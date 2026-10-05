@@ -28,6 +28,7 @@ import { registerContainerRoutes } from './containers/routes.ts'
 import { registerDockerRunRoutes } from './docker-run/routes.ts'
 import { registerHostingDeleteStepUp } from './hostings/delete-step-up.ts'
 import { registerHostingRoutes } from './hostings/routes.ts'
+import { registerTlsCaStepUp } from './tls/ca-step-up.ts'
 import { registerTlsRoutes } from './tls/routes.ts'
 import { registerLicenseRoutes } from './licenses/routes.ts'
 import {
@@ -158,6 +159,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerProjectPrincipalRoutes(client, opts)
   registerOrganizationLimitsRoutes(client, opts)
   registerServerLimitsRoutes(client, opts)
+  registerTlsCaStepUp(client, opts)
   registerTlsRoutes(client, opts)
   registerTeamRoutes(client, opts)
 

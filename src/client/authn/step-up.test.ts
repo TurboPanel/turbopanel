@@ -23,7 +23,10 @@ import {
 import { hashPassword } from '../../lib/secrets/password.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { registerEnvironmentStopRoutes } from '../environments/deploy-routes.ts'
 import { registerEnvironmentRoutes } from '../environments/routes.ts'
+import { registerManagedRoutes } from '../managed/routes.ts'
+import { registerTlsCaStepUp } from '../tls/ca-step-up.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerOrganizationMemberRoutes } from '../organizations/members.ts'
 import { registerHostingDeleteStepUp } from '../hostings/delete-step-up.ts'
@@ -82,6 +85,9 @@ async function buildFixture(db: Db, reauthLimit = 1000) {
   registerOrganizationMemberRoutes(client, opts)
   registerEnvironmentRoutes(client, opts)
   registerStorageRoutes(client, opts)
+  registerEnvironmentStopRoutes(client, opts)
+  registerManagedRoutes(client, opts)
+  registerTlsCaStepUp(client, opts)
   registerHostingDeleteStepUp(client, opts)
   registerHostingRoutes(client, opts)
   // A stand-in destructive route: any route wired to the gate behaves like it.
@@ -230,7 +236,7 @@ test('every registered action is called by a route', async () => {
   const all = sources.join('\n')
   for (const action of Object.keys(STEP_UP_ACTIONS)) {
     const wired = new RegExp(
-      String.raw`(?:requireStepUpIfConfigured|authorizeManagedBackupMutation)\(\s*c,\s*[\w.]+,\s*(?:[\w.]+,\s*)?['"]${action.replaceAll('.', String.raw`\.`)}['"]`
+      String.raw`(?:requireStepUpIfConfigured|authorizeManagedBackupMutation|loadManagedRowScope|tlsCaGate)\([^)]*?['"]${action.replaceAll('.', String.raw`\.`)}['"]`
     )
     assertEquals(wired.test(all), true, `no route calls the gate for ${action}`)
   }
@@ -583,6 +589,45 @@ test('delete hosting is wired to the gate', async () => {
     } finally {
       await db.delete(hosting).where(eq(hosting.id, host!.id))
       await db.delete(service).where(eq(service.id, svc!.id))
+      await db.delete(environment).where(eq(environment.projectId, scene.projectId))
+      await db.delete(project).where(eq(project.workspaceId, scene.workspaceId))
+      await db.delete(workspace).where(eq(workspace.organizationId, orgA))
+    }
+  })
+})
+
+test('stopping an environment, promoting a disaster-recovery replica and rotating or retiring the CA are wired to the gate', async () => {
+  await withScene(async ({ db, fx, orgA, cookie }) => {
+    const scene = await makeStoppedEnvironment(db, orgA, 'gated')
+    const envPath = `/environments/${scene.environmentId}`
+    const cases: Array<[string, string]> = [
+      [`${envPath}/stop`, 'environment.stop'],
+      [`${envPath}/managed/disaster-recovery/promote`, 'managed.disaster_recovery.promote'],
+      ['/tls/ca/rotate', 'tls.ca.rotate'],
+      ['/tls/ca/retire', 'tls.ca.retire'],
+    ]
+    const call = (path: string) =>
+      fx.app.request(`${API}${path}`, {
+        method: 'POST',
+        headers: {
+          cookie,
+          [ORG_ID_HEADER]: orgA,
+          'content-type': 'application/json',
+          'X-Real-IP': '203.0.113.7',
+        },
+        body: '{}',
+      })
+    try {
+      // Setting on and no recent re-authentication: each route is refused, by name.
+      await setOrgReauth(db, orgA, true)
+      for (const [path, action] of cases) {
+        const res = await call(path)
+        assertEquals(res.status, 403, action)
+        const body = (await res.json()) as { error: string; action: string }
+        assertEquals(body.error, 'reauth_required', action)
+        assertEquals(body.action, action)
+      }
+    } finally {
       await db.delete(environment).where(eq(environment.projectId, scene.projectId))
       await db.delete(project).where(eq(project.workspaceId, scene.workspaceId))
       await db.delete(workspace).where(eq(workspace.organizationId, orgA))
