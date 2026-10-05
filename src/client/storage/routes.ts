@@ -784,7 +784,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const copyRefError = await validateCopyRefsInOrg(c, ctx.db, ctx.orgId, updateFields)
     if (copyRefError) return copyRefError
-    const ownershipError = await validateCopyOwnership(c, ctx.db, row.principalId, row.id, {
+    const ownershipError = await validateCopyOwnership(c, ctx.db, row.principalId, {
       // Only a path being written is checked; an unrelated edit of a copy that
       // predates the rule is left alone (the host refuses its path on deploy).
       path: 'path' in updateFields ? updateFields.path : undefined,
