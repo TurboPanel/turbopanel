@@ -46,7 +46,7 @@
     "@noble/hashes": "1.8.0",
     "amqplib": "^2.0.1",
     "drizzle-orm": "^0.45.2",
-    "hono": "4.13.5",
+    "hono": "4.13.7",
     "ioredis": "^5.11.1",
     "nodemailer": "^10.0.2",
     "postgres": "^3.4.7",
