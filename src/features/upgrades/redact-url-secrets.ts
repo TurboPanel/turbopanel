@@ -71,29 +71,51 @@ const BEARER_VALUE = /\bBearer\s+[\w.~+/=-]{20,}/gi
  * inside a longer word (`tokenizer`). After `=` any value of 4+ characters is
  * dropped; after `:` only a quoted value or a long credential-shaped one is
  * (so `token: expired` survives).
+ *
+ * Three small patterns instead of one big one: the name, then the separator and
+ * the value read right after it (sticky, so each must start exactly there).
  */
-const SECRET_NAME_ASSIGNMENT =
-  /(?<![A-Za-z0-9])(?:token|secret|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key|authorization|credentials?)["']?(\s*[=:]\s*)("[^"\n]*"|'[^'\n]*'|[^\s"',;&]+)/gi
+const SECRET_NAME =
+  /(?<![a-z0-9])(?:token|secret|password|passwd|(?:api|access|private)[_-]?key|authorization|credentials?)["']?/gi
+const ASSIGNMENT_SEPARATOR = /\s*([=:])\s*/y
+const ASSIGNED_VALUE = /"[^"\n]*"|'[^'\n]*'|[^\s"',;&]+/y
 
 const CREDENTIAL_SHAPED = /^[\w.~+/=-]{16,}$/
 
-function redactAssignment(match: string, separator: string, value: string): string {
+/** The replacement for an assigned value, or the value itself when it is not a secret. */
+function redactedValue(separator: string, value: string): string {
   const quoted = value.startsWith('"') || value.startsWith("'")
   const redact = separator.includes('=')
     ? value.length >= 4
     : quoted || CREDENTIAL_SHAPED.test(value)
-  if (!redact) return match
-  return (
-    match.slice(0, match.length - value.length) +
-    (quoted ? `${value[0]}[redacted]${value[0]}` : '[redacted]')
-  )
+  if (!redact) return value
+  return quoted ? `${value[0]}[redacted]${value[0]}` : '[redacted]'
+}
+
+function redactAssignments(text: string): string {
+  let out = ''
+  let copiedTo = 0
+  for (const name of text.matchAll(SECRET_NAME)) {
+    // A name inside the value just redacted is already gone: skip it.
+    if (name.index < copiedTo) continue
+    ASSIGNMENT_SEPARATOR.lastIndex = name.index + name[0].length
+    const separator = ASSIGNMENT_SEPARATOR.exec(text)
+    if (!separator) continue
+    const valueStart = ASSIGNMENT_SEPARATOR.lastIndex
+    ASSIGNED_VALUE.lastIndex = valueStart
+    const value = ASSIGNED_VALUE.exec(text)?.[0]
+    if (value === undefined) continue
+    out += text.slice(copiedTo, valueStart) + redactedValue(separator[1] ?? '', value)
+    copiedTo = valueStart + value.length
+  }
+  return out + text.slice(copiedTo)
 }
 
 function redactBareSecrets(text: string): string {
   let out = text
   for (const pattern of PREFIXED_TOKENS) out = out.replaceAll(pattern, '[redacted]')
   out = out.replaceAll(BEARER_VALUE, 'Bearer [redacted]')
-  return out.replaceAll(SECRET_NAME_ASSIGNMENT, redactAssignment)
+  return redactAssignments(out)
 }
 
 export function redactUrlSecrets(text: string): string {
