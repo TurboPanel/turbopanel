@@ -15,6 +15,10 @@ import {
   emailRetryQueueName,
 } from '../../../features/email/smtp/amqp-topology.ts'
 import {
+  EMAIL_DEAD_AT_HEADER,
+  EMAIL_DEAD_REASON_HEADER,
+} from '../../../features/email/smtp/dead-letter-replay.ts'
+import {
   decideRetry,
   EMAIL_ATTEMPT_HEADER,
   failedAttemptsFromHeaders,
@@ -397,7 +401,12 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
   ): void {
     owner.channel.sendToQueue(EMAIL_AMQP_DEAD_QUEUE, msg.content, {
       persistent: true,
-      headers: { ...headers, 'x-tp-dead-reason': reason.slice(0, 300) },
+      messageId: crypto.randomUUID(),
+      headers: {
+        ...headers,
+        [EMAIL_DEAD_REASON_HEADER]: reason.slice(0, 300),
+        [EMAIL_DEAD_AT_HEADER]: new Date().toISOString(),
+      },
     })
     logError('mailer', `dead-lettered: ${reason}`)
   }
