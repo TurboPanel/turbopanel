@@ -304,7 +304,7 @@ export async function markDeploymentApplied(
       : { expectedCommandId: params.expectedCommandId }),
     status: 'applied',
     appliedGeneration: params.generation,
-    metadataPatch: { error: null, strategyOutcome: null },
+    metadataPatch: { error: null, strategyOutcome: null, cancelled: null },
     finishedAt,
     durationMs: params.durationMs ?? null,
     outcome: 'applied',
@@ -334,6 +334,12 @@ export async function markDeploymentFailed(
      * by a database check.
      */
     strategyOutcome?: DeployStrategyOutcome
+    /**
+     * The deploy was stopped on request before it switched anything over, so
+     * the previous version is still serving. Kept in `metadata` (like
+     * `strategyOutcome`) because `deployment.outcome` stays `failed`.
+     */
+    cancelled?: boolean
     /** See {@link DeploymentTransitionParams.expectedCommandId}. */
     expectedCommandId?: string
     expectedStatus?: DeploymentStatus
@@ -344,6 +350,7 @@ export async function markDeploymentFailed(
     metadataPatch.error = redactUrlSecrets(params.error)
   }
   metadataPatch.strategyOutcome = params.strategyOutcome ?? null
+  metadataPatch.cancelled = params.cancelled === true ? true : null
   const finishedAt = params.finishedAt ?? nowIso()
   return transitionDeploymentStatus(db, {
     environmentId: params.environmentId,

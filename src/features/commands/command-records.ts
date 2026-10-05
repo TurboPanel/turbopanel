@@ -1,4 +1,4 @@
-import { desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, notInArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { commandContextFromPayload } from './context.ts'
 import { lastErrorLine } from './error-line.ts'
@@ -487,7 +487,14 @@ export async function transitionCommand(
       ...(patch.errorCode === undefined ? {} : { errorCode: patch.errorCode }),
       ...timestamps,
     })
-    .where(eq(command.id, commandId))
+    .where(
+      TERMINAL_COMMAND_STATUSES.has(patch.status)
+        ? eq(command.id, commandId)
+        : // A command that already finished never moves back to a live status: a
+          // cancel (or timeout) that landed while the consumer was mid-dispatch
+          // must stay final.
+          and(eq(command.id, commandId), notInArray(command.status, [...TERMINAL_COMMAND_STATUSES]))
+    )
     .returning(COMMAND_COLUMNS)
 
   const row = rows[0]
@@ -502,4 +509,32 @@ export async function transitionCommand(
     await sealExecutionLogOnTerminal(commandId)
   }
   return serializeCommandRecord(row)
+}
+
+/**
+ * Cancel a command nothing has picked up yet: one conditional update, so it
+ * only wins while the row is still `queued`. Returns `false` when the consumer
+ * got there first (the caller then asks the daemon to stop it instead).
+ */
+export async function cancelQueuedCommand(
+  db: Db,
+  commandId: string,
+  patch: { error: string; errorCode?: string }
+): Promise<boolean> {
+  const now = nowIso()
+  const rows = await db
+    .update(command)
+    .set({
+      status: 'cancelled',
+      updatedAt: now,
+      finishedAt: now,
+      errorMessage: patch.error,
+      ...(patch.errorCode === undefined ? {} : { errorCode: patch.errorCode }),
+    })
+    .where(and(eq(command.id, commandId), eq(command.status, 'queued')))
+    .returning({ id: command.id })
+  if (rows.length === 0) return false
+  await finalizeCommandDispatch(db, commandId, 'cancelled')
+  await sealExecutionLogOnTerminal(commandId)
+  return true
 }
