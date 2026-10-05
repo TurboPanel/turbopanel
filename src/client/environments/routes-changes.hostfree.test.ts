@@ -5,6 +5,7 @@
 
 import { assertEquals, assertStringIncludes } from '@std/assert'
 import { emptyComposeDocument } from '../../features/compose/index.ts'
+import { mergeProjectEnvironmentCompose } from './deploy-prepare.ts'
 import { parseCreateEnvironmentJsonb, parseEnvironmentPatchOptions } from './routes-helpers.ts'
 
 /**
@@ -100,4 +101,13 @@ test('banned keys and unknown fields in the changes are still refused with the B
     parseEnvironmentPatchOptions({ options: { compose: placement } }, OVERLAY, PROJECT).ok,
     false
   )
+})
+
+test('the deploy prepare merge reads changes that only set a field on a Base service', () => {
+  const changes = { compose: compose({ web: { command: ['npm', 'start'] } }) }
+  const merged = mergeProjectEnvironmentCompose(PROJECT, changes)
+  if (merged instanceof Response) throw new TypeError('expected the layers to merge')
+  assertEquals(merged.data.services, {
+    web: { image: 'nginx:alpine', command: ['npm', 'start'] },
+  })
 })
