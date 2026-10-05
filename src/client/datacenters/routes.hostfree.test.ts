@@ -707,6 +707,21 @@ test('POST /datacenters returns 400 for invalid options', async () => {
   assertEquals(await res.json(), { error: 'Invalid request' })
 })
 
+test('POST /datacenters refuses an out-of-range priority with 400', async () => {
+  const { app, cookie } = await buildSessionApp({ manageAllowed: true })
+  const res = await app.request('/datacenters', {
+    method: 'POST',
+    headers: sessionHeaders(cookie, true),
+    body: JSON.stringify({
+      name: 'dc',
+      members: [{ serverId, address: '203.0.113.10' }],
+      options: { priority: 1001 },
+    }),
+  })
+  assertEquals(res.status, 400)
+  assertEquals(await res.json(), { error: 'invalid_priority' })
+})
+
 test('POST /datacenters returns 400 for an invalid sourceServerId', async () => {
   const { app, cookie } = await buildSessionApp({ manageAllowed: true })
   const res = await app.request('/datacenters', {
@@ -1152,7 +1167,7 @@ test('PATCH /datacenters/:id persists valid priority and trusted options', async
   })
 })
 
-test('PATCH /datacenters/:id drops invalid priority and trusted values', async () => {
+test('PATCH /datacenters/:id drops an invalid trusted value', async () => {
   const { app, cookie, updates } = await buildSessionApp({
     withDatacenterRow: true,
     manageAllowed: true,
@@ -1160,17 +1175,44 @@ test('PATCH /datacenters/:id drops invalid priority and trusted values', async (
   const res = await app.request(`/datacenters/${id}`, {
     method: 'PATCH',
     headers: sessionHeaders(cookie, true),
-    body: JSON.stringify({
-      options: {
-        addressPreference: 'ipv6',
-        priority: 5000,
-        trusted: 'yes',
-      },
-    }),
+    body: JSON.stringify({ options: { addressPreference: 'ipv6', priority: 20, trusted: 'yes' } }),
   })
   assertEquals(res.status, 200)
   assertEquals(updates.length, 1)
-  assertEquals(updates[0]?.options, { addressPreference: 'ipv6' })
+  assertEquals(updates[0]?.options, { addressPreference: 'ipv6', priority: 20 })
+})
+
+test('PATCH /datacenters/:id refuses a priority outside 0..1000 or not whole with 400', async () => {
+  for (const priority of [5000, -1, 1001, 10.5, '10', true]) {
+    const { app, cookie, updates } = await buildSessionApp({
+      withDatacenterRow: true,
+      manageAllowed: true,
+    })
+    const res = await app.request(`/datacenters/${id}`, {
+      method: 'PATCH',
+      headers: sessionHeaders(cookie, true),
+      body: JSON.stringify({ options: { priority } }),
+    })
+    assertEquals(res.status, 400, `priority ${String(priority)}`)
+    assertEquals(await res.json(), { error: 'invalid_priority' })
+    assertEquals(updates.length, 0)
+  }
+})
+
+test('PATCH /datacenters/:id accepts the edges 0 and 1000 and an absent or null priority', async () => {
+  for (const options of [{ priority: 0 }, { priority: 1000 }, { priority: null }, {}]) {
+    const { app, cookie, updates } = await buildSessionApp({
+      withDatacenterRow: true,
+      manageAllowed: true,
+    })
+    const res = await app.request(`/datacenters/${id}`, {
+      method: 'PATCH',
+      headers: sessionHeaders(cookie, true),
+      body: JSON.stringify({ options }),
+    })
+    assertEquals(res.status, 200, JSON.stringify(options))
+    assertEquals(updates.length, 1)
+  }
 })
 
 test('PATCH /datacenters/:id clears options when null is sent', async () => {

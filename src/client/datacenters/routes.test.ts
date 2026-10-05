@@ -1551,7 +1551,7 @@ test('PATCH /datacenters/:id updates name and description', async () => {
   })
 })
 
-test('PATCH /datacenters/:id persists valid priority and trusted and drops invalid values', async () => {
+test('PATCH /datacenters/:id persists valid priority and trusted, refuses a bad priority and drops a bad trusted', async () => {
   await withDatacenterFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const now = new Date().toISOString()
     const [dc] = await db
@@ -1598,12 +1598,24 @@ test('PATCH /datacenters/:id persists valid priority and trusted and drops inval
     assertEquals(detailBody.datacenter.priority, 7)
     assertEquals(detailBody.datacenter.trusted, false)
 
+    const outOfRange = await app.request(`/datacenters/${dc!.id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ options: { addressPreference: 'ipv6', priority: -1 } }),
+    })
+    assertEquals(outOfRange.status, 400)
+    assertEquals(await outOfRange.json(), { error: 'invalid_priority' })
+    const [afterRefused] = await db
+      .select({ options: datacenter.options })
+      .from(datacenter)
+      .where(eq(datacenter.id, dc!.id))
+      .limit(1)
+    assertEquals(afterRefused?.options, { priority: 7, trusted: false })
+
     const invalid = await app.request(`/datacenters/${dc!.id}`, {
       method: 'PATCH',
       headers,
-      body: JSON.stringify({
-        options: { addressPreference: 'ipv6', priority: -1, trusted: 'no' },
-      }),
+      body: JSON.stringify({ options: { addressPreference: 'ipv6', trusted: 'no' } }),
     })
     assertEquals(invalid.status, 200)
 

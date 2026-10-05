@@ -66,6 +66,19 @@ export function parseDatacenterPriority(value: unknown): number | undefined {
   return value
 }
 
+/**
+ * True when a request's `options` carries a `priority` that is not a whole
+ * number in range. The stored-value parser drops such a value silently (it
+ * must never throw on old rows); a request should say so instead. `null` and
+ * absent both mean "not set".
+ */
+export function hasInvalidPriority(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const priority = (value as Record<string, unknown>).priority
+  if (priority === undefined || priority === null) return false
+  return parseDatacenterPriority(priority) === undefined
+}
+
 /** Resolved policy fields the API surfaces beside the raw `options`. */
 export type DatacenterPolicy = {
   priority: number
