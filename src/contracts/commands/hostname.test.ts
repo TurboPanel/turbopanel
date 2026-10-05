@@ -4,6 +4,7 @@ import {
   assertValidHostname,
   HOSTNAME_MAX_LENGTH,
   isValidHostname,
+  wwwSiblingHostname,
 } from './hostname.ts'
 
 it('isValidHostname accepts RFC-1123 names', () => {
@@ -53,4 +54,15 @@ it('isValidHostname rejects non-string values', () => {
   assertEquals(isValidHostname(12), false)
   assertEquals(isValidHostname(null), false)
   assertEquals(isValidHostname(undefined), false)
+})
+
+it('wwwSiblingHostname flips the www spelling and refuses unusable results', () => {
+  assertEquals(wwwSiblingHostname('example.com'), 'www.example.com')
+  assertEquals(wwwSiblingHostname('www.example.com'), 'example.com')
+  assertEquals(wwwSiblingHostname('shop.example.com'), 'www.shop.example.com')
+  assertEquals(wwwSiblingHostname('www'), 'www.www')
+  assertEquals(wwwSiblingHostname('www.'), null)
+  const nearLimit = [60, 60, 60, 60].map((n) => 'a'.repeat(n)).join('.') + '.example'
+  assertEquals(nearLimit.length <= HOSTNAME_MAX_LENGTH, true)
+  assertEquals(wwwSiblingHostname(nearLimit), null)
 })

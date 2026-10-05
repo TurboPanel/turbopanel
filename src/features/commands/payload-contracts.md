@@ -473,14 +473,22 @@ allowRemoval? }`) to every connected server over the
 existing WSS session. **Site deploy:** compose `serviceKind: site` services are
 stripped into `sites[]` (nginx, Apache, and OpenLiteSpeed all supported) —
 hosting `options.web.php` (`version` / `memoryLimit` / `maxExecutionTime`) and
-`options.web.env` merge into the site payload (`webEnv` / `php` on each site);
-all three engines run PHP: nginx/Apache apply vendors php-fpm (never mod_php)
+`options.web.env` merge into the site payload (`webEnv` / `php` on each site).
+Hosting-scoped **secret** runtime variables never travel as plaintext: they ride
+`hostings[].web.secretEnv` and `sites[].webSecretEnv` as `tpdaemon` envelopes
+(`sealHostingWebSecretsForDaemon` reseals the stored `tpsecret` value for the
+target daemon; the control plane never decrypts them on this path), disjoint from
+`webEnv`, and the daemon decrypts them through `secrets/decrypt` before applying
+the site. A deploy with none needs no daemon key. Preview compiles no edge, so it
+carries neither.
+All three engines run PHP: nginx/Apache apply vendors php-fpm (never mod_php)
 and writes pool `php_admin_value` for memory/time limits, reached via
 `fastcgi_pass` / `mod_proxy_fcgi`; OpenLiteSpeed apply vendors `lsphp` and gives
 each vhost its own LSAPI processor under suEXEC, with the same limits as
 `phpIniOverride` values. One PHP series per host across all three engines —
-conflicting `version` hints fail the deploy. `web.env` is still Apache-only
-(`SetEnv`). When a project principal is assigned to the service, deploy-prepare
+conflicting `version` hints fail the deploy. `web.env` reaches PHP as FastCGI
+parameters: site Caddy `php_fastcgi env`, Apache `SetEnv`, nginx `fastcgi_param`
+(OpenLiteSpeed: not yet; `$_ENV` in no mode). When a project principal is assigned to the service, deploy-prepare
 pins `sites[].principal` (at most one — else **422**
 `site_principal_ambiguous`); the daemon owns the site tree as that user (engine
 group retains read) and runs the site's PHP workers — FPM pool or LSAPI process
