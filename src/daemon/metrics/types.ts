@@ -1,4 +1,8 @@
-import type { MetricEvent, MetricsSample } from '../../contracts/metrics-contract.ts'
+import type {
+  MetricEvent,
+  MetricsSample,
+  MetricsTextFieldName,
+} from '../../contracts/metrics-contract.ts'
 import type { HostedFamily } from './metric-descriptors.ts'
 import type { IngressDerivedValues } from './query/derived-metrics.ts'
 import type { SlotMapping } from '../../contracts/topology-types.ts'
@@ -363,6 +367,31 @@ export type MetricEventsResult = {
   truncated: boolean
 }
 
+export type HostFactsQuery = {
+  serverId: string
+  /** Only a sample taken at or after `from` counts (the lookback window). */
+  from: string
+  to: string
+}
+
+/** What a host told us about itself: kernel, OS, versions, a drive's model, a GPU's driver (never a number). */
+export type HostFacts = {
+  /** Host-wide short text by name; only fields the host actually reported. */
+  text: Partial<Record<MetricsTextFieldName, string>>
+  blockDevices: { deviceId: string; model?: string; smart?: string }[]
+  gpus: { gpuId: string; driver?: string; model?: string }[]
+}
+
+/** The latest host facts a store holds for one server. */
+export type HostFactsResult = {
+  kind: MetricsBackendKind
+  available: boolean
+  serverId: string
+  /** When the sample these facts came from was taken; `null` when no sample is in the window. */
+  sampledAt: string | null
+  facts: HostFacts
+}
+
 /**
  * Backend-neutral write sink for v5 host metrics samples and connection
  * status events, plus (where a real query-capable backend implements it)
@@ -398,4 +427,6 @@ export interface ServerMetricsStore {
   queryEntityIdsSeen?(input: EntityIdsSeenQuery): Promise<EntityIdsSeenResult>
   queryFleetHostSnapshot?(input: FleetHostSnapshotQuery): Promise<FleetHostSnapshotResult>
   queryMetricEvents?(input: MetricEventsQuery): Promise<MetricEventsResult>
+  /** Latest host facts (text the v7 layout stores outside the numbers). */
+  queryHostFacts?(input: HostFactsQuery): Promise<HostFactsResult>
 }

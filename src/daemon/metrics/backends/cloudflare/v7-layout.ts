@@ -348,6 +348,17 @@ function defOf(id: string): DoubleDef {
   return def
 }
 
+/** The `extended.text` key behind each content blob of a host row, blob7 onward (the reader's twin of `v7HostRowValues`). */
+export function v7HostRowTextKeys(
+  family: V7HostFamily
+): (keyof NonNullable<MetricsExtended['text']>)[] {
+  return V7_HOST_ROW_SPECS[family].blobs.map((id) => {
+    const key = TEXT_KEYS[id]
+    if (!key) throw new TypeError(`v7 layout names an unknown text id: ${id}`)
+    return key
+  })
+}
+
 function textOf(c: V7Context, id: string): string {
   const key = TEXT_KEYS[id]
   if (!key) throw new TypeError(`v7 layout names an unknown text id: ${id}`)
@@ -445,6 +456,16 @@ function opsPerSecond(device: BlockDeviceSample): number | null {
   return device.readOpsPerSecond + device.writeOpsPerSecond
 }
 
+/**
+ * The text each entity of a paged family carries, in the order its blobs follow
+ * the row's content blobs (entity by entity). The reader maps blobs back to
+ * entities with this, so the writer below is built from it too.
+ */
+export const V7_ENTITY_TEXT_FIELDS = {
+  block: ['model', 'smart'],
+  gpu: ['driver', 'model'],
+} as const
+
 function blockText(key: 'model' | 'smart') {
   return {
     read: (d: BlockDeviceSample, s: MetricsSample) =>
@@ -468,7 +489,7 @@ const BLOCK_SPEC: EntityRowSpec<BlockDeviceSample> = {
     entityNum('writeLatencyMs'),
     entityNum('queueDepth'),
   ],
-  blobs: [blockText('model'), blockText('smart')],
+  blobs: V7_ENTITY_TEXT_FIELDS.block.map(blockText),
   perPage: 3,
 }
 
@@ -501,7 +522,7 @@ const GPU_SPEC: EntityRowSpec<GpuSample> = {
     entityNum('pcieTransmitBytesPerSecond'),
     entityNum('throttlePercent'),
   ],
-  blobs: [gpuText('driver'), gpuText('model')],
+  blobs: V7_ENTITY_TEXT_FIELDS.gpu.map(gpuText),
   perPage: 3,
 }
 
