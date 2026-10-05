@@ -233,6 +233,8 @@ export const managedSchemas = {
       'startedAt',
       'completedAt',
       'blockedReason',
+      'needsOperator',
+      'failedReason',
       'lagBytes',
       'sourceDatacenterId',
       'targetDatacenterId',
@@ -265,6 +267,16 @@ export const managedSchemas = {
       startedAt: { type: 'string', format: 'date-time' },
       completedAt: { type: 'string', format: 'date-time', nullable: true },
       blockedReason: { type: 'string', nullable: true },
+      needsOperator: {
+        type: 'boolean',
+        description:
+          'True on a terminal `failed` row that nothing will advance (a command was lost or a step after the role change failed): the cluster may be half way through a role change, so an operator has to check which member is the writer before the next one.',
+      },
+      failedReason: {
+        type: 'string',
+        nullable: true,
+        description: 'Why a `needsOperator` recovery stopped; `null` otherwise.',
+      },
       lagBytes: { type: 'number', nullable: true },
       sourceDatacenterId: { type: 'string', format: 'uuid', nullable: true },
       targetDatacenterId: { type: 'string', format: 'uuid', nullable: true },
@@ -327,6 +339,27 @@ export const managedSchemas = {
       ok: { type: 'boolean', const: true },
       commandId: { type: 'string' },
       serverId: { type: 'string' },
+      status: { type: 'string', const: 'queued' },
+      results: {
+        type: 'array',
+        description: 'One entry per member the command was fanned out to.',
+        items: { $ref: '#/components/schemas/ManagedMemberEnqueueResult' },
+      },
+    },
+  },
+  ManagedMemberEnqueueResult: {
+    type: 'object',
+    required: ['memberId', 'serverId', 'status'],
+    properties: {
+      memberId: { type: 'string', format: 'uuid' },
+      serverId: { type: 'string', format: 'uuid' },
+      commandId: { type: 'string' },
+      status: { type: 'string', enum: ['queued', 'failed'] },
+      error: {
+        type: 'string',
+        description:
+          'Set when `status` is `failed`. `managed_member_needs_resync`: a start or restart skipped a demoted old primary that still holds a writable data directory; resync it first (stop is always allowed).',
+      },
     },
   },
   ManagedLifecycleRequest: {
@@ -878,7 +911,19 @@ export const managedSchemas = {
       limit: { type: 'integer' },
     },
   },
-  ManagedBusyError: errorSchema('managed_busy'),
+  ManagedBusyError: {
+    type: 'object',
+    required: ['error'],
+    properties: {
+      error: { type: 'string', const: 'managed_busy' },
+      reason: {
+        type: 'string',
+        enum: ['recovery_in_flight'],
+        description:
+          'Present when the cluster is not `applying` but an HA recovery (failover, switchover or disaster recovery) is still fencing or promoting in the journal. Every mutating managed route answers it until the recovery reaches a terminal state.',
+      },
+    },
+  },
   ServerPlacementRequiredError: errorSchema('server_placement_required'),
   ServerOfflineError: errorSchema('server_offline'),
   ManagedSettingsInvalidError: errorSchema('managed_settings_invalid'),

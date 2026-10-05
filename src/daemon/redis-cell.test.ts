@@ -726,10 +726,14 @@ function createSweepMockDb(init: {
       set: (patch: Record<string, unknown>) => {
         updateCalls.push(patch)
         if (patch.daemon !== undefined) {
-          daemon = materializeDaemonJsonbWrite(
-            { projection: daemon.projection },
-            patch.daemon
-          ) as ServerDaemonState
+          // The jsonb blob holds only the projection; the key row stays put.
+          daemon = {
+            ...(materializeDaemonJsonbWrite(
+              { projection: daemon.projection },
+              patch.daemon
+            ) as ServerDaemonState),
+            key: daemon.key,
+          }
         }
         if ('hostname' in patch) hostname = patch.hostname as string | null
         if ('machineKey' in patch) {
@@ -1203,17 +1207,12 @@ test(
   })
 )
 
-// KNOWN PRODUCT BUG, found when this suite first ran in CI (it was excluded
-// before). handleDaemonPresenceInbound calls cell.recordInbound, which marks
-// Redis connected again, and then onDaemonInbound, whose steady-state check
-// (steadyStateInboundSkipsDbRead) sees a connected cell and skips the Postgres
-// read. After a stale-presence sweep demoted the server, a heartbeat or hello
-// with an unchanged daemonBuild therefore leaves Postgres offline. The ping
-// path (handleDaemonCellPing) snapshots before recordInbound to avoid this; the
-// hello/heartbeat path does not. Re-enable once the product is fixed.
+// Mirrors handleDaemonPresenceInbound: it snapshots the cell BEFORE recordInbound
+// (which marks Redis connected again) and tells onDaemonInbound the runtime was
+// offline, so a hello or heartbeat with an unchanged daemonBuild still restores
+// Postgres after a stale-presence sweep.
 test({
   name: 'inbound after stale sweep restores postgres online status',
-  ignore: true,
   fn: withRedisCell(async ({ cell, client, registry, serverId }) => {
     const attached = await cell.attachDaemonSocket({
       keyId: crypto.randomUUID(),
@@ -1249,14 +1248,17 @@ test({
     // drive the inbound from a fresh cell that reads the back-dated Redis meta.
     const freshCell = new RedisDaemonCell(client, serverId)
     const at = new Date().toISOString()
+    const snapshotBefore = await freshCell.getSnapshot()
+    assertEquals(snapshotBefore.connected, false)
     await freshCell.recordInbound({
       connectionId: attached.connectionId,
       at,
       daemonBuild: { commit: 'recovered', buildId: '1', channel: 'trunk' },
     })
-    await onDaemonInbound(db, serverId, cell, {
+    await onDaemonInbound(db, serverId, freshCell, {
       at,
       daemonBuild: { commit: 'recovered', buildId: '1', channel: 'trunk' },
+      runtimeWasOffline: !snapshotBefore.connected,
     })
 
     const meta = await client.hgetall(metaKey(serverId))
@@ -1266,7 +1268,9 @@ test({
     const online = await registry.listOnlineServerIds()
     assert(online.includes(serverId))
 
-    assertEquals(updateCalls.length, 2)
+    // The sweep's offline write, the daemon-build projection, then the online restore.
+    assertEquals(updateCalls.length, 3)
+    assertEquals(updateCalls[0]?.isConnected, false)
     const last = updateCalls.at(-1)
     assertEquals(last?.isConnected, true)
     assertEquals(typeof last?.statusChangedAt, 'string')

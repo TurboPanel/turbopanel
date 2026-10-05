@@ -51,8 +51,7 @@ export const hostingSchemas = {
       },
       php: {
         $ref: '#/components/schemas/HostingPhpOptions',
-        description:
-          'PHP hints for a host-served site. Applied on every engine.',
+        description: 'PHP hints for a host-served site. Applied on every engine.',
       },
     },
   },
@@ -93,10 +92,14 @@ export const hostingSchemas = {
         description:
           'Required non-empty when protocol is tcp or udp. Invalid or duplicate published ports are dropped on parse; deploy rejects an empty list for tcp/udp.',
       },
+      wwwRedirect: {
+        type: 'boolean',
+        description:
+          "When true, the other spelling of each hostname (`www.` added, or removed when the name starts with `www.`) is also served and redirected permanently to the hostname as written, keeping the path and query. With Let's Encrypt the extra name gets its own certificate. http hostings only; the extra name must not already be a hostname in the environment. Default false.",
+      },
       web: {
         $ref: '#/components/schemas/HostingWebOptions',
-        description:
-          'Site / host-native stack options (env + optional Apache PHP hints)',
+        description: 'Site / host-native stack options (env + optional Apache PHP hints)',
       },
       proxy: {
         type: 'object',
@@ -153,16 +156,12 @@ export const hostingSchemas = {
           },
           composeAdopted: {
             type: 'boolean',
-            description:
-              'True when compose took over a panel-authored row serving the same route',
+            description: 'True when compose took over a panel-authored row serving the same route',
           },
         },
       },
       options: {
-        oneOf: [
-          { $ref: '#/components/schemas/HostingOptions' },
-          { type: 'null' },
-        ],
+        oneOf: [{ $ref: '#/components/schemas/HostingOptions' }, { type: 'null' }],
       },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
@@ -237,24 +236,19 @@ export const hostingPaths = {
   [hostingIdPath]: {
     ...(basePaths[hostingIdPath] as Record<string, unknown>),
     patch: {
-      ...((basePaths[hostingIdPath] as Record<string, unknown>).patch as Record<
-        string,
-        unknown
-      >),
+      ...((basePaths[hostingIdPath] as Record<string, unknown>).patch as Record<string, unknown>),
       responses: {
-        ...(((basePaths[hostingIdPath] as Record<string, unknown>)
-          .patch as Record<string, unknown>).responses as Record<string, unknown>),
+        ...(((basePaths[hostingIdPath] as Record<string, unknown>).patch as Record<string, unknown>)
+          .responses as Record<string, unknown>),
         ...composeOwnedConflictResponse,
       },
     },
     delete: {
-      ...((basePaths[hostingIdPath] as Record<string, unknown>).delete as Record<
-        string,
-        unknown
-      >),
+      ...((basePaths[hostingIdPath] as Record<string, unknown>).delete as Record<string, unknown>),
       responses: {
-        ...(((basePaths[hostingIdPath] as Record<string, unknown>)
-          .delete as Record<string, unknown>).responses as Record<string, unknown>),
+        ...((
+          (basePaths[hostingIdPath] as Record<string, unknown>).delete as Record<string, unknown>
+        ).responses as Record<string, unknown>),
         ...composeOwnedConflictResponse,
       },
     },

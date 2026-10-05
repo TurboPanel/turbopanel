@@ -22,6 +22,7 @@ import { applyStorageBackupSideEffect } from './storage-command-effects.ts'
 const test = Deno.test.bind(Deno)
 
 const dbUrl = getDatabaseUrl()
+const STORE_ID = '0192d6a0-0000-7000-8000-0000000000d1'
 
 type Db = ReturnType<typeof createDenoDb>
 
@@ -63,7 +64,14 @@ function record(copyId: string, action: 'create' | 'delete', backupId = 'bk_one'
   return {
     id: 'cmd-1',
     type: 'storage.backup',
-    payload: { copyId, copyProvider: 'docker', volumeName: 'uploads', action, backupId },
+    payload: {
+      copyId,
+      copyProvider: 'docker',
+      volumeName: 'uploads',
+      storageId: STORE_ID,
+      action,
+      backupId,
+    },
   }
 }
 

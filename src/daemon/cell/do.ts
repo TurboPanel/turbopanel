@@ -1926,7 +1926,9 @@ export class DaemonCellObject {
             serverId: attachment.serverId,
             hostname: parsed.hostname,
             ok: parsed.ok,
+            at: parsed.at,
             ...(parsed.errorMessage ? { errorMessage: parsed.errorMessage } : {}),
+            ...(parsed.notAfter ? { notAfter: parsed.notAfter } : {}),
           })
         })
         return

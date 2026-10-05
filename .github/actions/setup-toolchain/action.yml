@@ -6,12 +6,16 @@ runs:
   steps:
     # Node and Deno versions are the daemon role defaults (node_version /
     # deno_version). dev paths.sh and run.sh are tested against those files,
-    # so this action reads them instead of copying the numbers.
+    # so this action reads them instead of copying the numbers. The ref is a
+    # commit SHA, not `trunk`: a moving ref would change the compiler used for an
+    # already-merged instance commit with no change in this repo. To move to
+    # new versions, bump the SHA in a PR here (scripts/ci-runtime-pins.test.ts
+    # requires a full 40-character SHA).
     - name: Check out runtime pins
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         repository: TurboPanel/turbopaneld
-        ref: trunk
+        ref: 31210187aaf462199967dbd1e6bf3ccff69fa6b5 # TurboPanel/turbopaneld trunk, 2026-10-04
         fetch-depth: 1
         path: .ci-toolchain-pins
         persist-credentials: false

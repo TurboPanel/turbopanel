@@ -867,7 +867,6 @@ const BODY_ID_CASES: Record<string, BodyCase> = {
     body: (own, ref) => ({
       provider: 'docker',
       serverId: own.serverId,
-      path: `/idor/${crypto.randomUUID()}`,
       secretId: ref.secretId,
     }),
   },

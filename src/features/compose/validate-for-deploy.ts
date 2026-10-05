@@ -209,6 +209,7 @@ export function validateComposeForDeploy(
   // let the deploy run services as nobody.
   const structural = validateComposeDocument(document, {
     knownPrincipalAliases: principalAliasesInComposeData(document.data),
+    merged: true,
   })
   if (!structural.ok) {
     return { kind: 'compose_merged_invalid', issues: structural.issues }

@@ -92,7 +92,16 @@ function git(...args) {
 }
 
 function addedMigrations(base) {
-  return git('diff', '--name-status', '--diff-filter=A', base, 'HEAD', '--', 'migrations/')
+  return git(
+    'diff',
+    '--name-status',
+    '--no-renames',
+    '--diff-filter=A',
+    base,
+    'HEAD',
+    '--',
+    'migrations/'
+  )
     .split('\n')
     .filter(Boolean)
     .map((line) => line.split('\t').pop())

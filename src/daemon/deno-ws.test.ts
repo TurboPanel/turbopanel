@@ -2632,7 +2632,7 @@ const INBOUND_DISPATCH_CASES: ReadonlyArray<{
     correlatedResult: false,
   },
   {
-    // Fire-and-forget type with no dedicated handler: liveness only.
+    // Fire-and-forget; its handler is covered by the dedicated test below.
     name: 'acme-issuance-event',
     frame: {
       type: 'acme-issuance-event',
@@ -2689,6 +2689,85 @@ for (const dispatchCase of INBOUND_DISPATCH_CASES) {
     )
   })
 }
+
+test('live WS records an acme-issuance-event on the reporting organization lets_encrypt row', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-live-acme-event'
+  const base = createMockDb()
+  const patches: Array<Record<string, unknown>> = []
+  // The connect path needs the ordinary mock; only the acme handler's reads and
+  // its one write go through the doubles below, once the frame is sent.
+  let armed = false
+  let acmeWheres = 0
+  const managedRow = {
+    id: 'tls-1',
+    status: 'managed',
+    metadata: {
+      dnsNames: ['app.example.test'],
+      hasWildcard: false,
+      notBefore: '',
+      subject: '',
+      issuer: '',
+      acme: { lastError: 'old failure' },
+    },
+  }
+  const db = {
+    select: (...args: unknown[]) => {
+      const baseChain = (base.select as (...a: unknown[]) => unknown)(...args)
+      if (!armed) return baseChain
+      // The per-frame key check joins from the same table, so keep the base
+      // chain's joins and only answer a plain `from(...).where(...)`.
+      const baseFrom = (baseChain as { from: (...a: unknown[]) => object }).from()
+      return {
+        from: () => ({
+          ...baseFrom,
+          where: () =>
+            acmeWheres++ === 0
+              ? { limit: () => Promise.resolve([{ organizationId: 'org-1' }]) }
+              : Promise.resolve([managedRow]),
+        }),
+      }
+    },
+    update: (...args: unknown[]) => {
+      if (!armed) return (base.update as (...a: unknown[]) => unknown)(...args)
+      return {
+        set: (patch: Record<string, unknown>) => ({
+          where: () => {
+            patches.push(patch)
+            return Promise.resolve()
+          },
+        }),
+      }
+    },
+  } as unknown as Db
+  await withLiveDaemonServer(
+    { secrets, db, registry: createTrackingRegistry(createTrackingDaemonCell(serverId).cell) },
+    async ({ port }) => {
+      const issued = await issueDaemonJwt({ sub: serverId, kid: 'key-test' }, secrets)
+      const ws = await openLiveDaemonWs({ port, token: issued.token, remoteIp: LIVE_REMOTE_IP })
+      await new Promise((resolve) => setTimeout(resolve, 60))
+      armed = true
+      ws.send(
+        JSON.stringify({
+          type: 'acme-issuance-event',
+          hostname: 'app.example.test',
+          ok: true,
+          notAfter: '2027-01-01T00:00:00.000Z',
+          at: INBOUND_DISPATCH_AT,
+        })
+      )
+      await new Promise((resolve) => setTimeout(resolve, 80))
+      assertEquals(patches.length, 1)
+      const acme = (patches[0]!.metadata as { acme: Record<string, unknown> }).acme
+      assertEquals(acme.notAfter, '2027-01-01T00:00:00.000Z')
+      assertEquals(acme.lastIssuedAt, INBOUND_DISPATCH_AT)
+      assertEquals('lastError' in acme, false)
+      assertEquals('status' in patches[0]!, false)
+      ws.close(1000, 'done')
+      await waitForWsClose(ws)
+    }
+  )
+})
 
 test('live WS swallows inbound handler errors without tearing down the socket', async () => {
   const secrets = await createDaemonJwtSecrets()

@@ -81,3 +81,17 @@ test('hostingOptionsInputError names the first refused field, never the value', 
   assertEquals(secret?.field, 'options.web.env.TOKEN')
   assertEquals(JSON.stringify(secret).includes('secret\\n'), false)
 })
+
+test('hostingOptionsInputError checks wwwRedirect', () => {
+  assertEquals(hostingOptionsInputError({ wwwRedirect: false }), null)
+  assertEquals(hostingOptionsInputError({ wwwRedirect: true, hostnames: ['example.com'] }), null)
+  assertEquals(hostingOptionsInputError({ wwwRedirect: 'yes' })?.field, 'options.wwwRedirect')
+  assertEquals(
+    hostingOptionsInputError({ wwwRedirect: true, protocol: 'tcp' })?.field,
+    'options.wwwRedirect'
+  )
+  assertEquals(
+    hostingOptionsInputError({ wwwRedirect: true, hostnames: [`${'a.'.repeat(124)}com`] })?.field,
+    'options.wwwRedirect'
+  )
+})

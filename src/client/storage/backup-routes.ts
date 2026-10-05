@@ -15,6 +15,7 @@
  * `features/commands/payload-contracts.md`.
  */
 
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import type { Hono, Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -225,6 +226,12 @@ function registerManualBackupRoutes(router: Hono<AppEnv>): void {
   router.delete(BACKUP_PATH, async (c) => {
     const scope = await loadCopyScope(c)
     if (scope instanceof Response) return scope
+    const stepUp = await requireStepUpIfConfigured(
+      c,
+      scope.auth.organizationId,
+      'storage.backup.delete'
+    )
+    if (stepUp) return stepUp
     const backupId = decodeURIComponent(c.req.param('backupId'))
     const record = await findArchiveById(scope.db, scope.copy.copyId, backupId)
     if (!record) return c.json({ error: 'backup_not_found' }, 404)
@@ -244,6 +251,8 @@ function registerManualBackupRoutes(router: Hono<AppEnv>): void {
   router.post(RESTORE_PATH, async (c) => {
     const scope = await loadCopyScope(c)
     if (scope instanceof Response) return scope
+    const stepUp = await requireStepUpIfConfigured(c, scope.auth.organizationId, 'storage.restore')
+    if (stepUp) return stepUp
     const backupId = decodeURIComponent(c.req.param('backupId'))
     const record = await findArchiveById(scope.db, scope.copy.copyId, backupId)
     if (!record) return c.json({ error: 'backup_not_found' }, 404)

@@ -703,6 +703,11 @@ async function resolveIngestPlanAndReconcileTopology(
   sample: AuthenticatedMetricsSample,
   deployment: MetricsDeploymentKind
 ): Promise<IngestPlanAndTopology> {
+  // A non-durable 10 s live sample is only buffered for the chart overlay and
+  // never stored: it still needs the plan to truncate against, but must not
+  // cause writes (resync marker, machine-class guess) or the plan-generation
+  // record. The durable 60 s baseline owns all of those.
+  const durable = isDurableSample(sample)
   try {
     const [topologyMatch, latestTopology, planRow] = await Promise.all([
       getTopologyGeneration(db, serverId, sample.metadata.topologyGeneration),
@@ -711,7 +716,7 @@ async function resolveIngestPlanAndReconcileTopology(
     ])
 
     const topologyKnown = topologyMatch !== undefined
-    if (!topologyKnown) {
+    if (!topologyKnown && durable) {
       markTopologyResyncRequested(db, serverId).catch((err) => {
         rateLimitedMetricsLog(serverId, 'topology_resync_mark_failed', () => {
           console.warn(
@@ -728,6 +733,7 @@ async function resolveIngestPlanAndReconcileTopology(
       countHostLevelSignals(sample.hardwareSignals)
     )
     if (
+      durable &&
       planRow !== undefined &&
       !isServerMachineClass(planRow.machineClass) &&
       machineClass === 'physical'
@@ -771,7 +777,7 @@ async function resolveIngestPlanAndReconcileTopology(
     let planChanged = false
     // Self-hosted ingest writes the operator's own disk uncapped — never
     // persist or push a finite plan the daemon would then truncate against.
-    if (deployment !== 'self-hosted') {
+    if (deployment !== 'self-hosted' && durable) {
       try {
         const recorded = await recordCapabilityPlanGenerationIfChanged(db, serverId, plan)
         generation = recorded.generation

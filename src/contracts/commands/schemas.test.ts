@@ -3402,6 +3402,32 @@ test('parseEnvironmentDeployPayload accepts optional tlsMode acme and rejects un
   )
 })
 
+test('parseEnvironmentDeployPayload keeps wwwRedirect only when true and rejects non-booleans', () => {
+  const hostingIngressNetwork = '00000000-0000-4000-8000-0000000000bb'
+  const withHosting = (extra: Record<string, unknown>) =>
+    parseEnvironmentDeployPayload({
+      ...BASE_ENVIRONMENT_DEPLOY,
+      hostingIngressNetwork,
+      hostings: [
+        {
+          hostingId: 'h1',
+          serviceId: 's1',
+          composeServiceName: 'web',
+          hostnames: ['example.com'],
+          ...extra,
+        },
+      ],
+    })
+  assertEquals(withHosting({ wwwRedirect: true }).hostings[0]?.wwwRedirect, true)
+  assertEquals(withHosting({ wwwRedirect: false }).hostings[0]?.wwwRedirect, undefined)
+  assertEquals(withHosting({}).hostings[0]?.wwwRedirect, undefined)
+  assertThrows(
+    () => withHosting({ wwwRedirect: 'yes' }),
+    Error,
+    'Invalid environment.deploy payload'
+  )
+})
+
 test('parseEnvironmentDeployPayload parses hostingIngress for shared HTTP Traefik', () => {
   const result = parseEnvironmentDeployPayload({
     ...BASE_ENVIRONMENT_DEPLOY,
