@@ -399,6 +399,11 @@ export const deploySchemas = {
       },
       errorCode: { type: ['string', 'null'] },
       errorMessage: { type: ['string', 'null'] },
+      errorLine: {
+        type: ['string', 'null'],
+        description:
+          'The one line of `errorMessage` that says what went wrong (the cause is printed last). Signed URLs are redacted. Null when the attempt has no error text.',
+      },
       strategy: {
         type: ['string', 'null'],
         enum: ['inplace', 'sequential', null],

@@ -15,6 +15,7 @@ import { eq, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { instanceHostname, instanceUploadedCertificate, setting } from '../../db/schema.ts'
 import { coversHostname } from '../../lib/tls/match.ts'
+import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
 import { isLoopbackOrPrivateHostname } from './install-tls.ts'
 import {
   hostFromPublicUrlEntry,
@@ -420,7 +421,9 @@ export async function recordInstanceAcmeIssuance(
     notAfter?: string
   } = {
     acmeLastAttemptAt: event.at,
-    acmeLastError: event.ok ? null : (event.errorMessage ?? 'certificate issuance failed'),
+    acmeLastError: event.ok
+      ? null
+      : redactUrlSecrets(event.errorMessage ?? 'certificate issuance failed'),
   }
   if (event.ok && event.notAfter) patch.notAfter = event.notAfter
   await db.update(instanceHostname).set(patch).where(eq(instanceHostname.id, match.id))

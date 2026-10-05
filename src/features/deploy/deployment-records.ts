@@ -2,6 +2,7 @@ import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { nowIso } from '../commands/ids.ts'
 import { deployment } from '../../db/schema.ts'
+import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
 import type { DeployStrategyOutcome } from './deploy-outcome.ts'
 
 export const DEPLOYMENT_STATUSES = Object.freeze([
@@ -340,7 +341,7 @@ export async function markDeploymentFailed(
 ): Promise<DeploymentTargetRecord | null> {
   const metadataPatch: Record<string, unknown> = {}
   if (params.error !== undefined) {
-    metadataPatch.error = params.error
+    metadataPatch.error = redactUrlSecrets(params.error)
   }
   metadataPatch.strategyOutcome = params.strategyOutcome ?? null
   const finishedAt = params.finishedAt ?? nowIso()
