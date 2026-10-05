@@ -807,3 +807,137 @@ test('an environment moves to another server only by an explicit pin change, and
     }
   })
 })
+
+function composeDoc(data: Record<string, unknown>) {
+  return { version: 1, data, presentation: { keyOrder: Object.keys(data), comments: {} } }
+}
+
+async function setProjectBase(ctx: EnvironmentTestContext, services: Record<string, unknown>) {
+  await ctx.db
+    .update(project)
+    .set({ options: { compose: composeDoc({ services }) } })
+    .where(eq(project.id, ctx.projectId))
+}
+
+type ComposeRefusal = { error: string; issues: Array<{ path: string; message: string }> }
+
+async function assertComposeRefused(res: Response, serviceName: string): Promise<void> {
+  assertEquals(res.status, 400)
+  const body = (await res.json()) as ComposeRefusal
+  assertEquals(body.error, 'compose_invalid')
+  const message = body.issues.map((issue) => issue.message).join('\n')
+  assertEquals(message.includes(`Service "${serviceName}" must define "image" or "build"`), true)
+}
+
+test('PATCH /environments saves changes that only set a field on a service the Base defines', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    await setProjectBase(ctx, { web: { image: 'nginx:alpine' } })
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEnvironmentWith(ctx, cookie, { name: 'Changes only' })
+
+    const changes = composeDoc({ services: { web: { command: ['npm', 'start'] } } })
+    const saved = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
+      options: { compose: changes },
+    })
+    assertEquals(saved.status, 200)
+    const stored = (await storedOptions(ctx, id))?.compose as { data: unknown }
+    assertEquals(stored.data, changes.data)
+  })
+})
+
+test('PATCH /environments still needs an image or build for a service that is new in the environment', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    await setProjectBase(ctx, { web: { image: 'nginx:alpine' } })
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEnvironmentWith(ctx, cookie, { name: 'New service' })
+    const before = await storedOptions(ctx, id)
+
+    const bare = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
+      options: { compose: composeDoc({ services: { worker: { command: ['node', 'w.js'] } } }) },
+    })
+    await assertComposeRefused(bare, 'worker')
+    // A refused save changes nothing.
+    assertEquals(await storedOptions(ctx, id), before)
+
+    const withImage = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
+      options: {
+        compose: composeDoc({ services: { worker: { image: 'node:22', command: ['node'] } } }),
+      },
+    })
+    assertEquals(withImage.status, 200)
+  })
+})
+
+test('PATCH /environments refuses changes that leave a service with nothing to run', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    await setProjectBase(ctx, { web: { image: 'nginx:alpine' } })
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEnvironmentWith(ctx, cookie, { name: 'Reset image' })
+
+    const reset = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
+      options: {
+        compose: composeDoc({
+          services: { web: { image: { __turbopanelComposeTag: 'reset', value: null } } },
+        }),
+      },
+    })
+    await assertComposeRefused(reset, 'web')
+  })
+})
+
+test('PATCH /environments keeps refusing banned keys and unknown fields in the changes', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    await setProjectBase(ctx, { web: { image: 'nginx:alpine' } })
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEnvironmentWith(ctx, cookie, { name: 'Banned' })
+
+    const unknown = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
+      options: { compose: composeDoc({ services: { web: { imaage: 'nginx' } } }) },
+    })
+    assertEquals(unknown.status, 400)
+    assertEquals(((await unknown.json()) as ComposeRefusal).error, 'compose_invalid')
+
+    const placement = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
+      options: {
+        compose: composeDoc({
+          services: { web: { command: ['x'] } },
+          'x-turbopanel': { placement: { serverId: crypto.randomUUID() } },
+        }),
+      },
+    })
+    assertEquals(placement.status, 400)
+    assertEquals(((await placement.json()) as ComposeRefusal).error, 'compose_invalid')
+  })
+})
+
+test('PATCH /environments with no Base compose needs the image in the environment', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEnvironmentWith(ctx, cookie, { name: 'No base' })
+    const res = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
+      options: { compose: composeDoc({ services: { web: { command: ['npm', 'start'] } } }) },
+    })
+    await assertComposeRefused(res, 'web')
+  })
+})
+
+test('POST /environments accepts changes to a Base service and refuses a new bare service', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    await setProjectBase(ctx, { web: { image: 'nginx:alpine' } })
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+
+    const ok = await sendJson(ctx, cookie, 'POST', '/environments', {
+      projectId: ctx.projectId,
+      name: 'Created with changes',
+      options: { compose: composeDoc({ services: { web: { command: ['npm', 'start'] } } }) },
+    })
+    assertEquals(ok.status, 200)
+
+    const refused = await sendJson(ctx, cookie, 'POST', '/environments', {
+      projectId: ctx.projectId,
+      name: 'Created with a bare service',
+      options: { compose: composeDoc({ services: { worker: { command: ['node'] } } }) },
+    })
+    await assertComposeRefused(refused, 'worker')
+  })
+})
