@@ -21,10 +21,13 @@ import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
 import { getDb } from '../../db/connection.ts'
 import { getEmailQueue } from '../../features/email/types.ts'
 import {
+  CHANNEL_VERIFICATION_LIMITS,
   CHANNEL_VERIFICATION_TOKEN_PATTERN,
   channelVerificationCooldownSeconds,
   confirmChannelVerification,
+  countUnverifiedEmailChannels,
   mintChannelVerificationToken,
+  reserveVerificationMail,
 } from './channel-verification.ts'
 import {
   createNotificationChannel,
@@ -41,7 +44,7 @@ import { assertCanOr403 } from '../authz/http.ts'
 import { type AuthRouteOpts, resolveVerificationBaseUrlAsync } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { getOrgId } from '../shared.ts'
-import { parseChannelCreateBody } from './routes-helpers.ts'
+import { isPlainEmailChannelLabel, parseChannelCreateBody } from './routes-helpers.ts'
 
 /**
  * Where the link lands. Both are fixed constants: the redirect target is never
@@ -116,7 +119,9 @@ async function sendVerificationEmail(
     to: address,
     from: c.get('emailFrom') ?? opts.emailFrom ?? 'noreply@turbopanel.local',
     verifyUrl: `${base}${CLIENT_API_PREFIX}/notification-channels/verify/${token}`,
-    channelLabel: channel.label,
+    // A label edited after creation is held to the same rule: this mail goes
+    // to someone who never asked for it.
+    channelLabel: isPlainEmailChannelLabel(channel.label) ? channel.label : 'notification channel',
     organizationName: channel.organizationId
       ? await organizationName(db, channel.organizationId)
       : null,
@@ -148,6 +153,51 @@ async function planCreate(c: Ctx, userId: string): Promise<CreatePlan | Response
   return org instanceof Response ? org : { organizationId: org, body }
 }
 
+/**
+ * The brakes in front of every verification mail: how many unverified channels
+ * a user or organization may hold, and per-day allowances for the user and for
+ * the recipient address. `null` = go ahead; otherwise the 429 to send.
+ */
+async function refuseVerificationMail(
+  c: Ctx,
+  db: Db,
+  userId: string,
+  address: string,
+  organizationId: string | null
+): Promise<Response | null> {
+  const heldByUser = await countUnverifiedEmailChannels(db, { userId })
+  if (heldByUser >= CHANNEL_VERIFICATION_LIMITS.unverifiedPerUser) {
+    return c.json({ error: 'too_many_unverified_channels' }, 429)
+  }
+  if (organizationId !== null) {
+    const held = await countUnverifiedEmailChannels(db, { organizationId })
+    if (held >= CHANNEL_VERIFICATION_LIMITS.unverifiedPerOrganization) {
+      return c.json({ error: 'too_many_unverified_channels' }, 429)
+    }
+  }
+  return await refuseVerificationAllowance(c, db, userId, address)
+}
+
+async function refuseVerificationAllowance(
+  c: Ctx,
+  db: Db,
+  userId: string,
+  address: string
+): Promise<Response | null> {
+  const limits = CHANNEL_VERIFICATION_LIMITS
+  const user = await reserveVerificationMail(db, 'user', userId, limits.mailsPerUserPerDay)
+  if (!user.ok) {
+    c.header('Retry-After', String(user.retryAfterSeconds))
+    return c.json({ error: 'verification_mail_budget' }, 429)
+  }
+  const target = await reserveVerificationMail(db, 'address', address, limits.mailsPerAddressPerDay)
+  if (!target.ok) {
+    c.header('Retry-After', String(target.retryAfterSeconds))
+    return c.json({ error: 'address_verification_limit' }, 429)
+  }
+  return null
+}
+
 async function createEmailChannel(c: Ctx, opts: AuthRouteOpts): Promise<Response> {
   const db = getDb(c)
   if (!db) return c.json({ error: 'Database unavailable' }, 503)
@@ -164,6 +214,10 @@ async function createEmailChannel(c: Ctx, opts: AuthRouteOpts): Promise<Response
   const verifiedNow = await addressKnownToBelongHere(db, sess.email, address, plan.organizationId)
   if (!verifiedNow && !getEmailQueue(c)) {
     return c.json({ error: 'email_unavailable' }, 503)
+  }
+  if (!verifiedNow) {
+    const refused = await refuseVerificationMail(c, db, sess.userId, address, plan.organizationId)
+    if (refused) return refused
   }
   const channel = await createNotificationChannel(db, undefined, {
     scope,
@@ -208,6 +262,8 @@ async function resendVerification(c: Ctx, opts: AuthRouteOpts): Promise<Response
   }
   const address = await resolveChannelAddress(undefined, owned)
   if (address === null) return c.json({ error: 'address_unreadable' }, 409)
+  const refused = await refuseVerificationAllowance(c, db, sess.userId, address)
+  if (refused) return refused
   try {
     await sendVerificationEmail(c, opts, db, owned, address, sess.email)
   } catch (error) {
