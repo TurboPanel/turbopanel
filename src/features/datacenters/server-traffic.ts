@@ -125,6 +125,6 @@ export function equalPriorityWarnings(
     .map(([priority, ids]) => ({
       code: 'equal_priority' as const,
       priority,
-      datacenterIds: [...ids].sort(),
+      datacenterIds: [...ids].sort((a, b) => a.localeCompare(b)),
     }))
 }

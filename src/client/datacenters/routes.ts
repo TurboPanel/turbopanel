@@ -258,15 +258,17 @@ async function fanOutDatacenterPolicyChange(
   }
 }
 
+type OrganizationDatacenterOptions = ReadonlyMap<string, unknown>
+
 /**
  * Plan "make this the server-to-server network" over the organization's
- * datacenters and write the changed priorities in one transaction.
+ * datacenters (nothing is written here).
  */
-async function applyServerTrafficChoice(
+async function planServerTrafficForOrganization(
   db: Db,
   organizationId: string,
   datacenterId: string
-): Promise<ServerTrafficPlan> {
+): Promise<{ plan: ServerTrafficPlan; optionsById: OrganizationDatacenterOptions }> {
   const rows = await db
     .select({ id: datacenter.id, options: datacenter.options })
     .from(datacenter)
@@ -275,21 +277,29 @@ async function applyServerTrafficChoice(
     rows.map((row) => ({ id: row.id, ...resolveDatacenterPolicy(row.options) })),
     datacenterId
   )
-  if (!plan.ok || plan.changes.length === 0) return plan
-  const optionsById = new Map(rows.map((row) => [row.id, row.options]))
+  return { plan, optionsById: new Map(rows.map((row) => [row.id, row.options])) }
+}
+
+/** Write the changed priorities in one transaction, keeping every other option. */
+async function writeServerTrafficChanges(
+  db: Db,
+  changes: readonly PriorityChange[],
+  optionsById: OrganizationDatacenterOptions
+): Promise<void> {
   await db.transaction(async (tx) => {
-    for (const change of plan.changes) {
-      const options = {
-        ...parseDatacenterOptions(optionsById.get(change.datacenterId)),
-        priority: change.after,
-      }
-      await tx
+    await forEachSequential(changes, (change) =>
+      tx
         .update(datacenter)
-        .set({ options, updatedAt: new Date().toISOString() })
+        .set({
+          options: {
+            ...parseDatacenterOptions(optionsById.get(change.datacenterId)),
+            priority: change.after,
+          },
+          updatedAt: new Date().toISOString(),
+        })
         .where(eq(datacenter.id, change.datacenterId))
-    }
+    )
   })
-  return plan
 }
 
 function parseCreateDatacenterInput(
@@ -1093,10 +1103,11 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     if (body instanceof Response) return body
     if (body.preferred !== true) return c.json({ error: 'Invalid request' }, 400)
 
-    const plan = await applyServerTrafficChoice(db, organizationId, id)
+    const { plan, optionsById } = await planServerTrafficForOrganization(db, organizationId, id)
     if (!plan.ok) {
       return c.json({ error: plan.error }, plan.error === 'datacenter_not_found' ? 404 : 409)
     }
+    if (plan.changes.length > 0) await writeServerTrafficChanges(db, plan.changes, optionsById)
     await forEachSequential(plan.changes, (change: PriorityChange) =>
       fanOutDatacenterPolicyChange(c, db, {
         datacenterId: change.datacenterId,
