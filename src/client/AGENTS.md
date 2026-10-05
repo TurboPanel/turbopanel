@@ -37,6 +37,18 @@ Per-feature behavior contracts for the client surface (moved from the root
 `AGENTS.md` **API / WS surfaces** section). Keep current when endpoint behavior
 changes.
 
+- **Org activity feed (client surface):** `GET /organizations/:id/activity` —
+  running and recently failed (7 days) deploy / restart / stop commands across
+  the org, polled by the console (nothing is pushed). `?filter=all|deploying|failed`
+  (`crashing` / `crashed` are **not served**: no restart count is recorded; an
+  unknown filter is **400**), `limit` 1–100 (default 50, larger clamps),
+  `offset`. Returns `{ ok, items, total, hasMore }`; `step` / `totalSteps` /
+  `crashCount` are always `null` until those are recorded. Gate as the members
+  list: unreachable org or bad uuid **404**, no owner/manager rights **403**;
+  rows are limited to `listVisible(server)` and to servers of the **path** org
+  (never the active-org header). Reads `command` only (never `dispatch`); the
+  organization comes from `command.server_id → server.organization_id`.
+  `features/commands/activity-query.ts`.
 - **Server timezone / NTP (client surface):** daemon hello + change-detected
   heartbeats persist `timeSync` onto `server.timezone` / `is_time_sync_enabled`
   / `ntp_servers` / `ntp_last_synced_at`, and nest addresses on
