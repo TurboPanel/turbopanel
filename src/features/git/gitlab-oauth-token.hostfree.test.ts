@@ -247,6 +247,10 @@ function gitlabDb(opts: {
   })
   const db = {
     updated: undefined as unknown,
+    // The refresh runs in a transaction holding an advisory lock; the stub
+    // hands the same handle to the callback.
+    transaction: <T>(fn: (tx: unknown) => Promise<T>) => fn(db),
+    execute: () => Promise.resolve([]),
     select: () => ({
       from: (table: unknown) => ({
         innerJoin: joined,
