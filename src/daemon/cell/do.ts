@@ -19,6 +19,7 @@ import {
   type ServerDockerMetadata,
   type ServerHostResources,
   type ServerOsMetadata,
+  type ServerReleaseLinkScanMetadata,
   type ServerTimeSync,
 } from '../../features/servers/server-metadata.ts'
 import {
@@ -1154,6 +1155,7 @@ export class DaemonCellObject {
       resources?: ServerHostResources
       timeSync?: ServerTimeSync
       docker?: ServerDockerMetadata
+      releaseLinkScan?: ServerReleaseLinkScanMetadata
       services?: ServiceRunState[]
       features?: string[]
     },
@@ -1168,6 +1170,7 @@ export class DaemonCellObject {
         hostIdentity?.resources ||
         hostIdentity?.timeSync ||
         hostIdentity?.docker ||
+        hostIdentity?.releaseLinkScan ||
         hostIdentity?.services ||
         hostIdentity?.features
       ) {
@@ -1178,6 +1181,7 @@ export class DaemonCellObject {
           resources: hostIdentity.resources,
           timeSync: hostIdentity.timeSync,
           docker: hostIdentity.docker,
+          releaseLinkScan: hostIdentity.releaseLinkScan,
           services: hostIdentity.services,
           ...(hostIdentity.features !== undefined ? { features: hostIdentity.features } : {}),
         })
@@ -1719,6 +1723,7 @@ export class DaemonCellObject {
       resources?: ServerHostResources
       timeSync?: ServerTimeSync
       docker?: ServerDockerMetadata
+      releaseLinkScan?: ServerReleaseLinkScanMetadata
       services?: unknown
       features?: string[]
     }
@@ -1734,12 +1739,14 @@ export class DaemonCellObject {
       timeSync: parsed.timeSync,
       resources: resourcesFromDaemonPresence(parsed),
       docker: parsed.docker,
+      releaseLinkScan: parsed.releaseLinkScan,
       services: parseServiceRunStates(parsed.services),
     }
     const hasPresenceFacts = Boolean(
       presenceFacts.timeSync ||
       presenceFacts.resources ||
       presenceFacts.docker ||
+      presenceFacts.releaseLinkScan ||
       presenceFacts.services
     )
     // hostname/os stay hello-only; timeSync / resources / docker project
@@ -1752,6 +1759,7 @@ export class DaemonCellObject {
           resources?: ServerHostResources
           timeSync?: ServerTimeSync
           docker?: ServerDockerMetadata
+          releaseLinkScan?: ServerReleaseLinkScanMetadata
           services?: ServiceRunState[]
           features?: string[]
         }
@@ -1774,6 +1782,7 @@ export class DaemonCellObject {
       hostIdentity?.resources ||
       hostIdentity?.timeSync ||
       hostIdentity?.docker ||
+      hostIdentity?.releaseLinkScan ||
       hostIdentity?.services ||
       hostIdentity?.features
     )

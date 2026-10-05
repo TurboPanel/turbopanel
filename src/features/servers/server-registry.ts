@@ -8,6 +8,7 @@ import {
   parseServerDockerMetadata,
   parseServerHostResources,
   parseServerOsMetadata,
+  parseServerReleaseLinkScan,
   parseServerRuntimeMetadata,
   parseServerTimeSync,
   type ServerDockerMetadata,
@@ -17,7 +18,9 @@ import {
   type ServerMetadata,
   type ServerOsColumns,
   type ServerOsMetadata,
+  type ServerReleaseLinkScanMetadata,
   type ServerRuntimeMetadata,
+  serverReleaseLinkScanEquals,
   serverRuntimeMetadataEquals,
   type ServerTimeSync,
   type ServerTimeSyncColumns,
@@ -91,6 +94,7 @@ export type ServerHelloIdentity = {
   timeSync?: ServerTimeSync
   docker?: ServerDockerMetadata
   runtimes?: ServerRuntimeMetadata
+  releaseLinkScan?: ServerReleaseLinkScanMetadata
   /** Per-service run state; `[]` clears, `undefined` leaves what is stored. */
   services?: ServiceRunState[]
   /** Hello only. `[]` when the daemon omitted `features`. Heartbeat leaves this unset. */
@@ -107,6 +111,8 @@ function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
   if (docker) patch.docker = docker
   const runtimes = parseServerRuntimeMetadata(identity.runtimes)
   if (runtimes) patch.runtimes = runtimes
+  const releaseLinkScan = parseServerReleaseLinkScan(identity.releaseLinkScan)
+  if (releaseLinkScan) patch.releaseLinkScan = releaseLinkScan
   const services = parseServiceRunStates(identity.services)
   if (services !== undefined) patch.services = services
   return patch
@@ -173,7 +179,14 @@ export function mergeServerMetadataIdentity(
   current: ServerMetadata | null | undefined,
   identity: Pick<
     ServerHelloIdentity,
-    'hostname' | 'machineKey' | 'os' | 'resources' | 'timeSync' | 'docker' | 'services'
+    | 'hostname'
+    | 'machineKey'
+    | 'os'
+    | 'resources'
+    | 'timeSync'
+    | 'docker'
+    | 'releaseLinkScan'
+    | 'services'
   >
 ): ServerMetadata | null {
   const patch = metadataPatch(identity)
@@ -196,6 +209,13 @@ export function mergeServerMetadataIdentity(
   }
   if (patch.runtimes !== undefined && !serverRuntimeMetadataEquals(patch.runtimes, base.runtimes)) {
     next.runtimes = patch.runtimes
+    changed = true
+  }
+  if (
+    patch.releaseLinkScan !== undefined &&
+    !serverReleaseLinkScanEquals(patch.releaseLinkScan, base.releaseLinkScan)
+  ) {
+    next.releaseLinkScan = patch.releaseLinkScan
     changed = true
   }
   if (patch.services !== undefined && !serviceRunStatesEqual(patch.services, base.services)) {
@@ -239,6 +259,12 @@ function buildMetadataDelta(
     !serverRuntimeMetadataEquals(patch.runtimes, base?.runtimes)
   ) {
     delta.runtimes = patch.runtimes
+  }
+  if (
+    patch.releaseLinkScan !== undefined &&
+    !serverReleaseLinkScanEquals(patch.releaseLinkScan, base?.releaseLinkScan)
+  ) {
+    delta.releaseLinkScan = patch.releaseLinkScan
   }
   if (patch.services !== undefined && !serviceRunStatesEqual(patch.services, base?.services)) {
     delta.services = patch.services

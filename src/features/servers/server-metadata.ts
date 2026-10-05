@@ -317,6 +317,13 @@ export type ServerMetadata = {
    */
   runtimes?: ServerRuntimeMetadata
   /**
+   * Result of the daemon's boot-time check of live releases for symlinks that
+   * leave the release or reach into `shared/`, from daemon hello /
+   * change-detected heartbeat. Absent until a scan has been reported. jsonb, so
+   * no migration.
+   */
+  releaseLinkScan?: ServerReleaseLinkScanMetadata
+  /**
    * Run state of every service with a container on this host (running, restart
    * count, last error), replaced whole by each daemon hello / change-detected
    * heartbeat that carries it. jsonb, so no migration. Ephemeral by nature:
@@ -1200,6 +1207,83 @@ export function parseServerRuntimeMetadata(value: unknown): ServerRuntimeMetadat
 export function serverRuntimeMetadataEquals(
   a: ServerRuntimeMetadata | undefined,
   b: ServerRuntimeMetadata | undefined
+): boolean {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+}
+
+/** One site whose live release the daemon's link check flagged. */
+export type ServerReleaseLinkScanFinding = {
+  /** Linux user that owns the site. */
+  username: string
+  serviceId: string
+  releaseId?: string
+  /** Links that leave the release or reach into `shared/`. */
+  linkCount: number
+  /** Set when the daemon could not check the site at all. */
+  error?: string
+}
+
+/**
+ * The daemon's last live-release link check. `findingCount` is the full count;
+ * `findings` carries at most {@link MAX_RELEASE_LINK_SCAN_FINDINGS} sites and
+ * never the link text, which the site owner controls.
+ */
+export type ServerReleaseLinkScanMetadata = {
+  scannedAt: string
+  findingCount: number
+  findings: ServerReleaseLinkScanFinding[]
+}
+
+export const MAX_RELEASE_LINK_SCAN_FINDINGS = 20
+const MAX_RELEASE_LINK_SCAN_TEXT = 120
+
+function boundedScanText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0
+    ? value.slice(0, MAX_RELEASE_LINK_SCAN_TEXT)
+    : undefined
+}
+
+function parseReleaseLinkScanFinding(value: unknown): ServerReleaseLinkScanFinding | null {
+  if (!isRecord(value)) return null
+  const releaseId = boundedScanText(value.releaseId)
+  const error = boundedScanText(value.error)
+  const linkCount =
+    typeof value.linkCount === 'number' && Number.isInteger(value.linkCount) && value.linkCount > 0
+      ? value.linkCount
+      : 0
+  return {
+    username: boundedScanText(value.username) ?? '',
+    serviceId: boundedScanText(value.serviceId) ?? '',
+    ...(releaseId === undefined ? {} : { releaseId }),
+    linkCount,
+    ...(error === undefined ? {} : { error }),
+  }
+}
+
+/**
+ * Parse the daemon's link-scan summary, bounded: this arrives from a host, so
+ * text and list length are capped here whatever the daemon sent.
+ */
+export function parseServerReleaseLinkScan(
+  value: unknown
+): ServerReleaseLinkScanMetadata | undefined {
+  if (!isRecord(value)) return undefined
+  const scannedAt = boundedScanText(value.scannedAt)
+  if (scannedAt === undefined || !Array.isArray(value.findings)) return undefined
+  const findings = value.findings
+    .slice(0, MAX_RELEASE_LINK_SCAN_FINDINGS)
+    .map(parseReleaseLinkScanFinding)
+    .filter((finding): finding is ServerReleaseLinkScanFinding => finding !== null)
+  const reported =
+    typeof value.findingCount === 'number' && Number.isInteger(value.findingCount)
+      ? value.findingCount
+      : 0
+  return { scannedAt, findingCount: Math.max(reported, findings.length), findings }
+}
+
+export function serverReleaseLinkScanEquals(
+  a: ServerReleaseLinkScanMetadata | undefined,
+  b: ServerReleaseLinkScanMetadata | undefined
 ): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
 }

@@ -4,6 +4,7 @@ import type {
   ServerHardwareProfile,
   ServerHostResources,
   ServerOsMetadata,
+  ServerReleaseLinkScanMetadata,
   ServerTimeSync,
 } from '../features/servers/server-metadata.ts'
 import type { MetricsCapabilityPlan } from './capability-plan.ts'
@@ -325,6 +326,14 @@ export type DaemonMessage =
        * that predates the field; persistence stores `[]`.
        */
       features?: string[]
+      /**
+       * Bounded summary of the daemon's boot-time check of live releases for
+       * links that leave the release; persisted to
+       * `server.metadata.releaseLinkScan`. Omitted until a scan has run, and by
+       * a daemon that predates the field. Usually arrives on a heartbeat, since
+       * the scan finishes after the first hello.
+       */
+      releaseLinkScan?: ServerReleaseLinkScanMetadata
     }
   | {
       type: 'heartbeat'
@@ -342,6 +351,8 @@ export type DaemonMessage =
        * Omit when Docker is not installed.
        */
       docker?: ServerDockerMetadata
+      /** Change-detected link-check summary; persisted to `server.metadata.releaseLinkScan`. */
+      releaseLinkScan?: ServerReleaseLinkScanMetadata
       /**
        * Change-detected per-service run state; persisted to
        * `server.metadata.services`. Omitted when the daemon is not watching

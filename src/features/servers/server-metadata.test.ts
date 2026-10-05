@@ -15,7 +15,9 @@ import {
   parseServerHardwareProfile,
   parseServerHostResources,
   parseServerOptions,
+  MAX_RELEASE_LINK_SCAN_FINDINGS,
   parseServerOsMetadata,
+  parseServerReleaseLinkScan,
   parseServerRuntimeMetadata,
   parseServerTimeSync,
   REDACTED_SERVER_OPTION_KEYS,
@@ -1012,4 +1014,47 @@ test('resolveEffectiveMetricsCapabilityPlan: absent tier preserves platform-defa
   assertEquals(plan.gpuSlots, 1)
   assertEquals(plan.managedDockerEnabled, true)
   assertEquals(plan.physicalHardwareSignalSlots, 19)
+})
+
+test('parseServerReleaseLinkScan keeps a clean scan and a bounded finding list', () => {
+  const clean = { scannedAt: '2026-10-04T00:00:00.000Z', findingCount: 0, findings: [] }
+  assertEquals(parseServerReleaseLinkScan(clean), clean)
+
+  const parsed = parseServerReleaseLinkScan({
+    scannedAt: '2026-10-04T00:00:00.000Z',
+    findingCount: 41,
+    findings: Array.from({ length: 41 }, (_, i) => ({
+      username: 'appuser',
+      serviceId: `svc-${i}`,
+      releaseId: 'r1',
+      linkCount: 2,
+      links: ['public/x -> ../shared/evil'],
+    })),
+  })
+  assertEquals(parsed?.findingCount, 41)
+  assertEquals(parsed?.findings.length, MAX_RELEASE_LINK_SCAN_FINDINGS)
+  assertEquals(parsed?.findings[0], {
+    username: 'appuser',
+    serviceId: 'svc-0',
+    releaseId: 'r1',
+    linkCount: 2,
+  })
+})
+
+test('parseServerReleaseLinkScan caps text and never trusts the count below what it holds', () => {
+  const parsed = parseServerReleaseLinkScan({
+    scannedAt: '2026-10-04T00:00:00.000Z',
+    findingCount: 0,
+    findings: [{ username: 'u', serviceId: 's', linkCount: -3, error: 'e'.repeat(1000) }],
+  })
+  assertEquals(parsed?.findingCount, 1)
+  assertEquals(parsed?.findings[0]?.error?.length, 120)
+  assertEquals(parsed?.findings[0]?.linkCount, 0)
+})
+
+test('parseServerReleaseLinkScan refuses a block without a scan time or list', () => {
+  assertEquals(parseServerReleaseLinkScan(undefined), undefined)
+  assertEquals(parseServerReleaseLinkScan({ findings: [] }), undefined)
+  assertEquals(parseServerReleaseLinkScan({ scannedAt: 't', findings: 'x' }), undefined)
+  assertEquals(parseServerReleaseLinkScan({ scannedAt: 't' }), undefined)
 })

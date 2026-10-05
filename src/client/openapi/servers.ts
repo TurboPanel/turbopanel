@@ -184,6 +184,34 @@ export const serverSchemas = {
       lastSyncedAt: { type: 'string', format: 'date-time' },
     },
   },
+  ServerReleaseLinkScan: {
+    type: 'object',
+    description:
+      "The daemon's last check of live releases for symlinks that leave the release or reach into shared/. Link text is never included.",
+    properties: {
+      scannedAt: { type: 'string', format: 'date-time' },
+      findingCount: {
+        type: 'integer',
+        description: 'Sites flagged in total; findings lists at most the first 20.',
+      },
+      findings: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            username: { type: 'string', description: 'Linux user that owns the site.' },
+            serviceId: { type: 'string' },
+            releaseId: { type: 'string' },
+            linkCount: { type: 'integer' },
+            error: {
+              type: 'string',
+              description: 'Set when the daemon could not check the site at all.',
+            },
+          },
+        },
+      },
+    },
+  },
   ServerDockerMetadata: {
     type: 'object',
     description:
@@ -446,6 +474,11 @@ export const serverSchemas = {
         oneOf: [{ $ref: '#/components/schemas/ServerDockerMetadata' }, { type: 'null' }],
         description:
           'Docker CLI / Compose plugin versions from server.metadata.docker. Null when Docker is not installed or has not been reported.',
+      },
+      releaseLinkScan: {
+        oneOf: [{ $ref: '#/components/schemas/ServerReleaseLinkScan' }, { type: 'null' }],
+        description:
+          "The daemon's last check of live releases for links that leave the release (server.metadata.releaseLinkScan). Null until reported; findingCount 0 means every live release passed.",
       },
       timezone: {
         type: ['string', 'null'],

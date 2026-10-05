@@ -15,6 +15,7 @@ import {
   type ServerTimeSync,
   type ServerHostResources,
   type ServerDockerMetadata,
+  type ServerReleaseLinkScanMetadata,
   type ServerRuntimeMetadata,
 } from '../../features/servers/server-metadata.ts'
 import type { OrganizationOptions } from '../../features/organizations/organization-options.ts'
@@ -478,6 +479,8 @@ export type PresenceLike = {
   docker?: ServerDockerMetadata | null
   /** Runtimes the daemon reports installed; `null` when it has not reported. */
   runtimes?: ServerRuntimeMetadata | null
+  /** Daemon's last live-release link check; `null` until reported. */
+  releaseLinkScan?: ServerReleaseLinkScanMetadata | null
   /** Operator hardware profile (sensor/NIC slots, hosting path); `null` when none are set. */
   hardwareProfile?: ServerHardwareProfile | null
 }
@@ -595,6 +598,7 @@ export function shapeServerPresenceFields(
     timeSync: live?.timeSync ?? null,
     docker: live?.docker ?? null,
     runtimes: live?.runtimes ?? null,
+    releaseLinkScan: live?.releaseLinkScan ?? null,
     hardwareProfile: live?.hardwareProfile ?? null,
   }
 }
