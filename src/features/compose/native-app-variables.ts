@@ -115,7 +115,7 @@ function rejection(assignment: RuntimeEnvAssignment): NativeAppVariableReason | 
  */
 function withLfLineEndings(assignment: RuntimeEnvAssignment): RuntimeEnvAssignment {
   const { value } = assignment
-  if (value === null || !value.includes('\r\n')) return assignment
+  if (!value?.includes('\r\n')) return assignment
   return { ...assignment, value: value.replaceAll('\r\n', '\n') }
 }
 
