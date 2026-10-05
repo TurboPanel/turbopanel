@@ -2598,6 +2598,130 @@ test('POST users past apply-ready hits namespace and insert short-circuits', asy
   }
 })
 
+/**
+ * Wraps a fake db so the test can see which principal rows were inserted
+ * (the new login) and which commands were queued.
+ */
+function recordingUserCreate(memberRows: unknown[]) {
+  const base = applyReadyDb({ principalRows: [], memberRows })
+  const inserted: Array<Record<string, unknown>> = []
+  const db = {
+    ...base,
+    insert: (table: unknown) => {
+      const builder = base.insert(table as never) as unknown as {
+        values: (values: Record<string, unknown>) => unknown
+      }
+      return {
+        values: (values: Record<string, unknown>) => {
+          if (table === principal) inserted.push(values)
+          return builder.values(values)
+        },
+      }
+    },
+    transaction: (fn: (tx: Db) => Promise<unknown>) => fn(db),
+  } as unknown as Db
+  const commandQueue = capturingQueue()
+  return { db, inserted, envelopes: commandQueue.envelopes, commandQueue }
+}
+
+async function postUser(
+  body: Record<string, unknown>,
+  memberRows: unknown[]
+): Promise<{
+  res: Response
+  inserted: Array<Record<string, unknown>>
+  envelopes: CommandEnvelope[]
+}> {
+  const { db, inserted, envelopes, commandQueue } = recordingUserCreate(memberRows)
+  const { app, cookie } = await buildApp({
+    db,
+    registry: stubRegistry(),
+    commandQueue,
+  })
+  const res = await app.request(envPath('/users'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({
+      username: 'reporter',
+      databases: ['defaultdb'],
+      ...body,
+    }),
+  })
+  return { res, inserted, envelopes }
+}
+
+// Other principals (such as the replication login) may be inserted too.
+function loginMetadata(inserted: Array<Record<string, unknown>>): Record<string, unknown> {
+  const login = inserted.find((row) => row.username === 'reporter')
+  assertEquals(login !== undefined, true)
+  return login?.metadata as Record<string, unknown>
+}
+
+const PRIMARY_ONLY = [memberRow({ role: 'primary', replicaClass: null, ordinal: 1 })]
+const WITH_READ_REPLICA = [
+  ...PRIMARY_ONLY,
+  memberRow({ id: 'aaaaaaa2-aaaa-4aaa-8aaa-aaaaaaaaaaa2', readEligible: true }),
+]
+const WITH_HIDDEN_REPLICA = [
+  ...PRIMARY_ONLY,
+  memberRow({
+    id: 'aaaaaaa2-aaaa-4aaa-8aaa-aaaaaaaaaaa2',
+    readEligible: false,
+  }),
+]
+
+test('POST users refuses a read-only login on a standalone cluster', async () => {
+  const { res, inserted, envelopes } = await postUser({ connectionRole: 'read-only' }, PRIMARY_ONLY)
+  await expectJson(res, 422, { error: 'managed_no_read_targets' })
+  assertEquals(inserted, [])
+  assertEquals(envelopes, [])
+})
+
+test('POST users refuses a read-only login when no replica is read-eligible', async () => {
+  const { res, inserted, envelopes } = await postUser(
+    { connectionRole: 'read-only' },
+    WITH_HIDDEN_REPLICA
+  )
+  await expectJson(res, 422, { error: 'managed_no_read_targets' })
+  assertEquals(inserted, [])
+  assertEquals(envelopes, [])
+})
+
+// The principal is inserted before the apply payloads are prepared, and the
+// fake db has no organization CA, so a later step may still answer an error:
+// these tests judge only the row that was written.
+test('POST users stores the read-only role on the new login', async () => {
+  const { inserted } = await postUser({ connectionRole: 'read-only' }, WITH_READ_REPLICA)
+  const metadata = loginMetadata(inserted)
+  assertEquals(metadata.connectionRole, 'read-only')
+  assertEquals(metadata.databases, ['defaultdb'])
+})
+
+test('POST users leaves the metadata untouched for read-write and omitted roles', async () => {
+  for (const body of [{ connectionRole: 'read-write' }, {}]) {
+    const { inserted } = await postUser(body, PRIMARY_ONLY)
+    const metadata = loginMetadata(inserted)
+    assertEquals('connectionRole' in metadata, false)
+    assertEquals(Object.keys(metadata).sort(), ['databases', 'engine', 'privileges'])
+  }
+})
+
+test('GET users reports a stored read-only login as read-only', async () => {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({
+      managedRows: [managedRow()],
+      principalRows: [
+        principalRow({
+          metadata: { engine: 'postgres', connectionRole: 'read-only' },
+        }),
+      ],
+    }),
+  })
+  const body = await jsonOf(await app.request(envPath('/users'), { headers: authHeaders(cookie) }))
+  const users = body.users as Array<{ connectionRole: string }>
+  assertEquals(users[0]?.connectionRole, 'read-only')
+})
+
 test('DELETE database past apply-ready maps a later prepare error', async () => {
   const { app, cookie } = await buildApp({
     db: applyReadyDb(),
