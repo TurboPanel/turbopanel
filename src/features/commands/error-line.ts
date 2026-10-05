@@ -22,15 +22,22 @@ const TRUNCATION_MARKER = /^\[\.\.\.truncated\]\s*/
 const NOISE_LINES: readonly RegExp[] = [
   /^(process )?exit(ed)?( code| status)?:? ?\d+\.?$/i,
   /^exit status \d+$/i,
-  /^at\s[^(]+\([^)]*:\d+:\d+\)$/,
-  /^at\s\S+:\d+:\d+$/,
   /^npm (ERR!|error) (A complete log of this run|code |path |errno |syscall )/i,
   /^npm notice\b/i,
   /^[\s\-=_*#~.]+$/,
 ]
 
+const LINE_AND_COLUMN_END = /:\d+:\d+\)?$/
+
+/** `at fn (file:1:2)` or `at file:1:2`; plain string checks keep the matching linear. */
+function isStackFrame(line: string): boolean {
+  if (!line.startsWith('at ') || !LINE_AND_COLUMN_END.test(line)) return false
+  if (line.endsWith(')')) return line.includes('(')
+  return !line.slice(3).includes(' ')
+}
+
 function isNoise(line: string): boolean {
-  return NOISE_LINES.some((pattern) => pattern.test(line))
+  return isStackFrame(line) || NOISE_LINES.some((pattern) => pattern.test(line))
 }
 
 function clipKeepingEnd(text: string): string {
