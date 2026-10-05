@@ -15,10 +15,7 @@
 
 import { normalizeCheckRef } from './check-ref.ts'
 import { isGitProviderFailure } from './git-provider.ts'
-import {
-  MAX_REPOSITORY_FILE_BYTES,
-  MAX_REPOSITORY_READ_PATHS,
-} from './repository-read.ts'
+import { MAX_REPOSITORY_FILE_BYTES, MAX_REPOSITORY_READ_PATHS } from './repository-read.ts'
 import type {
   GitProviderSourceRow,
   ListRepositoryEntriesParams,
@@ -56,11 +53,13 @@ import {
   GithubAppTokenError,
   mintGithubInstallationToken,
 } from './github-app-token.ts'
-import {
-  GITHUB_SIGNATURE_HEADER,
-  verifyGithubWebhookSignature,
-} from './github-webhook.ts'
+import { GITHUB_SIGNATURE_HEADER, verifyGithubWebhookSignature } from './github-webhook.ts'
 import { forgeFetch } from './forge-url.ts'
+import { loadForgeForConnection } from './forge-records.ts'
+import {
+  REPOSITORY_HOST_MISMATCH_FAILURE,
+  repositoryUrlMatchesForgeHost,
+} from './forge-clone-host.ts'
 
 /** GitHub paginates installation repositories; walk a bounded number of pages. */
 const REPOSITORY_PAGE_SIZE = 100
@@ -79,10 +78,7 @@ const DEFAULT_MAX_ENTRIES = 256
  * Anything that is not a named entry is skipped rather than rejected: a
  * listing is a browsing aid, and one odd row should not blank the directory.
  */
-function toRepositoryEntries(
-  payload: unknown,
-  maxEntries: number,
-): RepositoryEntry[] {
+function toRepositoryEntries(payload: unknown, maxEntries: number): RepositoryEntry[] {
   if (!Array.isArray(payload)) return []
   const entries: RepositoryEntry[] = []
   for (const raw of payload.slice(0, maxEntries)) {
@@ -104,24 +100,18 @@ function externalId(value: unknown): string | null {
   return null
 }
 
-export function githubRepositoryExternalId(
-  payload: Record<string, unknown>,
-): string | null {
+export function githubRepositoryExternalId(payload: Record<string, unknown>): string | null {
   const repository = payload.repository
   return isPlainObject(repository) ? externalId(repository.id) : null
 }
 
-export function githubInstallationExternalId(
-  payload: Record<string, unknown>,
-): string | null {
+export function githubInstallationExternalId(payload: Record<string, unknown>): string | null {
   const installation = payload.installation
   return isPlainObject(installation) ? externalId(installation.id) : null
 }
 
 /** Narrow GitHub's repository payload to the fields the picker needs. */
-export function toGithubRepositorySummary(
-  value: unknown,
-): RepositorySummary | null {
+export function toGithubRepositorySummary(value: unknown): RepositorySummary | null {
   if (!isPlainObject(value)) return null
   const repo = value
   const fullName = repo.full_name
@@ -129,8 +119,7 @@ export function toGithubRepositorySummary(
   return {
     id: externalId(repo.id) ?? '',
     fullName,
-    defaultBranch:
-      typeof repo.default_branch === 'string' ? repo.default_branch : null,
+    defaultBranch: typeof repo.default_branch === 'string' ? repo.default_branch : null,
     private: repo.private === true,
     cloneUrl: typeof repo.clone_url === 'string' ? repo.clone_url : null,
   }
@@ -138,25 +127,23 @@ export function toGithubRepositorySummary(
 
 /** `GET /installation/repositories`, paginated. */
 export async function listGithubInstallationRepositories(
-  auth: GithubApiAuth,
+  auth: GithubApiAuth
 ): Promise<RepositorySummary[]> {
   const repositories: RepositorySummary[] = []
 
   for (let page = 1; page <= REPOSITORY_MAX_PAGES; page += 1) {
-    const url = `${auth.apiBase}/installation/repositories` +
-      `?per_page=${REPOSITORY_PAGE_SIZE}&page=${page}`
+    const url =
+      `${auth.apiBase}/installation/repositories` + `?per_page=${REPOSITORY_PAGE_SIZE}&page=${page}`
     const response = await forgeFetch(url, {
       headers: githubApiHeaders(auth.token, 'token'),
     })
     if (!response.ok) {
       throw new GithubAppTokenError(
         `github repository listing failed (${response.status})`,
-        response.status,
+        response.status
       )
     }
-    const payload = (await response.json().catch(() => null)) as
-      | { repositories?: unknown }
-      | null
+    const payload = (await response.json().catch(() => null)) as { repositories?: unknown } | null
     const entries = Array.isArray(payload?.repositories) ? payload.repositories : []
     for (const entry of entries) {
       const summary = toGithubRepositorySummary(entry)
@@ -170,14 +157,15 @@ export async function listGithubInstallationRepositories(
 
 /** Percent-encode each path segment, keeping `/` as the separator. */
 function encodePathSegments(path: string): string {
-  return path.split('/').filter((seg) => seg.length > 0).map(encodeURIComponent)
+  return path
+    .split('/')
+    .filter((seg) => seg.length > 0)
+    .map(encodeURIComponent)
     .join('/')
 }
 
 function networkFailureMessage(error: unknown): string {
-  return `github request failed: ${
-    error instanceof Error ? error.message : 'network error'
-  }`
+  return `github request failed: ${error instanceof Error ? error.message : 'network error'}`
 }
 
 /**
@@ -199,23 +187,19 @@ function githubReadFailure(error: unknown): GitProviderFailure {
  * GitHub URL, where waiting on a connected server to run git would stall the
  * wizard for the full read timeout.
  */
-export async function fetchPublicGithubDefaultBranch(
-  cloneUrl: string,
-): Promise<string | null> {
+export async function fetchPublicGithubDefaultBranch(cloneUrl: string): Promise<string | null> {
   if (!isGithubDotComHttpsCloneUrl(cloneUrl)) return null
   const parsed = parseRepositoryOwnerRepo(cloneUrl)
   if (!parsed) return null
-  const url = `${GITHUB_API_BASE}/repos/${
-    encodeURIComponent(parsed.owner)
-  }/${encodeURIComponent(parsed.repo)}`
+  const url = `${GITHUB_API_BASE}/repos/${encodeURIComponent(
+    parsed.owner
+  )}/${encodeURIComponent(parsed.repo)}`
   try {
     const response = await forgeFetch(url, {
       headers: githubApiHeaders('', 'token'),
     })
     if (!response.ok) return null
-    const payload = (await response.json().catch(() => null)) as
-      | { default_branch?: unknown }
-      | null
+    const payload = (await response.json().catch(() => null)) as { default_branch?: unknown } | null
     if (typeof payload?.default_branch !== 'string') return null
     const branch = payload.default_branch.trim()
     return branch.length > 0 ? branch : null
@@ -227,10 +211,8 @@ export async function fetchPublicGithubDefaultBranch(
 /** Mint a short-lived installation token, or say why we cannot read. */
 async function githubReadAuth(
   ctx: GitProviderContext,
-  row: GitProviderSourceRow,
-): Promise<
-  GithubApiAuth | GitProviderFailure | RepositoryReadUnsupported
-> {
+  row: GitProviderSourceRow
+): Promise<GithubApiAuth | GitProviderFailure | RepositoryReadUnsupported> {
   // A GitHub App installation is the authenticated lane. A public github.com
   // HTTPS clone with no App and no deploy key is still readable over anonymous
   // REST — that is the wizard's "paste a public URL" path. A deploy key means
@@ -248,7 +230,7 @@ async function githubReadAuth(
     const { token, apiBase } = await mintGithubInstallationToken(
       ctx.db,
       ctx.dataEncryptionSecrets,
-      row.connectionId,
+      row.connectionId
     )
     return { token, apiBase }
   } catch (error) {
@@ -267,13 +249,13 @@ async function readGithubFile(
   repositoryUrl: string,
   commitSha: string,
   path: string,
-  maxBytes: number,
+  maxBytes: number
 ): Promise<RepositoryFileEntry | GitProviderFailure> {
   const parsed = parseRepositoryOwnerRepo(repositoryUrl)
   if (!parsed) return { failure: 'source repository url is not a github path' }
-  const url = `${auth.apiBase}/repos/${encodeURIComponent(parsed.owner)}/${
-    encodeURIComponent(parsed.repo)
-  }/contents/${encodePathSegments(path)}?ref=${encodeURIComponent(commitSha)}`
+  const url = `${auth.apiBase}/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(
+    parsed.repo
+  )}/contents/${encodePathSegments(path)}?ref=${encodeURIComponent(commitSha)}`
 
   let response: Response
   try {
@@ -321,13 +303,11 @@ async function readGithubFile(
 export async function resolveGithubCommit(
   auth: GithubApiAuth,
   repositoryUrl: string,
-  ref: string,
+  ref: string
 ): Promise<ResolvedSourceCommit> {
   const parsed = parseRepositoryOwnerRepo(repositoryUrl)
   if (!parsed) {
-    throw new GithubAppTokenError(
-      'source repository url is not a github repository path',
-    )
+    throw new GithubAppTokenError('source repository url is not a github repository path')
   }
   // `ref` reaches this function straight from the inspect route's query
   // param — validate it against a known ref shape before it becomes part of
@@ -335,9 +315,9 @@ export async function resolveGithubCommit(
   if (!isSafeGitRef(ref)) {
     throw new GithubAppTokenError('source ref is not a valid git ref')
   }
-  const url = `${auth.apiBase}/repos/${encodeURIComponent(parsed.owner)}/${
-    encodeURIComponent(parsed.repo)
-  }/commits/${encodeURIComponent(ref)}`
+  const url = `${auth.apiBase}/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(
+    parsed.repo
+  )}/commits/${encodeURIComponent(ref)}`
   let response: Response
   try {
     // Sonar's taint engine does not read regex validators, so it still sees
@@ -345,25 +325,25 @@ export async function resolveGithubCommit(
     // `apiBase`, owner/repo/ref are percent-encoded per segment, and `ref`
     // passed the `isSafeGitRef` allow-list above — the value cannot reshape
     // the request URL.
-    response = await forgeFetch(url, { // NOSONAR typescript:S5144 — validated above
+    response = await forgeFetch(url, {
+      // NOSONAR typescript:S5144 — validated above
       headers: githubApiHeaders(auth.token, 'token'),
     })
   } catch (error) {
     throw new GithubAppTokenError(
-      `github commit lookup failed: ${
-        error instanceof Error ? error.message : 'network error'
-      }`,
+      `github commit lookup failed: ${error instanceof Error ? error.message : 'network error'}`
     )
   }
   if (!response.ok) {
     throw new GithubAppTokenError(
       `github commit lookup failed (${response.status})`,
-      response.status,
+      response.status
     )
   }
-  const payload = (await response.json().catch(() => null)) as
-    | { sha?: unknown; commit?: { message?: unknown; author?: { name?: unknown } } }
-    | null
+  const payload = (await response.json().catch(() => null)) as {
+    sha?: unknown
+    commit?: { message?: unknown; author?: { name?: unknown } }
+  } | null
   if (typeof payload?.sha !== 'string' || payload.sha.length === 0) {
     throw new GithubAppTokenError('github commit lookup returned no sha')
   }
@@ -371,10 +351,7 @@ export async function resolveGithubCommit(
   // release list answers "whose change is live", and a rebase or a squash-merge
   // rewrites the committer while leaving the author intact.
   const commitMessage = commitSubject(payload.commit?.message)
-  const commitAuthor = trimCommitField(
-    payload.commit?.author?.name,
-    COMMIT_AUTHOR_MAX_CHARS,
-  )
+  const commitAuthor = trimCommitField(payload.commit?.author?.name, COMMIT_AUTHOR_MAX_CHARS)
   return {
     commitSha: payload.sha,
     ...(commitMessage === undefined ? {} : { commitMessage }),
@@ -384,15 +361,13 @@ export async function resolveGithubCommit(
 
 /** A `check_suite`-shaped object that has finished green. */
 function isSuccessfulSuite(value: unknown): value is Record<string, unknown> {
-  return isPlainObject(value) &&
-    value.status === 'completed' &&
-    value.conclusion === 'success'
+  return isPlainObject(value) && value.status === 'completed' && value.conclusion === 'success'
 }
 
 /** `head_sha` from the run, else from the suite it belongs to. */
 function checkHeadSha(
   subject: Record<string, unknown>,
-  suite: Record<string, unknown> | null,
+  suite: Record<string, unknown> | null
 ): string | null {
   if (isCommitSha(subject.head_sha)) return subject.head_sha
   if (suite && isCommitSha(suite.head_sha)) return suite.head_sha
@@ -415,10 +390,7 @@ function checkHeadSha(
  * of a green suite (and only it) a valid release signal, and keeps the setting
  * working on installations that receive `check_run` but not `check_suite`.
  */
-export function successfulCheckSha(
-  event: string,
-  payload: Record<string, unknown>,
-): string | null {
+export function successfulCheckSha(event: string, payload: Record<string, unknown>): string | null {
   if (event === 'check_run') {
     const run = payload.check_run
     if (!isPlainObject(run)) return null
@@ -434,10 +406,7 @@ export function successfulCheckSha(
   return checkHeadSha(suite, null)
 }
 
-function checkEventRef(
-  event: string,
-  payload: Record<string, unknown>,
-): string | null {
+function checkEventRef(event: string, payload: Record<string, unknown>): string | null {
   if (event === 'check_run') {
     const run = payload.check_run
     if (!isPlainObject(run)) return null
@@ -455,7 +424,7 @@ export const githubProvider: GitProvider = {
 
   async listRepositories(
     ctx: GitProviderContext,
-    connectionId: string,
+    connectionId: string
   ): Promise<RepositorySummary[]> {
     if (!ctx.dataEncryptionSecrets) {
       throw new GithubAppTokenError('github app credentials are unreadable')
@@ -464,17 +433,15 @@ export const githubProvider: GitProvider = {
     const { token, apiBase } = await mintGithubInstallationToken(
       ctx.db,
       ctx.dataEncryptionSecrets,
-      connectionId,
+      connectionId
     )
     return await listGithubInstallationRepositories({ token, apiBase })
   },
 
   async readRepositoryFiles(
     ctx: GitProviderContext,
-    params: ReadRepositoryFilesParams,
-  ): Promise<
-    RepositoryFileSet | GitProviderFailure | RepositoryReadUnsupported
-  > {
+    params: ReadRepositoryFilesParams
+  ): Promise<RepositoryFileSet | GitProviderFailure | RepositoryReadUnsupported> {
     const auth = await githubReadAuth(ctx, params.row)
     if ('unsupported' in auth || 'failure' in auth) return auth
 
@@ -483,9 +450,7 @@ export const githubProvider: GitProvider = {
     // torn view — a compose file from one commit, a package.json from another.
     let commitSha: string
     try {
-      commitSha =
-        (await resolveGithubCommit(auth, params.row.repositoryUrl, params.ref))
-          .commitSha
+      commitSha = (await resolveGithubCommit(auth, params.row.repositoryUrl, params.ref)).commitSha
     } catch (error) {
       return githubReadFailure(error)
     }
@@ -493,13 +458,7 @@ export const githubProvider: GitProvider = {
     const maxBytes = params.maxBytesPerFile ?? MAX_REPOSITORY_FILE_BYTES
     const files: RepositoryFileEntry[] = []
     for (const path of params.paths.slice(0, MAX_REPOSITORY_READ_PATHS)) {
-      const entry = await readGithubFile(
-        auth,
-        params.row.repositoryUrl,
-        commitSha,
-        path,
-        maxBytes,
-      )
+      const entry = await readGithubFile(auth, params.row.repositoryUrl, commitSha, path, maxBytes)
       // A transport failure aborts the whole read: reporting the remaining
       // paths as `not_found` would be a lie the caller cannot detect.
       if (isGitProviderFailure(entry)) return entry
@@ -510,7 +469,7 @@ export const githubProvider: GitProvider = {
 
   async listRepositoryEntries(
     ctx: GitProviderContext,
-    params: ListRepositoryEntriesParams,
+    params: ListRepositoryEntriesParams
   ): Promise<
     | { commitSha: string; entries: RepositoryEntry[] }
     | GitProviderFailure
@@ -529,25 +488,24 @@ export const githubProvider: GitProvider = {
 
     let commitSha: string
     try {
-      commitSha =
-        (await resolveGithubCommit(auth, params.row.repositoryUrl, params.ref))
-          .commitSha
+      commitSha = (await resolveGithubCommit(auth, params.row.repositoryUrl, params.ref)).commitSha
     } catch (error) {
       return githubReadFailure(error)
     }
 
     const parsed = parseRepositoryOwnerRepo(params.row.repositoryUrl)
     if (!parsed) return { failure: 'source repository url is not a github path' }
-    const url = `${auth.apiBase}/repos/${encodeURIComponent(parsed.owner)}/${
-      encodeURIComponent(parsed.repo)
-    }/contents/${encodePathSegments(params.path)}?ref=${encodeURIComponent(commitSha)}`
+    const url = `${auth.apiBase}/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(
+      parsed.repo
+    )}/contents/${encodePathSegments(params.path)}?ref=${encodeURIComponent(commitSha)}`
 
     let response: Response
     try {
       // Same story as `resolveGithubCommit`: `params.path` passed the
       // `isSafeRepositoryPath` allow-list above and is encoded per segment;
       // `commitSha` is GitHub's own answer, not caller input.
-      response = await forgeFetch(url, { // NOSONAR typescript:S5144 — validated above
+      response = await forgeFetch(url, {
+        // NOSONAR typescript:S5144 — validated above
         headers: githubApiHeaders(auth.token, 'token'),
       })
     } catch (error) {
@@ -568,7 +526,7 @@ export const githubProvider: GitProvider = {
 
   async prepareClone(
     ctx: GitProviderContext,
-    params: PrepareCloneParams,
+    params: PrepareCloneParams
   ): Promise<PreparedClone | GitProviderFailure> {
     const { row, ref } = params
     // Preview never mints a token — shape only, ref as the placeholder.
@@ -583,12 +541,18 @@ export const githubProvider: GitProvider = {
     }
 
     try {
+      // The credential only ever goes to the forge it was minted for: refuse
+      // before minting when the row's URL names any other host.
+      const app = await loadForgeForConnection(ctx.db, ctx.dataEncryptionSecrets, row.connectionId)
+      if (!app || !repositoryUrlMatchesForgeHost(row.repositoryUrl, app.baseUrl)) {
+        return { failure: REPOSITORY_HOST_MISMATCH_FAILURE }
+      }
       // Minted here, sealed straight into the payload by the caller, never
       // persisted.
       const { token, apiBase } = await mintGithubInstallationToken(
         ctx.db,
         ctx.dataEncryptionSecrets,
-        row.connectionId,
+        row.connectionId
       )
       const auth = { token, apiBase }
       // A webhook already knows the head SHA, but not its subject or author, so
@@ -598,13 +562,12 @@ export const githubProvider: GitProvider = {
       // not fail a deploy that has everything it needs to build, so it degrades
       // to the bare SHA instead of raising. Without a SHA the lookup is
       // load-bearing and its failure is a real prepare error.
-      const commit = params.requestedCommitSha === undefined
-        ? await resolveGithubCommit(auth, row.repositoryUrl, ref)
-        : await resolveGithubCommit(
-          auth,
-          row.repositoryUrl,
-          params.requestedCommitSha,
-        ).catch(() => ({ commitSha: params.requestedCommitSha as string }))
+      const commit =
+        params.requestedCommitSha === undefined
+          ? await resolveGithubCommit(auth, row.repositoryUrl, ref)
+          : await resolveGithubCommit(auth, row.repositoryUrl, params.requestedCommitSha).catch(
+              () => ({ commitSha: params.requestedCommitSha as string })
+            )
       return {
         commit: {
           ...commit,
@@ -626,13 +589,9 @@ export const githubProvider: GitProvider = {
   async verifyWebhook(
     secret: string | null | undefined,
     rawBody: Uint8Array,
-    headers: WebhookHeaders,
+    headers: WebhookHeaders
   ): Promise<boolean> {
-    return await verifyGithubWebhookSignature(
-      secret,
-      rawBody,
-      headers.get(GITHUB_SIGNATURE_HEADER),
-    )
+    return await verifyGithubWebhookSignature(secret, rawBody, headers.get(GITHUB_SIGNATURE_HEADER))
   },
 
   parsePush(payload: Record<string, unknown>): ProviderPushEvent | null {
@@ -658,10 +617,7 @@ export const githubProvider: GitProvider = {
     }
   },
 
-  parseCheck(
-    event: string,
-    payload: Record<string, unknown>,
-  ): ProviderCheckEvent | null {
+  parseCheck(event: string, payload: Record<string, unknown>): ProviderCheckEvent | null {
     const commitSha = successfulCheckSha(event, payload)
     if (!commitSha) return null
     const installation = githubInstallationExternalId(payload)

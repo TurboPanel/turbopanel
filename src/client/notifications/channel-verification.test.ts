@@ -22,6 +22,7 @@ import {
   channelVerificationCooldownSeconds,
   confirmChannelVerification,
   mintChannelVerificationToken,
+  reserveVerificationMail,
 } from './channel-verification.ts'
 import { createNotificationChannel } from '../../features/notifications/records.ts'
 
@@ -194,4 +195,31 @@ test('the resend cooldown counts down from the last mail and is zero with no liv
       0
     )
   })
+})
+
+test('the per-day mail allowance holds under concurrent requests and starts a new window after a day', async () => {
+  if (!dbUrl) return
+  const db = createDenoDb()
+  const key = `limit-${crypto.randomUUID()}@example.org`
+  try {
+    const now = Date.now()
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () => reserveVerificationMail(db, 'address', key, 3, now))
+    )
+    assertEquals(results.filter((r) => r.ok).length, 3)
+    const refused = results.find((r) => !r.ok)
+    assertEquals(refused !== undefined && !refused.ok && refused.retryAfterSeconds > 0, true)
+    // The address is keyed case-insensitively, and another key is independent.
+    assertEquals(
+      (await reserveVerificationMail(db, 'address', key.toUpperCase(), 3, now)).ok,
+      false
+    )
+    assertEquals((await reserveVerificationMail(db, 'user', key, 3, now)).ok, true)
+    // A day later the window has ended and the allowance starts over.
+    const later = now + 25 * 60 * 60 * 1000
+    assertEquals((await reserveVerificationMail(db, 'address', key, 3, later)).ok, true)
+  } finally {
+    await db.delete(verification).where(like(verification.identifier, 'channel-verify-mail:%'))
+    await endDbConnection(db)
+  }
 })

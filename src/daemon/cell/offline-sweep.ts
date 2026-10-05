@@ -49,7 +49,7 @@
  * phases race remaining time, and `OFFLINE_SWEEP_LOCK.expiresAt` covers the
  * enforced live runtime so a still-running holder cannot be stolen.
  */
-import { expireStaleDetectingRecoveries } from '../../features/managed/recovery-records.ts'
+import { expireStaleRecoveries } from '../../features/managed/recovery-records.ts'
 import { AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE } from '../../features/managed/recovery.ts'
 import {
   type Db,
@@ -907,10 +907,12 @@ export async function sweepExpiredCommandDispatchSafely(db: Db): Promise<void> {
   // failure here never aborts the other sweeps.
   try {
     const timedOut = await sweepStaleCommands(db)
-    const released = await releaseStuckManagedApplying(db)
-    const expiredDetecting = await expireStaleDetectingRecoveries(db, {
+    // Recoveries first: a row still in flight keeps its managed row at
+    // `applying`, and an expired one releases it itself.
+    const expiredDetecting = await expireStaleRecoveries(db, {
       reason: AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE,
     })
+    const released = await releaseStuckManagedApplying(db)
     if (timedOut > 0 || released.length > 0 || expiredDetecting.length > 0) {
       sweepTrace('stale-command-swept', {
         timedOut,

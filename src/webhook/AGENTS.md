@@ -258,7 +258,17 @@ compares Postgres seats to licenses and never refetches Stripe. The sweep
 lists only Stripe rows whose object-ref handoff is complete
 (`object_id IS NOT NULL`); a claim that has not yet been handed off is
 not pending work and must not be settled. The task is kept small and
-idempotent so the window is narrow.
+idempotent so the window is narrow. A claim still without its object ref
+after five minutes was abandoned by a dead worker: the next redelivery takes
+it over instead of answering `204`.
+
+Projection rules: concurrent projections of one subscription are ordered by
+the moment each Stripe read began (stamped on `subscription.updated_at`); the
+older read is refused and reads Stripe again, up to three passes, then the
+event stays pending. An entitlement sync skipped on a held lease also leaves
+the event pending. A failed attempt moves the task to the back of the retry
+queue (`updated_at`), and a task still unsettled after seven days is given up
+on with a warning.
 
 The provider never sees internal dispatch results: accepted deliveries
 answer `{ ok: true }`; retryable faults answer `{ error: 'retry' }` with

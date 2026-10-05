@@ -375,6 +375,7 @@ test('copy policies join the set with where their bytes live', async () => {
       copyId: COPY_ID,
       copyProvider: 'docker',
       volumeName: STORAGE_ID,
+      storageId: STORAGE_ID,
     },
     {
       policyId: '0192d6a0-0000-7000-8000-0000000000b2',
@@ -385,6 +386,7 @@ test('copy policies join the set with where their bytes live', async () => {
       copyId: COPY_ID,
       copyProvider: 'path',
       hostPath: `/srv/users/acme/volumes/${STORAGE_ID}`,
+      ownerUsername: 'acme',
     },
     {
       policyId: '0192d6a0-0000-7000-8000-0000000000b3',

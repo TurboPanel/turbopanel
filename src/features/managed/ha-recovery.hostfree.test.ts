@@ -39,6 +39,8 @@ import {
   onFenceCommandSucceeded,
   onPromoteSucceeded,
   onRecoveryCommandFailed,
+  onRecoveryCommandTimedOut,
+  onRecoveryStepFailed,
   recoveryIdFromCommandMetadata,
 } from './ha-recovery.ts'
 
@@ -244,6 +246,8 @@ type HarnessOpts = {
   recoveryReads?: RecoveryRow[][]
   /** The recovery insert fails with this (a lost race on the in-flight slot). */
   recoveryInsertError?: unknown
+  /** Reading the cluster's members throws (a database blip mid-recovery). */
+  replicaReadError?: Error
 }
 
 type RecoveryHarness = {
@@ -312,7 +316,10 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
           }
           return thenableRows(name ? [{ containerName: name }] : [])
         }
-        if (table === replica) return thenableRows(members)
+        if (table === replica) {
+          if (opts.replicaReadError) throw opts.replicaReadError
+          return thenableRows(members)
+        }
         return thenableRows([])
       },
     }),
@@ -1905,4 +1912,102 @@ test('fresh-standby: of several accepted standbys the one that received the most
   assertEquals(row.state, 'fencing')
   // The lower-ordinal replica was accepted too, but is behind.
   assertEquals(row.targetMemberId, MEM_READ)
+})
+
+test('a timed-out fence command settles the journal row and frees the cluster slot', async () => {
+  const harness = createHarness({
+    recovery: recoveryRow({
+      state: 'fencing',
+      metadata: { fenceCommandIds: ['cmd-stop'] },
+    }),
+  })
+  await onRecoveryCommandTimedOut(harness.db, {
+    recoveryId: REC_ID,
+    commandId: 'cmd-stop',
+    type: 'managed.lifecycle',
+    fencePhase: 'stop',
+  })
+  assertEquals(harness.recovery()?.state, 'blocked')
+  assertEquals(TERMINAL_RECOVERY_STATES.has(harness.recovery()?.state as RecoveryState), true)
+})
+
+test('a timed-out promote command fails the row for the operator and releases the managed status', async () => {
+  const harness = createHarness({
+    recovery: recoveryRow({
+      state: 'promoting',
+      metadata: { promoteCommandId: 'cmd-promote' },
+    }),
+  })
+  await onRecoveryCommandTimedOut(harness.db, {
+    recoveryId: REC_ID,
+    commandId: 'cmd-promote',
+    type: 'managed.promote',
+    fencePhase: null,
+  })
+  const row = harness.recovery()
+  assertEquals(row?.state, 'failed')
+  assertEquals((row?.metadata as Record<string, unknown>).needsOperator, true)
+  assertEquals(harness.managedStatus.includes('failed'), true)
+})
+
+test('a timed-out command that is not part of a recovery step leaves the row alone', async () => {
+  const harness = createHarness({
+    recovery: recoveryRow({ state: 'repointing', metadata: {} }),
+  })
+  await onRecoveryCommandTimedOut(harness.db, {
+    recoveryId: REC_ID,
+    commandId: 'cmd-ingress',
+    type: 'managed.ingress.reconcile',
+    fencePhase: null,
+  })
+  assertEquals(harness.recovery()?.state, 'repointing')
+})
+
+test('onPromoteSucceeded fails the row (not stuck repointing) when a step after the role flip throws', async () => {
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    recovery: recoveryRow({ kind: 'switchover', state: 'promoting' }),
+    replicaReadError: new Error('database connection reset'),
+  })
+  await onPromoteSucceeded(harness.db, undefined, {}, REC_ID, ACTOR_ID)
+  const row = harness.recovery()
+  assertEquals(row?.state, 'failed')
+  assertEquals((row?.metadata as Record<string, unknown>).needsOperator, true)
+})
+
+test('onPromoteSucceeded runs once when the same promote result is delivered twice', async () => {
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    recovery: recoveryRow({ kind: 'switchover', state: 'repointing' }),
+    replicaReadError: new Error('must not be read: a later step already owns the row'),
+  })
+  await onPromoteSucceeded(harness.db, undefined, {}, REC_ID, ACTOR_ID)
+  assertEquals(harness.recovery()?.state, 'repointing')
+})
+
+test('onRecoveryStepFailed ends a promoting row terminal for the operator', async () => {
+  const harness = createHarness({ recovery: recoveryRow({ state: 'promoting' }) })
+  await onRecoveryStepFailed(harness.db, REC_ID)
+  const row = harness.recovery()
+  assertEquals(row?.state, 'failed')
+  assertEquals((row?.metadata as Record<string, unknown>).needsOperator, true)
+})
+
+test('a fence that settles on the sweep path (no queue) cannot leave a promoting row behind', async () => {
+  const harness = createHarness({
+    recovery: recoveryRow({
+      state: 'fencing',
+      metadata: { fenceCommandIds: ['cmd-drain'], stopApplied: true },
+    }),
+  })
+  await onRecoveryCommandTimedOut(harness.db, {
+    recoveryId: REC_ID,
+    commandId: 'cmd-drain',
+    type: 'managed.ha.failover',
+    fencePhase: 'drain',
+  })
+  // The stop landed and the last drain is gone, but nothing can queue the
+  // promote here: the row must be terminal, not parked at `promoting`.
+  const state = harness.recovery()?.state
+  assertEquals(state === 'blocked' || state === 'failed', true)
 })

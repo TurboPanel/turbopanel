@@ -593,9 +593,15 @@ all:
    `PROMOTE_UNQUEUED_MESSAGE`) instead of leaving `fencing` / `promoting`
    holding the in-flight slot.
 9. Safety net: the stale sweep (Deno cleanup lane and the Workers
-   offline-sweep cron) expires any `detecting` or `fencing` row older than
-   `STALE_DETECTING_RECOVERY_MS` (10 min) with no command recorded in its
-   metadata to `blocked` (`expireStaleDetectingRecoveries`).
+   offline-sweep cron) runs `expireStaleRecoveries`: a `detecting`/`fencing`
+   row older than `STALE_DETECTING_RECOVERY_MS` (10 min) with no command
+   recorded expires to `blocked`; any other in-flight row with no update for
+   `STALE_RECOVERY_STEP_MS` (15 min) ends terminal `failed` with
+   `metadata.needsOperator` (an operator checks which member is the writer).
+   The same sweep, when it times out a command that carries a `recoveryId`,
+   calls the recovery hooks (`onRecoveryCommandTimedOut`) so the row settles at
+   once. Every mutating managed route answers `managed_busy` while the journal
+   has an in-flight row (`assertManagedIdle`).
 
 **Automatic failover switch** (`auto-failover-switch.ts`):
 `TURBOPANEL_AUTO_FAILOVER=on|off` (also `true`/`false`, `1`/`0`), read at

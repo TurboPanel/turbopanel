@@ -641,7 +641,7 @@ test('GET /datacenters returns empty list when org has no datacenters', async ()
       headers: { cookie, [ORG_ID_HEADER]: organizationId },
     })
     assertEquals(res.status, 200)
-    assertEquals(await res.json(), { datacenters: [] })
+    assertEquals(await res.json(), { datacenters: [], warnings: [] })
   })
 })
 

@@ -1020,8 +1020,12 @@ function parseFirewallRenderedDocument(value: unknown, field: string): string {
 
 function parseFirewallRendered(value: unknown): FirewallRendered {
   if (!isRecord(value)) throw new Error('rendered must be an object')
-  const rendered: FirewallRendered = { v4: parseFirewallRenderedDocument(value.v4, 'v4') }
-  if (value.v6 !== undefined) rendered.v6 = parseFirewallRenderedDocument(value.v6, 'v6')
+  const rendered: FirewallRendered = {
+    v4: parseFirewallRenderedDocument(value.v4, 'v4'),
+  }
+  if (value.v6 !== undefined) {
+    rendered.v6 = parseFirewallRenderedDocument(value.v6, 'v6')
+  }
   return rendered
 }
 
@@ -1249,6 +1253,12 @@ export type FabricReconcileObservedPeer = {
   transferTx?: number
   endpoint?: string
   health?: FabricPeerHealth
+  /**
+   * Local NIC whose connected subnet holds the peer's live endpoint (the
+   * network the tunnel really runs on). Absent when the endpoint is not on a
+   * connected subnet (reached by the default route).
+   */
+  interface?: string
 }
 
 /**
@@ -1260,6 +1270,11 @@ export type FabricReconcileCommandResult = {
   publicKey?: string
   skipped?: boolean
   peers?: FabricReconcileObservedPeer[]
+}
+
+/** Linux interface name: at most 15 bytes, no slash or whitespace (daemon twin). */
+function isValidInterfaceName(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,14}$/.test(value)
 }
 
 const FABRIC_DOCKER_NETWORK_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
@@ -1509,15 +1524,26 @@ function parseFabricObservedPeer(value: unknown): FabricReconcileObservedPeer {
     peer.endpoint = value.endpoint
   }
   if (value.health !== undefined) {
-    if (
-      typeof value.health !== 'string' ||
-      !FABRIC_PEER_HEALTH.has(value.health as FabricPeerHealth)
-    ) {
-      throw new TypeError('Invalid fabric reconcile result peer health')
-    }
-    peer.health = value.health as FabricPeerHealth
+    peer.health = parseObservedPeerHealth(value.health)
+  }
+  if (value.interface !== undefined) {
+    peer.interface = parseObservedPeerInterface(value.interface)
   }
   return peer
+}
+
+function parseObservedPeerHealth(value: unknown): FabricPeerHealth {
+  if (typeof value !== 'string' || !FABRIC_PEER_HEALTH.has(value as FabricPeerHealth)) {
+    throw new TypeError('Invalid fabric reconcile result peer health')
+  }
+  return value as FabricPeerHealth
+}
+
+function parseObservedPeerInterface(value: unknown): string {
+  if (!isValidInterfaceName(value)) {
+    throw new TypeError('Invalid fabric reconcile result peer interface')
+  }
+  return value
 }
 
 export type EnvironmentDeployTlsMaterial = {
@@ -1748,8 +1774,14 @@ export type EnvironmentDeploySite = {
    * Requires `principal`: a timer with no `User=` would run as root.
    */
   cron?: EnvironmentDeployCronJob[]
-  /** Merged hosting web env (variables + options.web.env). */
+  /** Merged hosting web env (non-secret variables + options.web.env). */
   webEnv?: Record<string, string>
+  /**
+   * Secret runtime variables, name to `tpdaemon` envelope (the sealed twin of
+   * `webEnv`, disjoint from it). The daemon decrypts them before the site is
+   * applied; the plaintext only ever reaches the engine's own config files.
+   */
+  webSecretEnv?: Record<string, string>
   php?: EnvironmentDeployHostingPhp
   /**
    * When set (from a project principal ↔ service tenancy), the site tree
@@ -2253,6 +2285,12 @@ export type EnvironmentDeployHostingPort = {
 
 export type EnvironmentDeployHostingWeb = {
   env?: Record<string, string>
+  /**
+   * Secret runtime variables, name to `tpdaemon` envelope. Never plaintext: the
+   * daemon decrypts them through `POST /api/daemon/v1/secrets/decrypt` and folds
+   * them into the site's `webEnv`. Disjoint from `env`.
+   */
+  secretEnv?: Record<string, string>
   php?: EnvironmentDeployHostingPhp
 }
 
@@ -2289,6 +2327,13 @@ export type EnvironmentDeployHosting = {
   ports?: EnvironmentDeployHostingPort[]
   /** Merged hosting web env + PHP hints for site materialization. */
   web?: EnvironmentDeployHostingWeb
+  /**
+   * Also serve the other spelling of each hostname (`www.` added, or removed
+   * when the name starts with `www.`) as a permanent redirect to the hostname
+   * as written. `http` only; omitted when off. In `acme` mode the extra name
+   * gets its own certificate. Older daemons ignore the field.
+   */
+  wwwRedirect?: boolean
 }
 
 export type EnvironmentDeployContainer = {
@@ -2467,9 +2512,28 @@ function parseDeployHostingWeb(value: unknown): EnvironmentDeployHostingWeb | un
   const web: EnvironmentDeployHostingWeb = {}
   const env = parseEnvRecord(value.env)
   if (env) web.env = env
+  const secretEnv = parseEnvRecord(value.secretEnv)
+  if (secretEnv) web.secretEnv = secretEnv
   const php = parseDeployHostingPhp(value.php)
   if (php) web.php = php
   return Object.keys(web).length > 0 ? web : undefined
+}
+
+function parseDeployHostingBindAddress(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (!isString(value) || value.length === 0 || !isValidIpAddress(value)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  return value
+}
+
+/** `true` when on; `undefined` when absent or false; anything else is refused. */
+function parseDeployHostingWwwRedirect(value: unknown): true | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'boolean') {
+    throw new TypeError('Invalid environment.deploy payload')
+  }
+  return value ? true : undefined
 }
 
 function applyOptionalDeployHostingFields(
@@ -2489,21 +2553,15 @@ function applyOptionalDeployHostingFields(
   if (tlsMode) hosting.tlsMode = tlsMode
   const proxy = parseDeployHostingProxy(entry.proxy)
   if (proxy) hosting.proxy = proxy
-  if (entry.bindAddress !== undefined) {
-    if (!isString(entry.bindAddress) || entry.bindAddress.length === 0) {
-      throw new Error('Invalid environment.deploy payload')
-    }
-    if (!isValidIpAddress(entry.bindAddress)) {
-      throw new Error('Invalid environment.deploy payload')
-    }
-    hosting.bindAddress = entry.bindAddress
-  }
+  const bindAddress = parseDeployHostingBindAddress(entry.bindAddress)
+  if (bindAddress) hosting.bindAddress = bindAddress
   const protocol = parseDeployHostingProtocol(entry.protocol)
   if (protocol) hosting.protocol = protocol
   const ports = parseDeployHostingPorts(entry.ports)
   if (ports) hosting.ports = ports
   const web = parseDeployHostingWeb(entry.web)
   if (web) hosting.web = web
+  if (parseDeployHostingWwwRedirect(entry.wwwRedirect)) hosting.wwwRedirect = true
 }
 
 function parseDeployHostingEntry(entry: unknown): EnvironmentDeployHosting {
@@ -2999,6 +3057,8 @@ function parseDeploySiteEntry(entry: unknown): EnvironmentDeploySite {
   if (cron) site.cron = cron
   const webEnv = parseEnvRecord(entry.webEnv)
   if (webEnv) site.webEnv = webEnv
+  const webSecretEnv = parseEnvRecord(entry.webSecretEnv)
+  if (webSecretEnv) site.webSecretEnv = webSecretEnv
   const php = parseDeployHostingPhp(entry.php)
   if (php) site.php = php
   const principal = parseDeploySitePrincipal(entry.principal)
@@ -6286,13 +6346,31 @@ export type CopyBackupSource = {
   hostPath?: string
   organizationId?: string
   storageId?: string
+  /** A `hostPath` source: the site owner's Linux user whose own tree the path must stay inside. */
+  ownerUsername?: string
+  /** A docker source: the compose project a non-storage-named volume must be labelled with. */
+  composeProject?: string
 }
 
-const COPY_SOURCE_FIELDS = ['volumeName', 'hostPath', 'organizationId', 'storageId'] as const
+const COPY_SOURCE_FIELDS = [
+  'volumeName',
+  'hostPath',
+  'organizationId',
+  'storageId',
+  'ownerUsername',
+  'composeProject',
+] as const
+
+/** Linux user names the daemon accepts (`PRINCIPAL_USERNAME_RE` parity). */
+const COPY_OWNER_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
+const MAX_COPY_OWNER_USERNAME_LENGTH = 64
 
 function parsePathCopySource(raw: Record<string, unknown>, source: CopyBackupSource): void {
   if (raw.volumeName !== undefined) {
     throw new Error('A path copy source cannot name a volume')
+  }
+  if (raw.composeProject !== undefined) {
+    throw new Error('A path copy source cannot name a compose project')
   }
   if (raw.hostPath !== undefined) {
     if (
@@ -6302,8 +6380,19 @@ function parsePathCopySource(raw: Record<string, unknown>, source: CopyBackupSou
     ) {
       throw new Error('Invalid path copy source hostPath')
     }
+    if (
+      !isString(raw.ownerUsername) ||
+      raw.ownerUsername.length > MAX_COPY_OWNER_USERNAME_LENGTH ||
+      !COPY_OWNER_USERNAME_RE.test(raw.ownerUsername)
+    ) {
+      throw new Error('A path copy source with hostPath needs a valid ownerUsername')
+    }
     source.hostPath = raw.hostPath
+    source.ownerUsername = raw.ownerUsername
     return
+  }
+  if (raw.ownerUsername !== undefined) {
+    throw new Error('Only a hostPath copy source can name an ownerUsername')
   }
   if (!isCanonicalUuid(raw.organizationId) || !isCanonicalUuid(raw.storageId)) {
     throw new Error('A path copy source needs hostPath, or organizationId and storageId')
@@ -6335,11 +6424,21 @@ export function parseCopyBackupSource(raw: Record<string, unknown>): CopyBackupS
   if (
     raw.hostPath !== undefined ||
     raw.organizationId !== undefined ||
-    raw.storageId !== undefined
+    raw.ownerUsername !== undefined
   ) {
     throw new Error('A docker copy source cannot name a host path')
   }
+  if (!isCanonicalUuid(raw.storageId)) {
+    throw new Error('A docker copy source needs the storageId it belongs to')
+  }
+  if (raw.composeProject !== undefined) {
+    if (!isString(raw.composeProject) || !COMPOSE_PROJECT_RE.test(raw.composeProject)) {
+      throw new Error('Invalid docker copy source composeProject')
+    }
+    source.composeProject = raw.composeProject
+  }
   source.volumeName = raw.volumeName
+  source.storageId = raw.storageId
   return source
 }
 
@@ -6374,6 +6473,8 @@ export type BackupPolicyWireEntry = {
   hostPath?: string
   organizationId?: string
   storageId?: string
+  ownerUsername?: string
+  composeProject?: string
   onCalendar: string
   retentionKeep: number
   enabled: boolean
