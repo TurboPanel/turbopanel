@@ -122,8 +122,7 @@ export function serviceRunStatesEqual(
   return left.every((entry, index) => {
     const other = right[index]
     return (
-      other !== undefined &&
-      entry.serviceId === other.serviceId &&
+      entry.serviceId === other?.serviceId &&
       entry.state === other.state &&
       entry.restartCount === other.restartCount &&
       entry.asOf === other.asOf &&
