@@ -376,18 +376,6 @@ guard; `pnpm test:do` alone does not.
   else `git rev-parse HEAD`, and a deploy that cannot name a 40-hex commit is
   refused (so `/api/health` never reports `revision: unknown`). A failed
   migrate stops before wrangler runs.
-- **TESTING deploys from `trunk` via Cloudflare Workers Builds** on the
-  `testing-instance` worker (branch-based, like staging/live — not an Actions
-  API-token deploy). Deploy command `pnpm run deploy:testing` (sets
-  `CLOUDFLARE_ENV=testing`). Build variables (build-only, never runtime):
-  `TURBOPANEL_DATABASE_URL` — secret, the testing database's direct TCP URL
-  for the migrate role (Hyperdrive is not reachable from the build
-  container), and `TURBOPANEL_DEPLOY_CHECK_API_TOKEN` — secret, a token with
-  Hyperdrive Read so `check-deploy-env.mjs` can confirm the URL is testing's
-  Hyperdrive origin (it fails closed without it). Migrations run from zero on
-  a wiped database. `/api/client/v1/status` answers **503**
-  `{ code: "database_error" }` (not a bare 500) when the settings read fails
-  — the symptom of an unmigrated or unreachable database.
 - **STAGING and LIVE use the same Workers Builds setup**, one Worker per
   environment: `staging-instance` (branch `staging`, deploy command
   `pnpm run deploy:staging`) and `instance` (branch `live`, deploy command
@@ -403,6 +391,18 @@ guard; `pnpm test:do` alone does not.
   `GET /api/daemon/v1/readiness`, not `/api/health`:** `/api/health` is a
   static identity page and answers 200 with the database gone; readiness reads
   the database and answers 503 `database unavailable` when it cannot.
+- **TESTING deploys from `trunk` via Cloudflare Workers Builds** on the
+  `testing-instance` worker (branch-based, like staging/live — not an Actions
+  API-token deploy). Deploy command `pnpm run deploy:testing` (sets
+  `CLOUDFLARE_ENV=testing`). Build variables (build-only, never runtime):
+  `TURBOPANEL_DATABASE_URL` — secret, the testing database's direct TCP URL
+  for the migrate role (Hyperdrive is not reachable from the build
+  container), and `TURBOPANEL_DEPLOY_CHECK_API_TOKEN` — secret, a token with
+  Hyperdrive Read so `check-deploy-env.mjs` can confirm the URL is testing's
+  Hyperdrive origin (it fails closed without it). Migrations run from zero on
+  a wiped database. `/api/client/v1/status` answers **503**
+  `{ code: "database_error" }` (not a bare 500) when the settings read fails
+  — the symptom of an unmigrated or unreachable database.
   Do not commit `TURBOPANEL_REVISION` in `wrangler.jsonc` — that would freeze a
   SHA. Self-hosted instance-launch writes it into `runtime.env` /
   `runtime.dev-vars` from `git rev-parse HEAD` in the instance checkout.
