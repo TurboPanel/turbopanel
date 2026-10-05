@@ -28,6 +28,7 @@ import {
   evaluateReadOnlyLoginTargetsLazy,
   evaluateReplicaClassConversion,
   evaluateReplicaPlacementPrechecks,
+  listUsersReferencingDatabase,
   MANAGED_NO_READ_TARGETS_ERROR,
   managedStatusListenerParams,
   mergeManagedPatchSettings,
@@ -179,6 +180,26 @@ test("evaluateManagedDatabaseDelete guards initial and missing names", () => {
     evaluateManagedDatabaseDelete("app", ["postgres", "app"], "postgres"),
     null,
   );
+});
+
+test("listUsersReferencingDatabase lists only SQL users that name the database", () => {
+  const principals = [
+    { username: "root", metadata: { managedRoot: true, databases: ["app"] } },
+    {
+      username: "repl",
+      metadata: { managedReplication: true, databases: ["app"] },
+    },
+    { username: "alice", metadata: { databases: ["postgres", "app"] } },
+    { username: "bob", metadata: { databases: ["postgres"] } },
+    { username: "carol", metadata: { databases: "app" } },
+    { username: "dave", metadata: null },
+  ];
+  assertEquals(listUsersReferencingDatabase(principals, "app"), ["alice"]);
+  assertEquals(listUsersReferencingDatabase(principals, "postgres"), [
+    "alice",
+    "bob",
+  ]);
+  assertEquals(listUsersReferencingDatabase(principals, "gone"), []);
 });
 
 test("nextDatabasesAfterCreate/Delete sort and filter", () => {

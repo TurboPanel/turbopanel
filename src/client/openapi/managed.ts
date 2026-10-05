@@ -1261,6 +1261,29 @@ export const managedPaths = {
           description: 'Database removed',
           ...jsonSchema('ManagedDatabaseMutationResponse'),
         },
+        409: {
+          description:
+            'cannot_drop_initial_database, managed_database_has_bindings (a service binding references the database; lists `services`), or managed_database_has_users (SQL users still list the database; lists their typed usernames in `users`; remove them or change their databases first)',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  error: {
+                    type: 'string',
+                    enum: [
+                      'cannot_drop_initial_database',
+                      'managed_database_has_bindings',
+                      'managed_database_has_users',
+                    ],
+                  },
+                  services: { type: 'array', items: { type: 'object' } },
+                  users: { type: 'array', items: { type: 'string' } },
+                },
+              },
+            },
+          },
+        },
       },
     },
   },

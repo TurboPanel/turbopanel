@@ -7,7 +7,7 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import type { StepUpAction } from '../authn/step-up-actions.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
-import { getDaemonCellRegistry, getDb } from '../../db/connection.ts'
+import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   container,
@@ -149,6 +149,7 @@ import {
   isManagedReplicationPrincipal,
   isManagedRootPrincipal,
   isPlainObject,
+  listUsersReferencingDatabase,
   loadManagedStatusSnapshot,
   managedSessionPaths,
   type MemberPatchFields,
@@ -1096,6 +1097,30 @@ async function hasManagedUsernameNamespaceConflict(
   })
 }
 
+/** 409 when a service binding or a SQL user's database list still names the database. */
+async function refuseDatabaseDropWhenInUse(
+  c: Context<AppEnv>,
+  db: Db,
+  managedId: string,
+  databaseName: string
+): Promise<Response | null> {
+  if (await hasBindingsForDatabase(db, { managedId, databaseName })) {
+    const redeployRequired = await listBindingImpactForDatabase(db, { managedId, databaseName })
+    return c.json(
+      { error: 'managed_database_has_bindings', services: redeployRequired.services },
+      409
+    )
+  }
+  const users = listUsersReferencingDatabase(
+    await listManagedPrincipals(db, managedId),
+    databaseName
+  )
+  if (users.length > 0) {
+    return c.json({ error: 'managed_database_has_users', users }, 409)
+  }
+  return null
+}
+
 export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for managed routes')
@@ -1990,19 +2015,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: deleteError.error }, deleteError.status)
     }
 
-    if (await hasBindingsForDatabase(db, { managedId: row.id, databaseName })) {
-      const redeployRequired = await listBindingImpactForDatabase(db, {
-        managedId: row.id,
-        databaseName,
-      })
-      return c.json(
-        {
-          error: 'managed_database_has_bindings',
-          services: redeployRequired.services,
-        },
-        409
-      )
-    }
+    const inUse = await refuseDatabaseDropWhenInUse(c, db, row.id, databaseName)
+    if (inUse) return inUse
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId

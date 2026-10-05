@@ -433,6 +433,13 @@ export function isManagedReplicationPrincipal(metadata: unknown): boolean {
   return principalMetadata(metadata).managedReplication === true
 }
 
+function principalDatabaseNames(metadata: unknown): string[] {
+  const { databases } = principalMetadata(metadata)
+  return Array.isArray(databases)
+    ? databases.filter((entry): entry is string => typeof entry === 'string')
+    : []
+}
+
 export function serializeManagedUser(row: {
   id: string
   username: string
@@ -442,9 +449,7 @@ export function serializeManagedUser(row: {
   createdAt: string
 }) {
   const meta = principalMetadata(row.metadata)
-  const databases = Array.isArray(meta.databases)
-    ? meta.databases.filter((entry): entry is string => typeof entry === 'string')
-    : []
+  const databases = principalDatabaseNames(row.metadata)
   const privileges = Array.isArray(meta.privileges)
     ? meta.privileges.filter((entry): entry is string => typeof entry === 'string')
     : []
@@ -698,6 +703,25 @@ export function evaluateManagedDatabaseDelete(
     return { ok: false, error: 'cannot_drop_initial_database', status: 409 }
   }
   return null
+}
+
+/**
+ * Typed usernames of the SQL users (never the root or replication principal)
+ * whose `databases` list still names `databaseName`. Dropping the database
+ * while any remain would leave the next apply granting on a missing database.
+ */
+export function listUsersReferencingDatabase(
+  principals: ReadonlyArray<{ username: string; metadata: unknown }>,
+  databaseName: string
+): string[] {
+  return principals
+    .filter(
+      (entry) =>
+        !isManagedRootPrincipal(entry.metadata) &&
+        !isManagedReplicationPrincipal(entry.metadata) &&
+        principalDatabaseNames(entry.metadata).includes(databaseName)
+    )
+    .map((entry) => entry.username)
 }
 
 export function nextDatabasesAfterCreate(databases: readonly string[], name: string): string[] {

@@ -1562,6 +1562,67 @@ test('DELETE database refuses the initial database and unknown names', async () 
   )
 })
 
+test('DELETE database returns 409 listing the SQL users that still have access', async () => {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({
+      managedRows: [managedRow()],
+      principalRows: [
+        principalRow({ metadata: { managedRoot: true, databases: ['appdb'] } }),
+        principalRow({
+          id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          username: 'repl',
+          metadata: { managedReplication: true, databases: ['appdb'] },
+        }),
+        principalRow({
+          id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          username: 'appuser',
+          metadata: { engine: 'postgres', databases: ['defaultdb', 'appdb'] },
+        }),
+        principalRow({
+          id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccd',
+          username: 'other',
+          metadata: { engine: 'postgres', databases: ['defaultdb'] },
+        }),
+      ],
+    }),
+  })
+  const res = await app.request(envPath('/databases/appdb'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(res.status, 409)
+  const raw = await res.text()
+  assertEquals(JSON.parse(raw), { error: 'managed_database_has_users', users: ['appuser'] })
+  assertEquals(raw.includes('sealed'), false)
+})
+
+test('DELETE database reports bindings before users', async () => {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({
+      managedRows: [managedRow()],
+      principalRows: [
+        principalRow({ metadata: { engine: 'postgres', databases: ['defaultdb', 'appdb'] } }),
+      ],
+      bindingRows: [
+        {
+          id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          serviceId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+          name: 'web',
+          environmentId: ENV_ID,
+          projectId: PROJECT_ID,
+          keyPrefix: 'DATABASE',
+        },
+      ],
+    }),
+  })
+  const res = await app.request(envPath('/databases/appdb'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(res.status, 409)
+  assertEquals((await jsonOf(res)).error, 'managed_database_has_bindings')
+})
+
 test('POST members rejects a missing serverId and an invalid replica class', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
