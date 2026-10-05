@@ -74,12 +74,14 @@ export function readHostingPorts(options: unknown): { published: number; target:
 /**
  * Docker Compose `-p` project name for an environment deploy.
  *
- * Uses the TurboPanel **project** UUID — never the operator display name.
- * Container names are separately obfuscated via service-UUID allocation
- * (`containerNaming: uuid`).
+ * Uses the TurboPanel **environment** UUID — never the operator display name,
+ * and never the project UUID: two environments of one project on one server
+ * would share a Compose project, and each `up --remove-orphans` would remove
+ * or replace the other's containers. Container names are separately obfuscated
+ * via service-UUID allocation (`containerNaming: uuid`).
  */
-export function composeProjectName(projectId: string): string {
-  return projectId
+export function composeProjectName(environmentId: string): string {
+  return environmentId
 }
 
 export function tlsPinErrorCode(error: 'pin_not_found' | 'pin_mismatch' | 'pin_not_ready'): string {

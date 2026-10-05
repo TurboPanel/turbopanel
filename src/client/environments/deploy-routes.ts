@@ -1263,7 +1263,7 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
     const labelById = new Map(
       serverRows.map((row) => [row.id, { name: row.name, hostname: row.hostname }])
     )
-    const projectName = composeProjectName(planned.projectId)
+    const projectName = composeProjectName(environmentId)
     const ingress = preparedByServer.flatMap((row) => row.prepared.ingressServices)
     const appContainers = first?.prepared.containers ?? []
     const servers = buildDeployPreviewServers(preparedByServer, labelById)
@@ -1813,7 +1813,7 @@ async function runEnvironmentDeploy(
       attachments: spanningCtx.attachments,
       previous,
     })
-    const projectName = composeProjectName(planned.projectId)
+    const projectName = composeProjectName(environmentId)
     const engine = await resolveEnginePlan(
       db,
       environmentId,
@@ -2000,7 +2000,7 @@ async function loadLifecycleTargets(
   if (fromDeployments.length > 0) {
     return {
       projectId: projectRow.id,
-      projectName: composeProjectName(projectRow.id),
+      projectName: composeProjectName(environmentId),
       serverIds: fromDeployments,
     }
   }
@@ -2019,7 +2019,7 @@ async function loadLifecycleTargets(
   }
   return {
     projectId: projectRow.id,
-    projectName: composeProjectName(projectRow.id),
+    projectName: composeProjectName(environmentId),
     serverIds: [pin],
   }
 }

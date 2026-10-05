@@ -1,13 +1,11 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from '../authn/crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { grant, organization, team, teammate, user } from '../../db/schema.ts'
@@ -44,7 +42,7 @@ async function createTeamRoutesTestApp(db: ReturnType<typeof createDenoDb>) {
 async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
   secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
-  userId: string,
+  userId: string
 ): Promise<string> {
   const { token } = await createSession(db, userId, {})
   const signed = await buildSignedCookie(token, secrets)
@@ -59,10 +57,10 @@ async function withTeamFixtures(
     managerId: string
     memberId: string
     organizationId: string
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping team route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('team route tests')
     return
   }
 
@@ -114,10 +112,9 @@ async function withTeamFixtures(
     })
   } finally {
     await db.delete(team).where(eq(team.organizationId, organizationId))
-    await db.delete(grant).where(and(
-      eq(grant.actorId, managerId),
-      eq(grant.entityId, organizationId),
-    ))
+    await db
+      .delete(grant)
+      .where(and(eq(grant.actorId, managerId), eq(grant.entityId, organizationId)))
     await db.delete(user).where(eq(user.id, managerId))
     await db.delete(user).where(eq(user.id, memberId))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -125,29 +122,25 @@ async function withTeamFixtures(
 }
 
 test('GET /teams lists org teams for managers and hides them from regular members', async () => {
-  await withTeamFixtures(async ({
-    db,
-    app,
-    secrets,
-    managerId,
-    memberId,
-    organizationId,
-  }) => {
+  await withTeamFixtures(async ({ db, app, secrets, managerId, memberId, organizationId }) => {
     const now = new Date().toISOString()
-    const insertedTeams = await db.insert(team).values([
-      {
-        organizationId,
-        name: 'Platform',
-        createdAt: now,
-        updatedAt: now,
-      },
-      {
-        organizationId,
-        name: 'Support',
-        createdAt: now,
-        updatedAt: now,
-      },
-    ]).returning({ id: team.id, name: team.name })
+    const insertedTeams = await db
+      .insert(team)
+      .values([
+        {
+          organizationId,
+          name: 'Platform',
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          organizationId,
+          name: 'Support',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ])
+      .returning({ id: team.id, name: team.name })
     const platform = insertedTeams.find((row) => row.name === 'Platform')
     if (!platform) {
       throw new TypeError('expected Platform team')
@@ -162,7 +155,7 @@ test('GET /teams lists org teams for managers and hides them from regular member
       },
     })
     assertEquals(managerRes.status, 200)
-    const managerBody = await managerRes.json() as {
+    const managerBody = (await managerRes.json()) as {
       teams: Array<{ name: string | null }>
     }
     assertEquals(managerBody.teams.length, 2)
@@ -179,19 +172,13 @@ test('GET /teams lists org teams for managers and hides them from regular member
       },
     })
     assertEquals(memberRes.status, 200)
-    const memberBody = await memberRes.json() as { teams: unknown[] }
+    const memberBody = (await memberRes.json()) as { teams: unknown[] }
     assertEquals(memberBody.teams.length, 0)
   })
 })
 
 test('GET /teams returns an empty list when the org has no teams', async () => {
-  await withTeamFixtures(async ({
-    db,
-    app,
-    secrets,
-    managerId,
-    organizationId,
-  }) => {
+  await withTeamFixtures(async ({ db, app, secrets, managerId, organizationId }) => {
     const cookie = await sessionCookie(db, secrets, managerId)
     const res = await app.request('/teams', {
       headers: {
@@ -200,7 +187,7 @@ test('GET /teams returns an empty list when the org has no teams', async () => {
       },
     })
     assertEquals(res.status, 200)
-    const body = await res.json() as { teams: unknown[] }
+    const body = (await res.json()) as { teams: unknown[] }
     assertEquals(body.teams.length, 0)
   })
 })

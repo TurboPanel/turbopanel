@@ -32,6 +32,7 @@
  * all.
  */
 
+import { assertSafeEntityId } from '../../entity-metric-id.ts'
 import { AE_SQL_MAX_LENGTH } from './ae-sql-dialect.ts'
 import {
   HOST_METRICS_METRIC_DESCRIPTORS,
@@ -113,9 +114,20 @@ export { AE_DATASET_NAME }
 /** Schema versions this read path understands (positional semantics must match). */
 export const AE_SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [6, 7]
 
-/** Escape a string literal for AE SQL (single-quote doubling). Same idiom as v3's `quoteSqlString`. */
+/**
+ * Escape a string literal for AE SQL. AE's dialect is ClickHouse-flavoured, where a backslash
+ * escapes the next character inside a literal, so backslashes (and line breaks / NUL) are escaped
+ * as well as single quotes being doubled. Entity ids are additionally restricted to a safe
+ * charset before they get here (`parseEntityMetricId`).
+ */
 export function quoteSqlString(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`
+  const escaped = value
+    .replaceAll('\\', '\\\\')
+    .replaceAll("'", "''")
+    .replaceAll('\n', String.raw`\n`)
+    .replaceAll('\r', String.raw`\r`)
+    .replaceAll('\0', String.raw`\0`)
+  return `'${escaped}'`
 }
 
 function assertSafeDatasetName(dataset: string): string {
@@ -1821,6 +1833,7 @@ function assertEntityIds(entityIds: readonly string[]): string[] {
   const result: string[] = []
   for (const id of entityIds) {
     if (!id) throw new TypeError('entityIds must not contain an empty string')
+    assertSafeEntityId(id)
     if (seen.has(id)) continue
     seen.add(id)
     result.push(id)

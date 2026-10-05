@@ -152,7 +152,7 @@ run_deno_shard() {
 #   - Host-free unit suites (always run; no Postgres/Redis).
 #   - Postgres integration suites (need TURBOPANEL_DATABASE_URL; skip gracefully
 #     when unset locally — CI build.yml starts Postgres and sets the URL).
-# Omit: redis-cell / ws-handlers (Redis),
+# Omit: redis-cell / ws-handlers (Redis; the deno-redis job in build.yml runs them),
 # Vitest-only Workers suites (workers-ws, durable-object, routes-core, …).
 # CI uses -A so every suite shares one profile dir (mirrors the daemon repo's
 # test:coverage grant). A set DENO_SHARD runs that subset instead of the walk.
