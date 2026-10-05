@@ -95,8 +95,8 @@ export async function readSchemaMarker(paths: DuckDbPaths): Promise<number | nul
 }
 
 /**
- * Record the current schema marker — called only after a successful open.
- * Skipped when it already matches; otherwise written to a temp file and
+ * Record the current schema marker — called before the database file is
+ * created, so the marker never lags the data. Skipped when it already matches; otherwise written to a temp file and
  * renamed so a crash never leaves an empty or partial marker behind.
  */
 export async function writeSchemaMarker(paths: DuckDbPaths): Promise<void> {
@@ -138,6 +138,10 @@ export async function openDuckDb(options: OpenDuckDbOptions): Promise<DuckDbHand
   const { paths } = options
   await Deno.mkdir(paths.metricsDir, { recursive: true })
   await discardNonCurrentMetricsStore(paths)
+  // Marker before database file: a crash between the two leaves a current
+  // marker and no data, which the next open simply continues. The other order
+  // left a database file with no marker, which every later open refuses.
+  await writeSchemaMarker(paths)
 
   const instance = await DuckDBInstance.create(paths.databasePath)
   const connection = await instance.connect()
@@ -164,8 +168,6 @@ export async function openDuckDb(options: OpenDuckDbOptions): Promise<DuckDbHand
     instance.closeSync()
     throw error
   }
-
-  await writeSchemaMarker(paths)
 
   return {
     connection,

@@ -1212,7 +1212,9 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     if (this.#flushTimer !== null) return
     this.#flushTimer = this.#setTimeout(() => {
       this.#flushTimer = null
-      void this.#flushPending()
+      // An open failure (e.g. a refused marker) rejects here; nothing awaits a
+      // timer flush, so log it rather than raise an unhandled rejection.
+      this.#flushPending().catch((error) => this.#onFlushError(error))
     }, this.#batchMaxAgeMs)
   }
 

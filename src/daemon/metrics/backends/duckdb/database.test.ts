@@ -146,6 +146,25 @@ it('openDuckDb refuses to wipe the store for a marker newer than this build', as
   }
 })
 
+it('openDuckDb continues after a crash that left the marker but no database file', async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-open-marker-first-' })
+  try {
+    const paths = resolveDuckDbPaths(metricsDir)
+    // What a crash between "write marker" and "create database file" leaves.
+    await Deno.writeTextFile(schemaMarkerPath(paths), String(DUCKDB_SCHEMA_MARKER_VERSION))
+    assertEquals(await fileExistsForTest(paths.databasePath), false)
+    const handle = await openDuckDb({ paths })
+    try {
+      assertEquals(await fileExistsForTest(paths.databasePath), true)
+      assertEquals(await readSchemaMarker(paths), DUCKDB_SCHEMA_MARKER_VERSION)
+    } finally {
+      handle.close()
+    }
+  } finally {
+    await Deno.remove(metricsDir, { recursive: true })
+  }
+})
+
 it('openDuckDb leaves a current marker file untouched on reopen', async () => {
   const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-open-marker-stable-' })
   try {

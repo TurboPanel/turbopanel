@@ -410,7 +410,7 @@ contract), `DUCKDB_SCHEMA_MARKER_VERSION` (this on-disk layout), and the
 chart-cache `schemaVersion` token. Configured retention still prunes expired
 points (`TURBOPANEL_SERVER_METRICS_RETENTION_DAYS`, default 90). Analytics
 Engine has no SQL `DELETE`; hosted points age out after Cloudflare's ~3-month
-retention. The sidecar marker is written after a successful open.
+retention. The sidecar marker is written before the database file is first created, so a crash between the two leaves a current marker and no data (the next open continues) instead of a database file nothing vouches for.
 
 **Daily Parquet archive**, partitioned per family
 (`parquet/<family-table>/year=YYYY/month=MM/day=DD/*.parquet`; timer armed by
