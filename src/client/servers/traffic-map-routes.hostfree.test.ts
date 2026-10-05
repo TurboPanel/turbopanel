@@ -37,6 +37,23 @@ const LAN = '00000000-0000-4000-8000-0000000000d1'
 
 type Row = Record<string, unknown>
 
+/** String values bound in a drizzle condition (the ids of an `inArray`). */
+function boundStrings(condition: unknown): string[] {
+  const out: string[] = []
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      node.forEach(walk)
+      return
+    }
+    if (typeof node !== 'object' || node === null) return
+    const record = node as { value?: unknown; queryChunks?: unknown }
+    if (typeof record.value === 'string') out.push(record.value)
+    if (Array.isArray(record.queryChunks)) record.queryChunks.forEach(walk)
+  }
+  walk(condition)
+  return out
+}
+
 function rows<T>(value: T[]) {
   const promise = Promise.resolve(value)
   return Object.assign(promise, {
@@ -99,12 +116,16 @@ async function buildApp(options: { allowed: boolean; visible: string[] }) {
             { id: B, name: 'kore', metadata: null },
             { id: C, name: 'secret-box', metadata: null },
           ]
-          // The route's names query is `WHERE id IN (visible ids)`; the fake
-          // cannot read the clause, so it applies the same filter itself.
-          const onlyVisible = fields && !('metadata' in fields)
+          // The route's names query is `WHERE id IN (visible ids)`: the fake
+          // reads the ids out of that clause, so a route that dropped it
+          // would return every server and the leak test below would fail.
+          const onlyIds = fields && !('metadata' in fields)
           return {
-            where: () =>
-              rows(onlyVisible ? all.filter((row) => options.visible.includes(row.id)) : all),
+            where: (condition: unknown) => {
+              if (!onlyIds) return rows(all)
+              const ids = boundStrings(condition)
+              return rows(all.filter((row) => ids.includes(row.id)))
+            },
           }
         }
         if (name === 'ip' && fields && 'ipId' in fields) {
@@ -155,7 +176,7 @@ test('GET /servers/:id/traffic-map refuses a viewer who cannot read the server',
   const res = await app.request(`/servers/${A}/traffic-map`, {
     headers: { Cookie: cookie, [ORG_ID_HEADER]: ORG },
   })
-  assertEquals(res.status === 403 || res.status === 404, true)
+  assertEquals(res.status, 403)
 })
 
 test('GET /servers/:id/traffic-map lists only peers the viewer can read', async () => {

@@ -25,7 +25,7 @@ import { getLatestTopologyGeneration } from '../servers/server-topology-records.
 import { loadServerHardwareProfile } from '../servers/hardware-profile.ts'
 
 /** Peers shown per server; keeps the response and the queries bounded. */
-export const SERVER_TRAFFIC_MAP_MAX_PEERS = 100
+const SERVER_TRAFFIC_MAP_MAX_PEERS = 100
 
 export type ServerTrafficMapCandidate = { serverId: string; name: string | null }
 
@@ -95,7 +95,7 @@ async function loadNicMetrics(
   return out
 }
 
-export type ServerTrafficMapResult = ServerTrafficMap & {
+type ServerTrafficMapResult = ServerTrafficMap & {
   /** More peers share a network with this server than the cap shows. */
   truncated: boolean
 }

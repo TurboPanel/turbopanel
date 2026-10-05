@@ -21,7 +21,7 @@ import {
 const test = Deno.test.bind(Deno)
 
 function createQueuedDb(
-  queue: Array<Array<Record<string, unknown>>>
+  queue: Array<Array<Record<string, unknown>>>,
 ): Parameters<typeof loadDatacenterCidrs>[0] {
   let i = 0
   return {
@@ -51,7 +51,7 @@ function createQueuedDb(
 function membershipPinRow(
   serverId: string,
   datacenterId: string,
-  address = '203.0.113.10'
+  address = '203.0.113.10',
 ): Record<string, unknown> {
   return {
     ipId: `ip-${serverId}-${datacenterId}`,
@@ -69,15 +69,13 @@ test('loadDatacenterCidrs returns empty map for empty id list without querying',
 })
 
 test('loadDatacenterCidrs groups cidrs by datacenter id', async () => {
-  const db = createQueuedDb([
-    [
-      { datacenterId: 'dc-a', cidr: '10.0.0.0/24' },
-      { datacenterId: 'dc-a', cidr: '10.0.1.0/24' },
-      { datacenterId: 'dc-b', cidr: '10.1.0.0/16' },
-      { datacenterId: null, cidr: '10.9.0.0/24' },
-      { datacenterId: 'dc-c', cidr: null },
-    ],
-  ])
+  const db = createQueuedDb([[
+    { datacenterId: 'dc-a', cidr: '10.0.0.0/24' },
+    { datacenterId: 'dc-a', cidr: '10.0.1.0/24' },
+    { datacenterId: 'dc-b', cidr: '10.1.0.0/16' },
+    { datacenterId: null, cidr: '10.9.0.0/24' },
+    { datacenterId: 'dc-c', cidr: null },
+  ]])
   const map = await loadDatacenterCidrs(db, ['dc-a', 'dc-b', 'dc-c'])
   assertEquals(map.get('dc-a'), ['10.0.0.0/24', '10.0.1.0/24'])
   assertEquals(map.get('dc-b'), ['10.1.0.0/16'])
@@ -85,15 +83,13 @@ test('loadDatacenterCidrs groups cidrs by datacenter id', async () => {
 })
 
 test('loadDatacenterSubnets groups mixed-family rows and derives version', async () => {
-  const db = createQueuedDb([
-    [
-      { id: 'net-v4', datacenterId: 'dc-a', cidr: '203.0.113.0/24' },
-      { id: 'net-v6', datacenterId: 'dc-a', cidr: '2001:db8::/32' },
-      { id: 'net-b', datacenterId: 'dc-b', cidr: '198.51.100.0/24' },
-      { id: 'net-bad', datacenterId: 'dc-a', cidr: 'not-a-cidr' },
-      { id: 'net-orphan', datacenterId: null, cidr: '203.0.113.0/24' },
-    ],
-  ])
+  const db = createQueuedDb([[
+    { id: 'net-v4', datacenterId: 'dc-a', cidr: '203.0.113.0/24' },
+    { id: 'net-v6', datacenterId: 'dc-a', cidr: '2001:db8::/32' },
+    { id: 'net-b', datacenterId: 'dc-b', cidr: '198.51.100.0/24' },
+    { id: 'net-bad', datacenterId: 'dc-a', cidr: 'not-a-cidr' },
+    { id: 'net-orphan', datacenterId: null, cidr: '203.0.113.0/24' },
+  ]])
   const map = await loadDatacenterSubnets(db, ['dc-a', 'dc-b'])
   assertEquals(map.get('dc-a'), [
     { networkId: 'net-v4', cidr: '203.0.113.0/24', version: 4, name: null },
@@ -105,13 +101,11 @@ test('loadDatacenterSubnets groups mixed-family rows and derives version', async
 })
 
 test('loadDatacenterAddressPreferences defaults missing and invalid options to ipv6', async () => {
-  const db = createQueuedDb([
-    [
-      { id: 'dc-default', options: null },
-      { id: 'dc-v4', options: { addressPreference: 'ipv4' } },
-      { id: 'dc-bad', options: { addressPreference: 'dual' } },
-    ],
-  ])
+  const db = createQueuedDb([[
+    { id: 'dc-default', options: null },
+    { id: 'dc-v4', options: { addressPreference: 'ipv4' } },
+    { id: 'dc-bad', options: { addressPreference: 'dual' } },
+  ]])
   const map = await loadDatacenterAddressPreferences(db, [
     'dc-missing',
     'dc-default',
@@ -131,17 +125,15 @@ test('loadDatacenterAddressPreferences returns empty map for empty id list', asy
 })
 
 test('loadDatacenterPolicies seeds defaults for missing rows and drops invalid values', async () => {
-  const db = createQueuedDb([
-    [
-      { id: 'dc-default', options: null },
-      { id: 'dc-set', options: { addressPreference: 'ipv4', priority: 7, trusted: false } },
-      {
-        id: 'dc-bad',
-        options: { addressPreference: 'dual', priority: 1.5, trusted: 'no' },
-      },
-      { id: 'dc-range', options: { priority: 5000 } },
-    ],
-  ])
+  const db = createQueuedDb([[
+    { id: 'dc-default', options: null },
+    { id: 'dc-set', options: { addressPreference: 'ipv4', priority: 7, trusted: false } },
+    {
+      id: 'dc-bad',
+      options: { addressPreference: 'dual', priority: 1.5, trusted: 'no' },
+    },
+    { id: 'dc-range', options: { priority: 5000 } },
+  ]])
   const map = await loadDatacenterPolicies(db, [
     'dc-missing',
     'dc-default',
@@ -177,22 +169,30 @@ test('assertDatacenterHasCidr fails when no CIDR rows exist', async () => {
 })
 
 test('assertDatacenterHasCidr succeeds when a CIDR row exists', async () => {
-  const db = createQueuedDb([[{ datacenterId: 'dc-a', cidr: '10.0.0.0/24' }]])
+  const db = createQueuedDb([[
+    { datacenterId: 'dc-a', cidr: '10.0.0.0/24' },
+  ]])
   assertEquals(await assertDatacenterHasCidr(db, 'dc-a'), null)
 })
 
 test('assertServerDatacenterReady requires a pin and a site CIDR', async () => {
   assertEquals(
-    await assertServerDatacenterReady(createQueuedDb([[{ datacenterId: null }]]), 'srv-1'),
-    { kind: 'datacenter_required', serverId: 'srv-1' }
+    await assertServerDatacenterReady(
+      createQueuedDb([[{ datacenterId: null }]]),
+      'srv-1',
+    ),
+    { kind: 'datacenter_required', serverId: 'srv-1' },
   )
 
   assertEquals(
     await assertServerDatacenterReady(
-      createQueuedDb([[membershipPinRow('srv-1', 'dc-a')], []]),
-      'srv-1'
+      createQueuedDb([
+        [membershipPinRow('srv-1', 'dc-a')],
+        [],
+      ]),
+      'srv-1',
     ),
-    { kind: 'datacenter_cidr_required', datacenterId: 'dc-a' }
+    { kind: 'datacenter_cidr_required', datacenterId: 'dc-a' },
   )
 
   assertEquals(
@@ -201,9 +201,9 @@ test('assertServerDatacenterReady requires a pin and a site CIDR', async () => {
         [membershipPinRow('srv-1', 'dc-a')],
         [{ datacenterId: 'dc-a', cidr: '10.0.0.0/24' }],
       ]),
-      'srv-1'
+      'srv-1',
     ),
-    null
+    null,
   )
 })
 
@@ -218,9 +218,9 @@ test('assertServerDatacenterReady succeeds when a later pin datacenter has a sub
         [],
         [{ id: 'net-ok', datacenterId: 'dc-ok', cidr: '198.51.100.0/24' }],
       ]),
-      'srv-1'
+      'srv-1',
     ),
-    null
+    null,
   )
 })
 
@@ -228,13 +228,16 @@ test('assertServerDatacenterReady names the first pin datacenter when none have 
   assertEquals(
     await assertServerDatacenterReady(
       createQueuedDb([
-        [membershipPinRow('srv-1', 'dc-a'), membershipPinRow('srv-1', 'dc-b', '198.51.100.10')],
+        [
+          membershipPinRow('srv-1', 'dc-a'),
+          membershipPinRow('srv-1', 'dc-b', '198.51.100.10'),
+        ],
         [],
         [],
       ]),
-      'srv-1'
+      'srv-1',
     ),
-    { kind: 'datacenter_cidr_required', datacenterId: 'dc-a' }
+    { kind: 'datacenter_cidr_required', datacenterId: 'dc-a' },
   )
 })
 
@@ -245,23 +248,28 @@ test('assertGatewayRelaysReady ignores member relays', async () => {
       { serverId: 'srv-1', role: 'member' },
       { serverId: 'srv-2', role: 'member' },
     ]),
-    null
+    null,
   )
 })
 
 test('assertGatewayRelaysReady maps placement errors onto gateway wire codes', async () => {
   assertEquals(
-    await assertGatewayRelaysReady(createQueuedDb([[{ datacenterId: null }]]), [
-      { serverId: 'gw-1', role: 'gateway' },
-    ]),
-    { kind: 'gateway_datacenter_required', serverId: 'gw-1' }
+    await assertGatewayRelaysReady(
+      createQueuedDb([[{ datacenterId: null }]]),
+      [{ serverId: 'gw-1', role: 'gateway' }],
+    ),
+    { kind: 'gateway_datacenter_required', serverId: 'gw-1' },
   )
 
   assertEquals(
-    await assertGatewayRelaysReady(createQueuedDb([[membershipPinRow('gw-2', 'dc-a')], []]), [
-      { serverId: 'gw-2', role: 'gateway' },
-    ]),
-    { kind: 'gateway_datacenter_cidr_required', datacenterId: 'dc-a' }
+    await assertGatewayRelaysReady(
+      createQueuedDb([
+        [membershipPinRow('gw-2', 'dc-a')],
+        [],
+      ]),
+      [{ serverId: 'gw-2', role: 'gateway' }],
+    ),
+    { kind: 'gateway_datacenter_cidr_required', datacenterId: 'dc-a' },
   )
 
   assertEquals(
@@ -270,19 +278,24 @@ test('assertGatewayRelaysReady maps placement errors onto gateway wire codes', a
         [membershipPinRow('gw-3', 'dc-a')],
         [{ datacenterId: 'dc-a', cidr: '10.0.0.0/24' }],
       ]),
-      [{ serverId: 'gw-3', role: 'gateway' }]
+      [{ serverId: 'gw-3', role: 'gateway' }],
     ),
-    null
+    null,
   )
 })
 
 test('assertGatewayRelaysReady returns the first gateway failure when multiple are checked', async () => {
   assertEquals(
-    await assertGatewayRelaysReady(createQueuedDb([[{ datacenterId: null }]]), [
-      { serverId: 'gw-bad', role: 'gateway' },
-      { serverId: 'gw-ok', role: 'gateway' },
-    ]),
-    { kind: 'gateway_datacenter_required', serverId: 'gw-bad' }
+    await assertGatewayRelaysReady(
+      createQueuedDb([
+        [{ datacenterId: null }],
+      ]),
+      [
+        { serverId: 'gw-bad', role: 'gateway' },
+        { serverId: 'gw-ok', role: 'gateway' },
+      ],
+    ),
+    { kind: 'gateway_datacenter_required', serverId: 'gw-bad' },
   )
 })
 
@@ -364,120 +377,96 @@ test('loadDatacenterSubnetsForServers groups and dedupes by networkId across mul
 
 test('resolveDerivedAdvertisedCidrsByRelay returns empty for members', () => {
   const map = resolveDerivedAdvertisedCidrsByRelay(
-    [
-      {
-        id: 'r-mem',
-        serverId: 'srv-1',
-        role: 'member',
-        advertisedCidrs: ['203.0.113.0/24'],
-      },
-    ],
+    [{
+      id: 'r-mem',
+      serverId: 'srv-1',
+      role: 'member',
+      advertisedCidrs: ['203.0.113.0/24'],
+    }],
     new Map([
-      [
-        'srv-1',
-        [
-          {
-            networkId: 'net-a',
-            cidr: '203.0.113.0/24',
-            version: 4,
-            name: null,
-          },
-        ],
-      ],
-    ])
+      ['srv-1', [{
+        networkId: 'net-a',
+        cidr: '203.0.113.0/24',
+        version: 4,
+        name: null,
+      }]],
+    ]),
   )
   assertEquals(map.get('r-mem'), [])
 })
 
 test('resolveDerivedAdvertisedCidrsByRelay keeps a non-empty override verbatim', () => {
   const map = resolveDerivedAdvertisedCidrsByRelay(
-    [
-      {
-        id: 'r-gw',
-        serverId: 'srv-1',
-        role: 'gateway',
-        advertisedCidrs: ['2001:db8::/32', '203.0.113.0/24'],
-      },
-    ],
+    [{
+      id: 'r-gw',
+      serverId: 'srv-1',
+      role: 'gateway',
+      advertisedCidrs: ['2001:db8::/32', '203.0.113.0/24'],
+    }],
     new Map([
-      [
-        'srv-1',
-        [
-          {
-            networkId: 'net-a',
-            cidr: '198.51.100.0/24',
-            version: 4,
-            name: null,
-          },
-        ],
-      ],
-    ])
+      ['srv-1', [{
+        networkId: 'net-a',
+        cidr: '198.51.100.0/24',
+        version: 4,
+        name: null,
+      }]],
+    ]),
   )
   assertEquals(map.get('r-gw'), ['2001:db8::/32', '203.0.113.0/24'])
 })
 
 test('resolveDerivedAdvertisedCidrsByRelay derives both IPv4 subnets of a datacenter', () => {
   const map = resolveDerivedAdvertisedCidrsByRelay(
-    [
-      {
-        id: 'r-gw',
-        serverId: 'srv-1',
-        role: 'gateway',
-        advertisedCidrs: [],
-      },
-    ],
+    [{
+      id: 'r-gw',
+      serverId: 'srv-1',
+      role: 'gateway',
+      advertisedCidrs: [],
+    }],
     new Map([
-      [
-        'srv-1',
-        [
-          {
-            networkId: 'net-b',
-            cidr: '198.51.100.0/24',
-            version: 4,
-            name: null,
-          },
-          {
-            networkId: 'net-a',
-            cidr: '203.0.113.0/24',
-            version: 4,
-            name: null,
-          },
-        ],
-      ],
-    ])
+      ['srv-1', [
+        {
+          networkId: 'net-b',
+          cidr: '198.51.100.0/24',
+          version: 4,
+          name: null,
+        },
+        {
+          networkId: 'net-a',
+          cidr: '203.0.113.0/24',
+          version: 4,
+          name: null,
+        },
+      ]],
+    ]),
   )
   assertEquals(map.get('r-gw'), ['198.51.100.0/24', '203.0.113.0/24'])
 })
 
 test('resolveDerivedAdvertisedCidrsByRelay derives only IPv4 from a mixed-family datacenter', () => {
   const map = resolveDerivedAdvertisedCidrsByRelay(
-    [
-      {
-        id: 'r-gw',
-        serverId: 'srv-1',
-        role: 'gateway',
-        advertisedCidrs: [],
-      },
-    ],
+    [{
+      id: 'r-gw',
+      serverId: 'srv-1',
+      role: 'gateway',
+      advertisedCidrs: [],
+    }],
     new Map([
-      [
-        'srv-1',
-        [
-          {
-            networkId: 'net-v6',
-            cidr: '2001:db8::/32',
-            version: 6,
-            name: null,
-          },
-          {
-            networkId: 'net-v4',
-            cidr: '203.0.113.0/24',
-            version: 4,
-            name: null,
-          },
-        ],
-      ],
-    ])
+      ['srv-1', [
+        {
+          networkId: 'net-v6',
+          cidr: '2001:db8::/32',
+          version: 6,
+          name: null,
+        },
+        {
+          networkId: 'net-v4',
+          cidr: '203.0.113.0/24',
+          version: 4,
+          name: null,
+        },
+      ]],
+    ]),
   )
   assertEquals(map.get('r-gw'), ['203.0.113.0/24'])
 })
@@ -509,7 +498,7 @@ test('resolveDerivedAdvertisedCidrsByRelay assigns a shared subnet to the smalle
     new Map([
       ['srv-z', subnets],
       ['srv-a', subnets],
-    ])
+    ]),
   )
   assertEquals(map.get('r-aaa'), ['203.0.113.0/24'])
   assertEquals(map.get('r-zzz'), [])
@@ -527,41 +516,40 @@ test('serverIsMemberOfDatacenter is false when no pin exists', async () => {
 
 test('resolveDerivedAdvertisedCidrsByRelay dedupes identical IPv4 cidrs', () => {
   const map = resolveDerivedAdvertisedCidrsByRelay(
-    [
-      {
-        id: 'r-gw',
-        serverId: 'srv-1',
-        role: 'gateway',
-        advertisedCidrs: [],
-      },
-    ],
+    [{
+      id: 'r-gw',
+      serverId: 'srv-1',
+      role: 'gateway',
+      advertisedCidrs: [],
+    }],
     new Map([
-      [
-        'srv-1',
-        [
-          {
-            networkId: 'net-a',
-            cidr: '203.0.113.0/24',
-            version: 4,
-            name: null,
-          },
-          {
-            networkId: 'net-a-dup',
-            cidr: '203.0.113.0/24',
-            version: 4,
-            name: null,
-          },
-        ],
-      ],
-    ])
+      ['srv-1', [
+        {
+          networkId: 'net-a',
+          cidr: '203.0.113.0/24',
+          version: 4,
+          name: null,
+        },
+        {
+          networkId: 'net-a-dup',
+          cidr: '203.0.113.0/24',
+          version: 4,
+          name: null,
+        },
+      ]],
+    ]),
   )
   assertEquals(map.get('r-gw'), ['203.0.113.0/24'])
 })
 
 test('loadDatacenterSubnets coerces non-string ids and names', async () => {
-  const db = createQueuedDb([[{ id: 17, datacenterId: 'dc-a', cidr: '203.0.113.0/24', name: 9 }]])
+  const db = createQueuedDb([[
+    { id: 17, datacenterId: 'dc-a', cidr: '203.0.113.0/24', name: 9 },
+  ]])
   const map = await loadDatacenterSubnets(db, ['dc-a'])
-  assertEquals(map.get('dc-a'), [{ networkId: '', cidr: '203.0.113.0/24', version: 4, name: null }])
+  assertEquals(map.get('dc-a'), [
+    { networkId: '', cidr: '203.0.113.0/24', version: 4, name: null },
+  ])
 })
 
 test('assertGatewayRelaysReady accepts a multi-subnet datacenter and still emits the two gateway wire codes', async () => {
@@ -574,22 +562,27 @@ test('assertGatewayRelaysReady accepts a multi-subnet datacenter and still emits
           { id: 'net-b', datacenterId: 'dc-a', cidr: '198.51.100.0/24' },
         ],
       ]),
-      [{ serverId: 'gw-multi', role: 'gateway' }]
+      [{ serverId: 'gw-multi', role: 'gateway' }],
     ),
-    null
+    null,
   )
 
   assertEquals(
-    await assertGatewayRelaysReady(createQueuedDb([[{ datacenterId: null }]]), [
-      { serverId: 'gw-1', role: 'gateway' },
-    ]),
-    { kind: 'gateway_datacenter_required', serverId: 'gw-1' }
+    await assertGatewayRelaysReady(
+      createQueuedDb([[{ datacenterId: null }]]),
+      [{ serverId: 'gw-1', role: 'gateway' }],
+    ),
+    { kind: 'gateway_datacenter_required', serverId: 'gw-1' },
   )
 
   assertEquals(
-    await assertGatewayRelaysReady(createQueuedDb([[membershipPinRow('gw-2', 'dc-a')], []]), [
-      { serverId: 'gw-2', role: 'gateway' },
-    ]),
-    { kind: 'gateway_datacenter_cidr_required', datacenterId: 'dc-a' }
+    await assertGatewayRelaysReady(
+      createQueuedDb([
+        [membershipPinRow('gw-2', 'dc-a')],
+        [],
+      ]),
+      [{ serverId: 'gw-2', role: 'gateway' }],
+    ),
+    { kind: 'gateway_datacenter_cidr_required', datacenterId: 'dc-a' },
   )
 })

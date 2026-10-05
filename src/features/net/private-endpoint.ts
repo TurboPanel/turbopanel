@@ -411,6 +411,39 @@ function resolveFabricFromCaches(params: {
   }
 }
 
+type DatacenterResolution = ResolvedPrivateEndpoint | PrivateEndpointError | null
+
+/**
+ * The datacenter rung split by link state. A network whose link is down is a
+ * last resort, never a first choice: the best network that is up wins by
+ * priority, and the ones that are down are only used when nothing else
+ * carries the traffic, so a replication path never turns into an error just
+ * because a cable was pulled.
+ *
+ * - `preferred`: the networks that are up. When they only fail on address
+ *   family (no family both servers share) but a lower-priority network that
+ *   is down is compatible, that network is used (marked `linkDown`) instead of
+ *   the mismatch error, as before link state existed.
+ * - `lastResort`: the networks that are down, marked `linkDown`.
+ */
+function datacenterRung(
+  resolveAmong: (trusted: string[]) => DatacenterResolution,
+  byLink: TrustedByLink
+): { preferred: () => DatacenterResolution; lastResort: () => DatacenterResolution } {
+  const lastResort = (): DatacenterResolution => {
+    const down = resolveAmong(byLink.down)
+    if (down === null || 'kind' in down) return down
+    return { ...down, linkDown: true }
+  }
+  const preferred = (): DatacenterResolution => {
+    const up = resolveAmong(byLink.available)
+    if (up === null || !('kind' in up)) return up
+    const fallback = lastResort()
+    return fallback !== null && !('kind' in fallback) ? fallback : up
+  }
+  return { preferred, lastResort }
+}
+
 /**
  * Purpose-aware ladder. Same-host loopback is always first. Cross-host order
  * is inverted from the former fabric-first path: datacenter (LAN) before
@@ -448,39 +481,24 @@ export function resolveOneFromCaches(params: {
   const toPins = params.membershipsByServer.get(params.toServerId) ?? []
   const partition = partitionSharedDatacenters(fromPins, toPins, params.policiesByDatacenter)
   const byLink = splitTrustedByLink(partition.trusted, fromPins, toPins)
-  const resolveAmong = (trusted: string[]) =>
-    resolveDatacenterFromCaches({
-      fromServerId: params.fromServerId,
-      toServerId: params.toServerId,
-      fromPins,
-      toPins,
-      partition: { ...partition, trusted },
-      policiesByDatacenter: params.policiesByDatacenter,
-    })
-  // A network whose link is down is a last resort, never a first choice: the
-  // best network that is up wins by priority; the ones that are down are only
-  // used when nothing else carries the traffic, so a replication path never
-  // turns into an error just because a cable was pulled.
-  const lastResort = (): ResolvedPrivateEndpoint | PrivateEndpointError | null => {
-    const down = resolveAmong(byLink.down)
-    if (down === null || 'kind' in down) return down
-    return { ...down, linkDown: true }
-  }
+  const rung = datacenterRung(
+    (trusted) =>
+      resolveDatacenterFromCaches({
+        fromServerId: params.fromServerId,
+        toServerId: params.toServerId,
+        fromPins,
+        toPins,
+        partition: { ...partition, trusted },
+        policiesByDatacenter: params.policiesByDatacenter,
+      }),
+    byLink
+  )
 
-  const datacenter = resolveAmong(byLink.available)
-  if (datacenter) {
-    // The networks that are up cannot be used by this pair (no address family
-    // both servers share) but a lower-priority network that is down can: keep
-    // the path that worked before link state existed rather than an error.
-    if ('kind' in datacenter) {
-      const fallback = lastResort()
-      if (fallback && !('kind' in fallback)) return fallback
-    }
-    return datacenter
-  }
+  const datacenter = rung.preferred()
+  if (datacenter) return datacenter
 
   if (params.purpose === 'failover-replication') {
-    const fallback = lastResort()
+    const fallback = rung.lastResort()
     if (fallback) return fallback
     const untrustedDatacenterId = partition.untrusted[0]
     if (untrustedDatacenterId !== undefined) {
@@ -502,7 +520,7 @@ export function resolveOneFromCaches(params: {
     return { address: publicAddress, transport: 'public' }
   }
 
-  return lastResort() ?? unavailablePath(params.fromServerId, params.toServerId)
+  return rung.lastResort() ?? unavailablePath(params.fromServerId, params.toServerId)
 }
 
 /**

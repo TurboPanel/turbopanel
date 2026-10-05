@@ -222,14 +222,12 @@ test('cidr_overlaps_docker_network — candidate hits a docker registration with
 
 test('cidr_overlaps_docker_network — a managed row carrying a CIDR counts too', async () => {
   const db = createDb({
-    network: [
-      {
-        id: NET_DOCKER,
-        kind: 'managed',
-        cidr: '172.30.0.0/16',
-        datacenterId: null,
-      },
-    ],
+    network: [{
+      id: NET_DOCKER,
+      kind: 'managed',
+      cidr: '172.30.0.0/16',
+      datacenterId: null,
+    }],
   })
   const hit = await assertCidrAvailable(db, {
     organizationId: ORG,
@@ -347,7 +345,10 @@ test('gateway code honours an operator advertised-CIDR override', async () => {
   const db = createDb({
     fabric: [FABRIC_ROW],
     network: [SITE_A, SITE_B],
-    relay: [GATEWAY_RELAYS[0]!, { ...GATEWAY_RELAYS[1]!, advertisedCidrs: ['192.168.50.0/24'] }],
+    relay: [
+      GATEWAY_RELAYS[0]!,
+      { ...GATEWAY_RELAYS[1]!, advertisedCidrs: ['192.168.50.0/24'] },
+    ],
     ip: GATEWAY_PINS,
   })
   // The override replaces the derived list, so SITE_B is no longer advertised
@@ -424,7 +425,7 @@ test('precedence: fabric beats pool beats reserved beats docker beats subnet', (
   assertEquals(findCidrCollision(registry, candidate)?.code, 'cidr_overlaps_fabric')
   assertEquals(
     findCidrCollision({ ...registry, fabricCidr: null }, candidate)?.code,
-    'cidr_overlaps_fabric_pool'
+    'cidr_overlaps_fabric_pool',
   )
   const noFabric = { ...registry, fabricCidr: null, containerPool: null }
   assertEquals(findCidrCollision(noFabric, candidate)?.code, 'cidr_overlaps_reserved')
@@ -450,7 +451,7 @@ test('excludeNetworkId lets a PATCH keep or narrow its own range', async () => {
       intent: 'reserved',
       excludeNetworkId: NET_RESERVED,
     }),
-    null
+    null,
   )
   // … nor is narrowing it …
   assertEquals(
@@ -460,30 +461,26 @@ test('excludeNetworkId lets a PATCH keep or narrow its own range', async () => {
       intent: 'reserved',
       excludeNetworkId: NET_RESERVED,
     }),
-    null
+    null,
   )
   // … but the same candidate without the exclusion still collides …
   assertEquals(
-    (
-      await assertCidrAvailable(db, {
-        organizationId: ORG,
-        cidr: '10.100.8.0/24',
-        intent: 'reserved',
-      })
-    )?.code,
-    'cidr_overlaps_reserved'
+    (await assertCidrAvailable(db, {
+      organizationId: ORG,
+      cidr: '10.100.8.0/24',
+      intent: 'reserved',
+    }))?.code,
+    'cidr_overlaps_reserved',
   )
   // … and excluding one row never hides a different one.
   assertEquals(
-    (
-      await assertCidrAvailable(db, {
-        organizationId: ORG,
-        cidr: '10.10.0.0/24',
-        intent: 'reserved',
-        excludeNetworkId: NET_RESERVED,
-      })
-    )?.code,
-    'subnet_overlaps'
+    (await assertCidrAvailable(db, {
+      organizationId: ORG,
+      cidr: '10.10.0.0/24',
+      intent: 'reserved',
+      excludeNetworkId: NET_RESERVED,
+    }))?.code,
+    'subnet_overlaps',
   )
 })
 
@@ -553,7 +550,7 @@ test('assertCidrsAvailable with no candidates is a no-op', async () => {
   const db = createDb({ network: [RESERVED] })
   assertEquals(
     await assertCidrsAvailable(db, { organizationId: ORG, cidrs: [], intent: 'datacenter' }),
-    null
+    null,
   )
   assertEquals(db.selects.length, 0)
 })
@@ -572,10 +569,7 @@ test('loadOrganizationCidrRegistry skips CIDR-less and malformed rows', async ()
   const registry = await loadOrganizationCidrRegistry(db, ORG)
   assertEquals(registry.fabricCidr, '10.250.0.0/16')
   assertEquals(registry.containerPool, '10.192.0.0/12')
-  assertEquals(
-    registry.networks.map((row) => row.networkId),
-    [NET_SITE_A]
-  )
+  assertEquals(registry.networks.map((row) => row.networkId), [NET_SITE_A])
   assertEquals(registry.gateways, [])
 })
 
@@ -650,12 +644,15 @@ test('excludeDockerHostCidrs lets the docker PUT replace the stored pools/bridge
   assertEquals(site?.code, 'subnet_overlaps')
   // The stored bridge is part of the same replace-all config, so it is
   // skipped too — the route compares the submitted pair itself.
-  const overBridge = await assertCidrAvailable(createDb({ organization: [ORG_WITH_BRIDGE] }), {
-    organizationId: ORG,
-    cidr: '172.26.0.0/16',
-    intent: 'docker',
-    excludeDockerHostCidrs: true,
-  })
+  const overBridge = await assertCidrAvailable(
+    createDb({ organization: [ORG_WITH_BRIDGE] }),
+    {
+      organizationId: ORG,
+      cidr: '172.26.0.0/16',
+      intent: 'docker',
+      excludeDockerHostCidrs: true,
+    },
+  )
   assertEquals(overBridge, null)
 })
 
@@ -674,32 +671,26 @@ test('cidr_overlaps_docker_network — a stored default bridge keeps later write
   // `bip` is a host address; the registry holds the aligned network.
   const registry = await loadOrganizationCidrRegistry(db, ORG)
   assertEquals(registry.dockerHostCidrs, ['10.200.0.0/16', '172.26.0.0/16'])
-  for (const params of [
-    { cidr: '172.26.8.0/24', intent: 'reserved' as const },
-    { cidr: '172.26.0.0/20', intent: 'datacenter' as const, datacenterId: DC_A },
-    { cidr: '172.16.0.0/12', intent: 'docker' as const },
-  ]) {
+  for (
+    const params of [
+      { cidr: '172.26.8.0/24', intent: 'reserved' as const },
+      { cidr: '172.26.0.0/20', intent: 'datacenter' as const, datacenterId: DC_A },
+      { cidr: '172.16.0.0/12', intent: 'docker' as const },
+    ]
+  ) {
     const hit = await assertCidrAvailable(db, { organizationId: ORG, ...params })
-    assertEquals(
-      hit,
-      {
-        code: 'cidr_overlaps_docker_network',
-        cidr: params.cidr,
-        conflictingCidr: '172.26.0.0/16',
-        networkId: null,
-        datacenterId: null,
-      },
-      params.cidr
-    )
+    assertEquals(hit, {
+      code: 'cidr_overlaps_docker_network',
+      cidr: params.cidr,
+      conflictingCidr: '172.26.0.0/16',
+      networkId: null,
+      datacenterId: null,
+    }, params.cidr)
   }
   // Adjacent range is still free.
   assertEquals(
-    await assertCidrAvailable(db, {
-      organizationId: ORG,
-      cidr: '172.27.0.0/16',
-      intent: 'reserved',
-    }),
-    null
+    await assertCidrAvailable(db, { organizationId: ORG, cidr: '172.27.0.0/16', intent: 'reserved' }),
+    null,
   )
 })
 
@@ -720,32 +711,25 @@ test('precedence: docker rows beat docker host cidrs, host cidrs beat gateway/si
   assertEquals(rowHit?.networkId, NET_DOCKER)
   const poolHit = findCidrCollision(
     { ...registry, networks: registry.networks.filter((row) => row.kind !== 'docker') },
-    candidate
+    candidate,
   )
   assertEquals(poolHit?.code, 'cidr_overlaps_docker_network')
   assertEquals(poolHit?.networkId, null)
   assertEquals(
-    findCidrCollision(
-      {
-        ...registry,
-        dockerHostCidrs: [],
-        networks: registry.networks.filter((row) => row.kind !== 'docker'),
-      },
-      candidate
-    )?.code,
-    'subnet_overlaps'
+    findCidrCollision({ ...registry, dockerHostCidrs: [], networks: registry.networks.filter((row) => row.kind !== 'docker') }, candidate)?.code,
+    'subnet_overlaps',
   )
 })
 
 test('loadOrganizationCidrRegistry carries the org Docker host cidrs (empty when unconfigured)', async () => {
   const withPools = await loadOrganizationCidrRegistry(
     createDb({ fabric: [FABRIC_ROW], organization: [ORG_WITH_POOLS] }),
-    ORG
+    ORG,
   )
   assertEquals(withPools.dockerHostCidrs, ['10.200.0.0/16', '10.201.0.0/16'])
   const without = await loadOrganizationCidrRegistry(
     createDb({ organization: [{ id: ORG, options: null }] }),
-    ORG
+    ORG,
   )
   assertEquals(without.dockerHostCidrs, [])
   const noOrg = await loadOrganizationCidrRegistry(createDb({}), ORG)
@@ -769,8 +753,8 @@ test('loadCidrAllocationExclusions appends the org Docker host cidrs', async () 
   assertEquals(
     await loadCidrAllocationExclusions(
       createDb({ fabric: [FABRIC_ROW], organization: [ORG_WITH_BRIDGE] }),
-      ORG
+      ORG,
     ),
-    ['10.250.0.0/16', '10.200.0.0/16', '172.26.0.0/16']
+    ['10.250.0.0/16', '10.200.0.0/16', '172.26.0.0/16'],
   )
 })

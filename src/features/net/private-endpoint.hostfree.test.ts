@@ -41,7 +41,11 @@ type RelayRow = {
   address: string
 }
 
-function membershipPin(serverId: string, datacenterId: string, address: string): MembershipPinRow {
+function membershipPin(
+  serverId: string,
+  datacenterId: string,
+  address: string,
+): MembershipPinRow {
   return {
     ipId: `ip-${serverId}-${datacenterId}-${address}`,
     serverId,
@@ -85,12 +89,11 @@ function createFixtureDb(fixture: Fixture): Parameters<typeof resolvePrivateEndp
 
       // loadServerDatacenterAddress / loadServerPublicAddress: { address }
       if (keys.length === 1 && keySet.has('address')) {
-        const rows =
-          fixture.singleAddress === undefined
-            ? []
-            : fixture.singleAddress === null
-              ? []
-              : [{ address: fixture.singleAddress }]
+        const rows = fixture.singleAddress === undefined
+          ? []
+          : fixture.singleAddress === null
+          ? []
+          : [{ address: fixture.singleAddress }]
         const limited = {
           orderBy() {
             return {
@@ -119,7 +122,11 @@ function createFixtureDb(fixture: Fixture): Parameters<typeof resolvePrivateEndp
       }
 
       // loadPublicAddressesForServers: { serverId, address }
-      if (keys.length === 2 && keySet.has('serverId') && keySet.has('address')) {
+      if (
+        keys.length === 2 &&
+        keySet.has('serverId') &&
+        keySet.has('address')
+      ) {
         return {
           from() {
             return {
@@ -215,7 +222,10 @@ function mockContext(): Context {
 }
 
 test('isPrivateEndpointError is a structural kind guard', () => {
-  assertEquals(isPrivateEndpointError({ kind: 'datacenter_ip_required', serverId: 's1' }), true)
+  assertEquals(
+    isPrivateEndpointError({ kind: 'datacenter_ip_required', serverId: 's1' }),
+    true,
+  )
   assertEquals(isPrivateEndpointError(null), false)
   assertEquals(isPrivateEndpointError({ address: '10.0.0.1' }), false)
 })
@@ -273,22 +283,22 @@ test('resolvePrivateEndpoint local same-server is loopback', async () => {
   const db = createFixtureDb({
     memberships: [membershipPin('s1', 'dc-a', '10.0.0.1')],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's1',
-    }),
-    {
-      address: '127.0.0.1',
-      transport: 'local',
-    } satisfies ResolvedPrivateEndpoint
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's1',
+  }), {
+    address: '127.0.0.1',
+    transport: 'local',
+  } satisfies ResolvedPrivateEndpoint)
 })
 
 test('resolvePrivateEndpoint prefers datacenter when both fabric and datacenter exist', async () => {
   const db = createFixtureDb({
-    memberships: [membershipPin('s1', 'dc-a', '10.0.0.1'), membershipPin('s2', 'dc-a', '10.0.0.2')],
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-a', '10.0.0.2'),
+    ],
     relays: [
       {
         relayId: 'r1',
@@ -306,18 +316,15 @@ test('resolvePrivateEndpoint prefers datacenter when both fabric and datacenter 
       },
     ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's2',
-    }),
-    {
-      address: '10.0.0.2',
-      transport: 'datacenter',
-      datacenterId: 'dc-a',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    address: '10.0.0.2',
+    transport: 'datacenter',
+    datacenterId: 'dc-a',
+  })
 })
 
 test('resolvePrivateEndpoint prefers fabric over datacenter_ip_required', async () => {
@@ -340,59 +347,59 @@ test('resolvePrivateEndpoint prefers fabric over datacenter_ip_required', async 
       },
     ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's2',
-    }),
-    {
-      address: '10.250.0.2',
-      transport: 'fabric',
-      fabricId: 'fabric-1',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    address: '10.250.0.2',
+    transport: 'fabric',
+    fabricId: 'fabric-1',
+  })
 })
 
 test('resolvePrivateEndpoint falls back to datacenter when there is no shared fabric', async () => {
   const db = createFixtureDb({
-    memberships: [membershipPin('s1', 'dc-a', '10.0.0.1'), membershipPin('s2', 'dc-a', '10.0.0.2')],
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-a', '10.0.0.2'),
+    ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's2',
-    }),
-    {
-      address: '10.0.0.2',
-      transport: 'datacenter',
-      datacenterId: 'dc-a',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    address: '10.0.0.2',
+    transport: 'datacenter',
+    datacenterId: 'dc-a',
+  })
 })
 
 test('resolvePrivateEndpoint returns private_path_unavailable when membership pins have no address', async () => {
   const db = createFixtureDb({
-    memberships: [membershipPin('s1', 'dc-a', ''), membershipPin('s2', 'dc-a', '')],
+    memberships: [
+      membershipPin('s1', 'dc-a', ''),
+      membershipPin('s2', 'dc-a', ''),
+    ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's2',
-    }),
-    {
-      kind: 'private_path_unavailable',
-      fromServerId: 's1',
-      toServerId: 's2',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    kind: 'private_path_unavailable',
+    fromServerId: 's1',
+    toServerId: 's2',
+  })
 })
 
 test('resolvePrivateEndpoint picks lowest fabric.createdAt when multiple meshes share', async () => {
   const db = createFixtureDb({
-    memberships: [membershipPin('s1', 'dc-a', '10.0.0.1'), membershipPin('s2', 'dc-b', '10.1.0.2')],
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-b', '10.1.0.2'),
+    ],
     relays: [
       {
         relayId: 'r-new-from',
@@ -424,23 +431,23 @@ test('resolvePrivateEndpoint picks lowest fabric.createdAt when multiple meshes 
       },
     ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's2',
-    }),
-    {
-      address: '10.250.0.2',
-      transport: 'fabric',
-      fabricId: 'fabric-old',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    address: '10.250.0.2',
+    transport: 'fabric',
+    fabricId: 'fabric-old',
+  })
 })
 
 test('resolvePrivateEndpoint returns private_path_unavailable when the target has no relay', async () => {
   const db = createFixtureDb({
-    memberships: [membershipPin('s1', 'dc-a', '10.0.0.1'), membershipPin('s2', 'dc-b', '10.1.0.2')],
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-b', '10.1.0.2'),
+    ],
     relays: [
       {
         relayId: 'r-from',
@@ -451,36 +458,33 @@ test('resolvePrivateEndpoint returns private_path_unavailable when the target ha
       },
     ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's2',
-    }),
-    {
-      kind: 'private_path_unavailable',
-      fromServerId: 's1',
-      toServerId: 's2',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    kind: 'private_path_unavailable',
+    fromServerId: 's1',
+    toServerId: 's2',
+  })
 })
 
 test('resolvePrivateEndpoint returns private_path_unavailable', async () => {
   const db = createFixtureDb({
-    memberships: [membershipPin('s1', 'dc-a', '10.0.0.1'), membershipPin('s2', 'dc-b', '10.1.0.2')],
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-b', '10.1.0.2'),
+    ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's2',
-    }),
-    {
-      kind: 'private_path_unavailable',
-      fromServerId: 's1',
-      toServerId: 's2',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    kind: 'private_path_unavailable',
+    fromServerId: 's1',
+    toServerId: 's2',
+  })
 })
 
 test('resolvePrivateEndpoints batches multiple targets', async () => {
@@ -528,18 +532,15 @@ test('resolvePrivateEndpoint uses a shared membership when servers pin into many
       membershipPin('s2', 'dc-c', '10.2.0.2'),
     ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's2',
-    }),
-    {
-      address: '10.1.0.2',
-      transport: 'datacenter',
-      datacenterId: 'dc-b',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    address: '10.1.0.2',
+    transport: 'datacenter',
+    datacenterId: 'dc-b',
+  })
 })
 
 test('resolvePrivateEndpoint prefers ipv6 when both families share a datacenter', async () => {
@@ -551,18 +552,15 @@ test('resolvePrivateEndpoint prefers ipv6 when both families share a datacenter'
       membershipPin('s2', 'dc-a', '2001:db8::2'),
     ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's2',
-    }),
-    {
-      address: '2001:db8::2',
-      transport: 'datacenter',
-      datacenterId: 'dc-a',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    address: '2001:db8::2',
+    transport: 'datacenter',
+    datacenterId: 'dc-a',
+  })
 })
 
 test('resolvePrivateEndpoint honors datacenter ipv4 addressPreference', async () => {
@@ -573,20 +571,19 @@ test('resolvePrivateEndpoint honors datacenter ipv4 addressPreference', async ()
       membershipPin('s2', 'dc-a', '203.0.113.2'),
       membershipPin('s2', 'dc-a', '2001:db8::2'),
     ],
-    datacenterOptions: [{ id: 'dc-a', options: { addressPreference: 'ipv4' } }],
+    datacenterOptions: [
+      { id: 'dc-a', options: { addressPreference: 'ipv4' } },
+    ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's2',
-    }),
-    {
-      address: '203.0.113.2',
-      transport: 'datacenter',
-      datacenterId: 'dc-a',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    address: '203.0.113.2',
+    transport: 'datacenter',
+    datacenterId: 'dc-a',
+  })
 })
 
 test('resolvePrivateEndpoint falls back to the only shared family', async () => {
@@ -597,18 +594,15 @@ test('resolvePrivateEndpoint falls back to the only shared family', async () => 
       membershipPin('s2', 'dc-a', '2001:db8::2'),
     ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's2',
-    }),
-    {
-      address: '203.0.113.2',
-      transport: 'datacenter',
-      datacenterId: 'dc-a',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    address: '203.0.113.2',
+    transport: 'datacenter',
+    datacenterId: 'dc-a',
+  })
 })
 
 test('resolvePrivateEndpoint returns private_family_mismatch when shared pins have no common family', async () => {
@@ -618,19 +612,16 @@ test('resolvePrivateEndpoint returns private_family_mismatch when shared pins ha
       membershipPin('s2', 'dc-a', '203.0.113.2'),
     ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's2',
-    }),
-    {
-      kind: 'private_family_mismatch',
-      fromServerId: 's1',
-      toServerId: 's2',
-      datacenterId: 'dc-a',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    kind: 'private_family_mismatch',
+    fromServerId: 's1',
+    toServerId: 's2',
+    datacenterId: 'dc-a',
+  })
 })
 
 test('resolvePrivateEndpoint skips a family-mismatched datacenter for a compatible shared one', async () => {
@@ -642,53 +633,49 @@ test('resolvePrivateEndpoint skips a family-mismatched datacenter for a compatib
       membershipPin('s2', 'dc-b', '198.51.100.2'),
     ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's2',
-    }),
-    {
-      address: '198.51.100.2',
-      transport: 'datacenter',
-      datacenterId: 'dc-b',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    address: '198.51.100.2',
+    transport: 'datacenter',
+    datacenterId: 'dc-b',
+  })
 })
 
 const CROSS_DC_PUBLIC_FIXTURE: Fixture = {
-  memberships: [membershipPin('s1', 'dc-a', '10.0.0.1'), membershipPin('s2', 'dc-b', '10.1.0.2')],
-  publicAddresses: [{ serverId: 's2', address: '203.0.113.20' }],
+  memberships: [
+    membershipPin('s1', 'dc-a', '10.0.0.1'),
+    membershipPin('s2', 'dc-b', '10.1.0.2'),
+  ],
+  publicAddresses: [
+    { serverId: 's2', address: '203.0.113.20' },
+  ],
 }
 
 test('read-replication falls back to public across datacenters', async () => {
   const db = createFixtureDb(CROSS_DC_PUBLIC_FIXTURE)
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's2',
-    }),
-    {
-      address: '203.0.113.20',
-      transport: 'public',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    address: '203.0.113.20',
+    transport: 'public',
+  })
 })
 
 test('client-backend falls back to public across datacenters', async () => {
   const db = createFixtureDb(CROSS_DC_PUBLIC_FIXTURE)
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'client-backend',
-      toServerId: 's2',
-    }),
-    {
-      address: '203.0.113.20',
-      transport: 'public',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'client-backend',
+    toServerId: 's2',
+  }), {
+    address: '203.0.113.20',
+    transport: 'public',
+  })
 })
 
 test('failover-replication omits fabric and public when no shared datacenter', async () => {
@@ -711,18 +698,15 @@ test('failover-replication omits fabric and public when no shared datacenter', a
       },
     ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'failover-replication',
-      toServerId: 's2',
-    }),
-    {
-      kind: 'private_path_unavailable',
-      fromServerId: 's1',
-      toServerId: 's2',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'failover-replication',
+    toServerId: 's2',
+  }), {
+    kind: 'private_path_unavailable',
+    fromServerId: 's1',
+    toServerId: 's2',
+  })
 })
 
 test('private_family_mismatch surfaces under every purpose before fabric or public', async () => {
@@ -747,7 +731,9 @@ test('private_family_mismatch surfaces under every purpose before fabric or publ
         address: '10.250.0.2',
       },
     ],
-    publicAddresses: [{ serverId: 's2', address: '203.0.113.20' }],
+    publicAddresses: [
+      { serverId: 's2', address: '203.0.113.20' },
+    ],
   })
   const expected: PrivateEndpointError = {
     kind: 'private_family_mismatch',
@@ -767,20 +753,29 @@ test('private_family_mismatch surfaces under every purpose before fabric or publ
         purpose,
         toServerId: 's2',
       }),
-      expected
+      expected,
     )
   }
 })
 
 test('loadServerFabricAddress returns the address or null', async () => {
   assertEquals(
-    await loadServerFabricAddress(createFixtureDb({ singleAddress: '10.250.0.1' }), 's1'),
-    '10.250.0.1'
+    await loadServerFabricAddress(
+      createFixtureDb({ singleAddress: '10.250.0.1' }),
+      's1',
+    ),
+    '10.250.0.1',
   )
-  assertEquals(await loadServerFabricAddress(createFixtureDb({ singleAddress: null }), 's1'), null)
   assertEquals(
-    await loadServerFabricAddress(createFixtureDb({ singleAddress: 'not-an-ip' }), 's1'),
-    'not-an-ip'
+    await loadServerFabricAddress(createFixtureDb({ singleAddress: null }), 's1'),
+    null,
+  )
+  assertEquals(
+    await loadServerFabricAddress(
+      createFixtureDb({ singleAddress: 'not-an-ip' }),
+      's1',
+    ),
+    'not-an-ip',
   )
 })
 
@@ -797,7 +792,7 @@ test('loadPublicAddressesForServers skips empty input and later duplicate rows',
         { serverId: 's3', address: 'not-an-ip' },
       ],
     }),
-    ['s2', 's3']
+    ['s2', 's3'],
   )
   assertEquals(map.get('s2'), '203.0.113.20')
   assertEquals(map.has('s3'), false)
@@ -826,18 +821,15 @@ test('resolvePrivateEndpoint skips blank fabric relay addresses', async () => {
       },
     ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's2',
-    }),
-    {
-      kind: 'private_path_unavailable',
-      fromServerId: 's1',
-      toServerId: 's2',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    kind: 'private_path_unavailable',
+    fromServerId: 's1',
+    toServerId: 's2',
+  })
 })
 
 test('preferredFamilyOrder and pinAddressForDatacenter honor address preference', () => {
@@ -881,8 +873,14 @@ test('preferredFamilyOrder and pinAddressForDatacenter honor address preference'
     },
   ]
   assertEquals(familiesInDatacenter(fromPins, 'dc-a'), new Set([4, 6]))
-  assertEquals(pinAddressForDatacenter(fromPins, toPins, 'dc-a', 'ipv4'), '203.0.113.2')
-  assertEquals(pinAddressForDatacenter(fromPins, toPins, 'dc-missing', 'ipv6'), null)
+  assertEquals(
+    pinAddressForDatacenter(fromPins, toPins, 'dc-a', 'ipv4'),
+    '203.0.113.2',
+  )
+  assertEquals(
+    pinAddressForDatacenter(fromPins, toPins, 'dc-missing', 'ipv6'),
+    null,
+  )
 })
 
 const TWO_SHARED_DC_MEMBERSHIPS: MembershipPinRow[] = [
@@ -900,18 +898,15 @@ test('resolvePrivateEndpoint picks the shared datacenter with the lower priority
       { id: 'dc-b', options: { priority: 10 } },
     ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'failover-replication',
-      toServerId: 's2',
-    }),
-    {
-      address: '10.1.0.2',
-      transport: 'datacenter',
-      datacenterId: 'dc-b',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'failover-replication',
+    toServerId: 's2',
+  }), {
+    address: '10.1.0.2',
+    transport: 'datacenter',
+    datacenterId: 'dc-b',
+  })
 })
 
 test('resolvePrivateEndpoint breaks equal priority by datacenter id', async () => {
@@ -922,18 +917,15 @@ test('resolvePrivateEndpoint breaks equal priority by datacenter id', async () =
       { id: 'dc-b', options: { priority: 50 } },
     ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's2',
-    }),
-    {
-      address: '10.0.0.2',
-      transport: 'datacenter',
-      datacenterId: 'dc-a',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    address: '10.0.0.2',
+    transport: 'datacenter',
+    datacenterId: 'dc-a',
+  })
 })
 
 const UNTRUSTED_ONLY_FIXTURE: Fixture = {
@@ -941,7 +933,9 @@ const UNTRUSTED_ONLY_FIXTURE: Fixture = {
     membershipPin('s1', 'dc-shared', '10.0.0.1'),
     membershipPin('s2', 'dc-shared', '10.0.0.2'),
   ],
-  datacenterOptions: [{ id: 'dc-shared', options: { trusted: false } }],
+  datacenterOptions: [
+    { id: 'dc-shared', options: { trusted: false } },
+  ],
   relays: [
     {
       relayId: 'r1',
@@ -958,81 +952,74 @@ const UNTRUSTED_ONLY_FIXTURE: Fixture = {
       address: '10.250.0.2',
     },
   ],
-  publicAddresses: [{ serverId: 's2', address: '203.0.113.20' }],
+  publicAddresses: [
+    { serverId: 's2', address: '203.0.113.20' },
+  ],
 }
 
 test('failover-replication over an untrusted-only shared datacenter is failover_requires_trusted_datacenter', async () => {
   const db = createFixtureDb(UNTRUSTED_ONLY_FIXTURE)
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'failover-replication',
-      toServerId: 's2',
-    }),
-    {
-      kind: 'failover_requires_trusted_datacenter',
-      fromServerId: 's1',
-      toServerId: 's2',
-      datacenterId: 'dc-shared',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'failover-replication',
+    toServerId: 's2',
+  }), {
+    kind: 'failover_requires_trusted_datacenter',
+    fromServerId: 's1',
+    toServerId: 's2',
+    datacenterId: 'dc-shared',
+  })
 })
 
 test('read-replication and client-backend skip an untrusted shared datacenter and use fabric', async () => {
   const db = createFixtureDb(UNTRUSTED_ONLY_FIXTURE)
   for (const purpose of ['read-replication', 'client-backend'] as const) {
-    assertEquals(
-      await resolvePrivateEndpoint(db, {
-        fromServerId: 's1',
-        purpose,
-        toServerId: 's2',
-      }),
-      {
-        address: '10.250.0.2',
-        transport: 'fabric',
-        fabricId: 'fabric-1',
-      }
-    )
+    assertEquals(await resolvePrivateEndpoint(db, {
+      fromServerId: 's1',
+      purpose,
+      toServerId: 's2',
+    }), {
+      address: '10.250.0.2',
+      transport: 'fabric',
+      fabricId: 'fabric-1',
+    })
   }
 })
 
 test('read-replication and client-backend fall from an untrusted shared datacenter to public without fabric', async () => {
   const db = createFixtureDb({ ...UNTRUSTED_ONLY_FIXTURE, relays: [] })
   for (const purpose of ['read-replication', 'client-backend'] as const) {
-    assertEquals(
-      await resolvePrivateEndpoint(db, {
-        fromServerId: 's1',
-        purpose,
-        toServerId: 's2',
-      }),
-      {
-        address: '203.0.113.20',
-        transport: 'public',
-      }
-    )
+    assertEquals(await resolvePrivateEndpoint(db, {
+      fromServerId: 's1',
+      purpose,
+      toServerId: 's2',
+    }), {
+      address: '203.0.113.20',
+      transport: 'public',
+    })
   }
 })
 
 test('failover-replication with no shared datacenter at all stays private_path_unavailable', async () => {
   const db = createFixtureDb({
-    memberships: [membershipPin('s1', 'dc-a', '10.0.0.1'), membershipPin('s2', 'dc-b', '10.1.0.2')],
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-b', '10.1.0.2'),
+    ],
     datacenterOptions: [
       { id: 'dc-a', options: { trusted: false } },
       { id: 'dc-b', options: { trusted: false } },
     ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'failover-replication',
-      toServerId: 's2',
-    }),
-    {
-      kind: 'private_path_unavailable',
-      fromServerId: 's1',
-      toServerId: 's2',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'failover-replication',
+    toServerId: 's2',
+  }), {
+    kind: 'private_path_unavailable',
+    fromServerId: 's1',
+    toServerId: 's2',
+  })
 })
 
 test('resolvePrivateEndpoint prefers a trusted shared datacenter over a lower-priority untrusted one', async () => {
@@ -1044,18 +1031,15 @@ test('resolvePrivateEndpoint prefers a trusted shared datacenter over a lower-pr
     ],
   })
   for (const purpose of ['failover-replication', 'read-replication', 'client-backend'] as const) {
-    assertEquals(
-      await resolvePrivateEndpoint(db, {
-        fromServerId: 's1',
-        purpose,
-        toServerId: 's2',
-      }),
-      {
-        address: '10.1.0.2',
-        transport: 'datacenter',
-        datacenterId: 'dc-b',
-      }
-    )
+    assertEquals(await resolvePrivateEndpoint(db, {
+      fromServerId: 's1',
+      purpose,
+      toServerId: 's2',
+    }), {
+      address: '10.1.0.2',
+      transport: 'datacenter',
+      datacenterId: 'dc-b',
+    })
   }
 })
 
@@ -1067,23 +1051,24 @@ test('a trusted family mismatch still wins over falling through past an untruste
       membershipPin('s1', 'dc-untrusted', '10.0.0.1'),
       membershipPin('s2', 'dc-untrusted', '10.0.0.2'),
     ],
-    datacenterOptions: [{ id: 'dc-untrusted', options: { priority: 0, trusted: false } }],
-    publicAddresses: [{ serverId: 's2', address: '203.0.113.20' }],
+    datacenterOptions: [
+      { id: 'dc-untrusted', options: { priority: 0, trusted: false } },
+    ],
+    publicAddresses: [
+      { serverId: 's2', address: '203.0.113.20' },
+    ],
   })
   for (const purpose of ['failover-replication', 'read-replication', 'client-backend'] as const) {
-    assertEquals(
-      await resolvePrivateEndpoint(db, {
-        fromServerId: 's1',
-        purpose,
-        toServerId: 's2',
-      }),
-      {
-        kind: 'private_family_mismatch',
-        fromServerId: 's1',
-        toServerId: 's2',
-        datacenterId: 'dc-trusted',
-      }
-    )
+    assertEquals(await resolvePrivateEndpoint(db, {
+      fromServerId: 's1',
+      purpose,
+      toServerId: 's2',
+    }), {
+      kind: 'private_family_mismatch',
+      fromServerId: 's1',
+      toServerId: 's2',
+      datacenterId: 'dc-trusted',
+    })
   }
 })
 
@@ -1093,37 +1078,38 @@ test('untrusted datacenters never raise a family mismatch', async () => {
       membershipPin('s1', 'dc-untrusted', '2001:db8::1'),
       membershipPin('s2', 'dc-untrusted', '203.0.113.2'),
     ],
-    datacenterOptions: [{ id: 'dc-untrusted', options: { trusted: false } }],
-    publicAddresses: [{ serverId: 's2', address: '203.0.113.20' }],
+    datacenterOptions: [
+      { id: 'dc-untrusted', options: { trusted: false } },
+    ],
+    publicAddresses: [
+      { serverId: 's2', address: '203.0.113.20' },
+    ],
   })
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'read-replication',
-      toServerId: 's2',
-    }),
-    {
-      address: '203.0.113.20',
-      transport: 'public',
-    }
-  )
-  assertEquals(
-    await resolvePrivateEndpoint(db, {
-      fromServerId: 's1',
-      purpose: 'failover-replication',
-      toServerId: 's2',
-    }),
-    {
-      kind: 'failover_requires_trusted_datacenter',
-      fromServerId: 's1',
-      toServerId: 's2',
-      datacenterId: 'dc-untrusted',
-    }
-  )
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'read-replication',
+    toServerId: 's2',
+  }), {
+    address: '203.0.113.20',
+    transport: 'public',
+  })
+  assertEquals(await resolvePrivateEndpoint(db, {
+    fromServerId: 's1',
+    purpose: 'failover-replication',
+    toServerId: 's2',
+  }), {
+    kind: 'failover_requires_trusted_datacenter',
+    fromServerId: 's1',
+    toServerId: 's2',
+    datacenterId: 'dc-untrusted',
+  })
 })
 
 test('partitionSharedDatacenters sorts by (priority, id) and defaults absent policies', () => {
-  const pin = (serverId: string, datacenterId: string) => ({
+  const pin = (
+    serverId: string,
+    datacenterId: string,
+  ) => ({
     ipId: `${serverId}-${datacenterId}`,
     serverId,
     datacenterId,

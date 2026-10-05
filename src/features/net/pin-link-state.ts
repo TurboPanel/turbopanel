@@ -39,7 +39,9 @@ export function pinLinkIsDown(metadata: unknown): boolean {
  * down marker could be left stuck with its network stuck as a last resort.
  */
 export function addressMatchKey(address: string): string {
-  const normalized = normalizeIpAddress(address) ?? stripInetPrefixSuffix(address.trim())
+  const valid = normalizeIpAddress(address)
+  if (valid === null) return stripInetPrefixSuffix(address.trim())
+  const normalized = valid
   if (!normalized.includes(':')) return normalized
   try {
     // The URL parser compresses and lower-cases IPv6 literals.

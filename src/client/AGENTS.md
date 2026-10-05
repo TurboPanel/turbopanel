@@ -502,8 +502,8 @@ sourceServerId? }`
   `client-backend`, straight away for `failover-replication`, which never
   leaves the datacenter), and the result then carries `linkDown: true`. When
   the up networks have no address family both servers share, a compatible
-  network that is down is still used (never an error where a path worked
-  before). A datacenter counts as down when any pin of either server in it is
+  network that is down is still used, ahead of fabric and public in that one
+  corner (never an error where a path worked before). A datacenter counts as down when any pin of either server in it is
   flagged, whatever the pin's family. The
   TurboFabric LAN rung (`directCandidates`) orders LAN-up, public, NAT, then
   LAN-down. `GET /servers/:id/traffic-map`
