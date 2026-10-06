@@ -203,16 +203,25 @@ KiB cap), `exposure` (`ManagedSqlAccessScope` from `access-scope.ts`: `local` |
 `null`. **`ssl.mode` is optional and unset by default** — an absent mode means
 "inherit" (see **Client TLS (SSL mode)**), so `DEFAULT_MANAGED_SETTINGS.ssl` is
 `{}`. Legacy stored `ssl.enabled` booleans still parse: `false` → `disable`,
-`true` → `require`; explicit `mode` wins when both are present. Exposure is
-**recorded access intent only**: ProxySQL's client listener ports are always
-published on all interfaces (`decideIngressBindScopes` in
-`ingress-desired-pure.ts` unconditionally returns `0.0.0.0` — changing binds
-requires a ProxySQL restart, so exposure toggles must never flap the compose
-publish). **Exposure defaults on** (`DEFAULT_MANAGED_SETTINGS` and every
-engine spec record `{ enabled: true }`); create has no exposure choice — the
-settings panel is the opt-out. Access control today is credential auth +
-org-CA TLS; the host firewall (`features/firewall/`, preview only so far; enforcement is a later stage) will enforce `exposure.scope`. One-release
-read of retired
+`true` → `require`; explicit `mode` wins when both are present. Exposure decides where the
+shared ProxySQL **publishes** its listener ports on each server, and the daemon
+publishes exactly the addresses it is sent: `local` → `127.0.0.1`, `datacenter` →
+the server's datacenter address, `turbofabric` → its `tp0` address, `public` →
+`0.0.0.0`, exposure off → no host publish at all (`decideIngressBindScopes` in
+`ingress-desired-pure.ts`; an unresolvable scope fails the reconcile, it never
+widens). One ProxySQL fronts every cluster on a server, so the published set is
+the union over the clusters it fronts. **Exposure defaults to `local`**
+(`DEFAULT_MANAGED_SETTINGS`, `DEFAULT_MANAGED_SQL_ACCESS_SCOPE`, and the parser
+names the scope when a stored `{ enabled: true }` row has none): loopback is all
+a site run by a site owner's Linux user needs (`127.0.0.1:13306`), and bound
+containers dial ProxySQL by name over the organization's managed Docker network
+with no host publish. Wider scopes are an explicit per-cluster choice in the
+settings panel. Changing a cluster's exposure via `PATCH` queues a
+`managed.ingress.reconcile` on every fronting server at once
+(`exposure-change.ts`; the response carries `ingressReconcile`), after refusing
+a scope a server has no address for. Access control on a published listener is
+credential auth + org-CA TLS; the host firewall (`features/firewall/`, preview
+only so far) will enforce `exposure.scope`. One-release read of retired
 `exposure.bind` (`public` | `datacenter` | `local`) migrates to the same-named
 `scope`; new writes must use `scope`.
 

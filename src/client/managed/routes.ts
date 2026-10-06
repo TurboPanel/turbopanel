@@ -23,6 +23,12 @@ import {
 } from '../../db/schema.ts'
 import { getManagedEngineSpec } from '../../features/managed/index.ts'
 import { clampManagedResources, type ManagedSettings } from '../../features/managed/settings.ts'
+import {
+  enqueueManagedExposureReconcile,
+  loadManagedFrontendServerIds,
+  managedExposureChanged,
+  preflightManagedExposureChange,
+} from '../../features/managed/exposure-change.ts'
 import { parseResourceLimits } from '../../features/organizations/resource-limits.ts'
 import {
   createManagedPrincipal,
@@ -179,6 +185,7 @@ import {
   resolveManagedServerId,
   serializeContainerRow,
   serializeManagedUser,
+  parseManagedPatchName,
   validateManagedDatabaseCreateName,
 } from '../../features/managed/routes-helpers.ts'
 import {
@@ -771,6 +778,35 @@ type PreparedManagedApply = {
   members: PreparedManagedMemberApply[]
 }
 
+type ManagedExposurePlan = { commandQueue: CommandQueue; serverIds: string[] }
+
+/**
+ * `null` when the exposure did not change (nothing to tell the servers); a plan
+ * when it did; a refusal when the servers cannot be told or have no address for
+ * the new scope.
+ */
+async function planManagedExposureChange(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  params: Readonly<{
+    managedId: string
+    before: ManagedSettings['exposure']
+    after: ManagedSettings['exposure']
+  }>
+): Promise<ManagedExposurePlan | Response | null> {
+  if (!managedExposureChanged(params.before, params.after)) return null
+  const commandQueue = assertDispatchInfrastructure(c)
+  if (commandQueue instanceof Response) return commandQueue
+  const serverIds = await loadManagedFrontendServerIds(db, params.managedId)
+  const refusal = await preflightManagedExposureChange(c, db, {
+    serverIds,
+    // Turning exposure off needs no address, whatever scope is remembered.
+    scope: params.after.enabled ? params.after.scope : undefined,
+  })
+  if (refusal) return mapManagedApplyPrepareError(c, refusal)
+  return { commandQueue, serverIds }
+}
+
 /** Busy / online / dispatch / daemon-key / bind checks — no credential payload. */
 async function assertManagedApplyReady(
   c: Context<AppEnv>,
@@ -1308,6 +1344,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'managed_settings_invalid' }, 400)
     }
 
+    const patchName = parseManagedPatchName(body)
+    if (!patchName.ok) return c.json({ error: patchName.error }, patchName.status)
+
     // Refuse before anything is persisted: another series, or a PostgreSQL
     // swap between libc families (Alpine <-> Debian), would break the data.
     const imageRefusal = assertManagedImageChangeAllowed(ctx.spec, current.settings, mergedSettings)
@@ -1325,6 +1364,16 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     const clamped = clampManagedResources(mergedSettings, orgLimits, serverLimits)
 
+    // A changed exposure only takes effect once every server that fronts the
+    // cluster is told the new listener addresses. Check that can happen before
+    // anything is saved.
+    const exposurePlan = await planManagedExposureChange(c, db, {
+      managedId: row.id,
+      before: current.settings.exposure,
+      after: clamped.exposure,
+    })
+    if (exposurePlan instanceof Response) return exposurePlan
+
     const nextOptions = writeManagedRowOptions({
       settings: clamped,
       databases: current.databases,
@@ -1332,7 +1381,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const [updated] = await db
       .update(managed)
-      .set({ options: nextOptions, updatedAt: new Date().toISOString() })
+      .set({
+        options: nextOptions,
+        ...(patchName.name === undefined ? {} : { name: patchName.name }),
+        updatedAt: new Date().toISOString(),
+      })
       .where(eq(managed.id, row.id))
       .returning({
         id: managed.id,
@@ -1347,10 +1400,18 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         updatedAt: managed.updatedAt,
       })
 
+    const ingressReconcile = exposurePlan
+      ? await enqueueManagedExposureReconcile(c, db, exposurePlan.commandQueue, {
+          serverIds: exposurePlan.serverIds,
+          userId: auth.userId,
+        })
+      : undefined
+
     return c.json({
       ok: true,
       managed: serializeManagedRow(updated ?? row, targetServerId),
       settings: clamped,
+      ...(ingressReconcile ? { ingressReconcile } : {}),
     })
   })
 
@@ -1953,7 +2014,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       ctx.spec.engine
     )
     if (nameError) {
-      return c.json({ error: nameError.error }, nameError.status)
+      return c.json(
+        {
+          error: nameError.error,
+          ...(nameError.message ? { message: nameError.message } : {}),
+        },
+        nameError.status
+      )
     }
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)

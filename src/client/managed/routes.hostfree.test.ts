@@ -12,7 +12,7 @@
  * CI coverage uses `scripts/test-coverage.sh` (`deno test -A …`).
  */
 
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertStringIncludes } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
@@ -1749,15 +1749,17 @@ test('POST databases rejects a missing name and an invalid identifier', async ()
     400,
     { error: 'Invalid request' }
   )
-  await expectJson(
-    await app.request(envPath('/databases'), {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ name: 'bad-name' }),
-    }),
-    400,
-    { error: 'Invalid database name' }
-  )
+  // Hyphens are refused on purpose, and the answer says so in plain words.
+  const hyphen = await app.request(envPath('/databases'), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ name: 'bad-name' }),
+  })
+  assertEquals(hyphen.status, 400)
+  const hyphenBody = (await hyphen.json()) as { error: string; message: string }
+  assertEquals(hyphenBody.error, 'Invalid database name')
+  assertStringIncludes(hyphenBody.message, 'Hyphens are not allowed on purpose')
+  assertStringIncludes(hyphenBody.message, 'my_app')
 })
 
 test('POST databases returns 400 for invalid stored options', async () => {

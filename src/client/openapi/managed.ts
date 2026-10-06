@@ -315,7 +315,7 @@ export const managedSchemas = {
             type: 'string',
             enum: ['public', 'datacenter', 'local', 'turbofabric'],
             description:
-              'SQL client access scope when enabled. Legacy `bind` is read-only migration input.',
+              "Where SQL clients may connect when enabled: `local` (this server only: 127.0.0.1, which is what sites run by a site owner's Linux user need), `datacenter`, `turbofabric` or `public` (every interface). Omitted = `local`. Legacy `bind` is read-only migration input.",
           },
         },
       },
@@ -487,7 +487,12 @@ export const managedSchemas = {
     properties: {
       username: { type: 'string' },
       databases: { type: 'array', items: { type: 'string' } },
-      privileges: { type: 'array', items: { type: 'string' } },
+      privileges: {
+        type: 'array',
+        items: { type: 'string', enum: ['owner', 'read-write', 'read-only'] },
+        description:
+          'What the login may do in each listed database. Omitted = `read-only` for a `read-only` connectionRole, otherwise `read-write`. An empty list or an unknown name answers 400 `managed_user_privileges_invalid`, because a login with no grants can connect but is refused everywhere.',
+      },
       nameScheme: {
         type: 'string',
         enum: ['plain', 'partial', 'random'],
@@ -1043,6 +1048,8 @@ export const managedPaths = {
     patch: {
       tags: ['Managed services'],
       summary: 'Update managed settings (does not apply)',
+      description:
+        'Saves settings and, optionally, the cluster `name` (a label only; `null` clears it). Settings reach the engine on the next apply, with one exception: changing `exposure` immediately re-sends the ProxySQL listener addresses to every server that fronts the cluster (the response carries `ingressReconcile`), and a scope that a server has no address for is refused with 422 (`datacenter_ip_required` / `fabric_address_required`) before anything is saved.',
       parameters: [ENV_ID_PARAM],
       requestBody: {
         content: {
@@ -1051,6 +1058,7 @@ export const managedPaths = {
               type: 'object',
               properties: {
                 settings: { $ref: '#/components/schemas/ManagedSettings' },
+                name: { type: ['string', 'null'] },
               },
             },
           },

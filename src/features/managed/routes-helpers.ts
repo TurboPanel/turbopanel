@@ -620,23 +620,51 @@ export function parseManagedUserCreateFields(
     return c.json({ error: 'reserved_database_name' }, 400)
   }
 
-  const privileges = Array.isArray(body.privileges)
-    ? body.privileges.filter((entry): entry is string => typeof entry === 'string')
-    : []
-  if (Array.isArray(body.privileges) && privileges.length !== body.privileges.length) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  const allowedPrivileges = new Set<string>(ctx.spec.userOperations.privileges)
-  if (!privileges.every((entry) => allowedPrivileges.has(entry))) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-
   const connectionRole = parseManagedConnectionRole(body.connectionRole)
   if (connectionRole === null) {
     return c.json({ error: 'Invalid request' }, 400)
   }
 
+  const privileges = resolveManagedUserPrivileges(
+    body.privileges,
+    ctx.spec.userOperations.privileges,
+    connectionRole
+  )
+  if (privileges === null) {
+    return c.json(
+      {
+        error: MANAGED_USER_PRIVILEGES_INVALID_ERROR,
+        message: `privileges must list at least one of: ${ctx.spec.userOperations.privileges.join(', ')}. Leave it out to get the default for the login's connection role.`,
+      },
+      400
+    )
+  }
+
   return { username, databases, privileges, connectionRole }
+}
+
+/** `privileges` was present but empty, unknown, or not a list of names. */
+export const MANAGED_USER_PRIVILEGES_INVALID_ERROR = 'managed_user_privileges_invalid'
+
+/**
+ * Privileges for a new login: what was asked for, or - when the request leaves
+ * `privileges` out - the grant that matches the login's connection role
+ * (`read-only` for a read-only login, `read-write` otherwise). A login created
+ * with no grants can connect but is refused everywhere, so "none" is never a
+ * valid answer: an explicit empty list, an unknown name or a non-list is `null`.
+ */
+export function resolveManagedUserPrivileges(
+  requested: unknown,
+  allowed: readonly string[],
+  connectionRole: ManagedConnectionRole
+): string[] | null {
+  if (requested === undefined || requested === null) {
+    return [connectionRole === 'read-only' ? 'read-only' : 'read-write']
+  }
+  if (!Array.isArray(requested) || requested.length === 0) return null
+  const names = requested.filter((entry): entry is string => typeof entry === 'string')
+  if (names.length !== requested.length) return null
+  return names.every((name) => allowed.includes(name)) ? [...new Set(names)] : null
 }
 
 /** A `read-only` login was requested for a cluster with no read-eligible replica. */
@@ -689,6 +717,8 @@ export function parseManagedConnectionRole(value: unknown): ManagedConnectionRol
 export type ManagedRouteValidationError = {
   ok: false
   error: string
+  /** Plain-words explanation shown next to the error code, when one helps. */
+  message?: string
   status: 400 | 409 | 422
 }
 
@@ -719,6 +749,19 @@ export function parseManagedCreateName(
     }
     throw error
   }
+}
+
+/**
+ * Name parse for managed PATCH. Absent leaves the name alone (`name: undefined`),
+ * `null` clears it, a string is validated like the create name. The name is only
+ * a label: nothing on a host is derived from it.
+ */
+export function parseManagedPatchName(
+  body: Record<string, unknown>
+): { ok: true; name: string | null | undefined } | ManagedRouteValidationError {
+  if (body.name === undefined) return { ok: true, name: undefined }
+  if (body.name === null) return { ok: true, name: null }
+  return parseManagedCreateName(body)
 }
 
 /**
@@ -767,7 +810,12 @@ export function validateManagedDatabaseCreateName(
   engine = ''
 ): ManagedRouteValidationError | null {
   if (!identifier.pattern.test(name) || name.length > identifier.maxLength) {
-    return { ok: false, error: 'Invalid database name', status: 400 }
+    return {
+      ok: false,
+      error: 'Invalid database name',
+      message: `A database name may use letters, digits and underscores only, must start with a letter or underscore, and can be at most ${identifier.maxLength} characters. Hyphens are not allowed on purpose: use an underscore instead (my_app, not my-app).`,
+      status: 400,
+    }
   }
   if (isReservedDatabaseName(engine, name)) {
     return { ok: false, error: 'reserved_database_name', status: 400 }
