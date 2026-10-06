@@ -1,6 +1,7 @@
 import type { Context } from 'hono'
 import { and, eq, inArray, or } from 'drizzle-orm'
 import type { AppEnv } from '../../app/app.ts'
+import { type HostingWwwMode, hostingCertificateNames } from '../../contracts/commands/hostname.ts'
 import {
   decryptSecret,
   encryptSecretForDaemon,
@@ -225,6 +226,7 @@ import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secr
 import { resolveHostingDeployWeb } from '../../features/hostings/hosting-web-env.ts'
 import {
   assembleTlsMetadata,
+  coversAllHostnames,
   parseTlsOptions,
   resolveTlsForHosting,
   TLS_SOURCES,
@@ -241,7 +243,7 @@ import {
   readHostnames,
   readPathPrefix,
   readTargetPort,
-  readWwwRedirect,
+  readWwwMode,
   tlsPinErrorCode,
 } from './deploy-routes-helpers.ts'
 import {
@@ -3696,6 +3698,47 @@ type HostingRow = {
   ipId: string | null
 }
 
+/**
+ * Names a pinned certificate must cover. An uploaded pair is served as-is on
+ * every name the www mode adds, so it must list them all. A Let's Encrypt pin
+ * is issued by Caddy name by name in `acme` mode, so only the typed names are
+ * checked against the row (the www names get their own certificate).
+ */
+function pinCoverageNames(
+  pinId: string | null,
+  candidates: OrgTlsCandidate[],
+  hosting: Readonly<{ hostnames: string[]; www: HostingWwwMode }>
+): string[] {
+  const pinned = pinId ? candidates.find((candidate) => candidate.id === pinId) : undefined
+  return pinned?.source === 'lets_encrypt' ? hosting.hostnames : hostingCertificateNames(hosting)
+}
+
+/**
+ * The refusal for a pin that cannot serve the hosting. When the certificate
+ * covers the typed names and only misses names the www choice adds, say so in
+ * plain words, naming exactly the missing ones.
+ */
+function tlsPinErrorResponse(
+  error: Parameters<typeof tlsPinErrorCode>[0],
+  hostingId: string,
+  pinned: OrgTlsCandidate | undefined,
+  hosting: Readonly<{ hostnames: string[]; www: HostingWwwMode }>
+): Response {
+  const dnsNames = pinned?.metadata.dnsNames ?? []
+  const typedCovered = coversAllHostnames(dnsNames, hosting.hostnames)
+  const missing = hostingCertificateNames(hosting).filter(
+    (name) => !coversAllHostnames(dnsNames, [name])
+  )
+  const message =
+    error === 'pin_mismatch' && typedCovered && missing.length > 0
+      ? `The certificate on this hosting covers ${hosting.hostnames.join(', ')} but not ${missing.join(', ')}, which its www setting adds. Upload one that lists every name, or set www to "Only ${hosting.hostnames.join(', ')}".`
+      : undefined
+  return Response.json(
+    { error: tlsPinErrorCode(error), hostingId, ...(message ? { message } : {}) },
+    { status: 400 }
+  )
+}
+
 async function resolveHttpHostingEntry(
   db: Db,
   h: HostingRow,
@@ -3711,21 +3754,18 @@ async function resolveHttpHostingEntry(
 > {
   const hostnames = readHostnames(h.options)
   if (hostnames.length === 0) return { skip: true }
+  const www = readWwwMode(h.options)
 
   // A revoked Let's Encrypt pin resolves as internal (`tlsId: null`) here —
   // do not treat it as `tls_pin_not_ready`. Deleted / mismatched pins still fail.
   const resolved = resolveTlsForHosting({
     pinId: h.tlsId,
-    hostnames,
+    hostnames: pinCoverageNames(h.tlsId, candidates, { hostnames, www }),
     candidates,
   })
   if (!resolved.ok) {
-    return {
-      error: Response.json(
-        { error: tlsPinErrorCode(resolved.error), hostingId: h.id },
-        { status: 400 }
-      ),
-    }
+    const pinned = candidates.find((candidate) => candidate.id === h.tlsId)
+    return { error: tlsPinErrorResponse(resolved.error, h.id, pinned, { hostnames, www }) }
   }
 
   const bindScope = resolveHostingBind(parseHostingOptions(h.options))
@@ -3771,7 +3811,7 @@ async function resolveHttpHostingEntry(
       tlsId: tlsWire.tlsId,
       ...(tlsWire.tlsMode === undefined ? {} : { tlsMode: tlsWire.tlsMode }),
       proxy: readHostingProxyFromOptions(h.options),
-      ...(readWwwRedirect(h.options) ? { wwwRedirect: true } : {}),
+      ...(www === 'off' ? {} : { www }),
       ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),
       ...(web === undefined ? {} : { web }),
     },

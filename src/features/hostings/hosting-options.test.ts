@@ -1,6 +1,7 @@
 import { assertEquals } from '@std/assert'
 import {
   parseHostingOptions,
+  readHostingWwwMode,
   resolveHostingBind,
   resolveHostingProtocol,
   resolveHostingProxy,
@@ -159,10 +160,42 @@ test('parseHostingOptions returns empty object for nullish input', () => {
   assertEquals(parseHostingOptions(undefined), {})
 })
 
-test('parseHostingOptions keeps wwwRedirect only when it is true', () => {
-  assertEquals(parseHostingOptions({ wwwRedirect: true }), { wwwRedirect: true })
+test('parseHostingOptions keeps www only for a mode other than off', () => {
+  for (const www of ['both', 'www-to-root', 'root-to-www'] as const) {
+    assertEquals(parseHostingOptions({ www }), { www })
+  }
+  assertEquals(parseHostingOptions({ www: 'off' }), {})
+  assertEquals(parseHostingOptions({ www: 'yes' }), {})
+  assertEquals(parseHostingOptions({ www: true }), {})
+})
+
+test('readHostingWwwMode reads the mode and maps the old wwwRedirect flag', () => {
+  assertEquals(readHostingWwwMode(null), 'off')
+  assertEquals(readHostingWwwMode([]), 'off')
+  assertEquals(readHostingWwwMode({}), 'off')
+  assertEquals(readHostingWwwMode({ www: 'both' }), 'both')
+  assertEquals(readHostingWwwMode({ www: 'junk' }), 'off')
+  assertEquals(readHostingWwwMode({ www: 'both', wwwRedirect: true }), 'both')
+  assertEquals(readHostingWwwMode({ wwwRedirect: false, hostnames: ['example.com'] }), 'off')
+  assertEquals(readHostingWwwMode({ wwwRedirect: 'yes', hostnames: ['example.com'] }), 'off')
+  assertEquals(readHostingWwwMode({ wwwRedirect: true }), 'www-to-root')
+  assertEquals(readHostingWwwMode({ wwwRedirect: true, hostnames: ['example.com'] }), 'www-to-root')
+  assertEquals(
+    readHostingWwwMode({ wwwRedirect: true, hostnames: ['www.example.com', 'shop.example.com'] }),
+    'root-to-www'
+  )
+})
+
+test('parseHostingOptions turns the old wwwRedirect flag into a www mode', () => {
+  assertEquals(parseHostingOptions({ wwwRedirect: true, hostnames: ['example.com'] }), {
+    hostnames: ['example.com'],
+    www: 'www-to-root',
+  })
+  assertEquals(parseHostingOptions({ wwwRedirect: true, hostnames: ['www.example.com'] }), {
+    hostnames: ['www.example.com'],
+    www: 'root-to-www',
+  })
   assertEquals(parseHostingOptions({ wwwRedirect: false }), {})
-  assertEquals(parseHostingOptions({ wwwRedirect: 'yes' }), {})
 })
 
 test('parseHostingOptions drops the PHP ini override names from web.env', () => {

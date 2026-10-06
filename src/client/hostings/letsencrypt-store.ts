@@ -25,6 +25,7 @@ import {
 } from '../../features/hostings/hosting-certificate.ts'
 import {
   parseHostingOptions,
+  readHostingWwwMode,
   resolveHostingBind,
   resolveHostingProtocol,
 } from '../../features/hostings/hosting-options.ts'
@@ -247,6 +248,7 @@ export async function loadHostingCertificates(
         protocol: resolveHostingProtocol(options),
         bind: resolveHostingBind(options),
         hostnames,
+        www: readHostingWwwMode(row.options),
       }) === null
     const pinned = row.tlsId === null ? null : (pinnedById.get(row.tlsId) ?? null)
     out.set(
@@ -254,7 +256,7 @@ export async function loadHostingCertificates(
       deriveHostingCertificate({
         pinned,
         pending: readPendingLetsEncrypt(row.metadata),
-        wwwRedirect: (row.options as { wwwRedirect?: unknown } | null)?.wwwRedirect === true,
+        www: readHostingWwwMode(row.options),
         letsEncryptAvailable: available,
         needsDeploy: needsDeploy.has(row.id),
         now,

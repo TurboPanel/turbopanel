@@ -221,6 +221,29 @@ environment currently deploys to (`isReleaseMaterializedEverywhere`), and it
 carries the release's recorded commit metadata forward so the rollback's own
 release row names the commit going live rather than the branch placeholder.
 
+**`EnvironmentDeployHosting.www`:** optional `'both' | 'www-to-root' |
+'root-to-www'` (omitted = `off`), from `options.www` on the hosting row (compose
+`x-turbopanel.hosting[].www`). The other spelling of each hostname is `www.`
+added, or removed when the name starts with `www.`. `both` serves the site on
+both; `www-to-root` serves the bare name and permanently redirects `www.` there
+(path and query kept, plain HTTP straight to HTTPS in one hop); `root-to-www`
+the other way round. The direction is about the names, not about which one was
+typed. Expansion lives in one place, `hostingWwwNames` in
+`src/contracts/commands/hostname.ts` (twin of the daemon's
+`commands-contracts.ts`); `validateDeployWwwModes` (`www-redirect.ts`, twin of
+the daemon's `deploy-validation.ts`) refuses a mode on `tcp`/`udp`, a name with
+no other spelling (IP addresses and one-word names have none), an other
+spelling already a hostname in the deploy, and different choices on paths of
+one name. Every added name is also written to the organization's `hostname`
+uniqueness table (`hostingRoutingNames`), so a www name can never be claimed
+by two hostings (`409 hostname_in_use` at save time), and the daemon refuses a
+deploy whose names another environment's live site already answers on, before
+any container starts. A pinned uploaded
+certificate must cover every added name or the deploy is refused with
+`tls_pin_mismatch` and a plain `message`; Let's Encrypt (`acme`) gives each
+added name its own certificate, and "Use Let's Encrypt" checks DNS for them
+too. A daemon without the field serves only the typed names.
+
 **`EnvironmentDeployHosting.tlsMode`:** optional
 `'internal' | 'pinned' | 'acme'`. Absent = expand-only (daemon uses a
 materialized `tlsId` pair or `tls internal`). `acme` omits the Caddy `tls`
