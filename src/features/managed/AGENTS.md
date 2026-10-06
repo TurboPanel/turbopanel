@@ -469,9 +469,14 @@ destroys, hard-deletes the runtime rows, and returns `deleted: true` (sweeps
 mop up leftover containers). While any service is bound to one of the
 cluster's logins the destroy is refused with 409 `managed_has_bindings` and the
 bound `services` (same list shape as `managed_user_has_bindings`), for every
-engine and also with `force`; `?detach=true` removes those bindings (their
-variables cascade) once the destroy is enqueued, and the response lists them in
-`detached`.
+engine and also with `force`; `?detach=true` lets the destroy go ahead and the bindings
+(their variables cascade) go with the `managed` row **when the destroy
+succeeds** (at once on a forced or unplaced delete), so a destroy that fails
+leaves the cluster running with its apps still bound; the response lists them
+in `detached`. Detach needs no extra permission: it is the same destroy route,
+scope check and step-up. While a `managed.destroy` for the cluster is queued or
+running (`hasOutstandingManagedDestroy`), `POST /bindings` answers 409
+`managed_busy` / `destroy_in_flight` so a new binding is not silently dropped.
 `POST …/members/:memberId/promote`
 (lag-gated; **failover** class required — `{ force: true }` bypasses lag/health
 only, never class). **On-demand health probe:** replica health is only observed

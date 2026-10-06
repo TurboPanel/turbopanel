@@ -395,7 +395,7 @@ export const managedSchemas = {
         type: 'array',
         items: { type: 'object' },
         description:
-          'Present when `detach=true` removed bindings: the services (`serviceId`, `name`, `environmentId`, `projectId`, `keyPrefix`) that lost their database variables',
+          'Present when `detach=true` and services were bound: the services (`serviceId`, `name`, `environmentId`, `projectId`, `keyPrefix`) whose bindings and database variables go with the cluster. Removed at once on a forced or unplaced delete; otherwise removed only when the queued destroy succeeds (a destroy that fails leaves the cluster and its bindings in place)',
       },
     },
   },
@@ -1091,7 +1091,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Destroy managed service (two-step when running)',
       description:
-        "Refused with 409 `managed_has_bindings` (and the bound `services`) while any service is bound to one of the cluster's logins. Pass `detach=true` to remove those bindings and their variables as part of the destroy; the response then lists them in `detached`. The services keep running with the values they already have until their next deploy.",
+        "Refused with 409 `managed_has_bindings` (and the bound `services`) while any service is bound to one of the cluster's logins. Pass `detach=true` to remove those bindings and their variables with the cluster (when the destroy succeeds; at once on a forced or unplaced delete); the response then lists them in `detached`. New bindings are refused with 409 `managed_busy` (`destroy_in_flight`) while a destroy is queued. Needs the same rights as the destroy itself. The services keep running with the values they already have until their next deploy.",
       parameters: [
         ENV_ID_PARAM,
         {
@@ -1100,7 +1100,7 @@ export const managedPaths = {
           required: false,
           schema: { type: 'boolean' },
           description:
-            "Remove the cluster's service bindings (and their variables) with the destroy",
+            "Remove the cluster's service bindings (and their variables) with the cluster, once the destroy succeeds",
         },
       ],
       responses: {

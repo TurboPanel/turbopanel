@@ -476,7 +476,7 @@ async function runManagedDeleteFanout(
     environmentId: string
     managedId: string
     targetServerId: string
-    /** Services whose bindings are removed once the destroy is enqueued (`detach=true`). */
+    /** Services whose bindings go with the cluster (`detach=true`): removed when the destroy succeeds, or at once on a forced delete. */
     detached: readonly BindingImpactService[]
   }
 ): Promise<Response> {
@@ -534,14 +534,21 @@ async function runManagedDeleteFanout(
     return c.json({ ...buildManagedDeleteHardResponse(), ...detachedField(detached) })
   }
 
-  await detachManagedBindings(db, managedId, detached)
+  // The bindings are NOT removed here. They go with the `managed` row when the
+  // destroy succeeds (principal then binding then variable cascade), so a
+  // destroy that fails later leaves the cluster running with its apps still
+  // bound. `detached` lists the services that lose their binding once it does.
   return c.json({
     ...buildManagedDeleteQueuedResponse(enqueued, targetServerId),
     ...detachedField(detached),
   })
 }
 
-/** `detached` appears on the delete response only when bindings were removed. */
+/**
+ * `detached` appears on the delete response when bindings go with the cluster:
+ * already removed (hard or forced delete) or removed when the queued destroy
+ * succeeds.
+ */
 function detachedField(detached: readonly BindingImpactService[]) {
   return detached.length > 0 ? { detached } : {}
 }
