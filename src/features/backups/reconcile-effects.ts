@@ -39,13 +39,15 @@ export async function applyBackupsReconcileSideEffect(
 ): Promise<void> {
   if (record.type !== 'server.backups.reconcile') return
   try {
-    for (const next of reportedNextRuns(record.payload, result)) {
-      await db
-        .update(retention)
-        // A report is not an edit: keep `updated_at` as the operator left it.
-        .set({ nextRunAt: next.nextRunAt, updatedAt: sql`${retention.updatedAt}` })
-        .where(eq(retention.id, next.policyId))
-    }
+    await Promise.all(
+      reportedNextRuns(record.payload, result).map((next) =>
+        db
+          .update(retention)
+          // A report is not an edit: keep `updated_at` as the operator left it.
+          .set({ nextRunAt: next.nextRunAt, updatedAt: sql`${retention.updatedAt}` })
+          .where(eq(retention.id, next.policyId))
+      )
+    )
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     compatLogWarn(
