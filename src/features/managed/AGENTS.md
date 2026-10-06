@@ -466,7 +466,12 @@ and destroy side effects are row-independent (`payload.environmentId`) so
 concurrent outcomes never skip container-row cleanup or ingress teardown.
 `?force=true` skips online checks and replica gating, enqueues best-effort
 destroys, hard-deletes the runtime rows, and returns `deleted: true` (sweeps
-mop up leftover containers).
+mop up leftover containers). While any service is bound to one of the
+cluster's logins the destroy is refused with 409 `managed_has_bindings` and the
+bound `services` (same list shape as `managed_user_has_bindings`), for every
+engine and also with `force`; `?detach=true` removes those bindings (their
+variables cascade) once the destroy is enqueued, and the response lists them in
+`detached`.
 `POST …/members/:memberId/promote`
 (lag-gated; **failover** class required — `{ force: true }` bypasses lag/health
 only, never class). **On-demand health probe:** replica health is only observed
