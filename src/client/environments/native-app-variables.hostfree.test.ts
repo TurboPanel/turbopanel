@@ -136,6 +136,7 @@ test('the list people read shows where each name came from and hides secret valu
     view.map((row) => [row.name, row.source, row.value, row.delivered]),
     [
       ['HOST', 'platform', '127.0.0.1', true],
+      ['HOSTNAME', 'platform', '127.0.0.1', true],
       ['NODE_ENV', 'platform', 'production', true],
       ['PORT', 'platform', String(split.apps[0]?.listenPort), true],
       ['API_URL', 'project', 'https://example.test', true],

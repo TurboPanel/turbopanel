@@ -236,6 +236,8 @@ function ensureTopLevelSecret(
   data.secrets = secrets
 }
 
+// No `uid` / `gid` / `mode`: Docker Compose only supports them in Swarm mode and
+// logs a warning on every deploy otherwise. The file's own host permissions apply.
 function appendServiceSecret(service: Record<string, unknown>, plan: DeploySecretPlanEntry): void {
   const next = Array.isArray(service.secrets) ? [...service.secrets] : []
   const already = next.some((item) => {
@@ -246,9 +248,6 @@ function appendServiceSecret(service: Record<string, unknown>, plan: DeploySecre
   next.push({
     source: plan.source,
     target: plan.target,
-    uid: '0',
-    gid: '0',
-    mode: '0400',
   })
   service.secrets = next
 }

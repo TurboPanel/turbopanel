@@ -9,8 +9,16 @@
  * `AGENTS.md` ("Tenant values in root-loaded configs").
  */
 
-import { isValidHostname, wwwSiblingHostname } from '../../contracts/commands/hostname.ts'
-import { HOSTING_WEB_ENV_KEY_RE } from './hosting-options.ts'
+import {
+  isHostingWwwMode,
+  isValidHostname,
+  wwwSiblingHostname,
+} from '../../contracts/commands/hostname.ts'
+import {
+  HOSTING_WEB_ENV_KEY_RE,
+  isReservedSiteVariableName,
+  readHostingWwwMode,
+} from './hosting-options.ts'
 
 /** Stable error code for a hosting option value outside its allowlist. */
 export const INVALID_HOSTING_OPTION_ERROR = 'invalid_hosting_option'
@@ -100,19 +108,40 @@ function hostnamesProblem(value: unknown): HostingOptionInputError | null {
     : null
 }
 
-function wwwRedirectProblem(value: Record<string, unknown>): HostingOptionInputError | null {
+/**
+ * The www choice a write asks for, and the field to blame. An older client may
+ * still send `wwwRedirect: true`; it goes through the same checks as the mode
+ * it is read as, so it can never store what `options.www` would be refused for.
+ */
+function requestedWww(
+  value: Record<string, unknown>
+): { field: string; mode: unknown } | HostingOptionInputError | null {
+  if (value.www !== undefined) return { field: 'options.www', mode: value.www }
   if (value.wwwRedirect === undefined) return null
-  const field = 'options.wwwRedirect'
-  if (typeof value.wwwRedirect !== 'boolean') return { field, message: 'must be true or false' }
-  if (!value.wwwRedirect) return null
+  if (typeof value.wwwRedirect !== 'boolean') {
+    return { field: 'options.wwwRedirect', message: 'must be true or false' }
+  }
+  return { field: 'options.wwwRedirect', mode: readHostingWwwMode(value) }
+}
+
+function wwwProblem(value: Record<string, unknown>): HostingOptionInputError | null {
+  const requested = requestedWww(value)
+  if (requested === null || 'message' in requested) return requested
+  const { field, mode } = requested
+  if (mode === 'off') return null
+  if (!isHostingWwwMode(mode)) {
+    return { field, message: 'must be off, both, www-to-root, or root-to-www' }
+  }
   if (value.protocol === 'tcp' || value.protocol === 'udp') {
     return { field, message: 'applies to http hostings only' }
   }
   const hostnames = Array.isArray(value.hostnames) ? value.hostnames : []
-  const bad = hostnames.some(
+  const bad = hostnames.find(
     (h) => typeof h === 'string' && h.length > 0 && wwwSiblingHostname(h) === null
   )
-  return bad ? { field, message: 'every hostname needs a valid www or non-www twin name' } : null
+  return typeof bad === 'string'
+    ? { field, message: `${bad} has no www or bare spelling, so set www to off for it` }
+    : null
 }
 
 function webEnvProblem(web: unknown): HostingOptionInputError | null {
@@ -120,6 +149,12 @@ function webEnvProblem(web: unknown): HostingOptionInputError | null {
   for (const [key, entry] of Object.entries(web.env)) {
     const nameMessage = envNameProblem(key)
     if (nameMessage) return { field: 'options.web.env', message: nameMessage }
+    if (isReservedSiteVariableName(key)) {
+      return {
+        field: `options.web.env.${key}`,
+        message: 'is reserved for PHP itself and cannot be used as a site variable',
+      }
+    }
     if (typeof entry !== 'string' || entry.length > MAX_WEB_ENV_VALUE_LENGTH) continue
     const valueMessage = envValueProblem(entry.trim())
     if (valueMessage) return { field: `options.web.env.${key}`, message: valueMessage }
@@ -141,7 +176,7 @@ export function hostingOptionsInputError(value: unknown): HostingOptionInputErro
       isRecord(value.proxy) ? value.proxy.stripPrefix : undefined
     ) ??
     hostnamesProblem(value.hostnames) ??
-    wwwRedirectProblem(value) ??
+    wwwProblem(value) ??
     webEnvProblem(value.web)
   )
 }

@@ -1,4 +1,9 @@
-import { HOSTNAME_MAX_LENGTH, isValidHostname } from './hostname.ts'
+import {
+  HOSTNAME_MAX_LENGTH,
+  type HostingWwwMode,
+  isHostingWwwMode,
+  isValidHostname,
+} from './hostname.ts'
 import {
   addressInCidr,
   cidrContains,
@@ -1823,8 +1828,10 @@ export type EnvironmentDeploySourceBuild = {
    * Process the generated systemd unit runs for a `serviceKind: node` service
    * (`nativeAppServices[]`). Non-secret and validated exactly like
    * `installCommand` / `buildCommand`; ignored for every other kind, where
-   * nothing supervises a process. Omitted means "use the framework default"
-   * (`.next/standalone/server.js`, else `server.js`).
+   * nothing supervises a process. Omitted (with no `startupFile`) means the
+   * daemon picks from the built tree, in this order: Next.js standalone
+   * `server.js`, the `package.json` `start` script, `next start` for a Next.js
+   * app, the `package.json` `main` file, `index.js`, then `server.js`.
    */
   startCommand?: string
   /** Relative build-output directory (same rule as `x-turbopanel.root`). */
@@ -1879,7 +1886,20 @@ export type EnvironmentDeployNativeAppService = {
   /** Loopback port the app process must bind (`PORT` in the unit). */
   listenPort: number
   framework: EnvironmentDeployNativeFramework
-  /** Operator-pinned Node series, when the compose author declared one. */
+  /**
+   * `deno` runs the app on the vendored Deno (`denoVersion`) instead of Node.
+   * Omitted means `node`, and a Node app's wire shape is unchanged. Sent only
+   * to a daemon that advertises `deno-native-apps-v1`.
+   */
+  runtime?: 'node' | 'deno'
+  /** Deno series ("2", "2.9", "2.9.7"); only read when `runtime` is `deno`. */
+  denoVersion?: string
+  /**
+   * Node series for the app: the compose author's pin, else the series the
+   * control plane read from the repository at the deployed commit
+   * (`package.json` `engines.node`, `.nvmrc`, `.node-version`). Omitted means
+   * the daemon default.
+   */
   nodeVersion?: string
   /** `NODE_ENV` for the generated unit. Omitted means `production`. */
   appMode?: 'production' | 'development'
@@ -1891,7 +1911,10 @@ export type EnvironmentDeployNativeAppService = {
   /**
    * Script the vendored Node binary runs when `build.startCommand` is absent.
    * Relative path, validated on both sides — it lands in an `ExecStart` line.
-   * Omitted means the framework default (`server.js`).
+   * Omitted means the daemon's default start order (see
+   * `EnvironmentDeploySourceBuild.startCommand`): Next.js standalone
+   * `server.js`, the `start` script, `next start`, `main`, `index.js`, then
+   * `server.js`.
    */
   startupFile?: string
   /**
@@ -2350,12 +2373,14 @@ export type EnvironmentDeployHosting = {
   /** Merged hosting web env + PHP hints for site materialization. */
   web?: EnvironmentDeployHostingWeb
   /**
-   * Also serve the other spelling of each hostname (`www.` added, or removed
-   * when the name starts with `www.`) as a permanent redirect to the hostname
-   * as written. `http` only; omitted when off. In `acme` mode the extra name
-   * gets its own certificate. Older daemons ignore the field.
+   * What happens to the other spelling of each hostname (`www.` added, or
+   * removed when the name starts with `www.`); see `HostingWwwMode` in
+   * `./hostname.ts`. `http` only; omitted when `off`. The redirect is permanent
+   * and keeps the path and query. Every extra name is served under the
+   * hosting's own TLS mode (`acme` gives it its own certificate; a pinned pair
+   * must cover it). A daemon without the field serves only the typed names.
    */
-  wwwRedirect?: boolean
+  www?: Exclude<HostingWwwMode, 'off'>
 }
 
 export type EnvironmentDeployContainer = {
@@ -2549,13 +2574,13 @@ function parseDeployHostingBindAddress(value: unknown): string | undefined {
   return value
 }
 
-/** `true` when on; `undefined` when absent or false; anything else is refused. */
-function parseDeployHostingWwwRedirect(value: unknown): true | undefined {
+/** A www mode; `undefined` when absent or `off`; anything else is refused. */
+function parseDeployHostingWww(value: unknown): EnvironmentDeployHosting['www'] {
   if (value === undefined) return undefined
-  if (typeof value !== 'boolean') {
+  if (!isHostingWwwMode(value)) {
     throw new TypeError('Invalid environment.deploy payload')
   }
-  return value ? true : undefined
+  return value === 'off' ? undefined : value
 }
 
 function applyOptionalDeployHostingFields(
@@ -2583,7 +2608,8 @@ function applyOptionalDeployHostingFields(
   if (ports) hosting.ports = ports
   const web = parseDeployHostingWeb(entry.web)
   if (web) hosting.web = web
-  if (parseDeployHostingWwwRedirect(entry.wwwRedirect)) hosting.wwwRedirect = true
+  const www = parseDeployHostingWww(entry.www)
+  if (www) hosting.www = www
 }
 
 function parseDeployHostingEntry(entry: unknown): EnvironmentDeployHosting {
@@ -3461,6 +3487,22 @@ function parseNativeAppAccountLimits(
   }
 }
 
+function parseNativeAppRuntime(value: unknown): 'node' | 'deno' | undefined {
+  if (value === undefined) return undefined
+  if (value !== 'node' && value !== 'deno') {
+    throw new Error('Invalid nativeAppServices runtime')
+  }
+  return value
+}
+
+function parseNativeAppDenoVersion(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (!isString(value) || !NATIVE_APP_NODE_VERSION_RE.test(value)) {
+    throw new Error('Invalid nativeAppServices denoVersion')
+  }
+  return value
+}
+
 function parseNativeAppNodeVersion(value: unknown): string | undefined {
   if (value === undefined) return undefined
   if (!isString(value) || !NATIVE_APP_NODE_VERSION_RE.test(value)) {
@@ -3580,8 +3622,12 @@ function parseDeployNativeAppServiceEntry(entry: unknown): EnvironmentDeployNati
     listenPort: entry.listenPort,
     framework: entry.framework as EnvironmentDeployNativeFramework,
   }
+  const runtime = parseNativeAppRuntime(entry.runtime)
+  if (runtime !== undefined) app.runtime = runtime
   const nodeVersion = parseNativeAppNodeVersion(entry.nodeVersion)
   if (nodeVersion !== undefined) app.nodeVersion = nodeVersion
+  const denoVersion = parseNativeAppDenoVersion(entry.denoVersion)
+  if (denoVersion !== undefined) app.denoVersion = denoVersion
   const appMode = parseNativeAppMode(entry.appMode)
   if (appMode !== undefined) app.appMode = appMode
   const enabled = parseNativeAppEnabled(entry.enabled)

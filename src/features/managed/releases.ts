@@ -73,18 +73,14 @@ export type ManagedReleaseGate = {
 
 function isReleaseCreatable(
   release: ManagedEngineRelease,
-  gate: ManagedReleaseGate | undefined,
+  gate: ManagedReleaseGate | undefined
 ): boolean {
   return release.tested || gate?.includeUntested === true
 }
 
 const DEBIAN = 'Debian'
 
-function postgresRelease(
-  series: string,
-  isDefault = false,
-  tested = false,
-): ManagedEngineRelease {
+function postgresRelease(series: string, isDefault = false, tested = false): ManagedEngineRelease {
   return {
     engine: 'postgres',
     series,
@@ -111,11 +107,7 @@ function postgresRelease(
  * Debian tag is the default and Oracle's own Oracle Linux 9 build is the
  * alternative.
  */
-function mysqlRelease(
-  series: string,
-  isDefault = false,
-  tested = false,
-): ManagedEngineRelease {
+function mysqlRelease(series: string, isDefault = false, tested = false): ManagedEngineRelease {
   return {
     engine: 'mysql',
     series,
@@ -138,11 +130,7 @@ function mysqlRelease(
 }
 
 /** MariaDB has never shipped Alpine; UBI is the vendor-published alternative. */
-function mariadbRelease(
-  series: string,
-  isDefault = false,
-  tested = false,
-): ManagedEngineRelease {
+function mariadbRelease(series: string, isDefault = false, tested = false): ManagedEngineRelease {
   return {
     engine: 'mariadb',
     series,
@@ -199,9 +187,7 @@ export const MANAGED_ENGINE_RELEASES: readonly ManagedEngineRelease[] = [
  * use {@link managedCreatableReleasesForEngine} for anything that can produce a
  * new `settings.image`. Empty when the engine has no catalog yet.
  */
-export function managedReleasesForEngine(
-  engine: string,
-): readonly ManagedEngineRelease[] {
+export function managedReleasesForEngine(engine: string): readonly ManagedEngineRelease[] {
   return MANAGED_ENGINE_RELEASES.filter((release) => release.engine === engine)
 }
 
@@ -215,11 +201,9 @@ export function managedReleasesForEngine(
  */
 export function managedCreatableReleasesForEngine(
   engine: string,
-  gate?: ManagedReleaseGate,
+  gate?: ManagedReleaseGate
 ): readonly ManagedEngineRelease[] {
-  return managedReleasesForEngine(engine).filter((release) =>
-    isReleaseCreatable(release, gate)
-  )
+  return managedReleasesForEngine(engine).filter((release) => isReleaseCreatable(release, gate))
 }
 
 /**
@@ -228,17 +212,14 @@ export function managedCreatableReleasesForEngine(
  */
 export function defaultManagedRelease(
   engine: string,
-  gate?: ManagedReleaseGate,
+  gate?: ManagedReleaseGate
 ): ManagedEngineRelease | undefined {
   const releases = managedCreatableReleasesForEngine(engine, gate)
   return releases.find((release) => release.isDefault) ?? releases[0]
 }
 
 /** Default image (default series, default variant) for `engine`. */
-export function defaultManagedImage(
-  engine: string,
-  gate?: ManagedReleaseGate,
-): string | undefined {
+export function defaultManagedImage(engine: string, gate?: ManagedReleaseGate): string | undefined {
   return defaultManagedRelease(engine, gate)?.variants[0]?.image
 }
 
@@ -268,7 +249,7 @@ export function requireDefaultManagedImage(engine: ManagedEngineCode): string {
  */
 export function managedAllowedImagesForEngine(
   engine: string,
-  gate?: ManagedReleaseGate,
+  gate?: ManagedReleaseGate
 ): readonly string[] | undefined {
   if (managedReleasesForEngine(engine).length === 0) return undefined
   return managedCreatableReleasesForEngine(engine, gate).flatMap((release) =>
@@ -285,10 +266,10 @@ export function resolveManagedImage(
   engine: string,
   series: string,
   variantId?: string,
-  gate?: ManagedReleaseGate,
+  gate?: ManagedReleaseGate
 ): string | undefined {
   const release = managedCreatableReleasesForEngine(engine, gate).find(
-    (row) => row.series === series,
+    (row) => row.series === series
   )
   if (!release) return undefined
   if (variantId === undefined) return release.variants[0]?.image
@@ -312,9 +293,7 @@ export type ManagedImageDescriptor = {
  * described here on purpose — an existing row must still render its version
  * even though the series can no longer be chosen (`tested: false`).
  */
-export function describeManagedImage(
-  image: string,
-): ManagedImageDescriptor | undefined {
+export function describeManagedImage(image: string): ManagedImageDescriptor | undefined {
   for (const release of MANAGED_ENGINE_RELEASES) {
     for (const variant of release.variants) {
       if (variant.image === image) {
@@ -337,12 +316,12 @@ export function describeManagedImage(
  * Cross-major replication is not a supported topology and an engine will not
  * start on a data directory from another major, so a settings change that moves
  * an existing cluster to a different series must be refused (see
- * `managed_series_immutable`). Variant changes (same series, different base OS)
- * are allowed.
+ * `managed_series_immutable`). Whether a variant change (same series, different
+ * base OS) is allowed is a separate question: see {@link isManagedVariantSwapSafe}.
  */
 export function isSameManagedSeries(
   previousImage: string | undefined,
-  nextImage: string | undefined,
+  nextImage: string | undefined
 ): boolean {
   if (previousImage === undefined || nextImage === undefined) return true
   if (previousImage === nextImage) return true
@@ -352,4 +331,45 @@ export function isSameManagedSeries(
   // change rather than silently allowing it.
   if (!previous || !next) return false
   return previous.engine === next.engine && previous.series === next.series
+}
+
+/**
+ * C library each PostgreSQL variant is built on. PostgreSQL sorts text with the
+ * operating system's collation, and musl (Alpine) and glibc (Debian) order the
+ * same text differently, so an index built on one family is silently corrupt on
+ * the other. Engines absent from this table (MySQL, MariaDB) ship their own
+ * collations, so their variants are interchangeable.
+ */
+const LIBC_FAMILY_BY_ENGINE_VARIANT: Readonly<
+  Record<string, Readonly<Record<string, 'musl' | 'glibc'>>>
+> = {
+  postgres: { alpine: 'musl', debian: 'glibc' },
+}
+
+/**
+ * Whether an existing cluster may move from `previousImage` to `nextImage`
+ * without invalidating its on-disk data.
+ *
+ * This is the single place that decides the variant-swap policy. It is
+ * deliberately conservative: a PostgreSQL swap between libc families is
+ * refused. If the owner later chooses "allow and reindex", relax or remove the
+ * PostgreSQL entry above; the PATCH route and its error code follow from this
+ * one function. Series changes are not judged here
+ * ({@link isSameManagedSeries}), and an image outside the catalog is not
+ * judged either (the series check already refuses it).
+ */
+export function isManagedVariantSwapSafe(
+  previousImage: string | undefined,
+  nextImage: string | undefined
+): boolean {
+  if (previousImage === undefined || nextImage === undefined) return true
+  if (previousImage === nextImage) return true
+  const previous = describeManagedImage(previousImage)
+  const next = describeManagedImage(nextImage)
+  if (!previous || !next || previous.engine !== next.engine) return true
+  if (previous.variantId === next.variantId) return true
+  const families = LIBC_FAMILY_BY_ENGINE_VARIANT[previous.engine]
+  if (families === undefined) return true
+  const previousFamily = families[previous.variantId]
+  return previousFamily !== undefined && previousFamily === families[next.variantId]
 }

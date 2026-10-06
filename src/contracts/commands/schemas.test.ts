@@ -2159,6 +2159,20 @@ test('parseCommandPayload rejects a malformed runtime entitlement', () => {
   }
 })
 
+test('parseCommandPayload rejects a principalMaterial username with a dot', () => {
+  // The daemon writes each `-` of the name as `.` in slice names; that stays
+  // collision-free only while no username on the wire can hold a `.`.
+  for (const username of ['a.b', 'web-app.x', '.hidden']) {
+    const payload = deployPayloadWithPrincipal([])
+    payload.principalMaterial[0].username = username
+    assertThrows(
+      () => parseCommandPayload('environment.deploy' as CommandType, payload),
+      Error,
+      'Invalid environment.deploy payload'
+    )
+  }
+})
+
 test('parseCommandPayload accepts principalMaterial with and without uid/gid', () => {
   assertEquals(
     parseCommandPayload('environment.deploy' as CommandType, {
@@ -3417,7 +3431,7 @@ test('parseEnvironmentDeployPayload accepts optional tlsMode acme and rejects un
   )
 })
 
-test('parseEnvironmentDeployPayload keeps wwwRedirect only when true and rejects non-booleans', () => {
+test('parseEnvironmentDeployPayload keeps a www mode, drops off, and rejects unknown values', () => {
   const hostingIngressNetwork = '00000000-0000-4000-8000-0000000000bb'
   const withHosting = (extra: Record<string, unknown>) =>
     parseEnvironmentDeployPayload({
@@ -3433,14 +3447,14 @@ test('parseEnvironmentDeployPayload keeps wwwRedirect only when true and rejects
         },
       ],
     })
-  assertEquals(withHosting({ wwwRedirect: true }).hostings[0]?.wwwRedirect, true)
-  assertEquals(withHosting({ wwwRedirect: false }).hostings[0]?.wwwRedirect, undefined)
-  assertEquals(withHosting({}).hostings[0]?.wwwRedirect, undefined)
-  assertThrows(
-    () => withHosting({ wwwRedirect: 'yes' }),
-    Error,
-    'Invalid environment.deploy payload'
-  )
+  for (const www of ['both', 'www-to-root', 'root-to-www']) {
+    assertEquals(withHosting({ www }).hostings[0]?.www, www)
+  }
+  assertEquals(withHosting({ www: 'off' }).hostings[0]?.www, undefined)
+  assertEquals(withHosting({}).hostings[0]?.www, undefined)
+  for (const www of ['yes', true]) {
+    assertThrows(() => withHosting({ www }), Error, 'Invalid environment.deploy payload')
+  }
 })
 
 test('parseEnvironmentDeployPayload parses hostingIngress for shared HTTP Traefik', () => {
@@ -3978,6 +3992,32 @@ test('parseEnvironmentDeployPayload round-trips nativeAppServices', () => {
       accountLimits: { cpus: 4, memoryBytes: 2147483648, tasksMax: 512 },
     },
   ])
+})
+
+test('parseEnvironmentDeployPayload carries runtime deno and denoVersion, and rejects bad ones', () => {
+  const app = {
+    composeServiceName: 'api',
+    serviceId: 'svc-api',
+    listenPort: 18101,
+    framework: 'auto',
+  }
+  const parsed = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    nativeAppServices: [{ ...app, runtime: 'deno', denoVersion: '2.9' }, app],
+  })
+  assertEquals(parsed.nativeAppServices?.[0]?.runtime, 'deno')
+  assertEquals(parsed.nativeAppServices?.[0]?.denoVersion, '2.9')
+  assertEquals('runtime' in (parsed.nativeAppServices?.[1] ?? {}), false)
+  for (const bad of [{ runtime: 'bun' }, { denoVersion: 'latest' }]) {
+    assertThrows(
+      () =>
+        parseEnvironmentDeployPayload({
+          ...NATIVE_APP_BASE,
+          nativeAppServices: [{ ...app, ...bad }],
+        }),
+      Error
+    )
+  }
 })
 
 const NATIVE_VARIABLES_APP = {

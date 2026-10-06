@@ -14,11 +14,12 @@ const NOW = new Date('2026-10-04T12:00:00.000Z')
 const SERVER_IP = '203.0.113.7'
 
 type Saved = Parameters<LetsEncryptStore['saveHosting']>
-function fakeStore(existing: string | null = null) {
+function fakeStore(existing: string | null = null, otherWeb: string[] = []) {
   const saved: Saved[] = []
   const created: string[][] = []
   const store: LetsEncryptStore = {
     expectedAddresses: () => Promise.resolve([SERVER_IP]),
+    otherWebHostnames: () => Promise.resolve(otherWeb),
     findManagedCertificate: () => Promise.resolve(existing),
     createManagedCertificate: (_org, names) => {
       created.push([...names])
@@ -54,7 +55,6 @@ test("refuses when the organization has not allowed Let's Encrypt", async () => 
     now: NOW,
     hosting: record(),
     acmeEnabled: false,
-    wwwRedirect: false,
   })
   assertEquals(out, { ok: false, error: 'lets_encrypt_not_enabled' })
   assertEquals(saved.length, 0)
@@ -62,7 +62,7 @@ test("refuses when the organization has not allowed Let's Encrypt", async () => 
 
 test('refuses a local bind and a non-http hosting', async () => {
   const { store } = fakeStore()
-  const base = { store, lookup: pointing, now: NOW, acmeEnabled: true, wwwRedirect: false }
+  const base = { store, lookup: pointing, now: NOW, acmeEnabled: true }
   const local = await requestLetsEncrypt({
     ...base,
     hosting: record({ options: { hostnames: ['a.example.com'], bind: 'local' } }),
@@ -84,24 +84,25 @@ test('refuses a local bind and a non-http hosting', async () => {
 test('DNS ready: creates the certificate row, pins it, clears any waiting request', async () => {
   const { store, saved, created } = fakeStore()
   const pendingMeta = {
-    letsEncryptPending: { requestedAt: NOW.toISOString(), wwwRedirect: false, dns: null },
+    letsEncryptPending: { requestedAt: NOW.toISOString(), dns: null },
     keep: 1,
   }
   const out = await requestLetsEncrypt({
     store,
     lookup: pointing,
     now: NOW,
-    hosting: record({ metadata: pendingMeta }),
+    hosting: record({
+      metadata: pendingMeta,
+      options: { hostnames: ['shop.example.com'], www: 'www-to-root' },
+    }),
     acmeEnabled: true,
-    wwwRedirect: true,
   })
   assertEquals(out.ok && out.outcome, 'pinned')
   assertEquals(created, [['shop.example.com', 'www.shop.example.com']])
   const [id, patch] = saved[0]!
   assertEquals(id, 'h1')
-  assertEquals(patch.tlsId, 'tls-new')
-  assertEquals(patch.options?.wwwRedirect, true)
-  assertEquals(patch.metadata, { keep: 1 })
+  // Pinning leaves the hosting options alone: the www setting is saved elsewhere.
+  assertEquals(patch, { tlsId: 'tls-new', metadata: { keep: 1 } })
 })
 
 test('clicking again reuses the existing certificate row', async () => {
@@ -112,7 +113,6 @@ test('clicking again reuses the existing certificate row', async () => {
     now: NOW,
     hosting: record(),
     acmeEnabled: true,
-    wwwRedirect: false,
   })
   assertEquals(out.ok && out.outcome === 'pinned' && out.tlsId, 'tls-old')
   assertEquals(created.length, 0)
@@ -126,7 +126,6 @@ test('DNS not ready: nothing is pinned and the request is remembered with its fi
     now: NOW,
     hosting: record(),
     acmeEnabled: true,
-    wwwRedirect: false,
   })
   assertEquals(first.ok && first.outcome, 'waiting')
   const patch = saved[0]![1]
@@ -142,22 +141,24 @@ test('DNS not ready: nothing is pinned and the request is remembered with its fi
     now: later,
     hosting: record({ metadata: patch.metadata }),
     acmeEnabled: true,
-    wwwRedirect: false,
   })
   assertEquals(readPendingLetsEncrypt(saved[1]![1].metadata)?.requestedAt, NOW.toISOString())
 })
 
-function waiting(requestedAt: string, wwwRedirect = false) {
-  return record({ metadata: { letsEncryptPending: { requestedAt, wwwRedirect, dns: null } } })
+function waiting(requestedAt: string, www?: string) {
+  return record({
+    options: { hostnames: ['shop.example.com'], ...(www ? { www } : {}) },
+    metadata: { letsEncryptPending: { requestedAt, dns: null } },
+  })
 }
 
-test('the sweep pins a waiting request once DNS resolves, using the saved www choice', async () => {
+test("the sweep pins a waiting request once DNS resolves, using the hosting's www setting", async () => {
   const { store, created } = fakeStore()
   const out = await retryPendingLetsEncrypt({
     store,
     lookup: pointing,
     now: NOW,
-    hosting: waiting(NOW.toISOString(), true),
+    hosting: waiting(NOW.toISOString(), 'root-to-www'),
     acmeEnabled: true,
   })
   assertEquals(out, 'pinned')
@@ -202,4 +203,82 @@ test('the sweep drops a request older than a week, or one no longer allowed', as
     'refused'
   )
   assertEquals(b.created.length, 0)
+})
+
+test('refuses a www setting when the other spelling is already listed, before any DNS or pin', async () => {
+  const { store, saved, created } = fakeStore()
+  const out = await requestLetsEncrypt({
+    store,
+    lookup: pointing,
+    now: NOW,
+    hosting: record({ options: { hostnames: ['example.com', 'www.example.com'], www: 'both' } }),
+    acmeEnabled: true,
+  })
+  assertEquals(out.ok, false)
+  if (out.ok) return
+  assertEquals(out.error, 'www_redirect_conflict')
+  assertEquals(out.message?.includes('both example.com and www.example.com'), true)
+  assertEquals(saved.length, 0)
+  assertEquals(created.length, 0)
+})
+
+test('refuses a www setting when another web hosting in the environment serves the other spelling', async () => {
+  const { store, saved } = fakeStore(null, ['www.shop.example.com'])
+  const out = await requestLetsEncrypt({
+    store,
+    lookup: pointing,
+    now: NOW,
+    hosting: record({ options: { hostnames: ['shop.example.com'], www: 'www-to-root' } }),
+    acmeEnabled: true,
+  })
+  assertEquals(out.ok, false)
+  if (!out.ok) assertEquals(out.error, 'www_redirect_conflict')
+  assertEquals(saved.length, 0)
+})
+
+test('both names listed is fine while www is off', async () => {
+  const { store, created } = fakeStore()
+  const out = await requestLetsEncrypt({
+    store,
+    lookup: pointing,
+    now: NOW,
+    hosting: record({ options: { hostnames: ['example.com', 'www.example.com'] } }),
+    acmeEnabled: true,
+  })
+  assertEquals(out.ok, true)
+  assertEquals(created, [['example.com', 'www.example.com']])
+})
+
+test('a row saved with the old wwwRedirect flag still covers both spellings', async () => {
+  const { store, created } = fakeStore()
+  const out = await requestLetsEncrypt({
+    store,
+    lookup: pointing,
+    now: NOW,
+    hosting: record({ options: { hostnames: ['www.example.com'], wwwRedirect: true } }),
+    acmeEnabled: true,
+  })
+  assertEquals(out.ok && out.outcome, 'pinned')
+  assertEquals(created, [['example.com', 'www.example.com']])
+})
+
+test('a www name that does not point here yet keeps the request waiting and is named', async () => {
+  const { store, saved, created } = fakeStore()
+  const onlyBare: DnsLookup = (name) =>
+    name === 'shop.example.com' ? Promise.resolve([SERVER_IP]) : Promise.resolve([])
+  const out = await requestLetsEncrypt({
+    store,
+    lookup: onlyBare,
+    now: NOW,
+    hosting: record({ options: { hostnames: ['shop.example.com'], www: 'root-to-www' } }),
+    acmeEnabled: true,
+  })
+  assertEquals(out.ok && out.outcome, 'waiting')
+  assertEquals(created.length, 0)
+  const dns = readPendingLetsEncrypt(saved[0]![1].metadata)?.dns
+  assertEquals(dns?.ready, false)
+  assertEquals(
+    dns?.hostnames.map((h) => h.hostname),
+    ['shop.example.com', 'www.shop.example.com']
+  )
 })

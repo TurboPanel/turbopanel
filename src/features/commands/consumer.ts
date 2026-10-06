@@ -73,6 +73,7 @@ import {
 } from '../managed/destroy-gate.ts'
 import { deleteManagedBackup, insertManagedBackup } from '../backups/backup-records.ts'
 import { applyStorageBackupSideEffect } from '../backups/storage-command-effects.ts'
+import { applyBackupsReconcileSideEffect } from '../backups/reconcile-effects.ts'
 import {
   commandMayChangeFirewallPreview,
   enqueueFirewallPreview,
@@ -2118,6 +2119,7 @@ async function applySucceededSideEffects(
   await applyManagedDestroySideEffect(db, record, envelope, result, deps)
   await applyManagedPromoteSideEffect(db, record, envelope, result, deps)
   await applyManagedHaFailoverSideEffect(db, record, envelope, result, deps)
+  await applyBackupsReconcileSideEffect(db, record, result)
   await applyManagedBackupSideEffect(db, record, envelope, result)
   await applyManagedRestoreSideEffect(db, record, envelope, result)
   await applyStorageBackupSideEffect(db, record, result)

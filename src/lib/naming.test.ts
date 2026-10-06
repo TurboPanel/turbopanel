@@ -20,6 +20,7 @@ import {
   dockerVolumeNameFromStorageId,
   ingressContainerNameFromService,
   isReservedDeployVariableKey,
+  hasPlainPrincipalDashes,
   isReservedPrincipalUsername,
   isValidDockerResourceName,
   managedContainerName,
@@ -42,10 +43,7 @@ const test = Deno.test.bind(Deno)
 
 test('isValidDockerResourceName matches Docker Engine allowlist', () => {
   assertEquals(isValidDockerResourceName('a'), true)
-  assertEquals(
-    isValidDockerResourceName('01936b3e-8c7a-7b2d-a1f0-123456789abc'),
-    true,
-  )
+  assertEquals(isValidDockerResourceName('01936b3e-8c7a-7b2d-a1f0-123456789abc'), true)
   assertEquals(isValidDockerResourceName('-bad'), false)
   assertEquals(isValidDockerResourceName('has space'), false)
 })
@@ -57,7 +55,7 @@ test('containerNameFromService uses bare service id for single instance', () => 
       ordinal: 1,
       instanceCount: 1,
     }),
-    'sid-1',
+    'sid-1'
   )
 })
 
@@ -68,7 +66,7 @@ test('containerNameFromService suffixes ordinal when multi-instance', () => {
       ordinal: 2,
       instanceCount: 3,
     }),
-    'sid-1-2',
+    'sid-1-2'
   )
 })
 
@@ -97,21 +95,18 @@ test('ingressContainerNameFromService rejects invalid service ids', () => {
   assertThrows(
     () => ingressContainerNameFromService('has space'),
     TypeError,
-    'Invalid ingress container name for service id',
+    'Invalid ingress container name for service id'
   )
   assertThrows(
     () => ingressContainerNameFromService('-bad'),
     TypeError,
-    'Invalid ingress container name for service id',
+    'Invalid ingress container name for service id'
   )
 })
 
 test('managed-ingress container name is ingressContainerNameFromService (shared -in contract)', () => {
   const serviceId = '01936b3e-8c7a-7b2d-a1f0-123456789abc'
-  assertEquals(
-    ingressContainerNameFromService(serviceId),
-    `${serviceId}-in`,
-  )
+  assertEquals(ingressContainerNameFromService(serviceId), `${serviceId}-in`)
 })
 
 test('managedNetworkName returns the network UUID unchanged', () => {
@@ -120,11 +115,7 @@ test('managedNetworkName returns the network UUID unchanged', () => {
 })
 
 test('managedNetworkName rejects ids outside the Docker name allowlist', () => {
-  assertThrows(
-    () => managedNetworkName('has space'),
-    TypeError,
-    'Invalid managed network id',
-  )
+  assertThrows(() => managedNetworkName('has space'), TypeError, 'Invalid managed network id')
   assertThrows(() => managedNetworkName(''), TypeError)
 })
 
@@ -137,7 +128,7 @@ test('dockerVolumeNameFromStorageId rejects invalid ids', () => {
   assertThrows(
     () => dockerVolumeNameFromStorageId('-bad'),
     TypeError,
-    'Invalid Docker volume storage id',
+    'Invalid Docker volume storage id'
   )
 })
 
@@ -148,16 +139,13 @@ test('resolveDockerVolumeName prefers pinnedName', () => {
       storageId,
       pinnedName: storageId,
     }),
-    storageId,
+    storageId
   )
 })
 
 test('resolveDockerVolumeName uses storage UUID when unpinned', () => {
   const storageId = '01936b3e-8c7a-7b2d-a1f0-123456789abc'
-  assertEquals(
-    resolveDockerVolumeName({ storageId }),
-    storageId,
-  )
+  assertEquals(resolveDockerVolumeName({ storageId }), storageId)
 })
 
 test('principal path helpers nest under PRINCIPAL_HOME_ROOT by username', () => {
@@ -171,7 +159,7 @@ test('principal path helpers nest under PRINCIPAL_HOME_ROOT by username', () => 
   assertEquals(principalVolumesDir(username), `${PRINCIPAL_HOME_ROOT}/${username}/volumes`)
   assertEquals(
     principalVolumePath(username, storageId),
-    `${PRINCIPAL_HOME_ROOT}/${username}/volumes/${storageId}`,
+    `${PRINCIPAL_HOME_ROOT}/${username}/volumes/${storageId}`
   )
 })
 
@@ -181,23 +169,17 @@ test('principal path helpers reject invalid usernames', () => {
   assertThrows(() => principalHomeDir('a/b'), TypeError)
   assertThrows(
     () => assertSafePrincipalUsername('a'.repeat(MAX_PRINCIPAL_USERNAME_LENGTH + 1)),
-    TypeError,
+    TypeError
   )
   assertThrows(() => principalVolumePath('ok_user', '../x'), TypeError)
 })
 
 test('assertSafePrincipalUsername accepts max length that fits username-grp', () => {
-  assertEquals(
-    MAX_PRINCIPAL_USERNAME_LENGTH + PRINCIPAL_UNIX_GROUP_SUFFIX.length,
-    32,
-  )
+  assertEquals(MAX_PRINCIPAL_USERNAME_LENGTH + PRINCIPAL_UNIX_GROUP_SUFFIX.length, 32)
   const longest = `u${'a'.repeat(MAX_PRINCIPAL_USERNAME_LENGTH - 1)}`
   assertEquals(longest.length, MAX_PRINCIPAL_USERNAME_LENGTH)
   assertEquals(assertSafePrincipalUsername(longest), longest)
-  assertEquals(
-    `${longest}${PRINCIPAL_UNIX_GROUP_SUFFIX}`.length,
-    32,
-  )
+  assertEquals(`${longest}${PRINCIPAL_UNIX_GROUP_SUFFIX}`.length, 32)
 
   const overlong = `u${'a'.repeat(MAX_PRINCIPAL_USERNAME_LENGTH)}`
   assertEquals(overlong.length, MAX_PRINCIPAL_USERNAME_LENGTH + 1)
@@ -211,6 +193,31 @@ test('isReservedPrincipalUsername covers denylist and systemd- prefix', () => {
   assertEquals(isReservedPrincipalUsername('TPCTRL'), true)
   assertEquals(isReservedPrincipalUsername('systemd-network'), true)
   assertEquals(isReservedPrincipalUsername('appuser'), false)
+})
+
+test('isReservedPrincipalUsername reserves the platform slice names', () => {
+  // The host gives each site owner's Linux user turbopanel-<name>.slice;
+  // turbopanel-containers.slice and turbopanel-tpbuild.slice are the platform's.
+  assertEquals(isReservedPrincipalUsername('containers'), true)
+  assertEquals(isReservedPrincipalUsername(' Containers '), true)
+  assertEquals(isReservedPrincipalUsername('tpbuild'), true)
+  assertEquals(isReservedPrincipalUsername('container'), false)
+})
+
+test('assertSafePrincipalUsername never allows a dot', () => {
+  // The host writes each `-` of the name as `.` in slice names, which is only
+  // collision-free while no name can hold a `.` itself.
+  for (const name of ['a.b', 'a-b.c', '.a', 'a.', '.', '..']) {
+    assertThrows(() => assertSafePrincipalUsername(name), TypeError)
+  }
+  assertEquals(assertSafePrincipalUsername('a-b'), 'a-b')
+})
+
+test('hasPlainPrincipalDashes refuses a trailing dash and dash runs', () => {
+  assertEquals(hasPlainPrincipalDashes('web-app'), true)
+  assertEquals(hasPlainPrincipalDashes('web_app'), true)
+  assertEquals(hasPlainPrincipalDashes('web-'), false)
+  assertEquals(hasPlainPrincipalDashes('web--app'), false)
 })
 
 test('isReservedPrincipalUsername reserves the whole tp prefix', () => {
@@ -227,10 +234,7 @@ test('isReservedPrincipalUsername reserves the whole tp prefix', () => {
 })
 
 test('serviceDnsName is most-specific-first (replica then service)', () => {
-  assertEquals(
-    serviceDnsName('web', 1, 'env-1'),
-    ['web-1.env-1', 'web.env-1'],
-  )
+  assertEquals(serviceDnsName('web', 1, 'env-1'), ['web-1.env-1', 'web.env-1'])
   assertEquals(serviceDnsName('web', null, 'env-1'), ['web.env-1'])
 })
 
@@ -243,7 +247,10 @@ test('RESERVED_DEPLOY_VARIABLE_KEYS covers tenant-deploy reserved keys', () => {
     'TURBOPANEL_SERVICE_HOST',
     'TURBOPANEL_SERVICE_ID',
   ]
-  assertEquals([...RESERVED_DEPLOY_VARIABLE_KEYS].sort((a, b) => a.localeCompare(b)), expected)
+  assertEquals(
+    [...RESERVED_DEPLOY_VARIABLE_KEYS].sort((a, b) => a.localeCompare(b)),
+    expected
+  )
   for (const key of expected) {
     assertEquals(isReservedDeployVariableKey(key), true)
   }
@@ -284,10 +291,10 @@ Deno.test('randomPrincipalUsernameSuffix is _ plus 11 lowercase alphanumerics', 
 Deno.test('suffixed short-name cap leaves room for the applied suffix', () => {
   assertEquals(
     MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH + PRINCIPAL_APPLIED_SUFFIX_LENGTH,
-    MAX_PRINCIPAL_USERNAME_LENGTH,
+    MAX_PRINCIPAL_USERNAME_LENGTH
   )
   // A max-length short name plus suffix still passes the applied-name guard.
-  const applied = 'a'.repeat(MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH) +
-    randomPrincipalUsernameSuffix()
+  const applied =
+    'a'.repeat(MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH) + randomPrincipalUsernameSuffix()
   assertEquals(assertSafePrincipalUsername(applied), applied)
 })

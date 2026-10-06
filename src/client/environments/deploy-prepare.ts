@@ -1,6 +1,7 @@
 import type { Context } from 'hono'
 import { and, eq, inArray, or } from 'drizzle-orm'
 import type { AppEnv } from '../../app/app.ts'
+import { type HostingWwwMode, hostingCertificateNames } from '../../contracts/commands/hostname.ts'
 import {
   decryptSecret,
   encryptSecretForDaemon,
@@ -108,6 +109,23 @@ import {
 } from '../../features/principals/store.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
+import {
+  type NativeAppNodeVersionView,
+  type NodeVersionPrepareError,
+  repositoryNodeVersionReader,
+  resolveSourceNodeVersions,
+} from './deploy-node-version.ts'
+import {
+  DEFAULT_NATIVE_APP_DENO_SERIES,
+  denoEntitlementSeries,
+} from '../../contracts/runtime-registry.ts'
+import { isCheckViolationOn } from '../../db/check-violation.ts'
+import {
+  type DenoAppFeatureError,
+  type DenoMigrationPendingError,
+  withDenoNativeApps,
+  withRecordedRuntimes,
+} from './deploy-deno-gate.ts'
 import { type SiteEngineFeatureError, withSiteEngineFeature } from './deploy-site-engine-gate.ts'
 import { PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
 import {
@@ -225,6 +243,7 @@ import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secr
 import { resolveHostingDeployWeb } from '../../features/hostings/hosting-web-env.ts'
 import {
   assembleTlsMetadata,
+  coversAllHostnames,
   parseTlsOptions,
   resolveTlsForHosting,
   TLS_SOURCES,
@@ -241,7 +260,7 @@ import {
   readHostnames,
   readPathPrefix,
   readTargetPort,
-  readWwwRedirect,
+  readWwwMode,
   tlsPinErrorCode,
 } from './deploy-routes-helpers.ts'
 import {
@@ -292,7 +311,9 @@ export type DeployPrepareWarningCode =
   | 'principal_required_for_service_kind'
   | 'binding_endpoint_unavailable'
   | 'php_series_not_installed'
+  | 'compose_variable_unresolved'
   | 'php_mode_not_allowed'
+  | 'node_version_unresolved'
 
 /**
  * Gate a deploy's PHP series against what the target host actually reports.
@@ -472,6 +493,44 @@ export type PreparedDeployCompose = ServerDeployment & {
    * `nativeAppServices[].variables`.
    */
   nativeAppVariables?: NativeAppVariablesView[]
+  /**
+   * The Node series each native app runs and where it came from (the compose
+   * service, the repository's `package.json` / `.nvmrc` / `.node-version`, or
+   * the default), for people. Never sent to a daemon — the wire value is
+   * `nativeAppServices[].nodeVersion`.
+   */
+  nativeAppNodeVersions?: NativeAppNodeVersionView[]
+  /**
+   * The Deno series each Deno app (`x-turbopanel.runtime: deno`) runs and
+   * whether it was pinned or defaulted, for people. Never sent to a daemon —
+   * the wire value is `nativeAppServices[].denoVersion`.
+   */
+  nativeAppDenoVersions?: NativeAppDenoVersionView[]
+}
+
+/** One Deno app's series for the deploy preview. */
+export type NativeAppDenoVersionView = {
+  composeServiceName: string
+  /** The Deno series the host runs it on, such as `2`. */
+  denoVersion: string
+  /** `compose` when `x-turbopanel.denoVersion` pinned it, else `default`. */
+  source: 'compose' | 'default'
+}
+
+/** The preview's view of every Deno app: its series, pinned or defaulted. */
+export function nativeAppDenoVersionViews(
+  apps: readonly Pick<PreparedNativeAppService, 'composeServiceName' | 'runtime' | 'denoVersion'>[]
+): NativeAppDenoVersionView[] {
+  return apps
+    .filter((app) => app.runtime === 'deno')
+    .map((app) => {
+      const pinned = app.denoVersion?.trim()
+      return {
+        composeServiceName: app.composeServiceName,
+        denoVersion: denoEntitlementSeries(pinned || DEFAULT_NATIVE_APP_DENO_SERIES),
+        source: pinned ? ('compose' as const) : ('default' as const),
+      }
+    })
 }
 
 /** One native app's {@link NativeAppVariableView} list. */
@@ -549,6 +608,14 @@ export type DeployPrepareError =
   /** A PHP site asks for a mode its engine, organization or server does not offer. */
   | PhpModePrepareError
   | SiteEngineFeatureError
+  /** A Deno app goes to a daemon that cannot run it, or asks for a series nothing offers. */
+  | DenoAppFeatureError
+  | DenoMigrationPendingError
+  /**
+   * The repository asks for a Node version no offered series satisfies, names
+   * one that is not a version range, or (a deploy only) could not be read.
+   */
+  | NodeVersionPrepareError
   | { kind: 'source_principal_ambiguous'; composeServiceName: string }
   | {
       kind: 'source_ref_unresolved'
@@ -637,6 +704,8 @@ async function emptyPreparedCompose(
     volumes: [],
     warnings,
     nativeAppVariables: [],
+    nativeAppNodeVersions: [],
+    nativeAppDenoVersions: [],
   }
 }
 
@@ -645,6 +714,11 @@ type HardDeployPrepareError =
   // Hard in preview too: the site would not come up in the mode it asks for.
   | PhpModePrepareError
   | SiteEngineFeatureError
+  // Hard in preview too: a Deno app sent to a daemon that cannot run it would start on Node.
+  | DenoAppFeatureError
+  | DenoMigrationPendingError
+  // Hard in preview too: the build would get a Node the app says it cannot run on.
+  | NodeVersionPrepareError
   // Hard in preview too: previewing a deploy that would silently ignore a field
   // — or that would be refused the moment it was run for real — is exactly the
   // reassurance an operator must not be given.
@@ -1929,46 +2003,78 @@ function nativeAppServicesForDeploy(
   const resourcesByComposeName = new Map(
     resolvedServices.map((entry) => [entry.composeServiceName, entry.resources] as const)
   )
-  return apps.map((app) => {
-    const cron = renderCronForDeploy(app.cron, tasksByComposeName.get(app.composeServiceName))
-    const resources = resourcesByComposeName.get(app.composeServiceName)
-    const cpus = resources?.cpus
-    const memoryBytes = resources?.memoryBytes
-    const perApp =
-      cpus === undefined && memoryBytes === undefined
-        ? undefined
-        : {
-            ...(cpus === undefined ? {} : { cpus }),
-            ...(memoryBytes === undefined ? {} : { memoryBytes }),
-          }
-    return {
-      composeServiceName: app.composeServiceName,
-      listenPort: app.listenPort,
-      framework: app.framework,
-      ...(app.nodeVersion === undefined ? {} : { nodeVersion: app.nodeVersion }),
-      ...(app.appMode === undefined ? {} : { appMode: app.appMode }),
-      ...(app.enabled === undefined ? {} : { enabled: app.enabled }),
-      ...(app.startupFile === undefined ? {} : { startupFile: app.startupFile }),
-      // Plain Compose keys, read off the service body by the native split
-      // before the service left the compose document. They ride the payload
-      // rather than stopping here: the `node` service is removed from runtime
-      // compose entirely, so the generated unit is the only thing left that
-      // can honour a restart policy or record service labels.
-      ...(app.restartPolicy === undefined ? {} : { restartPolicy: app.restartPolicy }),
-      ...(app.serviceLabels === undefined ? {} : { serviceLabels: app.serviceLabels }),
-      ...(perApp === undefined ? {} : { resources: perApp }),
-      ...(accountLimits === undefined ? {} : { accountLimits }),
-      // A node app always runs as the principal that owns its release tree, so
-      // unlike a site there is no unowned case to refuse here — the daemon
-      // resolves the account from the same binding it builds for the app's own
-      // unit. Translation still happens exactly once, in `renderCronForDeploy`.
-      ...(cron.length === 0 ? {} : { cron }),
-      // The `node` service left the compose document, and with it the
-      // `environment:` the variables module built — this list is the only way
-      // its variables reach the process.
-      ...nativeAppVariablesField(variablesByComposeName.get(app.composeServiceName)),
-    }
-  })
+  return apps.map((app) =>
+    nativeAppServiceForDeploy(
+      app,
+      resourcesByComposeName.get(app.composeServiceName),
+      accountLimits,
+      renderCronForDeploy(app.cron, tasksByComposeName.get(app.composeServiceName)),
+      variablesByComposeName.get(app.composeServiceName)
+    )
+  )
+}
+
+/** The per-app resource ceiling the daemon turns into unit limits, when the app set one. */
+function nativeAppResourcesForWire(resources: ResolvedService['resources'] | undefined): {
+  resources?: { cpus?: number; memoryBytes?: number }
+} {
+  const cpus = resources?.cpus
+  const memoryBytes = resources?.memoryBytes
+  if (cpus === undefined && memoryBytes === undefined) return {}
+  return {
+    resources: {
+      ...(cpus === undefined ? {} : { cpus }),
+      ...(memoryBytes === undefined ? {} : { memoryBytes }),
+    },
+  }
+}
+
+/**
+ * The runtime and start fields of one app, each only when the app set it, so a
+ * Node app's payload carries neither `runtime` nor `denoVersion`.
+ */
+function nativeAppRuntimeFieldsForWire(app: NativeAppServiceSpec) {
+  return {
+    ...(app.nodeVersion === undefined ? {} : { nodeVersion: app.nodeVersion }),
+    ...(app.runtime === 'deno' ? { runtime: 'deno' as const } : {}),
+    ...(app.denoVersion === undefined ? {} : { denoVersion: app.denoVersion }),
+    ...(app.appMode === undefined ? {} : { appMode: app.appMode }),
+    ...(app.enabled === undefined ? {} : { enabled: app.enabled }),
+    ...(app.startupFile === undefined ? {} : { startupFile: app.startupFile }),
+  }
+}
+
+function nativeAppServiceForDeploy(
+  app: NativeAppServiceSpec,
+  resources: ResolvedService['resources'] | undefined,
+  accountLimits: ReturnType<typeof effectiveAccountLimits>,
+  cron: ReturnType<typeof renderCronForDeploy>,
+  variables: NativeAppVariables | undefined
+): PreparedNativeAppService {
+  return {
+    composeServiceName: app.composeServiceName,
+    listenPort: app.listenPort,
+    framework: app.framework,
+    ...nativeAppRuntimeFieldsForWire(app),
+    // Plain Compose keys, read off the service body by the native split
+    // before the service left the compose document. They ride the payload
+    // rather than stopping here: the `node` service is removed from runtime
+    // compose entirely, so the generated unit is the only thing left that
+    // can honour a restart policy or record service labels.
+    ...(app.restartPolicy === undefined ? {} : { restartPolicy: app.restartPolicy }),
+    ...(app.serviceLabels === undefined ? {} : { serviceLabels: app.serviceLabels }),
+    ...nativeAppResourcesForWire(resources),
+    ...(accountLimits === undefined ? {} : { accountLimits }),
+    // A node app always runs as the principal that owns its release tree, so
+    // unlike a site there is no unowned case to refuse here — the daemon
+    // resolves the account from the same binding it builds for the app's own
+    // unit. Translation still happens exactly once, in `renderCronForDeploy`.
+    ...(cron.length === 0 ? {} : { cron }),
+    // The `node` service left the compose document, and with it the
+    // `environment:` the variables module built — this list is the only way
+    // its variables reach the process.
+    ...nativeAppVariablesField(variables),
+  }
 }
 
 /**
@@ -2325,6 +2431,40 @@ async function prepareLocalSourceMaterial(
 }
 
 /**
+ * {@link prepareLocalSourceMaterial}, then the Node series of every native app
+ * that names none, read from its repository at the commit just resolved (see
+ * `deploy-node-version.ts`).
+ */
+async function prepareLocalSourcesWithNodeVersions(
+  c: Context<AppEnv>,
+  db: Db,
+  args: Parameters<typeof prepareLocalSourceMaterial>[2] & {
+    nativeApps: readonly PreparedNativeAppService[]
+  }
+): Promise<
+  | {
+      sourceMaterial: EnvironmentDeploySource[]
+      nodeVersions: { apps: PreparedNativeAppService[]; views: NativeAppNodeVersionView[] }
+    }
+  | DeployPrepareError
+  | Response
+> {
+  const sourceMaterial = await prepareLocalSourceMaterial(c, db, args)
+  if (!Array.isArray(sourceMaterial)) return sourceMaterial
+  return await resolveSourceNodeVersions(args.nativeApps, sourceMaterial, {
+    mode: args.mode,
+    warnings: args.warnings,
+    read: repositoryNodeVersionReader(c, db, {
+      organizationId: args.params.organizationId,
+      serverId: args.params.serverId,
+    }),
+    ...(args.params.rollback === undefined
+      ? {}
+      : { rollbackPins: args.params.rollback.releaseByService }),
+  })
+}
+
+/**
  * Registration check for the compose document's external Docker networks,
  * plus the addressing the registered rows declare (one query serves both).
  * The error is soft — `absorbSoftPrepareError` decides whether a preview
@@ -2501,6 +2641,8 @@ async function toPreparedDeployResult(
     sites: EnvironmentDeploySite[]
     nativeAppServices: PreparedNativeAppService[]
     nativeAppVariables?: NativeAppVariablesView[]
+    nativeAppNodeVersions?: NativeAppNodeVersionView[]
+    nativeAppDenoVersions?: NativeAppDenoVersionView[]
     sourceMaterial: EnvironmentDeploySource[]
     dockerExternalNetworks: string[]
     dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
@@ -2543,6 +2685,8 @@ async function toPreparedDeployResult(
     sites: parts.sites,
     nativeAppServices: parts.nativeAppServices,
     nativeAppVariables: parts.nativeAppVariables ?? [],
+    nativeAppNodeVersions: parts.nativeAppNodeVersions ?? [],
+    nativeAppDenoVersions: parts.nativeAppDenoVersions ?? [],
     sourceMaterial: parts.sourceMaterial,
     dockerExternalNetworks: parts.dockerExternalNetworks,
     dockerNetworkAddressing: parts.dockerNetworkAddressing
@@ -2900,9 +3044,73 @@ async function persistDeployRuntimeEntitlements(
   db: Db,
   mode: DeployPrepareMode,
   entitlements: readonly DeployRuntimeEntitlement[]
-): Promise<void> {
-  if (mode === 'preview') return
-  await insertDeployEntitlementsIfMissing(db, entitlements)
+): Promise<DenoMigrationPendingError | undefined> {
+  if (mode === 'preview') return undefined
+  try {
+    await insertDeployEntitlementsIfMissing(db, entitlements)
+  } catch (err) {
+    // A database that predates Deno apps refuses the `deno` runtime on this
+    // table. Say so in plain words rather than failing the deploy with a 500.
+    if (
+      entitlements.some((entry) => entry.runtime === 'deno') &&
+      isCheckViolationOn(err, 'entitlement_runtime_check')
+    ) {
+      return { kind: 'deno_migration_pending' }
+    }
+    throw err
+  }
+  return undefined
+}
+
+/**
+ * Everything that depends on which runtime each local native app runs: the
+ * Deno feature gate, the repository's Node version, the runtime groups each
+ * site owner's Linux user is granted, and the stored entitlements. The first
+ * refusal wins; a Deno app is refused before anything reads it as Node.
+ */
+async function prepareNativeAppRuntimes(
+  c: Context<AppEnv>,
+  db: Db,
+  args: Omit<Parameters<typeof prepareLocalSourcesWithNodeVersions>[2], 'nativeApps'> & {
+    nativeApps: readonly PreparedNativeAppService[]
+    principalMaterial: Parameters<typeof mergeDeployPrincipalRuntimes>[0]['principalMaterial']
+    sites: Parameters<typeof mergeDeployPrincipalRuntimes>[0]['sites']
+  }
+): Promise<
+  | {
+      localSourceMaterial: EnvironmentDeploySource[]
+      nodeVersions: { apps: PreparedNativeAppService[]; views: NativeAppNodeVersionView[] }
+      principalMaterialWithRuntimes: EnvironmentDeployPrincipalMaterial[]
+    }
+  | DeployPrepareError
+  | Response
+> {
+  // A rollback runs each app on the runtime its release ran on.
+  const nativeApps = withRecordedRuntimes(args.nativeApps, args.params.rollback?.releaseByService)
+  const denoGate = await withDenoNativeApps(db, args.params.serverId, nativeApps)
+  if ('kind' in denoGate) return denoGate
+
+  // Before the runtime merge: the group a native app's Linux user is granted
+  // follows the series it runs, and an app with no `nodeVersion` gets it here
+  // from its repository at the commit being deployed.
+  const localSources = await prepareLocalSourcesWithNodeVersions(c, db, { ...args, nativeApps })
+  if (!('sourceMaterial' in localSources)) return localSources
+  const { sourceMaterial: localSourceMaterial, nodeVersions } = localSources
+
+  const { principalMaterial: principalMaterialWithRuntimes, deployEntitlements } =
+    mergeDeployPrincipalRuntimes({
+      principalMaterial: args.principalMaterial,
+      nativeAppServices: nodeVersions.apps,
+      sourceMaterial: localSourceMaterial,
+      sites: args.sites,
+    })
+  const entitlementsPersisted = await persistDeployRuntimeEntitlements(
+    db,
+    args.mode,
+    deployEntitlements
+  )
+  if (entitlementsPersisted) return entitlementsPersisted
+  return { localSourceMaterial, nodeVersions, principalMaterialWithRuntimes }
 }
 
 export async function prepareDeployCompose(
@@ -3168,7 +3376,7 @@ export async function prepareDeployCompose(
     pipeline.localServiceNames
   )
 
-  const localSourceMaterial = await prepareLocalSourceMaterial(c, db, {
+  const runtimes = await prepareNativeAppRuntimes(c, db, {
     mode,
     warnings,
     params,
@@ -3177,17 +3385,11 @@ export async function prepareDeployCompose(
     principalMaterial,
     principalResolution,
     localServiceNames: pipeline.localServiceNames,
+    nativeApps: localNativeApps,
+    sites: localSite,
   })
-  if (!Array.isArray(localSourceMaterial)) return localSourceMaterial
-
-  const { principalMaterial: principalMaterialWithRuntimes, deployEntitlements } =
-    mergeDeployPrincipalRuntimes({
-      principalMaterial,
-      nativeAppServices: localNativeApps,
-      sourceMaterial: localSourceMaterial,
-      sites: localSite,
-    })
-  await persistDeployRuntimeEntitlements(db, mode, deployEntitlements)
+  if ('kind' in runtimes || runtimes instanceof Response) return runtimes
+  const { localSourceMaterial, nodeVersions, principalMaterialWithRuntimes } = runtimes
 
   const dockerExternalNetworks = collectComposeExternalDockerNetworkNames(split.composeYaml)
   const externalNetworks = await resolveExternalNetworks(
@@ -3257,8 +3459,10 @@ export async function prepareDeployCompose(
     storageMaterial,
     principalMaterial: principalMaterialWithRuntimes,
     sites: localSite,
-    nativeAppServices: localNativeApps,
-    nativeAppVariables: nativeAppVariableViews(localNativeApps, nativeVariables),
+    nativeAppServices: nodeVersions.apps,
+    nativeAppVariables: nativeAppVariableViews(nodeVersions.apps, nativeVariables),
+    nativeAppNodeVersions: nodeVersions.views,
+    nativeAppDenoVersions: nativeAppDenoVersionViews(nodeVersions.apps),
     sourceMaterial: localSourceMaterial,
     dockerExternalNetworks,
     dockerNetworkAddressing: externalNetworks.addressing,
@@ -3696,6 +3900,47 @@ type HostingRow = {
   ipId: string | null
 }
 
+/**
+ * Names a pinned certificate must cover. An uploaded pair is served as-is on
+ * every name the www mode adds, so it must list them all. A Let's Encrypt pin
+ * is issued by Caddy name by name in `acme` mode, so only the typed names are
+ * checked against the row (the www names get their own certificate).
+ */
+function pinCoverageNames(
+  pinId: string | null,
+  candidates: OrgTlsCandidate[],
+  hosting: Readonly<{ hostnames: string[]; www: HostingWwwMode }>
+): string[] {
+  const pinned = pinId ? candidates.find((candidate) => candidate.id === pinId) : undefined
+  return pinned?.source === 'lets_encrypt' ? hosting.hostnames : hostingCertificateNames(hosting)
+}
+
+/**
+ * The refusal for a pin that cannot serve the hosting. When the certificate
+ * covers the typed names and only misses names the www choice adds, say so in
+ * plain words, naming exactly the missing ones.
+ */
+function tlsPinErrorResponse(
+  error: Parameters<typeof tlsPinErrorCode>[0],
+  hostingId: string,
+  pinned: OrgTlsCandidate | undefined,
+  hosting: Readonly<{ hostnames: string[]; www: HostingWwwMode }>
+): Response {
+  const dnsNames = pinned?.metadata.dnsNames ?? []
+  const typedCovered = coversAllHostnames(dnsNames, hosting.hostnames)
+  const missing = hostingCertificateNames(hosting).filter(
+    (name) => !coversAllHostnames(dnsNames, [name])
+  )
+  const message =
+    error === 'pin_mismatch' && typedCovered && missing.length > 0
+      ? `The certificate on this hosting covers ${hosting.hostnames.join(', ')} but not ${missing.join(', ')}, which its www setting adds. Upload one that lists every name, or set www to "Only ${hosting.hostnames.join(', ')}".`
+      : undefined
+  return Response.json(
+    { error: tlsPinErrorCode(error), hostingId, ...(message ? { message } : {}) },
+    { status: 400 }
+  )
+}
+
 async function resolveHttpHostingEntry(
   db: Db,
   h: HostingRow,
@@ -3711,21 +3956,18 @@ async function resolveHttpHostingEntry(
 > {
   const hostnames = readHostnames(h.options)
   if (hostnames.length === 0) return { skip: true }
+  const www = readWwwMode(h.options)
 
   // A revoked Let's Encrypt pin resolves as internal (`tlsId: null`) here —
   // do not treat it as `tls_pin_not_ready`. Deleted / mismatched pins still fail.
   const resolved = resolveTlsForHosting({
     pinId: h.tlsId,
-    hostnames,
+    hostnames: pinCoverageNames(h.tlsId, candidates, { hostnames, www }),
     candidates,
   })
   if (!resolved.ok) {
-    return {
-      error: Response.json(
-        { error: tlsPinErrorCode(resolved.error), hostingId: h.id },
-        { status: 400 }
-      ),
-    }
+    const pinned = candidates.find((candidate) => candidate.id === h.tlsId)
+    return { error: tlsPinErrorResponse(resolved.error, h.id, pinned, { hostnames, www }) }
   }
 
   const bindScope = resolveHostingBind(parseHostingOptions(h.options))
@@ -3771,7 +4013,7 @@ async function resolveHttpHostingEntry(
       tlsId: tlsWire.tlsId,
       ...(tlsWire.tlsMode === undefined ? {} : { tlsMode: tlsWire.tlsMode }),
       proxy: readHostingProxyFromOptions(h.options),
-      ...(readWwwRedirect(h.options) ? { wwwRedirect: true } : {}),
+      ...(www === 'off' ? {} : { www }),
       ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),
       ...(web === undefined ? {} : { web }),
     },

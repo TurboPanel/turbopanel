@@ -60,7 +60,15 @@ it('wwwSiblingHostname flips the www spelling and refuses unusable results', () 
   assertEquals(wwwSiblingHostname('example.com'), 'www.example.com')
   assertEquals(wwwSiblingHostname('www.example.com'), 'example.com')
   assertEquals(wwwSiblingHostname('shop.example.com'), 'www.shop.example.com')
-  assertEquals(wwwSiblingHostname('www'), 'www.www')
+  // A one-word name has no www spelling, nor does an IP address.
+  assertEquals(wwwSiblingHostname('www'), null)
+  assertEquals(wwwSiblingHostname('203.0.113.5'), null)
+  for (const name of ['localhost', 'www.com', 'www.localhost', 'www.203.0.113.5', '2001:db8::1']) {
+    assertEquals(wwwSiblingHostname(name), null, name)
+  }
+  // Digits are fine anywhere but the last label.
+  assertEquals(wwwSiblingHostname('203.example.com'), 'www.203.example.com')
+  assertEquals(wwwSiblingHostname('www.shop1.example.com'), 'shop1.example.com')
   assertEquals(wwwSiblingHostname('www.'), null)
   const nearLimit = [60, 60, 60, 60].map((n) => 'a'.repeat(n)).join('.') + '.example'
   assertEquals(nearLimit.length <= HOSTNAME_MAX_LENGTH, true)

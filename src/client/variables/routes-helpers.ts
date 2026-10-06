@@ -27,7 +27,7 @@ export const PARENT_BODY_FIELDS = [
   { bodyKey: 'serverId', column: 'serverId', entityKind: 'server' },
 ] as const
 
-export type VariableParentColumn = typeof PARENT_BODY_FIELDS[number]['column']
+export type VariableParentColumn = (typeof PARENT_BODY_FIELDS)[number]['column']
 
 export type ParsedVariableParent = {
   column: VariableParentColumn
@@ -100,7 +100,7 @@ export function parseVariableKey(c: Context<AppEnv>, key: unknown): string | Res
 
 export function parseIsSecret(
   c: Context<AppEnv>,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): boolean | Response {
   if (body.isSecret === undefined || body.isSecret === null) {
     return false
@@ -113,7 +113,7 @@ export function parseIsSecret(
 
 export function parseOptionalBoolean(
   c: Context<AppEnv>,
-  value: unknown,
+  value: unknown
 ): boolean | Response | undefined {
   if (value === undefined) return undefined
   if (typeof value !== 'boolean') {
@@ -122,18 +122,34 @@ export function parseOptionalBoolean(
   return value
 }
 
+/**
+ * What is stored for a value the caller sent: Windows line endings (CR LF)
+ * become LF, so a PEM pasted from a Windows editor is the same text the host
+ * accepts, then surrounding whitespace is trimmed.
+ */
 export function trimVariableValueOnWrite(value: string): string {
-  return value.trim()
+  return value.replaceAll('\r\n', '\n').trim()
+}
+
+/** Why a variable cannot be saved as is, or `null`. Run on the normalised value. */
+export const VARIABLE_LONE_CARRIAGE_RETURN_ERROR =
+  'value contains a carriage return that is not part of a Windows line ending (CR LF); remove it'
+
+export function variableValueProblem(normalizedValue: string): string | null {
+  return normalizedValue.includes('\r') ? VARIABLE_LONE_CARRIAGE_RETURN_ERROR : null
 }
 
 export function serializeResolvedVariables(map: ResolvedVariableMap) {
-  const variables: Record<string, {
-    isSecret: boolean
-    isLiteral: boolean
-    forBuild: boolean
-    forRuntime: boolean
-    value: string | null
-  }> = {}
+  const variables: Record<
+    string,
+    {
+      isSecret: boolean
+      isLiteral: boolean
+      forBuild: boolean
+      forRuntime: boolean
+      value: string | null
+    }
+  > = {}
   for (const [key, entry] of map) {
     variables[key] = {
       isSecret: entry.isSecret,
@@ -148,7 +164,7 @@ export function serializeResolvedVariables(map: ResolvedVariableMap) {
 
 export function parseVariableParent(
   c: Context<AppEnv>,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): ParsedVariableParent | Response {
   const specified = PARENT_BODY_FIELDS.filter(({ bodyKey }) => {
     const value = body[bodyKey]
@@ -178,7 +194,7 @@ export function buildInsertValues(
     forBuild: boolean
     forRuntime: boolean
     description: string | null
-  },
+  }
 ) {
   return {
     organizationId: null,
@@ -207,7 +223,7 @@ export function hasImmutableParentChange(body: Record<string, unknown>): boolean
 
 export function parseOptionalStringValue(
   c: Context<AppEnv>,
-  value: unknown,
+  value: unknown
 ): string | null | Response | undefined {
   if (value === undefined) return undefined
   if (value === null) return null
@@ -219,7 +235,7 @@ export function parseOptionalStringValue(
 
 export function parseOptionalDescription(
   c: Context<AppEnv>,
-  value: unknown,
+  value: unknown
 ): string | null | Response | undefined {
   if (value === undefined) return undefined
   if (value === null) return null
@@ -235,7 +251,7 @@ export function parseOptionalDescription(
 export function resolvePatchIsSecret(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
-  existingIsSecret: boolean,
+  existingIsSecret: boolean
 ): { nextIsSecret: boolean; toggled: boolean } | Response {
   if (body.isSecret !== undefined && typeof body.isSecret !== 'boolean') {
     return c.json({ error: 'Invalid request' }, 400)
@@ -256,11 +272,9 @@ export function parseResolvedVariablesQuery(params: {
   serviceId: string | undefined
   environmentId: string | undefined
   hostingId: string | undefined
-}):
-  | { ok: true; query: ResolvedVariablesQuery }
-  | { ok: false; error: string; status: 400 } {
+}): { ok: true; query: ResolvedVariablesQuery } | { ok: false; error: string; status: 400 } {
   const specified = [params.serviceId, params.environmentId, params.hostingId].filter(
-    (value) => value !== undefined && value !== '',
+    (value) => value !== undefined && value !== ''
   )
   if (specified.length !== 1) {
     return {
@@ -283,7 +297,7 @@ export function variableKeyUniqueConflictMessage(): string {
 }
 
 export function validateVariableKeyValue(
-  key: unknown,
+  key: unknown
 ): { ok: true; key: string } | { ok: false; error: string; status: 400 } {
   if (typeof key !== 'string' || !key || !VARIABLE_KEY_RE.test(key)) {
     return { ok: false, error: 'Invalid request', status: 400 }
@@ -298,7 +312,7 @@ export function patchHasOnlyUpdatedAt(updateFields: Record<string, unknown>): bo
 export function switchingSecretRequiresValue(
   nextIsSecret: boolean,
   existingIsSecret: boolean,
-  valueProvided: boolean,
+  valueProvided: boolean
 ): boolean {
   return !nextIsSecret && existingIsSecret && !valueProvided
 }
