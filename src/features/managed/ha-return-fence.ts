@@ -137,7 +137,7 @@ export async function handleBootHoldReport(
   }
   const members = await deps.listMembers(db, input.managedId)
   const member = members.find((row) => row.id === input.sourceMemberId)
-  if (!member || member.serverId !== input.reporterServerId) {
+  if (member?.serverId !== input.reporterServerId) {
     compatLogWarn(
       'managed-ha',
       `boot-hold report for ${input.managedId} ignored: member ${input.sourceMemberId} is not on server ${input.reporterServerId}`
@@ -188,8 +188,7 @@ async function noteReplacedMemberFenced(
   }
   const latest = await findLatestRecovery(db, managedId)
   if (
-    latest &&
-    latest.sourcePrimaryMemberId === member.id &&
+    latest?.sourcePrimaryMemberId === member.id &&
     latest.metadata.fenceBasis === 'host-loss-attested' &&
     latest.metadata.returnFence !== 'confirmed'
   ) {
