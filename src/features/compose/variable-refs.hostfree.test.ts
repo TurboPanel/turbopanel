@@ -1,6 +1,7 @@
 import { assertEquals } from "@std/assert";
 import {
   collectComposeInterpolationKeys,
+  findUnresolvedComposeInterpolations,
   containsVariableRefOpener,
   isVariableRefScope,
   parseExactVariableRef,
@@ -125,4 +126,13 @@ test("collectComposeInterpolationKeys deduplicates repeated keys", () => {
     collectComposeInterpolationKeys("$FOO ${FOO} and $BAR ${BAR}"),
     ["FOO", "BAR"],
   );
+});
+
+test("findUnresolvedComposeInterpolations flags ${VAR} the env file does not define", () => {
+  const yaml = "environment:\n  A: ${GREETING}\n  B: ${web__NAME}\n  C: $${ESCAPED}\n";
+  assertEquals(
+    findUnresolvedComposeInterpolations(yaml, "web__NAME=x\n# c\n"),
+    ["GREETING"],
+  );
+  assertEquals(findUnresolvedComposeInterpolations("a: b", ""), []);
 });

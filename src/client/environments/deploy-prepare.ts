@@ -300,6 +300,7 @@ export type DeployPrepareWarningCode =
   | 'principal_required_for_service_kind'
   | 'binding_endpoint_unavailable'
   | 'php_series_not_installed'
+  | 'compose_variable_unresolved'
   | 'php_mode_not_allowed'
   | 'node_version_unresolved'
 
