@@ -297,6 +297,16 @@ export const managedSchemas = {
         type: 'string',
         description: 'Optional name; defaults to the environment name',
       },
+      engineSeries: {
+        type: 'string',
+        description:
+          'Optional engine series (major version, for example `18`). Only tested series are accepted; omitted = the engine default. A non-string answers 400; an unknown or untested series answers 422 `managed_version_unsupported`.',
+      },
+      imageVariant: {
+        type: 'string',
+        description:
+          'Optional base-OS image variant of the series (for example `alpine` or `debian`). Alone, it selects that variant of the default series; omitted = the first variant of the series. A non-string answers 400; an unknown variant answers 422 `managed_version_unsupported`.',
+      },
       exposure: {
         type: 'object',
         properties: {
@@ -935,6 +945,7 @@ export const managedSchemas = {
       message: { type: 'string', description: 'Plain-words explanation of the refusal.' },
     },
   },
+  ManagedVersionUnsupportedError: errorSchema('managed_version_unsupported'),
   ServerPlacementRequiredError: errorSchema('server_placement_required'),
   ServerOfflineError: errorSchema('server_offline'),
   ManagedSettingsInvalidError: errorSchema('managed_settings_invalid'),
@@ -993,7 +1004,7 @@ export const managedPaths = {
         },
         400: {
           description:
-            'not_managed_environment / managed_engine_unavailable / managed_settings_invalid',
+            'not_managed_environment / managed_engine_unavailable / managed_settings_invalid; also `Invalid engineSeries` / `Invalid imageVariant` when either is not a string',
           content: {
             'application/json': {
               schema: {
@@ -1007,6 +1018,11 @@ export const managedPaths = {
               },
             },
           },
+        },
+        422: {
+          description:
+            'managed_version_unsupported (the requested engineSeries / imageVariant is unknown or not a tested version; nothing is created)',
+          ...jsonSchema('ManagedVersionUnsupportedError'),
         },
         409: {
           description: 'server_placement_required / server_offline / managed_busy',
@@ -1286,6 +1302,29 @@ export const managedPaths = {
         200: {
           description: 'Database removed',
           ...jsonSchema('ManagedDatabaseMutationResponse'),
+        },
+        409: {
+          description:
+            'cannot_drop_initial_database, managed_database_has_bindings (a service binding references the database; lists `services`), or managed_database_has_users (SQL users still list the database; lists their typed usernames in `users`; delete those users first)',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  error: {
+                    type: 'string',
+                    enum: [
+                      'cannot_drop_initial_database',
+                      'managed_database_has_bindings',
+                      'managed_database_has_users',
+                    ],
+                  },
+                  services: { type: 'array', items: { type: 'object' } },
+                  users: { type: 'array', items: { type: 'string' } },
+                },
+              },
+            },
+          },
         },
       },
     },

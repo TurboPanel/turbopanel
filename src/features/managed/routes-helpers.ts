@@ -495,6 +495,13 @@ export function isManagedReplicationPrincipal(metadata: unknown): boolean {
   return principalMetadata(metadata).managedReplication === true
 }
 
+function principalDatabaseNames(metadata: unknown): string[] {
+  const { databases } = principalMetadata(metadata)
+  return Array.isArray(databases)
+    ? databases.filter((entry): entry is string => typeof entry === 'string')
+    : []
+}
+
 export function serializeManagedUser(row: {
   id: string
   username: string
@@ -504,9 +511,7 @@ export function serializeManagedUser(row: {
   createdAt: string
 }) {
   const meta = principalMetadata(row.metadata)
-  const databases = Array.isArray(meta.databases)
-    ? meta.databases.filter((entry): entry is string => typeof entry === 'string')
-    : []
+  const databases = principalDatabaseNames(row.metadata)
   const privileges = Array.isArray(meta.privileges)
     ? meta.privileges.filter((entry): entry is string => typeof entry === 'string')
     : []
@@ -609,6 +614,10 @@ export function parseManagedUserCreateFields(
     !databases.every((name) => options.databases.includes(name))
   ) {
     return c.json({ error: 'Invalid request' }, 400)
+  }
+  // A cluster that predates the reserved-name check may still list a system schema.
+  if (databases.some((name) => isReservedDatabaseName(ctx.spec.engine, name))) {
+    return c.json({ error: 'reserved_database_name' }, 400)
   }
 
   const privileges = Array.isArray(body.privileges)
@@ -729,13 +738,39 @@ export function mergeManagedPatchSettings(
   })
 }
 
+/**
+ * Engine system schemas that must never be created or granted as an application
+ * database. A user granted `mysql.*` (or `sys.*`) can read and write the
+ * engine's own account and configuration tables, so the name is refused the same
+ * way the initial database is. Matched case-insensitively, as the engines
+ * themselves treat these names.
+ */
+const MYSQL_FAMILY_RESERVED_DATABASES: readonly string[] = [
+  'mysql',
+  'information_schema',
+  'performance_schema',
+  'sys',
+]
+
+export function reservedDatabaseNames(engine: string): readonly string[] {
+  return engine === 'mysql' || engine === 'mariadb' ? MYSQL_FAMILY_RESERVED_DATABASES : []
+}
+
+export function isReservedDatabaseName(engine: string, name: string): boolean {
+  return reservedDatabaseNames(engine).includes(name.toLowerCase())
+}
+
 export function validateManagedDatabaseCreateName(
   name: string,
   databases: readonly string[],
-  identifier: { pattern: RegExp; maxLength: number }
+  identifier: { pattern: RegExp; maxLength: number },
+  engine = ''
 ): ManagedRouteValidationError | null {
   if (!identifier.pattern.test(name) || name.length > identifier.maxLength) {
     return { ok: false, error: 'Invalid database name', status: 400 }
+  }
+  if (isReservedDatabaseName(engine, name)) {
+    return { ok: false, error: 'reserved_database_name', status: 400 }
   }
   if (databases.includes(name)) {
     return { ok: false, error: 'database_exists', status: 409 }
@@ -760,6 +795,25 @@ export function evaluateManagedDatabaseDelete(
     return { ok: false, error: 'cannot_drop_initial_database', status: 409 }
   }
   return null
+}
+
+/**
+ * Typed usernames of the SQL users (never the root or replication principal)
+ * whose `databases` list still names `databaseName`. Dropping the database
+ * while any remain would leave the next apply granting on a missing database.
+ */
+export function listUsersReferencingDatabase(
+  principals: ReadonlyArray<{ username: string; metadata: unknown }>,
+  databaseName: string
+): string[] {
+  return principals
+    .filter(
+      (entry) =>
+        !isManagedRootPrincipal(entry.metadata) &&
+        !isManagedReplicationPrincipal(entry.metadata) &&
+        principalDatabaseNames(entry.metadata).includes(databaseName)
+    )
+    .map((entry) => entry.username)
 }
 
 export function nextDatabasesAfterCreate(databases: readonly string[], name: string): string[] {

@@ -1,6 +1,7 @@
 import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { mysqlEngineSpec } from './mysql.ts'
 import { postgresEngineSpec } from './postgres.ts'
 import { isManagedVariantSwapSafe } from './releases.ts'
 import type { ManagedContext } from '../../client/managed/context.ts'
@@ -540,6 +541,32 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
     assertEquals(res.status, 400)
     assertEquals(await res.json(), { error: 'Invalid username' })
   }
+})
+
+test('parseManagedUserCreateFields refuses a system schema listed by an older cluster', async () => {
+  const c = mockContext()
+  const settings = mysqlEngineSpec.parseSettings(mysqlEngineSpec.defaultSettings)
+  if (!settings) throw new TypeError('expected default mysql settings')
+  const options: ManagedRowOptions = { settings, databases: ['defaultdb', 'mysql'] }
+  const ctx = mockManagedContext({ spec: mysqlEngineSpec, catalogCode: 'mysql' })
+
+  const res = parseManagedUserCreateFields(
+    c,
+    ctx,
+    { username: 'app_user', databases: ['mysql'], privileges: ['read-write'] },
+    options
+  )
+  if (!(res instanceof Response)) throw new TypeError('expected Response')
+  assertEquals(res.status, 400)
+  assertEquals(await res.json(), { error: 'reserved_database_name' })
+
+  const ok = parseManagedUserCreateFields(
+    c,
+    ctx,
+    { username: 'app_user', databases: ['defaultdb'], privileges: ['read-write'] },
+    options
+  )
+  if (ok instanceof Response) throw new TypeError('expected parsed fields')
 })
 
 test('parseManagedUserCreateFields reserves suffix room when the scheme is partial', async () => {

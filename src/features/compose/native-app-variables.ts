@@ -98,9 +98,25 @@ function rejection(assignment: RuntimeEnvAssignment): NativeAppVariableReason | 
     return assignment.key.length > MAX_SECRET_KEY_LENGTH ? 'invalid_value' : null
   }
   const { value } = assignment
-  return value.length > NATIVE_APP_MAX_VARIABLE_VALUE || value.includes('\0')
+  // The host's checker refuses any carriage return; `withLfLineEndings` has
+  // already turned CR LF into LF, so one left over is a lone CR.
+  return value.length > NATIVE_APP_MAX_VARIABLE_VALUE ||
+    value.includes('\0') ||
+    value.includes('\r')
     ? 'invalid_value'
     : null
+}
+
+/**
+ * The assignment with Windows line endings (CR LF) turned into LF, so a PEM
+ * saved before values were normalised on write still reaches the host in a
+ * shape it accepts. A secret travels sealed, so the daemon does the same after
+ * it decrypts (`normalizeNativeAppEnvValue`).
+ */
+function withLfLineEndings(assignment: RuntimeEnvAssignment): RuntimeEnvAssignment {
+  const { value } = assignment
+  if (!value?.includes('\r\n')) return assignment
+  return { ...assignment, value: value.replaceAll('\r\n', '\n') }
 }
 
 /** Code-unit order, so the payload does not depend on the runtime's locale. */
@@ -128,7 +144,9 @@ export function buildNativeAppVariables(
   unreferenced: readonly UnreferencedSecret[] = []
 ): NativeAppVariables {
   const byName = new Map<string, RuntimeEnvAssignment>()
-  for (const assignment of assignments) byName.set(assignment.name, assignment)
+  for (const assignment of assignments) {
+    byName.set(assignment.name, withLfLineEndings(assignment))
+  }
 
   const variables: EnvironmentDeployNativeAppVariable[] = []
   const view: NativeAppVariableView[] = platformView(app)

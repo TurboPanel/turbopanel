@@ -50,6 +50,7 @@ export const AUDIT_ACTIONS = [
   'server.firewall_mode.set',
   'deployment.cancel',
   'hosting.letsencrypt.requested',
+  'mail.dead_letter.replay',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

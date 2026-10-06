@@ -7,7 +7,7 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import type { StepUpAction } from '../authn/step-up-actions.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
-import { getDaemonCellRegistry, getDb } from '../../db/connection.ts'
+import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   container,
@@ -145,11 +145,13 @@ import {
   evaluatePromoteLagHttpGate,
   evaluatePromoteMemberRole,
   evaluatePromoteReplicaClass,
+  evaluateReadOnlyLoginTargetsLazy,
   evaluateReplicaClassConversion,
   evaluateReplicaPlacementPrechecks,
   isManagedReplicationPrincipal,
   isManagedRootPrincipal,
   isPlainObject,
+  listUsersReferencingDatabase,
   loadManagedStatusSnapshot,
   managedSessionPaths,
   type MemberPatchFields,
@@ -162,6 +164,7 @@ import {
   parseManagedCreateName,
   parseManagedLifecycleAction,
   parseManagedUserCreateFields,
+  parseManagedVersionSelection,
   parseMemberPatch,
   parseMemberReadEligibleCreate,
   parsePromoteForce,
@@ -592,7 +595,12 @@ async function resolveManagedCreatePlan(
   }
   const displayName = displayNameResult.name
 
-  let settings = mergeCreateSettings(ctx.spec, body)
+  // Resolve the requested series / variant before anything is created or any
+  // server preflight runs, so a refused version never reaches the host.
+  const version = parseManagedVersionSelection(ctx.spec.engine, body)
+  if (!version.ok) return c.json({ error: version.error }, version.status)
+
+  let settings = mergeCreateSettings(ctx.spec, body, version.image)
   if (!settings) {
     return c.json({ error: 'managed_settings_invalid' }, 400)
   }
@@ -1097,6 +1105,30 @@ async function hasManagedUsernameNamespaceConflict(
   })
 }
 
+/** 409 when a service binding or a SQL user's database list still names the database. */
+async function refuseDatabaseDropWhenInUse(
+  c: Context<AppEnv>,
+  db: Db,
+  managedId: string,
+  databaseName: string
+): Promise<Response | null> {
+  if (await hasBindingsForDatabase(db, { managedId, databaseName })) {
+    const redeployRequired = await listBindingImpactForDatabase(db, { managedId, databaseName })
+    return c.json(
+      { error: 'managed_database_has_bindings', services: redeployRequired.services },
+      409
+    )
+  }
+  const users = listUsersReferencingDatabase(
+    await listManagedPrincipals(db, managedId),
+    databaseName
+  )
+  if (users.length > 0) {
+    return c.json({ error: 'managed_database_has_users', users }, 409)
+  }
+  return null
+}
+
 export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for managed routes')
@@ -1563,7 +1595,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       nameScheme
     )
     if (fields instanceof Response) return fields
-    const { username, databases, privileges } = fields
+    const { username, databases, privileges, connectionRole } = fields
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
@@ -1575,6 +1607,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const commandQueue = await assertManagedApplyReady(c, db, ctx, row, options, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
+
+    // A read-only login needs a read-eligible replica to land on; refuse it
+    // before anything is inserted or queued (a standalone cluster has none).
+    const readGuard = await evaluateReadOnlyLoginTargetsLazy(connectionRole, () =>
+      listManagedMembers(db, row.id)
+    )
+    if (readGuard) return c.json({ error: readGuard.error }, readGuard.status)
 
     // Same-cluster collision, owning-org namespace probe, and principal insert
     // share one txn so the organization FOR UPDATE lock covers the insert —
@@ -1616,6 +1655,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           engine: ctx.spec.engine,
           databases,
           privileges,
+          // Stored only for read-only: an absent key is the read-write default.
+          ...(connectionRole === 'read-only' ? { connectionRole } : {}),
         },
       })
       return { ok: true as const, appliedUsername, ...created }
@@ -1666,6 +1707,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         nameScheme,
         databases,
         privileges,
+        connectionRole,
         createdAt: createdUser?.createdAt ?? new Date().toISOString(),
       },
       password,
@@ -1904,10 +1946,12 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const { pattern, maxLength } = ctx.spec.userOperations.identifier
-    const nameError = validateManagedDatabaseCreateName(name, options.databases, {
-      pattern,
-      maxLength,
-    })
+    const nameError = validateManagedDatabaseCreateName(
+      name,
+      options.databases,
+      { pattern, maxLength },
+      ctx.spec.engine
+    )
     if (nameError) {
       return c.json({ error: nameError.error }, nameError.status)
     }
@@ -2001,19 +2045,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: deleteError.error }, deleteError.status)
     }
 
-    if (await hasBindingsForDatabase(db, { managedId: row.id, databaseName })) {
-      const redeployRequired = await listBindingImpactForDatabase(db, {
-        managedId: row.id,
-        databaseName,
-      })
-      return c.json(
-        {
-          error: 'managed_database_has_bindings',
-          services: redeployRequired.services,
-        },
-        409
-      )
-    }
+    const inUse = await refuseDatabaseDropWhenInUse(c, db, row.id, databaseName)
+    if (inUse) return inUse
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
