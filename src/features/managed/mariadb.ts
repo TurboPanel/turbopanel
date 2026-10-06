@@ -94,20 +94,14 @@ function parseInitialDatabase(value: unknown): string | null {
   return trimmed
 }
 
-function asSettingsRecord(
-  value: unknown,
-): Record<string, unknown> | undefined | null {
+function asSettingsRecord(value: unknown): Record<string, unknown> | undefined | null {
   if (value === null || value === undefined) return undefined
   if (typeof value !== 'object' || Array.isArray(value)) return null
   return value as Record<string, unknown>
 }
 
 function parseMariadbSettings(value: unknown): MariadbManagedSettings | null {
-  const base = parseManagedSettingsBase(
-    value,
-    MARIADB_RESERVED_ENV_KEYS,
-    'mariadb',
-  )
+  const base = parseManagedSettingsBase(value, MARIADB_RESERVED_ENV_KEYS, 'mariadb')
   if (base === null) return null
 
   const record = asSettingsRecord(value)
@@ -116,10 +110,7 @@ function parseMariadbSettings(value: unknown): MariadbManagedSettings | null {
   const initialDatabase = parseInitialDatabase(record?.initialDatabase)
   if (initialDatabase === null) return null
 
-  if (
-    base.engineConfig !== undefined &&
-    !isValidMysqlCnfSnippet(base.engineConfig)
-  ) {
+  if (base.engineConfig !== undefined && !isValidMysqlCnfSnippet(base.engineConfig)) {
     return null
   }
 
@@ -132,7 +123,7 @@ function formatStopGracePeriod(seconds: number): string {
 
 function buildPlatformMycnf(
   settings: MariadbManagedSettings,
-  input: BuildRuntimeSpecInput,
+  input: BuildRuntimeSpecInput
 ): string {
   const serverId = input.member?.ordinal ?? 1
   const lines = [
@@ -144,6 +135,9 @@ function buildPlatformMycnf(
     `server_id=${serverId}`,
     'log_bin=ON',
     'binlog_format=ROW',
+    // Row-based binlog makes unprivileged triggers and stored functions safe to replicate;
+    // without this, CREATE TRIGGER / CREATE FUNCTION fail for app users (error 1419).
+    'log_bin_trust_function_creators=ON',
     // MariaDB GTID vocabulary (not gtid_mode / enforce_gtid_consistency).
     'log_slave_updates=ON',
     'gtid_strict_mode=ON',
@@ -153,9 +147,7 @@ function buildPlatformMycnf(
 
   const memoryBytes = settings.resources?.memoryBytes
   if (memoryBytes !== undefined && memoryBytes > 0) {
-    lines.push(
-      `innodb_buffer_pool_size=${formatInnoDbBufferPoolSize(memoryBytes)}`,
-    )
+    lines.push(`innodb_buffer_pool_size=${formatInnoDbBufferPoolSize(memoryBytes)}`)
   }
 
   // Engine TLS is unconditional — ProxySQL dials backends with `use_ssl=1`,
@@ -165,7 +157,7 @@ function buildPlatformMycnf(
     `ssl_ca=${TLS_CA_PATH}`,
     `ssl_cert=${TLS_CERT_PATH}`,
     `ssl_key=${TLS_KEY_PATH}`,
-    'require_secure_transport=ON',
+    'require_secure_transport=ON'
   )
 
   if (input.member?.role === 'standby') {
@@ -201,10 +193,7 @@ function buildInitdbSql(): string {
 
 function buildHealthcheck(): ManagedRuntimeHealthcheck {
   return {
-    test: [
-      'CMD-SHELL',
-      `mariadb-admin ping --protocol=socket -u ${PLATFORM_SOCKET_ADMIN}`,
-    ],
+    test: ['CMD-SHELL', `mariadb-admin ping --protocol=socket -u ${PLATFORM_SOCKET_ADMIN}`],
     interval: '10s',
     timeout: '5s',
     retries: 5,
@@ -215,7 +204,7 @@ function buildHealthcheck(): ManagedRuntimeHealthcheck {
 function applyDockerOptions(
   service: Record<string, unknown>,
   env: Record<string, string>,
-  settings: MariadbManagedSettings,
+  settings: MariadbManagedSettings
 ): void {
   const opts = settings.dockerOptions
   if (!opts) return
@@ -224,9 +213,7 @@ function applyDockerOptions(
     service.restart = opts.restart
   }
   if (opts.stopGracePeriodSeconds !== undefined) {
-    service.stop_grace_period = formatStopGracePeriod(
-      opts.stopGracePeriodSeconds,
-    )
+    service.stop_grace_period = formatStopGracePeriod(opts.stopGracePeriodSeconds)
   }
   if (opts.shmSizeBytes !== undefined) {
     service.shm_size = opts.shmSizeBytes
@@ -333,10 +320,9 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
   return spec
 }
 
-function buildConnectionInfo(
-  input: BuildConnectionInfoInput,
-): ManagedConnectionInfo {
-  const dsn = `mysql://${encodeURIComponent(input.username)}:***@` +
+function buildConnectionInfo(input: BuildConnectionInfoInput): ManagedConnectionInfo {
+  const dsn =
+    `mysql://${encodeURIComponent(input.username)}:***@` +
     `${input.host}:${input.port}/${encodeURIComponent(input.database)}` +
     `?ssl-mode=${mysqlFamilySslMode(input.sslMode)}`
   return {
@@ -348,9 +334,7 @@ function buildConnectionInfo(
   }
 }
 
-function buildBindingDsn(
-  input: BuildConnectionInfoInput & { password: string },
-): string {
+function buildBindingDsn(input: BuildConnectionInfoInput & { password: string }): string {
   return (
     `mysql://${encodeURIComponent(input.username)}:` +
     `${encodeURIComponent(input.password)}@` +
