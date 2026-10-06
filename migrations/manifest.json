@@ -116,6 +116,12 @@
       "tag": "0018_command_server_name_index",
       "when": 1791097822760,
       "sha256": "3e6ea84f8dc168f5e4bcdf80b267560fb8026a1f2d02d202cdc0125221b48b25"
+    },
+    {
+      "idx": 19,
+      "tag": "0019_entitlement_runtime_deno",
+      "when": 1791304259875,
+      "sha256": "abd74582a6a57cd9037c3ae6e3b3df34bc3e77f42e21abd97f08d29b888079d3"
     }
   ]
 }

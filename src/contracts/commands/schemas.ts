@@ -1912,6 +1912,14 @@ export type EnvironmentDeployNativeAppService = {
   listenPort: number
   framework: EnvironmentDeployNativeFramework
   /**
+   * `deno` runs the app on the vendored Deno (`denoVersion`) instead of Node.
+   * Omitted means `node`, and a Node app's wire shape is unchanged. Sent only
+   * to a daemon that advertises `deno-native-apps-v1`.
+   */
+  runtime?: 'node' | 'deno'
+  /** Deno series ("2", "2.9", "2.9.7"); only read when `runtime` is `deno`. */
+  denoVersion?: string
+  /**
    * Node series for the app: the compose author's pin, else the series the
    * control plane read from the repository at the deployed commit
    * (`package.json` `engines.node`, `.nvmrc`, `.node-version`). Omitted means
@@ -3567,6 +3575,22 @@ function parseNativeAppAccountLimits(
   }
 }
 
+function parseNativeAppRuntime(value: unknown): 'node' | 'deno' | undefined {
+  if (value === undefined) return undefined
+  if (value !== 'node' && value !== 'deno') {
+    throw new Error('Invalid nativeAppServices runtime')
+  }
+  return value
+}
+
+function parseNativeAppDenoVersion(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (!isString(value) || !NATIVE_APP_NODE_VERSION_RE.test(value)) {
+    throw new Error('Invalid nativeAppServices denoVersion')
+  }
+  return value
+}
+
 function parseNativeAppNodeVersion(value: unknown): string | undefined {
   if (value === undefined) return undefined
   if (!isString(value) || !NATIVE_APP_NODE_VERSION_RE.test(value)) {
@@ -3686,8 +3710,12 @@ function parseDeployNativeAppServiceEntry(entry: unknown): EnvironmentDeployNati
     listenPort: entry.listenPort,
     framework: entry.framework as EnvironmentDeployNativeFramework,
   }
+  const runtime = parseNativeAppRuntime(entry.runtime)
+  if (runtime !== undefined) app.runtime = runtime
   const nodeVersion = parseNativeAppNodeVersion(entry.nodeVersion)
   if (nodeVersion !== undefined) app.nodeVersion = nodeVersion
+  const denoVersion = parseNativeAppDenoVersion(entry.denoVersion)
+  if (denoVersion !== undefined) app.denoVersion = denoVersion
   const appMode = parseNativeAppMode(entry.appMode)
   if (appMode !== undefined) app.appMode = appMode
   const enabled = parseNativeAppEnabled(entry.enabled)

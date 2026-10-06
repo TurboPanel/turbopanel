@@ -781,3 +781,43 @@ test('a deploy command records each native app series on its release row', () =>
     ]
   )
 })
+
+test('a Deno app is never read for a Node series, and keeps its place among the apps', async () => {
+  const { read, calls } = reader([file('package.json', packageJson('>=26.7.0'))])
+  const deno: PreparedNativeAppService = {
+    composeServiceName: 'api',
+    listenPort: 18101,
+    framework: 'auto',
+    runtime: 'deno',
+    denoVersion: '2',
+  }
+  const result = await withNativeAppNodeVersions(
+    [deno, app()],
+    [source(), { ...source(), composeServiceName: 'api' }],
+    { mode: 'deploy', read, warnings: [], offered: OFFERED }
+  )
+  if ('kind' in result) throw new TypeError('expected apps')
+  assertEquals(
+    result.apps.map((entry) => [entry.composeServiceName, entry.nodeVersion]),
+    [
+      ['api', undefined],
+      ['web', '26'],
+    ]
+  )
+  // Only the Node app got a Node view, and only its repository was read.
+  assertEquals(
+    result.views.map((view) => view.composeServiceName),
+    ['web']
+  )
+  assertEquals(calls.length, 1)
+  // And no Node series is recorded for it on the release row.
+  assertEquals(
+    [
+      ...recordedNodeVersions([
+        { composeServiceName: 'api', runtime: 'deno' },
+        { composeServiceName: 'web' },
+      ]),
+    ],
+    [['web', '24']]
+  )
+})

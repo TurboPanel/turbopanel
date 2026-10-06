@@ -3994,6 +3994,32 @@ test('parseEnvironmentDeployPayload round-trips nativeAppServices', () => {
   ])
 })
 
+test('parseEnvironmentDeployPayload carries runtime deno and denoVersion, and rejects bad ones', () => {
+  const app = {
+    composeServiceName: 'api',
+    serviceId: 'svc-api',
+    listenPort: 18101,
+    framework: 'auto',
+  }
+  const parsed = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    nativeAppServices: [{ ...app, runtime: 'deno', denoVersion: '2.9' }, app],
+  })
+  assertEquals(parsed.nativeAppServices?.[0]?.runtime, 'deno')
+  assertEquals(parsed.nativeAppServices?.[0]?.denoVersion, '2.9')
+  assertEquals('runtime' in (parsed.nativeAppServices?.[1] ?? {}), false)
+  for (const bad of [{ runtime: 'bun' }, { denoVersion: 'latest' }]) {
+    assertThrows(
+      () =>
+        parseEnvironmentDeployPayload({
+          ...NATIVE_APP_BASE,
+          nativeAppServices: [{ ...app, ...bad }],
+        }),
+      Error
+    )
+  }
+})
+
 const NATIVE_VARIABLES_APP = {
   composeServiceName: 'web',
   serviceId: 'svc-web',

@@ -153,6 +153,8 @@ export type DeployRollbackReleasePin = {
    * other kind of service. See `deploy-node-version.ts`.
    */
   nodeVersion?: string
+  /** `deno` when the pinned release ran on Deno; absent means Node. */
+  runtime?: 'deno'
 }
 
 /**

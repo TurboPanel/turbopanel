@@ -17,6 +17,7 @@ import { can } from '../authz/evaluator.ts'
 import {
   createReleaseIdAllocator,
   type DeployPrepareError,
+  type DeployPrepareWarning,
   type DeployRollbackRequest,
   type DeployScheduleSlice,
   type DeploySourceSelection,
@@ -25,6 +26,7 @@ import {
   prepareDeployCompose,
   type ReleaseIdAllocator,
 } from './deploy-prepare.ts'
+import { findUnresolvedComposeInterpolations } from '../../features/compose/unresolved-interpolation.ts'
 import { definedFields, presentFields } from '../../lib/optional-fields.ts'
 import { recordedNodeVersions } from './deploy-node-version.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -616,12 +618,23 @@ function oncePerApp<T extends { composeServiceName: string }>(rows: readonly T[]
  */
 export function contextReleasesFor(
   sourceMaterial: readonly EnvironmentDeploySource[],
-  nativeAppServices: readonly { composeServiceName: string; nodeVersion?: string }[] | undefined
+  nativeAppServices:
+    | readonly { composeServiceName: string; nodeVersion?: string; runtime?: 'node' | 'deno' }[]
+    | undefined
 ): CommandContextRelease[] | undefined {
   const nodeVersionByName = recordedNodeVersions(nativeAppServices)
+  const denoNames = new Set(
+    (nativeAppServices ?? [])
+      .filter((app) => app.runtime === 'deno')
+      .map((app) => app.composeServiceName)
+  )
   return normalizeContextReleases(
     sourceMaterial.map((entry) =>
-      contextReleaseFromSource(entry, nodeVersionByName.get(entry.composeServiceName))
+      contextReleaseFromSource(
+        entry,
+        nodeVersionByName.get(entry.composeServiceName),
+        denoNames.has(entry.composeServiceName) ? 'deno' : undefined
+      )
     )
   )
 }
@@ -629,7 +642,8 @@ export function contextReleasesFor(
 /** One `sourceMaterial[]` entry as the durable `command.context` records it. */
 export function contextReleaseFromSource(
   entry: EnvironmentDeploySource,
-  nodeVersion?: string
+  nodeVersion?: string,
+  runtime?: 'deno'
 ): CommandContextRelease {
   return definedFields({
     composeServiceName: entry.composeServiceName,
@@ -645,6 +659,8 @@ export function contextReleaseFromSource(
     // The Node series a native app was built with, so a rollback can send the
     // same one without reading the repository again (see `deploy-node-version.ts`).
     nodeVersion,
+    // Only a Deno release records its runtime; Node rows stay as they were.
+    runtime,
     rollbackToReleaseId: entry.rollbackToReleaseId,
   }) satisfies CommandContextRelease
 }
@@ -1237,6 +1253,18 @@ async function resolveEnginePlan(
   })
 }
 
+/** One warning per `${NAME}` the deploy would turn into an empty string. */
+function unresolvedInterpolationWarnings(
+  composeYaml: string,
+  envFile: string
+): DeployPrepareWarning[] {
+  return findUnresolvedComposeInterpolations(composeYaml, envFile).map((name) => ({
+    code: 'compose_variable_unresolved',
+    message: `\${${name}} is not defined, so it becomes empty. Panel variables are only substituted with the {$${name}} syntax (curly brace first), not \${${name}}.`,
+    details: { variable: name },
+  }))
+}
+
 /**
  * GET /environments/:id/deploy-preview — exact compose YAML the daemon would
  * receive (same `prepareDeployCompose` path), with secrets redacted.
@@ -1339,12 +1367,21 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
         composeKey: row.composeKey,
         volumeName: row.volumeName,
       })),
-      warnings: preparedByServer.flatMap((row) => row.prepared.warnings),
+      warnings: [
+        ...preparedByServer.flatMap((row) => row.prepared.warnings),
+        ...unresolvedInterpolationWarnings(
+          first?.prepared.composeYaml ?? '',
+          first?.prepared.envFile ?? ''
+        ),
+      ],
       envFile: first?.prepared.envFile ?? '',
       secretPlan: first?.prepared.secretPlan ?? [],
       nativeAppVariables: preparedByServer.flatMap((row) => row.prepared.nativeAppVariables ?? []),
       nativeAppNodeVersions: oncePerApp(
         preparedByServer.flatMap((row) => row.prepared.nativeAppNodeVersions ?? [])
+      ),
+      nativeAppDenoVersions: oncePerApp(
+        preparedByServer.flatMap((row) => row.prepared.nativeAppDenoVersions ?? [])
       ),
     })
   })
