@@ -28,13 +28,17 @@ import {
 import { container, managed, replica, server, service } from '../../db/schema.ts'
 import { OrchestratorManagedHaAuthority } from './ha-authority.ts'
 import {
-  nextStateAfterFence,
-  nextStateAfterIngressReconcile,
-  nextStateAfterPromoteSuccess,
-  nextStateAfterVerify,
   type FenceOutcome,
+  nextStateAfterFence,
+  nextStateAfterPromoteSuccess,
 } from './ha-recovery-pure.ts'
 import { fanOutManagedHaReconcile } from './ha-desired.ts'
+import {
+  failRecoveryIngressNotQueued,
+  parkRecoveryAtIngressGate,
+  settleIngressCommandForRecovery,
+} from './ha-ingress-gate.ts'
+import type { ManagedIngressFanOutOutcome } from './ingress-desired.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import { findManagedHaHierarchy } from '../system/hierarchy.ts'
 import { loadDatacenterMembershipsForServers } from '../net/datacenter-membership.ts'
@@ -60,19 +64,19 @@ import {
   AUTOMATIC_FAILOVER_NO_QUEUE_REASON,
   AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE,
   FENCE_STOP_UNQUEUED_MESSAGE,
+  isTerminalRecoveryState,
   PROMOTE_UNQUEUED_MESSAGE,
   RECOVERY_COMMAND_TIMED_OUT_MESSAGE,
   RECOVERY_STEP_FAILED_MESSAGE,
-  isTerminalRecoveryState,
   type RecoveryKind,
   type RecoveryMetadata,
   type RecoveryRecord,
 } from './recovery.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import {
+  type AutoFailoverSetting,
   AUTOMATIC_FAILOVER_DISABLED_MESSAGE,
   AUTOMATIC_FAILOVER_DISABLED_REASON,
-  type AutoFailoverSetting,
 } from './auto-failover-switch.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 
@@ -526,12 +530,19 @@ async function enqueueFenceCommands(
   if (!recorded) return { ok: false, error: 'managed_busy', status: 409 }
   await stampManagedApplying(db, params.recovery.managedId)
 
-  const settle = { recoveryId: params.recovery.id, engine: params.engine, actor: params.actor }
+  const settle = {
+    recoveryId: params.recovery.id,
+    engine: params.engine,
+    actor: params.actor,
+  }
   await forEachSequential(drains, async (drain) => {
     if (await publishCommand(db, commandQueue, drain)) return
     // A drain that never left still has to leave the pending list; the stop
     // is still pending, so this never advances the row on its own.
-    await settleFenceCommand(db, commandQueue, { ...settle, commandId: drain.commandId })
+    await settleFenceCommand(db, commandQueue, {
+      ...settle,
+      commandId: drain.commandId,
+    })
   })
   if (!(await publishCommand(db, commandQueue, stop))) {
     await blockUnqueuedFenceStop(db, params.recovery.id, stop.commandId)
@@ -990,7 +1001,10 @@ function applyFenceSettlement(
   const recorded = current.metadata.fenceCommandIds ?? []
   if (!recorded.includes(settlement.commandId)) return null
   const pending = recorded.filter((id) => id !== settlement.commandId)
-  const metadata: RecoveryMetadata = { ...current.metadata, fenceCommandIds: pending }
+  const metadata: RecoveryMetadata = {
+    ...current.metadata,
+    fenceCommandIds: pending,
+  }
   if (settlement.applied === 'drain') metadata.drainApplied = true
   if (settlement.applied === 'stop') metadata.stopApplied = true
   if (pending.length > 0) return { metadata }
@@ -1109,7 +1123,11 @@ async function reclassifyAfterDisasterRecovery(db: Db, record: RecoveryRecord): 
 function failedNeedsOperator(current: RecoveryRecord, reason: string): RecoveryPatch {
   return {
     state: 'failed',
-    metadata: { ...current.metadata, needsOperator: true, failedReason: reason },
+    metadata: {
+      ...current.metadata,
+      needsOperator: true,
+      failedReason: reason,
+    },
   }
 }
 
@@ -1143,7 +1161,9 @@ function claimPromoteResult(
 ): Promise<{ record: RecoveryRecord; metadata: RecoveryMetadata } | null> {
   let metadata: RecoveryMetadata | null = null
   return updateRecoveryLocked(db, recoveryId, (current) => {
-    if (!['detecting', 'fencing', 'promoting'].includes(current.state)) return null
+    if (!['detecting', 'fencing', 'promoting'].includes(current.state)) {
+      return null
+    }
     const afterPromote = nextStateAfterPromoteSuccess(current.metadata)
     metadata = afterPromote.metadata
     return { state: afterPromote.state, metadata: afterPromote.metadata }
@@ -1159,15 +1179,16 @@ async function fanOutAfterPromote(
   },
   record: RecoveryRecord,
   actorId: string
-): Promise<void> {
-  if (!commandQueue || !secrets.secretsConfig || !secrets.dataEncryptionSecrets) return
+): Promise<ManagedIngressFanOutOutcome | null> {
+  if (!commandQueue || !secrets.secretsConfig || !secrets.dataEncryptionSecrets) return null
   const { fanOutManagedIngressReconcile } = await import('./ingress-desired.ts')
-  await fanOutManagedIngressReconcile(db, commandQueue, {
+  const ingress = await fanOutManagedIngressReconcile(db, commandQueue, {
     managedId: record.managedId,
     actorType: 'system',
     actorId,
     secretsConfig: secrets.secretsConfig,
     dataEncryptionSecrets: secrets.dataEncryptionSecrets,
+    recoveryId: record.id,
   })
   await fanOutManagedHaReconcile(db, commandQueue, {
     managedId: record.managedId,
@@ -1176,6 +1197,7 @@ async function fanOutAfterPromote(
     secretsConfig: secrets.secretsConfig,
     dataEncryptionSecrets: secrets.dataEncryptionSecrets,
   })
+  return ingress
 }
 
 export async function onPromoteSucceeded(
@@ -1202,19 +1224,17 @@ export async function onPromoteSucceeded(
     if (record.kind === 'disaster-recovery' && record.targetMemberId) {
       await reclassifyAfterDisasterRecovery(db, record)
     }
-    await fanOutAfterPromote(db, commandQueue, secrets, record, actorId)
-
-    const afterIngress = nextStateAfterIngressReconcile(claimed.metadata)
+    const ingress = await fanOutAfterPromote(db, commandQueue, secrets, record, actorId)
+    if (ingress) {
+      // Not completed until every ingress confirms (ha-ingress-gate.ts).
+      await parkRecoveryAtIngressGate(db, record.id, ingress)
+      return
+    }
+    // Nothing could be queued, so no ingress was told about the new primary.
     const members = await listManagedMembers(db, record.managedId)
-    const writerCount = members.filter((row) => row.role === 'primary').length
-    const verified = nextStateAfterVerify({
-      writerCount,
-      metadata: afterIngress.metadata,
-    })
-    await updateRecovery(db, record.id, {
-      state: verified.state,
-      metadata: verified.metadata,
-    })
+    await failRecoveryIngressNotQueued(db, record.id, [
+      ...new Set(members.map((row) => row.serverId)),
+    ])
   } catch (error) {
     logRecoveryAdvanceFailure(
       record.id,
@@ -1263,6 +1283,11 @@ export async function onRecoveryCommandTimedOut(
       engine: 'postgres',
       actor: { actorType: 'system', actorId: params.commandId },
     })
+    return
+  }
+  if (params.type === 'managed.ingress.reconcile') {
+    // A repoint that never answered: the completion gate names the server.
+    await settleIngressCommandForRecovery(db, params.recoveryId)
     return
   }
   if (params.type === 'managed.promote' || params.type === 'managed.ha.failover') {

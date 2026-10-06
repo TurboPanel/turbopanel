@@ -14,8 +14,10 @@ import {
 } from '../net/private-endpoint.ts'
 import { container, replica, server } from '../../db/schema.ts'
 import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
+import { ageReplicationHealth, type ReplicationHealthView } from './replica-freshness.ts'
 import { MANAGED_PRIVATE_PORT_MAX, MANAGED_PRIVATE_PORT_MIN } from './ingress-ports.ts'
 import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
 
 /**
  * High contiguous host-port range for multi-member private listeners
@@ -55,7 +57,7 @@ export type SerializedManagedMember = {
   status: string | null
   replicationTransport: PrivateEndpointTransport | null
   privatePort: number | null
-  replication?: ManagedReplicationHealth
+  replication?: ManagedReplicationHealth | ReplicationHealthView
 }
 
 export type ManagedPrivatePortExhaustedError = {
@@ -116,6 +118,51 @@ function parseReplicationHealth(metadata: unknown): ManagedReplicationHealth | u
     health.receiveLagBytes = r.receiveLagBytes
   }
   return health
+}
+
+/**
+ * Parse the display-only health report replication reading from metadata.
+ * The promote gate and automatic failover use the probe-measured reading
+ * (`metadata.replication`); this field is for UI aging only.
+ */
+function parseDisplayReplicationHealth(metadata: unknown): ManagedReplicationHealth | undefined {
+  if (!isRecord(metadata) || !isRecord(metadata.replicationDisplay)) return undefined
+  const r = metadata.replicationDisplay
+  if (typeof r.state !== 'string' || typeof r.observedAt !== 'string') {
+    return undefined
+  }
+  const health: ManagedReplicationHealth = {
+    state: r.state,
+    observedAt: r.observedAt,
+  }
+  if (typeof r.lagBytes === 'number' && Number.isFinite(r.lagBytes)) {
+    health.lagBytes = r.lagBytes
+  }
+  if (typeof r.lagSeconds === 'number' && Number.isFinite(r.lagSeconds)) {
+    health.lagSeconds = r.lagSeconds
+  }
+  if (typeof r.receivedLsn === 'string') health.receivedLsn = r.receivedLsn
+  if (typeof r.replayLsn === 'string') health.replayLsn = r.replayLsn
+  if (typeof r.receiveLagBytes === 'number' && Number.isFinite(r.receiveLagBytes)) {
+    health.receiveLagBytes = r.receiveLagBytes
+  }
+  return health
+}
+
+/**
+ * Pick the newer of the probe-measured and display-only readings for display.
+ * Returns the reading with the most recent observedAt timestamp.
+ */
+function selectReplicationForDisplay(
+  measured: ManagedReplicationHealth | undefined,
+  display: ManagedReplicationHealth | undefined
+): ManagedReplicationHealth | undefined {
+  if (!measured && !display) return undefined
+  if (!measured) return display
+  if (!display) return measured
+  const measuredTime = Date.parse(measured.observedAt)
+  const displayTime = Date.parse(display.observedAt)
+  return measuredTime >= displayTime ? measured : display
 }
 
 /**
@@ -237,6 +284,31 @@ export function serializeManagedMember(
 }
 
 /**
+ * {@link serializeManagedMember} for the panel and the API: pick the newer of
+ * the probe-measured and display-only health report readings, then a replica
+ * reading older than the freshness window is shown as `unknown` instead of its
+ * stale `streaming` (see `replica-freshness.ts`). Promote and failover
+ * decisions keep using the plain serializer and the stored observation.
+ */
+export function serializeManagedMemberForDisplay(
+  row: ManagedMemberRow,
+  serverDisplayName: string | null,
+  nowMs: number = Date.now()
+): SerializedManagedMember {
+  const out = serializeManagedMember(row, serverDisplayName)
+  if (out.role === 'replica' && out.replication !== undefined) {
+    // For display, prefer the newer of the two readings
+    const measured = parseReplicationHealth(row.metadata)
+    const display = parseDisplayReplicationHealth(row.metadata)
+    const forDisplay = selectReplicationForDisplay(measured, display)
+    if (forDisplay !== undefined) {
+      out.replication = ageReplicationHealth(forDisplay, nowMs)
+    }
+  }
+  return out
+}
+
+/**
  * List members with server display names in a single join (no N+1).
  */
 export async function listSerializedManagedMembers(
@@ -253,7 +325,7 @@ export async function listSerializedManagedMembers(
     .where(eq(replica.managedId, managedId))
     .orderBy(asc(replica.ordinal))
 
-  return rows.map((row) => serializeManagedMember(row, row.serverDisplayName ?? null))
+  return rows.map((row) => serializeManagedMemberForDisplay(row, row.serverDisplayName ?? null))
 }
 
 /** A read replica is the only member allowed on the fabric/public ladder. */
@@ -747,6 +819,44 @@ export async function updateManagedMemberObservedReplication(
       updatedAt: new Date().toISOString(),
     })
     .where(eq(replica.id, memberId))
+}
+
+/**
+ * Store a health report's replication reading in a display-only field
+ * (`metadata.replicationDisplay`), separate from the probe-measured field
+ * (`metadata.replication`) so the promote gate and automatic failover continue
+ * reading stable probe data and the 30s health report cannot change promotion
+ * decisions.
+ *
+ * Uses `jsonb_set` for atomic single-key updates — a full read-modify-write
+ * could stomp a concurrent probe write to `metadata.replication`.
+ */
+export async function updateManagedMemberDisplayReplication(
+  db: Db,
+  memberId: string,
+  displayReplication: ManagedReplicationHealth
+): Promise<void> {
+  try {
+    await db.execute(
+      sql`
+        UPDATE ${replica}
+        SET metadata = jsonb_set(
+          COALESCE(metadata, '{}'::jsonb),
+          '{replicationDisplay}',
+          ${JSON.stringify(displayReplication)}::jsonb
+        ),
+        updated_at = NOW()
+        WHERE id = ${memberId}::uuid
+      `
+    )
+  } catch (error) {
+    compatLogWarn(
+      'managed-members',
+      `failed to update display replication for member ${memberId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    )
+  }
 }
 
 export function isManagedPrivatePortExhaustedError(

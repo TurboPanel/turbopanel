@@ -117,6 +117,7 @@ import {
   type ManagedReplicaClass,
   nextReplicaOrdinal,
   serializeManagedMember,
+  serializeManagedMemberForDisplay,
   updateManagedMemberReadEligible,
   updateManagedMemberReplicaClass,
 } from '../../features/managed/members.ts'
@@ -1055,9 +1056,15 @@ async function createManagedAndEnqueueApply(
   // Only after the create stuck: a compensated create cascades its policy away
   // and must never have reached the host.
   if (created.hasDefaultBackupPolicy) {
-    await enqueueBackupsReconcile(db, commandQueue, { actorType: 'user', actorId: userId }, [
-      createServerId,
-    ])
+    await enqueueBackupsReconcile(
+      db,
+      commandQueue,
+      {
+        actorType: 'user',
+        actorId: userId,
+      },
+      [createServerId]
+    )
   }
 
   const primary = pickPrimaryCommandResult(enqueued)
@@ -1236,9 +1243,15 @@ async function refuseDatabaseDropWhenInUse(
   databaseName: string
 ): Promise<Response | null> {
   if (await hasBindingsForDatabase(db, { managedId, databaseName })) {
-    const redeployRequired = await listBindingImpactForDatabase(db, { managedId, databaseName })
+    const redeployRequired = await listBindingImpactForDatabase(db, {
+      managedId,
+      databaseName,
+    })
     return c.json(
-      { error: 'managed_database_has_bindings', services: redeployRequired.services },
+      {
+        error: 'managed_database_has_bindings',
+        services: redeployRequired.services,
+      },
       409
     )
   }
@@ -1768,7 +1781,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // any name is validated: the scheme decides how long the typed name may be.
     const policy = await loadPrincipalNamePolicy(db, ctx.organizationId)
     const schemeChoice = resolveRequestedNameScheme(policy, body.nameScheme)
-    if (!schemeChoice.ok) return c.json({ error: schemeChoice.error }, schemeChoice.status)
+    if (!schemeChoice.ok) {
+      return c.json({ error: schemeChoice.error }, schemeChoice.status)
+    }
     const nameScheme = schemeChoice.scheme
     const fields = parseManagedUserCreateFields(
       c,
@@ -1962,7 +1977,10 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // Every failure from here on must undo BOTH the stored password and the
     // project variables that were just rewritten with the new one.
     const rollBack = () =>
-      rollBackPrincipalRotation(db, dataEncryptionSecrets, { principalId, previousPassword })
+      rollBackPrincipalRotation(db, dataEncryptionSecrets, {
+        principalId,
+        previousPassword,
+      })
     if (!('ok' in materializeResult)) {
       await rollBack()
       return c.json({ error: materializeResult.kind }, 422)
@@ -2809,7 +2827,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       port: listener?.port ?? residual.port ?? null,
       error: lastError,
       containers: rows.map(serializeContainerRow),
-      members: memberRows.map((m) => buildStatusMemberView(serializeManagedMember(m, null))),
+      members: memberRows.map((m) =>
+        buildStatusMemberView(serializeManagedMemberForDisplay(m, null))
+      ),
       ...(healthRefresh ? { healthRefresh } : {}),
     })
   })
@@ -3105,7 +3125,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       managed: rows.map((row) => {
         const spec = row.engine ? getManagedEngineSpec(row.engine) : null
         const members = (membersByManaged.get(row.id) ?? []).map((m) =>
-          serializeManagedMember(m, nameByServer.get(m.serverId) ?? null)
+          serializeManagedMemberForDisplay(m, nameByServer.get(m.serverId) ?? null)
         )
         return buildOrgManagedListEntry({
           serializedRow: serializeManagedRow(row, row.serverId) as Record<string, unknown>,
