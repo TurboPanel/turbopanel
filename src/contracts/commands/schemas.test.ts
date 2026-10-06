@@ -3994,6 +3994,32 @@ test('parseEnvironmentDeployPayload round-trips nativeAppServices', () => {
   ])
 })
 
+test('parseEnvironmentDeployPayload carries runtime deno and denoVersion, and rejects bad ones', () => {
+  const app = {
+    composeServiceName: 'api',
+    serviceId: 'svc-api',
+    listenPort: 18101,
+    framework: 'auto',
+  }
+  const parsed = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    nativeAppServices: [{ ...app, runtime: 'deno', denoVersion: '2.9' }, app],
+  })
+  assertEquals(parsed.nativeAppServices?.[0]?.runtime, 'deno')
+  assertEquals(parsed.nativeAppServices?.[0]?.denoVersion, '2.9')
+  assertEquals('runtime' in (parsed.nativeAppServices?.[1] ?? {}), false)
+  for (const bad of [{ runtime: 'bun' }, { denoVersion: 'latest' }]) {
+    assertThrows(
+      () =>
+        parseEnvironmentDeployPayload({
+          ...NATIVE_APP_BASE,
+          nativeAppServices: [{ ...app, ...bad }],
+        }),
+      Error
+    )
+  }
+})
+
 const NATIVE_VARIABLES_APP = {
   composeServiceName: 'web',
   serviceId: 'svc-web',
@@ -7130,4 +7156,59 @@ test('parseEnvironmentDeployResult keeps per-site app facts and drops unknown ki
   ])
   assertEquals('sites' in parseEnvironmentDeployResult({ projectName: 'demo' }), false)
   assertEquals('sites' in parseEnvironmentDeployResult({ projectName: 'demo', sites: 'x' }), false)
+})
+
+const DB_SITE_BASE = {
+  environmentId: 'env-1',
+  projectId: 'proj-1',
+  organizationId: 'org-1',
+  projectName: 'tp-demo',
+  composeFiles: [
+    {
+      filename: 'compose.yaml',
+      role: 'runtime' as const,
+      content: 'services:\\n  a:\\n    image: x\\n',
+    },
+  ],
+  hostings: [],
+}
+const DB_SITE = { composeServiceName: 'wp', engine: 'apache', root: 'public', listenPort: 18081 }
+const CERT = '-----BEGIN CERTIFICATE-----\nAA\n-----END CERTIFICATE-----\n'
+
+test('a site carries dbCa and requiredEnv; a key, a bad name or an empty list is refused', () => {
+  const parse = (extra: Record<string, unknown>) =>
+    parseEnvironmentDeployPayload({ ...DB_SITE_BASE, sites: [{ ...DB_SITE, ...extra }] })
+  const ok = parse({
+    dbCa: { variables: ['DATABASE_CA_FILE'], pem: CERT },
+    requiredEnv: ['DATABASE_HOST'],
+  })
+  assertEquals(ok.sites?.[0]?.dbCa?.variables, ['DATABASE_CA_FILE'])
+  assertEquals(ok.sites?.[0]?.requiredEnv, ['DATABASE_HOST'])
+  assertEquals(parse({}).sites?.[0]?.dbCa, undefined)
+  const key = '-----BEGIN PRIVATE KEY-----\nAA\n-----END PRIVATE KEY-----\n'
+  for (const bad of [
+    { dbCa: { variables: ['X'], pem: key } },
+    { dbCa: { variables: ['X'], pem: `${CERT}${key}` } },
+    { dbCa: { variables: ['a b'], pem: CERT } },
+    { dbCa: { variables: [], pem: CERT } },
+    { requiredEnv: ['a b'] },
+    { requiredEnv: [] },
+  ]) {
+    assertThrows(() => parse(bad))
+  }
+})
+
+test('the deploy result keeps daemon warnings, bounded, and ignores anything else', () => {
+  assertEquals(
+    parseEnvironmentDeployResult({ projectName: 'p', warnings: ['a', 3, 'b'] }).warnings,
+    ['a', 'b']
+  )
+  assertEquals(parseEnvironmentDeployResult({ projectName: 'p' }).warnings, undefined)
+  assertEquals(parseEnvironmentDeployResult({ projectName: 'p', warnings: [] }).warnings, undefined)
+  assertEquals(
+    parseEnvironmentDeployResult({ projectName: 'p', warnings: 'x' }).warnings,
+    undefined
+  )
+  const long = parseEnvironmentDeployResult({ projectName: 'p', warnings: ['x'.repeat(5000)] })
+  assertEquals(long.warnings?.[0]?.length, 1000)
 })

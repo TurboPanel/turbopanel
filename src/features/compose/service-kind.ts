@@ -31,6 +31,9 @@ export type SiteEngine = 'caddy' | 'apache' | 'nginx' | 'openlitespeed' | 'nginx
  */
 export type NativeRuntimeFramework = 'auto' | 'node' | 'next'
 
+/** What a native app runs on: the vendored Node (default) or the vendored Deno. */
+export type NativeRuntime = 'node' | 'deno'
+
 /**
  * Package manager used to install dependencies for a `serviceKind: node`
  * build. Omitted means auto-detect from the lockfile at build time
@@ -95,6 +98,14 @@ const NODE_VERSION_RE = /^\d{1,3}(\.\d{1,3}){0,2}$/
  */
 export const SUPPORTED_NODE_SERIES: readonly string[] = ['22', '24', '26']
 export const DEFAULT_NODE_SERIES = '24'
+
+/**
+ * Deno series offered in pickers: Deno ships one major, so a series is the
+ * major and `2.9` / `2.9.7` name the same one. Same advisory contract as
+ * {@link SUPPORTED_NODE_SERIES}.
+ */
+export const SUPPORTED_DENO_SERIES: readonly string[] = ['2']
+export const DEFAULT_DENO_SERIES = '2'
 
 /**
  * Per-service Git source binding (`x-turbopanel.source`).
@@ -175,6 +186,19 @@ type ComposeServiceExtensionFields = {
    * `.node-version`, else the default series.
    */
   nodeVersion?: string
+  /**
+   * Runtime a `serviceKind: node` service runs on: `node` (the default) or
+   * `deno`. A Deno service is a native app like a Node one (built from Git,
+   * run by a generated systemd unit as the site owner's Linux user), started
+   * with `deno task start` or `deno run --allow-all <entry>`.
+   */
+  runtime?: NativeRuntime
+  /**
+   * Pinned Deno series for a `runtime: deno` service (`2`, `2.9`, `2.9.7`).
+   * Deno ships one major, so every spelling selects the host's newest 2.x
+   * release. Omitted means the default series.
+   */
+  denoVersion?: string
   /**
    * Package manager for a `serviceKind: node` build. Omitted means
    * auto-detect from the lockfile at build time.
@@ -316,6 +340,8 @@ type SiteOnlyExtensionField = 'engine' | 'root' | 'sourceKind' | 'php'
 type NodeOnlyExtensionField =
   | 'framework'
   | 'nodeVersion'
+  | 'runtime'
+  | 'denoVersion'
   | 'packageManager'
   | 'appMode'
   | 'enabled'
@@ -468,6 +494,7 @@ const PHP_EXTENSION_RE = /^[a-z][a-z0-9_-]{0,31}$/
 
 const SERVICE_KINDS = new Set<ComposeServiceKind>(['container', 'site', 'node'])
 const NATIVE_RUNTIME_FRAMEWORKS = new Set<NativeRuntimeFramework>(['auto', 'node', 'next'])
+const NATIVE_RUNTIMES = new Set<NativeRuntime>(['node', 'deno'])
 const SITE_ENGINES = new Set<SiteEngine>([
   'caddy',
   'apache',
@@ -557,6 +584,17 @@ function readNodeVersion(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
   return NODE_VERSION_RE.test(trimmed) ? trimmed : undefined
+}
+
+function readNativeRuntime(value: unknown): NativeRuntime | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return NATIVE_RUNTIMES.has(trimmed as NativeRuntime) ? (trimmed as NativeRuntime) : undefined
+}
+
+/** `2`, `2.9`, `2.9.7` — the same shape as a Node pin. */
+function readDenoVersion(value: unknown): string | undefined {
+  return readNodeVersion(value)
 }
 
 function readNodePackageManager(value: unknown): NodePackageManager | undefined {
@@ -667,6 +705,10 @@ function applyRuntimeExtensionFields(
   if (framework) extension.framework = framework
   const nodeVersion = readNodeVersion(value.nodeVersion)
   if (nodeVersion) extension.nodeVersion = nodeVersion
+  const runtime = readNativeRuntime(value.runtime)
+  if (runtime) extension.runtime = runtime
+  const denoVersion = readDenoVersion(value.denoVersion)
+  if (denoVersion) extension.denoVersion = denoVersion
   const packageManager = readNodePackageManager(value.packageManager)
   if (packageManager) extension.packageManager = packageManager
   const appMode = readNodeAppMode(value.appMode)
@@ -882,6 +924,16 @@ const SERVICE_EXTENSION_FIELDS: Readonly<Record<string, ServiceExtensionFieldRul
     isValid: (value) => Boolean(readNodeVersion(value)),
     typeMessage: 'nodeVersion must be a pinned version like "24" or "24.17.0"',
   },
+  runtime: {
+    kinds: NODE_KIND_ONLY,
+    isValid: (value) => Boolean(readNativeRuntime(value)),
+    typeMessage: 'runtime must be "node" or "deno"',
+  },
+  denoVersion: {
+    kinds: NODE_KIND_ONLY,
+    isValid: (value) => Boolean(readDenoVersion(value)),
+    typeMessage: 'denoVersion must be a pinned version like "2" or "2.9.7"',
+  },
   packageManager: {
     kinds: NODE_KIND_ONLY,
     isValid: (value) => Boolean(readNodePackageManager(value)),
@@ -973,6 +1025,8 @@ const RAW_FIELD_TYPE_ORDER: readonly string[] = [
   'serviceKind',
   'framework',
   'nodeVersion',
+  'runtime',
+  'denoVersion',
   'packageManager',
   'appMode',
   'enabled',
@@ -1030,6 +1084,8 @@ function kindMembershipIssues(
 const NODE_ONLY_FIELD_ORDER: readonly string[] = [
   'framework',
   'nodeVersion',
+  'runtime',
+  'denoVersion',
   'packageManager',
   'appMode',
   'enabled',
@@ -1443,6 +1499,8 @@ function validateNodeConsistency(
 
   if (fields.serviceKind !== 'node') return issues
 
+  issues.push(...validateDenoRuntimeConsistency(basePath, fields))
+
   // Both land in daemon-side paths (and startupFile in an ExecStart line), so
   // they share the same relative-path rule as `root`.
   for (const field of ['documentRoot', 'startupFile'] as const) {
@@ -1454,6 +1512,43 @@ function validateNodeConsistency(
     })
   }
 
+  return issues
+}
+
+/**
+ * The two runtimes keep their own hints apart. `denoVersion` means nothing on a
+ * Node service, and the Node hints (`nodeVersion`, `packageManager`, a
+ * `framework` other than `auto`) mean nothing on a Deno one; saying so beats a
+ * key that is read by nobody.
+ */
+function validateDenoRuntimeConsistency(
+  basePath: string,
+  fields: ComposeServiceExtensionFields
+): ServiceTurbopanelValidationIssue[] {
+  // A partial layer that does not restate `runtime` leaves it to the Base.
+  if (fields.partialLayer && fields.runtime === undefined) return []
+  const issues: ServiceTurbopanelValidationIssue[] = []
+  if (fields.runtime === 'deno') {
+    const node = [
+      ['nodeVersion', fields.nodeVersion !== undefined],
+      ['packageManager', fields.packageManager !== undefined],
+      ['framework', fields.framework !== undefined && fields.framework !== 'auto'],
+    ] as const
+    for (const [field, present] of node) {
+      if (!present) continue
+      issues.push({
+        path: `${basePath}.${field}`,
+        message: `${field} is only valid when runtime is node (this service runs on Deno)`,
+      })
+    }
+    return issues
+  }
+  if (fields.denoVersion !== undefined) {
+    issues.push({
+      path: `${basePath}.denoVersion`,
+      message: 'denoVersion is only valid when runtime is "deno"',
+    })
+  }
   return issues
 }
 

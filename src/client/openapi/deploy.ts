@@ -434,6 +434,20 @@ export const deploySchemas = {
           },
         },
       },
+      nativeAppDenoVersions: {
+        type: 'array',
+        description:
+          'For each Deno app (a native service with `x-turbopanel.runtime: deno`) in the deploy, once: the Deno series it runs. Deno ships one major version (2) and the server runs its newest release, so `2.9` and `2.9.7` both mean series `2`. `compose` means `x-turbopanel.denoVersion` pinned it; `default` means the platform default. A server whose TurboPanel daemon is too old to run Deno apps refuses the deploy with `deno_feature_missing` (422).',
+        items: {
+          type: 'object',
+          required: ['composeServiceName', 'denoVersion', 'source'],
+          properties: {
+            composeServiceName: { type: 'string' },
+            denoVersion: { type: 'string', description: 'Deno major version, such as `2`.' },
+            source: { type: 'string', enum: ['compose', 'default'] },
+          },
+        },
+      },
     },
   },
   DeploymentHistoryEntry: {

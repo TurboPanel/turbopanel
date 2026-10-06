@@ -600,6 +600,14 @@ function tryMapPhpModePrepareError(prepared: DeployPrepareError): PrepareErrorRe
   }
 }
 
+function tryMapBindingHostSiteError(prepared: DeployPrepareError): PrepareErrorResponse | null {
+  if (prepared.kind !== 'binding_host_site_unsupported') return null
+  return {
+    status: 422,
+    body: { error: 'binding_host_site_unsupported', message: prepared.message },
+  }
+}
+
 function tryMapSiteEngineFeatureError(prepared: DeployPrepareError): PrepareErrorResponse | null {
   if (prepared.kind !== 'site_engine_feature_missing') return null
   return {
@@ -608,6 +616,40 @@ function tryMapSiteEngineFeatureError(prepared: DeployPrepareError): PrepareErro
       error: 'site_engine_feature_missing',
       composeServiceName: prepared.composeServiceName,
       message: `Site "${prepared.composeServiceName}" uses the nginx+apache web server pair, but the TurboPanel daemon on this server is too old to run it. Update the daemon on this server, then deploy again.`,
+    },
+  }
+}
+
+function tryMapDenoPrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
+  if (prepared.kind === 'deno_feature_missing') {
+    return {
+      status: 422,
+      body: {
+        error: 'deno_feature_missing',
+        composeServiceName: prepared.composeServiceName,
+        message: `App "${prepared.composeServiceName}" runs on Deno, but the TurboPanel daemon on this server is too old to run Deno apps. Update the daemon on this server, then deploy again.`,
+      },
+    }
+  }
+  if (prepared.kind === 'deno_migration_pending') {
+    return {
+      status: 422,
+      body: {
+        error: 'deno_migration_pending',
+        message:
+          "This TurboPanel instance's database has not been updated to run Deno apps yet. Ask the instance owner to apply the pending database migration, then deploy again.",
+      },
+    }
+  }
+  if (prepared.kind !== 'deno_version_unsupported') return null
+  return {
+    status: 422,
+    body: {
+      error: 'deno_version_unsupported',
+      composeServiceName: prepared.composeServiceName,
+      requested: prepared.requested,
+      supported: prepared.supported,
+      message: `Deno app "${prepared.composeServiceName}" asks for Deno ${prepared.requested}, which this platform does not offer. Offered: ${prepared.supported.join(', ')}. Set x-turbopanel: { denoVersion: "${prepared.supported.at(-1) ?? '2'}" }, or remove denoVersion to use the default.`,
     },
   }
 }
@@ -667,6 +709,8 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
     tryMapPhpModePrepareError(prepared) ??
     tryMapNodeVersionPrepareError(prepared) ??
     tryMapSiteEngineFeatureError(prepared) ??
+    tryMapBindingHostSiteError(prepared) ??
+    tryMapDenoPrepareError(prepared) ??
     tryMapSitePrepareError(prepared) ??
     tryMapPrincipalPrepareError(prepared) ??
     tryMapHostingPrepareError(prepared) ??
