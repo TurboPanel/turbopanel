@@ -373,7 +373,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       'Which runtime series a principal may execute on its host: one row per principal, runtime and series, realised by the daemon as a unix group membership.',
     columns: {
       runtime:
-        'Runtime family the grant covers, `php` or `node` (CHECK `entitlement_runtime_check`).',
+        'Runtime family the grant covers, `php`, `node` or `deno` (CHECK `entitlement_runtime_check`).',
       series:
         'Exec boundary series such as `8.4` or `24` (digits with an optional dotted minor, CHECKed), never a patch pin; realised as group `tpphp84` or `tpnode24`.',
       granted_by:

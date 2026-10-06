@@ -12,6 +12,7 @@ import {
 import { COMPOSE_YAML_OPTIONS } from './tags.ts'
 import {
   type ComposeServiceKind,
+  SUPPORTED_DENO_SERIES,
   SUPPORTED_NODE_SERIES,
   TURBOPANEL_SERVICE_EXTENSION_KEY,
 } from './service-kind.ts'
@@ -625,6 +626,35 @@ function lintServiceNodeVersion(
       ', '
     )}); the deploy uses whatever the host has vendored`,
     path: `services.${name}.x-turbopanel.nodeVersion`,
+    line: nodeLine(versionNode ?? undefined, lineCounter),
+    blocking: false,
+  })
+}
+
+/**
+ * Advisory when `x-turbopanel.denoVersion` pins a series this control plane
+ * does not offer. Unlike a Node pin this one stops the deploy
+ * (`deno_version_unsupported`): there is no Deno but the vendored one.
+ */
+function lintServiceDenoVersion(
+  name: string,
+  valueNode: YAMLMap,
+  lineCounter: LineCounter,
+  issues: ComposeLintIssue[]
+): void {
+  const extension = serviceExtensionMap(valueNode)
+  if (!extension) return
+  const versionNode = mapEntryValue(extension, 'denoVersion')
+  const version = scalarString(versionNode)
+  if (version === null) return
+  const series = version.trim().split('.')[0]
+  if (series.length === 0 || SUPPORTED_DENO_SERIES.includes(series)) return
+  issues.push({
+    level: 'warning',
+    message: `Deno ${version} is not an offered series (${SUPPORTED_DENO_SERIES.join(
+      ', '
+    )}); a deploy asking for it is refused`,
+    path: `services.${name}.x-turbopanel.denoVersion`,
     line: nodeLine(versionNode ?? undefined, lineCounter),
     blocking: false,
   })
@@ -1576,6 +1606,7 @@ function lintService(params: {
   lintServicePrincipal(name, valueNode, known, lineCounter, issues)
   lintServiceHosting(name, valueNode, known, lineCounter, issues)
   lintServiceNodeVersion(name, valueNode, lineCounter, issues)
+  lintServiceDenoVersion(name, valueNode, lineCounter, issues)
   lintServiceResourceLimits(name, valueNode, keyLine, issues)
 
   const hostNative = serviceIsHostNative(valueNode)

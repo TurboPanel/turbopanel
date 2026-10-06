@@ -3415,7 +3415,7 @@ export const entitlement = pgTable(
       name: 'entitlement_principal_id_principal_id_fk',
     }).onDelete('cascade'),
     unique('entitlement_unique').on(table.principalId, table.runtime, table.series),
-    check('entitlement_runtime_check', sql`${table.runtime} IN ('php', 'node')`),
+    check('entitlement_runtime_check', sql`${table.runtime} IN ('php', 'node', 'deno')`),
     check(
       'entitlement_series_check',
       // `[.]` not `\.`: a template literal eats the backslash, and a bare dot

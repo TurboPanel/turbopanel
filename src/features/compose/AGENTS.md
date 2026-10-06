@@ -801,6 +801,36 @@ read, then the default with a warning. It all runs before
 sent. The preview lists the result once per app as `nativeAppNodeVersions`
 (`nodeVersion`, `source`, `requested`, `path`, `note`).
 
+**Deno apps (`runtime: deno`).** A `serviceKind: node` service takes an
+optional **`runtime`** (`node`, the default, or `deno`) and, with `deno`, an
+optional **`denoVersion`** (`2`, `2.9`, `2.9.7`, never a range). It stays one
+service kind: the same Git source, build, systemd unit, principal, loopback
+port and hostnames, only the vendored runtime differs. The two runtimes keep
+their hints apart (`validateDenoRuntimeConsistency`): `nodeVersion`,
+`packageManager` and a `framework` other than `auto` are refused on a Deno
+service, and `denoVersion` is refused without `runtime: deno`. Deno ships one
+major, so a series is the major: every spelling of 2 selects the host's newest
+2.x release (`SUPPORTED_DENO_SERIES`, mirroring the daemon registry). Deploy
+prep sends `runtime: 'deno'` and `denoVersion` on `nativeAppServices[]` only for
+a Deno app, so a Node app's payload is byte-identical to before. What changes
+around it:
+
+- **Daemon first.** `deploy-deno-gate.ts` refuses (422 `deno_feature_missing`) a
+  Deno app bound for a daemon that does not advertise `deno-native-apps-v1`
+  (`DENO_NATIVE_APPS_FEATURE`, twin of the daemon list), because an older daemon
+  would ignore `runtime` and start the app on Node; and refuses (422
+  `deno_version_unsupported`) a series the registry mirror does not offer. The
+  lint warns on the same series at save.
+- **No repository read.** A Deno app is skipped by `deploy-node-version.ts`: no
+  `engines.node` / `.nvmrc` lookup, no Node view in the preview, no Node series
+  on its release row. Its series is the pin or the default; reading it from the
+  repository (`deno.json`) is deferred.
+- **Runtime grant.** `merge-deploy-principal-runtimes.ts` grants the owner's
+  Linux user `deno@<series>` (`tpdeno<series>` on the host) instead of
+  `node@<series>`.
+- **Preview.** `nativeAppDenoVersions` lists each Deno app once: its series and
+  whether it came from the compose pin or the default.
+
 **Plain Compose keys the split would
 otherwise take with it.** A node service is removed from `containerServices`, so
 any ordinary Compose key on its body leaves with it unless `native-app.ts` reads
