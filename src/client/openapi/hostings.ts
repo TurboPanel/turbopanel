@@ -351,7 +351,7 @@ const hostingJson = (schema: string) => ({
 })
 
 const letsEncryptRefusals =
-  "`lets_encrypt_not_enabled` (403): the organization has not allowed Let's Encrypt. 400: `hosting_not_http`, `hosting_has_no_hostnames`, `acme_requires_public_bind` or `letsencrypt_hostname_unsupported` (wildcard, IP address or private name)."
+  '`lets_encrypt_not_enabled` (403): the organization has not allowed Let\'s Encrypt. 400: `hosting_not_http`, `hosting_has_no_hostnames`, `acme_requires_public_bind`, `letsencrypt_hostname_unsupported` (wildcard, IP address or private name) or `www_redirect_conflict` ("also send www" is on, but the other spelling of a domain is already a domain in the environment; the body carries a plain-words `message`).'
 
 const letsEncryptPaths = {
   [`${hostingIdPath}/use-letsencrypt`]: {

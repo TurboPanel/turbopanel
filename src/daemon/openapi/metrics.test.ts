@@ -46,7 +46,7 @@ const event = metricsSchemas.DaemonMetricEvent as unknown as PropertySchema
 
 function fieldNamesForScope(scope: MetricEntityScope): string[] {
   return Object.values(HOST_METRICS_METRIC_DESCRIPTORS)
-    .filter((descriptor) => descriptor.entityScope === scope)
+    .filter((descriptor) => descriptor.entityScope === scope && descriptor.wire !== false)
     .map((descriptor) => descriptor.fieldName)
     .sort()
 }

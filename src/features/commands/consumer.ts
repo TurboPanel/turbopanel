@@ -7,9 +7,11 @@
  * isolate (worker stub or Deno process), not inside the Durable Object.
  * There is no per-server polling or cross-cell fan-out.
  */
-import { and, eq, inArray, or, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import type { DeployFailureNotice } from '../deploy/deploy-failure-notice.ts'
+import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
 import { generateDeliveryId } from '../../contracts/cell-protocol.ts'
 import { resultSummaryForPersist } from './result-summary.ts'
@@ -56,6 +58,7 @@ import { reconcileFabricMembership } from '../fabric/enqueue.ts'
 import {
   command,
   container,
+  deployment,
   managed,
   replica,
   server,
@@ -158,6 +161,8 @@ export type CommandResealDeps = {
 
 /** Optional deps for follow-up mesh-complete and managed-ingress applies. */
 export type CommandConsumerDeps = {
+  /** Best-effort; a throw is logged and never changes the command's outcome. */
+  onDeployFailed?: (notice: DeployFailureNotice) => Promise<void>
   commandQueue?: CommandQueue
   resealDeps?: CommandResealDeps
   secretsConfig?: SecretsConfig
@@ -559,7 +564,14 @@ async function enqueueAndAwaitOutcome(
       resultStatus: 'timed_out',
     })
     await applyManagedFailedSideEffect(db, record, deps, 'Command timed out')
-    await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out', 'timed_out')
+    await applyEnvironmentDeployFailedSideEffect(
+      db,
+      record,
+      envelope,
+      'timed_out',
+      'timed_out',
+      deps
+    )
     await applyFabricFailedSideEffect(db, record, envelope)
   }
   return pending
@@ -576,7 +588,8 @@ async function applyEnvironmentDeployFailedSideEffect(
   record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   error: string,
-  outcome: DeploymentOutcome = 'failed'
+  outcome: DeploymentOutcome = 'failed',
+  deps?: CommandConsumerDeps
 ): Promise<void> {
   if (record.type !== 'environment.deploy') return
   try {
@@ -607,11 +620,61 @@ async function applyEnvironmentDeployFailedSideEffect(
         reason: cancelled ? 'the deploy was cancelled' : `${envelope.serverId} failed`,
       })
     }
+    if (marked !== null && !cancelled) {
+      await announceDeployFailure(
+        db,
+        deps,
+        {
+          environmentId: payload.environmentId,
+          serverId: envelope.serverId,
+          commandId: record.id,
+          outcome,
+          ...(deployFailure === null ? {} : { strategyOutcome: deployFailure.outcome }),
+          error: redactUrlSecrets(error),
+        },
+        marked.desiredGeneration
+      )
+    }
   } catch (err) {
     const message = errorMessage(err)
     compatLogWarn(
       'command-consumer',
       `deployment failure side effect failed for command ${record.id}: ${message}`
+    )
+  }
+}
+
+/**
+ * Tell the hook about a failed deploy, once per desired generation: a rollout
+ * across several servers that fails on more than one is one failed deploy to
+ * the person reading, so only the first failed row of the generation speaks.
+ */
+export async function announceDeployFailure(
+  db: Db,
+  deps: Pick<CommandConsumerDeps, 'onDeployFailed'> | undefined,
+  notice: DeployFailureNotice,
+  desiredGeneration: number
+): Promise<void> {
+  if (!deps?.onDeployFailed) return
+  try {
+    const [first] = await db
+      .select({ serverId: deployment.serverId })
+      .from(deployment)
+      .where(
+        and(
+          eq(deployment.environmentId, notice.environmentId),
+          eq(deployment.desiredGeneration, desiredGeneration),
+          eq(deployment.status, 'failed')
+        )
+      )
+      .orderBy(asc(deployment.finishedAt), asc(deployment.serverId))
+      .limit(1)
+    if (first && first.serverId !== notice.serverId) return
+    await deps.onDeployFailed(notice)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `deploy failure notice failed for command ${notice.commandId}: ${errorMessage(err)}`
     )
   }
 }
@@ -2464,7 +2527,7 @@ async function handlePendingFailed(
     error,
   })
   await applyManagedFailedSideEffect(db, record, deps, error)
-  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error)
+  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error, 'failed', deps)
   await applyFabricFailedSideEffect(db, record, envelope)
   await applyFirewallFailedSideEffect(db, record, envelope, error)
 }
@@ -2485,7 +2548,7 @@ async function handlePendingExpired(
     resultStatus: 'timed_out',
   })
   await applyManagedFailedSideEffect(db, record, deps, pending.error ?? 'Command timed out')
-  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out', 'timed_out')
+  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out', 'timed_out', deps)
   await applyFabricFailedSideEffect(db, record, envelope)
   await applyFirewallFailedSideEffect(db, record, envelope, pending.error ?? 'Command timed out')
 }
@@ -2494,7 +2557,8 @@ async function handlePendingUnexpected(
   db: Db,
   record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
-  pending: PendingRequestRecord
+  pending: PendingRequestRecord,
+  deps?: CommandConsumerDeps
 ): Promise<void> {
   const error = `Unexpected pending request status: ${pending.status}`
   await transitionCommand(db, record.id, {
@@ -2509,7 +2573,7 @@ async function handlePendingUnexpected(
     resultStatus: 'failed',
     error,
   })
-  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error)
+  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error, 'failed', deps)
 }
 
 async function applyPendingOutcome(
@@ -2530,7 +2594,7 @@ async function applyPendingOutcome(
       await handlePendingExpired(db, record, envelope, pending, deps)
       return
     default:
-      await handlePendingUnexpected(db, record, envelope, pending)
+      await handlePendingUnexpected(db, record, envelope, pending, deps)
   }
 }
 
@@ -2549,7 +2613,7 @@ export async function processCommandEnvelope(
   if (notReady !== null) {
     // A deploy that never reached its server fails its row and halts the
     // rollout, or later batches would wait on an `applying` row forever.
-    await applyEnvironmentDeployFailedSideEffect(db, record, envelope, notReady)
+    await applyEnvironmentDeployFailedSideEffect(db, record, envelope, notReady, 'failed', deps)
     await applyFabricFailedSideEffect(db, record, envelope)
     return
   }

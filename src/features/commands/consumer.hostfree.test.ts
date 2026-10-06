@@ -10,7 +10,9 @@ import { recovery } from '../../db/schema.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
 import { COMMAND_DISPATCH_FAILURE_RETENTION_MS } from './command-records.ts'
 import type { CommandEnvelope } from './envelope.ts'
+import type { DeployFailureNotice } from '../deploy/deploy-failure-notice.ts'
 import {
+  announceDeployFailure,
   commandTimeoutMs,
   enrichPingResult,
   errorMessage,
@@ -1310,6 +1312,118 @@ test('processCommandEnvelope deploy failure runs the failed-deploy side effect',
     fake.transitions.some((t) => t.status === 'failed' && t.error === 'compose up failed'),
     true
   )
+})
+
+function failedDeployNotices() {
+  const notices: DeployFailureNotice[] = []
+  const deps = {
+    firewallApplyGate: DENY_FIREWALL_APPLY,
+    onDeployFailed: (notice: DeployFailureNotice) => Promise.resolve(void notices.push(notice)),
+  }
+  return { notices, deps }
+}
+
+const FAILED_PENDING = {
+  ...donePending(),
+  status: 'failed' as const,
+  result: undefined,
+}
+
+test('a failed deploy reaches the failure hook once, with the credentials removed', async () => {
+  const { notices, deps } = failedDeployNotices()
+  await runOnline(
+    'environment.deploy',
+    VALID_DEPLOY_PAYLOAD,
+    { ...FAILED_PENDING, error: 'clone https://user:hunter2@example.com/repo.git failed' },
+    { deps }
+  )
+  assertEquals(notices.length, 1)
+  assertEquals(notices[0]?.environmentId, ENV_ID)
+  assertEquals(notices[0]?.outcome, 'failed')
+  assertEquals(notices[0]?.error.includes('hunter2'), false)
+})
+
+test('a deploy that rolled back reports how it ended', async () => {
+  const { notices, deps } = failedDeployNotices()
+  await runOnline(
+    'environment.deploy',
+    VALID_DEPLOY_PAYLOAD,
+    { ...FAILED_PENDING, error: 'rolled_back: the new version never answered' },
+    { deps }
+  )
+  assertEquals(notices[0]?.strategyOutcome, 'rolled_back')
+})
+
+test('a deploy whose wait expired reaches the hook as timed out', async () => {
+  const { notices, deps } = failedDeployNotices()
+  await runOnline('environment.deploy', VALID_DEPLOY_PAYLOAD, null, { deps })
+  assertEquals(
+    notices.map((notice) => notice.outcome),
+    ['timed_out']
+  )
+})
+
+test('a cancelled deploy is not announced', async () => {
+  const { notices, deps } = failedDeployNotices()
+  await runOnline(
+    'environment.deploy',
+    VALID_DEPLOY_PAYLOAD,
+    { ...FAILED_PENDING, error: 'cancelled: stopped on request' },
+    { deps }
+  )
+  assertEquals(notices.length, 0)
+})
+
+test('a failing hook never changes the command outcome', async () => {
+  const fake = await runOnline(
+    'environment.deploy',
+    VALID_DEPLOY_PAYLOAD,
+    { ...FAILED_PENDING, error: 'compose up failed' },
+    {
+      deps: {
+        firewallApplyGate: DENY_FIREWALL_APPLY,
+        onDeployFailed: () => Promise.reject(new Error('sender down')),
+      },
+    }
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'failed' && t.error === 'compose up failed'),
+    true
+  )
+})
+
+test('only the first failed server of a generation announces a failed rollout', async () => {
+  const notice: DeployFailureNotice = {
+    environmentId: ENV_ID,
+    serverId: 'server-b',
+    commandId: 'cmd-b',
+    outcome: 'failed',
+    error: 'boom',
+  }
+  const dbWithFirstFailed = (firstServerId: string | undefined) =>
+    ({
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: () => Promise.resolve(firstServerId ? [{ serverId: firstServerId }] : []),
+            }),
+          }),
+        }),
+      }),
+    }) as unknown as Db
+  const seen: DeployFailureNotice[] = []
+  const deps = { onDeployFailed: (n: DeployFailureNotice) => Promise.resolve(void seen.push(n)) }
+
+  await announceDeployFailure(dbWithFirstFailed('server-a'), deps, notice, 4)
+  assertEquals(seen.length, 0)
+  await announceDeployFailure(dbWithFirstFailed('server-b'), deps, notice, 4)
+  assertEquals(seen.length, 1)
+  // Nothing visible yet (a concurrent failure): speak rather than stay silent.
+  await announceDeployFailure(dbWithFirstFailed(undefined), deps, notice, 4)
+  assertEquals(seen.length, 2)
+  await announceDeployFailure(dbWithFirstFailed('server-a'), {}, notice, 4)
+  assertEquals(seen.length, 2)
 })
 
 test('processCommandEnvelope deploy wait timeout runs timed_out deploy side effect', async () => {

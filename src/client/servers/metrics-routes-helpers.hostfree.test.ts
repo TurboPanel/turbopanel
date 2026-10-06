@@ -414,6 +414,24 @@ test('parseSeriesMetricSelectors defaults to every queryable host.* canonical na
   assertEquals(blank.value.hostCanonicalNames, defaultHostCanonicalNames())
 })
 
+test('parseSeriesMetricSelectors accepts the v7 extended numbers by name but never defaults to them', () => {
+  const named = parseSeriesMetricSelectors(
+    'extended.host.oomKills,extended.docker.containersUnhealthy,extended.ingress.tlsCertSoonestExpiryDays'
+  )
+  if (!named.ok) throw new TypeError('expected ok')
+  assertEquals(named.value.hostCanonicalNames, [
+    'extended.host.oomKills',
+    'extended.docker.containersUnhealthy',
+    'extended.ingress.tlsCertSoonestExpiryDays',
+  ])
+  assertEquals(
+    defaultHostCanonicalNames().some((name) => name.startsWith('extended.')),
+    false
+  )
+  const unknown = parseSeriesMetricSelectors('extended.host.nope')
+  assertEquals(unknown.ok, false)
+})
+
 test('parseSeriesMetricSelectors groups per-entity selectors by family, unioning ids and fields', () => {
   const result = parseSeriesMetricSelectors(
     [
