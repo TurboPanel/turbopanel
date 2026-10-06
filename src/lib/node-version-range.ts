@@ -58,27 +58,32 @@ function isWildcard(value: string): boolean {
 }
 
 /** Cut a prerelease (`-rc.1`) or build (`+sha`) suffix off a version. */
-function withoutSuffix(value: string): string {
-  let end = value.length
-  for (const marker of ['-', '+']) {
-    const at = value.indexOf(marker)
-    if (at !== -1 && at < end) end = at
+/** The `v` / `=` npm tolerates in front of a version (`v22`, `=22`, `v=22`). */
+function withoutPrefix(value: string): string {
+  let text = value
+  for (let i = 0; i < 2; i++) {
+    const first = text.charAt(0)
+    if (first === 'v' || first === 'V' || first === '=') text = text.slice(1)
   }
-  return value.slice(0, end)
+  return text
+}
+
+function cutAt(value: string, marker: string): { head: string; cut: boolean } {
+  const at = value.indexOf(marker)
+  return at === -1 ? { head: value, cut: false } : { head: value.slice(0, at), cut: true }
 }
 
 /** `22`, `v22.1`, `22.x`, `*`, `22.1.0-rc.1` → the numbers given, or null (`20-24`). */
 function parseWrittenVersion(raw: string): WrittenVersion | null {
-  let text = raw
-  if (text.startsWith('v') || text.startsWith('V')) text = text.slice(1)
-  const core = withoutSuffix(text)
+  // Build metadata (`+sha`) may follow any version; a prerelease (`-rc.1`)
+  // only a full `x.y.z`, as in npm. So `20-24` (a hyphen range written without
+  // spaces) is not a version, rather than `20` with a prerelease tag of `24`.
+  const { head: withoutBuild } = cutAt(withoutPrefix(raw), '+')
+  const { head: core, cut: prerelease } = cutAt(withoutBuild, '-')
   if (core.length === 0) return null
   const pieces = core.split('.')
   if (pieces.length > 3) return null
-  // A prerelease or build suffix belongs to a full `x.y.z`, as in npm. So
-  // `20-24` (a hyphen range written without spaces) is not a version, rather
-  // than `20` with a prerelease tag of `24`.
-  if (core.length !== text.length && pieces.length !== 3) return null
+  if (prerelease && pieces.length !== 3) return null
   const parts: number[] = []
   let wildcardSeen = false
   for (const piece of pieces) {

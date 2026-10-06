@@ -608,6 +608,23 @@ function oncePerApp<T extends { composeServiceName: string }>(rows: readonly T[]
   return [...new Map(rows.map((row) => [row.composeServiceName, row])).values()]
 }
 
+/**
+ * The release rows a deploy command records: one per `sourceMaterial[]` entry,
+ * each native app's with the Node series it was sent (or the default), which
+ * is what a later rollback sends back.
+ */
+export function contextReleasesFor(
+  sourceMaterial: readonly EnvironmentDeploySource[],
+  nativeAppServices: readonly { composeServiceName: string; nodeVersion?: string }[] | undefined
+): CommandContextRelease[] | undefined {
+  const nodeVersionByName = recordedNodeVersions(nativeAppServices)
+  return normalizeContextReleases(
+    sourceMaterial.map((entry) =>
+      contextReleaseFromSource(entry, nodeVersionByName.get(entry.composeServiceName))
+    )
+  )
+}
+
 /** One `sourceMaterial[]` entry as the durable `command.context` records it. */
 export function contextReleaseFromSource(
   entry: EnvironmentDeploySource,
@@ -637,12 +654,7 @@ async function createDeployCommand(
 ): Promise<CreatedDeployCommand> {
   const expiresAt = new Date(Date.now() + 600_000).toISOString()
   const replicaCounts = normalizeReplicaCounts(params.replicaCounts)
-  const nodeVersionByName = recordedNodeVersions(params.nativeAppServices)
-  const releases = normalizeContextReleases(
-    params.sourceMaterial.map((entry) =>
-      contextReleaseFromSource(entry, nodeVersionByName.get(entry.composeServiceName))
-    )
-  )
+  const releases = contextReleasesFor(params.sourceMaterial, params.nativeAppServices)
   const metadata = deploySelectionMetadata(params.selection)
   const record = await createCommandRecord(db, {
     serverId: params.serverId,

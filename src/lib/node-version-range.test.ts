@@ -56,6 +56,11 @@ test('picks the newest offered series each range form allows', () => {
     ['20 - 24', '24'],
     ['22 - 24.3', '24'],
     ['22\t||\t24', '24'],
+    // Spellings npm accepts: a doubled `=`, `v=`, build metadata on a short version.
+    ['==22', '22'],
+    ['v=22', '22'],
+    ['22+build', '22'],
+    ['>=22.0.0+build.7', '26'],
   ]
   for (const [range, expected] of cases) {
     assertEquals(newest(range), expected, range)

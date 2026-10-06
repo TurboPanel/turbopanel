@@ -176,6 +176,23 @@ export function isRateLimited(status: number, row: GitProviderSourceRow): boolea
   return status === 403 && !row.connectionId && !row.secretId
 }
 
+/**
+ * Whether a provider read that did not succeed is the answer, rather than a
+ * reason to ask a connected server.
+ *
+ * A real HTTP status is the answer (the server would be told the same thing),
+ * unless it is only the provider's rate limit and the caller asked for a
+ * server then (`daemonOnRateLimit`). No status (unreachable) or no read API at
+ * all goes to a server.
+ */
+export function providerAnswerStands(
+  read: unknown,
+  params: Pick<InspectRepositoryParams, 'row' | 'daemonOnRateLimit'>
+): read is { failure: string; status: number } {
+  if (!isGitProviderFailure(read) || typeof read.status !== 'number') return false
+  return !(params.daemonOnRateLimit === true && isRateLimited(read.status, params.row))
+}
+
 export async function inspectRepository(params: InspectRepositoryParams): Promise<InspectOutcome> {
   const paths = params.paths ?? INSPECT_PROBE_PATHS
   const provider = providerForInspect(params.row)
@@ -203,13 +220,7 @@ export async function inspectRepository(params: InspectRepositoryParams): Promis
     }
   }
 
-  // The provider answered with a real HTTP status: that IS the answer —
-  // unless it is only its rate limit and the caller asked for a server then.
-  if (
-    isGitProviderFailure(read) &&
-    typeof read.status === 'number' &&
-    !(params.daemonOnRateLimit === true && isRateLimited(read.status, params.row))
-  ) {
+  if (providerAnswerStands(read, params)) {
     return {
       ok: false,
       status: read.status === 404 ? 404 : 502,

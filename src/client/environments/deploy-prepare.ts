@@ -111,9 +111,8 @@ import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.t
 import {
   type NativeAppNodeVersionView,
   type NodeVersionPrepareError,
-  pinSourcesToReadCommits,
   repositoryNodeVersionReader,
-  withNativeAppNodeVersions,
+  resolveSourceNodeVersions,
 } from './deploy-node-version.ts'
 import { type SiteEngineFeatureError, withSiteEngineFeature } from './deploy-site-engine-gate.ts'
 import { PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
@@ -2368,7 +2367,7 @@ async function prepareLocalSourcesWithNodeVersions(
 > {
   const sourceMaterial = await prepareLocalSourceMaterial(c, db, args)
   if (!Array.isArray(sourceMaterial)) return sourceMaterial
-  const nodeVersions = await withNativeAppNodeVersions(args.nativeApps, sourceMaterial, {
+  return await resolveSourceNodeVersions(args.nativeApps, sourceMaterial, {
     mode: args.mode,
     warnings: args.warnings,
     read: repositoryNodeVersionReader(c, db, {
@@ -2379,13 +2378,6 @@ async function prepareLocalSourcesWithNodeVersions(
       ? {}
       : { rollbackPins: args.params.rollback.releaseByService }),
   })
-  if ('kind' in nodeVersions) return nodeVersions
-  // A preview's commit is only a placeholder; a deploy builds what was read.
-  const pinned =
-    args.mode === 'deploy'
-      ? pinSourcesToReadCommits(sourceMaterial, nodeVersions.readCommitShas)
-      : sourceMaterial
-  return { sourceMaterial: pinned, nodeVersions }
 }
 
 /**

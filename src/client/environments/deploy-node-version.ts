@@ -7,7 +7,8 @@
  * So the answer is worked out here, from the repository at the exact commit
  * this deploy builds, and sent as the payload's `nodeVersion`:
  *
- * 1. `x-turbopanel.nodeVersion` on the service always wins; nothing is read.
+ * 1. `x-turbopanel.nodeVersion` on the service wins (except on a rollback,
+ *    below); nothing is read.
  * 2. `package.json` `engines.node` (a range such as `>=26.7.0`, `^22`,
  *    `20 || 22`) → the newest offered series it allows.
  * 3. `.nvmrc`, then `.node-version` (a version such as `26` or `v24.1.0`).
@@ -108,6 +109,12 @@ const FILE_KINDS: readonly FileKind[] = ['package.json', '.nvmrc', '.node-versio
 /** Longest file value echoed back in a view or an error. */
 const MAX_ECHOED_VALUE = 200
 
+/**
+ * Longest value parsed at all. Far beyond any real range (a long one is a few
+ * hundred characters); it keeps the work bounded however large the file is.
+ */
+const MAX_PARSED_VALUE = 4096
+
 type FoundRequest = { requested: string; path: string; source: FileKind }
 
 type FileDecision =
@@ -166,9 +173,12 @@ function requestIn(file: RepositoryFileEntry): FoundRequest | undefined {
   if (!source) return undefined
   const requested =
     source === 'package.json' ? enginesNode(file.content) : firstVersionLine(file.content)
-  return requested === undefined
-    ? undefined
-    : { requested: shortened(requested), path: file.path, source }
+  return requested === undefined ? undefined : { requested, path: file.path, source }
+}
+
+/** The request as echoed back to people: the value cut to a readable length. */
+function forPeople(request: FoundRequest): FoundRequest {
+  return { ...request, requested: shortened(request.requested) }
 }
 
 /**
@@ -185,15 +195,19 @@ export function nodeVersionFromFiles(
     const file = byPath.get(path)
     const request = file ? requestIn(file) : undefined
     if (!request) continue
-    const range = parseNodeVersionRange(request.requested)
+    // The full value is parsed; only what is shown to people is shortened.
+    const range =
+      request.requested.length > MAX_PARSED_VALUE ? null : parseNodeVersionRange(request.requested)
     if (!range) {
       // `engines.node` is meant to be a range, so one npm would not accept is a
       // mistake to point out. A version file may hold an alias (`lts/*`).
-      if (request.source === 'package.json') return { invalid: request }
+      if (request.source === 'package.json') return { invalid: forPeople(request) }
       continue
     }
     const series = newestAllowedSeries(range, offered)
-    return series === null ? { unsupported: request } : { series, request }
+    return series === null
+      ? { unsupported: forPeople(request) }
+      : { series, request: forPeople(request) }
   }
   return null
 }
@@ -407,6 +421,28 @@ export async function withNativeAppNodeVersions(
   return result
 }
 
+/**
+ * The step deploy-prepare runs once source material is resolved: the Node
+ * series of every native app, and on a deploy (never a preview, whose commit is
+ * only a placeholder) the sources pinned to the commits that were read.
+ */
+export async function resolveSourceNodeVersions(
+  apps: readonly PreparedNativeAppService[],
+  sourceMaterial: readonly EnvironmentDeploySource[],
+  ctx: Parameters<typeof withNativeAppNodeVersions>[2]
+): Promise<
+  | { sourceMaterial: EnvironmentDeploySource[]; nodeVersions: NativeAppNodeVersions }
+  | NodeVersionPrepareError
+> {
+  const nodeVersions = await withNativeAppNodeVersions(apps, sourceMaterial, ctx)
+  if ('kind' in nodeVersions) return nodeVersions
+  const pinned =
+    ctx.mode === 'deploy'
+      ? pinSourcesToReadCommits(sourceMaterial, nodeVersions.readCommitShas)
+      : [...sourceMaterial]
+  return { sourceMaterial: pinned, nodeVersions }
+}
+
 function isFullCommitSha(value: string): boolean {
   if (value.length !== 40 && value.length !== 64) return false
   for (const ch of value) {
@@ -523,7 +559,8 @@ function loadSourceRow(
 export function repositoryNodeVersionReader(
   c: Context<AppEnv>,
   db: Db,
-  args: { organizationId: string; serverId: string }
+  args: { organizationId: string; serverId: string },
+  inspect: typeof inspectRepository = inspectRepository
 ): NodeVersionFileReader {
   const reads = requestReads(c)
   const readOnce = async (
@@ -532,7 +569,7 @@ export function repositoryNodeVersionReader(
   ): Promise<NodeVersionFileRead> => {
     const row = await loadSourceRow(db, args.organizationId, source.sourceId)
     if (!row) return { ok: false, message: 'repository not found in this organization' }
-    const outcome = await inspectRepository({
+    const outcome = await inspect({
       db,
       registry: getDaemonCellRegistry(c) ?? null,
       dataEncryptionSecrets: c.get('dataEncryptionSecrets') ?? null,

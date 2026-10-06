@@ -10,6 +10,7 @@ import {
   type NodeVersionFileReader,
   pinSourcesToReadCommits,
   recordedNodeVersions,
+  resolveSourceNodeVersions,
   type NodeVersionWarning,
   nodeVersionFilePaths,
   nodeVersionFromFiles,
@@ -17,11 +18,15 @@ import {
   withNativeAppNodeVersions,
 } from './deploy-node-version.ts'
 import { mapPrepareErrorResponse, queuedCommandsResponseBody } from './deploy-routes-helpers.ts'
-import { contextReleaseFromSource } from './deploy-routes.ts'
+import { contextReleaseFromSource, contextReleasesFor } from './deploy-routes.ts'
 import { releasePin } from './release-routes.ts'
 import { listServiceReleases } from '../../features/git/releases.ts'
 import { normalizeContextReleases } from '../../features/commands/context.ts'
-import { isRateLimited } from '../repositories/inspect.ts'
+import {
+  type InspectRepositoryParams,
+  isRateLimited,
+  providerAnswerStands,
+} from '../repositories/inspect.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -623,4 +628,156 @@ test('only a rate limit sends a provider read to a server instead', () => {
   // An installation that is refused is refused; a server would be too.
   assertEquals(isRateLimited(403, { ...anonymous, connectionId: 'conn' }), false)
   assertEquals(isRateLimited(429, { ...anonymous, connectionId: 'conn' }), true)
+})
+
+test('a long valid range is parsed in full; only what is shown is shortened', () => {
+  const majors = Array.from({ length: 20 }, (_, i) => `^${i + 4}.0.0`)
+  const long = [...majors, '>=22.11.0'].join(' || ')
+  if (long.length <= 200) throw new TypeError('the range must be longer than what is shown')
+  const decision = nodeVersionFromFiles(
+    [file('package.json', packageJson(long))],
+    nodeVersionFilePaths(undefined),
+    OFFERED
+  )
+  if (decision === null || !('series' in decision)) throw new TypeError('expected a series')
+  assertEquals(decision.series, '26')
+  assertEquals(decision.request.requested.length, 201)
+  assertEquals(decision.request.requested.endsWith('…'), true)
+})
+
+test('a value past the parse limit is not a range', () => {
+  const huge = Array.from({ length: 600 }, () => '^22.0.0').join(' || ')
+  const decision = nodeVersionFromFiles(
+    [file('package.json', packageJson(huge))],
+    nodeVersionFilePaths(undefined),
+    OFFERED
+  )
+  if (decision === null || !('invalid' in decision)) throw new TypeError('expected invalid')
+  assertEquals(decision.invalid.requested.length, 201)
+})
+
+test('prepare pins a deploy to the commit it read, and never a preview', async () => {
+  const { read } = reader([file('package.json', packageJson('>=26'))])
+  const branchOnly = { ...source(), commitSha: 'trunk' } as EnvironmentDeploySource
+  const deploy = await resolveSourceNodeVersions([app()], [branchOnly], {
+    mode: 'deploy',
+    read,
+    warnings: [],
+    offered: OFFERED,
+  })
+  if ('kind' in deploy) throw new TypeError('expected sources')
+  assertEquals(deploy.sourceMaterial[0]?.commitSha, COMMIT)
+  assertEquals(deploy.nodeVersions.apps[0]?.nodeVersion, '26')
+  const preview = await resolveSourceNodeVersions([app()], [branchOnly], {
+    mode: 'preview',
+    read,
+    warnings: [],
+    offered: OFFERED,
+  })
+  if ('kind' in preview) throw new TypeError('expected sources')
+  assertEquals(preview.sourceMaterial[0]?.commitSha, 'trunk')
+  const refused = await resolveSourceNodeVersions([app()], [branchOnly], {
+    mode: 'deploy',
+    read: unreadable,
+    warnings: [],
+    offered: OFFERED,
+  })
+  assertEquals('kind' in refused && refused.kind, 'node_version_unreadable')
+})
+
+test('the reader asks inspect at the commit, on this server, with the rate-limit fallback', async () => {
+  const row = {
+    id: '00000000-0000-4000-8000-000000000001',
+    provider: 'github',
+    repositoryUrl: 'https://github.com/TurboPanel/website.git',
+    defaultBranch: 'trunk',
+    subdirectory: null,
+    connectionId: null,
+    secretId: null,
+  }
+  const { db } = repositoryDb([row])
+  const seen: InspectRepositoryParams[] = []
+  const read = repositoryNodeVersionReader(
+    bareContext(),
+    db,
+    {
+      organizationId: '00000000-0000-4000-8000-0000000000aa',
+      serverId: '00000000-0000-4000-8000-0000000000bb',
+    },
+    (params) => {
+      seen.push(params)
+      return Promise.resolve({
+        ok: true,
+        commitSha: COMMIT,
+        files: [file('package.json', packageJson('>=26'))],
+        entries: [],
+        via: 'provider',
+      })
+    }
+  )
+  const sealed = {
+    ...source(),
+    credential: 'tpdaemon.sealed',
+    credentialKind: 'token',
+  } as EnvironmentDeploySource
+  const result = await read(sealed, ['package.json'])
+  assertEquals(result.ok && result.commitSha, COMMIT)
+  assertEquals(seen.length, 1)
+  assertEquals(seen[0]?.ref, COMMIT)
+  assertEquals(seen[0]?.paths, ['package.json'])
+  assertEquals(seen[0]?.serverIds, ['00000000-0000-4000-8000-0000000000bb'])
+  assertEquals(seen[0]?.daemonOnRateLimit, true)
+  assertEquals(seen[0]?.daemonCredential, {
+    credential: 'tpdaemon.sealed',
+    credentialKind: 'token',
+  })
+  assertEquals(seen[0]?.row, row)
+})
+
+test('a provider rate limit goes to a server only when the caller asks', () => {
+  const row = {
+    id: 'r',
+    provider: 'github',
+    repositoryUrl: 'https://github.com/TurboPanel/website.git',
+    defaultBranch: 'trunk',
+    subdirectory: null,
+    connectionId: null,
+    secretId: null,
+  }
+  const limited = { failure: 'API rate limit exceeded', status: 403 }
+  assertEquals(providerAnswerStands(limited, { row }), true)
+  assertEquals(providerAnswerStands(limited, { row, daemonOnRateLimit: true }), false)
+  assertEquals(
+    providerAnswerStands({ failure: 'Not Found', status: 404 }, { row, daemonOnRateLimit: true }),
+    true
+  )
+  // No status (unreachable) or no read API: always a server.
+  assertEquals(providerAnswerStands({ failure: 'fetch failed' }, { row }), false)
+  assertEquals(providerAnswerStands({ unsupported: true }, { row }), false)
+})
+
+test('a deploy command records each native app series on its release row', () => {
+  const api = {
+    ...source(),
+    composeServiceName: 'api',
+    releaseId: 'rel-2',
+  } as EnvironmentDeploySource
+  const site = {
+    ...source(),
+    composeServiceName: 'blog',
+    releaseId: 'rel-3',
+  } as EnvironmentDeploySource
+  const releases = contextReleasesFor(
+    [source(), api, site],
+    [{ composeServiceName: 'web', nodeVersion: '26' }, { composeServiceName: 'api' }]
+  )
+  assertEquals(
+    releases?.map((row) => [row.composeServiceName, row.nodeVersion]),
+    [
+      ['web', '26'],
+      ['api', '24'],
+      // Not a native app: nothing to record.
+      ['blog', undefined],
+    ]
+  )
 })
