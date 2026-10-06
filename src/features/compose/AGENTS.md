@@ -870,6 +870,19 @@ over the same merge. A service new in the environment still needs its own image
 or build; the host-access, privileged-field, build-policy and banned-key checks
 are unaffected because they were never per-layer-only.
 
+The same holds for an app's `x-turbopanel` block. A partial layer
+(`requireImageOrBuild: false`, which `assertComposeLayerDocument` and the
+environment save set) is read with `collectServiceTurbopanelValidationIssues(…,
+{ partialLayer: true })`: a block that does not restate `serviceKind` is not
+read as a container (its kind is the Base's, so the "only valid when
+serviceKind is …" membership checks wait for the merge), `node services require
+source` and `source.sourceId` are not demanded of the layer (a node version or a
+branch can change on its own), and what the layer does state is still checked as
+given (a `sourceId` it names must be a UUID, `image` on a restated node app is
+refused). The merge is validated with `partialLayer` off, so a kind with no
+source, or a field that does not fit the merged kind, is still refused on save
+and at deploy.
+
 ### Multi-file compose merge + layer model
 
 Merge semantics are now **Compose Spec–faithful** rather than a shallow

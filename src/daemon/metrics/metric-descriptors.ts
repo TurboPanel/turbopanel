@@ -29,6 +29,9 @@ import type {
   DiagnosticsCpuSample,
   DiagnosticsMemorySample,
   DockerUsageSample,
+  ExtendedDockerMetrics,
+  ExtendedHostMetrics,
+  ExtendedIngressMetrics,
   FilesystemSample,
   GpuSample,
   HardwareSignalSample,
@@ -42,6 +45,9 @@ import type {
   RouterSample,
 } from '../../contracts/metrics-contract.ts'
 import {
+  EXTENDED_DOCKER_FIELD_NAMES,
+  EXTENDED_HOST_FIELD_NAMES,
+  EXTENDED_INGRESS_FIELD_NAMES,
   STORAGE_ENGINE_FIELD_NAMES,
   STORAGE_ENGINE_KEYS,
   STORAGE_FLAT_FIELD_NAMES,
@@ -102,6 +108,12 @@ export type HostedFamily =
   | 'managed.storage'
   | 'managed.docker'
   | 'host.diagnostics'
+  /**
+   * The v7 optional `extended` section (`extended.host` / `.docker` /
+   * `.ingress`). Informational like every other value here: the physical
+   * rows that carry these numbers are in `V7-LAYOUT.md`.
+   */
+  | 'host.extended'
 
 /** Which contract entity a metric is scoped to. */
 export type MetricEntityScope =
@@ -121,6 +133,9 @@ export type MetricEntityScope =
   | 'storage'
   | 'dockerUsage'
   | 'diagnostics'
+  | 'extended.host'
+  | 'extended.docker'
+  | 'extended.ingress'
 
 export type HostMetricsMetricDescriptor = {
   /** Globally unique across all descriptors — see the file-level doc comment for the naming scheme. */
@@ -137,6 +152,13 @@ export type HostMetricsMetricDescriptor = {
   min: number
   max: number
   sanitize: MetricSanitizeBehavior
+  /**
+   * `false` for a read-time figure that is not a field of the daemon's wire
+   * sample (it is computed from wire fields when stored, e.g. a drive's
+   * combined `opsPerSecond`). The daemon-facing ingest schema leaves these
+   * out. Absent means a real wire field.
+   */
+  wire?: false
 }
 
 const SAFE_MAX = Number.MAX_SAFE_INTEGER
@@ -865,6 +887,118 @@ export const DIAGNOSTICS_MEMORY_FIELD_NAMES: readonly string[] = Object.values(
   DIAGNOSTICS_MEMORY_DESCRIPTORS
 ).map((descriptor) => descriptor.fieldName)
 
+// ---------------------------------------------------------------------------
+// Metrics v7 numbers — the optional `extended` section plus the combined
+// per-drive ops/s. Each `extended` group is its own entity scope
+// (`extended.host`, `extended.docker`, `extended.ingress`) so no v6 family
+// budget changes and the canonical names read like the wire shape
+// (`extended.host.oomKills`). Every one is a host-wide singleton, queried on
+// the ordinary host-series path.
+//
+// Aggregation follows what the number means over a bucket: counts of events
+// in the interval add up (`delta-sum`); "how many are unhealthy right now"
+// takes the worst reading in the bucket (`max`) because an average of 0 and 1
+// failed units is not a number anyone can act on; the soonest-certificate
+// expiry takes the latest reading (`last`) since it only ever moves one way.
+// ---------------------------------------------------------------------------
+
+/** Worst reading in the bucket: a health count where any non-zero sample matters. */
+function healthCount(
+  fieldName: string,
+  entityScope: MetricEntityScope,
+  hostedFamily: HostedFamily
+): HostMetricsMetricDescriptor {
+  return nonNegative(fieldName, {
+    unit: 'count',
+    semantic: 'gauge',
+    aggregation: 'max',
+    entityScope,
+    hostedFamily,
+    availabilityBehavior: 'missing-when-unsupported',
+  })
+}
+
+/** A v7 value that is only meaningful when the host reported it (never a 0 stand-in). */
+function reported(descriptor: HostMetricsMetricDescriptor): HostMetricsMetricDescriptor {
+  return { ...descriptor, availabilityBehavior: 'missing-when-unsupported' }
+}
+
+const EXTENDED_HOST_DESCRIPTORS: Record<keyof ExtendedHostMetrics, HostMetricsMetricDescriptor> = {
+  pidLimitUsedPercent: percent('pidLimitUsedPercent', 'extended.host', 'host.extended'),
+  oomKills: deltaCounter('oomKills', 'count', 'extended.host', 'host.extended'),
+  rootDiskQueueDepth: reported(countGauge('rootDiskQueueDepth', 'extended.host', 'host.extended')),
+  rootDiskOpsPerSecond: reported(
+    rate('rootDiskOpsPerSecond', 'opsPerSecond', 'extended.host', 'host.extended')
+  ),
+  systemdUnitsFailed: healthCount('systemdUnitsFailed', 'extended.host', 'host.extended'),
+  mdArraysDegraded: healthCount('mdArraysDegraded', 'extended.host', 'host.extended'),
+  mdArraysResyncing: healthCount('mdArraysResyncing', 'extended.host', 'host.extended'),
+}
+
+const EXTENDED_DOCKER_DESCRIPTORS: Record<
+  keyof ExtendedDockerMetrics,
+  HostMetricsMetricDescriptor
+> = {
+  containersRunning: reported({
+    ...countGauge('containersRunning', 'extended.docker', 'host.extended'),
+    aggregation: 'last',
+  }),
+  containersUnhealthy: healthCount('containersUnhealthy', 'extended.docker', 'host.extended'),
+  containersRestarting: healthCount('containersRestarting', 'extended.docker', 'host.extended'),
+  containerOomEvents: deltaCounter(
+    'containerOomEvents',
+    'count',
+    'extended.docker',
+    'host.extended'
+  ),
+  containerDieEvents: deltaCounter(
+    'containerDieEvents',
+    'count',
+    'extended.docker',
+    'host.extended'
+  ),
+  containersCpuPercent: percent('containersCpuPercent', 'extended.docker', 'host.extended'),
+  containersMemoryBytes: reported(
+    bytesGauge('containersMemoryBytes', 'extended.docker', 'host.extended')
+  ),
+  reclaimableBytes: reported(bytesGauge('reclaimableBytes', 'extended.docker', 'host.extended')),
+}
+
+const EXTENDED_INGRESS_DESCRIPTORS: Record<
+  keyof ExtendedIngressMetrics,
+  HostMetricsMetricDescriptor
+> = {
+  // Days, like the router's older figure: renewal windows are measured in days.
+  tlsCertSoonestExpiryDays: reported({
+    ...nonNegative('tlsCertSoonestExpiryDays', {
+      unit: 'days',
+      semantic: 'gauge',
+      aggregation: 'last',
+      entityScope: 'extended.ingress',
+      hostedFamily: 'host.extended',
+    }),
+  }),
+}
+
+/**
+ * A drive's read plus write operations per second, one number. v7 stores this
+ * sum in the drive row instead of the two halves (so it is not a field of the
+ * wire sample); the self-hosted store adds the two halves when it reads.
+ */
+const BLOCK_DERIVED_DESCRIPTORS: Record<'opsPerSecond', HostMetricsMetricDescriptor> = {
+  opsPerSecond: {
+    ...rate('opsPerSecond', 'opsPerSecond', 'block', 'block'),
+    wire: false,
+  },
+}
+
+/** The `extended` numeric field names per group, for consumers that need the ordered lists. */
+export const EXTENDED_FIELD_NAMES = {
+  host: EXTENDED_HOST_FIELD_NAMES,
+  docker: EXTENDED_DOCKER_FIELD_NAMES,
+  ingress: EXTENDED_INGRESS_FIELD_NAMES,
+} as const
+
 /** Every per-family descriptor record, in the order they contribute to the merged map. */
 const ALL_DESCRIPTOR_RECORDS: Record<string, HostMetricsMetricDescriptor>[] = [
   HOST_CPU_DESCRIPTORS,
@@ -883,6 +1017,10 @@ const ALL_DESCRIPTOR_RECORDS: Record<string, HostMetricsMetricDescriptor>[] = [
   STORAGE_DESCRIPTORS,
   DOCKER_USAGE_DESCRIPTORS,
   DIAGNOSTICS_DESCRIPTORS,
+  EXTENDED_HOST_DESCRIPTORS,
+  EXTENDED_DOCKER_DESCRIPTORS,
+  EXTENDED_INGRESS_DESCRIPTORS,
+  BLOCK_DERIVED_DESCRIPTORS,
 ]
 
 /**
@@ -925,6 +1063,8 @@ const HOSTED_FAMILY_CAPACITY: Partial<Record<HostedFamily, number>> = {
   'managed.storage': 19,
   'managed.docker': 10,
   'host.diagnostics': 19,
+  // 7 host + 8 docker + 1 ingress numbers (a budget of one row's doubles, not a physical page).
+  'host.extended': 19,
 }
 
 /** AE double-index page budget per entity for the per-entity-packed families. */
@@ -935,7 +1075,8 @@ const PER_ENTITY_CAPACITY: Record<
   gpu: 6,
   network: 6,
   filesystem: 2,
-  block: 8,
+  // 8 wire fields plus the combined `opsPerSecond` read-time figure.
+  block: 9,
 }
 
 /**

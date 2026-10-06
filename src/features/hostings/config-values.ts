@@ -10,7 +10,7 @@
  */
 
 import { isValidHostname, wwwSiblingHostname } from '../../contracts/commands/hostname.ts'
-import { HOSTING_WEB_ENV_KEY_RE } from './hosting-options.ts'
+import { HOSTING_WEB_ENV_KEY_RE, isReservedSiteVariableName } from './hosting-options.ts'
 
 /** Stable error code for a hosting option value outside its allowlist. */
 export const INVALID_HOSTING_OPTION_ERROR = 'invalid_hosting_option'
@@ -120,6 +120,12 @@ function webEnvProblem(web: unknown): HostingOptionInputError | null {
   for (const [key, entry] of Object.entries(web.env)) {
     const nameMessage = envNameProblem(key)
     if (nameMessage) return { field: 'options.web.env', message: nameMessage }
+    if (isReservedSiteVariableName(key)) {
+      return {
+        field: `options.web.env.${key}`,
+        message: 'is reserved for PHP itself and cannot be used as a site variable',
+      }
+    }
     if (typeof entry !== 'string' || entry.length > MAX_WEB_ENV_VALUE_LENGTH) continue
     const valueMessage = envValueProblem(entry.trim())
     if (valueMessage) return { field: `options.web.env.${key}`, message: valueMessage }
