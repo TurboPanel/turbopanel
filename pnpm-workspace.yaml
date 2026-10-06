@@ -10,7 +10,7 @@ minimumReleaseAgeExclude:
 overrides:
   nanoid: ^3.3.18
   postcss: ^8.5.23
-  sharp: ^0.35.4
+  sharp: ^0.35.5
   esbuild: ^0.25.0
   # GHSA-3wwx-pv8p-q78v: miniflare pins undici 7.29.0 exactly; force the fixed release.
   undici: 7.29.1

@@ -180,6 +180,7 @@ export const DAEMON_WIRE_FEATURES = [
   'php-site-modes-v1',
   'site-engine-nginx-apache-v1',
   'deploy-cancel-v1',
+  'deno-native-apps-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -245,6 +246,14 @@ export const PHP_SITE_MODES_FEATURE: DaemonWireFeature = 'php-site-modes-v1'
  * for a deploy the daemon already acknowledged.
  */
 export const DEPLOY_CANCEL_FEATURE: DaemonWireFeature = 'deploy-cancel-v1'
+
+/**
+ * The daemon runs a native app on Deno (`nativeAppServices[].runtime: "deno"`
+ * with `denoVersion`) and vendors the runtime for it. Without it the daemon
+ * ignores `runtime` and would start the app on Node, so the control plane
+ * refuses to send a Deno app to it.
+ */
+export const DENO_NATIVE_APPS_FEATURE: DaemonWireFeature = 'deno-native-apps-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}
