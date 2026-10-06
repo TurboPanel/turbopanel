@@ -19,6 +19,7 @@ import {
 } from '../../lib/secrets/secrets.ts'
 import {
   binding,
+  command,
   container,
   environment,
   grant,
@@ -34,6 +35,8 @@ import {
   variable,
   workspace,
 } from '../../db/schema.ts'
+import { detachBindingsForManaged } from '../../features/bindings/impact.ts'
+import { createCommandRecord } from '../../features/commands/command-records.ts'
 import { postgresEngineSpec } from '../../features/managed/postgres.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
@@ -713,6 +716,107 @@ test('PATCH /bindings/:id returns 503 when encryption secrets are missing', asyn
       })
       assertEquals(res.status, 503)
       assertEquals(await res.json(), { error: 'Encryption unavailable' })
+    }
+  )
+})
+
+test('POST /bindings is refused while a destroy of the cluster is outstanding, and allowed again once it is over', async () => {
+  await withBindingFixtures(
+    async ({
+      db,
+      app,
+      secrets,
+      userId,
+      organizationId,
+      serverId,
+      managedId,
+      principalId,
+      consumerServiceId,
+    }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = authHeaders(cookie, organizationId)
+      const body = JSON.stringify({
+        principalId,
+        serviceId: consumerServiceId,
+        databaseName: 'postgres',
+        keyPrefix: 'DATABASE',
+        emitEngineDefaults: false,
+      })
+
+      // Queued through the real record writer, so the test also proves that a
+      // destroy payload leaves `command.context.managedId` for the gate to find.
+      const destroy = await createCommandRecord(db, {
+        serverId,
+        actorType: 'user',
+        actorId: userId,
+        type: 'managed.destroy',
+        payload: { managedId, removeVolumes: true, deleteAfterDestroy: true },
+      })
+      try {
+        const refused = await app.request('/bindings', { method: 'POST', headers, body })
+        assertEquals(refused.status, 409)
+        assertEquals(await refused.json(), { error: 'managed_busy', reason: 'destroy_in_flight' })
+        assertEquals(
+          (
+            await db
+              .select({ id: binding.id })
+              .from(binding)
+              .where(eq(binding.principalId, principalId))
+          ).length,
+          0
+        )
+
+        await db.update(command).set({ status: 'failed' }).where(eq(command.id, destroy.id))
+        const created = await app.request('/bindings', { method: 'POST', headers, body })
+        assertEquals(created.status, 200)
+      } finally {
+        await db.delete(command).where(eq(command.id, destroy.id))
+      }
+    }
+  )
+})
+
+test('detachBindingsForManaged removes every binding of the cluster and its variables, and no other', async () => {
+  await withBindingFixtures(
+    async ({
+      db,
+      app,
+      secrets,
+      userId,
+      organizationId,
+      managedId,
+      principalId,
+      consumerServiceId,
+    }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = authHeaders(cookie, organizationId)
+      const created = await app.request('/bindings', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          principalId,
+          serviceId: consumerServiceId,
+          databaseName: 'postgres',
+          keyPrefix: 'DATABASE',
+          emitEngineDefaults: false,
+        }),
+      })
+      assertEquals(created.status, 200)
+      const mine = () =>
+        db.select({ id: binding.id }).from(binding).where(eq(binding.principalId, principalId))
+      assertEquals((await mine()).length, 1)
+
+      // Another cluster's id removes nothing.
+      await detachBindingsForManaged(db, crypto.randomUUID())
+      assertEquals((await mine()).length, 1)
+
+      await detachBindingsForManaged(db, managedId)
+      assertEquals((await mine()).length, 0)
+      const variables = await db
+        .select({ id: variable.id })
+        .from(variable)
+        .where(eq(variable.serviceId, consumerServiceId))
+      assertEquals(variables.length, 0)
     }
   )
 })

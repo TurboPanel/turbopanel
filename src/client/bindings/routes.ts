@@ -27,6 +27,7 @@ import {
   parseJsonBody,
   requireStringField,
 } from '../shared.ts'
+import { hasOutstandingManagedDestroy } from '../../features/managed/destroy-pending.ts'
 import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
 import {
   loadServicePlacementServerId,
@@ -570,6 +571,12 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const engineCode = requireBindingEngineCode(c, managedResult, input.databaseName)
     if (engineCode instanceof Response) return engineCode
+
+    // A destroy that is queued or running removes the cluster's bindings when
+    // it succeeds: refuse a new one instead of silently dropping it later.
+    if (await hasOutstandingManagedDestroy(db, managedResult.id)) {
+      return c.json({ error: 'managed_busy', reason: 'destroy_in_flight' }, 409)
+    }
 
     const conflictDenied = await assertBindingCreateConflicts(
       db,

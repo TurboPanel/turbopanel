@@ -3,14 +3,9 @@
  * can surface a `redeployRequired` hint. The API never restarts or redeploys.
  */
 
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import {
-  binding,
-  environment,
-  principal,
-  service,
-} from '../../db/schema.ts'
+import { binding, environment, principal, service } from '../../db/schema.ts'
 
 export type BindingImpactService = {
   serviceId: string
@@ -43,7 +38,7 @@ function toImpact(row: {
 
 export async function listBindingImpactForPrincipal(
   db: Db,
-  principalId: string,
+  principalId: string
 ): Promise<BindingRedeployRequired> {
   const rows = await db
     .select({
@@ -58,16 +53,19 @@ export async function listBindingImpactForPrincipal(
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .where(eq(binding.principalId, principalId))
 
-  const services = rows
-    .map(toImpact)
-    .sort((a, b) => a.keyPrefix.localeCompare(b.keyPrefix))
+  const services = rows.map(toImpact).sort((a, b) => a.keyPrefix.localeCompare(b.keyPrefix))
   return { count: services.length, services }
 }
 
-export async function listBindingImpactForDatabase(
+/**
+ * Services bound to a login of one managed cluster, optionally narrowed to one
+ * of its databases. Unsorted: each caller picks its own order.
+ */
+async function listManagedBindingImpact(
   db: Db,
-  params: Readonly<{ managedId: string; databaseName: string }>,
-): Promise<BindingRedeployRequired> {
+  managedId: string,
+  databaseName?: string
+): Promise<BindingImpactService[]> {
   const rows = await db
     .select({
       serviceId: binding.serviceId,
@@ -81,22 +79,52 @@ export async function listBindingImpactForDatabase(
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .where(
-      and(
-        eq(principal.managedId, params.managedId),
-        eq(binding.databaseName, params.databaseName),
-      ),
+      databaseName === undefined
+        ? eq(principal.managedId, managedId)
+        : and(eq(principal.managedId, managedId), eq(binding.databaseName, databaseName))
     )
+  return rows.map(toImpact)
+}
 
-  const services = rows
-    .map(toImpact)
-    .sort((a, b) => a.keyPrefix.localeCompare(b.keyPrefix))
+export async function listBindingImpactForDatabase(
+  db: Db,
+  params: Readonly<{ managedId: string; databaseName: string }>
+): Promise<BindingRedeployRequired> {
+  const services = (await listManagedBindingImpact(db, params.managedId, params.databaseName)).sort(
+    (a, b) => a.keyPrefix.localeCompare(b.keyPrefix)
+  )
   return { count: services.length, services }
 }
 
-export async function hasBindingsForPrincipal(
+/** Every service bound to any login of this managed cluster. */
+export async function listBindingImpactForManaged(
   db: Db,
-  principalId: string,
-): Promise<boolean> {
+  managedId: string
+): Promise<BindingRedeployRequired> {
+  const services = (await listManagedBindingImpact(db, managedId)).sort(
+    (a, b) => (a.name ?? '').localeCompare(b.name ?? '') || a.keyPrefix.localeCompare(b.keyPrefix)
+  )
+  return { count: services.length, services }
+}
+
+/**
+ * Remove every binding of a managed cluster's logins. Each binding's
+ * materialized variables go with it (they cascade on `binding_id`), so the
+ * services stop receiving the cluster's connection variables at their next
+ * deploy instead of keeping dangling ones.
+ */
+export async function detachBindingsForManaged(db: Db, managedId: string): Promise<void> {
+  await db
+    .delete(binding)
+    .where(
+      inArray(
+        binding.principalId,
+        db.select({ id: principal.id }).from(principal).where(eq(principal.managedId, managedId))
+      )
+    )
+}
+
+export async function hasBindingsForPrincipal(db: Db, principalId: string): Promise<boolean> {
   const [row] = await db
     .select({ id: binding.id })
     .from(binding)
@@ -107,7 +135,7 @@ export async function hasBindingsForPrincipal(
 
 export async function hasBindingsForDatabase(
   db: Db,
-  params: Readonly<{ managedId: string; databaseName: string }>,
+  params: Readonly<{ managedId: string; databaseName: string }>
 ): Promise<boolean> {
   const impact = await listBindingImpactForDatabase(db, params)
   return impact.count > 0

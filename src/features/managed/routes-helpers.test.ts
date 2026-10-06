@@ -1,4 +1,4 @@
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertStringIncludes } from '@std/assert'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { mysqlEngineSpec } from './mysql.ts'
@@ -14,15 +14,18 @@ import {
   isManagedRootPrincipal,
   isPlainObject,
   MANAGED_SERIES_IMMUTABLE_ERROR,
+  MANAGED_USER_PRIVILEGES_INVALID_ERROR,
   MANAGED_VARIANT_SWAP_UNSAFE_ERROR,
   MANAGED_VERSION_UNSUPPORTED_ERROR,
   managedSessionPaths,
   mergeCreateSettings,
+  parseManagedPatchName,
   parseManagedUserCreateFields,
   parseManagedVersionSelection,
   principalMetadata,
   readInitialDatabase,
   resolveManagedServerId,
+  resolveManagedUserPrivileges,
   serializeContainerRow,
   serializeManagedUser,
 } from './routes-helpers.ts'
@@ -96,7 +99,8 @@ test('mergeCreateSettings returns defaults when body has no exposure', () => {
   const merged = mergeCreateSettings(postgresEngineSpec, {})
   if (!merged) throw new TypeError('expected merged settings')
   assertEquals(merged.exposure.enabled, true)
-  assertEquals(merged.exposure.scope, undefined)
+  // New clusters are local-only until the owner picks a wider scope.
+  assertEquals(merged.exposure.scope, 'local')
 })
 
 test('mergeCreateSettings merges exposure overrides and re-validates', () => {
@@ -666,4 +670,67 @@ test('parseManagedUserCreateFields rejects empty databases and non-string entrie
   )
   if (!(mixed instanceof Response)) throw new TypeError('expected Response')
   assertEquals(mixed.status, 400)
+})
+
+test('a new login with no privileges named gets the grant that matches its connection role', () => {
+  const c = mockContext()
+  const options = defaultRowOptions()
+  const ctx = mockManagedContext()
+  for (const [connectionRole, expected] of [
+    [undefined, ['read-write']],
+    ['read-write', ['read-write']],
+    ['read-only', ['read-only']],
+  ] as const) {
+    const fields = parseManagedUserCreateFields(
+      c,
+      ctx,
+      { username: 'app_user', databases: ['postgres'], connectionRole },
+      options
+    )
+    if (fields instanceof Response) throw new TypeError('expected parsed fields')
+    assertEquals(fields.privileges, [...expected])
+  }
+})
+
+test('named privileges are kept, de-duplicated, and an empty or unknown list is refused in plain words', async () => {
+  const c = mockContext()
+  const options = defaultRowOptions()
+  const ctx = mockManagedContext()
+  const ok = parseManagedUserCreateFields(
+    c,
+    ctx,
+    { username: 'app_user', databases: ['postgres'], privileges: ['owner', 'owner'] },
+    options
+  )
+  if (ok instanceof Response) throw new TypeError('expected parsed fields')
+  assertEquals(ok.privileges, ['owner'])
+
+  for (const privileges of [[], ['superuser'], 'owner', [1]]) {
+    const res = parseManagedUserCreateFields(
+      c,
+      ctx,
+      { username: 'app_user', databases: ['postgres'], privileges },
+      options
+    )
+    if (!(res instanceof Response)) throw new TypeError('expected Response')
+    assertEquals(res.status, 400)
+    const body = (await res.json()) as { error: string; message: string }
+    assertEquals(body.error, MANAGED_USER_PRIVILEGES_INVALID_ERROR)
+    assertStringIncludes(body.message, 'owner, read-write, read-only')
+  }
+})
+
+test('MySQL and MariaDB logins get the same privilege default as PostgreSQL', () => {
+  const allowed = mysqlEngineSpec.userOperations.privileges
+  assertEquals(resolveManagedUserPrivileges(undefined, allowed, 'read-write'), ['read-write'])
+  assertEquals(resolveManagedUserPrivileges(null, allowed, 'read-only'), ['read-only'])
+  assertEquals(resolveManagedUserPrivileges([], allowed, 'read-write'), null)
+})
+
+test('PATCH name: absent leaves it, null clears it, a string is validated', () => {
+  assertEquals(parseManagedPatchName({}), { ok: true, name: undefined })
+  assertEquals(parseManagedPatchName({ name: null }), { ok: true, name: null })
+  assertEquals(parseManagedPatchName({ name: '  Orders DB ' }), { ok: true, name: 'Orders DB' })
+  const bad = parseManagedPatchName({ name: 42 })
+  assertEquals(bad.ok, false)
 })
