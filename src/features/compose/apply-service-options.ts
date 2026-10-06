@@ -255,7 +255,11 @@ function applyParsedOptionsToService(
     applyResourcesToComposeService(service, parsed.resources)
   }
 
-  applyRestartPolicy(service, resolveMaxRestartAttempts(parsed))
+  // An authored `restart:` is the operator's explicit choice (for example
+  // `unless-stopped`); a generated `on-failure` limit must not override it.
+  if (service.restart === undefined) {
+    applyRestartPolicy(service, resolveMaxRestartAttempts(parsed))
+  }
 }
 
 function buildServiceDeployHook(
