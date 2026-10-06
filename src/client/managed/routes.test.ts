@@ -2264,12 +2264,20 @@ test('POST managed user honours name schemes, the org lock, and the root login s
           body: JSON.stringify({ databases: ['defaultdb'], ...body }),
         })
       }
-      type UserBody = { user: { username: string; appliedUsername: string; nameScheme: string } }
+      type UserBody = {
+        user: {
+          username: string
+          appliedUsername: string
+          nameScheme: string
+          connectionRole: string
+        }
+      }
 
       // No scheme asked: the org default (random). The typed name stays the display name.
       const byDefault = (await (await createUser({ username: 'dbone' })).json()) as UserBody
       assertEquals(byDefault.user.nameScheme, 'random')
       assertEquals(byDefault.user.username, 'dbone')
+      assertEquals(byDefault.user.connectionRole, 'read-write')
       assertMatch(byDefault.user.appliedUsername, /^[a-z][a-z0-9]{11}$/)
 
       const plainRes = await createUser({ username: 'dbplain', nameScheme: 'plain' })
@@ -2279,6 +2287,11 @@ test('POST managed user honours name schemes, the org lock, and the root login s
         await createUser({ username: 'dbpart', nameScheme: 'partial' })
       ).json()) as UserBody
       assertMatch(partial.user.appliedUsername, /^dbpart_[a-z0-9]{11}$/)
+
+      // A read-only login needs a read-eligible replica: a standalone cluster has none.
+      const readOnly = await createUser({ username: 'dbro', connectionRole: 'read-only' })
+      assertEquals(readOnly.status, 422)
+      assertEquals(await readOnly.json(), { error: 'managed_no_read_targets' })
 
       const bad = await createUser({ username: 'dbbad', nameScheme: 'full' })
       assertEquals(bad.status, 400)

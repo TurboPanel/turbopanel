@@ -144,6 +144,7 @@ import {
   evaluatePromoteLagHttpGate,
   evaluatePromoteMemberRole,
   evaluatePromoteReplicaClass,
+  evaluateReadOnlyLoginTargetsLazy,
   evaluateReplicaClassConversion,
   evaluateReplicaPlacementPrechecks,
   isManagedReplicationPrincipal,
@@ -1583,7 +1584,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       nameScheme
     )
     if (fields instanceof Response) return fields
-    const { username, databases, privileges } = fields
+    const { username, databases, privileges, connectionRole } = fields
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
@@ -1595,6 +1596,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const commandQueue = await assertManagedApplyReady(c, db, ctx, row, options, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
+
+    // A read-only login needs a read-eligible replica to land on; refuse it
+    // before anything is inserted or queued (a standalone cluster has none).
+    const readGuard = await evaluateReadOnlyLoginTargetsLazy(connectionRole, () =>
+      listManagedMembers(db, row.id)
+    )
+    if (readGuard) return c.json({ error: readGuard.error }, readGuard.status)
 
     // Same-cluster collision, owning-org namespace probe, and principal insert
     // share one txn so the organization FOR UPDATE lock covers the insert —
@@ -1636,6 +1644,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           engine: ctx.spec.engine,
           databases,
           privileges,
+          // Stored only for read-only: an absent key is the read-write default.
+          ...(connectionRole === 'read-only' ? { connectionRole } : {}),
         },
       })
       return { ok: true as const, appliedUsername, ...created }
@@ -1686,6 +1696,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         nameScheme,
         databases,
         privileges,
+        connectionRole,
         createdAt: createdUser?.createdAt ?? new Date().toISOString(),
       },
       password,
