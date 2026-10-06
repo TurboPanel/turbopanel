@@ -346,6 +346,12 @@ export function isReservedDeployVariableKey(key: string): boolean {
   return RESERVED_DEPLOY_VARIABLE_KEYS.has(key)
 }
 
+/**
+ * What a host-run service (a PHP site or native app, not a container) dials
+ * for its managed database: ProxySQL's published listener on loopback.
+ */
+export const HOST_RUN_LOOPBACK_HOST = '127.0.0.1'
+
 /** Default `binding.key_prefix` when the operator omits one. */
 export const DEFAULT_BINDING_KEY_PREFIX = 'DATABASE'
 
@@ -357,6 +363,8 @@ export const MAX_BINDING_KEY_PREFIX_LENGTH = 64
 export type BindingPrefixedKeys = {
   url: string
   caCert: string
+  /** Host-run PHP sites only: path of a CA file the daemon keeps for the site. */
+  caFile: string
   readSplit: string
   host: string
   port: string
@@ -373,6 +381,7 @@ export function bindingPrefixedKeys(prefix: string): BindingPrefixedKeys {
   return {
     url: `${prefix}_URL`,
     caCert: `${prefix}_CA_CERT`,
+    caFile: `${prefix}_CA_FILE`,
     readSplit: `${prefix}_READ_SPLIT`,
     host: `${prefix}_HOST`,
     port: `${prefix}_PORT`,

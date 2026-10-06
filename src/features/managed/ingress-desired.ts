@@ -50,7 +50,7 @@ import {
   resolveManagedBindAddress,
 } from './access-address.ts'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
-import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
+import { loadBoundManagedIdsForServer, serverHasHostRunBinding } from './ingress-bound-consumers.ts'
 import { requestedExposureScope } from './host-exposure.ts'
 import { materializeBindingsForPrincipal } from '../bindings/materialize.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
@@ -94,6 +94,7 @@ import {
   principalConnectionRole,
   principalDefaultDatabase,
   protocolListenerForEngine,
+  sanBindAddresses,
   shouldSkipIngressFrontendUser,
   sortManagedIds,
 } from './ingress-desired-pure.ts'
@@ -604,6 +605,15 @@ type BuiltManagedIngressReconcile = {
   pendingTlsLeaf?: UpsertTlsLeafTrackingParams
 }
 
+/** `local` when a host-run consumer (PHP site, native app) is placed here, else nothing. */
+async function hostRunLoopbackScopes(
+  db: Db,
+  serverId: string,
+  organizationId: string
+): Promise<ManagedSqlAccessScope[]> {
+  return (await serverHasHostRunBinding(db, serverId, organizationId)) ? ['local'] : []
+}
+
 /** Internal: payload plus minted ingress leaf that is not yet deployed. */
 async function buildManagedIngressReconcileDesired(
   db: Db,
@@ -688,6 +698,12 @@ async function buildManagedIngressReconcileDesired(
   if ('kind' in clusters) return clusters
   if (clusters.length === 0) return null
 
+  // A PHP site or native app on this server dials the proxy on loopback, so the
+  // listener is published there whatever the clusters' exposure says. Loopback
+  // is not exposure: nothing off the machine can reach it.
+  const hostRunScopes = await hostRunLoopbackScopes(db, params.serverId, organizationId)
+  enabledScopes.push(...hostRunScopes)
+
   const bindAddresses = await resolveIngressBindAddresses(db, params.serverId, enabledScopes)
   if (!Array.isArray(bindAddresses)) return bindAddresses
 
@@ -701,7 +717,9 @@ async function buildManagedIngressReconcileDesired(
   const backendAddresses = clusters.flatMap((c) => c.backends.map((b) => b.address))
   const listenerSans = collectProxySqlListenerSans({
     hostname: advertisedHost,
-    bindAddresses,
+    // A host-run consumer verifies the certificate against `127.0.0.1`; under a
+    // public publish the bind is a wildcard and carries no SAN of its own.
+    bindAddresses: sanBindAddresses(bindAddresses, hostRunScopes),
     backendAddresses,
   })
   // Bindings (`resolveBindingEndpoint`) always dial ProxySQL by this
