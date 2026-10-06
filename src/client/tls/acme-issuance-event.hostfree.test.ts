@@ -478,6 +478,29 @@ test('a first failure announces once, with the organization and the raw reason',
   assertEquals(seen, [{ organizationId: ORG_ID, hostname: 'app.example.com', rawError: 'boom' }])
 })
 
+test('the announced reason never carries a URL token', async () => {
+  const { db } = fakeDb([FAILING_ROW({ managedBy: 'caddy' })])
+  const seen: unknown[] = []
+  await handleAcmeIssuanceEvent(
+    db,
+    {
+      serverId: SERVER_ID,
+      hostname: 'app.example.com',
+      ok: false,
+      errorMessage: 'probe failed for https://app.example.com/check?token=s3cr3t-value',
+    },
+    { onNewFailure: (failure) => Promise.resolve(void seen.push(failure)) }
+  )
+  assertEquals(seen, [
+    {
+      organizationId: ORG_ID,
+      hostname: 'app.example.com',
+      rawError: 'probe failed for https://app.example.com/check?[redacted]',
+    },
+  ])
+  assertEquals(JSON.stringify(seen).includes('s3cr3t-value'), false)
+})
+
 test('a hostname that keeps failing is not announced again', async () => {
   const { db } = fakeDb([FAILING_ROW({ lastError: 'earlier failure' })])
   const seen: unknown[] = []

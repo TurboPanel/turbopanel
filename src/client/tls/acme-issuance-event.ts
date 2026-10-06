@@ -141,7 +141,13 @@ export async function handleAcmeIssuanceEvent(
     updated = true
   })
 
-  if (newlyFailing) await announceNewFailure(deps, organizationId, hostname, input.errorMessage)
+  // The alert text reaches inbox rows and outside channels, so it carries the
+  // same URL-redacted reason the stored `lastError` does.
+  if (newlyFailing) {
+    const safeError =
+      input.errorMessage === undefined ? undefined : redactUrlSecrets(input.errorMessage)
+    await announceNewFailure(deps, organizationId, hostname, safeError)
+  }
   return { updated }
 }
 
