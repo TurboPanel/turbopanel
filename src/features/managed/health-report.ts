@@ -17,7 +17,7 @@ import { replica } from '../../db/schema.ts'
 import type { ManagedHealthReportMember } from '../../contracts/cell-protocol.ts'
 import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
-import { updateManagedMemberObservedReplication } from './members.ts'
+import { updateManagedMemberDisplayReplication } from './members.ts'
 
 export type ManagedHealthReportOutcome = { stored: number; ignored: number }
 
@@ -71,9 +71,7 @@ export async function handleManagedHealthReport(
       ignored += 1
       return
     }
-    await updateManagedMemberObservedReplication(db, entry.memberId, {
-      replication: readingFromReport(entry, receivedAtMs),
-    })
+    await updateManagedMemberDisplayReplication(db, entry.memberId, readingFromReport(entry, receivedAtMs))
     stored += 1
   })
   return { stored, ignored }

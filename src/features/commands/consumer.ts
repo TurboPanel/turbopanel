@@ -347,6 +347,7 @@ async function loadDispatchableRecord(
 
   if (record.expiresAt && Date.parse(record.expiresAt) < Date.now()) {
     await transitionCommand(db, record.id, { status: 'timed_out' })
+    await settleIngressCommandForRecovery(db, recoveryIdFromCommandMetadata(await getCommandMetadata(db, record.id)))
     if (record.type === 'environment.deploy') {
       await failTimedOutDeploy(db, {
         commandId: record.id,
@@ -374,6 +375,7 @@ async function loadDispatchableRecord(
       error: 'Command dispatch payload unavailable',
       errorCode: 'dispatch_payload_missing',
     })
+    await settleIngressCommandForRecovery(db, recoveryIdFromCommandMetadata(await getCommandMetadata(db, record.id)))
     if (record.type === 'environment.deploy') {
       // No payload to read the environment from; the command's context names it.
       await failDeployByContext(db, {

@@ -551,14 +551,23 @@ it. A daemon that predates that check still confirms by command success.
 `streaming` / `catching_up` reading older than the 120 s window as `unknown`
 (`stale: true`, `lastState`, `ageSeconds`; `replica-freshness.ts`); a negative
 reading is never made vaguer, and a far-future `observedAt` is not trusted.
-Display only: the promote gate and automatic failover read the stored
-observation and apply their own freshness rules unchanged. Fresh readings come
-from the daemon's own push (`managed-health-report`, feature
-`managed-health-report-v1`, every 30 s, `health-report.ts`: only the reporting
-server's own replicas are written, `lastStreaming` is dropped, a future time is
-clamped to receipt) and from the on-demand probe. When a probe is answered with
-"engine not running" the replica is stored as `not_streaming` with the receipt
-time, so a stopped replica stops showing its last `streaming` line.
+
+The promote gate and automatic failover read the stored probe-measured
+observation (`metadata.replication`) and apply their own freshness rules
+unchanged (120 s); they are unaffected by the 30 s health report push.
+
+Fresh readings come from two sources:
+- The daemon's own push (`managed-health-report`, feature
+  `managed-health-report-v1`, every 30 s) writes to a display-only field
+  (`metadata.replicationDisplay`): only the reporting server's own replicas are
+  written, `lastStreaming` is dropped, a future time is clamped to receipt.
+- The on-demand probe and apply/lifecycle results write to
+  `metadata.replication` (probe-measured). When a probe is answered with
+  "engine not running" the replica is stored as `not_streaming` with the receipt
+  time, so a stopped replica stops showing its last `streaming` line.
+
+For display, the newer of the two readings is shown; for promotion decisions,
+only the probe-measured field is read.
 
 ### Dead-primary detectors
 

@@ -279,3 +279,48 @@ test('an ingress command the sweep timed out settles the row through the timeout
   assertEquals(h.recovery().state, 'failed')
   assertEquals(h.recovery().metadata.ingressNotRepointed, [SERVER_B])
 })
+
+test('an expired TTL transitions to timed_out and settles a reconciling-ingress recovery to failed', async () => {
+  const h = harness({
+    recovery: recoveryRow({
+      state: 'reconciling-ingress',
+      metadata: {
+        ingressCommandIds: ['c1', 'c2'],
+        ingressServerIds: [SERVER_A, SERVER_B],
+      },
+    }),
+    commands: [
+      { id: 'c1', serverId: SERVER_A, status: 'succeeded' },
+      { id: 'c2', serverId: SERVER_B, status: 'running' },
+    ],
+  })
+
+  // Simulate what happens when a command record expires and needs to be transitioned
+  h.commands[1].status = 'timed_out'
+  await settleIngressCommandForRecovery(h.db, REC_ID)
+
+  assertEquals(h.recovery().state, 'failed')
+  assertEquals(h.recovery().metadata.needsOperator, true)
+  assertEquals(h.recovery().metadata.ingressNotRepointed, [SERVER_B])
+})
+
+test('a missing dispatch payload transitions to failed and settles a recovery to failed', async () => {
+  const h = harness({
+    recovery: recoveryRow({
+      state: 'reconciling-ingress',
+      metadata: {
+        ingressCommandIds: ['c1'],
+        ingressServerIds: [SERVER_A],
+      },
+    }),
+    commands: [{ id: 'c1', serverId: SERVER_A, status: 'running' }],
+  })
+
+  // Simulate what happens when a command fails due to missing dispatch payload
+  h.commands[0].status = 'failed'
+  await settleIngressCommandForRecovery(h.db, REC_ID)
+
+  assertEquals(h.recovery().state, 'failed')
+  assertEquals(h.recovery().metadata.needsOperator, true)
+  assertEquals(h.recovery().metadata.ingressNotRepointed, [SERVER_A])
+})
