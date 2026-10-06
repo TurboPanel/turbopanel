@@ -372,6 +372,12 @@ function applyOnlineTrigger(
     }
     writeProjection = true
   }
+  // A reconnect ends the mark, so its reason goes with it.
+  if (isOfflineToOnline && nextProjection?.offlineReason) {
+    const { offlineReason: _ended, ...rest } = nextProjection
+    nextProjection = rest
+    writeProjection = true
+  }
 
   if (!isOfflineToOnline && !writeProjection && !geoDue) {
     return null
@@ -399,7 +405,10 @@ function applyOnlineTrigger(
   }
 }
 
-function applyOfflineTrigger(ctx: ProjectionTriggerContext): ProjectionOutcome {
+function applyOfflineTrigger(
+  trigger: Extract<ProjectionTrigger, { kind: 'offline' | 'disconnected' }>,
+  ctx: ProjectionTriggerContext
+): ProjectionOutcome {
   const { currentProjection, existingStatus, now } = ctx
   const nextStatus: ServerDaemonStatus = {
     ...existingStatus,
@@ -408,8 +417,12 @@ function applyOfflineTrigger(ctx: ProjectionTriggerContext): ProjectionOutcome {
   }
   return {
     touchMetadata: false,
-    nextProjection: currentProjection,
-    writeProjection: false,
+    // The mark records why it was written; host-loss failover trusts only a stale sweep.
+    nextProjection: {
+      ...currentProjection,
+      offlineReason: trigger.reason === 'sweep_stale' ? 'sweep_stale' : 'disconnect',
+    },
+    writeProjection: true,
     nextStatus,
     writeStatus: true,
     geoDue: false,
@@ -614,7 +627,7 @@ function applyProjectionTrigger(
       return applyOnlineTrigger(trigger, ctx)
     case 'offline':
     case 'disconnected':
-      return applyOfflineTrigger(ctx)
+      return applyOfflineTrigger(trigger, ctx)
     case 'heartbeat':
       return applyHeartbeatTrigger(trigger, ctx)
     case 'identity':

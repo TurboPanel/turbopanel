@@ -132,6 +132,9 @@ async function listOfflinePrimaries(
         eq(replica.role, 'primary'),
         eq(server.isConnected, false),
         isNotNull(server.statusChangedAt),
+        // Only a mark written by the stale sweep (no heartbeat for the threshold,
+        // likely power loss). A closed daemon socket could be a restart or a blip.
+        sql`${server.daemon} -> 'projection' ->> 'offlineReason' = 'sweep_stale'`,
         gte(server.statusChangedAt, giveUpBoundary),
         lte(server.statusChangedAt, params.cutoffIso)
       )

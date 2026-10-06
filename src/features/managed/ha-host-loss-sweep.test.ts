@@ -87,6 +87,7 @@ async function withPair(fn: (cluster: Cluster) => Promise<void>): Promise<void> 
         name: 'Host Loss Primary',
         isConnected: false,
         statusChangedAt: offlineSince,
+        daemon: { projection: { offlineReason: 'sweep_stale' } },
       })
       .returning({ id: server.id })
     const [replicaServer] = await db
@@ -242,6 +243,26 @@ test('an offline primary past the cutoff is listed with its incident facts; a fr
       limit: 1000,
     })
     assertEquals(ours(back, c.managedId).length, 0)
+  })
+})
+
+test('a primary whose daemon socket closed is not a candidate; only a stale-sweep mark is', async () => {
+  await withPair(async (c) => {
+    const cutoffIso = new Date(Date.now() - 120_000).toISOString()
+    const mark = async (reason: 'disconnect' | 'sweep_stale' | null) => {
+      await c.db
+        .update(server)
+        .set({ daemon: reason ? { projection: { offlineReason: reason } } : null })
+        .where(eq(server.id, c.primaryServerId))
+      const rows = await DEFAULT_HOST_LOSS_LOADERS.listOfflinePrimaries(c.db, {
+        cutoffIso,
+        limit: 1000,
+      })
+      return ours(rows, c.managedId).length
+    }
+    assertEquals(await mark('disconnect'), 0)
+    assertEquals(await mark(null), 0)
+    assertEquals(await mark('sweep_stale'), 1)
   })
 })
 

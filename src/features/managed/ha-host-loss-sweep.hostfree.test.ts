@@ -71,7 +71,11 @@ function candidate(overrides: Partial<HostLossCandidate> = {}): HostLossCandidat
   }
 }
 
-const NOT_RECEIVING: ManagedReplicationHealth = { state: 'stopped', observedAt: NOW_ISO }
+const NOT_RECEIVING: ManagedReplicationHealth = {
+  state: 'stopped',
+  observedAt: NOW_ISO,
+  lastStreaming: { at: new Date(NOW - 600_000).toISOString(), ageMs: 600_000 },
+}
 const STILL_RECEIVING: ManagedReplicationHealth = { state: 'streaming', observedAt: NOW_ISO }
 
 type World = {
