@@ -828,6 +828,12 @@ test('a failing sign-in code is retried later with a growing delay, then dead-le
     for (const sent of broker.sentToQueue.slice(0, 5)) {
       assertEquals(Number(sent.options.expiration) > 0, true)
     }
+    // The dead letter carries what the replay tool lists: an id, when, and why.
+    const dead = broker.sentToQueue[5]!.options
+    assertEquals(typeof dead.messageId, 'string')
+    const deadHeaders = dead.headers as Record<string, unknown>
+    assertEquals(Number.isNaN(Date.parse(String(deadHeaders['x-tp-dead-at']))), false)
+    assertEquals(String(deadHeaders['x-tp-dead-reason']).includes('gave up'), true)
     assertEquals(
       broker.dispositions.every((d) => d.method === 'ack'),
       true
