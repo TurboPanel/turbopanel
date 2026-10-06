@@ -405,19 +405,26 @@ export async function withNativeAppNodeVersions(
     recorded: recordedSeries(ctx.rollbackPins),
   }
   const sourceByName = new Map(sourceMaterial.map((entry) => [entry.composeServiceName, entry]))
+  // A Deno app has no Node series: nothing is read for it and it gets no Node
+  // view. It keeps its place among the apps, untouched.
+  const nodeApps = apps.filter((app) => app.runtime !== 'deno')
   const outcomes = await Promise.all(
-    apps.map((app) => resolveOneApp(app, sourceByName.get(app.composeServiceName), resolveContext))
+    nodeApps.map((app) =>
+      resolveOneApp(app, sourceByName.get(app.composeServiceName), resolveContext)
+    )
   )
+  const resolved = new Map<string, PreparedNativeAppService>()
   const result: NativeAppNodeVersions = { apps: [], views: [], readCommitShas: new Map() }
   for (const outcome of outcomes) {
     if ('error' in outcome) return outcome.error
     if (outcome.warning) ctx.warnings.push(outcome.warning)
-    result.apps.push(outcome.app)
+    resolved.set(outcome.app.composeServiceName, outcome.app)
     result.views.push(outcome.view)
     if (outcome.readCommitSha !== undefined) {
       result.readCommitShas.set(outcome.app.composeServiceName, outcome.readCommitSha)
     }
   }
+  result.apps = apps.map((app) => resolved.get(app.composeServiceName) ?? app)
   return result
 }
 
@@ -479,13 +486,18 @@ export function pinSourcesToReadCommits(
  * the default the daemon applied. A rollback sends it back unchanged.
  */
 export function recordedNodeVersions(
-  apps: readonly { composeServiceName: string; nodeVersion?: string }[] | undefined
+  apps:
+    | readonly { composeServiceName: string; nodeVersion?: string; runtime?: 'node' | 'deno' }[]
+    | undefined
 ): Map<string, string> {
   return new Map(
-    (apps ?? []).map((app) => [
-      app.composeServiceName,
-      app.nodeVersion?.trim() || DEFAULT_NATIVE_APP_NODE_SERIES,
-    ])
+    // A Deno app has no Node series to record.
+    (apps ?? [])
+      .filter((app) => app.runtime !== 'deno')
+      .map((app) => [
+        app.composeServiceName,
+        app.nodeVersion?.trim() || DEFAULT_NATIVE_APP_NODE_SERIES,
+      ])
   )
 }
 

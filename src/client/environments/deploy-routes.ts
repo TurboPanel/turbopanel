@@ -617,12 +617,23 @@ function oncePerApp<T extends { composeServiceName: string }>(rows: readonly T[]
  */
 export function contextReleasesFor(
   sourceMaterial: readonly EnvironmentDeploySource[],
-  nativeAppServices: readonly { composeServiceName: string; nodeVersion?: string }[] | undefined
+  nativeAppServices:
+    | readonly { composeServiceName: string; nodeVersion?: string; runtime?: 'node' | 'deno' }[]
+    | undefined
 ): CommandContextRelease[] | undefined {
   const nodeVersionByName = recordedNodeVersions(nativeAppServices)
+  const denoNames = new Set(
+    (nativeAppServices ?? [])
+      .filter((app) => app.runtime === 'deno')
+      .map((app) => app.composeServiceName)
+  )
   return normalizeContextReleases(
     sourceMaterial.map((entry) =>
-      contextReleaseFromSource(entry, nodeVersionByName.get(entry.composeServiceName))
+      contextReleaseFromSource(
+        entry,
+        nodeVersionByName.get(entry.composeServiceName),
+        denoNames.has(entry.composeServiceName) ? 'deno' : undefined
+      )
     )
   )
 }
@@ -630,7 +641,8 @@ export function contextReleasesFor(
 /** One `sourceMaterial[]` entry as the durable `command.context` records it. */
 export function contextReleaseFromSource(
   entry: EnvironmentDeploySource,
-  nodeVersion?: string
+  nodeVersion?: string,
+  runtime?: 'deno'
 ): CommandContextRelease {
   return definedFields({
     composeServiceName: entry.composeServiceName,
@@ -646,6 +658,8 @@ export function contextReleaseFromSource(
     // The Node series a native app was built with, so a rollback can send the
     // same one without reading the repository again (see `deploy-node-version.ts`).
     nodeVersion,
+    // Only a Deno release records its runtime; Node rows stay as they were.
+    runtime,
     rollbackToReleaseId: entry.rollbackToReleaseId,
   }) satisfies CommandContextRelease
 }
@@ -1364,6 +1378,9 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
       nativeAppVariables: preparedByServer.flatMap((row) => row.prepared.nativeAppVariables ?? []),
       nativeAppNodeVersions: oncePerApp(
         preparedByServer.flatMap((row) => row.prepared.nativeAppNodeVersions ?? [])
+      ),
+      nativeAppDenoVersions: oncePerApp(
+        preparedByServer.flatMap((row) => row.prepared.nativeAppDenoVersions ?? [])
       ),
     })
   })

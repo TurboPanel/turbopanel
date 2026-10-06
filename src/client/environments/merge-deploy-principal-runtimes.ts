@@ -5,8 +5,10 @@ import type {
 } from '../../contracts/commands/schemas.ts'
 import type { PreparedNativeAppService } from '../../features/compose/ir.ts'
 import {
+  DEFAULT_NATIVE_APP_DENO_SERIES,
   DEFAULT_NATIVE_APP_NODE_SERIES,
   DEFAULT_SITE_PHP_SERIES,
+  denoEntitlementSeries,
   nodeEntitlementSeries,
   runtimeSeries,
 } from '../../contracts/runtime-registry.ts'
@@ -76,6 +78,15 @@ function nodeSeriesForApp(
   return offeredNodeSeries.has(series) ? series : undefined
 }
 
+function denoSeriesForApp(
+  app: PreparedNativeAppService,
+  offeredDenoSeries: ReadonlySet<string>
+): string | undefined {
+  const requested = app.denoVersion?.trim() || DEFAULT_NATIVE_APP_DENO_SERIES
+  const series = denoEntitlementSeries(requested)
+  return offeredDenoSeries.has(series) ? series : undefined
+}
+
 function pushUniqueEntitlement(
   list: DeployRuntimeEntitlement[],
   entitlement: DeployRuntimeEntitlement
@@ -102,12 +113,19 @@ function collectImpliedNodeRuntimes(
   principalIdByComposeService: ReadonlyMap<string, string>
 ): void {
   const offeredNodeSeries = new Set(runtimeSeries('node'))
+  const offeredDenoSeries = new Set(runtimeSeries('deno'))
   for (const app of nativeAppServices) {
     const principalId = principalIdByComposeService.get(app.composeServiceName)
     if (!principalId) continue
-    const series = nodeSeriesForApp(app, offeredNodeSeries)
+    // A Deno app executes the vendored Deno and never Node, so it is granted
+    // `tpdeno<series>` and not `tpnode<series>`.
+    const runtime = app.runtime === 'deno' ? 'deno' : 'node'
+    const series =
+      runtime === 'deno'
+        ? denoSeriesForApp(app, offeredDenoSeries)
+        : nodeSeriesForApp(app, offeredNodeSeries)
     if (!series) continue
-    addImpliedRuntime(impliedByPrincipal, { principalId, runtime: 'node', series })
+    addImpliedRuntime(impliedByPrincipal, { principalId, runtime, series })
   }
 }
 
@@ -211,6 +229,8 @@ function applyImpliedRuntimes(
  * - A `serviceKind: node` app runs `corepack` / `node` from the vendored tenant
  *   tree; the owning principal must hold `tpnode<series>` before systemd starts
  *   the unit. Build already runs under `sg tpnode<series>`; runtime does not.
+ *   A `runtime: deno` app runs the vendored Deno instead and holds
+ *   `tpdeno<series>`.
  * - A site whose `php.mode` is `fastcgi` or `fpm` (nginx / Apache) runs
  *   `php-cgi<series>` / `php-fpm<series>` as its principal, and those binaries
  *   are `0750 root:tpphp<series>` — without the grant the unit dies `203/EXEC`.

@@ -1,5 +1,7 @@
 import { assertEquals } from '@std/assert'
 import {
+  DEFAULT_NATIVE_APP_DENO_SERIES,
+  denoEntitlementSeries,
   nodeEntitlementSeries,
   runtimeSeries,
   SUPPORTED_RUNTIME_SERIES,
@@ -25,6 +27,7 @@ test('SUPPORTED_RUNTIME_SERIES is the flat union of known series', () => {
 test('runtimeSeries returns PHP and Node series only for known runtimes', () => {
   assertEquals(runtimeSeries('php'), ['8.3', '8.4'])
   assertEquals(runtimeSeries('node'), ['22', '24', '26'])
+  assertEquals(runtimeSeries('deno'), ['2'])
   assertEquals(runtimeSeries('ruby'), [])
   assertEquals(runtimeSeries(''), [])
 })
@@ -33,4 +36,11 @@ test('nodeEntitlementSeries normalizes Node pins to the major series', () => {
   assertEquals(nodeEntitlementSeries('24.17.0'), '24')
   assertEquals(nodeEntitlementSeries('22'), '22')
   assertEquals(nodeEntitlementSeries(''), '24')
+})
+
+test('denoEntitlementSeries normalizes Deno pins to the major series', () => {
+  assertEquals(denoEntitlementSeries('2.9.7'), '2')
+  assertEquals(denoEntitlementSeries('2'), '2')
+  assertEquals(denoEntitlementSeries(''), DEFAULT_NATIVE_APP_DENO_SERIES)
+  assertEquals(denoEntitlementSeries('latest'), DEFAULT_NATIVE_APP_DENO_SERIES)
 })
