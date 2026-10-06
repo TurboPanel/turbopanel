@@ -115,6 +115,16 @@ import {
   repositoryNodeVersionReader,
   resolveSourceNodeVersions,
 } from './deploy-node-version.ts'
+import {
+  DEFAULT_NATIVE_APP_DENO_SERIES,
+  denoEntitlementSeries,
+} from '../../contracts/runtime-registry.ts'
+import { isCheckViolationOn } from '../../db/check-violation.ts'
+import {
+  type DenoAppFeatureError,
+  type DenoMigrationPendingError,
+  withDenoNativeApps,
+} from './deploy-deno-gate.ts'
 import { type SiteEngineFeatureError, withSiteEngineFeature } from './deploy-site-engine-gate.ts'
 import { PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
 import {
@@ -488,6 +498,37 @@ export type PreparedDeployCompose = ServerDeployment & {
    * `nativeAppServices[].nodeVersion`.
    */
   nativeAppNodeVersions?: NativeAppNodeVersionView[]
+  /**
+   * The Deno series each Deno app (`x-turbopanel.runtime: deno`) runs and
+   * whether it was pinned or defaulted, for people. Never sent to a daemon —
+   * the wire value is `nativeAppServices[].denoVersion`.
+   */
+  nativeAppDenoVersions?: NativeAppDenoVersionView[]
+}
+
+/** One Deno app's series for the deploy preview. */
+export type NativeAppDenoVersionView = {
+  composeServiceName: string
+  /** The Deno series the host runs it on, such as `2`. */
+  denoVersion: string
+  /** `compose` when `x-turbopanel.denoVersion` pinned it, else `default`. */
+  source: 'compose' | 'default'
+}
+
+/** The preview's view of every Deno app: its series, pinned or defaulted. */
+export function nativeAppDenoVersionViews(
+  apps: readonly Pick<PreparedNativeAppService, 'composeServiceName' | 'runtime' | 'denoVersion'>[]
+): NativeAppDenoVersionView[] {
+  return apps
+    .filter((app) => app.runtime === 'deno')
+    .map((app) => {
+      const pinned = app.denoVersion?.trim()
+      return {
+        composeServiceName: app.composeServiceName,
+        denoVersion: denoEntitlementSeries(pinned || DEFAULT_NATIVE_APP_DENO_SERIES),
+        source: pinned ? ('compose' as const) : ('default' as const),
+      }
+    })
 }
 
 /** One native app's {@link NativeAppVariableView} list. */
@@ -565,6 +606,9 @@ export type DeployPrepareError =
   /** A PHP site asks for a mode its engine, organization or server does not offer. */
   | PhpModePrepareError
   | SiteEngineFeatureError
+  /** A Deno app goes to a daemon that cannot run it, or asks for a series nothing offers. */
+  | DenoAppFeatureError
+  | DenoMigrationPendingError
   /**
    * The repository asks for a Node version no offered series satisfies, names
    * one that is not a version range, or (a deploy only) could not be read.
@@ -659,6 +703,7 @@ async function emptyPreparedCompose(
     warnings,
     nativeAppVariables: [],
     nativeAppNodeVersions: [],
+    nativeAppDenoVersions: [],
   }
 }
 
@@ -667,6 +712,9 @@ type HardDeployPrepareError =
   // Hard in preview too: the site would not come up in the mode it asks for.
   | PhpModePrepareError
   | SiteEngineFeatureError
+  // Hard in preview too: a Deno app sent to a daemon that cannot run it would start on Node.
+  | DenoAppFeatureError
+  | DenoMigrationPendingError
   // Hard in preview too: the build would get a Node the app says it cannot run on.
   | NodeVersionPrepareError
   // Hard in preview too: previewing a deploy that would silently ignore a field
@@ -1970,6 +2018,8 @@ function nativeAppServicesForDeploy(
       listenPort: app.listenPort,
       framework: app.framework,
       ...(app.nodeVersion === undefined ? {} : { nodeVersion: app.nodeVersion }),
+      ...(app.runtime === 'deno' ? { runtime: 'deno' as const } : {}),
+      ...(app.denoVersion === undefined ? {} : { denoVersion: app.denoVersion }),
       ...(app.appMode === undefined ? {} : { appMode: app.appMode }),
       ...(app.enabled === undefined ? {} : { enabled: app.enabled }),
       ...(app.startupFile === undefined ? {} : { startupFile: app.startupFile }),
@@ -2560,6 +2610,7 @@ async function toPreparedDeployResult(
     nativeAppServices: PreparedNativeAppService[]
     nativeAppVariables?: NativeAppVariablesView[]
     nativeAppNodeVersions?: NativeAppNodeVersionView[]
+    nativeAppDenoVersions?: NativeAppDenoVersionView[]
     sourceMaterial: EnvironmentDeploySource[]
     dockerExternalNetworks: string[]
     dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
@@ -2603,6 +2654,7 @@ async function toPreparedDeployResult(
     nativeAppServices: parts.nativeAppServices,
     nativeAppVariables: parts.nativeAppVariables ?? [],
     nativeAppNodeVersions: parts.nativeAppNodeVersions ?? [],
+    nativeAppDenoVersions: parts.nativeAppDenoVersions ?? [],
     sourceMaterial: parts.sourceMaterial,
     dockerExternalNetworks: parts.dockerExternalNetworks,
     dockerNetworkAddressing: parts.dockerNetworkAddressing
@@ -2960,9 +3012,22 @@ async function persistDeployRuntimeEntitlements(
   db: Db,
   mode: DeployPrepareMode,
   entitlements: readonly DeployRuntimeEntitlement[]
-): Promise<void> {
-  if (mode === 'preview') return
-  await insertDeployEntitlementsIfMissing(db, entitlements)
+): Promise<DenoMigrationPendingError | undefined> {
+  if (mode === 'preview') return undefined
+  try {
+    await insertDeployEntitlementsIfMissing(db, entitlements)
+  } catch (err) {
+    // A database that predates Deno apps refuses the `deno` runtime on this
+    // table. Say so in plain words rather than failing the deploy with a 500.
+    if (
+      entitlements.some((entry) => entry.runtime === 'deno') &&
+      isCheckViolationOn(err, 'entitlement_runtime_check')
+    ) {
+      return { kind: 'deno_migration_pending' }
+    }
+    throw err
+  }
+  return undefined
 }
 
 export async function prepareDeployCompose(
@@ -3228,6 +3293,9 @@ export async function prepareDeployCompose(
     pipeline.localServiceNames
   )
 
+  const denoGate = await withDenoNativeApps(db, params.serverId, localNativeApps)
+  if ('kind' in denoGate) return denoGate
+
   // Before the runtime merge: the group a native app's Linux user is granted
   // follows the series it runs, and an app with no `nodeVersion` gets it here
   // from its repository at the commit being deployed.
@@ -3252,7 +3320,8 @@ export async function prepareDeployCompose(
       sourceMaterial: localSourceMaterial,
       sites: localSite,
     })
-  await persistDeployRuntimeEntitlements(db, mode, deployEntitlements)
+  const entitlementsPersisted = await persistDeployRuntimeEntitlements(db, mode, deployEntitlements)
+  if (entitlementsPersisted) return entitlementsPersisted
 
   const dockerExternalNetworks = collectComposeExternalDockerNetworkNames(split.composeYaml)
   const externalNetworks = await resolveExternalNetworks(
@@ -3325,6 +3394,7 @@ export async function prepareDeployCompose(
     nativeAppServices: nodeVersions.apps,
     nativeAppVariables: nativeAppVariableViews(nodeVersions.apps, nativeVariables),
     nativeAppNodeVersions: nodeVersions.views,
+    nativeAppDenoVersions: nativeAppDenoVersionViews(nodeVersions.apps),
     sourceMaterial: localSourceMaterial,
     dockerExternalNetworks,
     dockerNetworkAddressing: externalNetworks.addressing,

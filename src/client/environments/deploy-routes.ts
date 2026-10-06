@@ -615,7 +615,9 @@ function oncePerApp<T extends { composeServiceName: string }>(rows: readonly T[]
  */
 export function contextReleasesFor(
   sourceMaterial: readonly EnvironmentDeploySource[],
-  nativeAppServices: readonly { composeServiceName: string; nodeVersion?: string }[] | undefined
+  nativeAppServices:
+    | readonly { composeServiceName: string; nodeVersion?: string; runtime?: 'node' | 'deno' }[]
+    | undefined
 ): CommandContextRelease[] | undefined {
   const nodeVersionByName = recordedNodeVersions(nativeAppServices)
   return normalizeContextReleases(
@@ -1344,6 +1346,9 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
       nativeAppVariables: preparedByServer.flatMap((row) => row.prepared.nativeAppVariables ?? []),
       nativeAppNodeVersions: oncePerApp(
         preparedByServer.flatMap((row) => row.prepared.nativeAppNodeVersions ?? [])
+      ),
+      nativeAppDenoVersions: oncePerApp(
+        preparedByServer.flatMap((row) => row.prepared.nativeAppDenoVersions ?? [])
       ),
     })
   })
