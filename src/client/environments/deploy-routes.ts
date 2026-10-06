@@ -17,6 +17,7 @@ import { can } from '../authz/evaluator.ts'
 import {
   createReleaseIdAllocator,
   type DeployPrepareError,
+  type DeployPrepareWarning,
   type DeployRollbackRequest,
   type DeployScheduleSlice,
   type DeploySourceSelection,
@@ -25,6 +26,7 @@ import {
   prepareDeployCompose,
   type ReleaseIdAllocator,
 } from './deploy-prepare.ts'
+import { findUnresolvedComposeInterpolations } from '../../features/compose/unresolved-interpolation.ts'
 import { definedFields, presentFields } from '../../lib/optional-fields.ts'
 import { recordedNodeVersions } from './deploy-node-version.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -1236,6 +1238,18 @@ async function resolveEnginePlan(
   })
 }
 
+/** One warning per `${NAME}` the deploy would turn into an empty string. */
+function unresolvedInterpolationWarnings(
+  composeYaml: string,
+  envFile: string
+): DeployPrepareWarning[] {
+  return findUnresolvedComposeInterpolations(composeYaml, envFile).map((name) => ({
+    code: 'compose_variable_unresolved',
+    message: `\${${name}} is not defined, so it becomes empty. Panel variables are only substituted with the {$${name}} syntax (curly brace first), not \${${name}}.`,
+    details: { variable: name },
+  }))
+}
+
 /**
  * GET /environments/:id/deploy-preview — exact compose YAML the daemon would
  * receive (same `prepareDeployCompose` path), with secrets redacted.
@@ -1338,7 +1352,13 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
         composeKey: row.composeKey,
         volumeName: row.volumeName,
       })),
-      warnings: preparedByServer.flatMap((row) => row.prepared.warnings),
+      warnings: [
+        ...preparedByServer.flatMap((row) => row.prepared.warnings),
+        ...unresolvedInterpolationWarnings(
+          first?.prepared.composeYaml ?? '',
+          first?.prepared.envFile ?? ''
+        ),
+      ],
       envFile: first?.prepared.envFile ?? '',
       secretPlan: first?.prepared.secretPlan ?? [],
       nativeAppVariables: preparedByServer.flatMap((row) => row.prepared.nativeAppVariables ?? []),
