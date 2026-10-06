@@ -31,7 +31,7 @@
  */
 
 import { ipAddressScope, ipToBigInt, normalizeIpAddress } from '../../lib/ip-address.ts'
-import { hostIsReserved, unbracket } from '../../lib/http/outbound-url.ts'
+import { hostIsReserved, stripTrailingDots, unbracket } from '../../lib/http/outbound-url.ts'
 import { outsideReason } from './host-access.ts'
 import { resolveComposeTags } from './tags.ts'
 
@@ -148,21 +148,25 @@ class Refusals {
 /** Why an address is one a build must not be pointed at, or `null`. */
 export function internalAddressReason(value: string): string | null {
   const address = normalizeIpAddress(value)
-  if (address === null) return 'is not an IP address, so where it points cannot be checked'
+  if (address === null) {
+    return 'is not an IP address, so where it points cannot be checked'
+  }
   const numeric = ipToBigInt(address)
   if (numeric !== null && METADATA_ADDRESSES.has(numeric)) {
     return 'is a cloud metadata endpoint'
   }
   const scope = ipAddressScope(address)
   if (scope === 'loopback') return 'is a loopback address on the build host'
-  if (scope === 'link-local') return 'is link-local, where cloud metadata endpoints live'
+  if (scope === 'link-local') {
+    return 'is link-local, where cloud metadata endpoints live'
+  }
   if (scope === null) return 'is not a unicast host address'
   return null
 }
 
 /** Why a remote host is internal, or `null` when it may be fetched from. */
 function internalHostReason(rawHost: string): string | null {
-  const host = unbracket(rawHost.toLowerCase())
+  const host = stripTrailingDots(unbracket(rawHost.toLowerCase()))
   if (host === '') return 'names no host'
   if (normalizeIpAddress(host) !== null) {
     const reason = internalAddressReason(host)
@@ -307,9 +311,15 @@ function sshItem(at: Array<string | number>, item: unknown): SshEntry {
 
 /** `ssh`: a list of `id` / `id=path`, a single one, or a mapping of id to path. */
 function sshEntries(ssh: unknown): SshEntry[] {
-  if (Array.isArray(ssh)) return ssh.map((item, index) => sshItem([index], item))
+  if (Array.isArray(ssh)) {
+    return ssh.map((item, index) => sshItem([index], item))
+  }
   if (isRecord(ssh)) {
-    return Object.entries(ssh).map(([id, path]) => ({ at: [id], id, path: path ?? '' }))
+    return Object.entries(ssh).map(([id, path]) => ({
+      at: [id],
+      id,
+      path: path ?? '',
+    }))
   }
   return [sshItem([], ssh)]
 }
@@ -362,20 +372,32 @@ function extraHostEntries(
 ): Array<{ at: Array<string | number>; entry: string; ip: unknown }> {
   if (Array.isArray(value)) {
     return value.map((item, index) => {
-      if (typeof item !== 'string') return { at: [index], entry: '?', ip: item }
+      if (typeof item !== 'string') {
+        return { at: [index], entry: '?', ip: item }
+      }
       const eq = item.indexOf('=')
       const split = eq === -1 ? item.indexOf(':') : eq
-      return { at: [index], entry: item, ip: split === -1 ? '' : item.slice(split + 1) }
+      return {
+        at: [index],
+        entry: item,
+        ip: split === -1 ? '' : item.slice(split + 1),
+      }
     })
   }
   if (isRecord(value)) {
-    return Object.entries(value).map(([name, ip]) => ({ at: [name], entry: name, ip }))
+    return Object.entries(value).map(([name, ip]) => ({
+      at: [name],
+      entry: name,
+      ip,
+    }))
   }
   return [{ at: [], entry: '?', ip: value }]
 }
 
 function extraHostReason(ip: unknown): string | null {
-  if (typeof ip !== 'string') return 'is not an address, so where it points cannot be checked'
+  if (typeof ip !== 'string') {
+    return 'is not an address, so where it points cannot be checked'
+  }
   const trimmed = ip.trim()
   if (trimmed.includes('$')) {
     return 'is interpolated, so where it points cannot be checked before deploy'
@@ -436,7 +458,9 @@ export function collectBuildRefusals(data: unknown): BuildRefusal[] {
   if (!isRecord(root) || !isRecord(root.services)) return out.found
   const topLevelSecrets = isRecord(root.secrets) ? root.secrets : {}
   for (const [name, body] of Object.entries(root.services)) {
-    if (isRecord(body)) checkBuild(out, ['services', name], body.build, topLevelSecrets)
+    if (isRecord(body)) {
+      checkBuild(out, ['services', name], body.build, topLevelSecrets)
+    }
   }
   return out.found
 }

@@ -1101,6 +1101,9 @@ const HOST_SERIES_QUERYABLE_SCOPES: ReadonlySet<MetricEntityScope> = new Set([
   'router',
   'storage',
   'dockerUsage',
+  'extended.host',
+  'extended.docker',
+  'extended.ingress',
 ])
 
 /** Validate `metrics` are known canonical names scoped to a queryable host-singleton entity, de-duplicated, in request order. */

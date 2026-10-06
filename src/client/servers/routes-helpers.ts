@@ -606,7 +606,8 @@ export function shapeServerPresenceFields(
 export function shouldSkipProjectedUpdateRepair(
   projectedUpdate: { status?: string } | null | undefined
 ): boolean {
-  return projectedUpdate?.status !== 'updating'
+  const status = projectedUpdate?.status
+  return status !== 'updating' && status !== 'failed' && status !== 'expired'
 }
 
 export function repairedUpdateDoneProjection(

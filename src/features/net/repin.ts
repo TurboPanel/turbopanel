@@ -23,6 +23,12 @@
  */
 
 import { stripInetPrefixSuffix } from '../../lib/ip-address.ts'
+import type { ServerReportedIp } from '../../contracts/server-addresses.ts'
+import {
+  addressMatchKey,
+  type IpPinLinkDownMetadata,
+  parseLinkDownMarker,
+} from './pin-link-state.ts'
 import { resolveSubnetForAddress } from './datacenter-membership.ts'
 
 export type RepinPinInput = {
@@ -37,9 +43,7 @@ export type RepinPinInput = {
   stale: boolean
 }
 
-export type RepinStaleReason =
-  | 'address_gone_no_candidate'
-  | 'address_gone_ambiguous'
+export type RepinStaleReason = 'address_gone_no_candidate' | 'address_gone_ambiguous'
 
 export type RepinAction =
   | { kind: 'repin'; ipId: string; from: string; to: string }
@@ -70,7 +74,7 @@ function candidateAddresses(
   pin: RepinPinInput,
   reported: readonly string[],
   addressesInUse: ReadonlySet<string>,
-  claimedAddresses: ReadonlySet<string>,
+  claimedAddresses: ReadonlySet<string>
 ): string[] {
   const subnet = [{ networkId: pin.networkId, cidr: pin.subnetCidr }]
   const out: string[] = []
@@ -82,12 +86,10 @@ function candidateAddresses(
   return out
 }
 
-export function decideRepinActions(
-  params: DecideRepinActionsParams,
-): RepinAction[] {
-  const reported = [
-    ...new Set(params.reportedPrivateAddresses.map(normalizeAddress)),
-  ].filter((address) => address.length > 0)
+export function decideRepinActions(params: DecideRepinActionsParams): RepinAction[] {
+  const reported = [...new Set(params.reportedPrivateAddresses.map(normalizeAddress))].filter(
+    (address) => address.length > 0
+  )
   const reportedSet = new Set(reported)
   const claimedKeys = new Set<string>()
   const claimedAddresses = new Set<string>()
@@ -100,12 +102,7 @@ export function decideRepinActions(
       continue
     }
 
-    const candidates = candidateAddresses(
-      pin,
-      reported,
-      params.addressesInUse,
-      claimedAddresses,
-    )
+    const candidates = candidateAddresses(pin, reported, params.addressesInUse, claimedAddresses)
     if (candidates.length === 0) {
       actions.push({
         kind: 'mark_stale',
@@ -153,6 +150,8 @@ export type IpPinRepinMetadata = {
 export type IpPinMetadata = {
   stale?: IpPinStaleMetadata
   repin?: IpPinRepinMetadata
+  /** The NIC carrying this pin has no link; routing prefers other networks. */
+  linkDown?: IpPinLinkDownMetadata
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -165,10 +164,7 @@ function parseIsoTimestamp(value: unknown): string | undefined {
 }
 
 function parseStaleReason(value: unknown): RepinStaleReason | undefined {
-  if (
-    value === 'address_gone_no_candidate' ||
-    value === 'address_gone_ambiguous'
-  ) {
+  if (value === 'address_gone_no_candidate' || value === 'address_gone_ambiguous') {
     return value
   }
   return undefined
@@ -199,6 +195,8 @@ function parseRepinMarker(value: unknown): IpPinRepinMetadata | undefined {
 export function parseIpPinMetadata(value: unknown): IpPinMetadata {
   if (!isRecord(value)) return {}
   const out: IpPinMetadata = {}
+  const linkDown = parseLinkDownMarker(value.linkDown)
+  if (linkDown) out.linkDown = linkDown
   const stale = parseStaleMarker(value.stale)
   if (stale) out.stale = stale
   const repin = parseRepinMarker(value.repin)
@@ -217,7 +215,7 @@ function baseMetadata(value: unknown): Record<string, unknown> {
  */
 export function withStaleMetadata(
   existing: unknown,
-  stale: IpPinStaleMetadata,
+  stale: IpPinStaleMetadata
 ): Record<string, unknown> {
   const next = baseMetadata(existing)
   const previous = parseStaleMarker(next.stale)
@@ -228,10 +226,13 @@ export function withStaleMetadata(
 /** Merge a `repin` marker into existing metadata and drop any `stale` flag. */
 export function withRepinMetadata(
   existing: unknown,
-  repin: IpPinRepinMetadata,
+  repin: IpPinRepinMetadata
 ): Record<string, unknown> {
   const next = baseMetadata(existing)
   delete next.stale
+  // The new address may sit on another NIC: its link state is re-read from
+  // the same heartbeat (see `applyReportedAddressRepin`).
+  delete next.linkDown
   next.repin = repin
   return next
 }
@@ -240,5 +241,62 @@ export function withRepinMetadata(
 export function clearedStaleMetadata(existing: unknown): Record<string, unknown> {
   const next = baseMetadata(existing)
   delete next.stale
+  return next
+}
+
+// ---------------------------------------------------------------------------
+// NIC link state
+// ---------------------------------------------------------------------------
+
+export type LinkPinInput = {
+  ipId: string
+  address: string
+  /** Whether the pin is currently flagged `metadata.linkDown`. */
+  linkDown: boolean
+}
+
+export type LinkAction = { kind: 'link_down'; ipId: string } | { kind: 'link_up'; ipId: string }
+
+/**
+ * What to flag on each pin given the daemon's freshly reported addresses.
+ *
+ * - the pin's address is reported with `link: 'down'` and the pin is not
+ *   flagged → `link_down`;
+ * - the pin's address is reported without `link: 'down'` (up, or an older
+ *   daemon that does not say) and the pin is flagged → `link_up`;
+ * - the pin's address is not reported at all → nothing: that is the repin
+ *   decision's business, and a missing address says nothing about a link.
+ */
+export function decideLinkActions(
+  pins: readonly LinkPinInput[],
+  reportedIps: readonly ServerReportedIp[]
+): LinkAction[] {
+  const byAddress = new Map(reportedIps.map((row) => [addressMatchKey(row.address), row]))
+  const actions: LinkAction[] = []
+  for (const pin of pins) {
+    const reported = byAddress.get(addressMatchKey(pin.address))
+    if (!reported) continue
+    const down = reported.link === 'down'
+    if (down && !pin.linkDown) actions.push({ kind: 'link_down', ipId: pin.ipId })
+    if (!down && pin.linkDown) actions.push({ kind: 'link_up', ipId: pin.ipId })
+  }
+  return actions
+}
+
+/** Merge a `linkDown` marker; a pin already flagged keeps its original `since`. */
+export function withLinkDownMetadata(
+  existing: unknown,
+  marker: IpPinLinkDownMetadata
+): Record<string, unknown> {
+  const next = baseMetadata(existing)
+  const previous = parseLinkDownMarker(next.linkDown)
+  next.linkDown = { since: previous?.since ?? marker.since }
+  return next
+}
+
+/** Existing metadata without its `linkDown` marker (unknown keys preserved). */
+export function clearedLinkDownMetadata(existing: unknown): Record<string, unknown> {
+  const next = baseMetadata(existing)
+  delete next.linkDown
   return next
 }

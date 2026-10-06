@@ -32,6 +32,43 @@ export function toServiceRunStateView(entry: ServiceRunState): ServiceRunStateVi
   }
 }
 
+/** A service the daemon just reported down after crashing past its restart limit. */
+export type ServiceStoppedAfterCrashes = {
+  serviceId: string
+  restartCount: number
+  lastError: string | null
+  asOf: string
+}
+
+/**
+ * Services that are `stopped_after_crashes` in a daemon report and were not
+ * already stored as that: the moment to tell the site owner. A hello after a
+ * reconnect, or a heartbeat that only refreshes the log line, repeats a state
+ * already stored and returns nothing. A service started again and stopped
+ * again is a new stop and returns once more.
+ */
+export function servicesNewlyStoppedAfterCrashes(
+  previous: readonly ServiceRunState[] | undefined,
+  incoming: readonly ServiceRunState[] | undefined
+): ServiceStoppedAfterCrashes[] {
+  if (!incoming) return []
+  const alreadyStopped = new Set(
+    (previous ?? [])
+      .filter((entry) => entry.state === 'stopped_after_crashes')
+      .map((entry) => entry.serviceId)
+  )
+  return incoming
+    .filter(
+      (entry) => entry.state === 'stopped_after_crashes' && !alreadyStopped.has(entry.serviceId)
+    )
+    .map((entry) => ({
+      serviceId: entry.serviceId,
+      restartCount: entry.restartCount,
+      lastError: entry.lastError ?? null,
+      asOf: entry.asOf,
+    }))
+}
+
 export type ServicePlacement = { serviceId: string; serverId: string }
 export type ServerReport = { id: string; metadata: unknown }
 
