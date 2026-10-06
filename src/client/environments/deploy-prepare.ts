@@ -563,7 +563,10 @@ export type DeployPrepareError =
   /** A PHP site asks for a mode its engine, organization or server does not offer. */
   | PhpModePrepareError
   | SiteEngineFeatureError
-  /** The repository asks for a Node version no offered series satisfies. */
+  /**
+   * The repository asks for a Node version no offered series satisfies, or (a
+   * deploy only) could not be read to find out.
+   */
   | NodeVersionPrepareError
   | { kind: 'source_principal_ambiguous'; composeServiceName: string }
   | {
@@ -3205,6 +3208,7 @@ export async function prepareDeployCompose(
   // follows the series it runs, and an app with no `nodeVersion` gets it here
   // from its repository at the commit being deployed.
   const nodeVersions = await withNativeAppNodeVersions(localNativeApps, localSourceMaterial, {
+    mode,
     warnings,
     read: repositoryNodeVersionReader(c, db, {
       organizationId: params.organizationId,

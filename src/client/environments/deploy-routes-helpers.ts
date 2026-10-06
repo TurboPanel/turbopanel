@@ -607,6 +607,16 @@ function tryMapSiteEngineFeatureError(prepared: DeployPrepareError): PrepareErro
 }
 
 function tryMapNodeVersionPrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
+  if (prepared.kind === 'node_version_unreadable') {
+    return {
+      status: 422,
+      body: {
+        error: 'node_version_unreadable',
+        composeServiceName: prepared.composeServiceName,
+        message: `Could not read the repository of Node app "${prepared.composeServiceName}" to find which Node version it needs: ${prepared.message}. Try again, or set x-turbopanel.nodeVersion on the service so the repository does not have to be read.`,
+      },
+    }
+  }
   if (prepared.kind !== 'node_version_unsupported') return null
   return {
     status: 422,

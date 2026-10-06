@@ -782,9 +782,11 @@ repository root. A range resolves to the newest series in the registry mirror
 (`runtimeSeries('node')`) that satisfies it (`lib/node-version-range.ts`, a
 hand-written parser for the npm range forms); a value that is not a version
 (`lts/*`) is skipped. No offered series satisfying it is a hard
-`node_version_unsupported` (422, preview too); an unreadable repository leaves
-the value unset (daemon default 24) with a `node_version_unresolved` preview
-warning. It runs before `mergeDeployPrincipalRuntimes`, so the runtime group
+`node_version_unsupported` (422, preview too). An unreadable repository is a
+422 `node_version_unreadable` on a deploy (falling back to 24 would quietly
+bring the wrong-Node bug back; pinning `nodeVersion` skips the read), a
+`node_version_unresolved` warning in a preview, and the default on a rollback
+(the release already built; the way back is not refused). It runs before `mergeDeployPrincipalRuntimes`, so the runtime group
 granted matches the series sent. The preview lists the result per app as
 `nativeAppNodeVersions` (`nodeVersion`, `source`, `requested`, `path`).
 

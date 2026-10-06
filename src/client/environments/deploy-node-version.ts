@@ -17,9 +17,14 @@
  * from the repository root after that, so a monorepo that keeps `.nvmrc` at
  * the top still counts. A value that is not a version at all (`lts/*`, `node`)
  * says nothing and the next file is tried. A range no offered series
- * satisfies is a hard error naming the range and the offered series. A
- * repository that cannot be read leaves the series unset with a warning
- * rather than failing the deploy.
+ * satisfies is a hard error naming the range and the offered series.
+ *
+ * A repository that cannot be read fails a deploy (`node_version_unreadable`):
+ * building with the default instead would quietly bring back the very bug this
+ * fixes, and the error says how to go on (pin `x-turbopanel.nodeVersion`, which
+ * skips the read). A preview only warns (`node_version_unresolved`), and a
+ * rollback, which re-promotes a release that already built, falls back to the
+ * default rather than refusing the way back.
  *
  * "Offered" is the runtime registry mirror (`runtimeSeries('node')` in
  * `contracts/runtime-registry.ts`), the same list deploy-prepare grants the
@@ -52,13 +57,15 @@ export type NativeAppNodeVersionView = {
   path?: string
 }
 
-export type NodeVersionPrepareError = {
-  kind: 'node_version_unsupported'
-  composeServiceName: string
-  requested: string
-  path: string
-  supported: string[]
-}
+export type NodeVersionPrepareError =
+  | {
+      kind: 'node_version_unsupported'
+      composeServiceName: string
+      requested: string
+      path: string
+      supported: string[]
+    }
+  | { kind: 'node_version_unreadable'; composeServiceName: string; message: string }
 
 export type NodeVersionWarning = {
   code: 'node_version_unresolved'
@@ -159,12 +166,36 @@ type AppOutcome =
   | { app: PreparedNativeAppService; view: NativeAppNodeVersionView; warning?: NodeVersionWarning }
   | { error: NodeVersionPrepareError }
 
+/** How a failed read is handled: refuse (a deploy), or warn and use the default. */
+type ReadFailurePolicy = 'refuse' | 'default'
+
+function unreadableOutcome(
+  app: PreparedNativeAppService,
+  source: EnvironmentDeploySource,
+  message: string,
+  policy: ReadFailurePolicy
+): AppOutcome {
+  const name = app.composeServiceName
+  if (policy === 'refuse') {
+    return { error: { kind: 'node_version_unreadable', composeServiceName: name, message } }
+  }
+  return {
+    app,
+    view: defaultView(name),
+    warning: {
+      code: 'node_version_unresolved',
+      message: `Could not read the repository of "${name}" to find which Node version it needs (${message}). It will use Node ${DEFAULT_NATIVE_APP_NODE_SERIES}.`,
+      details: { composeServiceName: name, commitSha: source.commitSha },
+    },
+  }
+}
+
 async function resolveOneApp(
   app: PreparedNativeAppService,
   source: EnvironmentDeploySource | undefined,
-  read: NodeVersionFileReader,
-  offered: readonly string[]
+  ctx: { read: NodeVersionFileReader; offered: readonly string[]; mode: 'deploy' | 'preview' }
 ): Promise<AppOutcome> {
+  const { read, offered } = ctx
   const name = app.composeServiceName
   const pinned = app.nodeVersion?.trim()
   if (pinned) {
@@ -175,15 +206,9 @@ async function resolveOneApp(
   const paths = nodeVersionFilePaths(source.subdirectory)
   const fetched = await read(source, paths)
   if (!fetched.ok) {
-    return {
-      app,
-      view: defaultView(name),
-      warning: {
-        code: 'node_version_unresolved',
-        message: `Could not read the repository of "${name}" to find which Node version it needs (${fetched.message}). It will use Node ${DEFAULT_NATIVE_APP_NODE_SERIES}.`,
-        details: { composeServiceName: name, commitSha: source.commitSha },
-      },
-    }
+    const policy =
+      ctx.mode === 'deploy' && source.rollbackToReleaseId === undefined ? 'refuse' : 'default'
+    return unreadableOutcome(app, source, fetched.message, policy)
   }
 
   const decision = nodeVersionFromFiles(fetched.files, paths, offered)
@@ -224,6 +249,8 @@ export async function withNativeAppNodeVersions(
   apps: readonly PreparedNativeAppService[],
   sourceMaterial: readonly EnvironmentDeploySource[],
   ctx: {
+    /** `deploy` refuses when a repository cannot be read; `preview` warns. */
+    mode: 'deploy' | 'preview'
     read: NodeVersionFileReader
     /** The prepare's warning list; only ever pushed to. */
     warnings: { push(warning: NodeVersionWarning): unknown }
@@ -236,7 +263,11 @@ export async function withNativeAppNodeVersions(
   const sourceByName = new Map(sourceMaterial.map((entry) => [entry.composeServiceName, entry]))
   const outcomes = await Promise.all(
     apps.map((app) =>
-      resolveOneApp(app, sourceByName.get(app.composeServiceName), ctx.read, offered)
+      resolveOneApp(app, sourceByName.get(app.composeServiceName), {
+        read: ctx.read,
+        offered,
+        mode: ctx.mode,
+      })
     )
   )
   const resolved: PreparedNativeAppService[] = []

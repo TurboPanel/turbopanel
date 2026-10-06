@@ -172,6 +172,7 @@ test('sends the series read at the deployed commit and says where it came from',
   const { read, calls } = reader([file('package.json', packageJson('>=26.7.0'))])
   const warnings: NodeVersionWarning[] = []
   const result = await withNativeAppNodeVersions([app()], [source()], {
+    mode: 'deploy',
     read,
     warnings,
     offered: OFFERED,
@@ -194,6 +195,7 @@ test('sends the series read at the deployed commit and says where it came from',
 test('an explicit compose nodeVersion wins and nothing is read', async () => {
   const { read, calls } = reader([file('package.json', packageJson('>=26.7.0'))])
   const result = await withNativeAppNodeVersions([app('22')], [source()], {
+    mode: 'deploy',
     read,
     warnings: [],
     offered: OFFERED,
@@ -207,6 +209,7 @@ test('an explicit compose nodeVersion wins and nothing is read', async () => {
 test('nothing in the repository leaves the series unset (daemon default)', async () => {
   const { read } = reader([])
   const result = await withNativeAppNodeVersions([app()], [source()], {
+    mode: 'deploy',
     read,
     warnings: [],
     offered: OFFERED,
@@ -219,6 +222,7 @@ test('nothing in the repository leaves the series unset (daemon default)', async
 test('an app with no repository binding gets the default without a read', async () => {
   const { read, calls } = reader([])
   const result = await withNativeAppNodeVersions([app()], [], {
+    mode: 'deploy',
     read,
     warnings: [],
     offered: OFFERED,
@@ -228,11 +232,14 @@ test('an app with no repository binding gets the default without a read', async 
   assertEquals(calls, [])
 })
 
-test('an unreadable repository warns and leaves the series unset', async () => {
+const unreadable: NodeVersionFileReader = () =>
+  Promise.resolve({ ok: false, message: 'No connected server can read this repository.' })
+
+test('a preview of an unreadable repository warns and leaves the series unset', async () => {
   const warnings: NodeVersionWarning[] = []
   const result = await withNativeAppNodeVersions([app()], [source()], {
-    read: () =>
-      Promise.resolve({ ok: false, message: 'No connected server can read this repository.' }),
+    mode: 'preview',
+    read: unreadable,
     warnings,
     offered: OFFERED,
   })
@@ -248,6 +255,7 @@ test('an unreadable repository warns and leaves the series unset', async () => {
 test('an unsupported range fails prepare with a plain-words 422', async () => {
   const { read } = reader([file('package.json', packageJson('>=28'))])
   const result = await withNativeAppNodeVersions([app()], [source()], {
+    mode: 'deploy',
     read,
     warnings: [],
     offered: OFFERED,
@@ -343,4 +351,42 @@ test('the daemon lane gets the clone secret the deploy sealed, and nothing in pr
   })
   const keyOnly = { ...source(), credential: 'tpdaemon.key' } as EnvironmentDeploySource
   assertEquals(daemonCredentialOf(keyOnly), { daemonCredential: { credential: 'tpdaemon.key' } })
+})
+
+test('a deploy refuses an unreadable repository instead of guessing', async () => {
+  const warnings: NodeVersionWarning[] = []
+  const result = await withNativeAppNodeVersions([app()], [source()], {
+    mode: 'deploy',
+    read: unreadable,
+    warnings,
+    offered: OFFERED,
+  })
+  assertEquals(result, {
+    kind: 'node_version_unreadable',
+    composeServiceName: 'web',
+    message: 'No connected server can read this repository.',
+  })
+  assertEquals(warnings, [])
+  if (!('kind' in result)) throw new TypeError('expected an error')
+  const response = mapPrepareErrorResponse(result)
+  assertEquals(response.status, 422)
+  assertEquals(response.body.error, 'node_version_unreadable')
+  assertEquals(
+    String(response.body.message).includes('set x-turbopanel.nodeVersion on the service'),
+    true
+  )
+})
+
+test('a rollback of an unreadable repository falls back to the default', async () => {
+  const rollback = { ...source(), rollbackToReleaseId: 'rel-0' } as EnvironmentDeploySource
+  const warnings: NodeVersionWarning[] = []
+  const result = await withNativeAppNodeVersions([app()], [rollback], {
+    mode: 'deploy',
+    read: unreadable,
+    warnings,
+    offered: OFFERED,
+  })
+  if ('kind' in result) throw new TypeError('expected apps')
+  assertEquals(result.views[0]?.source, 'default')
+  assertEquals(warnings.length, 1)
 })
