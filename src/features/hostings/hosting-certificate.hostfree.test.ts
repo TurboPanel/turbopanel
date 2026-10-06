@@ -6,9 +6,10 @@ import {
   letsEncryptNames,
   letsEncryptRefusal,
   readPendingLetsEncrypt,
-  siblingHostname,
   uploadedExpiryWarning,
   withPendingLetsEncrypt,
+  wwwRedirectConflict,
+  wwwRedirectConflictMessage,
 } from './hosting-certificate.ts'
 
 const test = Deno.test.bind(Deno)
@@ -114,9 +115,7 @@ test("a Let's Encrypt certificate past its expiry is renewal failed", () => {
   assertEquals(out.lastError, 'The certificate has expired.')
 })
 
-test('sibling names go both ways and the covered names are sorted and unique', () => {
-  assertEquals(siblingHostname('Example.com'), 'www.example.com')
-  assertEquals(siblingHostname('www.example.com'), 'example.com')
+test('the covered names are sorted and unique, with the www twin only when redirecting', () => {
   assertEquals(letsEncryptNames(['b.example.com', 'a.example.com'], false), [
     'a.example.com',
     'b.example.com',
@@ -153,4 +152,30 @@ test('pending request round-trips through hosting metadata and expires after a w
   assertEquals(isPendingExpired(pending, NOW), true)
   assertEquals(isPendingExpired({ ...pending, requestedAt: iso(-6) }, NOW), false)
   assertEquals(readPendingLetsEncrypt(withPendingLetsEncrypt(metadata, null)), null)
+})
+
+test('wwwRedirectConflict finds a twin already served here or elsewhere in the environment', () => {
+  assertEquals(wwwRedirectConflict(['example.com'], []), null)
+  assertEquals(wwwRedirectConflict(['example.com', 'www.example.com'], []), {
+    hostname: 'example.com',
+    sibling: 'www.example.com',
+  })
+  assertEquals(wwwRedirectConflict(['shop.example.com'], ['www.shop.example.com']), {
+    hostname: 'shop.example.com',
+    sibling: 'www.shop.example.com',
+  })
+  assertEquals(wwwRedirectConflict(['www'], []), null)
+  assertEquals(wwwRedirectConflict(['www.'], []), { hostname: 'www.', sibling: null })
+})
+
+test('the conflict sentence names both spellings', () => {
+  const message = wwwRedirectConflictMessage({
+    hostname: 'example.com',
+    sibling: 'www.example.com',
+  })
+  assertEquals(message.includes('both example.com and www.example.com'), true)
+  assertEquals(
+    wwwRedirectConflictMessage({ hostname: 'x', sibling: null }).includes('no valid'),
+    true
+  )
 })
