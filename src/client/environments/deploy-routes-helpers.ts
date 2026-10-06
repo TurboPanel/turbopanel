@@ -15,7 +15,9 @@ import {
   validateDeployHostings,
   validateDeployStorageMaterialList,
 } from '../../contracts/commands/deploy-validation.ts'
-import { validateDeployWwwRedirects } from '../../contracts/commands/www-redirect.ts'
+import { validateDeployWwwModes } from '../../contracts/commands/www-redirect.ts'
+import type { HostingWwwMode } from '../../contracts/commands/hostname.ts'
+import { readHostingWwwMode } from '../../features/hostings/hosting-options.ts'
 import {
   type DeployStrategy,
   type MigrationStatus,
@@ -41,8 +43,9 @@ export function readPathPrefix(options: unknown): string | undefined {
   return typeof options.pathPrefix === 'string' ? options.pathPrefix : undefined
 }
 
-export function readWwwRedirect(options: unknown): boolean {
-  return isPlainObject(options) && options.wwwRedirect === true
+/** The hosting's www mode from its stored options (`off` when unset). */
+export function readWwwMode(options: unknown): HostingWwwMode {
+  return readHostingWwwMode(options)
 }
 
 export function readTargetPort(options: unknown): number | undefined {
@@ -935,7 +938,7 @@ export function validateDeployMaterials(
   storageMaterial: EnvironmentDeployStorageMaterial[]
 ): DeployMaterialValidationError | null {
   const hostingValidationError =
-    validateDeployHostings(hostings) ?? validateDeployWwwRedirects(hostings)
+    validateDeployHostings(hostings) ?? validateDeployWwwModes(hostings)
   if (hostingValidationError) {
     return { error: 'invalid_deploy_hosting', message: hostingValidationError }
   }

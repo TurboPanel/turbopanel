@@ -9,7 +9,11 @@
  * `AGENTS.md` ("Tenant values in root-loaded configs").
  */
 
-import { isValidHostname, wwwSiblingHostname } from '../../contracts/commands/hostname.ts'
+import {
+  isHostingWwwMode,
+  isValidHostname,
+  wwwSiblingHostname,
+} from '../../contracts/commands/hostname.ts'
 import { HOSTING_WEB_ENV_KEY_RE, isReservedSiteVariableName } from './hosting-options.ts'
 
 /** Stable error code for a hosting option value outside its allowlist. */
@@ -100,19 +104,22 @@ function hostnamesProblem(value: unknown): HostingOptionInputError | null {
     : null
 }
 
-function wwwRedirectProblem(value: Record<string, unknown>): HostingOptionInputError | null {
-  if (value.wwwRedirect === undefined) return null
-  const field = 'options.wwwRedirect'
-  if (typeof value.wwwRedirect !== 'boolean') return { field, message: 'must be true or false' }
-  if (!value.wwwRedirect) return null
+function wwwProblem(value: Record<string, unknown>): HostingOptionInputError | null {
+  if (value.www === undefined || value.www === 'off') return null
+  const field = 'options.www'
+  if (!isHostingWwwMode(value.www)) {
+    return { field, message: 'must be off, both, www-to-root, or root-to-www' }
+  }
   if (value.protocol === 'tcp' || value.protocol === 'udp') {
     return { field, message: 'applies to http hostings only' }
   }
   const hostnames = Array.isArray(value.hostnames) ? value.hostnames : []
-  const bad = hostnames.some(
+  const bad = hostnames.find(
     (h) => typeof h === 'string' && h.length > 0 && wwwSiblingHostname(h) === null
   )
-  return bad ? { field, message: 'every hostname needs a valid www or non-www twin name' } : null
+  return typeof bad === 'string'
+    ? { field, message: `${bad} has no www or bare spelling, so set www to off for it` }
+    : null
 }
 
 function webEnvProblem(web: unknown): HostingOptionInputError | null {
@@ -147,7 +154,7 @@ export function hostingOptionsInputError(value: unknown): HostingOptionInputErro
       isRecord(value.proxy) ? value.proxy.stripPrefix : undefined
     ) ??
     hostnamesProblem(value.hostnames) ??
-    wwwRedirectProblem(value) ??
+    wwwProblem(value) ??
     webEnvProblem(value.web)
   )
 }

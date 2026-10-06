@@ -9,7 +9,11 @@
  * from the row's issuance details plus the hosting's own pending request.
  */
 
-import { wwwSiblingHostname } from '../../contracts/commands/hostname.ts'
+import {
+  type HostingWwwMode,
+  hostingCertificateNames,
+  wwwSiblingHostname,
+} from '../../contracts/commands/hostname.ts'
 import { isLoopbackOrPrivateHostname } from '../install/install-tls.ts'
 import { normalizeIpAddress } from '../../lib/ip-address.ts'
 import type { HostingBindScope, HostingProtocol } from './hosting-options.ts'
@@ -53,7 +57,8 @@ export type HostingCertificate = {
   uploadedExpiryWarning: UploadedExpiryWarning
   dns: HostingDnsReport | null
   letsEncryptAvailable: boolean
-  wwwRedirect: boolean
+  /** The hosting's www mode (`off` when only the typed names are served). */
+  www: HostingWwwMode
   /** True when the pin is saved but the environment has not been deployed since. */
   needsDeploy: boolean
 }
@@ -70,7 +75,6 @@ export type PinnedCertificateRow = {
 
 export type PendingLetsEncrypt = {
   requestedAt: string
-  wwwRedirect: boolean
   dns: HostingDnsReport | null
 }
 
@@ -123,7 +127,6 @@ export function readPendingLetsEncrypt(metadata: unknown): PendingLetsEncrypt | 
   if (requestedAt === null) return null
   return {
     requestedAt,
-    wwwRedirect: raw.wwwRedirect === true,
     dns: isRecord(raw.dns) ? (raw.dns as HostingDnsReport) : null,
   }
 }
@@ -144,23 +147,21 @@ export function isPendingExpired(pending: PendingLetsEncrypt, now: Date): boolea
   )
 }
 
-/** The names the certificate must cover: the hostnames, plus their siblings when redirecting. */
-export function letsEncryptNames(hostnames: readonly string[], wwwRedirect: boolean): string[] {
-  const names = new Set<string>()
-  for (const raw of hostnames) {
-    const name = raw.trim().toLowerCase()
-    names.add(name)
-    const sibling = wwwRedirect ? wwwSiblingHostname(name) : null
-    if (sibling !== null) names.add(sibling)
-  }
-  return [...names].sort((a, b) => a.localeCompare(b))
+/**
+ * The names the certificate must cover: every name the hosting answers on
+ * under its www mode, including a name that only redirects (a browser still
+ * needs a valid certificate there before it sees the redirect).
+ */
+export function letsEncryptNames(hostnames: readonly string[], www: HostingWwwMode): string[] {
+  const typed = hostnames.map((raw) => raw.trim().toLowerCase())
+  return hostingCertificateNames({ hostnames: typed, www }).sort((a, b) => a.localeCompare(b))
 }
 
 export type WwwRedirectConflict = { hostname: string; sibling: string | null }
 
 /**
- * The first hostname the deploy would refuse "also send www to the main name"
- * for, or null. Mirrors `validateDeployWwwRedirects`: the other spelling must
+ * The first hostname the deploy would refuse a www setting for, or null.
+ * Mirrors `validateDeployWwwModes`: the other spelling must
  * be a valid name and must not already be served by this hosting or by another
  * web hosting in the same environment (`others`).
  */
@@ -179,9 +180,9 @@ export function wwwRedirectConflict(
 /** The sentence for a conflict, naming the two names. */
 export function wwwRedirectConflictMessage(conflict: WwwRedirectConflict): string {
   if (conflict.sibling === null) {
-    return `"Also send www to the main name" cannot work for ${conflict.hostname}: it has no valid www or non-www twin name.`
+    return `${conflict.hostname} has no www or non-www spelling, so its www setting must be "Only ${conflict.hostname}".`
   }
-  return `"Also send www to the main name" cannot be turned on: both ${conflict.hostname} and ${conflict.sibling} are already listed as domains in this environment. Remove one of them, or leave the option off.`
+  return `The www setting cannot cover ${conflict.sibling}: both ${conflict.hostname} and ${conflict.sibling} are already listed as domains in this environment. Remove one of them, or set www to "Only ${conflict.hostname}".`
 }
 
 export type LetsEncryptRefusal =
@@ -226,7 +227,7 @@ export type DeriveHostingCertificateInput = {
   /** The pinned row; null when the hosting has no pin or the pin is revoked/missing. */
   pinned: PinnedCertificateRow | null
   pending: PendingLetsEncrypt | null
-  wwwRedirect: boolean
+  www: HostingWwwMode
   letsEncryptAvailable: boolean
   /** Pinned, but no deployment has finished since the pin was saved. */
   needsDeploy: boolean
@@ -245,7 +246,7 @@ function baseCertificate(
     uploadedExpiryWarning: 'none',
     dns: null,
     letsEncryptAvailable: input.letsEncryptAvailable,
-    wwwRedirect: input.wwwRedirect,
+    www: input.www,
     needsDeploy: false,
   }
 }
@@ -298,7 +299,6 @@ function deriveTest(input: DeriveHostingCertificateInput): HostingCertificate {
       state: 'waiting_for_dns',
       source: 'test',
       dns: input.pending.dns,
-      wwwRedirect: input.pending.wwwRedirect,
     }
   }
   return { ...baseCertificate(input), state: 'test_certificate', source: 'test' }

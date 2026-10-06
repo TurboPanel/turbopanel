@@ -41,7 +41,7 @@ export const hostingSchemas = {
       'uploadedExpiryWarning',
       'dns',
       'letsEncryptAvailable',
-      'wwwRedirect',
+      'www',
       'needsDeploy',
     ],
     properties: {
@@ -75,7 +75,12 @@ export const hostingSchemas = {
         description:
           "True when the one-click action can run: the organization allows Let's Encrypt, the hosting is an HTTP route on a public bind with public hostnames, and compose does not own it.",
       },
-      wwwRedirect: { type: 'boolean' },
+      www: {
+        type: 'string',
+        enum: ['off', 'both', 'www-to-root', 'root-to-www'],
+        description:
+          "The hosting's www setting (`options.www`, `off` when unset). When not `off`, Let's Encrypt covers both spellings of each name.",
+      },
       needsDeploy: {
         type: 'boolean',
         description: 'The certificate is pinned but the environment has not been deployed since.',
@@ -84,13 +89,9 @@ export const hostingSchemas = {
   },
   UseLetsEncryptRequest: {
     type: 'object',
-    properties: {
-      wwwRedirect: {
-        type: 'boolean',
-        description:
-          "Also cover and redirect the www / non-www spelling of each hostname. Omitted keeps the hosting's current choice.",
-      },
-    },
+    description:
+      "No fields. The names the certificate covers follow the hosting's own www setting (`options.www`); change that with PATCH /hostings/{id}.",
+    properties: {},
   },
   UseLetsEncryptResponse: {
     type: 'object',
@@ -203,10 +204,11 @@ export const hostingSchemas = {
         description:
           'Required non-empty when protocol is tcp or udp. Invalid or duplicate published ports are dropped on parse; deploy rejects an empty list for tcp/udp.',
       },
-      wwwRedirect: {
-        type: 'boolean',
+      www: {
+        type: 'string',
+        enum: ['off', 'both', 'www-to-root', 'root-to-www'],
         description:
-          "When true, the other spelling of each hostname (`www.` added, or removed when the name starts with `www.`) is also served and redirected permanently to the hostname as written, keeping the path and query. With Let's Encrypt the extra name gets its own certificate. http hostings only; the extra name must not already be a hostname in the environment. Default false.",
+          "What happens to the other spelling of each hostname (`www.` added, or removed when the name starts with `www.`). `off` (default): only the hostname as written. `both`: the site answers on both names, no redirect. `www-to-root`: the site answers on the bare name and `www.<name>` redirects there permanently (path and query kept; plain HTTP goes straight to HTTPS in one hop). `root-to-www`: the site answers on `www.<name>` and the bare name redirects there. The direction is about the names, not which one was typed. Every extra name needs DNS pointing at the server and a certificate: Let's Encrypt covers it automatically; an uploaded certificate must list it or the deploy is refused with `tls_pin_mismatch`. http hostings only; the other spelling must not already be a hostname in the environment, and every path of one name must agree.",
       },
       web: {
         $ref: '#/components/schemas/HostingWebOptions',
@@ -351,7 +353,7 @@ const hostingJson = (schema: string) => ({
 })
 
 const letsEncryptRefusals =
-  '`lets_encrypt_not_enabled` (403): the organization has not allowed Let\'s Encrypt. 400: `hosting_not_http`, `hosting_has_no_hostnames`, `acme_requires_public_bind`, `letsencrypt_hostname_unsupported` (wildcard, IP address or private name) or `www_redirect_conflict` ("also send www" is on, but the other spelling of a domain is already a domain in the environment; the body carries a plain-words `message`).'
+  "`lets_encrypt_not_enabled` (403): the organization has not allowed Let's Encrypt. 400: `hosting_not_http`, `hosting_has_no_hostnames`, `acme_requires_public_bind`, `letsencrypt_hostname_unsupported` (wildcard, IP address or private name) or `www_redirect_conflict` (the hosting's www setting is not `off`, but the other spelling of a domain is already a domain in the environment; the body carries a plain-words `message`). A name the www setting adds is checked for DNS like the typed names: when it does not point at the server yet, the request waits and `dns` names it."
 
 const letsEncryptPaths = {
   [`${hostingIdPath}/use-letsencrypt`]: {

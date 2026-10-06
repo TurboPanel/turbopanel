@@ -606,7 +606,7 @@ all" are different refusals and say so.
 ### Per-service ingress (`x-turbopanel.hosting`) — materialized into `hosting` rows
 
 `services.<name>.x-turbopanel` accepts an optional **`hosting`** list:
-`[{ hostname, pathPrefix?, targetPort?, forceHttps?, tls?: { mode, certificateRef? }, bind?: { scope, ipRef? } }]`
+`[{ hostname, pathPrefix?, targetPort?, forceHttps?, www?, tls?: { mode, certificateRef? }, bind?: { scope, ipRef? } }]`
 (`src/features/compose/hosting-extension.ts`). Legal on **every** kind — a container
 behind the edge, a site served by a host engine, a supervised `node` process can
 each answer on a hostname — which is one row in the same field table
@@ -655,7 +655,7 @@ entry, keyed on `(serviceId, hostname, pathPrefix)` and stamped
 `metadata.composeOwned` (`src/features/hostings/hosting-compose-owner.ts`, the same
 jsonb-marker shape `principal.metadata.composeAlias` uses). `options` is written
 in the existing `HostingOptions` shape — `hostnames`, `pathPrefix`,
-`targetPort`, `proxy.forceHttps`, `bind` — so `buildHostingsForService` /
+`targetPort`, `proxy.forceHttps`, `www`, `bind` — so `buildHostingsForService` /
 `resolveHttpHostingEntry` in `deploy-routes.ts` and the daemon's ingress, site,
 and TLS lanes read the rows exactly as before and never learn compose exists.
 Panel-only fields on the row (`web.env`, PHP hints, `protocol` / `ports`,

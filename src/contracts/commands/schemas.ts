@@ -1,4 +1,9 @@
-import { HOSTNAME_MAX_LENGTH, isValidHostname } from './hostname.ts'
+import {
+  HOSTNAME_MAX_LENGTH,
+  type HostingWwwMode,
+  isHostingWwwMode,
+  isValidHostname,
+} from './hostname.ts'
 import {
   addressInCidr,
   cidrContains,
@@ -2350,12 +2355,14 @@ export type EnvironmentDeployHosting = {
   /** Merged hosting web env + PHP hints for site materialization. */
   web?: EnvironmentDeployHostingWeb
   /**
-   * Also serve the other spelling of each hostname (`www.` added, or removed
-   * when the name starts with `www.`) as a permanent redirect to the hostname
-   * as written. `http` only; omitted when off. In `acme` mode the extra name
-   * gets its own certificate. Older daemons ignore the field.
+   * What happens to the other spelling of each hostname (`www.` added, or
+   * removed when the name starts with `www.`); see `HostingWwwMode` in
+   * `./hostname.ts`. `http` only; omitted when `off`. The redirect is permanent
+   * and keeps the path and query. Every extra name is served under the
+   * hosting's own TLS mode (`acme` gives it its own certificate; a pinned pair
+   * must cover it). A daemon without the field serves only the typed names.
    */
-  wwwRedirect?: boolean
+  www?: Exclude<HostingWwwMode, 'off'>
 }
 
 export type EnvironmentDeployContainer = {
@@ -2549,13 +2556,13 @@ function parseDeployHostingBindAddress(value: unknown): string | undefined {
   return value
 }
 
-/** `true` when on; `undefined` when absent or false; anything else is refused. */
-function parseDeployHostingWwwRedirect(value: unknown): true | undefined {
+/** A www mode; `undefined` when absent or `off`; anything else is refused. */
+function parseDeployHostingWww(value: unknown): EnvironmentDeployHosting['www'] {
   if (value === undefined) return undefined
-  if (typeof value !== 'boolean') {
+  if (!isHostingWwwMode(value)) {
     throw new TypeError('Invalid environment.deploy payload')
   }
-  return value ? true : undefined
+  return value === 'off' ? undefined : value
 }
 
 function applyOptionalDeployHostingFields(
@@ -2583,7 +2590,8 @@ function applyOptionalDeployHostingFields(
   if (ports) hosting.ports = ports
   const web = parseDeployHostingWeb(entry.web)
   if (web) hosting.web = web
-  if (parseDeployHostingWwwRedirect(entry.wwwRedirect)) hosting.wwwRedirect = true
+  const www = parseDeployHostingWww(entry.www)
+  if (www) hosting.www = www
 }
 
 function parseDeployHostingEntry(entry: unknown): EnvironmentDeployHosting {
