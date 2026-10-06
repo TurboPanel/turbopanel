@@ -768,7 +768,40 @@ despite the historical names).
 Deploy prep strips node services into payload **`nativeAppServices[]`**
 (`{ composeServiceName, serviceId, listenPort, framework, nodeVersion?, resources?, accountLimits?, restartPolicy?, serviceLabels? }`)
 the same way it strips sites, and their releases ride the ordinary
-`sourceMaterial[]` lane unchanged. **Plain Compose keys the split would
+`sourceMaterial[]` lane unchanged.
+
+**Node version from the repository.** A node service with no `nodeVersion`
+gets one at deploy-prepare (`client/environments/deploy-node-version.ts`),
+because the daemon installs the series and adds the site owner's Linux user to
+its group before it checks anything out. The repository is read at the commit
+being deployed through the repository inspect path (`inspectRepository`:
+provider first, the target server's daemon with the deploy's sealed clone
+secret when the provider cannot read or turns an anonymous read away for its
+rate limit): `package.json` `engines.node`, then `.nvmrc`, then
+`.node-version`, in the source's `subdirectory` and then the repository root.
+Each repository is read once per request (all servers of a deploy share it).
+A range resolves to the newest series in the registry mirror
+(`runtimeSeries('node')`) that satisfies it (`lib/node-version-range.ts`, a
+hand-written parser for the npm range forms); a version-file value that is not
+a version (`lts/*`) is skipped. 422s (preview too): `node_version_unsupported`
+(nothing offered satisfies the range) and `node_version_invalid` (an
+`engines.node` npm would not accept, such as `20-24`); both name the file and
+how to pin. An unreadable repository is a 422 `node_version_unreadable` on a
+deploy (falling back to 24 would quietly bring the wrong-Node bug back;
+pinning `nodeVersion` skips the read), a `source: 'unresolved'` entry plus a
+warning in a preview, and the default plus a warning in the deploy response
+for a disabled app. A source whose commit the provider could not resolve
+(plain git, deploy key) is pinned to the commit the files were read at, so the
+build and the series agree. The series each native app ran with is recorded
+on the deploy command's `context.releases[].nodeVersion`, carried on the
+rollback pin (`DeployRollbackReleasePin.nodeVersion`), and a rollback sends it
+back without reading anything; a release recorded before that falls back to a
+read, then the default with a warning. It all runs before
+`mergeDeployPrincipalRuntimes`, so the runtime group granted matches the series
+sent. The preview lists the result once per app as `nativeAppNodeVersions`
+(`nodeVersion`, `source`, `requested`, `path`, `note`).
+
+**Plain Compose keys the split would
 otherwise take with it.** A node service is removed from `containerServices`, so
 any ordinary Compose key on its body leaves with it unless `native-app.ts` reads
 it out first. Two do:
@@ -809,7 +842,7 @@ the whole organization never lands in an app that did not ask for it; it is
 listed with `reason: 'not_referenced'` (`unreferencedSecrets`, never the value).
 Other differences worth knowing: the value is passed as typed
 (trimmed, not Compose-escaped, and a non-literal value's `${…}` is **not**
-expanded); the platform's own names (`HOST`, `NODE_ENV`, `PORT`, `PATH`, `HOME`,
+expanded); the platform's own names (`HOST`, `HOSTNAME`, `NODE_ENV`, `PORT`, `PATH`, `HOME`,
 `TMPDIR`, `XDG_CACHE_HOME`, `COREPACK_*`) are listed as not delivered, because
 systemd applies the environment file over the unit's own `Environment=` lines;
 names or values the daemon would refuse are held back and listed with a reason

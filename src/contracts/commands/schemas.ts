@@ -1828,8 +1828,10 @@ export type EnvironmentDeploySourceBuild = {
    * Process the generated systemd unit runs for a `serviceKind: node` service
    * (`nativeAppServices[]`). Non-secret and validated exactly like
    * `installCommand` / `buildCommand`; ignored for every other kind, where
-   * nothing supervises a process. Omitted means "use the framework default"
-   * (`.next/standalone/server.js`, else `server.js`).
+   * nothing supervises a process. Omitted (with no `startupFile`) means the
+   * daemon picks from the built tree, in this order: Next.js standalone
+   * `server.js`, the `package.json` `start` script, `next start` for a Next.js
+   * app, the `package.json` `main` file, `index.js`, then `server.js`.
    */
   startCommand?: string
   /** Relative build-output directory (same rule as `x-turbopanel.root`). */
@@ -1884,7 +1886,12 @@ export type EnvironmentDeployNativeAppService = {
   /** Loopback port the app process must bind (`PORT` in the unit). */
   listenPort: number
   framework: EnvironmentDeployNativeFramework
-  /** Operator-pinned Node series, when the compose author declared one. */
+  /**
+   * Node series for the app: the compose author's pin, else the series the
+   * control plane read from the repository at the deployed commit
+   * (`package.json` `engines.node`, `.nvmrc`, `.node-version`). Omitted means
+   * the daemon default.
+   */
   nodeVersion?: string
   /** `NODE_ENV` for the generated unit. Omitted means `production`. */
   appMode?: 'production' | 'development'
@@ -1896,7 +1903,10 @@ export type EnvironmentDeployNativeAppService = {
   /**
    * Script the vendored Node binary runs when `build.startCommand` is absent.
    * Relative path, validated on both sides — it lands in an `ExecStart` line.
-   * Omitted means the framework default (`server.js`).
+   * Omitted means the daemon's default start order (see
+   * `EnvironmentDeploySourceBuild.startCommand`): Next.js standalone
+   * `server.js`, the `start` script, `next start`, `main`, `index.js`, then
+   * `server.js`.
    */
   startupFile?: string
   /**

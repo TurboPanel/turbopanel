@@ -55,7 +55,11 @@ export type NativeAppServiceSpec = {
   framework: NativeRuntimeFramework
   /** Loopback listen port for hosting Caddy → the app process. */
   listenPort: number
-  /** Operator-pinned Node series, when the author declared one. */
+  /**
+   * Operator-pinned Node series, when the author declared one. When absent,
+   * deploy-prepare may fill it in from the repository
+   * (`client/environments/deploy-node-version.ts`).
+   */
   nodeVersion?: string
   /** `NODE_ENV` for build and unit. Omitted means `production`. */
   appMode?: NodeAppMode
@@ -65,7 +69,11 @@ export type NativeAppServiceSpec = {
    * daemon stops and disables the unit instead of starting it.
    */
   enabled?: boolean
-  /** Script run when `source.startCommand` is absent. Default `server.js`. */
+  /**
+   * Script run when `source.startCommand` is absent. Omitted means the daemon's
+   * start order: standalone `server.js`, `start` script, `next start`, `main`,
+   * `index.js`, `server.js`.
+   */
   startupFile?: string
   /**
    * Authored `deploy.restart_policy`, when the document set one. Absent means

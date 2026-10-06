@@ -71,6 +71,19 @@ export const deploySchemas = {
       },
       status: { type: 'string', const: 'queued' },
       serverId: { type: 'string' },
+      warnings: {
+        type: 'array',
+        description:
+          'Present only when a Node.js app runs on the default Node version because its repository could not be read: a disabled app, or a rollback to a release recorded before its Node version was. Each says what happened and how to pin `x-turbopanel.nodeVersion`.',
+        items: {
+          type: 'object',
+          required: ['code', 'message'],
+          properties: {
+            code: { type: 'string', enum: ['node_version_unresolved'] },
+            message: { type: 'string' },
+          },
+        },
+      },
       strategy: {
         type: 'object',
         description:
@@ -135,6 +148,7 @@ export const deploySchemas = {
           'site_managed_directory_unowned',
           'site_cron_unowned',
           'php_mode_not_allowed',
+          'node_version_unresolved',
         ],
       },
       message: { type: 'string' },
@@ -345,7 +359,7 @@ export const deploySchemas = {
       nativeAppVariables: {
         type: 'array',
         description:
-          "For each Node.js app (native service) in the deploy: every environment variable its process gets, where each one comes from, and whether it reaches the process. Secret values are never shown (`value` is null). The platform sets HOST, NODE_ENV and PORT itself; a variable of one of those names is listed with `delivered: false`. A secret set directly on the app (service or hostname) is passed automatically; a secret set higher up is passed only when the app's environment references it as `{$KEY}`, and is otherwise listed with `delivered: false, reason: not_referenced`.",
+          "For each Node.js app (native service) in the deploy: every environment variable its process gets, where each one comes from, and whether it reaches the process. Secret values are never shown (`value` is null). The platform sets HOST, HOSTNAME, NODE_ENV and PORT itself; a variable of one of those names is listed with `delivered: false`. A secret set directly on the app (service or hostname) is passed automatically; a secret set higher up is passed only when the app's environment references it as `{$KEY}`, and is otherwise listed with `delivered: false, reason: not_referenced`.",
         items: {
           type: 'object',
           required: ['composeServiceName', 'variables'],
@@ -379,6 +393,43 @@ export const deploySchemas = {
                   },
                 },
               },
+            },
+          },
+        },
+      },
+      nativeAppNodeVersions: {
+        type: 'array',
+        description:
+          "For each Node.js app (native service) in the deploy, once: the Node version it runs and where that came from. The service's own `x-turbopanel.nodeVersion` wins, except on a rollback, which runs the version the release recorded (`release`), since that is what its tree was built on; otherwise the repository is read at the commit being deployed: `package.json` `engines.node` (the newest offered version that satisfies it), then `.nvmrc`, then `.node-version`, in the service's subdirectory first and then the repository root. With none of those, the platform default is used. `unresolved` means the preview could not read the repository; `nodeVersion` is then absent and `note` says what the deploy will do.",
+        items: {
+          type: 'object',
+          required: ['composeServiceName', 'source'],
+          properties: {
+            composeServiceName: { type: 'string' },
+            nodeVersion: { type: 'string', description: 'Node major version, such as `24`.' },
+            source: {
+              type: 'string',
+              enum: [
+                'compose',
+                'release',
+                'package.json',
+                '.nvmrc',
+                '.node-version',
+                'default',
+                'unresolved',
+              ],
+            },
+            note: {
+              type: 'string',
+              description: 'Plain-words explanation, when the answer needs one.',
+            },
+            requested: {
+              type: 'string',
+              description: 'What the file asked for, such as `>=26.7.0`.',
+            },
+            path: {
+              type: 'string',
+              description: 'The repository file it was read from, such as `apps/web/package.json`.',
             },
           },
         },

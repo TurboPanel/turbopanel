@@ -109,6 +109,12 @@ import {
 } from '../../features/principals/store.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
+import {
+  type NativeAppNodeVersionView,
+  type NodeVersionPrepareError,
+  repositoryNodeVersionReader,
+  resolveSourceNodeVersions,
+} from './deploy-node-version.ts'
 import { type SiteEngineFeatureError, withSiteEngineFeature } from './deploy-site-engine-gate.ts'
 import { PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
 import {
@@ -295,6 +301,7 @@ export type DeployPrepareWarningCode =
   | 'binding_endpoint_unavailable'
   | 'php_series_not_installed'
   | 'php_mode_not_allowed'
+  | 'node_version_unresolved'
 
 /**
  * Gate a deploy's PHP series against what the target host actually reports.
@@ -474,6 +481,13 @@ export type PreparedDeployCompose = ServerDeployment & {
    * `nativeAppServices[].variables`.
    */
   nativeAppVariables?: NativeAppVariablesView[]
+  /**
+   * The Node series each native app runs and where it came from (the compose
+   * service, the repository's `package.json` / `.nvmrc` / `.node-version`, or
+   * the default), for people. Never sent to a daemon — the wire value is
+   * `nativeAppServices[].nodeVersion`.
+   */
+  nativeAppNodeVersions?: NativeAppNodeVersionView[]
 }
 
 /** One native app's {@link NativeAppVariableView} list. */
@@ -551,6 +565,11 @@ export type DeployPrepareError =
   /** A PHP site asks for a mode its engine, organization or server does not offer. */
   | PhpModePrepareError
   | SiteEngineFeatureError
+  /**
+   * The repository asks for a Node version no offered series satisfies, names
+   * one that is not a version range, or (a deploy only) could not be read.
+   */
+  | NodeVersionPrepareError
   | { kind: 'source_principal_ambiguous'; composeServiceName: string }
   | {
       kind: 'source_ref_unresolved'
@@ -639,6 +658,7 @@ async function emptyPreparedCompose(
     volumes: [],
     warnings,
     nativeAppVariables: [],
+    nativeAppNodeVersions: [],
   }
 }
 
@@ -647,6 +667,8 @@ type HardDeployPrepareError =
   // Hard in preview too: the site would not come up in the mode it asks for.
   | PhpModePrepareError
   | SiteEngineFeatureError
+  // Hard in preview too: the build would get a Node the app says it cannot run on.
+  | NodeVersionPrepareError
   // Hard in preview too: previewing a deploy that would silently ignore a field
   // — or that would be refused the moment it was run for real — is exactly the
   // reassurance an operator must not be given.
@@ -2327,6 +2349,40 @@ async function prepareLocalSourceMaterial(
 }
 
 /**
+ * {@link prepareLocalSourceMaterial}, then the Node series of every native app
+ * that names none, read from its repository at the commit just resolved (see
+ * `deploy-node-version.ts`).
+ */
+async function prepareLocalSourcesWithNodeVersions(
+  c: Context<AppEnv>,
+  db: Db,
+  args: Parameters<typeof prepareLocalSourceMaterial>[2] & {
+    nativeApps: readonly PreparedNativeAppService[]
+  }
+): Promise<
+  | {
+      sourceMaterial: EnvironmentDeploySource[]
+      nodeVersions: { apps: PreparedNativeAppService[]; views: NativeAppNodeVersionView[] }
+    }
+  | DeployPrepareError
+  | Response
+> {
+  const sourceMaterial = await prepareLocalSourceMaterial(c, db, args)
+  if (!Array.isArray(sourceMaterial)) return sourceMaterial
+  return await resolveSourceNodeVersions(args.nativeApps, sourceMaterial, {
+    mode: args.mode,
+    warnings: args.warnings,
+    read: repositoryNodeVersionReader(c, db, {
+      organizationId: args.params.organizationId,
+      serverId: args.params.serverId,
+    }),
+    ...(args.params.rollback === undefined
+      ? {}
+      : { rollbackPins: args.params.rollback.releaseByService }),
+  })
+}
+
+/**
  * Registration check for the compose document's external Docker networks,
  * plus the addressing the registered rows declare (one query serves both).
  * The error is soft — `absorbSoftPrepareError` decides whether a preview
@@ -2503,6 +2559,7 @@ async function toPreparedDeployResult(
     sites: EnvironmentDeploySite[]
     nativeAppServices: PreparedNativeAppService[]
     nativeAppVariables?: NativeAppVariablesView[]
+    nativeAppNodeVersions?: NativeAppNodeVersionView[]
     sourceMaterial: EnvironmentDeploySource[]
     dockerExternalNetworks: string[]
     dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
@@ -2545,6 +2602,7 @@ async function toPreparedDeployResult(
     sites: parts.sites,
     nativeAppServices: parts.nativeAppServices,
     nativeAppVariables: parts.nativeAppVariables ?? [],
+    nativeAppNodeVersions: parts.nativeAppNodeVersions ?? [],
     sourceMaterial: parts.sourceMaterial,
     dockerExternalNetworks: parts.dockerExternalNetworks,
     dockerNetworkAddressing: parts.dockerNetworkAddressing
@@ -3170,7 +3228,10 @@ export async function prepareDeployCompose(
     pipeline.localServiceNames
   )
 
-  const localSourceMaterial = await prepareLocalSourceMaterial(c, db, {
+  // Before the runtime merge: the group a native app's Linux user is granted
+  // follows the series it runs, and an app with no `nodeVersion` gets it here
+  // from its repository at the commit being deployed.
+  const localSources = await prepareLocalSourcesWithNodeVersions(c, db, {
     mode,
     warnings,
     params,
@@ -3179,13 +3240,15 @@ export async function prepareDeployCompose(
     principalMaterial,
     principalResolution,
     localServiceNames: pipeline.localServiceNames,
+    nativeApps: localNativeApps,
   })
-  if (!Array.isArray(localSourceMaterial)) return localSourceMaterial
+  if (!('sourceMaterial' in localSources)) return localSources
+  const { sourceMaterial: localSourceMaterial, nodeVersions } = localSources
 
   const { principalMaterial: principalMaterialWithRuntimes, deployEntitlements } =
     mergeDeployPrincipalRuntimes({
       principalMaterial,
-      nativeAppServices: localNativeApps,
+      nativeAppServices: nodeVersions.apps,
       sourceMaterial: localSourceMaterial,
       sites: localSite,
     })
@@ -3259,8 +3322,9 @@ export async function prepareDeployCompose(
     storageMaterial,
     principalMaterial: principalMaterialWithRuntimes,
     sites: localSite,
-    nativeAppServices: localNativeApps,
-    nativeAppVariables: nativeAppVariableViews(localNativeApps, nativeVariables),
+    nativeAppServices: nodeVersions.apps,
+    nativeAppVariables: nativeAppVariableViews(nodeVersions.apps, nativeVariables),
+    nativeAppNodeVersions: nodeVersions.views,
     sourceMaterial: localSourceMaterial,
     dockerExternalNetworks,
     dockerNetworkAddressing: externalNetworks.addressing,
