@@ -1850,6 +1850,39 @@ export class DaemonCellObject {
     )
   }
 
+  /**
+   * Fire-and-forget daemon reports that only write a projection
+   * (`managed-health-report`, `topology-report`). Returns true when handled.
+   */
+  async #handleReportInbound(
+    attachment: { connectionId: string; serverId: string },
+    parsed: DaemonMessage
+  ): Promise<boolean> {
+    if (parsed.type === 'managed-health-report') {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      await this.#withProjectionDb('managed-health-report', attachment.serverId, async (db) => {
+        await handleManagedHealthReport(db, {
+          reporterServerId: attachment.serverId,
+          members: parsed.members,
+        })
+      })
+      return true
+    }
+    if (parsed.type === 'topology-report') {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      await this.#withProjectionDb('topology-report', attachment.serverId, async (db) => {
+        await recordTopologyGeneration(db, attachment.serverId, {
+          generation: parsed.generation,
+          bootGeneration: parsed.bootGeneration,
+          snapshot: parsed.snapshot,
+          appliedAt: parsed.at,
+        })
+      })
+      return true
+    }
+    return false
+  }
+
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const attachment = ws.deserializeAttachment() as {
       connectionId: string
@@ -1917,29 +1950,7 @@ export class DaemonCellObject {
         return
       }
 
-      if (parsed.type === 'managed-health-report') {
-        await this.#recordInboundRepairingPresence(attachment, parsed.at)
-        await this.#withProjectionDb('managed-health-report', attachment.serverId, async (db) => {
-          await handleManagedHealthReport(db, {
-            reporterServerId: attachment.serverId,
-            members: parsed.members,
-          })
-        })
-        return
-      }
-
-      if (parsed.type === 'topology-report') {
-        await this.#recordInboundRepairingPresence(attachment, parsed.at)
-        await this.#withProjectionDb('topology-report', attachment.serverId, async (db) => {
-          await recordTopologyGeneration(db, attachment.serverId, {
-            generation: parsed.generation,
-            bootGeneration: parsed.bootGeneration,
-            snapshot: parsed.snapshot,
-            appliedAt: parsed.at,
-          })
-        })
-        return
-      }
+      if (await this.#handleReportInbound(attachment, parsed)) return
 
       if (parsed.type === 'acme-issuance-event') {
         await this.#recordInboundRepairingPresence(attachment, parsed.at)
