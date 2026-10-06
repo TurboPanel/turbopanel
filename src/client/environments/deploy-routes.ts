@@ -17,6 +17,7 @@ import { can } from '../authz/evaluator.ts'
 import {
   createReleaseIdAllocator,
   type DeployPrepareError,
+  type DeployPrepareWarning,
   type DeployRollbackRequest,
   type DeployScheduleSlice,
   type DeploySourceSelection,
@@ -25,7 +26,9 @@ import {
   prepareDeployCompose,
   type ReleaseIdAllocator,
 } from './deploy-prepare.ts'
+import { findUnresolvedComposeInterpolations } from '../../features/compose/unresolved-interpolation.ts'
 import { definedFields, presentFields } from '../../lib/optional-fields.ts'
+import { recordedNodeVersions } from './deploy-node-version.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type {
@@ -582,8 +585,65 @@ function deploySelectionMetadata(selection: DeploySourceSelection):
   return { sourceSelection }
 }
 
+/**
+ * Node version warnings a deploy carries back in its response: an app that
+ * runs on the default because its repository could not be read (a disabled
+ * app, or a rollback to a release that recorded no series). Other prepare
+ * warnings keep their old behaviour; these exist so nobody is surprised by
+ * the Node an app runs on. One per message, however many servers said it.
+ */
+function nodeVersionWarnings(
+  preparedByServer: ReadonlyArray<{ prepared: PreparedDeployCompose }>
+): Array<{ code: string; message: string }> {
+  const byMessage = new Map<string, { code: string; message: string }>()
+  for (const row of preparedByServer) {
+    for (const warning of row.prepared.warnings) {
+      if (warning.code !== 'node_version_unresolved') continue
+      byMessage.set(warning.message, { code: warning.code, message: warning.message })
+    }
+  }
+  return [...byMessage.values()]
+}
+
+/** One entry per app: an app on several servers is read once and listed once. */
+function oncePerApp<T extends { composeServiceName: string }>(rows: readonly T[]): T[] {
+  return [...new Map(rows.map((row) => [row.composeServiceName, row])).values()]
+}
+
+/**
+ * The release rows a deploy command records: one per `sourceMaterial[]` entry,
+ * each native app's with the Node series it was sent (or the default), which
+ * is what a later rollback sends back.
+ */
+export function contextReleasesFor(
+  sourceMaterial: readonly EnvironmentDeploySource[],
+  nativeAppServices:
+    | readonly { composeServiceName: string; nodeVersion?: string; runtime?: 'node' | 'deno' }[]
+    | undefined
+): CommandContextRelease[] | undefined {
+  const nodeVersionByName = recordedNodeVersions(nativeAppServices)
+  const denoNames = new Set(
+    (nativeAppServices ?? [])
+      .filter((app) => app.runtime === 'deno')
+      .map((app) => app.composeServiceName)
+  )
+  return normalizeContextReleases(
+    sourceMaterial.map((entry) =>
+      contextReleaseFromSource(
+        entry,
+        nodeVersionByName.get(entry.composeServiceName),
+        denoNames.has(entry.composeServiceName) ? 'deno' : undefined
+      )
+    )
+  )
+}
+
 /** One `sourceMaterial[]` entry as the durable `command.context` records it. */
-function contextReleaseFromSource(entry: EnvironmentDeploySource): CommandContextRelease {
+export function contextReleaseFromSource(
+  entry: EnvironmentDeploySource,
+  nodeVersion?: string,
+  runtime?: 'deno'
+): CommandContextRelease {
   return definedFields({
     composeServiceName: entry.composeServiceName,
     releaseId: entry.releaseId,
@@ -595,6 +655,11 @@ function contextReleaseFromSource(entry: EnvironmentDeploySource): CommandContex
     // the read path does not have.
     commitMessage: entry.commitMessage,
     commitAuthor: entry.commitAuthor,
+    // The Node series a native app was built with, so a rollback can send the
+    // same one without reading the repository again (see `deploy-node-version.ts`).
+    nodeVersion,
+    // Only a Deno release records its runtime; Node rows stay as they were.
+    runtime,
     rollbackToReleaseId: entry.rollbackToReleaseId,
   }) satisfies CommandContextRelease
 }
@@ -605,7 +670,7 @@ async function createDeployCommand(
 ): Promise<CreatedDeployCommand> {
   const expiresAt = new Date(Date.now() + 600_000).toISOString()
   const replicaCounts = normalizeReplicaCounts(params.replicaCounts)
-  const releases = normalizeContextReleases(params.sourceMaterial.map(contextReleaseFromSource))
+  const releases = contextReleasesFor(params.sourceMaterial, params.nativeAppServices)
   const metadata = deploySelectionMetadata(params.selection)
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
@@ -1187,6 +1252,18 @@ async function resolveEnginePlan(
   })
 }
 
+/** One warning per `${NAME}` the deploy would turn into an empty string. */
+function unresolvedInterpolationWarnings(
+  composeYaml: string,
+  envFile: string
+): DeployPrepareWarning[] {
+  return findUnresolvedComposeInterpolations(composeYaml, envFile).map((name) => ({
+    code: 'compose_variable_unresolved',
+    message: `\${${name}} is not defined, so it becomes empty. Panel variables are only substituted with the {$${name}} syntax (curly brace first), not \${${name}}.`,
+    details: { variable: name },
+  }))
+}
+
 /**
  * GET /environments/:id/deploy-preview — exact compose YAML the daemon would
  * receive (same `prepareDeployCompose` path), with secrets redacted.
@@ -1289,10 +1366,22 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
         composeKey: row.composeKey,
         volumeName: row.volumeName,
       })),
-      warnings: preparedByServer.flatMap((row) => row.prepared.warnings),
+      warnings: [
+        ...preparedByServer.flatMap((row) => row.prepared.warnings),
+        ...unresolvedInterpolationWarnings(
+          first?.prepared.composeYaml ?? '',
+          first?.prepared.envFile ?? ''
+        ),
+      ],
       envFile: first?.prepared.envFile ?? '',
       secretPlan: first?.prepared.secretPlan ?? [],
       nativeAppVariables: preparedByServer.flatMap((row) => row.prepared.nativeAppVariables ?? []),
+      nativeAppNodeVersions: oncePerApp(
+        preparedByServer.flatMap((row) => row.prepared.nativeAppNodeVersions ?? [])
+      ),
+      nativeAppDenoVersions: oncePerApp(
+        preparedByServer.flatMap((row) => row.prepared.nativeAppDenoVersions ?? [])
+      ),
     })
   })
 }
@@ -1872,7 +1961,11 @@ async function runEnvironmentDeploy(
     })
 
     return Response.json(
-      queuedCommandsResponseBody(queued, strategyResponse(engine, preparedByServer.length))
+      queuedCommandsResponseBody(
+        queued,
+        strategyResponse(engine, preparedByServer.length),
+        nodeVersionWarnings(preparedByServer)
+      )
     )
   } finally {
     if (!spanningCommitted) {

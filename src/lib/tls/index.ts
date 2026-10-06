@@ -1,9 +1,4 @@
-export {
-  Asn1Error,
-  children,
-  content,
-  readNode,
-} from './asn1.ts'
+export { Asn1Error, children, content, readNode } from './asn1.ts'
 export {
   coversAllHostnames,
   coversHostname,
@@ -43,8 +38,10 @@ export {
   KEY_USAGE_KEY_ENCIPHERMENT,
   mintOrganizationCa,
   mintSelfSignedCertificate,
+  readAuthorityKeyIdentifier,
   readBasicConstraintsCa,
   readKeyUsageBits,
+  readSubjectKeyIdentifier,
   verifyCertificateSignature,
 } from './self-signed.ts'
 export type {

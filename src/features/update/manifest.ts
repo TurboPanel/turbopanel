@@ -118,6 +118,43 @@ function readTarget(
   return { commit, buildId, builtAt, channel, manifestUrl, ...(version ? { version } : {}) }
 }
 
+const MANIFEST_FETCH_TIMEOUT_MS = 8000
+/** No new attempt starts once the lookups have taken this long (the routes wait on them). */
+const MANIFEST_RETRY_BUDGET_MS = 10_000
+const TRANSIENT_STATUSES = new Set([429, 502, 503, 504])
+const DEFAULT_RETRY_DELAYS_MS = [400, 1200]
+let retryDelaysMs = DEFAULT_RETRY_DELAYS_MS
+
+/** Wait between manifest attempts — for tests only (`[]` disables retries). */
+export function setUpdateManifestRetryDelaysForTests(delays: number[]): void {
+  retryDelaysMs = delays
+}
+
+/**
+ * Fetch a manifest, retrying a transient failure: a request that throws (a
+ * resolver blip, a refused or reset connection, a timeout) or an answer of
+ * 429/502/503/504. Any other answer is returned as-is, and when the attempts
+ * run out the last answer or error is handed back. Only the transport is
+ * retried; the signature is checked on whatever comes back.
+ */
+async function fetchManifestResponse(
+  url: string,
+  attempt = 0,
+  startedAt = Date.now()
+): Promise<Response> {
+  const delay = retryDelaysMs[attempt]
+  const canRetry = delay !== undefined && Date.now() - startedAt < MANIFEST_RETRY_BUDGET_MS
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(MANIFEST_FETCH_TIMEOUT_MS) })
+    if (!canRetry || !TRANSIENT_STATUSES.has(response.status)) return response
+    await response.body?.cancel()
+  } catch (error) {
+    if (!canRetry) throw error
+  }
+  await new Promise((resolve) => setTimeout(resolve, delay))
+  return fetchManifestResponse(url, attempt + 1, startedAt)
+}
+
 /**
  * One fetch, straight to the channel's built-in manifest location — no
  * catalog hop. `rc` / `release` resolve through GitHub's own redirects, which
@@ -133,9 +170,7 @@ async function fetchManifestUncached(
     const manifestUrl = builtinChannelManifestUrl(channel, kind)
     if (manifestUrl === null || !requireHttpsUrl(manifestUrl)) return null
 
-    const manifestRes = await fetch(manifestUrl, {
-      signal: AbortSignal.timeout(8000),
-    })
+    const manifestRes = await fetchManifestResponse(manifestUrl)
     if (!manifestRes.ok) return null
 
     const manifestJson = JSON.parse(await manifestRes.text()) as Record<string, unknown>
@@ -184,6 +219,7 @@ export function resetUpdateManifestCacheForTests(): void {
   inflight.clear()
   refusals.clear()
   accepted.clear()
+  retryDelaysMs = DEFAULT_RETRY_DELAYS_MS
   trustKeyHex = RELEASE_SIGNING_PUBLIC_KEY_HEX
 }
 

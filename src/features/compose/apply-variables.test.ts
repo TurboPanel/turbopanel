@@ -120,6 +120,8 @@ describe('apply-variables', () => {
     assertEquals(env[secretFileEnvKey('SECRET')], secretContainerPath('SECRET'))
     assertEquals(result.secretMaterial.length, 1)
     assertEquals(result.secretPlan[0]?.source, 'api_secret')
+    // Swarm-only keys are never emitted (Compose warns on every deploy).
+    assertEquals(services.api.secrets, [{ source: 'api_secret', target: 'SECRET' }])
     assertEquals(JSON.stringify(result.document.data).includes('super-secret'), false)
     assertEquals(result.envFileContent.includes('super-secret'), false)
   })

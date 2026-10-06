@@ -124,6 +124,7 @@ import {
 } from './commands/deno-amqp-queue.ts'
 import { startCommandConsumer } from '../../features/commands/deno-consumer.ts'
 import { startMailerConsumer } from '../../lib/email/mailer/deno-mailer-consumer.ts'
+import { createAmqpMailDeadLetterStore } from '../../lib/email/mailer/deno-mail-dead-letters.ts'
 import {
   createNoopCommandQueue,
   isNoopCommandQueue,
@@ -300,6 +301,15 @@ async function closeMetricsStoreIfSupported(store: ServerMetricsStore): Promise<
   } catch (err) {
     logWarn('metrics', `metrics store close on shutdown failed: ${String(err)}`)
   }
+}
+
+/** The dead-letter admin store, only where mail really goes through the broker. */
+function resolveMailDeadLetters(
+  emailQueue: EmailQueue
+): { mailDeadLetters: ReturnType<typeof createAmqpMailDeadLetterStore> } | Record<string, never> {
+  if (isNoopEmailQueue(emailQueue)) return {}
+  const amqpUrl = resolveCommandAmqpUrl()
+  return amqpUrl ? { mailDeadLetters: createAmqpMailDeadLetterStore({ amqpUrl }) } : {}
 }
 
 function resolveCommandAmqpUrl(): string | null {
@@ -627,6 +637,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     getEnv: () => Deno.env.toObject(),
     readPlatformCaBundle: () => Deno.readTextFile(resolveInstanceTlsCaServePath()),
     collectInstanceIps: () => collectServerIps(readDefaultRouteInterfaces()),
+    ...resolveMailDeadLetters(emailQueue),
   })
   const socketPath = resolveInstanceSocket()
 

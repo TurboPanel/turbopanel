@@ -122,14 +122,72 @@ export function serverHostsManagedHa(
   )
 }
 
+/**
+ * One address out of a server's pins in one datacenter: IPv4 first, then a
+ * fixed textual order within a family, so the answer never depends on the
+ * order the database returned the rows in.
+ */
 export function pickHaAdvertiseAddress(
   pins: ReadonlyArray<{ address: string; family: 4 | 6 }>
 ): string | null {
-  const v4 = pins.find((pin) => pin.family === 4)
-  return v4?.address ?? pins[0]?.address ?? null
+  const ordered = pins.toSorted((a, b) => a.family - b.family || a.address.localeCompare(b.address))
+  return ordered[0]?.address ?? null
 }
 
 export type HaRaftPin = { datacenterId: string; address: string; family: 4 | 6 }
+
+/** The routing policy fields Raft placement reads (see `DatacenterPolicyRow`). */
+export type HaDatacenterPolicy = { priority: number; trusted: boolean }
+
+/**
+ * A datacenter with no policy entry: the documented defaults
+ * (`DEFAULT_DATACENTER_PRIORITY` / `DEFAULT_DATACENTER_TRUSTED` in
+ * datacenter-options.ts; not imported here, this module is loaded by the
+ * command contracts). `loadDatacenterPolicies` seeds every id anyway.
+ */
+export const HA_DEFAULT_DATACENTER_POLICY: Readonly<HaDatacenterPolicy> = {
+  priority: 100,
+  trusted: true,
+}
+
+/**
+ * Which datacenter each Raft server's traffic uses. Every server computes this
+ * from the same inputs (all Raft servers' pins and the datacenter policies),
+ * so all of them agree on who is in which group: a server never lists a voter
+ * that does not list it back.
+ *
+ * Only trusted datacenters count, in `(priority asc, id asc)` order like the
+ * private-endpoint ladder. A server joins the first of its datacenters that
+ * at least one other Raft server is also pinned in; with none, its own best
+ * trusted datacenter (a group of one, as for a server alone in its
+ * datacenter). A server with only untrusted datacenters gets none.
+ */
+export function assignHaRaftDatacenters(
+  raftServerIds: readonly string[],
+  pins: ReadonlyMap<string, readonly HaRaftPin[]>,
+  policies: ReadonlyMap<string, HaDatacenterPolicy>
+): Map<string, string> {
+  const policyOf = (id: string): HaDatacenterPolicy =>
+    policies.get(id) ?? HA_DEFAULT_DATACENTER_POLICY
+  const serversIn = new Map<string, Set<string>>()
+  for (const serverId of raftServerIds) {
+    for (const pin of pins.get(serverId) ?? []) {
+      const members = serversIn.get(pin.datacenterId) ?? new Set<string>()
+      members.add(serverId)
+      serversIn.set(pin.datacenterId, members)
+    }
+  }
+  const assignment = new Map<string, string>()
+  for (const serverId of raftServerIds) {
+    const ranked = [...new Set((pins.get(serverId) ?? []).map((pin) => pin.datacenterId))]
+      .filter((id) => policyOf(id).trusted)
+      .toSorted((a, b) => policyOf(a).priority - policyOf(b).priority || a.localeCompare(b))
+    const shared = ranked.find((id) => (serversIn.get(id)?.size ?? 0) > 1)
+    const chosen = shared ?? ranked[0]
+    if (chosen) assignment.set(serverId, chosen)
+  }
+  return assignment
+}
 
 export type HaRaftMembers = {
   advertiseAddress: string
@@ -137,28 +195,35 @@ export type HaRaftMembers = {
 }
 
 /**
- * Raft voters for `thisServerId`: the HA servers pinned in the datacenter it
- * advertises from. An org-wide group spanning datacenters whose private
- * networks cannot see each other never reaches quorum (no leader, so no
- * DeadPrimary and no automatic failover anywhere in the org), and automatic
- * failover is same-datacenter only, so a cross-datacenter voter adds nothing
- * but quorum risk.
+ * Raft voters for `thisServerId`: the HA servers assigned to the same
+ * datacenter ({@link assignHaRaftDatacenters}). An org-wide group spanning
+ * datacenters whose private networks cannot see each other never reaches
+ * quorum (no leader, so no DeadPrimary and no automatic failover anywhere in
+ * the org), and automatic failover is same-datacenter only, so a
+ * cross-datacenter voter adds nothing but quorum risk.
  */
 export function selectHaRaftMembers(
   thisServerId: string,
   raftServerIds: readonly string[],
-  pins: ReadonlyMap<string, readonly HaRaftPin[]>
+  pins: ReadonlyMap<string, readonly HaRaftPin[]>,
+  policies: ReadonlyMap<string, HaDatacenterPolicy> = new Map()
 ): HaRaftMembers | null {
-  const thisPins = pins.get(thisServerId) ?? []
-  const advertiseAddress = pickHaAdvertiseAddress(thisPins)
+  const ids = raftServerIds.includes(thisServerId)
+    ? raftServerIds
+    : [...raftServerIds, thisServerId]
+  const assignment = assignHaRaftDatacenters(ids, pins, policies)
+  const datacenterId = assignment.get(thisServerId)
+  if (!datacenterId) return null
+  const pinIn = (serverId: string): string | null =>
+    pickHaAdvertiseAddress(
+      (pins.get(serverId) ?? []).filter((pin) => pin.datacenterId === datacenterId)
+    )
+  const advertiseAddress = pinIn(thisServerId)
   if (!advertiseAddress) return null
-  const datacenterId = thisPins.find((pin) => pin.address === advertiseAddress)?.datacenterId
   const peers: HaRaftMembers['peers'] = []
   for (const serverId of raftServerIds) {
-    const sameDatacenter = (pins.get(serverId) ?? []).filter(
-      (pin) => pin.datacenterId === datacenterId
-    )
-    const address = pickHaAdvertiseAddress(sameDatacenter)
+    if (assignment.get(serverId) !== datacenterId) continue
+    const address = pinIn(serverId)
     if (address) peers.push({ serverId, address })
   }
   return { advertiseAddress, peers }

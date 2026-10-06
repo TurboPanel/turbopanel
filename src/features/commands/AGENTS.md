@@ -90,6 +90,10 @@ end of a very long line. `CommandRecord`, the lean status projection
 failure path must keep the cause as the **last** line of its message.
 `transitionCommand` stores `error` through `redactUrlSecrets` (a daemon error can
 quote a signed download link), as does `deployment.metadata.error`.
+`redactUrlSecrets` also drops bare tokens (known token shapes, `Bearer` values,
+`NAME=value` for secret-looking names); the cell's `request` rows get the same
+treatment for every inbound message kind (`deriveInboundOutcome` redacts the
+`error` column and the stored result's `error`).
 
 ### Dispatch payload (`dispatch` table)
 

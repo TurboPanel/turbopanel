@@ -6,3 +6,10 @@ export const UPDATE_REQUEST_TTL_MS = 300_000
 
 /** Short-lived, per-channel cache for manifest lookups (matches the CDN's short-cache). */
 export const MANIFEST_CACHE_MS = 30_000
+
+/**
+ * The daemon's error code when it refuses an `update` / `instance-update`
+ * because an install of that unit is already running. The earlier install is
+ * the live one, so the refusal is not a failed attempt.
+ */
+export const UPDATE_IN_PROGRESS_ERROR_CODE = 'preflight_in_progress'

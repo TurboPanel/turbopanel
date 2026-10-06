@@ -6,6 +6,7 @@ import type { ManagedSettings } from './settings.ts'
 import {
   defaultManagedRelease,
   describeManagedImage,
+  isManagedVariantSwapSafe,
   isSameManagedSeries,
   type ManagedReleaseGate,
   resolveManagedImage,
@@ -328,6 +329,9 @@ export const MANAGED_VERSION_UNSUPPORTED_ERROR = 'managed_version_unsupported'
 /** A cluster's engine series cannot change after create. */
 export const MANAGED_SERIES_IMMUTABLE_ERROR = 'managed_series_immutable'
 
+/** A PostgreSQL image swap between libc families would corrupt text indexes. */
+export const MANAGED_VARIANT_SWAP_UNSAFE_ERROR = 'managed_variant_swap_unsafe'
+
 /**
  * Resolve create-time `engineSeries` / `imageVariant` to a catalog image.
  *
@@ -370,26 +374,84 @@ export function parseManagedVersionSelection(
   return { ok: true, image }
 }
 
+/** A settings patch is refused with HTTP 409, an error code and plain words. */
+export type ManagedImageRefusal = {
+  ok: false
+  error: string
+  message: string
+  status: 409
+}
+
 /**
  * Refuse a settings patch that moves an existing cluster to another engine
  * series.
  *
  * An engine refuses to start on a data directory written by a different major,
  * and cross-major replication is not a supported topology, so an in-place
- * series change would break the cluster rather than upgrade it. Changing the
- * base-OS variant within one series (`alpine` ↔ `debian`) is allowed. Series
+ * series change would break the cluster rather than upgrade it. Series
  * migration is a separate managed service plus a data move, not a settings
- * edit.
+ * edit. Whether a base-OS variant may change is decided by
+ * {@link assertManagedVariantSwapSafe}.
  */
 export function assertManagedSeriesUnchanged(
   spec: { defaultImage: string },
   currentSettings: ManagedSettings,
   nextSettings: ManagedSettings
-): { ok: false; error: string; status: 409 } | null {
+): ManagedImageRefusal | null {
   const current = currentSettings.image ?? spec.defaultImage
   const next = nextSettings.image ?? spec.defaultImage
   if (isSameManagedSeries(current, next)) return null
-  return { ok: false, error: MANAGED_SERIES_IMMUTABLE_ERROR, status: 409 }
+  return {
+    ok: false,
+    error: MANAGED_SERIES_IMMUTABLE_ERROR,
+    message:
+      'The database version cannot be changed on an existing cluster, because the data ' +
+      'on disk only works with the version that wrote it. Create a new cluster on the ' +
+      'version you want and restore a backup into it.',
+    status: 409,
+  }
+}
+
+/**
+ * Refuse a settings patch that swaps a PostgreSQL cluster between the Alpine
+ * and Debian images.
+ *
+ * The two images use different C libraries, which sort text differently, so
+ * every text index would silently become wrong (proven on a test host:
+ * `bt_index_check` fails and index-ordered queries return a different order).
+ * Same-variant changes, no-op patches, and engines with their own collations
+ * (MySQL, MariaDB) pass. The policy lives in {@link isManagedVariantSwapSafe}.
+ */
+export function assertManagedVariantSwapSafe(
+  spec: { defaultImage: string },
+  currentSettings: ManagedSettings,
+  nextSettings: ManagedSettings
+): ManagedImageRefusal | null {
+  const current = currentSettings.image ?? spec.defaultImage
+  const next = nextSettings.image ?? spec.defaultImage
+  if (isManagedVariantSwapSafe(current, next)) return null
+  return {
+    ok: false,
+    error: MANAGED_VARIANT_SWAP_UNSAFE_ERROR,
+    message:
+      'Switching this PostgreSQL cluster between the Alpine and Debian images would ' +
+      'silently break its text indexes, because the two sort text differently and the ' +
+      'data would need re-indexing. Create a new cluster on the image you want and ' +
+      'restore a backup into it.',
+    status: 409,
+  }
+}
+
+/** Run the series guard, then the variant guard; first refusal wins. */
+export function assertManagedImageChangeAllowed(
+  spec: { defaultImage: string },
+  currentSettings: ManagedSettings,
+  nextSettings: ManagedSettings
+): ManagedImageRefusal | null {
+  return (
+    assertManagedSeriesUnchanged(spec, currentSettings, nextSettings) ??
+    assertManagedVariantSwapSafe(spec, currentSettings, nextSettings)
+  )
 }
 
 export function readInitialDatabase(spec: {
@@ -433,6 +495,13 @@ export function isManagedReplicationPrincipal(metadata: unknown): boolean {
   return principalMetadata(metadata).managedReplication === true
 }
 
+function principalDatabaseNames(metadata: unknown): string[] {
+  const { databases } = principalMetadata(metadata)
+  return Array.isArray(databases)
+    ? databases.filter((entry): entry is string => typeof entry === 'string')
+    : []
+}
+
 export function serializeManagedUser(row: {
   id: string
   username: string
@@ -442,9 +511,7 @@ export function serializeManagedUser(row: {
   createdAt: string
 }) {
   const meta = principalMetadata(row.metadata)
-  const databases = Array.isArray(meta.databases)
-    ? meta.databases.filter((entry): entry is string => typeof entry === 'string')
-    : []
+  const databases = principalDatabaseNames(row.metadata)
   const privileges = Array.isArray(meta.privileges)
     ? meta.privileges.filter((entry): entry is string => typeof entry === 'string')
     : []
@@ -547,6 +614,10 @@ export function parseManagedUserCreateFields(
     !databases.every((name) => options.databases.includes(name))
   ) {
     return c.json({ error: 'Invalid request' }, 400)
+  }
+  // A cluster that predates the reserved-name check may still list a system schema.
+  if (databases.some((name) => isReservedDatabaseName(ctx.spec.engine, name))) {
+    return c.json({ error: 'reserved_database_name' }, 400)
   }
 
   const privileges = Array.isArray(body.privileges)
@@ -667,13 +738,39 @@ export function mergeManagedPatchSettings(
   })
 }
 
+/**
+ * Engine system schemas that must never be created or granted as an application
+ * database. A user granted `mysql.*` (or `sys.*`) can read and write the
+ * engine's own account and configuration tables, so the name is refused the same
+ * way the initial database is. Matched case-insensitively, as the engines
+ * themselves treat these names.
+ */
+const MYSQL_FAMILY_RESERVED_DATABASES: readonly string[] = [
+  'mysql',
+  'information_schema',
+  'performance_schema',
+  'sys',
+]
+
+export function reservedDatabaseNames(engine: string): readonly string[] {
+  return engine === 'mysql' || engine === 'mariadb' ? MYSQL_FAMILY_RESERVED_DATABASES : []
+}
+
+export function isReservedDatabaseName(engine: string, name: string): boolean {
+  return reservedDatabaseNames(engine).includes(name.toLowerCase())
+}
+
 export function validateManagedDatabaseCreateName(
   name: string,
   databases: readonly string[],
-  identifier: { pattern: RegExp; maxLength: number }
+  identifier: { pattern: RegExp; maxLength: number },
+  engine = ''
 ): ManagedRouteValidationError | null {
   if (!identifier.pattern.test(name) || name.length > identifier.maxLength) {
     return { ok: false, error: 'Invalid database name', status: 400 }
+  }
+  if (isReservedDatabaseName(engine, name)) {
+    return { ok: false, error: 'reserved_database_name', status: 400 }
   }
   if (databases.includes(name)) {
     return { ok: false, error: 'database_exists', status: 409 }
@@ -698,6 +795,25 @@ export function evaluateManagedDatabaseDelete(
     return { ok: false, error: 'cannot_drop_initial_database', status: 409 }
   }
   return null
+}
+
+/**
+ * Typed usernames of the SQL users (never the root or replication principal)
+ * whose `databases` list still names `databaseName`. Dropping the database
+ * while any remain would leave the next apply granting on a missing database.
+ */
+export function listUsersReferencingDatabase(
+  principals: ReadonlyArray<{ username: string; metadata: unknown }>,
+  databaseName: string
+): string[] {
+  return principals
+    .filter(
+      (entry) =>
+        !isManagedRootPrincipal(entry.metadata) &&
+        !isManagedReplicationPrincipal(entry.metadata) &&
+        principalDatabaseNames(entry.metadata).includes(databaseName)
+    )
+    .map((entry) => entry.username)
 }
 
 export function nextDatabasesAfterCreate(databases: readonly string[], name: string): string[] {
