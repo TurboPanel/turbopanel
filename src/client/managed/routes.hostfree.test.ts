@@ -263,6 +263,16 @@ function recordingQueue(): CommandQueue {
   }
 }
 
+/** A queue that keeps what was enqueued, so a test can see nothing was. */
+function countingQueue(sink: CommandEnvelope[]): CommandQueue {
+  return {
+    enqueue: (envelope: CommandEnvelope) => {
+      sink.push(envelope)
+      return Promise.resolve()
+    },
+  }
+}
+
 function principalRow(overrides: Record<string, unknown> = {}) {
   return {
     id: PRINCIPAL_ID,
@@ -2783,6 +2793,177 @@ test('POST lifecycle / DELETE placed / backups enqueue when the host is online',
       body: JSON.stringify({}),
     })
   )
+})
+
+const BOUND_SERVICE = {
+  id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+  serviceId: SERVICE_ID,
+  name: 'web',
+  environmentId: ENV_ID,
+  projectId: PROJECT_ID,
+  keyPrefix: 'DATABASE',
+}
+
+test('DELETE cluster refuses with the bound services listed, and queues nothing', async () => {
+  const enqueued: CommandEnvelope[] = []
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb({ bindingRows: [BOUND_SERVICE] }),
+    registry: stubRegistry(),
+    commandQueue: countingQueue(enqueued),
+  })
+  const res = await app.request(envPath(), { method: 'DELETE', headers: authHeaders(cookie) })
+  assertEquals(res.status, 409)
+  const body = await jsonOf(res)
+  assertEquals(body.error, 'managed_has_bindings')
+  assertEquals(
+    (body.services as Array<Record<string, unknown>>).map((entry) => entry.name),
+    ['web']
+  )
+  assertEquals(enqueued.length, 0)
+})
+
+test('DELETE cluster with ?detach=true queues the destroy and leaves the bindings until it succeeds', async () => {
+  const deletedTables: unknown[] = []
+  const base = applyReadyDb({ bindingRows: [BOUND_SERVICE] })
+  const db = {
+    ...base,
+    delete: (table: unknown) => {
+      deletedTables.push(table)
+      return base.delete(table as never)
+    },
+  } as unknown as Db
+  const enqueued: CommandEnvelope[] = []
+  const { app, cookie } = await buildApp({
+    db,
+    registry: stubRegistry(),
+    commandQueue: countingQueue(enqueued),
+  })
+  const res = await app.request(envPath('?detach=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(res.status, 200)
+  const body = await jsonOf(res)
+  assertEquals(body.deleted, false)
+  assertEquals(
+    (body.detached as Array<Record<string, unknown>>).map((entry) => entry.name),
+    ['web']
+  )
+  assertEquals(enqueued.length > 0, true)
+  // The bindings go with the managed row when the destroy succeeds; removing
+  // them now would leave a cluster that is still running with apps unbound if
+  // the destroy failed on the host.
+  assertEquals(deletedTables.includes(binding), false)
+  assertEquals(deletedTables.includes(managed), false)
+})
+
+test('DELETE cluster with ?detach=true whose destroy cannot be queued answers 502 and leaves the bindings', async () => {
+  const deletedTables: unknown[] = []
+  const base = applyReadyDb({ bindingRows: [BOUND_SERVICE] })
+  const db = {
+    ...base,
+    delete: (table: unknown) => {
+      deletedTables.push(table)
+      return base.delete(table as never)
+    },
+  } as unknown as Db
+  const { app, cookie } = await buildApp({
+    db,
+    registry: stubRegistry(),
+    commandQueue: failingQueue(),
+  })
+  const res = await app.request(envPath('?detach=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(res.status >= 500, true)
+  assertEquals(deletedTables.includes(binding), false)
+})
+
+test('DELETE cluster with ?detach=true needs the same rights as the destroy: manage denied is 403 and nothing is queued or removed', async () => {
+  const deletedTables: unknown[] = []
+  const base = applyReadyDb({ bindingRows: [BOUND_SERVICE] })
+  let executeCalls = 0
+  const db = {
+    ...base,
+    execute: () => {
+      executeCalls += 1
+      if (executeCalls === 1) {
+        return Promise.resolve([{ organization_id: ORG_ID, kind: 'user' }])
+      }
+      return Promise.resolve([{ allowed: false, organization_id: ORG_ID, kind: 'user' }])
+    },
+    delete: (table: unknown) => {
+      deletedTables.push(table)
+      return base.delete(table as never)
+    },
+  } as unknown as Db
+  const enqueued: CommandEnvelope[] = []
+  const { app, cookie } = await buildApp({
+    db,
+    registry: stubRegistry(),
+    commandQueue: countingQueue(enqueued),
+  })
+  executeCalls = 0
+  const detach = await app.request(envPath('?detach=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(detach.status, 403)
+  executeCalls = 0
+  const forced = await app.request(envPath('?force=true&detach=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(forced.status, 403)
+  assertEquals(enqueued.length, 0)
+  assertEquals(deletedTables.length, 0)
+})
+
+test('DELETE cluster with ?force=true&detach=true removes the bindings before the rows and still refuses without detach', async () => {
+  const deletedTables: unknown[] = []
+  const base = applyReadyDb({ bindingRows: [BOUND_SERVICE] })
+  const db = {
+    ...base,
+    delete: (table: unknown) => {
+      deletedTables.push(table)
+      return base.delete(table as never)
+    },
+  } as unknown as Db
+  const { app, cookie } = await buildApp({
+    db,
+    registry: stubRegistry(),
+    commandQueue: countingQueue([]),
+  })
+  const refused = await app.request(envPath('?force=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(refused.status, 409)
+  assertEquals(deletedTables.length, 0)
+  const res = await app.request(envPath('?force=true&detach=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(res.status, 200)
+  const body = await jsonOf(res)
+  assertEquals(body.deleted, true)
+  assertEquals(
+    (body.detached as Array<Record<string, unknown>>).map((entry) => entry.name),
+    ['web']
+  )
+  assertEquals(deletedTables.indexOf(binding) < deletedTables.indexOf(managed), true)
+})
+
+test('DELETE cluster with no bindings is unchanged and reports no detached list', async () => {
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb(),
+    registry: stubRegistry(),
+    commandQueue: recordingQueue(),
+  })
+  const res = await app.request(envPath(), { method: 'DELETE', headers: authHeaders(cookie) })
+  assertEquals(res.status, 200)
+  assertEquals('detached' in (await jsonOf(res)), false)
 })
 
 test('POST members surfaces a private-path error for an unreachable replica host', async () => {

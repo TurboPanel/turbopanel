@@ -391,6 +391,12 @@ export const managedSchemas = {
       },
       commandId: { type: 'string' },
       serverId: { type: 'string' },
+      detached: {
+        type: 'array',
+        items: { type: 'object' },
+        description:
+          'Present when `detach=true` and services were bound: the services (`serviceId`, `name`, `environmentId`, `projectId`, `keyPrefix`) whose bindings and database variables go with the cluster. Removed at once on a forced or unplaced delete; otherwise removed only when the queued destroy succeeds (a destroy that fails leaves the cluster and its bindings in place)',
+      },
     },
   },
   ManagedRootPasswordResponse: {
@@ -1084,15 +1090,43 @@ export const managedPaths = {
     delete: {
       tags: ['Managed services'],
       summary: 'Destroy managed service (two-step when running)',
-      parameters: [ENV_ID_PARAM],
+      description:
+        "Refused with 409 `managed_has_bindings` (and the bound `services`) while any service is bound to one of the cluster's logins. Pass `detach=true` to remove those bindings and their variables with the cluster (when the destroy succeeds; at once on a forced or unplaced delete); the response then lists them in `detached`. New bindings are refused with 409 `managed_busy` (`destroy_in_flight`) while a destroy is queued. Needs the same rights as the destroy itself. The services keep running with the values they already have until their next deploy.",
+      parameters: [
+        ENV_ID_PARAM,
+        {
+          name: 'detach',
+          in: 'query',
+          required: false,
+          schema: { type: 'boolean' },
+          description:
+            "Remove the cluster's service bindings (and their variables) with the cluster, once the destroy succeeds",
+        },
+      ],
       responses: {
         200: {
           description: 'Hard-deleted or destroy command enqueued',
           ...jsonSchema('ManagedDeleteResponse'),
         },
         409: {
-          description: 'managed_busy',
-          ...jsonSchema('ManagedBusyError'),
+          description: 'managed_busy, or managed_has_bindings (lists `services`)',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/ManagedBusyError' },
+                  {
+                    type: 'object',
+                    required: ['error', 'services'],
+                    properties: {
+                      error: { type: 'string', const: 'managed_has_bindings' },
+                      services: { type: 'array', items: { type: 'object' } },
+                    },
+                  },
+                ],
+              },
+            },
+          },
         },
       },
     },

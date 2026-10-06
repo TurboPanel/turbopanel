@@ -55,9 +55,12 @@ import {
   resolveManagedTargetServerId,
 } from './context.ts'
 import {
+  type BindingImpactService,
+  detachBindingsForManaged,
   hasBindingsForDatabase,
   hasBindingsForPrincipal,
   listBindingImpactForDatabase,
+  listBindingImpactForManaged,
   listBindingImpactForPrincipal,
 } from '../../features/bindings/impact.ts'
 import { materializeBindingsForPrincipal } from '../../features/bindings/materialize.ts'
@@ -473,9 +476,11 @@ async function runManagedDeleteFanout(
     environmentId: string
     managedId: string
     targetServerId: string
+    /** Services whose bindings go with the cluster (`detach=true`): removed when the destroy succeeds, or at once on a forced delete. */
+    detached: readonly BindingImpactService[]
   }
 ): Promise<Response> {
-  const { userId, environmentId, managedId, targetServerId } = params
+  const { userId, environmentId, managedId, targetServerId, detached } = params
   const force = c.req.query('force') === 'true'
   const members = await listManagedMembers(db, managedId)
   if (!force) {
@@ -521,14 +526,39 @@ async function runManagedDeleteFanout(
     // policies cascade with the row, so its host gets the smaller set.
     const backupHost = await captureManagedBackupHost(db, commandQueue, managedId)
     await clearPendingNullIdContainersForEnvironment(db, environmentId)
+    await detachManagedBindings(db, managedId, detached)
     await deleteManagedRuntimeRows(db, environmentId, managedId)
     await enqueueBackupsReconcile(db, commandQueue, { actorType: 'user', actorId: userId }, [
       backupHost,
     ])
-    return c.json(buildManagedDeleteHardResponse())
+    return c.json({ ...buildManagedDeleteHardResponse(), ...detachedField(detached) })
   }
 
-  return c.json(buildManagedDeleteQueuedResponse(enqueued, targetServerId))
+  // The bindings are NOT removed here. They go with the `managed` row when the
+  // destroy succeeds (principal then binding then variable cascade), so a
+  // destroy that fails later leaves the cluster running with its apps still
+  // bound. `detached` lists the services that lose their binding once it does.
+  return c.json({
+    ...buildManagedDeleteQueuedResponse(enqueued, targetServerId),
+    ...detachedField(detached),
+  })
+}
+
+/**
+ * `detached` appears on the delete response when bindings go with the cluster:
+ * already removed (hard or forced delete) or removed when the queued destroy
+ * succeeds.
+ */
+function detachedField(detached: readonly BindingImpactService[]) {
+  return detached.length > 0 ? { detached } : {}
+}
+
+async function detachManagedBindings(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  managedId: string,
+  detached: readonly BindingImpactService[]
+): Promise<void> {
+  if (detached.length > 0) await detachBindingsForManaged(db, managedId)
 }
 
 async function deleteManagedCompensation(
@@ -1429,14 +1459,23 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
+    // Apps bound to this cluster would lose their connection variables with
+    // no warning: refuse and list them, unless the caller asks to detach
+    // (`?detach=true`: the bindings and their variables are removed).
+    const attached = await listBindingImpactForManaged(db, row.id)
+    if (attached.count > 0 && c.req.query('detach') !== 'true') {
+      return c.json({ error: 'managed_has_bindings', services: attached.services }, 409)
+    }
+
     const canHardDelete = canHardDeleteManaged(row.serverId)
 
     if (canHardDelete) {
       // Clear never-applied pending container rows so deleteProjectCascade does
       // not treat them as active (`isActiveContainerStatus('pending')` is true).
       await clearPendingNullIdContainersForEnvironment(db, environmentId)
+      await detachManagedBindings(db, row.id, attached.services)
       await db.delete(managed).where(eq(managed.id, row.id))
-      return c.json(buildManagedDeleteHardResponse())
+      return c.json({ ...buildManagedDeleteHardResponse(), ...detachedField(attached.services) })
     }
 
     // `canHardDelete` already covers `!row.serverId`, so `managed.server_id`
@@ -1457,6 +1496,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       environmentId,
       managedId: row.id,
       targetServerId,
+      detached: attached.services,
     })
   })
 
