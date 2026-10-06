@@ -1334,7 +1334,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Postgres-only managed status + containers',
       description:
-        "Database-only by default. With `?refresh=1` (the panel's Refresh button) each replica's daemon is first asked for a fresh replication reading (`managed-health-request`, parallel, best effort, 10s each) and the result is stored before the snapshot is read. A daemon that is offline, lacks `managed-health-v1`, or times out keeps its stored observation.",
+        "Database-only by default. With `?refresh=1` (the panel's Refresh button) each replica's daemon is first asked for a fresh replication reading (`managed-health-request`, parallel, best effort, 10s each) and the result is stored before the snapshot is read. The primary is asked too while the cluster has replicas (its answer carries the replication-slot report, so a replica does not keep reading as cut off after a Resync); it is not counted in `healthRefresh`. A daemon that is offline, lacks `managed-health-v1`, or times out keeps its stored observation.",
       parameters: [
         ENV_ID_PARAM,
         {

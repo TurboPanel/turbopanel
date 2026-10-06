@@ -500,7 +500,8 @@ the target's daemon for a fresh reading first (`managed-health-request`, 8s,
 a daemon without the feature, a daemon error, a malformed reply, or a reply for
 another member all fall back to the gate on the stored observation — today's
 409. `force` never probes. `GET …/managed/status?refresh=1` (the panel's
-Refresh) probes every **replica** in parallel and returns
+Refresh) probes every **replica** in parallel (and the primary, while replicas
+exist, so its `slotRetention` is current after a Resync; not counted) and returns
 `healthRefresh: { observed, unavailable }`; a plain GET stays DB-only. The probe
 writes replication only (never `replica.status`). Automatic failover never
 honours `force`; it reads the stored, fresh observation first and probes only

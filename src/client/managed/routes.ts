@@ -333,8 +333,11 @@ async function assertManagedPromoteLagAllowed(
 /**
  * `?refresh=1` on GET …/managed/status: ask every replica's daemon for a
  * fresh reading (in parallel, best effort) so the snapshot that follows reads
- * current health. Primaries are not probed — their health rides apply and
- * lifecycle results, and the promote gate only judges replicas.
+ * current health. The primary is asked too while the cluster has replicas: its
+ * answer carries the replication-slot report, which would otherwise stay as it
+ * was at the last apply and keep showing a replica as cut off after a Resync.
+ * Its outcome is not counted in the replica totals the notice reports, and the
+ * promote gate still judges replicas only.
  */
 async function refreshManagedReplicaHealth(
   c: Context<AppEnv>,
@@ -344,18 +347,20 @@ async function refreshManagedReplicaHealth(
   const members = await listManagedMembers(db, row.id)
   const replicas = members.filter((m) => m.role === 'replica')
   const registry = getDaemonCellRegistry(c)
-  const outcomes = await Promise.all(
-    replicas.map((m) =>
-      probeManagedMemberHealth(db, registry, {
-        serverId: m.serverId,
-        managedId: row.id,
-        memberId: m.id,
-        role: 'replica',
-        engine: row.engine,
-        timeoutMs: MANAGED_HEALTH_PROBE_REFRESH_TIMEOUT_MS,
-      })
-    )
-  )
+  const probe = (m: ManagedMemberRow, role: 'primary' | 'replica') =>
+    probeManagedMemberHealth(db, registry, {
+      serverId: m.serverId,
+      managedId: row.id,
+      memberId: m.id,
+      role,
+      engine: row.engine,
+      timeoutMs: MANAGED_HEALTH_PROBE_REFRESH_TIMEOUT_MS,
+    })
+  const primary = replicas.length > 0 ? members.find((m) => m.role !== 'replica') : undefined
+  const [outcomes] = await Promise.all([
+    Promise.all(replicas.map((m) => probe(m, 'replica'))),
+    primary ? probe(primary, 'primary') : Promise.resolve(undefined),
+  ])
   const observed = outcomes.filter((o) => o.status === 'observed').length
   return { observed, unavailable: outcomes.length - observed }
 }

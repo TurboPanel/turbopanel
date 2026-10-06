@@ -3448,7 +3448,7 @@ test('GET status stays database-only without ?refresh=1', async () => {
   assertEquals('healthRefresh' in body, false)
 })
 
-test('GET status?refresh=1 probes replicas only and reports the outcome', async () => {
+test('GET status?refresh=1 probes the replicas, asks the primary for its slot report, and counts replicas only', async () => {
   const { registry, sent } = healthRegistry({
     status: 'done',
     result: streamingHealth(),
@@ -3472,13 +3472,29 @@ test('GET status?refresh=1 probes replicas only and reports the outcome', async 
       headers: authHeaders(cookie),
     })
   )
-  assertEquals(sent.length, 1)
-  const envelope = sent[0]!
-  assertEquals(envelope.kind, 'managed-health-request')
-  if (envelope.kind !== 'managed-health-request') return
-  assertEquals(envelope.memberId, MEMBER_ID)
-  assertEquals(envelope.role, 'replica')
+  const asked = sent.flatMap((envelope) =>
+    envelope.kind === 'managed-health-request' ? [`${envelope.role}:${envelope.memberId}`] : []
+  )
+  assertEquals(asked.toSorted(), [
+    `primary:99999999-9999-4999-8999-999999999990`,
+    `replica:${MEMBER_ID}`,
+  ])
   assertEquals(body.healthRefresh, { observed: 1, unavailable: 0 })
+})
+
+test('GET status?refresh=1 does not probe a primary that has no replicas', async () => {
+  const { registry, sent } = healthRegistry({ status: 'done', result: streamingHealth() })
+  const primary = memberRow({ role: 'primary', replicaClass: null, ordinal: 1 })
+  const { app, cookie } = await buildApp({
+    db: fakeDb({
+      managedRows: [managedRow()],
+      serverRows: [serverAdvertising([HEALTH_FEATURE])],
+      memberRows: [primary],
+    }),
+    registry,
+  })
+  await app.request(envPath('/status?refresh=1'), { headers: authHeaders(cookie) })
+  assertEquals(sent.length, 0)
 })
 
 test('GET status?refresh=1 falls back quietly when the daemon lacks the feature or times out', async () => {
