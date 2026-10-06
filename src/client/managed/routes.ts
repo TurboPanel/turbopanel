@@ -1918,10 +1918,12 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const { pattern, maxLength } = ctx.spec.userOperations.identifier
-    const nameError = validateManagedDatabaseCreateName(name, options.databases, {
-      pattern,
-      maxLength,
-    })
+    const nameError = validateManagedDatabaseCreateName(
+      name,
+      options.databases,
+      { pattern, maxLength },
+      ctx.spec.engine
+    )
     if (nameError) {
       return c.json({ error: nameError.error }, nameError.status)
     }
