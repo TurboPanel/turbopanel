@@ -10,6 +10,7 @@ import {
   INSTANCE_VERSION_HEADER,
   MANAGED_HA_INSTANCE_FEATURE,
   MANAGED_HEALTH_FEATURE,
+  MANAGED_HEALTH_REPORT_FEATURE,
   PHP_SITE_MODES_FEATURE,
   MIN_SUPPORTED_DAEMON_VERSION,
   parseSemver,
@@ -131,6 +132,14 @@ test('an old daemon is unsupported while the resolver itself does not disconnect
   assertEquals(resolveDaemonCapabilities('0.0.9')[CERT_SOURCES], false)
   assertEquals(resolveDaemonSupport(undefined).status, 'unknown')
   assertEquals(resolveDaemonCapabilities(undefined)[CERT_SOURCES], false)
+})
+
+test('managed-health-report-v1 is advertised to daemons, so they push health reports', () => {
+  assertEquals(MANAGED_HEALTH_REPORT_FEATURE, 'managed-health-report-v1')
+  assertEquals(
+    (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_HEALTH_REPORT_FEATURE),
+    true
+  )
 })
 
 test('managed-health-v1 is an advertised wire feature and raised no floor', () => {
