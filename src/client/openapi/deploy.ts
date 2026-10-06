@@ -135,6 +135,7 @@ export const deploySchemas = {
           'site_managed_directory_unowned',
           'site_cron_unowned',
           'php_mode_not_allowed',
+          'node_version_unresolved',
         ],
       },
       message: { type: 'string' },
@@ -345,7 +346,7 @@ export const deploySchemas = {
       nativeAppVariables: {
         type: 'array',
         description:
-          "For each Node.js app (native service) in the deploy: every environment variable its process gets, where each one comes from, and whether it reaches the process. Secret values are never shown (`value` is null). The platform sets HOST, NODE_ENV and PORT itself; a variable of one of those names is listed with `delivered: false`. A secret set directly on the app (service or hostname) is passed automatically; a secret set higher up is passed only when the app's environment references it as `{$KEY}`, and is otherwise listed with `delivered: false, reason: not_referenced`.",
+          "For each Node.js app (native service) in the deploy: every environment variable its process gets, where each one comes from, and whether it reaches the process. Secret values are never shown (`value` is null). The platform sets HOST, HOSTNAME, NODE_ENV and PORT itself; a variable of one of those names is listed with `delivered: false`. A secret set directly on the app (service or hostname) is passed automatically; a secret set higher up is passed only when the app's environment references it as `{$KEY}`, and is otherwise listed with `delivered: false, reason: not_referenced`.",
         items: {
           type: 'object',
           required: ['composeServiceName', 'variables'],
@@ -379,6 +380,31 @@ export const deploySchemas = {
                   },
                 },
               },
+            },
+          },
+        },
+      },
+      nativeAppNodeVersions: {
+        type: 'array',
+        description:
+          "For each Node.js app (native service) in the deploy: the Node version it runs and where that came from. The service's own `x-turbopanel.nodeVersion` always wins; otherwise the repository is read at the commit being deployed: `package.json` `engines.node` (the newest offered version that satisfies it), then `.nvmrc`, then `.node-version`, in the service's subdirectory first and then the repository root. With none of those, the platform default is used.",
+        items: {
+          type: 'object',
+          required: ['composeServiceName', 'nodeVersion', 'source'],
+          properties: {
+            composeServiceName: { type: 'string' },
+            nodeVersion: { type: 'string', description: 'Node major version, such as `24`.' },
+            source: {
+              type: 'string',
+              enum: ['compose', 'package.json', '.nvmrc', '.node-version', 'default'],
+            },
+            requested: {
+              type: 'string',
+              description: 'What the file asked for, such as `>=26.7.0`.',
+            },
+            path: {
+              type: 'string',
+              description: 'The repository file it was read from, such as `apps/web/package.json`.',
             },
           },
         },

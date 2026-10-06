@@ -34,6 +34,7 @@ export const NATIVE_APP_PLATFORM_ENV_NAMES: ReadonlySet<string> = new Set([
   'NODE_ENV',
   'PORT',
   'HOST',
+  'HOSTNAME',
   'HOME',
   'TMPDIR',
   'XDG_CACHE_HOME',
@@ -86,6 +87,8 @@ function platformView(app: {
   })
   return [
     plain('HOST', '127.0.0.1'),
+    // Next.js reads HOSTNAME, not HOST, for the address it listens on.
+    plain('HOSTNAME', '127.0.0.1'),
     plain('NODE_ENV', app.appMode ?? 'production'),
     plain('PORT', String(app.listenPort)),
   ]

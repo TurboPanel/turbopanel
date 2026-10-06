@@ -606,9 +606,25 @@ function tryMapSiteEngineFeatureError(prepared: DeployPrepareError): PrepareErro
   }
 }
 
+function tryMapNodeVersionPrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
+  if (prepared.kind !== 'node_version_unsupported') return null
+  return {
+    status: 422,
+    body: {
+      error: 'node_version_unsupported',
+      composeServiceName: prepared.composeServiceName,
+      requested: prepared.requested,
+      path: prepared.path,
+      supported: prepared.supported,
+      message: `Node app "${prepared.composeServiceName}" asks for Node ${prepared.requested} in ${prepared.path}, and no Node version this platform offers matches that. Offered: ${prepared.supported.join(', ')}. Change ${prepared.path}, or set x-turbopanel.nodeVersion on the service to one of the offered versions.`,
+    },
+  }
+}
+
 export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareErrorResponse {
   return (
     tryMapPhpModePrepareError(prepared) ??
+    tryMapNodeVersionPrepareError(prepared) ??
     tryMapSiteEngineFeatureError(prepared) ??
     tryMapSitePrepareError(prepared) ??
     tryMapPrincipalPrepareError(prepared) ??

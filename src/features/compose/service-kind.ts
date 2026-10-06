@@ -170,7 +170,9 @@ type ComposeServiceExtensionFields = {
   /**
    * Pinned Node series for `serviceKind: node` (`24`, `24.17`, `24.17.0`).
    * Advisory today: the daemon vendors one tenant Node release
-   * (`vendor/node-app/<version>/current`) and records the request.
+   * (`vendor/node-app/<version>/current`) and records the request. Omitted
+   * means deploy-prepare reads the repository's `engines.node` / `.nvmrc` /
+   * `.node-version`, else the default series.
    */
   nodeVersion?: string
   /**
@@ -198,8 +200,10 @@ type ComposeServiceExtensionFields = {
   documentRoot?: string
   /**
    * Script the vendored Node binary runs for a `serviceKind: node` service
-   * when `source.startCommand` is absent. Omitted means `server.js`. An
-   * explicit `startCommand` always wins.
+   * when `source.startCommand` is absent. Omitted means the daemon picks from
+   * the built tree: Next.js standalone `server.js`, the `package.json` `start`
+   * script, `next start`, the `package.json` `main` file, `index.js`, then
+   * `server.js`. An explicit `startCommand` always wins.
    */
   startupFile?: string
   /**

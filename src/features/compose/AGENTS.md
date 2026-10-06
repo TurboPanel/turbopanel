@@ -768,7 +768,27 @@ despite the historical names).
 Deploy prep strips node services into payload **`nativeAppServices[]`**
 (`{ composeServiceName, serviceId, listenPort, framework, nodeVersion?, resources?, accountLimits?, restartPolicy?, serviceLabels? }`)
 the same way it strips sites, and their releases ride the ordinary
-`sourceMaterial[]` lane unchanged. **Plain Compose keys the split would
+`sourceMaterial[]` lane unchanged.
+
+**Node version from the repository.** A node service with no `nodeVersion`
+gets one at deploy-prepare (`client/environments/deploy-node-version.ts`),
+because the daemon installs the series and adds the site owner's Linux user to
+its group before it checks anything out. The repository is read at the commit
+being deployed through the repository inspect path (`inspectRepository`:
+provider first, the target server's daemon with the deploy's sealed clone
+secret when the provider cannot read): `package.json` `engines.node`, then
+`.nvmrc`, then `.node-version`, in the source's `subdirectory` and then the
+repository root. A range resolves to the newest series in the registry mirror
+(`runtimeSeries('node')`) that satisfies it (`lib/node-version-range.ts`, a
+hand-written parser for the npm range forms); a value that is not a version
+(`lts/*`) is skipped. No offered series satisfying it is a hard
+`node_version_unsupported` (422, preview too); an unreadable repository leaves
+the value unset (daemon default 24) with a `node_version_unresolved` preview
+warning. It runs before `mergeDeployPrincipalRuntimes`, so the runtime group
+granted matches the series sent. The preview lists the result per app as
+`nativeAppNodeVersions` (`nodeVersion`, `source`, `requested`, `path`).
+
+**Plain Compose keys the split would
 otherwise take with it.** A node service is removed from `containerServices`, so
 any ordinary Compose key on its body leaves with it unless `native-app.ts` reads
 it out first. Two do:
@@ -809,7 +829,7 @@ the whole organization never lands in an app that did not ask for it; it is
 listed with `reason: 'not_referenced'` (`unreferencedSecrets`, never the value).
 Other differences worth knowing: the value is passed as typed
 (trimmed, not Compose-escaped, and a non-literal value's `${…}` is **not**
-expanded); the platform's own names (`HOST`, `NODE_ENV`, `PORT`, `PATH`, `HOME`,
+expanded); the platform's own names (`HOST`, `HOSTNAME`, `NODE_ENV`, `PORT`, `PATH`, `HOME`,
 `TMPDIR`, `XDG_CACHE_HOME`, `COREPACK_*`) are listed as not delivered, because
 systemd applies the environment file over the unit's own `Environment=` lines;
 names or values the daemon would refuse are held back and listed with a reason
