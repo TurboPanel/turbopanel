@@ -51,7 +51,6 @@ import {
 } from './access-address.ts'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
 import { loadBoundManagedIdsForServer, serverHasHostRunBinding } from './ingress-bound-consumers.ts'
-import { HOST_RUN_LOOPBACK_HOST } from '../../lib/naming.ts'
 import { requestedExposureScope } from './host-exposure.ts'
 import { materializeBindingsForPrincipal } from '../bindings/materialize.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
@@ -95,6 +94,7 @@ import {
   principalConnectionRole,
   principalDefaultDatabase,
   protocolListenerForEngine,
+  sanBindAddresses,
   shouldSkipIngressFrontendUser,
   sortManagedIds,
 } from './ingress-desired-pure.ts'
@@ -605,6 +605,15 @@ type BuiltManagedIngressReconcile = {
   pendingTlsLeaf?: UpsertTlsLeafTrackingParams
 }
 
+/** `local` when a host-run consumer (PHP site, native app) is placed here, else nothing. */
+async function hostRunLoopbackScopes(
+  db: Db,
+  serverId: string,
+  organizationId: string
+): Promise<ManagedSqlAccessScope[]> {
+  return (await serverHasHostRunBinding(db, serverId, organizationId)) ? ['local'] : []
+}
+
 /** Internal: payload plus minted ingress leaf that is not yet deployed. */
 async function buildManagedIngressReconcileDesired(
   db: Db,
@@ -692,8 +701,8 @@ async function buildManagedIngressReconcileDesired(
   // A PHP site or native app on this server dials the proxy on loopback, so the
   // listener is published there whatever the clusters' exposure says. Loopback
   // is not exposure: nothing off the machine can reach it.
-  const hostRunConsumer = await serverHasHostRunBinding(db, params.serverId, organizationId)
-  if (hostRunConsumer) enabledScopes.push('local')
+  const hostRunScopes = await hostRunLoopbackScopes(db, params.serverId, organizationId)
+  enabledScopes.push(...hostRunScopes)
 
   const bindAddresses = await resolveIngressBindAddresses(db, params.serverId, enabledScopes)
   if (!Array.isArray(bindAddresses)) return bindAddresses
@@ -710,7 +719,7 @@ async function buildManagedIngressReconcileDesired(
     hostname: advertisedHost,
     // A host-run consumer verifies the certificate against `127.0.0.1`; under a
     // public publish the bind is a wildcard and carries no SAN of its own.
-    bindAddresses: hostRunConsumer ? [...bindAddresses, HOST_RUN_LOOPBACK_HOST] : bindAddresses,
+    bindAddresses: sanBindAddresses(bindAddresses, hostRunScopes),
     backendAddresses,
   })
   // Bindings (`resolveBindingEndpoint`) always dial ProxySQL by this

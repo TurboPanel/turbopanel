@@ -25,6 +25,7 @@ import {
   mergeHierarchyContainerSan,
   principalConnectionRole,
   principalDefaultDatabase,
+  sanBindAddresses,
   protocolListenerForEngine,
   shouldSkipIngressFrontendUser,
   sortManagedIds,
@@ -509,10 +510,11 @@ test("a host-run consumer's loopback publish survives next to wider scopes, and 
   })
   // A public cluster covers loopback through the wildcard bind.
   assertEquals(decideIngressBindScopes(['public', 'local']).kind, 'public_all_interfaces')
-  // The wildcard has no SAN of its own, so the builder names loopback itself.
+  // The wildcard has no SAN of its own, so loopback is named explicitly.
+  assertEquals(sanBindAddresses(['0.0.0.0'], []), ['0.0.0.0'])
   const sans = collectProxySqlListenerSans({
     hostname: null,
-    bindAddresses: ['0.0.0.0', '127.0.0.1'],
+    bindAddresses: sanBindAddresses(['0.0.0.0'], ['local']),
     backendAddresses: [],
   })
   assertEquals(sans.ipAddresses, ['127.0.0.1'])

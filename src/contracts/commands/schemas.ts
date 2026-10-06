@@ -3130,10 +3130,7 @@ function parseDeploySiteEntry(entry: unknown): EnvironmentDeploySite {
   if (webEnv) site.webEnv = webEnv
   const webSecretEnv = parseEnvRecord(entry.webSecretEnv)
   if (webSecretEnv) site.webSecretEnv = webSecretEnv
-  const dbCa = parseDeploySiteDbCa(entry.dbCa)
-  if (dbCa) site.dbCa = dbCa
-  const requiredEnv = parseDeploySiteEnvNames(entry.requiredEnv, MAX_SITE_REQUIRED_ENV)
-  if (requiredEnv) site.requiredEnv = requiredEnv
+  Object.assign(site, parseDeploySiteDbFields(entry))
   const php = parseDeployHostingPhp(entry.php)
   if (php) site.php = php
   const principal = parseDeploySitePrincipal(entry.principal)
@@ -3183,6 +3180,18 @@ function parseDeploySiteEnvNames(value: unknown, max: number): string[] | undefi
     throw new Error('Invalid sites entry')
   }
   return value as string[]
+}
+
+/** `dbCa` and `requiredEnv` of one site entry; only the fields that are present. */
+function parseDeploySiteDbFields(
+  entry: Record<string, unknown>
+): Pick<EnvironmentDeploySite, 'dbCa' | 'requiredEnv'> {
+  const dbCa = parseDeploySiteDbCa(entry.dbCa)
+  const requiredEnv = parseDeploySiteEnvNames(entry.requiredEnv, MAX_SITE_REQUIRED_ENV)
+  return {
+    ...(dbCa ? { dbCa } : {}),
+    ...(requiredEnv ? { requiredEnv } : {}),
+  }
 }
 
 function parseDeploySiteDbCa(value: unknown): EnvironmentDeploySiteDbCa | undefined {
