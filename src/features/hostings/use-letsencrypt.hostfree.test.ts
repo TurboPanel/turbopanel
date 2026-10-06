@@ -14,11 +14,12 @@ const NOW = new Date('2026-10-04T12:00:00.000Z')
 const SERVER_IP = '203.0.113.7'
 
 type Saved = Parameters<LetsEncryptStore['saveHosting']>
-function fakeStore(existing: string | null = null) {
+function fakeStore(existing: string | null = null, otherWeb: string[] = []) {
   const saved: Saved[] = []
   const created: string[][] = []
   const store: LetsEncryptStore = {
     expectedAddresses: () => Promise.resolve([SERVER_IP]),
+    otherWebHostnames: () => Promise.resolve(otherWeb),
     findManagedCertificate: () => Promise.resolve(existing),
     createManagedCertificate: (_org, names) => {
       created.push([...names])
@@ -202,4 +203,51 @@ test('the sweep drops a request older than a week, or one no longer allowed', as
     'refused'
   )
   assertEquals(b.created.length, 0)
+})
+
+test('refuses "also redirect www" when the twin name is already listed, before any DNS or pin', async () => {
+  const { store, saved, created } = fakeStore()
+  const out = await requestLetsEncrypt({
+    store,
+    lookup: pointing,
+    now: NOW,
+    hosting: record({ options: { hostnames: ['example.com', 'www.example.com'] } }),
+    acmeEnabled: true,
+    wwwRedirect: true,
+  })
+  assertEquals(out.ok, false)
+  if (out.ok) return
+  assertEquals(out.error, 'www_redirect_conflict')
+  assertEquals(out.message?.includes('both example.com and www.example.com'), true)
+  assertEquals(saved.length, 0)
+  assertEquals(created.length, 0)
+})
+
+test('refuses "also redirect www" when another web hosting in the environment serves the twin', async () => {
+  const { store, saved } = fakeStore(null, ['www.shop.example.com'])
+  const out = await requestLetsEncrypt({
+    store,
+    lookup: pointing,
+    now: NOW,
+    hosting: record(),
+    acmeEnabled: true,
+    wwwRedirect: true,
+  })
+  assertEquals(out.ok, false)
+  if (!out.ok) assertEquals(out.error, 'www_redirect_conflict')
+  assertEquals(saved.length, 0)
+})
+
+test('both names listed is fine while "also redirect www" is off', async () => {
+  const { store, created } = fakeStore()
+  const out = await requestLetsEncrypt({
+    store,
+    lookup: pointing,
+    now: NOW,
+    hosting: record({ options: { hostnames: ['example.com', 'www.example.com'] } }),
+    acmeEnabled: true,
+    wwwRedirect: false,
+  })
+  assertEquals(out.ok, true)
+  assertEquals(created, [['example.com', 'www.example.com']])
 })
