@@ -98,6 +98,7 @@ import {
   DATABASE_PROXY_SAMPLES_TABLE,
   databaseProxySamplesInsertColumns,
   entityMetricColumnName,
+  extendedColumnName,
   FILESYSTEM_METRIC_FIELDS,
   FILESYSTEM_SAMPLES_TABLE,
   filesystemSamplesInsertColumns,
@@ -640,6 +641,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     const requiresRouter = metrics.some(isRouterMetric)
     const requiresStorage = metrics.some(isStorageMetric)
     const requiresDockerUsage = metrics.some(isDockerUsageMetric)
+    const requiresIngress = metrics.some(isIngressExtendedMetric)
 
     const joins: string[] = []
     if (requiresMemoryDiagnostics) {
@@ -668,6 +670,18 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       const dockerSource = await this.#familySamplesSource(parquetFamily('docker'), fromMs, toMs)
       joins.push(
         `LEFT JOIN ${dockerSource} AS dk ON dk.server_id = h.server_id AND dk.sampled_at = h.sampled_at`
+      )
+    }
+
+    if (requiresIngress) {
+      const ingressSource = await this.#familySamplesSource(parquetFamily('ingress'), fromMs, toMs)
+      // One row per sample whatever the number of ingress sources: the v7
+      // value is host-wide and rides every source row, so any one will do.
+      const summary = EXTENDED_INGRESS_FIELD_NAMES.map(
+        (field) => `max(${extendedColumnName(field)}) AS ${extendedColumnName(field)}`
+      ).join(', ')
+      joins.push(
+        `LEFT JOIN (SELECT server_id, sampled_at, ${summary} FROM ${ingressSource} GROUP BY server_id, sampled_at) AS ig ON ig.server_id = h.server_id AND ig.sampled_at = h.sampled_at`
       )
     }
 
@@ -1713,10 +1727,31 @@ function isStorageMetric(metric: string): boolean {
   return HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope === 'storage'
 }
 
-/** `true` when `metric` is a `managed.docker` field, stored in the singleton docker table. */
+/** `true` when `metric` is a `managed.docker` field or a v7 container-health field, both stored in the singleton docker table. */
 function isDockerUsageMetric(metric: string): boolean {
-  return HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope === 'dockerUsage'
+  const scope = HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope
+  return scope === 'dockerUsage' || scope === 'extended.docker'
 }
+
+/** `true` when `metric` is a v7 hosting-Caddy number, stored on the ingress rows. */
+function isIngressExtendedMetric(metric: string): boolean {
+  return HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope === 'extended.ingress'
+}
+
+/**
+ * Docker's reclaimable bytes: the daemon's own total, else the three reclaimable
+ * groups of the disk breakdown added up (`NULL` only when none was reported).
+ * The hosted writer applies the same fallback when it stores the sample.
+ */
+const DOCKER_RECLAIMABLE_SQL = [
+  '(coalesce(dk.ext_reclaimable_bytes,',
+  '  CASE WHEN dk.images_reclaimable_bytes IS NULL',
+  '    AND dk.volumes_reclaimable_bytes IS NULL',
+  '    AND dk.build_cache_reclaimable_bytes IS NULL THEN NULL',
+  '  ELSE coalesce(dk.images_reclaimable_bytes, 0)',
+  '    + coalesce(dk.volumes_reclaimable_bytes, 0)',
+  '    + coalesce(dk.build_cache_reclaimable_bytes, 0) END))',
+].join(' ')
 
 /**
  * DuckDB column reference for a `queryHostSeries` descriptor, scoped to
@@ -1741,6 +1776,20 @@ function hostSeriesColumnForDescriptor(descriptor: HostMetricsMetricDescriptor):
   if (descriptor.entityScope === 'dockerUsage') {
     return `dk.${entityMetricColumnName(descriptor.fieldName)}`
   }
+  // v7 numbers: host-wide health counters sit on the host row, container health
+  // on the docker row, and the certificate days on the (one-per-sample) ingress
+  // summary `ig` that `queryHostSeries` joins in.
+  if (descriptor.entityScope === 'extended.host') {
+    return `h.${extendedColumnName(descriptor.fieldName)}`
+  }
+  if (descriptor.entityScope === 'extended.docker') {
+    return descriptor.fieldName === 'reclaimableBytes'
+      ? DOCKER_RECLAIMABLE_SQL
+      : `dk.${extendedColumnName(descriptor.fieldName)}`
+  }
+  if (descriptor.entityScope === 'extended.ingress') {
+    return `ig.${extendedColumnName(descriptor.fieldName)}`
+  }
   if (descriptor.entityScope === 'diagnostics') {
     return CPU_DIAGNOSTICS_FIELD_SET.has(descriptor.fieldName)
       ? `h.${cpuDiagnosticsHostColumnName(descriptor.fieldName)}`
@@ -1755,6 +1804,9 @@ const HOST_SERIES_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set([
   'router',
   'storage',
   'dockerUsage',
+  'extended.host',
+  'extended.docker',
+  'extended.ingress',
 ])
 
 const NO_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set()
@@ -1922,7 +1974,12 @@ function resolveEntityFieldDescriptor(
 
 /** `hardware.physical` is long-form (one `value` column, not one column per field); every other family uses `entityMetricColumnName`. */
 function entityMetricColumnForFamily(family: PerEntityHostedFamily, field: string): string {
-  return family === 'hardware.physical' ? 'value' : entityMetricColumnName(field)
+  if (family === 'hardware.physical') return 'value'
+  // A drive's combined ops/s is not a stored column: read plus write, `NULL` when either half is.
+  if (family === 'block' && field === 'opsPerSecond') {
+    return `(${entityMetricColumnName('readOpsPerSecond')} + ${entityMetricColumnName('writeOpsPerSecond')})`
+  }
+  return entityMetricColumnName(field)
 }
 
 function assertNonEmptyFields(metrics: readonly string[]): string[] {

@@ -16,6 +16,8 @@ import {
   letsEncryptRefusal,
   readPendingLetsEncrypt,
   withPendingLetsEncrypt,
+  wwwRedirectConflict,
+  wwwRedirectConflictMessage,
 } from './hosting-certificate.ts'
 import { type DnsLookup, checkHostingDns } from './hosting-dns-check.ts'
 import {
@@ -35,6 +37,8 @@ export type LetsEncryptHostingRecord = {
 export type LetsEncryptStore = {
   /** The public addresses of the server this hosting is deployed to (the pinned IP wins). */
   expectedAddresses(hosting: LetsEncryptHostingRecord): Promise<string[]>
+  /** Hostnames of the other web hostings in this hosting's environment (what a www twin must not collide with). */
+  otherWebHostnames(hosting: LetsEncryptHostingRecord): Promise<string[]>
   /** A live managed Let's Encrypt row of the organization whose names equal `names`, if any. */
   findManagedCertificate(organizationId: string, names: readonly string[]): Promise<string | null>
   createManagedCertificate(organizationId: string, names: readonly string[]): Promise<string>
@@ -45,7 +49,7 @@ export type LetsEncryptStore = {
 }
 
 export type LetsEncryptRequestResult =
-  | { ok: false; error: LetsEncryptRefusal }
+  | { ok: false; error: LetsEncryptRefusal; message?: string }
   | { ok: true; outcome: 'waiting'; dns: HostingDnsReport }
   | { ok: true; outcome: 'pinned'; tlsId: string; dns: HostingDnsReport; created: boolean }
 
@@ -119,6 +123,20 @@ export async function requestLetsEncrypt(params: RequestParams): Promise<LetsEnc
     hostnames,
   })
   if (refusal !== null) return { ok: false, error: refusal }
+
+  if (params.wwwRedirect) {
+    const conflict = wwwRedirectConflict(
+      hostnames,
+      await params.store.otherWebHostnames(params.hosting)
+    )
+    if (conflict !== null) {
+      return {
+        ok: false,
+        error: 'www_redirect_conflict',
+        message: wwwRedirectConflictMessage(conflict),
+      }
+    }
+  }
 
   const names = letsEncryptNames(hostnames, params.wwwRedirect)
   const expected = await params.store.expectedAddresses(params.hosting)

@@ -62,7 +62,10 @@ test('parseServerIps rejects non-arrays and dedupes by address', () => {
     { address: '203.0.113.11', version: 4, scope: 'unknown' },
     { interface: 'eth99' },
   ])
-  assertEquals(rows?.map((r) => r.address), ['203.0.113.10', '203.0.113.20'])
+  assertEquals(
+    rows?.map((r) => r.address),
+    ['203.0.113.10', '203.0.113.20']
+  )
   assertEquals(rows?.[0]?.interface, 'enp1s0')
 })
 
@@ -118,10 +121,7 @@ test('serverIpsEquals compares normalized rows', () => {
   assertEquals(serverIpsEquals(left, right), true)
   assertEquals(serverIpsEquals(left, null), false)
   assertEquals(serverIpsEquals(left, left), true)
-  assertEquals(
-    serverIpsEquals(left, [{ ...PUBLIC_V4, preferred: false }]),
-    false,
-  )
+  assertEquals(serverIpsEquals(left, [{ ...PUBLIC_V4, preferred: false }]), false)
 })
 
 test('privateAddressesFromIps and preferredIpv4FromIps', () => {
@@ -137,4 +137,26 @@ test('bestReportedAddress follows public-before-private preference', () => {
   const row = bestReportedAddress([PRIVATE_V4, PUBLIC_V6, PUBLIC_V4])
   assertEquals(row?.address, '203.0.113.20')
   assertEquals(bestReportedAddress([]), undefined)
+})
+
+test('parseServerIps keeps a valid link state and drops anything else', () => {
+  const parsed = parseServerIps([
+    { address: '10.9.0.1', version: 4, scope: 'private', link: 'down' },
+    { address: '10.9.0.2', version: 4, scope: 'private', link: 'up' },
+    { address: '10.9.0.3', version: 4, scope: 'private', link: 'sideways' },
+    { address: '10.9.0.4', version: 4, scope: 'private' },
+  ])
+  assertEquals(
+    parsed?.map((row) => row.link),
+    ['down', 'up', undefined, undefined]
+  )
+})
+
+test('serverIpsEquals sees a link flip as a change', () => {
+  const up: ServerReportedIp[] = [
+    { address: '10.9.0.1', version: 4, scope: 'private', interface: 'eth1', link: 'up' },
+  ]
+  const down: ServerReportedIp[] = [{ ...up[0], link: 'down' }]
+  assertEquals(serverIpsEquals(up, down), false)
+  assertEquals(serverIpsEquals(up, [{ ...up[0] }]), true)
 })

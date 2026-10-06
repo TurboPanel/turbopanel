@@ -169,7 +169,10 @@ export function registerHostingLetsEncryptRoutes(
     })
     if (!result.ok) {
       return c.json(
-        { error: result.error },
+        {
+          error: result.error,
+          ...(result.message === undefined ? {} : { message: result.message }),
+        },
         result.error === 'lets_encrypt_not_enabled' ? 403 : 400
       )
     }
