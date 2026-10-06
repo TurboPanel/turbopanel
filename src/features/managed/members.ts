@@ -14,6 +14,7 @@ import {
 } from '../net/private-endpoint.ts'
 import { container, replica, server } from '../../db/schema.ts'
 import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
+import { ageReplicationHealth, type ReplicationHealthView } from './replica-freshness.ts'
 import { MANAGED_PRIVATE_PORT_MAX, MANAGED_PRIVATE_PORT_MIN } from './ingress-ports.ts'
 import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
 
@@ -55,7 +56,7 @@ export type SerializedManagedMember = {
   status: string | null
   replicationTransport: PrivateEndpointTransport | null
   privatePort: number | null
-  replication?: ManagedReplicationHealth
+  replication?: ManagedReplicationHealth | ReplicationHealthView
 }
 
 export type ManagedPrivatePortExhaustedError = {
@@ -237,6 +238,24 @@ export function serializeManagedMember(
 }
 
 /**
+ * {@link serializeManagedMember} for the panel and the API: a replica reading
+ * older than the freshness window is shown as `unknown` instead of its stale
+ * `streaming` (see `replica-freshness.ts`). Promote and failover decisions
+ * keep using the plain serializer and the stored observation.
+ */
+export function serializeManagedMemberForDisplay(
+  row: ManagedMemberRow,
+  serverDisplayName: string | null,
+  nowMs: number = Date.now()
+): SerializedManagedMember {
+  const out = serializeManagedMember(row, serverDisplayName)
+  if (out.role === 'replica' && out.replication !== undefined) {
+    out.replication = ageReplicationHealth(out.replication, nowMs)
+  }
+  return out
+}
+
+/**
  * List members with server display names in a single join (no N+1).
  */
 export async function listSerializedManagedMembers(
@@ -253,7 +272,7 @@ export async function listSerializedManagedMembers(
     .where(eq(replica.managedId, managedId))
     .orderBy(asc(replica.ordinal))
 
-  return rows.map((row) => serializeManagedMember(row, row.serverDisplayName ?? null))
+  return rows.map((row) => serializeManagedMemberForDisplay(row, row.serverDisplayName ?? null))
 }
 
 /** A read replica is the only member allowed on the fabric/public ladder. */

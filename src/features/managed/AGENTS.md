@@ -516,6 +516,50 @@ Durable Object poll loop. DR rewrite: members no longer in the new primary's
 datacenter cannot stay `failover` → `read` (keep `readEligible`). Same-DC `read`
 peers are never silently upgraded to `failover`.
 
+### Completion gate: every ingress must confirm (`ha-ingress-gate.ts`)
+
+A recovery is not `completed` when the role change is done, only when every
+server that routes to the database has repointed its ProxySQL. After the
+promote, `onPromoteSucceeded` queues one `managed.ingress.reconcile` per
+member and consumer server (each stamped with `metadata.recoveryId`) and parks
+the row at `reconciling-ingress` with `ingressCommandIds` (the commands) and
+`ingressServerIds` (every server that must confirm, including one whose
+command could not be built or queued). Each command's terminal result — success,
+failure, timeout (stale-command sweep via `onRecoveryCommandTimedOut`), or
+"daemon not connected" — calls `settleIngressCommandForRecovery`, which judges
+the row from the command table (idempotent; a result that lands before the row
+is parked is picked up by the judgement made right after parking):
+
+- any listed command still live: wait;
+- every required server has a succeeded command: exactly-one-writer check, then
+  `completed`;
+- otherwise terminal `failed` + `needsOperator` with `ingressNotRepointed`
+  (server ids) and a plain "Degraded: the database proxy on <names> has not
+  switched to the new primary" `failedReason`. The new primary is serving; the
+  retry is Apply (it re-sends the ingress update to every server). No new
+  recovery state (the CHECK list is unchanged).
+- Nothing could be queued (no queue or secrets in this context): `failed`, never
+  `completed`.
+
+The daemon only reports `succeeded` after reading the ProxySQL runtime table
+back and finding the new primary there, so "confirmed" means the proxy routes to
+it. A daemon that predates that check still confirms by command success.
+
+### Replica health freshness
+
+`serializeManagedMemberForDisplay` (panel, status, member list) shows a replica
+`streaming` / `catching_up` reading older than the 120 s window as `unknown`
+(`stale: true`, `lastState`, `ageSeconds`; `replica-freshness.ts`); a negative
+reading is never made vaguer, and a far-future `observedAt` is not trusted.
+Display only: the promote gate and automatic failover read the stored
+observation and apply their own freshness rules unchanged. Fresh readings come
+from the daemon's own push (`managed-health-report`, feature
+`managed-health-report-v1`, every 30 s, `health-report.ts`: only the reporting
+server's own replicas are written, `lastStreaming` is dropped, a future time is
+clamped to receipt) and from the on-demand probe. When a probe is answered with
+"engine not running" the replica is stored as `not_streaming` with the receipt
+time, so a stopped replica stops showing its last `streaming` line.
+
 ### Dead-primary detectors
 
 `managed-ha-event` may carry `detector` (absent = Orchestrator) and bounded

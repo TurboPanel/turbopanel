@@ -38,8 +38,8 @@ import {
 } from '../deploy/deploy-outcome.ts'
 import {
   advanceRollout,
-  failTimedOutDeploy,
   failDeployByContext,
+  failTimedOutDeploy,
   haltRollout,
 } from '../deploy/rollout.ts'
 import {
@@ -92,10 +92,10 @@ import {
 } from '../backups/reconcile.ts'
 import type { CommandQueue } from './queue.ts'
 import {
+  type EnvironmentDeployResultSite,
   type ManagedDestroyCommandPayload,
   parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
-  type EnvironmentDeployResultSite,
   parseEnvironmentLifecyclePayload,
   parseEnvironmentLifecycleResult,
   parseEnvironmentStopPayload,
@@ -136,14 +136,15 @@ import {
 } from '../tls/leaf-tracking.ts'
 import {
   fencePhaseFromCommandMetadata,
+  logRecoveryAdvanceFailure,
   onFenceCommandFailed,
   onFenceCommandSucceeded,
   onPromoteSucceeded,
-  logRecoveryAdvanceFailure,
   onRecoveryCommandFailed,
   onRecoveryStepFailed,
   recoveryIdFromCommandMetadata,
 } from '../managed/ha-recovery.ts'
+import { settleIngressCommandForRecovery } from '../managed/ha-ingress-gate.ts'
 import { isManagedEngineCode, type ManagedEngineCode } from '../managed/types.ts'
 import { isValidWireguardPublicKey } from '../fabric/wg.ts'
 import { type CommandType, TERMINAL_COMMAND_STATUSES } from './types.ts'
@@ -511,13 +512,21 @@ export async function awaitOutcomeWithAckDeadline(
   await dropDaemonConnection.call(cell, 'command_unacked').catch(() => undefined)
   // The ack may have landed while the connection was being dropped.
   const settled = await cell.getRequest(requestId)
-  if (settled && ['done', 'failed', 'expired'].includes(settled.status)) return settled
+  if (settled && ['done', 'failed', 'expired'].includes(settled.status)) {
+    return settled
+  }
   if (settled?.ackAt || (settled && settled.status !== 'sent')) {
     return cell.waitForRequest(requestId, restMs)
   }
   const expired = await expireRequest.call(cell, requestId).catch(() => null)
-  if (expired && (expired.status === 'done' || expired.status === 'failed')) return expired
-  return { ...(settled ?? current), status: 'failed', error: COMMAND_UNACKED_ERROR }
+  if (expired && (expired.status === 'done' || expired.status === 'failed')) {
+    return expired
+  }
+  return {
+    ...(settled ?? current),
+    status: 'failed',
+    error: COMMAND_UNACKED_ERROR,
+  }
 }
 
 async function enqueueAndAwaitOutcome(
@@ -1987,10 +1996,34 @@ async function applyManagedRecoveryFailedSideEffect(
     return true
   }
 
+  if (record.type === 'managed.ingress.reconcile') {
+    // One ingress did not confirm the new primary: the recovery gate decides.
+    await settleIngressCommandForRecovery(db, recoveryId)
+    return false
+  }
+
   if (record.type === 'managed.promote' || record.type === 'managed.ha.failover') {
     await onRecoveryCommandFailed(db, recoveryId)
   }
   return false
+}
+
+/**
+ * An ingress repoint that belongs to an HA recovery reached a terminal state
+ * without passing the failure path (it succeeded, or its server was offline):
+ * let the recovery's completion gate judge the row.
+ */
+async function settleIngressRecoveryOfCommand(
+  db: Db,
+  record: DispatchableCommandRecord
+): Promise<void> {
+  if (record.type !== 'managed.ingress.reconcile') return
+  try {
+    const recoveryId = recoveryIdFromCommandMetadata(await getCommandMetadata(db, record.id))
+    await settleIngressCommandForRecovery(db, recoveryId)
+  } catch (err) {
+    logRecoveryAdvanceFailure(record.id, errorMessage(err))
+  }
 }
 
 function shouldMarkManagedFailedOnCommandType(type: string): boolean {
@@ -2112,6 +2145,7 @@ async function applySucceededSideEffects(
   await applyEnvironmentLifecycleSideEffect(db, record, envelope, result)
   await applySystemReconcileSideEffect(db, record, envelope, result)
   await applyManagedIngressReconcileSideEffect(db, record, envelope, result)
+  await settleIngressRecoveryOfCommand(db, record)
   await applyManagedHaReconcileSideEffect(db, record, envelope, result)
   await applyManagedApplySideEffect(db, record, envelope, result, deps)
   await applyPendingTlsLeafSideEffect(db, record)
@@ -2490,7 +2524,9 @@ export function failureErrorCodeField(
   deployFailure: ReturnType<typeof classifyDeployFailure>,
   error: string
 ): { errorCode?: string } {
-  if (deployFailure !== null) return { errorCode: deployOutcomeErrorCode(deployFailure.outcome) }
+  if (deployFailure !== null) {
+    return { errorCode: deployOutcomeErrorCode(deployFailure.outcome) }
+  }
   if (type === 'environment.deploy' && isCancelledDeployError(error)) {
     return { errorCode: DEPLOY_CANCELLED_ERROR_CODE }
   }
@@ -2615,6 +2651,7 @@ export async function processCommandEnvelope(
     // rollout, or later batches would wait on an `applying` row forever.
     await applyEnvironmentDeployFailedSideEffect(db, record, envelope, notReady, 'failed', deps)
     await applyFabricFailedSideEffect(db, record, envelope)
+    await settleIngressRecoveryOfCommand(db, record)
     return
   }
 

@@ -31,6 +31,7 @@ import {
 import { createDurableObjectDaemonCellRegistry } from './do-registry.ts'
 import { createFreshStandbyProbe } from '../../client/managed/health-probe.ts'
 import { handleAcmeIssuanceEvent } from '../../client/tls/acme-issuance-event.ts'
+import { handleManagedHealthReport } from '../../features/managed/health-report.ts'
 import {
   backupRunReportResultMessage,
   createBackupRunReportStore,
@@ -86,8 +87,8 @@ import {
   DAEMON_CELL_PONG,
   DAEMON_OFFLINE_SWEEP_MS,
   DAEMON_WS_POLICY_VIOLATION_CLOSE,
-  TERMINAL_REQUEST_RETENTION_MS,
   outboundEnvelopeToWireMessage,
+  TERMINAL_REQUEST_RETENTION_MS,
   validateDaemonInboundEnvelope,
   validateDaemonInboundFrame,
   wireMessageToInboundEnvelope,
@@ -1916,6 +1917,17 @@ export class DaemonCellObject {
         return
       }
 
+      if (parsed.type === 'managed-health-report') {
+        await this.#recordInboundRepairingPresence(attachment, parsed.at)
+        await this.#withProjectionDb('managed-health-report', attachment.serverId, async (db) => {
+          await handleManagedHealthReport(db, {
+            reporterServerId: attachment.serverId,
+            members: parsed.members,
+          })
+        })
+        return
+      }
+
       if (parsed.type === 'topology-report') {
         await this.#recordInboundRepairingPresence(attachment, parsed.at)
         await this.#withProjectionDb('topology-report', attachment.serverId, async (db) => {
@@ -2677,7 +2689,9 @@ export class DaemonCellObject {
     ws: WebSocket | undefined
   ): Promise<void> {
     const outcome = await this.#withProjectionDbResult('backup-run-report', serverId, (db) =>
-      handleBackupRunReport(createBackupRunReportStore(db), msg, { reporterServerId: serverId })
+      handleBackupRunReport(createBackupRunReportStore(db), msg, {
+        reporterServerId: serverId,
+      })
     )
     if (!outcome || !ws) return
     ws.send(JSON.stringify(backupRunReportResultMessage(msg.id, outcome, nowIso())))
