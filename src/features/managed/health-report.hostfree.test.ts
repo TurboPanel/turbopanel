@@ -1,4 +1,6 @@
 import { assertEquals } from '@std/assert'
+import type { SQL } from 'drizzle-orm'
+import { PgDialect } from 'drizzle-orm/pg-core'
 import type { Db } from '../../db/connection.ts'
 import type { ManagedHealthReportMember } from '../../contracts/cell-protocol.ts'
 import { validateDaemonInboundFrame } from '../../contracts/cell-protocol.ts'
@@ -36,6 +38,8 @@ function thenableRows(rows: unknown[]) {
   return chain
 }
 
+const dialect = new PgDialect()
+
 function harness() {
   const rows: Row[] = [
     {
@@ -68,14 +72,15 @@ function harness() {
         return thenableRows(rows)
       },
     }),
-    update: () => ({
-      set: (patch: { metadata: Record<string, unknown> }) => ({
-        where: () => {
-          written.push({ metadata: patch.metadata })
-          return Promise.resolve()
-        },
-      }),
-    }),
+    // The report is written as display-only metadata.replicationDisplay via one
+    // jsonb_set statement, never to the probe-measured metadata.replication.
+    execute: (query: SQL) => {
+      const { sql: text, params } = dialect.sqlToQuery(query)
+      assertEquals(text.includes("'{replicationDisplay}'"), true)
+      const display = JSON.parse(String(params[0])) as Record<string, unknown>
+      written.push({ metadata: { replicationDisplay: display } })
+      return Promise.resolve()
+    },
   }
   return { db: db as unknown as Db, written }
 }
@@ -99,7 +104,7 @@ test("a report stores the reading of the reporter's own replica and drops lastSt
   })
   assertEquals(outcome, { stored: 1, ignored: 0 })
   assertEquals(h.written.length, 1)
-  const stored = h.written[0]!.metadata.replication as Record<string, unknown>
+  const stored = h.written[0]!.metadata.replicationDisplay as Record<string, unknown>
   assertEquals(stored.state, 'streaming')
   assertEquals('lastStreaming' in stored, false)
 })
@@ -111,7 +116,7 @@ test('a replica reported down is stored as not streaming with the receipt time',
     members: [{ managedId: MANAGED, memberId: MEMBER_OURS, down: true }],
     nowMs: NOW_MS,
   })
-  assertEquals(h.written[0]!.metadata.replication, {
+  assertEquals(h.written[0]!.metadata.replicationDisplay, {
     state: 'not_streaming',
     observedAt: iso(0),
   })
@@ -130,7 +135,7 @@ test('a reading dated in the future is stored with the receipt time', async () =
     ],
     nowMs: NOW_MS,
   })
-  const stored = h.written[0]!.metadata.replication as { observedAt: string }
+  const stored = h.written[0]!.metadata.replicationDisplay as { observedAt: string }
   assertEquals(stored.observedAt, iso(0))
 })
 

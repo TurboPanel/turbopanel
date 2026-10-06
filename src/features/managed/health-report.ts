@@ -71,7 +71,11 @@ export async function handleManagedHealthReport(
       ignored += 1
       return
     }
-    await updateManagedMemberDisplayReplication(db, entry.memberId, readingFromReport(entry, receivedAtMs))
+    await updateManagedMemberDisplayReplication(
+      db,
+      entry.memberId,
+      readingFromReport(entry, receivedAtMs)
+    )
     stored += 1
   })
   return { stored, ignored }
