@@ -110,6 +110,20 @@ export function isStaleProjectedUpdating(params: {
   return false
 }
 
+/**
+ * A failed or expired attempt that no longer matters because the daemon is
+ * running the target build. Its stored error is cleared, not shown.
+ */
+export function isSupersededProjectedFailure(params: {
+  projectedUpdate?: UpdateProjection | null
+  currentCommit?: string | null
+  targetCommit?: string | null
+}): boolean {
+  const status = params.projectedUpdate?.status
+  if (status !== 'failed' && status !== 'expired') return false
+  return !!params.targetCommit && params.currentCommit === params.targetCommit
+}
+
 export type ServerUpdateGetResponse = {
   ok: boolean
   serverId: string
@@ -194,7 +208,7 @@ async function loadUpdateRequests(params: {
 
 function statusFromFailedOrExpired(
   latest: PendingRequestRecord,
-  updateAvailable: boolean
+  retryable: boolean
 ): {
   status: ServerUpdateGetResponse['status']
   lastUpdateError: string
@@ -204,12 +218,12 @@ function statusFromFailedOrExpired(
     (latest.status === 'expired'
       ? 'Update timed out waiting for daemon acknowledgement'
       : 'Update failed')
-  // Only block the badge with "Update error" once the daemon already matches
-  // trunk (e.g. operator fixed the node manually). When still behind trunk,
-  // keep status idle so the UI shows "Update available" and a retry works.
+  // The "Update error" badge is for a failure that no retry can clear (an
+  // update that is blocked for this server). Otherwise keep status idle so the
+  // UI shows "Update available" and a retry works.
   return {
     lastUpdateError,
-    status: updateAvailable ? 'idle' : 'error',
+    status: retryable ? 'idle' : 'error',
   }
 }
 
@@ -243,9 +257,16 @@ function deriveUpdateLifecycle(params: {
   if (!isTerminalRequestStatus(latest.status)) {
     status = 'updating'
   } else if (latest.status === 'failed' || latest.status === 'expired') {
-    const failed = statusFromFailedOrExpired(latest, updateAvailable)
-    status = failed.status
-    lastUpdateError = failed.lastUpdateError
+    // A server already running the target build has nothing left to update, so
+    // an earlier failed or refused attempt (for example a refusal because an
+    // install was already running) is moot: report it as up to date.
+    if (!(target && currentCommit === target.commit)) {
+      // An unresolved target (a manifest fetch that failed) cannot show the
+      // server is up to date either, so it never raises the error badge.
+      const failed = statusFromFailedOrExpired(latest, updateAvailable || target === null)
+      status = failed.status
+      lastUpdateError = failed.lastUpdateError
+    }
   } else if (
     latest.status === 'done' &&
     target &&

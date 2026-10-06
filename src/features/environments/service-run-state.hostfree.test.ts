@@ -1,5 +1,10 @@
 import { assertEquals } from '@std/assert'
-import { buildServiceRunStateViews, toServiceRunStateView } from './service-run-state.ts'
+import {
+  buildServiceRunStateViews,
+  servicesNewlyStoppedAfterCrashes,
+  toServiceRunStateView,
+} from './service-run-state.ts'
+import type { ServiceRunState } from '../../contracts/service-run-state.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -109,4 +114,57 @@ test('a service nobody has reported is absent, not defaulted', () => {
     ).size,
     0
   )
+})
+
+function entry(
+  serviceId: string,
+  state: ServiceRunState['state'],
+  lastError?: string
+): ServiceRunState {
+  return {
+    serviceId,
+    state,
+    restartCount: 10,
+    asOf: AS_OF,
+    ...(lastError ? { lastError } : {}),
+  }
+}
+
+test('a service newly stopped after crashes is reported once, with its last error', () => {
+  assertEquals(
+    servicesNewlyStoppedAfterCrashes(
+      [entry('a', 'crashing'), entry('b', 'running')],
+      [entry('a', 'stopped_after_crashes', 'EADDRINUSE'), entry('b', 'running')]
+    ),
+    [{ serviceId: 'a', restartCount: 10, lastError: 'EADDRINUSE', asOf: AS_OF }]
+  )
+})
+
+test('a stop that is already stored is not reported again', () => {
+  const stopped = [entry('a', 'stopped_after_crashes')]
+  assertEquals(servicesNewlyStoppedAfterCrashes(stopped, stopped), [])
+  // A heartbeat that only adds the log line is still the same stop.
+  assertEquals(
+    servicesNewlyStoppedAfterCrashes(stopped, [entry('a', 'stopped_after_crashes', 'late line')]),
+    []
+  )
+})
+
+test('a first report, or a stop after a restart, is reported', () => {
+  assertEquals(
+    servicesNewlyStoppedAfterCrashes(undefined, [entry('a', 'stopped_after_crashes')]).length,
+    1
+  )
+  assertEquals(
+    servicesNewlyStoppedAfterCrashes([entry('a', 'running')], [entry('a', 'stopped_after_crashes')])
+      .length,
+    1
+  )
+})
+
+test('no report, other states and plain stops report nothing', () => {
+  assertEquals(servicesNewlyStoppedAfterCrashes([entry('a', 'running')], undefined), [])
+  assertEquals(servicesNewlyStoppedAfterCrashes(undefined, [entry('a', 'stopped')]), [])
+  assertEquals(servicesNewlyStoppedAfterCrashes(undefined, [entry('a', 'crashing')]), [])
+  assertEquals(servicesNewlyStoppedAfterCrashes([entry('a', 'stopped_after_crashes')], []), [])
 })

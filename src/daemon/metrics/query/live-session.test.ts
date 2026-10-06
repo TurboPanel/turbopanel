@@ -302,3 +302,39 @@ test('isDurableSample: only an explicit durable:false marks a live-only sample',
   assertEquals(isDurableSample(meta(true)), true)
   assertEquals(isDurableSample(meta(false)), false)
 })
+
+test('hostValuesFromSample reads the v7 extended numbers and falls back for Docker reclaimable bytes', () => {
+  const base = authenticatedSample({ sampledAt: '2026-01-01T00:00:10.000Z' })
+  const withExtended: AuthenticatedMetricsSample = {
+    ...base,
+    extended: { host: { oomKills: 3 }, docker: { containersUnhealthy: 1 } },
+    dockerUsage: {
+      layersBytes: null,
+      imagesCount: null,
+      imagesReclaimableBytes: 10,
+      containersBytes: null,
+      containersCount: null,
+      volumesBytes: null,
+      volumesCount: null,
+      volumesReclaimableBytes: 5,
+      buildCacheBytes: null,
+      buildCacheReclaimableBytes: null,
+    },
+  }
+  assertEquals(
+    hostValuesFromSample(withExtended, [
+      'extended.host.oomKills',
+      'extended.host.pidLimitUsedPercent',
+      'extended.docker.containersUnhealthy',
+      'extended.docker.reclaimableBytes',
+      'extended.ingress.tlsCertSoonestExpiryDays',
+    ]),
+    {
+      'extended.host.oomKills': 3,
+      'extended.host.pidLimitUsedPercent': null,
+      'extended.docker.containersUnhealthy': 1,
+      'extended.docker.reclaimableBytes': 15,
+      'extended.ingress.tlsCertSoonestExpiryDays': null,
+    }
+  )
+})

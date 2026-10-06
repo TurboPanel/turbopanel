@@ -1113,10 +1113,11 @@ export class DaemonCellObject {
     requestId: string,
     ok: boolean,
     finishedAt: string,
-    error?: string
+    error?: string,
+    errorCode?: string
   ): Promise<void> {
     await this.#withProjectionDb('update-result', serverId, async (db) => {
-      await onDaemonUpdateResult(db, serverId, requestId, ok, finishedAt, error)
+      await onDaemonUpdateResult(db, serverId, requestId, ok, finishedAt, error, errorCode)
       if (this.#isDaemonDebug()) {
         console.debug(`daemon cell projection: update-result (${serverId})`)
       }
@@ -2846,7 +2847,8 @@ export class DaemonCellObject {
         inbound.requestId,
         inbound.ok,
         inbound.at,
-        inbound.error
+        inbound.error,
+        inbound.errorCode
       )
       await this.#withProjectionDb('update-result-step', serverId, (db) =>
         persistUpgradeOutcome(db, {
