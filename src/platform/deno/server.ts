@@ -50,6 +50,7 @@ import { registerWebhookRoutes } from '../../webhook/routes.ts'
 import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-desired.ts'
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
+import { runHostLossTick } from '../../daemon/cell/host-loss-tick.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { firewallApplyGateFromEnv } from '../../features/firewall/enforcement.ts'
@@ -644,6 +645,12 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   const abort = new AbortController()
   const runSystemReconcileSweepTick = (): void => {
     if (isNoopCommandQueue(commandQueue)) return
+    // A lost database host (`daemon/cell/host-loss-tick.ts`): never throws.
+    void runHostLossTick(db, {
+      commandQueue,
+      registry: daemonCellRegistry,
+      env: Deno.env.toObject(),
+    })
     void runSystemReconcileSweep(db, commandQueue).catch((err) => {
       logWarn('daemon-cell', `system reconcile sweep error: ${String(err)}`)
     })

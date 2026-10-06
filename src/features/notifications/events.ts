@@ -59,6 +59,21 @@ function name(ctx: NotificationContext, key: string, fallback: string): string {
 }
 
 /**
+ * What a lost server means for the high availability databases whose primary
+ * it hosts, and what happens next. Empty when it hosts none.
+ */
+function databaseSentence(ctx: NotificationContext): string {
+  const databases = ctx.databases
+  if (typeof databases !== 'string' || databases.length === 0) return ''
+  return (
+    ` It hosts the primary of ${databases}. If the server stays down, PostgreSQL databases ` +
+    'can fail over to a replica on their own (where automatic failover is switched on) once the ' +
+    'replicas confirm the primary is gone; otherwise, or for MySQL and MariaDB, promote a replica ' +
+    "from the database's page."
+  )
+}
+
+/**
  * The catalogue. Keys are the codes; the object is `as const` so the code
  * union and the CHECK pin in `enum-checks.test.ts` derive from one place.
  */
@@ -76,7 +91,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
         'the server'
       )} stopped answering and the server was marked offline${
         typeof ctx.lastSeenAt === 'string' ? ` (last seen ${ctx.lastSeenAt})` : ''
-      }.`,
+      }.${databaseSentence(ctx)}`,
   },
   'fleet.mass_disconnect': {
     severity: 'critical',

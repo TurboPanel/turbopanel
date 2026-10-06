@@ -17,6 +17,7 @@ import { environment, managed, project, server } from '../../db/schema.ts'
 import { isManagedEngineCode } from './types.ts'
 import type { RecoveryRecord } from './recovery.ts'
 import { beginAutomaticFailover, recordStaleDeadPrimaryReport } from './ha-recovery.ts'
+import { BOOT_HOLD_DETECTOR, handleBootHoldReport } from './ha-return-fence.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import { haMemberDialForReporter } from './ha-desired.ts'
 import { getManagedEngineSpec } from './index.ts'
@@ -181,6 +182,8 @@ export async function handleManagedHaEvent(
     nowMs?: () => number
     /** Test seam for the Orchestrator binding lookups. */
     binding?: HaBindingLoaders
+    /** Test seam: the answer to a daemon's boot-hold report. */
+    bootHold?: typeof handleBootHoldReport
   }
 ): Promise<RecoveryRecord | null> {
   const receivedAtMs = (deps.nowMs ?? Date.now)()
@@ -191,6 +194,19 @@ export async function handleManagedHaEvent(
 
   const members = await listManagedMembers(db, row.id)
   if (members.length === 0) return null
+
+  // A held primary reporting in after an unclean boot is never a failover
+  // request: it is answered with a start (still the primary) or left stopped.
+  if (input.detector === BOOT_HOLD_DETECTOR) {
+    await (deps.bootHold ?? handleBootHoldReport)(db, {
+      managedId: row.id,
+      engine,
+      sourceMemberId: input.sourceMemberId,
+      reporterServerId: deps.reporterServerId,
+      commandQueue: deps.commandQueue,
+    })
+    return null
+  }
 
   const reporterOrganizationId = await loadServerOrganization(db, deps.reporterServerId)
   const primary = members.find((member) => member.role === 'primary') ?? null

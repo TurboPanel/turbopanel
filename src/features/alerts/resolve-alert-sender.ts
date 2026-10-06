@@ -15,10 +15,10 @@
  * throws: a sweep's job is to demote stale servers, and it runs whether or
  * not anyone can be told about it.
  */
-import { eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { type Db, runWithDbTimeout } from '../../db/connection.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
-import { server } from '../../db/schema.ts'
+import { managed, replica, server } from '../../db/schema.ts'
 import type { Alert, AlertSender } from './alert-sender.ts'
 import {
   adoptLegacyAlertWebhook,
@@ -38,6 +38,48 @@ type MappedEvent = {
   organizationId: string | null
   context: NotificationContext
   targetId: string | null
+}
+
+/** At most this many database names go into one alert. */
+const ALERT_DATABASE_NAMES_MAX = 5
+
+/**
+ * Names of the high availability databases whose PRIMARY lives on this server
+ * (a primary with at least one other member), so the offline alert can say what
+ * is at stake and what happens next. Best effort: a failed lookup only means
+ * the alert goes out without the sentence.
+ */
+export async function haPrimaryNamesOnServer(db: Db, serverId: string): Promise<string | null> {
+  try {
+    const primaries = await runWithDbTimeout(db, (tx) =>
+      tx
+        .select({ managedId: replica.managedId, name: managed.name })
+        .from(replica)
+        .innerJoin(managed, eq(managed.id, replica.managedId))
+        .where(and(eq(replica.serverId, serverId), eq(replica.role, 'primary')))
+        .limit(50)
+    )
+    if (primaries.length === 0) return null
+    const ids = primaries.map((row) => row.managedId)
+    const members = await runWithDbTimeout(db, (tx) =>
+      tx
+        .select({ managedId: replica.managedId })
+        .from(replica)
+        .where(inArray(replica.managedId, ids))
+    )
+    const counts = new Map<string, number>()
+    for (const row of members) counts.set(row.managedId, (counts.get(row.managedId) ?? 0) + 1)
+    const names = primaries
+      .filter((row) => (counts.get(row.managedId) ?? 0) > 1)
+      .map((row) => row.name ?? row.managedId.slice(0, 8))
+    if (names.length === 0) return null
+    const shown = names.slice(0, ALERT_DATABASE_NAMES_MAX).join(', ')
+    return names.length > ALERT_DATABASE_NAMES_MAX
+      ? `${shown} and ${names.length - ALERT_DATABASE_NAMES_MAX} more`
+      : shown
+  } catch {
+    return null
+  }
 }
 
 /** An alert's kind is an event code; its detail is the event's context, plus what the server row adds. */
@@ -80,6 +122,8 @@ async function toEvent(
     return null
   }
   context.serverName = row.name ?? row.hostname ?? serverId
+  const databases = await haPrimaryNamesOnServer(db, serverId)
+  if (databases) context.databases = databases
   return {
     event: 'server.offline',
     organizationId: row.organizationId,

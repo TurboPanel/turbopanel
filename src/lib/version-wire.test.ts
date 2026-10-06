@@ -8,6 +8,7 @@ import {
   daemonUnsupportedReason,
   INSTANCE_REVISION_HEADER,
   INSTANCE_VERSION_HEADER,
+  MANAGED_HA_BOOT_HOLD_FEATURE,
   MANAGED_HA_INSTANCE_FEATURE,
   MANAGED_HEALTH_FEATURE,
   PHP_SITE_MODES_FEATURE,
@@ -157,6 +158,15 @@ test('managed-ha-instance-v1 is an advertised wire feature and raised no floor',
   assertEquals(MANAGED_HA_INSTANCE_FEATURE, 'managed-ha-instance-v1')
   assertEquals(
     (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_HA_INSTANCE_FEATURE),
+    true
+  )
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('managed-ha-boot-hold-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(MANAGED_HA_BOOT_HOLD_FEATURE, 'managed-ha-boot-hold-v1')
+  assertEquals(
+    (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_HA_BOOT_HOLD_FEATURE),
     true
   )
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')

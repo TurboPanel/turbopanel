@@ -10,6 +10,7 @@ import {
   AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE,
   AUTOMATIC_FAILOVER_NO_CANDIDATE_MESSAGE,
   FENCE_STOP_UNQUEUED_MESSAGE,
+  HOST_LOSS_HOST_RETURNED_MESSAGE,
   PROMOTE_UNQUEUED_MESSAGE,
   AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
   AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE,
@@ -2010,4 +2011,170 @@ test('a fence that settles on the sweep path (no queue) cannot leave a promoting
   // promote here: the row must be terminal, not parked at `promoting`.
   const state = harness.recovery()?.state
   assertEquals(state === 'blocked' || state === 'failed', true)
+})
+
+// --- Whole-host loss (the old primary's server is silent) ------------------
+
+/** The offline mark was 3 minutes ago; the host can have died up to 150 s before it. */
+const HOST_LOSS_FAILURE_START_MS = EVENT_MS - 330_000
+const HOST_LOSS_INCIDENT = `${SERVER_A}@${new Date(EVENT_MS - 180_000).toISOString()}`
+
+/** Probe answer for a silent primary: stopped, last streaming `agoMs` before the probe. */
+function lostPrimaryReading(agoMs: number): ManagedReplicationHealth {
+  const reading = freshStopped()
+  return { ...reading, lastStreaming: { ...reading.lastStreaming!, ageMs: agoMs } }
+}
+
+async function hostLossFailover(
+  answer: ManagedReplicationHealth | null,
+  extra: {
+    autoFailover?: 'on' | 'off'
+    sourceConnected?: boolean
+    recoveryReads?: RecoveryRow[][]
+  } = {}
+) {
+  const harness = createHarness({
+    pins: sharedDatacenterPins(),
+    connected: [extra.sourceConnected ?? false],
+    ...(extra.recoveryReads ? { recoveryReads: extra.recoveryReads } : {}),
+  })
+  const { queue, sent } = countingQueue()
+  const { probe, calls } = stubProbe(answer)
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: queue,
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), coldReplica()],
+      sourceMemberId: MEM_PRIMARY,
+      detector: 'host-loss',
+      evidence: '{"incident":"x"}',
+      actor: ACTOR,
+      autoFailover: extra.autoFailover ?? 'on',
+      probeStandby: probe,
+      failureStartedAtMs: HOST_LOSS_FAILURE_START_MS,
+      nowMs: () => EVENT_MS,
+      hostLossIncident: HOST_LOSS_INCIDENT,
+    })
+  )
+  return { row, sent, calls, harness }
+}
+
+test('host loss: a caught-up replica is promoted at once, the fence recorded as attested, never as proven', async () => {
+  const { row, sent, calls, harness } = await hostLossFailover(lostPrimaryReading(300_000))
+  assertEquals(row.state, 'promoting')
+  assertEquals(row.targetMemberId, MEM_REPLICA)
+  assertEquals(row.metadata.fenceBasis, 'host-loss-attested')
+  assertEquals(row.metadata.fenced, false)
+  assertEquals(row.metadata.hostLossIncident, HOST_LOSS_INCIDENT)
+  assertEquals(row.metadata.detector, 'host-loss')
+  // Only the promote is queued: nothing can reach a dead host, so no drain and no stop.
+  const names = harness.commandInserts.map((values) => values.name).filter(Boolean)
+  assertEquals(names, ['managed.promote'])
+  assertEquals(sent.length, 1)
+  assertEquals(calls.length, 1)
+  assertEquals(row.metadata.fenceCommandIds, undefined)
+  // The old primary is flagged so it can never be started as a second writer.
+  assertEquals(
+    harness.nodePatches.some((patch) => patch.status === 'needs_resync'),
+    true
+  )
+})
+
+test('host loss: the promote names the dead primary as the member to demote', async () => {
+  const { harness } = await hostLossFailover(lostPrimaryReading(300_000))
+  const payloads = harness.commandInserts
+    .map((values) => values.payload as Record<string, unknown> | undefined)
+    .filter((payload) => payload?.memberId !== undefined)
+  assertEquals(payloads[0]?.memberId, MEM_REPLICA)
+  assertEquals(payloads[0]?.demoteMemberId, MEM_PRIMARY)
+})
+
+test('host loss: a replica that stopped streaming long before the host died is refused', async () => {
+  // Last streamed 10 minutes ago: earlier than the earliest the host can have died.
+  const { row, sent, harness } = await hostLossFailover(lostPrimaryReading(600_000))
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE)
+  assertEquals(row.metadata.freshStandby, `${MEM_REPLICA} refused: receipt_stale`)
+  assertEquals(sent.length, 0)
+  assertEquals(harness.nodePatches.length, 0)
+})
+
+test('host loss: a replica that does not answer is refused', async () => {
+  const { row, sent } = await hostLossFailover(null)
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.metadata.freshStandby, `${MEM_REPLICA} refused: probe_unavailable`)
+  assertEquals(sent.length, 0)
+})
+
+test('host loss with the switch off: alert only, nothing queued, nothing flagged', async () => {
+  const { row, sent, calls, harness } = await hostLossFailover(lostPrimaryReading(300_000), {
+    autoFailover: 'off',
+  })
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.targetMemberId, null)
+  assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_DISABLED_MESSAGE)
+  assertEquals(row.metadata.detector, 'host-loss')
+  assertEquals(calls.length, 0)
+  assertEquals(sent.length, 0)
+  assertEquals(harness.nodePatches.length, 0)
+})
+
+test('host loss inside the 15 minute cooldown is refused and leaves the cluster alone', async () => {
+  const previous = recoveryRow({
+    state: 'completed',
+    targetMemberId: MEM_REPLICA,
+    startedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+  })
+  const { row, sent, calls, harness } = await hostLossFailover(lostPrimaryReading(300_000), {
+    recoveryReads: [[], [previous]],
+  })
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.targetMemberId, null)
+  assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE)
+  assertEquals(row.metadata.detector, 'host-loss')
+  assertEquals(calls.length, 0)
+  assertEquals(sent.length, 0)
+  assertEquals(harness.nodePatches.length, 0)
+})
+
+test('host loss: the host came back after the decision, so nothing is changed', async () => {
+  const { row, sent, harness } = await hostLossFailover(lostPrimaryReading(300_000), {
+    sourceConnected: true,
+  })
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.metadata.blockedReason, HOST_LOSS_HOST_RETURNED_MESSAGE)
+  // No target: an aborted attempt must never start the 15 minute cooldown.
+  assertEquals(row.targetMemberId, null)
+  // The old primary is NOT flagged and no command of any kind is queued.
+  assertEquals(harness.nodePatches.length, 0)
+  assertEquals(harness.commandInserts.length, 0)
+  assertEquals(sent.length, 0)
+  assertEquals(harness.managedStatus.at(-1), 'ready')
+})
+
+test('without the host-loss incident an offline primary is still blocked: the engine-dead path keeps needing its stop', async () => {
+  const harness = createHarness({ pins: sharedDatacenterPins(), connected: [false] })
+  const { queue, sent } = countingQueue()
+  const { probe } = stubProbe(lostPrimaryReading(300_000))
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: queue,
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), coldReplica()],
+      sourceMemberId: MEM_PRIMARY,
+      detector: 'postgres-probe',
+      actor: ACTOR,
+      autoFailover: 'on',
+      probeStandby: probe,
+      failureStartedAtMs: HOST_LOSS_FAILURE_START_MS,
+      nowMs: () => EVENT_MS,
+    })
+  )
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.metadata.fenceBasis, undefined)
+  assertEquals(sent.length, 0)
 })

@@ -60,6 +60,7 @@ import {
 } from '../../db/connection.ts'
 import { resolveWorkersDb } from '../../platform/workers/workers-bindings.ts'
 import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-desired.ts'
+import { runHostLossTick } from './host-loss-tick.ts'
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
@@ -1044,10 +1045,18 @@ async function runQueuedCronSweeps(
   db: Db,
   queue: NonNullable<CloudflareBindings['TURBOPANEL_COMMAND_QUEUE']>,
   tlsRenewal: CronTlsRenewal | null | undefined,
-  firewallApplyGate: FirewallApplyGate
+  firewallApplyGate: FirewallApplyGate,
+  env: CloudflareBindings
 ): Promise<void> {
   try {
     const commandQueue = createWorkersCommandQueue(queue)
+    // First: a lost database host is the only sweep here whose delay costs
+    // writes. Isolated inside the tick; it never throws.
+    await runHostLossTick(db, {
+      commandQueue,
+      registry: createDurableObjectDaemonCellRegistry(env, db),
+      env: env as unknown as Record<string, string | undefined>,
+    })
     await runSystemReconcileSweep(db, commandQueue)
     // Backup policy sets after a reconnect; isolated so a failure never
     // aborts the other sweeps.
@@ -1489,7 +1498,7 @@ async function runOptionalCronPhases(
   const commandQueue = env.TURBOPANEL_COMMAND_QUEUE
   if (!commandQueue) return
   await runOptionalPhase(deadlineMs, 'reconcile', opts.scheduledTime, phasesSkipped, () =>
-    runQueuedCronSweeps(db, commandQueue, tlsRenewal, opts.firewallApplyGate)
+    runQueuedCronSweeps(db, commandQueue, tlsRenewal, opts.firewallApplyGate, env)
   )
 }
 

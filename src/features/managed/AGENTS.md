@@ -632,9 +632,76 @@ A rejected event is logged and dropped (no recovery row). An accepted one is
 logged with its evidence and records `metadata.detector` /
 `metadata.detectorEvidence` on the recovery row.
 
-Whole-host loss is deliberately **not** a detector: nothing can fence a host
-that is gone, so it stays manual with an alert. Widening it (Option A) is a new
-entry in `AUTOMATIC_FAILOVER_DETECTORS` once fencing can cope.
+Whole-host loss is **not** a `managed-ha-event` detector (a dead host sends
+nothing): the control plane detects it itself, see **Whole-host loss** below.
+
+### Whole-host loss (power cut)
+
+Both runtimes' sweep ticks (Workers cron `reconcile` phase first, self-hosted
+Deno timer) call `daemon/cell/host-loss-tick.ts` → `ha-host-loss-sweep.ts`
+(stateless: every tick re-reads who is offline) and `ha-return-fence.ts`. The
+rule is the pure `ha-host-loss.ts`; anything short of a clear yes is an
+**alert-only** terminal `blocked` row (reason in plain words,
+`metadata.detector = 'host-loss'`, `hostLossIncident = <serverId>@<offline
+mark>`; repeats of the same reason fold into one row), never a promotion:
+
+1. The primary's server has been offline (`server.status_changed_at`) for the
+   whole **window** (`TURBOPANEL_HOST_LOSS_WINDOW_SECONDS`, default 120, clamped
+   60-300), on top of the 90-150 s the offline sweep needs to notice. A host
+   that returns inside it stops being a candidate: nothing happens.
+2. Not within 10 minutes of an operator `server.reboot` of that server or while
+   a daemon update is in flight. Never later than 7.5 minutes after the offline
+   mark (`HOST_LOSS_LAST_DECISION_MS` = the fresh-standby gate's 10 minute
+   failure span minus the 150 s mark lag; the gate's receipt check does not
+   depend on when the probe runs, so without this cap a retry long after the
+   loss would still pass it): later is alert-only (`too_late`). Not for a host
+   offline over half an hour.
+3. Not when more than half of the organization's servers are offline.
+4. PostgreSQL only (MySQL/MariaDB replicas read `reconnecting` without a source
+   and cannot be proven caught up: alert, then manual promote).
+5. The dead primary's daemon advertised `managed-ha-boot-hold-v1`.
+6. Every other member's server is connected and answers a fresh
+   `managed-health-request`, and **none** is still receiving (`streaming`) from
+   the primary. One that hears the primary vetoes (the host is alive, only its
+   link to the control plane is down).
+
+Then `beginAutomaticFailover` runs with `hostLossIncident`: the per-environment
+switch (off: `auto_failover_disabled` row), the persisted 15 minute cooldown, a
+healthy same-DC `failover` replica proven by the fresh-standby gate anchored on
+`offline mark - 150 s` (the earliest the host can have died), and a command queue all
+apply unchanged. `beginRecovery` then skips the drain/stop (nothing can reach
+the host), flags the old primary `needs_resync`, records `fenceBasis =
+'host-loss-attested'` with `fenced = false` (`hostLossFenceAdvance`;
+`verifyFenced` is untouched, so the engine-dead path still needs its stop) and
+queues the promote with `demoteMemberId`. If the host reconnected in between
+the row ends `blocked` (`HOST_LOSS_HOST_RETURNED_MESSAGE`) with nothing changed.
+
+**The old primary when it returns** (`ha-return-fence.ts`), keyed on the role
+the control plane holds, not on how it was replaced:
+
+- The daemon's boot hold (`turbopaneld/src/managed/AGENTS.md`) stopped it after
+  an unclean boot and reports `detector: 'boot-hold'`. `handleManagedHaEvent`
+  answers it (never as a failover): still `primary` and no recovery in flight
+  and no `needsOperator` row = `managed.lifecycle start` (`bootHoldRelease`); a
+  replica = stays stopped, noted `returnFence: 'confirmed'`; in flight = no
+  answer, the daemon asks again in a minute.
+- `runReturnFenceSweep`: a `needs_resync` replica whose server is connected gets
+  one `managed.lifecycle stop` per reconnect (failed stops retried up to 5
+  times), metadata `returnFence`. The consumer projects **nothing** for it
+  (success or failure): it would overwrite `needs_resync` and mark the cluster
+  stopped/failed. It never resyncs: wiping the old primary's data is the
+  operator's choice (`POST .../members/:id/resync`), its un-replicated writes
+  exist nowhere else.
+
+**Alerts**: the offline alert (`server.offline`) now names the HA databases
+whose primary the server hosts and what happens next; the outcome is the
+recovery row in the journal. No new notification event (that needs a
+migration).
+
+Proven only by unit tests; the two-host power-cut runs (matrix H07, U11) are
+the live proof. Not covered: a primary that stays powered but is cut off from
+both the control plane and its replicas keeps taking local writes (they are
+lost on resync).
 
 **Fence bookkeeping is lock-serialized** (`ha-recovery.ts`). Every fence
 command row is created first, `metadata.fenceCommandIds` is written, and only

@@ -1571,6 +1571,11 @@ async function applyManagedLifecycleSideEffect(
   try {
     const payload = parseManagedLifecyclePayload(record.payload)
     const lifecycleResult = parseManagedLifecycleResult(result)
+    const meta = await getCommandMetadata(db, record.id)
+    // A stop sent to a demoted member that came back (`ha-return-fence.ts`)
+    // projects nothing: it would overwrite `needs_resync`, the only thing that
+    // keeps the old data from being started, and mark the whole cluster stopped.
+    if (meta?.returnFence === true) return
     await projectManagedObservedStatus(
       db,
       payload.managedId,
@@ -1580,7 +1585,6 @@ async function applyManagedLifecycleSideEffect(
     )
     await projectManagedMemberObservedStatus(db, lifecycleResult.member, record.id, record.type)
 
-    const meta = await getCommandMetadata(db, record.id)
     const recoveryId = recoveryIdFromCommandMetadata(meta)
     if (recoveryId && payload.action === 'stop') {
       await onFenceCommandSucceeded(db, deps?.commandQueue, {
@@ -2066,6 +2070,10 @@ async function applyManagedFailedSideEffect(
   error?: string
 ): Promise<void> {
   const meta = await getCommandMetadata(db, record.id)
+  // A failed return-fence stop (`ha-return-fence.ts`) must not flip the member
+  // from `needs_resync` to `failed` or mark the whole cluster failed; the
+  // sweep retries it a few times.
+  if (meta?.returnFence === true) return
   if (await applyManagedRecoveryFailedSideEffect(db, record, meta, deps)) {
     return
   }
