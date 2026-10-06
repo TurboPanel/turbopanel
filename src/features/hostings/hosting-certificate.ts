@@ -212,12 +212,15 @@ export function letsEncryptRefusal(params: {
   protocol: HostingProtocol
   bind: HostingBindScope
   hostnames: readonly string[]
+  /** The hosting's www choice: every name it adds must be able to get a certificate too. */
+  www?: HostingWwwMode
 }): LetsEncryptRefusal | null {
   if (!params.acmeEnabled) return 'lets_encrypt_not_enabled'
   if (params.protocol !== 'http') return 'hosting_not_http'
   if (params.hostnames.length === 0) return 'hosting_has_no_hostnames'
   if (params.bind !== 'public') return 'acme_requires_public_bind'
-  if (params.hostnames.some((h) => hostnameUnsupportedReason(h) !== null)) {
+  const names = letsEncryptNames(params.hostnames, params.www ?? 'off')
+  if (names.some((h) => hostnameUnsupportedReason(h) !== null)) {
     return 'letsencrypt_hostname_unsupported'
   }
   return null
@@ -281,6 +284,11 @@ function deriveLetsEncrypt(
   }
   if (acme.lastError !== null) {
     return { ...base, state: 'renewal_failed', lastError: acme.lastError }
+  }
+  // New names (a www choice) are waiting on DNS: say which, even though the
+  // names already covered keep their certificate meanwhile.
+  if (input.pending !== null) {
+    return { ...base, state: 'waiting_for_dns', dns: input.pending.dns }
   }
   if (acme.notAfter === null) {
     return { ...base, state: 'issuing', needsDeploy: input.needsDeploy }

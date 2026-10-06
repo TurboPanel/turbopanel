@@ -232,8 +232,13 @@ typed. Expansion lives in one place, `hostingWwwNames` in
 `src/contracts/commands/hostname.ts` (twin of the daemon's
 `commands-contracts.ts`); `validateDeployWwwModes` (`www-redirect.ts`, twin of
 the daemon's `deploy-validation.ts`) refuses a mode on `tcp`/`udp`, a name with
-no other spelling, an other spelling already a hostname in the deploy, and a
-name one hosting redirects while another serves it. A pinned uploaded
+no other spelling (IP addresses and one-word names have none), an other
+spelling already a hostname in the deploy, and different choices on paths of
+one name. Every added name is also written to the organization's `hostname`
+uniqueness table (`hostingRoutingNames`), so a www name can never be claimed
+by two hostings (`409 hostname_in_use` at save time), and the daemon refuses a
+deploy whose names another environment's live site already answers on, before
+any container starts. A pinned uploaded
 certificate must cover every added name or the deploy is refused with
 `tls_pin_mismatch` and a plain `message`; Let's Encrypt (`acme`) gives each
 added name its own certificate, and "Use Let's Encrypt" checks DNS for them

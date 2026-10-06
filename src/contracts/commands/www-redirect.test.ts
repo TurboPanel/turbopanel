@@ -7,6 +7,7 @@ import {
   hostingWwwNames,
   hostingWwwRedirects,
   isHostingWwwMode,
+  wwwSiblingHostname,
 } from './hostname.ts'
 import { validateDeployWwwModes } from './www-redirect.ts'
 
@@ -102,13 +103,13 @@ describe('validateDeployWwwModes', () => {
     assertEquals(error?.includes('has no www or bare spelling'), true)
   })
 
-  it('refuses a name one hosting redirects while another path of it is served', () => {
+  it('refuses paths of one name that make different www choices', () => {
     assertEquals(
       validateDeployWwwModes([
         host(['example.com'], { www: 'root-to-www' }),
         host(['example.com'], { hostingId: 'h2', pathPrefix: '/api' }),
       ]),
-      'www: example.com is sent to www.example.com by one hosting but served by another'
+      'www: every path of example.com must use the same www choice (found root-to-www and off)'
     )
     assertEquals(
       validateDeployWwwModes([
@@ -116,6 +117,32 @@ describe('validateDeployWwwModes', () => {
         host(['example.com'], { hostingId: 'h2', pathPrefix: '/api', www: 'root-to-www' }),
       ]),
       null
+    )
+  })
+
+  it('refuses both on one path and nothing on another path of the same name', () => {
+    assertEquals(
+      validateDeployWwwModes([
+        host(['example.com'], { www: 'both' }),
+        host(['example.com'], { hostingId: 'h2', pathPrefix: '/api' }),
+      ])?.startsWith('www: every path of example.com'),
+      true
+    )
+  })
+
+  it('gives IP addresses and one-word names no www spelling', () => {
+    for (const name of [
+      '203.0.113.5',
+      'www.203.0.113.5',
+      'localhost',
+      'www.com',
+      'www.localhost',
+    ]) {
+      assertEquals(wwwSiblingHostname(name), null, name)
+    }
+    assertEquals(
+      validateDeployWwwModes([host(['203.0.113.5'], { www: 'both' })]),
+      'www: 203.0.113.5 has no www or bare spelling to use'
     )
   })
 

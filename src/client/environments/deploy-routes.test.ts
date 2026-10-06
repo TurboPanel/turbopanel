@@ -3510,7 +3510,7 @@ test('an uploaded certificate pinned to a hosting with a www setting must list t
           headers,
           body: JSON.stringify({
             source: 'upload',
-            name: `Upload ${names.length}`,
+            name: `Upload ${names.length} ${names[0]}`,
             certificatePem: minted.certificatePem,
             privateKeyPem: minted.privateKeyPem,
           }),
@@ -3543,8 +3543,16 @@ test('an uploaded certificate pinned to a hosting with a www setting must list t
         error: 'tls_pin_mismatch',
         hostingId,
         message:
-          'The certificate on this hosting must also cover www.pinned.example.com because of its www setting. Upload one that lists every name, or set www to "Only pinned.example.com".',
+          'The certificate on this hosting covers pinned.example.com but not www.pinned.example.com, which its www setting adds. Upload one that lists every name, or set www to "Only pinned.example.com".',
       })
+
+      // A certificate for another name entirely misses the typed name too: the
+      // www sentence would be wrong, so the refusal carries no message.
+      const unrelated = await upload(['other.example.com'])
+      await ctx.db.update(hosting).set({ tlsId: unrelated }).where(eq(hosting.id, hostingId))
+      const mismatched = await deploy()
+      assertEquals(mismatched.status, 400)
+      assertEquals(await mismatched.json(), { error: 'tls_pin_mismatch', hostingId })
 
       // A certificate listing both spellings passes the pin check; this fixture
       // server has no daemon key, so the deploy only stops later.

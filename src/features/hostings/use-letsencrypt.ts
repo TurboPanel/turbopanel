@@ -106,15 +106,16 @@ async function rememberWaiting(
 export async function requestLetsEncrypt(params: RequestParams): Promise<LetsEncryptRequestResult> {
   const options = parseHostingOptions(params.hosting.options)
   const hostnames = readHostnames(params.hosting.options)
+  const www = readHostingWwwMode(params.hosting.options)
   const refusal = letsEncryptRefusal({
     acmeEnabled: params.acmeEnabled,
     protocol: resolveHostingProtocol(options),
     bind: resolveHostingBind(options),
     hostnames,
+    www,
   })
   if (refusal !== null) return { ok: false, error: refusal }
 
-  const www = readHostingWwwMode(params.hosting.options)
   if (www !== 'off') {
     const conflict = wwwRedirectConflict(
       hostnames,

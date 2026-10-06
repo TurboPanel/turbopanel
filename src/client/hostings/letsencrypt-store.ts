@@ -20,8 +20,10 @@ import {
   type HostingCertificate,
   type PinnedCertificateRow,
   deriveHostingCertificate,
+  letsEncryptNames,
   letsEncryptRefusal,
   readPendingLetsEncrypt,
+  withPendingLetsEncrypt,
 } from '../../features/hostings/hosting-certificate.ts'
 import {
   parseHostingOptions,
@@ -248,6 +250,7 @@ export async function loadHostingCertificates(
         protocol: resolveHostingProtocol(options),
         bind: resolveHostingBind(options),
         hostnames,
+        www: readHostingWwwMode(row.options),
       }) === null
     const pinned = row.tlsId === null ? null : (pinnedById.get(row.tlsId) ?? null)
     out.set(
@@ -263,4 +266,44 @@ export async function loadHostingCertificates(
     )
   }
   return out
+}
+
+/**
+ * After a hosting's names change (a new www choice, new hostnames) while it is
+ * pinned to a Let's Encrypt row that does not list them all: queue the same
+ * request the "Use Let's Encrypt" button makes. The sweep then checks DNS on
+ * every name, shows "www.<name> doesn't point at this server yet" while it
+ * waits, and pins a row covering every name once DNS is right. Returns whether
+ * a request was queued.
+ */
+export async function queueLetsEncryptRecheck(
+  db: Db,
+  hostingId: string,
+  now: Date
+): Promise<boolean> {
+  const [row] = await db
+    .select({ tlsId: hosting.tlsId, options: hosting.options, metadata: hosting.metadata })
+    .from(hosting)
+    .where(eq(hosting.id, hostingId))
+    .limit(1)
+  if (!row?.tlsId || readPendingLetsEncrypt(row.metadata) !== null) return false
+  const [pin] = await db
+    .select({ source: tls.source, metadata: tls.metadata })
+    .from(tls)
+    .where(eq(tls.id, row.tlsId))
+    .limit(1)
+  if (pin?.source !== 'lets_encrypt') return false
+  const covered = (pin.metadata as { dnsNames?: unknown } | null)?.dnsNames
+  const names = letsEncryptNames(
+    parseHostingOptions(row.options)?.hostnames ?? [],
+    readHostingWwwMode(row.options)
+  )
+  if (Array.isArray(covered) && names.every((name) => covered.includes(name))) return false
+  await db
+    .update(hosting)
+    .set({
+      metadata: withPendingLetsEncrypt(row.metadata, { requestedAt: now.toISOString(), dns: null }),
+    })
+    .where(eq(hosting.id, hostingId))
+  return true
 }

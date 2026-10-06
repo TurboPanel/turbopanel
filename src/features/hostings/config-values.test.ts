@@ -118,4 +118,41 @@ test('hostingOptionsInputError checks the www mode', () => {
     message: `${long} has no www or bare spelling, so set www to off for it`,
   })
   assertEquals(hostingOptionsInputError({ www: 'off', hostnames: [long] }), null)
+  assertEquals(hostingOptionsInputError({ hostnames: ['203.0.113.5'], www: 'both' }), {
+    field: 'options.www',
+    message: '203.0.113.5 has no www or bare spelling, so set www to off for it',
+  })
+})
+
+test('hostingOptionsInputError puts an old wwwRedirect key through the same www checks', () => {
+  assertEquals(hostingOptionsInputError({ wwwRedirect: 'yes' }), {
+    field: 'options.wwwRedirect',
+    message: 'must be true or false',
+  })
+  assertEquals(hostingOptionsInputError({ wwwRedirect: true, protocol: 'tcp' }), {
+    field: 'options.wwwRedirect',
+    message: 'applies to http hostings only',
+  })
+  const long = `${'a.'.repeat(124)}com`
+  assertEquals(hostingOptionsInputError({ wwwRedirect: true, hostnames: [long] }), {
+    field: 'options.wwwRedirect',
+    message: `${long} has no www or bare spelling, so set www to off for it`,
+  })
+  assertEquals(hostingOptionsInputError({ wwwRedirect: true, hostnames: ['203.0.113.5'] }), {
+    field: 'options.wwwRedirect',
+    message: '203.0.113.5 has no www or bare spelling, so set www to off for it',
+  })
+  // A wildcard is refused as a hostname before the www check runs.
+  assertEquals(
+    hostingOptionsInputError({ wwwRedirect: true, hostnames: ['*.example.com'] })?.field,
+    'options.hostnames'
+  )
+  assertEquals(hostingOptionsInputError({ wwwRedirect: true, hostnames: ['example.com'] }), null)
+  assertEquals(hostingOptionsInputError({ wwwRedirect: false, protocol: 'tcp' }), null)
+  // An explicit www wins over the old key, even a malformed one.
+  assertEquals(hostingOptionsInputError({ www: 'off', wwwRedirect: 'yes' }), null)
+  assertEquals(
+    hostingOptionsInputError({ www: 'both', wwwRedirect: 'yes', protocol: 'tcp' })?.field,
+    'options.www'
+  )
 })

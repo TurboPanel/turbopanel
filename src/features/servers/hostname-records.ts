@@ -9,6 +9,7 @@ import type { Db } from '../../db/connection.ts'
 import { hostname } from '../../db/schema.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { type HostingWwwMode, hostingCertificateNames } from '../../contracts/commands/hostname.ts'
 
 /**
  * Full-replace sync of a hosting's `hostname` rows, mirroring
@@ -29,6 +30,21 @@ export async function replaceHostingHostnames(
       hostname: value,
     })
   )
+}
+
+/**
+ * Every name a hosting answers on, for the uniqueness table: the typed names
+ * plus each name its www choice adds (served or redirect-only). A www name
+ * goes on the shared routing layer exactly like a typed one, so it must be
+ * just as unique: one environment's `both` may not claim a name another one
+ * typed, and typing a name another hosting's www choice already adds is
+ * refused too (`hostname_in_use`).
+ */
+export function hostingRoutingNames(
+  hostnames: readonly string[],
+  www: HostingWwwMode | undefined
+): string[] {
+  return hostingCertificateNames({ hostnames, www })
 }
 
 /** `uniq_hostname_routing_organization_id_hostname` firing — see `unique-violation.ts` for the `.cause` walk. */

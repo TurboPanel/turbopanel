@@ -242,6 +242,7 @@ export function registerHostingLetsEncryptRoutes(
       protocol: resolveHostingProtocol(options),
       bind: resolveHostingBind(options),
       hostnames,
+      www,
     })
     if (refusal !== null) {
       return c.json({ error: refusal }, 400)

@@ -54,6 +54,7 @@ import {
 import { hosting, ip, service, tls } from '../../db/schema.ts'
 import {
   isHostnameUniqueViolation,
+  hostingRoutingNames,
   replaceHostingHostnames,
 } from '../../features/servers/hostname-records.ts'
 import {
@@ -590,7 +591,12 @@ async function persistExistingDeclaredRoute(input: {
           updatedAt: new Date().toISOString(),
         })
         .where(eq(hosting.id, existingId))
-      await replaceHostingHostnames(tx, existingId, ctx.organizationId, [route.entry.hostname])
+      await replaceHostingHostnames(
+        tx,
+        existingId,
+        ctx.organizationId,
+        hostingRoutingNames([route.entry.hostname], route.entry.www)
+      )
     })
   } catch (err) {
     if (isHostnameUniqueViolation(err)) {
@@ -637,7 +643,12 @@ async function insertDeclaredRoute(
           options,
         })
         .returning({ id: hosting.id })
-      await replaceHostingHostnames(tx, inserted.id, ctx.organizationId, [route.entry.hostname])
+      await replaceHostingHostnames(
+        tx,
+        inserted.id,
+        ctx.organizationId,
+        hostingRoutingNames([route.entry.hostname], route.entry.www)
+      )
       return inserted.id
     })
   } catch (err) {

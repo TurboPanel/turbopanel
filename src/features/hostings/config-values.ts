@@ -14,7 +14,11 @@ import {
   isValidHostname,
   wwwSiblingHostname,
 } from '../../contracts/commands/hostname.ts'
-import { HOSTING_WEB_ENV_KEY_RE, isReservedSiteVariableName } from './hosting-options.ts'
+import {
+  HOSTING_WEB_ENV_KEY_RE,
+  isReservedSiteVariableName,
+  readHostingWwwMode,
+} from './hosting-options.ts'
 
 /** Stable error code for a hosting option value outside its allowlist. */
 export const INVALID_HOSTING_OPTION_ERROR = 'invalid_hosting_option'
@@ -104,10 +108,28 @@ function hostnamesProblem(value: unknown): HostingOptionInputError | null {
     : null
 }
 
+/**
+ * The www choice a write asks for, and the field to blame. An older client may
+ * still send `wwwRedirect: true`; it goes through the same checks as the mode
+ * it is read as, so it can never store what `options.www` would be refused for.
+ */
+function requestedWww(
+  value: Record<string, unknown>
+): { field: string; mode: unknown } | HostingOptionInputError | null {
+  if (value.www !== undefined) return { field: 'options.www', mode: value.www }
+  if (value.wwwRedirect === undefined) return null
+  if (typeof value.wwwRedirect !== 'boolean') {
+    return { field: 'options.wwwRedirect', message: 'must be true or false' }
+  }
+  return { field: 'options.wwwRedirect', mode: readHostingWwwMode(value) }
+}
+
 function wwwProblem(value: Record<string, unknown>): HostingOptionInputError | null {
-  if (value.www === undefined || value.www === 'off') return null
-  const field = 'options.www'
-  if (!isHostingWwwMode(value.www)) {
+  const requested = requestedWww(value)
+  if (requested === null || 'message' in requested) return requested
+  const { field, mode } = requested
+  if (mode === 'off') return null
+  if (!isHostingWwwMode(mode)) {
     return { field, message: 'must be off, both, www-to-root, or root-to-www' }
   }
   if (value.protocol === 'tcp' || value.protocol === 'udp') {

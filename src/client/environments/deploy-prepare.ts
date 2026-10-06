@@ -226,6 +226,7 @@ import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secr
 import { resolveHostingDeployWeb } from '../../features/hostings/hosting-web-env.ts'
 import {
   assembleTlsMetadata,
+  coversAllHostnames,
   parseTlsOptions,
   resolveTlsForHosting,
   TLS_SOURCES,
@@ -3712,16 +3713,25 @@ function pinCoverageNames(
   return pinned?.source === 'lets_encrypt' ? hosting.hostnames : hostingCertificateNames(hosting)
 }
 
-/** The refusal for a pin that cannot serve the hosting, in plain words when www is the cause. */
+/**
+ * The refusal for a pin that cannot serve the hosting. When the certificate
+ * covers the typed names and only misses names the www choice adds, say so in
+ * plain words, naming exactly the missing ones.
+ */
 function tlsPinErrorResponse(
   error: Parameters<typeof tlsPinErrorCode>[0],
   hostingId: string,
+  pinned: OrgTlsCandidate | undefined,
   hosting: Readonly<{ hostnames: string[]; www: HostingWwwMode }>
 ): Response {
-  const extra = hostingCertificateNames(hosting).filter((name) => !hosting.hostnames.includes(name))
+  const dnsNames = pinned?.metadata.dnsNames ?? []
+  const typedCovered = coversAllHostnames(dnsNames, hosting.hostnames)
+  const missing = hostingCertificateNames(hosting).filter(
+    (name) => !coversAllHostnames(dnsNames, [name])
+  )
   const message =
-    error === 'pin_mismatch' && extra.length > 0
-      ? `The certificate on this hosting must also cover ${extra.join(', ')} because of its www setting. Upload one that lists every name, or set www to "Only ${hosting.hostnames.join(', ')}".`
+    error === 'pin_mismatch' && typedCovered && missing.length > 0
+      ? `The certificate on this hosting covers ${hosting.hostnames.join(', ')} but not ${missing.join(', ')}, which its www setting adds. Upload one that lists every name, or set www to "Only ${hosting.hostnames.join(', ')}".`
       : undefined
   return Response.json(
     { error: tlsPinErrorCode(error), hostingId, ...(message ? { message } : {}) },
@@ -3754,7 +3764,8 @@ async function resolveHttpHostingEntry(
     candidates,
   })
   if (!resolved.ok) {
-    return { error: tlsPinErrorResponse(resolved.error, h.id, { hostnames, www }) }
+    const pinned = candidates.find((candidate) => candidate.id === h.tlsId)
+    return { error: tlsPinErrorResponse(resolved.error, h.id, pinned, { hostnames, www }) }
   }
 
   const bindScope = resolveHostingBind(parseHostingOptions(h.options))

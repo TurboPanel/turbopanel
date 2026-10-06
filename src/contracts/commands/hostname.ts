@@ -17,16 +17,29 @@ export function isValidHostname(value: unknown): boolean {
 
 const WWW_PREFIX = 'www.'
 
+/** True when every character of a non-empty label is a digit (an IPv4 octet). */
+function isAllDigits(label: string): boolean {
+  if (label.length === 0) return false
+  for (const ch of label) {
+    if (ch < '0' || ch > '9') return false
+  }
+  return true
+}
+
 /**
- * The other spelling of a site name for the "send www to the main name" option:
- * `www.example.com` for `example.com`, and `example.com` for `www.example.com`.
- * Returns `null` when no valid name results (a bare `www`, a name that would be
- * too long once `www.` is added).
+ * The other spelling of a site name for the www choice: `www.example.com` for
+ * `example.com`, and `example.com` for `www.example.com`. Returns `null` when
+ * no valid name results (a bare `www`, a name that would be too long once
+ * `www.` is added), and for names with no www spelling at all: an IP address
+ * (the last label is all digits) or a one-word name (`localhost`, `com` from
+ * `www.com`). Twin of `turbopaneld/src/contracts/commands-contracts.ts`.
  */
 export function wwwSiblingHostname(hostname: string): string | null {
-  const sibling = hostname.startsWith(WWW_PREFIX)
-    ? hostname.slice(WWW_PREFIX.length)
-    : WWW_PREFIX + hostname
+  const typedIsWww = hostname.startsWith(WWW_PREFIX)
+  const sibling = typedIsWww ? hostname.slice(WWW_PREFIX.length) : WWW_PREFIX + hostname
+  const bare = typedIsWww ? sibling : hostname
+  const lastDot = bare.lastIndexOf('.')
+  if (lastDot === -1 || isAllDigits(bare.slice(lastDot + 1))) return null
   return isValidHostname(sibling) ? sibling : null
 }
 

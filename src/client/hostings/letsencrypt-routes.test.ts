@@ -377,3 +377,109 @@ test('PUT use-letsencrypt: pins at once when DNS is ready, and a second click ad
     await f.cleanup()
   }
 })
+
+async function readPending(f: Fixture): Promise<unknown> {
+  const [row] = await f.db
+    .select({ metadata: hosting.metadata })
+    .from(hosting)
+    .where(eq(hosting.id, f.hostingId))
+  return (row?.metadata as Record<string, unknown> | null)?.letsEncryptPending
+}
+
+async function readCertificate(f: Fixture) {
+  const got = await f.call('GET', `/hostings/${f.hostingId}`)
+  assertEquals(got.status, 200)
+  return ((await got.json()) as { hosting: { certificate: CertificateBody['certificate'] } })
+    .hosting.certificate
+}
+
+test("PATCH /hostings: a www choice adding names the Let's Encrypt row lacks queues a DNS check", async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  try {
+    const pinned = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
+    assertEquals(pinned.status, 200)
+    const [row] = await f.db
+      .select({ metadata: tls.metadata })
+      .from(tls)
+      .where(eq(tls.organizationId, f.organizationId))
+    assertEquals((row?.metadata as { dnsNames?: unknown }).dnsNames, ['shop.example.com'])
+    assertEquals(await readPending(f), undefined)
+
+    const before = Date.now()
+    const patched = await f.call('PATCH', `/hostings/${f.hostingId}`, {
+      options: { ...PUBLIC_SITE, www: 'www-to-root' },
+    })
+    assertEquals(patched.status, 200)
+    const pending = (await readPending(f)) as { requestedAt: string; dns: unknown }
+    assertEquals(pending.dns, null)
+    assertEquals(Date.parse(pending.requestedAt) >= before - 1000, true)
+
+    const certificate = await readCertificate(f)
+    assertEquals(certificate?.state, 'waiting_for_dns')
+    assertEquals(certificate?.dns, null)
+
+    // A request already waiting is kept as it is, not queued again.
+    const again = await f.call('PATCH', `/hostings/${f.hostingId}`, {
+      options: { ...PUBLIC_SITE, www: 'both' },
+    })
+    assertEquals(again.status, 200)
+    assertEquals(await readPending(f), pending)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("PATCH /hostings: no DNS check is queued when the Let's Encrypt row already lists every name", async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({
+    acmeEnabled: true,
+    hostingOptions: { ...PUBLIC_SITE, www: 'www-to-root' },
+  })
+  try {
+    const pinned = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
+    assertEquals(pinned.status, 200)
+    for (const www of ['both', 'root-to-www', 'off']) {
+      const res = await f.call('PATCH', `/hostings/${f.hostingId}`, {
+        options: { ...PUBLIC_SITE, www },
+      })
+      assertEquals(res.status, 200, www)
+      assertEquals(await readPending(f), undefined, www)
+    }
+    assertEquals((await readCertificate(f))?.state, 'issuing')
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('PATCH /hostings: no DNS check is queued without a pin or for an uploaded certificate', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  try {
+    const unpinned = await f.call('PATCH', `/hostings/${f.hostingId}`, {
+      options: { ...PUBLIC_SITE, www: 'both' },
+    })
+    assertEquals(unpinned.status, 200)
+    assertEquals(await readPending(f), undefined)
+
+    const [upload] = await f.db
+      .insert(tls)
+      .values({
+        organizationId: f.organizationId,
+        name: 'Uploaded',
+        source: 'upload',
+        status: 'ready',
+        metadata: { dnsNames: ['shop.example.com'] },
+      })
+      .returning({ id: tls.id })
+    await f.db.update(hosting).set({ tlsId: upload!.id }).where(eq(hosting.id, f.hostingId))
+    const uploaded = await f.call('PATCH', `/hostings/${f.hostingId}`, {
+      options: { ...PUBLIC_SITE, www: 'www-to-root' },
+    })
+    assertEquals(uploaded.status, 200)
+    assertEquals(await readPending(f), undefined)
+  } finally {
+    await f.db.update(hosting).set({ tlsId: null }).where(eq(hosting.id, f.hostingId))
+    await f.cleanup()
+  }
+})
