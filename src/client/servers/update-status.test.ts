@@ -130,7 +130,7 @@ it('resolveServerUpdateStatus surfaces last error but stays idle when update sti
   assertEquals(resolved.lastUpdateError, 'reconcile failed')
 })
 
-it('resolveServerUpdateStatus returns error for failed update when already on trunk', async () => {
+it('resolveServerUpdateStatus reports idle with no error for a failed update when already on trunk', async () => {
   const commit = '51e32ad'
   const resolved = await resolveServerUpdateStatus({
     channel: 'trunk',
@@ -143,11 +143,49 @@ it('resolveServerUpdateStatus returns error for failed update when already on tr
       channel: 'trunk',
       manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
     },
+    projectedUpdate: {
+      status: 'failed',
+      error: 'preflight_in_progress: update already in progress',
+    },
+  })
+
+  assertEquals(resolved.status, 'idle')
+  assertEquals(resolved.updateAvailable, false)
+  assertEquals(resolved.lastUpdateError, undefined)
+  assertEquals(resolved.canResetUpdateStatus, undefined)
+})
+
+it('resolveServerUpdateStatus keeps a failed update idle when the target could not be resolved', async () => {
+  const resolved = await resolveServerUpdateStatus({
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit: '51e32ad', buildId: 'b1' },
+    targetManifest: null,
+    listUpdateRequests: async () => [request({ status: 'failed', error: 'checksum mismatch' })],
+  })
+
+  assertEquals(resolved.targetStatus, 'unknown')
+  assertEquals(resolved.status, 'idle')
+  assertEquals(resolved.lastUpdateError, 'checksum mismatch')
+})
+
+it('resolveServerUpdateStatus still returns error for a failed update on a blocked server', async () => {
+  const resolved = await resolveServerUpdateStatus({
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit: 'aaa', buildId: 'b1' },
+    colocatedWithInstance: true,
+    targetManifest: {
+      commit: 'bbb',
+      buildId: 'b2',
+      builtAt: '2020-01-01T00:00:00.000Z',
+      channel: 'trunk',
+      manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
+    },
     listUpdateRequests: async () => [request({ status: 'failed', error: 'checksum mismatch' })],
   })
 
   assertEquals(resolved.status, 'error')
-  assertEquals(resolved.updateAvailable, false)
   assertEquals(resolved.lastUpdateError, 'checksum mismatch')
 })
 

@@ -67,6 +67,9 @@ export type ComposeValidateOptions = {
    * Whether a Docker service must name its own `image` or `build`. Defaults to
    * `true`. `false` is for a partial layer whose merged result is checked
    * separately (see `lint.ts` `ComposeLintOptions.requireImageOrBuild`).
+   * `false` also marks the layer as partial for the `x-turbopanel` kind rules:
+   * a block that does not restate `serviceKind` or `source` inherits them from
+   * the Base, so those rules are asked of the merge instead.
    */
   requireImageOrBuild?: boolean
   /** The document is a merge of layers, not a stored one (wording only). */
@@ -135,7 +138,9 @@ export function validateComposeDocument(
 
   const services = unwrappedData.services
   if (isPlainMapping(services)) {
-    for (const issue of collectServiceTurbopanelValidationIssues(services)) {
+    for (const issue of collectServiceTurbopanelValidationIssues(services, {
+      partialLayer: options?.requireImageOrBuild === false,
+    })) {
       issues.push(issue)
     }
   }

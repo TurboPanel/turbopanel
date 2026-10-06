@@ -54,7 +54,11 @@ import {
   type DatacenterMembershipRow,
   loadDatacenterMembershipsForServers,
 } from '../net/datacenter-membership.ts'
-import { partitionSharedDatacenters, pinAddressForDatacenter } from '../net/private-endpoint.ts'
+import {
+  partitionSharedDatacenters,
+  pinAddressForDatacenter,
+  splitTrustedByLink,
+} from '../net/private-endpoint.ts'
 import { loadCidrAllocationExclusions } from '../net/cidr-collisions.ts'
 import { checkAdvertisedRangeShape } from './advertised-ranges.ts'
 import {
@@ -1185,12 +1189,14 @@ export function resolveRelayGlobalEndpointAddress(
 function lanPathCandidate(
   selfServerId: string,
   otherServerId: string,
-  caches: EndpointAddressCaches
+  caches: EndpointAddressCaches,
+  linkState: 'up' | 'down' = 'up'
 ): RelayPathCandidate | null {
   const fromPins = caches.datacenterMembershipsByServer.get(selfServerId) ?? []
   const toPins = caches.datacenterMembershipsByServer.get(otherServerId) ?? []
   const { trusted } = partitionSharedDatacenters(fromPins, toPins, caches.policyByDatacenter)
-  for (const datacenterId of trusted) {
+  const byLink = splitTrustedByLink(trusted, fromPins, toPins)
+  for (const datacenterId of linkState === 'up' ? byLink.available : byLink.down) {
     const policy = caches.policyByDatacenter.get(datacenterId) ?? defaultDatacenterPolicyRow()
     const address = pinAddressForDatacenter(
       fromPins,
@@ -1239,7 +1245,11 @@ function failedKindsForPair(
   return caches.failedPathKindsByPair.get(fabricPairCacheKey(selfServerId, otherServerId))
 }
 
-/** Direct LAN then public then NAT candidates for an arbitrary `(from → to)` pair. */
+/**
+ * Direct LAN then public then NAT candidates for an arbitrary `(from → to)`
+ * pair. A LAN whose NIC link is reported down is not tried first: it is
+ * appended last, so the tunnel only uses it when no other direct path exists.
+ */
 export function directCandidates(
   selfServerId: string,
   other: Pick<RelayRecord, 'serverId' | 'endpointAddress'>,
@@ -1253,6 +1263,8 @@ export function directCandidates(
   if (pub && !failed?.has('direct_public')) candidates.push(pub)
   const nat = natPathCandidate(selfServerId, other, caches)
   if (nat && !failed?.has('direct_nat')) candidates.push(nat)
+  const deadLan = lanPathCandidate(selfServerId, other.serverId, caches, 'down')
+  if (deadLan && !failed?.has('direct_lan')) candidates.push(deadLan)
   return candidates
 }
 

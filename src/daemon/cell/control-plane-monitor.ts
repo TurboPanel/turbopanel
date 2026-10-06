@@ -23,8 +23,14 @@ import {
 } from './postgres-projection.ts'
 import { resolveUpdateManifest } from '../../features/update/manifest.ts'
 import { DEFAULT_UPDATE_CHANNEL, type UpdateChannel } from '../../contracts/update-channel.ts'
-import { isStaleProjectedUpdating } from '../../client/servers/update-status.ts'
-import { UPDATE_REQUEST_TTL_MS } from '../../features/update/constants.ts'
+import {
+  isStaleProjectedUpdating,
+  isSupersededProjectedFailure,
+} from '../../client/servers/update-status.ts'
+import {
+  UPDATE_IN_PROGRESS_ERROR_CODE,
+  UPDATE_REQUEST_TTL_MS,
+} from '../../features/update/constants.ts'
 import type { RedisDaemonCell } from './redis/cell.ts'
 import type { RedisDaemonCellRegistry } from './redis/registry.ts'
 
@@ -190,8 +196,13 @@ export async function onDaemonUpdateResult(
   requestId: string,
   ok: boolean,
   finishedAt: string,
-  error?: string
+  error?: string,
+  errorCode?: string
 ): Promise<void> {
+  // "An install is already running" is the daemon declining a second request,
+  // not an update that failed: the install in flight owns the outcome, so the
+  // projection keeps its current state instead of showing a stale error.
+  if (!ok && errorCode === UPDATE_IN_PROGRESS_ERROR_CODE) return
   await projectServerDaemon(db, serverId, {
     kind: 'update-result',
     requestId,
@@ -231,14 +242,13 @@ export async function repairStaleProjectedUpdate(
     updateTtlMs?: number
   } = {}
 ): Promise<boolean> {
-  if (
-    !isStaleProjectedUpdating({
-      projectedUpdate,
-      currentCommit: opts.currentCommit,
-      targetCommit: opts.targetCommit,
-      updateTtlMs: opts.updateTtlMs ?? UPDATE_REQUEST_TTL_MS,
-    })
-  ) {
+  const stale = isStaleProjectedUpdating({
+    projectedUpdate,
+    currentCommit: opts.currentCommit,
+    targetCommit: opts.targetCommit,
+    updateTtlMs: opts.updateTtlMs ?? UPDATE_REQUEST_TTL_MS,
+  })
+  if (!stale && !isSupersededProjectedFailure({ projectedUpdate, ...opts })) {
     return false
   }
 
