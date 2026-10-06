@@ -82,6 +82,19 @@ test('hostingOptionsInputError names the first refused field, never the value', 
   assertEquals(JSON.stringify(secret).includes('secret\\n'), false)
 })
 
+test('hostingOptionsInputError refuses the PHP ini override names as site variables, in any case', () => {
+  for (const name of ['PHP_VALUE', 'PHP_ADMIN_VALUE', 'php_value', 'Php_Admin_Value']) {
+    const problem = hostingOptionsInputError({ web: { env: { [name]: 'memory_limit=-1' } } })
+    assertEquals(problem?.field, `options.web.env.${name}`, name)
+    assertEquals(problem?.message.includes('reserved'), true, name)
+    assertEquals(JSON.stringify(problem).includes('memory_limit'), false, name)
+  }
+  assertEquals(
+    hostingOptionsInputError({ web: { env: { PHP_VALUES: 'x', MY_PHP_VALUE: 'x' } } }),
+    null
+  )
+})
+
 test('hostingOptionsInputError checks wwwRedirect', () => {
   assertEquals(hostingOptionsInputError({ wwwRedirect: false }), null)
   assertEquals(hostingOptionsInputError({ wwwRedirect: true, hostnames: ['example.com'] }), null)

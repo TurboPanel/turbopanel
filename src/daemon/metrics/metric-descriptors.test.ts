@@ -1,6 +1,9 @@
 import { assertEquals, assertThrows } from '@std/assert'
 import type {
   BlockDeviceSample,
+  ExtendedDockerMetrics,
+  ExtendedHostMetrics,
+  ExtendedIngressMetrics,
   DatabaseProxySample,
   DiagnosticsCpuSample,
   DiagnosticsMemorySample,
@@ -243,6 +246,40 @@ const ENTITY_FIELD_SPECS: EntityFieldSpec[] = [
     ] satisfies (keyof DockerUsageSample)[],
   },
   {
+    entityScope: 'extended.host',
+    fields: [
+      'pidLimitUsedPercent',
+      'oomKills',
+      'rootDiskQueueDepth',
+      'rootDiskOpsPerSecond',
+      'systemdUnitsFailed',
+      'mdArraysDegraded',
+      'mdArraysResyncing',
+    ] satisfies (keyof ExtendedHostMetrics)[],
+  },
+  {
+    entityScope: 'extended.docker',
+    fields: [
+      'containersRunning',
+      'containersUnhealthy',
+      'containersRestarting',
+      'containerOomEvents',
+      'containerDieEvents',
+      'containersCpuPercent',
+      'containersMemoryBytes',
+      'reclaimableBytes',
+    ] satisfies (keyof ExtendedDockerMetrics)[],
+  },
+  {
+    entityScope: 'extended.ingress',
+    fields: ['tlsCertSoonestExpiryDays'] satisfies (keyof ExtendedIngressMetrics)[],
+  },
+  {
+    // Read-time figure, not a wire field: a drive's read plus write ops/s.
+    entityScope: 'block',
+    fields: ['opsPerSecond'],
+  },
+  {
     entityScope: 'diagnostics',
     fields: [
       'averageFrequencyMHz',
@@ -455,4 +492,25 @@ test('sanitizeMetricValue bounds the hardware-signal value descriptor that now c
   // The family is non-negative — a sub-zero reading nulls out rather than
   // clamping, since it is a misread sensor rather than a real measurement.
   assertEquals(sanitizeMetricValue('hardwareSignal.value', -50), null)
+})
+
+test('v7 numbers are described by what they mean over a bucket', () => {
+  const byName = (name: string) => HOST_METRICS_METRIC_DESCRIPTORS[name]!
+  // Events in the interval add up; health counts keep the worst reading.
+  assertEquals(byName('extended.host.oomKills').aggregation, 'delta-sum')
+  assertEquals(byName('extended.docker.containerDieEvents').aggregation, 'delta-sum')
+  assertEquals(byName('extended.host.systemdUnitsFailed').aggregation, 'max')
+  assertEquals(byName('extended.docker.containersUnhealthy').aggregation, 'max')
+  assertEquals(byName('extended.ingress.tlsCertSoonestExpiryDays').unit, 'days')
+  assertEquals(byName('extended.host.pidLimitUsedPercent').max, 100)
+  // A v7 number a host does not report is a gap, never a zero.
+  assertEquals(
+    byName('extended.host.rootDiskQueueDepth').availabilityBehavior,
+    'missing-when-unsupported'
+  )
+})
+
+test('a drive ops/s descriptor is marked read-time (not a wire field)', () => {
+  assertEquals(HOST_METRICS_METRIC_DESCRIPTORS['block.opsPerSecond']?.wire, false)
+  assertEquals(HOST_METRICS_METRIC_DESCRIPTORS['block.readOpsPerSecond']?.wire, undefined)
 })

@@ -14,6 +14,7 @@ import {
 import { mergeComposeLayers } from './layers.ts'
 import { makeComposeTag } from './tags.ts'
 import { type ComposeDocument, emptyComposeDocument } from './types.ts'
+import { validateComposeDocument } from './validate.ts'
 import { validateComposeForDeploy } from './validate-for-deploy.ts'
 
 /**
@@ -46,7 +47,10 @@ function mergedDeployVerdict(projectOptions: unknown, environmentOptions: unknow
 }
 
 function saveIssues(projectOptions: unknown, environmentOptions: unknown) {
-  return validateEnvironmentComposeAgainstBase({ projectOptions, environmentOptions })
+  return validateEnvironmentComposeAgainstBase({
+    projectOptions,
+    environmentOptions,
+  })
 }
 
 test('a change to a Base service needs no image of its own, on save or at deploy', () => {
@@ -72,7 +76,9 @@ test('a service the Base does not define still needs its own image or build', ()
 })
 
 test('a new service that brings an image or a build is fine', () => {
-  const withImage = changes({ worker: { image: 'node:22', command: ['node', 'w.js'] } })
+  const withImage = changes({
+    worker: { image: 'node:22', command: ['node', 'w.js'] },
+  })
   assertEquals(saveIssues(BASE, withImage), [])
   assertEquals(mergedDeployVerdict(BASE, withImage), null)
 
@@ -123,7 +129,9 @@ test('resetting the Base image leaves nothing to run and is refused', () => {
 })
 
 test('the project Base itself must still stand on its own', () => {
-  const brokenBase = { compose: doc({ services: { web: { command: ['x'] } } }) }
+  const brokenBase = {
+    compose: doc({ services: { web: { command: ['x'] } } }),
+  }
   const chain = resolveComposeLayerChain({
     projectOptions: brokenBase,
     environmentOptions: changes({ web: { image: 'nginx' } }),
@@ -224,4 +232,123 @@ test('a secret file outside the service directory is refused at deploy', () => {
   const verdict = mergedDeployVerdict(BASE, env)
   assert(verdict !== null && verdict !== 'chain_refused')
   assertEquals(verdict.kind, 'compose_field_requires_org_opt_in')
+})
+
+const REPO_ID = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+
+const NODE_BASE = {
+  compose: doc({
+    services: {
+      app: {
+        'x-turbopanel': {
+          serviceKind: 'node',
+          source: { sourceId: REPO_ID, branch: 'main' },
+        },
+      },
+    },
+  }),
+}
+
+const SITE_BASE = {
+  compose: doc({
+    services: {
+      www: {
+        'x-turbopanel': { serviceKind: 'site', source: { sourceId: REPO_ID } },
+      },
+    },
+  }),
+}
+
+const ext = (extension: Record<string, unknown>) => changes({ app: { 'x-turbopanel': extension } })
+
+test('a node app setting changes without restating its kind or repository', () => {
+  for (const extension of [
+    { nodeVersion: '24' },
+    { framework: 'next' },
+    { source: { branch: 'staging' } },
+    { serviceKind: 'node', nodeVersion: '22' },
+  ]) {
+    const env = ext(extension)
+    assertEquals(saveIssues(NODE_BASE, env), [], JSON.stringify(extension))
+    assertEquals(mergedDeployVerdict(NODE_BASE, env), null, JSON.stringify(extension))
+  }
+})
+
+test('a site setting changes without restating its kind', () => {
+  const env = changes({
+    www: { 'x-turbopanel': { root: 'dist', engine: 'nginx' } },
+  })
+  assertEquals(saveIssues(SITE_BASE, env), [])
+  assertEquals(mergedDeployVerdict(SITE_BASE, env), null)
+})
+
+test('the kind rules still apply to the merge: a Base that is not a node app', () => {
+  const containerBase = {
+    compose: doc({ services: { app: { image: 'nginx:alpine' } } }),
+  }
+  const env = ext({ framework: 'next' })
+  const issues = saveIssues(containerBase, env)
+  assertEquals(issues.length, 1)
+  assertEquals(issues[0]!.message, 'framework is only valid when serviceKind is node')
+
+  const restated = saveIssues(containerBase, ext({ serviceKind: 'node' }))
+  assert(restated.some((i) => i.message === 'node services require source'))
+})
+
+test('an app new to the environment must still name its own kind fields and repository', () => {
+  const env = changes({
+    worker: { 'x-turbopanel': { serviceKind: 'node', nodeVersion: '24' } },
+  })
+  const issues = saveIssues(BASE, env)
+  assert(issues.some((i) => i.message === 'node services require source'))
+
+  const noRepo = changes({
+    worker: {
+      'x-turbopanel': { serviceKind: 'node', source: { branch: 'main' } },
+    },
+  })
+  assert(
+    saveIssues(BASE, noRepo).some((i) =>
+      i.message.startsWith('source.sourceId must be the UUID of a source')
+    )
+  )
+})
+
+/** The layer on its own, the way a save validates it before the merge is built. */
+function layerIssues(extension: Record<string, unknown>, rest: Record<string, unknown> = {}) {
+  const result = validateComposeDocument(ext2({ ...rest, 'x-turbopanel': extension }), {
+    layer: 'overlay',
+    requireImageOrBuild: false,
+  })
+  return result.ok ? [] : result.issues
+}
+
+const ext2 = (service: Record<string, unknown>) => doc({ services: { app: service } })
+
+test('what a partial layer does state is still checked as given', () => {
+  assertEquals(layerIssues({ nodeVersion: '24' }), [])
+  assertEquals(layerIssues({ source: { branch: 'staging' } }), [])
+
+  const badId = layerIssues({ source: { sourceId: 'not-a-uuid' } })
+  assertEquals(badId.length, 1)
+  assertStringIncludes(badId[0]!.message, 'source.sourceId must be the UUID of a source')
+
+  const image = layerIssues({ serviceKind: 'node' }, { image: 'nginx' })
+  assertEquals(image.length, 1)
+  assertStringIncludes(image[0]!.message, 'image is not valid on a node service')
+
+  const wrongKind = layerIssues({
+    serviceKind: 'container',
+    framework: 'next',
+  })
+  assertEquals(wrongKind.length, 1)
+  assertStringIncludes(wrongKind[0]!.message, 'framework is only valid when serviceKind is node')
+})
+
+test('a document that is not a partial layer is held to the full rules', () => {
+  const strict = validateComposeDocument(ext2({ 'x-turbopanel': { nodeVersion: '24' } }), {
+    requireImageOrBuild: true,
+  })
+  assert(!strict.ok)
+  assertStringIncludes(strict.issues[0]!.message, 'nodeVersion is only valid')
 })

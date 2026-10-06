@@ -778,6 +778,69 @@ export const deployPaths = {
       },
     },
   },
+  '/api/client/v1/environments/{id}/stop': {
+    post: {
+      tags: ['Environments'],
+      summary: 'Stop an environment and remove what it runs',
+      description:
+        'Queues one `environment.stop` command per server the environment runs on: the compose project is taken down (containers, networks and volumes are removed), the environment\'s sites\' release trees are reclaimed and the host\'s ingress is reconciled. The environment record and its settings stay, so a later deploy starts it again. This is the teardown to use when cleaning up a test environment. A rollout still waiting for its next batch is cancelled. Needs manage on the environment, and a recent step-up when the organization requires one (403 `reauth_required`). Poll each command with `GET /servers/{serverId}/commands/{commandId}`. For a stop that keeps volumes use `POST /environments/{id}/lifecycle` with `{"action": "stop"}`.',
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: {
+        200: {
+          description: 'Stop command(s) queued',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/DeployEnvironmentResponse' },
+            },
+          },
+        },
+        401: { description: 'No session' },
+        403: { description: 'Caller cannot manage this environment, or `reauth_required`' },
+        404: { description: 'No such environment' },
+        503: {
+          description: 'The control plane has no link to the command queue or database',
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/lifecycle': {
+    post: {
+      tags: ['Environments'],
+      summary: 'Start, stop or restart an environment without removing it',
+      description:
+        'Queues one `environment.lifecycle` command per server the environment runs on. Unlike `POST /environments/{id}/stop` this keeps containers, networks and volumes. A rollout still waiting for its next batch is cancelled. Needs manage on the environment. Poll each command with `GET /servers/{serverId}/commands/{commandId}`.',
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['action'],
+              properties: { action: { type: 'string', enum: ['start', 'stop', 'restart'] } },
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Lifecycle command(s) queued',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/DeployEnvironmentResponse' },
+            },
+          },
+        },
+        400: { description: 'Invalid request (unknown `action`)' },
+        401: { description: 'No session' },
+        403: { description: 'Caller cannot manage this environment' },
+        404: { description: 'No such environment' },
+        503: {
+          description: 'The control plane has no link to the command queue or database',
+        },
+      },
+    },
+  },
   '/api/client/v1/environments/{id}/deploy-preview': {
     get: {
       tags: ['Environments'],

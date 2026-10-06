@@ -473,7 +473,8 @@ async function applyDaemonInboundEnvelope(params: {
       envelope.requestId,
       envelope.ok,
       envelope.at,
-      envelope.error
+      envelope.error,
+      envelope.errorCode
     )
   }
   if (envelope.kind === 'update-result') {

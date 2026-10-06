@@ -12,7 +12,7 @@ function numericPropertiesForScope(
 ): Record<string, { type: readonly ['number', 'null'] }> {
   const properties: Record<string, { type: readonly ['number', 'null'] }> = {}
   for (const descriptor of Object.values(HOST_METRICS_METRIC_DESCRIPTORS)) {
-    if (descriptor.entityScope === scope) {
+    if (descriptor.entityScope === scope && descriptor.wire !== false) {
       properties[descriptor.fieldName] = { type: ['number', 'null'] as const }
     }
   }
