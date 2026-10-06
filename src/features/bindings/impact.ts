@@ -57,10 +57,15 @@ export async function listBindingImpactForPrincipal(
   return { count: services.length, services }
 }
 
-export async function listBindingImpactForDatabase(
+/**
+ * Services bound to a login of one managed cluster, optionally narrowed to one
+ * of its databases. Unsorted: each caller picks its own order.
+ */
+async function listManagedBindingImpact(
   db: Db,
-  params: Readonly<{ managedId: string; databaseName: string }>
-): Promise<BindingRedeployRequired> {
+  managedId: string,
+  databaseName?: string
+): Promise<BindingImpactService[]> {
   const rows = await db
     .select({
       serviceId: binding.serviceId,
@@ -74,10 +79,20 @@ export async function listBindingImpactForDatabase(
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .where(
-      and(eq(principal.managedId, params.managedId), eq(binding.databaseName, params.databaseName))
+      databaseName === undefined
+        ? eq(principal.managedId, managedId)
+        : and(eq(principal.managedId, managedId), eq(binding.databaseName, databaseName))
     )
+  return rows.map(toImpact)
+}
 
-  const services = rows.map(toImpact).sort((a, b) => a.keyPrefix.localeCompare(b.keyPrefix))
+export async function listBindingImpactForDatabase(
+  db: Db,
+  params: Readonly<{ managedId: string; databaseName: string }>
+): Promise<BindingRedeployRequired> {
+  const services = (await listManagedBindingImpact(db, params.managedId, params.databaseName)).sort(
+    (a, b) => a.keyPrefix.localeCompare(b.keyPrefix)
+  )
   return { count: services.length, services }
 }
 
@@ -86,25 +101,9 @@ export async function listBindingImpactForManaged(
   db: Db,
   managedId: string
 ): Promise<BindingRedeployRequired> {
-  const rows = await db
-    .select({
-      serviceId: binding.serviceId,
-      name: service.name,
-      environmentId: service.environmentId,
-      projectId: environment.projectId,
-      keyPrefix: binding.keyPrefix,
-    })
-    .from(binding)
-    .innerJoin(principal, eq(binding.principalId, principal.id))
-    .innerJoin(service, eq(binding.serviceId, service.id))
-    .innerJoin(environment, eq(service.environmentId, environment.id))
-    .where(eq(principal.managedId, managedId))
-
-  const services = rows
-    .map(toImpact)
-    .sort(
-      (a, b) => (a.name ?? '').localeCompare(b.name ?? '') || a.keyPrefix.localeCompare(b.keyPrefix)
-    )
+  const services = (await listManagedBindingImpact(db, managedId)).sort(
+    (a, b) => (a.name ?? '').localeCompare(b.name ?? '') || a.keyPrefix.localeCompare(b.keyPrefix)
+  )
   return { count: services.length, services }
 }
 

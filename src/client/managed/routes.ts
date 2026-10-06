@@ -526,6 +526,7 @@ async function runManagedDeleteFanout(
     // policies cascade with the row, so its host gets the smaller set.
     const backupHost = await captureManagedBackupHost(db, commandQueue, managedId)
     await clearPendingNullIdContainersForEnvironment(db, environmentId)
+    await detachManagedBindings(db, managedId, detached)
     await deleteManagedRuntimeRows(db, environmentId, managedId)
     await enqueueBackupsReconcile(db, commandQueue, { actorType: 'user', actorId: userId }, [
       backupHost,

@@ -2853,6 +2853,41 @@ test('DELETE cluster with ?detach=true destroys it, removes the bindings and say
   assertEquals(enqueued.length > 0, true)
 })
 
+test('DELETE cluster with ?force=true&detach=true removes the bindings before the rows and still refuses without detach', async () => {
+  const deletedTables: unknown[] = []
+  const base = applyReadyDb({ bindingRows: [BOUND_SERVICE] })
+  const db = {
+    ...base,
+    delete: (table: unknown) => {
+      deletedTables.push(table)
+      return base.delete(table as never)
+    },
+  } as unknown as Db
+  const { app, cookie } = await buildApp({
+    db,
+    registry: stubRegistry(),
+    commandQueue: countingQueue([]),
+  })
+  const refused = await app.request(envPath('?force=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(refused.status, 409)
+  assertEquals(deletedTables.length, 0)
+  const res = await app.request(envPath('?force=true&detach=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(res.status, 200)
+  const body = await jsonOf(res)
+  assertEquals(body.deleted, true)
+  assertEquals(
+    (body.detached as Array<Record<string, unknown>>).map((entry) => entry.name),
+    ['web']
+  )
+  assertEquals(deletedTables.indexOf(binding) < deletedTables.indexOf(managed), true)
+})
+
 test('DELETE cluster with no bindings is unchanged and reports no detached list', async () => {
   const { app, cookie } = await buildApp({
     db: applyReadyDb(),
