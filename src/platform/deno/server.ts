@@ -47,6 +47,7 @@ import {
 } from '../../features/upgrades/prune.ts'
 import { runUpgradeMaintenance } from '../../features/upgrades/maintenance.ts'
 import { registerWebhookRoutes } from '../../webhook/routes.ts'
+import { runManagedExposurePendingSweep } from '../../features/managed/exposure-change.ts'
 import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-desired.ts'
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
@@ -655,6 +656,15 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       dataEncryptionSecrets,
     }).catch((err) => {
       logWarn('daemon-cell', `managed ingress orphan sweep error: ${String(err)}`)
+    })
+    // A database exposure change that never reached its server (a payload that
+    // could not be built, or a server offline past the command's validity) is
+    // pushed again here until the server confirms it.
+    void runManagedExposurePendingSweep(db, commandQueue, {
+      secretsConfig,
+      dataEncryptionSecrets,
+    }).catch((err) => {
+      logWarn('daemon-cell', `managed exposure pending sweep error: ${String(err)}`)
     })
     // Automatic membership repins stamp `ip.repin_pending_fanout_at`
     // from the presence path (which must not enqueue); this drains them with

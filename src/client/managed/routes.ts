@@ -23,6 +23,18 @@ import {
 } from '../../db/schema.ts'
 import { getManagedEngineSpec } from '../../features/managed/index.ts'
 import { clampManagedResources, type ManagedSettings } from '../../features/managed/settings.ts'
+import {
+  describeExposureRefusal,
+  describeFailedExposurePush,
+  enqueueManagedExposureReconcile,
+  loadManagedFrontendServerIds,
+  loadServerLabels,
+  managedExposureNeedsPush,
+  markManagedExposurePending,
+  preflightManagedExposureChange,
+  readManagedExposurePending,
+  unmarkManagedExposurePending,
+} from '../../features/managed/exposure-change.ts'
 import { parseResourceLimits } from '../../features/organizations/resource-limits.ts'
 import {
   createManagedPrincipal,
@@ -55,9 +67,12 @@ import {
   resolveManagedTargetServerId,
 } from './context.ts'
 import {
+  type BindingImpactService,
+  detachBindingsForManaged,
   hasBindingsForDatabase,
   hasBindingsForPrincipal,
   listBindingImpactForDatabase,
+  listBindingImpactForManaged,
   listBindingImpactForPrincipal,
 } from '../../features/bindings/impact.ts'
 import { materializeBindingsForPrincipal } from '../../features/bindings/materialize.ts'
@@ -180,6 +195,7 @@ import {
   resolveManagedServerId,
   serializeContainerRow,
   serializeManagedUser,
+  parseManagedPatchName,
   validateManagedDatabaseCreateName,
 } from '../../features/managed/routes-helpers.ts'
 import {
@@ -474,9 +490,11 @@ async function runManagedDeleteFanout(
     environmentId: string
     managedId: string
     targetServerId: string
+    /** Services whose bindings go with the cluster (`detach=true`): removed when the destroy succeeds, or at once on a forced delete. */
+    detached: readonly BindingImpactService[]
   }
 ): Promise<Response> {
-  const { userId, environmentId, managedId, targetServerId } = params
+  const { userId, environmentId, managedId, targetServerId, detached } = params
   const force = c.req.query('force') === 'true'
   const members = await listManagedMembers(db, managedId)
   if (!force) {
@@ -522,20 +540,39 @@ async function runManagedDeleteFanout(
     // policies cascade with the row, so its host gets the smaller set.
     const backupHost = await captureManagedBackupHost(db, commandQueue, managedId)
     await clearPendingNullIdContainersForEnvironment(db, environmentId)
+    await detachManagedBindings(db, managedId, detached)
     await deleteManagedRuntimeRows(db, environmentId, managedId)
-    await enqueueBackupsReconcile(
-      db,
-      commandQueue,
-      {
-        actorType: 'user',
-        actorId: userId,
-      },
-      [backupHost]
-    )
-    return c.json(buildManagedDeleteHardResponse())
+    await enqueueBackupsReconcile(db, commandQueue, { actorType: 'user', actorId: userId }, [
+      backupHost,
+    ])
+    return c.json({ ...buildManagedDeleteHardResponse(), ...detachedField(detached) })
   }
 
-  return c.json(buildManagedDeleteQueuedResponse(enqueued, targetServerId))
+  // The bindings are NOT removed here. They go with the `managed` row when the
+  // destroy succeeds (principal then binding then variable cascade), so a
+  // destroy that fails later leaves the cluster running with its apps still
+  // bound. `detached` lists the services that lose their binding once it does.
+  return c.json({
+    ...buildManagedDeleteQueuedResponse(enqueued, targetServerId),
+    ...detachedField(detached),
+  })
+}
+
+/**
+ * `detached` appears on the delete response when bindings go with the cluster:
+ * already removed (hard or forced delete) or removed when the queued destroy
+ * succeeds.
+ */
+function detachedField(detached: readonly BindingImpactService[]) {
+  return detached.length > 0 ? { detached } : {}
+}
+
+async function detachManagedBindings(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  managedId: string,
+  detached: readonly BindingImpactService[]
+): Promise<void> {
+  if (detached.length > 0) await detachBindingsForManaged(db, managedId)
 }
 
 async function deleteManagedCompensation(
@@ -776,6 +813,86 @@ async function insertDefaultBackupPolicy(
 type PreparedManagedApply = {
   commandQueue: CommandQueue
   members: PreparedManagedMemberApply[]
+}
+
+type ManagedExposurePlan = { commandQueue: CommandQueue; serverIds: string[] }
+
+/**
+ * `null` when the servers need not be told anything; a plan when they do; a
+ * refusal (naming the server) when they cannot be told or have no address for
+ * the new scope.
+ */
+async function planManagedExposureChange(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  params: Readonly<{
+    managedId: string
+    before: ManagedSettings['exposure']
+    after: ManagedSettings['exposure']
+    storedOptions: unknown
+    metadata: unknown
+  }>
+): Promise<ManagedExposurePlan | Response | null> {
+  if (!managedExposureNeedsPush(params)) return null
+  const commandQueue = assertDispatchInfrastructure(c)
+  if (commandQueue instanceof Response) return commandQueue
+  const serverIds = await loadManagedFrontendServerIds(db, params.managedId)
+  const refusal = await preflightManagedExposureChange(c, db, {
+    serverIds,
+    // Turning exposure off needs no address, whatever scope is remembered.
+    scope: params.after.enabled ? params.after.scope : undefined,
+  })
+  if (!refusal) return { commandQueue, serverIds }
+  const serverId = 'serverId' in refusal ? refusal.serverId : undefined
+  const label = serverId ? (await loadServerLabels(db, [serverId])).get(serverId) : undefined
+  const described = describeExposureRefusal(refusal, label ?? 'this server')
+  if (!described) return mapManagedApplyPrepareError(c, refusal)
+  return c.json({ ...described, ...(serverId ? { serverId } : {}) }, 422)
+}
+
+/**
+ * Tell the servers, remembering who was asked until each confirms. A push that
+ * could not be built or queued answers 502 (the setting is saved, the host is
+ * not yet), never a plain success: this is a security setting.
+ */
+async function pushManagedExposureChange(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  params: Readonly<{
+    plan: ManagedExposurePlan
+    managedId: string
+    userId: string
+    saved: { managed: unknown; settings: unknown }
+  }>
+): Promise<Response | { queuedServerIds: string[]; pendingServerIds: string[] }> {
+  await markManagedExposurePending(db, params.managedId, params.plan.serverIds)
+  const outcome = await enqueueManagedExposureReconcile(c, db, params.plan.commandQueue, {
+    serverIds: params.plan.serverIds,
+    userId: params.userId,
+  })
+  const settled = params.plan.serverIds.filter(
+    (id) => !outcome.queuedServerIds.includes(id) && !outcome.failedServerIds.includes(id)
+  )
+  await unmarkManagedExposurePending(db, params.managedId, settled)
+  if (outcome.failedServerIds.length > 0) {
+    const labels = await loadServerLabels(db, outcome.failedServerIds)
+    return c.json(
+      {
+        error: 'ingress_reconcile_failed',
+        message: describeFailedExposurePush(
+          outcome.failedServerIds.map((id) => labels.get(id) ?? id)
+        ),
+        ...params.saved,
+        ingressReconcile: {
+          queuedServerIds: outcome.queuedServerIds,
+          failedServerIds: outcome.failedServerIds,
+        },
+        pendingServerIds: [...outcome.queuedServerIds, ...outcome.failedServerIds],
+      },
+      502
+    )
+  }
+  return { queuedServerIds: outcome.queuedServerIds, pendingServerIds: outcome.queuedServerIds }
 }
 
 /** Busy / online / dispatch / daemon-key / bind checks — no credential payload. */
@@ -1269,6 +1386,16 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         })
       : null
 
+    // Servers asked to listen the new way that have not confirmed it yet.
+    const pendingIds = Object.keys(readManagedExposurePending(row.metadata))
+    const pendingLabels = await loadServerLabels(db, pendingIds)
+    const exposureView = exposure
+      ? {
+          ...exposure,
+          pendingServers: pendingIds.map((id) => ({ id, name: pendingLabels.get(id) ?? id })),
+        }
+      : null
+
     const serverRows = serverId
       ? await db
           .select({
@@ -1291,7 +1418,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       }),
       connection,
       endpoints,
-      exposure,
+      exposure: exposureView,
       settings: parsed.settings,
       ssl: buildManagedSslView(parsed.settings.ssl.mode, ctx.orgDefaults.sslMode),
       release: buildManagedReleaseView(ctx.spec, parsed.settings),
@@ -1327,6 +1454,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'managed_settings_invalid' }, 400)
     }
 
+    const patchName = parseManagedPatchName(body)
+    if (!patchName.ok) return c.json({ error: patchName.error }, patchName.status)
+
     // Refuse before anything is persisted: another series, or a PostgreSQL
     // swap between libc families (Alpine <-> Debian), would break the data.
     const imageRefusal = assertManagedImageChangeAllowed(ctx.spec, current.settings, mergedSettings)
@@ -1344,6 +1474,18 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     const clamped = clampManagedResources(mergedSettings, orgLimits, serverLimits)
 
+    // A changed exposure only takes effect once every server that fronts the
+    // cluster is told the new listener addresses. Check that can happen before
+    // anything is saved.
+    const exposurePlan = await planManagedExposureChange(c, db, {
+      managedId: row.id,
+      before: current.settings.exposure,
+      after: clamped.exposure,
+      storedOptions: row.options,
+      metadata: row.metadata,
+    })
+    if (exposurePlan instanceof Response) return exposurePlan
+
     const nextOptions = writeManagedRowOptions({
       settings: clamped,
       databases: current.databases,
@@ -1351,7 +1493,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const [updated] = await db
       .update(managed)
-      .set({ options: nextOptions, updatedAt: new Date().toISOString() })
+      .set({
+        options: nextOptions,
+        ...(patchName.name === undefined ? {} : { name: patchName.name }),
+        updatedAt: new Date().toISOString(),
+      })
       .where(eq(managed.id, row.id))
       .returning({
         id: managed.id,
@@ -1366,10 +1512,32 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         updatedAt: managed.updatedAt,
       })
 
-    return c.json({
-      ok: true,
+    const saved = {
       managed: serializeManagedRow(updated ?? row, targetServerId),
       settings: clamped,
+    }
+    const pushed = exposurePlan
+      ? await pushManagedExposureChange(c, db, {
+          plan: exposurePlan,
+          managedId: row.id,
+          userId: auth.userId,
+          saved,
+        })
+      : undefined
+    if (pushed instanceof Response) return pushed
+
+    return c.json({
+      ok: true,
+      ...saved,
+      ...(pushed
+        ? {
+            ingressReconcile: {
+              queuedServerIds: pushed.queuedServerIds,
+              failedServerIds: [],
+            },
+            pendingServerIds: pushed.pendingServerIds,
+          }
+        : {}),
     })
   })
 
@@ -1448,14 +1616,23 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
+    // Apps bound to this cluster would lose their connection variables with
+    // no warning: refuse and list them, unless the caller asks to detach
+    // (`?detach=true`: the bindings and their variables are removed).
+    const attached = await listBindingImpactForManaged(db, row.id)
+    if (attached.count > 0 && c.req.query('detach') !== 'true') {
+      return c.json({ error: 'managed_has_bindings', services: attached.services }, 409)
+    }
+
     const canHardDelete = canHardDeleteManaged(row.serverId)
 
     if (canHardDelete) {
       // Clear never-applied pending container rows so deleteProjectCascade does
       // not treat them as active (`isActiveContainerStatus('pending')` is true).
       await clearPendingNullIdContainersForEnvironment(db, environmentId)
+      await detachManagedBindings(db, row.id, attached.services)
       await db.delete(managed).where(eq(managed.id, row.id))
-      return c.json(buildManagedDeleteHardResponse())
+      return c.json({ ...buildManagedDeleteHardResponse(), ...detachedField(attached.services) })
     }
 
     // `canHardDelete` already covers `!row.serverId`, so `managed.server_id`
@@ -1476,6 +1653,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       environmentId,
       managedId: row.id,
       targetServerId,
+      detached: attached.services,
     })
   })
 
@@ -1977,7 +2155,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       ctx.spec.engine
     )
     if (nameError) {
-      return c.json({ error: nameError.error }, nameError.status)
+      return c.json(
+        {
+          error: nameError.error,
+          ...(nameError.message ? { message: nameError.message } : {}),
+        },
+        nameError.status
+      )
     }
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)

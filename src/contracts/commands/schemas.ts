@@ -6698,6 +6698,11 @@ export type BackupPolicyWireEntry = {
   managedId?: string
   engine?: ManagedEngineCode
   artifactExtension?: ManagedBackupArtifactExtension
+  /**
+   * The database a `managed` run dumps (the cluster's first non-system
+   * database). Optional: when absent the daemon dumps its engine default.
+   */
+  database?: string
   copyId?: string
   copyProvider?: CopyBackupProvider
   volumeName?: string
@@ -6755,12 +6760,19 @@ function parseBackupPolicyTarget(raw: Record<string, unknown>, entry: BackupPoli
     entry.managedId = raw.managedId
     entry.engine = raw.engine
     entry.artifactExtension = raw.artifactExtension
+    if (raw.database !== undefined) {
+      if (!isString(raw.database) || !isSafeIdentifier(raw.database)) {
+        throw new Error('Invalid backup policy managed database')
+      }
+      entry.database = raw.database
+    }
     return
   }
   if (
     raw.managedId !== undefined ||
     raw.engine !== undefined ||
-    raw.artifactExtension !== undefined
+    raw.artifactExtension !== undefined ||
+    raw.database !== undefined
   ) {
     throw new Error('Invalid backup policy copy target')
   }
