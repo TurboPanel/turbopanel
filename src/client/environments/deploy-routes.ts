@@ -26,6 +26,7 @@ import {
   type ReleaseIdAllocator,
 } from './deploy-prepare.ts'
 import { definedFields, presentFields } from '../../lib/optional-fields.ts'
+import { recordedNodeVersions } from './deploy-node-version.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type {
@@ -582,8 +583,36 @@ function deploySelectionMetadata(selection: DeploySourceSelection):
   return { sourceSelection }
 }
 
+/**
+ * Node version warnings a deploy carries back in its response: an app that
+ * runs on the default because its repository could not be read (a disabled
+ * app, or a rollback to a release that recorded no series). Other prepare
+ * warnings keep their old behaviour; these exist so nobody is surprised by
+ * the Node an app runs on. One per message, however many servers said it.
+ */
+function nodeVersionWarnings(
+  preparedByServer: ReadonlyArray<{ prepared: PreparedDeployCompose }>
+): Array<{ code: string; message: string }> {
+  const byMessage = new Map<string, { code: string; message: string }>()
+  for (const row of preparedByServer) {
+    for (const warning of row.prepared.warnings) {
+      if (warning.code !== 'node_version_unresolved') continue
+      byMessage.set(warning.message, { code: warning.code, message: warning.message })
+    }
+  }
+  return [...byMessage.values()]
+}
+
+/** One entry per app: an app on several servers is read once and listed once. */
+function oncePerApp<T extends { composeServiceName: string }>(rows: readonly T[]): T[] {
+  return [...new Map(rows.map((row) => [row.composeServiceName, row])).values()]
+}
+
 /** One `sourceMaterial[]` entry as the durable `command.context` records it. */
-function contextReleaseFromSource(entry: EnvironmentDeploySource): CommandContextRelease {
+export function contextReleaseFromSource(
+  entry: EnvironmentDeploySource,
+  nodeVersion?: string
+): CommandContextRelease {
   return definedFields({
     composeServiceName: entry.composeServiceName,
     releaseId: entry.releaseId,
@@ -595,6 +624,9 @@ function contextReleaseFromSource(entry: EnvironmentDeploySource): CommandContex
     // the read path does not have.
     commitMessage: entry.commitMessage,
     commitAuthor: entry.commitAuthor,
+    // The Node series a native app was built with, so a rollback can send the
+    // same one without reading the repository again (see `deploy-node-version.ts`).
+    nodeVersion,
     rollbackToReleaseId: entry.rollbackToReleaseId,
   }) satisfies CommandContextRelease
 }
@@ -605,7 +637,12 @@ async function createDeployCommand(
 ): Promise<CreatedDeployCommand> {
   const expiresAt = new Date(Date.now() + 600_000).toISOString()
   const replicaCounts = normalizeReplicaCounts(params.replicaCounts)
-  const releases = normalizeContextReleases(params.sourceMaterial.map(contextReleaseFromSource))
+  const nodeVersionByName = recordedNodeVersions(params.nativeAppServices)
+  const releases = normalizeContextReleases(
+    params.sourceMaterial.map((entry) =>
+      contextReleaseFromSource(entry, nodeVersionByName.get(entry.composeServiceName))
+    )
+  )
   const metadata = deploySelectionMetadata(params.selection)
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
@@ -1293,8 +1330,8 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
       envFile: first?.prepared.envFile ?? '',
       secretPlan: first?.prepared.secretPlan ?? [],
       nativeAppVariables: preparedByServer.flatMap((row) => row.prepared.nativeAppVariables ?? []),
-      nativeAppNodeVersions: preparedByServer.flatMap(
-        (row) => row.prepared.nativeAppNodeVersions ?? []
+      nativeAppNodeVersions: oncePerApp(
+        preparedByServer.flatMap((row) => row.prepared.nativeAppNodeVersions ?? [])
       ),
     })
   })
@@ -1875,7 +1912,11 @@ async function runEnvironmentDeploy(
     })
 
     return Response.json(
-      queuedCommandsResponseBody(queued, strategyResponse(engine, preparedByServer.length))
+      queuedCommandsResponseBody(
+        queued,
+        strategyResponse(engine, preparedByServer.length),
+        nodeVersionWarnings(preparedByServer)
+      )
     )
   } finally {
     if (!spanningCommitted) {

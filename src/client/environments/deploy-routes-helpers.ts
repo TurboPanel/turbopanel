@@ -1,6 +1,7 @@
 import { attachWebMetadataToSites } from '../../features/hostings/hosting-web-env.ts'
 import { assignSiteListenPorts } from '../../features/compose/site.ts'
 import { assignNativeAppListenPorts } from '../../features/compose/native-app.ts'
+import { DEFAULT_NATIVE_APP_NODE_SERIES } from '../../contracts/runtime-registry.ts'
 import type {
   EnvironmentDeployComposeFile,
   EnvironmentDeployHosting,
@@ -160,11 +161,13 @@ export type QueuedCommandRef = {
 
 export function queuedCommandsResponseBody(
   commands: readonly QueuedCommandRef[],
-  strategy?: Record<string, unknown>
+  strategy?: Record<string, unknown>,
+  warnings: readonly { code: string; message: string }[] = []
 ): Record<string, unknown> {
   const first = commands[0]
   return {
     ...(strategy === undefined ? {} : { strategy }),
+    ...(warnings.length === 0 ? {} : { warnings: [...warnings] }),
     ok: true as const,
     commandId: first?.commandId ?? '',
     status: 'queued' as const,
@@ -606,29 +609,54 @@ function tryMapSiteEngineFeatureError(prepared: DeployPrepareError): PrepareErro
   }
 }
 
-function tryMapNodeVersionPrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
+/** How to pin a Node version on the service, for the error messages below. */
+function pinHint(composeServiceName: string, example: string): string {
+  return `To choose one yourself, add to service "${composeServiceName}": x-turbopanel: { nodeVersion: "${example}" }.`
+}
+
+function nodeVersionErrorBody(
+  prepared: Extract<
+    DeployPrepareError,
+    { kind: 'node_version_unsupported' | 'node_version_invalid' | 'node_version_unreadable' }
+  >
+): Record<string, unknown> {
+  const name = prepared.composeServiceName
   if (prepared.kind === 'node_version_unreadable') {
     return {
-      status: 422,
-      body: {
-        error: 'node_version_unreadable',
-        composeServiceName: prepared.composeServiceName,
-        message: `Could not read the repository of Node app "${prepared.composeServiceName}" to find which Node version it needs: ${prepared.message}. Try again, or set x-turbopanel.nodeVersion on the service so the repository does not have to be read.`,
-      },
+      error: prepared.kind,
+      composeServiceName: name,
+      message: `Could not read the repository of Node app "${name}" to find which Node version it needs: ${prepared.message}. Try again in a moment. ${pinHint(name, DEFAULT_NATIVE_APP_NODE_SERIES)} With that set, the repository is not read.`,
     }
   }
-  if (prepared.kind !== 'node_version_unsupported') return null
-  return {
-    status: 422,
-    body: {
-      error: 'node_version_unsupported',
-      composeServiceName: prepared.composeServiceName,
+  if (prepared.kind === 'node_version_invalid') {
+    return {
+      error: prepared.kind,
+      composeServiceName: name,
       requested: prepared.requested,
       path: prepared.path,
-      supported: prepared.supported,
-      message: `Node app "${prepared.composeServiceName}" asks for Node ${prepared.requested} in ${prepared.path}, and no Node version this platform offers matches that. Offered: ${prepared.supported.join(', ')}. Change ${prepared.path}, or set x-turbopanel.nodeVersion on the service to one of the offered versions.`,
-    },
+      message: `Node app "${name}": engines.node in ${prepared.path} is "${prepared.requested}", which is not a version range npm accepts (a range between two versions needs spaces around the dash, like "20 - 24"). Fix it in ${prepared.path}. ${pinHint(name, DEFAULT_NATIVE_APP_NODE_SERIES)}`,
+    }
   }
+  const newest = prepared.supported.at(-1) ?? DEFAULT_NATIVE_APP_NODE_SERIES
+  return {
+    error: prepared.kind,
+    composeServiceName: name,
+    requested: prepared.requested,
+    path: prepared.path,
+    supported: prepared.supported,
+    message: `Node app "${name}" asks for Node ${prepared.requested} in ${prepared.path}, and no Node version this platform offers matches that. Offered: ${prepared.supported.join(', ')}. Change ${prepared.path} to allow one of them. ${pinHint(name, newest)}`,
+  }
+}
+
+function tryMapNodeVersionPrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
+  if (
+    prepared.kind !== 'node_version_unsupported' &&
+    prepared.kind !== 'node_version_invalid' &&
+    prepared.kind !== 'node_version_unreadable'
+  ) {
+    return null
+  }
+  return { status: 422, body: nodeVersionErrorBody(prepared) }
 }
 
 export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareErrorResponse {

@@ -15,16 +15,27 @@
  *
  * Files are read from the service's `subdirectory` first and, when it has one,
  * from the repository root after that, so a monorepo that keeps `.nvmrc` at
- * the top still counts. A value that is not a version at all (`lts/*`, `node`)
- * says nothing and the next file is tried. A range no offered series
- * satisfies is a hard error naming the range and the offered series.
+ * the top still counts. A `.nvmrc` / `.node-version` value that is not a
+ * version (`lts/*`, `node`) says nothing and the next file is tried. An
+ * `engines.node` that is not a version range npm accepts (`20-24`) is refused,
+ * like a range no offered series satisfies: both name the file and the value.
  *
  * A repository that cannot be read fails a deploy (`node_version_unreadable`):
  * building with the default instead would quietly bring back the very bug this
  * fixes, and the error says how to go on (pin `x-turbopanel.nodeVersion`, which
- * skips the read). A preview only warns (`node_version_unresolved`), and a
- * rollback, which re-promotes a release that already built, falls back to the
- * default rather than refusing the way back.
+ * skips the read). A preview only warns, and says the deploy reads it again
+ * with the clone secret. A disabled app warns and uses the default rather than
+ * holding up the whole deploy.
+ *
+ * **Rollbacks** send the series the release was built with, recorded on the
+ * deploy command's release row (`context.releases[].nodeVersion`), and read
+ * nothing: a rollback seals no clone secret, so a private repository could not
+ * be read anyway. A release recorded before the series was is read as before
+ * and falls back to the default with a warning in the deploy response.
+ *
+ * A deploy pins a source whose commit the provider could not resolve (a plain
+ * git remote, a deploy-key repository: `commitSha` is still the branch) to the
+ * commit the version files were read at, so the build and the series agree.
  *
  * "Offered" is the runtime registry mirror (`runtimeSeries('node')` in
  * `contracts/runtime-registry.ts`), the same list deploy-prepare grants the
@@ -43,18 +54,24 @@ import { newestAllowedSeries, parseNodeVersionRange } from '../../lib/node-versi
 import { inspectRepository, type InspectRepositoryParams } from '../repositories/inspect.ts'
 
 /** Where a native app's Node series came from. */
-export type NodeVersionOrigin = 'compose' | 'package.json' | '.nvmrc' | '.node-version' | 'default'
+export type NodeVersionOrigin =
+  'compose' | 'release' | 'package.json' | '.nvmrc' | '.node-version' | 'default' | 'unresolved'
 
 /** One native app's Node series, for people (the deploy preview). */
 export type NativeAppNodeVersionView = {
   composeServiceName: string
-  /** The series the app runs: what is sent, or the daemon default when nothing is. */
-  nodeVersion: string
+  /**
+   * The series the app runs: what is sent, or the daemon default when nothing
+   * is. Absent when the preview could not read the repository (`unresolved`).
+   */
+  nodeVersion?: string
   source: NodeVersionOrigin
   /** What the file said (`>=26.7.0`), when the series came from one. */
   requested?: string
   /** Repository path that was read (`apps/web/package.json`). */
   path?: string
+  /** Plain-words explanation, when the answer needs one. */
+  note?: string
 }
 
 export type NodeVersionPrepareError =
@@ -65,6 +82,7 @@ export type NodeVersionPrepareError =
       path: string
       supported: string[]
     }
+  | { kind: 'node_version_invalid'; composeServiceName: string; requested: string; path: string }
   | { kind: 'node_version_unreadable'; composeServiceName: string; message: string }
 
 export type NodeVersionWarning = {
@@ -73,19 +91,30 @@ export type NodeVersionWarning = {
   details: Record<string, unknown>
 }
 
+/** What one read of a repository's version files gives back. */
+export type NodeVersionFileRead =
+  { ok: true; files: RepositoryFileEntry[]; commitSha?: string } | { ok: false; message: string }
+
 /** Read `paths` from the repository a source entry clones, at its commit. */
 export type NodeVersionFileReader = (
   source: EnvironmentDeploySource,
   paths: readonly string[]
-) => Promise<{ ok: true; files: RepositoryFileEntry[] } | { ok: false; message: string }>
+) => Promise<NodeVersionFileRead>
 
 type FileKind = 'package.json' | '.nvmrc' | '.node-version'
 
 const FILE_KINDS: readonly FileKind[] = ['package.json', '.nvmrc', '.node-version']
 
+/** Longest file value echoed back in a view or an error. */
+const MAX_ECHOED_VALUE = 200
+
 type FoundRequest = { requested: string; path: string; source: FileKind }
 
-type FileDecision = { series: string; request: FoundRequest } | { unsupported: FoundRequest } | null
+type FileDecision =
+  | { series: string; request: FoundRequest }
+  | { unsupported: FoundRequest }
+  | { invalid: FoundRequest }
+  | null
 
 function joinPath(directory: string, name: string): string {
   return directory.length === 0 ? name : `${directory}/${name}`
@@ -127,13 +156,19 @@ function firstVersionLine(content: string): string | undefined {
   return undefined
 }
 
+function shortened(value: string): string {
+  return value.length > MAX_ECHOED_VALUE ? `${value.slice(0, MAX_ECHOED_VALUE)}…` : value
+}
+
 function requestIn(file: RepositoryFileEntry): FoundRequest | undefined {
   if (!file.found) return undefined
   const source = kindOf(file.path)
   if (!source) return undefined
   const requested =
     source === 'package.json' ? enginesNode(file.content) : firstVersionLine(file.content)
-  return requested === undefined ? undefined : { requested, path: file.path, source }
+  return requested === undefined
+    ? undefined
+    : { requested: shortened(requested), path: file.path, source }
 }
 
 /**
@@ -151,68 +186,95 @@ export function nodeVersionFromFiles(
     const request = file ? requestIn(file) : undefined
     if (!request) continue
     const range = parseNodeVersionRange(request.requested)
-    if (!range) continue
+    if (!range) {
+      // `engines.node` is meant to be a range, so one npm would not accept is a
+      // mistake to point out. A version file may hold an alias (`lts/*`).
+      if (request.source === 'package.json') return { invalid: request }
+      continue
+    }
     const series = newestAllowedSeries(range, offered)
     return series === null ? { unsupported: request } : { series, request }
   }
   return null
 }
 
-function defaultView(composeServiceName: string): NativeAppNodeVersionView {
-  return { composeServiceName, nodeVersion: DEFAULT_NATIVE_APP_NODE_SERIES, source: 'default' }
+function defaultView(composeServiceName: string, note?: string): NativeAppNodeVersionView {
+  return {
+    composeServiceName,
+    nodeVersion: DEFAULT_NATIVE_APP_NODE_SERIES,
+    source: 'default',
+    ...(note === undefined ? {} : { note }),
+  }
 }
 
 type AppOutcome =
-  | { app: PreparedNativeAppService; view: NativeAppNodeVersionView; warning?: NodeVersionWarning }
+  | {
+      app: PreparedNativeAppService
+      view: NativeAppNodeVersionView
+      warning?: NodeVersionWarning
+      /** The commit the version files were read at, when the reader said. */
+      readCommitSha?: string
+    }
   | { error: NodeVersionPrepareError }
 
-/** How a failed read is handled: refuse (a deploy), or warn and use the default. */
-type ReadFailurePolicy = 'refuse' | 'default'
+type ResolveContext = {
+  read: NodeVersionFileReader
+  offered: readonly string[]
+  mode: 'deploy' | 'preview'
+  /** Node series recorded on each rollback pin, by compose service name. */
+  recorded: ReadonlyMap<string, string>
+}
 
+function unresolvedWarning(name: string, message: string, commitSha: string): NodeVersionWarning {
+  return {
+    code: 'node_version_unresolved',
+    message,
+    details: { composeServiceName: name, commitSha },
+  }
+}
+
+/** A read that failed, in each of the three situations it can happen in. */
 function unreadableOutcome(
   app: PreparedNativeAppService,
   source: EnvironmentDeploySource,
   message: string,
-  policy: ReadFailurePolicy
+  mode: 'deploy' | 'preview'
 ): AppOutcome {
   const name = app.composeServiceName
-  if (policy === 'refuse') {
+  const pin = `Set x-turbopanel.nodeVersion on the service to skip this read.`
+  if (mode === 'preview') {
+    const note = `Could not read the repository in this preview (${message}). The deploy reads it again at the commit it builds, with the clone secret; without a version file the app uses Node ${DEFAULT_NATIVE_APP_NODE_SERIES}. ${pin}`
+    return {
+      app,
+      view: { composeServiceName: name, source: 'unresolved', note },
+      warning: unresolvedWarning(name, `"${name}": ${note}`, source.commitSha),
+    }
+  }
+  const rollback = source.rollbackToReleaseId !== undefined
+  if (!rollback && app.enabled !== false) {
     return { error: { kind: 'node_version_unreadable', composeServiceName: name, message } }
   }
+  const why = rollback
+    ? 'The release being restored recorded no Node version (it was published before that was recorded)'
+    : 'The app is disabled'
+  const note = `${why}, and its repository could not be read (${message}), so it uses Node ${DEFAULT_NATIVE_APP_NODE_SERIES}. ${pin}`
   return {
     app,
-    view: defaultView(name),
-    warning: {
-      code: 'node_version_unresolved',
-      message: `Could not read the repository of "${name}" to find which Node version it needs (${message}). It will use Node ${DEFAULT_NATIVE_APP_NODE_SERIES}.`,
-      details: { composeServiceName: name, commitSha: source.commitSha },
-    },
+    view: defaultView(name, note),
+    warning: unresolvedWarning(name, `"${name}": ${note}`, source.commitSha),
   }
 }
 
-async function resolveOneApp(
+function decisionOutcome(
   app: PreparedNativeAppService,
-  source: EnvironmentDeploySource | undefined,
-  ctx: { read: NodeVersionFileReader; offered: readonly string[]; mode: 'deploy' | 'preview' }
-): Promise<AppOutcome> {
-  const { read, offered } = ctx
+  decision: Exclude<FileDecision, null>,
+  offered: readonly string[]
+): AppOutcome {
   const name = app.composeServiceName
-  const pinned = app.nodeVersion?.trim()
-  if (pinned) {
-    return { app, view: { composeServiceName: name, nodeVersion: pinned, source: 'compose' } }
+  if ('invalid' in decision) {
+    const { requested, path } = decision.invalid
+    return { error: { kind: 'node_version_invalid', composeServiceName: name, requested, path } }
   }
-  if (!source) return { app, view: defaultView(name) }
-
-  const paths = nodeVersionFilePaths(source.subdirectory)
-  const fetched = await read(source, paths)
-  if (!fetched.ok) {
-    const policy =
-      ctx.mode === 'deploy' && source.rollbackToReleaseId === undefined ? 'refuse' : 'default'
-    return unreadableOutcome(app, source, fetched.message, policy)
-  }
-
-  const decision = nodeVersionFromFiles(fetched.files, paths, offered)
-  if (decision === null) return { app, view: defaultView(name) }
   if ('unsupported' in decision) {
     const { requested, path } = decision.unsupported
     return {
@@ -238,9 +300,72 @@ async function resolveOneApp(
   }
 }
 
+/** Answers that need no read: a recorded release, a compose pin, no repository. */
+function answerWithoutRead(
+  app: PreparedNativeAppService,
+  source: EnvironmentDeploySource | undefined,
+  recorded: ReadonlyMap<string, string>
+): AppOutcome | undefined {
+  const name = app.composeServiceName
+  const restored = source?.rollbackToReleaseId === undefined ? undefined : recorded.get(name)
+  if (restored) {
+    return {
+      app: { ...app, nodeVersion: restored },
+      view: { composeServiceName: name, nodeVersion: restored, source: 'release' },
+    }
+  }
+  const pinned = app.nodeVersion?.trim()
+  if (pinned) {
+    return { app, view: { composeServiceName: name, nodeVersion: pinned, source: 'compose' } }
+  }
+  return source ? undefined : { app, view: defaultView(name) }
+}
+
+async function resolveOneApp(
+  app: PreparedNativeAppService,
+  source: EnvironmentDeploySource | undefined,
+  ctx: ResolveContext
+): Promise<AppOutcome> {
+  const known = answerWithoutRead(app, source, ctx.recorded)
+  if (known || !source) return known ?? { app, view: defaultView(app.composeServiceName) }
+
+  const paths = nodeVersionFilePaths(source.subdirectory)
+  const fetched = await ctx.read(source, paths)
+  if (!fetched.ok) return unreadableOutcome(app, source, fetched.message, ctx.mode)
+
+  const readCommitSha = fetched.commitSha
+  const decision = nodeVersionFromFiles(fetched.files, paths, ctx.offered)
+  const outcome =
+    decision === null
+      ? { app, view: defaultView(app.composeServiceName) }
+      : decisionOutcome(app, decision, ctx.offered)
+  if ('error' in outcome || readCommitSha === undefined) return outcome
+  return { ...outcome, readCommitSha }
+}
+
+/** Node series per compose service recorded on a rollback's release pins. */
+function recordedSeries(
+  pins: Readonly<Record<string, { nodeVersion?: string }>> | undefined
+): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const [name, pin] of Object.entries(pins ?? {})) {
+    const series = pin.nodeVersion?.trim()
+    if (series) out.set(name, series)
+  }
+  return out
+}
+
+export type NativeAppNodeVersions = {
+  apps: PreparedNativeAppService[]
+  views: NativeAppNodeVersionView[]
+  /** Compose service name → the commit its version files were read at. */
+  readCommitShas: Map<string, string>
+}
+
 /**
  * Fill in `nodeVersion` for every native app that does not name one, from its
- * repository at the commit being deployed.
+ * repository at the commit being deployed (or, on a rollback, from what the
+ * release recorded).
  *
  * Returns the apps to send (unchanged when nothing was found) and, for the
  * preview, the series each one runs and where it came from.
@@ -255,30 +380,77 @@ export async function withNativeAppNodeVersions(
     /** The prepare's warning list; only ever pushed to. */
     warnings: { push(warning: NodeVersionWarning): unknown }
     offered?: readonly string[]
+    /** A rollback's pins (`DeployRollbackRequest.releaseByService`). */
+    rollbackPins?: Readonly<Record<string, { nodeVersion?: string }>>
   }
-): Promise<
-  { apps: PreparedNativeAppService[]; views: NativeAppNodeVersionView[] } | NodeVersionPrepareError
-> {
-  const offered = ctx.offered ?? runtimeSeries('node')
+): Promise<NativeAppNodeVersions | NodeVersionPrepareError> {
+  const resolveContext: ResolveContext = {
+    read: ctx.read,
+    offered: ctx.offered ?? runtimeSeries('node'),
+    mode: ctx.mode,
+    recorded: recordedSeries(ctx.rollbackPins),
+  }
   const sourceByName = new Map(sourceMaterial.map((entry) => [entry.composeServiceName, entry]))
   const outcomes = await Promise.all(
-    apps.map((app) =>
-      resolveOneApp(app, sourceByName.get(app.composeServiceName), {
-        read: ctx.read,
-        offered,
-        mode: ctx.mode,
-      })
-    )
+    apps.map((app) => resolveOneApp(app, sourceByName.get(app.composeServiceName), resolveContext))
   )
-  const resolved: PreparedNativeAppService[] = []
-  const views: NativeAppNodeVersionView[] = []
+  const result: NativeAppNodeVersions = { apps: [], views: [], readCommitShas: new Map() }
   for (const outcome of outcomes) {
     if ('error' in outcome) return outcome.error
     if (outcome.warning) ctx.warnings.push(outcome.warning)
-    resolved.push(outcome.app)
-    views.push(outcome.view)
+    result.apps.push(outcome.app)
+    result.views.push(outcome.view)
+    if (outcome.readCommitSha !== undefined) {
+      result.readCommitShas.set(outcome.app.composeServiceName, outcome.readCommitSha)
+    }
   }
-  return { apps: resolved, views }
+  return result
+}
+
+function isFullCommitSha(value: string): boolean {
+  if (value.length !== 40 && value.length !== 64) return false
+  for (const ch of value) {
+    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) return false
+  }
+  return true
+}
+
+/**
+ * Pin each source the provider could not resolve to the commit its version
+ * files were read at.
+ *
+ * A plain git remote or a deploy-key repository leaves `commitSha` as the
+ * branch name, and the server clones that branch later. Reading the files at
+ * the branch and building it separately would let a push land in between and
+ * build a commit the series was not read from. Sending the read commit instead
+ * makes the server check out exactly that one (it fetches a pinned commit when
+ * the branch has moved). Sources that already name a commit are left alone.
+ */
+export function pinSourcesToReadCommits(
+  sourceMaterial: readonly EnvironmentDeploySource[],
+  readCommitShas: ReadonlyMap<string, string>
+): EnvironmentDeploySource[] {
+  return sourceMaterial.map((entry) => {
+    const read = readCommitShas.get(entry.composeServiceName)
+    if (read === undefined || entry.rollbackToReleaseId !== undefined) return entry
+    if (isFullCommitSha(entry.commitSha) || !isFullCommitSha(read)) return entry
+    return { ...entry, commitSha: read }
+  })
+}
+
+/**
+ * The series to record on each native app's release row: what was sent, else
+ * the default the daemon applied. A rollback sends it back unchanged.
+ */
+export function recordedNodeVersions(
+  apps: readonly { composeServiceName: string; nodeVersion?: string }[] | undefined
+): Map<string, string> {
+  return new Map(
+    (apps ?? []).map((app) => [
+      app.composeServiceName,
+      app.nodeVersion?.trim() || DEFAULT_NATIVE_APP_NODE_SERIES,
+    ])
+  )
 }
 
 /**
@@ -301,45 +473,64 @@ export function daemonCredentialOf(
 }
 
 /**
+ * Reads already made in this request, keyed by repository, commit and paths.
+ *
+ * One request prepares every server of a deploy with the same context, so
+ * keying by it reads each repository once per deploy however many servers and
+ * apps share it, and nothing outlives the request.
+ */
+const readsByRequest = new WeakMap<object, Map<string, Promise<NodeVersionFileRead>>>()
+
+function requestReads(c: object): Map<string, Promise<NodeVersionFileRead>> {
+  let reads = readsByRequest.get(c)
+  if (!reads) {
+    reads = new Map()
+    readsByRequest.set(c, reads)
+  }
+  return reads
+}
+
+function loadSourceRow(
+  db: Db,
+  organizationId: string,
+  sourceId: string
+): Promise<GitProviderSourceRow | undefined> {
+  return db
+    .select({
+      id: repository.id,
+      provider: repository.provider,
+      repositoryUrl: repository.repositoryUrl,
+      defaultBranch: repository.defaultBranch,
+      subdirectory: repository.subdirectory,
+      connectionId: repository.connectionId,
+      secretId: repository.secretId,
+    })
+    .from(repository)
+    .where(and(eq(repository.id, sourceId), eq(repository.organizationId, organizationId)))
+    .limit(1)
+    .then((found) => found[0])
+}
+
+/**
  * The reader deploy-prepare uses: the repository inspect path (the provider's
- * read API first, a connected server when the provider cannot read), at the
- * source entry's commit.
+ * read API first, a connected server when the provider cannot read or turns an
+ * anonymous read away for its rate limit), at the source entry's commit.
  *
  * The daemon lane only asks the server this prepare is for, and passes the
  * clone secret already sealed to that server's daemon, so a private repository
  * a provider cannot read is read with the same access the build will use.
- * Repository rows are loaded once per source and shared.
  */
 export function repositoryNodeVersionReader(
   c: Context<AppEnv>,
   db: Db,
   args: { organizationId: string; serverId: string }
 ): NodeVersionFileReader {
-  const rows = new Map<string, Promise<GitProviderSourceRow | undefined>>()
-  const rowFor = (sourceId: string): Promise<GitProviderSourceRow | undefined> => {
-    let pending = rows.get(sourceId)
-    if (!pending) {
-      pending = db
-        .select({
-          id: repository.id,
-          provider: repository.provider,
-          repositoryUrl: repository.repositoryUrl,
-          defaultBranch: repository.defaultBranch,
-          subdirectory: repository.subdirectory,
-          connectionId: repository.connectionId,
-          secretId: repository.secretId,
-        })
-        .from(repository)
-        .where(and(eq(repository.id, sourceId), eq(repository.organizationId, args.organizationId)))
-        .limit(1)
-        .then((found) => found[0])
-      rows.set(sourceId, pending)
-    }
-    return pending
-  }
-
-  return async (source, paths) => {
-    const row = await rowFor(source.sourceId)
+  const reads = requestReads(c)
+  const readOnce = async (
+    source: EnvironmentDeploySource,
+    paths: readonly string[]
+  ): Promise<NodeVersionFileRead> => {
+    const row = await loadSourceRow(db, args.organizationId, source.sourceId)
     if (!row) return { ok: false, message: 'repository not found in this organization' }
     const outcome = await inspectRepository({
       db,
@@ -350,8 +541,21 @@ export function repositoryNodeVersionReader(
       ref: source.commitSha,
       paths,
       serverIds: [args.serverId],
+      daemonOnRateLimit: true,
       ...daemonCredentialOf(source),
     })
-    return outcome.ok ? { ok: true, files: outcome.files } : { ok: false, message: outcome.message }
+    return outcome.ok
+      ? { ok: true, files: outcome.files, commitSha: outcome.commitSha }
+      : { ok: false, message: outcome.message }
+  }
+
+  return (source, paths) => {
+    const key = [args.organizationId, source.sourceId, source.commitSha, ...paths].join('\n')
+    let pending = reads.get(key)
+    if (!pending) {
+      pending = readOnce(source, paths)
+      reads.set(key, pending)
+    }
+    return pending
   }
 }

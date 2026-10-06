@@ -71,6 +71,19 @@ export const deploySchemas = {
       },
       status: { type: 'string', const: 'queued' },
       serverId: { type: 'string' },
+      warnings: {
+        type: 'array',
+        description:
+          'Present only when a Node.js app runs on the default Node version because its repository could not be read: a disabled app, or a rollback to a release recorded before its Node version was. Each says what happened and how to pin `x-turbopanel.nodeVersion`.',
+        items: {
+          type: 'object',
+          required: ['code', 'message'],
+          properties: {
+            code: { type: 'string', enum: ['node_version_unresolved'] },
+            message: { type: 'string' },
+          },
+        },
+      },
       strategy: {
         type: 'object',
         description:
@@ -387,16 +400,28 @@ export const deploySchemas = {
       nativeAppNodeVersions: {
         type: 'array',
         description:
-          "For each Node.js app (native service) in the deploy: the Node version it runs and where that came from. The service's own `x-turbopanel.nodeVersion` always wins; otherwise the repository is read at the commit being deployed: `package.json` `engines.node` (the newest offered version that satisfies it), then `.nvmrc`, then `.node-version`, in the service's subdirectory first and then the repository root. With none of those, the platform default is used.",
+          "For each Node.js app (native service) in the deploy, once: the Node version it runs and where that came from. The service's own `x-turbopanel.nodeVersion` always wins; otherwise the repository is read at the commit being deployed: `package.json` `engines.node` (the newest offered version that satisfies it), then `.nvmrc`, then `.node-version`, in the service's subdirectory first and then the repository root. With none of those, the platform default is used. A rollback runs the version its release recorded (`release`). `unresolved` means the preview could not read the repository; `nodeVersion` is then absent and `note` says what the deploy will do.",
         items: {
           type: 'object',
-          required: ['composeServiceName', 'nodeVersion', 'source'],
+          required: ['composeServiceName', 'source'],
           properties: {
             composeServiceName: { type: 'string' },
             nodeVersion: { type: 'string', description: 'Node major version, such as `24`.' },
             source: {
               type: 'string',
-              enum: ['compose', 'package.json', '.nvmrc', '.node-version', 'default'],
+              enum: [
+                'compose',
+                'release',
+                'package.json',
+                '.nvmrc',
+                '.node-version',
+                'default',
+                'unresolved',
+              ],
+            },
+            note: {
+              type: 'string',
+              description: 'Plain-words explanation, when the answer needs one.',
             },
             requested: {
               type: 'string',

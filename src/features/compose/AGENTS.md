@@ -776,19 +776,30 @@ because the daemon installs the series and adds the site owner's Linux user to
 its group before it checks anything out. The repository is read at the commit
 being deployed through the repository inspect path (`inspectRepository`:
 provider first, the target server's daemon with the deploy's sealed clone
-secret when the provider cannot read): `package.json` `engines.node`, then
-`.nvmrc`, then `.node-version`, in the source's `subdirectory` and then the
-repository root. A range resolves to the newest series in the registry mirror
+secret when the provider cannot read or turns an anonymous read away for its
+rate limit): `package.json` `engines.node`, then `.nvmrc`, then
+`.node-version`, in the source's `subdirectory` and then the repository root.
+Each repository is read once per request (all servers of a deploy share it).
+A range resolves to the newest series in the registry mirror
 (`runtimeSeries('node')`) that satisfies it (`lib/node-version-range.ts`, a
-hand-written parser for the npm range forms); a value that is not a version
-(`lts/*`) is skipped. No offered series satisfying it is a hard
-`node_version_unsupported` (422, preview too). An unreadable repository is a
-422 `node_version_unreadable` on a deploy (falling back to 24 would quietly
-bring the wrong-Node bug back; pinning `nodeVersion` skips the read), a
-`node_version_unresolved` warning in a preview, and the default on a rollback
-(the release already built; the way back is not refused). It runs before `mergeDeployPrincipalRuntimes`, so the runtime group
-granted matches the series sent. The preview lists the result per app as
-`nativeAppNodeVersions` (`nodeVersion`, `source`, `requested`, `path`).
+hand-written parser for the npm range forms); a version-file value that is not
+a version (`lts/*`) is skipped. 422s (preview too): `node_version_unsupported`
+(nothing offered satisfies the range) and `node_version_invalid` (an
+`engines.node` npm would not accept, such as `20-24`); both name the file and
+how to pin. An unreadable repository is a 422 `node_version_unreadable` on a
+deploy (falling back to 24 would quietly bring the wrong-Node bug back;
+pinning `nodeVersion` skips the read), a `source: 'unresolved'` entry plus a
+warning in a preview, and the default plus a warning in the deploy response
+for a disabled app. A source whose commit the provider could not resolve
+(plain git, deploy key) is pinned to the commit the files were read at, so the
+build and the series agree. The series each native app ran with is recorded
+on the deploy command's `context.releases[].nodeVersion`, carried on the
+rollback pin (`DeployRollbackReleasePin.nodeVersion`), and a rollback sends it
+back without reading anything; a release recorded before that falls back to a
+read, then the default with a warning. It all runs before
+`mergeDeployPrincipalRuntimes`, so the runtime group granted matches the series
+sent. The preview lists the result once per app as `nativeAppNodeVersions`
+(`nodeVersion`, `source`, `requested`, `path`, `note`).
 
 **Plain Compose keys the split would
 otherwise take with it.** A node service is removed from `containerServices`, so

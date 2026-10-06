@@ -51,12 +51,12 @@ export const INSPECT_PROBE_PATHS: readonly string[] = [
 
 export type InspectOutcome =
   | {
-    ok: true
-    commitSha: string
-    files: RepositoryFileEntry[]
-    entries: RepositoryEntry[]
-    via: 'provider' | 'daemon'
-  }
+      ok: true
+      commitSha: string
+      files: RepositoryFileEntry[]
+      entries: RepositoryEntry[]
+      via: 'provider' | 'daemon'
+    }
   | { ok: false; status: number; error: string; message: string }
 
 /**
@@ -83,6 +83,13 @@ export type InspectRepositoryParams = {
   paths?: readonly string[]
   listPath?: string
   serverIds: readonly string[]
+  /**
+   * Ask a connected server when the provider turns the read away for its rate
+   * limit (429, or 403 on an anonymous read), instead of answering with that.
+   * A server clones over git, which that limit does not cover. Deploy-prepare
+   * sets it; the wizard's inspect route reports the limit as it always has.
+   */
+  daemonOnRateLimit?: boolean
   /** Sealed clone credential for the daemon lane, when the source has one. */
   daemonCredential?: {
     credential: string
@@ -101,7 +108,7 @@ export type InspectRepositoryParams = {
 async function listEntriesViaProvider(
   provider: ReturnType<typeof resolveGitProvider>,
   ctx: { db: Db; dataEncryptionSecrets?: DerivedSecretsConfig },
-  params: InspectRepositoryParams,
+  params: InspectRepositoryParams
 ): Promise<RepositoryEntry[]> {
   if (params.listPath === undefined) return []
   const listed = await provider.listRepositoryEntries(ctx, {
@@ -118,7 +125,7 @@ async function listEntriesViaProvider(
 /** The daemon lane, taken once the provider has declined or gone unreachable. */
 async function inspectViaDaemon(
   params: InspectRepositoryParams,
-  paths: readonly string[],
+  paths: readonly string[]
 ): Promise<InspectOutcome> {
   if (!params.registry) {
     return {
@@ -158,9 +165,18 @@ async function inspectViaDaemon(
   }
 }
 
-export async function inspectRepository(
-  params: InspectRepositoryParams,
-): Promise<InspectOutcome> {
+/**
+ * A provider answer that only means "too many requests": 429 always, and 403
+ * on an anonymous read (no installation, no stored secret), which is how the
+ * forge reports its unauthenticated limit — a private repository read
+ * anonymously answers 404, not 403.
+ */
+export function isRateLimited(status: number, row: GitProviderSourceRow): boolean {
+  if (status === 429) return true
+  return status === 403 && !row.connectionId && !row.secretId
+}
+
+export async function inspectRepository(params: InspectRepositoryParams): Promise<InspectOutcome> {
   const paths = params.paths ?? INSPECT_PROBE_PATHS
   const provider = providerForInspect(params.row)
   const ctx = {
@@ -187,8 +203,13 @@ export async function inspectRepository(
     }
   }
 
-  // The provider answered with a real HTTP status: that IS the answer.
-  if (isGitProviderFailure(read) && typeof read.status === 'number') {
+  // The provider answered with a real HTTP status: that IS the answer —
+  // unless it is only its rate limit and the caller asked for a server then.
+  if (
+    isGitProviderFailure(read) &&
+    typeof read.status === 'number' &&
+    !(params.daemonOnRateLimit === true && isRateLimited(read.status, params.row))
+  ) {
     return {
       ok: false,
       status: read.status === 404 ? 404 : 502,

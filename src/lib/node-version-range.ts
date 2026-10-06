@@ -67,14 +67,18 @@ function withoutSuffix(value: string): string {
   return value.slice(0, end)
 }
 
-/** `22`, `v22.1`, `22.x`, `*`, `22.1.0-rc.1` → the numbers given, or null. */
+/** `22`, `v22.1`, `22.x`, `*`, `22.1.0-rc.1` → the numbers given, or null (`20-24`). */
 function parseWrittenVersion(raw: string): WrittenVersion | null {
   let text = raw
   if (text.startsWith('v') || text.startsWith('V')) text = text.slice(1)
-  text = withoutSuffix(text)
-  if (text.length === 0) return null
-  const pieces = text.split('.')
+  const core = withoutSuffix(text)
+  if (core.length === 0) return null
+  const pieces = core.split('.')
   if (pieces.length > 3) return null
+  // A prerelease or build suffix belongs to a full `x.y.z`, as in npm. So
+  // `20-24` (a hyphen range written without spaces) is not a version, rather
+  // than `20` with a prerelease tag of `24`.
+  if (core.length !== text.length && pieces.length !== 3) return null
   const parts: number[] = []
   let wildcardSeen = false
   for (const piece of pieces) {

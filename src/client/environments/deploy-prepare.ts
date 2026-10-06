@@ -111,6 +111,7 @@ import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.t
 import {
   type NativeAppNodeVersionView,
   type NodeVersionPrepareError,
+  pinSourcesToReadCommits,
   repositoryNodeVersionReader,
   withNativeAppNodeVersions,
 } from './deploy-node-version.ts'
@@ -564,8 +565,8 @@ export type DeployPrepareError =
   | PhpModePrepareError
   | SiteEngineFeatureError
   /**
-   * The repository asks for a Node version no offered series satisfies, or (a
-   * deploy only) could not be read to find out.
+   * The repository asks for a Node version no offered series satisfies, names
+   * one that is not a version range, or (a deploy only) could not be read.
    */
   | NodeVersionPrepareError
   | { kind: 'source_principal_ambiguous'; composeServiceName: string }
@@ -2374,9 +2375,17 @@ async function prepareLocalSourcesWithNodeVersions(
       organizationId: args.params.organizationId,
       serverId: args.params.serverId,
     }),
+    ...(args.params.rollback === undefined
+      ? {}
+      : { rollbackPins: args.params.rollback.releaseByService }),
   })
   if ('kind' in nodeVersions) return nodeVersions
-  return { sourceMaterial, nodeVersions }
+  // A preview's commit is only a placeholder; a deploy builds what was read.
+  const pinned =
+    args.mode === 'deploy'
+      ? pinSourcesToReadCommits(sourceMaterial, nodeVersions.readCommitShas)
+      : sourceMaterial
+  return { sourceMaterial: pinned, nodeVersions }
 }
 
 /**

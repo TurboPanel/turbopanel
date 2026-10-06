@@ -77,6 +77,14 @@ export type CommandContextRelease = {
    */
   commitMessage?: string
   commitAuthor?: string
+  /**
+   * Node series a native (`serviceKind: node`) app's release was built and run
+   * with. A rollback sends it back unchanged instead of reading the repository
+   * again (it has no clone secret to read a private one with), so the release
+   * runs on the Node it was built on. Optional: absent for every other kind of
+   * service and on releases recorded before it existed.
+   */
+  nodeVersion?: string
   /** Present only for a rollback — the already-published release it promoted. */
   rollbackToReleaseId?: string
 }
@@ -132,6 +140,7 @@ export function normalizeContextReleases(value: unknown): CommandContextRelease[
     // taking the release row (and with it a rollback target) down with it.
     const commitMessage = releaseField(record, 'commitMessage')
     const commitAuthor = releaseField(record, 'commitAuthor')
+    const nodeVersion = releaseField(record, 'nodeVersion')
     releases.push({
       composeServiceName,
       releaseId,
@@ -139,6 +148,7 @@ export function normalizeContextReleases(value: unknown): CommandContextRelease[
       commitSha,
       ...(commitMessage === undefined ? {} : { commitMessage }),
       ...(commitAuthor === undefined ? {} : { commitAuthor }),
+      ...(nodeVersion === undefined ? {} : { nodeVersion }),
       ...(rollbackToReleaseId === undefined ? {} : { rollbackToReleaseId }),
     })
   }

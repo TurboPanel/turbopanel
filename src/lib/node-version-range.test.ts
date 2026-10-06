@@ -79,6 +79,11 @@ test('treats text that is not a version range as saying nothing', () => {
     '22.x.1',
     '1.2.3.4',
     'abc',
+    // A hyphen range needs spaces around the dash; without them npm refuses it.
+    '20-24',
+    '>=20-24',
+    '22-beta',
+    '22.1-rc.1',
   ]) {
     assertEquals(newest(range), 'invalid', range)
   }
