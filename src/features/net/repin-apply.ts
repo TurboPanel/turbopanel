@@ -10,7 +10,11 @@
  * - `repin` → new address + `metadata.repin { at, from }` plus
  *   `ip.repin_pending_fanout_at` (any `stale` flag dropped);
  * - `mark_stale` → `metadata.stale { since, reason }`;
- * - `clear_stale` → `stale` removed.
+ * - `clear_stale` → `stale` removed;
+ * - `link_down` / `link_up` → `metadata.linkDown { since }` set / removed plus
+ *   `ip.repin_pending_fanout_at`: the daemon reports each NIC's link state with
+ *   its addresses, and routing moves traffic off a network whose link is down
+ *   (see `partitionSharedDatacenters` consumers in `private-endpoint.ts`).
  *
  * Nothing is enqueued here: hello / Durable Object handlers must not enqueue
  * commands, so the routing fan-out is deferred to the maintenance sweep
@@ -36,12 +40,16 @@ import {
   validateMemberPinAddress,
 } from './datacenter-membership.ts'
 import {
+  clearedLinkDownMetadata,
   clearedStaleMetadata,
+  decideLinkActions,
   decideRepinActions,
+  type LinkAction,
   parseIpPinMetadata,
   type RepinAction,
   type RepinPinInput,
   type RepinStaleReason,
+  withLinkDownMetadata,
   withRepinMetadata,
   withStaleMetadata,
 } from './repin.ts'
@@ -111,18 +119,22 @@ async function writeRepin(
     return writeStale(db, pin, 'address_gone_no_candidate', nowIso)
   }
   try {
+    const metadata = withRepinMetadata(pin.metadata, {
+      at: nowIso,
+      from: action.from,
+    })
     await db
       .update(ip)
       .set({
         address: validated.address,
-        metadata: withRepinMetadata(pin.metadata, {
-          at: nowIso,
-          from: action.from,
-        }),
+        metadata,
         repinPendingFanoutAt: nowIso,
         updatedAt: nowIso,
       })
       .where(eq(ip.id, pin.ipId))
+    // Later writes of this pass (link state) build on what is stored now.
+    pin.address = validated.address
+    pin.metadata = metadata
     return action
   } catch (err) {
     if (!isUniqueViolationOn(err, 'uniq_ip_org_address')) throw err
@@ -138,24 +150,16 @@ async function writeStale(
   reason: RepinStaleReason,
   nowIso: string
 ): Promise<RepinAction> {
-  await db
-    .update(ip)
-    .set({
-      metadata: withStaleMetadata(pin.metadata, { since: nowIso, reason }),
-      updatedAt: nowIso,
-    })
-    .where(eq(ip.id, pin.ipId))
+  const metadata = withStaleMetadata(pin.metadata, { since: nowIso, reason })
+  await db.update(ip).set({ metadata, updatedAt: nowIso }).where(eq(ip.id, pin.ipId))
+  pin.metadata = metadata
   return { kind: 'mark_stale', ipId: pin.ipId, reason }
 }
 
 async function writeClearStale(db: Db, pin: PinDetail, nowIso: string): Promise<RepinAction> {
-  await db
-    .update(ip)
-    .set({
-      metadata: clearedStaleMetadata(pin.metadata),
-      updatedAt: nowIso,
-    })
-    .where(eq(ip.id, pin.ipId))
+  const metadata = clearedStaleMetadata(pin.metadata)
+  await db.update(ip).set({ metadata, updatedAt: nowIso }).where(eq(ip.id, pin.ipId))
+  pin.metadata = metadata
   return { kind: 'clear_stale', ipId: pin.ipId }
 }
 
@@ -176,10 +180,107 @@ async function applyAction(
   }
 }
 
+function logActionFailure(action: AppliedPinAction, err: unknown): void {
+  compatLogWarn(
+    LOG_COMPONENT,
+    `${action.kind} for pin ${action.ipId} failed: ${err instanceof Error ? err.message : String(err)}`
+  )
+}
+
+async function writeLink(
+  db: Db,
+  pin: DatacenterMembershipPinDetailRow,
+  action: LinkAction,
+  nowIso: string
+): Promise<LinkAction> {
+  const metadata =
+    action.kind === 'link_down'
+      ? withLinkDownMetadata(pin.metadata, { since: nowIso })
+      : clearedLinkDownMetadata(pin.metadata)
+  await db
+    .update(ip)
+    .set({ metadata, repinPendingFanoutAt: nowIso, updatedAt: nowIso })
+    .where(eq(ip.id, pin.ipId))
+  pin.metadata = metadata
+  return action
+}
+
+/** Repin decisions for the pins that have a subnet; returns what was applied. */
+async function runRepinPass(
+  db: Db,
+  pins: readonly PinDetail[],
+  reportedIps: ServerReportedIp[] | null | undefined,
+  nowIso: string
+): Promise<RepinAction[]> {
+  if (pins.length === 0) return []
+  const reported = normalizeReportedPrivateAddresses(reportedIps)
+  const ownPinIds = new Set(pins.map((pin) => pin.ipId))
+  const organizationId = pins[0]?.organizationId
+  if (!organizationId) return []
+  const addressesInUse = await loadAddressesInUse(db, organizationId, reported, ownPinIds)
+
+  const decided = decideRepinActions({
+    pins: pins.map(toRepinInput),
+    reportedPrivateAddresses: reported,
+    addressesInUse,
+  })
+  if (decided.length === 0) return []
+
+  const byIpId = new Map(pins.map((pin) => [pin.ipId, pin]))
+  const serverMetadata = { resources: { ips: reportedIps ?? [] } }
+  const applied: RepinAction[] = []
+  await forEachSequential(decided, async (action) => {
+    const pin = byIpId.get(action.ipId)
+    if (!pin) return
+    try {
+      applied.push(await applyAction(db, pin, action, serverMetadata, nowIso))
+    } catch (err) {
+      logActionFailure(action, err)
+    }
+  })
+  return applied
+}
+
+/**
+ * Flag / unflag the pins whose NIC link state moved. Runs after the repin
+ * pass on the pins' current address and metadata, so a repinned pin is judged
+ * on its new address and no earlier write of the pass is overwritten.
+ */
+async function runLinkPass(
+  db: Db,
+  pins: readonly DatacenterMembershipPinDetailRow[],
+  reportedIps: ServerReportedIp[] | null | undefined,
+  nowIso: string
+): Promise<LinkAction[]> {
+  const decided = decideLinkActions(
+    pins.map((pin) => ({
+      ipId: pin.ipId,
+      address: pin.address,
+      linkDown: parseIpPinMetadata(pin.metadata).linkDown !== undefined,
+    })),
+    reportedIps ?? []
+  )
+  const byIpId = new Map(pins.map((pin) => [pin.ipId, pin]))
+  const applied: LinkAction[] = []
+  await forEachSequential(decided, async (action) => {
+    const pin = byIpId.get(action.ipId)
+    if (!pin) return
+    try {
+      applied.push(await writeLink(db, pin, action, nowIso))
+    } catch (err) {
+      logActionFailure(action, err)
+    }
+  })
+  return applied
+}
+
+export type AppliedPinAction = RepinAction | LinkAction
+
 /**
  * Re-point / flag the server's membership pins against its freshly reported
- * addresses. Returns the actions actually applied (a `repin` that lost a
- * unique race comes back as `mark_stale`). Never throws.
+ * addresses, then record each pin's NIC link state. Returns the actions
+ * actually applied (a `repin` that lost a unique race comes back as
+ * `mark_stale`). Never throws.
  *
  * `reportedIps` is the daemon's full reported list; `validateMemberPinAddress`
  * needs it in `server.metadata` shape, so a `{ resources: { ips } }` view is
@@ -189,44 +290,16 @@ export async function applyReportedAddressRepin(
   db: Db,
   serverId: string,
   reportedIps: ServerReportedIp[] | null | undefined
-): Promise<RepinAction[]> {
+): Promise<AppliedPinAction[]> {
   try {
     const byServer = await loadDatacenterMembershipPinDetailsForServers(db, [serverId])
-    const pins = (byServer.get(serverId) ?? []).filter(isRepinablePin)
-    if (pins.length === 0) return []
+    const allPins = byServer.get(serverId) ?? []
+    if (allPins.length === 0) return []
 
-    const reported = normalizeReportedPrivateAddresses(reportedIps)
-    const ownPinIds = new Set(pins.map((pin) => pin.ipId))
-    const organizationId = pins[0]?.organizationId
-    if (!organizationId) return []
-    const addressesInUse = await loadAddressesInUse(db, organizationId, reported, ownPinIds)
-
-    const decided = decideRepinActions({
-      pins: pins.map(toRepinInput),
-      reportedPrivateAddresses: reported,
-      addressesInUse,
-    })
-    if (decided.length === 0) return []
-
-    const byIpId = new Map(pins.map((pin) => [pin.ipId, pin]))
-    const serverMetadata = { resources: { ips: reportedIps ?? [] } }
     const nowIso = new Date().toISOString()
-    const applied: RepinAction[] = []
-    await forEachSequential(decided, async (action) => {
-      const pin = byIpId.get(action.ipId)
-      if (!pin) return
-      try {
-        applied.push(await applyAction(db, pin, action, serverMetadata, nowIso))
-      } catch (err) {
-        compatLogWarn(
-          LOG_COMPONENT,
-          `${action.kind} for pin ${action.ipId} on server ${serverId} failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`
-        )
-      }
-    })
-    return applied
+    const repinned = await runRepinPass(db, allPins.filter(isRepinablePin), reportedIps, nowIso)
+    const linked = await runLinkPass(db, allPins, reportedIps, nowIso)
+    return [...repinned, ...linked]
   } catch (err) {
     compatLogWarn(
       LOG_COMPONENT,
