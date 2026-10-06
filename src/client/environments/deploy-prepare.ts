@@ -127,6 +127,12 @@ import {
   withRecordedRuntimes,
 } from './deploy-deno-gate.ts'
 import { type SiteEngineFeatureError, withSiteEngineFeature } from './deploy-site-engine-gate.ts'
+import { type SiteDbBindingsWarning, withSiteDbBindings } from './deploy-site-db-bindings.ts'
+import {
+  deliveryByServiceId,
+  hostRunDeliveryByComposeName,
+  type BindingDelivery,
+} from '../../features/bindings/host-run.ts'
 import { PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
 import {
   isComposeChainError,
@@ -310,6 +316,7 @@ export type DeployPrepareWarningCode =
   | 'principal_alias_unknown'
   | 'principal_required_for_service_kind'
   | 'binding_endpoint_unavailable'
+  | 'site_db_ca_unavailable'
   | 'php_series_not_installed'
   | 'compose_variable_unresolved'
   | 'php_mode_not_allowed'
@@ -625,6 +632,7 @@ export type DeployPrepareError =
       message: string
     }
   | { kind: 'binding_endpoint_unavailable' }
+  | { kind: 'binding_host_site_unsupported'; message: string }
   | {
       kind: 'variable_unresolved'
       message: string
@@ -711,6 +719,8 @@ async function emptyPreparedCompose(
 
 type HardDeployPrepareError =
   | { kind: 'datacenter_ip_required'; serverId: string }
+  // Hard in preview too: a PHP site cannot reach this database, however it is previewed.
+  | { kind: 'binding_host_site_unsupported'; message: string }
   // Hard in preview too: the site would not come up in the mode it asks for.
   | PhpModePrepareError
   | SiteEngineFeatureError
@@ -2315,12 +2325,24 @@ async function resolveBindingMaterializationOutcome(
   db: Db,
   dataEncryptionSecrets: Parameters<typeof decryptSecret>[0] | undefined,
   serviceIds: string[],
-  mode: DeployPrepareMode
+  mode: DeployPrepareMode,
+  deliveries?: ReadonlyMap<string, BindingDelivery>
 ): Promise<BindingMaterializationOutcome> {
   if (!dataEncryptionSecrets) return { kind: 'ok' }
 
-  const bindResult = await materializeBindingsForServices(db, dataEncryptionSecrets, serviceIds)
+  const bindResult = await materializeBindingsForServices(
+    db,
+    dataEncryptionSecrets,
+    serviceIds,
+    deliveries
+  )
   if ('ok' in bindResult) return { kind: 'ok' }
+  if (bindResult.kind === 'binding_host_site_unsupported') {
+    return {
+      kind: 'error',
+      error: { kind: 'binding_host_site_unsupported', message: bindResult.message },
+    }
+  }
 
   const isSoftBindingError =
     bindResult.kind === 'binding_endpoint_unavailable' ||
@@ -2950,7 +2972,10 @@ async function reconcileComposeDeclaredRows(
     db,
     c.get('dataEncryptionSecrets'),
     serviceRows.map((r) => r.id),
-    args.mode
+    args.mode,
+    // What the document says each service is: a site or native app dials the
+    // proxy on loopback, a container service by container name.
+    deliveryByServiceId(hostRunDeliveryByComposeName(args.merged.data), serviceRows)
   )
   const bindingErr = absorbBindingOutcome(args.warnings, bindingOutcome)
   if (bindingErr) return { ok: false, failure: bindingErr }
@@ -3362,6 +3387,15 @@ export async function prepareDeployCompose(
   const localSite = sitesOnScheduledServer(siteResolved, pipeline.localServiceNames)
   const engineGate = await withSiteEngineFeature(db, params.serverId, localSite)
   if ('kind' in engineGate) return engineGate
+  const dbBindingWarnings: SiteDbBindingsWarning[] = []
+  const localSiteBound = await withSiteDbBindings(db, c.get('dataEncryptionSecrets'), {
+    organizationId: params.organizationId,
+    sites: localSite,
+    serviceRows,
+    daemonFeatures: phpDaemonState?.projection?.features ?? [],
+    warnings: dbBindingWarnings,
+  })
+  warnings.push(...dbBindingWarnings)
 
   const nativeVariables = resolveNativeAppVariables(split.nativeApps, withVariables)
   const localNativeApps = sitesOnScheduledServer(
@@ -3386,7 +3420,7 @@ export async function prepareDeployCompose(
     principalResolution,
     localServiceNames: pipeline.localServiceNames,
     nativeApps: localNativeApps,
-    sites: localSite,
+    sites: localSiteBound,
   })
   if ('kind' in runtimes || runtimes instanceof Response) return runtimes
   const { localSourceMaterial, nodeVersions, principalMaterialWithRuntimes } = runtimes
@@ -3458,7 +3492,7 @@ export async function prepareDeployCompose(
     variableMaterial,
     storageMaterial,
     principalMaterial: principalMaterialWithRuntimes,
-    sites: localSite,
+    sites: localSiteBound,
     nativeAppServices: nodeVersions.apps,
     nativeAppVariables: nativeAppVariableViews(nodeVersions.apps, nativeVariables),
     nativeAppNodeVersions: nodeVersions.views,

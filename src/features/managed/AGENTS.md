@@ -35,6 +35,25 @@ Prefixed keys (`<PREFIX>_URL`, `_CA_CERT`, `_READ_SPLIT`, `_HOST`, `_PORT`,
 materializes it; do not emit `PGSSLROOTCERT` (no file path). A file-mount
 variant is an explicit `Future:` seam.
 
+**Delivery by service kind** (`src/features/bindings/host-run.ts`,
+`computeBindingVariableSet`'s `delivery`): a container service keeps the
+container name and `_CA_CERT` (output byte-identical to before). A **PHP site**
+and a **native Node app** run on the host as the site owner's Linux user, where
+the container name does not resolve, so they get `_HOST=127.0.0.1` (the DSN too)
+and the same listener port. A PHP site gets no `_CA_CERT` (a multi-line value
+breaks its web server): a daemon that lists `site-db-bindings-v1` is sent the CA
+as `sites[].dbCa` and sets `<PREFIX>_CA_FILE` to a file only the owner can read
+(`deploy-site-db-bindings.ts`); an older daemon gets a deploy warning instead. A
+native app keeps `_CA_CERT` as text (its private environment file carries
+multi-line values). The kind is decided at deploy from the merged compose
+document; any other re-materialize keeps the stored form (`inferStoredDelivery`).
+A PHP site can only use a MySQL-family database on the default listener port
+(the daemon's `tp-php-loopback` firewall names 13306): anything else is refused
+with `binding_host_site_unsupported`. Loopback needs the ProxySQL frontend
+published on `127.0.0.1`: `managed.ingress.reconcile` adds the `local` scope
+whenever a host-run binding is placed on the server
+(`serverHasHostRunBinding`), and a deploy re-reconciles those servers.
+
 **Extension rule:** a new engine = one spec file + one registry entry in
 `MANAGED_ENGINE_SPECS` + one status entry in `MANAGED_ENGINE_STATUS` (+ optional
 `binding` descriptor when the engine supports service bindings). Nothing else.
