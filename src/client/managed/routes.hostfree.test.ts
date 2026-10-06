@@ -41,7 +41,11 @@ import {
   user,
   workspace,
 } from '../../db/schema.ts'
+import { mariadbEngineSpec } from '../../features/managed/mariadb.ts'
+import { mysqlEngineSpec } from '../../features/managed/mysql.ts'
 import { postgresEngineSpec } from '../../features/managed/postgres.ts'
+import { POSTGRES_ALLOWED_IMAGES } from '../../features/managed/settings.ts'
+import type { ManagedEngineSpec } from '../../features/managed/types.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { managedSessionPaths } from '../../features/managed/routes-helpers.ts'
 import { registerManagedRoutes } from './routes.ts'
@@ -1311,6 +1315,136 @@ test('PATCH rejects invalid settings', async () => {
     400,
     { error: 'managed_settings_invalid' }
   )
+})
+
+const PG_ALPINE = 'docker.io/library/postgres:18-alpine'
+const PG_DEBIAN = 'docker.io/library/postgres:18'
+const PG_SERIES_17_ALPINE = 'docker.io/library/postgres:17-alpine'
+const PG_SERIES_17_DEBIAN = 'docker.io/library/postgres:17'
+
+/** A fake db that counts every write, so a refusal can prove nothing persisted. */
+function writeCountingDb(config: FakeDbConfig): { db: Db; writes: () => number } {
+  const base = fakeDb(config)
+  let count = 0
+  const counted = <T extends (...args: never[]) => unknown>(fn: T) =>
+    ((...args: Parameters<T>) => {
+      count += 1
+      return fn(...args)
+    }) as T
+  const db = {
+    ...base,
+    update: counted(base.update.bind(base)),
+    insert: counted(base.insert.bind(base)),
+    delete: counted(base.delete.bind(base)),
+    transaction: counted(base.transaction.bind(base)),
+  } as unknown as Db
+  return { db, writes: () => count }
+}
+
+function patchManaged(
+  app: Hono<AppEnv>,
+  cookie: string,
+  settings: Record<string, unknown>
+): Promise<Response> {
+  return Promise.resolve(
+    app.request(envPath(), {
+      method: 'PATCH',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({ settings }),
+    })
+  )
+}
+
+function rowFor(spec: ManagedEngineSpec, image: string) {
+  const settings = spec.parseSettings({ ...spec.defaultSettings, image })
+  if (!settings) throw new TypeError(`failed to parse ${spec.engine} settings`)
+  return managedRow({
+    engine: spec.engine,
+    options: { settings, databases: ['defaultdb'] },
+  })
+}
+
+test('PATCH refuses a series change with 409 managed_series_immutable and persists nothing', async () => {
+  // Only series 18 is creatable today, so the settings parser would answer 400
+  // before the series guard runs. Widen the allowlist for this test only, the
+  // way it will look once a second series is promoted to tested.
+  const allowed = POSTGRES_ALLOWED_IMAGES as string[]
+  const added = [PG_SERIES_17_ALPINE, PG_SERIES_17_DEBIAN].filter(
+    (image) => !allowed.includes(image)
+  )
+  allowed.push(...added)
+  try {
+    const { db, writes } = writeCountingDb({
+      managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)],
+    })
+    const { app, cookie } = await buildApp({ db })
+    for (const image of [PG_SERIES_17_ALPINE, PG_SERIES_17_DEBIAN]) {
+      const res = await patchManaged(app, cookie, { image })
+      assertEquals(res.status, 409)
+      const body = await jsonOf(res)
+      assertEquals(body.error, 'managed_series_immutable')
+      assertEquals(typeof body.message, 'string')
+    }
+    assertEquals(writes(), 0)
+  } finally {
+    for (const image of added) allowed.splice(allowed.indexOf(image), 1)
+  }
+})
+
+test('PATCH to an untested series is refused by the settings parser and persists nothing', async () => {
+  const { db, writes } = writeCountingDb({ managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)] })
+  const { app, cookie } = await buildApp({ db })
+  const res = await patchManaged(app, cookie, { image: PG_SERIES_17_ALPINE })
+  assertEquals(res.status, 400)
+  assertEquals((await jsonOf(res)).error, 'managed_settings_invalid')
+  assertEquals(writes(), 0)
+})
+
+test('PATCH refuses Alpine to Debian on PostgreSQL with 409 managed_variant_swap_unsafe and persists nothing', async () => {
+  const { db, writes } = writeCountingDb({ managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)] })
+  const { app, cookie } = await buildApp({ db })
+  const res = await patchManaged(app, cookie, { image: PG_DEBIAN })
+  assertEquals(res.status, 409)
+  const body = await jsonOf(res)
+  assertEquals(body.error, 'managed_variant_swap_unsafe')
+  assertEquals(String(body.message).includes('restore a backup'), true)
+  assertEquals(writes(), 0)
+
+  // The other direction is just as unsafe.
+  const reverse = writeCountingDb({ managedRows: [rowFor(postgresEngineSpec, PG_DEBIAN)] })
+  const reverseApp = await buildApp({ db: reverse.db })
+  const back = await patchManaged(reverseApp.app, reverseApp.cookie, { image: PG_ALPINE })
+  assertEquals(back.status, 409)
+  assertEquals((await jsonOf(back)).error, 'managed_variant_swap_unsafe')
+  assertEquals(reverse.writes(), 0)
+})
+
+test('PATCH accepts a PostgreSQL patch that keeps the same image', async () => {
+  const { db, writes } = writeCountingDb({ managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)] })
+  const { app, cookie } = await buildApp({ db })
+  const res = await patchManaged(app, cookie, { image: PG_ALPINE })
+  assertEquals(res.status, 200)
+  assertEquals((await jsonOf(res)).ok, true)
+  assertEquals(writes(), 1)
+})
+
+test('PATCH still allows a MySQL and a MariaDB variant change', async () => {
+  const cases: Array<[ManagedEngineSpec, string, string]> = [
+    [mysqlEngineSpec, 'docker.io/library/mysql:9.7', 'docker.io/library/mysql:9.7-oraclelinux9'],
+    [mariadbEngineSpec, 'docker.io/library/mariadb:12.3', 'docker.io/library/mariadb:12.3-ubi'],
+  ]
+  for (const [spec, from, to] of cases) {
+    const { db, writes } = writeCountingDb({
+      managedRows: [rowFor(spec, from)],
+      projectRows: [{ metadata: { code: spec.engine } }],
+    })
+    const { app, cookie } = await buildApp({ db })
+    const res = await patchManaged(app, cookie, { image: to })
+    assertEquals(res.status, 200)
+    const body = await jsonOf(res)
+    assertEquals((body.settings as { image: string }).image, to)
+    assertEquals(writes(), 1)
+  }
 })
 
 test('POST apply / lifecycle / backups require a placement pin', async () => {

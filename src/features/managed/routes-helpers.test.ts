@@ -3,14 +3,18 @@ import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { mysqlEngineSpec } from './mysql.ts'
 import { postgresEngineSpec } from './postgres.ts'
+import { isManagedVariantSwapSafe } from './releases.ts'
 import type { ManagedContext } from '../../client/managed/context.ts'
 import type { ManagedRowOptions } from './options.ts'
 import {
+  assertManagedImageChangeAllowed,
   assertManagedSeriesUnchanged,
+  assertManagedVariantSwapSafe,
   buildManagedReleaseView,
   isManagedRootPrincipal,
   isPlainObject,
   MANAGED_SERIES_IMMUTABLE_ERROR,
+  MANAGED_VARIANT_SWAP_UNSAFE_ERROR,
   MANAGED_VERSION_UNSUPPORTED_ERROR,
   managedSessionPaths,
   mergeCreateSettings,
@@ -261,11 +265,11 @@ test('mergeCreateSettings applies a resolved catalog image', () => {
   )
 })
 
-test('assertManagedSeriesUnchanged allows variant swaps only', () => {
+test('assertManagedSeriesUnchanged judges the series only', () => {
   const base = postgresEngineSpec.parseSettings({})
   if (!base) throw new TypeError('expected default settings')
 
-  // Same series, different base OS → allowed.
+  // Same series, different base OS: not this guard's concern.
   assertEquals(
     assertManagedSeriesUnchanged(postgresEngineSpec, base, {
       ...base,
@@ -275,14 +279,92 @@ test('assertManagedSeriesUnchanged allows variant swaps only', () => {
   )
   // Unset image compares against the spec default, so this is still series 18.
   assertEquals(assertManagedSeriesUnchanged(postgresEngineSpec, base, base), null)
-  // Different series → 409, even from the implicit default.
+  // Different series -> 409, even from the implicit default.
+  const refused = assertManagedSeriesUnchanged(postgresEngineSpec, base, {
+    ...base,
+    image: 'docker.io/library/postgres:17-alpine',
+  })
+  assertEquals(refused?.error, MANAGED_SERIES_IMMUTABLE_ERROR)
+  assertEquals(refused?.status, 409)
+  assertEquals(typeof refused?.message, 'string')
+})
+
+test('isManagedVariantSwapSafe refuses only PostgreSQL moves between libc families', () => {
+  const alpine = 'docker.io/library/postgres:18-alpine'
+  const debian = 'docker.io/library/postgres:18'
+  // The proven-unsafe swap, both directions, and across series too.
+  assertEquals(isManagedVariantSwapSafe(alpine, debian), false)
+  assertEquals(isManagedVariantSwapSafe(debian, alpine), false)
+  assertEquals(isManagedVariantSwapSafe(alpine, 'docker.io/library/postgres:17'), false)
+  // A no-op or an unset side is never refused.
+  assertEquals(isManagedVariantSwapSafe(alpine, alpine), true)
+  assertEquals(isManagedVariantSwapSafe(debian, debian), true)
+  assertEquals(isManagedVariantSwapSafe(undefined, debian), true)
+  assertEquals(isManagedVariantSwapSafe(alpine, undefined), true)
+  // Engines with their own collations may change variant.
   assertEquals(
-    assertManagedSeriesUnchanged(postgresEngineSpec, base, {
-      ...base,
-      image: 'docker.io/library/postgres:17-alpine',
-    }),
-    { ok: false, error: MANAGED_SERIES_IMMUTABLE_ERROR, status: 409 }
+    isManagedVariantSwapSafe(
+      'docker.io/library/mysql:9.7',
+      'docker.io/library/mysql:9.7-oraclelinux9'
+    ),
+    true
   )
+  assertEquals(
+    isManagedVariantSwapSafe(
+      'docker.io/library/mariadb:12.3-ubi',
+      'docker.io/library/mariadb:12.3'
+    ),
+    true
+  )
+  // Images outside the catalog are the series guard's business, not this one's.
+  assertEquals(isManagedVariantSwapSafe(alpine, 'example.com/other:1'), true)
+  assertEquals(isManagedVariantSwapSafe('example.com/other:1', debian), true)
+})
+
+test('assertManagedVariantSwapSafe returns a 409 with the unsafe-swap code', () => {
+  const base = postgresEngineSpec.parseSettings({})
+  if (!base) throw new TypeError('expected default settings')
+
+  // Default image is the alpine variant of series 18.
+  const refused = assertManagedVariantSwapSafe(postgresEngineSpec, base, {
+    ...base,
+    image: 'docker.io/library/postgres:18',
+  })
+  assertEquals(refused?.ok, false)
+  assertEquals(refused?.error, MANAGED_VARIANT_SWAP_UNSAFE_ERROR)
+  assertEquals(refused?.status, 409)
+  assertEquals(refused?.message.includes('restore a backup'), true)
+  // Unchanged settings, and an unset image, pass.
+  assertEquals(assertManagedVariantSwapSafe(postgresEngineSpec, base, base), null)
+  assertEquals(
+    assertManagedVariantSwapSafe(postgresEngineSpec, base, {
+      ...base,
+      image: 'docker.io/library/postgres:18-alpine',
+    }),
+    null
+  )
+})
+
+test('assertManagedImageChangeAllowed reports the series refusal before the variant one', () => {
+  const base = postgresEngineSpec.parseSettings({})
+  if (!base) throw new TypeError('expected default settings')
+
+  // Series 17 debian is both another series and another variant: series wins.
+  assertEquals(
+    assertManagedImageChangeAllowed(postgresEngineSpec, base, {
+      ...base,
+      image: 'docker.io/library/postgres:17',
+    })?.error,
+    MANAGED_SERIES_IMMUTABLE_ERROR
+  )
+  assertEquals(
+    assertManagedImageChangeAllowed(postgresEngineSpec, base, {
+      ...base,
+      image: 'docker.io/library/postgres:18',
+    })?.error,
+    MANAGED_VARIANT_SWAP_UNSAFE_ERROR
+  )
+  assertEquals(assertManagedImageChangeAllowed(postgresEngineSpec, base, base), null)
 })
 
 test('buildManagedReleaseView derives catalog identity from the image', () => {

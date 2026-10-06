@@ -114,10 +114,23 @@ tested series).
 change that moves the cluster to a different series (**409**
 `managed_series_immutable`, via `assertManagedSeriesUnchanged`) — an engine will
 not start on another major's data directory, and cross-major replication is not
-a supported topology. Variant swaps within a series are allowed. Every member of
-a topology therefore shares one series by construction. A cross-major move is a
-migration between two managed databases, not an in-place image change; that
-migration flow is a `Future:` seam.
+a supported topology. Every member of a topology therefore shares one series by
+construction. A cross-major move is a migration between two managed databases,
+not an in-place image change; that migration flow is a `Future:` seam.
+
+**PostgreSQL variant swaps are refused too.** Moving a PostgreSQL cluster
+between the Alpine image (musl libc) and the Debian image (glibc) is refused
+with **409** `managed_variant_swap_unsafe` (`assertManagedVariantSwapSafe`,
+policy in `isManagedVariantSwapSafe` in `releases.ts`). PostgreSQL sorts text
+with the operating system's collation and the two libraries order the same text
+differently, so every text index silently becomes wrong (proven on a test host:
+`bt_index_check` fails with `item order invariant violated`, and an index-ordered
+`ORDER BY` differs from a sequential scan). The fix for an operator is a new
+cluster on the wanted image plus a backup restore. A no-op patch is never
+refused, and MySQL / MariaDB variant swaps stay allowed (they ship their own
+collations). The refusal is the conservative default while the owner decides
+between refuse, allow plus reindex, or document; relaxing it means editing
+`LIBC_FAMILY_BY_ENGINE_VARIANT` / `isManagedVariantSwapSafe` in one place.
 
 `GET …/managed` returns a `release` view (`series` / `variantId` / `lifecycle` /
 `tested` / `image`, via `buildManagedReleaseView`) so the UI can show a version
