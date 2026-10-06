@@ -164,3 +164,10 @@ test('parseHostingOptions keeps wwwRedirect only when it is true', () => {
   assertEquals(parseHostingOptions({ wwwRedirect: false }), {})
   assertEquals(parseHostingOptions({ wwwRedirect: 'yes' }), {})
 })
+
+test('parseHostingOptions drops the PHP ini override names from web.env', () => {
+  assertEquals(
+    parseHostingOptions({ web: { env: { PHP_VALUE: 'a', php_admin_value: 'b', KEEP: 'c' } } }),
+    { web: { env: { KEEP: 'c' } } }
+  )
+})
