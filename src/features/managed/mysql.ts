@@ -157,6 +157,9 @@ function buildPlatformMycnf(settings: MysqlManagedSettings, input: BuildRuntimeS
     `server_id=${serverId}`,
     'log_bin=ON',
     'binlog_format=ROW',
+    // Row-based binlog makes unprivileged triggers and stored functions safe to replicate;
+    // without this, CREATE TRIGGER / CREATE FUNCTION fail for app users (error 1419).
+    'log_bin_trust_function_creators=ON',
     'gtid_mode=ON',
     'enforce_gtid_consistency=ON',
     'log_replica_updates=ON',
