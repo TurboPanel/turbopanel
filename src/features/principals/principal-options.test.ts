@@ -11,6 +11,7 @@ import {
 import {
   PRINCIPAL_RESERVED_UID_MAX,
   PRINCIPAL_RESERVED_UID_MIN,
+  PRINCIPAL_UID_END,
   PRINCIPAL_UID_START,
 } from '../../lib/naming.ts'
 
@@ -49,10 +50,11 @@ test('parsePrincipalOptions drops invalid shells', () => {
 })
 
 test('parsePrincipalOptions accepts a valid uid/gid override pair', () => {
-  assertEquals(
-    parsePrincipalOptions({ shell: '/bin/bash', uid: 15001, gid: 15001 }),
-    { shell: '/bin/bash', uid: 15001, gid: 15001 },
-  )
+  assertEquals(parsePrincipalOptions({ shell: '/bin/bash', uid: 15001, gid: 15001 }), {
+    shell: '/bin/bash',
+    uid: 15001,
+    gid: 15001,
+  })
 })
 
 test('parsePrincipalOptions drops a partial or invalid uid/gid pair', () => {
@@ -94,10 +96,10 @@ test('parsePrincipalOptionsInput rejects a shell outside the allowlist', () => {
 })
 
 test('parsePrincipalOptionsInput accepts uid/gid at or above the override floor', () => {
-  assertEquals(
-    parsePrincipalOptionsInput({ uid: 15001, gid: 15002 }),
-    { ok: true, value: { shell: DEFAULT_PRINCIPAL_SHELL, uid: 15001, gid: 15002 } },
-  )
+  assertEquals(parsePrincipalOptionsInput({ uid: 15001, gid: 15002 }), {
+    ok: true,
+    value: { shell: DEFAULT_PRINCIPAL_SHELL, uid: 15001, gid: 15002 },
+  })
 })
 
 test('parsePrincipalOptionsInput rejects invalid or one-of-two uid/gid overrides', () => {
@@ -138,6 +140,18 @@ test('isValidPrincipalIdOverride enforces floor and reserved service band', () =
   assertEquals(isValidPrincipalIdOverride(PRINCIPAL_RESERVED_UID_MAX), false)
   assertEquals(isValidPrincipalIdOverride(PRINCIPAL_UID_START - 1), false)
   assertEquals(isValidPrincipalIdOverride(1.5), false)
+})
+
+test('isValidPrincipalIdOverride caps the band at 60000', () => {
+  // Above it, 61184-65519 is systemd's range for the throwaway build users.
+  assertEquals(PRINCIPAL_UID_END, 60000)
+  assertEquals(isValidPrincipalIdOverride(PRINCIPAL_UID_END), true)
+  assertEquals(isValidPrincipalIdOverride(PRINCIPAL_UID_END + 1), false)
+  assertEquals(isValidPrincipalIdOverride(61184), false)
+  assertEquals(isValidPrincipalIdOverride(65534), false)
+  assertEquals(parsePrincipalOptionsInput({ uid: 60001, gid: 60001 }), { ok: false })
+  assertEquals(parsePrincipalOptions({ uid: 60001, gid: 60001 }), {})
+  assertEquals(resolvePrincipalIdOverride({ uid: 15001, gid: 65519 }), null)
 })
 
 test('resolvePrincipalIdOverride returns a pair or null', () => {

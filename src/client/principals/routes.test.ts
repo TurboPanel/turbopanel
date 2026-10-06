@@ -497,6 +497,24 @@ test('POST /projects/:projectId/principals accepts uid and gid override', async 
   })
 })
 
+test('POST /projects/:projectId/principals refuses a uid or gid above 60000', async () => {
+  await withPrincipalFixtures(async ({ app, db, secrets, userId, organizationId, projectId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/projects/${projectId}/principals`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      // 61184-65519 is the host's throwaway build users, never a site owner's.
+      body: JSON.stringify({ username: 'highuid', uid: 61184, gid: 15001 }),
+    })
+
+    assertEquals(res.status, 400)
+  })
+})
+
 test('POST and DELETE /projects/:projectId/principals/:id/password round-trip', async () => {
   await withPrincipalFixtures(async ({ app, db, secrets, userId, organizationId, projectId }) => {
     const cookie = await sessionCookie(db, secrets, userId)

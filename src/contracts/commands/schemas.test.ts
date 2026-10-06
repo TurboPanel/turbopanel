@@ -2159,6 +2159,20 @@ test('parseCommandPayload rejects a malformed runtime entitlement', () => {
   }
 })
 
+test('parseCommandPayload rejects a principalMaterial username with a dot', () => {
+  // The daemon writes each `-` of the name as `.` in slice names; that stays
+  // collision-free only while no username on the wire can hold a `.`.
+  for (const username of ['a.b', 'web-app.x', '.hidden']) {
+    const payload = deployPayloadWithPrincipal([])
+    payload.principalMaterial[0].username = username
+    assertThrows(
+      () => parseCommandPayload('environment.deploy' as CommandType, payload),
+      Error,
+      'Invalid environment.deploy payload'
+    )
+  }
+})
+
 test('parseCommandPayload accepts principalMaterial with and without uid/gid', () => {
   assertEquals(
     parseCommandPayload('environment.deploy' as CommandType, {

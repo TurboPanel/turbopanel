@@ -302,16 +302,26 @@ const ACCESS_LEVEL_FOR_COMPOSE: Readonly<Record<'none' | 'sftp' | 'ssh', Princip
  * namespace is not theirs to know about.
  */
 export function composeAliasShortUsername(alias: string): string {
+  // Dash runs fold to one and edge dashes go: the host refuses builds for a
+  // name ending in `-` or holding `--` (see `hasPlainPrincipalDashes`).
   const folded = alias
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9_-]/g, '')
+    .split('-')
+    .filter((part) => part.length > 0)
+    .join('-')
   const seeded = /^[a-z_]/.test(folded) ? folded : `u${folded}`
-  const capped = seeded.slice(0, MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH)
+  const capped = capShortUsername(seeded)
   const safe = capped.length > 0 ? capped : 'user'
-  return isReservedPrincipalUsername(safe)
-    ? `u${safe}`.slice(0, MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH)
-    : safe
+  return isReservedPrincipalUsername(safe) ? capShortUsername(`u${safe}`) : safe
+}
+
+/** Cap to the suffixed short-name length without leaving a trailing `-`. */
+function capShortUsername(value: string): string {
+  let capped = value.slice(0, MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH)
+  while (capped.endsWith('-')) capped = capped.slice(0, -1)
+  return capped
 }
 
 export type EnsureComposePrincipalInput = {
