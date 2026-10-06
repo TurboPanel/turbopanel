@@ -503,7 +503,12 @@ Hosting-scoped **secret** runtime variables never travel as plaintext: they ride
 target daemon; the control plane never decrypts them on this path), disjoint from
 `webEnv`, and the daemon decrypts them through `secrets/decrypt` before applying
 the site. A deploy with none needs no daemon key. Preview compiles no edge, so it
-carries neither.
+carries neither. A site bound to a managed database also carries `dbCa` (`{
+variables, pem }`: the CA as a file the daemon keeps for the site owner's Linux
+user, with each named variable set to its path) and `requiredEnv` (variables the
+site cannot run without; the daemon stops the deploy, naming one, if its web
+server cannot carry it), only to a daemon that lists `site-db-bindings-v1`; the
+deploy result may answer with `warnings` (variables left out, named).
 All three engines run PHP: nginx/Apache apply vendors php-fpm (never mod_php)
 and writes pool `php_admin_value` for memory/time limits, reached via
 `fastcgi_pass` / `mod_proxy_fcgi`; OpenLiteSpeed apply vendors `lsphp` and gives
