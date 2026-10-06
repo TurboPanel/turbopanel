@@ -118,6 +118,25 @@ describe('buildNativeAppVariables', () => {
     )
   })
 
+  it('turns Windows line endings into LF and holds back a lone carriage return', () => {
+    const pem = '-----BEGIN KEY-----\r\nAAAA\r\n-----END KEY-----'
+    const { variables, view } = buildNativeAppVariables(
+      [plain('PEM', pem), plain('LONE_CR', 'a\rb'), plain('MIXED', 'a\r\r\nb')],
+      app
+    )
+    assertEquals(variables, [
+      { name: 'PEM', value: '-----BEGIN KEY-----\nAAAA\n-----END KEY-----' },
+    ])
+    assertEquals(
+      view.filter((entry) => !entry.delivered).map((e) => [e.name, e.reason]),
+      [
+        ['LONE_CR', 'invalid_value'],
+        ['MIXED', 'invalid_value'],
+      ]
+    )
+    assertEquals(view.find((entry) => entry.name === 'PEM')?.value?.includes('\r'), false)
+  })
+
   it("caps the list at the daemon's limit and says which were left out", () => {
     const many = Array.from({ length: NATIVE_APP_MAX_VARIABLES + 2 }, (_, i) =>
       plain(`V${String(i).padStart(4, '0')}`, '1')
