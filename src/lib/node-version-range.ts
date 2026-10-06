@@ -128,6 +128,7 @@ function comparisonInterval(operator: string, written: WrittenVersion): Interval
 
 /** Longest first, so `>=` is not read as `>` followed by `=1.2`. */
 const OPERATORS: readonly string[] = ['>=', '<=', '~>', '>', '<', '=', '~', '^']
+const OPERATOR_SET: ReadonlySet<string> = new Set(OPERATORS)
 
 function splitOperator(token: string): { operator: string; version: string } {
   for (const operator of OPERATORS) {
@@ -173,7 +174,7 @@ function comparatorTokens(alternative: string): string[] {
   let pending = ''
   for (const word of alternative.split(' ')) {
     if (word.length === 0) continue
-    if (OPERATORS.includes(word)) {
+    if (OPERATOR_SET.has(word)) {
       pending += word
       continue
     }

@@ -2347,6 +2347,39 @@ async function prepareLocalSourceMaterial(
 }
 
 /**
+ * {@link prepareLocalSourceMaterial}, then the Node series of every native app
+ * that names none, read from its repository at the commit just resolved (see
+ * `deploy-node-version.ts`).
+ */
+async function prepareLocalSourcesWithNodeVersions(
+  c: Context<AppEnv>,
+  db: Db,
+  args: Parameters<typeof prepareLocalSourceMaterial>[2] & {
+    nativeApps: readonly PreparedNativeAppService[]
+  }
+): Promise<
+  | {
+      sourceMaterial: EnvironmentDeploySource[]
+      nodeVersions: { apps: PreparedNativeAppService[]; views: NativeAppNodeVersionView[] }
+    }
+  | DeployPrepareError
+  | Response
+> {
+  const sourceMaterial = await prepareLocalSourceMaterial(c, db, args)
+  if (!Array.isArray(sourceMaterial)) return sourceMaterial
+  const nodeVersions = await withNativeAppNodeVersions(args.nativeApps, sourceMaterial, {
+    mode: args.mode,
+    warnings: args.warnings,
+    read: repositoryNodeVersionReader(c, db, {
+      organizationId: args.params.organizationId,
+      serverId: args.params.serverId,
+    }),
+  })
+  if ('kind' in nodeVersions) return nodeVersions
+  return { sourceMaterial, nodeVersions }
+}
+
+/**
  * Registration check for the compose document's external Docker networks,
  * plus the addressing the registered rows declare (one query serves both).
  * The error is soft — `absorbSoftPrepareError` decides whether a preview
@@ -3192,7 +3225,10 @@ export async function prepareDeployCompose(
     pipeline.localServiceNames
   )
 
-  const localSourceMaterial = await prepareLocalSourceMaterial(c, db, {
+  // Before the runtime merge: the group a native app's Linux user is granted
+  // follows the series it runs, and an app with no `nodeVersion` gets it here
+  // from its repository at the commit being deployed.
+  const localSources = await prepareLocalSourcesWithNodeVersions(c, db, {
     mode,
     warnings,
     params,
@@ -3201,21 +3237,10 @@ export async function prepareDeployCompose(
     principalMaterial,
     principalResolution,
     localServiceNames: pipeline.localServiceNames,
+    nativeApps: localNativeApps,
   })
-  if (!Array.isArray(localSourceMaterial)) return localSourceMaterial
-
-  // Before the runtime merge: the group a native app's Linux user is granted
-  // follows the series it runs, and an app with no `nodeVersion` gets it here
-  // from its repository at the commit being deployed.
-  const nodeVersions = await withNativeAppNodeVersions(localNativeApps, localSourceMaterial, {
-    mode,
-    warnings,
-    read: repositoryNodeVersionReader(c, db, {
-      organizationId: params.organizationId,
-      serverId: params.serverId,
-    }),
-  })
-  if ('kind' in nodeVersions) return nodeVersions
+  if (!('sourceMaterial' in localSources)) return localSources
+  const { sourceMaterial: localSourceMaterial, nodeVersions } = localSources
 
   const { principalMaterial: principalMaterialWithRuntimes, deployEntitlements } =
     mergeDeployPrincipalRuntimes({
