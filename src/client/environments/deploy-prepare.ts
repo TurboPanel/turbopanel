@@ -124,6 +124,7 @@ import {
   type DenoAppFeatureError,
   type DenoMigrationPendingError,
   withDenoNativeApps,
+  withRecordedRuntimes,
 } from './deploy-deno-gate.ts'
 import { type SiteEngineFeatureError, withSiteEngineFeature } from './deploy-site-engine-gate.ts'
 import { PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
@@ -2001,48 +2002,78 @@ function nativeAppServicesForDeploy(
   const resourcesByComposeName = new Map(
     resolvedServices.map((entry) => [entry.composeServiceName, entry.resources] as const)
   )
-  return apps.map((app) => {
-    const cron = renderCronForDeploy(app.cron, tasksByComposeName.get(app.composeServiceName))
-    const resources = resourcesByComposeName.get(app.composeServiceName)
-    const cpus = resources?.cpus
-    const memoryBytes = resources?.memoryBytes
-    const perApp =
-      cpus === undefined && memoryBytes === undefined
-        ? undefined
-        : {
-            ...(cpus === undefined ? {} : { cpus }),
-            ...(memoryBytes === undefined ? {} : { memoryBytes }),
-          }
-    return {
-      composeServiceName: app.composeServiceName,
-      listenPort: app.listenPort,
-      framework: app.framework,
-      ...(app.nodeVersion === undefined ? {} : { nodeVersion: app.nodeVersion }),
-      ...(app.runtime === 'deno' ? { runtime: 'deno' as const } : {}),
-      ...(app.denoVersion === undefined ? {} : { denoVersion: app.denoVersion }),
-      ...(app.appMode === undefined ? {} : { appMode: app.appMode }),
-      ...(app.enabled === undefined ? {} : { enabled: app.enabled }),
-      ...(app.startupFile === undefined ? {} : { startupFile: app.startupFile }),
-      // Plain Compose keys, read off the service body by the native split
-      // before the service left the compose document. They ride the payload
-      // rather than stopping here: the `node` service is removed from runtime
-      // compose entirely, so the generated unit is the only thing left that
-      // can honour a restart policy or record service labels.
-      ...(app.restartPolicy === undefined ? {} : { restartPolicy: app.restartPolicy }),
-      ...(app.serviceLabels === undefined ? {} : { serviceLabels: app.serviceLabels }),
-      ...(perApp === undefined ? {} : { resources: perApp }),
-      ...(accountLimits === undefined ? {} : { accountLimits }),
-      // A node app always runs as the principal that owns its release tree, so
-      // unlike a site there is no unowned case to refuse here — the daemon
-      // resolves the account from the same binding it builds for the app's own
-      // unit. Translation still happens exactly once, in `renderCronForDeploy`.
-      ...(cron.length === 0 ? {} : { cron }),
-      // The `node` service left the compose document, and with it the
-      // `environment:` the variables module built — this list is the only way
-      // its variables reach the process.
-      ...nativeAppVariablesField(variablesByComposeName.get(app.composeServiceName)),
-    }
-  })
+  return apps.map((app) =>
+    nativeAppServiceForDeploy(
+      app,
+      resourcesByComposeName.get(app.composeServiceName),
+      accountLimits,
+      renderCronForDeploy(app.cron, tasksByComposeName.get(app.composeServiceName)),
+      variablesByComposeName.get(app.composeServiceName)
+    )
+  )
+}
+
+/** The per-app resource ceiling the daemon turns into unit limits, when the app set one. */
+function nativeAppResourcesForWire(
+  resources: ResolvedService['resources'] | undefined
+): { resources?: { cpus?: number; memoryBytes?: number } } {
+  const cpus = resources?.cpus
+  const memoryBytes = resources?.memoryBytes
+  if (cpus === undefined && memoryBytes === undefined) return {}
+  return {
+    resources: {
+      ...(cpus === undefined ? {} : { cpus }),
+      ...(memoryBytes === undefined ? {} : { memoryBytes }),
+    },
+  }
+}
+
+/**
+ * The runtime and start fields of one app, each only when the app set it, so a
+ * Node app's payload carries neither `runtime` nor `denoVersion`.
+ */
+function nativeAppRuntimeFieldsForWire(app: NativeAppServiceSpec) {
+  return {
+    ...(app.nodeVersion === undefined ? {} : { nodeVersion: app.nodeVersion }),
+    ...(app.runtime === 'deno' ? { runtime: 'deno' as const } : {}),
+    ...(app.denoVersion === undefined ? {} : { denoVersion: app.denoVersion }),
+    ...(app.appMode === undefined ? {} : { appMode: app.appMode }),
+    ...(app.enabled === undefined ? {} : { enabled: app.enabled }),
+    ...(app.startupFile === undefined ? {} : { startupFile: app.startupFile }),
+  }
+}
+
+function nativeAppServiceForDeploy(
+  app: NativeAppServiceSpec,
+  resources: ResolvedService['resources'] | undefined,
+  accountLimits: ReturnType<typeof effectiveAccountLimits>,
+  cron: ReturnType<typeof renderCronForDeploy>,
+  variables: NativeAppVariables | undefined
+): PreparedNativeAppService {
+  return {
+    composeServiceName: app.composeServiceName,
+    listenPort: app.listenPort,
+    framework: app.framework,
+    ...nativeAppRuntimeFieldsForWire(app),
+    // Plain Compose keys, read off the service body by the native split
+    // before the service left the compose document. They ride the payload
+    // rather than stopping here: the `node` service is removed from runtime
+    // compose entirely, so the generated unit is the only thing left that
+    // can honour a restart policy or record service labels.
+    ...(app.restartPolicy === undefined ? {} : { restartPolicy: app.restartPolicy }),
+    ...(app.serviceLabels === undefined ? {} : { serviceLabels: app.serviceLabels }),
+    ...nativeAppResourcesForWire(resources),
+    ...(accountLimits === undefined ? {} : { accountLimits }),
+    // A node app always runs as the principal that owns its release tree, so
+    // unlike a site there is no unowned case to refuse here — the daemon
+    // resolves the account from the same binding it builds for the app's own
+    // unit. Translation still happens exactly once, in `renderCronForDeploy`.
+    ...(cron.length === 0 ? {} : { cron }),
+    // The `node` service left the compose document, and with it the
+    // `environment:` the variables module built — this list is the only way
+    // its variables reach the process.
+    ...nativeAppVariablesField(variables),
+  }
 }
 
 /**
@@ -3030,6 +3061,60 @@ async function persistDeployRuntimeEntitlements(
   return undefined
 }
 
+/**
+ * Everything that depends on which runtime each local native app runs: the
+ * Deno feature gate, the repository's Node version, the runtime groups each
+ * site owner's Linux user is granted, and the stored entitlements. The first
+ * refusal wins; a Deno app is refused before anything reads it as Node.
+ */
+async function prepareNativeAppRuntimes(
+  c: Context<AppEnv>,
+  db: Db,
+  args: Omit<Parameters<typeof prepareLocalSourcesWithNodeVersions>[2], 'nativeApps'> & {
+    nativeApps: readonly PreparedNativeAppService[]
+    principalMaterial: Parameters<typeof mergeDeployPrincipalRuntimes>[0]['principalMaterial']
+    sites: Parameters<typeof mergeDeployPrincipalRuntimes>[0]['sites']
+  }
+): Promise<
+  | {
+      localSourceMaterial: EnvironmentDeploySource[]
+      nodeVersions: { apps: PreparedNativeAppService[]; views: NativeAppNodeVersionView[] }
+      principalMaterialWithRuntimes: EnvironmentDeployPrincipalMaterial[]
+    }
+  | DeployPrepareError
+  | Response
+> {
+  // A rollback runs each app on the runtime its release ran on.
+  const nativeApps = withRecordedRuntimes(
+    args.nativeApps,
+    args.params.rollback?.releaseByService
+  )
+  const denoGate = await withDenoNativeApps(db, args.params.serverId, nativeApps)
+  if ('kind' in denoGate) return denoGate
+
+  // Before the runtime merge: the group a native app's Linux user is granted
+  // follows the series it runs, and an app with no `nodeVersion` gets it here
+  // from its repository at the commit being deployed.
+  const localSources = await prepareLocalSourcesWithNodeVersions(c, db, { ...args, nativeApps })
+  if (!('sourceMaterial' in localSources)) return localSources
+  const { sourceMaterial: localSourceMaterial, nodeVersions } = localSources
+
+  const { principalMaterial: principalMaterialWithRuntimes, deployEntitlements } =
+    mergeDeployPrincipalRuntimes({
+      principalMaterial: args.principalMaterial,
+      nativeAppServices: nodeVersions.apps,
+      sourceMaterial: localSourceMaterial,
+      sites: args.sites,
+    })
+  const entitlementsPersisted = await persistDeployRuntimeEntitlements(
+    db,
+    args.mode,
+    deployEntitlements
+  )
+  if (entitlementsPersisted) return entitlementsPersisted
+  return { localSourceMaterial, nodeVersions, principalMaterialWithRuntimes }
+}
+
 export async function prepareDeployCompose(
   c: Context<AppEnv>,
   db: Db,
@@ -3293,13 +3378,7 @@ export async function prepareDeployCompose(
     pipeline.localServiceNames
   )
 
-  const denoGate = await withDenoNativeApps(db, params.serverId, localNativeApps)
-  if ('kind' in denoGate) return denoGate
-
-  // Before the runtime merge: the group a native app's Linux user is granted
-  // follows the series it runs, and an app with no `nodeVersion` gets it here
-  // from its repository at the commit being deployed.
-  const localSources = await prepareLocalSourcesWithNodeVersions(c, db, {
+  const runtimes = await prepareNativeAppRuntimes(c, db, {
     mode,
     warnings,
     params,
@@ -3309,19 +3388,10 @@ export async function prepareDeployCompose(
     principalResolution,
     localServiceNames: pipeline.localServiceNames,
     nativeApps: localNativeApps,
+    sites: localSite,
   })
-  if (!('sourceMaterial' in localSources)) return localSources
-  const { sourceMaterial: localSourceMaterial, nodeVersions } = localSources
-
-  const { principalMaterial: principalMaterialWithRuntimes, deployEntitlements } =
-    mergeDeployPrincipalRuntimes({
-      principalMaterial,
-      nativeAppServices: nodeVersions.apps,
-      sourceMaterial: localSourceMaterial,
-      sites: localSite,
-    })
-  const entitlementsPersisted = await persistDeployRuntimeEntitlements(db, mode, deployEntitlements)
-  if (entitlementsPersisted) return entitlementsPersisted
+  if ('kind' in runtimes || runtimes instanceof Response) return runtimes
+  const { localSourceMaterial, nodeVersions, principalMaterialWithRuntimes } = runtimes
 
   const dockerExternalNetworks = collectComposeExternalDockerNetworkNames(split.composeYaml)
   const externalNetworks = await resolveExternalNetworks(

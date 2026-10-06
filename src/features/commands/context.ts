@@ -85,6 +85,13 @@ export type CommandContextRelease = {
    * service and on releases recorded before it existed.
    */
   nodeVersion?: string
+  /**
+   * Recorded only for a Deno app's release (`deno`); absent means Node, as on
+   * every release recorded before Deno apps existed, so a Node row is
+   * unchanged. A rollback reads it to put the app back on the runtime that
+   * release ran on, even after the compose document switched runtime.
+   */
+  runtime?: 'deno'
   /** Present only for a rollback — the already-published release it promoted. */
   rollbackToReleaseId?: string
 }
@@ -141,6 +148,8 @@ export function normalizeContextReleases(value: unknown): CommandContextRelease[
     const commitMessage = releaseField(record, 'commitMessage')
     const commitAuthor = releaseField(record, 'commitAuthor')
     const nodeVersion = releaseField(record, 'nodeVersion')
+    // Anything but the one recorded value is dropped on its own, like the rest.
+    const runtime = record.runtime === 'deno' ? ('deno' as const) : undefined
     releases.push({
       composeServiceName,
       releaseId,
@@ -149,6 +158,7 @@ export function normalizeContextReleases(value: unknown): CommandContextRelease[
       ...(commitMessage === undefined ? {} : { commitMessage }),
       ...(commitAuthor === undefined ? {} : { commitAuthor }),
       ...(nodeVersion === undefined ? {} : { nodeVersion }),
+      ...(runtime === undefined ? {} : { runtime }),
       ...(rollbackToReleaseId === undefined ? {} : { rollbackToReleaseId }),
     })
   }

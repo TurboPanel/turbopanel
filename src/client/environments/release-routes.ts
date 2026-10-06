@@ -74,6 +74,8 @@ export function releasePin(release: ServiceReleaseRecord): DeployRollbackRelease
     // The Node a native app's release was built on: the rollback runs it on
     // the same one rather than reading the repository again.
     ...(release.nodeVersion === undefined ? {} : { nodeVersion: release.nodeVersion }),
+    // The runtime that release ran on, so the rollback restores it.
+    ...(release.runtime === undefined ? {} : { runtime: release.runtime }),
   }
 }
 
