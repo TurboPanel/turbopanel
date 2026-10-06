@@ -1728,6 +1728,15 @@ export const organizationPaths: Record<string, unknown> = {
             },
           },
         },
+        '503': {
+          description:
+            '`fabric_teardown_not_queued` (with `message` and `serverIds`): `enabled: false` could not queue the teardown for every server; the servers listed did not get it. TurboFabric stays on (its settings and relays are kept); servers whose teardown was queued drop their tunnel and are re-applied by the next reconcile. Retry.',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
       },
     },
   },
