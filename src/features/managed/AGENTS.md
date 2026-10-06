@@ -216,10 +216,17 @@ names the scope when a stored `{ enabled: true }` row has none): loopback is all
 a site run by a site owner's Linux user needs (`127.0.0.1:13306`), and bound
 containers dial ProxySQL by name over the organization's managed Docker network
 with no host publish. Wider scopes are an explicit per-cluster choice in the
-settings panel. Changing a cluster's exposure via `PATCH` queues a
-`managed.ingress.reconcile` on every fronting server at once
+settings panel. Changing a cluster's exposure via `PATCH` (also saving a
+legacy no-scope cluster, or any save while an earlier push is unconfirmed)
+queues a `managed.ingress.reconcile` on every fronting server at once
 (`exposure-change.ts`; the response carries `ingressReconcile`), after refusing
-a scope a server has no address for. Access control on a published listener is
+a scope a server has no address for (422 naming the server). Every asked server
+is kept in `managed.metadata.exposurePending` until a reconcile created after
+the ask succeeds (`consumer.ts`); a push that cannot be built or queued answers
+502 `ingress_reconcile_failed` (saved, not applied), `GET` lists the servers as
+`exposure.pendingServers`, and `runManagedExposurePendingSweep` re-pushes them
+once the earlier command has expired. One public cluster on a server still
+widens every other cluster there (one listener serves all). Access control on a published listener is
 credential auth + org-CA TLS; the host firewall (`features/firewall/`, preview
 only so far) will enforce `exposure.scope`. One-release read of retired
 `exposure.bind` (`public` | `datacenter` | `local`) migrates to the same-named
