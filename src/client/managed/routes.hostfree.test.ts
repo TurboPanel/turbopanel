@@ -2904,14 +2904,18 @@ test('DELETE cluster with ?detach=true needs the same rights as the destroy: man
     registry: stubRegistry(),
     commandQueue: countingQueue(enqueued),
   })
-  for (const query of ['?detach=true', '?force=true&detach=true']) {
-    executeCalls = 0
-    const res = await app.request(envPath(query), {
-      method: 'DELETE',
-      headers: authHeaders(cookie),
-    })
-    assertEquals(res.status, 403)
-  }
+  executeCalls = 0
+  const detach = await app.request(envPath('?detach=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(detach.status, 403)
+  executeCalls = 0
+  const forced = await app.request(envPath('?force=true&detach=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(forced.status, 403)
   assertEquals(enqueued.length, 0)
   assertEquals(deletedTables.length, 0)
 })

@@ -36,6 +36,7 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import { detachBindingsForManaged } from '../../features/bindings/impact.ts'
+import { createCommandRecord } from '../../features/commands/command-records.ts'
 import { postgresEngineSpec } from '../../features/managed/postgres.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
@@ -742,28 +743,34 @@ test('POST /bindings is refused while a destroy of the cluster is outstanding, a
         emitEngineDefaults: false,
       })
 
-      const [destroy] = await db
-        .insert(command)
-        .values({
-          serverId,
-          actorType: 'user',
-          actorId: userId,
-          name: 'managed.destroy',
-          status: 'queued',
-          context: { managedId },
-        })
-        .returning({ id: command.id })
+      // Queued through the real record writer, so the test also proves that a
+      // destroy payload leaves `command.context.managedId` for the gate to find.
+      const destroy = await createCommandRecord(db, {
+        serverId,
+        actorType: 'user',
+        actorId: userId,
+        type: 'managed.destroy',
+        payload: { managedId, removeVolumes: true, deleteAfterDestroy: true },
+      })
       try {
         const refused = await app.request('/bindings', { method: 'POST', headers, body })
         assertEquals(refused.status, 409)
         assertEquals(await refused.json(), { error: 'managed_busy', reason: 'destroy_in_flight' })
-        assertEquals((await db.select({ id: binding.id }).from(binding)).length, 0)
+        assertEquals(
+          (
+            await db
+              .select({ id: binding.id })
+              .from(binding)
+              .where(eq(binding.principalId, principalId))
+          ).length,
+          0
+        )
 
-        await db.update(command).set({ status: 'failed' }).where(eq(command.id, destroy!.id))
+        await db.update(command).set({ status: 'failed' }).where(eq(command.id, destroy.id))
         const created = await app.request('/bindings', { method: 'POST', headers, body })
         assertEquals(created.status, 200)
       } finally {
-        await db.delete(command).where(eq(command.id, destroy!.id))
+        await db.delete(command).where(eq(command.id, destroy.id))
       }
     }
   )
@@ -795,18 +802,16 @@ test('detachBindingsForManaged removes every binding of the cluster and its vari
         }),
       })
       assertEquals(created.status, 200)
-      assertEquals((await db.select({ id: binding.id }).from(binding)).length > 0, true)
+      const mine = () =>
+        db.select({ id: binding.id }).from(binding).where(eq(binding.principalId, principalId))
+      assertEquals((await mine()).length, 1)
 
       // Another cluster's id removes nothing.
       await detachBindingsForManaged(db, crypto.randomUUID())
-      assertEquals((await db.select({ id: binding.id }).from(binding)).length > 0, true)
+      assertEquals((await mine()).length, 1)
 
       await detachBindingsForManaged(db, managedId)
-      const left = await db
-        .select({ id: binding.id })
-        .from(binding)
-        .where(eq(binding.principalId, principalId))
-      assertEquals(left.length, 0)
+      assertEquals((await mine()).length, 0)
       const variables = await db
         .select({ id: variable.id })
         .from(variable)
