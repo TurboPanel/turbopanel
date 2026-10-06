@@ -26,7 +26,7 @@ import {
   prepareDeployCompose,
   type ReleaseIdAllocator,
 } from './deploy-prepare.ts'
-import { findUnresolvedComposeInterpolations } from '../../features/compose/variable-refs.ts'
+import { findUnresolvedComposeInterpolations } from '../../features/compose/unresolved-interpolation.ts'
 import { definedFields, presentFields } from '../../lib/optional-fields.ts'
 import { recordedNodeVersions } from './deploy-node-version.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
