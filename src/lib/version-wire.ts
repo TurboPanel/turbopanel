@@ -179,6 +179,7 @@ export const DAEMON_WIRE_FEATURES = [
   'php-site-modes-v1',
   'site-engine-nginx-apache-v1',
   'deploy-cancel-v1',
+  'site-db-bindings-v1',
   'deno-native-apps-v1',
 ] as const
 
@@ -237,6 +238,15 @@ export const PHP_SITE_MODES_FEATURE: DaemonWireFeature = 'php-site-modes-v1'
  * for a deploy the daemon already acknowledged.
  */
 export const DEPLOY_CANCEL_FEATURE: DaemonWireFeature = 'deploy-cancel-v1'
+
+/**
+ * The daemon takes `sites[].dbCa` (a managed database's CA as a file the site
+ * owner's Linux user can read) and `sites[].requiredEnv` (variables a site
+ * cannot run without), and answers an `environment.deploy` with `warnings`.
+ * Without it the control plane sends neither field: a bound PHP site then gets
+ * no CA and a deploy warning, never a multi-line value.
+ */
+export const SITE_DB_BINDINGS_FEATURE: DaemonWireFeature = 'site-db-bindings-v1'
 
 /**
  * The daemon runs a native app on Deno (`nativeAppServices[].runtime: "deno"`
