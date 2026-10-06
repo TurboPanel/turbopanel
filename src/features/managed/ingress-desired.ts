@@ -50,7 +50,8 @@ import {
   resolveManagedBindAddress,
 } from './access-address.ts'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
-import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
+import { loadBoundManagedIdsForServer, serverHasHostRunBinding } from './ingress-bound-consumers.ts'
+import { HOST_RUN_LOOPBACK_HOST } from '../../lib/naming.ts'
 import { requestedExposureScope } from './host-exposure.ts'
 import { materializeBindingsForPrincipal } from '../bindings/materialize.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
@@ -688,6 +689,12 @@ async function buildManagedIngressReconcileDesired(
   if ('kind' in clusters) return clusters
   if (clusters.length === 0) return null
 
+  // A PHP site or native app on this server dials the proxy on loopback, so the
+  // listener is published there whatever the clusters' exposure says. Loopback
+  // is not exposure: nothing off the machine can reach it.
+  const hostRunConsumer = await serverHasHostRunBinding(db, params.serverId, organizationId)
+  if (hostRunConsumer) enabledScopes.push('local')
+
   const bindAddresses = await resolveIngressBindAddresses(db, params.serverId, enabledScopes)
   if (!Array.isArray(bindAddresses)) return bindAddresses
 
@@ -701,7 +708,9 @@ async function buildManagedIngressReconcileDesired(
   const backendAddresses = clusters.flatMap((c) => c.backends.map((b) => b.address))
   const listenerSans = collectProxySqlListenerSans({
     hostname: advertisedHost,
-    bindAddresses,
+    // A host-run consumer verifies the certificate against `127.0.0.1`; under a
+    // public publish the bind is a wildcard and carries no SAN of its own.
+    bindAddresses: hostRunConsumer ? [...bindAddresses, HOST_RUN_LOOPBACK_HOST] : bindAddresses,
     backendAddresses,
   })
   // Bindings (`resolveBindingEndpoint`) always dial ProxySQL by this

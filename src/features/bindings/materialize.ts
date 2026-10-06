@@ -29,6 +29,13 @@ import type { ResolvedVariableEntry, ResolvedVariableMap } from '../variables/re
 import { ensureActiveOrganizationCa } from '../managed/apply-prepare.ts'
 import { parseManagedRowOptions } from '../managed/options.ts'
 import {
+  type BindingDelivery,
+  HOST_RUN_LOOPBACK_HOST,
+  hostSiteBindingRefusal,
+  isHostRunDelivery,
+  loadStoredDelivery,
+} from './host-run.ts'
+import {
   type BindingEndpointError,
   isBindingEndpointError,
   resolveBindingEndpoint,
@@ -42,6 +49,8 @@ export type MaterializeBindingError =
   | { kind: 'binding_engine_unsupported' }
   | { kind: 'binding_ca_unavailable' }
   | { kind: 'binding_cluster_invalid' }
+  /** A PHP site cannot reach this database (its port); `message` is plain words. */
+  | { kind: 'binding_host_site_unsupported'; message: string }
 
 export type DesiredBindingVariable = {
   key: string
@@ -71,6 +80,14 @@ export function computeBindingVariableSet(
      * default → platform), already resolved by the caller.
      */
     sslMode: ManagedSslMode
+    /**
+     * Where the consuming service runs. Omitted means `container`, whose output
+     * is byte-identical to what it was before host-run services existed. A host
+     * kind dials ProxySQL on loopback (`host` is replaced); a PHP site gets no
+     * `<PREFIX>_CA_CERT` (a multi-line value breaks its web server: the daemon
+     * delivers the CA as a file and sets `<PREFIX>_CA_FILE`).
+     */
+    delivery?: BindingDelivery
   }>
 ): DesiredBindingVariable[] | { kind: 'binding_engine_unsupported' } {
   const spec = getManagedEngineSpec(params.engineCode)
@@ -79,8 +96,10 @@ export function computeBindingVariableSet(
   }
 
   const prefixed = bindingPrefixedKeys(params.keyPrefix)
+  const delivery = params.delivery ?? 'container'
+  const host = isHostRunDelivery(delivery) ? HOST_RUN_LOOPBACK_HOST : params.host
   const dsn = spec.binding.buildBindingDsn({
-    host: params.host,
+    host,
     port: params.port,
     database: params.databaseName,
     username: params.username,
@@ -90,13 +109,15 @@ export function computeBindingVariableSet(
 
   const rows: DesiredBindingVariable[] = [
     { key: prefixed.url, value: dsn, isSecret: true },
-    { key: prefixed.caCert, value: params.caCertPem, isSecret: true },
+    ...(delivery === 'host-site'
+      ? []
+      : [{ key: prefixed.caCert, value: params.caCertPem, isSecret: true }]),
     {
       key: prefixed.readSplit,
       value: params.readSplit ? 'true' : 'false',
       isSecret: false,
     },
-    { key: prefixed.host, value: params.host, isSecret: false },
+    { key: prefixed.host, value: host, isSecret: false },
     { key: prefixed.port, value: String(params.port), isSecret: false },
     { key: prefixed.database, value: params.databaseName, isSecret: false },
     { key: prefixed.user, value: params.username, isSecret: false },
@@ -106,7 +127,7 @@ export function computeBindingVariableSet(
   if (params.emitEngineDefaults) {
     const u = spec.binding.unprefixed
     rows.push(
-      { key: u.host, value: params.host, isSecret: false },
+      { key: u.host, value: host, isSecret: false },
       { key: u.port, value: String(params.port), isSecret: false },
       { key: u.database, value: params.databaseName, isSecret: false },
       { key: u.user, value: params.username, isSecret: false },
@@ -134,8 +155,10 @@ export function listBindingEmittedKeys(
 ): string[] | null {
   const spec = getManagedEngineSpec(params.engineCode)
   if (!spec?.binding) return null
-  const prefixed = bindingPrefixedKeys(params.keyPrefix)
-  const keys = Object.values(prefixed)
+  // `<PREFIX>_CA_FILE` is set by the daemon on a PHP site at deploy, never
+  // stored as a binding row, so the stored/advertised key list leaves it out.
+  const { caFile: _daemonSet, ...stored } = bindingPrefixedKeys(params.keyPrefix)
+  const keys = Object.values(stored)
   if (params.emitEngineDefaults) {
     const u = spec.binding.unprefixed
     keys.push(u.host, u.port, u.database, u.user, u.password)
@@ -220,10 +243,32 @@ export async function upsertBindingOwnedVariables(
   })
 }
 
+/**
+ * The form this binding is written in: what the deploy said, else what its
+ * stored rows already are. A PHP site that could not reach the listener is
+ * refused here, before anything is written.
+ */
+export async function resolveBindingDelivery(
+  db: Db,
+  binding: Readonly<{ bindingId: string; keyPrefix: string; listenerPort: number }>,
+  delivery: BindingDelivery | undefined
+): Promise<BindingDelivery | MaterializeBindingError> {
+  const effective = delivery ?? (await loadStoredDelivery(db, binding.bindingId, binding.keyPrefix))
+  if (effective !== 'host-site') return effective
+  const refusal = hostSiteBindingRefusal(binding.listenerPort)
+  return refusal ? { kind: 'binding_host_site_unsupported', message: refusal } : effective
+}
+
+/**
+ * @param delivery where the consuming service runs. A deploy passes what the
+ *   compose document says; any other caller omits it and the binding keeps the
+ *   form its stored rows are already in.
+ */
 export async function materializeBinding(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  bindingId: string
+  bindingId: string,
+  delivery?: BindingDelivery
 ): Promise<{ ok: true } | MaterializeBindingError> {
   const [row] = await db
     .select({
@@ -303,6 +348,13 @@ export async function materializeBinding(
     return endpoint
   }
 
+  const effectiveDelivery = await resolveBindingDelivery(
+    db,
+    { bindingId, keyPrefix: row.keyPrefix, listenerPort: endpoint.port },
+    delivery
+  )
+  if (typeof effectiveDelivery === 'object') return effectiveDelivery
+
   const desired = computeBindingVariableSet({
     keyPrefix: row.keyPrefix,
     emitEngineDefaults: row.emitEngineDefaults,
@@ -315,6 +367,7 @@ export async function materializeBinding(
     readSplit: endpoint.readSplit,
     engineCode: row.managedEngine,
     sslMode: resolveManagedSslMode(options.settings.ssl.mode, orgManagedDefaults?.sslMode),
+    delivery: effectiveDelivery,
   })
   if ('kind' in desired) return desired
 
@@ -330,15 +383,22 @@ export async function materializeBinding(
 export async function materializeBindingsForServices(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  serviceIds: readonly string[]
+  serviceIds: readonly string[],
+  /** What the compose document says each service is; absent means keep stored form. */
+  deliveries?: ReadonlyMap<string, BindingDelivery>
 ): Promise<{ ok: true } | MaterializeBindingError> {
   if (serviceIds.length === 0) return { ok: true }
   const rows = await db
-    .select({ id: binding.id })
+    .select({ id: binding.id, serviceId: binding.serviceId })
     .from(binding)
     .where(inArray(binding.serviceId, [...serviceIds]))
   for (const row of rows) {
-    const result = await materializeBinding(db, dataEncryptionSecrets, row.id)
+    const result = await materializeBinding(
+      db,
+      dataEncryptionSecrets,
+      row.id,
+      deliveries?.get(row.serviceId)
+    )
     if (!('ok' in result)) return result
   }
   return { ok: true }

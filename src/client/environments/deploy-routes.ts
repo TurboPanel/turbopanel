@@ -115,6 +115,7 @@ import {
   type PlannedDeploy,
 } from '../../features/schedule/index.ts'
 import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
+import { serverHasHostRunBinding } from '../../features/managed/ingress-bound-consumers.ts'
 import {
   loadManagedIngressPlatformAttachments,
   type ManagedIngressConsumer,
@@ -1779,6 +1780,17 @@ async function enqueueIngressReconcileAfterDeploy(
     listenerNames: params.listenerNames,
     releasedListeners: params.releasedListeners,
   })
+  // A host-run binding was just (re)materialized for loopback: the proxy has to
+  // publish there before the site's first request. Checked per planned server,
+  // after the deploy, from the stored binding rows.
+  const hostRunChecks = await Promise.all(
+    params.planServerIds.map(
+      async (serverId) => [serverId, await serverHasHostRunBinding(db, serverId)] as const
+    )
+  )
+  for (const [serverId, hostRun] of hostRunChecks) {
+    if (hostRun) ingressServerIds.add(serverId)
+  }
   await forEachSequential(ingressServerIds, (serverId) =>
     enqueueManagedIngressReconcile(db, commandQueue, {
       serverId,

@@ -33,9 +33,13 @@ import {
   service,
   slot,
   tls,
+  variable,
   workspace,
 } from '../../db/schema.ts'
 import { postgresEngineSpec } from './postgres.ts'
+import { loadHostSiteBindingNeeds } from '../bindings/host-run.ts'
+import { materializeBinding } from '../bindings/materialize.ts'
+import { serverHasHostRunBinding } from './ingress-bound-consumers.ts'
 import type { ManagedSettings } from './settings.ts'
 import { createManagedPrincipal } from '../principals/store.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
@@ -884,4 +888,302 @@ test('loadBoundManagedIdsForServer does not scan unpinned environments that defa
     await db.delete(workspace).where(eq(workspace.id, workspaceId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
+})
+
+/** The `<PREFIX>_HOST` row a binding stores: loopback for a host-run service. */
+async function insertBindingHostRow(
+  db: ReturnType<typeof createDenoDb>,
+  serviceId: string,
+  keyPrefix: string,
+  value: string
+): Promise<void> {
+  const [bindingRow] = await db
+    .select({ id: binding.id })
+    .from(binding)
+    .where(eq(binding.serviceId, serviceId))
+  await db.insert(variable).values({
+    serviceId,
+    bindingId: bindingRow!.id,
+    key: `${keyPrefix}_HOST`,
+    value,
+    isSecret: false,
+    isLiteral: true,
+    isForBuild: false,
+    isForRuntime: true,
+  })
+}
+
+test('serverHasHostRunBinding sees only loopback-form bindings placed on the server', async () => {
+  if (!dbUrl) {
+    skipWithoutDatabase('host-run binding placement tests')
+    return
+  }
+  const db = createDenoDb()
+  const [org] = await db
+    .insert(organization)
+    .values({ name: 'Host Run Binding Org' })
+    .returning({ id: organization.id })
+  const organizationId = org!.id
+  const [ws] = await db
+    .insert(workspace)
+    .values({ name: 'Host Run Binding Workspace', organizationId })
+    .returning({ id: workspace.id })
+  const now = new Date().toISOString()
+  const servers = await db
+    .insert(server)
+    .values(
+      ['Host Run A', 'Host Run B'].map((name) => ({
+        organizationId,
+        name,
+        createdAt: now,
+        updatedAt: now,
+      }))
+    )
+    .returning({ id: server.id })
+  const [serverA, serverB] = [servers[0]!.id, servers[1]!.id]
+  const created: Awaited<ReturnType<typeof insertBoundConsumer>>[] = []
+  try {
+    const consumer = (name: string, serverId: string, keyPrefix: string, host: string) =>
+      insertBoundConsumer(db, {
+        organizationId,
+        workspaceId: ws!.id,
+        projectName: name,
+        defaultServerId: serverId,
+        environmentServerId: serverId,
+        managedServerId: serverId,
+        username: `${keyPrefix.toLowerCase()}_user`,
+        keyPrefix,
+      }).then(async (row) => {
+        created.push(row)
+        await insertBindingHostRow(db, row.serviceId, keyPrefix, host)
+        return row
+      })
+
+    // A container service on server A keeps the container name.
+    const container = await consumer('Container Consumer', serverA, 'CONTAINER', 'abc-in')
+    assertEquals(await serverHasHostRunBinding(db, serverA, organizationId), false)
+
+    // A host-run service on server B does not make server A look host-run.
+    const hostB = await consumer('Host Consumer B', serverB, 'HOSTB', '127.0.0.1')
+    assertEquals(await serverHasHostRunBinding(db, serverA, organizationId), false)
+    assertEquals(await serverHasHostRunBinding(db, serverB, organizationId), true)
+    assertEquals(await serverHasHostRunBinding(db, serverB, crypto.randomUUID()), false)
+    assertEquals(await serverHasHostRunBinding(db, serverB), true)
+
+    await consumer('Host Consumer A', serverA, 'HOSTA', '127.0.0.1')
+    assertEquals(await serverHasHostRunBinding(db, serverA, organizationId), true)
+
+    // The daemon is told what each bound site cannot run without, per service.
+    const needs = await loadHostSiteBindingNeeds(db, [container.serviceId, hostB.serviceId])
+    assertEquals(needs.get(hostB.serviceId)?.caFileKeys, ['HOSTB_CA_FILE'])
+    assertEquals(needs.get(hostB.serviceId)?.requiredKeys, [
+      'HOSTB_HOST',
+      'HOSTB_PORT',
+      'HOSTB_NAME',
+      'HOSTB_USER',
+      'HOSTB_PASSWORD',
+    ])
+    assertEquals((await loadHostSiteBindingNeeds(db, [])).size, 0)
+  } finally {
+    const serviceIds = created.map((row) => row.serviceId)
+    const managedIds = created.map((row) => row.managedId)
+    if (serviceIds.length > 0) {
+      await db.delete(variable).where(inArray(variable.serviceId, serviceIds))
+      await db.delete(binding).where(inArray(binding.serviceId, serviceIds))
+      await db.delete(service).where(inArray(service.id, serviceIds))
+    }
+    if (managedIds.length > 0) {
+      await db.delete(principal).where(inArray(principal.managedId, managedIds))
+      await db.delete(managed).where(inArray(managed.id, managedIds))
+    }
+    await db.delete(environment).where(
+      inArray(
+        environment.id,
+        created.map((row) => row.environmentId)
+      )
+    )
+    await db.delete(project).where(
+      inArray(
+        project.id,
+        created.map((row) => row.projectId)
+      )
+    )
+    await db.delete(server).where(inArray(server.id, [serverA, serverB]))
+    await db.delete(workspace).where(eq(workspace.id, ws!.id))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
+test('a host-run binding on the server publishes loopback with exposure off and names it in the certificate', async () => {
+  await withSingleClusterIngressFixture(
+    { enabled: false },
+    async ({ db, serverId, organizationId, secretsConfig, dataEncryptionSecrets }) => {
+      const build = async () => {
+        const built = await buildManagedIngressReconcilePayload(db, {
+          serverId,
+          secretsConfig,
+          dataEncryptionSecrets,
+        })
+        if (built === null || 'kind' in built) {
+          throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`)
+        }
+        return built
+      }
+      assertEquals('bindAddresses' in (await build()), false)
+
+      const [clusterRow] = await db
+        .select({ id: managed.id, environmentId: managed.environmentId })
+        .from(managed)
+        .where(eq(managed.serverId, serverId))
+      const [ws] = await db
+        .select({ id: workspace.id })
+        .from(workspace)
+        .where(eq(workspace.organizationId, organizationId))
+      const [projectRow] = await db
+        .insert(project)
+        .values({
+          name: 'Host Run Site Project',
+          workspaceId: ws!.id,
+          organizationId,
+          options: { defaultServerId: serverId },
+        })
+        .returning({ id: project.id })
+      const [envRow] = await db
+        .insert(environment)
+        .values({ name: 'Production', projectId: projectRow!.id, serverId })
+        .returning({ id: environment.id })
+      const [serviceRow] = await db
+        .insert(service)
+        .values({ environmentId: envRow!.id, composeServiceName: 'wordpress' })
+        .returning({ id: service.id })
+      const principalRow = await createManagedPrincipal(db, dataEncryptionSecrets, {
+        managedId: clusterRow!.id,
+        provider: 'postgres',
+        username: 'wp_user',
+      })
+      try {
+        await db.insert(binding).values({
+          principalId: principalRow.principalId,
+          serviceId: serviceRow!.id,
+          databaseName: 'postgres',
+          keyPrefix: 'DATABASE',
+          isEmitEngineDefaults: false,
+        })
+        // Stored the container way: still nothing published.
+        await insertBindingHostRow(db, serviceRow!.id, 'DATABASE', 'abc-in')
+        assertEquals('bindAddresses' in (await build()), false)
+        await db
+          .update(variable)
+          .set({ value: '127.0.0.1' })
+          .where(eq(variable.serviceId, serviceRow!.id))
+        assertEquals((await build()).bindAddresses, ['127.0.0.1'])
+      } finally {
+        await db.delete(variable).where(eq(variable.serviceId, serviceRow!.id))
+        await db.delete(binding).where(eq(binding.serviceId, serviceRow!.id))
+        await db.delete(principal).where(eq(principal.id, principalRow.principalId))
+        await db.delete(service).where(eq(service.id, serviceRow!.id))
+        await db.delete(environment).where(eq(environment.id, envRow!.id))
+        await db.delete(project).where(eq(project.id, projectRow!.id))
+      }
+    }
+  )
+})
+
+test('materializing a binding writes the form the deploy asks for and keeps it otherwise', async () => {
+  await withSingleClusterIngressFixture(
+    { enabled: false },
+    async ({ db, serverId, organizationId, dataEncryptionSecrets }) => {
+      const [clusterRow] = await db
+        .select({ id: managed.id })
+        .from(managed)
+        .where(eq(managed.serverId, serverId))
+      const [ws] = await db
+        .select({ id: workspace.id })
+        .from(workspace)
+        .where(eq(workspace.organizationId, organizationId))
+      const [projectRow] = await db
+        .insert(project)
+        .values({
+          name: 'Materialize Form Project',
+          workspaceId: ws!.id,
+          organizationId,
+          options: { defaultServerId: serverId },
+        })
+        .returning({ id: project.id })
+      const [envRow] = await db
+        .insert(environment)
+        .values({ name: 'Production', projectId: projectRow!.id, serverId })
+        .returning({ id: environment.id })
+      const [serviceRow] = await db
+        .insert(service)
+        .values({ environmentId: envRow!.id, composeServiceName: 'app' })
+        .returning({ id: service.id })
+      const principalRow = await createManagedPrincipal(db, dataEncryptionSecrets, {
+        managedId: clusterRow!.id,
+        provider: 'postgres',
+        username: 'app_user',
+      })
+      try {
+        const [bindingRow] = await db
+          .insert(binding)
+          .values({
+            principalId: principalRow.principalId,
+            serviceId: serviceRow!.id,
+            databaseName: 'postgres',
+            keyPrefix: 'DATABASE',
+            isEmitEngineDefaults: false,
+          })
+          .returning({ id: binding.id })
+        const bindingId = bindingRow!.id
+        const rows = async () =>
+          new Map(
+            (
+              await db
+                .select({ key: variable.key, value: variable.value })
+                .from(variable)
+                .where(eq(variable.bindingId, bindingId))
+            ).map((row) => [row.key, row.value])
+          )
+
+        // Container: the container name, the CA as text.
+        assertEquals(await materializeBinding(db, dataEncryptionSecrets, bindingId, 'container'), {
+          ok: true,
+        })
+        const container = await rows()
+        assertEquals(container.get('DATABASE_HOST')?.endsWith('-in'), true)
+        assertEquals(container.has('DATABASE_CA_CERT'), true)
+
+        // A PHP site cannot use a Postgres listener: refused, rows untouched.
+        const refused = await materializeBinding(db, dataEncryptionSecrets, bindingId, 'host-site')
+        assertEquals('kind' in refused && refused.kind, 'binding_host_site_unsupported')
+        assertEquals((await rows()).get('DATABASE_HOST'), container.get('DATABASE_HOST'))
+
+        // A native app dials loopback on the same listener port and keeps the CA text.
+        assertEquals(await materializeBinding(db, dataEncryptionSecrets, bindingId, 'host-node'), {
+          ok: true,
+        })
+        const node = await rows()
+        assertEquals(node.get('DATABASE_HOST'), '127.0.0.1')
+        assertEquals(node.get('DATABASE_PORT'), container.get('DATABASE_PORT'))
+        assertEquals(node.has('DATABASE_CA_CERT'), true)
+
+        // Not a deploy (a rotated CA, a changed password): the stored form stays.
+        assertEquals(await materializeBinding(db, dataEncryptionSecrets, bindingId), { ok: true })
+        assertEquals((await rows()).get('DATABASE_HOST'), '127.0.0.1')
+
+        // The document says container again: the deploy wins.
+        assertEquals(await materializeBinding(db, dataEncryptionSecrets, bindingId, 'container'), {
+          ok: true,
+        })
+        assertEquals((await rows()).get('DATABASE_HOST'), container.get('DATABASE_HOST'))
+      } finally {
+        await db.delete(variable).where(eq(variable.serviceId, serviceRow!.id))
+        await db.delete(binding).where(eq(binding.serviceId, serviceRow!.id))
+        await db.delete(principal).where(eq(principal.id, principalRow.principalId))
+        await db.delete(service).where(eq(service.id, serviceRow!.id))
+        await db.delete(environment).where(eq(environment.id, envRow!.id))
+        await db.delete(project).where(eq(project.id, projectRow!.id))
+      }
+    }
+  )
 })

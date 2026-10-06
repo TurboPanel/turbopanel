@@ -600,6 +600,14 @@ function tryMapPhpModePrepareError(prepared: DeployPrepareError): PrepareErrorRe
   }
 }
 
+function tryMapBindingHostSiteError(prepared: DeployPrepareError): PrepareErrorResponse | null {
+  if (prepared.kind !== 'binding_host_site_unsupported') return null
+  return {
+    status: 422,
+    body: { error: 'binding_host_site_unsupported', message: prepared.message },
+  }
+}
+
 function tryMapSiteEngineFeatureError(prepared: DeployPrepareError): PrepareErrorResponse | null {
   if (prepared.kind !== 'site_engine_feature_missing') return null
   return {
@@ -667,6 +675,7 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
     tryMapPhpModePrepareError(prepared) ??
     tryMapNodeVersionPrepareError(prepared) ??
     tryMapSiteEngineFeatureError(prepared) ??
+    tryMapBindingHostSiteError(prepared) ??
     tryMapSitePrepareError(prepared) ??
     tryMapPrincipalPrepareError(prepared) ??
     tryMapHostingPrepareError(prepared) ??
