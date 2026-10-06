@@ -384,6 +384,9 @@ test('projected update repair helpers', () => {
   assertEquals(shouldSkipProjectedUpdateRepair(null), true)
   assertEquals(shouldSkipProjectedUpdateRepair({ status: 'idle' }), true)
   assertEquals(shouldSkipProjectedUpdateRepair({ status: 'updating' }), false)
+  assertEquals(shouldSkipProjectedUpdateRepair({ status: 'failed' }), false)
+  assertEquals(shouldSkipProjectedUpdateRepair({ status: 'expired' }), false)
+  assertEquals(shouldSkipProjectedUpdateRepair({ status: 'done' }), true)
   assertEquals(
     repairedUpdateDoneProjection({
       requestId: 'r1',

@@ -17,6 +17,7 @@ import { organizationPaths, organizationSchemas } from './organizations.ts'
 import { phpModePaths, phpModeSchemas } from './php-modes.ts'
 import { projectPaths, projectSchemas } from './projects.ts'
 import { serverPaths, serverSchemas } from './servers.ts'
+import { serverTrafficMapPaths, serverTrafficMapSchemas } from './server-traffic-map.ts'
 import { servicePaths, serviceSchemas } from './services.ts'
 import { variablePaths, variableSchemas } from './variables.ts'
 import { tagPaths, tagSchemas } from './tags.ts'
@@ -154,6 +155,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
         ...sharedSchemas,
         ...buildAuthSchemas(options?.runtime),
         ...serverSchemas,
+        ...serverTrafficMapSchemas,
         ...metricsSchemas,
         ...networkSchemas,
         ...datacenterSchemas,
@@ -191,6 +193,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
     paths: {
       ...authPaths,
       ...serverPaths,
+      ...serverTrafficMapPaths,
       ...metricsPaths,
       ...networkPaths,
       ...datacenterPaths,

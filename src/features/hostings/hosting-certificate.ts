@@ -9,6 +9,7 @@
  * from the row's issuance details plus the hosting's own pending request.
  */
 
+import { wwwSiblingHostname } from '../../contracts/commands/hostname.ts'
 import { isLoopbackOrPrivateHostname } from '../install/install-tls.ts'
 import { normalizeIpAddress } from '../../lib/ip-address.ts'
 import type { HostingBindScope, HostingProtocol } from './hosting-options.ts'
@@ -143,21 +144,44 @@ export function isPendingExpired(pending: PendingLetsEncrypt, now: Date): boolea
   )
 }
 
-/** `example.com` <-> `www.example.com`: the other spelling of the same site. */
-export function siblingHostname(hostname: string): string {
-  const name = hostname.trim().toLowerCase()
-  return name.startsWith('www.') ? name.slice(4) : `www.${name}`
-}
-
 /** The names the certificate must cover: the hostnames, plus their siblings when redirecting. */
 export function letsEncryptNames(hostnames: readonly string[], wwwRedirect: boolean): string[] {
   const names = new Set<string>()
   for (const raw of hostnames) {
     const name = raw.trim().toLowerCase()
     names.add(name)
-    if (wwwRedirect) names.add(siblingHostname(name))
+    const sibling = wwwRedirect ? wwwSiblingHostname(name) : null
+    if (sibling !== null) names.add(sibling)
   }
   return [...names].sort((a, b) => a.localeCompare(b))
+}
+
+export type WwwRedirectConflict = { hostname: string; sibling: string | null }
+
+/**
+ * The first hostname the deploy would refuse "also send www to the main name"
+ * for, or null. Mirrors `validateDeployWwwRedirects`: the other spelling must
+ * be a valid name and must not already be served by this hosting or by another
+ * web hosting in the same environment (`others`).
+ */
+export function wwwRedirectConflict(
+  hostnames: readonly string[],
+  others: readonly string[]
+): WwwRedirectConflict | null {
+  const served = new Set([...hostnames, ...others])
+  for (const hostname of hostnames) {
+    const sibling = wwwSiblingHostname(hostname)
+    if (sibling === null || served.has(sibling)) return { hostname, sibling }
+  }
+  return null
+}
+
+/** The sentence for a conflict, naming the two names. */
+export function wwwRedirectConflictMessage(conflict: WwwRedirectConflict): string {
+  if (conflict.sibling === null) {
+    return `"Also send www to the main name" cannot work for ${conflict.hostname}: it has no valid www or non-www twin name.`
+  }
+  return `"Also send www to the main name" cannot be turned on: both ${conflict.hostname} and ${conflict.sibling} are already listed as domains in this environment. Remove one of them, or leave the option off.`
 }
 
 export type LetsEncryptRefusal =
@@ -166,6 +190,7 @@ export type LetsEncryptRefusal =
   | 'hosting_has_no_hostnames'
   | 'acme_requires_public_bind'
   | 'letsencrypt_hostname_unsupported'
+  | 'www_redirect_conflict'
 
 /** Why a name can never get a public certificate over the HTTP check, or null. */
 export function hostnameUnsupportedReason(hostname: string): string | null {

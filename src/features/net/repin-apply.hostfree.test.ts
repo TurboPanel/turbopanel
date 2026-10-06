@@ -37,10 +37,7 @@ type Write = { patch: Record<string, unknown> }
 
 function thenable<T>(rows: T[]) {
   return {
-    then(
-      resolve: (value: T[]) => unknown,
-      reject?: (err: unknown) => unknown,
-    ) {
+    then(resolve: (value: T[]) => unknown, reject?: (err: unknown) => unknown) {
       return Promise.resolve(rows).then(resolve, reject)
     },
   }
@@ -58,9 +55,7 @@ function createFakeDb(params: {
 }): Db {
   return {
     select(fields: Record<string, unknown>) {
-      const rows: unknown[] = 'subnetCidr' in fields
-        ? params.pins
-        : (params.inUse ?? [])
+      const rows: unknown[] = 'subnetCidr' in fields ? params.pins : (params.inUse ?? [])
       const chain = {
         from: () => chain,
         leftJoin: () => chain,
@@ -110,11 +105,7 @@ function reported(...addresses: string[]): ServerReportedIp[] {
 test('applyReportedAddressRepin: no pins → zero writes', async () => {
   const writes: Write[] = []
   const db = createFakeDb({ pins: [], writes })
-  const applied = await applyReportedAddressRepin(
-    db,
-    SERVER,
-    reported('10.20.0.42'),
-  )
+  const applied = await applyReportedAddressRepin(db, SERVER, reported('10.20.0.42'))
   assertEquals(applied, [])
   assertEquals(writes.length, 0)
 })
@@ -122,11 +113,7 @@ test('applyReportedAddressRepin: no pins → zero writes', async () => {
 test('applyReportedAddressRepin: unchanged pin → zero writes', async () => {
   const writes: Write[] = []
   const db = createFakeDb({ pins: [pin()], writes })
-  const applied = await applyReportedAddressRepin(
-    db,
-    SERVER,
-    reported('10.20.0.10'),
-  )
+  const applied = await applyReportedAddressRepin(db, SERVER, reported('10.20.0.10'))
   assertEquals(applied, [])
   assertEquals(writes.length, 0)
 })
@@ -134,22 +121,18 @@ test('applyReportedAddressRepin: unchanged pin → zero writes', async () => {
 test('applyReportedAddressRepin: a repin stamps repinPendingFanoutAt and clears stale', async () => {
   const writes: Write[] = []
   const db = createFakeDb({
-    pins: [pin({
-      metadata: {
-        note: 'keep',
-        stale: { since: '2026-09-01T00:00:00.000Z', reason: 'address_gone_no_candidate' },
-      },
-    })],
+    pins: [
+      pin({
+        metadata: {
+          note: 'keep',
+          stale: { since: '2026-09-01T00:00:00.000Z', reason: 'address_gone_no_candidate' },
+        },
+      }),
+    ],
     writes,
   })
-  const applied = await applyReportedAddressRepin(
-    db,
-    SERVER,
-    reported('10.20.0.42'),
-  )
-  assertEquals(applied, [
-    { kind: 'repin', ipId: 'ip-1', from: '10.20.0.10', to: '10.20.0.42' },
-  ])
+  const applied = await applyReportedAddressRepin(db, SERVER, reported('10.20.0.42'))
+  assertEquals(applied, [{ kind: 'repin', ipId: 'ip-1', from: '10.20.0.10', to: '10.20.0.42' }])
   assertEquals(writes.length, 1)
   const patch = writes[0]?.patch
   if (!patch) throw new TypeError('expected one ip write')
@@ -171,18 +154,12 @@ test('applyReportedAddressRepin: unique violation on repin downgrades to mark_st
     failWriteWith: (patch) =>
       'address' in patch
         ? Object.assign(new Error('duplicate key uniq_ip_org_address'), {
-          code: '23505',
-        })
+            code: '23505',
+          })
         : undefined,
   })
-  const applied = await applyReportedAddressRepin(
-    db,
-    SERVER,
-    reported('10.20.0.42'),
-  )
-  assertEquals(applied, [
-    { kind: 'mark_stale', ipId: 'ip-1', reason: 'address_gone_ambiguous' },
-  ])
+  const applied = await applyReportedAddressRepin(db, SERVER, reported('10.20.0.42'))
+  assertEquals(applied, [{ kind: 'mark_stale', ipId: 'ip-1', reason: 'address_gone_ambiguous' }])
   assertEquals(writes.length, 1)
   const metadata = writes[0]?.patch.metadata
   assertEquals(parseIpPinMetadata(metadata).stale?.reason, 'address_gone_ambiguous')
@@ -196,32 +173,24 @@ test('applyReportedAddressRepin: candidate held by another org row → stale', a
     inUse: [{ id: 'ip-other', address: '10.20.0.42' }],
     writes,
   })
-  const applied = await applyReportedAddressRepin(
-    db,
-    SERVER,
-    reported('10.20.0.42'),
-  )
-  assertEquals(applied, [
-    { kind: 'mark_stale', ipId: 'ip-1', reason: 'address_gone_no_candidate' },
-  ])
+  const applied = await applyReportedAddressRepin(db, SERVER, reported('10.20.0.42'))
+  assertEquals(applied, [{ kind: 'mark_stale', ipId: 'ip-1', reason: 'address_gone_no_candidate' }])
   assertEquals(writes.length, 1)
 })
 
 test('applyReportedAddressRepin: pin address returning clears stale only', async () => {
   const writes: Write[] = []
   const db = createFakeDb({
-    pins: [pin({
-      metadata: {
-        stale: { since: '2026-09-01T00:00:00.000Z', reason: 'address_gone_ambiguous' },
-      },
-    })],
+    pins: [
+      pin({
+        metadata: {
+          stale: { since: '2026-09-01T00:00:00.000Z', reason: 'address_gone_ambiguous' },
+        },
+      }),
+    ],
     writes,
   })
-  const applied = await applyReportedAddressRepin(
-    db,
-    SERVER,
-    reported('10.20.0.10'),
-  )
+  const applied = await applyReportedAddressRepin(db, SERVER, reported('10.20.0.10'))
   assertEquals(applied, [{ kind: 'clear_stale', ipId: 'ip-1' }])
   assertEquals(writes.length, 1)
   assertEquals(writes[0]?.patch.metadata, {})
@@ -234,11 +203,177 @@ test('applyReportedAddressRepin: a non-unique write failure is swallowed', async
     writes,
     failWriteWith: () => new Error('connection reset'),
   })
+  const applied = await applyReportedAddressRepin(db, SERVER, reported('10.20.0.42'))
+  assertEquals(applied, [])
+  assertEquals(writes.length, 0)
+})
+
+function reportedWithLink(address: string, link: 'up' | 'down' | undefined): ServerReportedIp[] {
+  return [
+    {
+      address,
+      version: 4,
+      scope: 'private',
+      interface: 'eth1',
+      ...(link ? { link } : {}),
+    },
+  ]
+}
+
+test('applyReportedAddressRepin: a link reported down flags the pin and stamps the fan-out marker', async () => {
+  const writes: Write[] = []
+  const db = createFakeDb({ pins: [pin({ metadata: { note: 'keep' } })], writes })
   const applied = await applyReportedAddressRepin(
     db,
     SERVER,
-    reported('10.20.0.42'),
+    reportedWithLink('10.20.0.10', 'down')
   )
-  assertEquals(applied, [])
+  assertEquals(applied, [{ kind: 'link_down', ipId: 'ip-1' }])
+  assertEquals(writes.length, 1)
+  const patch = writes[0]?.patch
+  if (!patch) throw new TypeError('expected one ip write')
+  const metadata = patch.metadata as Record<string, unknown>
+  assertEquals(metadata.note, 'keep')
+  assertEquals(typeof parseIpPinMetadata(metadata).linkDown?.since, 'string')
+  assertEquals(patch.repinPendingFanoutAt, parseIpPinMetadata(metadata).linkDown?.since)
+})
+
+test('applyReportedAddressRepin: a pin already flagged down and still down writes nothing', async () => {
+  const writes: Write[] = []
+  const db = createFakeDb({
+    pins: [pin({ metadata: { linkDown: { since: '2026-10-01T00:00:00.000Z' } } })],
+    writes,
+  })
+  assertEquals(
+    await applyReportedAddressRepin(db, SERVER, reportedWithLink('10.20.0.10', 'down')),
+    []
+  )
   assertEquals(writes.length, 0)
+})
+
+test('applyReportedAddressRepin: link back up (or not reported by an older daemon) clears the flag and re-plans', async () => {
+  for (const link of ['up', undefined] as const) {
+    const writes: Write[] = []
+    const db = createFakeDb({
+      pins: [pin({ metadata: { note: 'keep', linkDown: { since: '2026-10-01T00:00:00.000Z' } } })],
+      writes,
+    })
+    const applied = await applyReportedAddressRepin(
+      db,
+      SERVER,
+      reportedWithLink('10.20.0.10', link)
+    )
+    assertEquals(applied, [{ kind: 'link_up', ipId: 'ip-1' }])
+    const patch = writes[0]?.patch
+    if (!patch) throw new TypeError('expected one ip write')
+    const metadata = patch.metadata as Record<string, unknown>
+    assertEquals(metadata.note, 'keep')
+    assertEquals(parseIpPinMetadata(metadata).linkDown, undefined)
+    assertEquals(typeof patch.repinPendingFanoutAt, 'string')
+  }
+})
+
+test('applyReportedAddressRepin: clearing stale and flagging link on one pin keeps both writes', async () => {
+  const writes: Write[] = []
+  const db = createFakeDb({
+    pins: [
+      pin({
+        metadata: {
+          stale: { since: '2026-09-01T00:00:00.000Z', reason: 'address_gone_ambiguous' },
+        },
+      }),
+    ],
+    writes,
+  })
+  const applied = await applyReportedAddressRepin(
+    db,
+    SERVER,
+    reportedWithLink('10.20.0.10', 'down')
+  )
+  assertEquals(applied, [
+    { kind: 'clear_stale', ipId: 'ip-1' },
+    { kind: 'link_down', ipId: 'ip-1' },
+  ])
+  const last = writes.at(-1)?.patch.metadata
+  const parsed = parseIpPinMetadata(last)
+  assertEquals(parsed.stale, undefined)
+  assertEquals(typeof parsed.linkDown?.since, 'string')
+})
+
+test('applyReportedAddressRepin: a repinned pin drops the old link flag and is judged on its new address', async () => {
+  const writes: Write[] = []
+  const db = createFakeDb({
+    pins: [pin({ metadata: { linkDown: { since: '2026-10-01T00:00:00.000Z' } } })],
+    writes,
+  })
+  const applied = await applyReportedAddressRepin(
+    db,
+    SERVER,
+    reportedWithLink('10.20.0.42', 'down')
+  )
+  assertEquals(applied, [
+    { kind: 'repin', ipId: 'ip-1', from: '10.20.0.10', to: '10.20.0.42' },
+    { kind: 'link_down', ipId: 'ip-1' },
+  ])
+  assertEquals(writes.length, 2)
+  assertEquals(typeof parseIpPinMetadata(writes[1]?.patch.metadata).linkDown?.since, 'string')
+  assertEquals(parseIpPinMetadata(writes[1]?.patch.metadata).repin?.from, '10.20.0.10')
+})
+
+test('applyReportedAddressRepin: a pin without a subnet still gets its link state recorded', async () => {
+  const writes: Write[] = []
+  const db = createFakeDb({ pins: [pin({ networkId: null, subnetCidr: null })], writes })
+  const applied = await applyReportedAddressRepin(
+    db,
+    SERVER,
+    reportedWithLink('10.20.0.10', 'down')
+  )
+  assertEquals(applied, [{ kind: 'link_down', ipId: 'ip-1' }])
+})
+
+test('applyReportedAddressRepin: a repin onto an up address drops the old down marker in one write', async () => {
+  const writes: Write[] = []
+  const db = createFakeDb({
+    pins: [pin({ metadata: { linkDown: { since: '2026-10-01T00:00:00.000Z' } } })],
+    writes,
+  })
+  const applied = await applyReportedAddressRepin(db, SERVER, reportedWithLink('10.20.0.42', 'up'))
+  assertEquals(applied, [{ kind: 'repin', ipId: 'ip-1', from: '10.20.0.10', to: '10.20.0.42' }])
+  assertEquals(writes.length, 1)
+  assertEquals(parseIpPinMetadata(writes[0]?.patch.metadata).linkDown, undefined)
+})
+
+test('applyReportedAddressRepin: down, up, down in a row restarts since after the clear', async () => {
+  const writes: Write[] = []
+  let stored: unknown = null
+  const run = async (link: 'up' | 'down') => {
+    const db = createFakeDb({ pins: [pin({ metadata: stored })], writes })
+    await applyReportedAddressRepin(db, SERVER, reportedWithLink('10.20.0.10', link))
+    stored = writes.at(-1)?.patch.metadata
+  }
+  await run('down')
+  const first = parseIpPinMetadata(stored).linkDown?.since
+  await run('up')
+  assertEquals(parseIpPinMetadata(stored).linkDown, undefined)
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  await run('down')
+  const second = parseIpPinMetadata(stored).linkDown?.since
+  assertEquals(typeof first, 'string')
+  assertEquals(typeof second, 'string')
+  assertEquals(second === first, false)
+  assertEquals(writes.length, 3)
+})
+
+test('applyReportedAddressRepin: a stale-marked pin keeps its down marker when the stale flag is set', async () => {
+  const writes: Write[] = []
+  const db = createFakeDb({
+    pins: [pin({ metadata: { linkDown: { since: '2026-10-01T00:00:00.000Z' } } })],
+    writes,
+  })
+  // The pin's address is gone and nothing in its subnet is reported: it goes stale, the link flag stays.
+  const applied = await applyReportedAddressRepin(db, SERVER, reportedWithLink('192.0.2.9', 'down'))
+  assertEquals(applied, [{ kind: 'mark_stale', ipId: 'ip-1', reason: 'address_gone_no_candidate' }])
+  const parsed = parseIpPinMetadata(writes.at(-1)?.patch.metadata)
+  assertEquals(parsed.stale?.reason, 'address_gone_no_candidate')
+  assertEquals(parsed.linkDown?.since, '2026-10-01T00:00:00.000Z')
 })
