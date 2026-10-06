@@ -75,9 +75,7 @@ export function denoAppNeedingFeature(
  * runtime is a Node release, so `deno` is cleared. Apps without a pin, and
  * every non-rollback deploy (`pins` undefined), are returned as they are.
  */
-export function withRecordedRuntimes<
-  T extends DenoGateApp & { nodeVersion?: string },
->(
+export function withRecordedRuntimes<T extends DenoGateApp & { nodeVersion?: string }>(
   apps: readonly T[],
   pins: Readonly<Record<string, { runtime?: 'deno' }>> | undefined
 ): T[] {

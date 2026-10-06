@@ -621,7 +621,9 @@ export function contextReleasesFor(
 ): CommandContextRelease[] | undefined {
   const nodeVersionByName = recordedNodeVersions(nativeAppServices)
   const denoNames = new Set(
-    (nativeAppServices ?? []).filter((app) => app.runtime === 'deno').map((app) => app.composeServiceName)
+    (nativeAppServices ?? [])
+      .filter((app) => app.runtime === 'deno')
+      .map((app) => app.composeServiceName)
   )
   return normalizeContextReleases(
     sourceMaterial.map((entry) =>

@@ -137,9 +137,15 @@ test('only a Deno release records its runtime, so a Node release row is unchange
   assertEquals(api?.runtime, 'deno')
   assertEquals('nodeVersion' in (api ?? {}), false)
   // The stored row keeps it, and drops any value that is not `deno`.
-  assertEquals(normalizeContextReleases(rows)?.find((r) => r.composeServiceName === 'api')?.runtime, 'deno')
+  assertEquals(
+    normalizeContextReleases(rows)?.find((r) => r.composeServiceName === 'api')?.runtime,
+    'deno'
+  )
   const bad = rows?.map((row) => ({ ...row, runtime: 'bun' }))
-  assertEquals(normalizeContextReleases(bad)?.some((row) => 'runtime' in row), false)
+  assertEquals(
+    normalizeContextReleases(bad)?.some((row) => 'runtime' in row),
+    false
+  )
 })
 
 test('a release pin carries a Deno release runtime and nothing for a Node one', () => {

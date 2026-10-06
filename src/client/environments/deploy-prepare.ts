@@ -2014,9 +2014,9 @@ function nativeAppServicesForDeploy(
 }
 
 /** The per-app resource ceiling the daemon turns into unit limits, when the app set one. */
-function nativeAppResourcesForWire(
-  resources: ResolvedService['resources'] | undefined
-): { resources?: { cpus?: number; memoryBytes?: number } } {
+function nativeAppResourcesForWire(resources: ResolvedService['resources'] | undefined): {
+  resources?: { cpus?: number; memoryBytes?: number }
+} {
   const cpus = resources?.cpus
   const memoryBytes = resources?.memoryBytes
   if (cpus === undefined && memoryBytes === undefined) return {}
@@ -3085,10 +3085,7 @@ async function prepareNativeAppRuntimes(
   | Response
 > {
   // A rollback runs each app on the runtime its release ran on.
-  const nativeApps = withRecordedRuntimes(
-    args.nativeApps,
-    args.params.rollback?.releaseByService
-  )
+  const nativeApps = withRecordedRuntimes(args.nativeApps, args.params.rollback?.releaseByService)
   const denoGate = await withDenoNativeApps(db, args.params.serverId, nativeApps)
   if ('kind' in denoGate) return denoGate
 
