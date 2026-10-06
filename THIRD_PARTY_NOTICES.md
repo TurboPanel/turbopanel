@@ -6,7 +6,7 @@ Third-party components remain under their own copyright and license terms and ar
 
 <!-- lockfiles
 deno.lock sha256:567525770a55f3f24757fde7276f50f0c92d968d4b82e29b309c9cb68aadfb5d
-pnpm-lock.yaml sha256:9f99be5757e1512f538e52da93b86a77d03470930dd8fc1dd717449b46c05924
+pnpm-lock.yaml sha256:ce25973d0b438347b7f401f644e56fae970e6c15d358be6f431f4200b916d71a
 -->
 
 ## Production dependencies
@@ -777,7 +777,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Nick Fitzgerald
 - Homepage: https://github.com/mozilla/source-map
 
-### source-map-js@1.2.1
+### source-map-js@1.2.2
 
 - License: BSD-3-Clause
 - Copyright: Valentin 7rulnik Semirulnik

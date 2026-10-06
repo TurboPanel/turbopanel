@@ -255,6 +255,65 @@ test('PUT use-letsencrypt: waits for DNS, then the sweep pins it once the name r
   }
 })
 
+test('PUT use-letsencrypt: refuses "also redirect www" when the twin name is already a domain', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({
+    acmeEnabled: true,
+    hostingOptions: { hostnames: ['example.com', 'www.example.com'] },
+  })
+  try {
+    const res = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {
+      wwwRedirect: true,
+    })
+    assertEquals(res.status, 400)
+    const body = (await res.json()) as { error: string; message: string }
+    assertEquals(body.error, 'www_redirect_conflict')
+    assertEquals(body.message.includes('www.example.com'), true)
+    const rows = await f.db
+      .select({ id: tls.id })
+      .from(tls)
+      .where(eq(tls.organizationId, f.organizationId))
+    assertEquals(rows.length, 0)
+
+    const without = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {
+      wwwRedirect: false,
+    })
+    assertEquals(without.status, 200)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('PUT use-letsencrypt: refuses "also redirect www" when another hosting in the environment serves the twin', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  const [own] = await f.db
+    .select({ serviceId: hosting.serviceId })
+    .from(hosting)
+    .where(eq(hosting.id, f.hostingId))
+  const now = new Date().toISOString()
+  const [other] = await f.db
+    .insert(hosting)
+    .values({
+      serviceId: own!.serviceId,
+      name: 'Other',
+      options: { hostnames: ['www.shop.example.com'] },
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: hosting.id })
+  try {
+    const res = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {
+      wwwRedirect: true,
+    })
+    assertEquals(res.status, 400)
+    assertEquals(((await res.json()) as { error: string }).error, 'www_redirect_conflict')
+  } finally {
+    await f.db.delete(hosting).where(eq(hosting.id, other!.id))
+    await f.cleanup()
+  }
+})
+
 test('PUT use-letsencrypt: pins at once when DNS is ready, and a second click adds nothing', async () => {
   if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
   const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
