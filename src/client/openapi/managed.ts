@@ -212,6 +212,11 @@ export const managedSchemas = {
         },
       },
       rootUsername: { type: 'string', nullable: true },
+      exposure: {
+        oneOf: [{ $ref: '#/components/schemas/ManagedEffectiveExposure' }, { type: 'null' }],
+        description:
+          "What the shared connection listener on the cluster's server really publishes, which is not always what this cluster asked for: one exposed cluster publishes for every cluster on the same server.",
+      },
       members: {
         type: 'array',
         items: { $ref: '#/components/schemas/ManagedMember' },
@@ -220,6 +225,85 @@ export const managedSchemas = {
         oneOf: [{ $ref: '#/components/schemas/ManagedRecoveryRecord' }, { type: 'null' }],
         description: 'Latest HA recovery journal row for this cluster (`null` when none).',
       },
+    },
+  },
+  ManagedEffectiveExposure: {
+    type: 'object',
+    required: ['requested', 'published', 'scopes', 'viaCoResidentCluster', 'pendingServers'],
+    properties: {
+      requested: { type: 'boolean', description: "This cluster's own exposure toggle." },
+      published: {
+        type: 'boolean',
+        description: 'A host listener publishes in front of this cluster.',
+      },
+      scopes: {
+        type: 'array',
+        items: { type: 'string', enum: ['local', 'datacenter', 'turbofabric', 'public'] },
+        description: 'Scopes the shared listener covers, widest first.',
+      },
+      viaCoResidentCluster: {
+        type: 'boolean',
+        description: 'Published only because another cluster on the same server asked for it.',
+      },
+      pendingServers: {
+        type: 'array',
+        description:
+          'Servers told to listen the new way that have not confirmed it yet (still applying, offline, or the push failed). Retried automatically; Apply retries at once.',
+        items: {
+          type: 'object',
+          required: ['id', 'name'],
+          properties: { id: { type: 'string' }, name: { type: 'string' } },
+        },
+      },
+    },
+  },
+  ExposureReconcileOutcome: {
+    type: 'object',
+    required: ['queuedServerIds', 'failedServerIds'],
+    description:
+      'The new listener addresses sent to every server that fronts the cluster. `failedServerIds` could not be built or queued; the setting is saved and those servers are retried.',
+    properties: {
+      queuedServerIds: { type: 'array', items: { type: 'string' } },
+      failedServerIds: { type: 'array', items: { type: 'string' } },
+    },
+  },
+  ManagedPatchResponse: {
+    type: 'object',
+    required: ['ok', 'managed', 'settings'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      managed: { $ref: '#/components/schemas/ManagedEnvironmentRow' },
+      settings: { $ref: '#/components/schemas/ManagedSettings' },
+      ingressReconcile: {
+        $ref: '#/components/schemas/ExposureReconcileOutcome',
+        description: 'Present when the servers were told the listener addresses.',
+      },
+      pendingServerIds: { type: 'array', items: { type: 'string' } },
+    },
+  },
+  ManagedExposureRefusalError: {
+    type: 'object',
+    required: ['error', 'message'],
+    properties: {
+      error: {
+        type: 'string',
+        enum: ['datacenter_ip_required', 'fabric_address_required', 'daemon_key_unavailable'],
+      },
+      message: { type: 'string', description: 'Plain words; names the server.' },
+      serverId: { type: 'string' },
+    },
+  },
+  ManagedIngressReconcileFailedError: {
+    type: 'object',
+    required: ['error', 'message', 'managed', 'settings', 'ingressReconcile'],
+    description: 'The setting is saved; the host has not been told yet.',
+    properties: {
+      error: { type: 'string', const: 'ingress_reconcile_failed' },
+      message: { type: 'string' },
+      managed: { $ref: '#/components/schemas/ManagedEnvironmentRow' },
+      settings: { $ref: '#/components/schemas/ManagedSettings' },
+      ingressReconcile: { $ref: '#/components/schemas/ExposureReconcileOutcome' },
+      pendingServerIds: { type: 'array', items: { type: 'string' } },
     },
   },
   ManagedRecoveryRecord: {
@@ -315,7 +399,7 @@ export const managedSchemas = {
             type: 'string',
             enum: ['public', 'datacenter', 'local', 'turbofabric'],
             description:
-              'SQL client access scope when enabled. Legacy `bind` is read-only migration input.',
+              "Where SQL clients may connect when enabled: `local` (this server only: 127.0.0.1, which is what sites run by a site owner's Linux user need), `datacenter`, `turbofabric` or `public` (every interface). Omitted = `local`. Legacy `bind` is read-only migration input.",
           },
         },
       },
@@ -493,7 +577,12 @@ export const managedSchemas = {
     properties: {
       username: { type: 'string' },
       databases: { type: 'array', items: { type: 'string' } },
-      privileges: { type: 'array', items: { type: 'string' } },
+      privileges: {
+        type: 'array',
+        items: { type: 'string', enum: ['owner', 'read-write', 'read-only'] },
+        description:
+          'What the login may do in each listed database. Omitted = `read-only` for a `read-only` connectionRole, otherwise `read-write`. An empty list or an unknown name answers 400 `managed_user_privileges_invalid`, because a login with no grants can connect but is refused everywhere.',
+      },
       nameScheme: {
         type: 'string',
         enum: ['plain', 'partial', 'random'],
@@ -1049,6 +1138,8 @@ export const managedPaths = {
     patch: {
       tags: ['Managed services'],
       summary: 'Update managed settings (does not apply)',
+      description:
+        "Saves settings and, optionally, the cluster `name` (a label only; `null` clears it). Settings reach the engine on the next apply, with one exception: when `exposure` changes (or the cluster still has the old no-scope exposure, or an earlier push is unconfirmed) the database's listener addresses are re-sent at once to every server that fronts the cluster, and the response carries `ingressReconcile` and `pendingServerIds`. A scope a server has no address for is refused with 422 before anything is saved; a push that cannot be built or queued answers 502 `ingress_reconcile_failed` (the setting is saved, the servers stay listed as pending, and a background sweep retries them; Apply retries at once). A public cluster on the same server also makes every other cluster on that server reachable from outside, because one listener serves them all.",
       parameters: [ENV_ID_PARAM],
       requestBody: {
         content: {
@@ -1057,6 +1148,7 @@ export const managedPaths = {
               type: 'object',
               properties: {
                 settings: { $ref: '#/components/schemas/ManagedSettings' },
+                name: { type: ['string', 'null'] },
               },
             },
           },
@@ -1065,11 +1157,33 @@ export const managedPaths = {
       responses: {
         200: {
           description: 'Settings persisted',
-          ...jsonSchema('ManagedDetailResponse'),
+          ...jsonSchema('ManagedPatchResponse'),
         },
         400: {
-          description: 'managed_settings_invalid',
+          description: 'managed_settings_invalid, or a name that is not valid (Invalid request)',
           ...jsonSchema('ManagedSettingsInvalidError'),
+        },
+        422: {
+          description:
+            'The new exposure cannot be applied on a server that fronts the cluster; nothing was saved',
+          ...jsonSchema('ManagedExposureRefusalError'),
+        },
+        502: {
+          description:
+            'Saved, but the listener addresses could not be built or queued for a server',
+          ...jsonSchema('ManagedIngressReconcileFailedError'),
+        },
+        503: {
+          description: 'Command queue or daemon cell registry unavailable (exposure changes only)',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
         },
         409: {
           description:

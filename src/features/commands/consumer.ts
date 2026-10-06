@@ -1150,6 +1150,13 @@ async function applyManagedIngressReconcileSideEffect(
   if (record.type !== 'managed.ingress.reconcile') return
   try {
     const payload = parseManagedIngressReconcilePayload(record.payload)
+    // The host took the listener addresses: whatever it was told before this
+    // command was created is no longer waiting.
+    const { clearManagedExposurePendingForServer } = await import('../managed/exposure-change.ts')
+    await clearManagedExposurePendingForServer(db, {
+      serverId: payload.serverId,
+      commandCreatedAt: record.createdAt,
+    })
     const reconcileResult = parseManagedIngressReconcileResult(result)
     // Omitted containers = collection failed — skip reconcile. An explicit
     // empty array is authoritative teardown (empty-cluster ProxySQL removal).

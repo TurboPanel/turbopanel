@@ -21,11 +21,7 @@
  * (see `src/features/managed/members.ts`); nothing here changes which path a
  * failover replica may replicate over.
  */
-export type ManagedSqlAccessScope =
-  | 'local'
-  | 'datacenter'
-  | 'turbofabric'
-  | 'public'
+export type ManagedSqlAccessScope = 'local' | 'datacenter' | 'turbofabric' | 'public'
 
 /** Narrowest → widest. Also the canonical order for operator-facing lists. */
 export const MANAGED_SQL_ACCESS_SCOPES: readonly ManagedSqlAccessScope[] = [
@@ -36,14 +32,21 @@ export const MANAGED_SQL_ACCESS_SCOPES: readonly ManagedSqlAccessScope[] = [
 ]
 
 /**
- * Scope assumed when a service enables exposure without naming one.
+ * Scope assumed when a service enables exposure without naming one — also the
+ * scope every new managed cluster starts with.
  *
- * `public` keeps the historical meaning of "exposure enabled" (an operator who
- * turned exposure on got an internet-reachable listener), so an omitted scope
- * never silently narrows an already-published cluster. New UI always sends an
- * explicit scope.
+ * `local` is the least-exposed scope that still works for everything that runs
+ * on the same server: sites run by a site owner's Linux user reach the
+ * frontend on `127.0.0.1` (port 13306 / 15432), and containers bound to the
+ * cluster dial ProxySQL by name over the organization's managed Docker
+ * network, which needs no host publish at all. Anything wider (datacenter,
+ * TurboFabric, public) is something an owner opts into per cluster.
+ *
+ * A stored row that enabled exposure without a scope resolves to this too, so
+ * an old cluster that was published on every interface is narrowed to loopback
+ * the next time its host is reconciled.
  */
-export const DEFAULT_MANAGED_SQL_ACCESS_SCOPE: ManagedSqlAccessScope = 'public'
+export const DEFAULT_MANAGED_SQL_ACCESS_SCOPE: ManagedSqlAccessScope = 'local'
 
 /**
  * Scope of a cluster with exposure **disabled**: no host publish is desired,
@@ -53,9 +56,7 @@ export const UNEXPOSED_MANAGED_SQL_ACCESS_SCOPE: ManagedSqlAccessScope = 'local'
 
 const SCOPE_SET = new Set<string>(MANAGED_SQL_ACCESS_SCOPES)
 
-export function isManagedSqlAccessScope(
-  value: unknown,
-): value is ManagedSqlAccessScope {
+export function isManagedSqlAccessScope(value: unknown): value is ManagedSqlAccessScope {
   return typeof value === 'string' && SCOPE_SET.has(value)
 }
 
@@ -78,7 +79,7 @@ export function managedSqlAccessScopeRank(scope: ManagedSqlAccessScope): number 
 /** Widest first, so `[0]` is the operator-facing primary endpoint. */
 export function compareManagedSqlAccessScopes(
   a: ManagedSqlAccessScope,
-  b: ManagedSqlAccessScope,
+  b: ManagedSqlAccessScope
 ): number {
   return SCOPE_RANK[b] - SCOPE_RANK[a]
 }
@@ -91,7 +92,7 @@ export function compareManagedSqlAccessScopes(
  * wider one would leave the other's clients with nothing listening.
  */
 export function unionManagedSqlAccessScopes(
-  scopes: readonly (ManagedSqlAccessScope | undefined)[],
+  scopes: readonly (ManagedSqlAccessScope | undefined)[]
 ): ManagedSqlAccessScope[] {
   const seen = new Set<ManagedSqlAccessScope>()
   for (const scope of scopes) {
@@ -107,7 +108,7 @@ export function unionManagedSqlAccessScopes(
  * interface for the same port, which Docker rejects as a duplicate binding.
  */
 export function collapseManagedSqlAccessScopes(
-  scopes: readonly ManagedSqlAccessScope[],
+  scopes: readonly ManagedSqlAccessScope[]
 ): ManagedSqlAccessScope[] {
   if (scopes.includes('public')) return ['public']
   return [...scopes].sort(compareManagedSqlAccessScopes)
