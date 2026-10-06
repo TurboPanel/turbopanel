@@ -111,7 +111,7 @@ settings; an unknown **or untested** series/variant is **422**
 tested series).
 
 **Series are immutable after create.** `PATCH …/managed` refuses a settings
-change that moves the cluster to a different series (**422**
+change that moves the cluster to a different series (**409**
 `managed_series_immutable`, via `assertManagedSeriesUnchanged`) — an engine will
 not start on another major's data directory, and cross-major replication is not
 a supported topology. Variant swaps within a series are allowed. Every member of

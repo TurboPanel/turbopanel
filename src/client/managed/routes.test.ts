@@ -981,6 +981,108 @@ test('POST /environments/:id/managed does not seed provisional host/port', async
   )
 })
 
+test('POST /environments/:id/managed creates the requested series and variant', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ engineSeries: '18', imageVariant: 'debian' }),
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+
+      const [row] = await db
+        .select({ options: managed.options })
+        .from(managed)
+        .where(eq(managed.id, created.managed.id))
+        .limit(1)
+      const options = row?.options as { settings?: { image?: string } }
+      assertEquals(options.settings?.image, 'docker.io/library/postgres:18')
+
+      const detail = await app.request(`/environments/${environmentId}/managed`, { headers })
+      assertEquals(detail.status, 200)
+      const body = (await detail.json()) as {
+        release: { series: string; variantId: string; image: string }
+      }
+      assertEquals(body.release.series, '18')
+      assertEquals(body.release.variantId, 'debian')
+      assertEquals(body.release.image, 'docker.io/library/postgres:18')
+    }
+  )
+})
+
+test('POST /environments/:id/managed without a version keeps the default image', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+
+      const detail = await app.request(`/environments/${environmentId}/managed`, { headers })
+      const body = (await detail.json()) as {
+        release: { series: string; variantId: string; image: string }
+      }
+      assertEquals(body.release.image, getManagedEngineSpec('postgres')?.defaultImage)
+      assertEquals(body.release.variantId, 'alpine')
+    }
+  )
+})
+
+test('POST /environments/:id/managed refuses an unsupported or malformed version before creating', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId, commandQueue }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+
+      for (const [body, status, error] of [
+        [{ engineSeries: '17' }, 422, 'managed_version_unsupported'],
+        [{ engineSeries: '18', imageVariant: 'nope' }, 422, 'managed_version_unsupported'],
+        [{ engineSeries: 18 }, 400, 'Invalid engineSeries'],
+      ] as const) {
+        const res = await app.request(`/environments/${environmentId}/managed`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+        })
+        assertEquals(res.status, status, JSON.stringify(body))
+        assertEquals(((await res.json()) as { error: string }).error, error)
+      }
+
+      const rows = await db
+        .select({ id: managed.id })
+        .from(managed)
+        .where(eq(managed.environmentId, environmentId))
+      assertEquals(rows.length, 0)
+      assertEquals(commandQueue.envelopes.length, 0)
+    }
+  )
+})
+
 test('backup routes are forbidden without manage grant', async () => {
   await withManagedFixtures(
     { withManageGrant: false },
