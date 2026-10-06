@@ -9,6 +9,7 @@ import type { Db } from '../../db/connection.ts'
 import type { ManagedContext } from './context.ts'
 import { enqueueTypedCommand } from '../../features/managed/apply-prepare.ts'
 import type { ManagedRowOptions } from '../../features/managed/options.ts'
+import { defaultBackupDatabase } from '../../features/managed/default-backup-database.ts'
 import type { ManagedBackupRecord } from '../../features/backups/backup-records.ts'
 
 /** Mirrors `COMMAND_TIMEOUT_MS['managed.backup' | 'managed.restore']` in `../../features/commands/consumer.ts`. */
@@ -38,14 +39,6 @@ function generateBackupId(): string {
   return `bk_${crypto.randomUUID().replaceAll('-', '')}`
 }
 
-/** Engine system schemas that must never be chosen for a default backup. */
-const MYSQL_FAMILY_SYSTEM_SCHEMAS = new Set([
-  'mysql',
-  'information_schema',
-  'performance_schema',
-  'sys',
-])
-
 /**
  * Body `database` must already be a database configured on this managed
  * instance; when omitted, default to the first configured (initial) database
@@ -62,14 +55,7 @@ export function resolveBackupDatabase(
     }
     return requested
   }
-  const skipSystem = engine === 'mysql' || engine === 'mariadb'
-  for (const name of options.databases) {
-    if (skipSystem && MYSQL_FAMILY_SYSTEM_SCHEMAS.has(name.toLowerCase())) {
-      continue
-    }
-    return name
-  }
-  return null
+  return defaultBackupDatabase(options.databases, engine)
 }
 
 /** Clamp `settings.backups.retentionKeep` (or the engine default) to the engine's `maxRetentionKeep`. */
