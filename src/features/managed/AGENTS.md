@@ -164,9 +164,14 @@ operator value wins. Trade-off: a replica that is alive but further behind than
 the cap is invalidated (`wal_status = 'lost'`) and needs a Resync, so the cap
 should sit well above any lag a healthy replica reaches. The daemon reports the
 state on the **primary's** `replication.slotRetention` (`ok` / `lagging` = a
-slot holds more than `max_wal_size` / `critical` = `unreserved` or `lost`, with
-the worst slot, its `walStatus`, retained and safe bytes, and whether a replica
-is attached); it is optional on every hop (apply result, `managed-health-result`,
+slot holds more than `max_wal_size` / `critical` = `unreserved`, `lost` or
+`awaiting_resync`, with the worst slot, its `walStatus`, retained and safe
+bytes, and whether a replica is attached). A cut-off replica stays `critical`
+across later applies: the daemon replaces its lost slot with one that keeps no
+WAL (`awaiting_resync`) until a Resync reserves it again, so the signal does
+not clear on its own (daemon first: an older daemon re-creates the slot as
+reserved and the signal clears). The slot is named `tp_member_<ordinal>`, which
+is how the UI marks the replica itself as cut off; it is optional on every hop (apply result, `managed-health-result`,
 stored member metadata) so an older peer simply omits it.
 
 Reserved env keys: `POSTGRES_RESERVED_ENV_KEYS`, `MYSQL_RESERVED_ENV_KEYS`, and

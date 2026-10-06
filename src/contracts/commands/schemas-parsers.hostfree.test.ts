@@ -943,7 +943,7 @@ test('parseManagedReplicationHealth keeps a primary slotRetention and drops a ma
       slotRetention: {
         state: 'critical',
         slot: 'tp_member_2',
-        walStatus: 'lost',
+        walStatus: 'awaiting_resync',
         retainedBytes: 0,
         active: false,
         extra: 'ignored',
@@ -955,7 +955,7 @@ test('parseManagedReplicationHealth keeps a primary slotRetention and drops a ma
       slotRetention: {
         state: 'critical',
         slot: 'tp_member_2',
-        walStatus: 'lost',
+        walStatus: 'awaiting_resync',
         retainedBytes: 0,
         active: false,
       },

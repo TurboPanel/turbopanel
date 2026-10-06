@@ -4904,7 +4904,8 @@ export type ManagedReplicationHealth = {
    * Postgres primary only: how much WAL the replicas' replication slots hold
    * back. `lagging` = a slot holds more than `max_wal_size`; `critical` = a
    * slot is about to be (or was) invalidated by the `max_slot_wal_keep_size`
-   * cap, so that replica needs a Resync.
+   * cap, or its replacement slot is still waiting for the replica to be
+   * re-seeded (`walStatus: 'awaiting_resync'`), so that replica needs a Resync.
    */
   slotRetention?: ManagedSlotRetention
 }
