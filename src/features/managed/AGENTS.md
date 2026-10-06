@@ -155,6 +155,20 @@ that slots cover on Postgres: platform `my.cnf` always sets a bounded
 `binlog_expire_logs_seconds` (7 days). Operator snippets cannot override that
 key (see `RESERVED_CNF_KEYS` in `mysql-family.ts`).
 
+**Postgres slot retention is capped too.** Platform `postgresql.conf` sets
+`max_slot_wal_keep_size = '4GB'` (`SLOT_WAL_KEEP_SIZE`; Postgres' own default
+is unlimited, which let a stopped or removed replica's slot keep every WAL file
+until the primary's disk filled). Reload-only, so existing clusters get it at
+their next apply. Not a reserved key: the operator block comes last, so an
+operator value wins. Trade-off: a replica that is alive but further behind than
+the cap is invalidated (`wal_status = 'lost'`) and needs a Resync, so the cap
+should sit well above any lag a healthy replica reaches. The daemon reports the
+state on the **primary's** `replication.slotRetention` (`ok` / `lagging` = a
+slot holds more than `max_wal_size` / `critical` = `unreserved` or `lost`, with
+the worst slot, its `walStatus`, retained and safe bytes, and whether a replica
+is attached); it is optional on every hop (apply result, `managed-health-result`,
+stored member metadata) so an older peer simply omits it.
+
 Reserved env keys: `POSTGRES_RESERVED_ENV_KEYS`, `MYSQL_RESERVED_ENV_KEYS`, and
 `MARIADB_RESERVED_ENV_KEYS` (MariaDB + legacy `MYSQL_*` names — the image still
 honours both). Registered in `MANAGED_RESERVED_ENV_KEYS_BY_ENGINE` and

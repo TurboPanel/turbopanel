@@ -169,6 +169,9 @@ function formatStopGracePeriod(seconds: number): string {
   return `${seconds}s`
 }
 
+/** Default cap on WAL retained for a replication slot (see the conf block). */
+export const SLOT_WAL_KEEP_SIZE = '4GB'
+
 /** Headroom above live members for backup / inspection replication slots. */
 const REPLICATION_SLOT_HEADROOM = 2
 
@@ -191,6 +194,13 @@ function buildPlatformPostgresqlConf(
     'max_wal_senders = 10',
     // Member count + headroom for backup / inspection connections.
     `max_replication_slots = ${replicationSlotCount(input.memberCount)}`,
+    // Cap the WAL one replication slot may hold back. Unbounded (-1, the
+    // Postgres default), a stopped or removed replica's slot keeps every WAL
+    // file until the primary's disk is full. A replica that falls further
+    // behind than this is cut off and needs a Resync; a replica that is merely
+    // slow stays well inside it. Reload-only, so existing clusters pick it up
+    // on their next apply. The operator block below can override it.
+    `max_slot_wal_keep_size = '${SLOT_WAL_KEEP_SIZE}'`,
     'hot_standby = on',
     'wal_log_hints = on',
   ]

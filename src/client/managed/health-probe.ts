@@ -5,7 +5,10 @@ import {
   generateRequestId,
   type DaemonOutboundEnvelope,
 } from '../../contracts/cell-protocol.ts'
-import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
+import {
+  type ManagedReplicationHealth,
+  parseManagedSlotRetention,
+} from '../../contracts/commands/schemas.ts'
 import { updateManagedMemberObservedReplication } from '../../features/managed/members.ts'
 import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import { cellTrace } from '../../lib/logger.ts'
@@ -98,6 +101,8 @@ function parseObservedReplication(
   if (typeof replication.replayLsn === 'string') health.replayLsn = replication.replayLsn
   const lastStreaming = parseLastStreaming(replication.lastStreaming)
   if (lastStreaming) health.lastStreaming = lastStreaming
+  const slotRetention = parseManagedSlotRetention(replication.slotRetention)
+  if (slotRetention) health.slotRetention = slotRetention
   return health
 }
 

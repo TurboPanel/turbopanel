@@ -256,6 +256,30 @@ test('keeps the standby WAL positions and last streaming read, dropping a malfor
   assertEquals(dropped, { status: 'observed', replication: { state: 'stopped', observedAt: NOW } })
 })
 
+test('a primary probe keeps its slot retention and drops a malformed one', async () => {
+  const slotRetention = {
+    state: 'critical' as const,
+    slot: 'tp_member_2',
+    walStatus: 'lost',
+    active: false,
+  }
+  const { registry } = fakeRegistry(
+    ok({
+      memberId: MEMBER_ID,
+      role: 'primary',
+      status: 'ready',
+      replication: { state: 'unknown', observedAt: NOW, slotRetention },
+    })
+  )
+  const { merged, persisted } = deps()
+  const outcome = await probeManagedMemberHealth(DB, registry, PARAMS, merged)
+  assertEquals(outcome, {
+    status: 'observed',
+    replication: { state: 'unknown', observedAt: NOW, slotRetention },
+  })
+  assertEquals(persisted[0]?.replication.slotRetention, slotRetention)
+})
+
 test('the fresh-standby probe asks for a replica with the promote timeout', async () => {
   const { registry, sent } = fakeRegistry(
     ok({ memberId: MEMBER_ID, role: 'replica', status: 'ready', replication: COLD })

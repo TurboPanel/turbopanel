@@ -291,6 +291,15 @@ export type ManagedHealthObservedMember = {
       lagSeconds?: number
       receiveLagBytes?: number
     }
+    /** Postgres primary only: WAL held back by the replicas' replication slots. */
+    slotRetention?: {
+      state: 'ok' | 'lagging' | 'critical'
+      slot?: string
+      walStatus?: string
+      retainedBytes?: number
+      safeBytes?: number
+      active?: boolean
+    }
   }
 }
 
@@ -1303,7 +1312,28 @@ function validateManagedHealthMember(value: unknown): string | null {
       replication.receiveLagBytes,
       'member.replication.receiveLagBytes'
     ) ??
-    validateLastStreaming(replication.lastStreaming)
+    validateLastStreaming(replication.lastStreaming) ??
+    validateSlotRetention(replication.slotRetention)
+  )
+}
+
+function validateSlotRetention(value: unknown): string | null {
+  if (value === undefined) return null
+  if (!isRecord(value)) return 'invalid member.replication.slotRetention'
+  if (value.state !== 'ok' && value.state !== 'lagging' && value.state !== 'critical') {
+    return 'invalid member.replication.slotRetention.state'
+  }
+  if (value.active !== undefined && typeof value.active !== 'boolean') {
+    return 'invalid member.replication.slotRetention.active'
+  }
+  return (
+    validateOptionalHealthString(value.slot, 'member.replication.slotRetention.slot') ??
+    validateOptionalHealthString(value.walStatus, 'member.replication.slotRetention.walStatus') ??
+    validateOptionalFiniteNumber(
+      value.retainedBytes,
+      'member.replication.slotRetention.retainedBytes'
+    ) ??
+    validateOptionalFiniteNumber(value.safeBytes, 'member.replication.slotRetention.safeBytes')
   )
 }
 
