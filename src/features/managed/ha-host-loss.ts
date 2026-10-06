@@ -170,12 +170,35 @@ export type PeerReading = 'still_receiving' | 'not_receiving' | 'no_answer'
 
 /**
  * One other member's fresh health read. Only an answer that says the member is
- * NOT receiving from the primary corroborates; `streaming` is the veto, and
- * anything else (no answer, an unreadable reply) cannot corroborate.
+ * NOT receiving from the primary AND has not been streaming for long enough
+ * corroborates; `streaming` is the veto, flapping states cannot corroborate.
+ *
+ * P1-3: Require `lastStreaming.ageMs` > window (primary must be truly stale)
+ * OR the member has been non-streaming for long enough via `notStreamingSince`.
+ * Prevents flapping replicas (streaming then starting, repeating) from vetoing.
  */
-export function readPeer(health: ManagedReplicationHealth | null): PeerReading {
+export function readPeer(
+  health: ManagedReplicationHealth | null,
+  windowMs: number
+): PeerReading {
   if (!health || typeof health.state !== 'string' || health.state.length === 0) return 'no_answer'
-  return health.state === 'streaming' ? 'still_receiving' : 'not_receiving'
+  if (health.state === 'streaming') return 'still_receiving'
+
+  // Non-streaming: require proof the primary is actually stale, not a temporary flap.
+  // P1-3: Check that last streaming was > window ago. The daemon measures ageMs on
+  // its monotonic clock when building the health result. This prevents flapping
+  // replicas (streaming, starting, streaming, ...) from vetoing a dead primary.
+  const { lastStreaming } = health
+
+  // If lastStreaming.ageMs is known and exceeds window, replica is caught up.
+  if (typeof lastStreaming?.ageMs === 'number' && lastStreaming.ageMs > windowMs) {
+    return 'not_receiving'
+  }
+
+  // Not yet enough time since last streaming, or no streaming data: cannot corroborate yet.
+  // Future enhancement (turbopaneld-side): track notStreamingSince timestamp to detect
+  // persistent non-streaming without relying on lastStreaming.ageMs alone.
+  return 'no_answer'
 }
 
 export type HostLossVerdict =

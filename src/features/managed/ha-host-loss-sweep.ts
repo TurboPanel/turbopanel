@@ -20,7 +20,7 @@
  * test pins that the failover modules themselves never import the probe.
  */
 
-import { and, eq, gte, isNotNull, lte } from 'drizzle-orm'
+import { and, eq, gte, isNotNull, lte, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, managed, replica, server } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
@@ -33,6 +33,7 @@ import { beginAutomaticFailover } from './ha-recovery.ts'
 import {
   HOST_LOSS_ALERT_MESSAGES,
   HOST_LOSS_DETECTOR,
+  HOST_LOSS_GIVE_UP_MS,
   HOST_LOSS_PLANNED_GRACE_MS,
   type HostLossAlertCode,
   hostLossFailureStartMs,
@@ -112,6 +113,8 @@ async function listOfflinePrimaries(
   db: Db,
   params: { cutoffIso: string; limit: number }
 ): Promise<HostLossCandidate[]> {
+  const giveUpBoundary = new Date(toMs(params.cutoffIso) - HOST_LOSS_GIVE_UP_MS).toISOString()
+
   const rows = await db
     .select({
       managedId: replica.managedId,
@@ -129,9 +132,11 @@ async function listOfflinePrimaries(
         eq(replica.role, 'primary'),
         eq(server.isConnected, false),
         isNotNull(server.statusChangedAt),
+        gte(server.statusChangedAt, giveUpBoundary),
         lte(server.statusChangedAt, params.cutoffIso)
       )
     )
+    .orderBy(server.statusChangedAt)
     .limit(params.limit)
   return rows.flatMap((row) =>
     row.offlineSince ? [{ ...row, offlineSince: row.offlineSince } satisfies HostLossCandidate] : []
@@ -239,7 +244,8 @@ export async function recordAlert(
 async function readPeers(
   deps: HostLossSweepDeps,
   engine: string,
-  peers: readonly ManagedMemberRow[]
+  peers: readonly ManagedMemberRow[],
+  windowMs: number
 ): Promise<PeerReading[]> {
   return Promise.all(
     peers.map(async (peer) =>
@@ -251,7 +257,8 @@ async function readPeers(
             serverId: peer.serverId,
             engine,
           })
-          .catch(() => null)
+          .catch(() => null),
+        windowMs
       )
     )
   )
@@ -352,7 +359,7 @@ async function evaluateCluster(
     return { managedId, result: 'alert', code: pre.code }
   }
 
-  const readings = await readPeers(deps, engine, peers)
+  const readings = await readPeers(deps, engine, peers, deps.windowMs)
   const verdict = hostLossVerdict(readings)
   if (verdict.action === 'alert') {
     await alert(db, {

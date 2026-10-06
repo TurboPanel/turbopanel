@@ -161,13 +161,32 @@ test('the first matching refusal wins, in the documented order', () => {
   })
 })
 
-test('a reading says "receiving" only for a streaming member, and no reading cannot corroborate', () => {
+test('a reading says "receiving" only for a streaming member; non-streaming requires time proof', () => {
   const at = new Date(NOW).toISOString()
-  assertEquals(readPeer({ state: 'streaming', observedAt: at }), 'still_receiving')
-  assertEquals(readPeer({ state: 'stopped', observedAt: at }), 'not_receiving')
-  assertEquals(readPeer({ state: 'starting', observedAt: at }), 'not_receiving')
-  assertEquals(readPeer(null), 'no_answer')
-  assertEquals(readPeer({ state: '', observedAt: at }), 'no_answer')
+  const window = 120_000 // 2 min
+
+  // Streaming: always veto (still receiving)
+  assertEquals(readPeer({ state: 'streaming', observedAt: at }, window), 'still_receiving')
+
+  // Non-streaming without lastStreaming proof: cannot corroborate yet
+  assertEquals(readPeer({ state: 'stopped', observedAt: at }, window), 'no_answer')
+  assertEquals(readPeer({ state: 'starting', observedAt: at }, window), 'no_answer')
+
+  // Non-streaming with lastStreaming.ageMs > window: corroborates
+  assertEquals(
+    readPeer({ state: 'stopped', observedAt: at, lastStreaming: { at, ageMs: 150_000 } }, window),
+    'not_receiving'
+  )
+
+  // Non-streaming with lastStreaming.ageMs <= window: cannot corroborate yet
+  assertEquals(
+    readPeer({ state: 'starting', observedAt: at, lastStreaming: { at, ageMs: 90_000 } }, window),
+    'no_answer'
+  )
+
+  // No answer cases
+  assertEquals(readPeer(null, window), 'no_answer')
+  assertEquals(readPeer({ state: '', observedAt: at }, window), 'no_answer')
 })
 
 test('promotion needs every other member to say it is not receiving; one that hears the primary vetoes', () => {

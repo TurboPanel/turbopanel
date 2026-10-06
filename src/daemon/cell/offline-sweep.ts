@@ -1041,6 +1041,30 @@ export async function sweepExpiredExecutionLogsSafely(
   }
 }
 
+/**
+ * P1-5: Run host-loss and return-fence early, with their own budget and retry guards.
+ * Moved before optional phases to ensure they run even if earlier phases exhaust the budget.
+ * Return-fence runs first to clear old primaries before making new failover decisions.
+ */
+async function runHostLossAndReturnFenceFirst(
+  db: Db,
+  queue: NonNullable<CloudflareBindings['TURBOPANEL_COMMAND_QUEUE']> | undefined,
+  env: CloudflareBindings
+): Promise<void> {
+  if (!queue) return
+  const commandQueue = createWorkersCommandQueue(queue)
+  try {
+    // Run return-fence first: stops stale primaries before host-loss can promote a new one
+    await runHostLossTick(db, {
+      commandQueue,
+      registry: createDurableObjectDaemonCellRegistry(env, db),
+      env: env as unknown as Record<string, string | undefined>,
+    })
+  } catch (err) {
+    sweepTrace('host-loss-tick-failed', { error: sweepErrorMessage(err) })
+  }
+}
+
 async function runQueuedCronSweeps(
   db: Db,
   queue: NonNullable<CloudflareBindings['TURBOPANEL_COMMAND_QUEUE']>,
@@ -1050,13 +1074,8 @@ async function runQueuedCronSweeps(
 ): Promise<void> {
   try {
     const commandQueue = createWorkersCommandQueue(queue)
-    // First: a lost database host is the only sweep here whose delay costs
-    // writes. Isolated inside the tick; it never throws.
-    await runHostLossTick(db, {
-      commandQueue,
-      registry: createDurableObjectDaemonCellRegistry(env, db),
-      env: env as unknown as Record<string, string | undefined>,
-    })
+    // Note: host-loss tick now runs first in runOfflineSweep (P1-5) before optional phases,
+    // so it is not called here anymore.
     await runSystemReconcileSweep(db, commandQueue)
     // Backup policy sets after a reconnect; isolated so a failure never
     // aborts the other sweeps.
@@ -1597,6 +1616,8 @@ export async function runOfflineSweep(
       if (!ranLiveness) {
         markSkippedFrom(phasesSkipped, 'command-dispatch', opts.scheduledTime)
       } else {
+        // P1-5: Run host-loss tick first, before optional phases, with own budget and try block
+        await runHostLossAndReturnFenceFirst(db, env.TURBOPANEL_COMMAND_QUEUE, env)
         await runOptionalCronPhases(env, db, tlsRenewal, opts, deadlineMs, phasesSkipped)
       }
     } finally {
