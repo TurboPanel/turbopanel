@@ -38,9 +38,9 @@ test('mergeServerMetadataIdentity ignores invalid timeSync', () => {
   assertEquals(
     mergeServerMetadataIdentity(
       { resources: { cpus: [{ cores: { total: 1 } }] } },
-      { timeSync: { timezone: 1 } as never },
+      { timeSync: { timezone: 1 } as never }
     ),
-    null,
+    null
   )
 })
 
@@ -75,21 +75,23 @@ test('touchServerMetadata no-ops when identity facts are unchanged', async () =>
     select: () => ({
       from: () => ({
         where: () =>
-          queryResult([{
-            metadata: {},
-            hostname: 'host-1',
-            machineKey: HEX64,
-            osId: 'debian',
-            osFamily: 'linux',
-            osVersion: '13',
-            osCodename: null,
-            osPrettyName: null,
-            osArchitecture: null,
-            timezone: null,
-            isTimeSyncEnabled: null,
-            ntpServers: null,
-            ntpLastSyncedAt: null,
-          }]),
+          queryResult([
+            {
+              metadata: {},
+              hostname: 'host-1',
+              machineKey: HEX64,
+              osId: 'debian',
+              osFamily: 'linux',
+              osVersion: '13',
+              osCodename: null,
+              osPrettyName: null,
+              osArchitecture: null,
+              timezone: null,
+              isTimeSyncEnabled: null,
+              ntpServers: null,
+              ntpLastSyncedAt: null,
+            },
+          ]),
       }),
     }),
     update: () => ({
@@ -116,21 +118,23 @@ test('touchServerMetadata writes hostname and metadata deltas', async () => {
         // Repin pass (ips changed) loads pins via a `network` join — none here.
         leftJoin: () => ({ where: () => queryResult([]) }),
         where: () =>
-          queryResult([{
-            metadata: null,
-            hostname: null,
-            machineKey: null,
-            osId: null,
-            osFamily: null,
-            osVersion: null,
-            osCodename: null,
-            osPrettyName: null,
-            osArchitecture: null,
-            timezone: null,
-            isTimeSyncEnabled: null,
-            ntpServers: null,
-            ntpLastSyncedAt: null,
-          }]),
+          queryResult([
+            {
+              metadata: null,
+              hostname: null,
+              machineKey: null,
+              osId: null,
+              osFamily: null,
+              osVersion: null,
+              osCodename: null,
+              osPrettyName: null,
+              osArchitecture: null,
+              timezone: null,
+              isTimeSyncEnabled: null,
+              ntpServers: null,
+              ntpLastSyncedAt: null,
+            },
+          ]),
       }),
     }),
     update: () => ({
@@ -174,21 +178,23 @@ test('touchServerMetadata ignores raw machine-id shaped machineKey', async () =>
     select: () => ({
       from: () => ({
         where: () =>
-          queryResult([{
-            metadata: null,
-            hostname: 'host-1',
-            machineKey: null,
-            osId: null,
-            osFamily: null,
-            osVersion: null,
-            osCodename: null,
-            osPrettyName: null,
-            osArchitecture: null,
-            timezone: null,
-            isTimeSyncEnabled: null,
-            ntpServers: null,
-            ntpLastSyncedAt: null,
-          }]),
+          queryResult([
+            {
+              metadata: null,
+              hostname: 'host-1',
+              machineKey: null,
+              osId: null,
+              osFamily: null,
+              osVersion: null,
+              osCodename: null,
+              osPrettyName: null,
+              osArchitecture: null,
+              timezone: null,
+              isTimeSyncEnabled: null,
+              ntpServers: null,
+              ntpLastSyncedAt: null,
+            },
+          ]),
       }),
     }),
     update: () => ({
@@ -224,9 +230,11 @@ test('getServerLicenseBinding prefers an active bound license', async () => {
         where: () => {
           selectCount += 1
           if ('organizationId' in fields) {
-            return queryResult([{
-              organizationId: '00000000-0000-4000-8000-000000000099',
-            }])
+            return queryResult([
+              {
+                organizationId: '00000000-0000-4000-8000-000000000099',
+              },
+            ])
           }
           // Active license select (second call) — revokedAt IS NULL filter.
           if (selectCount === 2) {
@@ -277,9 +285,11 @@ test('getServerLicenseBinding returns null licenseId when unbound', async () => 
         where: () => {
           selectCount += 1
           if ('organizationId' in fields) {
-            return queryResult([{
-              organizationId: '00000000-0000-4000-8000-000000000099',
-            }])
+            return queryResult([
+              {
+                organizationId: '00000000-0000-4000-8000-000000000099',
+              },
+            ])
           }
           return queryResult([])
         },
@@ -300,9 +310,11 @@ test('getServerLicenseBinding returns null licenseId when unbound', async () => 
  * (`loadDatacenterMembershipPinDetailsForServers`), which returns no pins so
  * nothing else is written.
  */
-function createRepinProbeDb(
-  serverRow: Record<string, unknown>,
-): { db: Db; repinLoads: () => number; updates: () => number } {
+function createRepinProbeDb(serverRow: Record<string, unknown>): {
+  db: Db
+  repinLoads: () => number
+  updates: () => number
+} {
   let repinLoads = 0
   let updates = 0
   const db = {
@@ -417,11 +429,12 @@ test('a licensed identity resolves only through its license binding', async () =
   // Bound: that server, and only that server.
   const boundCalls: string[] = []
   assertEquals(
-    await findServerIdForIdentity(
-      lookupDb(boundCalls, { serverId: [{ serverId: SERVER_ID }] }),
-      { licenseId: 'lic-1', licenseToken: 'tok', hostname: 'web-01' },
-    ),
-    SERVER_ID,
+    await findServerIdForIdentity(lookupDb(boundCalls, { serverId: [{ serverId: SERVER_ID }] }), {
+      licenseId: 'lic-1',
+      licenseToken: 'tok',
+      hostname: 'web-01',
+    }),
+    SERVER_ID
   )
   assertEquals(boundCalls, ['serverId'])
 
@@ -429,11 +442,12 @@ test('a licensed identity resolves only through its license binding', async () =
   // does not exist yet, and matching one by hostname would cross organizations.
   const unboundCalls: string[] = []
   assertEquals(
-    await findServerIdForIdentity(
-      lookupDb(unboundCalls, { serverId: [{ serverId: null }] }),
-      { licenseId: 'lic-1', licenseToken: 'tok', hostname: 'web-01' },
-    ),
-    undefined,
+    await findServerIdForIdentity(lookupDb(unboundCalls, { serverId: [{ serverId: null }] }), {
+      licenseId: 'lic-1',
+      licenseToken: 'tok',
+      hostname: 'web-01',
+    }),
+    undefined
   )
   assertEquals(unboundCalls, ['serverId'])
 })
@@ -441,11 +455,100 @@ test('a licensed identity resolves only through its license binding', async () =
 test('an unlicensed identity falls back to the hostname and machine-key lookup', async () => {
   const calls: string[] = []
   assertEquals(
-    await findServerIdForIdentity(
-      lookupDb(calls, { id: [{ id: SERVER_ID }] }),
-      { machineKey: HEX64, hostname: 'web-01' },
-    ),
-    SERVER_ID,
+    await findServerIdForIdentity(lookupDb(calls, { id: [{ id: SERVER_ID }] }), {
+      machineKey: HEX64,
+      hostname: 'web-01',
+    }),
+    SERVER_ID
   )
   assertEquals(calls, ['id'])
+})
+
+function serviceReportDb(stored: unknown) {
+  const patches: Array<Record<string, unknown>> = []
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () =>
+          queryResult([
+            {
+              metadata: stored,
+              hostname: 'host-1',
+              machineKey: null,
+              osId: null,
+              osFamily: null,
+              osVersion: null,
+              osCodename: null,
+              osPrettyName: null,
+              osArchitecture: null,
+              timezone: null,
+              isTimeSyncEnabled: null,
+              ntpServers: null,
+              ntpLastSyncedAt: null,
+            },
+          ]),
+      }),
+    }),
+    update: () => ({
+      set: (patch: Record<string, unknown>) => {
+        patches.push(patch)
+        return { where: () => Promise.resolve(undefined) }
+      },
+    }),
+  } as unknown as Db
+  return { db, patches }
+}
+
+const STOPPED = {
+  serviceId: 'svc-1',
+  state: 'stopped_after_crashes' as const,
+  restartCount: 10,
+  lastError: 'EADDRINUSE',
+  asOf: '2026-10-05T12:00:00.000Z',
+}
+
+test('touchServerMetadata announces a service that is newly stopped after crashes, after the write', async () => {
+  const { db, patches } = serviceReportDb({
+    services: [{ ...STOPPED, state: 'crashing', lastError: undefined }],
+  })
+  const calls: Array<{ serverId: string; serviceIds: string[]; writes: number }> = []
+  await touchServerMetadata(
+    db,
+    SERVER_ID,
+    { services: [STOPPED] },
+    {
+      onServicesStoppedAfterCrashes: (serverId, stopped) => {
+        calls.push({
+          serverId,
+          serviceIds: stopped.map((s) => s.serviceId),
+          writes: patches.length,
+        })
+        return Promise.resolve()
+      },
+    }
+  )
+  assertEquals(calls, [{ serverId: SERVER_ID, serviceIds: ['svc-1'], writes: 1 }])
+})
+
+test('touchServerMetadata stays quiet when the stop was already stored', async () => {
+  const { db } = serviceReportDb({ services: [STOPPED] })
+  let calls = 0
+  await touchServerMetadata(
+    db,
+    SERVER_ID,
+    { services: [{ ...STOPPED, lastError: 'a later line', asOf: '2026-10-05T12:01:00.000Z' }] },
+    { onServicesStoppedAfterCrashes: () => Promise.resolve(void calls++) }
+  )
+  assertEquals(calls, 0)
+})
+
+test('touchServerMetadata keeps the report when the stop alert fails', async () => {
+  const { db, patches } = serviceReportDb({})
+  await touchServerMetadata(
+    db,
+    SERVER_ID,
+    { services: [STOPPED] },
+    { onServicesStoppedAfterCrashes: () => Promise.reject(new Error('sender down')) }
+  )
+  assertEquals(patches.length, 1)
 })
