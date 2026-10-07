@@ -1334,8 +1334,9 @@ src/
   Deno-only registration). Install helpers live in `src/features/install/`.
 - `src/features/update/manifest.ts` — Workers-safe channel manifest resolver
   (`fetch`-only, one fetch straight to the channel's built-in location from
-  `src/contracts/update-channel.ts` — trunk on the CDN drop, rc/release on the
-  daemon's GitHub Releases; per-channel cache; returns `null` on any failure).
+  `src/contracts/update-channel.ts` — canary/rc/release on the daemon's GitHub
+  Releases, `trunk` and `edge` have none; per-channel cache; returns `null` on
+  any failure).
   The instance follows `TURBOPANEL_UPDATE_CHANNEL` (default `release`; invalid
   is a Deno startup error) and every queued daemon update carries that channel
 - `src/features/email/` — shared queue types/templates; SMTP (Deno/AMQP) and
