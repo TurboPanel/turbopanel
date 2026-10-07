@@ -213,8 +213,10 @@ export const MANAGED_HEALTH_REPORT_FEATURE: DaemonWireFeature = 'managed-health-
 /**
  * A MySQL / MariaDB replica's `replication` carries `receivedGtid`,
  * `executedGtid`, `fullyApplied` and `lastStreaming`. When a whole database
- * host is lost, the failover promote rule reads those fields to choose a
- * caught-up standby.
+ * host is lost, the failover promote rule reads `fullyApplied`,
+ * `executedGtid` (to pick the standby with the most applied transactions)
+ * and `lastStreaming`. `receivedGtid` is only validated and stored
+ * (cell-protocol, schemas, members, health-probe); no decision code reads it.
  */
 export const MANAGED_REPLICA_FRESHNESS_FEATURE: DaemonWireFeature = 'managed-replica-freshness-v1'
 
