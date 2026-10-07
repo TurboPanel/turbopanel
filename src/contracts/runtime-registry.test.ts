@@ -21,11 +21,11 @@ test('SUPPORTED_RUNTIMES lists principal-executable runtimes', () => {
 })
 
 test('SUPPORTED_RUNTIME_SERIES is the flat union of known series', () => {
-  assertEquals(SUPPORTED_RUNTIME_SERIES, ['8.3', '8.4', '22', '24', '26'])
+  assertEquals(SUPPORTED_RUNTIME_SERIES, ['8.1', '8.2', '8.3', '8.4', '8.5', '22', '24', '26'])
 })
 
 test('runtimeSeries returns PHP and Node series only for known runtimes', () => {
-  assertEquals(runtimeSeries('php'), ['8.3', '8.4'])
+  assertEquals(runtimeSeries('php'), ['8.1', '8.2', '8.3', '8.4', '8.5'])
   assertEquals(runtimeSeries('node'), ['22', '24', '26'])
   assertEquals(runtimeSeries('deno'), ['2'])
   assertEquals(runtimeSeries('ruby'), [])
