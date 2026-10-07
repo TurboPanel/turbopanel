@@ -73,9 +73,9 @@ capability-plan generation and page are no longer written.
 | double6  | softirq (host.cpu.softirqPercent)                 |
 | double7  | cores (extended.sizes.logicalCores)               |
 | double8  | cpuPsi (host.cpu.pressureSomePercent)             |
-| double9  | memPsiSome (host.memory.pressureSomePercent)      |
-| double10 | memPsiFull (host.memory.pressureFullPercent)      |
-| double11 | irqPsiFull (extended.host.irqPressureFullPercent) |
+| double9  | irqPsiFull (extended.host.irqPressureFullPercent) |
+| double10 | memPsiSome (host.memory.pressureSomePercent)      |
+| double11 | memPsiFull (host.memory.pressureFullPercent)      |
 | double12 | used (host.memory.usedBytes)                      |
 | double13 | cachedFiles (host.memory.cachedFilesBytes)        |
 | double14 | swapUsed (host.memory.swapUsedBytes)              |

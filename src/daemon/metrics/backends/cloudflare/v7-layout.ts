@@ -376,10 +376,10 @@ function ids(list: string): string[] {
 }
 
 export const V7_HOST_ROW_SPECS: Readonly<Record<V7HostFamily, HostRowSpec>> = {
-  // CPU, pressure and memory, with the sizes they are measured against.
+  // CPU and its pressure (cpu, then irq), then memory and its pressure, with the sizes they are measured against.
   'host.system': {
     doubles: ids(
-      'busy user system iowait steal softirq cores cpuPsi memPsiSome memPsiFull irqPsiFull used cachedFiles swapUsed memTotal swapTotal oomKills dCommit commitLimit'
+      'busy user system iowait steal softirq cores cpuPsi irqPsiFull memPsiSome memPsiFull used cachedFiles swapUsed memTotal swapTotal oomKills dCommit commitLimit'
     ),
     blobs: ids(
       'loadavg topCpu cpuModel topMem lastOom kernel os bootId virt cloudProvider agentVersion timeSync pendingUpdates rebootRequired'
