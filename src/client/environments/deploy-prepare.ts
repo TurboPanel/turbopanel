@@ -328,7 +328,7 @@ export type DeployPrepareWarningCode =
  * Two outcomes, and the distinction is the whole point:
  *
  * - **Not supported at all** → a hard error before anything is queued. The
- *   operator gets "PHP 8.1 is not supported; supported: 8.3, 8.4" instead of a
+ *   operator gets "PHP 7.4 is not supported; supported: 8.1, 8.2, 8.3, 8.4, 8.5" instead of a
  *   daemon throw halfway through an apply.
  * - **Supported but not yet on this host** → proceed with a warning. The
  *   Ansible run installs it. Refusing here would reject a deploy the host can

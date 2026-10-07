@@ -457,8 +457,13 @@ export type ComposeServicePhpExtension = {
  * repos, so this exists for save-time linting; the authoritative answer for a
  * specific host is its reported inventory. Divergence degrades to "offered a
  * series the server has not reported" — visible, never exploitable.
+ *
+ * The daemon offers the series LiteSpeed publishes for the server's OS suite
+ * (`suiteSeries` in that registry); this is the list for Debian 13, the only
+ * supported OS today. A series the host's OS does not offer is refused by the
+ * daemon before it installs anything.
  */
-export const SUPPORTED_PHP_SERIES: readonly string[] = ['8.3', '8.4']
+export const SUPPORTED_PHP_SERIES: readonly string[] = ['8.1', '8.2', '8.3', '8.4', '8.5']
 export const ALLOWED_PHP_EXTENSIONS: readonly string[] = [
   'apcu',
   'bcmath',

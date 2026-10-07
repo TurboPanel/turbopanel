@@ -23,7 +23,7 @@ test("checkPhpSeriesAvailability hard-errors on an unsupported series", () => {
   });
   assertEquals(errors.length, 1);
   assertEquals(errors[0]?.includes("PHP 5.6"), true);
-  assertEquals(errors[0]?.includes("8.3, 8.4"), true);
+  assertEquals(errors[0]?.includes("8.1, 8.2, 8.3, 8.4, 8.5"), true);
   assertEquals(warnings, []);
 });
 
