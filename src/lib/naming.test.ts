@@ -219,6 +219,8 @@ test('isReservedPrincipalUsername reserves privileged and system group names', (
   ]) {
     assertEquals(isReservedPrincipalUsername(name), true, name)
   }
+  assertEquals(isReservedPrincipalUsername('wireshark'), true)
+  assertEquals(isReservedPrincipalUsername('bob-grp'), true)
   assertEquals(isReservedPrincipalUsername('admins'), false)
 })
 

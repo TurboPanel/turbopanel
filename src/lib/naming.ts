@@ -302,6 +302,17 @@ export const RESERVED_PRINCIPAL_USERNAMES: ReadonlySet<string> = new Set([
   'video',
   'voice',
   'wheel',
+  'bluetooth',
+  'gpio',
+  'i2c',
+  'nopasswdlogin',
+  'rdma',
+  'scanner',
+  'syslog',
+  'tss',
+  'uuidd',
+  'vboxusers',
+  'wireshark',
   // Platform cgroup slices directly under `turbopanel.slice`: a site owner's
   // Linux user gets `turbopanel-<name>.slice`, so these names are taken.
   // `containers` holds the platform's own containers; `tpbuild` holds builds
@@ -317,6 +328,9 @@ export function isReservedPrincipalUsername(value: string): boolean {
   // whole prefix closes the collision class permanently rather than one name at
   // a time. Costs tenants a two-letter prefix they have no reason to want.
   if (key.startsWith('tp')) return true
+  // `<name>-grp` is the group of a site owner from before the group took the
+  // owner's own name: a new user called that would share it.
+  if (key.endsWith('-grp')) return true
   return key.startsWith('systemd-')
 }
 
