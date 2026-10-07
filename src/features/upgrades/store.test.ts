@@ -584,6 +584,66 @@ test('Postgres upgrades: the in-memory tick window matches the SQL one', async (
   })
 })
 
+test('Postgres upgrades: the tick window prefers connected servers like the in-memory one', async () => {
+  await withFixture('tick-window-connected-first', async (fx) => {
+    const offline = [
+      await addServer(fx, { connected: false, commit: 'old' }),
+      await addServer(fx, { connected: false, commit: 'old' }),
+    ]
+    const online = [
+      await addServer(fx, { connected: true, commit: 'old' }),
+      await addServer(fx, { connected: true, commit: 'old' }),
+    ]
+    const fleet = [...offline, ...online]
+    const runId = await seedRun(fx, 'fleet', (id) =>
+      fleet.map((serverId, i) => ({
+        ...stepRow(id, { serverId, unit: 'daemon', phase: 'fleet' }),
+        batchIndex: i,
+      }))
+    )
+    const sqlStore = createDrizzleUpgradeStore(fx.db, null)
+    const run = await sqlStore.runById(runId)
+    const steps = await sqlStore.stepsFor(runId)
+    const memoryStore = createMemoryUpgradeStore({ facts: await sqlStore.factsFor(fleet, null) })
+    await memoryStore.insertRun(run!, steps)
+
+    const batches = async () => {
+      const sqlWindow = await sqlStore.tickWindow(runId, null, 10)
+      const memoryWindow = await memoryStore.tickWindow(runId, null, 10)
+      assertEquals(memoryWindow.batchIndex, sqlWindow.batchIndex)
+      assertEquals(
+        memoryWindow.steps.map((step) => step.id),
+        sqlWindow.steps.map((step) => step.id)
+      )
+      return sqlWindow.batchIndex
+    }
+
+    // Offline batches 0 and 1 wait behind the first connected batch.
+    assertEquals(await batches(), 2)
+
+    // An install in flight on an offline server pins its batch.
+    const first = steps.find((step) => step.serverId === offline[0])!
+    for (const store of [sqlStore, memoryStore]) {
+      await store.saveStep({ ...first, status: 'installing' })
+    }
+    assertEquals(await batches(), 0)
+
+    // Once that install settles, the connected batch leads again.
+    for (const store of [sqlStore, memoryStore]) {
+      await store.saveStep({ ...first, status: 'done' })
+    }
+    assertEquals(await batches(), 2)
+
+    // With every connected step done, the lowest offline batch is next.
+    for (const step of steps.filter((s) => online.includes(s.serverId))) {
+      for (const store of [sqlStore, memoryStore]) {
+        await store.saveStep({ ...step, status: 'done' })
+      }
+    }
+    assertEquals(await batches(), 1)
+  })
+})
+
 test('Postgres upgrades: saveStep with expectedStatus refuses a stale write', async () => {
   await withFixture('cas-refuses-stale-write', async (fx) => {
     const server = await addServer(fx, { connected: true, commit: 'old-daemon' })

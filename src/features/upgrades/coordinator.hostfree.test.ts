@@ -192,6 +192,58 @@ test('cancel records a cancelled run and retry reopens a failed step', async () 
 
 const FLEET_A = '33333333-3333-4333-8333-333333333333'
 const FLEET_B = '44444444-4444-4444-8444-444444444444'
+const FLEET_C = '55555555-5555-4555-8555-555555555555'
+const FLEET_D = '66666666-6666-4666-8666-666666666666'
+
+test('start updates connected fleet servers before offline ones', async () => {
+  const fleetFact = (serverId: string, name: string, connected: boolean): FleetServerFact => ({
+    ...fact(['managed-upgrade-v1'], 'old-daemon'),
+    serverId,
+    name,
+    colocated: false,
+    connected,
+  })
+  const enqueued: string[] = []
+  const store = createMemoryUpgradeStore({
+    facts: [
+      fleetFact(FLEET_A, 'studio', false),
+      fleetFact(FLEET_B, 'alpha', true),
+      fleetFact(FLEET_C, 'io', false),
+      fleetFact(FLEET_D, 'beta', true),
+    ],
+    latest: target,
+    settings: {
+      ...DEFAULT_UPGRADE_SETTINGS,
+      batch: { mode: 'count', value: 1 },
+    },
+  })
+  const coordinator = createUpgradeCoordinator({
+    store,
+    enqueue: (serverId) => {
+      enqueued.push(serverId)
+      return Promise.resolve()
+    },
+    runtime: 'workers',
+    channel: 'canary',
+    development: false,
+    now: () => '2026-09-24T12:00:00.000Z',
+    colocatedServerId: null,
+    instanceInstalled: { version: '0.1.1', commit: 'new-instance' },
+    resolveTarget: () => Promise.resolve({ ...target, instance: null, ui: null }),
+  })
+  const started = await coordinator.start({ source: 'manual', startedBy: null })
+  if (!started.ok) throw new TypeError(started.error)
+  const steps = (await store.stepsFor(started.runId)).filter((step) => step.phase === 'fleet')
+  assertEquals(
+    steps.map((step) => step.serverId),
+    [FLEET_B, FLEET_D, FLEET_A, FLEET_C]
+  )
+  assertEquals(
+    steps.map((step) => step.batchIndex),
+    [0, 1, 2, 3]
+  )
+  assertEquals(enqueued, [FLEET_B])
+})
 
 test('a missing UI or instance manifest refuses the run', async () => {
   for (const unit of ['ui', 'instance'] as const) {
