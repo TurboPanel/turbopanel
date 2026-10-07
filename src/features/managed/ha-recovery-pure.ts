@@ -82,6 +82,16 @@ export function hostLossFenceAdvance(metadata: RecoveryMetadata): RecoveryAdvanc
   }
 }
 
+/**
+ * Servers the ingress step must leave out: the old primary's server when the
+ * fence was attested (it is offline by definition, so it can never confirm).
+ */
+export function attestedLostServerIds(metadata: RecoveryMetadata): string[] {
+  return metadata.fenceBasis === 'host-loss-attested' && metadata.sourceServerId
+    ? [metadata.sourceServerId]
+    : []
+}
+
 export function nextStateAfterPromoteSuccess(metadata: RecoveryMetadata): RecoveryAdvance {
   return { state: 'repointing', metadata }
 }

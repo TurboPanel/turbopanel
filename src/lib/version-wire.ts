@@ -173,6 +173,7 @@ export const DAEMON_WIRE_FEATURES = [
   'update-progress-v1',
   'sealed-instance-secrets-v1',
   'managed-health-v1',
+  'managed-health-report-v1',
   'managed-ha-probe-v1',
   'managed-ha-instance-v1',
   'managed-ha-boot-hold-v1',
@@ -199,6 +200,14 @@ export const SEALED_INSTANCE_SECRETS_FEATURE: DaemonWireFeature = 'sealed-instan
  * plane never sends the request and keeps using the stored observation.
  */
 export const MANAGED_HEALTH_FEATURE: DaemonWireFeature = 'managed-health-v1'
+
+/**
+ * The daemon pushes `managed-health-report` (every local replica's fresh
+ * replication reading, every 30 s) and this control plane stores it. Without
+ * the feature the daemon sends nothing and a quiet cluster's reading ages out
+ * (shown as unknown) until something asks.
+ */
+export const MANAGED_HEALTH_REPORT_FEATURE: DaemonWireFeature = 'managed-health-report-v1'
 
 /**
  * The daemon may send `managed-ha-event` with `detector: 'postgres-probe'`

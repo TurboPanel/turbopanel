@@ -106,11 +106,11 @@ stays its default for footprint.
 **Adding, promoting, or retiring a series** means editing
 `MANAGED_ENGINE_RELEASES` here plus the two mirrors, in the same change:
 
-| Layer                           | File                                                                                  | Pinned by                      |
-| ------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------ |
-| Control plane (source of truth) | `releases.ts`                                                                         | `releases.test.ts`             |
+| Layer                           | File                                                                                   | Pinned by                      |
+| ------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------ |
+| Control plane (source of truth) | `releases.ts`                                                                          | `releases.test.ts`             |
 | Daemon payload allowlist        | `turbopaneld/src/contracts/commands-contracts.ts` (`MANAGED_ALLOWED_IMAGES_BY_ENGINE`) | `command-types-parity.test.ts` |
-| UI picker                       | `ui/src/lib/managed-releases.ts`                                                      | `managed-releases.test.ts`     |
+| UI picker                       | `ui/src/lib/managed-releases.ts`                                                       | `managed-releases.test.ts`     |
 
 Everything else derives: `settings.ts` allowlists (`POSTGRES_ALLOWED_IMAGES` /
 `MYSQL_ALLOWED_IMAGES` / `MARIADB_ALLOWED_IMAGES`, via
@@ -222,16 +222,32 @@ KiB cap), `exposure` (`ManagedSqlAccessScope` from `access-scope.ts`: `local` |
 `null`. **`ssl.mode` is optional and unset by default** — an absent mode means
 "inherit" (see **Client TLS (SSL mode)**), so `DEFAULT_MANAGED_SETTINGS.ssl` is
 `{}`. Legacy stored `ssl.enabled` booleans still parse: `false` → `disable`,
-`true` → `require`; explicit `mode` wins when both are present. Exposure is
-**recorded access intent only**: ProxySQL's client listener ports are always
-published on all interfaces (`decideIngressBindScopes` in
-`ingress-desired-pure.ts` unconditionally returns `0.0.0.0` — changing binds
-requires a ProxySQL restart, so exposure toggles must never flap the compose
-publish). **Exposure defaults on** (`DEFAULT_MANAGED_SETTINGS` and every
-engine spec record `{ enabled: true }`); create has no exposure choice — the
-settings panel is the opt-out. Access control today is credential auth +
-org-CA TLS; the host firewall (`features/firewall/`, preview only so far; enforcement is a later stage) will enforce `exposure.scope`. One-release
-read of retired
+`true` → `require`; explicit `mode` wins when both are present. Exposure decides where the
+shared ProxySQL **publishes** its listener ports on each server, and the daemon
+publishes exactly the addresses it is sent: `local` → `127.0.0.1`, `datacenter` →
+the server's datacenter address, `turbofabric` → its `tp0` address, `public` →
+`0.0.0.0`, exposure off → no host publish at all (`decideIngressBindScopes` in
+`ingress-desired-pure.ts`; an unresolvable scope fails the reconcile, it never
+widens). One ProxySQL fronts every cluster on a server, so the published set is
+the union over the clusters it fronts. **Exposure defaults to `local`**
+(`DEFAULT_MANAGED_SETTINGS`, `DEFAULT_MANAGED_SQL_ACCESS_SCOPE`, and the parser
+names the scope when a stored `{ enabled: true }` row has none): loopback is all
+a site run by a site owner's Linux user needs (`127.0.0.1:13306`), and bound
+containers dial ProxySQL by name over the organization's managed Docker network
+with no host publish. Wider scopes are an explicit per-cluster choice in the
+settings panel. Changing a cluster's exposure via `PATCH` (also saving a
+legacy no-scope cluster, or any save while an earlier push is unconfirmed)
+queues a `managed.ingress.reconcile` on every fronting server at once
+(`exposure-change.ts`; the response carries `ingressReconcile`), after refusing
+a scope a server has no address for (422 naming the server). Every asked server
+is kept in `managed.metadata.exposurePending` until a reconcile created after
+the ask succeeds (`consumer.ts`); a push that cannot be built or queued answers
+502 `ingress_reconcile_failed` (saved, not applied), `GET` lists the servers as
+`exposure.pendingServers`, and `runManagedExposurePendingSweep` re-pushes them
+once the earlier command has expired. One public cluster on a server still
+widens every other cluster there (one listener serves all). Access control on a published listener is
+credential auth + org-CA TLS; the host firewall (`features/firewall/`, preview
+only so far) will enforce `exposure.scope`. One-release read of retired
 `exposure.bind` (`public` | `datacenter` | `local`) migrates to the same-named
 `scope`; new writes must use `scope`.
 
@@ -351,14 +367,14 @@ named. Store/serve `ports` (configured, `null` per family = inherit) and
 
 ## Exposure / connection shape
 
-| Surface                    | Shape                                                                                                                                                                                                                                                                                                                                               |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Client connection endpoint | Shared ProxySQL host:port on the **placement server** (member or bound consumer) — port from the **server-owner** org's listener config, default pgsql `15432` / mysql `13306` (see Client listener ports above), TLS to the **server-owner Organization CA**, DSN TLS parameter from the effective `ManagedSslMode` (see Client TLS above)                  |
-| Routing                    | ProxySQL hostgroups map each login's `connectionRole` → primary/replica backends over the local Docker network, a fabric relay address over `tp0`, or a datacenter private address (see Client routing above; `^SELECT` rules only under `routing.autoReadSplit`)                                                                                   |
-| Engine containers          | Reachable only on the organization's managed network (container DNS / IP from apply peers); no host `ports:`. That network's name is the `network(kind='managed')` row's bare UUID — allocated by `ensureOrganizationManagedNetwork`, never a literal (`../db/AGENTS.md`; daemon side: `turbopaneld/src/managed/AGENTS.md` → **Compose project names**)                                                                                                                                                                                                                                                       |
-| Desired-state command      | Whole-server `managed.ingress.reconcile` builds `clusters[]` + **resealed frontend user passwords** for every managed cluster needed on that server (local members **and** clusters bound by compose services placed on the server). Binding lookup is scoped to the target org + server; cluster members/users/endpoints are batched per reconcile |
-| Organization CA scoping    | Organization CA and frontend leaf for ProxySQL come from **`server.organization_id`**, with SANs for advertised listener host/IP — not only synthetic names                                                                                                                                                                                         |
-| Username uniqueness        | Logins unique across every cluster on servers owned by the same organization (see Login namespace)                                                                                                                                                                                                                                                  |
+| Surface                    | Shape                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Client connection endpoint | Shared ProxySQL host:port on the **placement server** (member or bound consumer) — port from the **server-owner** org's listener config, default pgsql `15432` / mysql `13306` (see Client listener ports above), TLS to the **server-owner Organization CA**, DSN TLS parameter from the effective `ManagedSslMode` (see Client TLS above)             |
+| Routing                    | ProxySQL hostgroups map each login's `connectionRole` → primary/replica backends over the local Docker network, a fabric relay address over `tp0`, or a datacenter private address (see Client routing above; `^SELECT` rules only under `routing.autoReadSplit`)                                                                                       |
+| Engine containers          | Reachable only on the organization's managed network (container DNS / IP from apply peers); no host `ports:`. That network's name is the `network(kind='managed')` row's bare UUID — allocated by `ensureOrganizationManagedNetwork`, never a literal (`../db/AGENTS.md`; daemon side: `turbopaneld/src/managed/AGENTS.md` → **Compose project names**) |
+| Desired-state command      | Whole-server `managed.ingress.reconcile` builds `clusters[]` + **resealed frontend user passwords** for every managed cluster needed on that server (local members **and** clusters bound by compose services placed on the server). Binding lookup is scoped to the target org + server; cluster members/users/endpoints are batched per reconcile     |
+| Organization CA scoping    | Organization CA and frontend leaf for ProxySQL come from **`server.organization_id`**, with SANs for advertised listener host/IP — not only synthetic names                                                                                                                                                                                             |
+| Username uniqueness        | Logins unique across every cluster on servers owned by the same organization (see Login namespace)                                                                                                                                                                                                                                                      |
 
 Connection info helpers surface the ProxySQL frontend port/host when exposure is
 enabled (`resolveManagedAccessEndpoints` on `GET …/managed` → `endpoints[]`);
@@ -485,7 +501,17 @@ and destroy side effects are row-independent (`payload.environmentId`) so
 concurrent outcomes never skip container-row cleanup or ingress teardown.
 `?force=true` skips online checks and replica gating, enqueues best-effort
 destroys, hard-deletes the runtime rows, and returns `deleted: true` (sweeps
-mop up leftover containers).
+mop up leftover containers). While any service is bound to one of the
+cluster's logins the destroy is refused with 409 `managed_has_bindings` and the
+bound `services` (same list shape as `managed_user_has_bindings`), for every
+engine and also with `force`; `?detach=true` lets the destroy go ahead and the bindings
+(their variables cascade) go with the `managed` row **when the destroy
+succeeds** (at once on a forced or unplaced delete), so a destroy that fails
+leaves the cluster running with its apps still bound; the response lists them
+in `detached`. Detach needs no extra permission: it is the same destroy route,
+scope check and step-up. While a `managed.destroy` for the cluster is queued or
+running (`hasOutstandingManagedDestroy`), `POST /bindings` answers 409
+`managed_busy` / `destroy_in_flight` so a new binding is not silently dropped.
 `POST …/members/:memberId/promote`
 (lag-gated; **failover** class required — `{ force: true }` bypasses lag/health
 only, never class). **On-demand health probe:** replica health is only observed
@@ -493,13 +519,12 @@ when an apply/lifecycle result returns, so an idle healthy cluster's
 observation ages past the gate's 120s window. When the stored observation is
 missing, unparseable, or stale (`isManagedReplicaObservationStale` — keyed on
 age, not on the gate's error code, because the gate answers
-`managed_replica_not_streaming` *before* it reads `observedAt`), the route asks
+`managed_replica_not_streaming` _before_ it reads `observedAt`), the route asks
 the target's daemon for a fresh reading first (`managed-health-request`, 8s,
 `src/client/managed/health-probe.ts`, feature `managed-health-v1`) and runs the
 **unchanged** gate on it. **Fail-closed is preserved:** timeout, offline host,
 a daemon without the feature, a daemon error, a malformed reply, or a reply for
-another member all fall back to the gate on the stored observation — today's
-409. `force` never probes. `GET …/managed/status?refresh=1` (the panel's
+another member all fall back to the gate on the stored observation — today's 409. `force` never probes. `GET …/managed/status?refresh=1` (the panel's
 Refresh) probes every **replica** in parallel and returns
 `healthRefresh: { observed, unavailable }`; a plain GET stays DB-only. The probe
 writes replication only (never `replica.status`). Automatic failover never
@@ -535,6 +560,60 @@ Durable Object poll loop. DR rewrite: members no longer in the new primary's
 datacenter cannot stay `failover` → `read` (keep `readEligible`). Same-DC `read`
 peers are never silently upgraded to `failover`.
 
+### Completion gate: every ingress must confirm (`ha-ingress-gate.ts`)
+
+A recovery is not `completed` when the role change is done, only when every
+server that routes to the database has repointed its ProxySQL. After the
+promote, `onPromoteSucceeded` queues one `managed.ingress.reconcile` per
+member and consumer server (each stamped with `metadata.recoveryId`) and parks
+the row at `reconciling-ingress` with `ingressCommandIds` (the commands) and
+`ingressServerIds` (every server that must confirm, including one whose
+command could not be built or queued). Each command's terminal result — success,
+failure, timeout (stale-command sweep via `onRecoveryCommandTimedOut`), or
+"daemon not connected" — calls `settleIngressCommandForRecovery`, which judges
+the row from the command table (idempotent; a result that lands before the row
+is parked is picked up by the judgement made right after parking):
+
+- any listed command still live: wait;
+- every required server has a succeeded command: exactly-one-writer check, then
+  `completed`;
+- otherwise terminal `failed` + `needsOperator` with `ingressNotRepointed`
+  (server ids) and a plain "Degraded: the database proxy on <names> has not
+  switched to the new primary" `failedReason`. The new primary is serving; the
+  retry is Apply (it re-sends the ingress update to every server). No new
+  recovery state (the CHECK list is unchanged).
+- Nothing could be queued (no queue or secrets in this context): `failed`, never
+  `completed`.
+
+The daemon only reports `succeeded` after reading the ProxySQL runtime table
+back and finding the new primary there, so "confirmed" means the proxy routes to
+it. A daemon that predates that check still confirms by command success.
+
+### Replica health freshness
+
+`serializeManagedMemberForDisplay` (panel, status, member list) shows a replica
+`streaming` / `catching_up` reading older than the 120 s window as `unknown`
+(`stale: true`, `lastState`, `ageSeconds`; `replica-freshness.ts`); a negative
+reading is never made vaguer, and a far-future `observedAt` is not trusted.
+
+The promote gate and automatic failover read the stored probe-measured
+observation (`metadata.replication`) and apply their own freshness rules
+unchanged (120 s); they are unaffected by the 30 s health report push.
+
+Fresh readings come from two sources:
+
+- The daemon's own push (`managed-health-report`, feature
+  `managed-health-report-v1`, every 30 s) writes to a display-only field
+  (`metadata.replicationDisplay`): only the reporting server's own replicas are
+  written, `lastStreaming` is dropped, a future time is clamped to receipt.
+- The on-demand probe and apply/lifecycle results write to
+  `metadata.replication` (probe-measured). When a probe is answered with
+  "engine not running" the replica is stored as `not_streaming` with the receipt
+  time, so a stopped replica stops showing its last `streaming` line.
+
+For display, the newer of the two readings is shown; for promotion decisions,
+only the probe-measured field is read.
+
 ### Dead-primary detectors
 
 `managed-ha-event` may carry `detector` (absent = Orchestrator) and bounded
@@ -562,7 +641,7 @@ all:
 3. `PRIMARY_HOST_DETECTORS` (`postgres-probe`): `sourceMemberId` is the
    current primary member and the reporter is that member's server, so a stale
    daemon (old primary after a switchover) can never fail over the new primary.
-3a. `orchestrator` events are bound to the CURRENT primary
+   3a. `orchestrator` events are bound to the CURRENT primary
    (`orchestratorBindingRejection`): the daemon sends Orchestrator's key for
    the dead instance (`instanceHost` + `instancePort`, feature
    `managed-ha-instance-v1`), and it must equal the primary's address and port
@@ -619,7 +698,7 @@ all:
    never `detecting`, which would hold the in-flight slot
    (`uniq_recovery_inflight_managed`) and make every later switchover / DR
    answer `managed_busy`. With a queue: fence (drain + `managed.lifecycle
-   stop`; an unreachable old primary blocks) then promote.
+stop`; an unreachable old primary blocks) then promote.
 8. A fence stop or promote/recover command that cannot be enqueued turns the
    row terminal `blocked` (`FENCE_STOP_UNQUEUED_MESSAGE` /
    `PROMOTE_UNQUEUED_MESSAGE`) instead of leaving `fencing` / `promoting`

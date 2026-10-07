@@ -1069,8 +1069,7 @@ async function runQueuedCronSweeps(
   db: Db,
   queue: NonNullable<CloudflareBindings['TURBOPANEL_COMMAND_QUEUE']>,
   tlsRenewal: CronTlsRenewal | null | undefined,
-  firewallApplyGate: FirewallApplyGate,
-  env: CloudflareBindings
+  firewallApplyGate: FirewallApplyGate
 ): Promise<void> {
   try {
     const commandQueue = createWorkersCommandQueue(queue)
@@ -1517,7 +1516,7 @@ async function runOptionalCronPhases(
   const commandQueue = env.TURBOPANEL_COMMAND_QUEUE
   if (!commandQueue) return
   await runOptionalPhase(deadlineMs, 'reconcile', opts.scheduledTime, phasesSkipped, () =>
-    runQueuedCronSweeps(db, commandQueue, tlsRenewal, opts.firewallApplyGate, env)
+    runQueuedCronSweeps(db, commandQueue, tlsRenewal, opts.firewallApplyGate)
   )
 }
 

@@ -1,6 +1,7 @@
 import { assertEquals } from '@std/assert'
 import {
   blockedCopy,
+  attestedLostServerIds,
   hostLossFenceAdvance,
   nextStateAfterFence,
   nextStateAfterIngressReconcile,
@@ -108,3 +109,15 @@ test('host loss records the fence as attested and still never counts as proven',
   })
   assertEquals(ordinary.state, 'blocked')
 })
+
+Deno.test(
+  'an attested-lost server is left out of the ingress step, any other failover leaves nobody out',
+  () => {
+    assertEquals(
+      attestedLostServerIds({ fenceBasis: 'host-loss-attested', sourceServerId: 'srv-old' }),
+      ['srv-old']
+    )
+    assertEquals(attestedLostServerIds({ sourceServerId: 'srv-old' }), [])
+    assertEquals(attestedLostServerIds({ fenceBasis: 'host-loss-attested' }), [])
+  }
+)
