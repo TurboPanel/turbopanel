@@ -12,9 +12,16 @@
  * scripts/check-deploy-env.mjs). The revision comes from Workers Builds'
  * `WORKERS_CI_COMMIT_SHA`, else `git rev-parse HEAD`; a deploy that cannot
  * name its commit is refused rather than shipping `revision: unknown`.
+ *
+ * Confirmation: `staging` and `live` ask first. On a terminal you type the
+ * environment name; without one you must pass `--yes`
+ * (`pnpm run deploy:live --yes`). Inside Workers Builds (it sets
+ * `WORKERS_CI_COMMIT_SHA`, and `WORKERS_CI`) the guard is skipped so branch
+ * builds keep running unattended. `testing` is never asked.
  */
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
+import readline from 'node:readline/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -30,6 +37,44 @@ export function resolveRevision(env, gitHead) {
     )
   }
   return commit
+}
+
+const CONFIRMED_ENVS = new Set(['staging', 'live'])
+
+/** True inside Cloudflare Workers Builds (the unattended branch deploys). */
+export function isWorkersBuilds(env) {
+  return Boolean(env.WORKERS_CI_COMMIT_SHA?.trim() || env.WORKERS_CI?.trim())
+}
+
+async function askOnTerminal(question) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    return await rl.question(question)
+  } finally {
+    rl.close()
+  }
+}
+
+/**
+ * Throws unless a staging/live deploy is confirmed: skipped in Workers Builds
+ * and for other envs; `--yes` proceeds; a terminal must type the env name;
+ * anything else is refused.
+ */
+export async function confirmDeploy(
+  env,
+  argv = [],
+  { isTTY = Boolean(process.stdin.isTTY && process.stdout.isTTY), ask = askOnTerminal } = {}
+) {
+  const envName = env.CLOUDFLARE_ENV?.trim()
+  if (!envName || !CONFIRMED_ENVS.has(envName) || isWorkersBuilds(env)) return
+  if (argv.includes('--yes')) return
+  if (!isTTY) {
+    throw new Error(
+      `deploying ${envName} needs confirmation: pass --yes (pnpm run deploy:${envName} --yes)`
+    )
+  }
+  const answer = (await ask(`Deploy to ${envName}? Type "${envName}" to continue: `)).trim()
+  if (answer !== envName) throw new Error(`confirmation did not match "${envName}" — not deploying`)
 }
 
 /** The ordered commands for one deploy. Throws on a missing precondition. */
@@ -85,6 +130,7 @@ export function runDeploy(
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
+    await confirmDeploy(process.env, process.argv.slice(2))
     runDeploy()
   } catch (err) {
     console.error(`deploy-workers: ${err instanceof Error ? err.message : String(err)}`)

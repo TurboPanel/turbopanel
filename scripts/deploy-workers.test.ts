@@ -2,8 +2,14 @@
  * Workers deploy (`pnpm deploy`, `pnpm deploy:testing|staging|live`): migrate first, stamp
  * the commit, never ship `revision: unknown`.
  */
-import { assertEquals, assertThrows } from '@std/assert'
-import { planDeploy, resolveRevision, runDeploy } from './deploy-workers.mjs'
+import { assertEquals, assertRejects, assertThrows } from '@std/assert'
+import {
+  confirmDeploy,
+  isWorkersBuilds,
+  planDeploy,
+  resolveRevision,
+  runDeploy,
+} from './deploy-workers.mjs'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -116,4 +122,43 @@ test('each hosted environment has a deploy script that names it and goes through
       .replace(/,(\s*[}\]])/g, '$1')
   )
   assertEquals(Object.keys(wrangler.env).sort(), ['live', 'staging', 'testing'])
+})
+
+const LIVE = { ...ENV, CLOUDFLARE_ENV: 'live' }
+const never = () => Promise.reject(new Error('should not prompt'))
+
+test('live without --yes and without a terminal is refused', async () => {
+  await assertRejects(() => confirmDeploy(LIVE, [], { isTTY: false, ask: never }), Error, '--yes')
+})
+
+test('--yes proceeds for staging and live without a terminal', async () => {
+  await confirmDeploy(LIVE, ['--yes'], { isTTY: false, ask: never })
+  await confirmDeploy({ ...ENV, CLOUDFLARE_ENV: 'staging' }, ['--yes'], {
+    isTTY: false,
+    ask: never,
+  })
+})
+
+test('on a terminal the typed environment name must match', async () => {
+  await confirmDeploy(LIVE, [], { isTTY: true, ask: () => Promise.resolve('live\n') })
+  await assertRejects(
+    () => confirmDeploy(LIVE, [], { isTTY: true, ask: () => Promise.resolve('staging') }),
+    Error,
+    'did not match'
+  )
+  await assertRejects(
+    () => confirmDeploy(LIVE, [], { isTTY: true, ask: () => Promise.resolve('') }),
+    Error,
+    'did not match'
+  )
+})
+
+test('Workers Builds skips the guard', async () => {
+  assertEquals(isWorkersBuilds({ WORKERS_CI_COMMIT_SHA: CI_SHA }), true)
+  assertEquals(isWorkersBuilds({}), false)
+  await confirmDeploy({ ...LIVE, WORKERS_CI_COMMIT_SHA: CI_SHA }, [], { isTTY: false, ask: never })
+})
+
+test('testing is never asked', async () => {
+  await confirmDeploy(ENV, [], { isTTY: false, ask: never })
 })
