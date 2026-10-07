@@ -194,7 +194,9 @@ fire-and-forget, so an admitted sample can still be lost.
 
 A sample at or before the last stored one is a duplicate or replay; one at
 least 50 s after it is on time; an earlier one spends a catch-up token (5,
-refilling one a minute). Refused samples get 429 with `Retry-After`; a gate
+refilling one a minute). A duplicate or replayed sample gets 409 (`duplicate_sample`, no
+`Retry-After`): it can never be accepted later and the daemon does not retry a 409. An early
+sample gets 429 with `Retry-After` (the daemon retries 429s). A gate
 error (the object unreachable) answers 503 rather than writing unmetered.
 Events are stored while a 120-an-hour budget lasts, most severe first; the
 rest are dropped and the sample is still stored. Live (non-durable) samples

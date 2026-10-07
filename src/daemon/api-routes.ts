@@ -683,6 +683,12 @@ async function applyMetricsIngestGate<E extends Env>(
     rateLimitedMetricsLog(serverId, `metrics_gate_${gate.reason}`, () => {
       console.warn(`metrics sample refused for ${serverId}: ${gate.reason}`)
     })
+    // A duplicate (or replayed) sample can never be accepted later, so it gets
+    // 409, which the daemon does not retry; only an early sample is worth
+    // retrying, so only that one gets 429 with a Retry-After.
+    if (gate.reason === 'duplicate') {
+      return c.json({ ok: false, error: 'duplicate_sample' }, 409)
+    }
     c.header('Retry-After', String(gate.retryAfterSeconds))
     return c.json({ ok: false, error: 'rate_limited', reason: gate.reason }, 429)
   }
