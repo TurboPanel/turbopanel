@@ -1,7 +1,7 @@
 /**
  * Latest host facts on both stores: the text a v7 sample carries beside its
  * numbers (kernel, OS, versions, a drive's model and SMART verdict, a GPU's
- * driver and model) is written through the real DuckDB store and the real
+ * driver, model and memory size, each filesystem's size and each NIC's link speed) is written through the real DuckDB store and the real
  * hosted writer, then read back with `queryHostFacts` and compared.
  */
 import { assertEquals } from '@std/assert'
@@ -11,7 +11,7 @@ import {
   type MetricsExtended,
   type MetricsSampleInput,
 } from '../../../../contracts/metrics-contract.ts'
-import { hostFactsFromSample } from '../../query/host-facts.ts'
+import { emptyHostFacts, hostFactsFromSample } from '../../query/host-facts.ts'
 import type { AuthenticatedMetricsSample, HostFactsResult, SlotMapping } from '../../types.ts'
 import { DuckDbParquetServerMetricsStore } from '../duckdb/store.ts'
 import { CloudflareAnalyticsEngineServerMetricsStore } from './store.ts'
@@ -187,6 +187,10 @@ function sortFacts(result: HostFactsResult): HostFactsResult {
         a.deviceId.localeCompare(b.deviceId)
       ),
       gpus: [...result.facts.gpus].sort((a, b) => a.gpuId.localeCompare(b.gpuId)),
+      filesystems: [...result.facts.filesystems].sort((a, b) =>
+        a.filesystemId.localeCompare(b.filesystemId)
+      ),
+      networks: [...result.facts.networks].sort((a, b) => a.deviceId.localeCompare(b.deviceId)),
     },
   }
 }
@@ -218,7 +222,7 @@ it('host facts: both stores return the newest sample facts, drop what disappears
     // Nothing written yet: no sample, no facts, on both.
     for (const result of await both()) {
       assertEquals(result.sampledAt, null)
-      assertEquals(result.facts, { text: {}, blockDevices: [], gpus: [] })
+      assertEquals(result.facts, emptyHostFacts())
     }
 
     const first = sampleAt(BASE_MS, FULL_FACTS)
@@ -254,11 +258,7 @@ it('host facts: both stores return the newest sample facts, drop what disappears
     await write(sampleAt(secondAt, { text: { kernel: '6.8.0-50-generic' } }), secondAt)
     for (const result of await both()) {
       assertEquals(result.sampledAt, new Date(secondAt).toISOString())
-      assertEquals(result.facts, {
-        text: { kernel: '6.8.0-50-generic' },
-        blockDevices: [],
-        gpus: [],
-      })
+      assertEquals(result.facts, { ...emptyHostFacts(), text: { kernel: '6.8.0-50-generic' } })
     }
 
     // A late-arriving older sample never wins over the newer one.
@@ -278,6 +278,101 @@ it('host facts: both stores return the newest sample facts, drop what disappears
     ]) {
       assertEquals(result.sampledAt, null)
       assertEquals(result.facts.text, {})
+    }
+  } finally {
+    await duckStore.close()
+    await fakeAe.close()
+    await Deno.remove(metricsDir, { recursive: true })
+  }
+})
+
+function nic(deviceId: string) {
+  return {
+    deviceId,
+    receiveBytesPerSecond: 1,
+    transmitBytesPerSecond: 1,
+    receiveErrorsPerSecond: 0,
+    transmitErrorsPerSecond: 0,
+    receiveDropsPerSecond: 0,
+    transmitDropsPerSecond: 0,
+  }
+}
+
+it("host facts: each device's own size (filesystem bytes and inodes, GPU memory, NIC link speed) reads the same on both stores", async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-host-facts-sizes-' })
+  const duckStore = new DuckDbParquetServerMetricsStore({ metricsDir }, { writeBatchMaxRows: 1 })
+  const fakeAe = await createFakeAnalyticsEngine()
+  const aeStore = new CloudflareAnalyticsEngineServerMetricsStore(fakeAe.dataset, {
+    sql: fakeAe.sqlConfig,
+  })
+  try {
+    const extended: MetricsExtended = {
+      gpuText: [{ gpuId: 'gpu:0', model: 'NVIDIA RTX 4000' }],
+      gpuSizes: [
+        { gpuId: 'gpu:0', memoryTotalBytes: 20_000_000_000 },
+        // A size with no text still lists the GPU.
+        { gpuId: 'gpu:1', memoryTotalBytes: 8_000_000_000 },
+      ],
+      // The first two NICs are the ones the hosted layout embeds in `host.network`; the rest page.
+      networkSizes: [
+        { deviceId: 'eth0', linkSpeedMbps: 10_000 },
+        { deviceId: 'eth1', linkSpeedMbps: 1_000 },
+        { deviceId: 'eth2', linkSpeedMbps: 25_000 },
+        // No speed reported: the NIC is simply not listed.
+        { deviceId: 'eth3' },
+      ],
+      filesystemSizes: [
+        { filesystemId: 'fs:a', totalBytes: 500_000_000_000, totalInodes: 30_000_000 },
+        { filesystemId: 'fs:b', totalBytes: 100_000_000_000 },
+        { filesystemId: 'fs:c', totalInodes: 9_000_000 },
+        { filesystemId: 'fs:d' },
+      ],
+    }
+    const base = input(BASE_MS, extended)
+    const sample: AuthenticatedMetricsSample = {
+      ...buildMetricsSample({
+        ...base,
+        networks: ['eth0', 'eth1', 'eth2', 'eth3'].map(nic),
+        filesystems: ['fs:a', 'fs:b', 'fs:c', 'fs:d'].map((filesystemId) => ({
+          filesystemId,
+          availableBytes: 1,
+          freeInodes: 1,
+        })),
+      }),
+      serverId: SERVER_ID,
+      receivedAt: new Date(BASE_MS).toISOString(),
+    }
+    await duckStore.writeSample(sample)
+    fakeAe.setNow(BASE_MS)
+    aeStore.writeSample(sample, slotMapping)
+
+    const query = {
+      serverId: SERVER_ID,
+      from: new Date(BASE_MS - 3_600_000).toISOString(),
+      to: new Date(BASE_MS + 3_600_000).toISOString(),
+    }
+    const expected = hostFactsFromSample(sample)
+    assertEquals(expected.networks.length, 3)
+    assertEquals(expected.filesystems.length, 3)
+    assertEquals(
+      expected.gpus.find((g) => g.gpuId === 'gpu:1'),
+      {
+        gpuId: 'gpu:1',
+        memoryTotalBytes: 8_000_000_000,
+      }
+    )
+    for (const [label, result] of [
+      ['duckdb', sortFacts(await duckStore.queryHostFacts(query))],
+      ['hosted', sortFacts(await aeStore.queryHostFacts(query))],
+    ] as const) {
+      const sorted = sortFacts({ ...result, facts: expected }).facts
+      assertEquals(result.facts.networks, sorted.networks, `${label} NIC link speeds`)
+      assertEquals(result.facts.filesystems, sorted.filesystems, `${label} filesystem sizes`)
+      assertEquals(
+        result.facts.gpus.map((g) => [g.gpuId, g.memoryTotalBytes]),
+        sorted.gpus.map((g) => [g.gpuId, g.memoryTotalBytes]),
+        `${label} GPU memory`
+      )
     }
   } finally {
     await duckStore.close()

@@ -4,6 +4,7 @@ import type {
   ExtendedDockerMetrics,
   ExtendedHostMetrics,
   ExtendedIngressMetrics,
+  ExtendedSizes,
   DatabaseProxySample,
   DiagnosticsCpuSample,
   DiagnosticsMemorySample,
@@ -249,6 +250,7 @@ const ENTITY_FIELD_SPECS: EntityFieldSpec[] = [
     entityScope: 'extended.host',
     fields: [
       'pidLimitUsedPercent',
+      'irqPressureFullPercent',
       'oomKills',
       'rootDiskQueueDepth',
       'rootDiskOpsPerSecond',
@@ -273,6 +275,17 @@ const ENTITY_FIELD_SPECS: EntityFieldSpec[] = [
   {
     entityScope: 'extended.ingress',
     fields: ['tlsCertSoonestExpiryDays'] satisfies (keyof ExtendedIngressMetrics)[],
+  },
+  {
+    entityScope: 'extended.sizes',
+    fields: [
+      'memoryTotalBytes',
+      'swapTotalBytes',
+      'commitLimitBytes',
+      'logicalCores',
+      'rootFilesystemTotalBytes',
+      'rootFilesystemTotalInodes',
+    ] satisfies (keyof ExtendedSizes)[],
   },
   {
     // Read-time figure, not a wire field: a drive's read plus write ops/s.

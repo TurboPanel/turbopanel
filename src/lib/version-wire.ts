@@ -179,6 +179,7 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-ha-instance-v1',
   'managed-ha-boot-hold-v1',
   'metrics-v7',
+  'metrics-v7-sizes',
   'php-site-modes-v1',
   'site-engine-nginx-apache-v1',
   'deploy-cancel-v1',

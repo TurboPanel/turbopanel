@@ -85,7 +85,7 @@ function hostField(scope: MetricEntityScope, field: string): DoubleDef {
   return { ref: { scope, field }, read: (c) => num(c.sample.host[group], field) }
 }
 
-function extended(section: 'host' | 'docker' | 'ingress', field: string): DoubleDef {
+function extended(section: 'host' | 'docker' | 'ingress' | 'sizes', field: string): DoubleDef {
   return {
     ref: { scope: `extended.${section}`, field },
     read: (c) => num(c.sample.extended?.[section as keyof MetricsExtended], field),
@@ -162,6 +162,71 @@ function foldedFilesystemField(field: 'availableBytes' | 'freeInodes'): DoubleDe
   return { read: (c) => c.foldedFilesystem?.[field] ?? null }
 }
 
+/** The size the lone extra filesystem reported this sample (`extended.filesystemSizes`, by id). */
+function foldedFilesystemSize(field: 'totalBytes' | 'totalInodes'): DoubleDef {
+  return {
+    read: (c) =>
+      c.foldedFilesystem === undefined
+        ? null
+        : filesystemSizeOf(c.sample, c.foldedFilesystem.filesystemId, field),
+  }
+}
+
+function filesystemSizeOf(
+  sample: MetricsSample,
+  filesystemId: string,
+  field: 'totalBytes' | 'totalInodes'
+): number | null {
+  return num(
+    sample.extended?.filesystemSizes?.find((entry) => entry.filesystemId === filesystemId),
+    field
+  )
+}
+
+/** A size as plain decimal text (`''` when unknown), for a device row's text slot. */
+function sizeText(value: number | null): string {
+  return value === null ? '' : String(Math.round(value))
+}
+
+/** `<bytes>/<inodes>` for one filesystem (either side empty when unknown; `''` when both are). */
+function filesystemSizeText(sample: MetricsSample, filesystemId: string): string {
+  const bytes = filesystemSizeOf(sample, filesystemId, 'totalBytes')
+  const inodes = filesystemSizeOf(sample, filesystemId, 'totalInodes')
+  return bytes === null && inodes === null ? '' : `${sizeText(bytes)}/${sizeText(inodes)}`
+}
+
+function linkSpeedOf(sample: MetricsSample, deviceId: string): number | null {
+  return num(
+    sample.extended?.networkSizes?.find((entry) => entry.deviceId === deviceId),
+    'linkSpeedMbps'
+  )
+}
+
+/**
+ * The devices a host row's numbers belong to, written to that row's blob6 so a
+ * reader finds them by device id rather than by a stored slot map:
+ * `nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>` on `host.network` (empty parts
+ * left out), `''` on every other host row.
+ */
+export function v7HostRowEntityIds(family: V7HostFamily, ctx: V7Context): string {
+  if (family !== 'host.network') return ''
+  const parts: string[] = []
+  ctx.nics.forEach((nic, slot) => {
+    if (!nic) return
+    const speed = sizeText(linkSpeedOf(ctx.sample, nic.deviceId))
+    parts.push(`nic${slot + 1}=${nic.deviceId}@${speed}`)
+  })
+  if (ctx.foldedFilesystem) parts.push(`fs=${ctx.foldedFilesystem.filesystemId}`)
+  return parts.join(';')
+}
+
+function gpuMemoryTotalOf(sample: MetricsSample, gpuId: string): number | null {
+  return num(
+    sample.extended?.gpuSizes?.find((entry) => entry.gpuId === gpuId),
+    'memoryTotalBytes'
+  )
+}
+
 const DOUBLE_DEFS: Readonly<Record<string, DoubleDef>> = {
   // host.system
   busy: hostField('host.cpu', 'busyPercent'),
@@ -170,19 +235,21 @@ const DOUBLE_DEFS: Readonly<Record<string, DoubleDef>> = {
   iowait: hostField('host.cpu', 'iowaitPercent'),
   steal: hostField('host.cpu', 'stealPercent'),
   softirq: hostField('host.cpu', 'softirqPercent'),
+  irqPsiFull: extended('host', 'irqPressureFullPercent'),
   cpuPsi: hostField('host.cpu', 'pressureSomePercent'),
-  saturated: hostField('host.cpu', 'saturatedCoreCount'),
   used: hostField('host.memory', 'usedBytes'),
   cachedFiles: hostField('host.memory', 'cachedFilesBytes'),
   swapUsed: hostField('host.memory', 'swapUsedBytes'),
   memPsiSome: hostField('host.memory', 'pressureSomePercent'),
   memPsiFull: hostField('host.memory', 'pressureFullPercent'),
-  majorFaults: hostField('host.memory', 'majorPageFaultsPerSecond'),
   oomKills: extended('host', 'oomKills'),
   fileHandles: hostField('host.kernel', 'fileHandlesUsedPercent'),
   conntrack: hostField('host.kernel', 'conntrackUsedPercent'),
   pidLimit: extended('host', 'pidLimitUsedPercent'),
-  dSlabU: diagnostics('memory', 'slabUnreclaimableBytes'),
+  memTotal: extended('sizes', 'memoryTotalBytes'),
+  swapTotal: extended('sizes', 'swapTotalBytes'),
+  commitLimit: extended('sizes', 'commitLimitBytes'),
+  cores: extended('sizes', 'logicalCores'),
   // host.io
   ioPsiSome: hostField('host.storage', 'ioPressureSomePercent'),
   ioPsiFull: hostField('host.storage', 'ioPressureFullPercent'),
@@ -211,6 +278,10 @@ const DOUBLE_DEFS: Readonly<Record<string, DoubleDef>> = {
   rootInodes: hostField('host.storage', 'rootFilesystemFreeInodes'),
   fs_availableBytes: foldedFilesystemField('availableBytes'),
   fs_freeInodes: foldedFilesystemField('freeInodes'),
+  fs_totalBytes: foldedFilesystemSize('totalBytes'),
+  fs_totalInodes: foldedFilesystemSize('totalInodes'),
+  rootTotal: extended('sizes', 'rootFilesystemTotalBytes'),
+  rootInodesTotal: extended('sizes', 'rootFilesystemTotalInodes'),
   tcpRetrans: hostField('host.network', 'tcpRetransmitPercent'),
   'nic1.rx': embeddedNic(0, 'rx'),
   'nic1.tx': embeddedNic(0, 'tx'),
@@ -221,20 +292,14 @@ const DOUBLE_DEFS: Readonly<Record<string, DoubleDef>> = {
   systemdFailed: extended('host', 'systemdUnitsFailed'),
   mdDegraded: extended('host', 'mdArraysDegraded'),
   dCommit: diagnostics('memory', 'committedAsBytes'),
-  tUp: sampleScope('router', 'backendsUp'),
   tTotal: sampleScope('router', 'backendsTotal'),
   t5xx: sampleScope('router', 'backendErrors5xx'),
   tLatency: sampleScope('router', 'backendLatencyMsAvg'),
-  tRequests: sampleScope('router', 'backendRequests'),
   // host.web
   hostingUsed: sampleScope('storage', 'hostingUsedBytes'),
   backupUsed: sampleScope('storage', 'backupUsedBytes'),
-  dockerUsed: sampleScope('storage', 'dockerUsedBytes'),
-  logsUsed: sampleScope('storage', 'logsUsedBytes'),
-  hostingFree: sampleScope('storage', 'hostingFreeBytes'),
   backupFree: sampleScope('storage', 'backupFreeBytes'),
   cReq: ingressField('requests'),
-  c2xx: ingressField('responses2xx'),
   c4xx: ingressField('responses4xx'),
   c5xx: ingressField('responses5xx'),
   cErr: ingressField('requestErrors'),
@@ -311,31 +376,37 @@ function ids(list: string): string[] {
 }
 
 export const V7_HOST_ROW_SPECS: Readonly<Record<V7HostFamily, HostRowSpec>> = {
+  // CPU and its pressure (cpu, then irq), then memory and its pressure, with the sizes they are measured against.
   'host.system': {
     doubles: ids(
-      'busy user system iowait steal softirq cpuPsi saturated used cachedFiles swapUsed memPsiSome memPsiFull majorFaults oomKills fileHandles conntrack pidLimit dSlabU'
+      'busy user system iowait steal softirq cores cpuPsi irqPsiFull memPsiSome memPsiFull used cachedFiles swapUsed memTotal swapTotal oomKills dCommit commitLimit'
     ),
-    blobs: ids('loadavg topCpu cpuModel topMem lastOom'),
+    blobs: ids(
+      'loadavg topCpu cpuModel topMem lastOom kernel os bootId virt cloudProvider agentVersion timeSync pendingUpdates rebootRequired'
+    ),
   },
+  // Disk IO and disk space (root and the lone extra disk, with their sizes), storage usage, RAID.
   'host.io': {
     doubles: ids(
-      'ioPsiSome ioPsiFull diskRead diskWrite diskLatency rootQueue rootOps ctrRunning ctrUnhealthy ctrRestarting ctrOom ctrDie ctrCpu ctrMem layers ctrBytes volumes buildCache reclTotal'
+      'ioPsiSome ioPsiFull diskRead diskWrite diskLatency rootQueue rootOps rootAvail rootTotal rootInodes rootInodesTotal fs_availableBytes fs_totalBytes fs_freeInodes fs_totalInodes hostingUsed backupUsed backupFree mdDegraded'
+    ),
+    blobs: ids('fsReadOnly raidState'),
+  },
+  // Network, then Docker. blob6 names NIC 1, NIC 2 and the lone extra disk (see `v7HostRowEntityIds`).
+  'host.network': {
+    doubles: ids(
+      'tcpRetrans nic1.rx nic1.tx nic1.problems nic2.rx nic2.tx nic2.problems ctrRunning ctrUnhealthy ctrRestarting ctrOom ctrDie ctrCpu ctrMem layers ctrBytes volumes buildCache reclTotal'
     ),
     blobs: ids('unhealthyNames dockerVersion'),
   },
-  'host.network': {
-    doubles: ids(
-      'rootAvail rootInodes fs_availableBytes fs_freeInodes tcpRetrans nic1.rx nic1.tx nic1.problems nic2.rx nic2.tx nic2.problems systemdFailed mdDegraded dCommit tUp tTotal t5xx tLatency tRequests'
-    ),
-    blobs: ids(
-      'failedUnits raidState rebootRequired kernel os bootId virt cloudProvider agentVersion timeSync pendingUpdates fsReadOnly phpVersions webEngines'
-    ),
-  },
+  // Web traffic (hosting Caddy, shared router) and the host limits a busy web host runs out of.
   'host.web': {
     doubles: ids(
-      'hostingUsed backupUsed dockerUsed logsUsed hostingFree backupFree cReq c2xx c4xx c5xx cErr cReqB cRespB cDur cB100 cB500 cB1s cInFlight cTls'
+      'cReq c4xx c5xx cErr cReqB cRespB cDur cB100 cB500 cB1s cInFlight cTls tTotal t5xx tLatency conntrack fileHandles pidLimit systemdFailed'
     ),
-    blobs: ids('fpmBusiest topSites caddyVersion certSoonest traefikVersion unhealthyBackends'),
+    blobs: ids(
+      'fpmBusiest topSites caddyVersion certSoonest traefikVersion unhealthyBackends phpVersions webEngines failedUnits'
+    ),
   },
   'managed.database': {
     doubles: [
@@ -447,13 +518,19 @@ export function v7EmbeddedNicDoubleIndex(slot: 0 | 1, key: 'rx' | 'tx'): number 
 
 type EntityRowSpec<E> = {
   /** Per-entity double slots in physical order; `field` is the contract field name (null = no descriptor yet). */
-  doubles: readonly { field: string | null; read: (entity: E) => number | null }[]
+  doubles: readonly {
+    field: string | null
+    read: (entity: E, sample: MetricsSample) => number | null
+  }[]
   /** Per-entity text blobs, appended entity by entity. */
   blobs: readonly { read: (entity: E, sample: MetricsSample) => string }[]
   perPage: number
 }
 
-function entityNum<E>(field: string): { field: string; read: (entity: E) => number | null } {
+function entityNum<E>(field: string): {
+  field: string
+  read: (entity: E, sample: MetricsSample) => number | null
+} {
   return { field, read: (entity) => num(entity, field) }
 }
 
@@ -469,7 +546,9 @@ function opsPerSecond(device: BlockDeviceSample): number | null {
  */
 export const V7_ENTITY_TEXT_FIELDS = {
   block: ['model', 'smart'],
-  gpu: ['driver', 'model'],
+  gpu: ['driver', 'model', 'memoryTotal'],
+  network: ['linkSpeed'],
+  filesystem: ['size'],
 } as const
 
 function blockText(key: 'model' | 'smart') {
@@ -508,14 +587,15 @@ const NETWORK_SPEC: EntityRowSpec<NetworkDeviceSample> = {
     entityNum('receiveDropsPerSecond'),
     entityNum('transmitDropsPerSecond'),
   ],
-  // Link state has no wire field yet; the slot is reserved and written empty.
-  blobs: [{ read: () => '' }],
+  // The NIC's negotiated link speed (Mb/s) rides as text on its own row.
+  blobs: [{ read: (nic, sample) => sizeText(linkSpeedOf(sample, nic.deviceId)) }],
   perPage: 3,
 }
 
 const FILESYSTEM_SPEC: EntityRowSpec<FilesystemSample> = {
   doubles: [entityNum('availableBytes'), entityNum('freeInodes')],
-  blobs: [],
+  // The filesystem's size rides as text on its own row: `<bytes>/<inodes>`.
+  blobs: [{ read: (fs, sample) => filesystemSizeText(sample, fs.filesystemId) }],
   perPage: 9,
 }
 
@@ -528,7 +608,12 @@ const GPU_SPEC: EntityRowSpec<GpuSample> = {
     entityNum('pcieTransmitBytesPerSecond'),
     entityNum('throttlePercent'),
   ],
-  blobs: V7_ENTITY_TEXT_FIELDS.gpu.map(gpuText),
+  // The GPU's memory size rides as text on its own row.
+  blobs: [
+    gpuText('driver'),
+    gpuText('model'),
+    { read: (g: GpuSample, s: MetricsSample) => sizeText(gpuMemoryTotalOf(s, g.gpuId)) },
+  ],
   perPage: 3,
 }
 
@@ -569,7 +654,7 @@ function packEntityPages<E>(
     const doubles = new Array<number | null>(V7_DOUBLE_SLOTS).fill(null)
     chunk.forEach((entity, entityIndex) => {
       spec.doubles.forEach((slot, fieldIndex) => {
-        doubles[entityIndex * spec.doubles.length + fieldIndex] = slot.read(entity)
+        doubles[entityIndex * spec.doubles.length + fieldIndex] = slot.read(entity, sample)
       })
     })
     const blobs = chunk.flatMap((entity) => spec.blobs.map((blob) => blob.read(entity, sample)))

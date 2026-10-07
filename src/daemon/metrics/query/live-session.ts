@@ -233,6 +233,8 @@ function hostGroupForScope(
       return extendedDockerRecord(sample)
     case 'extended.ingress':
       return sample.extended?.ingress ? asFieldRecord(sample.extended.ingress) : undefined
+    case 'extended.sizes':
+      return sample.extended?.sizes ? asFieldRecord(sample.extended.sizes) : undefined
     default:
       return undefined
   }

@@ -31,6 +31,7 @@ import type {
   DockerUsageSample,
   ExtendedDockerMetrics,
   ExtendedHostMetrics,
+  ExtendedSizes,
   ExtendedIngressMetrics,
   FilesystemSample,
   GpuSample,
@@ -48,6 +49,7 @@ import {
   EXTENDED_DOCKER_FIELD_NAMES,
   EXTENDED_HOST_FIELD_NAMES,
   EXTENDED_INGRESS_FIELD_NAMES,
+  EXTENDED_SIZE_FIELD_NAMES,
   STORAGE_ENGINE_FIELD_NAMES,
   STORAGE_ENGINE_KEYS,
   STORAGE_FLAT_FIELD_NAMES,
@@ -114,6 +116,8 @@ export type HostedFamily =
    * rows that carry these numbers are in `V7-LAYOUT.md`.
    */
   | 'host.extended'
+  /** The sizes every sample carries (`extended.sizes`): the divisors of the derived percentages. */
+  | 'host.sizes'
 
 /** Which contract entity a metric is scoped to. */
 export type MetricEntityScope =
@@ -136,6 +140,7 @@ export type MetricEntityScope =
   | 'extended.host'
   | 'extended.docker'
   | 'extended.ingress'
+  | 'extended.sizes'
 
 export type HostMetricsMetricDescriptor = {
   /** Globally unique across all descriptors — see the file-level doc comment for the naming scheme. */
@@ -925,6 +930,8 @@ function reported(descriptor: HostMetricsMetricDescriptor): HostMetricsMetricDes
 
 const EXTENDED_HOST_DESCRIPTORS: Record<keyof ExtendedHostMetrics, HostMetricsMetricDescriptor> = {
   pidLimitUsedPercent: percent('pidLimitUsedPercent', 'extended.host', 'host.extended'),
+  // IRQ pressure: share of the interval every task waited on interrupt handling (kernel 6.1+).
+  irqPressureFullPercent: psiPercent('irqPressureFullPercent', 'extended.host', 'host.extended'),
   oomKills: deltaCounter('oomKills', 'count', 'extended.host', 'host.extended'),
   rootDiskQueueDepth: reported(countGauge('rootDiskQueueDepth', 'extended.host', 'host.extended')),
   rootDiskOpsPerSecond: reported(
@@ -933,6 +940,26 @@ const EXTENDED_HOST_DESCRIPTORS: Record<keyof ExtendedHostMetrics, HostMetricsMe
   systemdUnitsFailed: healthCount('systemdUnitsFailed', 'extended.host', 'host.extended'),
   mdArraysDegraded: healthCount('mdArraysDegraded', 'extended.host', 'host.extended'),
   mdArraysResyncing: healthCount('mdArraysResyncing', 'extended.host', 'host.extended'),
+}
+
+/**
+ * The sizes every sample carries (`extended.sizes`): the divisors of memory,
+ * swap, commit and root-disk use and of the saturated-core count. A balloon or
+ * resize changes them between samples, so a percentage is always taken against
+ * the size at that moment (the series route divides each bucket's use by that
+ * bucket's own size). Over a bucket they average, like any gauge.
+ */
+const EXTENDED_SIZE_DESCRIPTORS: Record<keyof ExtendedSizes, HostMetricsMetricDescriptor> = {
+  memoryTotalBytes: reported(bytesGauge('memoryTotalBytes', 'extended.sizes', 'host.sizes')),
+  swapTotalBytes: reported(bytesGauge('swapTotalBytes', 'extended.sizes', 'host.sizes')),
+  commitLimitBytes: reported(bytesGauge('commitLimitBytes', 'extended.sizes', 'host.sizes')),
+  logicalCores: reported(countGauge('logicalCores', 'extended.sizes', 'host.sizes')),
+  rootFilesystemTotalBytes: reported(
+    bytesGauge('rootFilesystemTotalBytes', 'extended.sizes', 'host.sizes')
+  ),
+  rootFilesystemTotalInodes: reported(
+    countGauge('rootFilesystemTotalInodes', 'extended.sizes', 'host.sizes')
+  ),
 }
 
 const EXTENDED_DOCKER_DESCRIPTORS: Record<
@@ -997,6 +1024,7 @@ export const EXTENDED_FIELD_NAMES = {
   host: EXTENDED_HOST_FIELD_NAMES,
   docker: EXTENDED_DOCKER_FIELD_NAMES,
   ingress: EXTENDED_INGRESS_FIELD_NAMES,
+  sizes: EXTENDED_SIZE_FIELD_NAMES,
 } as const
 
 /** Every per-family descriptor record, in the order they contribute to the merged map. */
@@ -1020,6 +1048,7 @@ const ALL_DESCRIPTOR_RECORDS: Record<string, HostMetricsMetricDescriptor>[] = [
   EXTENDED_HOST_DESCRIPTORS,
   EXTENDED_DOCKER_DESCRIPTORS,
   EXTENDED_INGRESS_DESCRIPTORS,
+  EXTENDED_SIZE_DESCRIPTORS,
   BLOCK_DERIVED_DESCRIPTORS,
 ]
 
@@ -1065,6 +1094,8 @@ const HOSTED_FAMILY_CAPACITY: Partial<Record<HostedFamily, number>> = {
   'host.diagnostics': 19,
   // 7 host + 8 docker + 1 ingress numbers (a budget of one row's doubles, not a physical page).
   'host.extended': 19,
+  // 6 sizes: memory, swap, commit limit, logical cores, root bytes and root inodes.
+  'host.sizes': 19,
 }
 
 /** AE double-index page budget per entity for the per-entity-packed families. */

@@ -34,6 +34,7 @@ import {
   EXTENDED_DOCKER_FIELD_NAMES,
   EXTENDED_HOST_FIELD_NAMES,
   EXTENDED_INGRESS_FIELD_NAMES,
+  EXTENDED_SIZE_FIELD_NAMES,
   type DatabaseProxySample,
   type DiagnosticsCpuSample,
   type DiagnosticsMemorySample,
@@ -99,9 +100,11 @@ export const HOST_FACTS_TABLE = 'server_host_facts'
  * `ext_*` columns on `server_host_samples`, `server_docker_samples` and
  * `server_ingress_samples`; like the earlier bumps it is a hard cut (a
  * marker-8 file is discarded). Free-text v7 fields are not stored here (Analytics Engine and the live view
- * only).
+ * only). Bumped 9 → 10 when every sample began carrying the sizes its percentages are measured against: the
+ * `ext_*` size columns on `server_host_samples` and `total_bytes` / `total_inodes` / `memory_total_bytes` on the
+ * filesystem and GPU tables; again a hard cut.
  */
-export const DUCKDB_SCHEMA_MARKER_VERSION = 9
+export const DUCKDB_SCHEMA_MARKER_VERSION = 10
 
 // ---------------------------------------------------------------------------
 // Field ordering — hand-declared `Record<keyof T, true>` literals so a
@@ -222,7 +225,15 @@ const FILESYSTEM_FIELDS: Record<keyof Omit<FilesystemSample, 'filesystemId'>, tr
   availableBytes: true,
   freeInodes: true,
 }
-export const FILESYSTEM_METRIC_FIELDS: readonly string[] = Object.keys(FILESYSTEM_FIELDS)
+/**
+ * Sizes the daemon sends in `extended.filesystemSizes`, stored beside each
+ * filesystem's readings so a percentage is taken against the size at that moment.
+ */
+export const FILESYSTEM_SIZE_FIELDS = ['totalBytes', 'totalInodes'] as const
+export const FILESYSTEM_METRIC_FIELDS: readonly string[] = [
+  ...Object.keys(FILESYSTEM_FIELDS),
+  ...FILESYSTEM_SIZE_FIELDS,
+]
 
 const BLOCK_FIELDS: Record<keyof Omit<BlockDeviceSample, 'deviceId'>, true> = {
   readBytesPerSecond: true,
@@ -244,7 +255,9 @@ const GPU_FIELDS: Record<keyof Omit<GpuSample, 'gpuId'>, true> = {
   pcieTransmitBytesPerSecond: true,
   throttlePercent: true,
 }
-export const GPU_METRIC_FIELDS: readonly string[] = Object.keys(GPU_FIELDS)
+/** The GPU's memory size from `extended.gpuSizes`, stored beside its readings. */
+export const GPU_SIZE_FIELDS = ['memoryTotalBytes'] as const
+export const GPU_METRIC_FIELDS: readonly string[] = [...Object.keys(GPU_FIELDS), ...GPU_SIZE_FIELDS]
 
 const INGRESS_FIELDS: Record<keyof Omit<IngressSourceSample, 'sourceId' | 'sourceKind'>, true> = {
   requests: true,
@@ -480,6 +493,8 @@ export const V7_DOCKER_COLUMNS: readonly string[] =
   EXTENDED_DOCKER_FIELD_NAMES.map(extendedColumnName)
 export const V7_INGRESS_COLUMNS: readonly string[] =
   EXTENDED_INGRESS_FIELD_NAMES.map(extendedColumnName)
+/** The sizes every sample carries (`extended.sizes`), as `ext_*` columns on `server_host_samples`. */
+export const V7_SIZE_COLUMNS: readonly string[] = EXTENDED_SIZE_FIELD_NAMES.map(extendedColumnName)
 
 /** DuckDB column name for one of the diagnostics CPU half's hand-declared host-global scalar fields. */
 export function cpuDiagnosticsHostColumnName(field: string): string {
@@ -533,6 +548,7 @@ function hostSamplesTableDdl(): string {
       ...metricColumns,
       ...cpuDiagnosticsColumns,
       ...V7_HOST_COLUMNS.map((column) => `${column} DOUBLE`),
+      ...V7_SIZE_COLUMNS.map((column) => `${column} DOUBLE`),
     ]),
     `)`,
   ].join('\n')
@@ -780,6 +796,7 @@ function hostSamplesDoubleColumnNames(): string[] {
     ...HOST_METRIC_FIELD_REFS.map((ref) => hostMetricColumnName(ref.group, ref.field)),
     ...HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST.map(cpuDiagnosticsHostColumnName),
     ...V7_HOST_COLUMNS,
+    ...V7_SIZE_COLUMNS,
   ]
 }
 

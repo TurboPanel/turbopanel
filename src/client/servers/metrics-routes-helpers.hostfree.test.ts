@@ -1302,6 +1302,8 @@ test('buildHostFactsPayload names the backend and carries the facts through', ()
       text: { kernel: '6.12.0' },
       blockDevices: [{ deviceId: 'sda', smart: 'passed' }],
       gpus: [],
+      filesystems: [{ filesystemId: 'fs:a', totalBytes: 1000 }],
+      networks: [{ deviceId: 'eth0', linkSpeedMbps: 10000 }],
     },
   })
   assertEquals(payload.ok, true)

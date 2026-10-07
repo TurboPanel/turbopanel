@@ -11,6 +11,7 @@ import {
   type MetricsSampleInput,
 } from '../../../../contracts/metrics-contract.ts'
 import type { AuthenticatedMetricsSample, SlotMapping } from '../../types.ts'
+import { V7_HOST_ROW_SPECS } from './v7-layout.ts'
 import {
   _internalFieldMap,
   AE_BLOB_CAPABILITY_PLAN_GENERATION_INDEX,
@@ -26,6 +27,7 @@ import {
   AE_BLOB_SOURCE_OR_IDENTITY_INDEX,
   AE_BLOB_STATUS_OR_EVENT_REASON_INDEX,
   AE_BLOB_TOPOLOGY_GENERATION_INDEX,
+  AE_STORAGE_VERSION,
   AE_DOUBLE_COUNT,
   AE_DOUBLE_INTERVAL_INDEX,
   AE_EVENT_BLOB_TOPOLOGY_GENERATION_INDEX,
@@ -245,7 +247,7 @@ function contentBlobs(point: AnalyticsEngineDataPointLike, count: number): strin
 // Envelope
 // ---------------------------------------------------------------------------
 
-it('metrics rows: blob1 kind, blob2 family, blob3 "7", blob4 topology generation, blob5 UTC text sample time, blob6 entity ids', () => {
+it('metrics rows: blob1 kind, blob2 family, blob3 "8", blob4 topology generation, blob5 UTC text sample time, blob6 entity ids', () => {
   const sample = buildSample({
     metadata: {
       version: 6,
@@ -262,7 +264,7 @@ it('metrics rows: blob1 kind, blob2 family, blob3 "7", blob4 topology generation
   assertEquals(gpu.blobs.slice(0, 6), [
     'metrics',
     'gpu',
-    '7',
+    '8',
     '12',
     '2026-03-04 05:06:07',
     'gpu0,gpu1',
@@ -273,13 +275,15 @@ it('metrics rows: blob1 kind, blob2 family, blob3 "7", blob4 topology generation
   assertEquals(host.blobs[AE_BLOB_SAMPLED_AT_INDEX], '2026-03-04 05:06:07')
 })
 
-it('blob3 is always the storage version "7", even for a v6-stamped sample', () => {
+it('blob3 is always the storage layout revision "8", even for a v6-stamped sample, so rows written before the sizes amendment are never read with the new slot meanings', () => {
   for (const version of [6, 7] as const) {
     const input = baseInput()
     input.metadata.version = version
     const built = buildMetricsSample(input)
     const points = buildMetricsDataPoints({ ...built, serverId: 's', receivedAt: 'x' })
-    for (const point of points) assertEquals(point.blobs[AE_BLOB_SCHEMA_VERSION_INDEX], '7')
+    for (const point of points)
+      assertEquals(point.blobs[AE_BLOB_SCHEMA_VERSION_INDEX], String(AE_STORAGE_VERSION))
+    assertEquals(AE_STORAGE_VERSION, 8)
   }
 })
 
@@ -346,6 +350,19 @@ const EXTENDED: MetricsExtended = {
     reclaimableBytes: 58,
   },
   ingress: { tlsCertSoonestExpiryDays: 61 },
+  sizes: {
+    memoryTotalBytes: 201,
+    swapTotalBytes: 202,
+    commitLimitBytes: 203,
+    logicalCores: 204,
+    rootFilesystemTotalBytes: 205,
+    rootFilesystemTotalInodes: 206,
+  },
+  filesystemSizes: [
+    { filesystemId: '/mnt/a', totalBytes: 700, totalInodes: 800 },
+    { filesystemId: '/mnt/b', totalBytes: 710, totalInodes: 810 },
+  ],
+  gpuSizes: [{ gpuId: 'gpu0', memoryTotalBytes: 16_000 }],
   text: {
     loadavg: '0.5 0.6 0.7 1/200 99',
     topCpu: 'php-fpm8.3',
@@ -378,7 +395,93 @@ const EXTENDED: MetricsExtended = {
   },
 }
 
-it('host.system: cpu, memory (incl. oom kills), kernel limits, pid limit, slab-unreclaimable', () => {
+/**
+ * One sample in which every host-row data point has its own value, keyed by the
+ * catalogue id the layout uses, so each row can be checked slot by slot against
+ * `V7_HOST_ROW_SPECS` (the layout, not hand-copied positions).
+ */
+function fullHostSample(): {
+  sample: AuthenticatedMetricsSample
+  expected: Record<string, number>
+} {
+  const expected: Record<string, number> = {
+    busy: 1,
+    user: 2,
+    system: 3,
+    iowait: 4,
+    steal: 5,
+    softirq: 6,
+    cpuPsi: 7,
+    used: 11,
+    cachedFiles: 12,
+    swapUsed: 13,
+    memPsiSome: 14,
+    memPsiFull: 15,
+    oomKills: 19,
+    fileHandles: 17,
+    conntrack: 18,
+    pidLimit: 20,
+    irqPsiFull: 22,
+    dCommit: 16,
+    memTotal: 201,
+    swapTotal: 202,
+    commitLimit: 203,
+    cores: 204,
+    rootTotal: 205,
+    rootInodesTotal: 206,
+    fs_totalBytes: 700,
+    fs_totalInodes: 800,
+    ioPsiSome: 31,
+    ioPsiFull: 32,
+    diskRead: 33,
+    diskWrite: 34,
+    diskLatency: 35,
+    rootAvail: 36,
+    rootInodes: 37,
+    rootQueue: 41,
+    rootOps: 42,
+    fs_availableBytes: 500,
+    fs_freeInodes: 600,
+    hostingUsed: 51,
+    backupUsed: 52,
+    backupFree: 56,
+    mdDegraded: 43,
+    tcpRetrans: 61,
+    'nic1.rx': 100,
+    'nic1.tx': 200,
+    'nic1.problems': 10,
+    'nic2.rx': 300,
+    'nic2.tx': 400,
+    'nic2.problems': 0,
+    ctrRunning: 71,
+    ctrUnhealthy: 72,
+    ctrRestarting: 73,
+    ctrOom: 74,
+    ctrDie: 75,
+    ctrCpu: 76,
+    ctrMem: 77,
+    layers: 81,
+    ctrBytes: 82,
+    volumes: 83,
+    buildCache: 84,
+    reclTotal: 78,
+    cReq: 90,
+    c4xx: 92,
+    c5xx: 93,
+    cErr: 94,
+    cReqB: 95,
+    cRespB: 96,
+    cDur: 97,
+    cB100: 98,
+    cB500: 99,
+    cB1s: 101,
+    cInFlight: 102,
+    cTls: 61,
+    tTotal: 112,
+    t5xx: 113,
+    tLatency: 114,
+    systemdFailed: 44,
+  }
   const sample = buildSample({
     host: {
       cpu: {
@@ -405,136 +508,16 @@ it('host.system: cpu, memory (incl. oom kills), kernel limits, pid limit, slab-u
         swapOutBytesPerSecond: 94,
         majorPageFaultsPerSecond: 16,
       },
-      storage: zeroFields(HOST_STORAGE_FIELDS),
-      network: zeroFields(HOST_NETWORK_FIELDS),
-    },
-    diagnostics: mkDiagnostics(),
-    extended: EXTENDED,
-  })
-  const point = pointFor(buildMetricsDataPoints(sample), 'host.system')
-  // procs*, processCount and swap in/out are not stored in v7.
-  assertEquals(
-    point.doubles,
-    expectedDoubles({
-      0: 1,
-      1: 2,
-      2: 3,
-      3: 4,
-      4: 5,
-      5: 6,
-      6: 7,
-      7: 8,
-      8: 11,
-      9: 12,
-      10: 13,
-      11: 14,
-      12: 15,
-      13: 16,
-      14: 19,
-      15: 17,
-      16: 18,
-      17: 20,
-      18: 12,
-    })
-  )
-  assertEquals(contentBlobs(point, 5), [
-    '0.5 0.6 0.7 1/200 99',
-    'php-fpm8.3',
-    'EPYC',
-    'mysqld',
-    'php 16:02Z',
-  ])
-})
-
-it('host.io: disk I/O, root disk queue/ops, Docker health and usage', () => {
-  const sample = buildSample({
-    host: {
-      cpu: zeroFields(HOST_CPU_FIELDS),
-      kernel: zeroFields(HOST_KERNEL_FIELDS),
-      memory: zeroFields(HOST_MEMORY_FIELDS),
       storage: {
-        ioPressureSomePercent: 1,
-        ioPressureFullPercent: 2,
-        diskReadBytesPerSecond: 3,
-        diskWriteBytesPerSecond: 4,
-        diskLatencyMs: 5,
-        rootFilesystemAvailableBytes: 8,
-        rootFilesystemFreeInodes: 9,
+        ioPressureSomePercent: 31,
+        ioPressureFullPercent: 32,
+        diskReadBytesPerSecond: 33,
+        diskWriteBytesPerSecond: 34,
+        diskLatencyMs: 35,
+        rootFilesystemAvailableBytes: 36,
+        rootFilesystemFreeInodes: 37,
       },
-      network: zeroFields(HOST_NETWORK_FIELDS),
-    },
-    dockerUsage: {
-      layersBytes: 71,
-      imagesCount: 99,
-      imagesReclaimableBytes: 1,
-      containersBytes: 72,
-      containersCount: 99,
-      volumesBytes: 73,
-      volumesCount: 99,
-      volumesReclaimableBytes: 2,
-      buildCacheBytes: 74,
-      buildCacheReclaimableBytes: 4,
-    },
-    extended: EXTENDED,
-  })
-  const point = pointFor(buildMetricsDataPoints(sample), 'host.io')
-  assertEquals(
-    point.doubles,
-    expectedDoubles({
-      0: 1,
-      1: 2,
-      2: 3,
-      3: 4,
-      4: 5,
-      5: 31,
-      6: 32,
-      7: 51,
-      8: 52,
-      9: 53,
-      10: 54,
-      11: 55,
-      12: 56,
-      13: 57,
-      14: 71,
-      15: 72,
-      16: 73,
-      17: 74,
-      18: 58,
-    })
-  )
-  assertEquals(contentBlobs(point, 2), ['web-1', '29.0.1'])
-})
-
-it('host.io reclaimable total: the sum of the three df groups when the daemon sent none', () => {
-  const sample = buildSample({
-    dockerUsage: {
-      layersBytes: null,
-      imagesCount: null,
-      imagesReclaimableBytes: 1,
-      containersBytes: null,
-      containersCount: null,
-      volumesBytes: null,
-      volumesCount: null,
-      volumesReclaimableBytes: 2,
-      buildCacheBytes: null,
-      buildCacheReclaimableBytes: 4,
-    },
-  })
-  assertEquals(pointFor(buildMetricsDataPoints(sample), 'host.io').doubles[18], 7)
-})
-
-it('host.network: root filesystem, retransmits, embedded NICs, health, committed memory, Traefik', () => {
-  const sample = buildSample({
-    host: {
-      cpu: zeroFields(HOST_CPU_FIELDS),
-      kernel: zeroFields(HOST_KERNEL_FIELDS),
-      memory: zeroFields(HOST_MEMORY_FIELDS),
-      storage: {
-        ...zeroFields(HOST_STORAGE_FIELDS),
-        rootFilesystemAvailableBytes: 8,
-        rootFilesystemFreeInodes: 9,
-      },
-      network: { tcpRetransmitPercent: 10, softnetDropsPerSecond: 99 },
+      network: { tcpRetransmitPercent: 61, softnetDropsPerSecond: 99 },
     },
     networks: [
       {
@@ -551,70 +534,193 @@ it('host.network: root filesystem, retransmits, embedded NICs, health, committed
     filesystems: [{ filesystemId: '/mnt/a', availableBytes: 500, freeInodes: 600 }],
     diagnostics: mkDiagnostics(),
     router: {
-      backendsUp: 21,
-      backendsTotal: 22,
+      backendsUp: 111,
+      backendsTotal: 112,
       servicesTotal: 99,
       routersTotal: 99,
       retries: 99,
-      backendErrors5xx: 23,
-      backendLatencyMsAvg: 24,
-      backendRequests: 25,
+      backendErrors5xx: 113,
+      backendLatencyMsAvg: 114,
+      backendRequests: 115,
       httpOpenConnections: 99,
       configReloads: 99,
       configLastReloadAgeSeconds: 99,
       tlsCertSoonestExpiryDays: 99,
     },
-    extended: EXTENDED,
+    storage: {
+      hostingUsedBytes: 51,
+      backupUsedBytes: 52,
+      dockerUsedBytes: 53,
+      logsUsedBytes: 54,
+      hostingFreeBytes: 55,
+      backupFreeBytes: 56,
+      logsFreeBytes: 57,
+      postgres: emptyEngine(),
+      mysql: emptyEngine(),
+      mariadb: emptyEngine(),
+    },
+    dockerUsage: {
+      layersBytes: 81,
+      imagesCount: 99,
+      imagesReclaimableBytes: 1,
+      containersBytes: 82,
+      containersCount: 99,
+      volumesBytes: 83,
+      volumesCount: 99,
+      volumesReclaimableBytes: 2,
+      buildCacheBytes: 84,
+      buildCacheReclaimableBytes: 4,
+    },
+    ingressSources: [
+      {
+        sourceId: 'caddy',
+        sourceKind: 'caddy',
+        requests: 90,
+        responses2xx: 91,
+        responses3xx: 99,
+        responses4xx: 92,
+        responses5xx: 93,
+        requestErrors: 94,
+        requestBytes: 95,
+        responseBytes: 96,
+        requestDurationSecondsSum: 97,
+        bucket10ms: 99,
+        bucket50ms: 99,
+        bucket100ms: 98,
+        bucket500ms: 99,
+        bucket1s: 101,
+        bucket5s: 99,
+        requestsInFlight: 102,
+        upstreamsHealthy: 99,
+        upstreamsTotal: 99,
+        retries: 99,
+      },
+    ],
+    extended: {
+      ...EXTENDED,
+      host: {
+        ...EXTENDED.host,
+        irqPressureFullPercent: 22,
+        mdArraysDegraded: 43,
+        systemdUnitsFailed: 44,
+        rootDiskQueueDepth: 41,
+        rootDiskOpsPerSecond: 42,
+        oomKills: 19,
+        pidLimitUsedPercent: 20,
+      },
+      docker: {
+        containersRunning: 71,
+        containersUnhealthy: 72,
+        containersRestarting: 73,
+        containerOomEvents: 74,
+        containerDieEvents: 75,
+        containersCpuPercent: 76,
+        containersMemoryBytes: 77,
+        reclaimableBytes: 78,
+      },
+      ingress: { tlsCertSoonestExpiryDays: 61 },
+      networkSizes: [{ deviceId: 'eth0', linkSpeedMbps: 1000 }],
+    },
   })
-  const point = pointFor(buildMetricsDataPoints(sample), 'host.network')
-  assertEquals(
-    point.doubles,
-    expectedDoubles({
-      0: 8,
-      1: 9,
-      2: 500,
-      3: 600,
-      4: 10,
-      5: 100,
-      6: 200,
-      7: 10,
-      8: 300,
-      9: 400,
-      10: 0,
-      11: 41,
-      12: 42,
-      13: 16,
-      14: 21,
-      15: 22,
-      16: 23,
-      17: 24,
-      18: 25,
+  return { sample, expected }
+}
+
+function emptyEngine() {
+  return {
+    instancesRunning: null,
+    instancesHealthy: null,
+    connectionsUsed: null,
+    connectionsMax: null,
+  }
+}
+
+for (const family of ['host.system', 'host.io', 'host.network', 'host.web'] as const) {
+  it(`${family}: every slot holds the data point the layout names there`, () => {
+    const { sample, expected } = fullHostSample()
+    const point = pointFor(buildMetricsDataPoints(sample), family)
+    const slots: Record<number, number> = {}
+    V7_HOST_ROW_SPECS[family].doubles.forEach((id, index) => {
+      if (id === null) return
+      if (!(id in expected)) throw new Error(`test has no value for ${id}`)
+      slots[index] = expected[id]!
     })
-  )
-  assertEquals(contentBlobs(point, 14), [
-    'a.service',
-    'md0 [UU]',
-    'kernel',
-    '6.8.0',
-    'Debian 13',
-    'boot-1',
-    'kvm',
-    'Hetzner',
-    '0.2.0',
-    'yes',
-    '3',
-    '/srv',
-    '8.3',
-    'nginx',
+    assertEquals(point.doubles, expectedDoubles(slots))
+  })
+}
+
+it('the 9 data points the owner dropped are written nowhere on the host rows', () => {
+  for (const family of ['host.system', 'host.io', 'host.network', 'host.web'] as const) {
+    for (const dropped of [
+      'saturated',
+      'hostingFree',
+      'dockerUsed',
+      'tUp',
+      'tRequests',
+      'majorFaults',
+      'c2xx',
+      'dSlabU',
+      'logsUsed',
+    ]) {
+      assertEquals(
+        V7_HOST_ROW_SPECS[family].doubles.includes(dropped),
+        false,
+        `${family} ${dropped}`
+      )
+    }
+  }
+})
+
+it('host row text follows its numbers: system facts on host.system, web facts on host.web', () => {
+  const { sample } = fullHostSample()
+  const points = buildMetricsDataPoints(sample)
+  assertEquals(contentBlobs(pointFor(points, 'host.system'), 3), [
+    '0.5 0.6 0.7 1/200 99',
+    'php-fpm8.3',
+    'EPYC',
   ])
+  assertEquals(contentBlobs(pointFor(points, 'host.io'), 2), ['/srv', 'md0 [UU]'])
+  assertEquals(contentBlobs(pointFor(points, 'host.network'), 2), ['web-1', '29.0.1'])
+  assertEquals(contentBlobs(pointFor(points, 'host.web'), 9).at(-1), 'a.service')
+})
+
+it('host.network blob6 names NIC 1, NIC 2 (with link speed) and the folded disk; other host rows leave it empty', () => {
+  const { sample } = fullHostSample()
+  const points = buildMetricsDataPoints(sample)
+  assertEquals(
+    pointFor(points, 'host.network').blobs[AE_BLOB_ENTITY_IDS_INDEX],
+    'nic1=eth0@1000;nic2=eth1@;fs=/mnt/a'
+  )
+  for (const family of ['host.system', 'host.io', 'host.web']) {
+    assertEquals(pointFor(points, family).blobs[AE_BLOB_ENTITY_IDS_INDEX], '')
+  }
+})
+
+it('host.network reclaimable total: the sum of the three df groups when the daemon sent none', () => {
+  const sample = buildSample({
+    dockerUsage: {
+      layersBytes: null,
+      imagesCount: null,
+      imagesReclaimableBytes: 1,
+      containersBytes: null,
+      containersCount: null,
+      volumesBytes: null,
+      volumesCount: null,
+      volumesReclaimableBytes: 2,
+      buildCacheBytes: null,
+      buildCacheReclaimableBytes: 4,
+    },
+  })
+  const slot = V7_HOST_ROW_SPECS['host.network'].doubles.indexOf('reclTotal')
+  assertEquals(pointFor(buildMetricsDataPoints(sample), 'host.network').doubles[slot], 7)
 })
 
 it('host.network: a NIC with any missing error/drop input has a sentinel problems slot, never a partial sum', () => {
   const nic = { ...mkNic('eth0'), receiveDropsPerSecond: null }
   const point = pointFor(buildMetricsDataPoints(buildSample({ networks: [nic] })), 'host.network')
-  assertEquals(point.doubles[5], 1)
-  assertEquals(point.doubles[7], AE_MISSING_METRIC_SENTINEL)
-  assertEquals(point.doubles[8], AE_MISSING_METRIC_SENTINEL)
+  const spec = V7_HOST_ROW_SPECS['host.network'].doubles
+  assertEquals(point.doubles[spec.indexOf('nic1.rx')], 1)
+  assertEquals(point.doubles[spec.indexOf('nic1.problems')], AE_MISSING_METRIC_SENTINEL)
+  assertEquals(point.doubles[spec.indexOf('nic2.rx')], AE_MISSING_METRIC_SENTINEL)
 })
 
 it('host.network embeds slot-mapped NICs by identity, not array position', () => {
@@ -631,97 +737,7 @@ it('host.network embeds slot-mapped NICs by identity, not array position', () =>
   const point = pointFor(buildMetricsDataPoints(sample, slotMapping), 'host.network')
   assertEquals(point.doubles[hostIoEmbeddedNicDoubleIndex(0, 'receiveBytesPerSecond')], 21)
   assertEquals(point.doubles[hostIoEmbeddedNicDoubleIndex(1, 'receiveBytesPerSecond')], 11)
-})
-
-it('host.web: hosting usage, Caddy totals, certificate expiry and text', () => {
-  const sample = buildSample({
-    storage: {
-      hostingUsedBytes: 1,
-      backupUsedBytes: 2,
-      dockerUsedBytes: 3,
-      logsUsedBytes: 4,
-      hostingFreeBytes: 5,
-      backupFreeBytes: 6,
-      logsFreeBytes: 99,
-      postgres: {
-        instancesRunning: null,
-        instancesHealthy: null,
-        connectionsUsed: null,
-        connectionsMax: null,
-      },
-      mysql: {
-        instancesRunning: null,
-        instancesHealthy: null,
-        connectionsUsed: null,
-        connectionsMax: null,
-      },
-      mariadb: {
-        instancesRunning: null,
-        instancesHealthy: null,
-        connectionsUsed: null,
-        connectionsMax: null,
-      },
-    },
-    ingressSources: [
-      {
-        sourceId: 'caddy',
-        sourceKind: 'caddy',
-        requests: 10,
-        responses2xx: 11,
-        responses3xx: 99,
-        responses4xx: 12,
-        responses5xx: 13,
-        requestErrors: 14,
-        requestBytes: 15,
-        responseBytes: 16,
-        requestDurationSecondsSum: 17,
-        bucket10ms: 99,
-        bucket50ms: 99,
-        bucket100ms: 18,
-        bucket500ms: 19,
-        bucket1s: 20,
-        bucket5s: 99,
-        requestsInFlight: 21,
-        upstreamsHealthy: 99,
-        upstreamsTotal: 99,
-        retries: 99,
-      },
-    ],
-    extended: EXTENDED,
-  })
-  const point = pointFor(buildMetricsDataPoints(sample), 'host.web')
-  assertEquals(
-    point.doubles,
-    expectedDoubles({
-      0: 1,
-      1: 2,
-      2: 3,
-      3: 4,
-      4: 5,
-      5: 6,
-      6: 10,
-      7: 11,
-      8: 12,
-      9: 13,
-      10: 14,
-      11: 15,
-      12: 16,
-      13: 17,
-      14: 18,
-      15: 19,
-      16: 20,
-      17: 21,
-      18: 61,
-    })
-  )
-  assertEquals(contentBlobs(point, 6), [
-    'site42 3/20',
-    'site1 1GB',
-    '2.9',
-    'site2 20d',
-    '3.1',
-    'svc1',
-  ])
+  assertEquals(point.blobs[AE_BLOB_ENTITY_IDS_INDEX], 'nic1=eth1@;nic2=eth0@')
 })
 
 it('managed.database: census and ProxySQL, only when managed databases are present', () => {
@@ -868,7 +884,7 @@ it('block ops are sentinel when either read or write ops is missing', () => {
   assertEquals(point.doubles[8], 2)
 })
 
-it('filesystem: exactly one extra filesystem folds into host.network; two or more page 9 per row', () => {
+it('filesystem: exactly one extra filesystem folds into host.io; two or more page 9 per row', () => {
   const one = buildMetricsDataPoints(buildSample({ filesystems: [mkFilesystem('/a')] }))
   assertEquals(countPointsOfFamily(one, 'filesystem'), 0)
   const many = Array.from({ length: 10 }, (_, i) => mkFilesystem(`/m${i}`))
@@ -880,7 +896,53 @@ it('filesystem: exactly one extra filesystem folds into host.network; two or mor
   )
   assertEquals(pointFor(points, 'filesystem', 1).blobs[AE_BLOB_ENTITY_IDS_INDEX], '/m9')
   // The folded slots stay empty once the filesystem pages.
-  assertEquals(pointFor(points, 'host.network').doubles[2], AE_MISSING_METRIC_SENTINEL)
+  const folded = V7_HOST_ROW_SPECS['host.io'].doubles.indexOf('fs_availableBytes')
+  assertEquals(pointFor(points, 'host.io').doubles[folded], AE_MISSING_METRIC_SENTINEL)
+})
+
+it("filesystem rows carry each filesystem's size as text on its own row, looked up by id", () => {
+  const sample = buildSample({
+    filesystems: [
+      { filesystemId: '/mnt/a', availableBytes: 1, freeInodes: 2 },
+      { filesystemId: '/mnt/b', availableBytes: 3, freeInodes: 4 },
+      { filesystemId: '/mnt/c', availableBytes: 5, freeInodes: 6 },
+    ],
+    extended: {
+      filesystemSizes: [
+        // Deliberately out of order: the lookup is by id, not position.
+        { filesystemId: '/mnt/b', totalBytes: 30, totalInodes: null },
+        { filesystemId: '/mnt/a', totalBytes: 10, totalInodes: 20 },
+      ],
+    },
+  })
+  const point = pointFor(buildMetricsDataPoints(sample), 'filesystem', 0)
+  // Numbers are unchanged: two per filesystem.
+  assertEquals(point.doubles.slice(0, 6), [1, 2, 3, 4, 5, 6])
+  // One text per filesystem: `<bytes>/<inodes>`, empty when nothing is known.
+  assertEquals(contentBlobs(point, 3), ['10/20', '30/', ''])
+})
+
+it("gpu rows keep memory activity and carry each GPU's memory size as text", () => {
+  const sample = buildSample({
+    gpus: [{ ...mkGpu('g0'), memoryUsedBytes: 5, memoryActivityPercent: 7 }],
+    extended: {
+      gpuSizes: [{ gpuId: 'g0', memoryTotalBytes: 16_000 }],
+      gpuText: [{ gpuId: 'g0', driver: 'nvidia 570', model: 'RTX' }],
+    },
+  })
+  const point = pointFor(buildMetricsDataPoints(sample), 'gpu', 0)
+  assertEquals(point.doubles.slice(0, 3), [1, 5, 7])
+  assertEquals(contentBlobs(point, 3), ['nvidia 570', 'RTX', '16000'])
+})
+
+it("NIC rows carry each NIC's link speed as text", () => {
+  const sample = buildSample({
+    networks: ['eth0', 'eth1', 'eth2', 'eth3'].map((id) => mkNic(id)),
+    extended: { networkSizes: [{ deviceId: 'eth2', linkSpeedMbps: 10_000 }] },
+  })
+  const point = pointFor(buildMetricsDataPoints(sample), 'network', 0)
+  assertEquals(point.blobs[AE_BLOB_ENTITY_IDS_INDEX], 'eth2,eth3')
+  assertEquals(contentBlobs(point, 2), ['10000', ''])
 })
 
 it('gpu: 3 per row, driver and model text per GPU', () => {
@@ -890,7 +952,17 @@ it('gpu: 3 per row, driver and model text per GPU', () => {
   })
   const points = buildMetricsDataPoints(sample)
   assertEquals(countPointsOfFamily(points, 'gpu'), 2)
-  assertEquals(contentBlobs(pointFor(points, 'gpu', 0), 6), ['', '', 'nvidia 570', 'RTX', '', ''])
+  assertEquals(contentBlobs(pointFor(points, 'gpu', 0), 9), [
+    '',
+    '',
+    '',
+    'nvidia 570',
+    'RTX',
+    '',
+    '',
+    '',
+    '',
+  ])
   assertEquals(pointFor(points, 'gpu', 1).blobs[AE_BLOB_ENTITY_IDS_INDEX], 'g3')
 })
 
@@ -942,7 +1014,7 @@ it('every produced point has exactly AE_DOUBLE_COUNT doubles and AE_BLOB_COUNT b
 // Events keep their v6 blob positions
 // ---------------------------------------------------------------------------
 
-it('events: one event-kind row per entry at the v6 blob positions, blob3 "7" and blob5 UTC text', () => {
+it('events: one event-kind row per entry at the v6 blob positions, blob3 "8" and blob5 UTC text', () => {
   const sample = buildSample({
     events: [
       {
@@ -960,7 +1032,7 @@ it('events: one event-kind row per entry at the v6 blob positions, blob3 "7" and
     (p) => p.blobs[AE_BLOB_KIND_INDEX] === AE_KIND_EVENT
   )!
   assertEquals(event.blobs[AE_BLOB_FAMILY_INDEX], 'nic_link_down')
-  assertEquals(event.blobs[AE_BLOB_SCHEMA_VERSION_INDEX], '7')
+  assertEquals(event.blobs[AE_BLOB_SCHEMA_VERSION_INDEX], '8')
   assertEquals(event.blobs[AE_BLOB_SAMPLED_AT_INDEX], '2026-01-01 00:00:00')
   assertEquals(event.blobs[AE_EVENT_BLOB_TOPOLOGY_GENERATION_INDEX], '1')
   assertEquals(event.blobs[AE_BLOB_SOURCE_OR_IDENTITY_INDEX], 'daemon')
@@ -1004,15 +1076,19 @@ it('doubleIndexForHostField resolves stored fields to their v7 row and slot', ()
   })
   assertEquals(doubleIndexForHostField('host.network', 'tcpRetransmitPercent'), {
     family: 'host.network',
-    doubleIndex: 4,
+    doubleIndex: 0,
   })
-  assertEquals(doubleIndexForHostField('router', 'backendsUp'), {
-    family: 'host.network',
-    doubleIndex: 14,
+  assertEquals(doubleIndexForHostField('router', 'backendsTotal'), {
+    family: 'host.web',
+    doubleIndex: 12,
   })
   assertEquals(doubleIndexForHostField('ingress', 'requests'), {
     family: 'host.web',
-    doubleIndex: 6,
+    doubleIndex: 0,
+  })
+  assertEquals(doubleIndexForHostField('extended.sizes', 'memoryTotalBytes'), {
+    family: 'host.system',
+    doubleIndex: 14,
   })
   assertEquals(doubleIndexForHostField('storage', 'mysqlInstancesRunning'), {
     family: 'managed.database',
@@ -1023,6 +1099,10 @@ it('doubleIndexForHostField resolves stored fields to their v7 row and slot', ()
 it('a field v7 dropped has no slot (findHostFieldSlot undefined, doubleIndexForHostField throws)', () => {
   assertEquals(findHostFieldSlot('host.cpu', 'procsRunning'), undefined)
   assertEquals(findHostFieldSlot('host.memory', 'swapInBytesPerSecond'), undefined)
+  // Owner-dropped 2026-10-07: derivable or duplicated elsewhere.
+  assertEquals(findHostFieldSlot('host.cpu', 'saturatedCoreCount'), undefined)
+  assertEquals(findHostFieldSlot('router', 'backendsUp'), undefined)
+  assertEquals(findHostFieldSlot('storage', 'dockerUsedBytes'), undefined)
   assertThrows(
     () => doubleIndexForHostField('host.cpu', 'procsRunning'),
     TypeError,
@@ -1048,7 +1128,7 @@ function maxCardinalitySample() {
     blockDevices: n(64, (i) => mkBlock(`blk${i}`)),
     gpus: n(64, (i) => mkGpu(`gpu${i}`)),
     hardwareSignals: n(64, (i) => mkSignal(`sig${i}`, 1)),
-    events: n(128, (i) => ({
+    events: n(16, (i) => ({
       eventId: `e${i}`,
       at: '2026-01-01T00:00:00.000Z',
       kind: 'oom_kill' as const,
@@ -1058,10 +1138,10 @@ function maxCardinalitySample() {
 }
 
 it('the contract array caps stay under the Analytics Engine invocation limit in v7', () => {
-  // v7 folded Caddy and ProxySQL into host rows, so 64-entry arrays plus 128
-  // events top out at 4 host rows + 22 + 21 + 8 + 22 + 4 pages + 128 events.
+  // v7 folded Caddy and ProxySQL into host rows, so 64-entry arrays plus the
+  // 16-event cap top out at 4 host rows + 22 + 21 + 8 + 22 + 4 pages + 16 events.
   const points = buildMetricsDataPoints(maxCardinalitySample())
-  assertEquals(points.length, 4 + 22 + 21 + 8 + 22 + 4 + 128)
+  assertEquals(points.length, 4 + 22 + 21 + 8 + 22 + 4 + 16)
   assertEquals(points.length <= AE_MAX_DATA_POINTS_PER_INVOCATION, true)
 })
 

@@ -59,12 +59,24 @@ import {
   type V7HostFamily,
   v7EmbeddedNicDoubleIndex,
   v7EntityPages,
+  v7HostRowEntityIds,
   v7HostRowValues,
   v7HostSlotFor,
   type V7RowValues,
 } from './v7-layout.ts'
 
 /** Analytics Engine dataset for the current metrics contract. */
+/**
+ * The layout revision stamped in `blob3` on every hosted row (stringified).
+ * It is the storage layout's own number, not the wire version: the sizes
+ * amendment (2026-10-07) reused hosted slots under the same wire version 7, so
+ * rows written before it must never be read with the new slot meanings. Rows
+ * stamped with any other value are invisible to the readers (history before
+ * the cut is dropped; only testing and canary had any). Bump it again whenever
+ * a slot changes meaning.
+ */
+export const AE_STORAGE_VERSION = 8 as const
+
 export const AE_DATASET_NAME = `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}`
 
 export const AE_DOUBLE_COUNT = 20
@@ -105,7 +117,7 @@ export const AE_BLOB_KIND_INDEX = 0
  * empty on `"status"` rows.
  */
 export const AE_BLOB_FAMILY_INDEX = 1
-/** blob3 — schema version (stringified integer, every row kind): always {@link METRICS_SCHEMA_VERSION}. */
+/** blob3 — schema version (stringified integer, every row kind): always {@link AE_STORAGE_VERSION}. */
 export const AE_BLOB_SCHEMA_VERSION_INDEX = 2
 /** blob4 — `"metrics"` rows: `metadata.topologyGeneration` (stringified integer). Reserved-empty on events/status. */
 export const AE_BLOB_TOPOLOGY_GENERATION_INDEX = 3
@@ -393,7 +405,7 @@ export function buildMetricsBlobs(
   const blobs: string[] = new Array(AE_BLOB_COUNT).fill('')
   blobs[AE_BLOB_KIND_INDEX] = AE_KIND_METRICS
   blobs[AE_BLOB_FAMILY_INDEX] = family
-  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(METRICS_SCHEMA_VERSION)
+  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(AE_STORAGE_VERSION)
   blobs[AE_BLOB_TOPOLOGY_GENERATION_INDEX] = String(sample.metadata.topologyGeneration)
   blobs[AE_BLOB_SAMPLED_AT_INDEX] = formatAeSampleTime(sample.metadata.sampledAt)
   blobs[AE_BLOB_ENTITY_IDS_INDEX] = entityIds
@@ -411,7 +423,7 @@ export function buildEventBlobs(
   const blobs: string[] = new Array(AE_BLOB_COUNT).fill('')
   blobs[AE_BLOB_KIND_INDEX] = AE_KIND_EVENT
   blobs[AE_BLOB_FAMILY_INDEX] = event.kind
-  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(METRICS_SCHEMA_VERSION)
+  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(AE_STORAGE_VERSION)
   blobs[AE_BLOB_SAMPLED_AT_INDEX] = formatAeSampleTime(event.at)
   blobs[AE_BLOB_SEQUENCE_INDEX] = String(sample.metadata.sequence)
   blobs[AE_EVENT_BLOB_TOPOLOGY_GENERATION_INDEX] = String(sample.metadata.topologyGeneration)
@@ -429,7 +441,7 @@ export function buildEventBlobs(
 export function buildStatusBlobs(event: ServerStatusEvent): string[] {
   const blobs: string[] = new Array(AE_BLOB_COUNT).fill('')
   blobs[AE_BLOB_KIND_INDEX] = AE_KIND_STATUS
-  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(METRICS_SCHEMA_VERSION)
+  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(AE_STORAGE_VERSION)
   blobs[AE_BLOB_STATUS_OR_EVENT_REASON_INDEX] = event.reason
   return blobs
 }
@@ -576,7 +588,9 @@ export function buildMetricsDataPoints(
 
   for (const family of V7_HOST_FAMILIES) {
     if (family === AE_FAMILY_MANAGED_DATABASE && !hasManagedDatabase(sample)) continue
-    points.push(v7Point(sample, family, '', v7HostRowValues(family, ctx)))
+    points.push(
+      v7Point(sample, family, v7HostRowEntityIds(family, ctx), v7HostRowValues(family, ctx))
+    )
   }
   points.push(...buildEntityPoints(sample, paged, slotMapping))
   for (const event of sample.events) {

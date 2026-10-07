@@ -86,6 +86,7 @@ import {
   AE_BLOB_SOURCE_OR_IDENTITY_INDEX,
   AE_BLOB_TOPOLOGY_GENERATION_INDEX,
   AE_DATASET_NAME,
+  AE_STORAGE_VERSION,
   AE_FAMILY_HOST_NETWORK,
   AE_FAMILY_HOST_SYSTEM,
   AE_EVENT_INDEX_SUFFIX,
@@ -112,7 +113,7 @@ import {
 export { AE_DATASET_NAME }
 
 /** Schema versions this read path understands (positional semantics must match). */
-export const AE_SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [6, 7]
+export const AE_SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [AE_STORAGE_VERSION]
 
 /**
  * Escape a string literal for AE SQL. AE's dialect is ClickHouse-flavoured, where a backslash
@@ -1104,6 +1105,7 @@ const HOST_SERIES_QUERYABLE_SCOPES: ReadonlySet<MetricEntityScope> = new Set([
   'extended.host',
   'extended.docker',
   'extended.ingress',
+  'extended.sizes',
 ])
 
 /** Validate `metrics` are known canonical names scoped to a queryable host-singleton entity, de-duplicated, in request order. */

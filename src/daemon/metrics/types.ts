@@ -374,12 +374,20 @@ export type HostFactsQuery = {
   to: string
 }
 
-/** What a host told us about itself: kernel, OS, versions, a drive's model, a GPU's driver (never a number). */
+/**
+ * What a host told us about itself: kernel, OS, versions, a drive's model, a GPU's driver, and each
+ * device's own size (a filesystem's bytes and inodes, a GPU's memory, a NIC's link speed). The sizes are
+ * facts about the device, shown as text; the series route carries the numbers that are measured.
+ */
 export type HostFacts = {
   /** Host-wide short text by name; only fields the host actually reported. */
   text: Partial<Record<MetricsTextFieldName, string>>
   blockDevices: { deviceId: string; model?: string; smart?: string }[]
-  gpus: { gpuId: string; driver?: string; model?: string }[]
+  gpus: { gpuId: string; driver?: string; model?: string; memoryTotalBytes?: number }[]
+  /** Each extra filesystem's size as the host reported it (bytes and inodes, whichever it knew). */
+  filesystems: { filesystemId: string; totalBytes?: number; totalInodes?: number }[]
+  /** Each NIC's negotiated link speed in Mb/s, when the host reported one. */
+  networks: { deviceId: string; linkSpeedMbps?: number }[]
 }
 
 /** The latest host facts a store holds for one server. */

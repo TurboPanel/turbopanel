@@ -7,8 +7,10 @@
  */
 import {
   presentBlockDeviceFacts,
+  presentFilesystemFacts,
   presentGpuFacts,
   presentHostText,
+  presentNetworkFacts,
   emptyHostFacts,
 } from '../../query/host-facts.ts'
 import type { HostFacts, HostFactsQuery, HostFactsResult } from '../../types.ts'
@@ -41,8 +43,11 @@ import {
   v7HostRowTextKeys,
 } from './v7-layout.ts'
 
-/** Families that carry text: every v7 host row (those with text blobs) plus the drive and GPU pages. */
-const FACT_ENTITY_FAMILIES = ['block', 'gpu'] as const
+/**
+ * Families that carry text: every v7 host row (those with text blobs) plus the pages of devices that
+ * have their own row (drives, GPUs, NICs beyond the two embedded ones, extra filesystems).
+ */
+const FACT_ENTITY_FAMILIES = ['block', 'gpu', 'network', 'filesystem'] as const
 const FACT_FAMILIES = [
   ...V7_HOST_FAMILIES.filter((family) => v7HostRowTextKeys(family).length > 0),
   ...FACT_ENTITY_FAMILIES,
@@ -50,10 +55,10 @@ const FACT_FAMILIES = [
 
 /**
  * Newest rows read per statement. One sample is at most a handful of host rows
- * plus the drive and GPU pages (24 drives and 24 GPUs are 8 + 8 pages at most),
- * so the newest sample always fits; older ones are ignored by sample time.
+ * plus the device pages (24 drives, GPUs and NICs and 24 filesystems are 8 + 8 + 8 + 3
+ * pages at most), so the newest sample always fits; older ones are ignored by sample time.
  */
-const FACT_ROW_LIMIT = 64
+const FACT_ROW_LIMIT = 96
 
 const CONTENT_BLOB_COLUMNS = Array.from({ length: V7_CONTENT_BLOB_CAPACITY }, (_, index) =>
   blobColumn(V7_FIRST_CONTENT_BLOB_INDEX + index)
@@ -153,6 +158,29 @@ function parseEntityText<K extends string>(
   return entities
 }
 
+/** `<bytes>/<inodes>` (either side may be empty) as the two sizes. */
+function parseFilesystemSizeText(raw: string): { totalBytes?: string; totalInodes?: string } {
+  const [bytes = '', inodes = ''] = raw.split('/')
+  return { totalBytes: bytes, totalInodes: inodes }
+}
+
+/**
+ * The two NICs embedded in `host.network` are named in its blob6
+ * (`nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>`), with the link speed after the `@`.
+ */
+function parseEmbeddedNicSpeeds(
+  rows: readonly FactRow[]
+): { deviceId: string; linkSpeedMbps: string }[] {
+  const nics: { deviceId: string; linkSpeedMbps: string }[] = []
+  for (const row of rows) {
+    for (const part of text(row.ids).split(';')) {
+      const match = /^nic[12]=(.+)@(\d*)$/.exec(part)
+      if (match) nics.push({ deviceId: match[1]!, linkSpeedMbps: match[2]! })
+    }
+  }
+  return nics
+}
+
 /**
  * Facts from the newest sample in the result. Only that sample's rows count, so
  * a drive or GPU that has since gone away is not listed from an older sample.
@@ -167,6 +195,8 @@ export function parseHostFactsRows(allRows: readonly FactRow[]): {
 
   const blockFields = V7_ENTITY_TEXT_FIELDS.block
   const gpuFields = V7_ENTITY_TEXT_FIELDS.gpu
+  const filesystemFields = V7_ENTITY_TEXT_FIELDS.filesystem
+  const networkFields = V7_ENTITY_TEXT_FIELDS.network
   return {
     sampledAt: sampleTimeToIso(newestKey),
     facts: {
@@ -180,9 +210,24 @@ export function parseHostFactsRows(allRows: readonly FactRow[]): {
       gpus: presentGpuFacts(
         parseEntityText(rowsOfFamily(rows, 'gpu'), gpuFields).map(({ id, text }) => ({
           gpuId: id,
-          ...text,
+          driver: text.driver,
+          model: text.model,
+          memoryTotalBytes: text.memoryTotal,
         }))
       ),
+      filesystems: presentFilesystemFacts(
+        parseEntityText(rowsOfFamily(rows, 'filesystem'), filesystemFields).map(({ id, text }) => ({
+          filesystemId: id,
+          ...parseFilesystemSizeText(text.size),
+        }))
+      ),
+      networks: presentNetworkFacts([
+        ...parseEmbeddedNicSpeeds(rowsOfFamily(rows, 'host.network')),
+        ...parseEntityText(rowsOfFamily(rows, 'network'), networkFields).map(({ id, text }) => ({
+          deviceId: id,
+          linkSpeedMbps: text.linkSpeed,
+        })),
+      ]),
     },
   }
 }

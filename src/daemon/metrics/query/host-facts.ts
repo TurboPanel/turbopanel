@@ -12,7 +12,7 @@ import {
 import type { HostFacts } from '../types.ts'
 
 export function emptyHostFacts(): HostFacts {
-  return { text: {}, blockDevices: [], gpus: [] }
+  return { text: {}, blockDevices: [], gpus: [], filesystems: [], networks: [] }
 }
 
 /** `true` when a host reported none of its facts. */
@@ -20,7 +20,9 @@ export function hostFactsAreEmpty(facts: HostFacts): boolean {
   return (
     Object.keys(facts.text).length === 0 &&
     facts.blockDevices.length === 0 &&
-    facts.gpus.length === 0
+    facts.gpus.length === 0 &&
+    facts.filesystems.length === 0 &&
+    facts.networks.length === 0
   )
 }
 
@@ -58,13 +60,58 @@ export function presentBlockDeviceFacts(
   })
 }
 
-/** GPU entry kept only when it carries text; ordered as given. */
+/** A size as a whole non-negative number: a number as sent, or decimal text as stored; otherwise absent. */
+function presentSize(value: unknown): number | undefined {
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  return value !== '' && Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : undefined
+}
+
+/** GPU entry kept only when it carries text or a memory size; ordered as given. */
 export function presentGpuFacts(
-  entries: readonly { gpuId: string; driver?: unknown; model?: unknown }[]
+  entries: readonly {
+    gpuId: string
+    driver?: unknown
+    model?: unknown
+    memoryTotalBytes?: unknown
+  }[]
 ): HostFacts['gpus'] {
   return entries.flatMap((entry) => {
     const text = pickPresent(entry, ['driver', 'model'] as const)
-    return Object.keys(text).length === 0 ? [] : [{ gpuId: entry.gpuId, ...text }]
+    const memoryTotalBytes = presentSize(entry.memoryTotalBytes)
+    const fact = {
+      gpuId: entry.gpuId,
+      ...text,
+      ...(memoryTotalBytes === undefined ? {} : { memoryTotalBytes }),
+    }
+    return Object.keys(fact).length === 1 ? [] : [fact]
+  })
+}
+
+/** Filesystem entry kept only when it carries a size; ordered as given. */
+export function presentFilesystemFacts(
+  entries: readonly { filesystemId: string; totalBytes?: unknown; totalInodes?: unknown }[]
+): HostFacts['filesystems'] {
+  return entries.flatMap((entry) => {
+    const totalBytes = presentSize(entry.totalBytes)
+    const totalInodes = presentSize(entry.totalInodes)
+    if (totalBytes === undefined && totalInodes === undefined) return []
+    return [
+      {
+        filesystemId: entry.filesystemId,
+        ...(totalBytes === undefined ? {} : { totalBytes }),
+        ...(totalInodes === undefined ? {} : { totalInodes }),
+      },
+    ]
+  })
+}
+
+/** NIC entry kept only when it carries a link speed; ordered as given. */
+export function presentNetworkFacts(
+  entries: readonly { deviceId: string; linkSpeedMbps?: unknown }[]
+): HostFacts['networks'] {
+  return entries.flatMap((entry) => {
+    const linkSpeedMbps = presentSize(entry.linkSpeedMbps)
+    return linkSpeedMbps === undefined ? [] : [{ deviceId: entry.deviceId, linkSpeedMbps }]
   })
 }
 
@@ -75,8 +122,23 @@ export function hostFactsFromSample(sample: MetricsSample): HostFacts {
   return {
     text: presentHostText(extended.text),
     blockDevices: presentBlockDeviceFacts(extended.blockDeviceText ?? []),
-    gpus: presentGpuFacts(extended.gpuText ?? []),
+    gpus: presentGpuFacts(mergeGpuSizes(extended.gpuText ?? [], extended.gpuSizes ?? [])),
+    filesystems: presentFilesystemFacts(extended.filesystemSizes ?? []),
+    networks: presentNetworkFacts(extended.networkSizes ?? []),
   }
+}
+
+/** GPU text joined with each GPU's memory size, listing a GPU that only has a size too. */
+function mergeGpuSizes(
+  text: readonly { gpuId: string; driver?: unknown; model?: unknown }[],
+  sizes: readonly { gpuId: string; memoryTotalBytes?: unknown }[]
+) {
+  const ids = [...new Set([...text.map((t) => t.gpuId), ...sizes.map((s) => s.gpuId)])]
+  return ids.map((gpuId) => ({
+    gpuId,
+    ...text.find((t) => t.gpuId === gpuId),
+    memoryTotalBytes: sizes.find((s) => s.gpuId === gpuId)?.memoryTotalBytes,
+  }))
 }
 
 /** Reads facts back from the JSON a store saved, tolerating a damaged value as "none". */
@@ -107,6 +169,22 @@ export function parseStoredHostFacts(raw: unknown): HostFacts {
           typeof entry === 'object' &&
           entry !== null &&
           typeof (entry as { gpuId?: unknown }).gpuId === 'string'
+      )
+    ),
+    filesystems: presentFilesystemFacts(
+      list(record.filesystems).filter(
+        (entry): entry is { filesystemId: string } =>
+          typeof entry === 'object' &&
+          entry !== null &&
+          typeof (entry as { filesystemId?: unknown }).filesystemId === 'string'
+      )
+    ),
+    networks: presentNetworkFacts(
+      list(record.networks).filter(
+        (entry): entry is { deviceId: string } =>
+          typeof entry === 'object' &&
+          entry !== null &&
+          typeof (entry as { deviceId?: unknown }).deviceId === 'string'
       )
     ),
   }

@@ -65,7 +65,6 @@ import {
   type StatusHistoryResult,
 } from '../../daemon/metrics/types.ts'
 import {
-  buildCapacitiesByGeneration,
   buildConnectionHistoryPayload,
   buildCpuLimitsEnvelope,
   buildFleetLatestPayload,
@@ -100,7 +99,6 @@ import {
 import {
   getLatestTopologyGeneration,
   getLatestTopologyGenerations,
-  getTopologyGenerations,
 } from '../../features/servers/server-topology-records.ts'
 
 /** Fixed lookback for the org servers overview usage strip/bars (~1 sample/min). */
@@ -524,15 +522,6 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       latestSnapshot: latestGeneration?.snapshot,
       deployment,
     })
-    // Capacity totals are the denominator of every derived percentage, so
-    // they must come from the generation each bucket was sampled under — not
-    // from today's. Only the generations this range actually spans are
-    // fetched, and a range that never crosses a topology change costs one
-    // extra indexed lookup.
-    const capacitiesByGeneration = buildCapacitiesByGeneration(
-      await getTopologyGenerations(db, serverId, hostResult?.topologyGenerations ?? []),
-      hardwareProfile
-    )
     const hostChartResponse = hostResult
       ? toHostSeriesChartResponse({
           serverId,
@@ -540,7 +529,7 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
           to: queryRange.toIso,
           result: hostResult,
           capacities: context.capacities,
-          capacitiesByGeneration,
+          hiddenMetrics: seriesQuery.hiddenHostMetrics,
         })
       : null
 

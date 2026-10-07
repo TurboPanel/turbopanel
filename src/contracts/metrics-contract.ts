@@ -1,5 +1,5 @@
 /**
- * Host metrics wire contract (daemon → instance). Mirrored in daemon
+ * Host metrics wire contract (daemon → instance). Mirrored in instance
  * `src/contracts/metrics-contract.ts`.
  *
  * Metrics are grouped by entity (host, network device, filesystem, block
@@ -487,6 +487,13 @@ export type DockerUsageSample = {
 export type ExtendedHostMetrics = {
   /** Processes and threads as a share of the kernel PID limit. */
   pidLimitUsedPercent?: number | null;
+  /**
+   * Share of the interval every task waited on interrupt handling
+   * (`/proc/pressure/irq`, `full` line). Absent where the kernel does not
+   * report it (no `/proc/pressure/irq`, or a kernel built without IRQ time
+   * accounting).
+   */
+  irqPressureFullPercent?: number | null;
   /** Processes the kernel OOM killer ended in the interval (`/proc/vmstat` `oom_kill` delta). */
   oomKills?: number | null;
   /** Requests queued at the disk that holds `/`. */
@@ -581,6 +588,44 @@ export type ExtendedGpuText = {
   model?: string;
 };
 
+/**
+ * Capacity totals each sample carries beside the readings that are measured
+ * against them (used memory against total memory, and so on). A percentage is
+ * always taken against the size at that moment, so a resize or a balloon never
+ * needs a new topology generation and never rewrites history. An unknown total
+ * is absent, never `0`.
+ */
+export type ExtendedSizes = {
+  memoryTotalBytes?: number | null;
+  swapTotalBytes?: number | null;
+  /** `CommitLimit` from `/proc/meminfo`, the ceiling committed memory is judged against. */
+  commitLimitBytes?: number | null;
+  /** Logical CPU count, the divisor of the saturated-core count. */
+  logicalCores?: number | null;
+  rootFilesystemTotalBytes?: number | null;
+  rootFilesystemTotalInodes?: number | null;
+};
+
+/** Capacity of one filesystem, keyed by its `filesystemId`. */
+export type ExtendedFilesystemSize = {
+  filesystemId: string;
+  totalBytes?: number | null;
+  totalInodes?: number | null;
+};
+
+/** Memory capacity of one GPU, keyed by its `gpuId`. */
+export type ExtendedGpuSize = {
+  gpuId: string;
+  memoryTotalBytes?: number | null;
+};
+
+/** Link speed of one NIC, keyed by its `deviceId`. */
+export type ExtendedNetworkSize = {
+  deviceId: string;
+  /** Negotiated link speed in Mb/s. */
+  linkSpeedMbps?: number | null;
+};
+
 export type MetricsExtended = {
   host?: ExtendedHostMetrics;
   docker?: ExtendedDockerMetrics;
@@ -588,10 +633,15 @@ export type MetricsExtended = {
   text?: MetricsTextFields;
   blockDeviceText?: ExtendedBlockDeviceText[];
   gpuText?: ExtendedGpuText[];
+  sizes?: ExtendedSizes;
+  filesystemSizes?: ExtendedFilesystemSize[];
+  gpuSizes?: ExtendedGpuSize[];
+  networkSizes?: ExtendedNetworkSize[];
 };
 
 export const EXTENDED_HOST_FIELD_NAMES = [
   "pidLimitUsedPercent",
+  "irqPressureFullPercent",
   "oomKills",
   "rootDiskQueueDepth",
   "rootDiskOpsPerSecond",
@@ -609,6 +659,15 @@ export const EXTENDED_DOCKER_FIELD_NAMES = [
   "containersCpuPercent",
   "containersMemoryBytes",
   "reclaimableBytes",
+] as const;
+
+export const EXTENDED_SIZE_FIELD_NAMES = [
+  "memoryTotalBytes",
+  "swapTotalBytes",
+  "commitLimitBytes",
+  "logicalCores",
+  "rootFilesystemTotalBytes",
+  "rootFilesystemTotalInodes",
 ] as const;
 
 export const EXTENDED_INGRESS_FIELD_NAMES = [
@@ -885,7 +944,11 @@ function assertFinitePositive(field: string, value: number): void {
  * accept unbounded input in the meantime.
  */
 const MAX_METRIC_ENTITY_ARRAY_LENGTH = 64;
-const MAX_METRIC_EVENTS_PER_SAMPLE = 128;
+/**
+ * Events per sample. Every event is its own stored row, so this bounds what
+ * one sample can cost; the control plane also caps events per server per hour.
+ */
+export const MAX_METRIC_EVENTS_PER_SAMPLE = 16;
 
 function assertArrayWithinCap(
   field: string,
@@ -1249,7 +1312,7 @@ function sanitizeExtended(raw: MetricsExtended): MetricsExtended {
   const host = sanitizeOptionalNumbers(
     EXTENDED_HOST_FIELD_NAMES,
     raw.host,
-    ["pidLimitUsedPercent"],
+    ["pidLimitUsedPercent", "irqPressureFullPercent"],
   );
   if (host) out.host = host;
   const docker = sanitizeOptionalNumbers(
@@ -1276,6 +1339,26 @@ function sanitizeExtended(raw: MetricsExtended): MetricsExtended {
     out.gpuText = raw.gpuText.map((entry) => ({
       gpuId: entry.gpuId,
       ...sanitizeTextRecord(["driver", "model"] as const, entry),
+    }));
+  }
+  const sizes = sanitizeOptionalNumbers(EXTENDED_SIZE_FIELD_NAMES, raw.sizes);
+  if (sizes) out.sizes = sizes;
+  if (raw.filesystemSizes) {
+    out.filesystemSizes = raw.filesystemSizes.map((entry) => ({
+      filesystemId: entry.filesystemId,
+      ...sanitizeOptionalNumbers(["totalBytes", "totalInodes"] as const, entry),
+    }));
+  }
+  if (raw.networkSizes) {
+    out.networkSizes = raw.networkSizes.map((entry) => ({
+      deviceId: entry.deviceId,
+      ...sanitizeOptionalNumbers(["linkSpeedMbps"] as const, entry),
+    }));
+  }
+  if (raw.gpuSizes) {
+    out.gpuSizes = raw.gpuSizes.map((entry) => ({
+      gpuId: entry.gpuId,
+      ...sanitizeOptionalNumbers(["memoryTotalBytes"] as const, entry),
     }));
   }
   return out;
@@ -1360,6 +1443,22 @@ export function buildMetricsSample(
   assertArrayWithinCap(
     "extended.gpuText",
     input.extended?.gpuText ?? [],
+    MAX_METRIC_ENTITY_ARRAY_LENGTH,
+  );
+
+  assertArrayWithinCap(
+    "extended.filesystemSizes",
+    input.extended?.filesystemSizes ?? [],
+    MAX_METRIC_ENTITY_ARRAY_LENGTH,
+  );
+  assertArrayWithinCap(
+    "extended.gpuSizes",
+    input.extended?.gpuSizes ?? [],
+    MAX_METRIC_ENTITY_ARRAY_LENGTH,
+  );
+  assertArrayWithinCap(
+    "extended.networkSizes",
+    input.extended?.networkSizes ?? [],
     MAX_METRIC_ENTITY_ARRAY_LENGTH,
   );
 

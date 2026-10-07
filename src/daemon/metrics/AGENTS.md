@@ -9,7 +9,7 @@ source, database proxy) with a stable logical id per entity, every leaf value is
 `number | null` (missing is always `null`, never coerced to `0`), and no value's
 presence is inferred from bitmask/part membership. Ingest accepts
 `metadata.version` 6 or 7 (`METRICS_WIRE_VERSIONS`) during the daemon transition
-and rejects anything else; every stored row carries blob3 `"7"`.
+and rejects anything else; every stored hosted row carries blob3 `"8"` (`AE_STORAGE_VERSION`, the storage layout revision).
 
 ## Metrics v7 (authoritative for new rows)
 
@@ -20,9 +20,9 @@ must reproduce them exactly (`v7-layout.test.ts`). The family catalog and blob
 tables below describe the **v6** layout, kept only as the read-side reference for
 v6 rows; where they disagree with `V7-LAYOUT.md`, v7 wins.
 
-- **Dataset** `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}` (hard cut, per-env `<env>_` prefix); pinned for every wrangler environment by `wrangler-datasets.test.ts`. Readers accept blob3 in `AE_SUPPORTED_SCHEMA_VERSIONS` = [6, 7].
+- **Dataset** `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}` (hard cut, per-env `<env>_` prefix); pinned for every wrangler environment by `wrangler-datasets.test.ts`. Readers accept only blob3 = `AE_STORAGE_VERSION` (`AE_SUPPORTED_SCHEMA_VERSIONS` = [8]): the sizes amendment reused hosted slots under wire version 7, so rows stamped earlier are skipped, never read with the new slot meanings. Bump `AE_STORAGE_VERSION` whenever a slot changes meaning.
 - **Rows**: `host.system` (liveness, bare serverId index), `host.io`, `host.network`, `host.web` on every host; `managed.database` only with managed databases; `block` (>1 drive, 3/row), `network` (NIC 3+, 3/row), `filesystem` (9/row; exactly one extra filesystem is folded into `host.network`), `gpu` (3/row, physical or real passthrough), `hardware.physical` (physical, up to 19 signals). VPS 4 rows, physical 5-6, +1 with databases.
-- **Envelope**: blob1 kind, blob2 family, blob3 `"7"` (the storage constant, never the wire version), blob4 topology generation, blob5 sample time as UTC text `YYYY-MM-DD hh:mm:ss`, blob6 entity ids, content text from blob7, double20 interval. Sequence, plan generation and page are no longer written. Event and status rows keep their v6 blob positions except blob3 and the blob5 text format.
+- **Envelope**: blob1 kind, blob2 family, blob3 `"8"` (the storage layout revision, never the wire version), blob4 topology generation, blob5 sample time as UTC text `YYYY-MM-DD hh:mm:ss`, blob6 entity ids, content text from blob7, double20 interval. Sequence, plan generation and page are no longer written. Event and status rows keep their v6 blob positions except blob3 and the blob5 text format.
 - **Wire negotiation**: wire feature `metrics-v7` (`DAEMON_WIRE_FEATURES`, both repos). A daemon stamps `METRICS_LEGACY_WIRE_VERSION` (6) until the control plane it is attached to advertises it. v7 data rides the optional `extended` section and `metadata.durable`; a v6 sample writes the same v7 rows with sentinels and empty text for the absent data.
 - **Caddy is totals only** (no per-site fields anywhere); slow families are still re-sent every sample.
 - **Reads**: the missing-metric sentinel is tested as `col > -pow(10, 307)` (`aePresentValueSql`), never by equality; a delta-sum over an absent family is null, not 0. The v6+v7 dual-dataset merge and descriptors for the new v7 metrics (OOM kills, Docker health, cert expiry, text blobs) are reader work.
@@ -123,7 +123,7 @@ should be able to change that. `host.cpu.saturatedCoreCount` (cores at or above
 **Retired host metrics** (v4 → v5): `host.cpu.maxCoreBusyPercent` →
 `saturatedCoreCount`; `host.memory.availableBytes` → `usedBytes` +
 `cachedFilesBytes` (used is what the UI wants, and reconstructing it from a
-capacity is what made history rewritable — see **Capacities by generation**);
+capacity is what made history rewritable — see **Sizes ride every sample**);
 `host.storage.diskReadLatencyMs` + `diskWriteLatencyMs` → one combined
 `diskLatencyMs`, since the per-drive split now rides the storage row;
 `host.storage.maxBlockDeviceUtilPercent` removed, as a rollup that only existed
@@ -199,25 +199,41 @@ all-null GPUs), then plan truncation. Queries weight by `interval_seconds` and
 A missing bucket is always a genuine gap. There is no slow tier left to hold a
 reading across empty host-grid buckets.
 
-#### Capacities by generation
+#### Sizes ride every sample
 
-Static host facts also ride the snapshot since v6: `machineClass` (the
-daemon's own DMI verdict, which `inferServerMachineClass` prefers over the
-sensor proxy) and `paths` (`backup` / `logs` from the daemon's environment,
-surfaced read-only as `layoutPaths` on the server DTOs). Both are absent on
-pre-v6 snapshots. Capacity totals (`memoryTotalBytes`, `swapTotalBytes`,
-`rootFilesystemTotalBytes`) are the denominator of every derived percentage.
-They are **topology, not metrics**: they live on the `topologyGeneration`
-record, never in a sample.
+Every percentage is taken against the size at the moment it was measured. The
+daemon sends those sizes on each sample (`extended.sizes`: memory, swap, commit
+limit, logical cores, root filesystem bytes and inodes; `extended.filesystemSizes`
+per extra filesystem; `extended.gpuSizes` per GPU memory), and both stores keep
+them beside the readings (`ext_*` columns and per-entity `total_bytes` /
+`total_inodes` / `memory_total_bytes` columns on DuckDB; slots on the hosted
+rows, see `V7-LAYOUT.md`). A resize or a balloon therefore changes the size on
+the next sample and nothing else: no new topology generation, no history to
+restate. Topology generations now track only the entity set (a NIC, filesystem,
+drive or GPU added or removed, a slot override); see
+`features/servers/server-topology-records.ts` for the limits that bound them.
 
-Each bucket carries the generation it was sampled under, so
-`toHostSeriesChartResponse` divides by _that_ generation's capacities
-(`buildCapacitiesByGeneration` + `getTopologyGenerations`), falling back to the
-latest context for a generation with no recorded snapshot. v4 resolved
-capacities once from the latest generation, which meant adding RAM or resizing a
-volume silently restated every historical point against the new total — a box
-that was at 90% memory last week read as 45% today. Only the generations a range
-actually spans are fetched.
+The series route reads the size beside each requested use metric
+(`sizeMetricsNeededFor`: memory used reads memory total, swap used reads swap
+total, root available reads root total), divides each bucket by its own size
+(`capacitiesFromValues`) and hides the sizes it added from the response. A sample
+from a daemon that sends no sizes yet falls back to the latest topology snapshot's
+totals, so old daemons keep their percentages. Over a bucket a size averages like
+any gauge, so a balloon inside one bucket gives the percentage against the average
+size; at the native 60 s resolution it is exact.
+
+The hosted layout (owner amendment 2026-10-07, `V7-LAYOUT.md`) gave nine
+already-selected data points for the eight host sizes plus IRQ pressure "full":
+pegged cores, hosting free (read from the disk that holds hosting), Docker used
+(the sum of the four Docker groups), router backends up (total minus the
+unhealthy names), router requests (Caddy counts every request first), major
+page faults, 2xx responses (requests minus 4xx and 5xx), unreclaimable slab and
+logs used. DuckDB still stores all of them; the hosted reader answers them as not
+stored. Per-device sizes (each extra disk's bytes and inodes, each GPU's memory,
+each NIC's link speed) ride as text on that device's own row, so device rows keep
+every number and their entities per row. `host.network` blob6 names the host
+rows' devices (`nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>`; the speed follows the
+last `@`).
 
 Store selection: `resolveServerMetricsStore` (`store-selection.ts` /
 `store-selection-workers.ts`) — always on, no enable/disable gate; a backend
@@ -567,6 +583,14 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
     `serverMetricsStore`, `resolveServerMetricsStore`, and `SERVER_METRICS`
     (dataset `turbopanel_server_metrics_v7`). Do not reintroduce a
     version-suffixed parallel store, binding, or dataset.
+21. **Host facts** (`GET /servers/:id/metrics/facts`, `query/host-facts.ts`,
+    `backends/cloudflare/host-facts-sql.ts`) are the newest sample's text, never numbers
+    measured over time. Besides host text, drive model/SMART and GPU driver/model, they carry each
+    device's own size as text read off that device's own row: a filesystem's bytes and inodes, a
+    GPU's memory, a NIC's link speed (embedded NICs from `host.network`'s blob6,
+    `nicN=<id>@<Mb/s>`). The one folded extra filesystem has no row of its own, so its size is
+    read as numbers (`fs_totalBytes`) and is not listed here. DuckDB builds the same facts from the
+    sample at write time; `host-facts.parity.test.ts` pins the two together.
 
 ## Coverage and gaps
 

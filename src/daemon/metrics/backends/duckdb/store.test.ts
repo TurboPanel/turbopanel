@@ -1058,10 +1058,10 @@ it('v5 queryMetricEvents: truncates at MAX_STATUS_EVENTS and reports truncated: 
       kind: 'oom_kill',
       severity: 'info',
     }))
-    // `buildMetricsSample` caps events per sample at 128 — split across
+    // `buildMetricsSample` caps events per sample at 16 — split across
     // several `writeSample` calls (each call still fans its own events out
     // inside a single transaction; the cap is per-sample, not per-store).
-    const CHUNK = 100
+    const CHUNK = 16
     for (let offset = 0; offset < allEvents.length; offset += CHUNK) {
       const chunk = allEvents.slice(offset, offset + CHUNK)
       await store.writeSample(
