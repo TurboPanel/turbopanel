@@ -1,14 +1,12 @@
 import { assert, assertEquals } from '@std/assert'
-import { eq, sql } from 'drizzle-orm'
-import { createDenoDb } from '../../db/connection.ts'
-import { metricsGate, organization, server } from '../../db/schema.ts'
-import { getDatabaseUrl } from '../../db/url.ts'
-import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import {
-  admitMetricsSample,
+  createInMemoryMetricsGate,
+  decideAdmission,
   GATE_EVENTS_PER_HOUR,
+  GATE_MIN_GAP_SECONDS,
   GATE_SAMPLE_BURST,
   type GateDecision,
+  type GateState,
 } from './ingest-gate.ts'
 
 /**
@@ -19,118 +17,136 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-const dbUrl = getDatabaseUrl()
-type TestDb = ReturnType<typeof createDenoDb>
-
-async function withServer(fn: (db: TestDb, serverId: string) => Promise<void>): Promise<void> {
-  if (!dbUrl) {
-    skipWithoutDatabase('metrics ingest gate tests')
-    return
-  }
-  const db = createDenoDb()
-  const [org] = await db
-    .insert(organization)
-    .values({ name: 'Metrics Gate Org' })
-    .returning({ id: organization.id })
-  const [row] = await db
-    .insert(server)
-    .values({ organizationId: org!.id, name: 'Metrics Gate Server' })
-    .returning({ id: server.id })
-  try {
-    await fn(db, row!.id)
-  } finally {
-    await db.delete(server).where(eq(server.id, row!.id))
-    await db.delete(organization).where(eq(organization.id, org!.id))
-  }
-}
-
 const T0 = Date.parse('2026-10-07T12:00:00.000Z')
 const at = (seconds: number) => new Date(T0 + seconds * 1000).toISOString()
 
-/** Pretend the gate's counters were last refreshed `seconds` ago (token refill). */
-async function age(db: TestDb, serverId: string, seconds: number): Promise<void> {
-  await db.execute(sql`
-    UPDATE gate SET refreshed_at = refreshed_at - make_interval(secs => ${seconds})
-    WHERE server_id = ${serverId}::uuid
-  `)
+/** A gate whose clock the test moves; `receivedAt` is when the server's request lands. */
+function gateWithClock() {
+  let now = T0
+  const gate = createInMemoryMetricsGate(() => now)
+  return {
+    gate,
+    advance(seconds: number) {
+      now += seconds * 1000
+    },
+  }
 }
 
 function stored(decision: GateDecision): boolean {
   return decision.stored
 }
 
+const SERVER = '11111111-2222-4333-8444-555555555555'
+
 test('the first sample is stored, the same timestamp again is a duplicate, an earlier one a replay', async () => {
-  await withServer(async (db, serverId) => {
-    assertEquals(await admitMetricsSample(db, serverId, at(0), 0), {
-      stored: true,
-      eventsAllowed: 0,
-    })
-    const again = await admitMetricsSample(db, serverId, at(0), 0)
-    assertEquals(again.stored, false)
-    if (!again.stored) assertEquals(again.reason, 'duplicate')
-    const replay = await admitMetricsSample(db, serverId, at(-60), 0)
-    assertEquals(replay.stored, false)
-    if (!replay.stored) assertEquals(replay.reason, 'duplicate')
-  })
+  const { gate } = gateWithClock()
+  assertEquals(await gate.admit(SERVER, at(0), 0), { stored: true, eventsAllowed: 0 })
+  const again = await gate.admit(SERVER, at(0), 0)
+  assertEquals(again.stored, false)
+  if (!again.stored) assertEquals(again.reason, 'duplicate')
+  const replay = await gate.admit(SERVER, at(-60), 0)
+  assertEquals(replay.stored, false)
+  if (!replay.stored) assertEquals(replay.reason, 'duplicate')
 })
 
-test('a sample a minute after the last is stored without spending the catch-up allowance', async () => {
-  await withServer(async (db, serverId) => {
-    for (let minute = 0; minute < 30; minute++) {
-      assert(stored(await admitMetricsSample(db, serverId, at(minute * 60), 0)), `minute ${minute}`)
-    }
-    const [row] = await db.select().from(metricsGate).where(eq(metricsGate.serverId, serverId))
-    assertEquals(row!.sampleTokens, GATE_SAMPLE_BURST)
-  })
+test('a duplicate leaves the remembered state exactly as it was', () => {
+  const state: GateState = {
+    lastSampledMs: T0,
+    sampleTokens: 3,
+    eventTokens: 50,
+    refreshedMs: T0,
+  }
+  const result = decideAdmission(state, { sampledAt: at(0), eventCount: 5 }, T0 + 1000)
+  assertEquals(result.decision.stored, false)
+  assertEquals(result.next, state)
+})
+
+test('an unreadable sample time is refused, never stored', () => {
+  const result = decideAdmission(undefined, { sampledAt: 'not a time', eventCount: 0 }, T0)
+  assertEquals(result.decision.stored, false)
+  assertEquals(result.next, undefined)
+})
+
+test('a sample a minute after the last is stored without spending the catch-up allowance', () => {
+  let state: GateState | undefined
+  for (let minute = 0; minute < 30; minute++) {
+    const result = decideAdmission(
+      state,
+      { sampledAt: at(minute * 60), eventCount: 0 },
+      T0 + minute * 60_000
+    )
+    assert(result.decision.stored, `minute ${minute}`)
+    state = result.next
+  }
+  assertEquals(state!.sampleTokens, GATE_SAMPLE_BURST)
 })
 
 test('early samples spend the catch-up allowance, then are refused with a Retry-After', async () => {
-  await withServer(async (db, serverId) => {
-    const decisions: GateDecision[] = []
-    for (let i = 0; i < 20; i++) {
-      decisions.push(await admitMetricsSample(db, serverId, at(i * 2), 0))
-    }
-    // The first sample, plus the burst of early ones; the rest are refused.
-    assertEquals(decisions.filter(stored).length, 1 + GATE_SAMPLE_BURST)
-    const refused = decisions.at(-1)!
-    assertEquals(refused.stored, false)
-    if (!refused.stored) {
-      assertEquals(refused.reason, 'too_soon')
-      assert(refused.retryAfterSeconds >= 1 && refused.retryAfterSeconds <= 60)
-    }
-  })
+  const { gate } = gateWithClock()
+  const decisions: GateDecision[] = []
+  for (let i = 0; i < 20; i++) decisions.push(await gate.admit(SERVER, at(i * 2), 0))
+  // The first sample, plus the burst of early ones; the rest are refused.
+  assertEquals(decisions.filter(stored).length, 1 + GATE_SAMPLE_BURST)
+  const refused = decisions.at(-1)!
+  assertEquals(refused.stored, false)
+  if (!refused.stored) {
+    assertEquals(refused.reason, 'too_soon')
+    assert(refused.retryAfterSeconds >= 1 && refused.retryAfterSeconds <= 60)
+  }
 })
 
 test('the catch-up allowance refills one sample a minute', async () => {
-  await withServer(async (db, serverId) => {
-    for (let i = 0; i <= GATE_SAMPLE_BURST; i++) await admitMetricsSample(db, serverId, at(i), 0)
-    assertEquals(stored(await admitMetricsSample(db, serverId, at(10), 0)), false)
-    await age(db, serverId, 61)
-    assertEquals(stored(await admitMetricsSample(db, serverId, at(11), 0)), true)
-  })
+  const { gate, advance } = gateWithClock()
+  for (let i = 0; i <= GATE_SAMPLE_BURST; i++) await gate.admit(SERVER, at(i), 0)
+  assertEquals(stored(await gate.admit(SERVER, at(10), 0)), false)
+  advance(61)
+  assertEquals(stored(await gate.admit(SERVER, at(11), 0)), true)
 })
 
 test('a flood of parallel samples for the same minute stores at most the first plus the burst', async () => {
-  await withServer(async (db, serverId) => {
-    const decisions = await Promise.all(
-      Array.from({ length: 60 }, (_, i) => admitMetricsSample(db, serverId, at(i), 0))
-    )
-    assert(decisions.filter(stored).length <= 1 + GATE_SAMPLE_BURST)
-  })
+  const { gate } = gateWithClock()
+  const decisions = await Promise.all(
+    Array.from({ length: GATE_MIN_GAP_SECONDS - 5 }, (_, i) => gate.admit(SERVER, at(i), 0))
+  )
+  assert(decisions.filter(stored).length <= 1 + GATE_SAMPLE_BURST)
 })
 
 test('events are stored while the hourly budget lasts, then dropped; the sample itself is still stored', async () => {
-  await withServer(async (db, serverId) => {
-    let allowed = 0
-    for (let minute = 0; minute < 10; minute++) {
-      const decision = await admitMetricsSample(db, serverId, at(minute * 60), 16)
-      assert(decision.stored)
-      if (decision.stored) allowed += decision.eventsAllowed
-    }
-    // 10 samples of 16 events is 160, against a budget of 120 an hour (plus the trickle refill).
-    assert(allowed >= GATE_EVENTS_PER_HOUR && allowed < 130, `allowed ${allowed}`)
-    const last = await admitMetricsSample(db, serverId, at(600), 16)
-    assert(last.stored)
-    if (last.stored) assert(last.eventsAllowed < 16)
-  })
+  // All ten land at once (a daemon replaying a backlog), so nothing refills in between.
+  const { gate } = gateWithClock()
+  let allowed = 0
+  for (let minute = 0; minute < 10; minute++) {
+    const decision = await gate.admit(SERVER, at(minute * 60), 16)
+    assert(decision.stored)
+    if (decision.stored) allowed += decision.eventsAllowed
+  }
+  // 10 samples of 16 events is 160, against a budget of 120 an hour.
+  assertEquals(allowed, GATE_EVENTS_PER_HOUR)
+  const last = await gate.admit(SERVER, at(600), 16)
+  assert(last.stored)
+  if (last.stored) assert(last.eventsAllowed < 16)
+})
+
+test('servers are counted separately', async () => {
+  const { gate } = gateWithClock()
+  const other = '99999999-2222-4333-8444-555555555555'
+  assert(stored(await gate.admit(SERVER, at(0), 0)))
+  assert(stored(await gate.admit(other, at(0), 0)))
+  assertEquals(stored(await gate.admit(SERVER, at(0), 0)), false)
+})
+
+test('the 50 s on-time gap is what separates a regular sample from an early one', () => {
+  const base = decideAdmission(undefined, { sampledAt: at(0), eventCount: 0 }, T0)
+  const onTime = decideAdmission(
+    base.next,
+    { sampledAt: at(GATE_MIN_GAP_SECONDS), eventCount: 0 },
+    T0
+  )
+  assertEquals(onTime.next!.sampleTokens, GATE_SAMPLE_BURST)
+  const early = decideAdmission(
+    base.next,
+    { sampledAt: at(GATE_MIN_GAP_SECONDS - 1), eventCount: 0 },
+    T0
+  )
+  assertEquals(early.next!.sampleTokens, GATE_SAMPLE_BURST - 1)
 })

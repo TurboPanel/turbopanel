@@ -51,6 +51,7 @@ import {
   registerDaemonApiRoutes,
 } from './api-routes.ts'
 import { MAX_METRICS_PAYLOAD_BYTES } from './metrics/validation.ts'
+import { createInMemoryMetricsGate } from './metrics/ingest-gate.ts'
 import { METRICS_SCHEMA_VERSION } from '../contracts/metrics-contract.ts'
 import type { DaemonCell, DaemonCellRegistry, DaemonCellSnapshot } from '../contracts/cell.ts'
 import type { DaemonOutboundEnvelope } from '../contracts/cell-protocol.ts'
@@ -2524,9 +2525,11 @@ async function createMetricsTestAppWithDb(
     },
   }
 
+  const gate = createInMemoryMetricsGate()
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
+    c.set('metricsGate', gate)
     c.set('serverMetricsStore', fakeStore)
     if (options.registry) c.set('daemonCellRegistry', options.registry)
     return next()

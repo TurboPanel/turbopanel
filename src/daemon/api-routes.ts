@@ -30,6 +30,7 @@ import {
   getDaemonCellRegistry,
   getDb,
   getExecutionLogStore,
+  getMetricsGate,
   getServerMetricsStore,
 } from '../db/connection.ts'
 import { contentLengthExceeds, readBodyWithByteLimit } from '../lib/http/bounded-body.ts'
@@ -88,7 +89,7 @@ import {
   topologyChurnLimitedRecently,
 } from '../features/servers/server-topology-records.ts'
 import { recordCapabilityPlanGenerationIfChanged } from '../client/servers/capability-plan-records.ts'
-import { admitMetricsSample } from './metrics/ingest-gate.ts'
+import type { GateDecision, MetricsGate } from './metrics/ingest-gate.ts'
 import type { MetricEvent } from '../contracts/metrics-contract.ts'
 import { enqueueCapabilityPlanUpdate } from '../client/servers/capability-plan-push.ts'
 import { computeSlotMapping } from '../contracts/topology-slot-mapping.ts'
@@ -663,13 +664,13 @@ function mostSevereFirst(events: readonly MetricEvent[]): MetricEvent[] {
  */
 async function applyMetricsIngestGate<E extends Env>(
   c: Context<E>,
-  db: Db,
+  metricsGate: MetricsGate,
   serverId: string,
   sample: AuthenticatedMetricsSample
 ): Promise<Response | null> {
-  let gate: Awaited<ReturnType<typeof admitMetricsSample>>
+  let gate: GateDecision
   try {
-    gate = await admitMetricsSample(db, serverId, sample.metadata.sampledAt, sample.events.length)
+    gate = await metricsGate.admit(serverId, sample.metadata.sampledAt, sample.events.length)
   } catch (err) {
     // No exact count, no write: an unmetered path is what the gate stops.
     rateLimitedMetricsLog(serverId, 'metrics_gate_failed', () => {
@@ -1691,11 +1692,12 @@ export function registerDaemonApiRoutes<E extends Env>(
         return c.json({ ok: true }, 202)
       }
       // Exactly one stored sample a minute per server, and a bounded number of
-      // events an hour (`metrics/ingest-gate.ts`). Like the active-key check
-      // above, it needs the database; every deployment binds one, so its
-      // absence only happens in tests that exercise other parts of the route.
-      if (db) {
-        const refused = await applyMetricsIngestGate(c, db, serverId, sample)
+      // events an hour (`metrics/ingest-gate.ts`): a Durable Object per server
+      // on Workers, an in-process map on Deno. Every deployment binds one, so
+      // its absence only happens in tests that exercise other parts of the route.
+      const metricsGate = getMetricsGate(c)
+      if (metricsGate) {
+        const refused = await applyMetricsIngestGate(c, metricsGate, serverId, sample)
         if (refused) return refused
       }
 

@@ -176,19 +176,29 @@ the store — never re-derived by the store itself. WebSocket
 
 #### Ingest gate — one stored sample a minute per server
 
-`ingest-gate.ts`'s `admitMetricsSample` holds every server to one stored
-sample a minute: one atomic `INSERT … ON CONFLICT DO UPDATE … WHERE …
-RETURNING` on the `gate` table per durable sample, after validation (it needs
-`sampledAt` and the event count). Postgres is strongly consistent, so racing
-samples cannot both pass (the Workers rate-limit binding counts per location
-and only throttles bursts). A sample at or before the last stored one is a
-duplicate or replay; one at least 50 s after it is on time; an earlier one
-spends a catch-up token (5, refilling one a minute). Refused samples get 429
-with `Retry-After`; a gate error answers 503 rather than writing unmetered.
+`ingest-gate.ts` holds every server to one stored sample a minute, with no
+Postgres involved. The rules are one pure function (`decideAdmission`); the
+state lives where the runtime can keep it exact:
+
+- **Workers:** `MetricsGateObject` (`ingest-gate-object.ts`), one Durable Object
+  per server (`METRICS_GATE`, `getByName(serverId)`). A Durable Object runs one
+  request at a time, so racing samples cannot both pass: exact. It is not the
+  daemon cell (`DAEMON_CELL`), which ingest must never wake. Analytics Engine
+  cannot do this job: it is write-only, and its SQL cannot drop duplicate
+  sample times before averaging.
+- **Self-hosted:** `createInMemoryMetricsGate`, a bounded in-process map.
+  Exact while the process lives; a restart forgets the last stored time.
+
+Best effort, not exact: the Analytics Engine write after an admitted sample is
+fire-and-forget, so an admitted sample can still be lost.
+
+A sample at or before the last stored one is a duplicate or replay; one at
+least 50 s after it is on time; an earlier one spends a catch-up token (5,
+refilling one a minute). Refused samples get 429 with `Retry-After`; a gate
+error (the object unreachable) answers 503 rather than writing unmetered.
 Events are stored while a 120-an-hour budget lasts, most severe first; the
 rest are dropped and the sample is still stored. Live (non-durable) samples
-are never stored and skip the gate. The gate needs the database, like the
-active-key check; every deployment binds one.
+are never stored and skip the gate.
 
 #### Cadence — one interval everywhere
 
