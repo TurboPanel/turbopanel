@@ -3037,6 +3037,29 @@ test('POST /metrics does not await the store write before responding', async () 
   assertEquals(writes.length, 1)
 })
 
+test('POST /metrics stores one sample a minute: a duplicate timestamp gets 429 with Retry-After and is not written', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const { app, writes } = await createMetricsTestAppWithDb(db)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const body = JSON.stringify(buildValidMetricsFrame())
+    const post = () =>
+      app.request('/api/daemon/v1/metrics', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          'Content-Type': 'application/json',
+        },
+        body,
+      })
+    assertEquals((await post()).status, 202)
+    const replay = await post()
+    assertEquals(replay.status, 429)
+    assertEquals(await replay.json(), { ok: false, error: 'rate_limited', reason: 'duplicate' })
+    assert(Number(replay.headers.get('Retry-After')) >= 1)
+    assertEquals(writes.length, 1)
+  })
+})
+
 test('POST /metrics accepts a known topology generation without requesting a resync', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
     await recordTopologyGeneration(db, serverId, {

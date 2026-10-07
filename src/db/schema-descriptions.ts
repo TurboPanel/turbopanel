@@ -1298,6 +1298,21 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Failure-retention deadline: NULL until a terminal failure, then now plus 24h (`failed`, `timed_out`, `cancelled`); the maintenance sweep deletes expired rows.',
     },
   },
+  gate: {
+    group: 'runtime',
+    summary:
+      'Per-server metrics ingest gate: one stored sample a minute plus a small catch-up burst, and an hourly event budget; one row per server, overwritten in place.',
+    columns: {
+      last_sampled_at:
+        'Sample time of the last stored sample; a sample at or before it is a duplicate or replay and is refused.',
+      sample_tokens:
+        'Catch-up allowance for samples less than 50 s apart: refills 1 a minute up to 5, one spent per early sample.',
+      event_tokens:
+        'Hourly event budget: refills 120 an hour up to 120; each stored event spends one, events beyond it are dropped.',
+      events_allowed: 'How many events the last accepted sample was allowed to store.',
+      refreshed_at: 'When the token counts were last brought up to date.',
+    },
+  },
   generation: {
     group: 'runtime',
     summary:

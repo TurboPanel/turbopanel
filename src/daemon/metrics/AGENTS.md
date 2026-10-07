@@ -174,6 +174,22 @@ fire-and-forget `ServerMetricsStore.writeSample(sample, slotMapping)` via
 the store — never re-derived by the store itself. WebSocket
 `{ type: "metrics" }` frames are **not** accepted — ingestion is HTTP-only.
 
+#### Ingest gate — one stored sample a minute per server
+
+`ingest-gate.ts`'s `admitMetricsSample` holds every server to one stored
+sample a minute: one atomic `INSERT … ON CONFLICT DO UPDATE … WHERE …
+RETURNING` on the `gate` table per durable sample, after validation (it needs
+`sampledAt` and the event count). Postgres is strongly consistent, so racing
+samples cannot both pass (the Workers rate-limit binding counts per location
+and only throttles bursts). A sample at or before the last stored one is a
+duplicate or replay; one at least 50 s after it is on time; an earlier one
+spends a catch-up token (5, refilling one a minute). Refused samples get 429
+with `Retry-After`; a gate error answers 503 rather than writing unmetered.
+Events are stored while a 120-an-hour budget lasts, most severe first; the
+rest are dropped and the sample is still stored. Live (non-durable) samples
+are never stored and skip the gate. The gate needs the database, like the
+active-key check; every deployment binds one.
+
 #### Cadence — one interval everywhere
 
 Every family writes on every sample. There is no per-family cadence and no

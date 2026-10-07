@@ -88,6 +88,8 @@ import {
   topologyChurnLimitedRecently,
 } from '../features/servers/server-topology-records.ts'
 import { recordCapabilityPlanGenerationIfChanged } from '../client/servers/capability-plan-records.ts'
+import { admitMetricsSample } from './metrics/ingest-gate.ts'
+import type { MetricEvent } from '../contracts/metrics-contract.ts'
 import { enqueueCapabilityPlanUpdate } from '../client/servers/capability-plan-push.ts'
 import { computeSlotMapping } from '../contracts/topology-slot-mapping.ts'
 import {
@@ -638,6 +640,21 @@ export function topologyResyncRecentlyRequested(
   return Number.isFinite(requestedMs) && nowMs - requestedMs < TOPOLOGY_RESYNC_MARK_COOLDOWN_MS
 }
 
+const EVENT_SEVERITY_RANK: Readonly<Record<MetricEvent['severity'], number>> = {
+  critical: 0,
+  warning: 1,
+  info: 2,
+}
+
+/** Events ordered most severe first, then oldest: what survives a budget cut. */
+function mostSevereFirst(events: readonly MetricEvent[]): MetricEvent[] {
+  return [...events].sort(
+    (a, b) =>
+      EVENT_SEVERITY_RANK[a.severity] - EVENT_SEVERITY_RANK[b.severity] ||
+      Date.parse(a.at) - Date.parse(b.at)
+  )
+}
+
 type IngestPlanAndTopology = {
   plan: MetricsCapabilityPlan
   slotMapping: SlotMapping | undefined
@@ -954,6 +971,9 @@ export function registerDaemonApiRoutes<E extends Env>(
       key: daemonMetricsRateLimitKey(serverId),
     })
     if (!success) {
+      // The binding's window is 60 s: telling the daemon when to try again
+      // stops a well-behaved one from hammering the limit.
+      c.header('Retry-After', '60')
       return c.json({ ok: false, error: 'rate_limited' }, 429)
     }
     return null
@@ -1629,6 +1649,44 @@ export function registerDaemonApiRoutes<E extends Env>(
         await cacheLiveSample(metricsChartCache, sample)
         return c.json({ ok: true }, 202)
       }
+      // Exactly one stored sample a minute per server, and a bounded number of
+      // events an hour (`metrics/ingest-gate.ts`). Like the active-key check
+      // above, it needs the database; every deployment binds one, so its
+      // absence only happens in tests that exercise other parts of the route.
+      if (db) {
+        let gate: Awaited<ReturnType<typeof admitMetricsSample>>
+        try {
+          gate = await admitMetricsSample(
+            db,
+            serverId,
+            sample.metadata.sampledAt,
+            sample.events.length
+          )
+        } catch (err) {
+          // No exact count, no write: an unmetered path is what the gate stops.
+          rateLimitedMetricsLog(serverId, 'metrics_gate_failed', () => {
+            console.warn(`metrics gate failed for ${serverId}: ${describeError(err)}`)
+          })
+          c.header('Retry-After', '60')
+          return c.json({ ok: false, error: 'metrics_gate_unavailable' }, 503)
+        }
+        if (!gate.stored) {
+          rateLimitedMetricsLog(serverId, `metrics_gate_${gate.reason}`, () => {
+            console.warn(`metrics sample refused for ${serverId}: ${gate.reason}`)
+          })
+          c.header('Retry-After', String(gate.retryAfterSeconds))
+          return c.json({ ok: false, error: 'rate_limited', reason: gate.reason }, 429)
+        }
+        if (gate.eventsAllowed < sample.events.length) {
+          rateLimitedMetricsLog(serverId, 'metrics_gate_events_dropped', () => {
+            console.warn(
+              `metrics events over the hourly budget for ${serverId}: kept ${gate.eventsAllowed} of ${sample.events.length}`
+            )
+          })
+          sample.events = mostSevereFirst(sample.events).slice(0, gate.eventsAllowed)
+        }
+      }
+
       if (await isServerLiveSessionActive(metricsChartCache, serverId)) {
         await cacheLiveSample(metricsChartCache, sample)
       }
