@@ -58,6 +58,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'environment',
   'fabric',
   'forge',
+  // Per-server metrics ingest gate (one stored sample a minute); name pending owner approval in the PR.
+  'gate',
   'generation',
   'grant',
   'hosting',

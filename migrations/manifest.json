@@ -122,6 +122,12 @@
       "tag": "0019_entitlement_runtime_deno",
       "when": 1791304259875,
       "sha256": "abd74582a6a57cd9037c3ae6e3b3df34bc3e77f42e21abd97f08d29b888079d3"
+    },
+    {
+      "idx": 20,
+      "tag": "0020_metrics_ingest_gate",
+      "when": 1791384942245,
+      "sha256": "9cb311abe4d28e1b95033e1b05f35677a3f15389d4a107b8eaadcaba8504a7f3"
     }
   ]
 }

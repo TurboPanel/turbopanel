@@ -21,6 +21,7 @@ import {
   bigint,
   boolean,
   check,
+  doublePrecision,
   foreignKey,
   index,
   integer,
@@ -5951,6 +5952,58 @@ export const bulwark = pgTable(
     check(
       'bulwark_digest_format_check',
       sql`last_digest IS NULL OR last_digest ~ '^[a-f0-9]{64}$'`
+    ),
+  ]
+)
+
+/**
+ * Per-server metrics ingest gate: the exact, strongly consistent counter that
+ * holds every server to one stored sample a minute (plus a small catch-up
+ * burst) and a bounded number of events an hour. Updated by one atomic
+ * statement per durable sample (`daemon/metrics/ingest-gate.ts`); one row per
+ * server, overwritten in place, so it never grows.
+ */
+export const metricsGate = pgTable(
+  'gate',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    serverId: uuid('server_id').notNull(),
+    lastSampledAt: timestamp('last_sampled_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }).notNull(),
+    sampleTokens: doublePrecision('sample_tokens').notNull(),
+    eventTokens: doublePrecision('event_tokens').notNull(),
+    eventsAllowed: integer('events_allowed').default(0).notNull(),
+    refreshedAt: timestamp('refreshed_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('uniq_gate_server_id').using('btree', table.serverId.asc()),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'gate_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    check(
+      'gate_tokens_check',
+      sql`sample_tokens >= 0 AND event_tokens >= 0 AND events_allowed >= 0`
     ),
   ]
 )
