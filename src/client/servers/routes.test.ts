@@ -1168,6 +1168,38 @@ test('DELETE /servers/:id succeeds with stopped system ingress inventory', async
   )
 })
 
+test('DELETE /servers/:id succeeds with a never-started pending system ingress container', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const hierarchy = await systemHierarchy.ensureSystemHierarchy(db, {
+        organizationId,
+        serverId,
+      })
+      await db
+        .update(container)
+        .set({ status: 'pending', containerId: null })
+        .where(eq(container.id, hierarchy.containerRowId))
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+
+      assertEquals(res.status, 200)
+      assertEquals(registry.purgedIds, [serverId])
+      const remainingContainers = await db
+        .select({ id: container.id })
+        .from(container)
+        .where(eq(container.id, hierarchy.containerRowId))
+      assertEquals(remainingContainers.length, 0)
+
+      await db.delete(project).where(eq(project.id, hierarchy.projectId))
+      await db.delete(workspace).where(eq(workspace.id, hierarchy.workspaceId))
+    }
+  )
+})
+
 test('DELETE /servers/:id invalidates the bound license', async () => {
   await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
     const { licenseId } = await createLicense(db, { organizationId })

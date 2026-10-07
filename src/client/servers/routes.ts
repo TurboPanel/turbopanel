@@ -629,10 +629,16 @@ async function systemEnvironmentHasActiveContainers(
   if (serviceIds.length === 0) return false
 
   const containerRows = await db
-    .select({ status: container.status })
+    .select({ status: container.status, containerId: container.containerId })
     .from(container)
     .where(inArray(container.serviceId, serviceIds))
-  return containerRows.some((row) => isActiveContainerStatus(row.status))
+  // A row still `pending` with no runtime container id was allocated but never
+  // started (for example the host went offline before first boot). Nothing
+  // runs, so it must not block deleting the server.
+  return containerRows.some(
+    (row) =>
+      isActiveContainerStatus(row.status) && !(row.status === 'pending' && row.containerId === null)
+  )
 }
 
 /**
