@@ -32,6 +32,7 @@ import {
   type ServerHardwareProfile,
   type ServerHardwareProfileUpdate,
 } from './server-metadata.ts'
+import { serverMetadataWithoutHardware } from './server-metadata-select.ts'
 
 /**
  * Server-metadata facts a single-server metrics route needs before it can
@@ -53,7 +54,7 @@ export async function loadServerHardwareProfile(
 }> {
   const [serverRow] = await db
     .select({
-      metadata: server.metadata,
+      metadata: serverMetadataWithoutHardware,
       organizationId: server.organizationId,
       options: server.options,
       machineClass: server.machineClass,
@@ -161,7 +162,7 @@ export async function mergeAndPersistHardwareProfile(
   update: ServerHardwareProfileUpdate
 ): Promise<HardwareProfilePersistResult> {
   const rows = await db
-    .select({ metadata: server.metadata })
+    .select({ metadata: serverMetadataWithoutHardware })
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1)

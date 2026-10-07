@@ -1298,21 +1298,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Failure-retention deadline: NULL until a terminal failure, then now plus 24h (`failed`, `timed_out`, `cancelled`); the maintenance sweep deletes expired rows.',
     },
   },
-  hardware: {
-    group: 'runtime',
-    summary:
-      "The latest hardware facts a server's daemon reported in `topology-report`; one row per server, overwritten in place at most every 5 minutes, no history.",
-    columns: {
-      generation:
-        'Daemon-maintained topology generation counter, bumped only when the enumerated NIC, GPU, filesystem, disk or signal identity set or slot mapping changes.',
-      boot_generation:
-        'Daemon boot counter, incremented when `/proc/sys/kernel/random/boot_id` differs from the value persisted in its state directory; sent with the snapshot.',
-      snapshot:
-        'Full daemon-reported topology object stored verbatim: networks, filesystems, blockDevices, gpus, hardwareSignals, cpu, numaNodes, capacities, machineClass.',
-      applied_at:
-        "Daemon's own report timestamp (`topology-report.at`) for the stored facts, never the control-plane receipt time.",
-    },
-  },
   key: {
     group: 'runtime',
     summary:

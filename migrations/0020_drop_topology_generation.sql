@@ -1,0 +1,2 @@
+-- breaking-ok: only the throwaway testing and canary servers exist; nothing is copied across, the daemon reports its hardware again after the resync marker and it now lands in server.metadata.hardware
+DROP TABLE "generation" CASCADE;

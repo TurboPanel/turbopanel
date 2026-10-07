@@ -7,6 +7,7 @@ import {
   type ServiceRunStateName,
   worstServiceRunState,
 } from '../../contracts/service-run-state.ts'
+import { serverMetadataWithoutHardware } from '../servers/server-metadata-select.ts'
 
 /**
  * What a service row serves as `runState`: the daemon's last report for it,
@@ -124,7 +125,7 @@ export async function loadServiceRunStates(
 
   const serverIds = [...new Set(placements.map((row) => row.serverId))]
   const servers = await db
-    .select({ id: server.id, metadata: server.metadata })
+    .select({ id: server.id, metadata: serverMetadataWithoutHardware })
     .from(server)
     .where(inArray(server.id, serverIds))
 

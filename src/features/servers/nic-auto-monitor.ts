@@ -35,6 +35,7 @@ import {
   pushHardwareProfileUpdate,
   resolveNicSlotLimit,
 } from './hardware-profile.ts'
+import { serverMetadataWithoutHardware } from './server-metadata-select.ts'
 
 /**
  * The physical `uplink` device id an interface name resolves to among
@@ -94,7 +95,7 @@ async function resolveReportedInterface(
   address: string
 ): Promise<string | undefined> {
   const [row] = await db
-    .select({ metadata: server.metadata })
+    .select({ metadata: serverMetadataWithoutHardware })
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1)

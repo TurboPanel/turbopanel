@@ -1,5 +1,5 @@
 {
-  "id": "3d074843-93ae-4009-92bc-53a7cb0f91a5",
+  "id": "42c75650-b9e3-4941-91c4-2ef57f0e254d",
   "prevId": "c70205e7-b5be-4635-845a-6d652c97abb6",
   "version": "7",
   "dialect": "postgresql",
@@ -8949,100 +8949,6 @@
           "value": "\"server\".\"machine_class\" IN ('physical', 'virtual')"
         }
       },
-      "isRLSEnabled": false
-    },
-    "public.hardware": {
-      "name": "hardware",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "uuidv7()"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "server_id": {
-          "name": "server_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "generation": {
-          "name": "generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "boot_generation": {
-          "name": "boot_generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "snapshot": {
-          "name": "snapshot",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "applied_at": {
-          "name": "applied_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "uniq_hardware_server_id": {
-          "name": "uniq_hardware_server_id",
-          "columns": [
-            {
-              "expression": "server_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "hardware_server_id_server_id_fk": {
-          "name": "hardware_server_id_server_id_fk",
-          "tableFrom": "hardware",
-          "tableTo": "server",
-          "columnsFrom": [
-            "server_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.service": {

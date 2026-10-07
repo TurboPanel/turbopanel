@@ -23,6 +23,7 @@ import { computeSlotMapping } from '../../contracts/topology-slot-mapping.ts'
 import { EMPTY_TOPOLOGY_OVERRIDES, type TopologySnapshot } from '../../contracts/topology-types.ts'
 import { getLatestTopologyGeneration } from '../servers/server-topology-records.ts'
 import { loadServerHardwareProfile } from '../servers/hardware-profile.ts'
+import { serverMetadataWithoutHardware } from '../servers/server-metadata-select.ts'
 
 /** Peers shown per server; keeps the response and the queries bounded. */
 const SERVER_TRAFFIC_MAP_MAX_PEERS = 100
@@ -36,7 +37,7 @@ async function loadServerRows(
   const out = new Map<string, { name: string | null; metadata: unknown }>()
   if (serverIds.length === 0) return out
   const rows = await db
-    .select({ id: server.id, name: server.name, metadata: server.metadata })
+    .select({ id: server.id, name: server.name, metadata: serverMetadataWithoutHardware })
     .from(server)
     .where(inArray(server.id, serverIds))
   for (const row of rows) out.set(row.id, { name: row.name, metadata: row.metadata })

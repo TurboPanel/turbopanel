@@ -73,6 +73,7 @@ import {
   parseFabricPolicy,
   parseRelayPolicy,
 } from './policy.ts'
+import { serverMetadataWithoutHardware } from '../servers/server-metadata-select.ts'
 
 export type FabricRecord = {
   id: string
@@ -1556,7 +1557,7 @@ export async function loadEndpointCaches(
     db
       .select({
         id: server.id,
-        metadata: server.metadata,
+        metadata: serverMetadataWithoutHardware,
       })
       .from(server)
       .where(inArray(server.id, ids)),

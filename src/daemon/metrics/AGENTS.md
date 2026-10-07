@@ -235,7 +235,7 @@ them beside the readings (`ext_*` columns and per-entity `total_bytes` /
 `total_inodes` / `memory_total_bytes` columns on DuckDB; slots on the hosted
 rows, see `V7-LAYOUT.md`). A resize or a balloon therefore changes the size on
 the next sample and nothing else: no history to restate. The server keeps only
-its latest hardware facts (one `hardware` row, overwritten at most every five
+its latest hardware facts (one `server.metadata.hardware` key, overwritten at most every five
 minutes; see `features/servers/server-topology-records.ts`), and every stored
 row names its own devices, so old samples never need an old layout.
 
@@ -580,7 +580,7 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
    Postgres `server.is_connected` is.
 10. `slotMapping` is resolved once by the ingest route and threaded through to
     the store — stores never re-derive it themselves.
-11a. A hosted server with more RAM or more physical CPU cores than its licensed box size keeps
+    11a. A hosted server with more RAM or more physical CPU cores than its licensed box size keeps
     every metric; ingest stamps `server.metadata.overPlan` (`over-plan.ts`, `over-plan-flag.ts`,
     refreshed at most hourly, cleared when it fits again). The units are the tiers' own: RAM bytes
     (the sample's own size, else the host report) and physical cores from the daemon's host report

@@ -58,11 +58,9 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'environment',
   'fabric',
   'forge',
-  // Still created by the shipped init migration; 0020 drops it for `hardware`.
+  // Still created by the shipped init migration; 0020 drops it (the latest hardware facts live in `server.metadata.hardware`).
   'generation',
   'grant',
-  // The server's latest hardware facts (replaces the generation history); name pending owner approval in the PR.
-  'hardware',
   'hosting',
   'hostname',
   'invitation',

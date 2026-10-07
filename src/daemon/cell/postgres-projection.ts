@@ -28,6 +28,7 @@ import { geoEquals, parseServerGeo, type ServerGeo } from '../../features/geo/se
 import type { DaemonCell, DaemonCellSnapshot } from '../../contracts/cell.ts'
 import type { ServerStatusTransitionReason } from '../metrics/types.ts'
 import { emitServerStatusEvent, type ServerStatusEventSink } from '../metrics/status-events.ts'
+import { serverMetadataWithoutHardware } from '../../features/servers/server-metadata-select.ts'
 
 export type ProjectionIdentity = {
   hostname?: string
@@ -965,7 +966,7 @@ export function loadServerRowsForFleetPresence(
     .select({
       id: server.id,
       daemon: server.daemon,
-      metadata: server.metadata,
+      metadata: serverMetadataWithoutHardware,
       hostname: server.hostname,
       machineKey: server.machineKey,
       osId: server.osId,

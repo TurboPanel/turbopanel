@@ -2,7 +2,7 @@
  * The server-record side of the over-plan check (`over-plan.ts`): stamp
  * `server.metadata.overPlan` when a server's RAM or physical cores are past the
  * licensed box size, clear it once they are not. The sample itself is stored either way.
- * One `metadata ||` statement, so a concurrent write to another key is never
+ * One single-key `jsonb_set` (or key removal) statement, so a concurrent write to another key is never
  * stomped, and the stamp is refreshed at most hourly while the server stays
  * over so a steady over-plan server does not write its row every minute.
  */
@@ -61,7 +61,7 @@ export async function recordOverPlan(
   const stamp = JSON.stringify({ at: new Date().toISOString(), ...result })
   await db.execute(sql`
     UPDATE server
-    SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('overPlan', ${stamp}::jsonb)
+    SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{overPlan}', ${stamp}::jsonb)
     WHERE id = ${serverId}::uuid
   `)
 }

@@ -40,6 +40,7 @@ import {
   type TierBandLabel,
   totalPhysicalCores,
 } from './tier-placement.ts'
+import { serverMetadataWithoutHardware } from '../servers/server-metadata-select.ts'
 
 /** Byte-for-byte daemon `classifyConnectFailure` permanent-auth/enroll message. */
 export const LICENSE_TIER_BELOW_REQUIRED_ERROR = 'License tier below required'
@@ -107,7 +108,7 @@ const JOIN_COLUMNS = {
   organizationName: organization.name,
   serverOptions: server.options,
   orgOptions: organization.options,
-  serverMetadata: server.metadata,
+  serverMetadata: serverMetadataWithoutHardware,
   machineClass: server.machineClass,
   licenseId: license.id,
   assignedTierId: server.assignedTierId,

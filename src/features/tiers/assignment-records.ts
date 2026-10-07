@@ -39,6 +39,7 @@ import { resolveRequiredTier, totalPhysicalCores } from './tier-placement.ts'
 import { getLatestTopologyGenerations } from '../servers/server-topology-records.ts'
 import { parseTopologySnapshot, recommendedRankFromMetadata } from './topology-recommendation.ts'
 import { selfHostedGrantRank } from './self-hosted-grant.ts'
+import { serverMetadataWithoutHardware } from '../servers/server-metadata-select.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -101,7 +102,7 @@ export async function loadAssignableServers(
     .select({
       serverId: server.id,
       createdAt: server.createdAt,
-      metadata: server.metadata,
+      metadata: serverMetadataWithoutHardware,
       assignedTierId: server.assignedTierId,
     })
     .from(server)

@@ -125,9 +125,9 @@
     },
     {
       "idx": 20,
-      "tag": "0020_metrics_latest_hardware",
-      "when": 1791389130947,
-      "sha256": "fdeb3471474252b49fe586b6c8ca571857d2ab0b8c06868735952889d8a03303"
+      "tag": "0020_drop_topology_generation",
+      "when": 1791390818488,
+      "sha256": "24802a9349ae27c571ae00b6a5630d5d36d6a149d28392a813b143877baa109e"
     }
   ]
 }

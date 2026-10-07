@@ -3,11 +3,14 @@ import { assert, assertEquals } from '@std/assert'
 import { eq, sql } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import { organization, server, serverHardware } from '../../db/schema.ts'
+import { organization, server } from '../../db/schema.ts'
+import { recordOverPlan } from '../../daemon/metrics/over-plan-flag.ts'
+import { serverMetadataWithoutHardware } from './server-metadata-select.ts'
 import {
   getLatestTopologyGeneration,
   getLatestTopologyGenerations,
   layoutPathsFromSnapshot,
+  markTopologyResyncRequested,
   recordTopologyGeneration,
   resetTopologyChurnLogForTests,
   TOPOLOGY_REWRITE_COOLDOWN_SECONDS,
@@ -56,7 +59,6 @@ async function withServerFixture(
   try {
     await fn({ db, serverId })
   } finally {
-    await db.delete(serverHardware).where(eq(serverHardware.serverId, serverId))
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
@@ -86,12 +88,13 @@ const REPORT_AT = '2026-01-01T00:00:00.000Z'
 
 type TestDb = ReturnType<typeof createDenoDb>
 
-async function hardwareRowCount(db: TestDb, serverId: string): Promise<number> {
-  const rows = await db
-    .select({ id: serverHardware.id })
-    .from(serverHardware)
-    .where(eq(serverHardware.serverId, serverId))
-  return rows.length
+/** How many `hardware` keys the server's metadata holds (0 or 1: there is nowhere to keep a history). */
+async function hardwareKeyCount(db: TestDb, serverId: string): Promise<number> {
+  const [row] = await db
+    .select({ metadata: server.metadata })
+    .from(server)
+    .where(eq(server.id, serverId))
+  return (row?.metadata as Record<string, unknown> | null)?.hardware === undefined ? 0 : 1
 }
 
 async function serverMetadata(db: TestDb, serverId: string): Promise<Record<string, unknown>> {
@@ -102,11 +105,16 @@ async function serverMetadata(db: TestDb, serverId: string): Promise<Record<stri
   return row!.metadata as Record<string, unknown>
 }
 
-/** Pretend this server's hardware row was last written `seconds` earlier than it was. */
+/** Pretend this server's hardware facts were last written `seconds` earlier than they were. */
 async function ageHardware(db: TestDb, serverId: string, seconds: number): Promise<void> {
   await db.execute(sql`
-    UPDATE hardware SET updated_at = updated_at - make_interval(secs => ${seconds})
-    WHERE server_id = ${serverId}::uuid
+    UPDATE server
+    SET metadata = jsonb_set(
+      metadata,
+      '{hardware,updatedAt}',
+      to_jsonb(((metadata -> 'hardware' ->> 'updatedAt')::timestamptz - make_interval(secs => ${seconds})))
+    )
+    WHERE id = ${serverId}::uuid
   `)
 }
 
@@ -144,7 +152,7 @@ test('the latest hardware facts overwrite the previous ones once the cooldown ha
       'refreshed'
     )
 
-    assertEquals(await hardwareRowCount(db, serverId), 1)
+    assertEquals(await hardwareKeyCount(db, serverId), 1)
     const latest = await getLatestTopologyGeneration(db, serverId)
     assertEquals(latest?.generation, 2)
     assertEquals(latest?.bootGeneration, 1)
@@ -201,7 +209,6 @@ async function withTwoServerFixture(
     })
   } finally {
     for (const serverId of [serverIdA, serverIdB, serverIdC]) {
-      await db.delete(serverHardware).where(eq(serverHardware.serverId, serverId!))
       await db.delete(server).where(eq(server.id, serverId!))
     }
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -232,7 +239,7 @@ test('getLatestTopologyGenerations returns an empty map for an empty serverIds l
   })
 })
 
-test('a flood of reports keeps one row per server and changes it at most once per cooldown', async () => {
+test('a flood of reports keeps one record per server and changes it at most once per cooldown', async () => {
   await withServerFixture(async ({ db, serverId }) => {
     resetTopologyChurnLogForTests()
     const outcomes: string[] = []
@@ -244,20 +251,20 @@ test('a flood of reports keeps one row per server and changes it at most once pe
       outcomes.slice(1).every((outcome) => outcome === 'rate_limited'),
       true
     )
-    assertEquals(await hardwareRowCount(db, serverId), 1)
+    assertEquals(await hardwareKeyCount(db, serverId), 1)
     assertEquals((await getLatestTopologyGeneration(db, serverId))?.generation, 100)
     assert('topologyChurnLimitedAt' in (await serverMetadata(db, serverId)))
   })
 })
 
-test('parallel reports still leave one row', async () => {
+test('parallel reports still leave one record', async () => {
   await withServerFixture(async ({ db, serverId }) => {
     resetTopologyChurnLogForTests()
     const outcomes = await Promise.all(
       Array.from({ length: 20 }, (_, i) => recordTopologyGeneration(db, serverId, report(i)))
     )
     assertEquals(outcomes.filter((outcome) => outcome === 'recorded').length, 1)
-    assertEquals(await hardwareRowCount(db, serverId), 1)
+    assertEquals(await hardwareKeyCount(db, serverId), 1)
   })
 })
 
@@ -271,7 +278,7 @@ test('generation numbers the table cannot hold are rejected and write nothing', 
       await recordTopologyGeneration(db, serverId, report(1, { bootGeneration: 2 ** 31 })),
       'rejected'
     )
-    assertEquals(await hardwareRowCount(db, serverId), 0)
+    assertEquals(await hardwareKeyCount(db, serverId), 0)
   })
 })
 
@@ -327,5 +334,56 @@ test('the churn alert stamp is not rewritten on every refused report', async () 
     await new Promise((resolve) => setTimeout(resolve, 20))
     await recordTopologyGeneration(db, serverId, report(999))
     assertEquals((await serverMetadata(db, serverId)).topologyChurnLimitedAt, first)
+  })
+})
+
+test('writers of different metadata keys never overwrite each other, however they interleave', async () => {
+  await withServerFixture(async ({ db, serverId }) => {
+    resetTopologyChurnLogForTests()
+    const GIB = 1024 ** 3
+    await db
+      .update(server)
+      .set({ metadata: { resources: { memory: { totalBytes: 8 * GIB } } } })
+      .where(eq(server.id, serverId))
+    const setResources = (round: number) =>
+      db.execute(sql`
+        UPDATE server
+        SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{docker}', ${JSON.stringify({ round })}::jsonb)
+        WHERE id = ${serverId}::uuid
+      `)
+    for (let round = 0; round < 12; round++) {
+      if (round > 0) await ageHardware(db, serverId, PAST_COOLDOWN_SECONDS)
+      await Promise.all([
+        recordTopologyGeneration(db, serverId, report(round)),
+        recordOverPlan(db, serverId, 1, 64 * GIB, {}),
+        markTopologyResyncRequested(db, serverId),
+        setResources(round),
+      ])
+      const metadata = await serverMetadata(db, serverId)
+      assertEquals(
+        Object.keys(metadata).sort(),
+        ['docker', 'hardware', 'overPlan', 'resources', 'topologyResyncRequestedAt'],
+        `round ${round}: a writer lost another writer's key`
+      )
+      assertEquals((metadata.docker as { round: number }).round, round)
+      assertEquals((metadata.hardware as { generation: number }).generation, round)
+    }
+  })
+})
+
+test('every other reader of server.metadata is handed the metadata without the hardware snapshot', async () => {
+  await withServerFixture(async ({ db, serverId }) => {
+    await db
+      .update(server)
+      .set({ metadata: { resources: { memory: { totalBytes: 1 } } } })
+      .where(eq(server.id, serverId))
+    await recordTopologyGeneration(db, serverId, report(1, { snapshot: { big: 'x'.repeat(2000) } }))
+    const [lean] = await db
+      .select({ metadata: serverMetadataWithoutHardware })
+      .from(server)
+      .where(eq(server.id, serverId))
+    assertEquals(lean?.metadata, { resources: { memory: { totalBytes: 1 } } })
+    // The one reader of the key still gets it.
+    assertEquals((await getLatestTopologyGeneration(db, serverId))?.generation, 1)
   })
 })

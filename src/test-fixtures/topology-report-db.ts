@@ -1,9 +1,9 @@
 /**
  * A fake `Db` surface for tests that only need to see what a `topology-report`
  * writes. `recordTopologyGeneration` runs inside a transaction, takes a lock
- * on the server row, looks for the server's hardware row and inserts; this fake answers
- * those statements (nothing exists yet, the insert succeeds) and captures the
- * values the insert carried.
+ * on the server row, reads `server.metadata.hardware` and writes it back with
+ * `jsonb_set`; this fake answers those statements (the server has no hardware
+ * yet, the write succeeds) and captures the values the write carried.
  */
 import { PgDialect } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
@@ -27,8 +27,11 @@ export function withTopologyReportRecording(base: Record<string, unknown>): {
   const tx = {
     execute: (query: SQL): Promise<unknown[]> => {
       const { sql: text, params } = dialect.sqlToQuery(query)
-      if (text.includes('INSERT INTO hardware')) {
-        const [serverId, generation, bootGeneration, snapshot, appliedAt] = params
+      if (text.includes('FOR UPDATE')) {
+        return Promise.resolve([{ has_hardware: false, same: false, recently_written: false }])
+      }
+      if (text.includes("'{hardware}'")) {
+        const [generation, bootGeneration, snapshot, appliedAt, serverId] = params
         inserted.push({
           serverId: String(serverId),
           generation: Number(generation),
