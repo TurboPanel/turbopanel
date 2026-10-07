@@ -153,15 +153,13 @@ export const PRINCIPAL_RESERVED_UID_MIN = 9989
 export const PRINCIPAL_RESERVED_UID_MAX = 9999
 
 /**
- * Max Linux username length so `<username>-grp` still fits the host group-name
- * limit (32). Keep in sync with daemon `MAX_PRINCIPAL_USERNAME_LENGTH` and
- * command-schema validators. Applies to the **applied** username — the name
- * that actually lands on the host.
+ * Max Linux username length. The host gives the user the standard Debian
+ * per-user group, named after it, so the group name is the same length. Keep
+ * in sync with daemon `MAX_PRINCIPAL_USERNAME_LENGTH` and command-schema
+ * validators. Applies to the **applied** username — the name that actually
+ * lands on the host.
  */
 export const MAX_PRINCIPAL_USERNAME_LENGTH = 28
-
-/** Suffix appended by daemon `principalUnixGroupName` (`${username}-grp`). */
-export const PRINCIPAL_UNIX_GROUP_SUFFIX = '-grp'
 
 /**
  * Random chars after the underscore in a randomized applied username
@@ -205,6 +203,15 @@ const PRINCIPAL_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
  * Reserved Linux / TurboPanel account names (lowercased). Rejected on create
  * so tenant principals cannot collide with host or service accounts.
  *
+ * The host gives each site owner's Linux user the standard Debian per-user
+ * group, named after the user. sudoers, PAM and polkit grant power by group
+ * name whether or not the group exists (Ubuntu's sudoers still names
+ * `%admin`; `wheel` is the pam_wheel and polkit group), so a user called
+ * `admin` would be an administrator. Every common Debian / Ubuntu system and
+ * privilege group name is therefore reserved too. Kept equal to
+ * `TP_RESERVED_NAMES` in the daemon's tp-host, which refuses the same names
+ * (and any group sudoers names) on the host.
+ *
  * The `tp*` entries here are documentation of the accounts that exist today —
  * the actual guard is the `tp` **prefix** rule in
  * {@link isReservedPrincipalUsername}. Enumerating them could never keep up:
@@ -238,6 +245,63 @@ export const RESERVED_PRINCIPAL_USERNAMES: ReadonlySet<string> = new Set([
   'tpapache',
   'tpols',
   'tplsws',
+  // System accounts and groups Debian and Ubuntu ship or commonly add, and
+  // the groups that grant administrator power by name.
+  'lp',
+  'uucp',
+  'proxy',
+  'backup',
+  'list',
+  'irc',
+  'gnats',
+  'nogroup',
+  'ssh',
+  '_ssh',
+  '_apt',
+  '_chrony',
+  'mysql',
+  'adm',
+  'admin',
+  'audio',
+  'avahi',
+  'cdrom',
+  'crontab',
+  'dialout',
+  'dip',
+  'disk',
+  'floppy',
+  'fuse',
+  'incus',
+  'incus-admin',
+  'input',
+  'kmem',
+  'kvm',
+  'libvirt',
+  'libvirt-qemu',
+  'lpadmin',
+  'lxd',
+  'messagebus',
+  'microk8s',
+  'netdev',
+  'operator',
+  'plugdev',
+  'polkitd',
+  'render',
+  'sambashare',
+  'sasl',
+  'sgx',
+  'shadow',
+  'src',
+  'ssl-cert',
+  'staff',
+  'sudo',
+  'tape',
+  'tty',
+  'users',
+  'utmp',
+  'video',
+  'voice',
+  'wheel',
   // Platform cgroup slices directly under `turbopanel.slice`: a site owner's
   // Linux user gets `turbopanel-<name>.slice`, so these names are taken.
   // `containers` holds the platform's own containers; `tpbuild` holds builds
@@ -272,7 +336,7 @@ export function hasPlainPrincipalDashes(username: string): boolean {
  * Rejects non-strings, empty, length > {@link MAX_PRINCIPAL_USERNAME_LENGTH},
  * or names outside the POSIX allowlist
  * (`^[A-Za-z_][A-Za-z0-9_-]*$` — also excludes `/`, `\`, NUL, `.`, `..`).
- * Length is capped so `<username>-grp` fits the Linux group-name limit.
+ * Length is capped at {@link MAX_PRINCIPAL_USERNAME_LENGTH}.
  */
 export function assertSafePrincipalUsername(username: string): string {
   if (

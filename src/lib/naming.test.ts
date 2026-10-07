@@ -5,7 +5,6 @@ import {
   PRINCIPAL_RESERVED_UID_MAX,
   PRINCIPAL_RESERVED_UID_MIN,
   PRINCIPAL_UID_START,
-  PRINCIPAL_UNIX_GROUP_SUFFIX,
   MAX_PRINCIPAL_USERNAME_LENGTH,
   MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH,
   PRINCIPAL_APPLIED_SUFFIX_LENGTH,
@@ -174,12 +173,11 @@ test('principal path helpers reject invalid usernames', () => {
   assertThrows(() => principalVolumePath('ok_user', '../x'), TypeError)
 })
 
-test('assertSafePrincipalUsername accepts max length that fits username-grp', () => {
-  assertEquals(MAX_PRINCIPAL_USERNAME_LENGTH + PRINCIPAL_UNIX_GROUP_SUFFIX.length, 32)
+test('assertSafePrincipalUsername accepts the max length of 28', () => {
+  assertEquals(MAX_PRINCIPAL_USERNAME_LENGTH, 28)
   const longest = `u${'a'.repeat(MAX_PRINCIPAL_USERNAME_LENGTH - 1)}`
   assertEquals(longest.length, MAX_PRINCIPAL_USERNAME_LENGTH)
   assertEquals(assertSafePrincipalUsername(longest), longest)
-  assertEquals(`${longest}${PRINCIPAL_UNIX_GROUP_SUFFIX}`.length, 32)
 
   const overlong = `u${'a'.repeat(MAX_PRINCIPAL_USERNAME_LENGTH)}`
   assertEquals(overlong.length, MAX_PRINCIPAL_USERNAME_LENGTH + 1)
@@ -202,6 +200,26 @@ test('isReservedPrincipalUsername reserves the platform slice names', () => {
   assertEquals(isReservedPrincipalUsername(' Containers '), true)
   assertEquals(isReservedPrincipalUsername('tpbuild'), true)
   assertEquals(isReservedPrincipalUsername('container'), false)
+})
+
+test('isReservedPrincipalUsername reserves privileged and system group names', () => {
+  // A site owner's Linux user gets a group of its own name; sudoers, PAM and
+  // polkit grant power by group name.
+  for (const name of [
+    'sudo',
+    'admin',
+    'Wheel',
+    'adm',
+    'staff',
+    'lxd',
+    'docker',
+    'shadow',
+    'disk',
+    '_ssh',
+  ]) {
+    assertEquals(isReservedPrincipalUsername(name), true, name)
+  }
+  assertEquals(isReservedPrincipalUsername('admins'), false)
 })
 
 test('assertSafePrincipalUsername never allows a dot', () => {
