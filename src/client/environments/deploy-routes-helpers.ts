@@ -1,6 +1,7 @@
 import { attachWebMetadataToSites } from '../../features/hostings/hosting-web-env.ts'
 import { assignSiteListenPorts } from '../../features/compose/site.ts'
 import { assignNativeAppListenPorts } from '../../features/compose/native-app.ts'
+import { DEFAULT_NATIVE_APP_NODE_SERIES } from '../../contracts/runtime-registry.ts'
 import type {
   EnvironmentDeployComposeFile,
   EnvironmentDeployHosting,
@@ -15,7 +16,9 @@ import {
   validateDeployHostings,
   validateDeployStorageMaterialList,
 } from '../../contracts/commands/deploy-validation.ts'
-import { validateDeployWwwRedirects } from '../../contracts/commands/www-redirect.ts'
+import { validateDeployWwwModes } from '../../contracts/commands/www-redirect.ts'
+import type { HostingWwwMode } from '../../contracts/commands/hostname.ts'
+import { readHostingWwwMode } from '../../features/hostings/hosting-options.ts'
 import {
   type DeployStrategy,
   type MigrationStatus,
@@ -41,8 +44,9 @@ export function readPathPrefix(options: unknown): string | undefined {
   return typeof options.pathPrefix === 'string' ? options.pathPrefix : undefined
 }
 
-export function readWwwRedirect(options: unknown): boolean {
-  return isPlainObject(options) && options.wwwRedirect === true
+/** The hosting's www mode from its stored options (`off` when unset). */
+export function readWwwMode(options: unknown): HostingWwwMode {
+  return readHostingWwwMode(options)
 }
 
 export function readTargetPort(options: unknown): number | undefined {
@@ -160,11 +164,13 @@ export type QueuedCommandRef = {
 
 export function queuedCommandsResponseBody(
   commands: readonly QueuedCommandRef[],
-  strategy?: Record<string, unknown>
+  strategy?: Record<string, unknown>,
+  warnings: readonly { code: string; message: string }[] = []
 ): Record<string, unknown> {
   const first = commands[0]
   return {
     ...(strategy === undefined ? {} : { strategy }),
+    ...(warnings.length === 0 ? {} : { warnings: [...warnings] }),
     ok: true as const,
     commandId: first?.commandId ?? '',
     status: 'queued' as const,
@@ -594,6 +600,14 @@ function tryMapPhpModePrepareError(prepared: DeployPrepareError): PrepareErrorRe
   }
 }
 
+function tryMapBindingHostSiteError(prepared: DeployPrepareError): PrepareErrorResponse | null {
+  if (prepared.kind !== 'binding_host_site_unsupported') return null
+  return {
+    status: 422,
+    body: { error: 'binding_host_site_unsupported', message: prepared.message },
+  }
+}
+
 function tryMapSiteEngineFeatureError(prepared: DeployPrepareError): PrepareErrorResponse | null {
   if (prepared.kind !== 'site_engine_feature_missing') return null
   return {
@@ -606,10 +620,97 @@ function tryMapSiteEngineFeatureError(prepared: DeployPrepareError): PrepareErro
   }
 }
 
+function tryMapDenoPrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
+  if (prepared.kind === 'deno_feature_missing') {
+    return {
+      status: 422,
+      body: {
+        error: 'deno_feature_missing',
+        composeServiceName: prepared.composeServiceName,
+        message: `App "${prepared.composeServiceName}" runs on Deno, but the TurboPanel daemon on this server is too old to run Deno apps. Update the daemon on this server, then deploy again.`,
+      },
+    }
+  }
+  if (prepared.kind === 'deno_migration_pending') {
+    return {
+      status: 422,
+      body: {
+        error: 'deno_migration_pending',
+        message:
+          "This TurboPanel instance's database has not been updated to run Deno apps yet. Ask the instance owner to apply the pending database migration, then deploy again.",
+      },
+    }
+  }
+  if (prepared.kind !== 'deno_version_unsupported') return null
+  return {
+    status: 422,
+    body: {
+      error: 'deno_version_unsupported',
+      composeServiceName: prepared.composeServiceName,
+      requested: prepared.requested,
+      supported: prepared.supported,
+      message: `Deno app "${prepared.composeServiceName}" asks for Deno ${prepared.requested}, which this platform does not offer. Offered: ${prepared.supported.join(', ')}. Set x-turbopanel: { denoVersion: "${prepared.supported.at(-1) ?? '2'}" }, or remove denoVersion to use the default.`,
+    },
+  }
+}
+
+/** How to pin a Node version on the service, for the error messages below. */
+function pinHint(composeServiceName: string, example: string): string {
+  return `To choose one yourself, add to service "${composeServiceName}": x-turbopanel: { nodeVersion: "${example}" }.`
+}
+
+function nodeVersionErrorBody(
+  prepared: Extract<
+    DeployPrepareError,
+    { kind: 'node_version_unsupported' | 'node_version_invalid' | 'node_version_unreadable' }
+  >
+): Record<string, unknown> {
+  const name = prepared.composeServiceName
+  if (prepared.kind === 'node_version_unreadable') {
+    return {
+      error: prepared.kind,
+      composeServiceName: name,
+      message: `Could not read the repository of Node app "${name}" to find which Node version it needs: ${prepared.message}. Try again in a moment. ${pinHint(name, DEFAULT_NATIVE_APP_NODE_SERIES)} With that set, the repository is not read.`,
+    }
+  }
+  if (prepared.kind === 'node_version_invalid') {
+    return {
+      error: prepared.kind,
+      composeServiceName: name,
+      requested: prepared.requested,
+      path: prepared.path,
+      message: `Node app "${name}": engines.node in ${prepared.path} is "${prepared.requested}", which is not a version range npm accepts (a range between two versions needs spaces around the dash, like "20 - 24"). Fix it in ${prepared.path}. ${pinHint(name, DEFAULT_NATIVE_APP_NODE_SERIES)}`,
+    }
+  }
+  const newest = prepared.supported.at(-1) ?? DEFAULT_NATIVE_APP_NODE_SERIES
+  return {
+    error: prepared.kind,
+    composeServiceName: name,
+    requested: prepared.requested,
+    path: prepared.path,
+    supported: prepared.supported,
+    message: `Node app "${name}" asks for Node ${prepared.requested} in ${prepared.path}, and no Node version this platform offers matches that. Offered: ${prepared.supported.join(', ')}. Change ${prepared.path} to allow one of them. ${pinHint(name, newest)}`,
+  }
+}
+
+function tryMapNodeVersionPrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
+  if (
+    prepared.kind !== 'node_version_unsupported' &&
+    prepared.kind !== 'node_version_invalid' &&
+    prepared.kind !== 'node_version_unreadable'
+  ) {
+    return null
+  }
+  return { status: 422, body: nodeVersionErrorBody(prepared) }
+}
+
 export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareErrorResponse {
   return (
     tryMapPhpModePrepareError(prepared) ??
+    tryMapNodeVersionPrepareError(prepared) ??
     tryMapSiteEngineFeatureError(prepared) ??
+    tryMapBindingHostSiteError(prepared) ??
+    tryMapDenoPrepareError(prepared) ??
     tryMapSitePrepareError(prepared) ??
     tryMapPrincipalPrepareError(prepared) ??
     tryMapHostingPrepareError(prepared) ??
@@ -935,7 +1036,7 @@ export function validateDeployMaterials(
   storageMaterial: EnvironmentDeployStorageMaterial[]
 ): DeployMaterialValidationError | null {
   const hostingValidationError =
-    validateDeployHostings(hostings) ?? validateDeployWwwRedirects(hostings)
+    validateDeployHostings(hostings) ?? validateDeployWwwModes(hostings)
   if (hostingValidationError) {
     return { error: 'invalid_deploy_hosting', message: hostingValidationError }
   }

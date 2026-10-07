@@ -933,3 +933,75 @@ test('parseManagedReplicationHealth keeps standby WAL positions and receive lag'
     { state: 'streaming', observedAt: '2020-01-01T00:00:00.000Z' }
   )
 })
+
+test('parseManagedReplicationHealth keeps well-formed GTID freshness, drops the rest', () => {
+  const base = { state: 'streaming', observedAt: '2020-01-01T00:00:00.000Z' }
+  assertEquals(
+    parseManagedReplicationHealth({
+      ...base,
+      receivedGtid: 'uuid:1-5',
+      executedGtid: 'uuid:1-5',
+      fullyApplied: true,
+    }),
+    { ...base, receivedGtid: 'uuid:1-5', executedGtid: 'uuid:1-5', fullyApplied: true }
+  )
+  assertEquals(
+    parseManagedReplicationHealth({
+      ...base,
+      receivedGtid: 'x'.repeat(4097),
+      executedGtid: 7,
+      fullyApplied: 'yes',
+    }),
+    base
+  )
+  assertEquals(parseManagedReplicationHealth({ ...base, receivedGtid: '', executedGtid: '' }), base)
+  assertEquals(parseManagedReplicationHealth(base), base)
+})
+
+test('parseManagedReplicationHealth keeps a primary slotRetention and drops a malformed one', () => {
+  const observedAt = '2020-01-01T00:00:00.000Z'
+  assertEquals(
+    parseManagedReplicationHealth({
+      state: 'unknown',
+      observedAt,
+      slotRetention: {
+        state: 'critical',
+        slot: 'tp_member_2',
+        walStatus: 'awaiting_resync',
+        retainedBytes: 0,
+        active: false,
+        extra: 'ignored',
+      },
+    }),
+    {
+      state: 'unknown',
+      observedAt,
+      slotRetention: {
+        state: 'critical',
+        slot: 'tp_member_2',
+        walStatus: 'awaiting_resync',
+        retainedBytes: 0,
+        active: false,
+      },
+    }
+  )
+  assertEquals(
+    parseManagedReplicationHealth({ state: 'unknown', observedAt, slotRetention: { state: 'ok' } }),
+    { state: 'unknown', observedAt, slotRetention: { state: 'ok' } }
+  )
+  for (const slotRetention of [
+    { state: 'on fire' },
+    { state: 7 },
+    'critical',
+    null,
+    { state: 'lagging', retainedBytes: -1, safeBytes: Number.NaN, slot: 'x'.repeat(65) },
+  ]) {
+    const parsed = parseManagedReplicationHealth({ state: 'unknown', observedAt, slotRetention })
+    assertEquals(
+      parsed?.slotRetention,
+      typeof slotRetention === 'object' && slotRetention?.state === 'lagging'
+        ? { state: 'lagging' }
+        : undefined
+    )
+  }
+})

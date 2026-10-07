@@ -86,7 +86,10 @@ function hostField(scope: MetricEntityScope, field: string): DoubleDef {
 }
 
 function extended(section: 'host' | 'docker' | 'ingress', field: string): DoubleDef {
-  return { read: (c) => num(c.sample.extended?.[section as keyof MetricsExtended], field) }
+  return {
+    ref: { scope: `extended.${section}`, field },
+    read: (c) => num(c.sample.extended?.[section as keyof MetricsExtended], field),
+  }
 }
 
 function diagnostics(half: 'cpu' | 'memory', field: string): DoubleDef {
@@ -199,7 +202,10 @@ const DOUBLE_DEFS: Readonly<Record<string, DoubleDef>> = {
   ctrBytes: sampleScope('dockerUsage', 'containersBytes'),
   volumes: sampleScope('dockerUsage', 'volumesBytes'),
   buildCache: sampleScope('dockerUsage', 'buildCacheBytes'),
-  reclTotal: { read: reclaimableTotal },
+  reclTotal: {
+    ref: { scope: 'extended.docker', field: 'reclaimableBytes' },
+    read: reclaimableTotal,
+  },
   // host.network
   rootAvail: hostField('host.storage', 'rootFilesystemAvailableBytes'),
   rootInodes: hostField('host.storage', 'rootFilesystemFreeInodes'),
@@ -484,7 +490,7 @@ const BLOCK_SPEC: EntityRowSpec<BlockDeviceSample> = {
   doubles: [
     entityNum('readBytesPerSecond'),
     entityNum('writeBytesPerSecond'),
-    { field: null, read: opsPerSecond },
+    { field: 'opsPerSecond', read: opsPerSecond },
     entityNum('readLatencyMs'),
     entityNum('writeLatencyMs'),
     entityNum('queueDepth'),

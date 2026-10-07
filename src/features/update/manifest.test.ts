@@ -6,6 +6,7 @@ import {
   resolveUpdateManifest,
   seedUpdateManifestCacheForTests,
   setUpdateManifestProvider,
+  setUpdateManifestRetryDelaysForTests,
 } from './manifest.ts'
 
 /**
@@ -16,7 +17,8 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-const TRUNK_MANIFEST_URL = 'https://dl.trbp.nl/channels/trunk/manifest.json'
+const CANARY_MANIFEST_URL =
+  'https://github.com/TurboPanel/turbopaneld/releases/download/canary/manifest.json'
 const RC_MANIFEST_URL =
   'https://github.com/TurboPanel/turbopaneld/releases/download/rc/manifest.json'
 const RELEASE_MANIFEST_URL =
@@ -105,20 +107,20 @@ function stubFetch(handler: (url: string) => Response | Promise<Response>): {
 test('resolveUpdateManifest reads the built-in rail with one fetch — no channels.json hop', async () => {
   await resetUpdateManifestCacheForTests()
   const stub = stubFetch(async (url) =>
-    url === TRUNK_MANIFEST_URL
-      ? new Response(await manifestBody('trunk'), { status: 200 })
+    url === CANARY_MANIFEST_URL
+      ? new Response(await manifestBody('canary'), { status: 200 })
       : new Response('missing', { status: 404 })
   )
   try {
-    const manifest = await resolveUpdateManifest('trunk')
+    const manifest = await resolveUpdateManifest('canary')
     assertEquals(manifest, {
       commit: 'abc123',
       buildId: 'build-abc123',
       builtAt: '2020-01-01T00:00:00.000Z',
-      channel: 'trunk',
-      manifestUrl: TRUNK_MANIFEST_URL,
+      channel: 'canary',
+      manifestUrl: CANARY_MANIFEST_URL,
     })
-    assertEquals(stub.calls, [TRUNK_MANIFEST_URL])
+    assertEquals(stub.calls, [CANARY_MANIFEST_URL])
   } finally {
     stub.restore()
     await resetUpdateManifestCacheForTests()
@@ -153,7 +155,7 @@ test('resolveUpdateManifest follows rc and release to GitHub Releases', async ()
   }
 })
 
-test('resolveUpdateManifest is null for the reserved channel without fetching', async () => {
+test('resolveUpdateManifest is null for the reserved and retired channels without fetching', async () => {
   await resetUpdateManifestCacheForTests()
   const stub = stubFetch(() => {
     throw new TypeError('must not fetch')
@@ -162,6 +164,8 @@ test('resolveUpdateManifest is null for the reserved channel without fetching', 
     // canary is advertised now (the rolling GitHub pre-release); only edge
     // still has no built-in location.
     assertEquals(await resolveUpdateManifest('edge'), null)
+    // trunk's CDN drop is retired: the target is unknown, not a fetch of the old URL.
+    assertEquals(await resolveUpdateManifest('trunk'), null)
     assertEquals(stub.calls, [])
   } finally {
     stub.restore()
@@ -173,20 +177,20 @@ test('resolveUpdateManifest coalesces concurrent lookups per channel', async () 
   await resetUpdateManifestCacheForTests()
   const stub = stubFetch(
     async (url) =>
-      new Response(await manifestBody(url === RC_MANIFEST_URL ? 'rc' : 'trunk'), {
+      new Response(await manifestBody(url === RC_MANIFEST_URL ? 'rc' : 'canary'), {
         status: 200,
       })
   )
   try {
     const [first, second, rc] = await Promise.all([
-      resolveUpdateManifest('trunk'),
-      resolveUpdateManifest('trunk'),
+      resolveUpdateManifest('canary'),
+      resolveUpdateManifest('canary'),
       resolveUpdateManifest('rc'),
     ])
     assertEquals(first?.commit, 'abc123')
     assertEquals(second?.commit, 'abc123')
     assertEquals(rc?.channel, 'rc')
-    assertEquals(stub.calls, [TRUNK_MANIFEST_URL, RC_MANIFEST_URL])
+    assertEquals(stub.calls, [CANARY_MANIFEST_URL, RC_MANIFEST_URL])
   } finally {
     stub.restore()
     await resetUpdateManifestCacheForTests()
@@ -195,10 +199,10 @@ test('resolveUpdateManifest coalesces concurrent lookups per channel', async () 
 
 test('resolveUpdateManifest reuses the cached manifest within the TTL, per channel', async () => {
   await resetUpdateManifestCacheForTests()
-  const stub = stubFetch(async () => new Response(await manifestBody('trunk'), { status: 200 }))
+  const stub = stubFetch(async () => new Response(await manifestBody('canary'), { status: 200 }))
   try {
-    await resolveUpdateManifest('trunk')
-    await resolveUpdateManifest('trunk')
+    await resolveUpdateManifest('canary')
+    await resolveUpdateManifest('canary')
     assertEquals(stub.calls.length, 1)
     await resolveUpdateManifest('release')
     assertEquals(stub.calls.length, 2)
@@ -212,7 +216,7 @@ test('resolveUpdateManifest returns null when the manifest is unavailable', asyn
   await resetUpdateManifestCacheForTests()
   const stub = stubFetch(() => new Response('nope', { status: 500 }))
   try {
-    assertEquals(await resolveUpdateManifest('trunk'), null)
+    assertEquals(await resolveUpdateManifest('canary'), null)
     // A release that does not exist yet (404 until the first promotion) is
     // the same "unknown" the page already degrades to.
     assertEquals(await resolveUpdateManifest('release'), null)
@@ -228,7 +232,7 @@ test('resolveUpdateManifest returns null for incomplete manifest fields', async 
     async () => new Response(await signBody({ commit: 'only' }), { status: 200 })
   )
   try {
-    assertEquals(await resolveUpdateManifest('trunk'), null)
+    assertEquals(await resolveUpdateManifest('canary'), null)
   } finally {
     stub.restore()
     await resetUpdateManifestCacheForTests()
@@ -237,11 +241,66 @@ test('resolveUpdateManifest returns null for incomplete manifest fields', async 
 
 test('resolveUpdateManifest returns null when fetch throws', async () => {
   await resetUpdateManifestCacheForTests()
+  setUpdateManifestRetryDelaysForTests([0, 0])
   const stub = stubFetch(() => {
     throw new TypeError('network down')
   })
   try {
-    assertEquals(await resolveUpdateManifest('trunk'), null)
+    assertEquals(await resolveUpdateManifest('canary'), null)
+    assertEquals(stub.calls.length, 3)
+  } finally {
+    stub.restore()
+    await resetUpdateManifestCacheForTests()
+  }
+})
+
+test('resolveUpdateManifest retries a resolver blip and still resolves the target', async () => {
+  await resetUpdateManifestCacheForTests()
+  setUpdateManifestRetryDelaysForTests([0, 0])
+  let attempts = 0
+  const body = await manifestBody('canary')
+  const stub = stubFetch(() => {
+    attempts++
+    if (attempts < 3) {
+      throw new TypeError('error sending request: dns error: Temporary failure in name resolution')
+    }
+    return new Response(body, { status: 200 })
+  })
+  try {
+    const target = await resolveUpdateManifest('canary')
+    assertEquals(target?.channel, 'canary')
+    assertEquals(stub.calls.length, 3)
+  } finally {
+    stub.restore()
+    await resetUpdateManifestCacheForTests()
+  }
+})
+
+test('resolveUpdateManifest retries a 503 once the answer clears', async () => {
+  await resetUpdateManifestCacheForTests()
+  setUpdateManifestRetryDelaysForTests([0])
+  const body = await manifestBody('canary')
+  const stub = stubFetch(() =>
+    stub.calls.length === 1
+      ? new Response('busy', { status: 503 })
+      : new Response(body, { status: 200 })
+  )
+  try {
+    assertEquals((await resolveUpdateManifest('canary'))?.channel, 'canary')
+    assertEquals(stub.calls.length, 2)
+  } finally {
+    stub.restore()
+    await resetUpdateManifestCacheForTests()
+  }
+})
+
+test('resolveUpdateManifest does not retry a 404', async () => {
+  await resetUpdateManifestCacheForTests()
+  setUpdateManifestRetryDelaysForTests([0, 0])
+  const stub = stubFetch(() => new Response('missing', { status: 404 }))
+  try {
+    assertEquals(await resolveUpdateManifest('canary'), null)
+    assertEquals(stub.calls.length, 1)
   } finally {
     stub.restore()
     await resetUpdateManifestCacheForTests()
@@ -255,14 +314,14 @@ test('seedUpdateManifestCacheForTests short-circuits the fetch path for its chan
       commit: 'seeded',
       buildId: 'b',
       builtAt: '2020-01-01T00:00:00.000Z',
-      channel: 'trunk',
-      manifestUrl: 'https://dl.trbp.nl/m.json',
+      channel: 'canary',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
-    'trunk'
+    'canary'
   )
   const stub = stubFetch(() => new Response('missing', { status: 404 }))
   try {
-    assertEquals((await resolveUpdateManifest('trunk'))?.commit, 'seeded')
+    assertEquals((await resolveUpdateManifest('canary'))?.commit, 'seeded')
     assertEquals(stub.calls, [])
     assertEquals(await resolveUpdateManifest('rc'), null)
     assertEquals(stub.calls, [RC_MANIFEST_URL])
@@ -281,12 +340,12 @@ test('resolveUpdateManifest defers to a registered provider for every channel', 
     commit: 'abc+1',
     buildId: 'dev-abc+1',
     builtAt: '2026-01-01T00:00:00.000Z',
-    channel: 'trunk',
+    channel: 'canary',
     manifestUrl: '/repo/dist/manifest.json',
   }
   try {
     setUpdateManifestProvider(() => Promise.resolve(target))
-    assertEquals(await resolveUpdateManifest('trunk'), target)
+    assertEquals(await resolveUpdateManifest('canary'), target)
     assertEquals(await resolveUpdateManifest('release'), target)
     assertEquals(stub.calls, [])
   } finally {
@@ -326,13 +385,13 @@ test('resolveUpdateManifest keeps the daemon provider off the instance kind', as
   }
 })
 
-/** Resolve one trunk manifest body through a fresh cache; returns the target and refusal code. */
+/** Resolve one canary manifest body through a fresh cache; returns the target and refusal code. */
 async function resolveTrunkBody(body: string) {
   await resetUpdateManifestCacheForTests()
   const stub = stubFetch(() => new Response(body, { status: 200 }))
   try {
-    const target = await resolveUpdateManifest('trunk')
-    return { target, code: getUpdateManifestRefusal('trunk')?.code ?? null, calls: stub.calls }
+    const target = await resolveUpdateManifest('canary')
+    return { target, code: getUpdateManifestRefusal('canary')?.code ?? null, calls: stub.calls }
   } finally {
     stub.restore()
     resetToPinnedKey()
@@ -344,16 +403,16 @@ test('an unsigned manifest is refused with manifest_unsigned', async () => {
     commit: 'c',
     buildId: 'b',
     builtAt: '2020-01-01T00:00:00Z',
-    channel: 'trunk',
+    channel: 'canary',
   })
   const result = await resolveTrunkBody(body)
   assertEquals(result.target, null)
   assertEquals(result.code, 'manifest_unsigned')
-  assertEquals(result.calls, [TRUNK_MANIFEST_URL])
+  assertEquals(result.calls, [CANARY_MANIFEST_URL])
 })
 
 test('a tampered manifest is refused with manifest_signature_invalid', async () => {
-  const signed = JSON.parse(await manifestBody('trunk', 'good')) as Record<string, unknown>
+  const signed = JSON.parse(await manifestBody('canary', 'good')) as Record<string, unknown>
   const result = await resolveTrunkBody(JSON.stringify({ ...signed, commit: 'evil' }))
   assertEquals(result.target, null)
   assertEquals(result.code, 'manifest_signature_invalid')
@@ -361,14 +420,14 @@ test('a tampered manifest is refused with manifest_signature_invalid', async () 
 
 test('a manifest signed by another key is refused', async () => {
   const body = await signBody(
-    { commit: 'c', buildId: 'b', builtAt: '2020-01-01T00:00:00Z', channel: 'trunk' },
+    { commit: 'c', buildId: 'b', builtAt: '2020-01-01T00:00:00Z', channel: 'canary' },
     OTHER_KEY
   )
   assertEquals((await resolveTrunkBody(body)).code, 'manifest_signature_invalid')
 })
 
 test('a malformed signature is refused with manifest_signature_malformed', async () => {
-  const signed = JSON.parse(await manifestBody('trunk')) as Record<string, unknown>
+  const signed = JSON.parse(await manifestBody('canary')) as Record<string, unknown>
   const body = JSON.stringify({
     ...signed,
     signature: { alg: 'ed25519', keyId: 'x', value: 'AAAA' },
@@ -397,19 +456,19 @@ function makeClockAdvancer(): { next: () => void; restore: () => void } {
 
 test('a replayed older signed manifest is refused, and a newer build is accepted again', async () => {
   await resetUpdateManifestCacheForTests()
-  let body = await manifestBody('trunk', 'new', undefined, '2026-02-01T00:00:00.000Z')
+  let body = await manifestBody('canary', 'new', undefined, '2026-02-01T00:00:00.000Z')
   const stub = stubFetch(() => new Response(body, { status: 200 }))
   const clock = makeClockAdvancer()
   try {
-    assertEquals((await resolveUpdateManifest('trunk'))?.commit, 'new')
+    assertEquals((await resolveUpdateManifest('canary'))?.commit, 'new')
     clock.next()
-    body = await manifestBody('trunk', 'old', undefined, '2026-01-01T00:00:00.000Z')
-    assertEquals(await resolveUpdateManifest('trunk'), null)
-    assertEquals(getUpdateManifestRefusal('trunk')?.code, 'manifest_replayed')
+    body = await manifestBody('canary', 'old', undefined, '2026-01-01T00:00:00.000Z')
+    assertEquals(await resolveUpdateManifest('canary'), null)
+    assertEquals(getUpdateManifestRefusal('canary')?.code, 'manifest_replayed')
     clock.next()
-    body = await manifestBody('trunk', 'newer', undefined, '2026-03-01T00:00:00.000Z')
-    assertEquals((await resolveUpdateManifest('trunk'))?.commit, 'newer')
-    assertEquals(getUpdateManifestRefusal('trunk'), null)
+    body = await manifestBody('canary', 'newer', undefined, '2026-03-01T00:00:00.000Z')
+    assertEquals((await resolveUpdateManifest('canary'))?.commit, 'newer')
+    assertEquals(getUpdateManifestRefusal('canary'), null)
   } finally {
     clock.restore()
     stub.restore()

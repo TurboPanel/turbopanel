@@ -20,7 +20,7 @@ export type UpgradeUnitTarget = {
   commit: string | null
   buildId: string | null
   builtAt: string | null
-  /** `pinnedChannelManifestUrl`, or the channel's built-in URL for trunk. */
+  /** `pinnedChannelManifestUrl`, or the channel's built-in URL when there is no pin. */
   manifestUrl: string | null
 }
 

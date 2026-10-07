@@ -13,7 +13,12 @@
  * reported" — visible, never exploitable.
  */
 
-/** Runtimes a principal can be entitled to execute. */
+/**
+ * Runtimes an operator can grant a principal by hand. Deno is deliberately not
+ * here yet: a Deno app's grant is recorded by deploy, and the database's
+ * `entitlement_runtime_check` only allows `deno` after the instance migration
+ * (`runtimeSeries('deno')` is still answered for deploy).
+ */
 export const SUPPORTED_RUNTIMES: readonly string[] = ['php', 'node']
 
 /**
@@ -29,6 +34,7 @@ export const SUPPORTED_RUNTIME_SERIES: readonly string[] = ['8.3', '8.4', '22', 
 export function runtimeSeries(runtime: string): readonly string[] {
   if (runtime === 'php') return ['8.3', '8.4']
   if (runtime === 'node') return ['22', '24', '26']
+  if (runtime === 'deno') return ['2']
   return []
 }
 
@@ -53,5 +59,23 @@ export const DEFAULT_NATIVE_APP_NODE_SERIES = '24'
 export function nodeEntitlementSeries(version: string = DEFAULT_NATIVE_APP_NODE_SERIES): string {
   const major = version.trim().split('.')[0]
   if (!major || !/^\d+$/.test(major)) return DEFAULT_NATIVE_APP_NODE_SERIES
+  return major
+}
+
+/**
+ * Default Deno series when a Deno app declares no `denoVersion`. Deno ships one
+ * major (2) and many minors, so a series is the major: the host runs the newest
+ * 2.x release.
+ */
+export const DEFAULT_NATIVE_APP_DENO_SERIES = '2'
+
+/**
+ * Normalize a Deno pin to the **exec boundary** (`2.9.7` → `2`).
+ *
+ * Mirrors `entitlementSeries('deno', …)` in the daemon registry.
+ */
+export function denoEntitlementSeries(version: string = DEFAULT_NATIVE_APP_DENO_SERIES): string {
+  const major = version.trim().split('.')[0]
+  if (!major || !/^\d+$/.test(major)) return DEFAULT_NATIVE_APP_DENO_SERIES
   return major
 }

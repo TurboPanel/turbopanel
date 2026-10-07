@@ -34,6 +34,13 @@ export type ServerDaemonProjection = {
   update?: UpdateProjection
   /** Advertised wire features from `hello`. Missing on disk means none. */
   features?: string[]
+  /**
+   * Why the last offline mark was written: `disconnect` when the daemon socket
+   * closed (could be a restart, deploy or network blip), `sweep_stale` when the
+   * sweep found no heartbeat for the threshold (likely power loss). Set with
+   * the mark, cleared on reconnect. Host-loss failover acts on `sweep_stale` only.
+   */
+  offlineReason?: 'disconnect' | 'sweep_stale'
 }
 
 /** Fleet liveness — stored on dedicated `server` columns, not `server.daemon`. */
@@ -175,6 +182,10 @@ function parseServerDaemonProjection(raw: unknown): ServerDaemonProjection | nul
   const parsedDaemonBuild = parseProjectionDaemonBuild(projection.daemonBuild)
   const parsedUpdate = parseUpdateProjection(projection.update)
   const parsedFeatures = parseProjectionFeatures(projection.features)
+  const offlineReason =
+    projection.offlineReason === 'disconnect' || projection.offlineReason === 'sweep_stale'
+      ? projection.offlineReason
+      : undefined
 
   const parsed: ServerDaemonProjection = {
     hostname: isNonEmptyString(projection.hostname) ? projection.hostname : undefined,
@@ -186,6 +197,7 @@ function parseServerDaemonProjection(raw: unknown): ServerDaemonProjection | nul
     ...(parsedDaemonBuild ? { daemonBuild: parsedDaemonBuild } : {}),
     ...(parsedUpdate ? { update: parsedUpdate } : {}),
     ...(parsedFeatures !== undefined ? { features: parsedFeatures } : {}),
+    ...(offlineReason ? { offlineReason } : {}),
   }
 
   if (
@@ -195,7 +207,8 @@ function parseServerDaemonProjection(raw: unknown): ServerDaemonProjection | nul
     parsed.keyId === undefined &&
     parsed.daemonBuild === undefined &&
     parsed.update === undefined &&
-    parsed.features === undefined
+    parsed.features === undefined &&
+    parsed.offlineReason === undefined
   ) {
     return null
   }

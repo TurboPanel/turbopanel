@@ -854,6 +854,9 @@ type DaemonApiEnv = {
   }
 }
 
+/** `Retry-After` (seconds) sent with a daemon REST 429. */
+const DAEMON_REST_RETRY_AFTER_SECONDS = '5'
+
 export function registerDaemonApiRoutes<E extends Env>(
   app: Hono<E>,
   options: {
@@ -912,7 +915,11 @@ export function registerDaemonApiRoutes<E extends Env>(
   async function enforceDaemonRestLimit(c: Context, key: string): Promise<Response | null> {
     const { success } = await restLimiter.limit({ key })
     if (!success) {
-      return c.json({ ok: false, error: 'rate_limited' }, 429)
+      // A hint, not the window's reset time (the limiter does not report it):
+      // a daemon waits at least this long before it tries the call again.
+      return c.json({ ok: false, error: 'rate_limited' }, 429, {
+        'Retry-After': DAEMON_REST_RETRY_AFTER_SECONDS,
+      })
     }
     return null
   }

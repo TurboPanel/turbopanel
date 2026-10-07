@@ -74,6 +74,14 @@ export const RECOVERY_STEP_FAILED_MESSAGE =
 export const AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE =
   'Automatic failover refused: a previous automatic failover started less than 15 minutes ago (cooldown)'
 
+/**
+ * The old primary's server reconnected between the whole-host-loss decision
+ * and the moment the failover would have started: it is a normal primary
+ * again and nothing was changed.
+ */
+export const HOST_LOSS_HOST_RETURNED_MESSAGE =
+  "Failover stopped: the primary's server came back before anything was changed, so the database was left as it was"
+
 /** The promote / recover command could not be enqueued. */
 export const PROMOTE_UNQUEUED_MESSAGE =
   'Recovery blocked: the promote command could not be queued (command queue unavailable)'
@@ -93,12 +101,34 @@ export const AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE =
 export const AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE =
   'Automatic failover blocked: the failover replica is not streaming and could not be proven caught up to the failed primary'
 
+/**
+ * The role change is done and the new primary is serving, but at least one
+ * server's ProxySQL did not confirm it (the repoint command failed, timed out,
+ * could not be queued, or its server was offline). The row ends terminal
+ * `failed` and names the servers so an operator can re-apply the cluster
+ * (Apply re-sends the ingress update to every server).
+ */
+export function ingressNotRepointedMessage(serverNames: readonly string[]): string {
+  const names = serverNames.length > 0 ? serverNames.join(', ') : 'at least one server'
+  return `Degraded: the new primary is in place, but the database proxy on ${names} has not switched to it, so connections through that server may still reach the old primary. Apply the cluster again to retry.`
+}
+
 export type RecoveryMetadata = {
   fencingEpoch?: string
   fenceCommandIds?: string[]
   promoteCommandId?: string
   failoverCommandId?: string
   ingressCommandIds?: string[]
+  /** Every server whose ProxySQL must learn the new primary before the row completes. */
+  ingressServerIds?: string[]
+  /**
+   * Servers left out of the ingress step because they were attested lost
+   * (`fenceBasis: 'host-loss-attested'`): they cannot answer, and are
+   * repointed by the normal reconcile when they return.
+   */
+  ingressPendingServerIds?: string[]
+  /** Servers whose ProxySQL did not confirm the new primary (set on the terminal `failed` row). */
+  ingressNotRepointed?: string[]
   haPresent?: boolean
   fenced?: boolean
   drainApplied?: boolean
@@ -121,6 +151,17 @@ export type RecoveryMetadata = {
   detectorEvidence?: string
   /** Fresh-standby gate outcome per probed replica (accepted basis / refusal). */
   freshStandby?: string
+  /**
+   * How the old primary was fenced. Absent = a stop command proved it.
+   * `host-loss-attested`: its server was silent and the replicas confirmed it
+   * is gone, so no stop could be sent; the old primary is held back when it
+   * returns instead (`ha-return-fence.ts`). Never set by `verifyFenced`.
+   */
+  fenceBasis?: 'host-loss-attested'
+  /** `<serverId>@<offline since>`: one whole-host-loss incident (`ha-host-loss.ts`). */
+  hostLossIncident?: string
+  /** The old primary came back and was confirmed stopped / needs a resync. */
+  returnFence?: 'confirmed'
   /**
    * The report did not name the current primary: recorded, never acted on
    * (no fencing, no promotion). `blockedReason` says why.
@@ -204,6 +245,13 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   setIfPresent(metadata, 'promoteCommandId', optionalString(value.promoteCommandId))
   setIfPresent(metadata, 'failoverCommandId', optionalString(value.failoverCommandId))
   setIfPresent(metadata, 'ingressCommandIds', optionalStringList(value.ingressCommandIds))
+  setIfPresent(metadata, 'ingressServerIds', optionalStringList(value.ingressServerIds))
+  setIfPresent(
+    metadata,
+    'ingressPendingServerIds',
+    optionalStringList(value.ingressPendingServerIds)
+  )
+  setIfPresent(metadata, 'ingressNotRepointed', optionalStringList(value.ingressNotRepointed))
   setIfPresent(metadata, 'haPresent', optionalBoolean(value.haPresent))
   setIfPresent(metadata, 'fenced', optionalBoolean(value.fenced))
   setIfPresent(metadata, 'drainApplied', optionalBoolean(value.drainApplied))
@@ -219,6 +267,9 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   setIfPresent(metadata, 'detector', optionalString(value.detector))
   setIfPresent(metadata, 'detectorEvidence', optionalString(value.detectorEvidence))
   setIfPresent(metadata, 'freshStandby', optionalString(value.freshStandby))
+  if (value.fenceBasis === 'host-loss-attested') metadata.fenceBasis = value.fenceBasis
+  setIfPresent(metadata, 'hostLossIncident', optionalString(value.hostLossIncident))
+  if (value.returnFence === 'confirmed') metadata.returnFence = value.returnFence
   setIfPresent(metadata, 'stale', optionalBoolean(value.stale))
   setIfPresent(metadata, 'needsOperator', optionalBoolean(value.needsOperator))
   setIfPresent(metadata, 'failedReason', optionalString(value.failedReason))

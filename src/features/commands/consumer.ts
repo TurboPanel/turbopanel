@@ -7,9 +7,11 @@
  * isolate (worker stub or Deno process), not inside the Durable Object.
  * There is no per-server polling or cross-cell fan-out.
  */
-import { and, eq, inArray, or, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import type { DeployFailureNotice } from '../deploy/deploy-failure-notice.ts'
+import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
 import { generateDeliveryId } from '../../contracts/cell-protocol.ts'
 import { resultSummaryForPersist } from './result-summary.ts'
@@ -36,8 +38,8 @@ import {
 } from '../deploy/deploy-outcome.ts'
 import {
   advanceRollout,
-  failTimedOutDeploy,
   failDeployByContext,
+  failTimedOutDeploy,
   haltRollout,
 } from '../deploy/rollout.ts'
 import {
@@ -56,6 +58,7 @@ import { reconcileFabricMembership } from '../fabric/enqueue.ts'
 import {
   command,
   container,
+  deployment,
   managed,
   replica,
   server,
@@ -70,6 +73,7 @@ import {
 } from '../managed/destroy-gate.ts'
 import { deleteManagedBackup, insertManagedBackup } from '../backups/backup-records.ts'
 import { applyStorageBackupSideEffect } from '../backups/storage-command-effects.ts'
+import { applyBackupsReconcileSideEffect } from '../backups/reconcile-effects.ts'
 import {
   commandMayChangeFirewallPreview,
   enqueueFirewallPreview,
@@ -88,10 +92,10 @@ import {
 } from '../backups/reconcile.ts'
 import type { CommandQueue } from './queue.ts'
 import {
+  type EnvironmentDeployResultSite,
   type ManagedDestroyCommandPayload,
   parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
-  type EnvironmentDeployResultSite,
   parseEnvironmentLifecyclePayload,
   parseEnvironmentLifecycleResult,
   parseEnvironmentStopPayload,
@@ -132,14 +136,15 @@ import {
 } from '../tls/leaf-tracking.ts'
 import {
   fencePhaseFromCommandMetadata,
+  logRecoveryAdvanceFailure,
   onFenceCommandFailed,
   onFenceCommandSucceeded,
   onPromoteSucceeded,
-  logRecoveryAdvanceFailure,
   onRecoveryCommandFailed,
   onRecoveryStepFailed,
   recoveryIdFromCommandMetadata,
 } from '../managed/ha-recovery.ts'
+import { settleIngressCommandForRecovery } from '../managed/ha-ingress-gate.ts'
 import { isManagedEngineCode, type ManagedEngineCode } from '../managed/types.ts'
 import { isValidWireguardPublicKey } from '../fabric/wg.ts'
 import { type CommandType, TERMINAL_COMMAND_STATUSES } from './types.ts'
@@ -157,6 +162,8 @@ export type CommandResealDeps = {
 
 /** Optional deps for follow-up mesh-complete and managed-ingress applies. */
 export type CommandConsumerDeps = {
+  /** Best-effort; a throw is logged and never changes the command's outcome. */
+  onDeployFailed?: (notice: DeployFailureNotice) => Promise<void>
   commandQueue?: CommandQueue
   resealDeps?: CommandResealDeps
   secretsConfig?: SecretsConfig
@@ -340,6 +347,10 @@ async function loadDispatchableRecord(
 
   if (record.expiresAt && Date.parse(record.expiresAt) < Date.now()) {
     await transitionCommand(db, record.id, { status: 'timed_out' })
+    await settleIngressCommandForRecovery(
+      db,
+      recoveryIdFromCommandMetadata(await getCommandMetadata(db, record.id))
+    )
     if (record.type === 'environment.deploy') {
       await failTimedOutDeploy(db, {
         commandId: record.id,
@@ -367,6 +378,10 @@ async function loadDispatchableRecord(
       error: 'Command dispatch payload unavailable',
       errorCode: 'dispatch_payload_missing',
     })
+    await settleIngressCommandForRecovery(
+      db,
+      recoveryIdFromCommandMetadata(await getCommandMetadata(db, record.id))
+    )
     if (record.type === 'environment.deploy') {
       // No payload to read the environment from; the command's context names it.
       await failDeployByContext(db, {
@@ -505,13 +520,21 @@ export async function awaitOutcomeWithAckDeadline(
   await dropDaemonConnection.call(cell, 'command_unacked').catch(() => undefined)
   // The ack may have landed while the connection was being dropped.
   const settled = await cell.getRequest(requestId)
-  if (settled && ['done', 'failed', 'expired'].includes(settled.status)) return settled
+  if (settled && ['done', 'failed', 'expired'].includes(settled.status)) {
+    return settled
+  }
   if (settled?.ackAt || (settled && settled.status !== 'sent')) {
     return cell.waitForRequest(requestId, restMs)
   }
   const expired = await expireRequest.call(cell, requestId).catch(() => null)
-  if (expired && (expired.status === 'done' || expired.status === 'failed')) return expired
-  return { ...(settled ?? current), status: 'failed', error: COMMAND_UNACKED_ERROR }
+  if (expired && (expired.status === 'done' || expired.status === 'failed')) {
+    return expired
+  }
+  return {
+    ...(settled ?? current),
+    status: 'failed',
+    error: COMMAND_UNACKED_ERROR,
+  }
 }
 
 async function enqueueAndAwaitOutcome(
@@ -558,7 +581,14 @@ async function enqueueAndAwaitOutcome(
       resultStatus: 'timed_out',
     })
     await applyManagedFailedSideEffect(db, record, deps, 'Command timed out')
-    await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out', 'timed_out')
+    await applyEnvironmentDeployFailedSideEffect(
+      db,
+      record,
+      envelope,
+      'timed_out',
+      'timed_out',
+      deps
+    )
     await applyFabricFailedSideEffect(db, record, envelope)
   }
   return pending
@@ -575,7 +605,8 @@ async function applyEnvironmentDeployFailedSideEffect(
   record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   error: string,
-  outcome: DeploymentOutcome = 'failed'
+  outcome: DeploymentOutcome = 'failed',
+  deps?: CommandConsumerDeps
 ): Promise<void> {
   if (record.type !== 'environment.deploy') return
   try {
@@ -606,11 +637,61 @@ async function applyEnvironmentDeployFailedSideEffect(
         reason: cancelled ? 'the deploy was cancelled' : `${envelope.serverId} failed`,
       })
     }
+    if (marked !== null && !cancelled) {
+      await announceDeployFailure(
+        db,
+        deps,
+        {
+          environmentId: payload.environmentId,
+          serverId: envelope.serverId,
+          commandId: record.id,
+          outcome,
+          ...(deployFailure === null ? {} : { strategyOutcome: deployFailure.outcome }),
+          error: redactUrlSecrets(error),
+        },
+        marked.desiredGeneration
+      )
+    }
   } catch (err) {
     const message = errorMessage(err)
     compatLogWarn(
       'command-consumer',
       `deployment failure side effect failed for command ${record.id}: ${message}`
+    )
+  }
+}
+
+/**
+ * Tell the hook about a failed deploy, once per desired generation: a rollout
+ * across several servers that fails on more than one is one failed deploy to
+ * the person reading, so only the first failed row of the generation speaks.
+ */
+export async function announceDeployFailure(
+  db: Db,
+  deps: Pick<CommandConsumerDeps, 'onDeployFailed'> | undefined,
+  notice: DeployFailureNotice,
+  desiredGeneration: number
+): Promise<void> {
+  if (!deps?.onDeployFailed) return
+  try {
+    const [first] = await db
+      .select({ serverId: deployment.serverId })
+      .from(deployment)
+      .where(
+        and(
+          eq(deployment.environmentId, notice.environmentId),
+          eq(deployment.desiredGeneration, desiredGeneration),
+          eq(deployment.status, 'failed')
+        )
+      )
+      .orderBy(asc(deployment.finishedAt), asc(deployment.serverId))
+      .limit(1)
+    if (first && first.serverId !== notice.serverId) return
+    await deps.onDeployFailed(notice)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `deploy failure notice failed for command ${notice.commandId}: ${errorMessage(err)}`
     )
   }
 }
@@ -1086,6 +1167,13 @@ async function applyManagedIngressReconcileSideEffect(
   if (record.type !== 'managed.ingress.reconcile') return
   try {
     const payload = parseManagedIngressReconcilePayload(record.payload)
+    // The host took the listener addresses: whatever it was told before this
+    // command was created is no longer waiting.
+    const { clearManagedExposurePendingForServer } = await import('../managed/exposure-change.ts')
+    await clearManagedExposurePendingForServer(db, {
+      serverId: payload.serverId,
+      commandCreatedAt: record.createdAt,
+    })
     const reconcileResult = parseManagedIngressReconcileResult(result)
     // Omitted containers = collection failed — skip reconcile. An explicit
     // empty array is authoritative teardown (empty-cluster ProxySQL removal).
@@ -1507,6 +1595,11 @@ async function applyManagedLifecycleSideEffect(
   try {
     const payload = parseManagedLifecyclePayload(record.payload)
     const lifecycleResult = parseManagedLifecycleResult(result)
+    const meta = await getCommandMetadata(db, record.id)
+    // A stop sent to a demoted member that came back (`ha-return-fence.ts`)
+    // projects nothing: it would overwrite `needs_resync`, the only thing that
+    // keeps the old data from being started, and mark the whole cluster stopped.
+    if (meta?.returnFence === true) return
     await projectManagedObservedStatus(
       db,
       payload.managedId,
@@ -1516,7 +1609,6 @@ async function applyManagedLifecycleSideEffect(
     )
     await projectManagedMemberObservedStatus(db, lifecycleResult.member, record.id, record.type)
 
-    const meta = await getCommandMetadata(db, record.id)
     const recoveryId = recoveryIdFromCommandMetadata(meta)
     if (recoveryId && payload.action === 'stop') {
       await onFenceCommandSucceeded(db, deps?.commandQueue, {
@@ -1923,10 +2015,34 @@ async function applyManagedRecoveryFailedSideEffect(
     return true
   }
 
+  if (record.type === 'managed.ingress.reconcile') {
+    // One ingress did not confirm the new primary: the recovery gate decides.
+    await settleIngressCommandForRecovery(db, recoveryId)
+    return false
+  }
+
   if (record.type === 'managed.promote' || record.type === 'managed.ha.failover') {
     await onRecoveryCommandFailed(db, recoveryId)
   }
   return false
+}
+
+/**
+ * An ingress repoint that belongs to an HA recovery reached a terminal state
+ * without passing the failure path (it succeeded, or its server was offline):
+ * let the recovery's completion gate judge the row.
+ */
+async function settleIngressRecoveryOfCommand(
+  db: Db,
+  record: DispatchableCommandRecord
+): Promise<void> {
+  if (record.type !== 'managed.ingress.reconcile') return
+  try {
+    const recoveryId = recoveryIdFromCommandMetadata(await getCommandMetadata(db, record.id))
+    await settleIngressCommandForRecovery(db, recoveryId)
+  } catch (err) {
+    logRecoveryAdvanceFailure(record.id, errorMessage(err))
+  }
 }
 
 function shouldMarkManagedFailedOnCommandType(type: string): boolean {
@@ -2002,6 +2118,10 @@ async function applyManagedFailedSideEffect(
   error?: string
 ): Promise<void> {
   const meta = await getCommandMetadata(db, record.id)
+  // A failed return-fence stop (`ha-return-fence.ts`) must not flip the member
+  // from `needs_resync` to `failed` or mark the whole cluster failed; the
+  // sweep retries it a few times.
+  if (meta?.returnFence === true) return
   if (await applyManagedRecoveryFailedSideEffect(db, record, meta, deps)) {
     return
   }
@@ -2048,6 +2168,7 @@ async function applySucceededSideEffects(
   await applyEnvironmentLifecycleSideEffect(db, record, envelope, result)
   await applySystemReconcileSideEffect(db, record, envelope, result)
   await applyManagedIngressReconcileSideEffect(db, record, envelope, result)
+  await settleIngressRecoveryOfCommand(db, record)
   await applyManagedHaReconcileSideEffect(db, record, envelope, result)
   await applyManagedApplySideEffect(db, record, envelope, result, deps)
   await applyPendingTlsLeafSideEffect(db, record)
@@ -2055,6 +2176,7 @@ async function applySucceededSideEffects(
   await applyManagedDestroySideEffect(db, record, envelope, result, deps)
   await applyManagedPromoteSideEffect(db, record, envelope, result, deps)
   await applyManagedHaFailoverSideEffect(db, record, envelope, result, deps)
+  await applyBackupsReconcileSideEffect(db, record, result)
   await applyManagedBackupSideEffect(db, record, envelope, result)
   await applyManagedRestoreSideEffect(db, record, envelope, result)
   await applyStorageBackupSideEffect(db, record, result)
@@ -2425,7 +2547,9 @@ export function failureErrorCodeField(
   deployFailure: ReturnType<typeof classifyDeployFailure>,
   error: string
 ): { errorCode?: string } {
-  if (deployFailure !== null) return { errorCode: deployOutcomeErrorCode(deployFailure.outcome) }
+  if (deployFailure !== null) {
+    return { errorCode: deployOutcomeErrorCode(deployFailure.outcome) }
+  }
   if (type === 'environment.deploy' && isCancelledDeployError(error)) {
     return { errorCode: DEPLOY_CANCELLED_ERROR_CODE }
   }
@@ -2462,7 +2586,7 @@ async function handlePendingFailed(
     error,
   })
   await applyManagedFailedSideEffect(db, record, deps, error)
-  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error)
+  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error, 'failed', deps)
   await applyFabricFailedSideEffect(db, record, envelope)
   await applyFirewallFailedSideEffect(db, record, envelope, error)
 }
@@ -2483,7 +2607,7 @@ async function handlePendingExpired(
     resultStatus: 'timed_out',
   })
   await applyManagedFailedSideEffect(db, record, deps, pending.error ?? 'Command timed out')
-  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out', 'timed_out')
+  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out', 'timed_out', deps)
   await applyFabricFailedSideEffect(db, record, envelope)
   await applyFirewallFailedSideEffect(db, record, envelope, pending.error ?? 'Command timed out')
 }
@@ -2492,7 +2616,8 @@ async function handlePendingUnexpected(
   db: Db,
   record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
-  pending: PendingRequestRecord
+  pending: PendingRequestRecord,
+  deps?: CommandConsumerDeps
 ): Promise<void> {
   const error = `Unexpected pending request status: ${pending.status}`
   await transitionCommand(db, record.id, {
@@ -2507,7 +2632,7 @@ async function handlePendingUnexpected(
     resultStatus: 'failed',
     error,
   })
-  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error)
+  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error, 'failed', deps)
 }
 
 async function applyPendingOutcome(
@@ -2528,7 +2653,7 @@ async function applyPendingOutcome(
       await handlePendingExpired(db, record, envelope, pending, deps)
       return
     default:
-      await handlePendingUnexpected(db, record, envelope, pending)
+      await handlePendingUnexpected(db, record, envelope, pending, deps)
   }
 }
 
@@ -2547,8 +2672,9 @@ export async function processCommandEnvelope(
   if (notReady !== null) {
     // A deploy that never reached its server fails its row and halts the
     // rollout, or later batches would wait on an `applying` row forever.
-    await applyEnvironmentDeployFailedSideEffect(db, record, envelope, notReady)
+    await applyEnvironmentDeployFailedSideEffect(db, record, envelope, notReady, 'failed', deps)
     await applyFabricFailedSideEffect(db, record, envelope)
+    await settleIngressRecoveryOfCommand(db, record)
     return
   }
 

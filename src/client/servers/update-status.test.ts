@@ -62,7 +62,7 @@ it('resolveServerUpdateStatus returns updating after successful ack until commit
       buildId: 'b2',
       builtAt: '2020-01-01T00:00:00.000Z',
       channel: 'trunk',
-      manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
     listUpdateRequests: async () => [request({ status: 'done', finishedAt })],
   })
@@ -80,7 +80,7 @@ it('resolveServerUpdateStatus uses shared target manifest without refetching', a
       buildId: 'b2',
       builtAt: '2020-01-01T00:00:00.000Z',
       channel: 'trunk',
-      manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
     listUpdateRequests: async () => [],
   })
@@ -101,7 +101,7 @@ it('resolveServerUpdateStatus returns idle after pending window expires', async 
       buildId: 'b2',
       builtAt: '2020-01-01T00:00:00.000Z',
       channel: 'trunk',
-      manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
     listUpdateRequests: async () => [request({ status: 'done', finishedAt })],
   })
@@ -120,7 +120,7 @@ it('resolveServerUpdateStatus surfaces last error but stays idle when update sti
       buildId: 'b2',
       builtAt: '2020-01-01T00:00:00.000Z',
       channel: 'trunk',
-      manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
     listUpdateRequests: async () => [request({ status: 'failed', error: 'reconcile failed' })],
   })
@@ -130,7 +130,7 @@ it('resolveServerUpdateStatus surfaces last error but stays idle when update sti
   assertEquals(resolved.lastUpdateError, 'reconcile failed')
 })
 
-it('resolveServerUpdateStatus returns error for failed update when already on trunk', async () => {
+it('resolveServerUpdateStatus reports idle with no error for a failed update when already on trunk', async () => {
   const commit = '51e32ad'
   const resolved = await resolveServerUpdateStatus({
     channel: 'trunk',
@@ -141,13 +141,51 @@ it('resolveServerUpdateStatus returns error for failed update when already on tr
       buildId: 'b2',
       builtAt: '2020-01-01T00:00:00.000Z',
       channel: 'trunk',
-      manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
+      manifestUrl: 'https://updates.example.test/manifest.json',
+    },
+    projectedUpdate: {
+      status: 'failed',
+      error: 'preflight_in_progress: update already in progress',
+    },
+  })
+
+  assertEquals(resolved.status, 'idle')
+  assertEquals(resolved.updateAvailable, false)
+  assertEquals(resolved.lastUpdateError, undefined)
+  assertEquals(resolved.canResetUpdateStatus, undefined)
+})
+
+it('resolveServerUpdateStatus keeps a failed update idle when the target could not be resolved', async () => {
+  const resolved = await resolveServerUpdateStatus({
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit: '51e32ad', buildId: 'b1' },
+    targetManifest: null,
+    listUpdateRequests: async () => [request({ status: 'failed', error: 'checksum mismatch' })],
+  })
+
+  assertEquals(resolved.targetStatus, 'unknown')
+  assertEquals(resolved.status, 'idle')
+  assertEquals(resolved.lastUpdateError, 'checksum mismatch')
+})
+
+it('resolveServerUpdateStatus still returns error for a failed update on a blocked server', async () => {
+  const resolved = await resolveServerUpdateStatus({
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit: 'aaa', buildId: 'b1' },
+    colocatedWithInstance: true,
+    targetManifest: {
+      commit: 'bbb',
+      buildId: 'b2',
+      builtAt: '2020-01-01T00:00:00.000Z',
+      channel: 'trunk',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
     listUpdateRequests: async () => [request({ status: 'failed', error: 'checksum mismatch' })],
   })
 
   assertEquals(resolved.status, 'error')
-  assertEquals(resolved.updateAvailable, false)
   assertEquals(resolved.lastUpdateError, 'checksum mismatch')
 })
 
@@ -162,7 +200,7 @@ it('resolveServerUpdateStatus ignores stale failed request when daemon matches t
       buildId: 'b2',
       builtAt: '2020-01-01T00:00:00.000Z',
       channel: 'trunk',
-      manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
     listUpdateRequests: async () => [
       request({
@@ -193,7 +231,7 @@ it('resolveServerUpdateStatus blocks remote updates for co-located daemons', asy
       buildId: 'b2',
       builtAt: '2020-01-01T00:00:00.000Z',
       channel: 'trunk',
-      manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
     listUpdateRequests: async () => [],
   })
@@ -217,7 +255,7 @@ it('resolveServerUpdateStatus does not offer update when running commit is unkno
       buildId: 'b2',
       builtAt: '2020-01-01T00:00:00.000Z',
       channel: 'trunk',
-      manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
     listUpdateRequests: async () => [],
   })
@@ -264,7 +302,7 @@ it('resolveServerUpdateStatus returns updating from projected done with commit d
       buildId: 'b2',
       builtAt: '2020-01-01T00:00:00.000Z',
       channel: 'trunk',
-      manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
     projectedUpdate: { status: 'done', finishedAt },
   })
@@ -282,7 +320,7 @@ it('resolveServerUpdateStatus surfaces last error from projected failed update',
       buildId: 'b2',
       builtAt: '2020-01-01T00:00:00.000Z',
       channel: 'trunk',
-      manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
     projectedUpdate: { status: 'failed', error: 'reconcile failed' },
   })
@@ -313,7 +351,7 @@ it('resolveServerUpdateStatus ignores stale projected updating when daemon match
       buildId: 'b2',
       builtAt: '2020-01-01T00:00:00.000Z',
       channel: 'trunk',
-      manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
     projectedUpdate: {
       status: 'updating',

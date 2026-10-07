@@ -40,9 +40,7 @@ export function managedContainerName(serviceId: string, ordinal = 1): string {
   }
   const name = `${serviceId}-${ordinal}`
   if (!isValidDockerResourceName(name)) {
-    throw new TypeError(
-      `Invalid managed container name for service id: ${serviceId}`,
-    )
+    throw new TypeError(`Invalid managed container name for service id: ${serviceId}`)
   }
   return name
 }
@@ -71,9 +69,7 @@ export const INGRESS_CONTAINER_NAME_SUFFIX = '-in'
 export function ingressContainerNameFromService(serviceId: string): string {
   const name = `${serviceId}${INGRESS_CONTAINER_NAME_SUFFIX}`
   if (!isValidDockerResourceName(name)) {
-    throw new TypeError(
-      `Invalid ingress container name for service id: ${serviceId}`,
-    )
+    throw new TypeError(`Invalid ingress container name for service id: ${serviceId}`)
   }
   return name
 }
@@ -86,14 +82,10 @@ export const MANAGED_HA_CONTAINER_NAME_SUFFIX = '-ha'
  * row (`role='turbopanel'`, always ordinal 1). Distinct from `-in` Traefik /
  * ProxySQL ingress rows.
  */
-export function managedHaContainerNameFromService(
-  serviceId: string,
-): string {
+export function managedHaContainerNameFromService(serviceId: string): string {
   const name = `${serviceId}${MANAGED_HA_CONTAINER_NAME_SUFFIX}`
   if (!isValidDockerResourceName(name)) {
-    throw new TypeError(
-      `Invalid managed HA container name for service id: ${serviceId}`,
-    )
+    throw new TypeError(`Invalid managed HA container name for service id: ${serviceId}`)
   }
   return name
 }
@@ -118,9 +110,7 @@ export function resolveDockerVolumeName(input: {
 }): string {
   if (typeof input.pinnedName === 'string' && input.pinnedName.length > 0) {
     if (!isValidDockerResourceName(input.pinnedName)) {
-      throw new TypeError(
-        `Invalid pinned Docker volume name: ${input.pinnedName}`,
-      )
+      throw new TypeError(`Invalid pinned Docker volume name: ${input.pinnedName}`)
     }
     return input.pinnedName
   }
@@ -128,19 +118,28 @@ export function resolveDockerVolumeName(input: {
 }
 
 /**
- * Principal home root on managed hosts. The host picks uid/gid from 15001
- * through 60000; when an operator supplies an explicit override it must be
- * ≥ {@link PRINCIPAL_UID_START} and outside the reserved `tp*` service band
+ * Principal home root on managed hosts. The host picks uid/gid from
+ * {@link PRINCIPAL_UID_START} through {@link PRINCIPAL_UID_END}; when an
+ * operator supplies an explicit override it must sit in that same band and
+ * outside the reserved `tp*` service band
  * [{@link PRINCIPAL_RESERVED_UID_MIN}, {@link PRINCIPAL_RESERVED_UID_MAX}].
  */
 export const PRINCIPAL_HOME_ROOT = '/srv/users'
 /**
- * Floor for a principal uid/gid. The host picks from this value through 60000
- * when the operator omits an override; an explicit override must be ≥ this
- * constant. Keep in step with `PRINCIPAL_ID_MIN` in the daemon's
- * `src/deploy/ensure-principal.ts`.
+ * Floor for a principal uid/gid. The host picks from this value through
+ * {@link PRINCIPAL_UID_END} when the operator omits an override; an explicit
+ * override must be ≥ this constant. Keep in step with `PRINCIPAL_ID_MIN` in the
+ * daemon's `src/deploy/ensure-principal.ts`.
  */
 export const PRINCIPAL_UID_START = 15001
+/**
+ * Ceiling for a principal uid/gid (inclusive); an explicit override must be ≤
+ * this constant. Above it, 61184–65519 is systemd's range for the throwaway
+ * per-build users, which must never pass for a site owner's Linux user, so the
+ * host refuses anything higher. Keep in step with `PRINCIPAL_ID_MAX` in the
+ * daemon's `src/deploy/ensure-principal.ts`.
+ */
+export const PRINCIPAL_UID_END = 60000
 /**
  * Inclusive low end of the reserved TurboPanel service-account UID band.
  *
@@ -170,8 +169,7 @@ export const PRINCIPAL_UNIX_GROUP_SUFFIX = '-grp'
  */
 export const PRINCIPAL_APPLIED_SUFFIX_RANDOM_LENGTH = 11
 /** Total applied-suffix length including the underscore separator. */
-export const PRINCIPAL_APPLIED_SUFFIX_LENGTH =
-  PRINCIPAL_APPLIED_SUFFIX_RANDOM_LENGTH + 1
+export const PRINCIPAL_APPLIED_SUFFIX_LENGTH = PRINCIPAL_APPLIED_SUFFIX_RANDOM_LENGTH + 1
 /**
  * Short-name cap for a server principal when the applied name is randomized:
  * `<short>_<11>` must still fit {@link MAX_PRINCIPAL_USERNAME_LENGTH}.
@@ -240,6 +238,12 @@ export const RESERVED_PRINCIPAL_USERNAMES: ReadonlySet<string> = new Set([
   'tpapache',
   'tpols',
   'tplsws',
+  // Platform cgroup slices directly under `turbopanel.slice`: a site owner's
+  // Linux user gets `turbopanel-<name>.slice`, so these names are taken.
+  // `containers` holds the platform's own containers; `tpbuild` holds builds
+  // nobody owns (also caught by the `tp` prefix rule).
+  'containers',
+  'tpbuild',
 ])
 
 export function isReservedPrincipalUsername(value: string): boolean {
@@ -250,6 +254,17 @@ export function isReservedPrincipalUsername(value: string): boolean {
   // a time. Costs tenants a two-letter prefix they have no reason to want.
   if (key.startsWith('tp')) return true
   return key.startsWith('systemd-')
+}
+
+/**
+ * True when every `-` in the name sits between two other characters: no
+ * trailing `-` and no `--`. The host writes each `-` of a site owner's Linux
+ * user as `.` in its slice names and refuses to run builds for a name that ends
+ * in `-` or holds `--`, so new names are held to that shape up front. (A
+ * leading `-` is already refused by the username pattern.)
+ */
+export function hasPlainPrincipalDashes(username: string): boolean {
+  return !username.endsWith('-') && !username.includes('--')
 }
 
 /**
@@ -266,9 +281,7 @@ export function assertSafePrincipalUsername(username: string): string {
     username.length > MAX_PRINCIPAL_USERNAME_LENGTH ||
     !PRINCIPAL_USERNAME_RE.test(username)
   ) {
-    throw new TypeError(
-      `Invalid principal username for home path: ${username}`,
-    )
+    throw new TypeError(`Invalid principal username for home path: ${username}`)
   }
   return username
 }
@@ -285,10 +298,7 @@ export function principalVolumesDir(username: string): string {
   return `${principalHomeDir(username)}/volumes`
 }
 
-export function principalVolumePath(
-  username: string,
-  storageId: string,
-): string {
+export function principalVolumePath(username: string, storageId: string): string {
   if (
     typeof storageId !== 'string' ||
     storageId.length === 0 ||
@@ -298,9 +308,7 @@ export function principalVolumePath(
     storageId === '.' ||
     storageId === '..'
   ) {
-    throw new TypeError(
-      `Invalid storage id for principal volume path: ${storageId}`,
-    )
+    throw new TypeError(`Invalid storage id for principal volume path: ${storageId}`)
   }
   return `${principalVolumesDir(username)}/${storageId}`
 }
@@ -315,18 +323,11 @@ export function principalVolumePath(
 export function serviceDnsName(
   composeServiceName: string,
   replicaOrdinal: number | null,
-  environmentId: string,
+  environmentId: string
 ): string[] {
   const serviceLevel = `${composeServiceName}.${environmentId}`
-  if (
-    replicaOrdinal !== null &&
-    Number.isInteger(replicaOrdinal) &&
-    replicaOrdinal >= 1
-  ) {
-    return [
-      `${composeServiceName}-${replicaOrdinal}.${environmentId}`,
-      serviceLevel,
-    ]
+  if (replicaOrdinal !== null && Number.isInteger(replicaOrdinal) && replicaOrdinal >= 1) {
+    return [`${composeServiceName}-${replicaOrdinal}.${environmentId}`, serviceLevel]
   }
   return [serviceLevel]
 }
@@ -345,6 +346,12 @@ export function isReservedDeployVariableKey(key: string): boolean {
   return RESERVED_DEPLOY_VARIABLE_KEYS.has(key)
 }
 
+/**
+ * What a host-run service (a PHP site or native app, not a container) dials
+ * for its managed database: ProxySQL's published listener on loopback.
+ */
+export const HOST_RUN_LOOPBACK_HOST = '127.0.0.1'
+
 /** Default `binding.key_prefix` when the operator omits one. */
 export const DEFAULT_BINDING_KEY_PREFIX = 'DATABASE'
 
@@ -356,6 +363,8 @@ export const MAX_BINDING_KEY_PREFIX_LENGTH = 64
 export type BindingPrefixedKeys = {
   url: string
   caCert: string
+  /** Host-run PHP sites only: path of a CA file the daemon keeps for the site. */
+  caFile: string
   readSplit: string
   host: string
   port: string
@@ -372,6 +381,7 @@ export function bindingPrefixedKeys(prefix: string): BindingPrefixedKeys {
   return {
     url: `${prefix}_URL`,
     caCert: `${prefix}_CA_CERT`,
+    caFile: `${prefix}_CA_FILE`,
     readSplit: `${prefix}_READ_SPLIT`,
     host: `${prefix}_HOST`,
     port: `${prefix}_PORT`,
@@ -398,17 +408,13 @@ export function assertSafeBindingKeyPrefix(prefix: string): string {
   const keys = bindingPrefixedKeys(trimmed)
   for (const key of Object.values(keys)) {
     if (isReservedDeployVariableKey(key)) {
-      throw new TypeError(
-        'binding key prefix collides with reserved deploy keys',
-      )
+      throw new TypeError('binding key prefix collides with reserved deploy keys')
     }
   }
   // Catch the short prefix that would mint reserved keys when extended with
   // suffixes we control (e.g. `TURBOPANEL` → `TURBOPANEL_SERVICE_ID`).
   if (trimmed === 'TURBOPANEL' || trimmed.startsWith('TURBOPANEL_')) {
-    throw new TypeError(
-      'binding key prefix collides with reserved deploy keys',
-    )
+    throw new TypeError('binding key prefix collides with reserved deploy keys')
   }
   return trimmed
 }

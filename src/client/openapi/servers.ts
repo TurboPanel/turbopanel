@@ -244,6 +244,12 @@ export const serverSchemas = {
         type: 'string',
         description: 'Host interface name (e.g. eth0, enp1s0).',
       },
+      link: {
+        type: 'string',
+        enum: ['up', 'down'],
+        description:
+          'Link state of `interface` as the daemon read it from the kernel. Absent when the daemon did not say (older daemon); readers treat absent as up. Server-to-server routing prefers networks whose link is up.',
+      },
     },
   },
   ServerTierPlacement: {

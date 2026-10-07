@@ -8,6 +8,7 @@
 import {
   PRINCIPAL_RESERVED_UID_MAX,
   PRINCIPAL_RESERVED_UID_MIN,
+  PRINCIPAL_UID_END,
   PRINCIPAL_UID_START,
 } from '../../lib/naming.ts'
 
@@ -66,21 +67,20 @@ function isValidPrincipalShell(value: string): boolean {
 }
 
 /**
- * Operator override floor: integer ≥ {@link PRINCIPAL_UID_START}, outside the
+ * Operator override band: integer in
+ * [{@link PRINCIPAL_UID_START}, {@link PRINCIPAL_UID_END}], outside the
  * reserved TurboPanel service-account band.
  */
 export function isValidPrincipalIdOverride(value: unknown): value is number {
   if (typeof value !== 'number' || !Number.isInteger(value)) return false
-  if (value < PRINCIPAL_UID_START) return false
+  if (value < PRINCIPAL_UID_START || value > PRINCIPAL_UID_END) return false
   if (value >= PRINCIPAL_RESERVED_UID_MIN && value <= PRINCIPAL_RESERVED_UID_MAX) {
     return false
   }
   return true
 }
 
-function readIdOverridePair(
-  value: Record<string, unknown>,
-): { uid: number; gid: number } | null {
+function readIdOverridePair(value: Record<string, unknown>): { uid: number; gid: number } | null {
   const hasUid = 'uid' in value && value.uid !== undefined
   const hasGid = 'gid' in value && value.gid !== undefined
   if (!hasUid || !hasGid) return null
@@ -95,7 +95,7 @@ function readIdOverridePair(
  * Omitted/`undefined` → default; malformed → fail.
  */
 function parsePrincipalShellInput(
-  value: Record<string, unknown>,
+  value: Record<string, unknown>
 ): { ok: true; shell: string } | { ok: false } {
   if (!('shell' in value) || value.shell === undefined) {
     return { ok: true, shell: DEFAULT_PRINCIPAL_SHELL }
@@ -113,7 +113,7 @@ function parsePrincipalShellInput(
  * Both omitted → host allocates (`null`); one-of-two or invalid → fail.
  */
 function parsePrincipalIdOverrideInput(
-  value: Record<string, unknown>,
+  value: Record<string, unknown>
 ): { ok: true; override: { uid: number; gid: number } | null } | { ok: false } {
   const hasUid = 'uid' in value && value.uid !== undefined
   const hasGid = 'gid' in value && value.gid !== undefined
@@ -155,7 +155,7 @@ export function parsePrincipalOptions(value: unknown): PrincipalOptions {
  * - both valid → persisted override
  */
 export function parsePrincipalOptionsInput(
-  value: unknown,
+  value: unknown
 ): { ok: true; value: PrincipalOptionsPersisted } | { ok: false } {
   if (value === undefined || value === null) {
     return { ok: true, value: { shell: DEFAULT_PRINCIPAL_SHELL } }
@@ -182,15 +182,13 @@ export function parsePrincipalOptionsInput(
 }
 
 /** Default shell when absent/invalid. */
-export function resolvePrincipalShell(
-  options: PrincipalOptions | null | undefined,
-): string {
+export function resolvePrincipalShell(options: PrincipalOptions | null | undefined): string {
   return options?.shell ?? DEFAULT_PRINCIPAL_SHELL
 }
 
 /** Operator uid/gid override for deploy wire material, or null when host allocates. */
 export function resolvePrincipalIdOverride(
-  options: PrincipalOptions | null | undefined,
+  options: PrincipalOptions | null | undefined
 ): { uid: number; gid: number } | null {
   if (
     options?.uid === undefined ||

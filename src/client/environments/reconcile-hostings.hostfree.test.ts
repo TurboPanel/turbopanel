@@ -633,3 +633,28 @@ test('reconcileHostingsFromCompose leaves a stale row in place when a later rout
     ['host-old']
   )
 })
+
+test('reconcileHostingsFromCompose sets options.www from the entry and drops it once omitted', async () => {
+  const db = createReconcileDb({})
+  const reconcile = (entry: Record<string, unknown>) =>
+    reconcileHostingsFromCompose(db, {
+      organizationId: ORG_ID,
+      environmentId: ENV_ID,
+      merged: composeDoc({ web: hostingService([entry]) }),
+      serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
+    })
+  const first = await reconcile({ hostname: HOSTNAME, www: 'root-to-www' })
+  if (!first.ok) throw new TypeError('expected create with www to succeed')
+  const id = first.created[0]!
+  assertEquals((hostingRow(db, id)?.options as Record<string, unknown>).www, 'root-to-www')
+
+  const second = await reconcile({ hostname: HOSTNAME })
+  if (!second.ok) throw new TypeError('expected update without www to succeed')
+  assertEquals(second.updated, [id])
+  assertEquals('www' in (hostingRow(db, id)?.options as Record<string, unknown>), false)
+
+  await reconcile({ hostname: HOSTNAME, www: 'both' })
+  const third = await reconcile({ hostname: HOSTNAME, www: 'off' })
+  if (!third.ok) throw new TypeError('expected update with www off to succeed')
+  assertEquals('www' in (hostingRow(db, id)?.options as Record<string, unknown>), false)
+})

@@ -50,7 +50,7 @@ import {
   resolveManagedBindAddress,
 } from './access-address.ts'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
-import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
+import { loadBoundManagedIdsForServer, serverHasHostRunBinding } from './ingress-bound-consumers.ts'
 import { requestedExposureScope } from './host-exposure.ts'
 import { materializeBindingsForPrincipal } from '../bindings/materialize.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
@@ -94,6 +94,7 @@ import {
   principalConnectionRole,
   principalDefaultDatabase,
   protocolListenerForEngine,
+  sanBindAddresses,
   shouldSkipIngressFrontendUser,
   sortManagedIds,
 } from './ingress-desired-pure.ts'
@@ -604,6 +605,15 @@ type BuiltManagedIngressReconcile = {
   pendingTlsLeaf?: UpsertTlsLeafTrackingParams
 }
 
+/** `local` when a host-run consumer (PHP site, native app) is placed here, else nothing. */
+async function hostRunLoopbackScopes(
+  db: Db,
+  serverId: string,
+  organizationId: string
+): Promise<ManagedSqlAccessScope[]> {
+  return (await serverHasHostRunBinding(db, serverId, organizationId)) ? ['local'] : []
+}
+
 /** Internal: payload plus minted ingress leaf that is not yet deployed. */
 async function buildManagedIngressReconcileDesired(
   db: Db,
@@ -688,6 +698,12 @@ async function buildManagedIngressReconcileDesired(
   if ('kind' in clusters) return clusters
   if (clusters.length === 0) return null
 
+  // A PHP site or native app on this server dials the proxy on loopback, so the
+  // listener is published there whatever the clusters' exposure says. Loopback
+  // is not exposure: nothing off the machine can reach it.
+  const hostRunScopes = await hostRunLoopbackScopes(db, params.serverId, organizationId)
+  enabledScopes.push(...hostRunScopes)
+
   const bindAddresses = await resolveIngressBindAddresses(db, params.serverId, enabledScopes)
   if (!Array.isArray(bindAddresses)) return bindAddresses
 
@@ -701,7 +717,9 @@ async function buildManagedIngressReconcileDesired(
   const backendAddresses = clusters.flatMap((c) => c.backends.map((b) => b.address))
   const listenerSans = collectProxySqlListenerSans({
     hostname: advertisedHost,
-    bindAddresses,
+    // A host-run consumer verifies the certificate against `127.0.0.1`; under a
+    // public publish the bind is a wildcard and carries no SAN of its own.
+    bindAddresses: sanBindAddresses(bindAddresses, hostRunScopes),
     backendAddresses,
   })
   // Bindings (`resolveBindingEndpoint`) always dial ProxySQL by this
@@ -812,6 +830,16 @@ export type EnqueueManagedIngressReconcileResult =
   | { ok: false; reason: 'not_needed' | 'enqueue_failed' | 'prepare_failed' }
 
 /**
+ * What a fan-out queued: the servers whose ProxySQL has to learn the new
+ * primary, and the commands that were really queued for them (a required
+ * server with no command could not be told at all).
+ */
+export type ManagedIngressFanOutOutcome = {
+  requiredServerIds: string[]
+  commandIds: string[]
+}
+
+/**
  * Create + enqueue one `managed.ingress.reconcile` for the server.
  * Compensates the command row to `failed` when the queue rejects.
  * Callers own per-request server-id dedup (`Set`).
@@ -825,6 +853,8 @@ export async function enqueueManagedIngressReconcile(
     actorId: string
     secretsConfig: SecretsConfig
     dataEncryptionSecrets: DerivedSecretsConfig
+    /** Extra command metadata (an HA recovery id, so its result settles the journal). */
+    metadata?: Record<string, unknown>
   }>
 ): Promise<EnqueueManagedIngressReconcileResult> {
   const built = await buildManagedIngressReconcileDesired(db, {
@@ -836,7 +866,11 @@ export async function enqueueManagedIngressReconcile(
   if ('kind' in built) return { ok: false, reason: 'prepare_failed' }
 
   const expiresAt = new Date(Date.now() + MANAGED_INGRESS_RECONCILE_TTL_MS).toISOString()
-  const metadata = built.pendingTlsLeaf ? pendingTlsLeafMetadata(built.pendingTlsLeaf) : undefined
+  const leafMetadata = built.pendingTlsLeaf
+    ? pendingTlsLeafMetadata(built.pendingTlsLeaf)
+    : undefined
+  const metadata =
+    leafMetadata || params.metadata ? { ...leafMetadata, ...params.metadata } : undefined
 
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
@@ -959,8 +993,12 @@ export async function fanOutManagedIngressReconcile(
     secretsConfig: SecretsConfig
     dataEncryptionSecrets: DerivedSecretsConfig
     extraServerIds?: readonly string[]
+    /** Servers to leave out (an attested-lost host cannot answer; it is repointed when it returns). */
+    excludeServerIds?: readonly string[]
+    /** An HA recovery's id: stamped on every queued command so each result settles that journal row. */
+    recoveryId?: string
   }>
-): Promise<void> {
+): Promise<ManagedIngressFanOutOutcome> {
   await recomputeManagedMemberTransports(db, params.managedId)
   await rematerializeManagedBindings(db, params.managedId, params.dataEncryptionSecrets)
 
@@ -969,21 +1007,38 @@ export async function fanOutManagedIngressReconcile(
     .from(replica)
     .where(eq(replica.managedId, params.managedId))
   const consumerIds = await consumerServerIdsForManaged(db, params.managedId)
-  const serverIds = new Set<string>([
-    ...memberIds.map((row) => row.serverId),
-    ...consumerIds,
-    ...(params.extraServerIds ?? []),
-  ])
+  const excluded = new Set(params.excludeServerIds ?? [])
+  const serverIds = new Set<string>(
+    [
+      ...memberIds.map((row) => row.serverId),
+      ...consumerIds,
+      ...(params.extraServerIds ?? []),
+    ].filter((serverId) => !excluded.has(serverId))
+  )
 
+  const outcome: ManagedIngressFanOutOutcome = {
+    requiredServerIds: [],
+    commandIds: [],
+  }
   await forEachSequential(serverIds, async (serverId) => {
-    await enqueueManagedIngressReconcile(db, commandQueue, {
+    const result = await enqueueManagedIngressReconcile(db, commandQueue, {
       serverId,
       actorType: params.actorType,
       actorId: params.actorId,
       secretsConfig: params.secretsConfig,
       dataEncryptionSecrets: params.dataEncryptionSecrets,
+      ...(params.recoveryId ? { metadata: { recoveryId: params.recoveryId } } : {}),
     })
+    // `not_needed`: nothing to route on that server. Any other refusal means
+    // the server's ProxySQL was NOT told about the new primary.
+    if (result.ok) {
+      outcome.requiredServerIds.push(serverId)
+      outcome.commandIds.push(result.commandId)
+    } else if (result.reason !== 'not_needed') {
+      outcome.requiredServerIds.push(serverId)
+    }
   })
+  return outcome
 }
 
 /** Bounded batch for one orphaned-frontend sweep tick. */

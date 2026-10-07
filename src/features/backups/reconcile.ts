@@ -34,7 +34,9 @@ import { createCommandRecord, transitionCommand } from '../commands/command-reco
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
-import { getManagedBackupDescriptor } from '../managed/index.ts'
+import { getManagedBackupDescriptor, getManagedEngineSpec } from '../managed/index.ts'
+import { defaultBackupDatabase } from '../managed/default-backup-database.ts'
+import { parseManagedRowOptions } from '../managed/options.ts'
 import { managedHasBackupPolicies } from './policy-records.ts'
 import { translateBackupSchedule } from './schedules.ts'
 import { COPY_TARGET_SELECT, type CopyTargetRow, resolveCopyBackupSource } from './copy-targets.ts'
@@ -64,6 +66,20 @@ type ManagedPolicyRow = {
   retentionKeep: number
   isEnabled: boolean
   engine: string
+  /** `managed.options`, as stored: it lists the instance's databases. */
+  options?: unknown
+}
+
+/**
+ * The database a scheduled run dumps: the same default a manual backup picks
+ * (the first non-system database). Absent when the stored options cannot say,
+ * so the daemon falls back to its engine default rather than the run failing here.
+ */
+function scheduledBackupDatabase(row: ManagedPolicyRow): string | undefined {
+  const spec = getManagedEngineSpec(row.engine)
+  const options = spec ? parseManagedRowOptions(spec, row.options) : null
+  if (!options) return undefined
+  return defaultBackupDatabase(options.databases, row.engine) ?? undefined
 }
 
 function toWireEntry(row: ManagedPolicyRow): BackupPolicyWireEntry | null {
@@ -78,12 +94,14 @@ function toWireEntry(row: ManagedPolicyRow): BackupPolicyWireEntry | null {
     )
     return null
   }
+  const database = scheduledBackupDatabase(row)
   return {
     policyId: row.id,
     targetKind: 'managed',
     managedId: row.managedId,
     engine: row.engine as BackupPolicyWireEntry['engine'],
     artifactExtension: descriptor.artifactExtension,
+    ...(database === undefined ? {} : { database }),
     onCalendar: onCalendar.value,
     retentionKeep: row.retentionKeep,
     enabled: row.isEnabled,
@@ -133,6 +151,7 @@ async function loadManagedPolicyRows(db: Db, serverId: string): Promise<ManagedP
       retentionKeep: retention.retentionKeep,
       isEnabled: retention.isEnabled,
       engine: managed.engine,
+      options: managed.options,
     })
     .from(retention)
     .innerJoin(managed, eq(managed.id, retention.managedId))

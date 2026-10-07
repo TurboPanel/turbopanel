@@ -2,7 +2,7 @@ import { assertEquals } from '@std/assert'
 import { applyResourcesToComposeService } from '../compose/apply-service-options.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { ManagedSecretPlaceholder } from './index.ts'
-import { postgresEngineSpec } from './postgres.ts'
+import { postgresEngineSpec, SLOT_WAL_KEEP_SIZE } from './postgres.ts'
 import type { PostgresManagedSettings } from './postgres.ts'
 import { POSTGRES_ALLOWED_IMAGES } from './settings.ts'
 import { MANAGED_SSL_MODES } from './ssl.ts'
@@ -141,6 +141,29 @@ test('postgresql.conf is base plus appended operator snippet', () => {
   assertEquals(conf.contents.includes('log_min_duration_statement = 250'), true)
   assertEquals(conf.contents.includes('ssl = on'), true)
   assertEquals(conf.contents.includes('max_replication_slots = 3'), true)
+})
+
+test('postgresql.conf caps the WAL a replication slot may hold, and an operator can override it', () => {
+  const build = (engineConfig?: string) => {
+    const spec = postgresEngineSpec.buildRuntimeSpec({
+      managedId: '11111111-1111-1111-1111-111111111111',
+      settings: defaultSettings(engineConfig === undefined ? {} : { engineConfig }),
+      rootUsername: 'postgres',
+    })
+    const conf = spec.configFiles.find((f) => f.path === 'postgresql.conf')
+    if (!conf) throw new TypeError('missing postgresql.conf')
+    return conf.contents
+  }
+  const base = build()
+  assertEquals(base.includes("max_slot_wal_keep_size = '4GB'"), true)
+  assertEquals(SLOT_WAL_KEEP_SIZE, '4GB')
+  // The operator block comes last, so an operator value wins.
+  const overridden = build("max_slot_wal_keep_size = '20GB'\n")
+  assertEquals(
+    overridden.indexOf("max_slot_wal_keep_size = '20GB'") >
+      overridden.indexOf("max_slot_wal_keep_size = '4GB'"),
+    true
+  )
 })
 
 test('max_replication_slots scales with memberCount plus headroom', () => {

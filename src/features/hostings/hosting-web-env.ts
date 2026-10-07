@@ -6,8 +6,8 @@ import {
 } from '../variables/resolve-inherited.ts'
 import type { Db } from '../../db/connection.ts'
 import {
-  HOSTING_WEB_ENV_KEY_RE,
   type HostingWebOptions,
+  isSiteVariableName,
   parseHostingOptions,
 } from './hosting-options.ts'
 import type {
@@ -25,7 +25,7 @@ export function sanitizeHostingWebEnv(
   if (!raw) return undefined
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(raw)) {
-    if (!HOSTING_WEB_ENV_KEY_RE.test(key)) continue
+    if (!isSiteVariableName(key)) continue
     if (typeof value !== 'string') continue
     const trimmed = value.trim()
     if (trimmed.length === 0 || trimmed.length > MAX_WEB_ENV_VALUE_LENGTH) {
@@ -54,7 +54,7 @@ function mergeRuntimeVariables(
   varMap: ResolvedVariableMap
 ): void {
   for (const [key, entry] of varMap) {
-    if (!entry.forRuntime || !HOSTING_WEB_ENV_KEY_RE.test(key)) continue
+    if (!entry.forRuntime || !isSiteVariableName(key)) continue
     if (entry.isSecret) {
       secretEnv[key] = entry.value
     } else if (isUsableWebEnvValue(entry.value)) {
@@ -185,7 +185,7 @@ export function parseHostingEnvFile(content: string): Record<string, string> {
     const eq = trimmed.indexOf('=')
     if (eq <= 0) continue
     const key = trimmed.slice(0, eq).trim()
-    if (!HOSTING_WEB_ENV_KEY_RE.test(key)) continue
+    if (!isSiteVariableName(key)) continue
     let value = trimmed.slice(eq + 1).trim()
     if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
       value = value

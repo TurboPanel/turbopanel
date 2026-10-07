@@ -83,6 +83,10 @@ export type ServiceReleaseRecord = {
   /** Commit subject / author, when the source provider resolved them. */
   commitMessage?: string
   commitAuthor?: string
+  /** Node series a native app's release ran with, when it was recorded. */
+  nodeVersion?: string
+  /** `deno` when a native app's release ran on Deno; absent means Node. */
+  runtime?: 'deno'
   /**
    * Railpack lane only: the OCI image this release resolved to, and the pinned
    * build inputs that produced it.
@@ -432,6 +436,8 @@ function newReleaseRecord(
     commitSha: release.commitSha,
     ...(release.commitMessage === undefined ? {} : { commitMessage: release.commitMessage }),
     ...(release.commitAuthor === undefined ? {} : { commitAuthor: release.commitAuthor }),
+    ...(release.nodeVersion === undefined ? {} : { nodeVersion: release.nodeVersion }),
+    ...(release.runtime === undefined ? {} : { runtime: release.runtime }),
     // Railpack identity rides in from the deploy result, not the context.
     ...identity,
     status: aggregateReleaseStatus([attempt]),

@@ -10,6 +10,7 @@
 import { clampServiceResources, type ResourceLimits } from '../organizations/resource-limits.ts'
 import type { ServiceOptions } from '../projects/service-options.ts'
 import {
+  DEFAULT_MANAGED_SQL_ACCESS_SCOPE,
   isManagedSqlAccessScope,
   type ManagedSqlAccessScope,
 } from './access-scope.ts'
@@ -17,12 +18,7 @@ import { managedAllowedImagesForEngine } from './releases.ts'
 import { type ManagedSslMode, parseManagedSslMode } from './ssl.ts'
 
 /** Compose Spec restart policies. */
-const RESTART_POLICIES = new Set([
-  'no',
-  'always',
-  'on-failure',
-  'unless-stopped',
-])
+const RESTART_POLICIES = new Set(['no', 'always', 'on-failure', 'unless-stopped'])
 
 /**
  * Docker Compose keys that must never appear under managed `dockerOptions`.
@@ -170,8 +166,8 @@ export const POSTGRES_ALLOWED_IMAGES: readonly string[] =
 
 export const MYSQL_ALLOWED_IMAGES: readonly string[] = managedAllowedImagesForEngine('mysql') ?? []
 
-export const MARIADB_ALLOWED_IMAGES: readonly string[] = managedAllowedImagesForEngine('mariadb') ??
-  []
+export const MARIADB_ALLOWED_IMAGES: readonly string[] =
+  managedAllowedImagesForEngine('mariadb') ?? []
 
 const MANAGED_ALLOWED_IMAGES_BY_ENGINE: Record<string, readonly string[]> = {
   postgres: POSTGRES_ALLOWED_IMAGES,
@@ -180,9 +176,7 @@ const MANAGED_ALLOWED_IMAGES_BY_ENGINE: Record<string, readonly string[]> = {
 }
 
 /** Approved image references for `engine`, or `undefined` when the engine has no curated allowlist yet. */
-export function getManagedAllowedImages(
-  engine: string,
-): readonly string[] | undefined {
+export function getManagedAllowedImages(engine: string): readonly string[] | undefined {
   return MANAGED_ALLOWED_IMAGES_BY_ENGINE[engine]
 }
 
@@ -252,11 +246,11 @@ export const DEFAULT_MANAGED_SETTINGS: ManagedSettings = {
   /** No override — inherit the org default, then `require`. */
   ssl: {},
   /**
-   * Exposed by default: the shared ProxySQL publishes its listener ports
-   * regardless, so recording exposure on matches reality. Narrowing access is
-   * a host-firewall / database-user-rule concern, not a create-time choice.
+   * Local by default: ProxySQL listens on the server's own loopback address
+   * only, which is all a site run by a site owner's Linux user on the same
+   * server needs. Wider scopes are an explicit choice per cluster.
    */
-  exposure: { enabled: true },
+  exposure: { enabled: true, scope: DEFAULT_MANAGED_SQL_ACCESS_SCOPE },
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -311,9 +305,7 @@ function parseSsl(value: unknown): ManagedSettings['ssl'] | null {
   return {}
 }
 
-function parseRouting(
-  value: unknown,
-): ManagedRoutingSettings | null | undefined {
+function parseRouting(value: unknown): ManagedRoutingSettings | null | undefined {
   if (value === undefined) return undefined
   if (!isRecord(value)) return null
   for (const key of Object.keys(value)) {
@@ -335,9 +327,7 @@ function readOptionalPositiveInt(value: unknown): number | undefined {
   return rounded > 0 ? rounded : undefined
 }
 
-function parseResources(
-  value: unknown,
-): ServiceOptions['resources'] | null | undefined {
+function parseResources(value: unknown): ServiceOptions['resources'] | null | undefined {
   if (value === undefined) return undefined
   if (!isRecord(value)) return null
   const resources: NonNullable<ServiceOptions['resources']> = {}
@@ -352,9 +342,7 @@ function parseResources(
     resources.memoryBytes = memoryBytes
   }
   if (value.memoryReservationBytes !== undefined) {
-    const memoryReservationBytes = readOptionalPositiveInt(
-      value.memoryReservationBytes,
-    )
+    const memoryReservationBytes = readOptionalPositiveInt(value.memoryReservationBytes)
     if (memoryReservationBytes === undefined) return null
     resources.memoryReservationBytes = memoryReservationBytes
   }
@@ -383,7 +371,7 @@ function parseLabels(value: unknown): Record<string, string> | null {
 
 function parseExtraEnv(
   value: unknown,
-  reservedKeys: ReadonlySet<string>,
+  reservedKeys: ReadonlySet<string>
 ): Record<string, string> | null {
   if (!isRecord(value)) return null
   const entries = Object.entries(value)
@@ -401,9 +389,7 @@ function parseExtraEnv(
   return env
 }
 
-function parseNofileUlimit(
-  value: unknown,
-): { soft: number; hard: number } | null {
+function parseNofileUlimit(value: unknown): { soft: number; hard: number } | null {
   if (!isRecord(value)) return null
   const soft = readOptionalPositiveInt(value.soft)
   const hard = readOptionalPositiveInt(value.hard)
@@ -412,9 +398,7 @@ function parseNofileUlimit(
   return { soft, hard }
 }
 
-function parseUlimits(
-  value: unknown,
-): ManagedDockerOptions['ulimits'] | null {
+function parseUlimits(value: unknown): ManagedDockerOptions['ulimits'] | null {
   if (!isRecord(value)) return null
   for (const key of Object.keys(value)) {
     if (key !== 'nofile') return null
@@ -429,7 +413,7 @@ function parseDockerOptionsField(
   key: string,
   value: unknown,
   reservedEnvKeys: ReadonlySet<string>,
-  out: ManagedDockerOptions,
+  out: ManagedDockerOptions
 ): boolean {
   switch (key) {
     case 'restart': {
@@ -480,7 +464,7 @@ function parseDockerOptionsField(
  */
 export function parseManagedDockerOptions(
   value: unknown,
-  reservedEnvKeys: ReadonlySet<string> = new Set(),
+  reservedEnvKeys: ReadonlySet<string> = new Set()
 ): ManagedDockerOptions | null | undefined {
   if (value === undefined) return undefined
   if (!isRecord(value)) return null
@@ -519,6 +503,11 @@ function parseExposure(value: unknown): ManagedSettings['exposure'] | null {
   if (value.scope !== undefined) {
     if (!isManagedSqlAccessScope(value.scope)) return null
     exposure.scope = value.scope
+  } else if (value.enabled) {
+    // Name the scope instead of leaving it implied, so every reader (the
+    // connection panel, a settings save that echoes it back) sees the same
+    // answer the reconcile uses.
+    exposure.scope = DEFAULT_MANAGED_SQL_ACCESS_SCOPE
   }
 
   return exposure
@@ -530,18 +519,14 @@ function parseExposure(value: unknown): ManagedSettings['exposure'] | null {
  * an integer within `1..MAX_BACKUP_RETENTION_KEEP` — callers additionally
  * clamp against the engine's `maxRetentionKeep`.
  */
-export function parseBackupSettings(
-  value: unknown,
-): ManagedBackupSettings | null | undefined {
+export function parseBackupSettings(value: unknown): ManagedBackupSettings | null | undefined {
   if (value === undefined) return undefined
   if (!isRecord(value)) return null
 
   const backups: ManagedBackupSettings = {}
   if (value.retentionKeep !== undefined) {
     const retentionKeep = readOptionalPositiveInt(value.retentionKeep)
-    if (
-      retentionKeep === undefined || retentionKeep > MAX_BACKUP_RETENTION_KEEP
-    ) {
+    if (retentionKeep === undefined || retentionKeep > MAX_BACKUP_RETENTION_KEEP) {
       return null
     }
     backups.retentionKeep = retentionKeep
@@ -562,7 +547,7 @@ export function parseBackupSettings(
 export function parseManagedSettingsBase(
   value: unknown,
   reservedEnvKeys: ReadonlySet<string> = new Set(),
-  engine?: string,
+  engine?: string
 ): ManagedSettings | null {
   if (value === null || value === undefined) {
     return {
@@ -578,15 +563,11 @@ export function parseManagedSettingsBase(
 function parseManagedSettingsRecord(
   value: Record<string, unknown>,
   reservedEnvKeys: ReadonlySet<string>,
-  engine?: string,
+  engine?: string
 ): ManagedSettings | null {
   const image = parseImage(value.image)
   if (image === null) return null
-  if (
-    image !== undefined &&
-    engine !== undefined &&
-    !isManagedImageAllowed(engine, image)
-  ) {
+  if (image !== undefined && engine !== undefined && !isManagedImageAllowed(engine, image)) {
     return null
   }
 
@@ -599,10 +580,7 @@ function parseManagedSettingsRecord(
   const resources = parseResources(value.resources)
   if (resources === null) return null
 
-  const dockerOptions = parseManagedDockerOptions(
-    value.dockerOptions,
-    reservedEnvKeys,
-  )
+  const dockerOptions = parseManagedDockerOptions(value.dockerOptions, reservedEnvKeys)
   if (dockerOptions === null) return null
 
   const engineConfig = parseEngineConfig(value.engineConfig)
@@ -657,13 +635,9 @@ function assembleManagedSettings(parts: {
 export function clampManagedResources(
   settings: ManagedSettings,
   orgLimits: ResourceLimits,
-  serverLimits: ResourceLimits,
+  serverLimits: ResourceLimits
 ): ManagedSettings {
-  const clamped = clampServiceResources(
-    { resources: settings.resources },
-    orgLimits,
-    serverLimits,
-  )
+  const clamped = clampServiceResources({ resources: settings.resources }, orgLimits, serverLimits)
   return {
     ...settings,
     resources: clamped.resources,

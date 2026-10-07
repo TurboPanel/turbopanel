@@ -207,11 +207,15 @@ test('PUT use-letsencrypt: refuses a local bind and hostings owned by compose', 
 
 test('PUT use-letsencrypt: waits for DNS, then the sweep pins it once the name resolves', async () => {
   if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
-  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  const f = await setup({
+    acmeEnabled: true,
+    hostingOptions: { ...PUBLIC_SITE, www: 'www-to-root' },
+  })
   try {
     f.setLookup(nowhere)
+    // An old client may still send `wwwRedirect`: it is ignored, not refused.
     const waiting = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {
-      wwwRedirect: true,
+      wwwRedirect: 'yes',
     })
     assertEquals(waiting.status, 200)
     const waitingBody = (await waiting.json()) as CertificateBody
@@ -223,6 +227,11 @@ test('PUT use-letsencrypt: waits for DNS, then the sweep pins it once the name r
       .from(hosting)
       .where(eq(hosting.id, f.hostingId))
     assertEquals(unpinned?.tlsId, null)
+    const [requested] = await f.db
+      .select({ context: audit.context })
+      .from(audit)
+      .where(eq(audit.organizationId, f.organizationId))
+    assertEquals(requested?.context, { outcome: 'waiting', www: 'www-to-root' })
 
     const check = await f.call('GET', `/hostings/${f.hostingId}/dns-check`)
     assertEquals(
@@ -241,16 +250,79 @@ test('PUT use-letsencrypt: waits for DNS, then the sweep pins it once the name r
       .from(hosting)
       .where(eq(hosting.id, f.hostingId))
     assertEquals(typeof pinned?.tlsId, 'string')
-    assertEquals((pinned?.options as { wwwRedirect?: boolean }).wwwRedirect, true)
+    assertEquals(pinned?.options, { ...PUBLIC_SITE, www: 'www-to-root' })
 
     const got = await f.call('GET', `/hostings/${f.hostingId}`)
     const body = (await got.json()) as {
-      hosting: { certificate: { state: string; needsDeploy: boolean; wwwRedirect: boolean } }
+      hosting: { certificate: { state: string; needsDeploy: boolean; www: string } }
     }
     assertEquals(body.hosting.certificate.state, 'issuing')
     assertEquals(body.hosting.certificate.needsDeploy, true)
-    assertEquals(body.hosting.certificate.wwwRedirect, true)
+    assertEquals(body.hosting.certificate.www, 'www-to-root')
   } finally {
+    await f.cleanup()
+  }
+})
+
+test('PUT use-letsencrypt: refuses a www setting when the other spelling is already a domain', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({
+    acmeEnabled: true,
+    hostingOptions: { hostnames: ['example.com', 'www.example.com'], www: 'both' },
+  })
+  try {
+    // The body cannot turn the setting off: only the hosting's own options count.
+    const res = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {
+      wwwRedirect: false,
+    })
+    assertEquals(res.status, 400)
+    const body = (await res.json()) as { error: string; message: string }
+    assertEquals(body.error, 'www_redirect_conflict')
+    assertEquals(body.message.includes('www.example.com'), true)
+    const rows = await f.db
+      .select({ id: tls.id })
+      .from(tls)
+      .where(eq(tls.organizationId, f.organizationId))
+    assertEquals(rows.length, 0)
+
+    await f.db
+      .update(hosting)
+      .set({ options: { hostnames: ['example.com', 'www.example.com'] } })
+      .where(eq(hosting.id, f.hostingId))
+    const without = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
+    assertEquals(without.status, 200)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('PUT use-letsencrypt: refuses a www setting when another hosting in the environment serves the other spelling', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({
+    acmeEnabled: true,
+    hostingOptions: { ...PUBLIC_SITE, www: 'root-to-www' },
+  })
+  const [own] = await f.db
+    .select({ serviceId: hosting.serviceId })
+    .from(hosting)
+    .where(eq(hosting.id, f.hostingId))
+  const now = new Date().toISOString()
+  const [other] = await f.db
+    .insert(hosting)
+    .values({
+      serviceId: own!.serviceId,
+      name: 'Other',
+      options: { hostnames: ['www.shop.example.com'] },
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: hosting.id })
+  try {
+    const res = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
+    assertEquals(res.status, 400)
+    assertEquals(((await res.json()) as { error: string }).error, 'www_redirect_conflict')
+  } finally {
+    await f.db.delete(hosting).where(eq(hosting.id, other!.id))
     await f.cleanup()
   }
 })
@@ -302,6 +374,112 @@ test('PUT use-letsencrypt: pins at once when DNS is ready, and a second click ad
     }
     assertEquals(listBody.hostings[0]?.certificate?.state, 'renewal_failed')
   } finally {
+    await f.cleanup()
+  }
+})
+
+async function readPending(f: Fixture): Promise<unknown> {
+  const [row] = await f.db
+    .select({ metadata: hosting.metadata })
+    .from(hosting)
+    .where(eq(hosting.id, f.hostingId))
+  return (row?.metadata as Record<string, unknown> | null)?.letsEncryptPending
+}
+
+async function readCertificate(f: Fixture) {
+  const got = await f.call('GET', `/hostings/${f.hostingId}`)
+  assertEquals(got.status, 200)
+  return ((await got.json()) as { hosting: { certificate: CertificateBody['certificate'] } })
+    .hosting.certificate
+}
+
+test("PATCH /hostings: a www choice adding names the Let's Encrypt row lacks queues a DNS check", async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  try {
+    const pinned = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
+    assertEquals(pinned.status, 200)
+    const [row] = await f.db
+      .select({ metadata: tls.metadata })
+      .from(tls)
+      .where(eq(tls.organizationId, f.organizationId))
+    assertEquals((row?.metadata as { dnsNames?: unknown }).dnsNames, ['shop.example.com'])
+    assertEquals(await readPending(f), undefined)
+
+    const before = Date.now()
+    const patched = await f.call('PATCH', `/hostings/${f.hostingId}`, {
+      options: { ...PUBLIC_SITE, www: 'www-to-root' },
+    })
+    assertEquals(patched.status, 200)
+    const pending = (await readPending(f)) as { requestedAt: string; dns: unknown }
+    assertEquals(pending.dns, null)
+    assertEquals(Date.parse(pending.requestedAt) >= before - 1000, true)
+
+    const certificate = await readCertificate(f)
+    assertEquals(certificate?.state, 'waiting_for_dns')
+    assertEquals(certificate?.dns, null)
+
+    // A request already waiting is kept as it is, not queued again.
+    const again = await f.call('PATCH', `/hostings/${f.hostingId}`, {
+      options: { ...PUBLIC_SITE, www: 'both' },
+    })
+    assertEquals(again.status, 200)
+    assertEquals(await readPending(f), pending)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("PATCH /hostings: no DNS check is queued when the Let's Encrypt row already lists every name", async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({
+    acmeEnabled: true,
+    hostingOptions: { ...PUBLIC_SITE, www: 'www-to-root' },
+  })
+  try {
+    const pinned = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
+    assertEquals(pinned.status, 200)
+    for (const www of ['both', 'root-to-www', 'off']) {
+      const res = await f.call('PATCH', `/hostings/${f.hostingId}`, {
+        options: { ...PUBLIC_SITE, www },
+      })
+      assertEquals(res.status, 200, www)
+      assertEquals(await readPending(f), undefined, www)
+    }
+    assertEquals((await readCertificate(f))?.state, 'issuing')
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('PATCH /hostings: no DNS check is queued without a pin or for an uploaded certificate', async () => {
+  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
+  const f = await setup({ acmeEnabled: true, hostingOptions: PUBLIC_SITE })
+  try {
+    const unpinned = await f.call('PATCH', `/hostings/${f.hostingId}`, {
+      options: { ...PUBLIC_SITE, www: 'both' },
+    })
+    assertEquals(unpinned.status, 200)
+    assertEquals(await readPending(f), undefined)
+
+    const [upload] = await f.db
+      .insert(tls)
+      .values({
+        organizationId: f.organizationId,
+        name: 'Uploaded',
+        source: 'upload',
+        status: 'ready',
+        metadata: { dnsNames: ['shop.example.com'] },
+      })
+      .returning({ id: tls.id })
+    await f.db.update(hosting).set({ tlsId: upload!.id }).where(eq(hosting.id, f.hostingId))
+    const uploaded = await f.call('PATCH', `/hostings/${f.hostingId}`, {
+      options: { ...PUBLIC_SITE, www: 'www-to-root' },
+    })
+    assertEquals(uploaded.status, 200)
+    assertEquals(await readPending(f), undefined)
+  } finally {
+    await f.db.update(hosting).set({ tlsId: null }).where(eq(hosting.id, f.hostingId))
     await f.cleanup()
   }
 })

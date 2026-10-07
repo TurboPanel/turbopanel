@@ -59,6 +59,21 @@ function name(ctx: NotificationContext, key: string, fallback: string): string {
 }
 
 /**
+ * What a lost server means for the high availability databases whose primary
+ * it hosts, and what happens next. Empty when it hosts none.
+ */
+function databaseSentence(ctx: NotificationContext): string {
+  const databases = ctx.databases
+  if (typeof databases !== 'string' || databases.length === 0) return ''
+  return (
+    ` It hosts the primary of ${databases}. If the server stays down, PostgreSQL databases ` +
+    'can fail over to a replica on their own (where automatic failover is switched on) once the ' +
+    'replicas confirm the primary is gone; otherwise, or for MySQL and MariaDB, promote a replica ' +
+    "from the database's page."
+  )
+}
+
+/**
  * The catalogue. Keys are the codes; the object is `as const` so the code
  * union and the CHECK pin in `enum-checks.test.ts` derive from one place.
  */
@@ -76,7 +91,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
         'the server'
       )} stopped answering and the server was marked offline${
         typeof ctx.lastSeenAt === 'string' ? ` (last seen ${ctx.lastSeenAt})` : ''
-      }.`,
+      }.${databaseSentence(ctx)}`,
   },
   'fleet.mass_disconnect': {
     severity: 'critical',
@@ -137,14 +152,38 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       )} from ${name(ctx, 'subjectKind', 'a subject')} ${name(ctx, 'subjectId', '')}`.trimEnd() +
       '.',
   },
+  'certificate.renewal_failed': {
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'members',
+    urgent: true,
+    title: (ctx) => `Certificate renewal failed for ${name(ctx, 'hostname', 'a domain')}`,
+    body: (ctx) =>
+      `${name(
+        ctx,
+        'reason',
+        "Let's Encrypt could not issue or renew the certificate."
+      )} Visitors may see a browser warning until it is fixed; check the domain's DNS, then try again.`,
+  },
 } as const satisfies Record<string, EventDefinition>
 
 export type NotificationEvent = keyof typeof NOTIFICATION_EVENT_DEFINITIONS
 
+/**
+ * Events that are defined and tested but not offered yet: the database CHECK
+ * constraints on `notification`, `attempt` and `rule` do not list them until
+ * the owner commits the migration that widens them (see the PR that added
+ * `certificate.renewal_failed`). While listed here an event is not in the
+ * rules vocabulary or the catalogue endpoint, is refused as a rule target, and
+ * its emitter stays quiet instead of failing on every insert. The migration
+ * patch empties this list.
+ */
+const EVENTS_AWAITING_MIGRATION: readonly NotificationEvent[] = ['certificate.renewal_failed']
+
 /** The codes, in catalogue order — what the CHECK constraint and the rules vocabulary pin. */
-export const NOTIFICATION_EVENTS = Object.keys(
-  NOTIFICATION_EVENT_DEFINITIONS
-) as readonly NotificationEvent[]
+export const NOTIFICATION_EVENTS = (
+  Object.keys(NOTIFICATION_EVENT_DEFINITIONS) as NotificationEvent[]
+).filter((event) => !EVENTS_AWAITING_MIGRATION.includes(event)) as readonly NotificationEvent[]
 
 /** A rule may name one event, or every event. */
 export const NOTIFICATION_RULE_ANY_EVENT = '*' as const
@@ -154,7 +193,16 @@ export const NOTIFICATION_RULE_EVENTS = [
 ] as const
 
 export function isNotificationEvent(value: string): value is NotificationEvent {
-  return Object.hasOwn(NOTIFICATION_EVENT_DEFINITIONS, value)
+  return Object.hasOwn(NOTIFICATION_EVENT_DEFINITIONS, value) && !isAwaitingMigration(value)
+}
+
+function isAwaitingMigration(value: string): boolean {
+  return (EVENTS_AWAITING_MIGRATION as readonly string[]).includes(value)
+}
+
+/** True when the database accepts this event (it is in the pinned vocabulary). */
+export function isNotificationEventLive(event: NotificationEvent): boolean {
+  return NOTIFICATION_EVENTS.includes(event)
 }
 
 export function eventSeverity(event: NotificationEvent): NotificationSeverity {
