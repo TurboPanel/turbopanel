@@ -7,6 +7,7 @@ import {
   EXTENDED_DOCKER_FIELD_NAMES,
   EXTENDED_HOST_FIELD_NAMES,
   EXTENDED_INGRESS_FIELD_NAMES,
+  EXTENDED_SIZE_FIELD_NAMES,
   isMetricsWireVersion,
   MAX_METRICS_TEXT_LENGTH,
   METRICS_TEXT_FIELD_NAMES,
@@ -1011,6 +1012,9 @@ const ALLOWED_EXTENDED_FIELDS: ReadonlySet<string> = new Set([
   'text',
   'blockDeviceText',
   'gpuText',
+  'sizes',
+  'filesystemSizes',
+  'gpuSizes',
 ])
 
 /** One flat object of `number | null` readings: unknown keys and non-numbers are rejected. */
@@ -1074,11 +1078,45 @@ function parseTextEntries(
   return { ok: true, value: out }
 }
 
-type ExtendedNumberSection = 'host' | 'docker' | 'ingress'
+/** An array of `{ <idField>, ...numbers }` entries, bounded like every other entity array. */
+function parseNumberEntries(
+  raw: unknown,
+  label: string,
+  idField: string,
+  names: readonly string[]
+): ValidateResult<Record<string, string | number | null>[]> {
+  const arr = parseArray(raw, label, MAX_METRIC_ENTITY_ARRAY_LENGTH)
+  if (!arr.ok) return arr
+  const out: Record<string, string | number | null>[] = []
+  for (let i = 0; i < arr.value.length; i++) {
+    const entry = arr.value[i]
+    const entryLabel = `${label}[${i}]`
+    if (!isRecord(entry)) return fail(`${entryLabel} must be an object`)
+    const unknown = rejectUnknownKeys(entry, new Set([idField, ...names]), entryLabel)
+    if (unknown) return unknown
+    const id = entry[idField]
+    if (typeof id !== 'string' || id.length === 0 || id.length > MAX_DIMENSION_LEN) {
+      return fail(`${entryLabel}.${idField} must be a non-empty string`)
+    }
+    const numbers = parseOptionalNumberGroup(
+      Object.fromEntries(
+        names.filter((name) => entry[name] !== undefined).map((name) => [name, entry[name]])
+      ),
+      entryLabel,
+      names
+    )
+    if (!numbers.ok) return numbers
+    out.push({ [idField]: id, ...numbers.value })
+  }
+  return { ok: true, value: out }
+}
+
+type ExtendedNumberSection = 'host' | 'docker' | 'ingress' | 'sizes'
 const EXTENDED_NUMBER_SECTIONS: readonly (readonly [ExtendedNumberSection, readonly string[]])[] = [
   ['host', EXTENDED_HOST_FIELD_NAMES],
   ['docker', EXTENDED_DOCKER_FIELD_NAMES],
   ['ingress', EXTENDED_INGRESS_FIELD_NAMES],
+  ['sizes', EXTENDED_SIZE_FIELD_NAMES],
 ]
 
 /** Parse the text-bearing parts of the v7 `extended` section into `out`. */
@@ -1107,6 +1145,31 @@ function parseExtendedText(
   return { ok: true, value: true }
 }
 
+/** Parse the per-filesystem and per-GPU totals of the v7 `extended` section into `out`. */
+function parseExtendedEntitySizes(
+  raw: Record<string, unknown>,
+  out: Record<string, unknown>
+): ValidateResult<true> {
+  if (raw.filesystemSizes !== undefined) {
+    const parsed = parseNumberEntries(
+      raw.filesystemSizes,
+      'extended.filesystemSizes',
+      'filesystemId',
+      ['totalBytes', 'totalInodes']
+    )
+    if (!parsed.ok) return parsed
+    out.filesystemSizes = parsed.value
+  }
+  if (raw.gpuSizes !== undefined) {
+    const parsed = parseNumberEntries(raw.gpuSizes, 'extended.gpuSizes', 'gpuId', [
+      'memoryTotalBytes',
+    ])
+    if (!parsed.ok) return parsed
+    out.gpuSizes = parsed.value
+  }
+  return { ok: true, value: true }
+}
+
 /**
  * Parse the optional v7 `extended` section. Every key is optional and unknown
  * keys are rejected, so a typo cannot silently drop a reading.
@@ -1124,6 +1187,8 @@ function parseExtended(raw: unknown): ValidateResult<MetricsExtended> {
   }
   const text = parseExtendedText(raw, out)
   if (!text.ok) return text
+  const entitySizes = parseExtendedEntitySizes(raw, out)
+  if (!entitySizes.ok) return entitySizes
   return { ok: true, value: out as MetricsExtended }
 }
 

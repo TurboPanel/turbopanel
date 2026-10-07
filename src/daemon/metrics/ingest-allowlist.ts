@@ -131,6 +131,14 @@ function pruneExtended(
   gpuIds: ReadonlySet<string>
 ): NonNullable<MetricsSample['extended']> {
   const out = { ...extended }
+  if (extended.filesystemSizes) {
+    out.filesystemSizes = extended.filesystemSizes.filter(
+      (entry) => !isNoiseFilesystemId(entry.filesystemId)
+    )
+  }
+  if (extended.gpuSizes) {
+    out.gpuSizes = extended.gpuSizes.filter((entry) => gpuIds.has(entry.gpuId))
+  }
   if (extended.blockDeviceText) {
     out.blockDeviceText = extended.blockDeviceText.filter((entry) => blockIds.has(entry.deviceId))
   }
