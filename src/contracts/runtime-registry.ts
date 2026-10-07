@@ -28,7 +28,16 @@ export const SUPPORTED_RUNTIMES: readonly string[] = ['php', 'node']
  * against the registry on the host anyway; this is a shape gate, not the
  * authority. `runtimeSeries` is what the UI should offer per runtime.
  */
-export const SUPPORTED_RUNTIME_SERIES: readonly string[] = ['8.1', '8.2', '8.3', '8.4', '8.5', '22', '24', '26']
+export const SUPPORTED_RUNTIME_SERIES: readonly string[] = [
+  '8.1',
+  '8.2',
+  '8.3',
+  '8.4',
+  '8.5',
+  '22',
+  '24',
+  '26',
+]
 
 /** Series offered for one runtime, or `[]` for one this list does not know. */
 export function runtimeSeries(runtime: string): readonly string[] {
