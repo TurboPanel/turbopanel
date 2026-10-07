@@ -592,13 +592,18 @@ export async function pruneToSizeCap(input: PruneToSizeCapInput): Promise<number
 
   let total = input.otherBytes + [...byDay.values()].reduce((sum, day) => sum + day.bytes, 0)
   const oldestFirst = [...byDay.entries()].sort(([a], [b]) => a - b)
-  let removed = 0
+  // Choose the oldest days that bring the store under the cap, then remove
+  // them together: day directories are independent of one another.
+  const doomed: { dirs: string[]; bytes: number }[] = []
   for (const [, day] of oldestFirst) {
     if (total <= input.maxBytes) break
-    // Distinct day directories of one day: removals are independent of one another.
-    await Promise.all(day.dirs.map((dir) => Deno.remove(dir, { recursive: true }).catch(() => {})))
+    doomed.push(day)
     total -= day.bytes
-    removed++
   }
-  return removed
+  await Promise.all(
+    doomed.flatMap((day) =>
+      day.dirs.map((dir) => Deno.remove(dir, { recursive: true }).catch(() => {}))
+    )
+  )
+  return doomed.length
 }
