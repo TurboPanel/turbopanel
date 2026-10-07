@@ -231,7 +231,7 @@ for (const tier of model.TIER_IDS) {
 }
 
 // ---------------------------------------------------------------------------
-// Owner amendment 2026-10-07 (research: .cl-tmp/metrics-v7/research-v7-totals-and-abuse.md).
+// Owner amendment 2026-10-07 (research notes in the owner's working folder; the v8 Metrics Schema Audit supersedes them).
 //
 // Every sample carries the sizes its percentages are measured against, so a
 // resize or a balloon never needs a new topology generation. The host rows
