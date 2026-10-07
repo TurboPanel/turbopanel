@@ -85,6 +85,7 @@ import {
   getLatestTopologyGeneration,
   getTopologyGeneration,
   markTopologyResyncRequested,
+  topologyChurnLimitedRecently,
 } from '../features/servers/server-topology-records.ts'
 import { recordCapabilityPlanGenerationIfChanged } from '../client/servers/capability-plan-records.ts'
 import { enqueueCapabilityPlanUpdate } from '../client/servers/capability-plan-push.ts'
@@ -623,6 +624,20 @@ function resolveSlotMappingForIngest(
   }
 }
 
+/** A fresh resync marker is not re-stamped: an unknown generation on every sample must not become a write per sample. */
+const TOPOLOGY_RESYNC_MARK_COOLDOWN_MS = 5 * 60 * 1000
+
+export function topologyResyncRecentlyRequested(
+  serverMetadata: unknown,
+  nowMs = Date.now()
+): boolean {
+  if (!isPlainObject(serverMetadata)) return false
+  const at = serverMetadata.topologyResyncRequestedAt
+  if (typeof at !== 'string') return false
+  const requestedMs = Date.parse(at)
+  return Number.isFinite(requestedMs) && nowMs - requestedMs < TOPOLOGY_RESYNC_MARK_COOLDOWN_MS
+}
+
 type IngestPlanAndTopology = {
   plan: MetricsCapabilityPlan
   slotMapping: SlotMapping | undefined
@@ -716,7 +731,12 @@ async function resolveIngestPlanAndReconcileTopology(
     ])
 
     const topologyKnown = topologyMatch !== undefined
-    if (!topologyKnown && durable) {
+    if (
+      !topologyKnown &&
+      durable &&
+      !topologyResyncRecentlyRequested(planRow?.serverMetadata) &&
+      !topologyChurnLimitedRecently(planRow?.serverMetadata)
+    ) {
       markTopologyResyncRequested(db, serverId).catch((err) => {
         rateLimitedMetricsLog(serverId, 'topology_resync_mark_failed', () => {
           console.warn(

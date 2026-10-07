@@ -1,3 +1,7 @@
+import {
+  withTopologyReportRecording,
+  type RecordedTopologyInsert,
+} from '../test-fixtures/topology-report-db.ts'
 import { assertEquals, assertStringIncludes } from '@std/assert'
 import { stub } from '@std/testing/mock'
 import { Hono } from 'hono'
@@ -2528,19 +2532,11 @@ test('live WS update-result and heartbeat with addresses cover inbound dispatch'
  */
 function createTopologyInsertTrackingDb(): {
   db: Db
-  getInsertedValues: () => Record<string, unknown>[]
+  getInsertedValues: () => RecordedTopologyInsert[]
 } {
-  const inserted: Record<string, unknown>[] = []
-  const base = createMockDb() as unknown as Record<string, unknown>
-  const db = {
-    ...base,
-    insert: () => ({
-      values: (v: Record<string, unknown>) => {
-        inserted.push(v)
-        return { onConflictDoNothing: () => Promise.resolve(undefined) }
-      },
-    }),
-  } as unknown as Db
+  const { db, inserted } = withTopologyReportRecording(
+    createMockDb() as unknown as Record<string, unknown>
+  )
   return { db, getInsertedValues: () => inserted }
 }
 
