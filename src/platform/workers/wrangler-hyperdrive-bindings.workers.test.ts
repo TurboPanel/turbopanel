@@ -8,14 +8,8 @@ import { HYPERDRIVE_CACHED_PLACEHOLDER_ID } from './workers-bindings.ts'
 
 describe('stripJsoncLineComments', () => {
   it('removes trailing // comments from each line', () => {
-    const input = [
-      '{',
-      '  "id": "abc", // line comment',
-      '  "next": 1',
-    ].join('\n')
-    expect(stripJsoncLineComments(input)).toBe(
-      ['{', '  "id": "abc", ', '  "next": 1'].join('\n'),
-    )
+    const input = ['{', '  "id": "abc", // line comment', '  "next": 1'].join('\n')
+    expect(stripJsoncLineComments(input)).toBe(['{', '  "id": "abc", ', '  "next": 1'].join('\n'))
   })
 })
 
@@ -70,13 +64,13 @@ describe('readHyperdriveCachedIdsFromWranglerJsonc', () => {
 describe('assertExercisedHyperdriveCachedBindings', () => {
   it('throws when an exercised env id is missing or the dev placeholder', () => {
     expect(() =>
-      assertExercisedHyperdriveCachedBindings({ testing: undefined, live: 'real-id' }),
+      assertExercisedHyperdriveCachedBindings({ testing: undefined, live: 'real-id' })
     ).toThrow(/testing HYPERDRIVE_CACHED/)
     expect(() =>
       assertExercisedHyperdriveCachedBindings({
         testing: 'real-id',
         live: HYPERDRIVE_CACHED_PLACEHOLDER_ID,
-      }),
+      })
     ).toThrow(/live HYPERDRIVE_CACHED/)
   })
 
@@ -85,7 +79,7 @@ describe('assertExercisedHyperdriveCachedBindings', () => {
       assertExercisedHyperdriveCachedBindings({
         testing: 'a1b2c3d4e5f6478901234567890abcde',
         live: 'd9c42999730048e2842dccb61aa05d67',
-      }),
+      })
     ).not.toThrow()
   })
 })

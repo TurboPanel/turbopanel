@@ -586,6 +586,12 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
     (the sample's own size, else the host report) and physical cores from the daemon's host report
     (`server.metadata.resources`, one entry per socket) — the sample only carries the logical CPU
     count, which is never compared. Plans limit box size only — never refuse a sample for it.
+    11b. `topology-report` (the only writer of `server.metadata.hardware`) is burst-limited per server
+    before any Postgres work (`rate-limit/topology-report-limit.ts`): the `DAEMON_TOPOLOGY_RATE_LIMITER`
+    Workers binding (4 a minute, every wrangler environment), an in-process bucket (Redis-backed with a
+    local fallback) on self-hosted. It is per Cloudflare location and eventually consistent, so it blunts
+    a flood and is not exact; the 5-minute overwrite cooldown is the exact limit. A limited report is
+    dropped (it is fire-and-forget on the socket, so there is no 429 to send).
 11. No hardware facts yet (no recorded `SlotMapping`) degrades
     gracefully to positional packing — never a dropped sample.
 12. `HARDWARE_HEALTH_EVENT_KIND` is a `Record` over every `MetricEventKind` — a

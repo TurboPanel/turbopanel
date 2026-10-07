@@ -33,6 +33,14 @@
       }
     ]
   },
+  // The topology-report burst limit the cell reads; production-like surfaces fail closed without it.
+  "ratelimits": [
+    {
+      "name": "DAEMON_TOPOLOGY_RATE_LIMITER",
+      "namespace_id": "9011",
+      "simple": { "limit": 4, "period": 60 }
+    }
+  ],
   "migrations": [
     {
       "tag": "v1-daemon-cell",

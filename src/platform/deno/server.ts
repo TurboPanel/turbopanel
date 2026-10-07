@@ -14,6 +14,7 @@ import { resolveInstanceRevision } from '../../app/build-info.ts'
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveColocatedServerId } from '../../client/authn/install-state.ts'
 import { createDenoDb, type Db, endDbConnection } from '../../db/connection.ts'
+import { TOPOLOGY_REPORT_RATE } from '../../daemon/rate-limit/topology-report-limit.ts'
 import { createInMemoryMetricsGate } from '../../daemon/metrics/ingest-gate.ts'
 import { assertSchemaCurrent, SchemaStateError } from '../../db/schema-state.ts'
 import { logError, logInfo, logWarn } from '../../lib/logger.ts'
@@ -493,6 +494,14 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     limit: metricsRate.limit,
     periodSeconds: metricsRate.periodSeconds,
   })
+  // Topology reports (the only writer of server.metadata.hardware): Redis-backed, and a
+  // process-local bucket when Redis throws so a broker hiccup still throttles.
+  const daemonTopologyLimiter = createRedisRateLimiter({
+    client: daemonCellRegistry.client,
+    limit: TOPOLOGY_REPORT_RATE.limit,
+    periodSeconds: TOPOLOGY_REPORT_RATE.periodSeconds,
+    onError: 'local',
+  })
   // Inbound GitHub webhooks: keyed per peer address, not per server, because the
   // caller has no identity until its HMAC has been checked (see
   // `githubWebhookRateLimitKey`). Redis eval failures fall through to a
@@ -632,6 +641,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     dataEncryptionSecrets,
     daemonCellRegistry,
     connectLimiter: daemonConnectLimiter,
+    topologyLimiter: daemonTopologyLimiter,
     inboundMessageLimit: inboundLimits.limit,
     inboundMessageWindowMs: inboundLimits.windowMs,
     commandQueue,

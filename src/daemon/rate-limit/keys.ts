@@ -34,6 +34,15 @@ export function daemonRestRateLimitKey(id: string, route: DaemonRestRateLimitRou
   return `daemon:rest:${route}:${id}`
 }
 
+/**
+ * Per-server key for a `topology-report` message (dedicated topology limiter).
+ * The report arrives on the daemon's authenticated WebSocket, so the verified
+ * server id always exists and no source-address key is needed.
+ */
+export function daemonTopologyRateLimitKey(serverId: string): string {
+  return `daemon:topology:${serverId}`
+}
+
 /** Per-server key for `POST /metrics` (dedicated metrics limiter). */
 export function daemonMetricsRateLimitKey(serverId: string): string {
   return `daemon:metrics:${serverId}`

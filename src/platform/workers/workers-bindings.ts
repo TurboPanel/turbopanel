@@ -156,12 +156,14 @@ export function resolveWorkersDaemonRateLimiters(env: CloudflareBindings): {
   connect: RateLimiter
   rest: RateLimiter
   metrics: RateLimiter
+  topology: RateLimiter
 } {
   const allowNoop = isWorkersDevSurface(env)
   return {
     connect: resolveDaemonLimiterBinding(env.DAEMON_CONNECT_RATE_LIMITER, allowNoop),
     rest: resolveDaemonLimiterBinding(env.DAEMON_REST_RATE_LIMITER, allowNoop),
     metrics: resolveDaemonLimiterBinding(env.DAEMON_METRICS_RATE_LIMITER, allowNoop),
+    topology: resolveDaemonLimiterBinding(env.DAEMON_TOPOLOGY_RATE_LIMITER, allowNoop),
   }
 }
 
@@ -299,7 +301,8 @@ export function warnIfDaemonRateLimitersMissing(env: CloudflareBindings): void {
   if (
     env.DAEMON_CONNECT_RATE_LIMITER &&
     env.DAEMON_REST_RATE_LIMITER &&
-    env.DAEMON_METRICS_RATE_LIMITER
+    env.DAEMON_METRICS_RATE_LIMITER &&
+    env.DAEMON_TOPOLOGY_RATE_LIMITER
   ) {
     return
   }
@@ -307,7 +310,7 @@ export function warnIfDaemonRateLimitersMissing(env: CloudflareBindings): void {
 
   daemonRateLimiterWarningLogged = true
   console.warn(
-    'DAEMON_CONNECT_RATE_LIMITER / DAEMON_REST_RATE_LIMITER / DAEMON_METRICS_RATE_LIMITER ' +
+    'DAEMON_CONNECT_RATE_LIMITER / DAEMON_REST_RATE_LIMITER / DAEMON_METRICS_RATE_LIMITER / DAEMON_TOPOLOGY_RATE_LIMITER ' +
       'binding(s) missing; daemon rate limits fail closed (429) until bound.'
   )
 }
