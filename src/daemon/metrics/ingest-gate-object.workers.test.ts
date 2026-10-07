@@ -23,6 +23,6 @@ describe('MetricsGateObject', () => {
     const decisions = await Promise.all(
       Array.from({ length: 40 }, (_, i) => gate.admit(id, at(i), 0))
     )
-    expect(decisions.filter((d) => d.stored).length).toBe(1 + GATE_SAMPLE_BURST)
+    expect(decisions.filter((d) => d.stored)).toHaveLength(1 + GATE_SAMPLE_BURST)
   })
 })
