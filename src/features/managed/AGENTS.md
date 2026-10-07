@@ -183,6 +183,25 @@ the operator block is rendered after the platform lines in the same
 speed can set another value. Existing clusters pick this up only when the
 config is re-applied and the engine restarts; no restart is forced.
 
+**Postgres slot retention is capped too.** Platform `postgresql.conf` sets
+`max_slot_wal_keep_size = '4GB'` (`SLOT_WAL_KEEP_SIZE`; Postgres' own default
+is unlimited, which let a stopped or removed replica's slot keep every WAL file
+until the primary's disk filled). Reload-only, so existing clusters get it at
+their next apply. Not a reserved key: the operator block comes last, so an
+operator value wins. Trade-off: a replica that is alive but further behind than
+the cap is invalidated (`wal_status = 'lost'`) and needs a Resync, so the cap
+should sit well above any lag a healthy replica reaches. The daemon reports the
+state on the **primary's** `replication.slotRetention` (`ok` / `lagging` = a
+slot holds more than `max_wal_size` / `critical` = `unreserved`, `lost` or
+`awaiting_resync`, with the worst slot, its `walStatus`, retained and safe
+bytes, and whether a replica is attached). A cut-off replica stays `critical`
+across later applies: the daemon replaces its lost slot with one that keeps no
+WAL (`awaiting_resync`) until a Resync reserves it again, so the signal does
+not clear on its own (daemon first: an older daemon re-creates the slot as
+reserved and the signal clears). The slot is named `tp_member_<ordinal>`, which
+is how the UI marks the replica itself as cut off; it is optional on every hop (apply result, `managed-health-result`,
+stored member metadata) so an older peer simply omits it.
+
 Reserved env keys: `POSTGRES_RESERVED_ENV_KEYS`, `MYSQL_RESERVED_ENV_KEYS`, and
 `MARIADB_RESERVED_ENV_KEYS` (MariaDB + legacy `MYSQL_*` names — the image still
 honours both). Registered in `MANAGED_RESERVED_ENV_KEYS_BY_ENGINE` and
@@ -533,8 +552,10 @@ the target's daemon for a fresh reading first (`managed-health-request`, 8s,
 `src/client/managed/health-probe.ts`, feature `managed-health-v1`) and runs the
 **unchanged** gate on it. **Fail-closed is preserved:** timeout, offline host,
 a daemon without the feature, a daemon error, a malformed reply, or a reply for
-another member all fall back to the gate on the stored observation — today's 409. `force` never probes. `GET …/managed/status?refresh=1` (the panel's
-Refresh) probes every **replica** in parallel and returns
+another member all fall back to the gate on the stored observation — today's
+409. `force` never probes. `GET …/managed/status?refresh=1` (the panel's
+Refresh) probes every **replica** in parallel (and the primary, while replicas
+exist, so its `slotRetention` is current after a Resync; not counted) and returns
 `healthRefresh: { observed, unavailable }`; a plain GET stays DB-only. The probe
 writes replication only (never `replica.status`). Automatic failover never
 honours `force`; it reads the stored, fresh observation first and probes only

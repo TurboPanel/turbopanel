@@ -13,7 +13,10 @@ import {
   resolvePrivateEndpoints,
 } from '../net/private-endpoint.ts'
 import { container, replica, server } from '../../db/schema.ts'
-import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
+import {
+  type ManagedReplicationHealth,
+  parseManagedSlotRetention,
+} from '../../contracts/commands/schemas.ts'
 import { ageReplicationHealth, type ReplicationHealthView } from './replica-freshness.ts'
 import { MANAGED_PRIVATE_PORT_MAX, MANAGED_PRIVATE_PORT_MIN } from './ingress-ports.ts'
 import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
@@ -130,6 +133,8 @@ function parseReplicationHealth(metadata: unknown): ManagedReplicationHealth | u
   if (typeof r.receiveLagBytes === 'number' && Number.isFinite(r.receiveLagBytes)) {
     health.receiveLagBytes = r.receiveLagBytes
   }
+  const slotRetention = parseManagedSlotRetention(r.slotRetention)
+  if (slotRetention !== undefined) health.slotRetention = slotRetention
   return withFreshnessFields(health, r)
 }
 

@@ -2487,6 +2487,36 @@ it('managed-health-result carries standby WAL positions and the last streaming r
   assertEquals(frame({ receiveLagBytes: '1' }), false)
 })
 
+it('managed-health-result carries a primary slot retention and refuses a malformed one', () => {
+  const frame = (slotRetention: unknown) =>
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        type: 'managed-health-result',
+        id: 'req-1',
+        ok: true,
+        member: { ...HEALTH_MEMBER, replication: { ...HEALTH_MEMBER.replication, slotRetention } },
+        at: VALID_AT,
+      })
+    ).ok
+  assertEquals(frame({ state: 'ok' }), true)
+  assertEquals(
+    frame({
+      state: 'critical',
+      slot: 'tp_member_2',
+      walStatus: 'lost',
+      retainedBytes: 12,
+      safeBytes: 0,
+      active: false,
+    }),
+    true
+  )
+  assertEquals(frame('critical'), false)
+  assertEquals(frame({ state: 'on fire' }), false)
+  assertEquals(frame({ state: 'lagging', active: 'no' }), false)
+  assertEquals(frame({ state: 'lagging', retainedBytes: '1' }), false)
+  assertEquals(frame({ state: 'lagging', slot: 7 }), false)
+})
+
 it('deploy-cancel round-trips between the envelope and the wire message', () => {
   assertEquals(
     outboundEnvelopeToWireMessage({
