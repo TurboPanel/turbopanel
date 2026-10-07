@@ -91,10 +91,7 @@ test('restricting BOTH day fields is rejected, with the reason', () => {
 
 test('a weekday step is rejected rather than approximated', () => {
   // "Every other Tuesday" is not something a calendar event can say.
-  assertStringIncludes(
-    calendarError('0 0 * * 1-5/2'),
-    'has no systemd equivalent',
-  )
+  assertStringIncludes(calendarError('0 0 * * 1-5/2'), 'has no systemd equivalent')
 })
 
 test('a backwards range is rejected rather than reordered', () => {
@@ -142,32 +139,26 @@ test('month names are accepted and rendered numerically', () => {
 })
 
 test('a command becomes argv, with php resolved to the dispatcher', () => {
-  // Runs *after* systemd drops to User=, so which PHP it resolves — and whether
-  // the account may run PHP at all — comes from its own entitlement groups.
+  // Runs *after* systemd drops to User=; the dispatcher picks which installed
+  // PHP version a bare `php` means for that account.
   assertEquals(argv('php wp-cron.php'), ['/usr/local/bin/php', 'wp-cron.php'])
   assertEquals(argv('/usr/bin/env true'), ['/usr/bin/env', 'true'])
-  assertEquals(argv('  php   -f  cron.php  '), [
-    '/usr/local/bin/php',
-    '-f',
-    'cron.php',
-  ])
+  assertEquals(argv('  php   -f  cron.php  '), ['/usr/local/bin/php', '-f', 'cron.php'])
 })
 
 test('shell syntax is rejected, never escaped', () => {
   // systemd runs the command directly. Accepting `>>` would silently pass it to
   // the script as an argument, which looks like redirection and is not.
-  for (
-    const command of [
-      'php cron.php >> /tmp/log',
-      'php cron.php && echo done',
-      'php cron.php | tee log',
-      'php cron.php; rm -rf /',
-      'php $(whoami).php',
-      'php `id`.php',
-      'php *.php',
-      'php "quoted arg"',
-    ]
-  ) {
+  for (const command of [
+    'php cron.php >> /tmp/log',
+    'php cron.php && echo done',
+    'php cron.php | tee log',
+    'php cron.php; rm -rf /',
+    'php $(whoami).php',
+    'php `id`.php',
+    'php *.php',
+    'php "quoted arg"',
+  ]) {
     const error = argvError(command)
     assertStringIncludes(error, 'no shell')
     assertStringIncludes(error, 'Output is captured for you')
@@ -190,10 +181,7 @@ test('empty and oversized commands are rejected', () => {
   assertStringIncludes(argvError('   '), 'command is required')
   assertStringIncludes(argvError(7), 'must be text')
   assertStringIncludes(argvError(`/bin/x ${'a'.repeat(1200)}`), 'under 1000')
-  assertStringIncludes(
-    argvError(`/bin/x ${'a'.repeat(600)}`),
-    'under 512 characters',
-  )
+  assertStringIncludes(argvError(`/bin/x ${'a'.repeat(600)}`), 'under 512 characters')
 })
 
 test('parseCronSchedule accepts five-field cron including a day-of-month and day-of-week union', () => {
@@ -210,7 +198,7 @@ test('parseCronSchedule rejects malformed schedules and unsupported aliases', ()
   assertEquals(parseCronSchedule(7).ok, false)
 })
 
-test('a timezone is appended as systemd\'s trailing calendar field', () => {
+test("a timezone is appended as systemd's trailing calendar field", () => {
   const result = cronToOnCalendar('0 3 * * *', 'Europe/Berlin')
   assert(result.ok, 'expected a zoned schedule to translate')
   assertEquals(result.value, '*-*-* 3:0:00 Europe/Berlin')
@@ -258,7 +246,10 @@ test('cronJobUnitName folds a display name to the unit-name rule, or refuses it'
   assertEquals(cronJobUnitName('nightly-backup'), cronJobUnitName('Nightly Backup'))
   // 32 characters, never ending on the hyphen the cut left behind.
   assertEquals(cronJobUnitName('a'.repeat(40))?.length, 32)
-  assertEquals(cronJobUnitName('abcdefghijklmnopqrstuvwxyzabcde-fgh'), 'abcdefghijklmnopqrstuvwxyzabcde')
+  assertEquals(
+    cronJobUnitName('abcdefghijklmnopqrstuvwxyzabcde-fgh'),
+    'abcdefghijklmnopqrstuvwxyzabcde'
+  )
   // Nothing survives the fold.
   assertEquals(cronJobUnitName('!!!'), null)
   assertEquals(cronJobUnitName('   '), null)

@@ -2126,36 +2126,16 @@ function deployPayloadWithPrincipal(runtimes: unknown) {
   }
 }
 
-test('parseCommandPayload round-trips principal runtime entitlements', () => {
-  const parsed = parseCommandPayload(
-    'environment.deploy' as CommandType,
-    deployPayloadWithPrincipal([
-      { runtime: 'php', series: '8.4' },
-      { runtime: 'node', series: '24' },
-    ])
-  ) as { principalMaterial: { runtimes?: unknown }[] }
-  assertEquals(parsed.principalMaterial[0]?.runtimes, [
-    { runtime: 'php', series: '8.4' },
-    { runtime: 'node', series: '24' },
-  ])
-})
-
-test('parseCommandPayload rejects a malformed runtime entitlement', () => {
-  // Rejected rather than dropped: the daemon reconciles group membership from
-  // exactly this list, so silently discarding it would REVOKE every
-  // entitlement the principal should have held.
-  for (const bad of [
-    [{ runtime: 'php' }],
-    [{ runtime: 'php', series: '8.4.1' }],
-    [{ runtime: 'php', series: 'latest' }],
-    'php',
-  ]) {
-    assertThrows(
-      () =>
-        parseCommandPayload('environment.deploy' as CommandType, deployPayloadWithPrincipal(bad)),
-      Error,
-      'Invalid environment.deploy payload'
-    )
+test('parseCommandPayload drops a stale principal runtimes list', () => {
+  // Every installed runtime runs for every site owner's Linux user, so the
+  // payload no longer carries a per-version list. A deploy prepared before
+  // that change must still parse, and the list must not reach the daemon.
+  for (const runtimes of [[{ runtime: 'php', series: '8.4' }], 'php']) {
+    const parsed = parseCommandPayload(
+      'environment.deploy' as CommandType,
+      deployPayloadWithPrincipal(runtimes)
+    ) as { principalMaterial: Record<string, unknown>[] }
+    assertEquals('runtimes' in (parsed.principalMaterial[0] ?? {}), false)
   }
 })
 
