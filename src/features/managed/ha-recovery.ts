@@ -58,6 +58,7 @@ import {
   type FreshStandbyProbe,
   isMysqlFamilyEngine,
   pickMostAdvancedStandby,
+  pickMysqlFamilyStandby,
 } from './ha-fresh-standby.ts'
 import { isAutomaticFailoverHealthy, replicationFromMemberMetadata } from './promote-lag.ts'
 import {
@@ -828,8 +829,11 @@ async function probeFreshStandbys(
     return null
   }
   const now = params.nowMs ?? Date.now
+  // MySQL and MariaDB: a stored `streaming` reading proves no GTID state, so
+  // every failover-class replica is probed, healthy-looking or not.
+  const mysqlFamily = isMysqlFamilyEngine(params.engine)
   const unhealthy = inputs.filter(
-    (input) => isAutomaticFailoverClassMember(input) && !input.healthy
+    (input) => isAutomaticFailoverClassMember(input) && (mysqlFamily || !input.healthy)
   )
   if (unhealthy.length === 0) return null
   const verdicts = await Promise.all(
@@ -856,20 +860,26 @@ async function probeFreshStandbys(
         ordinal: input.ordinal,
         verdict,
         receivedLsn: replication?.receivedLsn,
+        executedGtid: replication?.executedGtid,
       }
     })
   )
   const accepted = new Set(verdicts.filter((row) => row.verdict.accepted).map((row) => row.id))
-  const probed = inputs.map((input) =>
-    accepted.has(input.id) ? { ...input, healthy: true } : input
-  )
+  const probedIds = new Set(unhealthy.map((input) => input.id))
+  const probed = inputs.map((input) => {
+    if (accepted.has(input.id)) return { ...input, healthy: true }
+    return mysqlFamily && probedIds.has(input.id) ? { ...input, healthy: false } : input
+  })
   const freshStandby = verdicts
     .map(({ id, verdict }) =>
       verdict.accepted ? `${id} accepted: ${verdict.basis}` : `${id} refused: ${verdict.reason}`
     )
     .join('; ')
   // Several accepted: the one that received the most WAL loses the least.
-  const best = pickMostAdvancedStandby(verdicts.filter((row) => row.verdict.accepted))
+  const acceptedRows = verdicts.filter((row) => row.verdict.accepted)
+  const best = mysqlFamily
+    ? pickMysqlFamilyStandby(acceptedRows)
+    : pickMostAdvancedStandby(acceptedRows)
   return {
     inputs: probed,
     candidate: best ? (probed.find((input) => input.id === best.id) ?? null) : null,
@@ -883,7 +893,13 @@ async function pickAutomaticCandidate(
   dcSets: Map<string, Set<string>>
 ): Promise<CandidatePick> {
   const inputs = candidateInputs(params.members, primary, dcSets)
-  const candidate = OrchestratorManagedHaAuthority.pickAutomaticCandidate(inputs)
+  const probeFirst =
+    isMysqlFamilyEngine(params.engine) &&
+    params.probeStandby !== undefined &&
+    typeof params.failureStartedAtMs === 'number'
+  const candidate = probeFirst
+    ? null
+    : OrchestratorManagedHaAuthority.pickAutomaticCandidate(inputs)
   if (candidate) return { inputs, candidate }
   return (await probeFreshStandbys(params, inputs)) ?? { inputs, candidate: null }
 }

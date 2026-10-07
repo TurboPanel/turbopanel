@@ -2231,6 +2231,41 @@ for (const engine of ['mysql', 'mariadb'] as const) {
   })
 }
 
+test('host loss mysql: a stored streaming reading with no GTID proof is not enough', async () => {
+  const harness = createHarness({ pins: sharedDatacenterPins(), connected: [false] })
+  const { queue, sent } = countingQueue()
+  const stored = failoverReplica({
+    serverId: SERVER_B,
+    metadata: {
+      replication: {
+        state: 'streaming',
+        observedAt: new Date(EVENT_MS).toISOString(),
+        lagSeconds: 5,
+      },
+    },
+  })
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: queue,
+      managedId: MANAGED_ID,
+      engine: 'mysql',
+      members: [member(), stored],
+      sourceMemberId: MEM_PRIMARY,
+      detector: 'host-loss',
+      evidence: '{"incident":"x"}',
+      actor: ACTOR,
+      autoFailover: 'on',
+      probeStandby: () => Promise.resolve(lostMysqlPrimaryReading({ fullyApplied: false })),
+      failureStartedAtMs: HOST_LOSS_FAILURE_START_MS,
+      nowMs: () => EVENT_MS,
+      hostLossIncident: HOST_LOSS_INCIDENT,
+    })
+  )
+  assertEquals(row.state, 'blocked')
+  assertEquals(sent.length, 0)
+})
+
 test('host loss: the promote names the dead primary as the member to demote', async () => {
   const { harness } = await hostLossFailover(lostPrimaryReading(300_000))
   const payloads = harness.commandInserts

@@ -7,6 +7,7 @@ import {
   MAX_FAILURE_SPAN_MS,
   parsePgLsn,
   pickMostAdvancedStandby,
+  pickMysqlFamilyStandby,
 } from './ha-fresh-standby.ts'
 
 /**
@@ -227,4 +228,25 @@ test('mysql: still streaming needs fullyApplied and the lag gate', () => {
 
 test('postgres reading shape is not accepted without engine mysql (reconnecting is not a pg state)', () => {
   assertEquals(reason(judge(mysqlReplica(), { engine: 'postgres' })), 'not_a_standby')
+})
+
+test('mysql: a replica that was far behind when it lost its source is refused', () => {
+  const lagging = mysqlReplica({ lastStreaming: { at: 'x', ageMs: 25_000, lagSeconds: 600 } })
+  assertEquals(reason(judge(lagging, { engine: 'mysql' })), 'last_lag_over_limit')
+})
+
+test('mysql family: several accepted replicas are chosen only when their executed sets match', () => {
+  const a = { id: 'a', ordinal: 1, executedGtid: 'u:1-9' }
+  const b = { id: 'b', ordinal: 2, executedGtid: 'u:1-9' }
+  assertEquals(pickMysqlFamilyStandby([b, a])?.id, 'a')
+  assertEquals(pickMysqlFamilyStandby([a, { ...b, executedGtid: 'u:1-10' }]), null)
+  assertEquals(
+    pickMysqlFamilyStandby([
+      { id: 'a', ordinal: 1 },
+      { id: 'b', ordinal: 2 },
+    ]),
+    null
+  )
+  assertEquals(pickMysqlFamilyStandby([{ id: 'a', ordinal: 1 }])?.id, 'a')
+  assertEquals(pickMysqlFamilyStandby([]), null)
 })

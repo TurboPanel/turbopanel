@@ -28,6 +28,7 @@
 import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
 import {
   DEFAULT_MANAGED_PROMOTE_MAX_LAG_BYTES,
+  DEFAULT_MANAGED_PROMOTE_MAX_LAG_SECONDS,
   evaluateManagedPromoteLagGate,
 } from './promote-lag.ts'
 
@@ -246,6 +247,15 @@ function evaluateMysqlFamilyStandby(
     })
     if (gate !== null) return { accepted: false, reason: 'lagging' }
   }
+  // A replica that was already far behind when it lost its source is not proven current.
+  const lastLagSeconds = replication.lastStreaming?.lagSeconds
+  if (
+    !streaming &&
+    isNonNegativeFinite(lastLagSeconds) &&
+    lastLagSeconds > (input.maxLagSeconds ?? DEFAULT_MANAGED_PROMOTE_MAX_LAG_SECONDS)
+  ) {
+    return { accepted: false, reason: 'last_lag_over_limit' }
+  }
   const receipt = checkReceipt(input, replication)
   if (!receipt.ok) return { accepted: false, reason: receipt.reason }
   return {
@@ -254,6 +264,23 @@ function evaluateMysqlFamilyStandby(
       `${replication.state}; last contact ${receipt.value.toFixed(1)} s before failure start ` +
       `(margin ${input.marginMs / 1000} s); every received transaction applied`,
   }
+}
+
+/**
+ * MySQL / MariaDB: GTID sets are opaque text and cannot be ranked here, so
+ * several accepted replicas are only safe to choose between when they report
+ * the same executed set. Otherwise `null`: no automatic pick, the operator
+ * chooses.
+ */
+export function pickMysqlFamilyStandby<
+  T extends { id: string; ordinal: number; executedGtid?: string },
+>(accepted: readonly T[]): T | null {
+  if (accepted.length === 0) return null
+  const first = accepted[0]!.executedGtid
+  if (accepted.length > 1 && (!first || accepted.some((row) => row.executedGtid !== first))) {
+    return null
+  }
+  return pickMostAdvancedStandby(accepted.map((row) => ({ ...row, receivedLsn: undefined })))
 }
 
 /**
