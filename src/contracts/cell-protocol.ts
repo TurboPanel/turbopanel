@@ -1346,9 +1346,8 @@ function validateObservedReplication(replication: unknown): string | null {
 function validateOptionalGtid(value: unknown, field: string): string | null {
   if (
     value === undefined ||
-    (typeof value === 'string' &&
-      value.length > 0 &&
-      value.length <= MAX_DAEMON_WS_MANAGED_GTID_CHARS)
+    // An empty string is an empty GTID set: unknown (the parsers drop it), not a rejection.
+    (typeof value === 'string' && value.length <= MAX_DAEMON_WS_MANAGED_GTID_CHARS)
   ) {
     return null
   }

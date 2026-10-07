@@ -2550,6 +2550,7 @@ it('managed-health-result bounds the GTID freshness fields and types fullyApplie
     ).ok
   assertEquals(frame({ receivedGtid: 'u:1-5', executedGtid: 'u:1-5', fullyApplied: false }), true)
   assertEquals(frame({ receivedGtid: 'x'.repeat(4096) }), true)
+  assertEquals(frame({ receivedGtid: '', executedGtid: '' }), true)
   assertEquals(frame({ receivedGtid: 'x'.repeat(4097) }), false)
   assertEquals(frame({ executedGtid: 7 }), false)
   assertEquals(frame({ fullyApplied: 'true' }), false)

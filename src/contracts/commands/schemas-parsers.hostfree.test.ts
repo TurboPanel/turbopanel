@@ -954,5 +954,6 @@ test('parseManagedReplicationHealth keeps well-formed GTID freshness, drops the 
     }),
     base
   )
+  assertEquals(parseManagedReplicationHealth({ ...base, receivedGtid: '', executedGtid: '' }), base)
   assertEquals(parseManagedReplicationHealth(base), base)
 })

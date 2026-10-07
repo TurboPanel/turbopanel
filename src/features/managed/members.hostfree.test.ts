@@ -1581,6 +1581,10 @@ test('serializeManagedMember keeps stored GTID freshness and drops malformed fie
     executedGtid: 'u:1-5',
     fullyApplied: true,
   })
+  assertEquals(stored({ receivedGtid: '', executedGtid: '' }), {
+    state: 'streaming',
+    observedAt: '2020-01-02T00:00:00.000Z',
+  })
   assertEquals(stored({ receivedGtid: 'x'.repeat(4097), executedGtid: 3, fullyApplied: 'true' }), {
     state: 'streaming',
     observedAt: '2020-01-02T00:00:00.000Z',

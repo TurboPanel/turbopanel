@@ -282,6 +282,10 @@ test('keeps GTID freshness fields and drops malformed ones', async () => {
       fullyApplied: false,
     },
   })
+  assertEquals(await run({ receivedGtid: '', executedGtid: '' }), {
+    status: 'observed',
+    replication: { state: 'streaming', observedAt: NOW },
+  })
   assertEquals(await run({ receivedGtid: 'x'.repeat(4097), executedGtid: 1, fullyApplied: 'y' }), {
     status: 'observed',
     replication: { state: 'streaming', observedAt: NOW },
