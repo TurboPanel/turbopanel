@@ -1394,17 +1394,25 @@ it('GET /servers/:id/metrics/facts returns 401 without session', async () => {
   })
 })
 
-it('GET /servers/:id/metrics/connection returns 403 without read access', async () => {
+/** A signed-in user with no access to a server that exists: what every read route must answer 403 for. */
+async function withDeniedReader(
+  label: string,
+  fn: (ctx: {
+    app: Awaited<ReturnType<typeof createMetricsRoutesTestApp>>['app']
+    serverId: string
+    cookie: string
+  }) => Promise<void>
+): Promise<void> {
   if (!dbUrl) return
 
   resetDenoMetricsChartCacheForTests()
   const db = createDenoDb()
   const { app, secrets } = await createMetricsRoutesTestApp(db)
 
-  const email = `metrics-conn-deny-${crypto.randomUUID()}@example.com`
+  const email = `metrics-${label}-deny-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ name: 'Metrics Connection Deny Org' })
+    .values({ name: `Metrics ${label} Deny Org` })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -1416,22 +1424,53 @@ it('GET /servers/:id/metrics/connection returns 403 without read access', async 
 
   const [insertedServer] = await db
     .insert(server)
-    .values({ organizationId, name: 'Denied Connection Server' })
+    .values({ organizationId, name: `Denied ${label} Server` })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
 
   const cookie = await sessionCookie(db, secrets, userId)
 
   try {
-    const res = await app.request(`/servers/${serverId}/metrics/connection?from=${FROM}&to=${TO}`, {
-      headers: { Cookie: cookie },
-    })
-    assertEquals(res.status, 403)
+    await fn({ app, serverId, cookie })
   } finally {
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
+}
+
+it('GET /servers/:id/metrics/connection returns 403 without read access', async () => {
+  await withDeniedReader('connection', async ({ app, serverId, cookie }) => {
+    const res = await app.request(`/servers/${serverId}/metrics/connection?from=${FROM}&to=${TO}`, {
+      headers: { Cookie: cookie },
+    })
+    assertEquals(res.status, 403)
+  })
+})
+
+it('GET /servers/:id/metrics/facts returns 403 without read access', async () => {
+  await withDeniedReader('facts', async ({ app, serverId, cookie }) => {
+    const res = await app.request(`/servers/${serverId}/metrics/facts`, {
+      headers: { Cookie: cookie },
+    })
+    assertEquals(res.status, 403)
+  })
+})
+
+it('GET /servers/:id/metrics/facts answers like its siblings for a server that does not exist', async () => {
+  await withMetricsFixtures(async ({ app, cookie }) => {
+    const missing = crypto.randomUUID()
+    const facts = await app.request(`/servers/${missing}/metrics/facts`, {
+      headers: { Cookie: cookie },
+    })
+    const sibling = await app.request(
+      `/servers/${missing}/metrics/connection?from=${FROM}&to=${TO}`,
+      { headers: { Cookie: cookie } }
+    )
+    // Whatever the siblings do for an unknown id (never a 200 with data), facts does too.
+    assertEquals(facts.status, sibling.status)
+    assertEquals(facts.status === 200, false)
+  })
 })
 
 it('GET /servers/:id/metrics/connection rejects invalid range', async () => {
