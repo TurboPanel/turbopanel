@@ -22,16 +22,67 @@ export type DerivedHostValues = {
 }
 
 /**
- * Host capacities needed to turn v5's "available"/"used" raw readings into
- * used-percent figures — sourced from the server's latest `TopologySnapshot`
- * (`memoryTotalBytes`/`swapTotalBytes`) plus the root-role filesystem's
- * `totalBytes` (`TopologyFilesystem` with `roles` including `"root"`).
- * `null` when the topology hasn't reported the figure yet.
+ * The sizes every derived percentage is taken against. Since every sample
+ * carries the sizes it was measured against (`extended.sizes`), each point is
+ * divided by its own sizes (see {@link capacitiesFromValues}), so a resize or a
+ * balloon never rewrites history. The same shape also carries the fallback for
+ * a sample from a daemon that does not send sizes yet: the totals of the
+ * server's latest topology snapshot (`memoryTotalBytes`/`swapTotalBytes`) plus
+ * the root-role filesystem's `totalBytes`. `null` when neither knows the figure.
  */
 export type HostCapacities = {
   memoryTotalBytes: number | null
   swapTotalBytes: number | null
   rootFilesystemTotalBytes: number | null
+}
+
+/** Canonical names of the per-sample sizes the derived percentages need. */
+export const SIZE_METRIC_NAMES = {
+  memoryTotalBytes: 'extended.sizes.memoryTotalBytes',
+  swapTotalBytes: 'extended.sizes.swapTotalBytes',
+  rootFilesystemTotalBytes: 'extended.sizes.rootFilesystemTotalBytes',
+} as const
+
+/** The use readings each size divides: asking for a use metric needs its size beside it. */
+const SIZE_FOR_USE_METRIC: Readonly<Record<string, string>> = {
+  'host.memory.usedBytes': SIZE_METRIC_NAMES.memoryTotalBytes,
+  'host.memory.swapUsedBytes': SIZE_METRIC_NAMES.swapTotalBytes,
+  'host.storage.rootFilesystemAvailableBytes': SIZE_METRIC_NAMES.rootFilesystemTotalBytes,
+}
+
+/**
+ * The metrics a query must also read so the derived percentages can be taken
+ * against the sizes at that moment: the size of each requested use metric that
+ * is not itself requested. Never reordered into the caller's list.
+ */
+export function sizeMetricsNeededFor(requested: readonly string[]): string[] {
+  const have = new Set(requested)
+  const extra: string[] = []
+  for (const name of requested) {
+    const size = SIZE_FOR_USE_METRIC[name]
+    if (size !== undefined && !have.has(size) && !extra.includes(size)) extra.push(size)
+  }
+  return extra
+}
+
+function positiveOrNull(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
+}
+
+/** The sizes one point carries, each falling back to `fallback` when the point has none. */
+export function capacitiesFromValues(
+  values: Partial<Record<string, number | null>>,
+  fallback: HostCapacities
+): HostCapacities {
+  return {
+    memoryTotalBytes:
+      positiveOrNull(values[SIZE_METRIC_NAMES.memoryTotalBytes]) ?? fallback.memoryTotalBytes,
+    swapTotalBytes:
+      positiveOrNull(values[SIZE_METRIC_NAMES.swapTotalBytes]) ?? fallback.swapTotalBytes,
+    rootFilesystemTotalBytes:
+      positiveOrNull(values[SIZE_METRIC_NAMES.rootFilesystemTotalBytes]) ??
+      fallback.rootFilesystemTotalBytes,
+  }
 }
 
 function usedFromAvailable(
@@ -50,8 +101,10 @@ function usedPercent(used: number | null, totalBytes: number | null): number | n
 /** Compute all route-layer derived host values from a v6 canonical-name-keyed value map. */
 export function computeDerivedHostValues(
   values: Partial<Record<string, number | null>>,
-  capacities: HostCapacities
+  fallbackCapacities: HostCapacities
 ): DerivedHostValues {
+  // Each point is divided by the sizes it was measured against.
+  const capacities = capacitiesFromValues(values, fallbackCapacities)
   const cpuUsagePercent = values['host.cpu.busyPercent'] ?? null
 
   // v5 stores used memory directly (`MemTotal - MemAvailable`, computed on

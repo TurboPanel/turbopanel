@@ -100,9 +100,11 @@ import {
   entityMetricColumnName,
   extendedColumnName,
   FILESYSTEM_METRIC_FIELDS,
+  FILESYSTEM_SIZE_FIELDS,
   FILESYSTEM_SAMPLES_TABLE,
   filesystemSamplesInsertColumns,
   GPU_METRIC_FIELDS,
+  GPU_SIZE_FIELDS,
   GPU_SAMPLES_TABLE,
   gpuSamplesInsertColumns,
   HARDWARE_SIGNAL_SAMPLES_TABLE,
@@ -139,11 +141,13 @@ import {
   V7_DOCKER_COLUMNS,
   V7_HOST_COLUMNS,
   V7_INGRESS_COLUMNS,
+  V7_SIZE_COLUMNS,
 } from './schema.ts'
 import {
   EXTENDED_DOCKER_FIELD_NAMES,
   EXTENDED_HOST_FIELD_NAMES,
   EXTENDED_INGRESS_FIELD_NAMES,
+  EXTENDED_SIZE_FIELD_NAMES,
   STORAGE_ENGINE_FIELD_NAMES,
   STORAGE_ENGINE_KEYS,
 } from '../../../../contracts/metrics-contract.ts'
@@ -343,6 +347,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
           input.diagnostics ? numericField(input.diagnostics.cpu, field) : null
         ),
         ...EXTENDED_HOST_FIELD_NAMES.map((field) => extendedNumber(input.extended?.host, field)),
+        ...EXTENDED_SIZE_FIELD_NAMES.map((field) => extendedNumber(input.extended?.sizes, field)),
       ],
     })
 
@@ -376,7 +381,18 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
         values: [
           ...common,
           filesystem.filesystemId,
-          ...FILESYSTEM_METRIC_FIELDS.map((field) => numericField(filesystem, field)),
+          ...FILESYSTEM_METRIC_FIELDS.map((field) =>
+            (FILESYSTEM_SIZE_FIELDS as readonly string[]).includes(field)
+              ? extendedNumber(
+                  sizeEntry(
+                    input.extended?.filesystemSizes,
+                    'filesystemId',
+                    filesystem.filesystemId
+                  ),
+                  field
+                )
+              : numericField(filesystem, field)
+          ),
         ],
       })
     }
@@ -398,7 +414,11 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
         values: [
           ...common,
           gpu.gpuId,
-          ...GPU_METRIC_FIELDS.map((field) => numericField(gpu, field)),
+          ...GPU_METRIC_FIELDS.map((field) =>
+            (GPU_SIZE_FIELDS as readonly string[]).includes(field)
+              ? extendedNumber(sizeEntry(input.extended?.gpuSizes, 'gpuId', gpu.gpuId), field)
+              : numericField(gpu, field)
+          ),
         ],
       })
     }
@@ -1367,6 +1387,15 @@ function numericField(source: unknown, field: string): number | null {
   return (source as Record<string, number | null>)[field] ?? null
 }
 
+/** The size entry of one entity (`extended.filesystemSizes` / `extended.gpuSizes`), by its id. */
+function sizeEntry(
+  entries: readonly object[] | undefined,
+  idField: string,
+  id: string
+): object | undefined {
+  return entries?.find((entry) => (entry as Record<string, unknown>)[idField] === id)
+}
+
 /** One v7 `extended` numeric field: the real value, or SQL `NULL` when the section or field is absent (a v6 sample). */
 function extendedNumber(source: object | undefined, field: string): number | null {
   return source ? numericField(source, field) : null
@@ -1406,7 +1435,8 @@ const HOST_TUPLE = entityTuple(
   [],
   HOST_METRIC_FIELD_REFS.length +
     HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST.length +
-    V7_HOST_COLUMNS.length
+    V7_HOST_COLUMNS.length +
+    V7_SIZE_COLUMNS.length
 )
 
 const NETWORK_COLUMNS = networkSamplesInsertColumns()
@@ -1790,6 +1820,9 @@ function hostSeriesColumnForDescriptor(descriptor: HostMetricsMetricDescriptor):
   if (descriptor.entityScope === 'extended.ingress') {
     return `ig.${extendedColumnName(descriptor.fieldName)}`
   }
+  if (descriptor.entityScope === 'extended.sizes') {
+    return `h.${extendedColumnName(descriptor.fieldName)}`
+  }
   if (descriptor.entityScope === 'diagnostics') {
     return CPU_DIAGNOSTICS_FIELD_SET.has(descriptor.fieldName)
       ? `h.${cpuDiagnosticsHostColumnName(descriptor.fieldName)}`
@@ -1807,6 +1840,7 @@ const HOST_SERIES_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set([
   'extended.host',
   'extended.docker',
   'extended.ingress',
+  'extended.sizes',
 ])
 
 const NO_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set()

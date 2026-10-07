@@ -16,6 +16,15 @@ ids, not the 171 the brief quoted, and equals preset `r` exactly). Differences f
   sample time at blob5 (as in v6, so every row kind agrees), so topology generation takes blob4. There are still six
   contiguous envelope blobs and 14 content blobs, so content packing is identical to the explorer.
 - Slot ids are catalogue ids (`busy`, `oomKills`, ...). The contract field behind each id is in `v7-layout.ts`.
+- Sizes amendment, owner decision 2026-10-07: every sample carries the sizes its percentages are measured against
+  (memory, swap, commit limit, logical cores, root bytes and inodes, each extra filesystem's bytes and inodes, each
+  GPU's memory), so a resize or a balloon never needs a new topology generation. To make room without adding rows,
+  these already-selected data points were dropped: `majorFaults` (major page faults), `softirq` (soft-interrupt
+  CPU time), `memPsiFull` (memory pressure, all tasks stalled), `dSlabU` (kernel slab that cannot be freed),
+  `t5xx` / `tLatency` / `tRequests` (shared router backend errors, latency and request count; backends up and
+  total stay), `nic2.problems` (NIC 2 errors and drops; NIC 1 stays) and `gp_memoryActivityPercent` (GPU memory
+  controller activity). Filesystem rows hold 4 filesystems instead of 9, which only costs an extra row on a host with
+  more than 4 extra filesystems.
 
 ## Row envelope (metrics rows)
 
@@ -42,8 +51,8 @@ capability-plan generation and page are no longer written.
 - `block`: written only when the host has more than one drive (a single drive is covered by `host.io`);
   3 drives per row.
 - `network`: NIC 3 and up, 3 per row. NIC 1 and 2 are embedded in `host.network` (rx, tx, problems each).
-- `filesystem`: extra (non-root) filesystems, 9 per row; exactly one extra filesystem is folded into
-  `host.network` (`fs_*` slots) and writes no row.
+- `filesystem`: extra (non-root) filesystems, 4 per row (bytes free, inodes free, bytes total, inodes total);
+  exactly one extra filesystem is folded into `host.network` (`fs_*` slots) and writes no row.
 - `gpu`: 3 per row, physical machines or real passthrough GPUs only. `hardware.physical`: physical only, up to 19
   signals (one double each, ids in blob6); signal order: CPU/board signals, one per drive, three per GPU.
 - Plan limits (entities kept, the rest dropped at ingest): see `planLimits` in the fixture. Drive slots are
@@ -60,20 +69,20 @@ capability-plan generation and page are no longer written.
 | double3 | system (host.cpu.systemPercent) |
 | double4 | iowait (host.cpu.iowaitPercent) |
 | double5 | steal (host.cpu.stealPercent) |
-| double6 | softirq (host.cpu.softirqPercent) |
+| double6 | memTotal (extended.sizes.memoryTotalBytes) |
 | double7 | cpuPsi (host.cpu.pressureSomePercent) |
 | double8 | saturated (host.cpu.saturatedCoreCount) |
 | double9 | used (host.memory.usedBytes) |
 | double10 | cachedFiles (host.memory.cachedFilesBytes) |
 | double11 | swapUsed (host.memory.swapUsedBytes) |
 | double12 | memPsiSome (host.memory.pressureSomePercent) |
-| double13 | memPsiFull (host.memory.pressureFullPercent) |
-| double14 | majorFaults (host.memory.majorPageFaultsPerSecond) |
+| double13 | swapTotal (extended.sizes.swapTotalBytes) |
+| double14 | cores (extended.sizes.logicalCores) |
 | double15 | oomKills (host.memory.oomKills) |
 | double16 | fileHandles (host.kernel.fileHandlesUsedPercent) |
 | double17 | conntrack (host.kernel.conntrackUsedPercent) |
 | double18 | pidLimit (host.cpu.pidLimitUsedPercent) |
-| double19 | dSlabU (diagnostics.slabUnreclaimableBytes) |
+| double19 | commitLimit (extended.sizes.commitLimitBytes) |
 | double20 | interval seconds |
 | blob7 | loadavg (cpu.load average (text)) |
 | blob8 | topCpu (cpu.top CPU process) |
@@ -122,15 +131,15 @@ capability-plan generation and page are no longer written.
 | double8 | nic1.problems (net.NIC 1 rx / tx / problems.problems) |
 | double9 | nic2.rx (net.NIC 2 rx / tx / problems.rx) |
 | double10 | nic2.tx (net.NIC 2 rx / tx / problems.tx) |
-| double11 | nic2.problems (net.NIC 2 rx / tx / problems.problems) |
+| double11 | fs_totalInodes (filesystem.totalInodes) |
 | double12 | systemdFailed (health.systemdUnitsFailed) |
 | double13 | mdDegraded (health.mdArraysDegraded) |
 | double14 | dCommit (diagnostics.committedAsBytes) |
 | double15 | tUp (router.backendsUp) |
 | double16 | tTotal (router.backendsTotal) |
-| double17 | t5xx (router.backendErrors5xx) |
-| double18 | tLatency (router.backendLatencyMsAvg) |
-| double19 | tRequests (router.backendRequests) |
+| double17 | rootTotal (extended.sizes.rootFilesystemTotalBytes) |
+| double18 | rootInodesTotal (extended.sizes.rootFilesystemTotalInodes) |
+| double19 | fs_totalBytes (filesystem.totalBytes) |
 | double20 | interval seconds |
 | blob7 | failedUnits (health.failed unit names) |
 | blob8 | raidState (health.RAID state) |
@@ -223,10 +232,12 @@ One double per sensor signal id, in the order listed in blob6 (up to 19 per row)
 
 ### filesystem
 
-9 entities per row; each entity takes 2 consecutive doubles, in blob6 order:
+4 entities per row; each entity takes 4 consecutive doubles, in blob6 order:
 
 - per-entity double 1: fs_availableBytes (filesystem.availableBytes)
 - per-entity double 2: fs_freeInodes (filesystem.freeInodes)
+- per-entity double 3: fs_totalBytes (filesystem.totalBytes)
+- per-entity double 4: fs_totalInodes (filesystem.totalInodes)
 
 ### gpu
 
@@ -234,7 +245,7 @@ One double per sensor signal id, in the order listed in blob6 (up to 19 per row)
 
 - per-entity double 1: gp_utilizationPercent (gpu.utilizationPercent)
 - per-entity double 2: gp_memoryUsedBytes (gpu.memoryUsedBytes)
-- per-entity double 3: gp_memoryActivityPercent (gpu.memoryActivityPercent)
+- per-entity double 3: gp_memoryTotalBytes (gpu.memoryTotalBytes)
 - per-entity double 4: gp_pcieReceiveBytesPerSecond (gpu.pcieReceiveBytesPerSecond)
 - per-entity double 5: gp_pcieTransmitBytesPerSecond (gpu.pcieTransmitBytesPerSecond)
 - per-entity double 6: gp_throttlePercent (gpu.throttlePercent)

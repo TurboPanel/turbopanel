@@ -123,7 +123,7 @@ should be able to change that. `host.cpu.saturatedCoreCount` (cores at or above
 **Retired host metrics** (v4 → v5): `host.cpu.maxCoreBusyPercent` →
 `saturatedCoreCount`; `host.memory.availableBytes` → `usedBytes` +
 `cachedFilesBytes` (used is what the UI wants, and reconstructing it from a
-capacity is what made history rewritable — see **Capacities by generation**);
+capacity is what made history rewritable — see **Sizes ride every sample**);
 `host.storage.diskReadLatencyMs` + `diskWriteLatencyMs` → one combined
 `diskLatencyMs`, since the per-drive split now rides the storage row;
 `host.storage.maxBlockDeviceUtilPercent` removed, as a rollup that only existed
@@ -199,25 +199,34 @@ all-null GPUs), then plan truncation. Queries weight by `interval_seconds` and
 A missing bucket is always a genuine gap. There is no slow tier left to hold a
 reading across empty host-grid buckets.
 
-#### Capacities by generation
+#### Sizes ride every sample
 
-Static host facts also ride the snapshot since v6: `machineClass` (the
-daemon's own DMI verdict, which `inferServerMachineClass` prefers over the
-sensor proxy) and `paths` (`backup` / `logs` from the daemon's environment,
-surfaced read-only as `layoutPaths` on the server DTOs). Both are absent on
-pre-v6 snapshots. Capacity totals (`memoryTotalBytes`, `swapTotalBytes`,
-`rootFilesystemTotalBytes`) are the denominator of every derived percentage.
-They are **topology, not metrics**: they live on the `topologyGeneration`
-record, never in a sample.
+Every percentage is taken against the size at the moment it was measured. The
+daemon sends those sizes on each sample (`extended.sizes`: memory, swap, commit
+limit, logical cores, root filesystem bytes and inodes; `extended.filesystemSizes`
+per extra filesystem; `extended.gpuSizes` per GPU memory), and both stores keep
+them beside the readings (`ext_*` columns and per-entity `total_bytes` /
+`total_inodes` / `memory_total_bytes` columns on DuckDB; slots on the hosted
+rows, see `V7-LAYOUT.md`). A resize or a balloon therefore changes the size on
+the next sample and nothing else: no new topology generation, no history to
+restate. Topology generations now track only the entity set (a NIC, filesystem,
+drive or GPU added or removed, a slot override); see
+`features/servers/server-topology-records.ts` for the limits that bound them.
 
-Each bucket carries the generation it was sampled under, so
-`toHostSeriesChartResponse` divides by _that_ generation's capacities
-(`buildCapacitiesByGeneration` + `getTopologyGenerations`), falling back to the
-latest context for a generation with no recorded snapshot. v4 resolved
-capacities once from the latest generation, which meant adding RAM or resizing a
-volume silently restated every historical point against the new total — a box
-that was at 90% memory last week read as 45% today. Only the generations a range
-actually spans are fetched.
+The series route reads the size beside each requested use metric
+(`sizeMetricsNeededFor`: memory used reads memory total, swap used reads swap
+total, root available reads root total), divides each bucket by its own size
+(`capacitiesFromValues`) and hides the sizes it added from the response. A sample
+from a daemon that sends no sizes yet falls back to the latest topology snapshot's
+totals, so old daemons keep their percentages. Over a bucket a size averages like
+any gauge, so a balloon inside one bucket gives the percentage against the average
+size; at the native 60 s resolution it is exact.
+
+The hosted layout traded eight already-selected data points for the sizes (see
+`V7-LAYOUT.md`: major page faults, soft-interrupt time, memory pressure full, slab
+that cannot be freed, the shared router's backend errors, latency and request count,
+NIC 2 problems, and the GPU memory-controller activity). DuckDB still stores those;
+the hosted reader answers them as not stored.
 
 Store selection: `resolveServerMetricsStore` (`store-selection.ts` /
 `store-selection-workers.ts`) — always on, no enable/disable gate; a backend

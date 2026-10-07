@@ -67,7 +67,9 @@ receiveDropsPerSecond|/s|avg|Receive drops.
 transmitDropsPerSecond|/s|avg|Transmit drops.`);
 def('filesystem','S',`
 availableBytes|bytes|avg|Free space on this filesystem.
-freeInodes|count|avg|Free inodes on this filesystem.`);
+freeInodes|count|avg|Free inodes on this filesystem.
+totalBytes|bytes|avg|Size of this filesystem when the sample was taken. The divisor of its used percentage. New in v7 (sizes amendment).
+totalInodes|count|avg|Inodes this filesystem has when the sample was taken. New in v7 (sizes amendment).`);
 def('host.io','I',`
 rootDiskQueueDepth|count|avg|Requests queued at the disk that holds /. The saturation signal for NVMe and virtual disks. New in v7.
 rootDiskOpsPerSecond|/s|avg|Read plus write operations per second on that disk. Providers cap IOPS. New in v7.`);
@@ -198,7 +200,15 @@ memoryUsedBytes|bytes|avg|GPU memory in use.
 memoryActivityPercent|%|avg|GPU memory controller activity.
 pcieReceiveBytesPerSecond|B/s|avg|PCIe receive rate.
 pcieTransmitBytesPerSecond|B/s|avg|PCIe transmit rate.
-throttlePercent|%|avg|Time the GPU was throttled.`);
+throttlePercent|%|avg|Time the GPU was throttled.
+memoryTotalBytes|bytes|avg|GPU memory size when the sample was taken. The divisor of its used percentage. New in v7 (sizes amendment).`);
+def('extended.sizes','M',`
+memoryTotalBytes|bytes|avg|Total memory when the sample was taken (MemTotal). The divisor of memory used. A balloon or resize changes it between samples.
+swapTotalBytes|bytes|avg|Total swap when the sample was taken. The divisor of swap used.
+commitLimitBytes|bytes|avg|CommitLimit from /proc/meminfo. The divisor of committed memory.
+logicalCores|count|avg|Logical CPU count when the sample was taken. The divisor of the saturated-core count.
+rootFilesystemTotalBytes|bytes|avg|Size of / when the sample was taken. The divisor of root disk used.
+rootFilesystemTotalInodes|count|avg|Inodes on / when the sample was taken. The divisor of root inodes used.`);
 const INTERVAL = {name:'interval', unit:'s', agg:'weight', desc:'Sample interval in seconds: 60 normally, 10 while a live lease is open. Every reader weights by it.'};
 const L = (scope, name) => { const f = F[scope + '.' + name]; if (!f) throw new Error('no field ' + scope + '.' + name); return f; };
 function sig(id, desc, unit, isNew){ return {name: id, scope:'hardwareSignal', unit: unit || '°C', agg:'avg', cat:'T', desc: desc + (isNew ? ' New in v7.' : '')}; }
@@ -661,6 +671,8 @@ nc_transmitDropsPerSecond|nic|nic|d|network.transmitDropsPerSecond|||||v6|vlbx||
 nc_link|nic|nic|b|-|link state|text|-|N|idea|x|Per NIC: up/down and speed, e.g. "up 1000Mb/s".||
 fs_availableBytes|fs|fs|d|filesystem.availableBytes|||||v6|vlbx|||
 fs_freeInodes|fs|fs|d|filesystem.freeInodes|||||v6|vlbx|||
+fs_totalBytes|fs|fs|d|filesystem.totalBytes|||||new|||||
+fs_totalInodes|fs|fs|d|filesystem.totalInodes|||||new|||||
 fs_type|fs|fs|b|-|filesystem type / mount|text|-|S|idea||Per filesystem: type and mount point, e.g. "ext4 /mnt/data".||
 gp_utilizationPercent|gpu|gpu|d|gpu.utilizationPercent|||||v6|vlbx|||
 gp_memoryUsedBytes|gpu|gpu|d|gpu.memoryUsedBytes|||||v6|vlbx|||
@@ -668,8 +680,15 @@ gp_memoryActivityPercent|gpu|gpu|d|gpu.memoryActivityPercent|||||v6|vlbx|||
 gp_pcieReceiveBytesPerSecond|gpu|gpu|d|gpu.pcieReceiveBytesPerSecond|||||v6|vlbx|||
 gp_pcieTransmitBytesPerSecond|gpu|gpu|d|gpu.pcieTransmitBytesPerSecond|||||v6|vlbx|||
 gp_throttlePercent|gpu|gpu|d|gpu.throttlePercent|||||v6|vlbx|||
+gp_memoryTotalBytes|gpu|gpu|d|gpu.memoryTotalBytes|||||new|||||
 gp_driver|gpu|gpu|b|-|GPU driver version|text|-|G|idea|x|Per GPU driver version (e.g. nvidia 570.x).||
 gp_model|gpu|gpu|b|-|GPU model|text|-|G|idea|x|Per GPU model name.||
+memTotal|mem|core|d|extended.sizes.memoryTotalBytes|||||new|||||
+swapTotal|mem|core|d|extended.sizes.swapTotalBytes|||||new|||||
+commitLimit|mem|core|d|extended.sizes.commitLimitBytes|||||new|||||
+cores|cpu|core|d|extended.sizes.logicalCores|||||new|||||
+rootTotal|space|io|d|extended.sizes.rootFilesystemTotalBytes|||||new|||||
+rootInodesTotal|space|io|d|extended.sizes.rootFilesystemTotalInodes|||||new|||||
 sn_value|sensor|sensor|d|-|sensor reading|value|avg|T|v6|vlbx|One value per sensor signal (temperatures, power, one per drive). Kinds come from topology.||
 `;
 const ITEMS = RAW.trim().split('\n').map(line => {

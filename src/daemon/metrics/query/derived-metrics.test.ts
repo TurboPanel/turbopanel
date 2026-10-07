@@ -1,7 +1,9 @@
 import { assertEquals } from '@std/assert'
 import {
   computeDerivedHostValues,
+  capacitiesFromValues,
   computeIngressDerivedValues,
+  sizeMetricsNeededFor,
   type HostCapacities,
 } from './derived-metrics.ts'
 
@@ -201,4 +203,57 @@ test('computeIngressDerivedValues returns null percentiles when any bucket is mi
   assertEquals(derived.p50LatencyMs, null)
   assertEquals(derived.p90LatencyMs, null)
   assertEquals(derived.p99LatencyMs, null)
+})
+
+test('sizeMetricsNeededFor adds the size beside each requested use metric, once, and never one already requested', () => {
+  assertEquals(
+    sizeMetricsNeededFor([
+      'host.memory.usedBytes',
+      'host.cpu.busyPercent',
+      'host.memory.swapUsedBytes',
+      'host.storage.rootFilesystemAvailableBytes',
+    ]),
+    [
+      'extended.sizes.memoryTotalBytes',
+      'extended.sizes.swapTotalBytes',
+      'extended.sizes.rootFilesystemTotalBytes',
+    ]
+  )
+  assertEquals(
+    sizeMetricsNeededFor(['host.memory.usedBytes', 'extended.sizes.memoryTotalBytes']),
+    []
+  )
+  assertEquals(sizeMetricsNeededFor(['host.cpu.busyPercent']), [])
+})
+
+test('capacitiesFromValues prefers the point’s own size and falls back per field, never to a zero', () => {
+  const fallback: HostCapacities = {
+    memoryTotalBytes: 32,
+    swapTotalBytes: 16,
+    rootFilesystemTotalBytes: 8,
+  }
+  assertEquals(
+    capacitiesFromValues(
+      {
+        'extended.sizes.memoryTotalBytes': 64,
+        'extended.sizes.swapTotalBytes': 0,
+      },
+      fallback
+    ),
+    { memoryTotalBytes: 64, swapTotalBytes: 16, rootFilesystemTotalBytes: 8 }
+  )
+})
+
+test('a balloon between two samples changes the percentage of the same reading, with no other input', () => {
+  const reading = { 'host.memory.usedBytes': 6_000 }
+  const before = computeDerivedHostValues(
+    { ...reading, 'extended.sizes.memoryTotalBytes': 8_000 },
+    EMPTY_CAPACITIES
+  )
+  const after = computeDerivedHostValues(
+    { ...reading, 'extended.sizes.memoryTotalBytes': 12_000 },
+    EMPTY_CAPACITIES
+  )
+  assertEquals(before.memoryUsedPercent, 75)
+  assertEquals(after.memoryUsedPercent, 50)
 })

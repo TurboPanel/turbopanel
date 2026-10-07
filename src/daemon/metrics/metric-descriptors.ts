@@ -31,6 +31,7 @@ import type {
   DockerUsageSample,
   ExtendedDockerMetrics,
   ExtendedHostMetrics,
+  ExtendedSizes,
   ExtendedIngressMetrics,
   FilesystemSample,
   GpuSample,
@@ -48,6 +49,7 @@ import {
   EXTENDED_DOCKER_FIELD_NAMES,
   EXTENDED_HOST_FIELD_NAMES,
   EXTENDED_INGRESS_FIELD_NAMES,
+  EXTENDED_SIZE_FIELD_NAMES,
   STORAGE_ENGINE_FIELD_NAMES,
   STORAGE_ENGINE_KEYS,
   STORAGE_FLAT_FIELD_NAMES,
@@ -114,6 +116,8 @@ export type HostedFamily =
    * rows that carry these numbers are in `V7-LAYOUT.md`.
    */
   | 'host.extended'
+  /** The sizes every sample carries (`extended.sizes`): the divisors of the derived percentages. */
+  | 'host.sizes'
 
 /** Which contract entity a metric is scoped to. */
 export type MetricEntityScope =
@@ -136,6 +140,7 @@ export type MetricEntityScope =
   | 'extended.host'
   | 'extended.docker'
   | 'extended.ingress'
+  | 'extended.sizes'
 
 export type HostMetricsMetricDescriptor = {
   /** Globally unique across all descriptors — see the file-level doc comment for the naming scheme. */
@@ -447,11 +452,15 @@ const NETWORK_DESCRIPTORS: Record<
 }
 
 const FILESYSTEM_DESCRIPTORS: Record<
-  Exclude<keyof FilesystemSample, 'filesystemId'>,
+  Exclude<keyof FilesystemSample, 'filesystemId'> | 'totalBytes' | 'totalInodes',
   HostMetricsMetricDescriptor
 > = {
   availableBytes: bytesGauge('availableBytes', 'filesystem', 'filesystem'),
   freeInodes: countGauge('freeInodes', 'filesystem', 'filesystem'),
+  // The size this filesystem had when the sample was taken: it rides
+  // `extended.filesystemSizes`, not the `FilesystemSample`, so it is not a wire field of the entity.
+  totalBytes: { ...reported(bytesGauge('totalBytes', 'filesystem', 'filesystem')), wire: false },
+  totalInodes: { ...reported(countGauge('totalInodes', 'filesystem', 'filesystem')), wire: false },
 }
 
 const BLOCK_DESCRIPTORS: Record<
@@ -468,9 +477,14 @@ const BLOCK_DESCRIPTORS: Record<
   queueDepth: countGauge('queueDepth', 'block', 'block'),
 }
 
-const GPU_DESCRIPTORS: Record<Exclude<keyof GpuSample, 'gpuId'>, HostMetricsMetricDescriptor> = {
+const GPU_DESCRIPTORS: Record<
+  Exclude<keyof GpuSample, 'gpuId'> | 'memoryTotalBytes',
+  HostMetricsMetricDescriptor
+> = {
   utilizationPercent: percent('utilizationPercent', 'gpu', 'gpu'),
   memoryUsedBytes: bytesGauge('memoryUsedBytes', 'gpu', 'gpu'),
+  // The GPU's memory size when the sample was taken (`extended.gpuSizes`, not a `GpuSample` field).
+  memoryTotalBytes: { ...reported(bytesGauge('memoryTotalBytes', 'gpu', 'gpu')), wire: false },
   memoryActivityPercent: percent('memoryActivityPercent', 'gpu', 'gpu'),
   pcieReceiveBytesPerSecond: rate('pcieReceiveBytesPerSecond', 'bytesPerSecond', 'gpu', 'gpu'),
   pcieTransmitBytesPerSecond: rate('pcieTransmitBytesPerSecond', 'bytesPerSecond', 'gpu', 'gpu'),
@@ -935,6 +949,26 @@ const EXTENDED_HOST_DESCRIPTORS: Record<keyof ExtendedHostMetrics, HostMetricsMe
   mdArraysResyncing: healthCount('mdArraysResyncing', 'extended.host', 'host.extended'),
 }
 
+/**
+ * The sizes every sample carries (`extended.sizes`): the divisors of memory,
+ * swap, commit and root-disk use and of the saturated-core count. A balloon or
+ * resize changes them between samples, so a percentage is always taken against
+ * the size at that moment (the series route divides each bucket's use by that
+ * bucket's own size). Over a bucket they average, like any gauge.
+ */
+const EXTENDED_SIZE_DESCRIPTORS: Record<keyof ExtendedSizes, HostMetricsMetricDescriptor> = {
+  memoryTotalBytes: reported(bytesGauge('memoryTotalBytes', 'extended.sizes', 'host.sizes')),
+  swapTotalBytes: reported(bytesGauge('swapTotalBytes', 'extended.sizes', 'host.sizes')),
+  commitLimitBytes: reported(bytesGauge('commitLimitBytes', 'extended.sizes', 'host.sizes')),
+  logicalCores: reported(countGauge('logicalCores', 'extended.sizes', 'host.sizes')),
+  rootFilesystemTotalBytes: reported(
+    bytesGauge('rootFilesystemTotalBytes', 'extended.sizes', 'host.sizes')
+  ),
+  rootFilesystemTotalInodes: reported(
+    countGauge('rootFilesystemTotalInodes', 'extended.sizes', 'host.sizes')
+  ),
+}
+
 const EXTENDED_DOCKER_DESCRIPTORS: Record<
   keyof ExtendedDockerMetrics,
   HostMetricsMetricDescriptor
@@ -997,6 +1031,7 @@ export const EXTENDED_FIELD_NAMES = {
   host: EXTENDED_HOST_FIELD_NAMES,
   docker: EXTENDED_DOCKER_FIELD_NAMES,
   ingress: EXTENDED_INGRESS_FIELD_NAMES,
+  sizes: EXTENDED_SIZE_FIELD_NAMES,
 } as const
 
 /** Every per-family descriptor record, in the order they contribute to the merged map. */
@@ -1020,6 +1055,7 @@ const ALL_DESCRIPTOR_RECORDS: Record<string, HostMetricsMetricDescriptor>[] = [
   EXTENDED_HOST_DESCRIPTORS,
   EXTENDED_DOCKER_DESCRIPTORS,
   EXTENDED_INGRESS_DESCRIPTORS,
+  EXTENDED_SIZE_DESCRIPTORS,
   BLOCK_DERIVED_DESCRIPTORS,
 ]
 
@@ -1065,6 +1101,8 @@ const HOSTED_FAMILY_CAPACITY: Partial<Record<HostedFamily, number>> = {
   'host.diagnostics': 19,
   // 7 host + 8 docker + 1 ingress numbers (a budget of one row's doubles, not a physical page).
   'host.extended': 19,
+  // 6 sizes: memory, swap, commit limit, logical cores, root bytes and root inodes.
+  'host.sizes': 19,
 }
 
 /** AE double-index page budget per entity for the per-entity-packed families. */
@@ -1072,9 +1110,11 @@ const PER_ENTITY_CAPACITY: Record<
   Extract<HostedFamily, 'gpu' | 'network' | 'filesystem' | 'block'>,
   number
 > = {
-  gpu: 6,
+  // 6 stored on both stores plus the DuckDB-only `memoryActivityPercent` (the hosted layout traded it for the GPU's memory size).
+  gpu: 7,
   network: 6,
-  filesystem: 2,
+  // available and free inodes, plus the filesystem's size in bytes and inodes.
+  filesystem: 4,
   // 8 wire fields plus the combined `opsPerSecond` read-time figure.
   block: 9,
 }

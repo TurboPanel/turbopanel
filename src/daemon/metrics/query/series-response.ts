@@ -326,25 +326,30 @@ export function toHostSeriesChartResponse(input: {
   from: string
   to: string
   result: HostSeriesResult
-  /** Fallback capacities — the latest recorded generation. */
+  /**
+   * Sizes for a point whose sample carried none (a daemon that does not send
+   * `extended.sizes` yet): the latest topology snapshot's totals. A point that
+   * carries its own sizes is divided by those, so a resize or a balloon never
+   * restates history.
+   */
   capacities: HostCapacities
   /**
-   * Capacities that were true at each topology generation the range spans.
-   * A bucket is divided by the totals its own generation had, so a RAM
-   * upgrade or volume resize mid-range no longer restates history against
-   * today's hardware. Points whose generation isn't in the map (or that
-   * carry no generation at all) fall back to `capacities`.
+   * Metrics the query read only to take a percentage (the size beside a use
+   * metric the caller asked for): left out of each point's `values` and of
+   * `metrics` after the derived values are computed.
    */
-  capacitiesByGeneration?: ReadonlyMap<number, HostCapacities>
+  hiddenMetrics?: ReadonlySet<string>
 }): HostSeriesChartResponse {
   const result = finalizeHostSeriesResult(input.from, input.to, input.result)
-  const capacitiesFor = (generation: number | null | undefined): HostCapacities =>
-    (generation != null ? input.capacitiesByGeneration?.get(generation) : undefined) ??
-    input.capacities
+  const hidden = input.hiddenMetrics
+  const visibleValues = (values: HostSeriesPoint['values']): HostSeriesPoint['values'] =>
+    hidden === undefined || hidden.size === 0
+      ? values
+      : Object.fromEntries(Object.entries(values).filter(([name]) => !hidden.has(name)))
   const points: HostSeriesChartPoint[] = result.points.map((point: HostSeriesPoint) => ({
     at: point.at,
-    values: point.values,
-    derived: computeDerivedHostValues(point.values, capacitiesFor(point.topologyGeneration)),
+    values: visibleValues(point.values),
+    derived: computeDerivedHostValues(point.values, input.capacities),
     sampleCount: point.sampleCount ?? 0,
     ...(point.expectedSampleCount !== undefined
       ? { expectedSampleCount: point.expectedSampleCount }
@@ -365,7 +370,8 @@ export function toHostSeriesChartResponse(input: {
     resolutionSeconds: result.resolutionSeconds,
     backend: result.kind,
     available: result.available,
-    metrics: result.metrics,
+    metrics:
+      hidden === undefined ? result.metrics : result.metrics.filter((name) => !hidden.has(name)),
     sampleCount: result.sampleCount,
     gapCount: result.gapCount,
     gapBuckets: result.gapBuckets ?? [],

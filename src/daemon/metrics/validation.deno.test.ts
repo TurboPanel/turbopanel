@@ -146,6 +146,44 @@ it('validateMetricsSample accepts the v7 extended section and sanitizes it', () 
   assertEquals(result.sample.extended?.blockDeviceText, [{ deviceId: 'nvme0n1', model: 'Samsung' }])
 })
 
+it('validateMetricsSample accepts the per-sample sizes and sanitizes them without coercing a gap to 0', () => {
+  const result = validateMetricsSample(
+    validRaw({
+      metadata: { version: METRICS_SCHEMA_VERSION },
+      extended: {
+        sizes: { memoryTotalBytes: 8e9, swapTotalBytes: null, logicalCores: 4 },
+        filesystemSizes: [{ filesystemId: 'fs-a', totalBytes: 1e9, totalInodes: null }],
+        gpuSizes: [{ gpuId: 'gpu0', memoryTotalBytes: 16e9 }],
+      },
+    }),
+    ctx()
+  )
+  assertEquals(result.ok, true)
+  if (!result.ok) return
+  assertEquals(result.sample.extended?.sizes, {
+    memoryTotalBytes: 8e9,
+    swapTotalBytes: null,
+    logicalCores: 4,
+  })
+  assertEquals(result.sample.extended?.filesystemSizes, [
+    { filesystemId: 'fs-a', totalBytes: 1e9, totalInodes: null },
+  ])
+  assertEquals(result.sample.extended?.gpuSizes, [{ gpuId: 'gpu0', memoryTotalBytes: 16e9 }])
+})
+
+it('validateMetricsSample rejects malformed or unbounded sizes', () => {
+  const bad = (extended: unknown) => validateMetricsSample(validRaw({ extended }), ctx())
+  assertEquals(bad({ sizes: { notASize: 1 } }).ok, false)
+  assertEquals(bad({ sizes: { memoryTotalBytes: 'lots' } }).ok, false)
+  assertEquals(bad({ filesystemSizes: [{ totalBytes: 1 }] }).ok, false)
+  assertEquals(bad({ filesystemSizes: [{ filesystemId: 'fs', totalBytes: 'x' }] }).ok, false)
+  assertEquals(bad({ filesystemSizes: [{ filesystemId: 'fs', unknown: 1 }] }).ok, false)
+  assertEquals(bad({ gpuSizes: [{ gpuId: 'g', memoryTotalBytes: {} }] }).ok, false)
+  // The per-entity arrays are bounded like every other entity array: a flood of ids is refused.
+  const flood = Array.from({ length: 65 }, (_, i) => ({ filesystemId: `fs-${i}`, totalBytes: 1 }))
+  assertEquals(bad({ filesystemSizes: flood }).ok, false)
+})
+
 it('validateMetricsSample rejects malformed extended sections', () => {
   const bad = (extended: unknown) => validateMetricsSample(validRaw({ extended }), ctx())
   assertEquals(bad({ nope: 1 }).ok, false)

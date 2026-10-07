@@ -346,6 +346,19 @@ const EXTENDED: MetricsExtended = {
     reclaimableBytes: 58,
   },
   ingress: { tlsCertSoonestExpiryDays: 61 },
+  sizes: {
+    memoryTotalBytes: 201,
+    swapTotalBytes: 202,
+    commitLimitBytes: 203,
+    logicalCores: 204,
+    rootFilesystemTotalBytes: 205,
+    rootFilesystemTotalInodes: 206,
+  },
+  filesystemSizes: [
+    { filesystemId: '/mnt/a', totalBytes: 700, totalInodes: 800 },
+    { filesystemId: '/mnt/b', totalBytes: 710, totalInodes: 810 },
+  ],
+  gpuSizes: [{ gpuId: 'gpu0', memoryTotalBytes: 16_000 }],
   text: {
     loadavg: '0.5 0.6 0.7 1/200 99',
     topCpu: 'php-fpm8.3',
@@ -378,7 +391,7 @@ const EXTENDED: MetricsExtended = {
   },
 }
 
-it('host.system: cpu, memory (incl. oom kills), kernel limits, pid limit, slab-unreclaimable', () => {
+it('host.system: cpu, memory (incl. oom kills), kernel limits, pid limit and the sizes the percentages are measured against', () => {
   const sample = buildSample({
     host: {
       cpu: {
@@ -412,7 +425,8 @@ it('host.system: cpu, memory (incl. oom kills), kernel limits, pid limit, slab-u
     extended: EXTENDED,
   })
   const point = pointFor(buildMetricsDataPoints(sample), 'host.system')
-  // procs*, processCount and swap in/out are not stored in v7.
+  // procs*, processCount, swap in/out, soft-interrupt time, memory pressure (full) and major
+  // page faults are not stored in v7; the sizes took their slots.
   assertEquals(
     point.doubles,
     expectedDoubles({
@@ -421,20 +435,20 @@ it('host.system: cpu, memory (incl. oom kills), kernel limits, pid limit, slab-u
       2: 3,
       3: 4,
       4: 5,
-      5: 6,
+      5: 201,
       6: 7,
       7: 8,
       8: 11,
       9: 12,
       10: 13,
       11: 14,
-      12: 15,
-      13: 16,
+      12: 202,
+      13: 204,
       14: 19,
       15: 17,
       16: 18,
       17: 20,
-      18: 12,
+      18: 203,
     })
   )
   assertEquals(contentBlobs(point, 5), [
@@ -523,7 +537,7 @@ it('host.io reclaimable total: the sum of the three df groups when the daemon se
   assertEquals(pointFor(buildMetricsDataPoints(sample), 'host.io').doubles[18], 7)
 })
 
-it('host.network: root filesystem, retransmits, embedded NICs, health, committed memory, Traefik', () => {
+it('host.network: root filesystem and its size, retransmits, embedded NICs, health, committed memory, Traefik backends, the folded filesystem and its size', () => {
   const sample = buildSample({
     host: {
       cpu: zeroFields(HOST_CPU_FIELDS),
@@ -580,15 +594,15 @@ it('host.network: root filesystem, retransmits, embedded NICs, health, committed
       7: 10,
       8: 300,
       9: 400,
-      10: 0,
+      10: 800,
       11: 41,
       12: 42,
       13: 16,
       14: 21,
       15: 22,
-      16: 23,
-      17: 24,
-      18: 25,
+      16: 205,
+      17: 206,
+      18: 700,
     })
   )
   assertEquals(contentBlobs(point, 14), [
@@ -868,19 +882,64 @@ it('block ops are sentinel when either read or write ops is missing', () => {
   assertEquals(point.doubles[8], 2)
 })
 
-it('filesystem: exactly one extra filesystem folds into host.network; two or more page 9 per row', () => {
+it('filesystem: exactly one extra filesystem folds into host.network; two or more page 4 per row', () => {
   const one = buildMetricsDataPoints(buildSample({ filesystems: [mkFilesystem('/a')] }))
   assertEquals(countPointsOfFamily(one, 'filesystem'), 0)
   const many = Array.from({ length: 10 }, (_, i) => mkFilesystem(`/m${i}`))
   const points = buildMetricsDataPoints(buildSample({ filesystems: many }))
-  assertEquals(countPointsOfFamily(points, 'filesystem'), 2)
+  // Four per row: bytes free, inodes free, and the size in bytes and inodes.
+  assertEquals(countPointsOfFamily(points, 'filesystem'), 3)
   assertEquals(
     pointFor(points, 'filesystem', 0).blobs[AE_BLOB_ENTITY_IDS_INDEX].split(',').length,
-    9
+    4
   )
-  assertEquals(pointFor(points, 'filesystem', 1).blobs[AE_BLOB_ENTITY_IDS_INDEX], '/m9')
+  assertEquals(pointFor(points, 'filesystem', 2).blobs[AE_BLOB_ENTITY_IDS_INDEX], '/m8,/m9')
   // The folded slots stay empty once the filesystem pages.
   assertEquals(pointFor(points, 'host.network').doubles[2], AE_MISSING_METRIC_SENTINEL)
+})
+
+it("filesystem rows carry each filesystem's own size beside its readings, looked up by id", () => {
+  const sample = buildSample({
+    filesystems: [
+      { filesystemId: '/mnt/a', availableBytes: 1, freeInodes: 2 },
+      { filesystemId: '/mnt/b', availableBytes: 3, freeInodes: 4 },
+    ],
+    extended: {
+      filesystemSizes: [
+        // Deliberately out of order: the lookup is by id, not position.
+        { filesystemId: '/mnt/b', totalBytes: 30, totalInodes: 40 },
+        { filesystemId: '/mnt/a', totalBytes: 10, totalInodes: 20 },
+      ],
+    },
+  })
+  const point = pointFor(buildMetricsDataPoints(sample), 'filesystem', 0)
+  assertEquals(point.doubles.slice(0, 8), [1, 2, 10, 20, 3, 4, 30, 40])
+})
+
+it('a filesystem with no reported size has a sentinel in its size slots, never 0', () => {
+  const sample = buildSample({
+    filesystems: [
+      { filesystemId: '/mnt/a', availableBytes: 1, freeInodes: 2 },
+      { filesystemId: '/mnt/b', availableBytes: 3, freeInodes: 4 },
+    ],
+  })
+  const point = pointFor(buildMetricsDataPoints(sample), 'filesystem', 0)
+  assertEquals(point.doubles.slice(0, 4), [
+    1,
+    2,
+    AE_MISSING_METRIC_SENTINEL,
+    AE_MISSING_METRIC_SENTINEL,
+  ])
+})
+
+it("gpu rows carry each GPU's memory size where memory activity used to sit", () => {
+  const sample = buildSample({
+    gpus: [{ ...mkGpu('g0'), memoryUsedBytes: 5 }],
+    extended: { gpuSizes: [{ gpuId: 'g0', memoryTotalBytes: 16_000 }] },
+  })
+  const point = pointFor(buildMetricsDataPoints(sample), 'gpu', 0)
+  assertEquals(point.doubles[1], 5)
+  assertEquals(point.doubles[2], 16_000)
 })
 
 it('gpu: 3 per row, driver and model text per GPU', () => {
@@ -1059,9 +1118,10 @@ function maxCardinalitySample() {
 
 it('the contract array caps stay under the Analytics Engine invocation limit in v7', () => {
   // v7 folded Caddy and ProxySQL into host rows, so 64-entry arrays plus 128
-  // events top out at 4 host rows + 22 + 21 + 8 + 22 + 4 pages + 128 events.
+  // events top out at 4 host rows + 22 + 21 + 16 + 22 + 4 pages + 128 events
+  // (64 filesystems page 4 per row now that each carries its size).
   const points = buildMetricsDataPoints(maxCardinalitySample())
-  assertEquals(points.length, 4 + 22 + 21 + 8 + 22 + 4 + 128)
+  assertEquals(points.length, 4 + 22 + 21 + 16 + 22 + 4 + 128)
   assertEquals(points.length <= AE_MAX_DATA_POINTS_PER_INVOCATION, true)
 })
 

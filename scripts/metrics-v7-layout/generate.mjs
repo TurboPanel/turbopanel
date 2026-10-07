@@ -151,6 +151,15 @@ ids, not the 171 the brief quoted, and equals preset \`r\` exactly). Differences
   sample time at blob5 (as in v6, so every row kind agrees), so topology generation takes blob4. There are still six
   contiguous envelope blobs and 14 content blobs, so content packing is identical to the explorer.
 - Slot ids are catalogue ids (\`busy\`, \`oomKills\`, ...). The contract field behind each id is in \`v7-layout.ts\`.
+- Sizes amendment, owner decision 2026-10-07: every sample carries the sizes its percentages are measured against
+  (memory, swap, commit limit, logical cores, root bytes and inodes, each extra filesystem's bytes and inodes, each
+  GPU's memory), so a resize or a balloon never needs a new topology generation. To make room without adding rows,
+  these already-selected data points were dropped: \`majorFaults\` (major page faults), \`softirq\` (soft-interrupt
+  CPU time), \`memPsiFull\` (memory pressure, all tasks stalled), \`dSlabU\` (kernel slab that cannot be freed),
+  \`t5xx\` / \`tLatency\` / \`tRequests\` (shared router backend errors, latency and request count; backends up and
+  total stay), \`nic2.problems\` (NIC 2 errors and drops; NIC 1 stays) and \`gp_memoryActivityPercent\` (GPU memory
+  controller activity). Filesystem rows hold 4 filesystems instead of 9, which only costs an extra row on a host with
+  more than 4 extra filesystems.
 
 ## Row envelope (metrics rows)
 
@@ -177,8 +186,8 @@ capability-plan generation and page are no longer written.
 - \`block\`: written only when the host has more than one drive (a single drive is covered by \`host.io\`);
   3 drives per row.
 - \`network\`: NIC 3 and up, 3 per row. NIC 1 and 2 are embedded in \`host.network\` (rx, tx, problems each).
-- \`filesystem\`: extra (non-root) filesystems, 9 per row; exactly one extra filesystem is folded into
-  \`host.network\` (\`fs_*\` slots) and writes no row.
+- \`filesystem\`: extra (non-root) filesystems, 4 per row (bytes free, inodes free, bytes total, inodes total);
+  exactly one extra filesystem is folded into \`host.network\` (\`fs_*\` slots) and writes no row.
 - \`gpu\`: 3 per row, physical machines or real passthrough GPUs only. \`hardware.physical\`: physical only, up to 19
   signals (one double each, ids in blob6); signal order: CPU/board signals, one per drive, three per GPU.
 - Plan limits (entities kept, the rest dropped at ingest): see \`planLimits\` in the fixture. Drive slots are
@@ -219,6 +228,82 @@ for (const tier of model.TIER_IDS) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Sizes amendment (owner decision 2026-10-07).
+//
+// Every sample carries the sizes its percentages are measured against, so a
+// resize or a balloon never needs a new topology generation. The owner chose to
+// free the number slots by dropping the least valuable already-selected data
+// points (rather than adding rows or using text slots). The packer's output
+// above is amended here, slot for slot, so every other slot keeps its place.
+//
+//   host.system: majorFaults -> cores, softirq -> memTotal, memPsiFull -> swapTotal, dSlabU -> commitLimit
+//   host.network: t5xx -> rootTotal, tLatency -> rootInodesTotal, tRequests -> fs_totalBytes,
+//                 nic2.problems -> fs_totalInodes
+//   gpu: gp_memoryActivityPercent -> gp_memoryTotalBytes
+//   filesystem: two more per-entity doubles (fs_totalBytes, fs_totalInodes), so 4 filesystems per row
+//
+// Nothing is dropped from the entity rows except the one GPU data point.
+// ---------------------------------------------------------------------------
+const SIZE_SUBSTITUTIONS = {
+  'host.system': {
+    majorFaults: 'cores',
+    softirq: 'memTotal',
+    memPsiFull: 'swapTotal',
+    dSlabU: 'commitLimit',
+  },
+  'host.network': {
+    t5xx: 'rootTotal',
+    tLatency: 'rootInodesTotal',
+    tRequests: 'fs_totalBytes',
+    'nic2.problems': 'fs_totalInodes',
+  },
+  gpu: { gp_memoryActivityPercent: 'gp_memoryTotalBytes' },
+}
+const FILESYSTEM_SIZE_DOUBLES = ['fs_totalBytes', 'fs_totalInodes']
+const FILESYSTEM_ENTITIES_PER_ROW = Math.floor(19 / (2 + FILESYSTEM_SIZE_DOUBLES.length))
+const DROPPED_BY_SIZES = Object.values(SIZE_SUBSTITUTIONS).flatMap((m) => Object.keys(m))
+const ADDED_BY_SIZES = [
+  ...Object.values(SIZE_SUBSTITUTIONS).flatMap((m) => Object.values(m)),
+  ...FILESYSTEM_SIZE_DOUBLES,
+]
+for (const id of [...new Set(ADDED_BY_SIZES)])
+  if (!model.ITEM[id.split('.')[0]]) throw new Error(`unknown sizes id ${id}`)
+
+for (const [family, map] of Object.entries(SIZE_SUBSTITUTIONS)) {
+  const tpl = templates[family].tpl
+  for (const [from, to] of Object.entries(map)) {
+    const at = tpl.doubles.indexOf(from)
+    if (at === -1) throw new Error(`${family} has no slot ${from} to replace`)
+    tpl.doubles[at] = to
+  }
+}
+{
+  const tpl = templates.filesystem.tpl
+  tpl.doubles = [...tpl.doubles, ...FILESYSTEM_SIZE_DOUBLES]
+  tpl.perPageEntities = FILESYSTEM_ENTITIES_PER_ROW
+}
+for (const c of cases) {
+  const filesystemRows = c.rows.filter((r) => r.family === 'filesystem')
+  if (filesystemRows.length === 0) continue
+  const entities = filesystemRows.flatMap((r) => r.entities)
+  const rebuilt = []
+  for (let i = 0; i < entities.length; i += FILESYSTEM_ENTITIES_PER_ROW) {
+    rebuilt.push({
+      family: 'filesystem',
+      page: rebuilt.length,
+      entities: entities.slice(i, i + FILESYSTEM_ENTITIES_PER_ROW),
+    })
+  }
+  const first = c.rows.findIndex((r) => r.family === 'filesystem')
+  c.rows = [
+    ...c.rows.slice(0, first),
+    ...rebuilt,
+    ...c.rows.filter((r, i) => i > first && r.family !== 'filesystem'),
+  ]
+  c.rowCount = c.rows.length
+}
+
 const planLimits = Object.fromEntries(
   model.TIER_IDS.map((tier) => {
     const t = model.TIERS.prop[tier]
@@ -245,6 +330,11 @@ const fixture = {
     shortcuts: plan.shortcuts,
     ownerExclusions: plan.ownerExclusions,
     ids: effectiveIds,
+    sizesAmendment: {
+      date: '2026-10-07',
+      dropped: DROPPED_BY_SIZES,
+      added: [...new Set(ADDED_BY_SIZES)],
+    },
   },
   envelope: {
     order: ENVELOPE_ORDER,

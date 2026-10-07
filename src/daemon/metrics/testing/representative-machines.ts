@@ -716,8 +716,9 @@ function twelveExtraFilesystems(): RepresentativeMachineFixture {
       normalNicSlots: ['eth0', 'eth1'],
       filesystemPageOrder: [...filesystemIds].sort((a, b) => a.localeCompare(b)),
     }),
-    expectedFamilies: [...HOST_BASE_FAMILIES, 'filesystem', 'filesystem'],
-    expectedRowCount: 6,
+    // 12 filesystems page 4 per row (each carries its size beside its readings): 3 rows.
+    expectedFamilies: [...HOST_BASE_FAMILIES, 'filesystem', 'filesystem', 'filesystem'],
+    expectedRowCount: 7,
   }
 }
 

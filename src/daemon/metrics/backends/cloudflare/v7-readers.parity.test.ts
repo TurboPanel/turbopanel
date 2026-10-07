@@ -38,15 +38,21 @@ const V7_HOST_METRICS = [
   'extended.docker.containersMemoryBytes',
   'extended.docker.reclaimableBytes',
   'extended.ingress.tlsCertSoonestExpiryDays',
+  'extended.sizes.memoryTotalBytes',
+  'extended.sizes.swapTotalBytes',
+  'extended.sizes.commitLimitBytes',
+  'extended.sizes.logicalCores',
+  'extended.sizes.rootFilesystemTotalBytes',
+  'extended.sizes.rootFilesystemTotalInodes',
 ] as const
 
 const slotMapping: SlotMapping = {
   normalNicSlots: [],
   fabricDeviceIds: [],
   rootFilesystemId: null,
-  gpuPageOrder: [],
+  gpuPageOrder: ['gpu0'],
   blockPageOrder: ['sda', 'sdb'],
-  filesystemPageOrder: [],
+  filesystemPageOrder: ['fs-a', 'fs-b'],
   hardwareSignalPageOrder: [],
 }
 
@@ -111,10 +117,23 @@ function input(atMs: number, withExtended: boolean): MetricsSampleInput {
       network: { tcpRetransmitPercent: null, softnetDropsPerSecond: null },
     },
     networks: [],
-    filesystems: [],
+    filesystems: [
+      { filesystemId: 'fs-a', availableBytes: 10, freeInodes: 20 },
+      { filesystemId: 'fs-b', availableBytes: 30, freeInodes: 40 },
+    ],
     // sda reports both halves; sdb is missing one, so its combined figure is a gap.
     blockDevices: [drive('sda', 100, 50), drive('sdb', 7, null)],
-    gpus: [],
+    gpus: [
+      {
+        gpuId: 'gpu0',
+        utilizationPercent: 5,
+        memoryUsedBytes: 4_000,
+        memoryActivityPercent: null,
+        pcieReceiveBytesPerSecond: null,
+        pcieTransmitBytesPerSecond: null,
+        throttlePercent: null,
+      },
+    ],
     hardwareSignals: [],
     ingressSources: [
       {
@@ -178,6 +197,20 @@ function input(atMs: number, withExtended: boolean): MetricsSampleInput {
               reclaimableBytes: 4242,
             },
             ingress: { tlsCertSoonestExpiryDays: 21 },
+            sizes: {
+              memoryTotalBytes: 8_000_000_000,
+              swapTotalBytes: 2_000_000_000,
+              commitLimitBytes: 6_000_000_000,
+              logicalCores: 4,
+              rootFilesystemTotalBytes: 100_000_000_000,
+              rootFilesystemTotalInodes: 6_000_000,
+            },
+            filesystemSizes: [
+              // Out of page order: the size is matched to its filesystem by id.
+              { filesystemId: 'fs-b', totalBytes: 2_000, totalInodes: 400 },
+              { filesystemId: 'fs-a', totalBytes: 1_000, totalInodes: 200 },
+            ],
+            gpuSizes: [{ gpuId: 'gpu0', memoryTotalBytes: 16_000 }],
           },
         }
       : {}),
@@ -238,6 +271,12 @@ it('every v7 number reads back on DuckDB and on the hosted store, and a v6 sampl
       'extended.docker.containersMemoryBytes': 5_000_000,
       'extended.docker.reclaimableBytes': 4242,
       'extended.ingress.tlsCertSoonestExpiryDays': 21,
+      'extended.sizes.memoryTotalBytes': 8_000_000_000,
+      'extended.sizes.swapTotalBytes': 2_000_000_000,
+      'extended.sizes.commitLimitBytes': 6_000_000_000,
+      'extended.sizes.logicalCores': 4,
+      'extended.sizes.rootFilesystemTotalBytes': 100_000_000_000,
+      'extended.sizes.rootFilesystemTotalInodes': 6_000_000,
     }
     const duck = await duckStore.queryHostSeries({ ...range, metrics: [...V7_HOST_METRICS] })
     const ae = await aeStore.queryHostSeries({ ...range, metrics: [...V7_HOST_METRICS] })
@@ -272,6 +311,39 @@ it('every v7 number reads back on DuckDB and on the hosted store, and a v6 sampl
       const sdb = result.entities.find((entity) => entity.entityId === 'sdb')!
       assertEquals(sda.points[0]!.values.opsPerSecond, 150, `${label} sda ops/s`)
       assertEquals(sdb.points[0]!.values.opsPerSecond ?? null, null, `${label} sdb ops/s`)
+    }
+
+    // Each extra filesystem's and GPU's own size reads back beside its readings.
+    const fsQuery = {
+      ...range,
+      family: 'filesystem' as const,
+      entityIds: ['fs-a', 'fs-b'],
+      metrics: ['availableBytes', 'totalBytes', 'totalInodes'],
+    }
+    const gpuQuery = {
+      ...range,
+      family: 'gpu' as const,
+      entityIds: ['gpu0'],
+      metrics: ['memoryUsedBytes', 'memoryTotalBytes'],
+    }
+    for (const [label, store] of [
+      ['duckdb', duckStore],
+      ['hosted', aeStore],
+    ] as const) {
+      const fs = await store.queryEntitySeries(fsQuery)
+      const a = fs.entities.find((entity) => entity.entityId === 'fs-a')!
+      const b = fs.entities.find((entity) => entity.entityId === 'fs-b')!
+      assertEquals(a.points[0]!.values.totalBytes, 1_000, `${label} fs-a size`)
+      assertEquals(a.points[0]!.values.totalInodes, 200, `${label} fs-a inodes`)
+      assertEquals(b.points[0]!.values.totalBytes, 2_000, `${label} fs-b size`)
+      assertEquals(b.points[0]!.values.availableBytes, 30, `${label} fs-b free`)
+      // The v6 sample carried no sizes: a gap, never 0.
+      assertEquals(a.points[1]?.values.totalBytes ?? null, null, `${label} fs-a v6 size`)
+      const gpu = await store.queryEntitySeries(gpuQuery)
+      const g = gpu.entities.find((entity) => entity.entityId === 'gpu0')!
+      assertEquals(g.points[0]!.values.memoryTotalBytes, 16_000, `${label} gpu memory size`)
+      assertEquals(g.points[0]!.values.memoryUsedBytes, 4_000, `${label} gpu memory used`)
+      assertEquals(g.points[1]?.values.memoryTotalBytes ?? null, null, `${label} gpu v6 size`)
     }
   } finally {
     await duckStore.close()

@@ -15,6 +15,7 @@ import {
   DUCKDB_SCHEMA_MARKER_VERSION,
   V7_DOCKER_COLUMNS,
   V7_HOST_COLUMNS,
+  V7_SIZE_COLUMNS,
   V7_INGRESS_COLUMNS,
   entityMetricColumnName,
   FILESYSTEM_METRIC_FIELDS,
@@ -43,8 +44,8 @@ import {
   STATUS_EVENTS_TABLE,
 } from './schema.ts'
 
-it('DuckDB schema marker is 9', () => {
-  assertEquals(DUCKDB_SCHEMA_MARKER_VERSION, 9)
+it('DuckDB schema marker is 10', () => {
+  assertEquals(DUCKDB_SCHEMA_MARKER_VERSION, 10)
 })
 
 it('the DDL carries every extended numeric column', () => {
@@ -224,7 +225,8 @@ it('buildSchemaStatements emits idempotent DDL for every v5 table', () => {
     'active_file_bytes',
     'inactive_file_bytes',
   ]) {
-    assertEquals(joined.includes(dropped), false, dropped)
+    // `ext_commit_limit_bytes` is the v7 size column, not the dropped diagnostics gauge.
+    assertEquals(new RegExp(`(?<![a-z_])${dropped}`).test(joined), false, dropped)
   }
 })
 
@@ -244,7 +246,8 @@ it('hostSamplesInsertColumns lists common metadata then every host metric column
     7 +
       HOST_METRIC_FIELD_REFS.length +
       HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST.length +
-      V7_HOST_COLUMNS.length
+      V7_HOST_COLUMNS.length +
+      V7_SIZE_COLUMNS.length
   )
   assertEquals(columns.slice(0, 7), [
     'server_id',

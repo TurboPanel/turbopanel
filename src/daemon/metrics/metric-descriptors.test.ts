@@ -4,12 +4,11 @@ import type {
   ExtendedDockerMetrics,
   ExtendedHostMetrics,
   ExtendedIngressMetrics,
+  ExtendedSizes,
   DatabaseProxySample,
   DiagnosticsCpuSample,
   DiagnosticsMemorySample,
   DockerUsageSample,
-  FilesystemSample,
-  GpuSample,
   HardwareSignalSample,
   HostCpuMetrics,
   HostKernelMetrics,
@@ -118,10 +117,13 @@ const ENTITY_FIELD_SPECS: EntityFieldSpec[] = [
   },
   {
     entityScope: 'filesystem',
-    fields: ['availableBytes', 'freeInodes'] satisfies Exclude<
-      keyof FilesystemSample,
-      'filesystemId'
-    >[],
+    fields: [
+      'availableBytes',
+      'freeInodes',
+      // The size rides `extended.filesystemSizes`, so it is not a `FilesystemSample` field.
+      'totalBytes',
+      'totalInodes',
+    ],
   },
   {
     entityScope: 'block',
@@ -145,7 +147,9 @@ const ENTITY_FIELD_SPECS: EntityFieldSpec[] = [
       'pcieReceiveBytesPerSecond',
       'pcieTransmitBytesPerSecond',
       'throttlePercent',
-    ] satisfies Exclude<keyof GpuSample, 'gpuId'>[],
+      // The memory size rides `extended.gpuSizes`, so it is not a `GpuSample` field.
+      'memoryTotalBytes',
+    ],
   },
   {
     entityScope: 'hardwareSignal',
@@ -273,6 +277,17 @@ const ENTITY_FIELD_SPECS: EntityFieldSpec[] = [
   {
     entityScope: 'extended.ingress',
     fields: ['tlsCertSoonestExpiryDays'] satisfies (keyof ExtendedIngressMetrics)[],
+  },
+  {
+    entityScope: 'extended.sizes',
+    fields: [
+      'memoryTotalBytes',
+      'swapTotalBytes',
+      'commitLimitBytes',
+      'logicalCores',
+      'rootFilesystemTotalBytes',
+      'rootFilesystemTotalInodes',
+    ] satisfies (keyof ExtendedSizes)[],
   },
   {
     // Read-time figure, not a wire field: a drive's read plus write ops/s.
