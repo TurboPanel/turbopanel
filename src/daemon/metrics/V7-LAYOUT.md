@@ -32,14 +32,14 @@ ids, not the 171 the brief quoted, and equals preset `r` exactly). Differences f
 | --- | --- |
 | blob1 | kind, `metrics` |
 | blob2 | family (below) |
-| blob3 | schema version, `7` |
+| blob3 | storage layout revision, `8` (the sizes amendment reused slots under wire version 7, so rows stamped `7` are never read) |
 | blob4 | topology generation |
 | blob5 | sample time, UTC text `YYYY-MM-DD hh:mm:ss` |
 | blob6 | entity ids (comma joined, same order as the row's doubles) or source id; empty on host rows |
 | blob7-blob20 | text content blobs (below) |
 | double20 | interval seconds |
 
-Event and status rows keep their v6 blob positions; only blob3 (`7`) and the blob5 text format change. Sequence,
+Event and status rows keep their v6 blob positions; only blob3 (`8`) and the blob5 text format change. Sequence,
 capability-plan generation and page are no longer written.
 
 ## Row families and presence
