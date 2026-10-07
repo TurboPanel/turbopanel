@@ -453,3 +453,111 @@ test('handleAcmeIssuanceEvent writes notAfter and lastIssuedAt on a good event, 
     lastIssuedAt: AT,
   })
 })
+
+const FAILING_ROW = (acme?: Record<string, unknown>): Row => ({
+  id: 'tls-1',
+  status: 'managed',
+  metadata: {
+    dnsNames: ['app.example.com'],
+    hasWildcard: false,
+    notBefore: '',
+    subject: '',
+    issuer: '',
+    ...(acme ? { acme } : {}),
+  },
+})
+
+test('a first failure announces once, with the organization and the raw reason', async () => {
+  const { db } = fakeDb([FAILING_ROW({ managedBy: 'caddy' })])
+  const seen: unknown[] = []
+  await handleAcmeIssuanceEvent(
+    db,
+    { serverId: SERVER_ID, hostname: 'App.Example.com.', ok: false, errorMessage: 'boom' },
+    { onNewFailure: (failure) => Promise.resolve(void seen.push(failure)) }
+  )
+  assertEquals(seen, [{ organizationId: ORG_ID, hostname: 'app.example.com', rawError: 'boom' }])
+})
+
+test('the announced reason never carries a URL token', async () => {
+  const { db } = fakeDb([FAILING_ROW({ managedBy: 'caddy' })])
+  const seen: unknown[] = []
+  await handleAcmeIssuanceEvent(
+    db,
+    {
+      serverId: SERVER_ID,
+      hostname: 'app.example.com',
+      ok: false,
+      errorMessage: 'probe failed for https://app.example.com/check?token=s3cr3t-value',
+    },
+    { onNewFailure: (failure) => Promise.resolve(void seen.push(failure)) }
+  )
+  assertEquals(seen, [
+    {
+      organizationId: ORG_ID,
+      hostname: 'app.example.com',
+      rawError: 'probe failed for https://app.example.com/check?[redacted]',
+    },
+  ])
+  assertEquals(JSON.stringify(seen).includes('s3cr3t-value'), false)
+})
+
+test('a hostname that keeps failing is not announced again', async () => {
+  const { db } = fakeDb([FAILING_ROW({ lastError: 'earlier failure' })])
+  const seen: unknown[] = []
+  await handleAcmeIssuanceEvent(
+    db,
+    { serverId: SERVER_ID, hostname: 'app.example.com', ok: false, errorMessage: 'still boom' },
+    { onNewFailure: (failure) => Promise.resolve(void seen.push(failure)) }
+  )
+  assertEquals(seen.length, 0)
+})
+
+test('a good event never announces, and a failure after recovery announces again', async () => {
+  const seen: unknown[] = []
+  const deps = { onNewFailure: (f: unknown) => Promise.resolve(void seen.push(f)) }
+  const ok = fakeDb([FAILING_ROW({ lastError: 'earlier failure' })])
+  await handleAcmeIssuanceEvent(
+    ok.db,
+    {
+      serverId: SERVER_ID,
+      hostname: 'app.example.com',
+      ok: true,
+    },
+    deps
+  )
+  assertEquals(seen.length, 0)
+  const cleared = fakeDb([FAILING_ROW({ lastIssuedAt: AT })])
+  await handleAcmeIssuanceEvent(
+    cleared.db,
+    {
+      serverId: SERVER_ID,
+      hostname: 'app.example.com',
+      ok: false,
+      errorMessage: 'again',
+    },
+    deps
+  )
+  assertEquals(seen.length, 1)
+})
+
+test('a failing alert never fails the event or loses the record', async () => {
+  const { db, updates } = fakeDb([FAILING_ROW()])
+  const result = await handleAcmeIssuanceEvent(
+    db,
+    { serverId: SERVER_ID, hostname: 'app.example.com', ok: false, errorMessage: 'boom' },
+    { onNewFailure: () => Promise.reject(new Error('sender down')) }
+  )
+  assertEquals(result.updated, true)
+  assertEquals(updates.length, 1)
+})
+
+test('several rows covering one hostname announce once', async () => {
+  const { db } = fakeDb([FAILING_ROW(), { ...FAILING_ROW(), id: 'tls-2' }])
+  let calls = 0
+  await handleAcmeIssuanceEvent(
+    db,
+    { serverId: SERVER_ID, hostname: 'app.example.com', ok: false, errorMessage: 'boom' },
+    { onNewFailure: () => Promise.resolve(void calls++) }
+  )
+  assertEquals(calls, 1)
+})
