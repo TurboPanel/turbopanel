@@ -10,6 +10,7 @@ import {
   INSTANCE_REVISION_HEADER,
   INSTANCE_VERSION_HEADER,
   MANAGED_HA_INSTANCE_FEATURE,
+  MANAGED_REPLICA_FRESHNESS_FEATURE,
   MANAGED_HEALTH_FEATURE,
   MANAGED_HEALTH_REPORT_FEATURE,
   PHP_SITE_MODES_FEATURE,
@@ -139,6 +140,14 @@ test('managed-health-report-v1 is advertised to daemons, so they push health rep
   assertEquals(MANAGED_HEALTH_REPORT_FEATURE, 'managed-health-report-v1')
   assertEquals(
     (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_HEALTH_REPORT_FEATURE),
+    true
+  )
+})
+
+test('managed-replica-freshness-v1 is an advertised wire feature', () => {
+  assertEquals(MANAGED_REPLICA_FRESHNESS_FEATURE, 'managed-replica-freshness-v1')
+  assertEquals(
+    (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_REPLICA_FRESHNESS_FEATURE),
     true
   )
 })

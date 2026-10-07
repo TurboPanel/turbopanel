@@ -2536,3 +2536,21 @@ it('validateDaemonInboundFrame checks the deploy-cancel-result outcome', () => {
     false
   )
 })
+
+it('managed-health-result bounds the GTID freshness fields and types fullyApplied', () => {
+  const frame = (replication: Record<string, unknown>) =>
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        type: 'managed-health-result',
+        id: 'req-1',
+        ok: true,
+        member: { ...HEALTH_MEMBER, replication: { ...HEALTH_MEMBER.replication, ...replication } },
+        at: VALID_AT,
+      })
+    ).ok
+  assertEquals(frame({ receivedGtid: 'u:1-5', executedGtid: 'u:1-5', fullyApplied: false }), true)
+  assertEquals(frame({ receivedGtid: 'x'.repeat(4096) }), true)
+  assertEquals(frame({ receivedGtid: 'x'.repeat(4097) }), false)
+  assertEquals(frame({ executedGtid: 7 }), false)
+  assertEquals(frame({ fullyApplied: 'true' }), false)
+})

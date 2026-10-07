@@ -96,6 +96,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** MySQL / MariaDB freshness fields, when well-formed; anything else is dropped (unknown). */
+function withFreshnessFields(
+  health: ManagedReplicationHealth,
+  r: Record<string, unknown>
+): ManagedReplicationHealth {
+  for (const key of ['receivedGtid', 'executedGtid'] as const) {
+    const v = r[key]
+    if (typeof v === 'string' && v.length > 0 && v.length <= 4096) health[key] = v
+  }
+  if (typeof r.fullyApplied === 'boolean') health.fullyApplied = r.fullyApplied
+  return health
+}
+
 function parseReplicationHealth(metadata: unknown): ManagedReplicationHealth | undefined {
   if (!isRecord(metadata) || !isRecord(metadata.replication)) return undefined
   const r = metadata.replication
@@ -117,7 +130,7 @@ function parseReplicationHealth(metadata: unknown): ManagedReplicationHealth | u
   if (typeof r.receiveLagBytes === 'number' && Number.isFinite(r.receiveLagBytes)) {
     health.receiveLagBytes = r.receiveLagBytes
   }
-  return health
+  return withFreshnessFields(health, r)
 }
 
 /**
@@ -146,7 +159,7 @@ function parseDisplayReplicationHealth(metadata: unknown): ManagedReplicationHea
   if (typeof r.receiveLagBytes === 'number' && Number.isFinite(r.receiveLagBytes)) {
     health.receiveLagBytes = r.receiveLagBytes
   }
-  return health
+  return withFreshnessFields(health, r)
 }
 
 /**

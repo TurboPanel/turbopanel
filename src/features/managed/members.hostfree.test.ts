@@ -1559,3 +1559,30 @@ test('serializeManagedMember keeps the stored standby WAL positions', () => {
     receiveLagBytes: 0,
   })
 })
+
+test('serializeManagedMember keeps stored GTID freshness and drops malformed fields', () => {
+  const stored = (extra: Record<string, unknown>) =>
+    serializeManagedMember(
+      member({
+        id: 'm3',
+        serverId: 's1',
+        role: 'replica',
+        ordinal: 3,
+        metadata: {
+          replication: { state: 'streaming', observedAt: '2020-01-02T00:00:00.000Z', ...extra },
+        },
+      }),
+      'db-1'
+    ).replication
+  assertEquals(stored({ receivedGtid: 'u:1-5', executedGtid: 'u:1-5', fullyApplied: true }), {
+    state: 'streaming',
+    observedAt: '2020-01-02T00:00:00.000Z',
+    receivedGtid: 'u:1-5',
+    executedGtid: 'u:1-5',
+    fullyApplied: true,
+  })
+  assertEquals(stored({ receivedGtid: 'x'.repeat(4097), executedGtid: 3, fullyApplied: 'true' }), {
+    state: 'streaming',
+    observedAt: '2020-01-02T00:00:00.000Z',
+  })
+})
