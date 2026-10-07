@@ -57,7 +57,12 @@ describe('buildNativeAppVariables', () => {
 
   it("lists the platform's own variables and refuses to let a variable replace them", () => {
     const { variables, view } = buildNativeAppVariables(
-      [plain('PORT', '1', 'environment'), plain('PATH', '/evil'), plain('OK', '1')],
+      [
+        plain('PORT', '1', 'environment'),
+        plain('PATH', '/evil'),
+        plain('HOSTNAME', 'web.example.test', 'service'),
+        plain('OK', '1'),
+      ],
       { listenPort: 18100, appMode: 'development' }
     )
     assertEquals(variables, [{ name: 'OK', value: '1' }])
@@ -65,6 +70,7 @@ describe('buildNativeAppVariables', () => {
       view.filter((entry) => entry.source === 'platform').map((e) => [e.name, e.value]),
       [
         ['HOST', '127.0.0.1'],
+        ['HOSTNAME', '127.0.0.1'],
         ['NODE_ENV', 'development'],
         ['PORT', '18100'],
       ]
@@ -73,6 +79,7 @@ describe('buildNativeAppVariables', () => {
     assertEquals(
       dropped.map((e) => [e.name, e.source, e.reason]),
       [
+        ['HOSTNAME', 'service', 'platform'],
         ['PATH', 'project', 'platform'],
         ['PORT', 'environment', 'platform'],
       ]
@@ -85,6 +92,7 @@ describe('buildNativeAppVariables', () => {
       'NODE_ENV',
       'PORT',
       'HOST',
+      'HOSTNAME',
       'HOME',
       'TMPDIR',
       'XDG_CACHE_HOME',
@@ -116,6 +124,25 @@ describe('buildNativeAppVariables', () => {
         ['not-a-name', 'invalid_name'],
       ]
     )
+  })
+
+  it('turns Windows line endings into LF and holds back a lone carriage return', () => {
+    const pem = '-----BEGIN KEY-----\r\nAAAA\r\n-----END KEY-----'
+    const { variables, view } = buildNativeAppVariables(
+      [plain('PEM', pem), plain('LONE_CR', 'a\rb'), plain('MIXED', 'a\r\r\nb')],
+      app
+    )
+    assertEquals(variables, [
+      { name: 'PEM', value: '-----BEGIN KEY-----\nAAAA\n-----END KEY-----' },
+    ])
+    assertEquals(
+      view.filter((entry) => !entry.delivered).map((e) => [e.name, e.reason]),
+      [
+        ['LONE_CR', 'invalid_value'],
+        ['MIXED', 'invalid_value'],
+      ]
+    )
+    assertEquals(view.find((entry) => entry.name === 'PEM')?.value?.includes('\r'), false)
   })
 
   it("caps the list at the daemon's limit and says which were left out", () => {

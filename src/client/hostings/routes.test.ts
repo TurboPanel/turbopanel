@@ -13,6 +13,7 @@ import {
   environment,
   grant,
   hosting,
+  hostname,
   ip,
   network,
   organization,
@@ -532,6 +533,127 @@ test('hosting CRUD covers list, filter, create, patch, and delete', async () => 
       assertEquals(del.status, 200)
     }
   )
+})
+
+type HostingCall = (method: string, path: string, body: unknown) => Promise<Response>
+
+function hostingCaller(app: Hono<AppEnv>, cookie: string, organizationId: string): HostingCall {
+  return async (method, path, body) =>
+    await app.request(path, {
+      method,
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    })
+}
+
+async function createHostingId(call: HostingCall, serviceId: string, options: unknown) {
+  const res = await call('POST', '/hostings', { serviceId, name: 'Site', options })
+  assertEquals(res.status, 200)
+  return ((await res.json()) as { id: string }).id
+}
+
+async function hostnameRows(db: ReturnType<typeof createDenoDb>, hostingId: string) {
+  const rows = await db
+    .select({ hostname: hostname.hostname })
+    .from(hostname)
+    .where(eq(hostname.hostingId, hostingId))
+  return rows.map((row) => row.hostname).sort((a, b) => a.localeCompare(b))
+}
+
+test("POST /hostings refuses a typed name another hosting's www choice already answers on", async () => {
+  await withHostingFixtures(async ({ app, secrets, db, userId, organizationId, serviceId }) => {
+    const call = hostingCaller(app, await sessionCookie(db, secrets, userId), organizationId)
+    const a = await createHostingId(call, serviceId, { hostnames: ['example.com'], www: 'both' })
+    assertEquals(await hostnameRows(db, a), ['example.com', 'www.example.com'])
+
+    const b = await call('POST', '/hostings', {
+      serviceId,
+      name: 'Other',
+      options: { hostnames: ['www.example.com'] },
+    })
+    assertEquals(b.status, 409)
+    assertEquals(await b.json(), { error: 'hostname_in_use' })
+
+    // A redirect-only spelling is claimed too.
+    const redirectOnly = await createHostingId(call, serviceId, {
+      hostnames: ['shop.example.com'],
+      www: 'www-to-root',
+    })
+    assertEquals(await hostnameRows(db, redirectOnly), ['shop.example.com', 'www.shop.example.com'])
+    const clash = await call('POST', '/hostings', {
+      serviceId,
+      name: 'Other',
+      options: { hostnames: ['www.shop.example.com'] },
+    })
+    assertEquals(clash.status, 409)
+    assertEquals(await clash.json(), { error: 'hostname_in_use' })
+  })
+})
+
+test('PATCH /hostings refuses a www choice that adds a name another hosting typed, and off frees it', async () => {
+  await withHostingFixtures(async ({ app, secrets, db, userId, organizationId, serviceId }) => {
+    const call = hostingCaller(app, await sessionCookie(db, secrets, userId), organizationId)
+    const b = await createHostingId(call, serviceId, { hostnames: ['www.example.com'] })
+    const a = await createHostingId(call, serviceId, { hostnames: ['example.com'] })
+
+    const refused = await call('PATCH', `/hostings/${a}`, {
+      options: { hostnames: ['example.com'], www: 'root-to-www' },
+    })
+    assertEquals(refused.status, 409)
+    assertEquals(await refused.json(), { error: 'hostname_in_use' })
+    // The refused write left both hostings as they were.
+    assertEquals(await hostnameRows(db, a), ['example.com'])
+    const [unchanged] = await db
+      .select({ options: hosting.options })
+      .from(hosting)
+      .where(eq(hosting.id, a))
+    assertEquals(unchanged?.options, { hostnames: ['example.com'] })
+
+    // Free the name, let A take it with its www choice, then turn it off again.
+    await db.delete(hosting).where(eq(hosting.id, b))
+    const taken = await call('PATCH', `/hostings/${a}`, {
+      options: { hostnames: ['example.com'], www: 'root-to-www' },
+    })
+    assertEquals(taken.status, 200)
+    assertEquals(await hostnameRows(db, a), ['example.com', 'www.example.com'])
+    const blocked = await call('POST', '/hostings', {
+      serviceId,
+      name: 'Other',
+      options: { hostnames: ['www.example.com'] },
+    })
+    assertEquals(blocked.status, 409)
+
+    const off = await call('PATCH', `/hostings/${a}`, {
+      options: { hostnames: ['example.com'], www: 'off' },
+    })
+    assertEquals(off.status, 200)
+    assertEquals(await hostnameRows(db, a), ['example.com'])
+    const saved = await createHostingId(call, serviceId, { hostnames: ['www.example.com'] })
+    assertEquals(await hostnameRows(db, saved), ['www.example.com'])
+  })
+})
+
+test('PATCH /hostings: turning www off frees the added name for a hosting that already exists', async () => {
+  await withHostingFixtures(async ({ app, secrets, db, userId, organizationId, serviceId }) => {
+    const call = hostingCaller(app, await sessionCookie(db, secrets, userId), organizationId)
+    const a = await createHostingId(call, serviceId, { hostnames: ['example.com'], www: 'both' })
+    const b = await createHostingId(call, serviceId, { hostnames: ['other.example.com'] })
+
+    const typed = { options: { hostnames: ['www.example.com'] } }
+    const before = await call('PATCH', `/hostings/${b}`, typed)
+    assertEquals(before.status, 409)
+    assertEquals(await before.json(), { error: 'hostname_in_use' })
+
+    const off = await call('PATCH', `/hostings/${a}`, { options: { hostnames: ['example.com'] } })
+    assertEquals(off.status, 200)
+    const after = await call('PATCH', `/hostings/${b}`, typed)
+    assertEquals(after.status, 200)
+    assertEquals(await hostnameRows(db, b), ['www.example.com'])
+  })
 })
 
 test('POST /hostings accepts tcp protocol with port mappings', async () => {

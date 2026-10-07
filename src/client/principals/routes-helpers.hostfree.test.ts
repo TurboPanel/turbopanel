@@ -53,6 +53,20 @@ test('parsePrincipalUsernameValue rejects reserved and unsafe names', () => {
     status: 400,
   })
   assertEquals(parsePrincipalUsernameValue('Bad Name!').ok, false)
+  for (const name of ['containers', 'tpbuild']) {
+    assertEquals(parsePrincipalUsernameValue(name), {
+      ok: false,
+      error: 'username_reserved',
+      status: 400,
+    })
+  }
+  for (const name of ['a.b', 'web-', 'web--app']) {
+    assertEquals(parsePrincipalUsernameValue(name), {
+      ok: false,
+      error: 'Invalid request',
+      status: 400,
+    })
+  }
   const ok = parsePrincipalUsernameValue('  appuser  ')
   if (!ok.ok) throw new TypeError('expected valid username')
   assertEquals(ok.username, 'appuser')
@@ -65,6 +79,13 @@ test('parseCreatePrincipalOptions accepts and rejects option shapes', () => {
 
   assertEquals(parseCreatePrincipalOptions({ options: 'nope' }).ok, false)
   assertEquals(parseCreatePrincipalOptions({ uid: 2000, gid: 2000 }).ok, false)
+
+  const top = parseCreatePrincipalOptions({ uid: 60000, gid: 60000 })
+  if (!top.ok) throw new TypeError('expected the top of the band to be accepted')
+  assertEquals(top.override, { uid: 60000, gid: 60000 })
+  // Above 60000 is no site owner's: 61184-65519 is the throwaway build users.
+  assertEquals(parseCreatePrincipalOptions({ uid: 60001, gid: 15001 }).ok, false)
+  assertEquals(parseCreatePrincipalOptions({ uid: 15001, gid: 61184 }).ok, false)
 })
 
 test('projectPrincipalCreateResponse includes uid/gid only when set', () => {

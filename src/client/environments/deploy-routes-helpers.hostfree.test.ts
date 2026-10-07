@@ -27,7 +27,7 @@ import {
   readHostingPorts,
   readHostingProtocol,
   readHostnames,
-  readWwwRedirect,
+  readWwwMode,
   readPathPrefix,
   readTargetPort,
   scheduleErrorResponse,
@@ -399,9 +399,12 @@ test('hosting option readers filter invalid values', () => {
   assertEquals(readHostnames(null), [])
   assertEquals(readHostnames({ hostnames: ['a.example.com', '', 3] }), ['a.example.com'])
   assertEquals(readPathPrefix({ pathPrefix: '/api' }), '/api')
-  assertEquals(readWwwRedirect({ wwwRedirect: true }), true)
-  assertEquals(readWwwRedirect({ wwwRedirect: 'true' }), false)
-  assertEquals(readWwwRedirect(null), false)
+  assertEquals(readWwwMode({ www: 'both' }), 'both')
+  assertEquals(readWwwMode({ www: 'root-to-www' }), 'root-to-www')
+  assertEquals(readWwwMode({ www: 'yes' }), 'off')
+  assertEquals(readWwwMode({ wwwRedirect: true, hostnames: ['example.com'] }), 'www-to-root')
+  assertEquals(readWwwMode({ wwwRedirect: 'true' }), 'off')
+  assertEquals(readWwwMode(null), 'off')
   assertEquals(readTargetPort({ targetPort: 8080 }), 8080)
   assertEquals(readTargetPort({ targetPort: Number.NaN }), undefined)
   assertEquals(readHostingProtocol({ protocol: 'tcp' }), 'tcp')
@@ -510,22 +513,42 @@ test('validateDeployMaterials rejects tcp hostings without ports', () => {
   assertEquals(error.error, 'invalid_deploy_hosting')
 })
 
-test('validateDeployMaterials refuses a www redirect onto an existing hostname', () => {
-  const hosting = (hostingId: string, hostnames: string[], wwwRedirect?: true) => ({
+test('validateDeployMaterials refuses a www name that is already an existing hostname', () => {
+  const hosting = (
+    hostingId: string,
+    hostnames: string[],
+    www?: 'both' | 'www-to-root' | 'root-to-www',
+    protocol?: 'tcp'
+  ) => ({
     hostingId,
     serviceId: 'svc',
     composeServiceName: 'web',
     hostnames,
-    ...(wwwRedirect ? { wwwRedirect } : {}),
+    ...(www ? { www } : {}),
+    ...(protocol ? { protocol, ports: [{ published: 5432, target: 5432 }] } : {}),
   })
-  const error = validateDeployMaterials(
-    [hosting('h1', ['example.com'], true), hosting('h2', ['www.example.com'])],
-    []
+  for (const mode of ['both', 'www-to-root', 'root-to-www'] as const) {
+    const error = validateDeployMaterials(
+      [hosting('h1', ['example.com'], mode), hosting('h2', ['www.example.com'])],
+      []
+    )
+    if (!error) throw new TypeError(`expected invalid deploy hosting for ${mode}`)
+    assertEquals(error.error, 'invalid_deploy_hosting')
+    assertEquals(
+      error.message,
+      'www: www.example.com is already a hostname in this environment, so example.com cannot also claim it'
+    )
+    assertEquals(validateDeployMaterials([hosting('h1', ['example.com'], mode)], []), null)
+  }
+  assertEquals(
+    validateDeployMaterials(
+      [hosting('h1', ['example.com']), hosting('h2', ['www.example.com'])],
+      []
+    ),
+    null
   )
-  if (!error) throw new TypeError('expected invalid deploy hosting')
-  assertEquals(error.error, 'invalid_deploy_hosting')
-  assertEquals(error.message.includes('www.example.com'), true)
-  assertEquals(validateDeployMaterials([hosting('h1', ['example.com'], true)], []), null)
+  const tcp = validateDeployMaterials([hosting('h1', [], 'both', 'tcp')], [])
+  assertEquals(tcp, { error: 'invalid_deploy_hosting', message: 'www requires the http protocol' })
 })
 
 test('validateDeployMaterials rejects invalid storage material', () => {

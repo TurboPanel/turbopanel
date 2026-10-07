@@ -4,7 +4,7 @@
  * block returned with every hosting.
  */
 
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   deployment,
@@ -25,6 +25,7 @@ import {
 } from '../../features/hostings/hosting-certificate.ts'
 import {
   parseHostingOptions,
+  readHostingWwwMode,
   resolveHostingBind,
   resolveHostingProtocol,
 } from '../../features/hostings/hosting-options.ts'
@@ -80,6 +81,26 @@ async function loadExpectedAddresses(db: Db, hostingId: string): Promise<string[
   })
 }
 
+/** Hostnames of the other web hostings that deploy together with this one (same environment). */
+async function loadOtherWebHostnames(db: Db, hostingId: string): Promise<string[]> {
+  const [own] = await db
+    .select({ environmentId: service.environmentId })
+    .from(hosting)
+    .innerJoin(service, eq(service.id, hosting.serviceId))
+    .where(eq(hosting.id, hostingId))
+    .limit(1)
+  if (!own) return []
+  const rows = await db
+    .select({ options: hosting.options })
+    .from(hosting)
+    .innerJoin(service, eq(service.id, hosting.serviceId))
+    .where(and(eq(service.environmentId, own.environmentId), ne(hosting.id, hostingId)))
+  return rows.flatMap((row) => {
+    const options = parseHostingOptions(row.options)
+    return resolveHostingProtocol(options) === 'http' ? (options?.hostnames ?? []) : []
+  })
+}
+
 function sameNames(left: readonly string[], right: readonly string[]): boolean {
   if (left.length !== right.length) return false
   const set = new Set(left.map((name) => name.toLowerCase()))
@@ -89,6 +110,8 @@ function sameNames(left: readonly string[], right: readonly string[]): boolean {
 export function createLetsEncryptStore(db: Db): LetsEncryptStore {
   return {
     expectedAddresses: (record) => loadExpectedAddresses(db, record.id),
+
+    otherWebHostnames: (record) => loadOtherWebHostnames(db, record.id),
 
     async findManagedCertificate(organizationId, names) {
       const rows = await db
@@ -225,6 +248,7 @@ export async function loadHostingCertificates(
         protocol: resolveHostingProtocol(options),
         bind: resolveHostingBind(options),
         hostnames,
+        www: readHostingWwwMode(row.options),
       }) === null
     const pinned = row.tlsId === null ? null : (pinnedById.get(row.tlsId) ?? null)
     out.set(
@@ -232,7 +256,7 @@ export async function loadHostingCertificates(
       deriveHostingCertificate({
         pinned,
         pending: readPendingLetsEncrypt(row.metadata),
-        wwwRedirect: (row.options as { wwwRedirect?: unknown } | null)?.wwwRedirect === true,
+        www: readHostingWwwMode(row.options),
         letsEncryptAvailable: available,
         needsDeploy: needsDeploy.has(row.id),
         now,

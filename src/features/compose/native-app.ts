@@ -14,6 +14,7 @@ import {
   type ComposeServiceCronJob,
   type ComposeServiceTurbopanelExtension,
   isNodeComposeService,
+  type NativeRuntime,
   type NativeRuntimeFramework,
   type NodeAppMode,
   readServiceTurbopanelExtension,
@@ -55,8 +56,19 @@ export type NativeAppServiceSpec = {
   framework: NativeRuntimeFramework
   /** Loopback listen port for hosting Caddy → the app process. */
   listenPort: number
-  /** Operator-pinned Node series, when the author declared one. */
+  /**
+   * Operator-pinned Node series, when the author declared one. When absent,
+   * deploy-prepare may fill it in from the repository
+   * (`client/environments/deploy-node-version.ts`).
+   */
   nodeVersion?: string
+  /**
+   * `deno` runs the app on the vendored Deno; omitted means `node`. Rides the
+   * deploy payload only when it is `deno`, so a Node app's payload is unchanged.
+   */
+  runtime?: NativeRuntime
+  /** Operator-pinned Deno series (a Deno app only). Omitted means the default. */
+  denoVersion?: string
   /** `NODE_ENV` for build and unit. Omitted means `production`. */
   appMode?: NodeAppMode
   /**
@@ -65,7 +77,11 @@ export type NativeAppServiceSpec = {
    * daemon stops and disables the unit instead of starting it.
    */
   enabled?: boolean
-  /** Script run when `source.startCommand` is absent. Default `server.js`. */
+  /**
+   * Script run when `source.startCommand` is absent. Omitted means the daemon's
+   * start order: standalone `server.js`, `start` script, `next start`, `main`,
+   * `index.js`, `server.js`.
+   */
   startupFile?: string
   /**
    * Authored `deploy.restart_policy`, when the document set one. Absent means
@@ -378,6 +394,8 @@ function nativeAppSpecFor(
     framework: extension.framework ?? NATIVE_APP_DEFAULT_FRAMEWORK,
     listenPort,
     ...(extension.nodeVersion === undefined ? {} : { nodeVersion: extension.nodeVersion }),
+    ...(extension.runtime === 'deno' ? { runtime: 'deno' as const } : {}),
+    ...(extension.denoVersion === undefined ? {} : { denoVersion: extension.denoVersion }),
     ...(extension.appMode === undefined ? {} : { appMode: extension.appMode }),
     ...(extension.enabled === undefined ? {} : { enabled: extension.enabled }),
     ...(extension.startupFile === undefined ? {} : { startupFile: extension.startupFile }),

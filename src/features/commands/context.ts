@@ -77,6 +77,21 @@ export type CommandContextRelease = {
    */
   commitMessage?: string
   commitAuthor?: string
+  /**
+   * Node series a native (`serviceKind: node`) app's release was built and run
+   * with. A rollback sends it back unchanged instead of reading the repository
+   * again (it has no clone secret to read a private one with), so the release
+   * runs on the Node it was built on. Optional: absent for every other kind of
+   * service and on releases recorded before it existed.
+   */
+  nodeVersion?: string
+  /**
+   * Recorded only for a Deno app's release (`deno`); absent means Node, as on
+   * every release recorded before Deno apps existed, so a Node row is
+   * unchanged. A rollback reads it to put the app back on the runtime that
+   * release ran on, even after the compose document switched runtime.
+   */
+  runtime?: 'deno'
   /** Present only for a rollback — the already-published release it promoted. */
   rollbackToReleaseId?: string
 }
@@ -120,29 +135,41 @@ export function normalizeContextReleases(value: unknown): CommandContextRelease[
   if (!Array.isArray(value)) return undefined
   const releases: CommandContextRelease[] = []
   for (const entry of value) {
-    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return undefined
-    const record = entry as Record<string, unknown>
-    const composeServiceName = releaseField(record, 'composeServiceName')
-    const releaseId = releaseField(record, 'releaseId')
-    const sourceId = releaseField(record, 'sourceId')
-    const commitSha = releaseField(record, 'commitSha')
-    if (!composeServiceName || !releaseId || !sourceId || !commitSha) return undefined
-    const rollbackToReleaseId = releaseField(record, 'rollbackToReleaseId')
-    // Display-only, so a malformed value is dropped on its own rather than
-    // taking the release row (and with it a rollback target) down with it.
-    const commitMessage = releaseField(record, 'commitMessage')
-    const commitAuthor = releaseField(record, 'commitAuthor')
-    releases.push({
-      composeServiceName,
-      releaseId,
-      sourceId,
-      commitSha,
-      ...(commitMessage === undefined ? {} : { commitMessage }),
-      ...(commitAuthor === undefined ? {} : { commitAuthor }),
-      ...(rollbackToReleaseId === undefined ? {} : { rollbackToReleaseId }),
-    })
+    const release = normalizeContextRelease(entry)
+    if (release === undefined) return undefined
+    releases.push(release)
   }
   return releases.length > 0 ? releases : undefined
+}
+
+/** One release row, or `undefined` when a required field is missing. */
+function normalizeContextRelease(entry: unknown): CommandContextRelease | undefined {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return undefined
+  const record = entry as Record<string, unknown>
+  const composeServiceName = releaseField(record, 'composeServiceName')
+  const releaseId = releaseField(record, 'releaseId')
+  const sourceId = releaseField(record, 'sourceId')
+  const commitSha = releaseField(record, 'commitSha')
+  if (!composeServiceName || !releaseId || !sourceId || !commitSha) return undefined
+  const rollbackToReleaseId = releaseField(record, 'rollbackToReleaseId')
+  // Display-only, so a malformed value is dropped on its own rather than
+  // taking the release row (and with it a rollback target) down with it.
+  const commitMessage = releaseField(record, 'commitMessage')
+  const commitAuthor = releaseField(record, 'commitAuthor')
+  const nodeVersion = releaseField(record, 'nodeVersion')
+  // Anything but the one recorded value is dropped on its own, like the rest.
+  const runtime = record.runtime === 'deno' ? ('deno' as const) : undefined
+  return {
+    composeServiceName,
+    releaseId,
+    sourceId,
+    commitSha,
+    ...(commitMessage === undefined ? {} : { commitMessage }),
+    ...(commitAuthor === undefined ? {} : { commitAuthor }),
+    ...(nodeVersion === undefined ? {} : { nodeVersion }),
+    ...(runtime === undefined ? {} : { runtime }),
+    ...(rollbackToReleaseId === undefined ? {} : { rollbackToReleaseId }),
+  }
 }
 
 /**

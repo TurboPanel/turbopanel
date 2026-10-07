@@ -93,12 +93,28 @@ export const AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE =
 export const AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE =
   'Automatic failover blocked: the failover replica is not streaming and could not be proven caught up to the failed primary'
 
+/**
+ * The role change is done and the new primary is serving, but at least one
+ * server's ProxySQL did not confirm it (the repoint command failed, timed out,
+ * could not be queued, or its server was offline). The row ends terminal
+ * `failed` and names the servers so an operator can re-apply the cluster
+ * (Apply re-sends the ingress update to every server).
+ */
+export function ingressNotRepointedMessage(serverNames: readonly string[]): string {
+  const names = serverNames.length > 0 ? serverNames.join(', ') : 'at least one server'
+  return `Degraded: the new primary is in place, but the database proxy on ${names} has not switched to it, so connections through that server may still reach the old primary. Apply the cluster again to retry.`
+}
+
 export type RecoveryMetadata = {
   fencingEpoch?: string
   fenceCommandIds?: string[]
   promoteCommandId?: string
   failoverCommandId?: string
   ingressCommandIds?: string[]
+  /** Every server whose ProxySQL must learn the new primary before the row completes. */
+  ingressServerIds?: string[]
+  /** Servers whose ProxySQL did not confirm the new primary (set on the terminal `failed` row). */
+  ingressNotRepointed?: string[]
   haPresent?: boolean
   fenced?: boolean
   drainApplied?: boolean
@@ -204,6 +220,8 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   setIfPresent(metadata, 'promoteCommandId', optionalString(value.promoteCommandId))
   setIfPresent(metadata, 'failoverCommandId', optionalString(value.failoverCommandId))
   setIfPresent(metadata, 'ingressCommandIds', optionalStringList(value.ingressCommandIds))
+  setIfPresent(metadata, 'ingressServerIds', optionalStringList(value.ingressServerIds))
+  setIfPresent(metadata, 'ingressNotRepointed', optionalStringList(value.ingressNotRepointed))
   setIfPresent(metadata, 'haPresent', optionalBoolean(value.haPresent))
   setIfPresent(metadata, 'fenced', optionalBoolean(value.fenced))
   setIfPresent(metadata, 'drainApplied', optionalBoolean(value.drainApplied))

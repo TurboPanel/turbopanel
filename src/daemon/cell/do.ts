@@ -31,6 +31,7 @@ import {
 import { createDurableObjectDaemonCellRegistry } from './do-registry.ts'
 import { createFreshStandbyProbe } from '../../client/managed/health-probe.ts'
 import { handleAcmeIssuanceEvent } from '../../client/tls/acme-issuance-event.ts'
+import { handleManagedHealthReport } from '../../features/managed/health-report.ts'
 import {
   backupRunReportResultMessage,
   createBackupRunReportStore,
@@ -86,8 +87,8 @@ import {
   DAEMON_CELL_PONG,
   DAEMON_OFFLINE_SWEEP_MS,
   DAEMON_WS_POLICY_VIOLATION_CLOSE,
-  TERMINAL_REQUEST_RETENTION_MS,
   outboundEnvelopeToWireMessage,
+  TERMINAL_REQUEST_RETENTION_MS,
   validateDaemonInboundEnvelope,
   validateDaemonInboundFrame,
   wireMessageToInboundEnvelope,
@@ -1113,10 +1114,11 @@ export class DaemonCellObject {
     requestId: string,
     ok: boolean,
     finishedAt: string,
-    error?: string
+    error?: string,
+    errorCode?: string
   ): Promise<void> {
     await this.#withProjectionDb('update-result', serverId, async (db) => {
-      await onDaemonUpdateResult(db, serverId, requestId, ok, finishedAt, error)
+      await onDaemonUpdateResult(db, serverId, requestId, ok, finishedAt, error, errorCode)
       if (this.#isDaemonDebug()) {
         console.debug(`daemon cell projection: update-result (${serverId})`)
       }
@@ -1848,6 +1850,39 @@ export class DaemonCellObject {
     )
   }
 
+  /**
+   * Fire-and-forget daemon reports that only write a projection
+   * (`managed-health-report`, `topology-report`). Returns true when handled.
+   */
+  async #handleReportInbound(
+    attachment: { connectionId: string; serverId: string },
+    parsed: DaemonMessage
+  ): Promise<boolean> {
+    if (parsed.type === 'managed-health-report') {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      await this.#withProjectionDb('managed-health-report', attachment.serverId, async (db) => {
+        await handleManagedHealthReport(db, {
+          reporterServerId: attachment.serverId,
+          members: parsed.members,
+        })
+      })
+      return true
+    }
+    if (parsed.type === 'topology-report') {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      await this.#withProjectionDb('topology-report', attachment.serverId, async (db) => {
+        await recordTopologyGeneration(db, attachment.serverId, {
+          generation: parsed.generation,
+          bootGeneration: parsed.bootGeneration,
+          snapshot: parsed.snapshot,
+          appliedAt: parsed.at,
+        })
+      })
+      return true
+    }
+    return false
+  }
+
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const attachment = ws.deserializeAttachment() as {
       connectionId: string
@@ -1915,18 +1950,7 @@ export class DaemonCellObject {
         return
       }
 
-      if (parsed.type === 'topology-report') {
-        await this.#recordInboundRepairingPresence(attachment, parsed.at)
-        await this.#withProjectionDb('topology-report', attachment.serverId, async (db) => {
-          await recordTopologyGeneration(db, attachment.serverId, {
-            generation: parsed.generation,
-            bootGeneration: parsed.bootGeneration,
-            snapshot: parsed.snapshot,
-            appliedAt: parsed.at,
-          })
-        })
-        return
-      }
+      if (await this.#handleReportInbound(attachment, parsed)) return
 
       if (parsed.type === 'acme-issuance-event') {
         await this.#recordInboundRepairingPresence(attachment, parsed.at)
@@ -2676,7 +2700,9 @@ export class DaemonCellObject {
     ws: WebSocket | undefined
   ): Promise<void> {
     const outcome = await this.#withProjectionDbResult('backup-run-report', serverId, (db) =>
-      handleBackupRunReport(createBackupRunReportStore(db), msg, { reporterServerId: serverId })
+      handleBackupRunReport(createBackupRunReportStore(db), msg, {
+        reporterServerId: serverId,
+      })
     )
     if (!outcome || !ws) return
     ws.send(JSON.stringify(backupRunReportResultMessage(msg.id, outcome, nowIso())))
@@ -2846,7 +2872,8 @@ export class DaemonCellObject {
         inbound.requestId,
         inbound.ok,
         inbound.at,
-        inbound.error
+        inbound.error,
+        inbound.errorCode
       )
       await this.#withProjectionDb('update-result-step', serverId, (db) =>
         persistUpgradeOutcome(db, {

@@ -1,5 +1,7 @@
 /** Validated `hosting.options` shape including proxy settings. */
 
+import { type HostingWwwMode, isHostingWwwMode } from '../../contracts/commands/hostname.ts'
+
 export type HostingProxyOptions = {
   forceHttps?: boolean
   gzip?: boolean
@@ -58,16 +60,34 @@ export type HostingOptions = {
   ports?: HostingPortMapping[]
   web?: HostingWebOptions
   /**
-   * Also serve the other spelling of each hostname (`www.` added or removed)
-   * and send it permanently to the hostname as written. `http` hostings only.
+   * What happens to the other spelling of each hostname (`www.` added or
+   * removed): see `HostingWwwMode`. Omitted means `off`. `http` hostings only.
    */
-  wwwRedirect?: boolean
+  www?: Exclude<HostingWwwMode, 'off'>
 }
 
 const MAX_HOSTING_PORTS = 10
 const MAX_WEB_ENV_ENTRIES = 64
 const MAX_WEB_ENV_VALUE_LENGTH = 4096
 export const HOSTING_WEB_ENV_KEY_RE = /^[A-Za-z_]\w*$/
+
+/**
+ * Names a site variable may never take. PHP-FPM reads `PHP_VALUE` and
+ * `PHP_ADMIN_VALUE` from the FastCGI request as ini overrides, and every site
+ * engine hands a site variable to PHP as a FastCGI parameter, so a variable of
+ * either name would let a project member change PHP's own settings. Compared
+ * without regard to case. The daemon drops them too (`site-secret-env.ts`).
+ */
+const SITE_RESERVED_VARIABLE_NAMES: ReadonlySet<string> = new Set(['PHP_VALUE', 'PHP_ADMIN_VALUE'])
+
+export function isReservedSiteVariableName(name: string): boolean {
+  return SITE_RESERVED_VARIABLE_NAMES.has(name.toUpperCase())
+}
+
+/** A site variable name that is well formed and not reserved. */
+export function isSiteVariableName(name: string): boolean {
+  return HOSTING_WEB_ENV_KEY_RE.test(name) && !isReservedSiteVariableName(name)
+}
 const PHP_VERSION_RE = /^\d+\.\d+$/
 const PHP_MEMORY_RE = /^\d+[KMG]?$/i
 
@@ -173,7 +193,7 @@ function parsePhpOptions(value: unknown): HostingPhpOptions | undefined {
 function sanitizeParsedWebEnv(raw: Record<string, string>): Record<string, string> | undefined {
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(raw)) {
-    if (!HOSTING_WEB_ENV_KEY_RE.test(key)) continue
+    if (!isSiteVariableName(key)) continue
     const trimmed = value.trim()
     if (trimmed.length === 0 || trimmed.length > MAX_WEB_ENV_VALUE_LENGTH) continue
     env[key] = trimmed
@@ -186,7 +206,7 @@ function parseWebEnv(value: unknown): Record<string, string> | undefined {
   if (!isRecord(value)) return undefined
   const raw: Record<string, string> = {}
   for (const [key, entry] of Object.entries(value)) {
-    if (!HOSTING_WEB_ENV_KEY_RE.test(key)) continue
+    if (!isSiteVariableName(key)) continue
     if (typeof entry !== 'string') continue
     raw[key] = entry
   }
@@ -234,9 +254,23 @@ export function parseHostingOptions(value: unknown): HostingOptions | null {
   const web = parseWebOptions(value.web)
   if (web) options.web = web
 
-  if (value.wwwRedirect === true) options.wwwRedirect = true
+  const www = readHostingWwwMode(value)
+  if (www !== 'off') options.www = www
 
   return options
+}
+
+/**
+ * The www mode stored on a hosting's raw options. A row saved before the mode
+ * existed may still carry `wwwRedirect: true` ("send the other spelling to the
+ * name as written"), read as the mode that keeps the typed name the site.
+ */
+export function readHostingWwwMode(value: unknown): HostingWwwMode {
+  if (!isRecord(value)) return 'off'
+  if (isHostingWwwMode(value.www)) return value.www
+  if (value.wwwRedirect !== true) return 'off'
+  const first = Array.isArray(value.hostnames) ? value.hostnames[0] : undefined
+  return typeof first === 'string' && first.startsWith('www.') ? 'root-to-www' : 'www-to-root'
 }
 
 /** Defaults to `'http'` when unset/invalid — the only protocol prior to `tcp`/`udp` support. */

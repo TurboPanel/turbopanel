@@ -82,16 +82,77 @@ test('hostingOptionsInputError names the first refused field, never the value', 
   assertEquals(JSON.stringify(secret).includes('secret\\n'), false)
 })
 
-test('hostingOptionsInputError checks wwwRedirect', () => {
-  assertEquals(hostingOptionsInputError({ wwwRedirect: false }), null)
-  assertEquals(hostingOptionsInputError({ wwwRedirect: true, hostnames: ['example.com'] }), null)
-  assertEquals(hostingOptionsInputError({ wwwRedirect: 'yes' })?.field, 'options.wwwRedirect')
+test('hostingOptionsInputError refuses the PHP ini override names as site variables, in any case', () => {
+  for (const name of ['PHP_VALUE', 'PHP_ADMIN_VALUE', 'php_value', 'Php_Admin_Value']) {
+    const problem = hostingOptionsInputError({ web: { env: { [name]: 'memory_limit=-1' } } })
+    assertEquals(problem?.field, `options.web.env.${name}`, name)
+    assertEquals(problem?.message.includes('reserved'), true, name)
+    assertEquals(JSON.stringify(problem).includes('memory_limit'), false, name)
+  }
   assertEquals(
-    hostingOptionsInputError({ wwwRedirect: true, protocol: 'tcp' })?.field,
-    'options.wwwRedirect'
+    hostingOptionsInputError({ web: { env: { PHP_VALUES: 'x', MY_PHP_VALUE: 'x' } } }),
+    null
   )
+})
+
+test('hostingOptionsInputError checks the www mode', () => {
+  assertEquals(hostingOptionsInputError({}), null)
+  assertEquals(hostingOptionsInputError({ www: 'off', protocol: 'tcp' }), null)
+  for (const www of ['both', 'www-to-root', 'root-to-www']) {
+    assertEquals(hostingOptionsInputError({ www, hostnames: ['example.com'] }), null, www)
+    assertEquals(hostingOptionsInputError({ www, hostnames: ['www.example.com'] }), null, www)
+    assertEquals(hostingOptionsInputError({ www, protocol: 'tcp' }), {
+      field: 'options.www',
+      message: 'applies to http hostings only',
+    })
+  }
+  for (const www of ['yes', true, 'WWW-TO-ROOT', 1]) {
+    assertEquals(hostingOptionsInputError({ www }), {
+      field: 'options.www',
+      message: 'must be off, both, www-to-root, or root-to-www',
+    })
+  }
+  const long = `${'a.'.repeat(124)}com`
+  assertEquals(hostingOptionsInputError({ www: 'both', hostnames: ['example.com', long] }), {
+    field: 'options.www',
+    message: `${long} has no www or bare spelling, so set www to off for it`,
+  })
+  assertEquals(hostingOptionsInputError({ www: 'off', hostnames: [long] }), null)
+  assertEquals(hostingOptionsInputError({ hostnames: ['203.0.113.5'], www: 'both' }), {
+    field: 'options.www',
+    message: '203.0.113.5 has no www or bare spelling, so set www to off for it',
+  })
+})
+
+test('hostingOptionsInputError puts an old wwwRedirect key through the same www checks', () => {
+  assertEquals(hostingOptionsInputError({ wwwRedirect: 'yes' }), {
+    field: 'options.wwwRedirect',
+    message: 'must be true or false',
+  })
+  assertEquals(hostingOptionsInputError({ wwwRedirect: true, protocol: 'tcp' }), {
+    field: 'options.wwwRedirect',
+    message: 'applies to http hostings only',
+  })
+  const long = `${'a.'.repeat(124)}com`
+  assertEquals(hostingOptionsInputError({ wwwRedirect: true, hostnames: [long] }), {
+    field: 'options.wwwRedirect',
+    message: `${long} has no www or bare spelling, so set www to off for it`,
+  })
+  assertEquals(hostingOptionsInputError({ wwwRedirect: true, hostnames: ['203.0.113.5'] }), {
+    field: 'options.wwwRedirect',
+    message: '203.0.113.5 has no www or bare spelling, so set www to off for it',
+  })
+  // A wildcard is refused as a hostname before the www check runs.
   assertEquals(
-    hostingOptionsInputError({ wwwRedirect: true, hostnames: [`${'a.'.repeat(124)}com`] })?.field,
-    'options.wwwRedirect'
+    hostingOptionsInputError({ wwwRedirect: true, hostnames: ['*.example.com'] })?.field,
+    'options.hostnames'
+  )
+  assertEquals(hostingOptionsInputError({ wwwRedirect: true, hostnames: ['example.com'] }), null)
+  assertEquals(hostingOptionsInputError({ wwwRedirect: false, protocol: 'tcp' }), null)
+  // An explicit www wins over the old key, even a malformed one.
+  assertEquals(hostingOptionsInputError({ www: 'off', wwwRedirect: 'yes' }), null)
+  assertEquals(
+    hostingOptionsInputError({ www: 'both', wwwRedirect: 'yes', protocol: 'tcp' })?.field,
+    'options.www'
   )
 })

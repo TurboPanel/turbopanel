@@ -6,6 +6,7 @@ import {
   resolveUpdateManifest,
   seedUpdateManifestCacheForTests,
   setUpdateManifestProvider,
+  setUpdateManifestRetryDelaysForTests,
 } from './manifest.ts'
 
 /**
@@ -240,11 +241,66 @@ test('resolveUpdateManifest returns null for incomplete manifest fields', async 
 
 test('resolveUpdateManifest returns null when fetch throws', async () => {
   await resetUpdateManifestCacheForTests()
+  setUpdateManifestRetryDelaysForTests([0, 0])
   const stub = stubFetch(() => {
     throw new TypeError('network down')
   })
   try {
     assertEquals(await resolveUpdateManifest('canary'), null)
+    assertEquals(stub.calls.length, 3)
+  } finally {
+    stub.restore()
+    await resetUpdateManifestCacheForTests()
+  }
+})
+
+test('resolveUpdateManifest retries a resolver blip and still resolves the target', async () => {
+  await resetUpdateManifestCacheForTests()
+  setUpdateManifestRetryDelaysForTests([0, 0])
+  let attempts = 0
+  const body = await manifestBody('canary')
+  const stub = stubFetch(() => {
+    attempts++
+    if (attempts < 3) {
+      throw new TypeError('error sending request: dns error: Temporary failure in name resolution')
+    }
+    return new Response(body, { status: 200 })
+  })
+  try {
+    const target = await resolveUpdateManifest('canary')
+    assertEquals(target?.channel, 'canary')
+    assertEquals(stub.calls.length, 3)
+  } finally {
+    stub.restore()
+    await resetUpdateManifestCacheForTests()
+  }
+})
+
+test('resolveUpdateManifest retries a 503 once the answer clears', async () => {
+  await resetUpdateManifestCacheForTests()
+  setUpdateManifestRetryDelaysForTests([0])
+  const body = await manifestBody('canary')
+  const stub = stubFetch(() =>
+    stub.calls.length === 1
+      ? new Response('busy', { status: 503 })
+      : new Response(body, { status: 200 })
+  )
+  try {
+    assertEquals((await resolveUpdateManifest('canary'))?.channel, 'canary')
+    assertEquals(stub.calls.length, 2)
+  } finally {
+    stub.restore()
+    await resetUpdateManifestCacheForTests()
+  }
+})
+
+test('resolveUpdateManifest does not retry a 404', async () => {
+  await resetUpdateManifestCacheForTests()
+  setUpdateManifestRetryDelaysForTests([0, 0])
+  const stub = stubFetch(() => new Response('missing', { status: 404 }))
+  try {
+    assertEquals(await resolveUpdateManifest('canary'), null)
+    assertEquals(stub.calls.length, 1)
   } finally {
     stub.restore()
     await resetUpdateManifestCacheForTests()

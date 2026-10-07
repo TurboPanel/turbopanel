@@ -10,9 +10,11 @@ minimumReleaseAgeExclude:
 overrides:
   nanoid: ^3.3.18
   postcss: ^8.5.23
-  sharp: ^0.35.4
+  sharp: ^0.35.5
   esbuild: ^0.25.0
   # GHSA-3wwx-pv8p-q78v: miniflare pins undici 7.29.0 exactly; force the fixed release.
   undici: 7.29.1
+  # GHSA-68fv-2mgg-jv7q: source-map-js < 1.2.2 (event-loop DoS); pulled in by postcss and magicast.
+  source-map-js: 1.2.2
 patchedDependencies:
   postgres@3.4.9: patches/postgres@3.4.9.patch
