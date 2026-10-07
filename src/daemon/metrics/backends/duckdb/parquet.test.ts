@@ -11,8 +11,11 @@ import {
   listPartitionFilesInRange,
   MS_PER_DAY,
   parquetFamily,
+  listPartitionDays,
+  PARQUET_FAMILIES,
   partitionFileForDay,
   pruneExpiredPartitions,
+  pruneToSizeCap,
   sealDayToParquet,
   timestampLiteralFromMs,
   utcDayStartMs,
@@ -421,4 +424,51 @@ it('pruneExpiredPartitions drops old partitions and hot rows across every family
     assertEquals(await hotRowCount(handle.connection, METRIC_EVENTS_TABLE), 0)
     assertEquals(await hotRowCount(handle.connection, STATUS_EVENTS_TABLE), 0)
   })
+})
+
+/** A sealed partition file of `bytes` bytes for `family` on the day starting at `dayStartMs`. */
+async function writePartition(
+  parquetRoot: string,
+  subdir: string,
+  dayStartMs: number,
+  bytes: number
+): Promise<void> {
+  const file = partitionFileForDay(parquetRoot, subdir, dayStartMs)
+  await Deno.mkdir(file.slice(0, file.lastIndexOf('/')), { recursive: true })
+  await Deno.writeFile(file, new Uint8Array(bytes))
+}
+
+it('pruneToSizeCap removes whole days, oldest first, until the store fits its cap', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'tp-duckdb-cap-' })
+  try {
+    const [first, second] = PARQUET_FAMILIES
+    for (let day = 0; day < 5; day++) {
+      const dayStartMs = DAY_START + day * MS_PER_DAY
+      await writePartition(root, first!.subdir, dayStartMs, 1000)
+      await writePartition(root, second!.subdir, dayStartMs, 500)
+    }
+    // 5 days of 1,500 bytes plus 2,000 bytes of hot database: 9,500 against a cap of 6,000.
+    const removed = await pruneToSizeCap({ parquetRoot: root, maxBytes: 6000, otherBytes: 2000 })
+    assertEquals(removed, 3)
+    for (const family of [first!, second!]) {
+      const left = await listPartitionDays(root, family.subdir)
+      assertEquals(
+        left.map((day) => day.dayStartMs),
+        [DAY_START + 3 * MS_PER_DAY, DAY_START + 4 * MS_PER_DAY]
+      )
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true })
+  }
+})
+
+it('pruneToSizeCap leaves a store under its cap untouched', async () => {
+  const root = await Deno.makeTempDir({ prefix: 'tp-duckdb-cap-' })
+  try {
+    await writePartition(root, PARQUET_FAMILIES[0]!.subdir, DAY_START, 100)
+    assertEquals(await pruneToSizeCap({ parquetRoot: root, maxBytes: 1000, otherBytes: 0 }), 0)
+    assertEquals((await listPartitionDays(root, PARQUET_FAMILIES[0]!.subdir)).length, 1)
+  } finally {
+    await Deno.remove(root, { recursive: true })
+  }
 })
