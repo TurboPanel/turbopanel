@@ -200,3 +200,34 @@ test('mergeDeployPrincipalRuntimes does not re-persist a php grant the principal
   assertEquals(principalMaterial[0]?.runtimes, [{ runtime: 'php', series: '8.4' }])
   assertEquals(deployEntitlements, [])
 })
+
+test('mergeDeployPrincipalRuntimes grants a Deno app owner deno@2 and not node', () => {
+  const principalId = '11111111-1111-4111-8111-111111111111'
+  const { principalMaterial, deployEntitlements } = mergeDeployPrincipalRuntimes({
+    principalMaterial: [{ principalId, username: 'app_test', accessGroups: [], sshKeys: [] }],
+    nativeAppServices: [
+      {
+        composeServiceName: 'web',
+        listenPort: 18_868,
+        framework: 'auto' as const,
+        runtime: 'deno' as const,
+        denoVersion: '2.9.7',
+      },
+    ],
+    sourceMaterial: [
+      {
+        composeServiceName: 'web',
+        sourceId: '33333333-3333-4333-8333-333333333333',
+        releaseId: '44444444-4444-4444-8444-444444444444',
+        commitSha: 'abc123',
+        provider: 'github' as const,
+        cloneUrl: 'https://git.example.com/example/deno-app.git',
+        ref: 'trunk',
+        principal: { principalId, username: 'app_test' },
+        build: { kind: 'native' as const },
+      },
+    ],
+  })
+  assertEquals(principalMaterial[0]?.runtimes, [{ runtime: 'deno', series: '2' }])
+  assertEquals(deployEntitlements, [{ principalId, runtime: 'deno', series: '2' }])
+})

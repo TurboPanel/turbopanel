@@ -1,9 +1,9 @@
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import {
+  type DaemonOutboundEnvelope,
   generateDeliveryId,
   generateRequestId,
-  type DaemonOutboundEnvelope,
 } from '../../contracts/cell-protocol.ts'
 import {
   type ManagedReplicationHealth,
@@ -97,8 +97,12 @@ function parseObservedReplication(
     observedAt: replication.observedAt,
     ...lagFields(replication),
   }
-  if (typeof replication.receivedLsn === 'string') health.receivedLsn = replication.receivedLsn
-  if (typeof replication.replayLsn === 'string') health.replayLsn = replication.replayLsn
+  if (typeof replication.receivedLsn === 'string') {
+    health.receivedLsn = replication.receivedLsn
+  }
+  if (typeof replication.replayLsn === 'string') {
+    health.replayLsn = replication.replayLsn
+  }
   const lastStreaming = parseLastStreaming(replication.lastStreaming)
   if (lastStreaming) health.lastStreaming = lastStreaming
   const slotRetention = parseManagedSlotRetention(replication.slotRetention)
@@ -125,8 +129,21 @@ function lagFields(record: Record<string, unknown>): {
 /** The daemon's last `streaming` read of a standby; dropped when malformed. */
 function parseLastStreaming(value: unknown): ManagedReplicationHealth['lastStreaming'] {
   if (!isRecord(value)) return undefined
-  if (typeof value.at !== 'string' || !finiteNumber(value.ageMs)) return undefined
+  if (typeof value.at !== 'string' || !finiteNumber(value.ageMs)) {
+    return undefined
+  }
   return { at: value.at, ageMs: value.ageMs, ...lagFields(value) }
+}
+
+/** The daemon's text when the member's engine is not running or not answering. */
+const ENGINE_DOWN_ANSWER = 'engine not running'
+
+function isEngineDownAnswer(error: string | null | undefined): boolean {
+  return typeof error === 'string' && error.includes(ENGINE_DOWN_ANSWER)
+}
+
+function notStreamingReading(): ManagedReplicationHealth {
+  return { state: 'not_streaming', observedAt: new Date().toISOString() }
 }
 
 /** `lastStreaming.ageMs` is only meaningful at probe time: never stored. */
@@ -169,7 +186,9 @@ export async function probeManagedMemberHealth(
   const requestId = generateRequestId()
   try {
     const features = await daemonFeatures(params.serverId)
-    if (!features.includes(MANAGED_HEALTH_FEATURE)) return { status: 'unsupported' }
+    if (!features.includes(MANAGED_HEALTH_FEATURE)) {
+      return { status: 'unsupported' }
+    }
     if (!(await isServerConnected(params.serverId))) {
       return { status: 'unavailable', reason: 'offline' }
     }
@@ -200,14 +219,29 @@ export async function probeManagedMemberHealth(
       pendingStatus: record.status,
     })
 
-    if (record.status === 'expired') return { status: 'unavailable', reason: 'timeout' }
+    if (record.status === 'expired') {
+      return { status: 'unavailable', reason: 'timeout' }
+    }
     if (record.status === 'failed') {
-      return { status: 'unavailable', reason: 'daemon_error', error: record.error ?? undefined }
+      // The host answered: the replica's engine is down. Record that, or the
+      // last `streaming` reading would survive for as long as nobody asks again.
+      if (params.role === 'replica' && isEngineDownAnswer(record.error)) {
+        await persist(params.memberId, notStreamingReading())
+      }
+      return {
+        status: 'unavailable',
+        reason: 'daemon_error',
+        error: record.error ?? undefined,
+      }
     }
 
     const parsed = parseObservedReplication(record.result, params.memberId)
-    if (parsed === 'member_mismatch') return { status: 'unavailable', reason: 'member_mismatch' }
-    if (parsed === null) return { status: 'unavailable', reason: 'invalid_result' }
+    if (parsed === 'member_mismatch') {
+      return { status: 'unavailable', reason: 'member_mismatch' }
+    }
+    if (parsed === null) {
+      return { status: 'unavailable', reason: 'invalid_result' }
+    }
 
     await persist(params.memberId, withoutLastStreaming(parsed))
     return { status: 'observed', replication: parsed }

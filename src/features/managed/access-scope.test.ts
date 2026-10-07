@@ -19,14 +19,9 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-test('catalog order is narrowest to widest with public as the exposure default', () => {
-  assertEquals(MANAGED_SQL_ACCESS_SCOPES, [
-    'local',
-    'datacenter',
-    'turbofabric',
-    'public',
-  ])
-  assertEquals(DEFAULT_MANAGED_SQL_ACCESS_SCOPE, 'public')
+test('catalog order is narrowest to widest with local as the exposure default', () => {
+  assertEquals(MANAGED_SQL_ACCESS_SCOPES, ['local', 'datacenter', 'turbofabric', 'public'])
+  assertEquals(DEFAULT_MANAGED_SQL_ACCESS_SCOPE, 'local')
   assertEquals(UNEXPOSED_MANAGED_SQL_ACCESS_SCOPE, 'local')
 })
 
@@ -50,24 +45,24 @@ test('rank and compare put widest first for operator-facing primary endpoints', 
 test('unionManagedSqlAccessScopes dedupes and sorts widest first', () => {
   assertEquals(unionManagedSqlAccessScopes([]), [])
   assertEquals(unionManagedSqlAccessScopes([undefined, undefined]), [])
-  assertEquals(
-    unionManagedSqlAccessScopes(['local', 'turbofabric', 'local', undefined]),
-    ['turbofabric', 'local'],
-  )
-  assertEquals(
-    unionManagedSqlAccessScopes(['public', 'datacenter', 'turbofabric']),
-    ['public', 'turbofabric', 'datacenter'],
-  )
+  assertEquals(unionManagedSqlAccessScopes(['local', 'turbofabric', 'local', undefined]), [
+    'turbofabric',
+    'local',
+  ])
+  assertEquals(unionManagedSqlAccessScopes(['public', 'datacenter', 'turbofabric']), [
+    'public',
+    'turbofabric',
+    'datacenter',
+  ])
 })
 
 test('collapseManagedSqlAccessScopes drops narrower scopes when public is present', () => {
-  assertEquals(collapseManagedSqlAccessScopes(['public', 'local', 'datacenter']), [
-    'public',
+  assertEquals(collapseManagedSqlAccessScopes(['public', 'local', 'datacenter']), ['public'])
+  assertEquals(collapseManagedSqlAccessScopes(['turbofabric', 'local', 'datacenter']), [
+    'turbofabric',
+    'datacenter',
+    'local',
   ])
-  assertEquals(
-    collapseManagedSqlAccessScopes(['turbofabric', 'local', 'datacenter']),
-    ['turbofabric', 'datacenter', 'local'],
-  )
   assertEquals(collapseManagedSqlAccessScopes([]), [])
 })
 

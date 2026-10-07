@@ -2068,6 +2068,9 @@ test('POST /commands/lease returns 429 when restLimiter denies with valid JWT', 
     headers: { Authorization: `Bearer ${daemonToken}` },
   })
   assertEquals(response.status, 429)
+  // A daemon waits at least this long before it tries again (it retries, so a
+  // managed command is not dropped by the limit).
+  assertEquals(response.headers.get('retry-after'), '5')
   const body = (await response.json()) as { ok: boolean; error: string }
   assertEquals(body, { ok: false, error: 'rate_limited' })
 })

@@ -303,6 +303,14 @@ export type ManagedHealthObservedMember = {
   }
 }
 
+/** One replica in a `managed-health-report`: `down`, or its reading. */
+export type ManagedHealthReportMember = {
+  managedId: string
+  memberId: string
+  down?: true
+  replication?: NonNullable<ManagedHealthObservedMember['replication']>
+}
+
 export type DaemonMessage =
   | {
       type: 'hello'
@@ -408,6 +416,17 @@ export type DaemonMessage =
       ok: boolean
       member?: ManagedHealthObservedMember
       error?: string
+      at: string
+    }
+  | {
+      /**
+       * Daemon-initiated, fire-and-forget: every managed replica the host runs,
+       * read just now (every 30 s; feature `managed-health-report-v1`). A
+       * replica whose engine is down is `down: true` with no `replication`.
+       * Twin of the daemon's `ManagedHealthReportMember`.
+       */
+      type: 'managed-health-report'
+      members: ManagedHealthReportMember[]
       at: string
     }
   | {
@@ -768,6 +787,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'repo-read-result',
   'repo-default-branch-result',
   'managed-ha-event',
+  'managed-health-report',
   'topology-report',
   'acme-issuance-event',
   'instance-acme-issuance-event',
@@ -1218,7 +1238,9 @@ function validateBackupRunReportArtifact(record: Record<string, unknown>): strin
   ) {
     return 'invalid path'
   }
-  if (record.pruned !== undefined && !isBackupPrunedList(record.pruned)) return 'invalid pruned'
+  if (record.pruned !== undefined && !isBackupPrunedList(record.pruned)) {
+    return 'invalid pruned'
+  }
   return null
 }
 
@@ -1295,7 +1317,11 @@ function validateManagedHealthMember(value: unknown): string | null {
   if (!isBoundedHealthString(value.role)) return 'invalid member.role'
   if (!isBoundedHealthString(value.status)) return 'invalid member.status'
   if (value.replication === undefined) return null
-  const replication = value.replication
+  return validateObservedReplication(value.replication)
+}
+
+/** One replication reading, as carried on `managed-health-result` and `managed-health-report`. */
+function validateObservedReplication(replication: unknown): string | null {
   if (!isRecord(replication)) return 'invalid member.replication'
   if (!isBoundedHealthString(replication.state)) {
     return 'invalid member.replication.state'
@@ -1345,7 +1371,9 @@ function validateOptionalHealthString(value: unknown, field: string): string | n
 function validateLastStreaming(value: unknown): string | null {
   if (value === undefined) return null
   if (!isRecord(value)) return 'invalid member.replication.lastStreaming'
-  if (!isIsoTimestamp(value.at)) return 'invalid member.replication.lastStreaming.at'
+  if (!isIsoTimestamp(value.at)) {
+    return 'invalid member.replication.lastStreaming.at'
+  }
   if (typeof value.ageMs !== 'number' || !Number.isFinite(value.ageMs)) {
     return 'invalid member.replication.lastStreaming.ageMs'
   }
@@ -1357,6 +1385,40 @@ function validateLastStreaming(value: unknown): string | null {
       'member.replication.lastStreaming.receiveLagBytes'
     )
   )
+}
+
+/** Max members on one `managed-health-report` (a host's replicas). */
+export const MAX_DAEMON_WS_MANAGED_HEALTH_REPORT_MEMBERS = 32
+
+function validateManagedHealthReportMember(value: unknown): string | null {
+  if (!isRecord(value)) return 'invalid member'
+  if (!isBoundedHealthString(value.managedId)) {
+    return 'invalid member.managedId'
+  }
+  if (!isBoundedHealthString(value.memberId)) return 'invalid member.memberId'
+  const down = value.down
+  if (down !== undefined && down !== true) return 'invalid member.down'
+  // Exactly one of: a reading, or "the engine is down".
+  if ((down === true) === (value.replication !== undefined)) {
+    return 'member needs exactly one of down or replication'
+  }
+  return value.replication === undefined ? null : validateObservedReplication(value.replication)
+}
+
+function validateManagedHealthReportFields(record: Record<string, unknown>): string | null {
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
+  if (!Array.isArray(record.members)) return 'invalid members'
+  if (
+    record.members.length === 0 ||
+    record.members.length > MAX_DAEMON_WS_MANAGED_HEALTH_REPORT_MEMBERS
+  ) {
+    return 'members count out of range'
+  }
+  for (const entry of record.members) {
+    const issue = validateManagedHealthReportMember(entry)
+    if (issue) return issue
+  }
+  return null
 }
 
 function validateManagedHealthResultFields(record: Record<string, unknown>): string | null {
@@ -1522,6 +1584,8 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateRepoDefaultBranchResultFields(record)
     case 'managed-ha-event':
       return validateManagedHaEventFields(record)
+    case 'managed-health-report':
+      return validateManagedHealthReportFields(record)
     case 'topology-report':
       return validateTopologyReportFields(record)
     case 'acme-issuance-event':
@@ -1991,6 +2055,7 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
     case 'hello':
     case 'heartbeat':
     case 'managed-ha-event':
+    case 'managed-health-report':
     case 'topology-report':
     case 'acme-issuance-event':
     case 'instance-acme-issuance-event':
