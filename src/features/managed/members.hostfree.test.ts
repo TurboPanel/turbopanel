@@ -1559,3 +1559,28 @@ test('serializeManagedMember keeps the stored standby WAL positions', () => {
     receiveLagBytes: 0,
   })
 })
+
+test('serializeManagedMember keeps a stored primary slotRetention and drops a malformed one', () => {
+  const stored = (slotRetention: unknown) =>
+    serializeManagedMember(
+      member({
+        id: 'm1',
+        serverId: 's1',
+        role: 'primary',
+        ordinal: 1,
+        metadata: {
+          replication: { state: 'unknown', observedAt: '2020-01-02T00:00:00.000Z', slotRetention },
+        },
+      }),
+      'db-1'
+    ).replication
+  assertEquals(stored({ state: 'lagging', slot: 'tp_member_2', walStatus: 'extended' }), {
+    state: 'unknown',
+    observedAt: '2020-01-02T00:00:00.000Z',
+    slotRetention: { state: 'lagging', slot: 'tp_member_2', walStatus: 'extended' },
+  })
+  assertEquals(stored({ state: 'on fire' }), {
+    state: 'unknown',
+    observedAt: '2020-01-02T00:00:00.000Z',
+  })
+})
