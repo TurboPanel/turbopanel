@@ -1367,6 +1367,36 @@ test('DELETE /servers/:id returns 409 when child resources block deletion', asyn
   )
 })
 
+test('DELETE /servers/:id returns 409 for a pending ingress container on a connected server', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      // A start may be in flight while the daemon is connected, so it still blocks.
+      const hierarchy = await systemHierarchy.ensureSystemHierarchy(db, {
+        organizationId,
+        serverId,
+      })
+      await db
+        .update(container)
+        .set({ status: 'pending', containerId: null })
+        .where(eq(container.id, hierarchy.containerRowId))
+      await db.update(server).set({ isConnected: true }).where(eq(server.id, serverId))
+
+      try {
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/servers/${serverId}`, {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        })
+
+        assertEquals(res.status, 409)
+        assertEquals(registry.purgedIds.length, 0)
+      } finally {
+        await cleanupOrgSystemSubtree(db, organizationId)
+      }
+    }
+  )
+})
+
 test('DELETE /servers/:id returns 503 when daemon cell registry is unavailable', async () => {
   if (!dbUrl) {
     skipWithoutDatabase('server route tests')

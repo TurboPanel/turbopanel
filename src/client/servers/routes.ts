@@ -619,7 +619,8 @@ async function enqueueHostingReconcileBestEffort(
 
 async function systemEnvironmentHasActiveContainers(
   db: Db,
-  systemEnvironmentId: string
+  systemEnvironmentId: string,
+  serverConnected: boolean
 ): Promise<boolean> {
   const serviceRows = await db
     .select({ id: service.id })
@@ -633,11 +634,13 @@ async function systemEnvironmentHasActiveContainers(
     .from(container)
     .where(inArray(container.serviceId, serviceIds))
   // A row still `pending` with no runtime container id was allocated but never
-  // started (for example the host went offline before first boot). Nothing
-  // runs, so it must not block deleting the server.
+  // started (for example the host went offline before first boot). On an
+  // offline server nothing can start it, so it must not block deleting the
+  // server. On a connected server a start may be in flight, so it still blocks.
   return containerRows.some(
     (row) =>
-      isActiveContainerStatus(row.status) && !(row.status === 'pending' && row.containerId === null)
+      isActiveContainerStatus(row.status) &&
+      (serverConnected || !(row.status === 'pending' && row.containerId === null))
   )
 }
 
@@ -653,7 +656,18 @@ async function assertSystemEnvironmentIdleOrBlocked(
   const systemEnvironmentId = await systemHierarchy.findSystemEnvironmentForServer(db, serverId)
   if (!systemEnvironmentId) return { systemEnvironmentId: null }
 
-  if (await systemEnvironmentHasActiveContainers(db, systemEnvironmentId)) {
+  const [serverRow] = await db
+    .select({ isConnected: server.isConnected })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  if (
+    await systemEnvironmentHasActiveContainers(
+      db,
+      systemEnvironmentId,
+      serverRow?.isConnected ?? false
+    )
+  ) {
     return hierarchyDeleteHasChildrenResponse(c)
   }
   return { systemEnvironmentId }
