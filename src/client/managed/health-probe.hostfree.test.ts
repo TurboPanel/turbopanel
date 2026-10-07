@@ -260,6 +260,38 @@ test('a throwing transport or persist is contained as unavailable', async () => 
   })
 })
 
+test('keeps GTID freshness fields and drops malformed ones', async () => {
+  const run = async (extra: Record<string, unknown>) => {
+    const { registry } = fakeRegistry(
+      ok({
+        memberId: MEMBER_ID,
+        role: 'replica',
+        status: 'ready',
+        replication: { state: 'streaming', observedAt: NOW, ...extra },
+      })
+    )
+    return await probeManagedMemberHealth(DB, registry, PARAMS, deps().merged)
+  }
+  assertEquals(await run({ receivedGtid: 'u:1-5', executedGtid: 'u:1-4', fullyApplied: false }), {
+    status: 'observed',
+    replication: {
+      state: 'streaming',
+      observedAt: NOW,
+      receivedGtid: 'u:1-5',
+      executedGtid: 'u:1-4',
+      fullyApplied: false,
+    },
+  })
+  assertEquals(await run({ receivedGtid: '', executedGtid: '' }), {
+    status: 'observed',
+    replication: { state: 'streaming', observedAt: NOW },
+  })
+  assertEquals(await run({ receivedGtid: 'x'.repeat(4097), executedGtid: 1, fullyApplied: 'y' }), {
+    status: 'observed',
+    replication: { state: 'streaming', observedAt: NOW },
+  })
+})
+
 const COLD: ManagedReplicationHealth = {
   state: 'stopped',
   observedAt: NOW,

@@ -933,3 +933,27 @@ test('parseManagedReplicationHealth keeps standby WAL positions and receive lag'
     { state: 'streaming', observedAt: '2020-01-01T00:00:00.000Z' }
   )
 })
+
+test('parseManagedReplicationHealth keeps well-formed GTID freshness, drops the rest', () => {
+  const base = { state: 'streaming', observedAt: '2020-01-01T00:00:00.000Z' }
+  assertEquals(
+    parseManagedReplicationHealth({
+      ...base,
+      receivedGtid: 'uuid:1-5',
+      executedGtid: 'uuid:1-5',
+      fullyApplied: true,
+    }),
+    { ...base, receivedGtid: 'uuid:1-5', executedGtid: 'uuid:1-5', fullyApplied: true }
+  )
+  assertEquals(
+    parseManagedReplicationHealth({
+      ...base,
+      receivedGtid: 'x'.repeat(4097),
+      executedGtid: 7,
+      fullyApplied: 'yes',
+    }),
+    base
+  )
+  assertEquals(parseManagedReplicationHealth({ ...base, receivedGtid: '', executedGtid: '' }), base)
+  assertEquals(parseManagedReplicationHealth(base), base)
+})
