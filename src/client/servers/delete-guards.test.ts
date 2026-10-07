@@ -50,10 +50,7 @@ function deleteBlockersDb(opts: {
         where: () => {
           if (table === server) {
             return {
-              limit: () =>
-                Promise.resolve(
-                  opts.serverMissing ? [] : [{ id: 'server-1' }],
-                ),
+              limit: () => Promise.resolve(opts.serverMissing ? [] : [{ id: 'server-1' }]),
             }
           }
           if (table === network) {
@@ -66,16 +63,12 @@ function deleteBlockersDb(opts: {
         },
       }),
     }),
-    execute: () =>
-      Promise.resolve([{ value: opts.containerCount ?? 0 }]),
+    execute: () => Promise.resolve([{ value: opts.containerCount ?? 0 }]),
   } as unknown as Db
 }
 
 test('colocatedServerDeleteBlockedReason returns the stable operator copy', () => {
-  assertEquals(
-    colocatedServerDeleteBlockedReason(),
-    COLOCATED_SERVER_DELETE_BLOCKED_REASON,
-  )
+  assertEquals(colocatedServerDeleteBlockedReason(), COLOCATED_SERVER_DELETE_BLOCKED_REASON)
 })
 
 test('serverDeleteBlockersResponse returns 409 with code and blockers', async () => {
@@ -96,7 +89,7 @@ test('listServerDeleteBlockers returns empty when the server is not in the org',
   const blockers = await listServerDeleteBlockers(
     deleteBlockersDb({ serverMissing: true }),
     'server-1',
-    'org-1',
+    'org-1'
   )
   assertEquals(blockers, [])
 })
@@ -109,7 +102,7 @@ test('listServerDeleteBlockers omits zero-count dependency kinds', async () => {
       ipCount: 0,
     }),
     'server-1',
-    'org-1',
+    'org-1'
   )
   assertEquals(blockers, [])
 })
@@ -122,7 +115,7 @@ test('listServerDeleteBlockers reports each positive dependency count', async ()
       ipCount: 4,
     }),
     'server-1',
-    'org-1',
+    'org-1'
   )
   assertEquals(blockers, [
     { kind: 'network', count: 2 },

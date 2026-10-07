@@ -1,15 +1,12 @@
-import { assertEquals } from "@std/assert";
-import type {
-  DaemonCell,
-  DaemonCellRegistry,
-} from "../../contracts/cell.ts";
-import type { DaemonOutboundEnvelope } from "../../contracts/cell-protocol.ts";
-import { PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN } from "../../contracts/capability-plan.ts";
+import { assertEquals } from '@std/assert'
+import type { DaemonCell, DaemonCellRegistry } from '../../contracts/cell.ts'
+import type { DaemonOutboundEnvelope } from '../../contracts/cell-protocol.ts'
+import { PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN } from '../../contracts/capability-plan.ts'
 import {
   buildCapabilityPlanUpdateEnvelope,
   enqueueCapabilityPlanUpdate,
   enqueueLatestRecordedCapabilityPlan,
-} from "./capability-plan-push.ts";
+} from './capability-plan-push.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -17,11 +14,9 @@ import {
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno);
+const test = Deno.test.bind(Deno)
 
-function fakeRegistry(
-  enqueue: DaemonCell["enqueue"],
-): DaemonCellRegistry {
+function fakeRegistry(enqueue: DaemonCell['enqueue']): DaemonCellRegistry {
   return {
     getCell: (_serverId: string) =>
       ({
@@ -30,73 +25,70 @@ function fakeRegistry(
     listOnlineServerIds: () => Promise.resolve([]),
     getSnapshots: () => Promise.resolve(new Map()),
     purge: () => Promise.resolve(),
-  };
+  }
 }
 
-test("buildCapabilityPlanUpdateEnvelope carries plan and generation", () => {
-  const envelope = buildCapabilityPlanUpdateEnvelope(
-    PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN,
-    3,
-  );
-  assertEquals(envelope.kind, "capability-plan-update");
-  assertEquals(envelope.plan, PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN);
-  assertEquals(envelope.generation, 3);
-  assertEquals(typeof envelope.requestId, "string");
-  assertEquals(typeof envelope.deliveryId, "string");
-  assertEquals(typeof envelope.at, "string");
-});
+test('buildCapabilityPlanUpdateEnvelope carries plan and generation', () => {
+  const envelope = buildCapabilityPlanUpdateEnvelope(PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN, 3)
+  assertEquals(envelope.kind, 'capability-plan-update')
+  assertEquals(envelope.plan, PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN)
+  assertEquals(envelope.generation, 3)
+  assertEquals(typeof envelope.requestId, 'string')
+  assertEquals(typeof envelope.deliveryId, 'string')
+  assertEquals(typeof envelope.at, 'string')
+})
 
-test("enqueueCapabilityPlanUpdate is a no-op without a registry", async () => {
+test('enqueueCapabilityPlanUpdate is a no-op without a registry', async () => {
   assertEquals(
     await enqueueCapabilityPlanUpdate(
       undefined,
-      "server-1",
+      'server-1',
       PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN,
-      0,
+      0
     ),
-    false,
-  );
-});
+    false
+  )
+})
 
-test("enqueueCapabilityPlanUpdate enqueues the outbound envelope", async () => {
-  const enqueued: DaemonOutboundEnvelope[] = [];
+test('enqueueCapabilityPlanUpdate enqueues the outbound envelope', async () => {
+  const enqueued: DaemonOutboundEnvelope[] = []
   const registry = fakeRegistry((envelope: DaemonOutboundEnvelope) => {
-    enqueued.push(envelope);
-    return Promise.resolve({} as never);
-  });
+    enqueued.push(envelope)
+    return Promise.resolve({} as never)
+  })
   assertEquals(
     await enqueueCapabilityPlanUpdate(
       registry,
-      "server-1",
+      'server-1',
       PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN,
-      2,
+      2
     ),
-    true,
-  );
-  assertEquals(enqueued.length, 1);
-  assertEquals(enqueued[0]?.kind, "capability-plan-update");
-  if (enqueued[0]?.kind !== "capability-plan-update") {
-    throw new TypeError("expected capability-plan-update envelope");
+    true
+  )
+  assertEquals(enqueued.length, 1)
+  assertEquals(enqueued[0]?.kind, 'capability-plan-update')
+  if (enqueued[0]?.kind !== 'capability-plan-update') {
+    throw new TypeError('expected capability-plan-update envelope')
   }
-  assertEquals(enqueued[0].generation, 2);
-  assertEquals(enqueued[0].plan, PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN);
-});
+  assertEquals(enqueued[0].generation, 2)
+  assertEquals(enqueued[0].plan, PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN)
+})
 
-test("enqueueCapabilityPlanUpdate swallows enqueue failures", async () => {
-  const registry = fakeRegistry(() => Promise.reject(new Error("cell down")));
+test('enqueueCapabilityPlanUpdate swallows enqueue failures', async () => {
+  const registry = fakeRegistry(() => Promise.reject(new Error('cell down')))
   assertEquals(
     await enqueueCapabilityPlanUpdate(
       registry,
-      "server-1",
+      'server-1',
       PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN,
-      1,
+      1
     ),
-    false,
-  );
-});
+    false
+  )
+})
 
-test("enqueueLatestRecordedCapabilityPlan skips when nothing is recorded", async () => {
-  const enqueued: DaemonOutboundEnvelope[] = [];
+test('enqueueLatestRecordedCapabilityPlan skips when nothing is recorded', async () => {
+  const enqueued: DaemonOutboundEnvelope[] = []
   await enqueueLatestRecordedCapabilityPlan(
     {
       select: () => ({
@@ -109,16 +101,16 @@ test("enqueueLatestRecordedCapabilityPlan skips when nothing is recorded", async
         }),
       }),
     } as never,
-    "server-1",
+    'server-1',
     (envelope) => {
-      enqueued.push(envelope);
-    },
-  );
-  assertEquals(enqueued, []);
-});
+      enqueued.push(envelope)
+    }
+  )
+  assertEquals(enqueued, [])
+})
 
-test("enqueueLatestRecordedCapabilityPlan enqueues the recorded plan", async () => {
-  const enqueued: DaemonOutboundEnvelope[] = [];
+test('enqueueLatestRecordedCapabilityPlan enqueues the recorded plan', async () => {
+  const enqueued: DaemonOutboundEnvelope[] = []
   await enqueueLatestRecordedCapabilityPlan(
     {
       select: () => ({
@@ -129,10 +121,10 @@ test("enqueueLatestRecordedCapabilityPlan enqueues the recorded plan", async () 
                 Promise.resolve([
                   {
                     generation: 5,
-                    planHash: "hash",
+                    planHash: 'hash',
                     plan: PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN,
-                    appliedAt: "2026-01-01T00:00:00.000Z",
-                    serverId: "server-1",
+                    appliedAt: '2026-01-01T00:00:00.000Z',
+                    serverId: 'server-1',
                   },
                 ]),
             }),
@@ -140,34 +132,34 @@ test("enqueueLatestRecordedCapabilityPlan enqueues the recorded plan", async () 
         }),
       }),
     } as never,
-    "server-1",
+    'server-1',
     (envelope) => {
-      enqueued.push(envelope);
-    },
-  );
-  assertEquals(enqueued.length, 1);
-  assertEquals(enqueued[0]?.kind, "capability-plan-update");
-  if (enqueued[0]?.kind !== "capability-plan-update") {
-    throw new TypeError("expected capability-plan-update envelope");
+      enqueued.push(envelope)
+    }
+  )
+  assertEquals(enqueued.length, 1)
+  assertEquals(enqueued[0]?.kind, 'capability-plan-update')
+  if (enqueued[0]?.kind !== 'capability-plan-update') {
+    throw new TypeError('expected capability-plan-update envelope')
   }
-  assertEquals(enqueued[0].generation, 5);
-  assertEquals(enqueued[0].plan, PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN);
-});
+  assertEquals(enqueued[0].generation, 5)
+  assertEquals(enqueued[0].plan, PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN)
+})
 
-test("enqueueLatestRecordedCapabilityPlan clears a leftover plan on self-hosted", async () => {
-  const enqueued: DaemonOutboundEnvelope[] = [];
+test('enqueueLatestRecordedCapabilityPlan clears a leftover plan on self-hosted', async () => {
+  const enqueued: DaemonOutboundEnvelope[] = []
   await enqueueLatestRecordedCapabilityPlan(
     {
       select: () => {
-        throw new TypeError("self-hosted clear must not read a recorded plan");
+        throw new TypeError('self-hosted clear must not read a recorded plan')
       },
     } as never,
-    "server-1",
+    'server-1',
     (envelope) => {
-      enqueued.push(envelope);
+      enqueued.push(envelope)
     },
-    "self-hosted",
-  );
-  assertEquals(enqueued.length, 1);
-  assertEquals(enqueued[0]?.kind, "capability-plan-clear");
-});
+    'self-hosted'
+  )
+  assertEquals(enqueued.length, 1)
+  assertEquals(enqueued[0]?.kind, 'capability-plan-clear')
+})

@@ -1387,6 +1387,13 @@ it('GET /servers/:id/metrics/connection returns 401 without session', async () =
   })
 })
 
+it('GET /servers/:id/metrics/facts returns 401 without session', async () => {
+  await withMetricsFixtures(async ({ app, serverId }) => {
+    const res = await app.request(`/servers/${serverId}/metrics/facts`)
+    assertEquals(res.status, 401)
+  })
+})
+
 it('GET /servers/:id/metrics/connection returns 403 without read access', async () => {
   if (!dbUrl) return
 

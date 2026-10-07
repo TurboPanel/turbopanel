@@ -20,7 +20,7 @@ const test = Deno.test.bind(Deno)
 test('buildUserCommandExpiresAt adds ttl to now', () => {
   assertEquals(
     buildUserCommandExpiresAt(60_000, Date.parse('2020-01-01T00:00:00.000Z')),
-    '2020-01-01T00:01:00.000Z',
+    '2020-01-01T00:01:00.000Z'
   )
 })
 
@@ -38,7 +38,7 @@ test('buildCommandEnqueueEnvelope defaults attempt to 1', () => {
       type: 'daemon.ping',
       attempt: 1,
       queuedAt: '2020-01-01T00:00:00.000Z',
-    },
+    }
   )
   assertEquals(
     buildCommandEnqueueEnvelope({
@@ -48,7 +48,7 @@ test('buildCommandEnqueueEnvelope defaults attempt to 1', () => {
       queuedAt: '2020-01-01T00:00:00.000Z',
       attempt: 3,
     }).attempt,
-    3,
+    3
   )
 })
 

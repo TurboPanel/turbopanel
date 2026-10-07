@@ -18,6 +18,7 @@ import {
   buildConnectionHistoryPayload,
   buildCpuLimitsEnvelope,
   buildFleetLatestPayload,
+  buildHostFactsPayload,
   buildHostSummaryPayload,
   buildSeriesRouteResponse,
   buildTopologyContext,
@@ -1289,4 +1290,22 @@ test('buildFleetLatestPayload attaches per-server derived values from the batche
 
   const srv2 = payload.servers.find((row) => row.serverId === 'srv-2')!
   assertEquals(srv2.derived.memoryUsedPercent, null)
+})
+
+test('buildHostFactsPayload names the backend and carries the facts through', () => {
+  const payload = buildHostFactsPayload({
+    kind: 'duckdb',
+    available: true,
+    serverId: 'srv-1',
+    sampledAt: '2026-10-07T10:00:00.000Z',
+    facts: {
+      text: { kernel: '6.12.0' },
+      blockDevices: [{ deviceId: 'sda', smart: 'passed' }],
+      gpus: [],
+    },
+  })
+  assertEquals(payload.ok, true)
+  assertEquals(payload.backend, 'duckdb')
+  assertEquals(payload.facts.text.kernel, '6.12.0')
+  assertEquals(payload.sampledAt, '2026-10-07T10:00:00.000Z')
 })

@@ -480,6 +480,58 @@ export const metricsSchemas = {
       },
     },
   },
+  HostFactsResponse: {
+    type: 'object',
+    required: ['ok', 'serverId', 'backend', 'available', 'sampledAt', 'facts'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      serverId: { type: 'string', format: 'uuid' },
+      backend: backendEnumSchema,
+      available: { type: 'boolean' },
+      sampledAt: {
+        type: ['string', 'null'],
+        format: 'date-time',
+        description:
+          'When the sample the facts came from was taken; `null` when none is in the last day.',
+      },
+      facts: {
+        type: 'object',
+        required: ['text', 'blockDevices', 'gpus'],
+        properties: {
+          text: {
+            type: 'object',
+            description:
+              'Host-wide short text by name (kernel, os, virt, web engines, PHP versions and so on). Only fields the host reported.',
+            additionalProperties: { type: 'string' },
+          },
+          blockDevices: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['deviceId'],
+              properties: {
+                deviceId: { type: 'string' },
+                model: { type: 'string' },
+                smart: { type: 'string' },
+              },
+            },
+          },
+          gpus: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['gpuId'],
+              properties: {
+                gpuId: { type: 'string' },
+                driver: { type: 'string' },
+                model: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
   MetricsBackendUnavailableResponse: {
     type: 'object',
     required: ['ok', 'error', 'backend'],
@@ -716,6 +768,27 @@ export const metricsPaths: Record<string, unknown> = {
               schema: {
                 $ref: '#/components/schemas/ConnectionHistoryChartResponse',
               },
+            },
+          },
+        },
+        ...metricsQueryErrorResponses,
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/metrics/facts': {
+    get: {
+      tags: ['Servers'],
+      summary: 'Get what a visible server last told us about itself',
+      description:
+        "Short text, never numbers: kernel, OS, virtualisation, web engine and PHP versions, each drive's model and SMART verdict, each GPU's driver and model. Read from the newest sample in the last day; empty when the host reports none.",
+      security: [{ cookieAuth: [] }],
+      parameters: [serverIdParam],
+      responses: {
+        '200': {
+          description: 'Latest host facts',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/HostFactsResponse' },
             },
           },
         },

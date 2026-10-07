@@ -8,6 +8,7 @@ import { DisabledServerMetricsStore } from '../../daemon/metrics/disabled-store.
 import type {
   EntitySeriesResult,
   HostSeriesResult,
+  HostFactsResult,
   MetricEventsResult,
   MetricsBackendKind,
   PerEntityHostedFamily,
@@ -1560,4 +1561,28 @@ export function buildMetricEventsPayload(
 /** True when metric-events history has something worth caching. */
 export function metricEventsHasCacheableData(result: MetricEventsResult): boolean {
   return result.events.length > 0
+}
+
+/** How far back the newest sample may be for its host facts to count (one day). */
+export const HOST_FACTS_LOOKBACK_MS = 24 * 60 * 60 * 1000
+
+export type HostFactsResponse = {
+  ok: true
+  serverId: string
+  backend: MetricsBackendKind
+  available: boolean
+  /** When the sample the facts came from was taken; `null` when none is in the last day. */
+  sampledAt: string | null
+  facts: HostFactsResult['facts']
+}
+
+export function buildHostFactsPayload(result: HostFactsResult): HostFactsResponse {
+  return {
+    ok: true,
+    serverId: result.serverId,
+    backend: result.kind,
+    available: result.available,
+    sampledAt: result.sampledAt,
+    facts: result.facts,
+  }
 }
