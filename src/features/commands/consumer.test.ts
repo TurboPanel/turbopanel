@@ -900,6 +900,25 @@ async function withManagedDestroyFixtures(
   })
 }
 
+test('processCommandEnvelope releases an applying managed row when the daemon is offline', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    await db.update(managed).set({ status: 'applying' }).where(eq(managed.id, managedId))
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.restore',
+      payload: { managedId },
+    })
+    const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [row] = await db.select().from(managed).where(eq(managed.id, managedId))
+    assertEquals(row?.status, 'failed')
+    assertEquals(registry.enqueueCalled, false)
+  })
+})
+
 test('processCommandEnvelope deletes the managed row and cascades principals when deleteAfterDestroy succeeds', async () => {
   await withManagedDestroyFixtures(async ({ db, serverId, managedId, rootPrincipalId }) => {
     const record = await createCommandRecord(db, {
