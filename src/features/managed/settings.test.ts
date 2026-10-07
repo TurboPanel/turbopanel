@@ -81,12 +81,14 @@ test('getManagedAllowedImages / isManagedImageAllowed expose the curated allowli
   assertEquals(isManagedImageAllowed('postgres', 'docker.io/library/postgres:17'), false)
   assertEquals(isManagedImageAllowed('postgres', 'docker.io/library/postgres:14'), false)
   assertEquals(isManagedImageAllowed('mysql', 'docker.io/library/mysql:9.7'), true)
-  // Catalogued but untested — refused, same as EOL.
-  assertEquals(isManagedImageAllowed('mysql', 'docker.io/library/mysql:8.4'), false)
+  assertEquals(isManagedImageAllowed('mysql', 'docker.io/library/mysql:8.4'), true)
   // EOL since April 2026 — must never be creatable.
   assertEquals(isManagedImageAllowed('mysql', 'docker.io/library/mysql:8.0'), false)
   assertEquals(isManagedImageAllowed('mysql', 'docker.io/library/mysql:8'), false)
   assertEquals(isManagedImageAllowed('mariadb', 'docker.io/library/mariadb:12.3'), true)
+  assertEquals(isManagedImageAllowed('mariadb', 'docker.io/library/mariadb:11.8'), true)
+  // Catalogued but untested — refused, same as EOL.
+  assertEquals(isManagedImageAllowed('mariadb', 'docker.io/library/mariadb:11.4'), false)
   assertEquals(isManagedImageAllowed('mariadb', 'docker.io/library/mariadb:10.11'), false)
   assertEquals(isManagedImageAllowed('mariadb', 'docker.io/library/mariadb:11'), false)
   // Unrestricted engines accept anything syntactically valid.
