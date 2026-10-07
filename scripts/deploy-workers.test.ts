@@ -155,6 +155,9 @@ test('on a terminal the typed environment name must match', async () => {
 
 test('Workers Builds skips the guard', async () => {
   assertEquals(isWorkersBuilds({ WORKERS_CI_COMMIT_SHA: CI_SHA }), true)
+  assertEquals(isWorkersBuilds({ WORKERS_CI: '1' }), true)
+  assertEquals(isWorkersBuilds({ WORKERS_CI: '0' }), false)
+  assertEquals(isWorkersBuilds({ WORKERS_CI: '' }), false)
   assertEquals(isWorkersBuilds({}), false)
   await confirmDeploy({ ...LIVE, WORKERS_CI_COMMIT_SHA: CI_SHA }, [], { isTTY: false, ask: never })
 })

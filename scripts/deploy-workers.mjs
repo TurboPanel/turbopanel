@@ -43,7 +43,9 @@ const CONFIRMED_ENVS = new Set(['staging', 'live'])
 
 /** True inside Cloudflare Workers Builds (the unattended branch deploys). */
 export function isWorkersBuilds(env) {
-  return Boolean(env.WORKERS_CI_COMMIT_SHA?.trim() || env.WORKERS_CI?.trim())
+  return Boolean(
+    env.WORKERS_CI_COMMIT_SHA?.trim() || ['1', 'true'].includes(env.WORKERS_CI?.trim())
+  )
 }
 
 async function askOnTerminal(question) {
