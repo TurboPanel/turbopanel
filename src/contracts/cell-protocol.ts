@@ -284,6 +284,11 @@ export type ManagedHealthObservedMember = {
     receivedLsn?: string
     replayLsn?: string
     receiveLagBytes?: number
+    /** MySQL / MariaDB replica: GTID sets received / applied (opaque, bounded). */
+    receivedGtid?: string
+    executedGtid?: string
+    /** MySQL / MariaDB replica: every received transaction is applied. Absent = unknown. */
+    fullyApplied?: boolean
     lastStreaming?: {
       at: string
       ageMs: number
@@ -826,6 +831,8 @@ export const MAX_DAEMON_WS_LOGS_CHARS = 200 * 1024
 
 /** Max characters for the string fields of `managed-health-result.member`. */
 export const MAX_DAEMON_WS_MANAGED_HEALTH_FIELD_CHARS = 128
+/** Bound for a replica's opaque GTID set text (`receivedGtid`, `executedGtid`). */
+export const MAX_DAEMON_WS_MANAGED_GTID_CHARS = 4096
 
 /** Max UTF-8 bytes of `metrics-capabilities-result.capabilities` JSON. */
 export const MAX_DAEMON_WS_CAPABILITIES_BYTES = 96 * 1024
@@ -1338,6 +1345,9 @@ function validateObservedReplication(replication: unknown): string | null {
       replication.receiveLagBytes,
       'member.replication.receiveLagBytes'
     ) ??
+    validateOptionalGtid(replication.receivedGtid, 'member.replication.receivedGtid') ??
+    validateOptionalGtid(replication.executedGtid, 'member.replication.executedGtid') ??
+    validateOptionalBoolean(replication.fullyApplied, 'member.replication.fullyApplied') ??
     validateLastStreaming(replication.lastStreaming) ??
     validateSlotRetention(replication.slotRetention)
   )
@@ -1361,6 +1371,22 @@ function validateSlotRetention(value: unknown): string | null {
     ) ??
     validateOptionalFiniteNumber(value.safeBytes, 'member.replication.slotRetention.safeBytes')
   )
+}
+
+function validateOptionalGtid(value: unknown, field: string): string | null {
+  if (
+    value === undefined ||
+    // An empty string is an empty GTID set: unknown (the parsers drop it), not a rejection.
+    (typeof value === 'string' && value.length <= MAX_DAEMON_WS_MANAGED_GTID_CHARS)
+  ) {
+    return null
+  }
+  return `invalid ${field}`
+}
+
+function validateOptionalBoolean(value: unknown, field: string): string | null {
+  if (value === undefined || typeof value === 'boolean') return null
+  return `invalid ${field}`
 }
 
 function validateOptionalHealthString(value: unknown, field: string): string | null {

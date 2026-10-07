@@ -103,6 +103,13 @@ function parseObservedReplication(
   if (typeof replication.replayLsn === 'string') {
     health.replayLsn = replication.replayLsn
   }
+  for (const key of ['receivedGtid', 'executedGtid'] as const) {
+    const v = replication[key]
+    if (typeof v === 'string' && v.length > 0 && v.length <= 4096) health[key] = v
+  }
+  if (typeof replication.fullyApplied === 'boolean') {
+    health.fullyApplied = replication.fullyApplied
+  }
   const lastStreaming = parseLastStreaming(replication.lastStreaming)
   if (lastStreaming) health.lastStreaming = lastStreaming
   const slotRetention = parseManagedSlotRetention(replication.slotRetention)
