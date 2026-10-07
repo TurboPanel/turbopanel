@@ -212,46 +212,6 @@ function mariadbCatalogEntry(): CatalogEntry {
 }
 
 const CATALOG: CatalogEntry[] = [
-  {
-    code: 'wordpress-mysql',
-    kind: 'template',
-    displayName: 'WordPress with MySQL',
-    description: 'WordPress site with MySQL database',
-    compose: composeDocument({
-      services: {
-        wordpress: { image: 'wordpress:latest', depends_on: ['db'] },
-        db: { image: 'mysql:8' },
-      },
-    }),
-    options: { stack: 'wordpress-mysql' },
-    environments: [
-      {
-        displayName: 'production',
-        description: 'Production environment',
-        variables: [
-          { key: 'MYSQL_ROOT_PASSWORD', isSecret: true },
-          { key: 'WORDPRESS_DB_PASSWORD', isSecret: true },
-        ],
-      },
-    ],
-  },
-  {
-    code: 'static-site',
-    kind: 'template',
-    displayName: 'Static Site',
-    description: 'Basic static web server template',
-    compose: composeDocument({
-      services: {
-        web: { image: 'nginx:alpine' },
-      },
-    }),
-    environments: [
-      {
-        displayName: 'production',
-        description: 'Production environment',
-      },
-    ],
-  },
   postgresCatalogEntry(),
   mysqlCatalogEntry(),
   mariadbCatalogEntry(),

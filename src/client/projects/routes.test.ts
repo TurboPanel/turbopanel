@@ -1669,7 +1669,7 @@ test('PATCH /projects/:id validates deploy defaults, keeps stored ones, and refu
   })
 })
 
-test('POST /projects/:id/configure with a catalog template keeps the environment deploy settings', async () => {
+test('POST /projects/:id/configure with a catalog entry keeps the environment deploy settings', async () => {
   await withProjectFixtures(async (ctx) => {
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
     const id = await createEmptyProject(ctx, cookie, 'Template Keeps Strategy')
@@ -1685,8 +1685,8 @@ test('POST /projects/:id/configure with a catalog template keeps the environment
       .where(eq(environment.id, env!.id))
 
     const res = await sendProjectJson(ctx, cookie, 'POST', `/projects/${id}/configure`, {
-      type: 'template',
-      code: 'static-site',
+      type: 'managed',
+      code: 'postgres',
     })
     assertEquals(res.status, 200)
 
@@ -1765,8 +1765,8 @@ test('POST /projects creates a project from every catalog template and managed e
   await withProjectFixtures(async (ctx) => {
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
     const summaries = listCatalog()
-    assertEquals(summaries.length >= 7, true)
-    assertEquals(summaries.filter((entry) => entry.kind === 'template').length >= 2, true)
+    assertEquals(summaries.length >= 5, true)
+    assertEquals(summaries.filter((entry) => entry.kind === 'template').length, 0)
 
     await forEachSequential(summaries, async (summary) => {
       const entry = getCatalogEntry(summary.code)
