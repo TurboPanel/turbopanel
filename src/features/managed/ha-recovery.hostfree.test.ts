@@ -1621,6 +1621,23 @@ test('onPromoteSucceeded fans out ingress and HA reconcile when secrets are pres
   assertEquals(harness.recovery()?.state, 'completed')
 })
 
+test('a host-loss failover leaves the lost host out of the ingress step and still completes', async () => {
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    recovery: recoveryRow({
+      state: 'promoting',
+      metadata: { fenceBasis: 'host-loss-attested', sourceServerId: SERVER_A },
+    }),
+  })
+  const deps = await promoteFanOutDeps()
+  await onPromoteSucceeded(harness.db, deps.queue, deps.secrets, REC_ID, ACTOR_ID)
+  const row = harness.recovery()
+  assertEquals(row?.state, 'completed')
+  assertEquals((row?.metadata as { ingressPendingServerIds?: string[] }).ingressPendingServerIds, [
+    SERVER_A,
+  ])
+})
+
 test('onPromoteSucceeded fails when writer count is not exactly one', async () => {
   const harness = createHarness({
     members: [member(), member({ id: MEM_READ, ordinal: 3 })],

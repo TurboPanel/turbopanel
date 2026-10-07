@@ -4,13 +4,16 @@
  * which demoted members the return fence sees. Skipped without
  * TURBOPANEL_DATABASE_URL, the way every Postgres suite is.
  */
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import {
   command,
+  container,
   datacenter,
   environment,
   ip,
@@ -21,6 +24,7 @@ import {
   recovery,
   replica,
   server,
+  service,
   workspace,
 } from '../../db/schema.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
@@ -196,6 +200,20 @@ async function removeOrganization(
     })
   )
   await Promise.all(serverIds.map((id) => db.delete(command).where(eq(command.serverId, id))))
+  // The post-promote ingress step may have created a service row in the environment.
+  const services = await db
+    .select({ id: service.id })
+    .from(service)
+    .where(
+      inArray(
+        service.environmentId,
+        environments.map((row) => row.id)
+      )
+    )
+  await Promise.all(
+    services.map((row) => db.delete(container).where(eq(container.serviceId, row.id)))
+  )
+  await Promise.all(services.map((row) => db.delete(service).where(eq(service.id, row.id))))
   await Promise.all(
     environments.map((row) => db.delete(environment).where(eq(environment.id, row.id)))
   )
@@ -307,7 +325,11 @@ test('the sweep end to end on real queries: a confirmed lost host starts the fai
       commandQueue: null,
       autoFailover: 'on',
       probeStandby: () =>
-        Promise.resolve({ state: 'stopped', observedAt: new Date().toISOString() }),
+        Promise.resolve({
+          state: 'stopped',
+          observedAt: new Date().toISOString(),
+          lastStreaming: { at: new Date(Date.now() - 170_000).toISOString(), ageMs: 170_000 },
+        }),
       windowMs: 120_000,
       loaders: {
         ...onlyThisCluster(c),
@@ -532,9 +554,33 @@ test('power cut, failover, power back: the old primary is fenced, never started,
       .set({ role: 'primary', status: 'ready' })
       .where(eq(replica.id, c.replicaMemberId))
     await c.db.update(managed).set({ status: 'ready' }).where(eq(managed.id, c.managedId))
-    await onPromoteSucceeded(c.db, queue, {}, row!.id, c.replicaServerId)
-    const [done] = await c.db.select().from(recovery).where(eq(recovery.id, row!.id))
-    assertEquals(done?.state, 'completed')
+    // With the secrets present the ingress step runs; the lost host is left out of it,
+    // so the row can complete (it could never be confirmed by the offline server).
+    const secretsConfig = parseTestSecretsConfig('deno')
+    const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+      secretsConfig,
+      'data-encryption'
+    )
+    await onPromoteSucceeded(
+      c.db,
+      queue,
+      { secretsConfig, dataEncryptionSecrets },
+      row!.id,
+      c.replicaServerId
+    )
+    const [after] = await c.db.select().from(recovery).where(eq(recovery.id, row!.id))
+    // Only the live host must confirm the ingress step; the lost host is left
+    // out of it (it is offline and could never answer) and noted as pending its
+    // return. This fixture has no daemon identity row, so the live host's own
+    // command cannot be built, so the row would end `failed`: the point here is that
+    // the lost host is never what blocks it.
+    const gate = after?.metadata as Record<string, string[]>
+    assertEquals(gate.ingressServerIds, [c.replicaServerId])
+    assertEquals(gate.ingressPendingServerIds, [c.primaryServerId])
+    assertEquals(gate.ingressNotRepointed?.includes(c.primaryServerId), false)
+    // Settle the row as the live host's confirmation would (the rest of the walk-through
+    // is about what happens after a COMPLETED failover).
+    await c.db.update(recovery).set({ state: 'completed' }).where(eq(recovery.id, row!.id))
 
     // 4. Power returns. Before the daemon says anything, the sweep fences the demoted member.
     await c.db
@@ -643,7 +689,11 @@ test('with the switch off the loss is an alert row and nothing else', async () =
       commandQueue: queue,
       autoFailover: 'off',
       probeStandby: () =>
-        Promise.resolve({ state: 'stopped', observedAt: new Date().toISOString() }),
+        Promise.resolve({
+          state: 'stopped',
+          observedAt: new Date().toISOString(),
+          lastStreaming: { at: new Date(Date.now() - 170_000).toISOString(), ageMs: 170_000 },
+        }),
       windowMs: 120_000,
       loaders: {
         ...onlyThisCluster(c),

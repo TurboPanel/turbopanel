@@ -177,10 +177,7 @@ export type PeerReading = 'still_receiving' | 'not_receiving' | 'no_answer'
  * OR the member has been non-streaming for long enough via `notStreamingSince`.
  * Prevents flapping replicas (streaming then starting, repeating) from vetoing.
  */
-export function readPeer(
-  health: ManagedReplicationHealth | null,
-  windowMs: number
-): PeerReading {
+export function readPeer(health: ManagedReplicationHealth | null, windowMs: number): PeerReading {
   if (!health || typeof health.state !== 'string' || health.state.length === 0) return 'no_answer'
   if (health.state === 'streaming') return 'still_receiving'
 
