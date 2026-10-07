@@ -138,6 +138,10 @@ function buildPlatformMycnf(
     // Row-based binlog makes unprivileged triggers and stored functions safe to replicate;
     // without this, CREATE TRIGGER / CREATE FUNCTION fail for app users (error 1419).
     'log_bin_trust_function_creators=ON',
+    // Durable commits: an acknowledged write survives a hard reboot. Operators may
+    // override these in their snippet (later duplicates win); not reserved keys.
+    'sync_binlog=1',
+    'innodb_flush_log_at_trx_commit=1',
     // MariaDB GTID vocabulary (not gtid_mode / enforce_gtid_consistency).
     'log_slave_updates=ON',
     'gtid_strict_mode=ON',

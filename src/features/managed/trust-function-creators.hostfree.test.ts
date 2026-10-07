@@ -26,3 +26,21 @@ for (const spec of [mysqlEngineSpec, mariadbEngineSpec]) {
     assertEquals(conf.includes('binlog_format=ROW'), true)
   })
 }
+
+test('mariadb platform my.cnf pins durable commits and operator override comes later', () => {
+  const settings = mariadbEngineSpec.parseSettings({
+    ...mariadbEngineSpec.defaultSettings,
+    engineConfig: 'sync_binlog=0\n',
+  })
+  if (!settings) throw new TypeError('expected settings')
+  const runtime = mariadbEngineSpec.buildRuntimeSpec({
+    managedId: '11111111-1111-1111-1111-111111111111',
+    settings,
+    rootUsername: 'root',
+  })
+  const conf = runtime.configFiles.find((f) => f.path === 'my.cnf')?.contents ?? ''
+  assertEquals(conf.includes('innodb_flush_log_at_trx_commit=1'), true)
+  assertEquals(conf.indexOf('sync_binlog=1') >= 0, true)
+  assertEquals(conf.lastIndexOf('sync_binlog=0') > conf.indexOf('sync_binlog=1'), true)
+  assertEquals(conf.lastIndexOf('sync_binlog=0') > conf.indexOf('# --- operator config ---'), true)
+})
