@@ -84,10 +84,10 @@ import {
 } from '../features/tiers/tier-enforcement.ts'
 import {
   getLatestTopologyGeneration,
-  getTopologyGeneration,
   markTopologyResyncRequested,
   topologyChurnLimitedRecently,
 } from '../features/servers/server-topology-records.ts'
+import { recordOverPlan } from './metrics/over-plan-flag.ts'
 import { recordCapabilityPlanGenerationIfChanged } from '../client/servers/capability-plan-records.ts'
 import type { GateDecision, MetricsGate } from './metrics/ingest-gate.ts'
 import type { MetricEvent } from '../contracts/metrics-contract.ts'
@@ -592,14 +592,14 @@ function isSlotMappableTopologySnapshot(value: Record<string, unknown>): value i
 }
 
 /**
- * Resolve the {@link SlotMapping} for a sample's own
- * `metadata.topologyGeneration`, given that exact generation's snapshot (not
- * the latest one — reinterpreting a sample under a different generation's
- * layout is exactly what a `SlotMapping` must never do) and the operator's
- * `hardwareProfile` overrides. `undefined` when the snapshot is missing/not a
- * plausible topology report (unknown generation) or resolution otherwise
- * fails — callers must fall back to topology-agnostic packing in that case
- * (see `field-map.ts`).
+ * Resolve the {@link SlotMapping} from the server's latest hardware facts and
+ * the operator's `hardwareProfile` overrides. It only decides which device
+ * sits in NIC 1/NIC 2 and the page order: every stored row names its own
+ * devices (blob6), and a device the mapping does not know yet is packed after
+ * the known ones, so a sample sent just before a hardware change still stores
+ * every device under its own id. `undefined` when there are no facts yet or
+ * they are not a plausible topology report — callers fall back to
+ * topology-agnostic packing (see `field-map.ts`).
  */
 function resolveSlotMappingForIngest(
   serverId: string,
@@ -697,6 +697,31 @@ async function applyMetricsIngestGate<E extends Env>(
   return null
 }
 
+/**
+ * A server with more RAM or more physical CPU cores than its licensed box size
+ * keeps its metrics and gets flagged on the server record (`over-plan-flag.ts`).
+ * Fire-and-forget, like the other ingest-side marks: a failure logs and never
+ * blocks the sample.
+ */
+function flagOverPlanInBackground(
+  db: Db,
+  serverId: string,
+  sample: AuthenticatedMetricsSample,
+  planRow: IngestServerPlanRow
+): void {
+  recordOverPlan(
+    db,
+    serverId,
+    planRow.tierRank,
+    sample.extended?.sizes?.memoryTotalBytes,
+    planRow.serverMetadata
+  ).catch((err) => {
+    rateLimitedMetricsLog(serverId, 'over_plan_record_failed', () => {
+      console.warn(`metrics over-plan flag failed for ${serverId}: ${describeError(err)}`)
+    })
+  })
+}
+
 type IngestPlanAndTopology = {
   plan: MetricsCapabilityPlan
   slotMapping: SlotMapping | undefined
@@ -705,6 +730,7 @@ type IngestPlanAndTopology = {
 }
 
 type IngestServerPlanRow = {
+  tierRank?: number | null
   serverOptions: unknown
   orgOptions: unknown
   serverMetadata: unknown
@@ -750,6 +776,7 @@ async function loadIngestServerPlanRow(
     orgOptions: joined.orgOptions,
     serverMetadata: joined.serverMetadata,
     machineClass: joined.machineClass,
+    tierRank: joined.tierRank,
     tier: metricsCapabilityTierEntitlementsForRank(joined.tierRank),
   }
 }
@@ -759,8 +786,8 @@ async function loadIngestServerPlanRow(
  * `POST /api/daemon/v1/metrics`. Resolves the effective v5 metrics
  * capability plan from persisted server/org state (replacing the
  * conservative default-only resolution) and, alongside it, checks whether
- * the sample's `metadata.topologyGeneration` has ever been recorded via
- * `recordTopologyGeneration` — an unknown generation stamps
+ * the sample's `metadata.topologyGeneration` matches the server's stored
+ * hardware facts (`recordTopologyGeneration`) — a mismatch stamps
  * `markTopologyResyncRequested` (fire-and-forget; never blocks ingestion,
  * never reaches the daemon cell directly — see that function's doc comment)
  * — and resolves the sample's {@link SlotMapping} (see
@@ -783,13 +810,12 @@ async function resolveIngestPlanAndReconcileTopology(
   // record. The durable 60 s baseline owns all of those.
   const durable = isDurableSample(sample)
   try {
-    const [topologyMatch, latestTopology, planRow] = await Promise.all([
-      getTopologyGeneration(db, serverId, sample.metadata.topologyGeneration),
+    const [latestTopology, planRow] = await Promise.all([
       getLatestTopologyGeneration(db, serverId),
       loadIngestServerPlanRow(db, serverId, deployment),
     ])
 
-    const topologyKnown = topologyMatch !== undefined
+    const topologyKnown = latestTopology?.generation === sample.metadata.topologyGeneration
     if (
       !topologyKnown &&
       durable &&
@@ -805,7 +831,7 @@ async function resolveIngestPlanAndReconcileTopology(
       })
     }
 
-    const snapshotForClass = topologyMatch?.snapshot ?? latestTopology?.snapshot
+    const snapshotForClass = latestTopology?.snapshot
     const machineClass = resolveServerMachineClass(
       planRow?.machineClass,
       snapshotForClass,
@@ -835,6 +861,8 @@ async function resolveIngestPlanAndReconcileTopology(
         })
     }
 
+    if (durable && planRow !== undefined) flagOverPlanInBackground(db, serverId, sample, planRow)
+
     const serverOptions = parseServerOptions(planRow?.serverOptions) ?? undefined
     const orgOptions: OrganizationOptions = parseOrganizationOptions(planRow?.orgOptions)
 
@@ -848,7 +876,7 @@ async function resolveIngestPlanAndReconcileTopology(
 
     const slotMapping = resolveSlotMappingForIngest(
       serverId,
-      topologyMatch?.snapshot,
+      latestTopology?.snapshot,
       planRow?.serverMetadata
     )
 

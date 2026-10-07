@@ -152,7 +152,7 @@ it('host series for every host metric over 90 days stays within AE limits', asyn
     from: FROM,
     to: TO,
   })
-  assert(statements.length > 2, 'expected the metric list to be split')
+  assert(statements.length > 1, 'expected the metric list to be split')
   assertAcceptableToAe(statements)
 })
 
@@ -206,10 +206,10 @@ for (const family of Object.keys(ENTITY_SCOPE) as PerEntityHostedFamily[]) {
   })
 }
 
-it('network entity series with embedded NIC slots (the host.io path) stays within AE rules', async () => {
-  // The embedded-NIC builder only runs with a slot mapping and a resolved
-  // topology generation — the path whose Integer/Double if() was live on
-  // testing after #46, which the worst-case test above never reached.
+it('network entity series also sends the host.network embedded-NIC statement and it stays within AE rules', async () => {
+  // Every requested NIC is looked up in blob6 of host.network as well as in
+  // the paged rows; this is the path whose Integer/Double if() was live on
+  // testing after #46.
   const entityIds = entityIdsFor('network', WORST_CASE_ENTITIES.network)
   const { config, statements } = capturingConfig()
   const result = await queryEntitySeriesViaSqlApi(config, {
@@ -219,20 +219,10 @@ it('network entity series with embedded NIC slots (the host.io path) stays withi
     metrics: fieldsFor('network'),
     from: FROM,
     to: TO,
-    topologyGeneration: 3,
-    slotMapping: {
-      normalNicSlots: entityIds,
-      fabricDeviceIds: [],
-      rootFilesystemId: null,
-      gpuPageOrder: [],
-      blockPageOrder: [],
-      filesystemPageOrder: [],
-      hardwareSignalPageOrder: [],
-    },
   })
   assertEquals(result.entities.length, entityIds.length)
   assert(
-    statements.some((sql) => sql.includes('nic0_')),
+    statements.some((sql) => sql.includes('_samples')),
     'the embedded-NIC statement was not sent'
   )
   assertAcceptableToAe(statements)
@@ -242,13 +232,10 @@ it('a chunked host series merges every metric back into one point per bucket', a
   const bucket = Date.parse('2026-09-26T00:00:00.000Z') / 1000
   const { config, statements } = capturingConfig((sql) => {
     const aliases = [...sql.matchAll(/ AS (m\d+)/g)].map((match) => match[1])
-    if (aliases.length === 0) return [{ generation: '4' }]
     const row: Record<string, unknown> = {
       bucket,
       sample_count: 5,
       avg_interval_seconds: 60,
-      topology_gen_min: 4,
-      topology_gen_max: 4,
     }
     for (const alias of aliases) row[alias] = 1
     return [row]
@@ -259,11 +246,9 @@ it('a chunked host series merges every metric back into one point per bucket', a
     from: '2026-09-25T00:00:00.000Z',
     to: TO,
   })
-  assert(statements.length > 2)
+  assert(statements.length > 1)
   assertEquals(result.points.length, 1)
   assertEquals(result.sampleCount, 5)
-  assertEquals(result.points[0].topologyGeneration, 4)
-  assertEquals(result.topologyGenerations, [4])
   for (const name of HOST_METRICS) {
     assertEquals(result.points[0].values[name], 1, name)
   }
@@ -296,7 +281,6 @@ it('a chunked fleet snapshot returns each server once with every metric', async 
   assertEquals(result.servers.length, ids.length)
   for (const server of result.servers) {
     assertEquals(server.sampleCount, 3)
-    assertEquals(server.topologyGeneration, 2)
     for (const name of HOST_METRICS) assertEquals(server.values[name], 7, name)
   }
 })

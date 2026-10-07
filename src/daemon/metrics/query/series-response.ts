@@ -262,15 +262,6 @@ export type HostSeriesChartResponse = {
    */
   gapBuckets: string[]
   points: HostSeriesChartPoint[]
-  /**
-   * Point indices where `topologyGeneration` differs from the previous known
-   * generation — v5 analogue of v3's `generationBreaks`, renamed since v5
-   * tracks topology generations rather than hardware-profile generations.
-   * See {@link computeTopologyGenerationBreaks}.
-   */
-  topologyGenerationBreaks: number[]
-  /** Distinct topology generations observed anywhere in the queried range — see `HostSeriesResult.topologyGenerations`. */
-  topologyGenerations?: number[]
 }
 
 export function finalizeHostSeriesResult(
@@ -297,28 +288,6 @@ export function finalizeHostSeriesResult(
     gapCount: coverage.gapCount,
     gapBuckets: coverage.gapBucketStarts.map((ms) => new Date(ms).toISOString()),
   }
-}
-
-/**
- * v5 analogue of v3's `computeGenerationBreaks`, reading `topologyGeneration`
- * instead of `hardwareProfileGeneration` — same semantics: a `null`/`undefined`
- * entry is "unknown" and never itself a break, and the first point
- * establishing a known generation is never a break.
- */
-export function computeTopologyGenerationBreaks(
-  points: readonly { topologyGeneration?: number | null }[]
-): number[] {
-  const breaks: number[] = []
-  let lastKnown: number | undefined
-  for (let i = 0; i < points.length; i++) {
-    const generation = points[i].topologyGeneration
-    if (generation === null || generation === undefined) continue
-    if (lastKnown !== undefined && generation !== lastKnown) {
-      breaks.push(i)
-    }
-    lastKnown = generation
-  }
-  return breaks
 }
 
 export function toHostSeriesChartResponse(input: {
@@ -357,9 +326,6 @@ export function toHostSeriesChartResponse(input: {
     ...(point.sampleSpacingSeconds !== undefined
       ? { sampleSpacingSeconds: point.sampleSpacingSeconds }
       : {}),
-    ...(point.topologyGeneration !== undefined
-      ? { topologyGeneration: point.topologyGeneration }
-      : {}),
   }))
 
   return {
@@ -376,9 +342,5 @@ export function toHostSeriesChartResponse(input: {
     gapCount: result.gapCount,
     gapBuckets: result.gapBuckets ?? [],
     points,
-    topologyGenerationBreaks: computeTopologyGenerationBreaks(points),
-    ...(result.topologyGenerations !== undefined
-      ? { topologyGenerations: result.topologyGenerations }
-      : {}),
   }
 }

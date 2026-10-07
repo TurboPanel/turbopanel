@@ -143,11 +143,6 @@ export const metricsSchemas = {
       derived: { $ref: '#/components/schemas/HostSeriesChartPointDerived' },
       sampleCount: { type: 'integer' },
       expectedSampleCount: { type: 'integer' },
-      topologyGeneration: {
-        type: ['integer', 'null'],
-        description:
-          'Topology generation shared by every contributing sample in this bucket — `null` means unknown or the bucket spans a topology reassignment (mixed generations). Omitted when the backend doesn’t track generations.',
-      },
     },
   },
   EffectiveCpuThermalLimits: {
@@ -168,7 +163,7 @@ export const metricsSchemas = {
     type: 'object',
     description:
       'Host-singleton series (`host.*` metrics) — present only when the request’s `metrics` selector included at least one `host.*` id.',
-    required: ['metrics', 'sampleCount', 'gapCount', 'points', 'topologyGenerationBreaks'],
+    required: ['metrics', 'sampleCount', 'gapCount', 'points'],
     properties: {
       metrics: { type: 'array', items: { type: 'string' } },
       sampleCount: { type: 'integer' },
@@ -176,18 +171,6 @@ export const metricsSchemas = {
       points: {
         type: 'array',
         items: { $ref: '#/components/schemas/HostSeriesChartPoint' },
-      },
-      topologyGenerationBreaks: {
-        type: 'array',
-        items: { type: 'integer' },
-        description:
-          'Point indices where `topologyGeneration` differs from the previous known generation — a chart-continuity boundary marker (v5 analogue of v3’s `generationBreaks`).',
-      },
-      topologyGenerations: {
-        type: 'array',
-        items: { type: 'integer' },
-        description:
-          'Distinct topology generations observed anywhere in the queried range. Omitted when the backend doesn’t track generations.',
       },
     },
   },
@@ -319,7 +302,6 @@ export const metricsSchemas = {
       'host',
       'entities',
       'inventory',
-      'topologyGeneration',
       'cpuLimits',
       'temperatureUnit',
       'nicSlotLimit',
@@ -353,10 +335,6 @@ export const metricsSchemas = {
           },
         ],
         description: '`null` when the server has not reported a usable topology generation yet.',
-      },
-      topologyGeneration: {
-        type: ['integer', 'null'],
-        description: 'The server’s latest recorded topology generation, or `null` if none yet.',
       },
       cpuLimits: { $ref: '#/components/schemas/EffectiveCpuThermalLimits' },
       temperatureUnit: { type: 'string', enum: ['celsius', 'fahrenheit'] },
@@ -400,11 +378,6 @@ export const metricsSchemas = {
       latestAt: { type: ['string', 'null'], format: 'date-time' },
       values: { $ref: '#/components/schemas/HostMetricValues' },
       sampleCount: { type: 'integer' },
-      topologyGeneration: {
-        type: ['integer', 'null'],
-        description:
-          'Topology generation shared by every contributing sample in the queried window, or `null` when unknown/mixed. Omitted when the backend doesn’t track generations.',
-      },
       derived: { $ref: '#/components/schemas/HostSeriesChartPointDerived' },
     },
   },

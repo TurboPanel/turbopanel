@@ -37,9 +37,10 @@ export function metricsChartCacheKey(input: {
   schemaVersion: number
   kind?: 'series' | 'summary' | 'connection' | 'fleet-latest' | 'events' | 'entity-series'
   /**
-   * Scopes the cache entry to one topology generation. Uses a distinct
-   * `tg{gen}` token, appended only when provided so it never collides with a
-   * full-range entry, which omits it.
+   * Scopes the cache entry to the server's latest hardware facts (their
+   * generation counter), so a response carrying the device inventory is not
+   * served after the hardware changed. Never stored on a sample. Uses a
+   * distinct `tg{gen}` token, appended only when provided.
    */
   topologyGeneration?: number
 }): string {

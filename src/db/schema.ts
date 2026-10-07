@@ -5400,30 +5400,36 @@ export const verification = pgTable(
   (table) => [unique('verification_identifier_unique').on(table.identifier)]
 )
 /**
- * Append-only history of every topology generation a server has ever
- * reported (stable device/filesystem/GPU/signal identity + a generation
- * counter, pushed by the daemon over the `topology-report` cell message).
- * One row per (server, generation) — never updated in place, so later
- * "resolve historical generation N" query-reconstruction work can replay
- * exactly what the daemon saw at that generation.
+ * The latest hardware facts a server's daemon reported (stable
+ * device/filesystem/GPU/signal identity, the daemon's topology generation
+ * counter and its host layout paths), pushed over the `topology-report` cell
+ * message. One row per server, overwritten in place at most once every five
+ * minutes (see `server-topology-records.ts`), so nothing here grows.
  *
- * `snapshot` is the full topology snapshot as reported by the daemon, minus
- * daemon-internal-only fields. jsonb, so no migration for its shape.
+ * There is no history: every stored metrics row names its own devices
+ * (blob6 on hosted, per-device rows on DuckDB), so old samples never need an
+ * old layout to be read.
  *
- * Bounded: at most 12 new generations per server per hour and 24 per day,
- * and only the newest 200 rows kept per server (see `server-topology-records.ts`). This
- * table has no partner `options` column (that jsonb-pairing convention only
- * applies to columns literally named `metadata`/`options`; ours is
- * `snapshot`).
+ * `snapshot` is the full topology snapshot as reported by the daemon (at most
+ * 64 KiB). jsonb, so no migration for its shape. This table has no partner
+ * `options` column (that jsonb-pairing convention only applies to columns
+ * literally named `metadata`/`options`; ours is `snapshot`).
  */
-export const topologyGeneration = pgTable(
-  'generation',
+export const serverHardware = pgTable(
+  'hardware',
   {
     id: uuid()
       .default(sql`uuidv7()`)
       .primaryKey()
       .notNull(),
     createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
       precision: 3,
       withTimezone: true,
       mode: 'string',
@@ -5441,16 +5447,11 @@ export const topologyGeneration = pgTable(
     }).notNull(),
   },
   (table) => [
-    unique('uniq_generation_server_generation').on(table.serverId, table.generation),
-    index('idx_generation_server_generation').using(
-      'btree',
-      table.serverId.asc(),
-      table.generation.desc()
-    ),
+    uniqueIndex('uniq_hardware_server_id').using('btree', table.serverId.asc()),
     foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
-      name: 'generation_server_id_server_id_fk',
+      name: 'hardware_server_id_server_id_fk',
     }).onDelete('cascade'),
   ]
 )
@@ -5460,8 +5461,8 @@ export const topologyGeneration = pgTable(
  * (see `../../daemon/metrics/capability-plan.ts`) — one row per
  * `(server, generation)`, written only when the *resolved* plan for a server
  * actually changes (`plan_hash` differs from the last recorded row), never
- * on every sample. Mirrors `topologyGeneration`'s shape/spirit, scoped to
- * capability-plan config instead of daemon-reported topology.
+ * on every sample. Scoped to capability-plan config, not daemon-reported
+ * topology (that is `hardware`, latest only).
  *
  * `plan` is the full resolved `MetricsCapabilityPlan` snapshot, stored for
  * audit/debugging; `plan_hash` is the cheap "did it change" comparison key.

@@ -1,31 +1,19 @@
 /**
- * Topology-reinterpretation guard for the v5 metrics write path.
+ * Embedded-device identity for the v7 Analytics Engine write and read paths.
  *
- * `host.network`'s embedded NIC slots (double6..11 — see `field-map.ts`'s
- * module doc comment) carry no per-slot identity of their own: which
- * `networks[]` entry a slot represents is resolved only through the
- * `SlotMapping` passed to `buildMetricsDataPoints` at write time. Every
- * other paged family (gpu/network/filesystem/block/hardware.physical) stamps
- * blob6 with the contributing entities' real ids, so a stored row is
- * self-describing regardless of which topology generation produced it; NICs
- * embedded in `host.network` are the one place a topology reassignment could
- * silently reinterpret a slot if the wrong generation's mapping were ever
- * used to decode it. DuckDB has no equivalent risk — it writes every network
- * device to its per-family table keyed by real `deviceId` regardless of slot
- * embedding (`types.ts`'s `EntitySeriesQuery` doc comment) — so this
- * guard is scoped to the Cloudflare AE write path only.
+ * `host.network` embeds NIC 1 and NIC 2 (and the lone extra filesystem) in
+ * its own doubles, so the doubles carry no per-slot identity. Every such row
+ * therefore names its devices in blob6 (`nic1=<id>@<speed>;nic2=<id>@<speed>;fs=<id>`),
+ * and readers look a NIC up by that id. No topology generation is stored or
+ * consulted, so history stays attached to the right device however the slots
+ * were reassigned or however many hardware changes happened since.
  *
- * The write-path packing tests below prove the packer itself is
- * identity-addressed (not positional) once a `SlotMapping` is available, and
- * that every row carries its own sample's `topologyGeneration` so a
- * downstream reader can regroup rows by generation. Further down,
- * `createFakeAnalyticsEngine` (`testing/fake-analytics-engine.ts`) — an
- * in-memory DuckDB-backed AE dataset the real `queryXViaSqlApi` SQL text
- * executes against — extends this to the read path: historical query
- * results for both a generation-reordered paged family (GPU page-position
- * swap) and the host series must keep resolving each row by its own
- * generation/identity, never reinterpreted under a later generation's
- * mapping.
+ * The write-path tests prove the packer is identity-addressed (not
+ * positional) once a `SlotMapping` is available and that blob6 names the
+ * devices. The query tests run the real `queryXViaSqlApi` SQL against
+ * `createFakeAnalyticsEngine` (`testing/fake-analytics-engine.ts`, an
+ * in-memory DuckDB-backed AE dataset) to prove a swap of slots never gives one
+ * device the other's history.
  */
 import { assertEquals } from '@std/assert'
 import { V7_HOST_ROW_SPECS } from './backends/cloudflare/v7-layout.ts'
@@ -42,7 +30,7 @@ import {
 import type { AuthenticatedMetricsSample, SlotMapping } from './types.ts'
 import {
   AE_BLOB_FAMILY_INDEX,
-  AE_BLOB_TOPOLOGY_GENERATION_INDEX,
+  AE_BLOB_ENTITY_IDS_INDEX,
   AE_FAMILY_HOST_NETWORK,
   AE_FAMILY_HOST_SYSTEM,
   AE_FAMILY_NETWORK,
@@ -50,7 +38,6 @@ import {
   type AnalyticsEngineDataPointLike,
   buildMetricsDataPoints,
 } from './backends/cloudflare/field-map.ts'
-import { computeTopologyGenerationBreaks } from './query/series-response.ts'
 import { CloudflareAnalyticsEngineServerMetricsStore } from './backends/cloudflare/store.ts'
 import { createFakeAnalyticsEngine } from './testing/fake-analytics-engine.ts'
 
@@ -176,11 +163,11 @@ function hostNetworkPoint(points: AnalyticsEngineDataPointLike[]): AnalyticsEngi
 const NIC0_RX_DOUBLE_INDEX = V7_HOST_ROW_SPECS['host.network'].doubles.indexOf('nic1.rx')
 
 // ---------------------------------------------------------------------------
-// Own-generation resolution: two generations, two distinct devices, each
-// decoded with its own recorded SlotMapping.
+// Identity-addressed packing: each sample is packed with the mapping that
+// names its own devices.
 // ---------------------------------------------------------------------------
 
-it("generation 1's host.network row embeds generation 1's own slot-mapped NIC", () => {
+it('a host.network row embeds the slot-mapped NIC and names it in blob6', () => {
   const sampleGen1 = buildSample({
     metadata: {
       version: 6,
@@ -195,9 +182,10 @@ it("generation 1's host.network row embeds generation 1's own slot-mapped NIC", 
   const slotMappingGen1 = emptySlotMapping({ normalNicSlots: ['eth0'] })
   const point = hostNetworkPoint(buildMetricsDataPoints(sampleGen1, slotMappingGen1))
   assertEquals(point.doubles[NIC0_RX_DOUBLE_INDEX], 100)
+  assertEquals(point.blobs[AE_BLOB_ENTITY_IDS_INDEX], 'nic1=eth0@')
 })
 
-it("generation 2's host.network row embeds generation 2's own (replaced) slot-mapped NIC", () => {
+it('a replaced NIC is embedded and named under its own id', () => {
   const sampleGen2 = buildSample({
     metadata: {
       version: 6,
@@ -212,9 +200,10 @@ it("generation 2's host.network row embeds generation 2's own (replaced) slot-ma
   const slotMappingGen2 = emptySlotMapping({ normalNicSlots: ['eth1'] })
   const point = hostNetworkPoint(buildMetricsDataPoints(sampleGen2, slotMappingGen2))
   assertEquals(point.doubles[NIC0_RX_DOUBLE_INDEX], 300)
+  assertEquals(point.blobs[AE_BLOB_ENTITY_IDS_INDEX], 'nic1=eth1@')
 })
 
-it("decoding generation 2's sample with generation 1's mapping never finds the replaced device (proves resolution is identity-addressed, not positional)", () => {
+it("packing a sample with a mapping that does not name its device never reads another device's value (identity-addressed, not positional)", () => {
   const sampleGen2 = buildSample({
     metadata: {
       version: 6,
@@ -226,9 +215,9 @@ it("decoding generation 2's sample with generation 1's mapping never finds the r
     },
     networks: [nic('eth1', 300)],
   })
-  const wrongGenerationMapping = emptySlotMapping({ normalNicSlots: ['eth0'] })
-  const point = hostNetworkPoint(buildMetricsDataPoints(sampleGen2, wrongGenerationMapping))
-  // eth0 does not exist in this sample under the wrong (stale) mapping —
+  const staleMapping = emptySlotMapping({ normalNicSlots: ['eth0'] })
+  const point = hostNetworkPoint(buildMetricsDataPoints(sampleGen2, staleMapping))
+  // eth0 does not exist in this sample under the stale mapping —
   // the slot goes missing rather than silently reading eth1's value under
   // eth0's name.
   assertEquals(point.doubles[NIC0_RX_DOUBLE_INDEX], AE_MISSING_METRIC_SENTINEL)
@@ -267,12 +256,11 @@ it('without a SlotMapping, host.network falls back to positional embedding (netw
 })
 
 // ---------------------------------------------------------------------------
-// blob4 (topologyGeneration) carries each sample's own generation on every
-// row kind, so a downstream reader can regroup rows by generation even
-// without per-slot ids.
+// blob4 is reserved and written empty on every row: the topology generation is
+// no longer stored, rows name their own devices instead.
 // ---------------------------------------------------------------------------
 
-it("every row (host.system, host.network, and a paged family) carries its own sample's topologyGeneration in blob4", () => {
+it('every row is written with an empty blob4, whatever generation the sample reports', () => {
   const sample = buildSample({
     metadata: {
       version: 6,
@@ -293,75 +281,15 @@ it("every row (host.system, host.network, and a paged family) carries its own sa
     true
   )
   for (const point of points) {
-    assertEquals(
-      point.blobs[AE_BLOB_TOPOLOGY_GENERATION_INDEX],
-      '7',
-      `family ${point.blobs[AE_BLOB_FAMILY_INDEX]} must carry its own sample's topologyGeneration`
-    )
+    assertEquals(point.blobs[3], '', `family ${point.blobs[AE_BLOB_FAMILY_INDEX]} blob4`)
   }
-})
-
-// ---------------------------------------------------------------------------
-// computeTopologyGenerationBreaks — v5 analogue of v3's
-// computeGenerationBreaks, at the already-decoded query-result layer.
-// ---------------------------------------------------------------------------
-
-it('computeTopologyGenerationBreaks: empty input has no breaks', () => {
-  assertEquals(computeTopologyGenerationBreaks([]), [])
-})
-
-it('computeTopologyGenerationBreaks: all points sharing one generation have no breaks', () => {
-  const points = [
-    { topologyGeneration: 1 },
-    { topologyGeneration: 1 },
-    {
-      topologyGeneration: 1,
-    },
-  ]
-  assertEquals(computeTopologyGenerationBreaks(points), [])
-})
-
-it('computeTopologyGenerationBreaks: a null/undefined entry is unknown and never itself a break', () => {
-  const points = [
-    { topologyGeneration: 1 },
-    { topologyGeneration: null },
-    { topologyGeneration: undefined },
-    { topologyGeneration: 1 },
-  ]
-  assertEquals(computeTopologyGenerationBreaks(points), [])
-})
-
-it('computeTopologyGenerationBreaks: the first point establishing a known generation is never a break', () => {
-  const points = [{ topologyGeneration: null }, { topologyGeneration: 5 }]
-  assertEquals(computeTopologyGenerationBreaks(points), [])
-})
-
-it('computeTopologyGenerationBreaks: marks the index where generation actually changes', () => {
-  const points = [
-    { topologyGeneration: 1 },
-    { topologyGeneration: 1 },
-    { topologyGeneration: 2 },
-    { topologyGeneration: 2 },
-    { topologyGeneration: 3 },
-  ]
-  assertEquals(computeTopologyGenerationBreaks(points), [2, 4])
-})
-
-it('computeTopologyGenerationBreaks: an unknown gap between two same-generation points is not a break', () => {
-  const points = [
-    { topologyGeneration: 1 },
-    { topologyGeneration: null },
-    { topologyGeneration: 1 },
-  ]
-  assertEquals(computeTopologyGenerationBreaks(points), [])
 })
 
 // ---------------------------------------------------------------------------
 // Executed query-layer resolution (Cloudflare AE, via
 // `createFakeAnalyticsEngine`) — proves the real `queryXViaSqlApi` SQL
-// resolves historical rows by their own generation/identity after a
-// reorder/swap, not just that the write-path packer produced the right
-// bytes.
+// resolves historical rows by their own device identity after a reorder or
+// swap, not just that the write-path packer produced the right bytes.
 // ---------------------------------------------------------------------------
 
 function gpu(gpuId: string, seed: number) {
@@ -376,7 +304,7 @@ function gpu(gpuId: string, seed: number) {
   }
 }
 
-it("queryEntitySeries resolves each generation's page-position swap by identity, not by slot: a GPU that moves slots after a topology reorder never inherits the other GPU's value at its old timestamp", async () => {
+it("queryEntitySeries resolves a page-position swap by identity, not by slot: a GPU that moves slots never inherits the other GPU's value at its old timestamp", async () => {
   const SERVER_ID = '11111111-2222-4333-8444-555555555555'
   const BASE_MS = Date.UTC(2026, 5, 2)
   const INTERVAL_SECONDS = 60
@@ -463,7 +391,7 @@ it("queryEntitySeries resolves each generation's page-position swap by identity,
   }
 })
 
-it("queryHostSeries: topologyGenerations reports both generations across a reorder, and each bucket keeps its own generation's value", async () => {
+it('queryEntitySeries (network): an embedded NIC keeps its own history when another NIC takes its slot', async () => {
   const SERVER_ID = '11111111-2222-4333-8444-555555555555'
   const BASE_MS = Date.UTC(2026, 5, 3)
   const INTERVAL_SECONDS = 60
@@ -472,11 +400,11 @@ it("queryHostSeries: topologyGenerations reports both generations across a reord
     sql: fakeAe.sqlConfig,
   })
   try {
-    const gen1AtMs = BASE_MS
-    const gen1Sample = buildSample({
+    const firstAtMs = BASE_MS
+    const first = buildSample({
       metadata: {
         version: 6,
-        sampledAt: new Date(gen1AtMs).toISOString(),
+        sampledAt: new Date(firstAtMs).toISOString(),
         intervalSeconds: INTERVAL_SECONDS,
         sequence: 1,
         topologyGeneration: 1,
@@ -484,15 +412,15 @@ it("queryHostSeries: topologyGenerations reports both generations across a reord
       },
       networks: [nic('eth0', 100)],
     })
-    fakeAe.setNow(gen1AtMs)
-    store.writeSample(gen1Sample, emptySlotMapping({ normalNicSlots: ['eth0'] }))
+    fakeAe.setNow(firstAtMs)
+    store.writeSample(first, emptySlotMapping({ normalNicSlots: ['eth0'] }))
 
-    // Generation 2: the reorder replaces eth0 with eth1 in the primary slot.
-    const gen2AtMs = BASE_MS + INTERVAL_SECONDS * 1000
-    const gen2Sample = buildSample({
+    // eth0 is replaced by eth1 in the primary slot.
+    const secondAtMs = BASE_MS + INTERVAL_SECONDS * 1000
+    const second = buildSample({
       metadata: {
         version: 6,
-        sampledAt: new Date(gen2AtMs).toISOString(),
+        sampledAt: new Date(secondAtMs).toISOString(),
         intervalSeconds: INTERVAL_SECONDS,
         sequence: 2,
         topologyGeneration: 2,
@@ -500,25 +428,34 @@ it("queryHostSeries: topologyGenerations reports both generations across a reord
       },
       networks: [nic('eth1', 300)],
     })
-    fakeAe.setNow(gen2AtMs)
-    store.writeSample(gen2Sample, emptySlotMapping({ normalNicSlots: ['eth1'] }))
+    fakeAe.setNow(secondAtMs)
+    store.writeSample(second, emptySlotMapping({ normalNicSlots: ['eth1'] }))
 
-    const hostSeries = await store.queryHostSeries({
+    const series = await store.queryEntitySeries({
       serverId: SERVER_ID,
-      metrics: ['host.cpu.busyPercent'],
-      from: new Date(gen1AtMs - 60_000).toISOString(),
-      to: new Date(gen2AtMs + 60_000).toISOString(),
+      family: 'network',
+      entityIds: ['eth0', 'eth1'],
+      metrics: ['receiveBytesPerSecond'],
+      from: new Date(firstAtMs - 60_000).toISOString(),
+      to: new Date(secondAtMs + 60_000).toISOString(),
       resolutionSeconds: INTERVAL_SECONDS,
     })
-    assertEquals(hostSeries.topologyGenerations, [1, 2])
+    const rxByAt = (id: string) =>
+      new Map(
+        series.entities
+          .find((e) => e.entityId === id)!
+          .points.map((p) => [p.at, p.values.receiveBytesPerSecond])
+      )
+    const eth0 = rxByAt('eth0')
+    assertEquals(eth0.get(first.metadata.sampledAt), 100)
     assertEquals(
-      hostSeries.points.find((p) => p.at === gen1Sample.metadata.sampledAt)?.topologyGeneration,
-      1
+      eth0.has(second.metadata.sampledAt),
+      false,
+      'eth0 has no point once eth1 replaced it'
     )
-    assertEquals(
-      hostSeries.points.find((p) => p.at === gen2Sample.metadata.sampledAt)?.topologyGeneration,
-      2
-    )
+    const eth1 = rxByAt('eth1')
+    assertEquals(eth1.get(second.metadata.sampledAt), 300)
+    assertEquals(eth1.has(first.metadata.sampledAt), false, 'eth1 has no point before it existed')
   } finally {
     await fakeAe.close()
   }

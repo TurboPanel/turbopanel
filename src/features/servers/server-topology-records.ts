@@ -1,55 +1,43 @@
 /**
- * Bounded history of daemon-reported topology generations
- * (`topologyGeneration` table, see `../../db/schema.ts`) — one row per
- * `(server, generation)`, written when the daemon's fire-and-forget
- * `topology-report` cell message lands (see `../../daemon/cell/protocol.ts`).
- * The table lives in the control plane's Postgres in every deployment (the
- * hosted Workers and the self-hosted Deno process alike); DuckDB is only the
- * metrics sample store, so the Postgres statements here need no DuckDB twin.
+ * The latest hardware facts each server's daemon reported (`hardware` table,
+ * see `../../db/schema.ts`): one row per server, overwritten when the
+ * daemon's fire-and-forget `topology-report` cell message lands (see
+ * `../../daemon/cell/protocol.ts`). The table lives in the control plane's
+ * Postgres in every deployment (the hosted Workers and the self-hosted Deno
+ * process alike); DuckDB is only the metrics sample store, so the Postgres
+ * statements here need no DuckDB twin.
  *
- * The history answers "what did this server's topology look like at
- * generation N" so a sample can be read against the entity layout (which NIC
- * was NIC 1, which drive sat in slot 2) that was active when it was recorded.
- * It is NOT a record of the machine: sizes (RAM, CPU, disk) are carried on
- * every sample and are not history here. Nothing a host operator or a daemon
- * sends can make the table grow without bound. Limits that hold whatever the
- * daemon says:
+ * There is no history. Every stored metrics row names its own devices (blob6
+ * on hosted, per-device rows on DuckDB), so an old sample never needs the
+ * layout that was active when it was recorded. Sizes (RAM, CPU, disk) are
+ * carried on every sample. The record answers "what hardware does this server
+ * have now" (NIC names, layout paths, machine class) and lets ingest notice a
+ * sample whose generation the record has not seen yet.
+ *
+ * Nothing a host operator or a daemon sends can make the table grow, and the
+ * limits hold whatever the daemon says:
  *
  * - `generation` and `bootGeneration` fit the column ({@link MAX_TOPOLOGY_GENERATION});
  *   the snapshot is at most 64 KiB (`validateDaemonInboundFrame`, before any
  *   write, on both the Workers and the Deno path).
- * - at most {@link MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR} new generations per
- *   server per rolling hour and {@link MAX_NEW_TOPOLOGY_GENERATIONS_PER_DAY}
- *   per rolling day; the rest are dropped and `server.metadata.topologyChurnLimitedAt`
- *   is stamped as an alert. The day cap is what keeps a slow, patient flood
- *   from pushing honest rows out of the retained window.
- * - only the newest {@link MAX_RETAINED_TOPOLOGY_GENERATIONS} rows are kept per
- *   server. At the daily cap a flood needs over 8 days to evict an honest row.
- * - a resend of a recorded generation never adds a row and never rewrites an
- *   older row's snapshot; it is throttled to one write per server per
- *   {@link TOPOLOGY_REWRITE_COOLDOWN_SECONDS} seconds.
+ * - a changed report overwrites the row at most once per server every
+ *   {@link TOPOLOGY_REWRITE_COOLDOWN_SECONDS} seconds. A change refused inside
+ *   that window stamps `server.metadata.topologyChurnLimitedAt` as an alert
+ *   (a flapping device, a tampered daemon) and is dropped; the daemon reports
+ *   again on its next change or resync.
  *
- * Every report runs under a lock on the server's row, so concurrent reports
- * cannot slip past the counters together.
- *
- * "Newest" is by write time, never by the daemon's own generation number: a
- * forged huge number must not pin itself as the latest topology.
+ * Every report runs under a lock on the server's row, so two reports for one
+ * server are handled one after the other.
  */
-import { and, desc, eq, sql } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { topologyGeneration } from '../../db/schema.ts'
+import { serverHardware } from '../../db/schema.ts'
 import type { TopologyLayoutPaths } from '../../contracts/topology-types.ts'
 
 /** Largest generation number the table stores (a Postgres `integer`). */
 export const MAX_TOPOLOGY_GENERATION = 2_147_483_647
-/** New generations recorded per server per rolling hour; honest hardware changes are rare. */
-export const MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR = 12
-/** New generations recorded per server per rolling day. */
-export const MAX_NEW_TOPOLOGY_GENERATIONS_PER_DAY = 24
-/** Generation rows kept per server; older rows are deleted as new ones arrive. */
-export const MAX_RETAINED_TOPOLOGY_GENERATIONS = 200
-/** Minimum seconds between two rewrites (a resend of a recorded generation) for one server. */
-export const TOPOLOGY_REWRITE_COOLDOWN_SECONDS = 30
+/** Minimum seconds between two overwrites of one server's hardware facts. */
+export const TOPOLOGY_REWRITE_COOLDOWN_SECONDS = 300
 /** The churn alert stamp is rewritten at most this often, so a flood cannot also write the server row every message. */
 const CHURN_STAMP_REFRESH_SECONDS = 300
 
@@ -70,7 +58,7 @@ export type TopologyGenerationReport = {
   appliedAt: string
 }
 
-function serializeRow(row: typeof topologyGeneration.$inferSelect): TopologyGenerationRecord {
+function serializeRow(row: typeof serverHardware.$inferSelect): TopologyGenerationRecord {
   return {
     generation: row.generation,
     bootGeneration: row.bootGeneration,
@@ -80,13 +68,13 @@ function serializeRow(row: typeof topologyGeneration.$inferSelect): TopologyGene
 }
 
 export type RecordTopologyGenerationOutcome =
-  /** A new `(server, generation)` row was written. */
+  /** The server's first report: its hardware row was created. */
   | 'recorded'
-  /** A resend of a recorded generation changed the stored row (newest row: snapshot; older row: it became the latest). */
+  /** A changed report overwrote the server's hardware row. */
   | 'refreshed'
-  /** Nothing to do: an identical resend, or a rewrite inside the cooldown. */
+  /** Nothing to do: the report matches the stored facts. */
   | 'unchanged'
-  /** The server hit its hourly or daily limit of new generations; nothing was written. */
+  /** A changed report arrived inside the cooldown; nothing was written. */
   | 'rate_limited'
   /** The numbers do not fit the table; nothing was written. */
   | 'rejected'
@@ -108,7 +96,7 @@ function logTopologyChurn(serverId: string, outcome: 'rate_limited' | 'rejected'
   churnLogAt.set(key, now)
   console.error(
     outcome === 'rate_limited'
-      ? `topology generation limit reached for server ${serverId}: more than ${MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR} new generations in an hour or ${MAX_NEW_TOPOLOGY_GENERATIONS_PER_DAY} in a day; further reports are dropped`
+      ? `topology report dropped for server ${serverId}: its hardware facts changed again within ${TOPOLOGY_REWRITE_COOLDOWN_SECONDS} s`
       : `topology report rejected for server ${serverId}: generation numbers out of range`
   )
 }
@@ -124,27 +112,15 @@ function fitsGeneration(value: number): boolean {
 
 type Tx = Pick<Db, 'execute'>
 
-type ExistingGenerationRow = {
-  id: string
-  newest: boolean
+type ExistingHardwareRow = {
   same: boolean
   recently_written: boolean
 }
 
 /**
- * Record one topology generation, within the limits in the module doc, under
- * a lock on the server's row (`FOR UPDATE`, the same pattern as
- * `capability-plan-records.ts`) so two reports for one server are handled one
- * after the other and the counters below cannot be raced.
- *
- * - A generation not seen before is inserted if the hourly and daily limits
- *   allow it, then the oldest rows beyond the retention cap are deleted.
- * - A generation already recorded never adds a row. If it is the newest row its
- *   snapshot is refreshed when it differs; if it is an older row it only becomes
- *   the latest again (an honest daemon reconnecting at its current generation
- *   must not stay behind a forged newer row) and its snapshot is left alone.
- *   Either rewrite waits {@link TOPOLOGY_REWRITE_COOLDOWN_SECONDS} since the
- *   server's last write.
+ * Store one topology report as the server's latest hardware facts, within the
+ * limits in the module doc, under a lock on the server's row (`FOR UPDATE`,
+ * the same pattern as `capability-plan-records.ts`).
  */
 export async function recordTopologyGeneration(
   db: Db,
@@ -161,100 +137,48 @@ export async function recordTopologyGeneration(
     await tx.execute(sql`SELECT id FROM server WHERE id = ${serverId}::uuid FOR UPDATE`)
 
     const existing = (await tx.execute(sql`
-      SELECT g.id,
-             (g.id = (
-               SELECT id FROM generation WHERE server_id = ${serverId}::uuid
-               ORDER BY created_at DESC, id DESC LIMIT 1
-             )) AS newest,
-             (g.snapshot IS NOT DISTINCT FROM ${snapshotJson}::jsonb) AS same,
-             EXISTS (
-               SELECT 1 FROM generation
-               WHERE server_id = ${serverId}::uuid
-                 AND created_at > now() - make_interval(secs => ${TOPOLOGY_REWRITE_COOLDOWN_SECONDS})
-             ) AS recently_written
-      FROM generation g
-      WHERE g.server_id = ${serverId}::uuid AND g.generation = ${report.generation}
-    `)) as unknown as ExistingGenerationRow[]
+      SELECT (h.generation = ${report.generation}
+              AND h.boot_generation = ${report.bootGeneration}
+              AND h.snapshot IS NOT DISTINCT FROM ${snapshotJson}::jsonb) AS same,
+             (h.updated_at > now() - make_interval(secs => ${TOPOLOGY_REWRITE_COOLDOWN_SECONDS})) AS recently_written
+      FROM hardware h
+      WHERE h.server_id = ${serverId}::uuid
+    `)) as unknown as ExistingHardwareRow[]
 
     const row = existing[0]
-    if (row) return await rewriteExistingGeneration(tx, row, report, snapshotJson)
-    return await insertNewGeneration(tx, serverId, report, snapshotJson)
+    if (!row) {
+      await tx.execute(sql`
+        INSERT INTO hardware (server_id, generation, boot_generation, snapshot, applied_at)
+        VALUES (${serverId}::uuid, ${report.generation}::int, ${report.bootGeneration}::int,
+                ${snapshotJson}::jsonb, ${report.appliedAt}::timestamptz)
+      `)
+      return 'recorded'
+    }
+    if (row.same) return 'unchanged'
+    if (row.recently_written) {
+      await markTopologyChurnLimited(tx, serverId)
+      return 'rate_limited'
+    }
+    await tx.execute(sql`
+      UPDATE hardware
+      SET generation = ${report.generation}::int,
+          boot_generation = ${report.bootGeneration}::int,
+          snapshot = ${snapshotJson}::jsonb,
+          applied_at = ${report.appliedAt}::timestamptz,
+          updated_at = now()
+      WHERE server_id = ${serverId}::uuid
+    `)
+    await clearTopologyChurnLimited(tx, serverId)
+    return 'refreshed'
   })
 
   if (outcome === 'rate_limited') logTopologyChurn(serverId, 'rate_limited')
   return outcome
 }
 
-async function rewriteExistingGeneration(
-  tx: Tx,
-  row: ExistingGenerationRow,
-  report: TopologyGenerationReport,
-  snapshotJson: string
-): Promise<RecordTopologyGenerationOutcome> {
-  if (row.recently_written) return 'unchanged'
-  if (row.newest) {
-    if (row.same) return 'unchanged'
-    await tx.execute(sql`
-      UPDATE generation
-      SET snapshot = ${snapshotJson}::jsonb,
-          boot_generation = ${report.bootGeneration},
-          applied_at = ${report.appliedAt}::timestamptz,
-          created_at = now()
-      WHERE id = ${row.id}::uuid
-    `)
-    return 'refreshed'
-  }
-  // An older row: history is not rewritten, it only becomes the latest again.
-  await tx.execute(sql`UPDATE generation SET created_at = now() WHERE id = ${row.id}::uuid`)
-  return 'refreshed'
-}
-
-async function insertNewGeneration(
-  tx: Tx,
-  serverId: string,
-  report: TopologyGenerationReport,
-  snapshotJson: string
-): Promise<RecordTopologyGenerationOutcome> {
-  const inserted = (await tx.execute(sql`
-    INSERT INTO generation (server_id, generation, boot_generation, snapshot, applied_at)
-    SELECT ${serverId}::uuid, ${report.generation}::int, ${report.bootGeneration}::int,
-           ${snapshotJson}::jsonb, ${report.appliedAt}::timestamptz
-    WHERE (SELECT count(*) FROM generation
-           WHERE server_id = ${serverId}::uuid AND created_at > now() - interval '1 hour')
-            < ${MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR}
-      AND (SELECT count(*) FROM generation
-           WHERE server_id = ${serverId}::uuid AND created_at > now() - interval '1 day')
-            < ${MAX_NEW_TOPOLOGY_GENERATIONS_PER_DAY}
-    RETURNING id
-  `)) as unknown as Array<{ id: string }>
-
-  if (inserted.length === 0) {
-    await markTopologyChurnLimited(tx, serverId)
-    return 'rate_limited'
-  }
-
-  await pruneTopologyGenerations(tx, serverId)
-  await clearTopologyChurnLimited(tx, serverId)
-  return 'recorded'
-}
-
-/** Delete all but the newest {@link MAX_RETAINED_TOPOLOGY_GENERATIONS} rows of a server (by write time). */
-export async function pruneTopologyGenerations(db: Tx, serverId: string): Promise<void> {
-  await db.execute(sql`
-    DELETE FROM generation
-    WHERE server_id = ${serverId}::uuid
-      AND id NOT IN (
-        SELECT id FROM generation
-        WHERE server_id = ${serverId}::uuid
-        ORDER BY created_at DESC, id DESC
-        LIMIT ${MAX_RETAINED_TOPOLOGY_GENERATIONS}
-      )
-  `)
-}
-
 /**
  * Stamp `server.metadata.topologyChurnLimitedAt`: the durable alert that this
- * server tried to mint more topology generations than the limits allow (a
+ * server's hardware facts changed more often than the cooldown allows (a
  * flapping device, a tampered daemon). `jsonb_set` on the one key, like
  * {@link markTopologyResyncRequested}, so a concurrent write to another
  * `metadata` field is never stomped. Rewritten at most every few minutes.
@@ -276,7 +200,7 @@ export async function markTopologyChurnLimited(db: Tx, serverId: string): Promis
   `)
 }
 
-/** A report was recorded, so the limits have room again: the alert stamp is cleared. */
+/** A report was stored, so the alert stamp is cleared. */
 async function clearTopologyChurnLimited(db: Tx, serverId: string): Promise<void> {
   await db.execute(sql`
     UPDATE server
@@ -285,10 +209,10 @@ async function clearTopologyChurnLimited(db: Tx, serverId: string): Promise<void
   `)
 }
 
-/** How long a refused report suppresses the resync request: until the hourly window can have freed up. */
-export const TOPOLOGY_CHURN_HOLD_MS = 60 * 60 * 1000
+/** How long a refused report suppresses the resync request: until the cooldown has passed. */
+export const TOPOLOGY_CHURN_HOLD_MS = TOPOLOGY_REWRITE_COOLDOWN_SECONDS * 1000
 
-/** `true` while a recent refusal says the server is over its generation limits. */
+/** `true` while a recent refusal says the server is changing its hardware facts too often. */
 export function topologyChurnLimitedRecently(serverMetadata: unknown, nowMs = Date.now()): boolean {
   if (typeof serverMetadata !== 'object' || serverMetadata === null) return false
   const at = (serverMetadata as Record<string, unknown>).topologyChurnLimitedAt
@@ -297,27 +221,26 @@ export function topologyChurnLimitedRecently(serverMetadata: unknown, nowMs = Da
   return Number.isFinite(stampedMs) && nowMs - stampedMs < TOPOLOGY_CHURN_HOLD_MS
 }
 
-/** Most recently recorded row for a server (insertion order, never the daemon's own number), or `undefined` if none has been reported yet. */
+/** The server's latest hardware facts, or `undefined` if it has not reported any yet. */
 export async function getLatestTopologyGeneration(
   db: Db,
   serverId: string
 ): Promise<TopologyGenerationRecord | undefined> {
   const rows = await db
     .select()
-    .from(topologyGeneration)
-    .where(eq(topologyGeneration.serverId, serverId))
-    .orderBy(desc(topologyGeneration.createdAt), desc(topologyGeneration.id))
+    .from(serverHardware)
+    .where(eq(serverHardware.serverId, serverId))
     .limit(1)
   const row = rows[0]
   return row ? serializeRow(row) : undefined
 }
 
 /**
- * Most recently recorded row for each of `serverIds`, in one query —
+ * Latest hardware facts for each of `serverIds`, in one query —
  * the batched analogue of {@link getLatestTopologyGeneration} for routes that
  * must stay O(1) in the number of servers (e.g. `/servers/metrics/latest`'s
  * fleet snapshot — see `AGENTS.md`'s fleet-read invariant). A server with no
- * recorded generation is simply absent from the returned map rather than
+ * report yet is simply absent from the returned map rather than
  * mapped to `undefined`, so callers can use `.has()` /  `.get()` directly.
  */
 export async function getLatestTopologyGenerations(
@@ -330,10 +253,9 @@ export async function getLatestTopologyGenerations(
     sql`, `
   )
   const rows = (await db.execute(sql`
-    SELECT DISTINCT ON (server_id) server_id, generation, boot_generation, snapshot, applied_at
-    FROM generation
+    SELECT server_id, generation, boot_generation, snapshot, applied_at
+    FROM hardware
     WHERE server_id IN (${idList})
-    ORDER BY server_id, created_at DESC, id DESC
   `)) as unknown as Array<{
     server_id: string
     generation: number
@@ -357,8 +279,8 @@ export async function getLatestTopologyGenerations(
 /**
  * Stamp `server.metadata.topologyResyncRequestedAt` — the durable signal
  * that `POST /api/daemon/v1/metrics` emits (see `api-routes.ts`) when a
- * sample's `metadata.topologyGeneration` has never been recorded via
- * {@link recordTopologyGeneration}. Ingest must never wake the Durable
+ * sample's `metadata.topologyGeneration` differs from the server's stored
+ * hardware facts (see {@link recordTopologyGeneration}). Ingest must never wake the Durable
  * Object to ask the daemon for a fresh `topology-report` directly, so this
  * marker is the hand-off point: a later phase's sweep reads it from a safe,
  * non-DO context and pushes the actual re-sync request to the connected
@@ -378,23 +300,6 @@ export async function markTopologyResyncRequested(db: Db, serverId: string): Pro
     )
     WHERE id = ${serverId}::uuid
   `)
-}
-
-/** The specific historical generation row for a server, or `undefined` if it was never recorded. */
-export async function getTopologyGeneration(
-  db: Db,
-  serverId: string,
-  generation: number
-): Promise<TopologyGenerationRecord | undefined> {
-  const rows = await db
-    .select()
-    .from(topologyGeneration)
-    .where(
-      and(eq(topologyGeneration.serverId, serverId), eq(topologyGeneration.generation, generation))
-    )
-    .limit(1)
-  const row = rows[0]
-  return row ? serializeRow(row) : undefined
 }
 
 function nonEmptyString(value: unknown): value is string {
@@ -419,7 +324,7 @@ export function layoutPathsFromSnapshot(snapshot: unknown): TopologyLayoutPaths 
 
 /**
  * Latest reported layout paths per server, for the server DTOs. One
- * `DISTINCT ON` query over the generation table; servers with no topology
+ * query over the hardware table; servers with no topology
  * yet (or a pre-v6 daemon) are simply absent from the map.
  */
 export async function loadServerLayoutPaths(
