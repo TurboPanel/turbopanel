@@ -87,7 +87,7 @@ export const metricsSchemas = {
             type: 'integer',
             enum: [...METRICS_WIRE_VERSIONS],
             description:
-              'Wire version: 6 (legacy shape) or 7. The control plane stores every sample as v7 either way.',
+              'Wire version: 6 (legacy shape) or 8. The control plane stores every sample as v8 either way.',
           },
           sampledAt: { type: 'string', format: 'date-time' },
           intervalSeconds: { type: 'number' },
@@ -104,7 +104,7 @@ export const metricsSchemas = {
           durable: {
             type: 'boolean',
             description:
-              'v7 only. false marks a 10 s live-lease sample that feeds the live overlay and is never stored; absent means durable.',
+              'v8 only. false marks a 10 s live-lease sample that feeds the live overlay and is never stored; absent means durable.',
           },
         },
         additionalProperties: false,
@@ -184,7 +184,7 @@ export const metricsSchemas = {
       extended: {
         type: 'object',
         description:
-          "v7 additions: host counters (`host`), Docker health and totals (`docker`), hosting-Caddy certificate expiry (`ingress`), free text (`text`), per-drive / per-GPU text (`blockDeviceText`, `gpuText`) and the sizes the sample's percentages are measured against (`sizes` for the host, `filesystemSizes` and `gpuSizes` per entity id). An unknown size is left out, never sent as 0. Every key is optional; unknown keys are rejected.",
+          "v8 additions: host counters (`host`), Docker health and totals (`docker`), hosting-Caddy certificate expiry (`ingress`), free text (`text`), per-drive / per-GPU text (`blockDeviceText`, `gpuText`) and the sizes the sample's percentages are measured against (`sizes` for the host, `filesystemSizes` and `gpuSizes` per entity id). An unknown size is left out, never sent as 0. Every key is optional; unknown keys are rejected.",
         properties: {
           host: { type: 'object' },
           docker: { type: 'object' },

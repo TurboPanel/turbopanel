@@ -577,9 +577,9 @@ const HOST_SINGLETON_QUERYABLE_SCOPES: ReadonlySet<MetricEntityScope> = new Set(
  * plan (the capability plan's `managedDockerEnabled`, no longer tier-gated). Both answer a storage panel that
  * asks for them by name, never the fleet overview's default selection.
  *
- * `extended.*`: the v7 health and limit numbers (OOM kills, PID limit, root
+ * `extended.*`: the v8 health and limit numbers (OOM kills, PID limit, root
  * disk queue/ops, failed units, RAID, container health, Docker reclaimable,
- * certificate days). Only a v7 daemon reports them, so a panel asks for them
+ * certificate days). Only a v8 daemon reports them, so a panel asks for them
  * by name and the overview default stays the v6 host set.
  */
 const HOST_SINGLETON_EXPLICIT_ONLY_SCOPES: ReadonlySet<MetricEntityScope> = new Set([

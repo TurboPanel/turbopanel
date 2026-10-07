@@ -9,7 +9,7 @@ import {
 } from './metrics-tier-model.ts'
 
 describe('metrics tier model', () => {
-  it('derives row counts from the v7 layout fixture, not re-derived packing', () => {
+  it('derives row counts from the v8 layout fixture, not re-derived packing', () => {
     assertEquals(rowsFor('S1', 'vps/preset/plain'), 4)
     assertEquals(rowsFor('S1', 'vps/preset/docker+db'), 5)
     assertEquals(rowsFor('S1', 'phys/single/docker'), 5)

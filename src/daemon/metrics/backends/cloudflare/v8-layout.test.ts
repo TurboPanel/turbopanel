@@ -1,6 +1,6 @@
 /**
- * Pins the v7 writer to the canonical layout fixture
- * (`../../testing/v7-layout.fixture.json`, spec `../../V7-LAYOUT.md`): for each
+ * Pins the v8 writer to the canonical layout fixture
+ * (`../../testing/v8-layout.fixture.json`, spec `../../V8-LAYOUT.md`): for each
  * of the fixture's 240 plan x machine x hardware x service cases, a synthetic
  * sample is run through capability-plan truncation and the real data-point
  * builder, and the rows it writes (family, page, entity ids, folded filesystem,
@@ -17,7 +17,7 @@ import {
   buildMetricsSample,
   type MetricsSampleInput,
 } from '../../../../contracts/metrics-contract.ts'
-import fixtureJson from '../../testing/v7-layout.fixture.json' with { type: 'json' }
+import fixtureJson from '../../testing/v8-layout.fixture.json' with { type: 'json' }
 import type { AuthenticatedMetricsSample, SlotMapping } from '../../types.ts'
 import {
   AE_BLOB_ENTITY_IDS_INDEX,
@@ -28,12 +28,12 @@ import {
   buildMetricsDataPoints,
 } from './field-map.ts'
 import {
-  V7_CONTENT_BLOB_CAPACITY,
-  V7_ENTITIES_PER_PAGE,
-  V7_ENTITY_FIELD_ORDER,
-  V7_HOST_FAMILIES,
-  V7_HOST_ROW_SPECS,
-} from './v7-layout.ts'
+  V8_CONTENT_BLOB_CAPACITY,
+  V8_ENTITIES_PER_PAGE,
+  V8_ENTITY_FIELD_ORDER,
+  V8_HOST_FAMILIES,
+  V8_HOST_ROW_SPECS,
+} from './v8-layout.ts'
 
 type FixtureRow = { family: string; page?: number; entities?: string[] }
 type FixtureCase = {
@@ -215,7 +215,7 @@ function writtenRows(c: FixtureCase): {
   const pageOf = new Map<string, number>()
   const rows = points.map((p): FixtureRow => {
     const family = p.blobs[AE_BLOB_FAMILY_INDEX]
-    if ((V7_HOST_FAMILIES as readonly string[]).includes(family)) return { family }
+    if ((V8_HOST_FAMILIES as readonly string[]).includes(family)) return { family }
     const page = pageOf.get(family) ?? 0
     pageOf.set(family, page + 1)
     return { family, page, entities: p.blobs[AE_BLOB_ENTITY_IDS_INDEX].split(',') }
@@ -224,7 +224,7 @@ function writtenRows(c: FixtureCase): {
 }
 
 for (const c of fixture.cases) {
-  it(`v7 writer matches the fixture: ${c.id}`, () => {
+  it(`v8 writer matches the fixture: ${c.id}`, () => {
     const { rows, points } = writtenRows(c)
     assertEquals(rows, c.rows)
     assertEquals(rows.length, c.rowCount)
@@ -233,14 +233,14 @@ for (const c of fixture.cases) {
     const network = points.find((p) => p.blobs[AE_BLOB_FAMILY_INDEX] === 'host.network')
     assert(io && network)
     // Folded lone filesystem: its values sit in host.io's fs slots.
-    const foldedSlot = V7_HOST_ROW_SPECS['host.io'].doubles.indexOf('fs_availableBytes')
+    const foldedSlot = V8_HOST_ROW_SPECS['host.io'].doubles.indexOf('fs_availableBytes')
     const folded = io.doubles[foldedSlot] !== AE_MISSING_METRIC_SENTINEL
     assertEquals(folded, c.foldedFilesystem !== null, 'folded filesystem slots')
     // Embedded NICs: first two slot-mapped NICs, in slot order, named in blob6.
     const named = network.blobs[AE_BLOB_ENTITY_IDS_INDEX]
     c.embeddedNics.forEach((nic, i) => {
       const index = names(c.machine, c.hardware).nics.indexOf(nic)
-      const slot = V7_HOST_ROW_SPECS['host.network'].doubles.indexOf(`nic${i + 1}.rx`)
+      const slot = V8_HOST_ROW_SPECS['host.network'].doubles.indexOf(`nic${i + 1}.rx`)
       assertEquals(network.doubles[slot], 100 + index, `embedded NIC ${i + 1}`)
       assert(named.includes(`nic${i + 1}=${nic}@`), `blob6 names NIC ${i + 1}`)
     })
@@ -249,20 +249,20 @@ for (const c of fixture.cases) {
 }
 
 it('the host row specs are exactly the fixture templates (slot ids per double and blob)', () => {
-  for (const family of V7_HOST_FAMILIES) {
+  for (const family of V8_HOST_FAMILIES) {
     const template = fixture.families[family]
-    assertEquals([...V7_HOST_ROW_SPECS[family].doubles], template.doubles, `${family} doubles`)
-    assertEquals([...V7_HOST_ROW_SPECS[family].blobs], template.blobs, `${family} blobs`)
-    assert(template.blobs.length <= V7_CONTENT_BLOB_CAPACITY)
+    assertEquals([...V8_HOST_ROW_SPECS[family].doubles], template.doubles, `${family} doubles`)
+    assertEquals([...V8_HOST_ROW_SPECS[family].blobs], template.blobs, `${family} blobs`)
+    assert(template.blobs.length <= V8_CONTENT_BLOB_CAPACITY)
   }
 })
 
 it('the entity row shapes match the fixture templates (width, entities per page)', () => {
   for (const family of ['block', 'network', 'filesystem', 'gpu'] as const) {
     const template = fixture.families[family]
-    assertEquals(V7_ENTITY_FIELD_ORDER[family].length, template.doubles.length, `${family} width`)
-    assertEquals(V7_ENTITIES_PER_PAGE[family], template.perPageEntities, `${family} per page`)
+    assertEquals(V8_ENTITY_FIELD_ORDER[family].length, template.doubles.length, `${family} width`)
+    assertEquals(V8_ENTITIES_PER_PAGE[family], template.perPageEntities, `${family} per page`)
   }
-  assertEquals(V7_ENTITY_FIELD_ORDER['hardware.physical'].length, 1)
-  assertEquals(V7_ENTITIES_PER_PAGE['hardware.physical'], 19)
+  assertEquals(V8_ENTITY_FIELD_ORDER['hardware.physical'].length, 1)
+  assertEquals(V8_ENTITIES_PER_PAGE['hardware.physical'], 19)
 })

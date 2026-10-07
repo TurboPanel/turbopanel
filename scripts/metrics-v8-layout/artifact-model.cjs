@@ -9,7 +9,7 @@ const CATS = {
   T:{name:'Sensors'}, H:{name:'Host health'}, G:{name:'GPU'}
 };
 
-/* ---------- Field catalogue (turbopanel 902236d metric-descriptors.ts / field-map.ts; v7 additions marked) ---------- */
+/* ---------- Field catalogue (turbopanel 902236d metric-descriptors.ts / field-map.ts; v8 additions marked) ---------- */
 const F = {};
 function def(scope, cat, rows){
   rows.trim().split('\n').forEach(line => {
@@ -29,7 +29,7 @@ saturatedCoreCount|count|avg|Cores running at or near 100%.
 procsRunning|count|avg|Runnable tasks.
 procsBlocked|count|avg|Tasks blocked on I/O. IO pressure measures the same thing directly.
 processCount|count|avg|Total processes. Only meaningful against the PID limit.
-pidLimitUsedPercent|%|avg|Processes and threads as a share of the kernel PID limit. A stock Netdata alert. New in v7.|L`);
+pidLimitUsedPercent|%|avg|Processes and threads as a share of the kernel PID limit. A stock Netdata alert. New in v8.|L`);
 def('host.memory','M',`
 usedBytes|bytes|avg|Memory in use, excluding page cache.
 cachedFilesBytes|bytes|avg|Page cache holding file data.
@@ -39,7 +39,7 @@ pressureFullPercent|%|avg|Memory pressure (PSI full): every task stalled at once
 swapInBytesPerSecond|B/s|avg|Swap read rate.
 swapOutBytesPerSecond|B/s|avg|Swap write rate.
 majorPageFaultsPerSecond|/s|avg|Page faults that had to read from disk.
-oomKills|count|sum|Processes the kernel OOM killer ended in the interval (/proc/vmstat oom_kill). The memory "errors" signal. New in v7.`);
+oomKills|count|sum|Processes the kernel OOM killer ended in the interval (/proc/vmstat oom_kill). The memory "errors" signal. New in v8.`);
 def('host.kernel','L',`
 fileHandlesUsedPercent|%|avg|Open file handles as a share of the kernel limit.
 conntrackUsedPercent|%|avg|Connection-tracking table fill. When it is full, new connections are dropped.`);
@@ -68,11 +68,11 @@ transmitDropsPerSecond|/s|avg|Transmit drops.`);
 def('filesystem','S',`
 availableBytes|bytes|avg|Free space on this filesystem.
 freeInodes|count|avg|Free inodes on this filesystem.
-totalBytes|bytes|avg|Size of this filesystem when the sample was taken. The divisor of its used percentage. New in v7 (sizes amendment).
-totalInodes|count|avg|Inodes this filesystem has when the sample was taken. New in v7 (sizes amendment).`);
+totalBytes|bytes|avg|Size of this filesystem when the sample was taken. The divisor of its used percentage. New in v8 (sizes amendment).
+totalInodes|count|avg|Inodes this filesystem has when the sample was taken. New in v8 (sizes amendment).`);
 def('host.io','I',`
-rootDiskQueueDepth|count|avg|Requests queued at the disk that holds /. The saturation signal for NVMe and virtual disks. New in v7.
-rootDiskOpsPerSecond|/s|avg|Read plus write operations per second on that disk. Providers cap IOPS. New in v7.`);
+rootDiskQueueDepth|count|avg|Requests queued at the disk that holds /. The saturation signal for NVMe and virtual disks. New in v8.
+rootDiskOpsPerSecond|/s|avg|Read plus write operations per second on that disk. Providers cap IOPS. New in v8.`);
 def('diagnostics','C',`
 averageFrequencyMHz|MHz|avg|Average core clock. On a VM it is whatever the hypervisor exposes, usually a fixed nominal clock.
 minimumFrequencyMHz|MHz|avg|Slowest core clock.
@@ -121,15 +121,15 @@ volumesReclaimableBytes|bytes|avg|Volume bytes not mounted by any container.
 buildCacheBytes|bytes|avg|Build cache.
 buildCacheReclaimableBytes|bytes|avg|Build cache that can be pruned.
 reclaimableBytes|bytes|avg|Images, volumes and build cache Docker could reclaim, summed. From df, refreshed slowly with a timeout.
-containersRunning|count|avg|Containers running (GET /info). New in v7.
-containersUnhealthy|count|avg|Running containers whose healthcheck reports unhealthy (/containers/json health filter). New in v7.
-containersRestarting|count|avg|Containers in a restart loop. New in v7.
-containerOomEvents|count|sum|Container OOM kills in the interval, counted from the Docker events stream. New in v7.
-containerDieEvents|count|sum|Container exits in the interval, from the events stream. New in v7.`);
+containersRunning|count|avg|Containers running (GET /info). New in v8.
+containersUnhealthy|count|avg|Running containers whose healthcheck reports unhealthy (/containers/json health filter). New in v8.
+containersRestarting|count|avg|Containers in a restart loop. New in v8.
+containerOomEvents|count|sum|Container OOM kills in the interval, counted from the Docker events stream. New in v8.
+containerDieEvents|count|sum|Container exits in the interval, from the events stream. New in v8.`);
 def('health','H',`
-systemdUnitsFailed|count|avg|Failed systemd units. The service-health signal for native nginx, Apache, OpenLiteSpeed, php-fpm and Node sites. New in v7.
-mdArraysDegraded|count|avg|Software RAID arrays running degraded (/proc/mdstat). New in v7.
-mdArraysResyncing|count|avg|Software RAID arrays resyncing or rebuilding. New in v7.`);
+systemdUnitsFailed|count|avg|Failed systemd units. The service-health signal for native nginx, Apache, OpenLiteSpeed, php-fpm and Node sites. New in v8.
+mdArraysDegraded|count|avg|Software RAID arrays running degraded (/proc/mdstat). New in v8.
+mdArraysResyncing|count|avg|Software RAID arrays resyncing or rebuilding. New in v8.`);
 def('ingress','W',`
 requests|count|sum|Requests Caddy handled in the interval. Includes everything Traefik serves, plus native and static sites.
 responses2xx|count|sum|2xx responses.
@@ -150,9 +150,9 @@ requestsInFlight|count|avg|Requests in progress.
 upstreamsHealthy|count|avg|Caddy upstreams passing health checks. With Docker the only upstream is Traefik, so this says little.
 upstreamsTotal|count|avg|Caddy upstreams configured.
 retries|count|sum|Upstream retries. Caddy exports no retries metric, so this is always empty in practice.
-backendsUp|count|avg|Backends up: from Traefik when Docker runs, otherwise Caddy's upstream health gauge. Moved here in v7.
-backendsTotal|count|avg|Backends configured, from the same source. Moved here in v7.
-tlsCertSoonestExpiryDays|days|avg|Days until the soonest certificate expires. Moved here from the Traefik row in v7.`);
+backendsUp|count|avg|Backends up: from Traefik when Docker runs, otherwise Caddy's upstream health gauge. Moved here in v8.
+backendsTotal|count|avg|Backends configured, from the same source. Moved here in v8.
+tlsCertSoonestExpiryDays|days|avg|Days until the soonest certificate expires. Moved here from the Traefik row in v8.`);
 def('router','W',`
 backendsUp|count|avg|Traefik backends up.
 backendsTotal|count|avg|Traefik backends configured.
@@ -193,7 +193,7 @@ readLatencyMs|ms|avg|Mean read latency.
 writeLatencyMs|ms|avg|Mean write latency.
 utilizationPercent|%|avg|Time the drive was busy. Misleading on NVMe and virtual disks, which serve requests in parallel.
 queueDepth|count|avg|Requests queued at the drive. The saturation signal.
-opsPerSecond|/s|avg|Read plus write operations per second. New in v7 (summed).`);
+opsPerSecond|/s|avg|Read plus write operations per second. New in v8 (summed).`);
 def('gpu','G',`
 utilizationPercent|%|avg|GPU busy time.
 memoryUsedBytes|bytes|avg|GPU memory in use.
@@ -201,9 +201,9 @@ memoryActivityPercent|%|avg|GPU memory controller activity.
 pcieReceiveBytesPerSecond|B/s|avg|PCIe receive rate.
 pcieTransmitBytesPerSecond|B/s|avg|PCIe transmit rate.
 throttlePercent|%|avg|Time the GPU was throttled.
-memoryTotalBytes|bytes|avg|GPU memory size when the sample was taken. The divisor of its used percentage. New in v7 (sizes amendment).`);
+memoryTotalBytes|bytes|avg|GPU memory size when the sample was taken. The divisor of its used percentage. New in v8 (sizes amendment).`);
 def('extended.host','C',`
-irqPressureFullPercent|%|avg|IRQ pressure (PSI full): share of time every task waited on interrupt handling. Kernel 6.1+; not reported elsewhere. New in v7 (owner amendment).`);
+irqPressureFullPercent|%|avg|IRQ pressure (PSI full): share of time every task waited on interrupt handling. Kernel 6.1+; not reported elsewhere. New in v8 (owner amendment).`);
 def('extended.sizes','M',`
 memoryTotalBytes|bytes|avg|Total memory when the sample was taken (MemTotal). The divisor of memory used. A balloon or resize changes it between samples.
 swapTotalBytes|bytes|avg|Total swap when the sample was taken. The divisor of swap used.
@@ -213,7 +213,7 @@ rootFilesystemTotalBytes|bytes|avg|Size of / when the sample was taken. The divi
 rootFilesystemTotalInodes|count|avg|Inodes on / when the sample was taken. The divisor of root inodes used.`);
 const INTERVAL = {name:'interval', unit:'s', agg:'weight', desc:'Sample interval in seconds: 60 normally, 10 while a live lease is open. Every reader weights by it.'};
 const L = (scope, name) => { const f = F[scope + '.' + name]; if (!f) throw new Error('no field ' + scope + '.' + name); return f; };
-function sig(id, desc, unit, isNew){ return {name: id, scope:'hardwareSignal', unit: unit || '°C', agg:'avg', cat:'T', desc: desc + (isNew ? ' New in v7.' : '')}; }
+function sig(id, desc, unit, isNew){ return {name: id, scope:'hardwareSignal', unit: unit || '°C', agg:'avg', cat:'T', desc: desc + (isNew ? ' New in v8.' : '')}; }
 
 /* ---------- Slot builders ---------- */
 const sl = (field, group, opt) => Object.assign({f:field, g:group, st:'live'}, opt || {});
@@ -242,14 +242,14 @@ function nics(m){
   });
   return out;
 }
-function hostSystem(v7){
+function hostSystem(v8){
   const cpu = many('host.cpu', CPU6, 'CPU');
   const mem = many('host.memory', MEM8, 'Memory');
-  if (!v7) return [...cpu, ...many('host.cpu',['procsBlocked','processCount'],'CPU'), ...mem];
+  if (!v8) return [...cpu, ...many('host.cpu',['procsBlocked','processCount'],'CPU'), ...mem];
   return [...cpu, ...mem, sl(L('host.memory','oomKills'),'Memory',{nw:true}), sl(L('host.cpu','pidLimitUsedPercent'),'Kernel limits',{nw:true})];
 }
-function hostIo(m, v7){
-  if (v7) return [
+function hostIo(m, v8){
+  if (v8) return [
     ...many('host.storage', STOR.slice(0, 5), 'Disk I/O'),
     sl(L('host.io','rootDiskQueueDepth'),'Disk I/O',{nw:true}),
     sl(L('host.io','rootDiskOpsPerSecond'),'Disk I/O',{nw:true}),
@@ -261,9 +261,9 @@ function hostIo(m, v7){
   return [
     ...many('host.kernel',['fileHandlesUsedPercent','conntrackUsedPercent'],'Kernel limits'),
     ...many('host.storage', STOR, 'Disk + root fs'),
-    v7 ? sl(L('host.io','rootDiskQueueDepth'),'Root disk',{nw:true}) : spare('Spare held for host.storage growth (HOST_IO_SPARE_SLOT).'),
+    v8 ? sl(L('host.io','rootDiskQueueDepth'),'Root disk',{nw:true}) : spare('Spare held for host.storage growth (HOST_IO_SPARE_SLOT).'),
     ...many('host.network',['tcpRetransmitPercent','softnetDropsPerSecond'],'Network stack'),
-    v7 ? sl(L('host.io','rootDiskOpsPerSecond'),'Root disk',{nw:true}) : spare('Spare held for host.network growth.'),
+    v8 ? sl(L('host.io','rootDiskOpsPerSecond'),'Root disk',{nw:true}) : spare('Spare held for host.network growth.'),
     ...nics(m)
   ];
 }
@@ -296,9 +296,9 @@ function footprint(m, o){
   });
   return out;
 }
-function ingressRow(v7, o){
+function ingressRow(v8, o){
   const out = many('ingress', TRAFFIC, 'Caddy traffic');
-  if (!v7) return [...out, ...many('ingress',['upstreamsHealthy','upstreamsTotal','retries'],'Caddy upstreams')];
+  if (!v8) return [...out, ...many('ingress',['upstreamsHealthy','upstreamsTotal','retries'],'Caddy upstreams')];
   const src = o.docker ? 'Traefik backends' : 'Caddy upstreams';
   return [...out, sl(L('ingress','backendsUp'), src, {nw:true}), sl(L('ingress','backendsTotal'), src, {nw:true}), sl(L('ingress','tlsCertSoonestExpiryDays'),'TLS',{nw:true})];
 }
@@ -381,42 +381,42 @@ function buildMachine(prof, hw){
 /* ---------- Row model ---------- */
 function rowsFor(m, tier, lay, o){
   if (lay === 'prop' || lay === 'custom') return customRows(m, tier, o);
-  const t = TIERS[lay][tier], v7 = lay === 'prop', R = [];
+  const t = TIERS[lay][tier], v8 = lay === 'prop', R = [];
   const add = (fam, why, slots, extra) => R.push(Object.assign({fam, why, slots}, extra || {}));
-  add('host.system', v7 ? 'Every sample. The liveness anchor. CPU, then memory (incl. OOM kills), then the PID limit.' : 'Every sample. The liveness anchor.', hostSystem(v7));
-  add('host.io', v7 ? 'Every sample. Regrouped: disk I/O (incl. new root-disk queue depth and ops/s), root filesystem, network with NICs 1-2, then kernel limits.' : 'Every sample. NICs 1 and 2 are embedded here. Slot order is v6 as shipped.', hostIo(m, v7));
-  if (!v7){
+  add('host.system', v8 ? 'Every sample. The liveness anchor. CPU, then memory (incl. OOM kills), then the PID limit.' : 'Every sample. The liveness anchor.', hostSystem(v8));
+  add('host.io', v8 ? 'Every sample. Regrouped: disk I/O (incl. new root-disk queue depth and ops/s), root filesystem, network with NICs 1-2, then kernel limits.' : 'Every sample. NICs 1 and 2 are embedded here. Slot order is v6 as shipped.', hostIo(m, v8));
+  if (!v8){
     add('host.diagnostics', 'Every sample. Ungated.', DIAG.map(n => sl(L('diagnostics', n), F['diagnostics.' + n].cat === 'C' ? 'CPU detail' : 'Memory detail')));
     add('managed.storage', 'Every sample once the directory walker has run; values change every 15 min. Ungated.', storageRow(m, o));
     if (o.docker && t.docker) add('managed.docker', 'S2 and up, when Docker runs. df is read every 5 min and re-sent each minute.', dockerRow());
   } else {
     add('host.footprint', 'Every sample. Replaces managed.storage, managed.docker and host.diagnostics.', footprint(m, o), {nw:true});
   }
-  add('managed.ingress', v7 ? 'Every host: hosting Caddy always runs. Now also carries Traefik\'s backend health and TLS expiry.' : 'Every host: hosting Caddy always runs.', ingressRow(v7, o));
-  if (!v7 && o.docker) add('managed.router', 'When Docker runs: the shared Traefik behind Caddy.', routerRow());
+  add('managed.ingress', v8 ? 'Every host: hosting Caddy always runs. Now also carries Traefik\'s backend health and TLS expiry.' : 'Every host: hosting Caddy always runs.', ingressRow(v8, o));
+  if (!v8 && o.docker) add('managed.router', 'When Docker runs: the shared Traefik behind Caddy.', routerRow());
   const nicKept = m.nics.slice(0, t.nic);
   pages(nicKept.slice(2), 3, n => many('network',['receiveBytesPerSecond','transmitBytesPerSecond','receiveErrorsPerSecond','transmitErrorsPerSecond','receiveDropsPerSecond','transmitDropsPerSecond'],'NIC ' + n))
     .forEach(p => add('network', 'NICs beyond the first two, 3 per page: ' + p.chunk.join(', ') + '.', p.slots, pageExtra(p)));
   pages(m.fs.slice(0, t.fs), 9, f => many('filesystem',['availableBytes','freeInodes'],'fs ' + f))
     .forEach(p => add('filesystem', 'Extra (non-root) filesystems, 9 per page: ' + p.chunk.join(', ') + '.', p.slots, pageExtra(p)));
-  const gpuOk = !v7 || m.cls === 'physical' || o.passthrough;
+  const gpuOk = !v8 || m.cls === 'physical' || o.passthrough;
   if (gpuOk) pages(m.gpus.slice(0, t.gpu), 3, g => many('gpu',['utilizationPercent','memoryUsedBytes','memoryActivityPercent','pcieReceiveBytesPerSecond','pcieTransmitBytesPerSecond','throttlePercent'],'GPU ' + g))
     .forEach(p => add('gpu', 'GPUs, 3 per page: ' + p.chunk.join(', ') + '.', p.slots, pageExtra(p)));
   const disks = m.disks.slice(0, t.drive);
-  if (!v7) pages(disks, 2, d => many('block', BLOCK, 'Drive ' + d)).forEach(p => add('block', 'Drive page ' + (p.page + 1) + ': ' + p.chunk.join(', ') + '.', p.slots, pageExtra(p)));
+  if (!v8) pages(disks, 2, d => many('block', BLOCK, 'Drive ' + d)).forEach(p => add('block', 'Drive page ' + (p.page + 1) + ': ' + p.chunk.join(', ') + '.', p.slots, pageExtra(p)));
   else if (m.disks.length > 1) pages(disks, 3, d => many('block', BLOCK7, 'Drive ' + d, {nw:false})).forEach(p => add('block', 'More than one disk, so per-drive rows are written, 3 drives per page (a single-disk host skips this row: host.io already covers its only disk). ' + p.chunk.join(', ') + '.', p.slots.map(s => s.f && s.f.name === 'opsPerSecond' ? Object.assign({}, s, {nw:true}) : s), pageExtra(p)));
   if (m.cls === 'physical'){
-    const all = (v7 ? [['cpu.average-mhz','CPU average clock, moved from host.diagnostics as a sensor signal.','MHz',true]] : []).concat(m.sensors);
+    const all = (v8 ? [['cpu.average-mhz','CPU average clock, moved from host.diagnostics as a sensor signal.','MHz',true]] : []).concat(m.sensors);
     const kept = all.slice(0, t.sensors);
     const dropped = all.length - kept.length;
     const sig7 = kept.map(([id, d, u, isNew]) => sl(sig(id, d, u, isNew), 'Sensor ' + id, isNew ? {nw:true} : {}));
     add('hardware.physical', 'Physical machines only: ' + all.length + ' signals, ' + (dropped > 0 ? dropped + ' dropped by the plan cap of ' + t.sensors + '. ' : 'all kept. ') + 'One temperature per drive; fans are reported as fault events, not values.', fill(sig7), {ids: kept.map(k => k[0]).join(',')});
   }
   if (o.db){
-    if (v7) add('managed.database', 'Only when a managed engine runs. Holds the census that today sits in managed.storage.', databaseRow(), {nw:true});
+    if (v8) add('managed.database', 'Only when a managed engine runs. Holds the census that today sits in managed.storage.', databaseRow(), {nw:true});
     add('managed.database_proxy', 'One per ProxySQL source, when managed databases run.', proxyRow());
   }
-  if (!v7 && m.qemu && m.gpus.length === 0){
+  if (!v8 && m.qemu && m.gpus.length === 0){
     add('gpu', 'Bug: QEMU\'s virtual display adapter is counted as a GPU (seen on io, megaclite, themisto). Allowed because S1–S3 grant 2 GPU slots whatever the machine class.', fill(many('gpu',['utilizationPercent','memoryUsedBytes','memoryActivityPercent','pcieReceiveBytesPerSecond','pcieTransmitBytesPerSecond','throttlePercent'],'bochs-drm').map(s => nul(s,'The virtual display reports nothing.'))), {bug:true});
     add('hardware.physical', 'Same bug: null GPU signals make the VM look physical, so it gets a sensor row.', fill(['gpu:temp','gpu:power','gpu:memtemp'].map(id => sl(sig(id,'GPU-derived signal from the virtual display.'), 'Signal ' + id, {st:'null', note:'Always null.'}))), {bug:true});
   }
@@ -427,16 +427,16 @@ function rowsFor(m, tier, lay, o){
 /* ---------- Blobs (field-map.ts AE_BLOB_* at turbopanel 902236d) ---------- */
 const PAGED = ['gpu','network','filesystem','block','hardware.physical'];
 const SOURCED = ['managed.ingress','managed.database_proxy'];
-function blobsFor(r, v7){
+function blobsFor(r, v8){
   if (r.blobs) return r.blobs;
   const B = [];
   const put = (name, letter, val, st, desc, extra) => B.push(Object.assign({name, letter, val, st, desc}, extra || {}));
   const empty = (name, desc) => put(name, '', '', 'empty', desc);
   put('kind','k','"metrics"','read','Row kind: metrics, event or status. Every reader filters on it.');
   put('family','f','"' + r.fam + '"','read','The row family. Readers select rows by it.');
-  put('schema version','v', v7 ? '"7"' : '"6"','read','Schema version. Readers keep only supported versions (blob3 IN [...]).', v7 ? {nw:true} : {});
+  put('schema version','v', v8 ? '"7"' : '"6"','read','Schema version. Readers keep only supported versions (blob3 IN [...]).', v8 ? {nw:true} : {});
   empty('reserved','Always empty since v6 (v5 stored the collection mode here). Held so later blobs keep their numbers.');
-  put('sampledAt','t','ISO time','' + (v7 ? 'read' : 'unread'), v7 ? 'The daemon\'s sample time. v7 reads it so AE and DuckDB bucket by the same clock (AE\'s own timestamp is ingest time and cannot be set). No double is free for it, and blobs cost nothing.' : 'The daemon\'s sample time. Written, but no reader uses it: AE buckets by its own ingest timestamp.', v7 ? {nw:true} : {});
+  put('sampledAt','t','ISO time','' + (v8 ? 'read' : 'unread'), v8 ? 'The daemon\'s sample time. v8 reads it so AE and DuckDB bucket by the same clock (AE\'s own timestamp is ingest time and cannot be set). No double is free for it, and blobs cost nothing.' : 'The daemon\'s sample time. Written, but no reader uses it: AE buckets by its own ingest timestamp.', v8 ? {nw:true} : {});
   put('sequence','q','"1234"','unread','The sample\'s sequence number. Written, never read. Free to keep for debugging, since blobs cost nothing.');
   put('topology generation','g','"17"','read','Topology generation the sample was built against. Used to map slots to entities.');
   put('plan generation','g','"3"','unread','Capability-plan generation used at ingest. Written, never read.');
@@ -717,7 +717,7 @@ const PRESETS = [
   {id:'v', name:'v6 today', mode:'auto', rules:{skipDrive:false, foldFs:false, foldGpu:false},
    blurb:'Every field trunk stores now. Packed by this tool, so slot positions differ from the real v6 layout in Now.'},
   {id:'l', name:'Lean', mode:'auto', rules:{skipDrive:true, foldFs:false, foldGpu:false},
-   blurb:'The draft v7 plan: alert-backed metrics only, diagnostics to the live view, Traefik reduced to backend health.'},
+   blurb:'The draft v8 plan: alert-backed metrics only, diagnostics to the live view, Traefik reduced to backend health.'},
   {id:'b', name:'Balanced', mode:'auto', rules:{skipDrive:true, foldFs:false, foldGpu:false},
    blurb:'Lean plus what you asked back: the full Traefik row, diagnostics, Docker df counts, process counts, and host-wide container totals.'},
   {id:'x', name:'Balanced + text', mode:'auto', rules:{skipDrive:true, foldFs:false, foldGpu:false},
