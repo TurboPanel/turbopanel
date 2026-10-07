@@ -62,8 +62,11 @@ export function presentBlockDeviceFacts(
 
 /** A size as a whole non-negative number: a number as sent, or decimal text as stored; otherwise absent. */
 function presentSize(value: unknown): number | undefined {
-  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  return value !== '' && Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : undefined
+  if (value === '') return undefined
+  let parsed = Number.NaN
+  if (typeof value === 'number') parsed = value
+  else if (typeof value === 'string') parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : undefined
 }
 
 /** GPU entry kept only when it carries text or a memory size; ordered as given. */
