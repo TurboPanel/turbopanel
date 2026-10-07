@@ -60,8 +60,11 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'forge',
   // Per-server metrics ingest gate (one stored sample a minute); name pending owner approval in the PR.
   'gate',
+  // Still created by the shipped init migration; 0021 drops it for `hardware`.
   'generation',
   'grant',
+  // The server's latest hardware facts (replaces the generation history); name pending owner approval in the PR.
+  'hardware',
   'hosting',
   'hostname',
   'invitation',

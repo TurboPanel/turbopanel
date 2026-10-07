@@ -1,7 +1,7 @@
 /**
  * A fake `Db` surface for tests that only need to see what a `topology-report`
  * writes. `recordTopologyGeneration` runs inside a transaction, takes a lock
- * on the server row, looks for an existing row and inserts; this fake answers
+ * on the server row, looks for the server's hardware row and inserts; this fake answers
  * those statements (nothing exists yet, the insert succeeds) and captures the
  * values the insert carried.
  */
@@ -27,7 +27,7 @@ export function withTopologyReportRecording(base: Record<string, unknown>): {
   const tx = {
     execute: (query: SQL): Promise<unknown[]> => {
       const { sql: text, params } = dialect.sqlToQuery(query)
-      if (text.includes('INSERT INTO generation')) {
+      if (text.includes('INSERT INTO hardware')) {
         const [serverId, generation, bootGeneration, snapshot, appliedAt] = params
         inserted.push({
           serverId: String(serverId),

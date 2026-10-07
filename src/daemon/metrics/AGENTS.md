@@ -22,7 +22,7 @@ v6 rows; where they disagree with `V7-LAYOUT.md`, v7 wins.
 
 - **Dataset** `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}` (hard cut, per-env `<env>_` prefix); pinned for every wrangler environment by `wrangler-datasets.test.ts`. Readers accept only blob3 = `AE_STORAGE_VERSION` (`AE_SUPPORTED_SCHEMA_VERSIONS` = [8]): the sizes amendment reused hosted slots under wire version 7, so rows stamped earlier are skipped, never read with the new slot meanings. Bump `AE_STORAGE_VERSION` whenever a slot changes meaning.
 - **Rows**: `host.system` (liveness, bare serverId index), `host.io`, `host.network`, `host.web` on every host; `managed.database` only with managed databases; `block` (>1 drive, 3/row), `network` (NIC 3+, 3/row), `filesystem` (9/row; exactly one extra filesystem is folded into `host.network`), `gpu` (3/row, physical or real passthrough), `hardware.physical` (physical, up to 19 signals). VPS 4 rows, physical 5-6, +1 with databases.
-- **Envelope**: blob1 kind, blob2 family, blob3 `"8"` (the storage layout revision, never the wire version), blob4 topology generation, blob5 sample time as UTC text `YYYY-MM-DD hh:mm:ss`, blob6 entity ids, content text from blob7, double20 interval. Sequence, plan generation and page are no longer written. Event and status rows keep their v6 blob positions except blob3 and the blob5 text format.
+- **Envelope**: blob1 kind, blob2 family, blob3 `"8"` (the storage layout revision, never the wire version), blob4 reserved (written empty; it held the topology generation), blob5 sample time as UTC text `YYYY-MM-DD hh:mm:ss`, blob6 entity ids (on `host.network`: `nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>`, so each row names its embedded devices), content text from blob7, double20 interval. Sequence, plan generation and page are no longer written. Event and status rows keep their v6 blob positions except blob3 and the blob5 text format.
 - **Wire negotiation**: wire feature `metrics-v7` (`DAEMON_WIRE_FEATURES`, both repos). A daemon stamps `METRICS_LEGACY_WIRE_VERSION` (6) until the control plane it is attached to advertises it. v7 data rides the optional `extended` section and `metadata.durable`; a v6 sample writes the same v7 rows with sentinels and empty text for the absent data.
 - **Caddy is totals only** (no per-site fields anywhere); slow families are still re-sent every sample.
 - **Reads**: the missing-metric sentinel is tested as `col > -pow(10, 307)` (`aePresentValueSql`), never by equality; a delta-sum over an absent family is null, not 0. The v6+v7 dual-dataset merge and descriptors for the new v7 metrics (OOM kills, Docker health, cert expiry, text blobs) are reader work.
@@ -168,7 +168,7 @@ rules). Session issuance (`POST /auth/session`) is the cut-off. Pipeline:
 (`query/live-session.ts`) → cache the sample (`cacheLiveSample`) **or**
 fire-and-forget `ServerMetricsStore.writeSample(sample, slotMapping)` via
 `getServerMetricsStore(c)`, where `slotMapping` is the caller-resolved
-`(topology generation) -> SlotMapping`
+`SlotMapping` for the server's latest hardware facts
 (`client/servers/topology-slot-mapping.ts`), computed once by the ingest route
 (it already does that work for capability planning) and threaded straight into
 the store — never re-derived by the store itself. WebSocket
@@ -224,10 +224,10 @@ per extra filesystem; `extended.gpuSizes` per GPU memory), and both stores keep
 them beside the readings (`ext_*` columns and per-entity `total_bytes` /
 `total_inodes` / `memory_total_bytes` columns on DuckDB; slots on the hosted
 rows, see `V7-LAYOUT.md`). A resize or a balloon therefore changes the size on
-the next sample and nothing else: no new topology generation, no history to
-restate. Topology generations now track only the entity set (a NIC, filesystem,
-drive or GPU added or removed, a slot override); see
-`features/servers/server-topology-records.ts` for the limits that bound them.
+the next sample and nothing else: no history to restate. The server keeps only
+its latest hardware facts (one `hardware` row, overwritten at most every five
+minutes; see `features/servers/server-topology-records.ts`), and every stored
+row names its own devices, so old samples never need an old layout.
 
 The series route reads the size beside each requested use metric
 (`sizeMetricsNeededFor`: memory used reads memory total, swap used reads swap
@@ -283,8 +283,7 @@ fake engine in `testing/fake-analytics-engine.ts` now mirrors them as `422`):
   `AE_SQL_CHUNK_CONCURRENCY` at once, and merge rows back by bucket / server /
   entity. `executeSql` refuses an over-long statement before sending it.
 - **No aggregate over a String blob** (`cannot use the String type as argument
-1 in max(`). Aggregate `doubleN` columns only; the topology generation
-  (`blob7`, a stringified integer) is compared as `MIN/MAX(toUInt32(blob7))`.
+1 in max(`). Aggregate `doubleN` columns only.
 - Emit only functions on Cloudflare's AE SQL reference pages —
   `sql-limits.test.ts` keeps an allowlist and checks every builder's
   worst-case statements against all three rules. Errors name the query
@@ -321,7 +320,7 @@ outside `backends/cloudflare/`; `scripts/check-metrics-boundaries.mjs` enforces
 this at CI (see below).
 
 **Identity-addressed slotting:** when a `SlotMapping` is available (resolved
-from the sample's `metadata.topologyGeneration` via `topology-slot-mapping.ts`'s
+from the server's latest hardware facts via `topology-slot-mapping.ts`'s
 `computeSlotMapping`), `host.io`'s `double14`..`double19` (after its 13 leading
 slots — 2 `host.kernel`, 7 `host.storage`, a spare, 2 `host.network`, a spare)
 embed the first two monitored NIC slots (`slotMapping.normalNicSlots[0..1]`)
@@ -337,9 +336,11 @@ validates every listed id as an `uplink` in the last recorded topology and
 rejects a list longer than the server's effective `normalNicSlots`
 (`nicSlotLimit` on `/series` and `/summary` tells the UI that limit).
 `gpu`/`network`/`filesystem`/`block` pages order entities by the matching
-`*PageOrder` list (new-since-recorded-generation entities append in sample
-order). No recorded generation yet (first sample, resync pending) degrades
+`*PageOrder` list (entities new since the facts were recorded append in sample
+order). No hardware facts yet (first sample, resync pending) degrades
 gracefully to pre-topology positional packing — never a dropped sample.
+Readers never use the mapping: a NIC is found by the id in `host.network`'s
+blob6 (either slot), so reassigning slots cannot move history to another device.
 
 **Missing metrics:** same `-1e308` sentinel idiom as v3
 (`AE_MISSING_METRIC_SENTINEL`), never coerced to `0`; all host metrics are ≥ 0
@@ -456,9 +457,8 @@ expired partitions plus any hot rows past the cutoff.
 **Cross-backend regression net:** `representative-machines.ts` (16 machine
 shapes) feeds `representative-row-counts.test.ts` (exact AE row count + family
 order per shape), `cross-backend-parity.test.ts` (AE vs. DuckDB agree on the
-same logical sample), `topology-generation-guard.test.ts` (re-interpreting a
-sample under a stale topology generation never corrupts identity-addressed
-slots), `orphan-row-semantics.test.ts`, and `counter-reset-end-to-end.test.ts`
+same logical sample), `embedded-device-identity.test.ts` (a slot swap or a
+replaced NIC never gives one device another's history), `orphan-row-semantics.test.ts`, and `counter-reset-end-to-end.test.ts`
 (storage/query never fabricates a value in place of a daemon-emitted `null`
 after a monotonic counter reset — daemon half of the battery lives in
 `turbopaneld/src/metrics/collector/baseline-reset-battery.test.ts`). **New
@@ -501,8 +501,8 @@ instance (`disabled` / `analytics-engine` / `duckdb`) purely by instance type
   server/range can never collide. **Chart cache** (`query/cache.ts`): key =
   `tp:metrics:chart:` + kind + authorized `serverId` + bucket-rounded range +
   sorted metrics + resolution + backend + `v{schemaVersion}` (callers pass
-  `schemaVersion: 6` explicitly, required) + `tg{topologyGeneration}` when a
-  caller scopes to one topology generation. TTL: live 45 s / historical 300 s.
+  `schemaVersion: 6` explicitly, required) + `tg{generation}` (the latest hardware facts' counter) so a
+  response carrying the device inventory is not served after the hardware changed. TTL: live 45 s / historical 300 s.
   Workers: Cloudflare Cache API; Deno: bounded in-process `Map` (256 entries).
 
 **Resolution ladder** (`query/resolution.ts`): range ≤10 min → 10 s; ≤1 h → 60
@@ -570,7 +570,11 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
    Postgres `server.is_connected` is.
 10. `slotMapping` is resolved once by the ingest route and threaded through to
     the store — stores never re-derive it themselves.
-11. An unresolved topology generation (no recorded `SlotMapping` yet) degrades
+11a. A hosted server whose sample sizes are past its licensed box size (RAM over the tier's
+    ceiling, or more than twice the core ceiling in logical CPUs) keeps every metric; ingest stamps
+    `server.metadata.overPlan` (`over-plan.ts`, `over-plan-flag.ts`, refreshed at most hourly,
+    cleared when the sizes fit again). Plans limit box size only — never refuse a sample for it.
+11. No hardware facts yet (no recorded `SlotMapping`) degrades
     gracefully to positional packing — never a dropped sample.
 12. `HARDWARE_HEALTH_EVENT_KIND` is a `Record` over every `MetricEventKind` — a
     new event kind that isn't classified fails to compile, never silently

@@ -148,6 +148,13 @@
       "when": 1791384942245,
       "tag": "0020_metrics_ingest_gate",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1791386039724,
+      "tag": "0021_metrics_latest_hardware",
+      "breakpoints": true
     }
   ]
 }

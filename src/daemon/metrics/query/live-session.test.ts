@@ -227,7 +227,6 @@ test('mergeLiveSampleIntoHostSeries appends a newer bucket and replaces the same
   assertEquals(empty.points.length, 1)
   assertEquals(empty.points[0]?.values['host.cpu.busyPercent'], 70)
   assertEquals(empty.sampleCount, 1)
-  assertEquals(empty.topologyGenerations, [3])
 
   const replaced = mergeLiveSampleIntoHostSeries(empty, sample, 10)
   assertEquals(replaced.points.length, 1)

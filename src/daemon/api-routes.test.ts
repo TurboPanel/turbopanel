@@ -3340,6 +3340,46 @@ test('POST /metrics: a declared machine_class=physical retains sensors with no t
   })
 })
 
+test('POST /metrics keeps the sample and flags the server when its sizes are past the licensed box size', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const { app, writes } = await createMetricsTestAppWithDb(db)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const post = (extended: Record<string, unknown>, at: string) =>
+      app.request('/api/daemon/v1/metrics', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(buildValidMetricsFrame({ extended, metadata: { sampledAt: at } })),
+      })
+    const metadataOf = async () =>
+      ((await db.select({ m: server.metadata }).from(server).where(eq(server.id, serverId)))[0]!
+        .m ?? {}) as Record<string, unknown>
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 200))
+
+    // The fixture's tier is S1 (16 GiB, 4 cores): a 64 GiB machine is past it.
+    const over = await post(
+      { sizes: { memoryTotalBytes: 64 * 1024 ** 3, logicalCores: 4 } },
+      new Date().toISOString()
+    )
+    assertEquals(over.status, 202)
+    assertEquals(writes.length, 1, 'the sample is stored')
+    await settle()
+    const stamp = (await metadataOf()).overPlan as Record<string, unknown>
+    assertEquals([stamp.memory, stamp.cpu], [true, false])
+
+    const back = await post(
+      { sizes: { memoryTotalBytes: 8 * 1024 ** 3, logicalCores: 4 } },
+      new Date(Date.now() + 1000).toISOString()
+    )
+    assertEquals(back.status, 202)
+    assertEquals(writes.length, 2)
+    await settle()
+    assertEquals('overPlan' in (await metadataOf()), false)
+  })
+})
+
 test('POST /metrics truncates hardwareSignals when the org overrides physicalHardwareSignalSlots to 0', async () => {
   await withEnrollFixture(async ({ db, organizationId, serverId, keyId }) => {
     await recordTopologyGeneration(db, serverId, {

@@ -128,6 +128,12 @@
       "tag": "0020_metrics_ingest_gate",
       "when": 1791384942245,
       "sha256": "9cb311abe4d28e1b95033e1b05f35677a3f15389d4a107b8eaadcaba8504a7f3"
+    },
+    {
+      "idx": 21,
+      "tag": "0021_metrics_latest_hardware",
+      "when": 1791386039724,
+      "sha256": "fdeb3471474252b49fe586b6c8ca571857d2ab0b8c06868735952889d8a03303"
     }
   ]
 }
