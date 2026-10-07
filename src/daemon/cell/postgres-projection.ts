@@ -410,10 +410,24 @@ function applyOfflineTrigger(
   ctx: ProjectionTriggerContext
 ): ProjectionOutcome {
   const { currentProjection, existingStatus, now } = ctx
-  const nextStatus: ServerDaemonStatus = {
-    ...existingStatus,
-    connected: false,
-    statusChangedAt: now,
+  // A late socket close (including the half-open reaper) must not downgrade an earlier
+  // stale-sweep mark or restart its clock: host-loss failover trusts only the sweep mark.
+  const keepSweepMark =
+    trigger.reason !== 'sweep_stale' &&
+    existingStatus.connected === false &&
+    currentProjection?.offlineReason === 'sweep_stale'
+  const nextStatus: ServerDaemonStatus = keepSweepMark
+    ? { ...existingStatus }
+    : { ...existingStatus, connected: false, statusChangedAt: now }
+  if (keepSweepMark) {
+    return {
+      touchMetadata: false,
+      nextProjection: currentProjection,
+      writeProjection: false,
+      nextStatus,
+      writeStatus: false,
+      geoDue: false,
+    }
   }
   return {
     touchMetadata: false,

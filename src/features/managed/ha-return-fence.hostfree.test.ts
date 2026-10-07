@@ -168,6 +168,18 @@ test('a recovery that ended needing an operator keeps even a still-primary membe
   assertEquals(spy.starts.length, 0)
 })
 
+test('an old needs-operator failure about another member does not hold a still-primary member', async () => {
+  const { deps, spy } = seams([member()], {
+    latest: recovery({
+      state: 'failed',
+      sourcePrimaryMemberId: MEM_NEW,
+      metadata: { needsOperator: true },
+    }),
+  })
+  assertEquals(await report(deps), 'released')
+  assertEquals(spy.starts[0]?.memberId, MEM_OLD)
+})
+
 test('a primary flagged needs_resync by a blocked failover is released: the control plane never replaced it', async () => {
   const { deps, spy } = seams([member({ status: 'needs_resync' })], {
     latest: recovery({ state: 'blocked', targetMemberId: null }),

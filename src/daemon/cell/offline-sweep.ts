@@ -1044,7 +1044,7 @@ export async function sweepExpiredExecutionLogsSafely(
 /**
  * P1-5: Run host-loss and return-fence early, with their own budget and retry guards.
  * Moved before optional phases to ensure they run even if earlier phases exhaust the budget.
- * Return-fence runs first to clear old primaries before making new failover decisions.
+ * Inside the tick the host-loss sweep runs first, then the return fence.
  */
 async function runHostLossAndReturnFenceFirst(
   db: Db,
@@ -1054,7 +1054,7 @@ async function runHostLossAndReturnFenceFirst(
   if (!queue) return
   const commandQueue = createWorkersCommandQueue(queue)
   try {
-    // Run return-fence first: stops stale primaries before host-loss can promote a new one
+    // Host-loss runs first, then the return fence (see runHostLossTick).
     await runHostLossTick(db, {
       commandQueue,
       registry: createDurableObjectDaemonCellRegistry(env, db),

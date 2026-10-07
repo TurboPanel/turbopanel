@@ -151,7 +151,13 @@ export async function handleBootHoldReport(
     return 'kept'
   }
   const latest = await deps.latestRecovery(db, input.managedId)
-  if (latest?.state === 'failed' && latest.metadata.needsOperator) {
+  // Only this member's own failed failover holds it; an older failed row about another member
+  // (or a manual recovery) must not keep a still-primary member stopped forever.
+  if (
+    latest?.state === 'failed' &&
+    latest.metadata.needsOperator &&
+    latest.sourcePrimaryMemberId === member.id
+  ) {
     compatLogWarn(
       'managed-ha',
       `boot-hold report for ${input.managedId}: the last recovery needs an operator, member ${member.id} stays stopped`
