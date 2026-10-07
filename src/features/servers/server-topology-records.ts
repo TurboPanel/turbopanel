@@ -1,25 +1,38 @@
 /**
- * Append-only history of daemon-reported topology generations
+ * Bounded history of daemon-reported topology generations
  * (`topologyGeneration` table, see `../../db/schema.ts`) — one row per
- * `(server, generation)`, meant to be written when the daemon's
- * fire-and-forget `topology-report` cell message lands (see
- * `../../daemon/cell/protocol.ts`) and never mutated in place afterward.
+ * `(server, generation)`, written when the daemon's fire-and-forget
+ * `topology-report` cell message lands (see `../../daemon/cell/protocol.ts`).
  *
- * Keeping every generation (not just the latest) is what lets a later phase
- * answer "what did this server's topology look like at generation N" for
- * historical-metrics query reconstruction — segmenting charts by the
- * topology layout that was active when a sample was recorded, the same way
- * `hardwareProfileGeneration` segments by sensor/NIC layout today.
+ * The history answers "what did this server's topology look like at
+ * generation N" so a sample can be read against the entity layout (which NIC
+ * was NIC 1, which drive sat in slot 2) that was active when it was recorded.
+ * It is NOT a record of the machine: sizes (RAM, CPU, disk) are not history
+ * here, and nothing a host operator or a daemon sends can make the table grow
+ * without bound. Three limits hold whatever the daemon says:
  *
- * No pruning/retention logic yet: this table grows without bound as servers
- * report new generations. NEXT STEP: add a bounded retention sweep (mirroring
- * `sweepExpiredWebhookDeliveries` / `sweepExpiredCommandDispatch`) once real
- * growth and the "how far back do we ever query" answer are understood.
+ * - `generation` and `bootGeneration` are integers that fit the column
+ *   ({@link MAX_TOPOLOGY_GENERATION}); the cell protocol rejects the rest.
+ * - at most {@link MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR} new generations are
+ *   recorded per server per hour; the rest are dropped, counted, and logged as
+ *   an alert (`server.metadata.topologyChurnLimitedAt` is stamped).
+ * - only the newest {@link MAX_RETAINED_TOPOLOGY_GENERATIONS} rows are kept per
+ *   server; older rows are deleted as new ones arrive.
+ *
+ * "Newest" is by insertion time, never by the daemon's own generation number:
+ * a forged huge number must not pin itself as the latest topology.
  */
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { topologyGeneration } from '../../db/schema.ts'
 import type { TopologyLayoutPaths } from '../../contracts/topology-types.ts'
+
+/** Largest generation number the table stores (a Postgres `integer`). */
+export const MAX_TOPOLOGY_GENERATION = 2_147_483_647
+/** New generations recorded per server per rolling hour; honest hardware changes are rare. */
+export const MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR = 12
+/** Generation rows kept per server; older rows are deleted as new ones arrive. */
+export const MAX_RETAINED_TOPOLOGY_GENERATIONS = 100
 
 export type TopologyGenerationRecord = {
   generation: number
@@ -47,33 +60,143 @@ function serializeRow(row: typeof topologyGeneration.$inferSelect): TopologyGene
   }
 }
 
+export type RecordTopologyGenerationOutcome =
+  /** A new `(server, generation)` row was written. */
+  | 'recorded'
+  /** The generation was already recorded; its snapshot was refreshed in place (no new row). */
+  | 'refreshed'
+  /** The server hit its hourly limit of new generations; nothing was written. */
+  | 'rate_limited'
+  /** The numbers do not fit the table; nothing was written. */
+  | 'rejected'
+
+const CHURN_LOG_COOLDOWN_MS = 10 * 60 * 1000
+const MAX_CHURN_LOG_KEYS = 1000
+const churnLogAt = new Map<string, number>()
+
+/** One alert line per server per cooldown, so a flood cannot also flood the log. */
+function logTopologyChurn(serverId: string, outcome: 'rate_limited' | 'rejected'): void {
+  const now = Date.now()
+  const key = `${serverId}:${outcome}`
+  const last = churnLogAt.get(key)
+  if (last !== undefined && now - last < CHURN_LOG_COOLDOWN_MS) return
+  if (churnLogAt.size >= MAX_CHURN_LOG_KEYS) {
+    const oldest = churnLogAt.keys().next()
+    if (!oldest.done) churnLogAt.delete(oldest.value)
+  }
+  churnLogAt.set(key, now)
+  console.error(
+    outcome === 'rate_limited'
+      ? `topology generation limit reached for server ${serverId}: more than ${MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR} new generations in an hour; further reports are dropped`
+      : `topology report rejected for server ${serverId}: generation numbers out of range`
+  )
+}
+
+/** Test seam: forget the alert cooldowns. */
+export function resetTopologyChurnLogForTests(): void {
+  churnLogAt.clear()
+}
+
+function fitsGeneration(value: number): boolean {
+  return Number.isInteger(value) && value >= 0 && value <= MAX_TOPOLOGY_GENERATION
+}
+
 /**
- * Record one topology generation. Safe against the daemon resending an
- * unchanged generation on reconnect — `(server_id, generation)` is unique
- * (`uniq_generation_server_generation`), so a repeat insert for a
- * generation already recorded is a silent no-op rather than a duplicate row
- * or a thrown constraint error.
+ * Record one topology generation, within the limits in the module doc.
+ * Safe against the daemon resending a generation on reconnect —
+ * `(server_id, generation)` is unique, so a repeat refreshes that row's
+ * snapshot in place (the newest snapshot of a generation wins) instead of
+ * adding a row. Only a genuinely new generation counts against the hourly
+ * limit; the guard and the insert are one statement, so concurrent reports
+ * cannot slip past it together.
  */
 export async function recordTopologyGeneration(
   db: Db,
   serverId: string,
   report: TopologyGenerationReport
-): Promise<void> {
-  await db
-    .insert(topologyGeneration)
-    .values({
-      serverId,
-      generation: report.generation,
+): Promise<RecordTopologyGenerationOutcome> {
+  if (!fitsGeneration(report.generation) || !fitsGeneration(report.bootGeneration)) {
+    logTopologyChurn(serverId, 'rejected')
+    return 'rejected'
+  }
+
+  const existing = await db
+    .update(topologyGeneration)
+    .set({
       bootGeneration: report.bootGeneration,
       snapshot: report.snapshot,
       appliedAt: report.appliedAt,
     })
-    .onConflictDoNothing({
-      target: [topologyGeneration.serverId, topologyGeneration.generation],
-    })
+    .where(
+      and(
+        eq(topologyGeneration.serverId, serverId),
+        eq(topologyGeneration.generation, report.generation),
+        // An identical resend rewrites nothing.
+        sql`${topologyGeneration.snapshot} IS DISTINCT FROM ${JSON.stringify(report.snapshot)}::jsonb`
+      )
+    )
+    .returning({ id: topologyGeneration.id })
+  if (existing.length > 0) return 'refreshed'
+
+  const inserted = (await db.execute(sql`
+    INSERT INTO generation (server_id, generation, boot_generation, snapshot, applied_at)
+    SELECT ${serverId}::uuid, ${report.generation}, ${report.bootGeneration},
+           ${JSON.stringify(report.snapshot)}::jsonb, ${report.appliedAt}::timestamptz
+    WHERE (
+      SELECT count(*) FROM generation
+      WHERE server_id = ${serverId}::uuid AND created_at > now() - interval '1 hour'
+    ) < ${MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR}
+    ON CONFLICT (server_id, generation) DO NOTHING
+    RETURNING id
+  `)) as unknown as Array<{ id: string }>
+
+  if (inserted.length === 0) {
+    // Either a concurrent report recorded this generation first, or the limit was hit.
+    const concurrent = await getTopologyGeneration(db, serverId, report.generation)
+    if (concurrent) return 'refreshed'
+    logTopologyChurn(serverId, 'rate_limited')
+    await markTopologyChurnLimited(db, serverId)
+    return 'rate_limited'
+  }
+
+  await pruneTopologyGenerations(db, serverId)
+  return 'recorded'
 }
 
-/** Highest-`generation` row recorded for a server, or `undefined` if none has been reported yet. */
+/** Delete all but the newest {@link MAX_RETAINED_TOPOLOGY_GENERATIONS} rows of a server (by insertion time). */
+export async function pruneTopologyGenerations(db: Db, serverId: string): Promise<void> {
+  await db.execute(sql`
+    DELETE FROM generation
+    WHERE server_id = ${serverId}::uuid
+      AND id NOT IN (
+        SELECT id FROM generation
+        WHERE server_id = ${serverId}::uuid
+        ORDER BY created_at DESC, id DESC
+        LIMIT ${MAX_RETAINED_TOPOLOGY_GENERATIONS}
+      )
+  `)
+}
+
+/**
+ * Stamp `server.metadata.topologyChurnLimitedAt`: the durable alert that this
+ * server tried to mint more topology generations than the hourly limit allows
+ * (a flapping device, a tampered daemon). `jsonb_set` on the one key, like
+ * {@link markTopologyResyncRequested}, so a concurrent write to another
+ * `metadata` field is never stomped.
+ */
+export async function markTopologyChurnLimited(db: Db, serverId: string): Promise<void> {
+  await db.execute(sql`
+    UPDATE server
+    SET metadata = jsonb_set(
+      COALESCE(metadata, '{}'::jsonb),
+      '{topologyChurnLimitedAt}',
+      ${JSON.stringify(new Date().toISOString())}::jsonb
+    )
+    WHERE id = ${serverId}::uuid
+  `)
+}
+
+/** Most recently recorded row for a server (insertion order, never the daemon's own number), or `undefined` if none has been reported yet. */
 export async function getLatestTopologyGeneration(
   db: Db,
   serverId: string
@@ -82,14 +205,14 @@ export async function getLatestTopologyGeneration(
     .select()
     .from(topologyGeneration)
     .where(eq(topologyGeneration.serverId, serverId))
-    .orderBy(desc(topologyGeneration.generation))
+    .orderBy(desc(topologyGeneration.createdAt), desc(topologyGeneration.id))
     .limit(1)
   const row = rows[0]
   return row ? serializeRow(row) : undefined
 }
 
 /**
- * Highest-`generation` row recorded for each of `serverIds`, in one query —
+ * Most recently recorded row for each of `serverIds`, in one query —
  * the batched analogue of {@link getLatestTopologyGeneration} for routes that
  * must stay O(1) in the number of servers (e.g. `/servers/metrics/latest`'s
  * fleet snapshot — see `AGENTS.md`'s fleet-read invariant). A server with no
@@ -109,7 +232,7 @@ export async function getLatestTopologyGenerations(
     SELECT DISTINCT ON (server_id) server_id, generation, boot_generation, snapshot, applied_at
     FROM generation
     WHERE server_id IN (${idList})
-    ORDER BY server_id, generation DESC
+    ORDER BY server_id, created_at DESC, id DESC
   `)) as unknown as Array<{
     server_id: string
     generation: number
@@ -192,7 +315,11 @@ export async function getTopologyGenerations(
   serverId: string,
   generations: readonly number[]
 ): Promise<Map<number, TopologyGenerationRecord>> {
-  const wanted = [...new Set(generations.filter((g) => Number.isInteger(g) && g >= 0))]
+  const wanted = [
+    ...new Set(
+      generations.filter((g) => Number.isInteger(g) && g >= 0 && g <= MAX_TOPOLOGY_GENERATION)
+    ),
+  ].slice(-MAX_RETAINED_TOPOLOGY_GENERATIONS)
   if (wanted.length === 0) return new Map()
   const rows = await db
     .select()

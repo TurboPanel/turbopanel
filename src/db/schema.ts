@@ -5410,10 +5410,11 @@ export const verification = pgTable(
  * `snapshot` is the full topology snapshot as reported by the daemon, minus
  * daemon-internal-only fields. jsonb, so no migration for its shape.
  *
- * No pruning/retention logic yet — this table has no partner `options`
- * column (that jsonb-pairing convention only applies to columns literally
- * named `metadata`/`options`; ours is `snapshot`). Future concern: add a
- * retention sweep once history size/growth is understood.
+ * Bounded: at most 12 new generations per server per hour and only the
+ * newest 100 rows kept per server (see `server-topology-records.ts`). This
+ * table has no partner `options` column (that jsonb-pairing convention only
+ * applies to columns literally named `metadata`/`options`; ours is
+ * `snapshot`).
  */
 export const topologyGeneration = pgTable(
   'generation',
@@ -5466,7 +5467,8 @@ export const topologyGeneration = pgTable(
  * audit/debugging; `plan_hash` is the cheap "did it change" comparison key.
  * jsonb, so no migration for the plan shape.
  *
- * No pruning/retention logic yet — same future concern as `topologyGeneration`.
+ * Bounded: only the newest 100 rows are kept per server (see
+ * `capability-plan-records.ts`).
  */
 export const capabilityPlanGeneration = pgTable(
   'capability',

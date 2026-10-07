@@ -1,5 +1,5 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
-import { assertEquals } from '@std/assert'
+import { assert, assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
@@ -9,7 +9,10 @@ import {
   getLatestTopologyGenerations,
   getTopologyGeneration,
   layoutPathsFromSnapshot,
+  MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR,
+  MAX_RETAINED_TOPOLOGY_GENERATIONS,
   recordTopologyGeneration,
+  resetTopologyChurnLogForTests,
 } from './server-topology-records.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -248,5 +251,150 @@ test('recordTopologyGeneration is idempotent for a repeated generation number', 
     assertEquals(record?.snapshot, { devices: ['nic-a'] })
     // The second call's appliedAt is dropped along with the rest of its row.
     assertEquals(Date.parse(record?.appliedAt ?? ''), Date.parse('2026-01-01T00:00:00.000Z'))
+  })
+})
+
+const REPORT_AT = '2026-01-01T00:00:00.000Z'
+
+async function topologyRowCount(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string
+): Promise<number> {
+  const rows = await db
+    .select({ id: topologyGeneration.id })
+    .from(topologyGeneration)
+    .where(eq(topologyGeneration.serverId, serverId))
+  return rows.length
+}
+
+test('a flood of fake generation numbers cannot grow the table past the hourly limit', async () => {
+  await withServerFixture(async ({ db, serverId }) => {
+    resetTopologyChurnLogForTests()
+    const outcomes: string[] = []
+    for (let i = 0; i < 200; i++) {
+      outcomes.push(
+        await recordTopologyGeneration(db, serverId, {
+          // Distinct, scattered numbers and a fat snapshot each: the worst a daemon can send.
+          generation: 1000 + i * 7919,
+          bootGeneration: i,
+          snapshot: { pad: 'x'.repeat(2000), i },
+          appliedAt: REPORT_AT,
+        })
+      )
+    }
+    assertEquals(await topologyRowCount(db, serverId), MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR)
+    assertEquals(
+      outcomes.filter((outcome) => outcome === 'recorded').length,
+      MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR
+    )
+    assertEquals(
+      outcomes.filter((outcome) => outcome === 'rate_limited').length,
+      200 - MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR
+    )
+    const [row] = await db
+      .select({ metadata: server.metadata })
+      .from(server)
+      .where(eq(server.id, serverId))
+    const metadata = row!.metadata as Record<string, unknown>
+    assert(
+      typeof metadata.topologyChurnLimitedAt === 'string',
+      'the limit hit is stamped as a durable alert'
+    )
+  })
+})
+
+test('generation numbers the table cannot hold are rejected and write nothing', async () => {
+  await withServerFixture(async ({ db, serverId }) => {
+    resetTopologyChurnLogForTests()
+    for (const generation of [2_147_483_648, 1e300, -1, 1.5, Number.NaN]) {
+      assertEquals(
+        await recordTopologyGeneration(db, serverId, {
+          generation,
+          bootGeneration: 0,
+          snapshot: {},
+          appliedAt: REPORT_AT,
+        }),
+        'rejected'
+      )
+    }
+    assertEquals(
+      await recordTopologyGeneration(db, serverId, {
+        generation: 1,
+        bootGeneration: 2_147_483_648,
+        snapshot: {},
+        appliedAt: REPORT_AT,
+      }),
+      'rejected'
+    )
+    assertEquals(await topologyRowCount(db, serverId), 0)
+  })
+})
+
+test('resending a generation refreshes its snapshot in place and never adds a row', async () => {
+  await withServerFixture(async ({ db, serverId }) => {
+    const first = { generation: 4, bootGeneration: 1, appliedAt: REPORT_AT }
+    assertEquals(
+      await recordTopologyGeneration(db, serverId, { ...first, snapshot: { memory: 1 } }),
+      'recorded'
+    )
+    assertEquals(
+      await recordTopologyGeneration(db, serverId, { ...first, snapshot: { memory: 2 } }),
+      'refreshed'
+    )
+    assertEquals(
+      await recordTopologyGeneration(db, serverId, { ...first, snapshot: { memory: 2 } }),
+      'refreshed'
+    )
+    assertEquals(await topologyRowCount(db, serverId), 1)
+    assertEquals((await getTopologyGeneration(db, serverId, 4))?.snapshot, { memory: 2 })
+  })
+})
+
+test('the latest topology is the newest recorded row, so a forged huge number cannot pin itself', async () => {
+  await withServerFixture(async ({ db, serverId }) => {
+    await recordTopologyGeneration(db, serverId, {
+      generation: 2_000_000_000,
+      bootGeneration: 0,
+      snapshot: { forged: true },
+      appliedAt: REPORT_AT,
+    })
+    await recordTopologyGeneration(db, serverId, {
+      generation: 3,
+      bootGeneration: 0,
+      snapshot: { honest: true },
+      appliedAt: REPORT_AT,
+    })
+    assertEquals((await getLatestTopologyGeneration(db, serverId))?.snapshot, { honest: true })
+  })
+})
+
+test('only the newest rows are kept per server as new generations arrive', async () => {
+  await withServerFixture(async ({ db, serverId }) => {
+    const hourMs = 60 * 60 * 1000
+    const total = MAX_RETAINED_TOPOLOGY_GENERATIONS + 50
+    await db.insert(topologyGeneration).values(
+      Array.from({ length: total }, (_, i) => ({
+        serverId,
+        generation: i,
+        bootGeneration: 0,
+        snapshot: { i },
+        appliedAt: REPORT_AT,
+        // Older than the hourly window, oldest first.
+        createdAt: new Date(Date.now() - (total - i + 2) * hourMs).toISOString(),
+      }))
+    )
+    assertEquals(
+      await recordTopologyGeneration(db, serverId, {
+        generation: 10_000,
+        bootGeneration: 0,
+        snapshot: { newest: true },
+        appliedAt: REPORT_AT,
+      }),
+      'recorded'
+    )
+    assertEquals(await topologyRowCount(db, serverId), MAX_RETAINED_TOPOLOGY_GENERATIONS)
+    assertEquals((await getTopologyGeneration(db, serverId, 10_000))?.snapshot, { newest: true })
+    assertEquals(await getTopologyGeneration(db, serverId, 0), undefined)
+    assert((await getTopologyGeneration(db, serverId, total - 1)) !== undefined)
   })
 })

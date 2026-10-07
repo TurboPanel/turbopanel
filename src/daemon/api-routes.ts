@@ -623,6 +623,20 @@ function resolveSlotMappingForIngest(
   }
 }
 
+/** A fresh resync marker is not re-stamped: an unknown generation on every sample must not become a write per sample. */
+const TOPOLOGY_RESYNC_MARK_COOLDOWN_MS = 5 * 60 * 1000
+
+export function topologyResyncRecentlyRequested(
+  serverMetadata: unknown,
+  nowMs = Date.now()
+): boolean {
+  if (!isPlainObject(serverMetadata)) return false
+  const at = serverMetadata.topologyResyncRequestedAt
+  if (typeof at !== 'string') return false
+  const requestedMs = Date.parse(at)
+  return Number.isFinite(requestedMs) && nowMs - requestedMs < TOPOLOGY_RESYNC_MARK_COOLDOWN_MS
+}
+
 type IngestPlanAndTopology = {
   plan: MetricsCapabilityPlan
   slotMapping: SlotMapping | undefined
@@ -716,7 +730,7 @@ async function resolveIngestPlanAndReconcileTopology(
     ])
 
     const topologyKnown = topologyMatch !== undefined
-    if (!topologyKnown && durable) {
+    if (!topologyKnown && durable && !topologyResyncRecentlyRequested(planRow?.serverMetadata)) {
       markTopologyResyncRequested(db, serverId).catch((err) => {
         rateLimitedMetricsLog(serverId, 'topology_resync_mark_failed', () => {
           console.warn(

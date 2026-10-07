@@ -1155,10 +1155,17 @@ function isNonNegativeInt(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0
 }
 
+/** Largest generation number the control plane stores (a Postgres `integer`). */
+const MAX_TOPOLOGY_REPORT_GENERATION = 2_147_483_647
+
+function isTopologyGenerationNumber(value: unknown): value is number {
+  return isNonNegativeInt(value) && value <= MAX_TOPOLOGY_REPORT_GENERATION
+}
+
 function validateTopologyReportFields(record: Record<string, unknown>): string | null {
   if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
-  if (!isNonNegativeInt(record.generation)) return 'invalid generation'
-  if (!isNonNegativeInt(record.bootGeneration)) {
+  if (!isTopologyGenerationNumber(record.generation)) return 'invalid generation'
+  if (!isTopologyGenerationNumber(record.bootGeneration)) {
     return 'invalid bootGeneration'
   }
   return validateTopologyReportSnapshot(record.snapshot)
