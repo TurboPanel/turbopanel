@@ -2251,7 +2251,9 @@ function parsePagedEntitySeriesRows(
 function embeddedNicPredicate(slot: 0 | 1, entityId: string): string {
   const col = blobColumn(AE_BLOB_ENTITY_IDS_INDEX)
   const token = `nic${slot + 1}=${entityId}@`
-  return `(startsWith(${col}, ${quoteSqlString(token)}) OR position(${quoteSqlString(`;${token}`)} IN ${col}) > 0)`
+  const atStart = quoteSqlString(token)
+  const afterSeparator = quoteSqlString(';' + token)
+  return `(startsWith(${col}, ${atStart}) OR position(${afterSeparator} IN ${col}) > 0)`
 }
 
 function embeddedNicAlias(entityIndex: number, field: string): string {
