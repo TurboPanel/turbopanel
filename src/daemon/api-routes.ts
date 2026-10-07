@@ -85,6 +85,7 @@ import {
   getLatestTopologyGeneration,
   getTopologyGeneration,
   markTopologyResyncRequested,
+  topologyChurnLimitedRecently,
 } from '../features/servers/server-topology-records.ts'
 import { recordCapabilityPlanGenerationIfChanged } from '../client/servers/capability-plan-records.ts'
 import { enqueueCapabilityPlanUpdate } from '../client/servers/capability-plan-push.ts'
@@ -730,7 +731,12 @@ async function resolveIngestPlanAndReconcileTopology(
     ])
 
     const topologyKnown = topologyMatch !== undefined
-    if (!topologyKnown && durable && !topologyResyncRecentlyRequested(planRow?.serverMetadata)) {
+    if (
+      !topologyKnown &&
+      durable &&
+      !topologyResyncRecentlyRequested(planRow?.serverMetadata) &&
+      !topologyChurnLimitedRecently(planRow?.serverMetadata)
+    ) {
       markTopologyResyncRequested(db, serverId).catch((err) => {
         rateLimitedMetricsLog(serverId, 'topology_resync_mark_failed', () => {
           console.warn(

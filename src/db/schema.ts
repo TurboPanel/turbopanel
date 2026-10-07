@@ -5410,8 +5410,8 @@ export const verification = pgTable(
  * `snapshot` is the full topology snapshot as reported by the daemon, minus
  * daemon-internal-only fields. jsonb, so no migration for its shape.
  *
- * Bounded: at most 12 new generations per server per hour and only the
- * newest 100 rows kept per server (see `server-topology-records.ts`). This
+ * Bounded: at most 12 new generations per server per hour and 24 per day,
+ * and only the newest 200 rows kept per server (see `server-topology-records.ts`). This
  * table has no partner `options` column (that jsonb-pairing convention only
  * applies to columns literally named `metadata`/`options`; ours is
  * `snapshot`).
