@@ -1643,7 +1643,7 @@ async function upsertHostFacts(
   connection: DuckDbConnectionLike,
   rows: DuckDbBindValue[][]
 ): Promise<void> {
-  for (const [serverId, sampledAt, facts] of rows) {
+  await forEachSequential(rows, async ([serverId, sampledAt, facts]) => {
     await connection.run(
       `DELETE FROM ${HOST_FACTS_TABLE} WHERE server_id = CAST(? AS UUID) AND sampled_at <= CAST(? AS TIMESTAMP)`,
       [serverId, sampledAt]
@@ -1652,7 +1652,7 @@ async function upsertHostFacts(
       `INSERT INTO ${HOST_FACTS_TABLE} (server_id, sampled_at, facts) VALUES (CAST(? AS UUID), CAST(? AS TIMESTAMP), ?) ON CONFLICT DO NOTHING`,
       [serverId, sampledAt, facts]
     )
-  }
+  })
 }
 
 /** DuckDB `TIMESTAMP`-castable UTC string from an ISO timestamp. */
