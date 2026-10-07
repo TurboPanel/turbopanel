@@ -441,8 +441,8 @@ tokens (`doubleN`/`blobN` literals, the `-1e308` sentinel) stay confined to
 `backends/cloudflare/`; (2) backend-private page-identifier symbols
 (`AE_BLOB_PAGE_INDEX`, `AE_BLOB_SOURCE_OR_IDENTITY_INDEX`,
 `entityIdInPageIdentityPredicate`) never leak outside `backends/cloudflare/`.
-Ingest rejects `metadata.version !== 6` outright — there is no dual-accept of
-older wire versions.
+Ingest accepts wire versions 6 and 7 (v7 adds the optional `extended`
+section); any other version is rejected outright.
 
 #### Server metrics — query API & caching
 
@@ -525,9 +525,9 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
 5. The page-identifier symbols (`AE_BLOB_PAGE_INDEX`,
    `AE_BLOB_SOURCE_OR_IDENTITY_INDEX`, `entityIdInPageIdentityPredicate`) never
    appear outside `backends/cloudflare/`.
-6. Ingest rejects any sample whose `metadata.version !== 6` outright. There is
-   no dual-accept of older wire versions and no migration of existing metrics
-   data — enforced by `validateMetricsSample`.
+6. Ingest accepts wire versions 6 and 7 only and rejects any other version
+   outright. There is no migration of existing metrics data — enforced by
+   `validateMetricsSample`.
 7. `DuckDbParquetServerMetricsStore` is the single Deno store instance — never
    two independently constructed instances opening two DuckDB handles on one
    database file.
