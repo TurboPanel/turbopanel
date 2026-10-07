@@ -1144,7 +1144,7 @@ const EXTENDED_NUMBER_SECTIONS: readonly (readonly [ExtendedNumberSection, reado
   ['sizes', EXTENDED_SIZE_FIELD_NAMES],
 ]
 
-/** Parse the text-bearing parts of the v7 `extended` section into `out`. */
+/** Parse the text-bearing parts of the v8 `extended` section into `out`. */
 function parseExtendedText(
   raw: Record<string, unknown>,
   out: Record<string, unknown>
@@ -1170,7 +1170,7 @@ function parseExtendedText(
   return { ok: true, value: true }
 }
 
-/** Parse the per-filesystem and per-GPU totals of the v7 `extended` section into `out`. */
+/** Parse the per-filesystem and per-GPU totals of the v8 `extended` section into `out`. */
 function parseExtendedEntitySizes(
   raw: Record<string, unknown>,
   out: Record<string, unknown>
@@ -1203,7 +1203,7 @@ function parseExtendedEntitySizes(
 }
 
 /**
- * Parse the optional v7 `extended` section. Every key is optional and unknown
+ * Parse the optional v8 `extended` section. Every key is optional and unknown
  * keys are rejected, so a typo cannot silently drop a reading.
  */
 function parseExtended(raw: unknown): ValidateResult<MetricsExtended> {

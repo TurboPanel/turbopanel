@@ -1,19 +1,19 @@
 /**
- * Tier model for metrics v7: what each plan stores, how many Analytics Engine
+ * Tier model for metrics v8: what each plan stores, how many Analytics Engine
  * rows a host writes per sample, and what that costs per host-month.
  *
  *   deno task metrics:tiers
  *
  * Row counts come from the canonical layout fixture
- * (`src/daemon/metrics/testing/v7-layout.fixture.json`, generated from the
- * owner-sealed explorer by `scripts/metrics-v7-layout/generate.mjs`), never
+ * (`src/daemon/metrics/testing/v8-layout.fixture.json`, generated from the
+ * owner-sealed explorer by `scripts/metrics-v8-layout/generate.mjs`), never
  * from re-derived packing, so the model cannot drift from the write path the
  * fixture test pins. Plan limits come from the real ladder through
  * `metricsCapabilityPlanFromTierEntitlements`, so `isEntryTier` and every
  * carve-out are whatever production applies; any difference from the
  * fixture's limits is printed as DRIFT and fails the run.
  *
- * Model facts (v7): every family writes on every 60 s sample; a live lease
+ * Model facts (v8): every family writes on every 60 s sample; a live lease
  * keeps the 60 s baseline running and stores only that (10 s samples feed the
  * live overlay), so a lease adds no durable rows; Docker metrics are on every
  * plan; drive slots are multiples of 3; self-hosted ingest is not priced.
@@ -23,7 +23,7 @@ import {
   metricsCapabilityPlanFromTierEntitlements,
 } from '../src/contracts/capability-plan.ts'
 import { LADDER, ladderEntitlements } from '../src/features/tiers/ladder.ts'
-import fixtureJson from '../src/daemon/metrics/testing/v7-layout.fixture.json' with { type: 'json' }
+import fixtureJson from '../src/daemon/metrics/testing/v8-layout.fixture.json' with { type: 'json' }
 
 type PlanLimits = {
   nicSlots: number
@@ -183,7 +183,7 @@ function printInvocationLimit(): void {
 
 function printLiveLeases(): void {
   console.log('\n=== 4. Live leases ===\n')
-  console.log('  v7 keeps the 60 s baseline running during a lease and stores only that;')
+  console.log('  v8 keeps the 60 s baseline running during a lease and stores only that;')
   console.log('  the 10 s samples go to the live overlay buffer. A lease adds +0 durable rows.')
   const rows = rowsFor('S1', 'vps/preset/docker')
   const extra = rows * (V6_LIVE_MULTIPLIER - 1) * 60 * 240
@@ -195,7 +195,7 @@ function printLiveLeases(): void {
 }
 
 if (import.meta.main) {
-  console.log('METRICS TIER MODEL (v7) — rows from the canonical layout fixture\n')
+  console.log('METRICS TIER MODEL (v8) — rows from the canonical layout fixture\n')
   const drift = printLimits()
   printRows()
   printInvocationLimit()

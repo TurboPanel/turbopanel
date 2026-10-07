@@ -1,9 +1,9 @@
 /**
  * Hosted read of the latest host facts: the content text blobs the v7 layout
- * writes beside the numbers (`V7-LAYOUT.md`). One statement fetches the newest
+ * writes beside the numbers (`V8-LAYOUT.md`). One statement fetches the newest
  * rows of the host families plus the drive and GPU pages in the window; the
  * newest sample's rows are then read blob by blob using the same layout tables
- * the writer packs with (`v7-layout.ts`), so reader and writer cannot drift.
+ * the writer packs with (`v8-layout.ts`), so reader and writer cannot drift.
  */
 import {
   presentBlockDeviceFacts,
@@ -36,12 +36,12 @@ import {
   type CloudflareAnalyticsSqlConfig,
 } from './sql-api.ts'
 import {
-  V7_CONTENT_BLOB_CAPACITY,
-  V7_ENTITY_TEXT_FIELDS,
-  V7_FIRST_CONTENT_BLOB_INDEX,
-  V7_HOST_FAMILIES,
-  v7HostRowTextKeys,
-} from './v7-layout.ts'
+  V8_CONTENT_BLOB_CAPACITY,
+  V8_ENTITY_TEXT_FIELDS,
+  V8_FIRST_CONTENT_BLOB_INDEX,
+  V8_HOST_FAMILIES,
+  v8HostRowTextKeys,
+} from './v8-layout.ts'
 
 /**
  * Families that carry text: every v7 host row (those with text blobs) plus the pages of devices that
@@ -49,7 +49,7 @@ import {
  */
 const FACT_ENTITY_FAMILIES = ['block', 'gpu', 'network', 'filesystem'] as const
 const FACT_FAMILIES = [
-  ...V7_HOST_FAMILIES.filter((family) => v7HostRowTextKeys(family).length > 0),
+  ...V8_HOST_FAMILIES.filter((family) => v8HostRowTextKeys(family).length > 0),
   ...FACT_ENTITY_FAMILIES,
 ] as const
 
@@ -60,8 +60,8 @@ const FACT_FAMILIES = [
  */
 const FACT_ROW_LIMIT = 96
 
-const CONTENT_BLOB_COLUMNS = Array.from({ length: V7_CONTENT_BLOB_CAPACITY }, (_, index) =>
-  blobColumn(V7_FIRST_CONTENT_BLOB_INDEX + index)
+const CONTENT_BLOB_COLUMNS = Array.from({ length: V8_CONTENT_BLOB_CAPACITY }, (_, index) =>
+  blobColumn(V8_FIRST_CONTENT_BLOB_INDEX + index)
 )
 
 export function buildHostFactsSql(
@@ -127,8 +127,8 @@ function sampleTimeToIso(sampled: string): string | null {
 
 function parseHostText(rows: readonly FactRow[]): HostFacts['text'] {
   const merged: Record<string, string> = {}
-  for (const family of V7_HOST_FAMILIES) {
-    const keys = v7HostRowTextKeys(family)
+  for (const family of V8_HOST_FAMILIES) {
+    const keys = v8HostRowTextKeys(family)
     const row = rowsOfFamily(rows, family)[0]
     if (!row) continue
     keys.forEach((key, index) => {
@@ -193,10 +193,10 @@ export function parseHostFactsRows(allRows: readonly FactRow[]): {
   if (newestKey === '') return { sampledAt: null, facts: emptyHostFacts() }
   const rows = allRows.filter((row) => rowSampleKey(row) === newestKey)
 
-  const blockFields = V7_ENTITY_TEXT_FIELDS.block
-  const gpuFields = V7_ENTITY_TEXT_FIELDS.gpu
-  const filesystemFields = V7_ENTITY_TEXT_FIELDS.filesystem
-  const networkFields = V7_ENTITY_TEXT_FIELDS.network
+  const blockFields = V8_ENTITY_TEXT_FIELDS.block
+  const gpuFields = V8_ENTITY_TEXT_FIELDS.gpu
+  const filesystemFields = V8_ENTITY_TEXT_FIELDS.filesystem
+  const networkFields = V8_ENTITY_TEXT_FIELDS.network
   return {
     sampledAt: sampleTimeToIso(newestKey),
     facts: {

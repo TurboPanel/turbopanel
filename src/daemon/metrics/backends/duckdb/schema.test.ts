@@ -13,10 +13,10 @@ import {
   dockerSamplesInsertColumns,
   dockerUsageStorageColumnName,
   DUCKDB_SCHEMA_MARKER_VERSION,
-  V7_DOCKER_COLUMNS,
-  V7_HOST_COLUMNS,
-  V7_SIZE_COLUMNS,
-  V7_INGRESS_COLUMNS,
+  V8_DOCKER_COLUMNS,
+  V8_HOST_COLUMNS,
+  V8_SIZE_COLUMNS,
+  V8_INGRESS_COLUMNS,
   entityMetricColumnName,
   FILESYSTEM_METRIC_FIELDS,
   FILESYSTEM_SAMPLES_TABLE,
@@ -49,11 +49,11 @@ it('DuckDB schema marker is 10', () => {
 })
 
 it('the DDL carries every extended numeric column', () => {
-  assertEquals(V7_HOST_COLUMNS.length, 8)
-  assertEquals(V7_DOCKER_COLUMNS.length, 8)
-  assertEquals(V7_INGRESS_COLUMNS, ['ext_tls_cert_soonest_expiry_days'])
+  assertEquals(V8_HOST_COLUMNS.length, 8)
+  assertEquals(V8_DOCKER_COLUMNS.length, 8)
+  assertEquals(V8_INGRESS_COLUMNS, ['ext_tls_cert_soonest_expiry_days'])
   const ddl = buildSchemaStatements().join('\n')
-  for (const column of [...V7_HOST_COLUMNS, ...V7_DOCKER_COLUMNS, ...V7_INGRESS_COLUMNS]) {
+  for (const column of [...V8_HOST_COLUMNS, ...V8_DOCKER_COLUMNS, ...V8_INGRESS_COLUMNS]) {
     assertEquals(ddl.includes(`${column} DOUBLE`), true, column)
   }
 })
@@ -225,7 +225,7 @@ it('buildSchemaStatements emits idempotent DDL for every v5 table', () => {
     'active_file_bytes',
     'inactive_file_bytes',
   ]) {
-    // `ext_commit_limit_bytes` is the v7 size column, not the dropped diagnostics gauge.
+    // `ext_commit_limit_bytes` is the v8 size column, not the dropped diagnostics gauge.
     assertEquals(new RegExp(`(?<![a-z_])${dropped}`).test(joined), false, dropped)
   }
 })
@@ -246,8 +246,8 @@ it('hostSamplesInsertColumns lists common metadata then every host metric column
     7 +
       HOST_METRIC_FIELD_REFS.length +
       HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST.length +
-      V7_HOST_COLUMNS.length +
-      V7_SIZE_COLUMNS.length
+      V8_HOST_COLUMNS.length +
+      V8_SIZE_COLUMNS.length
   )
   assertEquals(columns.slice(0, 7), [
     'server_id',
@@ -325,7 +325,7 @@ it('server_docker_samples mirrors the AE managed.docker family exactly, unprefix
   const columns = dockerSamplesInsertColumns()
   assertEquals(columns.slice(COMMON_METADATA_COLUMNS.length), [
     ...DOCKER_USAGE_METRIC_FIELDS.map(entityMetricColumnName),
-    ...V7_DOCKER_COLUMNS,
+    ...V8_DOCKER_COLUMNS,
   ])
   assertEquals(DOCKER_USAGE_METRIC_FIELDS.length, 10)
   assertEquals(columns.includes('layers_bytes'), true)
