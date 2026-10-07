@@ -1,5 +1,5 @@
 /**
- * Host facts: the short text a v7 sample carries beside its numbers (kernel,
+ * Host facts: the short text a v8 sample carries beside its numbers (kernel,
  * OS, versions, a drive's model and SMART verdict, a GPU's driver and model).
  * Both stores answer the same question, "what did this host last tell us about
  * itself", and return the same {@link HostFacts} shape built here.

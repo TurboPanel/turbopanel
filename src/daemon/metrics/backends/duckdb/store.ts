@@ -517,7 +517,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       })
     }
 
-    // Latest host facts: every sample from a v7 daemon (one that sends the
+    // Latest host facts: every sample from a v8 daemon (one that sends the
     // `extended` section) replaces the row, even with no text, so a fact that
     // disappears stops being shown, like on the hosted store. A v6 sample has
     // nothing to say about facts and leaves the row alone.

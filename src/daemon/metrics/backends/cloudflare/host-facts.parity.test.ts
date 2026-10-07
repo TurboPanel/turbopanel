@@ -1,5 +1,5 @@
 /**
- * Latest host facts on both stores: the text a v7 sample carries beside its
+ * Latest host facts on both stores: the text a v8 sample carries beside its
  * numbers (kernel, OS, versions, a drive's model and SMART verdict, a GPU's
  * driver, model and memory size, each filesystem's size and each NIC's link speed) is written through the real DuckDB store and the real
  * hosted writer, then read back with `queryHostFacts` and compared.
@@ -63,7 +63,7 @@ const slotMapping: SlotMapping = {
 function input(atMs: number, serverExtended: MetricsExtended | undefined): MetricsSampleInput {
   return {
     metadata: {
-      version: serverExtended ? 7 : 6,
+      version: serverExtended ? 8 : 6,
       sampledAt: new Date(atMs).toISOString(),
       intervalSeconds: 60,
       sequence: 1,

@@ -75,7 +75,7 @@ export const METRIC_EVENTS_TABLE = 'server_metric_events'
 export const STATUS_EVENTS_TABLE = 'server_status_events'
 
 /**
- * Latest host facts (the short text a v7 sample carries beside its numbers):
+ * Latest host facts (the short text a v8 sample carries beside its numbers):
  * one row per server, replaced as newer samples arrive. Not a time series, so
  * it is never archived to Parquet and needs no retention. Added with
  * `CREATE TABLE IF NOT EXISTS`, so an existing marker-9 file simply gains it.

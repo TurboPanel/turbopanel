@@ -435,6 +435,6 @@ export interface ServerMetricsStore {
   queryEntityIdsSeen?(input: EntityIdsSeenQuery): Promise<EntityIdsSeenResult>
   queryFleetHostSnapshot?(input: FleetHostSnapshotQuery): Promise<FleetHostSnapshotResult>
   queryMetricEvents?(input: MetricEventsQuery): Promise<MetricEventsResult>
-  /** Latest host facts (text the v7 layout stores outside the numbers). */
+  /** Latest host facts (text the v8 layout stores outside the numbers). */
   queryHostFacts?(input: HostFactsQuery): Promise<HostFactsResult>
 }

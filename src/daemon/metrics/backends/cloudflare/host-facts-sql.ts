@@ -1,5 +1,5 @@
 /**
- * Hosted read of the latest host facts: the content text blobs the v7 layout
+ * Hosted read of the latest host facts: the content text blobs the v8 layout
  * writes beside the numbers (`V8-LAYOUT.md`). One statement fetches the newest
  * rows of the host families plus the drive and GPU pages in the window; the
  * newest sample's rows are then read blob by blob using the same layout tables
@@ -44,7 +44,7 @@ import {
 } from './v8-layout.ts'
 
 /**
- * Families that carry text: every v7 host row (those with text blobs) plus the pages of devices that
+ * Families that carry text: every v8 host row (those with text blobs) plus the pages of devices that
  * have their own row (drives, GPUs, NICs beyond the two embedded ones, extra filesystems).
  */
 const FACT_ENTITY_FAMILIES = ['block', 'gpu', 'network', 'filesystem'] as const
