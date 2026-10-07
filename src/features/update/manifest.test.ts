@@ -315,7 +315,7 @@ test('seedUpdateManifestCacheForTests short-circuits the fetch path for its chan
       buildId: 'b',
       builtAt: '2020-01-01T00:00:00.000Z',
       channel: 'canary',
-      manifestUrl: 'https://dl.trbp.nl/m.json',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
     'canary'
   )

@@ -45,8 +45,7 @@ export function channelHasInstancePackage(channel: UpdateChannel): boolean {
 
 /**
  * One unit's pin. `manifestUrl` is the version-pinned manifest when the channel
- * pins (`canary` / `rc` / `release`), else the channel's built-in URL (the
- * trunk CDN drop) — so an install always fetches the exact build the run
+ * pins (`canary` / `rc` / `release`), else the manifest's own URL — so an install always fetches the exact build the run
  * recorded, or the floating channel head when there is no pin.
  */
 export function unitTargetFromManifest(

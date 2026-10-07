@@ -66,7 +66,7 @@ function manifest(
     buildId: "abc+1",
     builtAt: "2026-01-01T00:00:00Z",
     channel: "release",
-    manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+    manifestUrl: "https://updates.example.test/manifest.json",
     ...overrides,
   };
 }
@@ -79,7 +79,7 @@ test("channelHasInstancePackage: only canary/rc/release", () => {
   assertEquals(channelHasInstancePackage("release"), true);
 });
 
-test("unitTargetFromManifest pins a versioned release, floats trunk", () => {
+test("unitTargetFromManifest pins a versioned release, keeps an unversioned manifest URL", () => {
   const release = unitTargetFromManifest(
     "instance",
     "release",
@@ -93,18 +93,18 @@ test("unitTargetFromManifest pins a versioned release, floats trunk", () => {
     manifestUrl:
       "https://github.com/TurboPanel/turbopanel/releases/download/v0.1.1/manifest.json",
   });
-  // trunk daemon has no version pin — keep the manifest's own URL.
-  const trunk = unitTargetFromManifest(
+  // a manifest with no version has no pin — keep its own URL.
+  const unversioned = unitTargetFromManifest(
     "daemon",
-    "trunk",
+    "canary",
     manifest({ version: undefined }),
   );
   assertEquals(
-    trunk?.manifestUrl,
-    "https://dl.trbp.nl/channels/trunk/manifest.json",
+    unversioned?.manifestUrl,
+    "https://updates.example.test/manifest.json",
   );
-  assertEquals(trunk?.version, null);
-  assertEquals(unitTargetFromManifest("daemon", "trunk", null), null);
+  assertEquals(unversioned?.version, null);
+  assertEquals(unitTargetFromManifest("daemon", "canary", null), null);
 });
 
 test("resolveUpgradeTarget resolves each unit through the injected resolver", async () => {

@@ -588,7 +588,7 @@ test('onDaemonInbound repairs stale updating on steady-state hello when daemonBu
     buildId: 'b2',
     builtAt: '2020-01-01T00:00:00.000Z',
     channel: 'trunk',
-    manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
+    manifestUrl: 'https://updates.example.test/manifest.json',
   })
 
   const daemonBuild = {
@@ -1147,7 +1147,7 @@ test('maybeRepairUpdateFromDaemonBuildHello uses the trunk manifest when targetC
     buildId: 'b-manifest',
     builtAt: '2020-01-01T00:00:00.000Z',
     channel: 'trunk',
-    manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
+    manifestUrl: 'https://updates.example.test/manifest.json',
   })
   const { db, getDaemon } = createTrackingDb({
     key: baseKey,
