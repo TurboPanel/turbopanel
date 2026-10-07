@@ -44,6 +44,7 @@ import {
   onRecoveryStepFailed,
   recoveryIdFromCommandMetadata,
 } from './ha-recovery.ts'
+import type { ManagedEngineCode } from './types.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -2131,6 +2132,7 @@ async function hostLossFailover(
     autoFailover?: 'on' | 'off'
     sourceConnected?: boolean
     recoveryReads?: RecoveryRow[][]
+    engine?: ManagedEngineCode
   } = {}
 ) {
   const harness = createHarness({
@@ -2145,7 +2147,7 @@ async function hostLossFailover(
       db: harness.db,
       commandQueue: queue,
       managedId: MANAGED_ID,
-      engine: 'postgres',
+      engine: extra.engine ?? 'postgres',
       members: [member(), coldReplica()],
       sourceMemberId: MEM_PRIMARY,
       detector: 'host-loss',
@@ -2180,6 +2182,88 @@ test('host loss: a caught-up replica is promoted at once, the fence recorded as 
     harness.nodePatches.some((patch) => patch.status === 'needs_resync'),
     true
   )
+})
+
+/** A MySQL / MariaDB replica whose source is gone: reconnecting, every received transaction applied. */
+function lostMysqlPrimaryReading(
+  overrides: Partial<ManagedReplicationHealth> = {}
+): ManagedReplicationHealth {
+  return {
+    state: 'reconnecting',
+    observedAt: new Date(EVENT_MS).toISOString(),
+    receivedGtid: 'uuid:1-9',
+    executedGtid: 'uuid:1-9',
+    fullyApplied: true,
+    lastStreaming: { at: new Date(EVENT_MS - 300_000).toISOString(), ageMs: 300_000 },
+    ...overrides,
+  }
+}
+
+for (const engine of ['mysql', 'mariadb'] as const) {
+  test(`host loss ${engine}: a fully applied replica is promoted and the old primary is demoted`, async () => {
+    const { row, harness } = await hostLossFailover(lostMysqlPrimaryReading(), { engine })
+    assertEquals(row.state, 'promoting')
+    assertEquals(row.targetMemberId, MEM_REPLICA)
+    assertEquals(row.metadata.fenceBasis, 'host-loss-attested')
+    const names = harness.commandInserts.map((values) => values.name).filter(Boolean)
+    assertEquals(names, ['managed.promote'])
+    const payload = harness.commandInserts
+      .map((values) => values.payload as Record<string, unknown> | undefined)
+      .find((value) => value?.memberId !== undefined)
+    assertEquals(payload?.demoteMemberId, MEM_PRIMARY)
+    assertEquals(
+      harness.nodePatches.some((patch) => patch.status === 'needs_resync'),
+      true
+    )
+  })
+
+  test(`host loss ${engine}: a replica not proven fully applied is refused, nothing changes`, async () => {
+    for (const reading of [
+      lostMysqlPrimaryReading({ fullyApplied: false }),
+      lostMysqlPrimaryReading({ fullyApplied: undefined }),
+      null,
+    ]) {
+      const { row, sent, harness } = await hostLossFailover(reading, { engine })
+      assertEquals(row.state, 'blocked')
+      assertEquals(sent.length, 0)
+      assertEquals(harness.nodePatches.length, 0)
+    }
+  })
+}
+
+test('host loss mysql: a stored streaming reading with no GTID proof is not enough', async () => {
+  const harness = createHarness({ pins: sharedDatacenterPins(), connected: [false] })
+  const { queue, sent } = countingQueue()
+  const stored = failoverReplica({
+    serverId: SERVER_B,
+    metadata: {
+      replication: {
+        state: 'streaming',
+        observedAt: new Date(EVENT_MS).toISOString(),
+        lagSeconds: 5,
+      },
+    },
+  })
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: queue,
+      managedId: MANAGED_ID,
+      engine: 'mysql',
+      members: [member(), stored],
+      sourceMemberId: MEM_PRIMARY,
+      detector: 'host-loss',
+      evidence: '{"incident":"x"}',
+      actor: ACTOR,
+      autoFailover: 'on',
+      probeStandby: () => Promise.resolve(lostMysqlPrimaryReading({ fullyApplied: false })),
+      failureStartedAtMs: HOST_LOSS_FAILURE_START_MS,
+      nowMs: () => EVENT_MS,
+      hostLossIncident: HOST_LOSS_INCIDENT,
+    })
+  )
+  assertEquals(row.state, 'blocked')
+  assertEquals(sent.length, 0)
 })
 
 test('host loss: the promote names the dead primary as the member to demote', async () => {
