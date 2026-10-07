@@ -1157,7 +1157,7 @@ it('hello over WS clears stale updating when daemonBuild matches trunk', async (
     buildId: 'b2',
     builtAt: '2020-01-01T00:00:00.000Z',
     channel: 'trunk',
-    manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
+    manifestUrl: 'https://updates.example.test/manifest.json',
   })
 
   const secrets = await createDaemonJwtSecrets()

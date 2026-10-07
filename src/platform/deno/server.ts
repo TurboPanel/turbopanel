@@ -626,6 +626,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     db,
     secrets: daemonJwtKeyring,
     sessionSecrets,
+    dataEncryptionSecrets,
     daemonCellRegistry,
     connectLimiter: daemonConnectLimiter,
     inboundMessageLimit: inboundLimits.limit,

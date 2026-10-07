@@ -174,6 +174,15 @@ that slots cover on Postgres: platform `my.cnf` always sets a bounded
 `binlog_expire_logs_seconds` (7 days). Operator snippets cannot override that
 key (see `RESERVED_CNF_KEYS` in `mysql-family.ts`).
 
+**MariaDB commits are durable by default.** Platform `my.cnf` pins
+`sync_binlog=1` and `innodb_flush_log_at_trx_commit=1` (MariaDB's own default
+`sync_binlog=0` lost an acknowledged write after a hard reboot; MySQL 8+
+already defaults to both). They are deliberately not in `RESERVED_CNF_KEYS`:
+the operator block is rendered after the platform lines in the same
+`[mysqld]` section and the last duplicate wins, so an operator who wants
+speed can set another value. Existing clusters pick this up only when the
+config is re-applied and the engine restarts; no restart is forced.
+
 Reserved env keys: `POSTGRES_RESERVED_ENV_KEYS`, `MYSQL_RESERVED_ENV_KEYS`, and
 `MARIADB_RESERVED_ENV_KEYS` (MariaDB + legacy `MYSQL_*` names — the image still
 honours both). Registered in `MANAGED_RESERVED_ENV_KEYS_BY_ENGINE` and
