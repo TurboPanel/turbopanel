@@ -71,6 +71,19 @@ export const deploySchemas = {
       },
       status: { type: 'string', const: 'queued' },
       serverId: { type: 'string' },
+      warnings: {
+        type: 'array',
+        description:
+          'Present only when a Node.js app runs on the default Node version because its repository could not be read: a disabled app, or a rollback to a release recorded before its Node version was. Each says what happened and how to pin `x-turbopanel.nodeVersion`.',
+        items: {
+          type: 'object',
+          required: ['code', 'message'],
+          properties: {
+            code: { type: 'string', enum: ['node_version_unresolved'] },
+            message: { type: 'string' },
+          },
+        },
+      },
       strategy: {
         type: 'object',
         description:
@@ -135,6 +148,7 @@ export const deploySchemas = {
           'site_managed_directory_unowned',
           'site_cron_unowned',
           'php_mode_not_allowed',
+          'node_version_unresolved',
         ],
       },
       message: { type: 'string' },
@@ -345,7 +359,7 @@ export const deploySchemas = {
       nativeAppVariables: {
         type: 'array',
         description:
-          "For each Node.js app (native service) in the deploy: every environment variable its process gets, where each one comes from, and whether it reaches the process. Secret values are never shown (`value` is null). The platform sets HOST, NODE_ENV and PORT itself; a variable of one of those names is listed with `delivered: false`. A secret set directly on the app (service or hostname) is passed automatically; a secret set higher up is passed only when the app's environment references it as `{$KEY}`, and is otherwise listed with `delivered: false, reason: not_referenced`.",
+          "For each Node.js app (native service) in the deploy: every environment variable its process gets, where each one comes from, and whether it reaches the process. Secret values are never shown (`value` is null). The platform sets HOST, HOSTNAME, NODE_ENV and PORT itself; a variable of one of those names is listed with `delivered: false`. A secret set directly on the app (service or hostname) is passed automatically; a secret set higher up is passed only when the app's environment references it as `{$KEY}`, and is otherwise listed with `delivered: false, reason: not_referenced`.",
         items: {
           type: 'object',
           required: ['composeServiceName', 'variables'],
@@ -380,6 +394,57 @@ export const deploySchemas = {
                 },
               },
             },
+          },
+        },
+      },
+      nativeAppNodeVersions: {
+        type: 'array',
+        description:
+          "For each Node.js app (native service) in the deploy, once: the Node version it runs and where that came from. The service's own `x-turbopanel.nodeVersion` wins, except on a rollback, which runs the version the release recorded (`release`), since that is what its tree was built on; otherwise the repository is read at the commit being deployed: `package.json` `engines.node` (the newest offered version that satisfies it), then `.nvmrc`, then `.node-version`, in the service's subdirectory first and then the repository root. With none of those, the platform default is used. `unresolved` means the preview could not read the repository; `nodeVersion` is then absent and `note` says what the deploy will do.",
+        items: {
+          type: 'object',
+          required: ['composeServiceName', 'source'],
+          properties: {
+            composeServiceName: { type: 'string' },
+            nodeVersion: { type: 'string', description: 'Node major version, such as `24`.' },
+            source: {
+              type: 'string',
+              enum: [
+                'compose',
+                'release',
+                'package.json',
+                '.nvmrc',
+                '.node-version',
+                'default',
+                'unresolved',
+              ],
+            },
+            note: {
+              type: 'string',
+              description: 'Plain-words explanation, when the answer needs one.',
+            },
+            requested: {
+              type: 'string',
+              description: 'What the file asked for, such as `>=26.7.0`.',
+            },
+            path: {
+              type: 'string',
+              description: 'The repository file it was read from, such as `apps/web/package.json`.',
+            },
+          },
+        },
+      },
+      nativeAppDenoVersions: {
+        type: 'array',
+        description:
+          'For each Deno app (a native service with `x-turbopanel.runtime: deno`) in the deploy, once: the Deno series it runs. Deno ships one major version (2) and the server runs its newest release, so `2.9` and `2.9.7` both mean series `2`. `compose` means `x-turbopanel.denoVersion` pinned it; `default` means the platform default. A server whose TurboPanel daemon is too old to run Deno apps refuses the deploy with `deno_feature_missing` (422).',
+        items: {
+          type: 'object',
+          required: ['composeServiceName', 'denoVersion', 'source'],
+          properties: {
+            composeServiceName: { type: 'string' },
+            denoVersion: { type: 'string', description: 'Deno major version, such as `2`.' },
+            source: { type: 'string', enum: ['compose', 'default'] },
           },
         },
       },
@@ -775,6 +840,69 @@ export const deployPaths = {
           },
         },
         503: { description: '`daemon_unavailable`: the control plane has no link to the server' },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/stop': {
+    post: {
+      tags: ['Environments'],
+      summary: 'Stop an environment and remove what it runs',
+      description:
+        'Queues one `environment.stop` command per server the environment runs on: the compose project is taken down (containers, networks and volumes are removed), the environment\'s sites\' release trees are reclaimed and the host\'s ingress is reconciled. The environment record and its settings stay, so a later deploy starts it again. This is the teardown to use when cleaning up a test environment. A rollout still waiting for its next batch is cancelled. Needs manage on the environment, and a recent step-up when the organization requires one (403 `reauth_required`). Poll each command with `GET /servers/{serverId}/commands/{commandId}`. For a stop that keeps volumes use `POST /environments/{id}/lifecycle` with `{"action": "stop"}`.',
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: {
+        200: {
+          description: 'Stop command(s) queued',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/DeployEnvironmentResponse' },
+            },
+          },
+        },
+        401: { description: 'No session' },
+        403: { description: 'Caller cannot manage this environment, or `reauth_required`' },
+        404: { description: 'No such environment' },
+        503: {
+          description: 'The control plane has no link to the command queue or database',
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/lifecycle': {
+    post: {
+      tags: ['Environments'],
+      summary: 'Start, stop or restart an environment without removing it',
+      description:
+        'Queues one `environment.lifecycle` command per server the environment runs on. Unlike `POST /environments/{id}/stop` this keeps containers, networks and volumes. A rollout still waiting for its next batch is cancelled. Needs manage on the environment. Poll each command with `GET /servers/{serverId}/commands/{commandId}`.',
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['action'],
+              properties: { action: { type: 'string', enum: ['start', 'stop', 'restart'] } },
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Lifecycle command(s) queued',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/DeployEnvironmentResponse' },
+            },
+          },
+        },
+        400: { description: 'Invalid request (unknown `action`)' },
+        401: { description: 'No session' },
+        403: { description: 'Caller cannot manage this environment' },
+        404: { description: 'No such environment' },
+        503: {
+          description: 'The control plane has no link to the command queue or database',
+        },
       },
     },
   },

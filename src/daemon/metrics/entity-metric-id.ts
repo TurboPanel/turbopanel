@@ -14,7 +14,9 @@
  * and is queried through the ordinary host-series path on both backends.
  * `storage` (`managed.storage`) and `dockerUsage` (`managed.docker`) are
  * host-wide for the same reason: one hosting/backup/log picture and one
- * Docker daemon per host.
+ * Docker daemon per host. The three v7 `extended.*` scopes (`extended.host`,
+ * `extended.docker`, `extended.ingress`) are host-wide singletons too, named
+ * like the wire section (`extended.host.oomKills`).
  *
  * Per-entity scopes (`network`, `filesystem`, `block`, `gpu`,
  * `hardwareSignal`, `ingress`, `databaseProxy`) can have many
@@ -53,6 +55,9 @@ const SINGLETON_SCOPES: ReadonlySet<MetricEntityScope> = new Set([
   'router',
   'storage',
   'dockerUsage',
+  'extended.host',
+  'extended.docker',
+  'extended.ingress',
 ])
 
 /** Per-entity scope -> wire alias. Only `hardwareSignal` differs from its scope name. */

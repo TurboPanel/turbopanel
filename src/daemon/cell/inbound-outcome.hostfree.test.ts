@@ -354,6 +354,39 @@ test('deriveInboundOutcome has a mapping for every inbound kind except the non-t
   }
 })
 
+test('deriveInboundOutcome redacts the error text of every message kind, in the column and in the result', () => {
+  let checked = 0
+  const raw = 'fetch https://u:pa?ss@h.test/x?token=abc123 failed, password=hunter2'
+  for (const [kind, sample] of Object.entries(SAMPLES)) {
+    // `command-ack` is not a completion; `addresses-result` carries no error text.
+    if (kind === 'command-ack' || kind === 'addresses-result') continue
+    const outcome = deriveInboundOutcome({ ...sample, ok: false, error: raw } as never)
+    checked += 1
+    assertEquals(outcome?.status, 'failed', kind)
+    assertEquals(
+      outcome?.error,
+      'fetch https://h.test/x?[redacted] failed, password=[redacted]',
+      kind
+    )
+    const stored = JSON.stringify(outcome)
+    for (const secret of ['pa?ss', 'abc123', 'hunter2']) {
+      assertEquals(stored.includes(secret), false, `${kind}: ${secret}`)
+    }
+  }
+  assertEquals(checked, Object.keys(SAMPLES).length - 2)
+})
+
+test('deriveInboundOutcome leaves a result without error text as it was', () => {
+  const logs = [{ at: AT, line: 'password=hunter2 stays: logs are not error text' }]
+  const outcome = deriveInboundOutcome({
+    kind: 'managed-logs-result',
+    requestId: REQUEST_ID,
+    at: AT,
+    logs,
+  } as never)
+  assertEquals(outcome, { status: 'done', result: { logs } })
+})
+
 test('deriveInboundOutcome treats an unknown kind as non-terminal', () => {
   assertEquals(deriveInboundOutcome({ kind: 'from-the-future', ...common } as never), null)
 })

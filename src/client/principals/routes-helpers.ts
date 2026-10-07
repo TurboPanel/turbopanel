@@ -4,7 +4,11 @@
  */
 
 import type { PrincipalNameScheme } from '../../lib/principal-name-scheme.ts'
-import { assertSafePrincipalUsername, isReservedPrincipalUsername } from '../../lib/naming.ts'
+import {
+  assertSafePrincipalUsername,
+  hasPlainPrincipalDashes,
+  isReservedPrincipalUsername,
+} from '../../lib/naming.ts'
 import {
   isPrincipalAccessLevel,
   shellForAccessLevel,
@@ -50,6 +54,9 @@ export function parsePrincipalUsernameValue(
   try {
     assertSafePrincipalUsername(username)
   } catch {
+    return { ok: false, error: 'Invalid request', status: 400 }
+  }
+  if (!hasPlainPrincipalDashes(username)) {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
   if (isReservedPrincipalUsername(username)) {

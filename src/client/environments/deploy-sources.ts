@@ -147,6 +147,14 @@ export type DeployRollbackReleasePin = {
   commitSha?: string
   commitMessage?: string
   commitAuthor?: string
+  /**
+   * Node series a native app's release was built and run with. Recorded at
+   * deploy time; absent on releases recorded before it existed and on every
+   * other kind of service. See `deploy-node-version.ts`.
+   */
+  nodeVersion?: string
+  /** `deno` when the pinned release ran on Deno; absent means Node. */
+  runtime?: 'deno'
 }
 
 /**

@@ -6,7 +6,7 @@ Third-party components remain under their own copyright and license terms and ar
 
 <!-- lockfiles
 deno.lock sha256:567525770a55f3f24757fde7276f50f0c92d968d4b82e29b309c9cb68aadfb5d
-pnpm-lock.yaml sha256:9f99be5757e1512f538e52da93b86a77d03470930dd8fc1dd717449b46c05924
+pnpm-lock.yaml sha256:1ed04c21aca44d4fdb173ddd6d1d387431b446a569578062bce17b684596e856
 -->
 
 ## Production dependencies
@@ -297,13 +297,13 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Homepage: https://github.com/lovell/colour#readme
 
-### @img/sharp-libvips-linux-x64@1.3.3
+### @img/sharp-libvips-linux-x64@1.3.4
 
 - License: LGPL-3.0-or-later
 - Copyright: Lovell Fuller
 - Homepage: https://sharp.pixelplumbing.com
 
-### @img/sharp-linux-x64@0.35.4
+### @img/sharp-linux-x64@0.35.5
 
 - License: Apache-2.0
 - Copyright: Lovell Fuller
@@ -759,7 +759,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: GitHub Inc.
 - Homepage: https://github.com/npm/node-semver#readme
 
-### sharp@0.35.4
+### sharp@0.35.5
 
 - License: Apache-2.0
 - Copyright: Lovell Fuller
@@ -777,7 +777,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Nick Fitzgerald
 - Homepage: https://github.com/mozilla/source-map
 
-### source-map-js@1.2.1
+### source-map-js@1.2.2
 
 - License: BSD-3-Clause
 - Copyright: Valentin 7rulnik Semirulnik

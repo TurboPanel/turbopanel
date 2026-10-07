@@ -937,6 +937,24 @@ test('lintComposeYaml warns when nodeVersion pins an unoffered series', () => {
   assertEquals(advisory?.message.includes('not an offered series'), true)
 })
 
+test('lintComposeYaml warns when denoVersion pins an unoffered series, and not for 2.x spellings', () => {
+  const lint = (version: string) =>
+    lintComposeYaml(`services:
+  web:
+    x-turbopanel:
+      serviceKind: node
+      runtime: deno
+      denoVersion: "${version}"
+      source:
+        sourceId: ${SOURCE_ID}
+`).find((issue) => issue.path === 'services.web.x-turbopanel.denoVersion')
+  const advisory = lint('3')
+  assertEquals(advisory?.level, 'warning')
+  assertEquals(advisory?.blocking, false)
+  assertEquals(advisory?.message.includes('not an offered series'), true)
+  for (const version of ['2', '2.9', '2.9.7']) assertEquals(lint(version), undefined)
+})
+
 test('lintComposeYaml stays quiet for an offered node series and its minor pins', () => {
   for (const version of ['24', '24.17', '26']) {
     const issues = lintComposeYaml(`services:

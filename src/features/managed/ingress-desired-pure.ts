@@ -221,6 +221,19 @@ export function decideIngressBindScopes(
   }
 }
 
+/**
+ * Addresses the proxy's certificate must name for its published listeners. A
+ * host-run consumer verifies the certificate against `127.0.0.1`, and under a
+ * public publish the bind is a wildcard that carries no SAN of its own, so
+ * loopback is named explicitly whenever the loopback scope was requested.
+ */
+export function sanBindAddresses(
+  bindAddresses: readonly string[],
+  hostRunScopes: readonly ManagedSqlAccessScope[]
+): string[] {
+  return hostRunScopes.includes('local') ? [...bindAddresses, '127.0.0.1'] : [...bindAddresses]
+}
+
 export type LocalBackendMember = {
   memberId: string
   serverId: string

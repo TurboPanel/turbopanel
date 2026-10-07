@@ -13,6 +13,10 @@ import {
   type SecretsConfig,
 } from '../../lib/secrets/secrets.ts'
 import { attachDaemonStateToServer } from '../../features/servers/server-identity-db.ts'
+import {
+  clearManagedExposurePendingForServer,
+  runManagedExposurePendingSweep,
+} from '../../features/managed/exposure-change.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
@@ -977,6 +981,108 @@ test('POST /environments/:id/managed does not seed provisional host/port', async
       assertEquals(meta.host, undefined)
       assertEquals(meta.port, undefined)
       assertEquals(typeof meta.rootPrincipalId, 'string')
+    }
+  )
+})
+
+test('POST /environments/:id/managed creates the requested series and variant', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ engineSeries: '18', imageVariant: 'debian' }),
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+
+      const [row] = await db
+        .select({ options: managed.options })
+        .from(managed)
+        .where(eq(managed.id, created.managed.id))
+        .limit(1)
+      const options = row?.options as { settings?: { image?: string } }
+      assertEquals(options.settings?.image, 'docker.io/library/postgres:18')
+
+      const detail = await app.request(`/environments/${environmentId}/managed`, { headers })
+      assertEquals(detail.status, 200)
+      const body = (await detail.json()) as {
+        release: { series: string; variantId: string; image: string }
+      }
+      assertEquals(body.release.series, '18')
+      assertEquals(body.release.variantId, 'debian')
+      assertEquals(body.release.image, 'docker.io/library/postgres:18')
+    }
+  )
+})
+
+test('POST /environments/:id/managed without a version keeps the default image', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+
+      const detail = await app.request(`/environments/${environmentId}/managed`, { headers })
+      const body = (await detail.json()) as {
+        release: { series: string; variantId: string; image: string }
+      }
+      assertEquals(body.release.image, getManagedEngineSpec('postgres')?.defaultImage)
+      assertEquals(body.release.variantId, 'alpine')
+    }
+  )
+})
+
+test('POST /environments/:id/managed refuses an unsupported or malformed version before creating', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId, commandQueue }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+
+      for (const [body, status, error] of [
+        [{ engineSeries: '17' }, 422, 'managed_version_unsupported'],
+        [{ engineSeries: '18', imageVariant: 'nope' }, 422, 'managed_version_unsupported'],
+        [{ engineSeries: 18 }, 400, 'Invalid engineSeries'],
+      ] as const) {
+        const res = await app.request(`/environments/${environmentId}/managed`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+        })
+        assertEquals(res.status, status, JSON.stringify(body))
+        assertEquals(((await res.json()) as { error: string }).error, error)
+      }
+
+      const rows = await db
+        .select({ id: managed.id })
+        .from(managed)
+        .where(eq(managed.environmentId, environmentId))
+      assertEquals(rows.length, 0)
+      assertEquals(commandQueue.envelopes.length, 0)
     }
   )
 })
@@ -2162,12 +2268,20 @@ test('POST managed user honours name schemes, the org lock, and the root login s
           body: JSON.stringify({ databases: ['defaultdb'], ...body }),
         })
       }
-      type UserBody = { user: { username: string; appliedUsername: string; nameScheme: string } }
+      type UserBody = {
+        user: {
+          username: string
+          appliedUsername: string
+          nameScheme: string
+          connectionRole: string
+        }
+      }
 
       // No scheme asked: the org default (random). The typed name stays the display name.
       const byDefault = (await (await createUser({ username: 'dbone' })).json()) as UserBody
       assertEquals(byDefault.user.nameScheme, 'random')
       assertEquals(byDefault.user.username, 'dbone')
+      assertEquals(byDefault.user.connectionRole, 'read-write')
       assertMatch(byDefault.user.appliedUsername, /^[a-z][a-z0-9]{11}$/)
 
       const plainRes = await createUser({ username: 'dbplain', nameScheme: 'plain' })
@@ -2177,6 +2291,11 @@ test('POST managed user honours name schemes, the org lock, and the root login s
         await createUser({ username: 'dbpart', nameScheme: 'partial' })
       ).json()) as UserBody
       assertMatch(partial.user.appliedUsername, /^dbpart_[a-z0-9]{11}$/)
+
+      // A read-only login needs a read-eligible replica: a standalone cluster has none.
+      const readOnly = await createUser({ username: 'dbro', connectionRole: 'read-only' })
+      assertEquals(readOnly.status, 422)
+      assertEquals(await readOnly.json(), { error: 'managed_no_read_targets' })
 
       const bad = await createUser({ username: 'dbbad', nameScheme: 'full' })
       assertEquals(bad.status, 400)
@@ -2729,6 +2848,413 @@ test('a new cluster inherits the organization defaults; its own override wins', 
       assertEquals(own.ssl.configured, 'require')
       assertEquals(own.ssl.effective, 'require')
       assertEquals(own.connection?.dsn.endsWith('?sslmode=require'), true)
+    }
+  )
+})
+
+async function latestIngressReconcileBindAddresses(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string
+): Promise<string[] | undefined> {
+  const [row] = await db
+    .select({ payload: dispatch.payload })
+    .from(dispatch)
+    .innerJoin(command, eq(command.id, dispatch.commandId))
+    .where(and(eq(command.serverId, serverId), eq(command.name, 'managed.ingress.reconcile')))
+    .orderBy(desc(command.createdAt), desc(command.id))
+    .limit(1)
+  return (row?.payload as { bindAddresses?: string[] } | undefined)?.bindAddresses
+}
+
+test('a new cluster listens on loopback only, and changing its exposure re-sends the listener addresses at once', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const patchExposure = async (exposure: Record<string, unknown>) =>
+        await app.request(`/environments/${environmentId}/managed`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify({ settings: { exposure } }),
+        })
+
+      // Created with no exposure argument.
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      const ready = () =>
+        db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+      await ready()
+      assertEquals(await latestIngressReconcileBindAddresses(db, serverId), ['127.0.0.1'])
+
+      // Public: every interface. The new addresses are queued by the PATCH
+      // itself, with no separate apply.
+      const before = commandQueue.envelopes.length
+      const toPublic = await patchExposure({ enabled: true, scope: 'public' })
+      assertEquals(toPublic.status, 200)
+      const toPublicBody = (await toPublic.json()) as {
+        ingressReconcile: { queuedServerIds: string[]; failedServerIds: string[] }
+      }
+      assertEquals(toPublicBody.ingressReconcile, {
+        queuedServerIds: [serverId],
+        failedServerIds: [],
+      })
+      assertEquals(
+        commandQueue.envelopes.slice(before).map((envelope) => [envelope.type, envelope.serverId]),
+        [['managed.ingress.reconcile', serverId]]
+      )
+      assertEquals(await latestIngressReconcileBindAddresses(db, serverId), ['0.0.0.0'])
+
+      // Off: nothing is published.
+      const toOff = await patchExposure({ enabled: false })
+      assertEquals(toOff.status, 200)
+      assertEquals(await latestIngressReconcileBindAddresses(db, serverId), undefined)
+
+      // Back on with no scope named: loopback again.
+      const toDefault = await patchExposure({ enabled: true })
+      assertEquals(toDefault.status, 200)
+      const toDefaultBody = (await toDefault.json()) as {
+        settings: { exposure: { enabled: boolean; scope: string } }
+      }
+      assertEquals(toDefaultBody.settings.exposure, { enabled: true, scope: 'local' })
+      assertEquals(await latestIngressReconcileBindAddresses(db, serverId), ['127.0.0.1'])
+
+      // Saving the same exposure again changes nothing on the host, so nothing is
+      // queued once the servers have confirmed the earlier pushes.
+      await clearManagedExposurePendingForServer(db, {
+        serverId,
+        commandCreatedAt: new Date(Date.now() + 60_000).toISOString(),
+      })
+      const count = commandQueue.envelopes.length
+      const same = await patchExposure({ enabled: true, scope: 'local' })
+      assertEquals(same.status, 200)
+      assertEquals(
+        ((await same.json()) as { ingressReconcile?: unknown }).ingressReconcile,
+        undefined
+      )
+      assertEquals(commandQueue.envelopes.length, count)
+    }
+  )
+})
+
+test('a scope the server has no address for is refused before it is saved', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      await db
+        .update(managed)
+        .set({ status: 'ready' })
+        .where(eq(managed.environmentId, environmentId))
+      const count = commandQueue.envelopes.length
+
+      const refused = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ settings: { exposure: { enabled: true, scope: 'turbofabric' } } }),
+      })
+      assertEquals(refused.status, 422)
+      const refusedBody = (await refused.json()) as {
+        error: string
+        message: string
+        serverId: string
+      }
+      assertEquals(refusedBody.error, 'fabric_address_required')
+      assertEquals(refusedBody.serverId, serverId)
+      // The refusal names the server it is about.
+      assertEquals(refusedBody.message.includes('TurboFabric address'), true)
+      assertEquals(refusedBody.message.startsWith('Server '), true)
+      assertEquals(commandQueue.envelopes.length, count)
+
+      const detail = await app.request(`/environments/${environmentId}/managed`, { headers })
+      const body = (await detail.json()) as {
+        settings: { exposure: { enabled: boolean; scope?: string } }
+      }
+      assertEquals(body.settings.exposure, { enabled: true, scope: 'local' })
+    }
+  )
+})
+
+test('PATCH renames a cluster and rejects a bad name before saving anything', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      await db
+        .update(managed)
+        .set({ status: 'ready' })
+        .where(eq(managed.environmentId, environmentId))
+      const count = commandQueue.envelopes.length
+
+      const renamed = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ name: 'Orders database' }),
+      })
+      assertEquals(renamed.status, 200)
+      const renamedBody = (await renamed.json()) as { managed: { name: string | null } }
+      assertEquals(renamedBody.managed.name, 'Orders database')
+
+      const bad = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ name: 42 }),
+      })
+      assertEquals(bad.status, 400)
+
+      // A rename alone is only a label: nothing is sent to any server.
+      assertEquals(commandQueue.envelopes.length, count)
+    }
+  )
+})
+
+test('POST managed user without privileges gets the default for its role; an empty list is refused', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      const ready = () =>
+        db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+      await ready()
+
+      const noPrivileges = await app.request(`/environments/${environmentId}/managed/users`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ username: 'app_user', databases: ['defaultdb'] }),
+      })
+      assertEquals(noPrivileges.status, 200)
+      const noPrivilegesBody = (await noPrivileges.json()) as { user: { privileges: string[] } }
+      assertEquals(noPrivilegesBody.user.privileges, ['read-write'])
+      await ready()
+
+      const empty = await app.request(`/environments/${environmentId}/managed/users`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ username: 'empty_user', databases: ['defaultdb'], privileges: [] }),
+      })
+      assertEquals(empty.status, 400)
+      const emptyBody = (await empty.json()) as { error: string; message: string }
+      assertEquals(emptyBody.error, 'managed_user_privileges_invalid')
+      assertEquals(emptyBody.message.includes('owner, read-write, read-only'), true)
+    }
+  )
+})
+
+test('a failed exposure push answers 502, stays marked as pending, shows on the detail, and a retry clears it', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      await db
+        .update(managed)
+        .set({ status: 'ready' })
+        .where(eq(managed.environmentId, environmentId))
+      const patchPublic = () =>
+        app.request(`/environments/${environmentId}/managed`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify({ settings: { exposure: { enabled: true, scope: 'public' } } }),
+        })
+      const detail = async () =>
+        (await (
+          await app.request(`/environments/${environmentId}/managed`, { headers })
+        ).json()) as {
+          exposure: { pendingServers: Array<{ id: string; name: string }> }
+          settings: { exposure: { scope: string } }
+        }
+
+      // The queue refuses the command (the same outcome as a payload that cannot be built).
+      const working = commandQueue.enqueue
+      commandQueue.enqueue = () => Promise.reject(new Error('queue down'))
+      const failed = await patchPublic()
+      assertEquals(failed.status, 502)
+      const failedBody = (await failed.json()) as {
+        error: string
+        message: string
+        ingressReconcile: { failedServerIds: string[] }
+        settings: { exposure: { scope: string } }
+      }
+      assertEquals(failedBody.error, 'ingress_reconcile_failed')
+      assertEquals(failedBody.ingressReconcile.failedServerIds, [serverId])
+      assertEquals(failedBody.message.includes('still listens the old way'), true)
+      // Saved, and visibly not applied yet.
+      assertEquals(failedBody.settings.exposure.scope, 'public')
+      const pending = await detail()
+      assertEquals(
+        pending.exposure.pendingServers.map((entry) => entry.id),
+        [serverId]
+      )
+
+      // Saving again pushes again because the server never confirmed.
+      commandQueue.enqueue = working
+      const before = commandQueue.envelopes.length
+      const retried = await patchPublic()
+      assertEquals(retried.status, 200)
+      assertEquals(
+        commandQueue.envelopes.slice(before).map((envelope) => envelope.type),
+        ['managed.ingress.reconcile']
+      )
+      assertEquals((await detail()).exposure.pendingServers.length, 1)
+
+      // The server confirms a reconcile created after the change: nothing is pending.
+      await clearManagedExposurePendingForServer(db, {
+        serverId,
+        commandCreatedAt: new Date(Date.now() + 60_000).toISOString(),
+      })
+      assertEquals((await detail()).exposure.pendingServers, [])
+    }
+  )
+})
+
+test('the pending sweep re-pushes a server that never confirmed, once the earlier push has expired', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      await db
+        .update(managed)
+        .set({ status: 'ready' })
+        .where(eq(managed.environmentId, environmentId))
+      const patch = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ settings: { exposure: { enabled: false } } }),
+      })
+      assertEquals(patch.status, 200)
+
+      const sweepParams = {
+        secretsConfig: parseTestSecretsConfig('deno'),
+        dataEncryptionSecrets: await deriveEncryptionSecretsConfig(
+          parseTestSecretsConfig('deno'),
+          'data-encryption'
+        ),
+      }
+      // The earlier push is still valid: nothing to do yet.
+      assertEquals(
+        (await runManagedExposurePendingSweep(db, commandQueue, sweepParams)).enqueued,
+        0
+      )
+
+      // It expired without the server confirming (offline past its validity).
+      await db
+        .update(command)
+        .set({ createdAt: new Date(Date.now() - 10 * 60_000).toISOString() })
+        .where(and(eq(command.serverId, serverId), eq(command.name, 'managed.ingress.reconcile')))
+      const before = commandQueue.envelopes.length
+      assertEquals(
+        (await runManagedExposurePendingSweep(db, commandQueue, sweepParams)).enqueued,
+        1
+      )
+      assertEquals(
+        commandQueue.envelopes.slice(before).map((envelope) => [envelope.type, envelope.serverId]),
+        [['managed.ingress.reconcile', serverId]]
+      )
+    }
+  )
+})
+
+test('saving Local on a legacy cluster that stored no scope still re-sends the listener addresses', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      // A cluster made before `local` was the default: exposure on, no scope stored.
+      await db
+        .update(managed)
+        .set({
+          status: 'ready',
+          options: sql`jsonb_set(${managed.options}, '{settings,exposure}', '{"enabled": true}'::jsonb)`,
+        })
+        .where(eq(managed.environmentId, environmentId))
+
+      const before = commandQueue.envelopes.length
+      const save = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ settings: { exposure: { enabled: true, scope: 'local' } } }),
+      })
+      assertEquals(save.status, 200)
+      assertEquals(
+        commandQueue.envelopes.slice(before).map((envelope) => [envelope.type, envelope.serverId]),
+        [['managed.ingress.reconcile', serverId]]
+      )
+      assertEquals(await latestIngressReconcileBindAddresses(db, serverId), ['127.0.0.1'])
     }
   )
 })

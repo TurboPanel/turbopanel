@@ -18,6 +18,8 @@ import {
   setOperatorWebhookUrl,
 } from '../features/alerts/alert-webhook-settings.ts'
 import { registerNotificationAdminRoutes } from './notification-routes.ts'
+import { registerMailDeadLetterAdminRoutes } from './mail-dead-letter-routes.ts'
+import type { MailDeadLetterStore } from '../features/email/smtp/dead-letter-replay.ts'
 import {
   broadcastEchoToFleet,
   collectFleetCommands,
@@ -176,6 +178,12 @@ export function registerAdminRoutes(
      * it so this registrar never imports `platform/deno/server-addresses-deno`.
      */
     collectInstanceIps?: () => ServerReportedIp[]
+    /**
+     * Deno composition root injects the RabbitMQ-backed mail dead-letter
+     * store. Workers omits it (Cloudflare Queues has its own dead-letter
+     * queue), so the routes answer 501 there.
+     */
+    mailDeadLetters?: MailDeadLetterStore
   }
 ) {
   const admin = new Hono<AppEnv>()
@@ -183,6 +191,7 @@ export function registerAdminRoutes(
 
   opts.registerTiers?.(admin)
   registerNotificationAdminRoutes(admin)
+  registerMailDeadLetterAdminRoutes(admin, { store: opts.mailDeadLetters })
 
   admin.get('/daemon/connections', async (c) => {
     const registry = getDaemonCellRegistry(c)

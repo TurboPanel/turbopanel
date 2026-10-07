@@ -220,6 +220,21 @@ const REFUSED: Array<[string, unknown, Array<[string, string]>, Record<string, u
     [[`${B}.context`, 'build_context_internal_url']],
   ],
   [
+    'URL on localhost with a trailing dot',
+    { context: 'https://localhost./x.git' },
+    [[`${B}.context`, 'build_context_internal_url']],
+  ],
+  [
+    'URL on .internal with a trailing dot',
+    { context: 'https://metadata.google.internal./x' },
+    [[`${B}.context`, 'build_context_internal_url']],
+  ],
+  [
+    'git@ on localhost with a trailing dot',
+    { context: 'git@localhost.:x/y.git' },
+    [[`${B}.context`, 'build_context_internal_url']],
+  ],
+  [
     'URL on .internal',
     { context: 'https://metadata.google.internal/x' },
     [[`${B}.context`, 'build_context_internal_url']],
@@ -255,14 +270,25 @@ const ALLOWED: Array<[string, unknown, Record<string, unknown>?]> = [
   ['network default', { network: 'default' }],
   ['privileged false', { privileged: false }],
   ['an ssh key inside', { ssh: ['deploy=./keys/deploy'] }],
-  ['a secret from a file inside', { secrets: ['k'] }, { secrets: { k: { file: './k.txt' } } }],
+  [
+    'a secret from a file inside',
+    { secrets: ['k'] },
+    {
+      secrets: { k: { file: './k.txt' } },
+    },
+  ],
   [
     'a secret from the environment',
     { secrets: ['k'] },
     { secrets: { k: { environment: 'TOKEN' } } },
   ],
   ['a secret with no top-level definition', { secrets: ['missing'] }],
-  ['extra hosts on public and private addresses', { extra_hosts: ['a:203.0.113.7', 'b=10.1.2.3'] }],
+  [
+    'extra hosts on public and private addresses',
+    {
+      extra_hosts: ['a:203.0.113.7', 'b=10.1.2.3'],
+    },
+  ],
   [
     'image and stage contexts',
     {

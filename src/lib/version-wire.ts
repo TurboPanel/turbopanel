@@ -173,12 +173,15 @@ export const DAEMON_WIRE_FEATURES = [
   'update-progress-v1',
   'sealed-instance-secrets-v1',
   'managed-health-v1',
+  'managed-health-report-v1',
   'managed-ha-probe-v1',
   'managed-ha-instance-v1',
   'metrics-v7',
   'php-site-modes-v1',
   'site-engine-nginx-apache-v1',
   'deploy-cancel-v1',
+  'site-db-bindings-v1',
+  'deno-native-apps-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -196,6 +199,14 @@ export const SEALED_INSTANCE_SECRETS_FEATURE: DaemonWireFeature = 'sealed-instan
  * plane never sends the request and keeps using the stored observation.
  */
 export const MANAGED_HEALTH_FEATURE: DaemonWireFeature = 'managed-health-v1'
+
+/**
+ * The daemon pushes `managed-health-report` (every local replica's fresh
+ * replication reading, every 30 s) and this control plane stores it. Without
+ * the feature the daemon sends nothing and a quiet cluster's reading ages out
+ * (shown as unknown) until something asks.
+ */
+export const MANAGED_HEALTH_REPORT_FEATURE: DaemonWireFeature = 'managed-health-report-v1'
 
 /**
  * The daemon may send `managed-ha-event` with `detector: 'postgres-probe'`
@@ -236,6 +247,23 @@ export const PHP_SITE_MODES_FEATURE: DaemonWireFeature = 'php-site-modes-v1'
  * for a deploy the daemon already acknowledged.
  */
 export const DEPLOY_CANCEL_FEATURE: DaemonWireFeature = 'deploy-cancel-v1'
+
+/**
+ * The daemon takes `sites[].dbCa` (a managed database's CA as a file the site
+ * owner's Linux user can read) and `sites[].requiredEnv` (variables a site
+ * cannot run without), and answers an `environment.deploy` with `warnings`.
+ * Without it the control plane sends neither field: a bound PHP site then gets
+ * no CA and a deploy warning, never a multi-line value.
+ */
+export const SITE_DB_BINDINGS_FEATURE: DaemonWireFeature = 'site-db-bindings-v1'
+
+/**
+ * The daemon runs a native app on Deno (`nativeAppServices[].runtime: "deno"`
+ * with `denoVersion`) and vendors the runtime for it. Without it the daemon
+ * ignores `runtime` and would start the app on Node, so the control plane
+ * refuses to send a Deno app to it.
+ */
+export const DENO_NATIVE_APPS_FEATURE: DaemonWireFeature = 'deno-native-apps-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}

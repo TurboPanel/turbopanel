@@ -177,6 +177,33 @@ function asFieldRecord(value: object): Record<string, unknown> {
   return value as unknown as Record<string, unknown>
 }
 
+/**
+ * `extended.docker` as a field record. `reclaimableBytes` is the daemon's own
+ * total when it sent one, else the three `dockerUsage` reclaimable groups added
+ * up (the same fallback the stores apply to stored history).
+ */
+function extendedDockerRecord(sample: MetricsSample): Record<string, unknown> | undefined {
+  const docker = sample.extended?.docker
+  const usage = sample.dockerUsage
+  if (!docker && !usage) return undefined
+  const record: Record<string, unknown> = docker ? { ...docker } : {}
+  if (typeof record.reclaimableBytes !== 'number' && usage) {
+    const parts = [
+      usage.imagesReclaimableBytes,
+      usage.volumesReclaimableBytes,
+      usage.buildCacheReclaimableBytes,
+    ].filter((part): part is number => typeof part === 'number')
+    if (parts.length > 0) record.reclaimableBytes = parts.reduce((sum, part) => sum + part, 0)
+  }
+  return record
+}
+
+/** A drive's read plus write operations per second; `null` unless both halves are known. */
+function blockOpsPerSecond(device: MetricsSample['blockDevices'][number]): number | null {
+  if (device.readOpsPerSecond === null || device.writeOpsPerSecond === null) return null
+  return device.readOpsPerSecond + device.writeOpsPerSecond
+}
+
 function hostGroupForScope(
   sample: MetricsSample,
   entityScope: MetricEntityScope
@@ -200,6 +227,12 @@ function hostGroupForScope(
       return sample.storage ? asFieldRecord(sample.storage) : undefined
     case 'dockerUsage':
       return sample.dockerUsage ? asFieldRecord(sample.dockerUsage) : undefined
+    case 'extended.host':
+      return sample.extended?.host ? asFieldRecord(sample.extended.host) : undefined
+    case 'extended.docker':
+      return extendedDockerRecord(sample)
+    case 'extended.ingress':
+      return sample.extended?.ingress ? asFieldRecord(sample.extended.ingress) : undefined
     default:
       return undefined
   }
@@ -254,7 +287,7 @@ function sampleEntitiesForFamily(
     case 'block':
       return sample.blockDevices.map((device) => ({
         id: device.deviceId,
-        record: asFieldRecord(device),
+        record: { ...asFieldRecord(device), opsPerSecond: blockOpsPerSecond(device) },
       }))
     case 'hardware.physical':
       return sample.hardwareSignals.map((signal) => ({

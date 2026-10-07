@@ -99,7 +99,7 @@ the systemd table for ownership, ACLs, and `/run/turbopanel` **`2770 tp:tp`**
 | `tplsws`     | 9989    | LiteSpeed Enterprise (reserved)                                |
 | `tpnodeapp`  | 9988    | group only — read+traverse on the vendored tenant Node tree    |
 
-Tenant principals: **15001+** (host-picked from 15001–60000, or an operator override ≥ 15001).
+Tenant principals: **15001–60000** (host-picked from that band, or an operator override inside it; 61184–65519 above it is systemd's throwaway build users).
 
 `tpnodeapp` is a **group with no user**: tenant principals join it when their
 first native (`serviceKind: node`) app deploys, and it means only "may execute
