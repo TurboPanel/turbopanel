@@ -129,19 +129,15 @@ export function activeBatchIndex(steps: readonly BatchStepView[]): number | null
   let pinned: number | null = null
   for (const step of steps) {
     if (isTerminalStepStatus(step.status)) continue
-    if (active === null || step.batchIndex < active) active = step.batchIndex
-    if (isInFlightStepStatus(step.status)) {
-      if (pinned === null || step.batchIndex < pinned) pinned = step.batchIndex
-    }
-    if (step.connected === true) {
-      if (connected === null || step.batchIndex < connected) {
-        connected = step.batchIndex
-      }
-    }
+    active = lowerBatch(active, step.batchIndex)
+    if (isInFlightStepStatus(step.status)) pinned = lowerBatch(pinned, step.batchIndex)
+    if (step.connected === true) connected = lowerBatch(connected, step.batchIndex)
   }
-  if (pinned !== null) return pinned
-  if (connected !== null) return connected
-  return active
+  return pinned ?? connected ?? active
+}
+
+function lowerBatch(current: number | null, candidate: number): number {
+  return current === null || candidate < current ? candidate : current
 }
 
 /** True once every step in `batchIndex` is terminal (and the batch exists). */
