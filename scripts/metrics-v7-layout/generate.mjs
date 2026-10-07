@@ -151,15 +151,16 @@ ids, not the 171 the brief quoted, and equals preset \`r\` exactly). Differences
   sample time at blob5 (as in v6, so every row kind agrees), so topology generation takes blob4. There are still six
   contiguous envelope blobs and 14 content blobs, so content packing is identical to the explorer.
 - Slot ids are catalogue ids (\`busy\`, \`oomKills\`, ...). The contract field behind each id is in \`v7-layout.ts\`.
-- Sizes amendment, owner decision 2026-10-07: every sample carries the sizes its percentages are measured against
-  (memory, swap, commit limit, logical cores, root bytes and inodes, each extra filesystem's bytes and inodes, each
-  GPU's memory), so a resize or a balloon never needs a new topology generation. To make room without adding rows,
-  these already-selected data points were dropped: \`majorFaults\` (major page faults), \`softirq\` (soft-interrupt
-  CPU time), \`memPsiFull\` (memory pressure, all tasks stalled), \`dSlabU\` (kernel slab that cannot be freed),
-  \`t5xx\` / \`tLatency\` / \`tRequests\` (shared router backend errors, latency and request count; backends up and
-  total stay), \`nic2.problems\` (NIC 2 errors and drops; NIC 1 stays) and \`gp_memoryActivityPercent\` (GPU memory
-  controller activity). Filesystem rows hold 4 filesystems instead of 9, which only costs an extra row on a host with
-  more than 4 extra filesystems.
+- Owner amendment 2026-10-07: every sample carries the sizes its percentages are measured against, so a resize
+  or a balloon never needs a new topology generation. The host rows gain memory total, swap total, commit limit,
+  CPU cores, root bytes and inode totals, the lone extra disk's bytes and inode totals, and IRQ pressure "full";
+  they drop \`saturated\` (pegged cores), \`hostingFree\` (read from the disk that holds hosting), \`dockerUsed\`
+  (the sum of the four Docker groups), \`tUp\` (backends total minus the unhealthy names), \`tRequests\` (Caddy
+  counts every request first), \`majorFaults\` (memory pressure is the better signal), \`c2xx\` (requests minus
+  4xx and 5xx), \`dSlabU\` and \`logsUsed\`. The host rows are regrouped: CPU, pressure and memory; disk IO and
+  disk space; network and Docker; web traffic, router and host limits. Each extra disk's size, each GPU's memory
+  and each NIC's link speed ride as text on that device's own row, so device rows keep every number.
+- \`host.network\` blob6 names the host rows' devices: \`nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>\`.
 
 ## Row envelope (metrics rows)
 
@@ -185,10 +186,11 @@ capability-plan generation and page are no longer written.
 - \`managed.database\` (database census + ProxySQL) is written only when managed databases run.
 - \`block\`: written only when the host has more than one drive (a single drive is covered by \`host.io\`);
   3 drives per row.
-- \`network\`: NIC 3 and up, 3 per row. NIC 1 and 2 are embedded in \`host.network\` (rx, tx, problems each).
-- \`filesystem\`: extra (non-root) filesystems, 4 per row (bytes free, inodes free, bytes total, inodes total);
-  exactly one extra filesystem is folded into \`host.network\` (\`fs_*\` slots) and writes no row.
-- \`gpu\`: 3 per row, physical machines or real passthrough GPUs only. \`hardware.physical\`: physical only, up to 19
+- \`network\`: NIC 3 and up, 3 per row, each with its link speed as text. NIC 1 and 2 are embedded in \`host.network\`
+  (rx, tx, problems each); \`host.network\` blob6 names them and the folded filesystem.
+- \`filesystem\`: extra (non-root) filesystems, 9 per row, each with its size as text (\`<bytes>/<inodes>\`);
+  exactly one extra filesystem is folded into \`host.io\` (\`fs_*\` slots, sizes as numbers) and writes no row.
+- \`gpu\`: 3 per row, each with its memory size as text, physical machines or real passthrough GPUs only. \`hardware.physical\`: physical only, up to 19
   signals (one double each, ids in blob6); signal order: CPU/board signals, one per drive, three per GPU.
 - Plan limits (entities kept, the rest dropped at ingest): see \`planLimits\` in the fixture. Drive slots are
   multiples of 3 (S1 3, S2 6, S3 6, S4 9, S5 12, S6 18, S7 21, SX 24); GPU slots S1 0, S2 1, S3 1, S4+ 4, 4, 6, 8, 8;
@@ -229,79 +231,194 @@ for (const tier of model.TIER_IDS) {
 }
 
 // ---------------------------------------------------------------------------
-// Sizes amendment (owner decision 2026-10-07).
+// Owner amendment 2026-10-07 (research: .cl-tmp/metrics-v7/research-v7-totals-and-abuse.md).
 //
 // Every sample carries the sizes its percentages are measured against, so a
-// resize or a balloon never needs a new topology generation. The owner chose to
-// free the number slots by dropping the least valuable already-selected data
-// points (rather than adding rows or using text slots). The packer's output
-// above is amended here, slot for slot, so every other slot keeps its place.
-//
-//   host.system: majorFaults -> cores, softirq -> memTotal, memPsiFull -> swapTotal, dSlabU -> commitLimit
-//   host.network: t5xx -> rootTotal, tLatency -> rootInodesTotal, tRequests -> fs_totalBytes,
-//                 nic2.problems -> fs_totalInodes
-//   gpu: gp_memoryActivityPercent -> gp_memoryTotalBytes
-//   filesystem: two more per-entity doubles (fs_totalBytes, fs_totalInodes), so 4 filesystems per row
-//
-// Nothing is dropped from the entity rows except the one GPU data point.
+// resize or a balloon never needs a new topology generation. The host rows
+// gain 9 numbers (8 sizes plus IRQ pressure "full") and drop exactly 9 that are
+// duplicated, derivable or low value. Per-device sizes (each extra disk, each
+// GPU's memory, each NIC's link speed) ride as text on that device's own row,
+// so device rows keep every number and their entities per row. The host rows
+// are regrouped so like data sits together; the tables below are the owner's.
 // ---------------------------------------------------------------------------
-const SIZE_SUBSTITUTIONS = {
+const OWNER_DROPPED = [
+  'saturated',
+  'hostingFree',
+  'dockerUsed',
+  'tUp',
+  'tRequests',
+  'majorFaults',
+  'c2xx',
+  'dSlabU',
+  'logsUsed',
+]
+const OWNER_ADDED = [
+  'cores',
+  'memTotal',
+  'swapTotal',
+  'commitLimit',
+  'irqPsiFull',
+  'rootTotal',
+  'rootInodesTotal',
+  'fs_totalBytes',
+  'fs_totalInodes',
+]
+const OWNER_HOST_ROWS = {
   'host.system': {
-    majorFaults: 'cores',
-    softirq: 'memTotal',
-    memPsiFull: 'swapTotal',
-    dSlabU: 'commitLimit',
+    doubles: [
+      'busy',
+      'user',
+      'system',
+      'iowait',
+      'steal',
+      'softirq',
+      'cores',
+      'cpuPsi',
+      'memPsiSome',
+      'memPsiFull',
+      'irqPsiFull',
+      'used',
+      'cachedFiles',
+      'swapUsed',
+      'memTotal',
+      'swapTotal',
+      'oomKills',
+      'dCommit',
+      'commitLimit',
+    ],
+    blobs: [
+      'loadavg',
+      'topCpu',
+      'cpuModel',
+      'topMem',
+      'lastOom',
+      'kernel',
+      'os',
+      'bootId',
+      'virt',
+      'cloudProvider',
+      'agentVersion',
+      'timeSync',
+      'pendingUpdates',
+      'rebootRequired',
+    ],
+  },
+  'host.io': {
+    doubles: [
+      'ioPsiSome',
+      'ioPsiFull',
+      'diskRead',
+      'diskWrite',
+      'diskLatency',
+      'rootQueue',
+      'rootOps',
+      'rootAvail',
+      'rootTotal',
+      'rootInodes',
+      'rootInodesTotal',
+      'fs_availableBytes',
+      'fs_totalBytes',
+      'fs_freeInodes',
+      'fs_totalInodes',
+      'hostingUsed',
+      'backupUsed',
+      'backupFree',
+      'mdDegraded',
+    ],
+    blobs: ['fsReadOnly', 'raidState'],
   },
   'host.network': {
-    t5xx: 'rootTotal',
-    tLatency: 'rootInodesTotal',
-    tRequests: 'fs_totalBytes',
-    'nic2.problems': 'fs_totalInodes',
+    doubles: [
+      'tcpRetrans',
+      'nic1.rx',
+      'nic1.tx',
+      'nic1.problems',
+      'nic2.rx',
+      'nic2.tx',
+      'nic2.problems',
+      'ctrRunning',
+      'ctrUnhealthy',
+      'ctrRestarting',
+      'ctrOom',
+      'ctrDie',
+      'ctrCpu',
+      'ctrMem',
+      'layers',
+      'ctrBytes',
+      'volumes',
+      'buildCache',
+      'reclTotal',
+    ],
+    blobs: ['unhealthyNames', 'dockerVersion'],
   },
-  gpu: { gp_memoryActivityPercent: 'gp_memoryTotalBytes' },
+  'host.web': {
+    doubles: [
+      'cReq',
+      'c4xx',
+      'c5xx',
+      'cErr',
+      'cReqB',
+      'cRespB',
+      'cDur',
+      'cB100',
+      'cB500',
+      'cB1s',
+      'cInFlight',
+      'cTls',
+      'tTotal',
+      't5xx',
+      'tLatency',
+      'conntrack',
+      'fileHandles',
+      'pidLimit',
+      'systemdFailed',
+    ],
+    blobs: [
+      'fpmBusiest',
+      'topSites',
+      'caddyVersion',
+      'certSoonest',
+      'traefikVersion',
+      'unhealthyBackends',
+      'phpVersions',
+      'webEngines',
+      'failedUnits',
+    ],
+  },
 }
-const FILESYSTEM_SIZE_DOUBLES = ['fs_totalBytes', 'fs_totalInodes']
-const FILESYSTEM_ENTITIES_PER_ROW = Math.floor(19 / (2 + FILESYSTEM_SIZE_DOUBLES.length))
-const DROPPED_BY_SIZES = Object.values(SIZE_SUBSTITUTIONS).flatMap((m) => Object.keys(m))
-const ADDED_BY_SIZES = [
-  ...Object.values(SIZE_SUBSTITUTIONS).flatMap((m) => Object.values(m)),
-  ...FILESYSTEM_SIZE_DOUBLES,
-]
-for (const id of [...new Set(ADDED_BY_SIZES)])
-  if (!model.ITEM[id.split('.')[0]]) throw new Error(`unknown sizes id ${id}`)
+/** Per-device sizes as text on the device's own row (one blob per entity). */
+const OWNER_DEVICE_TEXT = {
+  filesystem: ['fs_size'],
+  gpu: ['gp_driver', 'gp_model', 'gp_memTotal'],
+  network: ['nc_link'],
+}
 
-for (const [family, map] of Object.entries(SIZE_SUBSTITUTIONS)) {
-  const tpl = templates[family].tpl
-  for (const [from, to] of Object.entries(map)) {
-    const at = tpl.doubles.indexOf(from)
-    if (at === -1) throw new Error(`${family} has no slot ${from} to replace`)
-    tpl.doubles[at] = to
-  }
-}
 {
-  const tpl = templates.filesystem.tpl
-  tpl.doubles = [...tpl.doubles, ...FILESYSTEM_SIZE_DOUBLES]
-  tpl.perPageEntities = FILESYSTEM_ENTITIES_PER_ROW
-}
-for (const c of cases) {
-  const filesystemRows = c.rows.filter((r) => r.family === 'filesystem')
-  if (filesystemRows.length === 0) continue
-  const entities = filesystemRows.flatMap((r) => r.entities)
-  const rebuilt = []
-  for (let i = 0; i < entities.length; i += FILESYSTEM_ENTITIES_PER_ROW) {
-    rebuilt.push({
-      family: 'filesystem',
-      page: rebuilt.length,
-      entities: entities.slice(i, i + FILESYSTEM_ENTITIES_PER_ROW),
-    })
+  // The regrouped rows hold exactly the packer's host numbers, minus the 9 drops, plus the 9 new ones.
+  const families = Object.keys(OWNER_HOST_ROWS)
+  const before = families.flatMap((family) => templates[family].tpl.doubles).filter(Boolean)
+  const expected = [...before.filter((id) => !OWNER_DROPPED.includes(id)), ...OWNER_ADDED].sort()
+  const after = families.flatMap((family) => OWNER_HOST_ROWS[family].doubles)
+  if (JSON.stringify([...after].sort()) !== JSON.stringify(expected))
+    throw new Error('owner host rows do not match packer output minus drops plus additions')
+  const blobsBefore = families.flatMap((family) => templates[family].tpl.blobs).sort()
+  const blobsAfter = families.flatMap((family) => OWNER_HOST_ROWS[family].blobs).sort()
+  if (JSON.stringify(blobsBefore) !== JSON.stringify(blobsAfter))
+    throw new Error('owner host rows must carry exactly the packer text blobs')
+  for (const family of families) {
+    const row = OWNER_HOST_ROWS[family]
+    if (row.doubles.length !== 19 || row.blobs.length > 14) throw new Error(`${family} overflows`)
+    for (const id of [...row.doubles, ...row.blobs])
+      if (!model.ITEM[id.split('.')[0]]) throw new Error(`unknown id ${id}`)
+    templates[family].tpl.doubles = row.doubles
+    templates[family].tpl.blobs = row.blobs
   }
-  const first = c.rows.findIndex((r) => r.family === 'filesystem')
-  c.rows = [
-    ...c.rows.slice(0, first),
-    ...rebuilt,
-    ...c.rows.filter((r, i) => i > first && r.family !== 'filesystem'),
-  ]
-  c.rowCount = c.rows.length
+  for (const [family, blobs] of Object.entries(OWNER_DEVICE_TEXT)) {
+    for (const id of blobs) if (!model.ITEM[id]) throw new Error(`unknown id ${id}`)
+    const tpl = templates[family].tpl
+    if (tpl.perPageEntities * blobs.length > 14) throw new Error(`${family} text overflows`)
+    tpl.blobs = blobs
+  }
 }
 
 const planLimits = Object.fromEntries(
@@ -330,10 +447,11 @@ const fixture = {
     shortcuts: plan.shortcuts,
     ownerExclusions: plan.ownerExclusions,
     ids: effectiveIds,
-    sizesAmendment: {
+    ownerAmendment: {
       date: '2026-10-07',
-      dropped: DROPPED_BY_SIZES,
-      added: [...new Set(ADDED_BY_SIZES)],
+      dropped: OWNER_DROPPED,
+      added: OWNER_ADDED,
+      deviceText: OWNER_DEVICE_TEXT,
     },
   },
   envelope: {

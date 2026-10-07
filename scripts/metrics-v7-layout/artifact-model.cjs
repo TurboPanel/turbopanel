@@ -202,6 +202,8 @@ pcieReceiveBytesPerSecond|B/s|avg|PCIe receive rate.
 pcieTransmitBytesPerSecond|B/s|avg|PCIe transmit rate.
 throttlePercent|%|avg|Time the GPU was throttled.
 memoryTotalBytes|bytes|avg|GPU memory size when the sample was taken. The divisor of its used percentage. New in v7 (sizes amendment).`);
+def('extended.host','C',`
+irqPressureFullPercent|%|avg|IRQ pressure (PSI full): share of time every task waited on interrupt handling. Kernel 6.1+; not reported elsewhere. New in v7 (owner amendment).`);
 def('extended.sizes','M',`
 memoryTotalBytes|bytes|avg|Total memory when the sample was taken (MemTotal). The divisor of memory used. A balloon or resize changes it between samples.
 swapTotalBytes|bytes|avg|Total swap when the sample was taken. The divisor of swap used.
@@ -668,11 +670,12 @@ nc_receiveErrorsPerSecond|nic|nic|d|network.receiveErrorsPerSecond|||||v6|vlbx||
 nc_transmitErrorsPerSecond|nic|nic|d|network.transmitErrorsPerSecond|||||v6|vlbx|||
 nc_receiveDropsPerSecond|nic|nic|d|network.receiveDropsPerSecond|||||v6|vlbx|||
 nc_transmitDropsPerSecond|nic|nic|d|network.transmitDropsPerSecond|||||v6|vlbx|||
-nc_link|nic|nic|b|-|link state|text|-|N|idea|x|Per NIC: up/down and speed, e.g. "up 1000Mb/s".||
+nc_link|nic|nic|b|-|link speed|text|-|N|idea|x|Per NIC: negotiated link speed in Mb/s, as text on the NIC's own row.||
 fs_availableBytes|fs|fs|d|filesystem.availableBytes|||||v6|vlbx|||
 fs_freeInodes|fs|fs|d|filesystem.freeInodes|||||v6|vlbx|||
 fs_totalBytes|fs|fs|d|filesystem.totalBytes|||||new|||||
 fs_totalInodes|fs|fs|d|filesystem.totalInodes|||||new|||||
+fs_size|fs|fs|b|-|filesystem size|text|-|S|new|||Size in bytes and inode total, as text on the filesystem's own row (\"bytes/inodes\").||
 fs_type|fs|fs|b|-|filesystem type / mount|text|-|S|idea||Per filesystem: type and mount point, e.g. "ext4 /mnt/data".||
 gp_utilizationPercent|gpu|gpu|d|gpu.utilizationPercent|||||v6|vlbx|||
 gp_memoryUsedBytes|gpu|gpu|d|gpu.memoryUsedBytes|||||v6|vlbx|||
@@ -680,9 +683,10 @@ gp_memoryActivityPercent|gpu|gpu|d|gpu.memoryActivityPercent|||||v6|vlbx|||
 gp_pcieReceiveBytesPerSecond|gpu|gpu|d|gpu.pcieReceiveBytesPerSecond|||||v6|vlbx|||
 gp_pcieTransmitBytesPerSecond|gpu|gpu|d|gpu.pcieTransmitBytesPerSecond|||||v6|vlbx|||
 gp_throttlePercent|gpu|gpu|d|gpu.throttlePercent|||||v6|vlbx|||
-gp_memoryTotalBytes|gpu|gpu|d|gpu.memoryTotalBytes|||||new|||||
+gp_memTotal|gpu|gpu|b|-|GPU memory size|text|-|G|new|||GPU memory size in bytes, as text on the GPU's own row (the divisor of memory used).||
 gp_driver|gpu|gpu|b|-|GPU driver version|text|-|G|idea|x|Per GPU driver version (e.g. nvidia 570.x).||
 gp_model|gpu|gpu|b|-|GPU model|text|-|G|idea|x|Per GPU model name.||
+irqPsiFull|cpu|core|d|extended.host.irqPressureFullPercent|||||new|||||
 memTotal|mem|core|d|extended.sizes.memoryTotalBytes|||||new|||||
 swapTotal|mem|core|d|extended.sizes.swapTotalBytes|||||new|||||
 commitLimit|mem|core|d|extended.sizes.commitLimitBytes|||||new|||||

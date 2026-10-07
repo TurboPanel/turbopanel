@@ -373,10 +373,11 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
     // storage (AE double slot vs. a joined DuckDB table). ---
     const routerQuery = {
       serverId: SERVER_ID,
-      // The two backend-health gauges v7 keeps on the hosted host row (the
-      // router's error, latency and request-count figures are DuckDB-only now:
-      // the sizes amendment traded their slots for the sizes).
-      metrics: ['router.backendsUp', 'router.backendsTotal'],
+      // A gauge, a weighted average and a delta-sum, each resolved through a
+      // different SQL expression on AE than DuckDB's plain column aggregation.
+      // (Backends up and the request count are DuckDB-only since the owner's
+      // 2026-10-07 layout: both are derivable from what the hosted row keeps.)
+      metrics: ['router.backendsTotal', 'router.backendLatencyMsAvg', 'router.backendErrors5xx'],
       from,
       to,
       resolutionSeconds: INTERVAL_SECONDS,
@@ -388,7 +389,11 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
       at: string,
       field: string
     ) => result.points.find((point) => point.at === at)?.values[field] ?? null
-    for (const field of ['router.backendsUp', 'router.backendsTotal']) {
+    for (const field of [
+      'router.backendsTotal',
+      'router.backendLatencyMsAvg',
+      'router.backendErrors5xx',
+    ]) {
       for (const sample of [tick1Sample, tick2Sample]) {
         assertEquals(
           routerValues(aeRouter, sample.metadata.sampledAt, field),
@@ -399,9 +404,15 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
     }
     // Pin the actual value too, not just agreement — two backends resolving
     // the same wrong slot would otherwise pass.
-    assertEquals(routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendsUp'), 3)
-    assertEquals(routerValues(aeRouter, tick2Sample.metadata.sampledAt, 'router.backendsUp'), 1)
     assertEquals(routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendsTotal'), 4)
+    assertEquals(
+      routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendLatencyMsAvg'),
+      12
+    )
+    assertEquals(
+      routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendErrors5xx'),
+      0
+    )
 
     // --- managed.storage / managed.docker: the other two host-wide
     // singletons. Covers a flat storage gauge, a *nested* per-engine reading

@@ -452,15 +452,11 @@ const NETWORK_DESCRIPTORS: Record<
 }
 
 const FILESYSTEM_DESCRIPTORS: Record<
-  Exclude<keyof FilesystemSample, 'filesystemId'> | 'totalBytes' | 'totalInodes',
+  Exclude<keyof FilesystemSample, 'filesystemId'>,
   HostMetricsMetricDescriptor
 > = {
   availableBytes: bytesGauge('availableBytes', 'filesystem', 'filesystem'),
   freeInodes: countGauge('freeInodes', 'filesystem', 'filesystem'),
-  // The size this filesystem had when the sample was taken: it rides
-  // `extended.filesystemSizes`, not the `FilesystemSample`, so it is not a wire field of the entity.
-  totalBytes: { ...reported(bytesGauge('totalBytes', 'filesystem', 'filesystem')), wire: false },
-  totalInodes: { ...reported(countGauge('totalInodes', 'filesystem', 'filesystem')), wire: false },
 }
 
 const BLOCK_DESCRIPTORS: Record<
@@ -477,14 +473,9 @@ const BLOCK_DESCRIPTORS: Record<
   queueDepth: countGauge('queueDepth', 'block', 'block'),
 }
 
-const GPU_DESCRIPTORS: Record<
-  Exclude<keyof GpuSample, 'gpuId'> | 'memoryTotalBytes',
-  HostMetricsMetricDescriptor
-> = {
+const GPU_DESCRIPTORS: Record<Exclude<keyof GpuSample, 'gpuId'>, HostMetricsMetricDescriptor> = {
   utilizationPercent: percent('utilizationPercent', 'gpu', 'gpu'),
   memoryUsedBytes: bytesGauge('memoryUsedBytes', 'gpu', 'gpu'),
-  // The GPU's memory size when the sample was taken (`extended.gpuSizes`, not a `GpuSample` field).
-  memoryTotalBytes: { ...reported(bytesGauge('memoryTotalBytes', 'gpu', 'gpu')), wire: false },
   memoryActivityPercent: percent('memoryActivityPercent', 'gpu', 'gpu'),
   pcieReceiveBytesPerSecond: rate('pcieReceiveBytesPerSecond', 'bytesPerSecond', 'gpu', 'gpu'),
   pcieTransmitBytesPerSecond: rate('pcieTransmitBytesPerSecond', 'bytesPerSecond', 'gpu', 'gpu'),
@@ -939,6 +930,8 @@ function reported(descriptor: HostMetricsMetricDescriptor): HostMetricsMetricDes
 
 const EXTENDED_HOST_DESCRIPTORS: Record<keyof ExtendedHostMetrics, HostMetricsMetricDescriptor> = {
   pidLimitUsedPercent: percent('pidLimitUsedPercent', 'extended.host', 'host.extended'),
+  // IRQ pressure: share of the interval every task waited on interrupt handling (kernel 6.1+).
+  irqPressureFullPercent: psiPercent('irqPressureFullPercent', 'extended.host', 'host.extended'),
   oomKills: deltaCounter('oomKills', 'count', 'extended.host', 'host.extended'),
   rootDiskQueueDepth: reported(countGauge('rootDiskQueueDepth', 'extended.host', 'host.extended')),
   rootDiskOpsPerSecond: reported(
@@ -1110,11 +1103,9 @@ const PER_ENTITY_CAPACITY: Record<
   Extract<HostedFamily, 'gpu' | 'network' | 'filesystem' | 'block'>,
   number
 > = {
-  // 6 stored on both stores plus the DuckDB-only `memoryActivityPercent` (the hosted layout traded it for the GPU's memory size).
-  gpu: 7,
+  gpu: 6,
   network: 6,
-  // available and free inodes, plus the filesystem's size in bytes and inodes.
-  filesystem: 4,
+  filesystem: 2,
   // 8 wire fields plus the combined `opsPerSecond` read-time figure.
   block: 9,
 }

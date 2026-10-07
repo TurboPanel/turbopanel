@@ -229,16 +229,22 @@ for (const c of fixture.cases) {
     assertEquals(rows, c.rows)
     assertEquals(rows.length, c.rowCount)
 
+    const io = points.find((p) => p.blobs[AE_BLOB_FAMILY_INDEX] === 'host.io')
     const network = points.find((p) => p.blobs[AE_BLOB_FAMILY_INDEX] === 'host.network')
-    assert(network)
-    // Folded lone filesystem: its values sit in host.network's fs slots.
-    const folded = network.doubles[2] !== AE_MISSING_METRIC_SENTINEL
+    assert(io && network)
+    // Folded lone filesystem: its values sit in host.io's fs slots.
+    const foldedSlot = V7_HOST_ROW_SPECS['host.io'].doubles.indexOf('fs_availableBytes')
+    const folded = io.doubles[foldedSlot] !== AE_MISSING_METRIC_SENTINEL
     assertEquals(folded, c.foldedFilesystem !== null, 'folded filesystem slots')
-    // Embedded NICs: first two slot-mapped NICs, in slot order.
+    // Embedded NICs: first two slot-mapped NICs, in slot order, named in blob6.
+    const named = network.blobs[AE_BLOB_ENTITY_IDS_INDEX]
     c.embeddedNics.forEach((nic, i) => {
       const index = names(c.machine, c.hardware).nics.indexOf(nic)
-      assertEquals(network.doubles[5 + 3 * i], 100 + index, `embedded NIC ${i + 1}`)
+      const slot = V7_HOST_ROW_SPECS['host.network'].doubles.indexOf(`nic${i + 1}.rx`)
+      assertEquals(network.doubles[slot], 100 + index, `embedded NIC ${i + 1}`)
+      assert(named.includes(`nic${i + 1}=${nic}@`), `blob6 names NIC ${i + 1}`)
     })
+    assertEquals(named.includes('fs='), c.foldedFilesystem !== null, 'blob6 names the folded disk')
   })
 }
 

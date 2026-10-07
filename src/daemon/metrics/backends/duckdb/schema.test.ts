@@ -49,7 +49,7 @@ it('DuckDB schema marker is 10', () => {
 })
 
 it('the DDL carries every extended numeric column', () => {
-  assertEquals(V7_HOST_COLUMNS.length, 7)
+  assertEquals(V7_HOST_COLUMNS.length, 8)
   assertEquals(V7_DOCKER_COLUMNS.length, 8)
   assertEquals(V7_INGRESS_COLUMNS, ['ext_tls_cert_soonest_expiry_days'])
   const ddl = buildSchemaStatements().join('\n')

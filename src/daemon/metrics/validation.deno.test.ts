@@ -154,6 +154,7 @@ it('validateMetricsSample accepts the per-sample sizes and sanitizes them withou
         sizes: { memoryTotalBytes: 8e9, swapTotalBytes: null, logicalCores: 4 },
         filesystemSizes: [{ filesystemId: 'fs-a', totalBytes: 1e9, totalInodes: null }],
         gpuSizes: [{ gpuId: 'gpu0', memoryTotalBytes: 16e9 }],
+        networkSizes: [{ deviceId: 'eth0', linkSpeedMbps: 1000 }],
       },
     }),
     ctx()
@@ -169,6 +170,7 @@ it('validateMetricsSample accepts the per-sample sizes and sanitizes them withou
     { filesystemId: 'fs-a', totalBytes: 1e9, totalInodes: null },
   ])
   assertEquals(result.sample.extended?.gpuSizes, [{ gpuId: 'gpu0', memoryTotalBytes: 16e9 }])
+  assertEquals(result.sample.extended?.networkSizes, [{ deviceId: 'eth0', linkSpeedMbps: 1000 }])
 })
 
 it('validateMetricsSample rejects malformed or unbounded sizes', () => {
@@ -677,4 +679,22 @@ it('rateLimitedMetricsLog keeps bounded memory and bounded reason length', () =>
   rateLimitedMetricsLog('srv-1', `0:${'x'.repeat(5000)}`, log, 1_000 + 20_000)
   assertEquals(logged.length, 20_001)
   resetMetricsRateLimitForTests()
+})
+
+it('validateMetricsSample keeps the 16 most severe events of an older daemon that sends more', () => {
+  const at = new Date().toISOString()
+  const events = [
+    ...Array.from({ length: 40 }, (_, i) => ({
+      eventId: `info-${i}`,
+      at,
+      kind: 'oom_kill',
+      severity: 'info',
+    })),
+    { eventId: 'crit', at, kind: 'oom_kill', severity: 'critical' },
+  ]
+  const result = validateMetricsSample(validRaw({ events }), ctx())
+  assertEquals(result.ok, true)
+  if (!result.ok) return
+  assertEquals(result.sample.events.length, 16)
+  assertEquals(result.sample.events[0]?.eventId, 'crit')
 })

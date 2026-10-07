@@ -222,11 +222,18 @@ totals, so old daemons keep their percentages. Over a bucket a size averages lik
 any gauge, so a balloon inside one bucket gives the percentage against the average
 size; at the native 60 s resolution it is exact.
 
-The hosted layout traded eight already-selected data points for the sizes (see
-`V7-LAYOUT.md`: major page faults, soft-interrupt time, memory pressure full, slab
-that cannot be freed, the shared router's backend errors, latency and request count,
-NIC 2 problems, and the GPU memory-controller activity). DuckDB still stores those;
-the hosted reader answers them as not stored.
+The hosted layout (owner amendment 2026-10-07, `V7-LAYOUT.md`) gave nine
+already-selected data points for the eight host sizes plus IRQ pressure "full":
+pegged cores, hosting free (read from the disk that holds hosting), Docker used
+(the sum of the four Docker groups), router backends up (total minus the
+unhealthy names), router requests (Caddy counts every request first), major
+page faults, 2xx responses (requests minus 4xx and 5xx), unreclaimable slab and
+logs used. DuckDB still stores all of them; the hosted reader answers them as not
+stored. Per-device sizes (each extra disk's bytes and inodes, each GPU's memory,
+each NIC's link speed) ride as text on that device's own row, so device rows keep
+every number and their entities per row. `host.network` blob6 names the host
+rows' devices (`nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>`; the speed follows the
+last `@`).
 
 Store selection: `resolveServerMetricsStore` (`store-selection.ts` /
 `store-selection-workers.ts`) — always on, no enable/disable gate; a backend

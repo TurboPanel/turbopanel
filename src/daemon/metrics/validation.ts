@@ -9,6 +9,7 @@ import {
   EXTENDED_INGRESS_FIELD_NAMES,
   EXTENDED_SIZE_FIELD_NAMES,
   isMetricsWireVersion,
+  MAX_METRIC_EVENTS_PER_SAMPLE,
   MAX_METRICS_TEXT_LENGTH,
   METRICS_TEXT_FIELD_NAMES,
   METRICS_WIRE_VERSIONS,
@@ -112,7 +113,7 @@ export function metricsPayloadByteLength(raw: string | ArrayBuffer): number {
  * + the four singleton objects (`diagnostics`, `router`, `storage`,
  * `dockerUsage`) at well under 1 KiB
  * together + 128 events
- * (`MAX_METRIC_EVENTS_PER_SAMPLE`) × ~150 bytes of JSON per event
+ * (`MAX_WIRE_EVENTS_PER_SAMPLE`) × ~150 bytes of JSON per event
  * (including a small `payload`) ≈ 7×64×250 + 128×150 = 112,000 + 19,200 ≈
  * 131,200 bytes (~129 KiB). Doubled for headroom (host block, metadata, JSON
  * key repetition, UTF-8 overhead) → 262,144 bytes (256 KiB).
@@ -127,7 +128,12 @@ export const MAX_METRICS_PAYLOAD_BYTES = 262_144
  * `TypeError`, but both layers must agree on the same ceiling.
  */
 const MAX_METRIC_ENTITY_ARRAY_LENGTH = 64
-const MAX_METRIC_EVENTS_PER_SAMPLE = 128
+/**
+ * Events a sample may list on the wire. An older daemon sends up to 128; ingest
+ * keeps the {@link MAX_METRIC_EVENTS_PER_SAMPLE} most severe (every event is a
+ * stored row) and the per-server hourly budget limits the rest.
+ */
+const MAX_WIRE_EVENTS_PER_SAMPLE = 128
 
 const MAX_EVENT_PAYLOAD_KEYS = 32
 
@@ -815,7 +821,7 @@ function parseEvent(raw: unknown, index: number, nowMs: number): ValidateResult<
 }
 
 function parseEvents(raw: unknown, nowMs: number): ValidateResult<MetricEvent[]> {
-  const arr = parseArray(raw, 'events', MAX_METRIC_EVENTS_PER_SAMPLE)
+  const arr = parseArray(raw, 'events', MAX_WIRE_EVENTS_PER_SAMPLE)
   if (!arr.ok) return arr
 
   const events: MetricEvent[] = []
@@ -824,7 +830,25 @@ function parseEvents(raw: unknown, nowMs: number): ValidateResult<MetricEvent[]>
     if (!event.ok) return event
     events.push(event.value)
   }
-  return { ok: true, value: events }
+  return { ok: true, value: keepMostSevereEvents(events) }
+}
+
+const EVENT_SEVERITY_RANK: Readonly<Record<MetricEvent['severity'], number>> = {
+  critical: 0,
+  warning: 1,
+  info: 2,
+}
+
+/** At most {@link MAX_METRIC_EVENTS_PER_SAMPLE} events, most severe first, then oldest. */
+export function keepMostSevereEvents(events: readonly MetricEvent[]): MetricEvent[] {
+  if (events.length <= MAX_METRIC_EVENTS_PER_SAMPLE) return [...events]
+  return [...events]
+    .sort(
+      (a, b) =>
+        EVENT_SEVERITY_RANK[a.severity] - EVENT_SEVERITY_RANK[b.severity] ||
+        Date.parse(a.at) - Date.parse(b.at)
+    )
+    .slice(0, MAX_METRIC_EVENTS_PER_SAMPLE)
 }
 
 // ---------------------------------------------------------------------------
@@ -1015,6 +1039,7 @@ const ALLOWED_EXTENDED_FIELDS: ReadonlySet<string> = new Set([
   'sizes',
   'filesystemSizes',
   'gpuSizes',
+  'networkSizes',
 ])
 
 /** One flat object of `number | null` readings: unknown keys and non-numbers are rejected. */
@@ -1166,6 +1191,13 @@ function parseExtendedEntitySizes(
     ])
     if (!parsed.ok) return parsed
     out.gpuSizes = parsed.value
+  }
+  if (raw.networkSizes !== undefined) {
+    const parsed = parseNumberEntries(raw.networkSizes, 'extended.networkSizes', 'deviceId', [
+      'linkSpeedMbps',
+    ])
+    if (!parsed.ok) return parsed
+    out.networkSizes = parsed.value
   }
   return { ok: true, value: true }
 }

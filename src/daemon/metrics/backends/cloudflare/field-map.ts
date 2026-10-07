@@ -59,6 +59,7 @@ import {
   type V7HostFamily,
   v7EmbeddedNicDoubleIndex,
   v7EntityPages,
+  v7HostRowEntityIds,
   v7HostRowValues,
   v7HostSlotFor,
   type V7RowValues,
@@ -587,7 +588,9 @@ export function buildMetricsDataPoints(
 
   for (const family of V7_HOST_FAMILIES) {
     if (family === AE_FAMILY_MANAGED_DATABASE && !hasManagedDatabase(sample)) continue
-    points.push(v7Point(sample, family, '', v7HostRowValues(family, ctx)))
+    points.push(
+      v7Point(sample, family, v7HostRowEntityIds(family, ctx), v7HostRowValues(family, ctx))
+    )
   }
   points.push(...buildEntityPoints(sample, paged, slotMapping))
   for (const event of sample.events) {

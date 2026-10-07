@@ -9,6 +9,8 @@ import type {
   DiagnosticsCpuSample,
   DiagnosticsMemorySample,
   DockerUsageSample,
+  FilesystemSample,
+  GpuSample,
   HardwareSignalSample,
   HostCpuMetrics,
   HostKernelMetrics,
@@ -117,13 +119,10 @@ const ENTITY_FIELD_SPECS: EntityFieldSpec[] = [
   },
   {
     entityScope: 'filesystem',
-    fields: [
-      'availableBytes',
-      'freeInodes',
-      // The size rides `extended.filesystemSizes`, so it is not a `FilesystemSample` field.
-      'totalBytes',
-      'totalInodes',
-    ],
+    fields: ['availableBytes', 'freeInodes'] satisfies Exclude<
+      keyof FilesystemSample,
+      'filesystemId'
+    >[],
   },
   {
     entityScope: 'block',
@@ -147,9 +146,7 @@ const ENTITY_FIELD_SPECS: EntityFieldSpec[] = [
       'pcieReceiveBytesPerSecond',
       'pcieTransmitBytesPerSecond',
       'throttlePercent',
-      // The memory size rides `extended.gpuSizes`, so it is not a `GpuSample` field.
-      'memoryTotalBytes',
-    ],
+    ] satisfies Exclude<keyof GpuSample, 'gpuId'>[],
   },
   {
     entityScope: 'hardwareSignal',
@@ -253,6 +250,7 @@ const ENTITY_FIELD_SPECS: EntityFieldSpec[] = [
     entityScope: 'extended.host',
     fields: [
       'pidLimitUsedPercent',
+      'irqPressureFullPercent',
       'oomKills',
       'rootDiskQueueDepth',
       'rootDiskOpsPerSecond',

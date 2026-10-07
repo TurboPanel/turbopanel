@@ -128,12 +128,18 @@ function keptGpuIds(sample: MetricsSample): Set<string> {
 function pruneExtended(
   extended: NonNullable<MetricsSample['extended']>,
   blockIds: ReadonlySet<string>,
-  gpuIds: ReadonlySet<string>
+  gpuIds: ReadonlySet<string>,
+  fabric: ReadonlySet<string>
 ): NonNullable<MetricsSample['extended']> {
   const out = { ...extended }
   if (extended.filesystemSizes) {
     out.filesystemSizes = extended.filesystemSizes.filter(
       (entry) => !isNoiseFilesystemId(entry.filesystemId)
+    )
+  }
+  if (extended.networkSizes) {
+    out.networkSizes = extended.networkSizes.filter(
+      (entry) => !isNoiseNicId(entry.deviceId, fabric)
     )
   }
   if (extended.gpuSizes) {
@@ -167,6 +173,6 @@ export function applyIngestAllowlist(
     blockDevices: sample.blockDevices.filter((device) => blockIds.has(device.deviceId)),
     gpus: sample.gpus.filter((gpu) => gpuIds.has(gpu.gpuId)),
   }
-  if (sample.extended) filtered.extended = pruneExtended(sample.extended, blockIds, gpuIds)
+  if (sample.extended) filtered.extended = pruneExtended(sample.extended, blockIds, gpuIds, fabric)
   return filtered
 }

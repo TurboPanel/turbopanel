@@ -183,6 +183,43 @@ function filesystemSizeOf(
   )
 }
 
+/** A size as plain decimal text (`''` when unknown), for a device row's text slot. */
+function sizeText(value: number | null): string {
+  return value === null ? '' : String(Math.round(value))
+}
+
+/** `<bytes>/<inodes>` for one filesystem (either side empty when unknown; `''` when both are). */
+function filesystemSizeText(sample: MetricsSample, filesystemId: string): string {
+  const bytes = filesystemSizeOf(sample, filesystemId, 'totalBytes')
+  const inodes = filesystemSizeOf(sample, filesystemId, 'totalInodes')
+  return bytes === null && inodes === null ? '' : `${sizeText(bytes)}/${sizeText(inodes)}`
+}
+
+function linkSpeedOf(sample: MetricsSample, deviceId: string): number | null {
+  return num(
+    sample.extended?.networkSizes?.find((entry) => entry.deviceId === deviceId),
+    'linkSpeedMbps'
+  )
+}
+
+/**
+ * The devices a host row's numbers belong to, written to that row's blob6 so a
+ * reader finds them by device id rather than by a stored slot map:
+ * `nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>` on `host.network` (empty parts
+ * left out), `''` on every other host row.
+ */
+export function v7HostRowEntityIds(family: V7HostFamily, ctx: V7Context): string {
+  if (family !== 'host.network') return ''
+  const parts: string[] = []
+  ctx.nics.forEach((nic, slot) => {
+    if (!nic) return
+    const speed = sizeText(linkSpeedOf(ctx.sample, nic.deviceId))
+    parts.push(`nic${slot + 1}=${nic.deviceId}@${speed}`)
+  })
+  if (ctx.foldedFilesystem) parts.push(`fs=${ctx.foldedFilesystem.filesystemId}`)
+  return parts.join(';')
+}
+
 function gpuMemoryTotalOf(sample: MetricsSample, gpuId: string): number | null {
   return num(
     sample.extended?.gpuSizes?.find((entry) => entry.gpuId === gpuId),
@@ -197,12 +234,14 @@ const DOUBLE_DEFS: Readonly<Record<string, DoubleDef>> = {
   system: hostField('host.cpu', 'systemPercent'),
   iowait: hostField('host.cpu', 'iowaitPercent'),
   steal: hostField('host.cpu', 'stealPercent'),
+  softirq: hostField('host.cpu', 'softirqPercent'),
+  irqPsiFull: extended('host', 'irqPressureFullPercent'),
   cpuPsi: hostField('host.cpu', 'pressureSomePercent'),
-  saturated: hostField('host.cpu', 'saturatedCoreCount'),
   used: hostField('host.memory', 'usedBytes'),
   cachedFiles: hostField('host.memory', 'cachedFilesBytes'),
   swapUsed: hostField('host.memory', 'swapUsedBytes'),
   memPsiSome: hostField('host.memory', 'pressureSomePercent'),
+  memPsiFull: hostField('host.memory', 'pressureFullPercent'),
   oomKills: extended('host', 'oomKills'),
   fileHandles: hostField('host.kernel', 'fileHandlesUsedPercent'),
   conntrack: hostField('host.kernel', 'conntrackUsedPercent'),
@@ -249,20 +288,18 @@ const DOUBLE_DEFS: Readonly<Record<string, DoubleDef>> = {
   'nic1.problems': embeddedNic(0, 'problems'),
   'nic2.rx': embeddedNic(1, 'rx'),
   'nic2.tx': embeddedNic(1, 'tx'),
+  'nic2.problems': embeddedNic(1, 'problems'),
   systemdFailed: extended('host', 'systemdUnitsFailed'),
   mdDegraded: extended('host', 'mdArraysDegraded'),
   dCommit: diagnostics('memory', 'committedAsBytes'),
-  tUp: sampleScope('router', 'backendsUp'),
   tTotal: sampleScope('router', 'backendsTotal'),
+  t5xx: sampleScope('router', 'backendErrors5xx'),
+  tLatency: sampleScope('router', 'backendLatencyMsAvg'),
   // host.web
   hostingUsed: sampleScope('storage', 'hostingUsedBytes'),
   backupUsed: sampleScope('storage', 'backupUsedBytes'),
-  dockerUsed: sampleScope('storage', 'dockerUsedBytes'),
-  logsUsed: sampleScope('storage', 'logsUsedBytes'),
-  hostingFree: sampleScope('storage', 'hostingFreeBytes'),
   backupFree: sampleScope('storage', 'backupFreeBytes'),
   cReq: ingressField('requests'),
-  c2xx: ingressField('responses2xx'),
   c4xx: ingressField('responses4xx'),
   c5xx: ingressField('responses5xx'),
   cErr: ingressField('requestErrors'),
@@ -339,31 +376,37 @@ function ids(list: string): string[] {
 }
 
 export const V7_HOST_ROW_SPECS: Readonly<Record<V7HostFamily, HostRowSpec>> = {
+  // CPU, pressure and memory, with the sizes they are measured against.
   'host.system': {
     doubles: ids(
-      'busy user system iowait steal memTotal cpuPsi saturated used cachedFiles swapUsed memPsiSome swapTotal cores oomKills fileHandles conntrack pidLimit commitLimit'
+      'busy user system iowait steal softirq cores cpuPsi memPsiSome memPsiFull irqPsiFull used cachedFiles swapUsed memTotal swapTotal oomKills dCommit commitLimit'
     ),
-    blobs: ids('loadavg topCpu cpuModel topMem lastOom'),
+    blobs: ids(
+      'loadavg topCpu cpuModel topMem lastOom kernel os bootId virt cloudProvider agentVersion timeSync pendingUpdates rebootRequired'
+    ),
   },
+  // Disk IO and disk space (root and the lone extra disk, with their sizes), storage usage, RAID.
   'host.io': {
     doubles: ids(
-      'ioPsiSome ioPsiFull diskRead diskWrite diskLatency rootQueue rootOps ctrRunning ctrUnhealthy ctrRestarting ctrOom ctrDie ctrCpu ctrMem layers ctrBytes volumes buildCache reclTotal'
+      'ioPsiSome ioPsiFull diskRead diskWrite diskLatency rootQueue rootOps rootAvail rootTotal rootInodes rootInodesTotal fs_availableBytes fs_totalBytes fs_freeInodes fs_totalInodes hostingUsed backupUsed backupFree mdDegraded'
+    ),
+    blobs: ids('fsReadOnly raidState'),
+  },
+  // Network, then Docker. blob6 names NIC 1, NIC 2 and the lone extra disk (see `v7HostRowEntityIds`).
+  'host.network': {
+    doubles: ids(
+      'tcpRetrans nic1.rx nic1.tx nic1.problems nic2.rx nic2.tx nic2.problems ctrRunning ctrUnhealthy ctrRestarting ctrOom ctrDie ctrCpu ctrMem layers ctrBytes volumes buildCache reclTotal'
     ),
     blobs: ids('unhealthyNames dockerVersion'),
   },
-  'host.network': {
-    doubles: ids(
-      'rootAvail rootInodes fs_availableBytes fs_freeInodes tcpRetrans nic1.rx nic1.tx nic1.problems nic2.rx nic2.tx fs_totalInodes systemdFailed mdDegraded dCommit tUp tTotal rootTotal rootInodesTotal fs_totalBytes'
-    ),
-    blobs: ids(
-      'failedUnits raidState rebootRequired kernel os bootId virt cloudProvider agentVersion timeSync pendingUpdates fsReadOnly phpVersions webEngines'
-    ),
-  },
+  // Web traffic (hosting Caddy, shared router) and the host limits a busy web host runs out of.
   'host.web': {
     doubles: ids(
-      'hostingUsed backupUsed dockerUsed logsUsed hostingFree backupFree cReq c2xx c4xx c5xx cErr cReqB cRespB cDur cB100 cB500 cB1s cInFlight cTls'
+      'cReq c4xx c5xx cErr cReqB cRespB cDur cB100 cB500 cB1s cInFlight cTls tTotal t5xx tLatency conntrack fileHandles pidLimit systemdFailed'
     ),
-    blobs: ids('fpmBusiest topSites caddyVersion certSoonest traefikVersion unhealthyBackends'),
+    blobs: ids(
+      'fpmBusiest topSites caddyVersion certSoonest traefikVersion unhealthyBackends phpVersions webEngines failedUnits'
+    ),
   },
   'managed.database': {
     doubles: [
@@ -521,40 +564,33 @@ const NETWORK_SPEC: EntityRowSpec<NetworkDeviceSample> = {
     entityNum('receiveDropsPerSecond'),
     entityNum('transmitDropsPerSecond'),
   ],
-  // Link state has no wire field yet; the slot is reserved and written empty.
-  blobs: [{ read: () => '' }],
+  // The NIC's negotiated link speed (Mb/s) rides as text on its own row.
+  blobs: [{ read: (nic, sample) => sizeText(linkSpeedOf(sample, nic.deviceId)) }],
   perPage: 3,
 }
 
 const FILESYSTEM_SPEC: EntityRowSpec<FilesystemSample> = {
-  doubles: [
-    entityNum('availableBytes'),
-    entityNum('freeInodes'),
-    // The sizes ride `extended.filesystemSizes`, looked up by filesystem id.
-    {
-      field: 'totalBytes',
-      read: (fs, sample) => filesystemSizeOf(sample, fs.filesystemId, 'totalBytes'),
-    },
-    {
-      field: 'totalInodes',
-      read: (fs, sample) => filesystemSizeOf(sample, fs.filesystemId, 'totalInodes'),
-    },
-  ],
-  blobs: [],
-  perPage: 4,
+  doubles: [entityNum('availableBytes'), entityNum('freeInodes')],
+  // The filesystem's size rides as text on its own row: `<bytes>/<inodes>`.
+  blobs: [{ read: (fs, sample) => filesystemSizeText(sample, fs.filesystemId) }],
+  perPage: 9,
 }
 
 const GPU_SPEC: EntityRowSpec<GpuSample> = {
   doubles: [
     entityNum('utilizationPercent'),
     entityNum('memoryUsedBytes'),
-    // The GPU's own memory size, from `extended.gpuSizes`, by GPU id.
-    { field: 'memoryTotalBytes', read: (gpu, sample) => gpuMemoryTotalOf(sample, gpu.gpuId) },
+    entityNum('memoryActivityPercent'),
     entityNum('pcieReceiveBytesPerSecond'),
     entityNum('pcieTransmitBytesPerSecond'),
     entityNum('throttlePercent'),
   ],
-  blobs: [gpuText('driver'), gpuText('model')],
+  // The GPU's memory size rides as text on its own row.
+  blobs: [
+    gpuText('driver'),
+    gpuText('model'),
+    { read: (g: GpuSample, s: MetricsSample) => sizeText(gpuMemoryTotalOf(s, g.gpuId)) },
+  ],
   perPage: 3,
 }
 
