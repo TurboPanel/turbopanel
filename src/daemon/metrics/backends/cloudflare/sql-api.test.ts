@@ -322,13 +322,12 @@ it('aggregateExpressionForDescriptor dispatches weighted-average/delta-sum/max/l
 
 const HOST_SERVER_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
 
-it('queryHostSeriesViaSqlApi: one bucket, one weighted-average metric, topology generation carried through', async () => {
+it('queryHostSeriesViaSqlApi: one bucket, one weighted-average metric', async () => {
   const result = await queryHostSeriesViaSqlApi(
     {
       accountId: 'acct123',
       apiToken: 'token-xyz',
-      fetch: async (_url, init) => {
-        const body = String(init?.body ?? '')
+      fetch: async () => {
         return new Response(
           envelopedSqlResponse([
             {

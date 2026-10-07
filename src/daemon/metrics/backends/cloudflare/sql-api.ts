@@ -58,7 +58,6 @@ import type {
   MetricEventsResult,
   PerEntityHostedFamily,
   ServerStatusTransitionReason,
-  SlotMapping,
   StatusHistoryEvent,
   StatusHistoryQuery,
   StatusHistoryResult,
