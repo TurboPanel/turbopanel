@@ -1278,8 +1278,8 @@ const DOCKER_V6: DockerUsageSample = {
   buildCacheReclaimableBytes: null,
 }
 
-it('v7 extended numeric fields land in the ext_* columns; a v6 sample writes real NULLs there', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-v7-' })
+it('v8 extended numeric fields land in the ext_* columns; a v6 sample writes real NULLs there', async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-v8-' })
   try {
     const store = makeStore(metricsDir)
     await store.writeSample(

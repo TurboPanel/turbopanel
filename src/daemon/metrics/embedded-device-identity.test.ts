@@ -1,5 +1,5 @@
 /**
- * Embedded-device identity for the v7 Analytics Engine write and read paths.
+ * Embedded-device identity for the v8 Analytics Engine write and read paths.
  *
  * `host.network` embeds NIC 1 and NIC 2 (and the lone extra filesystem) in
  * its own doubles, so the doubles carry no per-slot identity. Every such row
@@ -16,7 +16,7 @@
  * device the other's history.
  */
 import { assertEquals } from '@std/assert'
-import { V7_HOST_ROW_SPECS } from './backends/cloudflare/v7-layout.ts'
+import { V8_HOST_ROW_SPECS } from './backends/cloudflare/v8-layout.ts'
 import { it } from '@std/testing/bdd'
 import {
   buildMetricsSample,
@@ -159,8 +159,8 @@ function hostNetworkPoint(points: AnalyticsEngineDataPointLike[]): AnalyticsEngi
 
 // host.network's NIC0 rx-bytes/s embed slot: after the root filesystem pair
 // (double1..2), the folded filesystem pair (double3..4) and tcp retransmits
-// (double5), so double6 (index 5) in the v7 layout.
-const NIC0_RX_DOUBLE_INDEX = V7_HOST_ROW_SPECS['host.network'].doubles.indexOf('nic1.rx')
+// (double5), so double6 (index 5) in the v8 layout.
+const NIC0_RX_DOUBLE_INDEX = V8_HOST_ROW_SPECS['host.network'].doubles.indexOf('nic1.rx')
 
 // ---------------------------------------------------------------------------
 // Identity-addressed packing: each sample is packed with the mapping that

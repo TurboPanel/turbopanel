@@ -101,7 +101,7 @@ it('validateMetricsSample rejects a wrong metadata schema version', () => {
   assertEquals(result.ok, false)
 })
 
-it('validateMetricsSample accepts both v6 and v7 samples and keeps the wire version', () => {
+it('validateMetricsSample accepts both v6 and v8 samples and keeps the wire version', () => {
   for (const version of [METRICS_LEGACY_WIRE_VERSION, METRICS_SCHEMA_VERSION]) {
     const result = validateMetricsSample(validRaw({ metadata: { version } }), ctx())
     assertEquals(result.ok, true)
@@ -124,7 +124,7 @@ it('validateMetricsSample carries the durable flag and rejects a non-boolean one
   assertEquals(bad.ok, false)
 })
 
-it('validateMetricsSample accepts the v7 extended section and sanitizes it', () => {
+it('validateMetricsSample accepts the v8 extended section and sanitizes it', () => {
   const result = validateMetricsSample(
     validRaw({
       metadata: { version: METRICS_SCHEMA_VERSION },

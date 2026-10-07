@@ -1,7 +1,7 @@
 {
   "specVersion": 1,
-  "schemaVersion": 7,
-  "generatedBy": "scripts/metrics-v7-layout/generate.mjs",
+  "schemaVersion": 8,
+  "generatedBy": "scripts/metrics-v8-layout/generate.mjs",
   "plan": {
     "packing": "auto",
     "shortcuts": { "foldFs": true, "foldGpu": false, "skipDrive": true },

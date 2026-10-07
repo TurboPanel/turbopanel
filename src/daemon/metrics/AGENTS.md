@@ -1,31 +1,31 @@
 # Server metrics — AGENTS.md
 
 Host-metrics ingestion (`POST /api/daemon/v1/metrics`, never wakes the DO),
-backend storage, and the query/caching API — **v7 stored schema**
-(`metrics-contract.ts`, `METRICS_SCHEMA_VERSION = 7`; v6-stamped samples are still
-accepted on the wire and written as v7 rows, see "Metrics v7" below). Metrics are grouped by **entity**
+backend storage, and the query/caching API — **v8 stored schema**
+(`metrics-contract.ts`, `METRICS_SCHEMA_VERSION = 8`; v6-stamped samples are still
+accepted on the wire and written as v8 rows, see "Metrics v8" below). Metrics are grouped by **entity**
 (host, network device, filesystem, block device, GPU, hardware signal, ingress
 source, database proxy) with a stable logical id per entity, every leaf value is
 `number | null` (missing is always `null`, never coerced to `0`), and no value's
 presence is inferred from bitmask/part membership. Ingest accepts
-`metadata.version` 6 or 7 (`METRICS_WIRE_VERSIONS`) during the daemon transition
+`metadata.version` 6 or 8 (`METRICS_WIRE_VERSIONS`) during the daemon transition
 and rejects anything else; every stored hosted row carries blob3 `"8"` (`AE_STORAGE_VERSION`, the storage layout revision).
 
-## Metrics v7 (authoritative for new rows)
+## Metrics v8 (authoritative for new rows)
 
-The v7 layout is **fixture-pinned**: `V7-LAYOUT.md` (generated) and
-`testing/v7-layout.fixture.json` are the spec, produced from the owner-sealed
-plan by `scripts/metrics-v7-layout/generate.mjs`; `backends/cloudflare/v7-layout.ts`
-must reproduce them exactly (`v7-layout.test.ts`). The family catalog and blob
+The v8 layout is **fixture-pinned**: `V8-LAYOUT.md` (generated) and
+`testing/v8-layout.fixture.json` are the spec, produced from the owner-sealed
+plan by `scripts/metrics-v8-layout/generate.mjs`; `backends/cloudflare/v8-layout.ts`
+must reproduce them exactly (`v8-layout.test.ts`). The family catalog and blob
 tables below describe the **v6** layout, kept only as the read-side reference for
-v6 rows; where they disagree with `V7-LAYOUT.md`, v7 wins.
+v6 rows; where they disagree with `V8-LAYOUT.md`, v8 wins.
 
-- **Dataset** `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}` (hard cut, per-env `<env>_` prefix); pinned for every wrangler environment by `wrangler-datasets.test.ts`. Readers accept only blob3 = `AE_STORAGE_VERSION` (`AE_SUPPORTED_SCHEMA_VERSIONS` = [8]): the sizes amendment reused hosted slots under wire version 7, so rows stamped earlier are skipped, never read with the new slot meanings. Bump `AE_STORAGE_VERSION` whenever a slot changes meaning.
+- **Dataset** `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}` (hard cut, per-env `<env>_` prefix); pinned for every wrangler environment by `wrangler-datasets.test.ts`. Readers accept only blob3 = `AE_STORAGE_VERSION` (`AE_SUPPORTED_SCHEMA_VERSIONS` = [8]): the sizes amendment reused hosted slots under wire version 8, so rows stamped earlier are skipped, never read with the new slot meanings. Bump `AE_STORAGE_VERSION` whenever a slot changes meaning.
 - **Rows**: `host.system` (liveness, bare serverId index), `host.io`, `host.network`, `host.web` on every host; `managed.database` only with managed databases; `block` (>1 drive, 3/row), `network` (NIC 3+, 3/row), `filesystem` (9/row; exactly one extra filesystem is folded into `host.network`), `gpu` (3/row, physical or real passthrough), `hardware.physical` (physical, up to 19 signals). VPS 4 rows, physical 5-6, +1 with databases.
 - **Envelope**: blob1 kind, blob2 family, blob3 `"8"` (the storage layout revision, never the wire version), blob4 reserved (written empty; it held the topology generation), blob5 sample time as UTC text `YYYY-MM-DD hh:mm:ss`, blob6 entity ids (on `host.network`: `nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>`, so each row names its embedded devices), content text from blob7, double20 interval. Sequence, plan generation and page are no longer written. Event and status rows keep their v6 blob positions except blob3 and the blob5 text format.
-- **Wire negotiation**: wire feature `metrics-v7` (`DAEMON_WIRE_FEATURES`, both repos). A daemon stamps `METRICS_LEGACY_WIRE_VERSION` (6) until the control plane it is attached to advertises it. v7 data rides the optional `extended` section and `metadata.durable`; a v6 sample writes the same v7 rows with sentinels and empty text for the absent data.
+- **Wire negotiation**: wire feature `metrics-v8` (`DAEMON_WIRE_FEATURES`, both repos). A daemon stamps `METRICS_LEGACY_WIRE_VERSION` (6) until the control plane it is attached to advertises it. v8 data rides the optional `extended` section and `metadata.durable`; a v6 sample writes the same v8 rows with sentinels and empty text for the absent data.
 - **Caddy is totals only** (no per-site fields anywhere); slow families are still re-sent every sample.
-- **Reads**: the missing-metric sentinel is tested as `col > -pow(10, 307)` (`aePresentValueSql`), never by equality; a delta-sum over an absent family is null, not 0. The v6+v7 dual-dataset merge and descriptors for the new v7 metrics (OOM kills, Docker health, cert expiry, text blobs) are reader work.
+- **Reads**: the missing-metric sentinel is tested as `col > -pow(10, 307)` (`aePresentValueSql`), never by equality; a delta-sum over an absent family is null, not 0. The v6+v8 dual-dataset merge and descriptors for the new v8 metrics (OOM kills, Docker health, cert expiry, text blobs) are reader work.
 
 Root context: `../../../AGENTS.md`. Daemon cell: `../cell/AGENTS.md`. Operator
 glossary (what each console chart means): `../../../../website/docs/metrics/`.
@@ -34,7 +34,7 @@ Human docs + AE cost model:
 
 The store surface is unsuffixed: `ServerMetricsStore`,
 `resolveServerMetricsStore`, binding `SERVER_METRICS`, dataset
-`turbopanel_server_metrics_v7`. `DuckDbParquetServerMetricsStore` implements
+`turbopanel_server_metrics_v8`. `DuckDbParquetServerMetricsStore` implements
 only `ServerMetricsStore` — its
 `queryHostSeries`/`queryHostSummary`/`queryFleetHostSnapshot` accept the current
 canonical metric names. `app.ts`/`db.ts`/`workers.ts` carry only the
@@ -212,7 +212,7 @@ free on Analytics Engine, so the pipeline never chooses which families to drop.
 marker (`markServerLiveSessionActive`, keyed under `tp:metrics:live-session:`)
 tracks active lease ids per server and is added/removed by `POST`/`DELETE
 /servers/:id/metrics/live`; concurrent viewers share it. A sample with
-`metadata.durable === false` (a v7 daemon's 10 s live sample) is cached for the
+`metadata.durable === false` (a v8 daemon's 10 s live sample) is cached for the
 overlay (`cacheLiveSample`, even if this colo never saw the marker) and **never**
 reaches `store.writeSample`. The parallel 60 s baseline (`durable` true or
 absent) is stored and, while a lease is active, also cached. A sample with no
@@ -235,7 +235,7 @@ limit, logical cores, root filesystem bytes and inodes; `extended.filesystemSize
 per extra filesystem; `extended.gpuSizes` per GPU memory), and both stores keep
 them beside the readings (`ext_*` columns and per-entity `total_bytes` /
 `total_inodes` / `memory_total_bytes` columns on DuckDB; slots on the hosted
-rows, see `V7-LAYOUT.md`). A resize or a balloon therefore changes the size on
+rows, see `V8-LAYOUT.md`). A resize or a balloon therefore changes the size on
 the next sample and nothing else: no history to restate. The server keeps only
 its latest hardware facts (one `server.metadata.hardware` key, overwritten at most every five
 minutes; see `features/servers/server-topology-records.ts`), and every stored
@@ -250,7 +250,7 @@ totals, so old daemons keep their percentages. Over a bucket a size averages lik
 any gauge, so a balloon inside one bucket gives the percentage against the average
 size; at the native 60 s resolution it is exact.
 
-The hosted layout (owner amendment 2026-10-07, `V7-LAYOUT.md`) gave nine
+The hosted layout (owner amendment 2026-10-07, `V8-LAYOUT.md`) gave nine
 already-selected data points for the eight host sizes plus IRQ pressure "full":
 pegged cores, hosting free (read from the disk that holds hosting), Docker used
 (the sum of the four Docker groups), router backends up (total minus the
@@ -280,7 +280,7 @@ below).
 | Binding / config | Value                                                                                                                                                                                        |
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Wrangler binding | `SERVER_METRICS` (`analytics_engine_datasets`)                                                                                                                                               |
-| Dataset name     | `turbopanel_server_metrics_v7` by default (`AE_DATASET_NAME`, `field-map.ts`; always `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}`); every hosted environment has its own `<testing | staging | live>_turbopanel_server_metrics_v7`: wrangler.jsonc sets it on the `SERVER_METRICS`binding (writes) AND as`TURBOPANEL_SERVER_METRICS_AE_DATASET`(the SQL read side,`resolveCloudflareAnalyticsSqlConfig`); `wrangler-datasets.test.ts` keeps the two equal and unique per env |
+| Dataset name     | `turbopanel_server_metrics_v8` by default (`AE_DATASET_NAME`, `field-map.ts`; always `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}`); every hosted environment has its own `<testing | staging | live>_turbopanel_server_metrics_v8`: wrangler.jsonc sets it on the `SERVER_METRICS`binding (writes) AND as`TURBOPANEL_SERVER_METRICS_AE_DATASET`(the SQL read side,`resolveCloudflareAnalyticsSqlConfig`); `wrangler-datasets.test.ts` keeps the two equal and unique per env |
 | Write API        | `writeDataPoint({ indexes, doubles, blobs })` — sync, non-blocking; one call per family row actually emitted (2 baseline + 0..N presence-gated), full 20/20 doubles/blobs shape on every row |
 | SQL API          | `POST .../analytics_engine/sql` with `Authorization: Bearer <token>`; response envelope rows under `result.data`                                                                             |
 | Max range        | Default `AE_DEFAULT_MAX_RANGE_SECONDS` = 90 days; override via `TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS`                                                                              |
@@ -485,7 +485,7 @@ tokens (`doubleN`/`blobN` literals, the `-1e308` sentinel) stay confined to
 `backends/cloudflare/`; (2) backend-private page-identifier symbols
 (`AE_BLOB_PAGE_INDEX`, `AE_BLOB_SOURCE_OR_IDENTITY_INDEX`,
 `entityIdInPageIdentityPredicate`) never leak outside `backends/cloudflare/`.
-Ingest accepts wire versions 6 and 7 (v7 adds the optional `extended`
+Ingest accepts wire versions 6 and 8 (v8 adds the optional `extended`
 section); any other version is rejected outright.
 
 #### Server metrics — query API & caching
@@ -541,7 +541,7 @@ clamped to 11. `MetricsCapabilityPlan` fields: `liveMinIntervalSeconds`,
 `detailedBlockDeviceSlots`, `gpuSlots`, `gpuInterconnectEnabled`,
 `physicalHardwareSignalSlots`, `managedIngressEnabled`,
 `databaseProxyMetricsEnabled`, `managedDockerEnabled`,
-`hardwareHealthEventsEnabled` (v7 tier mapping: Docker metrics are on every plan, `managedDockerEnabled` is never tier-gated; the entry tier keeps 1 extra filesystem and the same 19 physical sensor slots as every plan; GPU slots S1 0, S2 1, S3 1, then 4, 4, 6, 8, 8; drive slots 3, 6, 6, 9, 12, 18, 21, 24; GPU-only sensor signals never make a machine physical; real whole disks, RAID members included, take drive slots while md arrays and partitions never count as drives) — deliberately no pricing-tier names/literals,
+`hardwareHealthEventsEnabled` (v8 tier mapping: Docker metrics are on every plan, `managedDockerEnabled` is never tier-gated; the entry tier keeps 1 extra filesystem and the same 19 physical sensor slots as every plan; GPU slots S1 0, S2 1, S3 1, then 4, 4, 6, 8, 8; drive slots 3, 6, 6, 9, 12, 18, 21, 24; GPU-only sensor signals never make a machine physical; real whole disks, RAID members included, take drive slots while md arrays and partitions never count as drives) — deliberately no pricing-tier names/literals,
 only slot counts and toggles. v6 removed `baselineIntervalSeconds` (the daemon's
 steady cadence is fixed, not sold), `cpuDetailEnabled`/ `memoryDetailEnabled`
 (depth is always on — doubles inside a row are free, so gating them only
@@ -569,7 +569,7 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
 5. The page-identifier symbols (`AE_BLOB_PAGE_INDEX`,
    `AE_BLOB_SOURCE_OR_IDENTITY_INDEX`, `entityIdInPageIdentityPredicate`) never
    appear outside `backends/cloudflare/`.
-6. Ingest accepts wire versions 6 and 7 only and rejects any other version
+6. Ingest accepts wire versions 6 and 8 only and rejects any other version
    outright. There is no migration of existing metrics data — enforced by
    `validateMetricsSample`.
 7. `DuckDbParquetServerMetricsStore` is the single Deno store instance — never
@@ -621,7 +621,7 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
 20. The store/binding/dataset are unsuffixed. `app.ts`/`db.ts`/`workers.ts`/
     `do.ts`/`offline-sweep.ts`/`store-selection*.ts` carry only
     `serverMetricsStore`, `resolveServerMetricsStore`, and `SERVER_METRICS`
-    (dataset `turbopanel_server_metrics_v7`). Do not reintroduce a
+    (dataset `turbopanel_server_metrics_v8`). Do not reintroduce a
     version-suffixed parallel store, binding, or dataset.
 
 ## Coverage and gaps

@@ -143,17 +143,17 @@
   "triggers": { "crons": ["* * * * *"] },
   // Host metrics (Workers Analytics Engine). AE datasets are account-scoped and
   // auto-created on first write. Each environment (testing, staging, live) has
-  // its OWN dataset, `<env>_turbopanel_server_metrics_v7`, so their rows, retention
+  // its OWN dataset, `<env>_turbopanel_server_metrics_v8`, so their rows, retention
   // and any reset never mix; the top level (local `wrangler dev`) keeps the bare
   // name. The binding's `dataset` is what is written; the read side (SQL API) takes
   // its table from `TURBOPANEL_SERVER_METRICS_AE_DATASET` — an env must set both to
   // the same value (guarded by src/daemon/metrics/backends/cloudflare/wrangler-datasets.test.ts).
   // Rows are keyed by index1=serverId.
-  // Schema v7 (blob3 "7"): every sample writes four always-present host rows
+  // Schema v8 (blob3 "8"): every sample writes four always-present host rows
   // (host.system, host.io, host.network, host.web), managed.database when managed
   // databases run, presence-gated pages for block/network/filesystem/gpu/
   // hardware.physical, and one row per event — see
-  // src/daemon/metrics/backends/cloudflare/field-map.ts and src/daemon/metrics/V7-LAYOUT.md. `workers.ts` wires this binding
+  // src/daemon/metrics/backends/cloudflare/field-map.ts and src/daemon/metrics/V8-LAYOUT.md. `workers.ts` wires this binding
   // straight into a real `CloudflareAnalyticsEngineServerMetricsStore` for
   // both writes and reads — metric samples, status transitions, and metric
   // events all land here directly.
@@ -163,7 +163,7 @@
   "analytics_engine_datasets": [
     {
       "binding": "SERVER_METRICS",
-      "dataset": "turbopanel_server_metrics_v7"
+      "dataset": "turbopanel_server_metrics_v8"
     }
   ],
   // Command execution logs (transcripts). Buckets are NOT auto-created — create
@@ -290,7 +290,7 @@
       "analytics_engine_datasets": [
         {
           "binding": "SERVER_METRICS",
-          "dataset": "testing_turbopanel_server_metrics_v7"
+          "dataset": "testing_turbopanel_server_metrics_v8"
         }
       ],
       "r2_buckets": [
@@ -339,7 +339,7 @@
         // non-production builds with it (live shows no label).
         "TURBOPANEL_ENVIRONMENT": "testing",
         // Read side of SERVER_METRICS above: must name the same dataset.
-        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "testing_turbopanel_server_metrics_v7",
+        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "testing_turbopanel_server_metrics_v8",
         "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90",
         // Upgrade tick every 5 minutes instead of 15 so a testing-fleet rollout
         // finishes in minutes. Staging and live keep the 15-minute default.
@@ -463,7 +463,7 @@
       "analytics_engine_datasets": [
         {
           "binding": "SERVER_METRICS",
-          "dataset": "staging_turbopanel_server_metrics_v7"
+          "dataset": "staging_turbopanel_server_metrics_v8"
         }
       ],
       "r2_buckets": [
@@ -511,7 +511,7 @@
         // non-production builds with it (live shows no label).
         "TURBOPANEL_ENVIRONMENT": "staging",
         // Read side of SERVER_METRICS above: must name the same dataset.
-        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "staging_turbopanel_server_metrics_v7",
+        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "staging_turbopanel_server_metrics_v8",
         "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90",
         // Automatic failover off: an accepted dead-primary event is recorded
         // as blocked (auto_failover_disabled), nothing is fenced or promoted.
@@ -608,7 +608,7 @@
       "analytics_engine_datasets": [
         {
           "binding": "SERVER_METRICS",
-          "dataset": "live_turbopanel_server_metrics_v7"
+          "dataset": "live_turbopanel_server_metrics_v8"
         }
       ],
       "r2_buckets": [
@@ -652,7 +652,7 @@
         "TURBOPANEL_UPDATE_CHANNEL": "release",
         "TURBOPANEL_ENVIRONMENT": "live",
         // Read side of SERVER_METRICS above: must name the same dataset.
-        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "live_turbopanel_server_metrics_v7",
+        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "live_turbopanel_server_metrics_v8",
         "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90",
         // Automatic failover off (see testing): blocked auto_failover_disabled.
         "TURBOPANEL_AUTO_FAILOVER": "off"

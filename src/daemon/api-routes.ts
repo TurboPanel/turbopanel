@@ -1711,7 +1711,7 @@ export function registerDaemonApiRoutes<E extends Env>(
         })
       }
 
-      // Live leases. A v7 daemon keeps its 60 s baseline running during a
+      // Live leases. A v8 daemon keeps its 60 s baseline running during a
       // lease and flags the parallel 10 s live samples `durable: false`: those
       // feed the chart's live overlay ONLY and are never stored (storing them
       // is the 6x row cost the baseline-only rule removes). They are buffered

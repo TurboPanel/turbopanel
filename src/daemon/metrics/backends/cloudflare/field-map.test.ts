@@ -11,7 +11,7 @@ import {
   type MetricsSampleInput,
 } from '../../../../contracts/metrics-contract.ts'
 import type { AuthenticatedMetricsSample, SlotMapping } from '../../types.ts'
-import { V7_HOST_ROW_SPECS } from './v7-layout.ts'
+import { V8_HOST_ROW_SPECS } from './v8-layout.ts'
 import {
   _internalFieldMap,
   AE_BLOB_CAPABILITY_PLAN_GENERATION_INDEX,
@@ -274,7 +274,7 @@ it('metrics rows: blob1 kind, blob2 family, blob3 "8", blob4 empty, blob5 UTC te
 })
 
 it('blob3 is always the storage layout revision "8", even for a v6-stamped sample, so rows written before the sizes amendment are never read with the new slot meanings', () => {
-  for (const version of [6, 7] as const) {
+  for (const version of [6, 8] as const) {
     const input = baseInput()
     input.metadata.version = version
     const built = buildMetricsSample(input)
@@ -396,7 +396,7 @@ const EXTENDED: MetricsExtended = {
 /**
  * One sample in which every host-row data point has its own value, keyed by the
  * catalogue id the layout uses, so each row can be checked slot by slot against
- * `V7_HOST_ROW_SPECS` (the layout, not hand-copied positions).
+ * `V8_HOST_ROW_SPECS` (the layout, not hand-copied positions).
  */
 function fullHostSample(): {
   sample: AuthenticatedMetricsSample
@@ -637,7 +637,7 @@ for (const family of ['host.system', 'host.io', 'host.network', 'host.web'] as c
     const { sample, expected } = fullHostSample()
     const point = pointFor(buildMetricsDataPoints(sample), family)
     const slots: Record<number, number> = {}
-    V7_HOST_ROW_SPECS[family].doubles.forEach((id, index) => {
+    V8_HOST_ROW_SPECS[family].doubles.forEach((id, index) => {
       if (id === null) return
       if (!(id in expected)) throw new Error(`test has no value for ${id}`)
       slots[index] = expected[id]!
@@ -660,7 +660,7 @@ it('the 9 data points the owner dropped are written nowhere on the host rows', (
       'logsUsed',
     ]) {
       assertEquals(
-        V7_HOST_ROW_SPECS[family].doubles.includes(dropped),
+        V8_HOST_ROW_SPECS[family].doubles.includes(dropped),
         false,
         `${family} ${dropped}`
       )
@@ -708,14 +708,14 @@ it('host.network reclaimable total: the sum of the three df groups when the daem
       buildCacheReclaimableBytes: 4,
     },
   })
-  const slot = V7_HOST_ROW_SPECS['host.network'].doubles.indexOf('reclTotal')
+  const slot = V8_HOST_ROW_SPECS['host.network'].doubles.indexOf('reclTotal')
   assertEquals(pointFor(buildMetricsDataPoints(sample), 'host.network').doubles[slot], 7)
 })
 
 it('host.network: a NIC with any missing error/drop input has a sentinel problems slot, never a partial sum', () => {
   const nic = { ...mkNic('eth0'), receiveDropsPerSecond: null }
   const point = pointFor(buildMetricsDataPoints(buildSample({ networks: [nic] })), 'host.network')
-  const spec = V7_HOST_ROW_SPECS['host.network'].doubles
+  const spec = V8_HOST_ROW_SPECS['host.network'].doubles
   assertEquals(point.doubles[spec.indexOf('nic1.rx')], 1)
   assertEquals(point.doubles[spec.indexOf('nic1.problems')], AE_MISSING_METRIC_SENTINEL)
   assertEquals(point.doubles[spec.indexOf('nic2.rx')], AE_MISSING_METRIC_SENTINEL)
@@ -894,7 +894,7 @@ it('filesystem: exactly one extra filesystem folds into host.io; two or more pag
   )
   assertEquals(pointFor(points, 'filesystem', 1).blobs[AE_BLOB_ENTITY_IDS_INDEX], '/m9')
   // The folded slots stay empty once the filesystem pages.
-  const folded = V7_HOST_ROW_SPECS['host.io'].doubles.indexOf('fs_availableBytes')
+  const folded = V8_HOST_ROW_SPECS['host.io'].doubles.indexOf('fs_availableBytes')
   assertEquals(pointFor(points, 'host.io').doubles[folded], AE_MISSING_METRIC_SENTINEL)
 })
 
@@ -1063,7 +1063,7 @@ it('events: the capability-plan generation is still stamped on event rows (blob8
 // Read-side lookups
 // ---------------------------------------------------------------------------
 
-it('doubleIndexForHostField resolves stored fields to their v7 row and slot', () => {
+it('doubleIndexForHostField resolves stored fields to their v8 row and slot', () => {
   assertEquals(doubleIndexForHostField('host.cpu', 'busyPercent'), {
     family: 'host.system',
     doubleIndex: 0,
@@ -1094,7 +1094,7 @@ it('doubleIndexForHostField resolves stored fields to their v7 row and slot', ()
   })
 })
 
-it('a field v7 dropped has no slot (findHostFieldSlot undefined, doubleIndexForHostField throws)', () => {
+it('a field v8 dropped has no slot (findHostFieldSlot undefined, doubleIndexForHostField throws)', () => {
   assertEquals(findHostFieldSlot('host.cpu', 'procsRunning'), undefined)
   assertEquals(findHostFieldSlot('host.memory', 'swapInBytesPerSecond'), undefined)
   // Owner-dropped 2026-10-07: derivable or duplicated elsewhere.
@@ -1104,12 +1104,12 @@ it('a field v7 dropped has no slot (findHostFieldSlot undefined, doubleIndexForH
   assertThrows(
     () => doubleIndexForHostField('host.cpu', 'procsRunning'),
     TypeError,
-    'no AE v7 host double slot'
+    'no AE v8 host double slot'
   )
 })
 
 it('the layout fits the AE page budgets at module load', () => {
-  _internalFieldMap.assertV7LayoutWithinBudgets()
+  _internalFieldMap.assertV8LayoutWithinBudgets()
 })
 
 // ---------------------------------------------------------------------------
@@ -1135,8 +1135,8 @@ function maxCardinalitySample() {
   })
 }
 
-it('the contract array caps stay under the Analytics Engine invocation limit in v7', () => {
-  // v7 folded Caddy and ProxySQL into host rows, so 64-entry arrays plus the
+it('the contract array caps stay under the Analytics Engine invocation limit in v8', () => {
+  // v8 folded Caddy and ProxySQL into host rows, so 64-entry arrays plus the
   // 16-event cap top out at 4 host rows + 22 + 21 + 8 + 22 + 4 pages + 16 events.
   const points = buildMetricsDataPoints(maxCardinalitySample())
   assertEquals(points.length, 4 + 22 + 21 + 8 + 22 + 4 + 16)

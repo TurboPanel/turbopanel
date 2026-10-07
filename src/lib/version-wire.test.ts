@@ -203,8 +203,8 @@ test('deno-native-apps-v1 is an advertised wire feature and raised no floor', ()
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
-test('advertises metrics-v7-sizes, the feature a daemon checks before it sends the per-sample sizes', () => {
-  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes('metrics-v7-sizes'), true)
-  // A control plane that advertises the sizes also advertises metrics-v7 (the sizes ride its `extended` block).
-  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes('metrics-v7'), true)
+test('advertises metrics-v8-sizes, the feature a daemon checks before it sends the per-sample sizes', () => {
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes('metrics-v8-sizes'), true)
+  // A control plane that advertises the sizes also advertises metrics-v8 (the sizes ride its `extended` block).
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes('metrics-v8'), true)
 })
