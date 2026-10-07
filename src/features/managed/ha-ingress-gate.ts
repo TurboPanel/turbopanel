@@ -16,6 +16,8 @@
  * - any listed command still queued, sent or running: wait;
  * - every required server has a succeeded command: exactly one writer is
  *   checked, then `completed`;
+ * - an attested-lost server (host-loss failover) is left out of the required set
+ *   and noted as `ingressPendingServerIds`: it is offline and cannot answer;
  * - otherwise terminal `failed` + `needsOperator`, naming the servers whose
  *   ingress was not repointed (`ingressNotRepointed`).
  *
@@ -151,7 +153,8 @@ export async function parkRecoveryAtIngressGate(
   fanOut: {
     requiredServerIds: readonly string[]
     commandIds: readonly string[]
-  }
+  },
+  pendingServerIds: readonly string[] = []
 ): Promise<void> {
   await updateRecoveryLocked(db, recoveryId, (current) => ({
     state: 'reconciling-ingress',
@@ -159,6 +162,7 @@ export async function parkRecoveryAtIngressGate(
       ...current.metadata,
       ingressCommandIds: [...fanOut.commandIds],
       ingressServerIds: [...fanOut.requiredServerIds],
+      ...(pendingServerIds.length > 0 ? { ingressPendingServerIds: [...pendingServerIds] } : {}),
     },
   }))
   await evaluateIngressGate(db, recoveryId)

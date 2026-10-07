@@ -106,11 +106,11 @@ stays its default for footprint.
 **Adding, promoting, or retiring a series** means editing
 `MANAGED_ENGINE_RELEASES` here plus the two mirrors, in the same change:
 
-| Layer                           | File                                                                                  | Pinned by                      |
-| ------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------ |
-| Control plane (source of truth) | `releases.ts`                                                                         | `releases.test.ts`             |
+| Layer                           | File                                                                                   | Pinned by                      |
+| ------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------ |
+| Control plane (source of truth) | `releases.ts`                                                                          | `releases.test.ts`             |
 | Daemon payload allowlist        | `turbopaneld/src/contracts/commands-contracts.ts` (`MANAGED_ALLOWED_IMAGES_BY_ENGINE`) | `command-types-parity.test.ts` |
-| UI picker                       | `ui/src/lib/managed-releases.ts`                                                      | `managed-releases.test.ts`     |
+| UI picker                       | `ui/src/lib/managed-releases.ts`                                                       | `managed-releases.test.ts`     |
 
 Everything else derives: `settings.ts` allowlists (`POSTGRES_ALLOWED_IMAGES` /
 `MYSQL_ALLOWED_IMAGES` / `MARIADB_ALLOWED_IMAGES`, via
@@ -376,14 +376,14 @@ named. Store/serve `ports` (configured, `null` per family = inherit) and
 
 ## Exposure / connection shape
 
-| Surface                    | Shape                                                                                                                                                                                                                                                                                                                                               |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Client connection endpoint | Shared ProxySQL host:port on the **placement server** (member or bound consumer) — port from the **server-owner** org's listener config, default pgsql `15432` / mysql `13306` (see Client listener ports above), TLS to the **server-owner Organization CA**, DSN TLS parameter from the effective `ManagedSslMode` (see Client TLS above)                  |
-| Routing                    | ProxySQL hostgroups map each login's `connectionRole` → primary/replica backends over the local Docker network, a fabric relay address over `tp0`, or a datacenter private address (see Client routing above; `^SELECT` rules only under `routing.autoReadSplit`)                                                                                   |
-| Engine containers          | Reachable only on the organization's managed network (container DNS / IP from apply peers); no host `ports:`. That network's name is the `network(kind='managed')` row's bare UUID — allocated by `ensureOrganizationManagedNetwork`, never a literal (`../db/AGENTS.md`; daemon side: `turbopaneld/src/managed/AGENTS.md` → **Compose project names**)                                                                                                                                                                                                                                                       |
-| Desired-state command      | Whole-server `managed.ingress.reconcile` builds `clusters[]` + **resealed frontend user passwords** for every managed cluster needed on that server (local members **and** clusters bound by compose services placed on the server). Binding lookup is scoped to the target org + server; cluster members/users/endpoints are batched per reconcile |
-| Organization CA scoping    | Organization CA and frontend leaf for ProxySQL come from **`server.organization_id`**, with SANs for advertised listener host/IP — not only synthetic names                                                                                                                                                                                         |
-| Username uniqueness        | Logins unique across every cluster on servers owned by the same organization (see Login namespace)                                                                                                                                                                                                                                                  |
+| Surface                    | Shape                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Client connection endpoint | Shared ProxySQL host:port on the **placement server** (member or bound consumer) — port from the **server-owner** org's listener config, default pgsql `15432` / mysql `13306` (see Client listener ports above), TLS to the **server-owner Organization CA**, DSN TLS parameter from the effective `ManagedSslMode` (see Client TLS above)             |
+| Routing                    | ProxySQL hostgroups map each login's `connectionRole` → primary/replica backends over the local Docker network, a fabric relay address over `tp0`, or a datacenter private address (see Client routing above; `^SELECT` rules only under `routing.autoReadSplit`)                                                                                       |
+| Engine containers          | Reachable only on the organization's managed network (container DNS / IP from apply peers); no host `ports:`. That network's name is the `network(kind='managed')` row's bare UUID — allocated by `ensureOrganizationManagedNetwork`, never a literal (`../db/AGENTS.md`; daemon side: `turbopaneld/src/managed/AGENTS.md` → **Compose project names**) |
+| Desired-state command      | Whole-server `managed.ingress.reconcile` builds `clusters[]` + **resealed frontend user passwords** for every managed cluster needed on that server (local members **and** clusters bound by compose services placed on the server). Binding lookup is scoped to the target org + server; cluster members/users/endpoints are batched per reconcile     |
+| Organization CA scoping    | Organization CA and frontend leaf for ProxySQL come from **`server.organization_id`**, with SANs for advertised listener host/IP — not only synthetic names                                                                                                                                                                                             |
+| Username uniqueness        | Logins unique across every cluster on servers owned by the same organization (see Login namespace)                                                                                                                                                                                                                                                      |
 
 Connection info helpers surface the ProxySQL frontend port/host when exposure is
 enabled (`resolveManagedAccessEndpoints` on `GET …/managed` → `endpoints[]`);
@@ -528,13 +528,12 @@ when an apply/lifecycle result returns, so an idle healthy cluster's
 observation ages past the gate's 120s window. When the stored observation is
 missing, unparseable, or stale (`isManagedReplicaObservationStale` — keyed on
 age, not on the gate's error code, because the gate answers
-`managed_replica_not_streaming` *before* it reads `observedAt`), the route asks
+`managed_replica_not_streaming` _before_ it reads `observedAt`), the route asks
 the target's daemon for a fresh reading first (`managed-health-request`, 8s,
 `src/client/managed/health-probe.ts`, feature `managed-health-v1`) and runs the
 **unchanged** gate on it. **Fail-closed is preserved:** timeout, offline host,
 a daemon without the feature, a daemon error, a malformed reply, or a reply for
-another member all fall back to the gate on the stored observation — today's
-409. `force` never probes. `GET …/managed/status?refresh=1` (the panel's
+another member all fall back to the gate on the stored observation — today's 409. `force` never probes. `GET …/managed/status?refresh=1` (the panel's
 Refresh) probes every **replica** in parallel and returns
 `healthRefresh: { observed, unavailable }`; a plain GET stays DB-only. The probe
 writes replication only (never `replica.status`). Automatic failover never
@@ -611,6 +610,7 @@ observation (`metadata.replication`) and apply their own freshness rules
 unchanged (120 s); they are unaffected by the 30 s health report push.
 
 Fresh readings come from two sources:
+
 - The daemon's own push (`managed-health-report`, feature
   `managed-health-report-v1`, every 30 s) writes to a display-only field
   (`metadata.replicationDisplay`): only the reporting server's own replicas are
@@ -650,7 +650,7 @@ all:
 3. `PRIMARY_HOST_DETECTORS` (`postgres-probe`): `sourceMemberId` is the
    current primary member and the reporter is that member's server, so a stale
    daemon (old primary after a switchover) can never fail over the new primary.
-3a. `orchestrator` events are bound to the CURRENT primary
+   3a. `orchestrator` events are bound to the CURRENT primary
    (`orchestratorBindingRejection`): the daemon sends Orchestrator's key for
    the dead instance (`instanceHost` + `instancePort`, feature
    `managed-ha-instance-v1`), and it must equal the primary's address and port
@@ -707,7 +707,7 @@ all:
    never `detecting`, which would hold the in-flight slot
    (`uniq_recovery_inflight_managed`) and make every later switchover / DR
    answer `managed_busy`. With a queue: fence (drain + `managed.lifecycle
-   stop`; an unreachable old primary blocks) then promote.
+stop`; an unreachable old primary blocks) then promote.
 8. A fence stop or promote/recover command that cannot be enqueued turns the
    row terminal `blocked` (`FENCE_STOP_UNQUEUED_MESSAGE` /
    `PROMOTE_UNQUEUED_MESSAGE`) instead of leaving `fencing` / `promoting`
@@ -739,9 +739,76 @@ A rejected event is logged and dropped (no recovery row). An accepted one is
 logged with its evidence and records `metadata.detector` /
 `metadata.detectorEvidence` on the recovery row.
 
-Whole-host loss is deliberately **not** a detector: nothing can fence a host
-that is gone, so it stays manual with an alert. Widening it (Option A) is a new
-entry in `AUTOMATIC_FAILOVER_DETECTORS` once fencing can cope.
+Whole-host loss is **not** a `managed-ha-event` detector (a dead host sends
+nothing): the control plane detects it itself, see **Whole-host loss** below.
+
+### Whole-host loss (power cut)
+
+Both runtimes' sweep ticks (Workers cron `reconcile` phase first, self-hosted
+Deno timer) call `daemon/cell/host-loss-tick.ts` → `ha-host-loss-sweep.ts`
+(stateless: every tick re-reads who is offline) and `ha-return-fence.ts`. The
+rule is the pure `ha-host-loss.ts`; anything short of a clear yes is an
+**alert-only** terminal `blocked` row (reason in plain words,
+`metadata.detector = 'host-loss'`, `hostLossIncident = <serverId>@<offline
+mark>`; repeats of the same reason fold into one row), never a promotion:
+
+1. The primary's server has been offline (`server.status_changed_at`) for the
+   whole **window** (`TURBOPANEL_HOST_LOSS_WINDOW_SECONDS`, default 120, clamped
+   60-300), on top of the 90-150 s the offline sweep needs to notice. A host
+   that returns inside it stops being a candidate: nothing happens.
+2. Not within 10 minutes of an operator `server.reboot` of that server or while
+   a daemon update is in flight. Never later than 7.5 minutes after the offline
+   mark (`HOST_LOSS_LAST_DECISION_MS` = the fresh-standby gate's 10 minute
+   failure span minus the 150 s mark lag; the gate's receipt check does not
+   depend on when the probe runs, so without this cap a retry long after the
+   loss would still pass it): later is alert-only (`too_late`). Not for a host
+   offline over half an hour.
+3. Not when more than half of the organization's servers are offline.
+4. PostgreSQL only (MySQL/MariaDB replicas read `reconnecting` without a source
+   and cannot be proven caught up: alert, then manual promote).
+5. The dead primary's daemon advertised `managed-ha-boot-hold-v1`.
+6. Every other member's server is connected and answers a fresh
+   `managed-health-request`, and **none** is still receiving (`streaming`) from
+   the primary. One that hears the primary vetoes (the host is alive, only its
+   link to the control plane is down).
+
+Then `beginAutomaticFailover` runs with `hostLossIncident`: the per-environment
+switch (off: `auto_failover_disabled` row), the persisted 15 minute cooldown, a
+healthy same-DC `failover` replica proven by the fresh-standby gate anchored on
+`offline mark - 150 s` (the earliest the host can have died), and a command queue all
+apply unchanged. `beginRecovery` then skips the drain/stop (nothing can reach
+the host), flags the old primary `needs_resync`, records `fenceBasis =
+'host-loss-attested'` with `fenced = false` (`hostLossFenceAdvance`;
+`verifyFenced` is untouched, so the engine-dead path still needs its stop) and
+queues the promote with `demoteMemberId`. If the host reconnected in between
+the row ends `blocked` (`HOST_LOSS_HOST_RETURNED_MESSAGE`) with nothing changed.
+
+**The old primary when it returns** (`ha-return-fence.ts`), keyed on the role
+the control plane holds, not on how it was replaced:
+
+- The daemon's boot hold (`turbopaneld/src/managed/AGENTS.md`) stopped it after
+  an unclean boot and reports `detector: 'boot-hold'`. `handleManagedHaEvent`
+  answers it (never as a failover): still `primary` and no recovery in flight
+  and no `needsOperator` row = `managed.lifecycle start` (`bootHoldRelease`); a
+  replica = stays stopped, noted `returnFence: 'confirmed'`; in flight = no
+  answer, the daemon asks again in a minute.
+- `runReturnFenceSweep`: a `needs_resync` replica whose server is connected gets
+  one `managed.lifecycle stop` per reconnect (failed stops retried up to 5
+  times), metadata `returnFence`. The consumer projects **nothing** for it
+  (success or failure): it would overwrite `needs_resync` and mark the cluster
+  stopped/failed. It never resyncs: wiping the old primary's data is the
+  operator's choice (`POST .../members/:id/resync`), its un-replicated writes
+  exist nowhere else.
+
+**Alerts**: the offline alert (`server.offline`) now names the HA databases
+whose primary the server hosts and what happens next; the outcome is the
+recovery row in the journal. No new notification event (that needs a
+migration).
+
+Proven only by unit tests; the two-host power-cut runs (matrix H07, U11) are
+the live proof. Not covered: a primary that stays powered but is cut off from
+both the control plane and its replicas keeps taking local writes (they are
+lost on resync).
 
 **Fence bookkeeping is lock-serialized** (`ha-recovery.ts`). Every fence
 command row is created first, `metadata.fenceCommandIds` is written, and only

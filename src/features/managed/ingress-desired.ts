@@ -993,6 +993,8 @@ export async function fanOutManagedIngressReconcile(
     secretsConfig: SecretsConfig
     dataEncryptionSecrets: DerivedSecretsConfig
     extraServerIds?: readonly string[]
+    /** Servers to leave out (an attested-lost host cannot answer; it is repointed when it returns). */
+    excludeServerIds?: readonly string[]
     /** An HA recovery's id: stamped on every queued command so each result settles that journal row. */
     recoveryId?: string
   }>
@@ -1005,11 +1007,14 @@ export async function fanOutManagedIngressReconcile(
     .from(replica)
     .where(eq(replica.managedId, params.managedId))
   const consumerIds = await consumerServerIdsForManaged(db, params.managedId)
-  const serverIds = new Set<string>([
-    ...memberIds.map((row) => row.serverId),
-    ...consumerIds,
-    ...(params.extraServerIds ?? []),
-  ])
+  const excluded = new Set(params.excludeServerIds ?? [])
+  const serverIds = new Set<string>(
+    [
+      ...memberIds.map((row) => row.serverId),
+      ...consumerIds,
+      ...(params.extraServerIds ?? []),
+    ].filter((serverId) => !excluded.has(serverId))
+  )
 
   const outcome: ManagedIngressFanOutOutcome = {
     requiredServerIds: [],

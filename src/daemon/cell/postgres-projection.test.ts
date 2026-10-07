@@ -706,6 +706,23 @@ test('projectServerDaemon disconnected matches offline status patch', async () =
   assertEquals(getDaemon()?.projection?.daemonBuild, testDaemonBuild)
 })
 
+test('the offline mark records why it was written, and a reconnect clears it', async () => {
+  const { db, getDaemon } = createMockDb(
+    { key: baseKey, projection: { hostname: 'host-1' } },
+    { connected: true, statusChangedAt: '2020-01-01T00:00:00.000Z' }
+  )
+
+  await onDaemonDisconnected(db, serverId)
+  assertEquals(getDaemon()?.projection?.offlineReason, 'disconnect')
+  assertEquals(getDaemon()?.projection?.hostname, 'host-1')
+
+  await projectServerDaemon(db, serverId, { kind: 'online', identity: { hostname: 'host-1' } })
+  assertEquals(getDaemon()?.projection?.offlineReason, undefined)
+
+  await onDaemonDisconnected(db, serverId, undefined, 'sweep_stale')
+  assertEquals(getDaemon()?.projection?.offlineReason, 'sweep_stale')
+})
+
 test('projectServerDaemon heartbeat with unchanged daemonBuild writes nothing', async () => {
   const { db, updateCalls } = createMockDb(
     {
