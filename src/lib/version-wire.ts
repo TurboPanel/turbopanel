@@ -177,6 +177,7 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-replica-freshness-v1',
   'managed-ha-probe-v1',
   'managed-ha-instance-v1',
+  'managed-ha-boot-hold-v1',
   'metrics-v7',
   'php-site-modes-v1',
   'site-engine-nginx-apache-v1',
@@ -232,6 +233,18 @@ export const MANAGED_HA_PROBE_FEATURE: DaemonWireFeature = 'managed-ha-probe-v1'
  * daemon that does not list it keeps the legacy behavior (no binding).
  */
 export const MANAGED_HA_INSTANCE_FEATURE: DaemonWireFeature = 'managed-ha-instance-v1'
+
+/**
+ * After a host restart that was not a clean shutdown, the daemon holds each HA
+ * primary it runs (engine stopped) and reports it with `managed-ha-event`
+ * `detector: 'boot-hold'` until this control plane answers (`managed.lifecycle
+ * start` = still the primary; a role change = stays stopped). A daemon that
+ * lists this feature will not let a stale primary serve writes again unchecked,
+ * which is what lets the control plane promote a replica when it cannot reach
+ * a lost host (`features/managed/ha-host-loss.ts`). Without it the daemon
+ * releases its own hold, and the control plane never promotes on host loss.
+ */
+export const MANAGED_HA_BOOT_HOLD_FEATURE: DaemonWireFeature = 'managed-ha-boot-hold-v1'
 
 /**
  * Metrics schema v7 (`metadata.version` 7: the `extended` section and the

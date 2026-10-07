@@ -376,6 +376,26 @@ guard; `pnpm test:do` alone does not.
   else `git rev-parse HEAD`, and a deploy that cannot name a 40-hex commit is
   refused (so `/api/health` never reports `revision: unknown`). A failed
   migrate stops before wrangler runs.
+- **STAGING and LIVE use the same Workers Builds setup**, one Worker per
+  environment: `staging-instance` (branch `staging`, deploy command
+  `pnpm run deploy:staging`) and `instance` (branch `live`, deploy command
+  `pnpm run deploy:live`). Each needs its own build variables
+  (`TURBOPANEL_DATABASE_URL`, `TURBOPANEL_DEPLOY_CHECK_API_TOKEN`) pointing at
+  that environment's own database and Hyperdrive; a database URL that is not
+  the env's Hyperdrive origin is refused before anything migrates (`pnpm run
+  migrate` calls `check-deploy-env.mjs` for every env). By hand,
+  `deploy:staging` / `deploy:live` ask first: type the env name on a terminal,
+  or pass `--yes` without one. Workers Builds (it sets `WORKERS_CI_COMMIT_SHA`
+  and `WORKERS_CI`; either one skips the ask) and `deploy:testing` are never
+  asked. The ask covers deploys only, not a hand-run `pnpm run migrate`. The
+  queue (`staging-daemon-commands` / `daemon-commands`) with its `-dlq`
+  dead-letter queue and the R2 bucket must exist before the first deploy; the
+  Durable Object namespace and rate limiters come from `wrangler.jsonc`.
+  Hosted sign-up is off on both until `TURBOPANEL_IS_SIGNUP_ENABLED` says
+  otherwise, and `TURBOPANEL_AUTO_FAILOVER` is `off`. **Monitor
+  `GET /api/daemon/v1/readiness`, not `/api/health`:** `/api/health` is a
+  static identity page and answers 200 with the database gone; readiness reads
+  the database and answers 503 `database unavailable` when it cannot.
 - **TESTING deploys from `trunk` via Cloudflare Workers Builds** on the
   `testing-instance` worker (branch-based, like staging/live — not an Actions
   API-token deploy). Deploy command `pnpm run deploy:testing` (sets
@@ -1314,8 +1334,9 @@ src/
   Deno-only registration). Install helpers live in `src/features/install/`.
 - `src/features/update/manifest.ts` — Workers-safe channel manifest resolver
   (`fetch`-only, one fetch straight to the channel's built-in location from
-  `src/contracts/update-channel.ts` — trunk on the CDN drop, rc/release on the
-  daemon's GitHub Releases; per-channel cache; returns `null` on any failure).
+  `src/contracts/update-channel.ts` — canary/rc/release on the daemon's GitHub
+  Releases, `trunk` and `edge` have none; per-channel cache; returns `null` on
+  any failure).
   The instance follows `TURBOPANEL_UPDATE_CHANNEL` (default `release`; invalid
   is a Deno startup error) and every queued daemon update carries that channel
 - `src/features/email/` — shared queue types/templates; SMTP (Deno/AMQP) and

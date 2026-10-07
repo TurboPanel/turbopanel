@@ -372,6 +372,12 @@ function applyOnlineTrigger(
     }
     writeProjection = true
   }
+  // A reconnect ends the mark, so its reason goes with it.
+  if (isOfflineToOnline && nextProjection?.offlineReason) {
+    const { offlineReason: _ended, ...rest } = nextProjection
+    nextProjection = rest
+    writeProjection = true
+  }
 
   if (!isOfflineToOnline && !writeProjection && !geoDue) {
     return null
@@ -399,17 +405,38 @@ function applyOnlineTrigger(
   }
 }
 
-function applyOfflineTrigger(ctx: ProjectionTriggerContext): ProjectionOutcome {
+function applyOfflineTrigger(
+  trigger: Extract<ProjectionTrigger, { kind: 'offline' | 'disconnected' }>,
+  ctx: ProjectionTriggerContext
+): ProjectionOutcome {
   const { currentProjection, existingStatus, now } = ctx
-  const nextStatus: ServerDaemonStatus = {
-    ...existingStatus,
-    connected: false,
-    statusChangedAt: now,
+  // A late socket close (including the half-open reaper) must not downgrade an earlier
+  // stale-sweep mark or restart its clock: host-loss failover trusts only the sweep mark.
+  const keepSweepMark =
+    trigger.reason !== 'sweep_stale' &&
+    existingStatus.connected === false &&
+    currentProjection?.offlineReason === 'sweep_stale'
+  const nextStatus: ServerDaemonStatus = keepSweepMark
+    ? { ...existingStatus }
+    : { ...existingStatus, connected: false, statusChangedAt: now }
+  if (keepSweepMark) {
+    return {
+      touchMetadata: false,
+      nextProjection: currentProjection,
+      writeProjection: false,
+      nextStatus,
+      writeStatus: false,
+      geoDue: false,
+    }
   }
   return {
     touchMetadata: false,
-    nextProjection: currentProjection,
-    writeProjection: false,
+    // The mark records why it was written; host-loss failover trusts only a stale sweep.
+    nextProjection: {
+      ...currentProjection,
+      offlineReason: trigger.reason === 'sweep_stale' ? 'sweep_stale' : 'disconnect',
+    },
+    writeProjection: true,
     nextStatus,
     writeStatus: true,
     geoDue: false,
@@ -614,7 +641,7 @@ function applyProjectionTrigger(
       return applyOnlineTrigger(trigger, ctx)
     case 'offline':
     case 'disconnected':
-      return applyOfflineTrigger(ctx)
+      return applyOfflineTrigger(trigger, ctx)
     case 'heartbeat':
       return applyHeartbeatTrigger(trigger, ctx)
     case 'identity':

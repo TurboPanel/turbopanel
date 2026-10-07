@@ -503,3 +503,48 @@ test('a postgres-probe event is not subject to the Orchestrator binding', async 
   )
   assertEquals(result?.id, 'rec-probe')
 })
+
+test('a boot-hold report is answered, never treated as a dead primary: no failover row, no probe', async () => {
+  const calls: DbCalls = { inserts: 0, reads: 0 }
+  const answers: Array<Record<string, unknown>> = []
+  const result = await handleManagedHaEvent(
+    fakeDb([[pgRow], [member(), replicaMember()]], undefined, calls),
+    { managedId: MANAGED_ID, sourceMemberId: 'mem-primary', detector: 'boot-hold' },
+    {
+      reporterServerId: SERVER_A,
+      commandQueue: queue,
+      autoFailover: 'on',
+      probeStandby: () => {
+        throw new TypeError('a boot-hold report must never probe a standby')
+      },
+      bootHold: (_db, input) => {
+        answers.push(input as unknown as Record<string, unknown>)
+        return Promise.resolve('released')
+      },
+    }
+  )
+  assertEquals(result, null)
+  assertEquals(calls.inserts, 0)
+  assertEquals(answers.length, 1)
+  // The authenticated session's server id is what the answer is keyed on.
+  assertEquals(answers[0]?.reporterServerId, SERVER_A)
+  assertEquals(answers[0]?.sourceMemberId, 'mem-primary')
+  assertEquals(answers[0]?.engine, 'postgres')
+})
+
+test('a boot-hold report for a cluster the control plane does not know is dropped', async () => {
+  const answers: unknown[] = []
+  const result = await handleManagedHaEvent(
+    fakeDb([[]]),
+    { managedId: MANAGED_ID, detector: 'boot-hold' },
+    {
+      reporterServerId: SERVER_A,
+      bootHold: () => {
+        answers.push(1)
+        return Promise.resolve('released')
+      },
+    }
+  )
+  assertEquals(result, null)
+  assertEquals(answers.length, 0)
+})

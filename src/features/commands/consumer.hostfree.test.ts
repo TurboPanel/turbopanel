@@ -1647,6 +1647,47 @@ test('processCommandEnvelope managed.lifecycle stop without recoveryId skips fen
   )
 })
 
+test('a return-fence stop (a demoted member that came back) projects nothing: needs_resync and the cluster status stay', async () => {
+  const stop = { managedId: MANAGED_ID, action: 'stop', engine: 'postgres' }
+  const plain = await runOnline('managed.lifecycle', stop, doneWith({ status: 'stopped' }))
+  // Baseline: an ordinary stop is projected onto the cluster.
+  assertEquals(
+    plain.managedUpdates.some((patch) => patch.status === 'stopped'),
+    true
+  )
+  const fenced = await runOnline('managed.lifecycle', stop, doneWith({ status: 'stopped' }), {
+    commandMetadata: { returnFence: true },
+  })
+  assertEquals(
+    fenced.transitions.some((t) => t.status === 'succeeded'),
+    true
+  )
+  assertEquals(fenced.managedUpdates, [])
+})
+
+test('a failed return-fence stop never marks the cluster or the member failed', async () => {
+  const stop = { managedId: MANAGED_ID, action: 'stop', engine: 'postgres' }
+  const failed = {
+    ...donePending(),
+    status: 'failed' as const,
+    error: 'docker unavailable',
+    result: undefined,
+  }
+  const plain = await runOnline('managed.lifecycle', stop, failed)
+  assertEquals(
+    plain.managedUpdates.some((patch) => patch.status === 'failed'),
+    true
+  )
+  const fenced = await runOnline('managed.lifecycle', stop, failed, {
+    commandMetadata: { returnFence: true },
+  })
+  assertEquals(
+    fenced.transitions.some((t) => t.status === 'failed'),
+    true
+  )
+  assertEquals(fenced.managedUpdates, [])
+})
+
 test('processCommandEnvelope managed.lifecycle invalid payload is swallowed', async () => {
   const fake = await runOnline('managed.lifecycle', {}, doneWith({ status: 'ready' }))
   assertEquals(

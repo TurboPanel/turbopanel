@@ -14,8 +14,6 @@ import {
   type UpdateChannel,
 } from '../../contracts/update-channel.ts'
 
-export { DL_BASE_URL } from '../../contracts/update-channel.ts'
-
 export type UpdateManifestTarget = {
   commit: string
   buildId: string

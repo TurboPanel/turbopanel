@@ -28,6 +28,8 @@ import {
 import { container, managed, replica, server, service } from '../../db/schema.ts'
 import { OrchestratorManagedHaAuthority } from './ha-authority.ts'
 import {
+  attestedLostServerIds,
+  hostLossFenceAdvance,
   type FenceOutcome,
   nextStateAfterFence,
   nextStateAfterPromoteSuccess,
@@ -64,6 +66,7 @@ import {
   AUTOMATIC_FAILOVER_NO_QUEUE_REASON,
   AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE,
   FENCE_STOP_UNQUEUED_MESSAGE,
+  HOST_LOSS_HOST_RETURNED_MESSAGE,
   isTerminalRecoveryState,
   PROMOTE_UNQUEUED_MESSAGE,
   RECOVERY_COMMAND_TIMED_OUT_MESSAGE,
@@ -568,6 +571,12 @@ async function beginRecovery(params: {
   members: readonly ManagedMemberRow[]
   actor: RecoveryCommandActor
   extraMetadata?: RecoveryMetadata
+  /**
+   * Whole-host loss (`ha-host-loss-sweep.ts`): the old primary's server is
+   * silent and the replicas confirmed it. Only an automatic failover may carry
+   * it, and only while that server is still not connected.
+   */
+  hostLoss?: boolean
 }): Promise<RecoveryEnqueueResult> {
   const inflight = await findInFlightRecovery(params.db, params.managedId)
   if (inflight) {
@@ -592,17 +601,32 @@ async function beginRecovery(params: {
   if (!recovery) return { ok: false, error: 'managed_busy', status: 409 }
 
   const sourceOnline = await isServerConnected(params.db, params.source.serverId)
+  if (params.hostLoss && sourceOnline) {
+    // The host came back between the decision and now: it is a normal primary
+    // again. Nothing was changed yet, so the row just ends, and without a
+    // target so that it never starts the 15 minute cooldown.
+    await updateRecovery(params.db, recovery.id, {
+      state: 'blocked',
+      targetMemberId: null,
+      metadata: { ...recovery.metadata, blockedReason: HOST_LOSS_HOST_RETURNED_MESSAGE },
+    })
+    await stampManagedReady(params.db, params.managedId)
+    return { ok: false, error: AUTOMATIC_FAILOVER_BLOCKED_ERROR, status: 409 }
+  }
   if (!sourceOnline) {
     await markNeedsResync(params.db, params.source.id)
-    const advance = nextStateAfterFence({
-      kind: params.kind,
-      outcome: {
-        oldPrimaryReachable: false,
-        drainApplied: false,
-        stopApplied: false,
-      },
-      metadata: recovery.metadata,
-    })
+    const advance =
+      params.hostLoss && params.kind === 'automatic-failover'
+        ? hostLossFenceAdvance(recovery.metadata)
+        : nextStateAfterFence({
+            kind: params.kind,
+            outcome: {
+              oldPrimaryReachable: false,
+              drainApplied: false,
+              stopApplied: false,
+            },
+            metadata: recovery.metadata,
+          })
     await updateRecovery(params.db, recovery.id, {
       state: advance.state,
       metadata: advance.metadata,
@@ -766,6 +790,12 @@ type AutomaticFailoverParams = FreshStandbyGate & {
   actor: RecoveryCommandActor
   /** `TURBOPANEL_AUTO_FAILOVER` for this deployment; absent = `on`. */
   autoFailover?: AutoFailoverSetting
+  /**
+   * Whole-host loss incident (`<serverId>@<offline since>`): the old primary's
+   * server is silent. Only `ha-host-loss-sweep.ts` sets it, after the replicas
+   * confirmed the host is gone; the fence is then attested, not proven.
+   */
+  hostLossIncident?: string
 }
 
 type CandidatePick = {
@@ -962,7 +992,9 @@ export async function beginAutomaticFailover(
       targetDatacenterId: firstDatacenterId(dcSets, target.serverId),
       ...freshStandby,
       ...detectorMetadata(params.detector, params.evidence),
+      ...(params.hostLossIncident ? { hostLossIncident: params.hostLossIncident } : {}),
     },
+    ...(params.hostLossIncident ? { hostLoss: true } : {}),
   })
   if (!result.ok) {
     return findLatestRecovery(params.db, params.managedId)
@@ -1189,6 +1221,7 @@ async function fanOutAfterPromote(
     secretsConfig: secrets.secretsConfig,
     dataEncryptionSecrets: secrets.dataEncryptionSecrets,
     recoveryId: record.id,
+    excludeServerIds: attestedLostServerIds(record.metadata),
   })
   await fanOutManagedHaReconcile(db, commandQueue, {
     managedId: record.managedId,
@@ -1227,7 +1260,12 @@ export async function onPromoteSucceeded(
     const ingress = await fanOutAfterPromote(db, commandQueue, secrets, record, actorId)
     if (ingress) {
       // Not completed until every ingress confirms (ha-ingress-gate.ts).
-      await parkRecoveryAtIngressGate(db, record.id, ingress)
+      await parkRecoveryAtIngressGate(
+        db,
+        record.id,
+        ingress,
+        attestedLostServerIds(record.metadata)
+      )
       return
     }
     // Nothing could be queued, so no ingress was told about the new primary.
