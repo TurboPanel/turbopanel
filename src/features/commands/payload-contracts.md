@@ -221,6 +221,29 @@ environment currently deploys to (`isReleaseMaterializedEverywhere`), and it
 carries the release's recorded commit metadata forward so the rollback's own
 release row names the commit going live rather than the branch placeholder.
 
+**`EnvironmentDeployHosting.www`:** optional `'both' | 'www-to-root' |
+'root-to-www'` (omitted = `off`), from `options.www` on the hosting row (compose
+`x-turbopanel.hosting[].www`). The other spelling of each hostname is `www.`
+added, or removed when the name starts with `www.`. `both` serves the site on
+both; `www-to-root` serves the bare name and permanently redirects `www.` there
+(path and query kept, plain HTTP straight to HTTPS in one hop); `root-to-www`
+the other way round. The direction is about the names, not about which one was
+typed. Expansion lives in one place, `hostingWwwNames` in
+`src/contracts/commands/hostname.ts` (twin of the daemon's
+`commands-contracts.ts`); `validateDeployWwwModes` (`www-redirect.ts`, twin of
+the daemon's `deploy-validation.ts`) refuses a mode on `tcp`/`udp`, a name with
+no other spelling (IP addresses and one-word names have none), an other
+spelling already a hostname in the deploy, and different choices on paths of
+one name. Every added name is also written to the organization's `hostname`
+uniqueness table (`hostingRoutingNames`), so a www name can never be claimed
+by two hostings (`409 hostname_in_use` at save time), and the daemon refuses a
+deploy whose names another environment's live site already answers on, before
+any container starts. A pinned uploaded
+certificate must cover every added name or the deploy is refused with
+`tls_pin_mismatch` and a plain `message`; Let's Encrypt (`acme`) gives each
+added name its own certificate, and "Use Let's Encrypt" checks DNS for them
+too. A daemon without the field serves only the typed names.
+
 **`EnvironmentDeployHosting.tlsMode`:** optional
 `'internal' | 'pinned' | 'acme'`. Absent = expand-only (daemon uses a
 materialized `tlsId` pair or `tls internal`). `acme` omits the Caddy `tls`
@@ -480,7 +503,12 @@ Hosting-scoped **secret** runtime variables never travel as plaintext: they ride
 target daemon; the control plane never decrypts them on this path), disjoint from
 `webEnv`, and the daemon decrypts them through `secrets/decrypt` before applying
 the site. A deploy with none needs no daemon key. Preview compiles no edge, so it
-carries neither.
+carries neither. A site bound to a managed database also carries `dbCa` (`{
+variables, pem }`: the CA as a file the daemon keeps for the site owner's Linux
+user, with each named variable set to its path) and `requiredEnv` (variables the
+site cannot run without; the daemon stops the deploy, naming one, if its web
+server cannot carry it), only to a daemon that lists `site-db-bindings-v1`; the
+deploy result may answer with `warnings` (variables left out, named).
 All three engines run PHP: nginx/Apache apply vendors php-fpm (never mod_php)
 and writes pool `php_admin_value` for memory/time limits, reached via
 `fastcgi_pass` / `mod_proxy_fcgi`; OpenLiteSpeed apply vendors `lsphp` and gives

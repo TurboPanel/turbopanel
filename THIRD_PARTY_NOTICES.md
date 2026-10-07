@@ -6,7 +6,7 @@ Third-party components remain under their own copyright and license terms and ar
 
 <!-- lockfiles
 deno.lock sha256:567525770a55f3f24757fde7276f50f0c92d968d4b82e29b309c9cb68aadfb5d
-pnpm-lock.yaml sha256:ce25973d0b438347b7f401f644e56fae970e6c15d358be6f431f4200b916d71a
+pnpm-lock.yaml sha256:1ed04c21aca44d4fdb173ddd6d1d387431b446a569578062bce17b684596e856
 -->
 
 ## Production dependencies
@@ -297,13 +297,13 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Homepage: https://github.com/lovell/colour#readme
 
-### @img/sharp-libvips-linux-x64@1.3.3
+### @img/sharp-libvips-linux-x64@1.3.4
 
 - License: LGPL-3.0-or-later
 - Copyright: Lovell Fuller
 - Homepage: https://sharp.pixelplumbing.com
 
-### @img/sharp-linux-x64@0.35.4
+### @img/sharp-linux-x64@0.35.5
 
 - License: Apache-2.0
 - Copyright: Lovell Fuller
@@ -759,7 +759,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: GitHub Inc.
 - Homepage: https://github.com/npm/node-semver#readme
 
-### sharp@0.35.4
+### sharp@0.35.5
 
 - License: Apache-2.0
 - Copyright: Lovell Fuller

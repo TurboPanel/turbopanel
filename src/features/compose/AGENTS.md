@@ -606,7 +606,7 @@ all" are different refusals and say so.
 ### Per-service ingress (`x-turbopanel.hosting`) — materialized into `hosting` rows
 
 `services.<name>.x-turbopanel` accepts an optional **`hosting`** list:
-`[{ hostname, pathPrefix?, targetPort?, forceHttps?, tls?: { mode, certificateRef? }, bind?: { scope, ipRef? } }]`
+`[{ hostname, pathPrefix?, targetPort?, forceHttps?, www?, tls?: { mode, certificateRef? }, bind?: { scope, ipRef? } }]`
 (`src/features/compose/hosting-extension.ts`). Legal on **every** kind — a container
 behind the edge, a site served by a host engine, a supervised `node` process can
 each answer on a hostname — which is one row in the same field table
@@ -655,7 +655,7 @@ entry, keyed on `(serviceId, hostname, pathPrefix)` and stamped
 `metadata.composeOwned` (`src/features/hostings/hosting-compose-owner.ts`, the same
 jsonb-marker shape `principal.metadata.composeAlias` uses). `options` is written
 in the existing `HostingOptions` shape — `hostnames`, `pathPrefix`,
-`targetPort`, `proxy.forceHttps`, `bind` — so `buildHostingsForService` /
+`targetPort`, `proxy.forceHttps`, `www`, `bind` — so `buildHostingsForService` /
 `resolveHttpHostingEntry` in `deploy-routes.ts` and the daemon's ingress, site,
 and TLS lanes read the rows exactly as before and never learn compose exists.
 Panel-only fields on the row (`web.env`, PHP hints, `protocol` / `ports`,
@@ -768,7 +768,70 @@ despite the historical names).
 Deploy prep strips node services into payload **`nativeAppServices[]`**
 (`{ composeServiceName, serviceId, listenPort, framework, nodeVersion?, resources?, accountLimits?, restartPolicy?, serviceLabels? }`)
 the same way it strips sites, and their releases ride the ordinary
-`sourceMaterial[]` lane unchanged. **Plain Compose keys the split would
+`sourceMaterial[]` lane unchanged.
+
+**Node version from the repository.** A node service with no `nodeVersion`
+gets one at deploy-prepare (`client/environments/deploy-node-version.ts`),
+because the daemon installs the series and adds the site owner's Linux user to
+its group before it checks anything out. The repository is read at the commit
+being deployed through the repository inspect path (`inspectRepository`:
+provider first, the target server's daemon with the deploy's sealed clone
+secret when the provider cannot read or turns an anonymous read away for its
+rate limit): `package.json` `engines.node`, then `.nvmrc`, then
+`.node-version`, in the source's `subdirectory` and then the repository root.
+Each repository is read once per request (all servers of a deploy share it).
+A range resolves to the newest series in the registry mirror
+(`runtimeSeries('node')`) that satisfies it (`lib/node-version-range.ts`, a
+hand-written parser for the npm range forms); a version-file value that is not
+a version (`lts/*`) is skipped. 422s (preview too): `node_version_unsupported`
+(nothing offered satisfies the range) and `node_version_invalid` (an
+`engines.node` npm would not accept, such as `20-24`); both name the file and
+how to pin. An unreadable repository is a 422 `node_version_unreadable` on a
+deploy (falling back to 24 would quietly bring the wrong-Node bug back;
+pinning `nodeVersion` skips the read), a `source: 'unresolved'` entry plus a
+warning in a preview, and the default plus a warning in the deploy response
+for a disabled app. A source whose commit the provider could not resolve
+(plain git, deploy key) is pinned to the commit the files were read at, so the
+build and the series agree. The series each native app ran with is recorded
+on the deploy command's `context.releases[].nodeVersion`, carried on the
+rollback pin (`DeployRollbackReleasePin.nodeVersion`), and a rollback sends it
+back without reading anything; a release recorded before that falls back to a
+read, then the default with a warning. It all runs before
+`mergeDeployPrincipalRuntimes`, so the runtime group granted matches the series
+sent. The preview lists the result once per app as `nativeAppNodeVersions`
+(`nodeVersion`, `source`, `requested`, `path`, `note`).
+
+**Deno apps (`runtime: deno`).** A `serviceKind: node` service takes an
+optional **`runtime`** (`node`, the default, or `deno`) and, with `deno`, an
+optional **`denoVersion`** (`2`, `2.9`, `2.9.7`, never a range). It stays one
+service kind: the same Git source, build, systemd unit, principal, loopback
+port and hostnames, only the vendored runtime differs. The two runtimes keep
+their hints apart (`validateDenoRuntimeConsistency`): `nodeVersion`,
+`packageManager` and a `framework` other than `auto` are refused on a Deno
+service, and `denoVersion` is refused without `runtime: deno`. Deno ships one
+major, so a series is the major: every spelling of 2 selects the host's newest
+2.x release (`SUPPORTED_DENO_SERIES`, mirroring the daemon registry). Deploy
+prep sends `runtime: 'deno'` and `denoVersion` on `nativeAppServices[]` only for
+a Deno app, so a Node app's payload is byte-identical to before. What changes
+around it:
+
+- **Daemon first.** `deploy-deno-gate.ts` refuses (422 `deno_feature_missing`) a
+  Deno app bound for a daemon that does not advertise `deno-native-apps-v1`
+  (`DENO_NATIVE_APPS_FEATURE`, twin of the daemon list), because an older daemon
+  would ignore `runtime` and start the app on Node; and refuses (422
+  `deno_version_unsupported`) a series the registry mirror does not offer. The
+  lint warns on the same series at save.
+- **No repository read.** A Deno app is skipped by `deploy-node-version.ts`: no
+  `engines.node` / `.nvmrc` lookup, no Node view in the preview, no Node series
+  on its release row. Its series is the pin or the default; reading it from the
+  repository (`deno.json`) is deferred.
+- **Runtime grant.** `merge-deploy-principal-runtimes.ts` grants the owner's
+  Linux user `deno@<series>` (`tpdeno<series>` on the host) instead of
+  `node@<series>`.
+- **Preview.** `nativeAppDenoVersions` lists each Deno app once: its series and
+  whether it came from the compose pin or the default.
+
+**Plain Compose keys the split would
 otherwise take with it.** A node service is removed from `containerServices`, so
 any ordinary Compose key on its body leaves with it unless `native-app.ts` reads
 it out first. Two do:
@@ -809,7 +872,7 @@ the whole organization never lands in an app that did not ask for it; it is
 listed with `reason: 'not_referenced'` (`unreferencedSecrets`, never the value).
 Other differences worth knowing: the value is passed as typed
 (trimmed, not Compose-escaped, and a non-literal value's `${…}` is **not**
-expanded); the platform's own names (`HOST`, `NODE_ENV`, `PORT`, `PATH`, `HOME`,
+expanded); the platform's own names (`HOST`, `HOSTNAME`, `NODE_ENV`, `PORT`, `PATH`, `HOME`,
 `TMPDIR`, `XDG_CACHE_HOME`, `COREPACK_*`) are listed as not delivered, because
 systemd applies the environment file over the unit's own `Environment=` lines;
 names or values the daemon would refuse are held back and listed with a reason

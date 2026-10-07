@@ -62,6 +62,7 @@ import {
   handleBackupRunReport,
 } from '../features/backups/run-report.ts'
 import { handleManagedHaEvent } from '../features/managed/ha-event.ts'
+import { handleManagedHealthReport } from '../features/managed/health-report.ts'
 import {
   resolveAutoFailoverFromDenoEnv,
   resolveFreshStandbyMarginMsFromDenoEnv,
@@ -397,6 +398,21 @@ async function handleDaemonManagedHaInbound(params: {
   await cell.recordInbound({ connectionId, at: message.at })
 }
 
+async function handleDaemonManagedHealthReportInbound(params: {
+  cell: ReturnType<DaemonCellRegistry['getCell']>
+  db: Db
+  connectionId: string | undefined
+  message: Extract<DaemonMessage, { type: 'managed-health-report' }>
+  reporterServerId: string
+}): Promise<void> {
+  const { cell, db, connectionId, message } = params
+  await handleManagedHealthReport(db, {
+    reporterServerId: params.reporterServerId,
+    members: message.members,
+  })
+  await cell.recordInbound({ connectionId, at: message.at })
+}
+
 async function handleAcmeIssuanceInbound(params: {
   cell: ReturnType<DaemonCellRegistry['getCell']>
   db: Db
@@ -604,6 +620,15 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
         message,
         commandQueue: params.commandQueue,
         registry: params.registry,
+        reporterServerId: serverId,
+      })
+      return
+    case 'managed-health-report':
+      await handleDaemonManagedHealthReportInbound({
+        cell,
+        db,
+        connectionId,
+        message,
         reporterServerId: serverId,
       })
       return

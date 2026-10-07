@@ -352,6 +352,13 @@ function mergeComposeHostingOptions(
     delete options.proxy
   }
 
+  // Compose owns the row, so an omitted `www` means `off`, never a leftover.
+  if (entry.www === undefined || entry.www === 'off') {
+    delete options.www
+  } else {
+    options.www = entry.www
+  }
+
   return options
 }
 

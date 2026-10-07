@@ -1,5 +1,7 @@
 /** Validated `hosting.options` shape including proxy settings. */
 
+import { type HostingWwwMode, isHostingWwwMode } from '../../contracts/commands/hostname.ts'
+
 export type HostingProxyOptions = {
   forceHttps?: boolean
   gzip?: boolean
@@ -58,10 +60,10 @@ export type HostingOptions = {
   ports?: HostingPortMapping[]
   web?: HostingWebOptions
   /**
-   * Also serve the other spelling of each hostname (`www.` added or removed)
-   * and send it permanently to the hostname as written. `http` hostings only.
+   * What happens to the other spelling of each hostname (`www.` added or
+   * removed): see `HostingWwwMode`. Omitted means `off`. `http` hostings only.
    */
-  wwwRedirect?: boolean
+  www?: Exclude<HostingWwwMode, 'off'>
 }
 
 const MAX_HOSTING_PORTS = 10
@@ -252,9 +254,23 @@ export function parseHostingOptions(value: unknown): HostingOptions | null {
   const web = parseWebOptions(value.web)
   if (web) options.web = web
 
-  if (value.wwwRedirect === true) options.wwwRedirect = true
+  const www = readHostingWwwMode(value)
+  if (www !== 'off') options.www = www
 
   return options
+}
+
+/**
+ * The www mode stored on a hosting's raw options. A row saved before the mode
+ * existed may still carry `wwwRedirect: true` ("send the other spelling to the
+ * name as written"), read as the mode that keeps the typed name the site.
+ */
+export function readHostingWwwMode(value: unknown): HostingWwwMode {
+  if (!isRecord(value)) return 'off'
+  if (isHostingWwwMode(value.www)) return value.www
+  if (value.wwwRedirect !== true) return 'off'
+  const first = Array.isArray(value.hostnames) ? value.hostnames[0] : undefined
+  return typeof first === 'string' && first.startsWith('www.') ? 'root-to-www' : 'www-to-root'
 }
 
 /** Defaults to `'http'` when unset/invalid — the only protocol prior to `tcp`/`udp` support. */

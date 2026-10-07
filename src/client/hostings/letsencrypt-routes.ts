@@ -20,7 +20,6 @@ import { recordAudit } from '../../features/audit/audit-records.ts'
 import {
   letsEncryptNames,
   letsEncryptRefusal,
-  readPendingLetsEncrypt,
 } from '../../features/hostings/hosting-certificate.ts'
 import {
   checkHostingDns,
@@ -29,6 +28,7 @@ import {
 } from '../../features/hostings/hosting-dns-check.ts'
 import {
   parseHostingOptions,
+  readHostingWwwMode,
   resolveHostingBind,
   resolveHostingProtocol,
 } from '../../features/hostings/hosting-options.ts'
@@ -139,11 +139,10 @@ export function registerHostingLetsEncryptRoutes(
     const refused = await refuseHostingWrite(c, db, organizationId, id)
     if (refused) return refused
 
+    // The body is accepted for older clients but carries nothing: the www
+    // setting lives on the hosting itself (`options.www`).
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
-    if (body.wwwRedirect !== undefined && typeof body.wwwRedirect !== 'boolean') {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
 
     const [row] = await db
       .select({
@@ -157,15 +156,13 @@ export function registerHostingLetsEncryptRoutes(
       .limit(1)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const wwwRedirect =
-      body.wwwRedirect ?? (row.options as { wwwRedirect?: unknown } | null)?.wwwRedirect === true
+    const www = readHostingWwwMode(row.options)
     const result = await requestLetsEncrypt({
       store: createLetsEncryptStore(db),
       lookup,
       now: now(),
       hosting: { ...row, organizationId },
       acmeEnabled: await loadAcmeEnabled(db, organizationId),
-      wwwRedirect,
     })
     if (!result.ok) {
       return c.json(
@@ -184,7 +181,7 @@ export function registerHostingLetsEncryptRoutes(
       action: 'hosting.letsencrypt.requested',
       targetType: 'hosting',
       targetId: id,
-      context: { outcome: result.outcome, wwwRedirect },
+      context: { outcome: result.outcome, www },
     })
 
     const [fresh] = await db
@@ -239,21 +236,20 @@ export function registerHostingLetsEncryptRoutes(
 
     const options = parseHostingOptions(row.options)
     const hostnames = options?.hostnames ?? []
-    const wwwRedirect =
-      readPendingLetsEncrypt(row.metadata)?.wwwRedirect ??
-      (row.options as { wwwRedirect?: unknown } | null)?.wwwRedirect === true
+    const www = readHostingWwwMode(row.options)
     const refusal = letsEncryptRefusal({
       acmeEnabled: true,
       protocol: resolveHostingProtocol(options),
       bind: resolveHostingBind(options),
       hostnames,
+      www,
     })
     if (refusal !== null) {
       return c.json({ error: refusal }, 400)
     }
     const store = createLetsEncryptStore(db)
     const dns = await checkHostingDns({
-      hostnames: letsEncryptNames(hostnames, wwwRedirect),
+      hostnames: letsEncryptNames(hostnames, www),
       expectedAddresses: await store.expectedAddresses({ ...row, organizationId }),
       lookup,
       now: now(),

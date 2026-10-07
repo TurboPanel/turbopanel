@@ -43,6 +43,7 @@ import {
   switchingSecretRequiresValue,
   trimVariableValueOnWrite,
   variableKeyUniqueConflictMessage,
+  variableValueProblem,
   type ParsedVariableParent,
 } from './routes-helpers.ts'
 import {
@@ -164,6 +165,8 @@ async function applyValueAndSecretPatch(
       return c.json({ error: 'Invalid request' }, 400)
     }
     const plaintextValue = trimVariableValueOnWrite(body.value ?? '')
+    const valueProblem = variableValueProblem(plaintextValue)
+    if (valueProblem) return c.json({ error: valueProblem }, 400)
     const stored = await sealOrPlainValue(c, plaintextValue, nextIsSecret)
     if (stored instanceof Response) return stored
     updateFields.value = stored
@@ -306,6 +309,8 @@ async function parseVariableCreateFields(
   if (parsedDescription instanceof Response) return parsedDescription
 
   const plaintextValue = trimVariableValueOnWrite(parsedValue ?? '')
+  const valueProblem = variableValueProblem(plaintextValue)
+  if (valueProblem) return c.json({ error: valueProblem }, 400)
   const storedValue = await sealOrPlainValue(c, plaintextValue, isSecret)
   if (storedValue instanceof Response) return storedValue
 

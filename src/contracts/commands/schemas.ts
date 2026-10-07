@@ -1,4 +1,9 @@
-import { HOSTNAME_MAX_LENGTH, isValidHostname } from './hostname.ts'
+import {
+  HOSTNAME_MAX_LENGTH,
+  type HostingWwwMode,
+  isHostingWwwMode,
+  isValidHostname,
+} from './hostname.ts'
 import {
   addressInCidr,
   cidrContains,
@@ -1697,6 +1702,17 @@ export type EnvironmentDeployHostingPhp = {
  * Daemon `ensureSystemPrincipals` creates the Linux user before apply;
  * document roots are `chown`ed to this user with the engine group for read.
  */
+/**
+ * A public CA bundle for a site's managed database connection. The daemon keeps
+ * it as a file only the site owner's Linux user can read and sets every name in
+ * `variables` to that file's path, so a multi-line certificate never has to ride
+ * in the web server's environment. Certificate blocks only.
+ */
+export type EnvironmentDeploySiteDbCa = {
+  variables: string[]
+  pem: string
+}
+
 export type EnvironmentDeploySitePrincipal = {
   principalId: string
   username: string
@@ -1782,6 +1798,20 @@ export type EnvironmentDeploySite = {
    * applied; the plaintext only ever reaches the engine's own config files.
    */
   webSecretEnv?: Record<string, string>
+  /**
+   * The CA a bound managed database's TLS certificate chains to, delivered as
+   * a file (see {@link EnvironmentDeploySiteDbCa}). Sent only to a daemon that
+   * lists `site-db-bindings-v1`.
+   */
+  dbCa?: EnvironmentDeploySiteDbCa
+  /**
+   * Variable names the site cannot run without (a database binding's host,
+   * port, user, password and name). The daemon stops the deploy, naming the
+   * variable, if its web server cannot carry one; any other variable it cannot
+   * carry is left out with a warning. Sent only to a daemon that lists
+   * `site-db-bindings-v1`.
+   */
+  requiredEnv?: string[]
   php?: EnvironmentDeployHostingPhp
   /**
    * When set (from a project principal ↔ service tenancy), the site tree
@@ -1823,8 +1853,10 @@ export type EnvironmentDeploySourceBuild = {
    * Process the generated systemd unit runs for a `serviceKind: node` service
    * (`nativeAppServices[]`). Non-secret and validated exactly like
    * `installCommand` / `buildCommand`; ignored for every other kind, where
-   * nothing supervises a process. Omitted means "use the framework default"
-   * (`.next/standalone/server.js`, else `server.js`).
+   * nothing supervises a process. Omitted (with no `startupFile`) means the
+   * daemon picks from the built tree, in this order: Next.js standalone
+   * `server.js`, the `package.json` `start` script, `next start` for a Next.js
+   * app, the `package.json` `main` file, `index.js`, then `server.js`.
    */
   startCommand?: string
   /** Relative build-output directory (same rule as `x-turbopanel.root`). */
@@ -1879,7 +1911,20 @@ export type EnvironmentDeployNativeAppService = {
   /** Loopback port the app process must bind (`PORT` in the unit). */
   listenPort: number
   framework: EnvironmentDeployNativeFramework
-  /** Operator-pinned Node series, when the compose author declared one. */
+  /**
+   * `deno` runs the app on the vendored Deno (`denoVersion`) instead of Node.
+   * Omitted means `node`, and a Node app's wire shape is unchanged. Sent only
+   * to a daemon that advertises `deno-native-apps-v1`.
+   */
+  runtime?: 'node' | 'deno'
+  /** Deno series ("2", "2.9", "2.9.7"); only read when `runtime` is `deno`. */
+  denoVersion?: string
+  /**
+   * Node series for the app: the compose author's pin, else the series the
+   * control plane read from the repository at the deployed commit
+   * (`package.json` `engines.node`, `.nvmrc`, `.node-version`). Omitted means
+   * the daemon default.
+   */
   nodeVersion?: string
   /** `NODE_ENV` for the generated unit. Omitted means `production`. */
   appMode?: 'production' | 'development'
@@ -1891,7 +1936,10 @@ export type EnvironmentDeployNativeAppService = {
   /**
    * Script the vendored Node binary runs when `build.startCommand` is absent.
    * Relative path, validated on both sides — it lands in an `ExecStart` line.
-   * Omitted means the framework default (`server.js`).
+   * Omitted means the daemon's default start order (see
+   * `EnvironmentDeploySourceBuild.startCommand`): Next.js standalone
+   * `server.js`, the `start` script, `next start`, `main`, `index.js`, then
+   * `server.js`.
    */
   startupFile?: string
   /**
@@ -2350,12 +2398,14 @@ export type EnvironmentDeployHosting = {
   /** Merged hosting web env + PHP hints for site materialization. */
   web?: EnvironmentDeployHostingWeb
   /**
-   * Also serve the other spelling of each hostname (`www.` added, or removed
-   * when the name starts with `www.`) as a permanent redirect to the hostname
-   * as written. `http` only; omitted when off. In `acme` mode the extra name
-   * gets its own certificate. Older daemons ignore the field.
+   * What happens to the other spelling of each hostname (`www.` added, or
+   * removed when the name starts with `www.`); see `HostingWwwMode` in
+   * `./hostname.ts`. `http` only; omitted when `off`. The redirect is permanent
+   * and keeps the path and query. Every extra name is served under the
+   * hosting's own TLS mode (`acme` gives it its own certificate; a pinned pair
+   * must cover it). A daemon without the field serves only the typed names.
    */
-  wwwRedirect?: boolean
+  www?: Exclude<HostingWwwMode, 'off'>
 }
 
 export type EnvironmentDeployContainer = {
@@ -2416,6 +2466,12 @@ export type EnvironmentDeployCommandResult = {
   releases?: EnvironmentDeployResultRelease[]
   /** Per-site facts for the sites this deploy applied; absent from older daemons. */
   sites?: EnvironmentDeployResultSite[]
+  /**
+   * What the deploy worked around without failing, in plain words (a variable
+   * a site's web server cannot carry was left out). Names only, never values.
+   * Absent from older daemons and when there were none.
+   */
+  warnings?: string[]
 }
 
 const MAX_ENVIRONMENT_DEPLOY_CONTAINERS = 100
@@ -2549,13 +2605,13 @@ function parseDeployHostingBindAddress(value: unknown): string | undefined {
   return value
 }
 
-/** `true` when on; `undefined` when absent or false; anything else is refused. */
-function parseDeployHostingWwwRedirect(value: unknown): true | undefined {
+/** A www mode; `undefined` when absent or `off`; anything else is refused. */
+function parseDeployHostingWww(value: unknown): EnvironmentDeployHosting['www'] {
   if (value === undefined) return undefined
-  if (typeof value !== 'boolean') {
+  if (!isHostingWwwMode(value)) {
     throw new TypeError('Invalid environment.deploy payload')
   }
-  return value ? true : undefined
+  return value === 'off' ? undefined : value
 }
 
 function applyOptionalDeployHostingFields(
@@ -2583,7 +2639,8 @@ function applyOptionalDeployHostingFields(
   if (ports) hosting.ports = ports
   const web = parseDeployHostingWeb(entry.web)
   if (web) hosting.web = web
-  if (parseDeployHostingWwwRedirect(entry.wwwRedirect)) hosting.wwwRedirect = true
+  const www = parseDeployHostingWww(entry.www)
+  if (www) hosting.www = www
 }
 
 function parseDeployHostingEntry(entry: unknown): EnvironmentDeployHosting {
@@ -3081,6 +3138,7 @@ function parseDeploySiteEntry(entry: unknown): EnvironmentDeploySite {
   if (webEnv) site.webEnv = webEnv
   const webSecretEnv = parseEnvRecord(entry.webSecretEnv)
   if (webSecretEnv) site.webSecretEnv = webSecretEnv
+  Object.assign(site, parseDeploySiteDbFields(entry))
   const php = parseDeployHostingPhp(entry.php)
   if (php) site.php = php
   const principal = parseDeploySitePrincipal(entry.principal)
@@ -3101,6 +3159,62 @@ function parseDeploySiteEntry(entry: unknown): EnvironmentDeploySite {
     )
   }
   return site
+}
+
+const MAX_SITE_DB_CA_BYTES = 65_536
+const MAX_SITE_DB_CA_VARIABLES = 8
+const MAX_SITE_REQUIRED_ENV = 64
+const ENV_VARIABLE_NAME_RE = /^[A-Za-z_]\w*$/
+
+/** True when every PEM block in `pem` is a certificate and there is at least one. */
+function isCertificateOnlyPem(pem: string): boolean {
+  let blocks = 0
+  for (const line of pem.split('\n')) {
+    if (!line.startsWith('-----BEGIN ')) continue
+    if (line.trim() !== '-----BEGIN CERTIFICATE-----') return false
+    blocks += 1
+  }
+  return blocks > 0
+}
+
+function parseDeploySiteEnvNames(value: unknown, max: number): string[] | undefined {
+  if (value === undefined) return undefined
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > max ||
+    !value.every((name) => isString(name) && ENV_VARIABLE_NAME_RE.test(name))
+  ) {
+    throw new Error('Invalid sites entry')
+  }
+  return value as string[]
+}
+
+/** `dbCa` and `requiredEnv` of one site entry; only the fields that are present. */
+function parseDeploySiteDbFields(
+  entry: Record<string, unknown>
+): Pick<EnvironmentDeploySite, 'dbCa' | 'requiredEnv'> {
+  const dbCa = parseDeploySiteDbCa(entry.dbCa)
+  const requiredEnv = parseDeploySiteEnvNames(entry.requiredEnv, MAX_SITE_REQUIRED_ENV)
+  return {
+    ...(dbCa ? { dbCa } : {}),
+    ...(requiredEnv ? { requiredEnv } : {}),
+  }
+}
+
+function parseDeploySiteDbCa(value: unknown): EnvironmentDeploySiteDbCa | undefined {
+  if (value === undefined) return undefined
+  if (
+    !isRecord(value) ||
+    !isString(value.pem) ||
+    value.pem.length > MAX_SITE_DB_CA_BYTES ||
+    !isCertificateOnlyPem(value.pem)
+  ) {
+    throw new Error('Invalid sites entry')
+  }
+  const variables = parseDeploySiteEnvNames(value.variables, MAX_SITE_DB_CA_VARIABLES)
+  if (!variables) throw new Error('Invalid sites entry')
+  return { variables, pem: value.pem }
 }
 
 /** Apache's port behind nginx: a loopback high port other than `listenPort`. */
@@ -3461,6 +3575,22 @@ function parseNativeAppAccountLimits(
   }
 }
 
+function parseNativeAppRuntime(value: unknown): 'node' | 'deno' | undefined {
+  if (value === undefined) return undefined
+  if (value !== 'node' && value !== 'deno') {
+    throw new Error('Invalid nativeAppServices runtime')
+  }
+  return value
+}
+
+function parseNativeAppDenoVersion(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (!isString(value) || !NATIVE_APP_NODE_VERSION_RE.test(value)) {
+    throw new Error('Invalid nativeAppServices denoVersion')
+  }
+  return value
+}
+
 function parseNativeAppNodeVersion(value: unknown): string | undefined {
   if (value === undefined) return undefined
   if (!isString(value) || !NATIVE_APP_NODE_VERSION_RE.test(value)) {
@@ -3580,8 +3710,12 @@ function parseDeployNativeAppServiceEntry(entry: unknown): EnvironmentDeployNati
     listenPort: entry.listenPort,
     framework: entry.framework as EnvironmentDeployNativeFramework,
   }
+  const runtime = parseNativeAppRuntime(entry.runtime)
+  if (runtime !== undefined) app.runtime = runtime
   const nodeVersion = parseNativeAppNodeVersion(entry.nodeVersion)
   if (nodeVersion !== undefined) app.nodeVersion = nodeVersion
+  const denoVersion = parseNativeAppDenoVersion(entry.denoVersion)
+  if (denoVersion !== undefined) app.denoVersion = denoVersion
   const appMode = parseNativeAppMode(entry.appMode)
   if (appMode !== undefined) app.appMode = appMode
   const enabled = parseNativeAppEnabled(entry.enabled)
@@ -4145,7 +4279,22 @@ export function parseEnvironmentDeployResult(value: unknown): EnvironmentDeployC
   if (releases !== undefined) result.releases = releases
   const sites = parseDeployResultSites(value.sites)
   if (sites !== undefined) result.sites = sites
+  const warnings = parseDeployResultWarnings(value.warnings)
+  if (warnings !== undefined) result.warnings = warnings
   return result
+}
+
+const MAX_ENVIRONMENT_DEPLOY_RESULT_WARNINGS = 100
+const MAX_ENVIRONMENT_DEPLOY_RESULT_WARNING_LENGTH = 1000
+
+/** Lenient like the rest of the result parser: strings only, bounded. */
+function parseDeployResultWarnings(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const out = value
+    .filter(isString)
+    .slice(0, MAX_ENVIRONMENT_DEPLOY_RESULT_WARNINGS)
+    .map((entry) => entry.slice(0, MAX_ENVIRONMENT_DEPLOY_RESULT_WARNING_LENGTH))
+  return out.length > 0 ? out : undefined
 }
 
 const MAX_ENVIRONMENT_DEPLOY_RESULT_SITES = 100
@@ -6549,6 +6698,11 @@ export type BackupPolicyWireEntry = {
   managedId?: string
   engine?: ManagedEngineCode
   artifactExtension?: ManagedBackupArtifactExtension
+  /**
+   * The database a `managed` run dumps (the cluster's first non-system
+   * database). Optional: when absent the daemon dumps its engine default.
+   */
+  database?: string
   copyId?: string
   copyProvider?: CopyBackupProvider
   volumeName?: string
@@ -6606,12 +6760,19 @@ function parseBackupPolicyTarget(raw: Record<string, unknown>, entry: BackupPoli
     entry.managedId = raw.managedId
     entry.engine = raw.engine
     entry.artifactExtension = raw.artifactExtension
+    if (raw.database !== undefined) {
+      if (!isString(raw.database) || !isSafeIdentifier(raw.database)) {
+        throw new Error('Invalid backup policy managed database')
+      }
+      entry.database = raw.database
+    }
     return
   }
   if (
     raw.managedId !== undefined ||
     raw.engine !== undefined ||
-    raw.artifactExtension !== undefined
+    raw.artifactExtension !== undefined ||
+    raw.database !== undefined
   ) {
     throw new Error('Invalid backup policy copy target')
   }

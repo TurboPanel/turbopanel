@@ -47,6 +47,7 @@ import {
 } from '../../features/upgrades/prune.ts'
 import { runUpgradeMaintenance } from '../../features/upgrades/maintenance.ts'
 import { registerWebhookRoutes } from '../../webhook/routes.ts'
+import { runManagedExposurePendingSweep } from '../../features/managed/exposure-change.ts'
 import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-desired.ts'
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
@@ -124,6 +125,7 @@ import {
 } from './commands/deno-amqp-queue.ts'
 import { startCommandConsumer } from '../../features/commands/deno-consumer.ts'
 import { startMailerConsumer } from '../../lib/email/mailer/deno-mailer-consumer.ts'
+import { createAmqpMailDeadLetterStore } from '../../lib/email/mailer/deno-mail-dead-letters.ts'
 import {
   createNoopCommandQueue,
   isNoopCommandQueue,
@@ -300,6 +302,15 @@ async function closeMetricsStoreIfSupported(store: ServerMetricsStore): Promise<
   } catch (err) {
     logWarn('metrics', `metrics store close on shutdown failed: ${String(err)}`)
   }
+}
+
+/** The dead-letter admin store, only where mail really goes through the broker. */
+function resolveMailDeadLetters(
+  emailQueue: EmailQueue
+): { mailDeadLetters: ReturnType<typeof createAmqpMailDeadLetterStore> } | Record<string, never> {
+  if (isNoopEmailQueue(emailQueue)) return {}
+  const amqpUrl = resolveCommandAmqpUrl()
+  return amqpUrl ? { mailDeadLetters: createAmqpMailDeadLetterStore({ amqpUrl }) } : {}
 }
 
 function resolveCommandAmqpUrl(): string | null {
@@ -628,6 +639,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     getEnv: () => Deno.env.toObject(),
     readPlatformCaBundle: () => Deno.readTextFile(resolveInstanceTlsCaServePath()),
     collectInstanceIps: () => collectServerIps(readDefaultRouteInterfaces()),
+    ...resolveMailDeadLetters(emailQueue),
   })
   const socketPath = resolveInstanceSocket()
 
@@ -645,6 +657,15 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       dataEncryptionSecrets,
     }).catch((err) => {
       logWarn('daemon-cell', `managed ingress orphan sweep error: ${String(err)}`)
+    })
+    // A database exposure change that never reached its server (a payload that
+    // could not be built, or a server offline past the command's validity) is
+    // pushed again here until the server confirms it.
+    void runManagedExposurePendingSweep(db, commandQueue, {
+      secretsConfig,
+      dataEncryptionSecrets,
+    }).catch((err) => {
+      logWarn('daemon-cell', `managed exposure pending sweep error: ${String(err)}`)
     })
     // Automatic membership repins stamp `ip.repin_pending_fanout_at`
     // from the presence path (which must not enqueue); this drains them with

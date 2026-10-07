@@ -69,12 +69,13 @@ export function releasePin(release: ServiceReleaseRecord): DeployRollbackRelease
     // the branch name as the commit. Absent on releases published before this
     // metadata was recorded, and the prepare layer falls back to the ref then.
     commitSha: release.commitSha,
-    ...(release.commitMessage === undefined
-      ? {}
-      : { commitMessage: release.commitMessage }),
-    ...(release.commitAuthor === undefined
-      ? {}
-      : { commitAuthor: release.commitAuthor }),
+    ...(release.commitMessage === undefined ? {} : { commitMessage: release.commitMessage }),
+    ...(release.commitAuthor === undefined ? {} : { commitAuthor: release.commitAuthor }),
+    // The Node a native app's release was built on: the rollback runs it on
+    // the same one rather than reading the repository again.
+    ...(release.nodeVersion === undefined ? {} : { nodeVersion: release.nodeVersion }),
+    // The runtime that release ran on, so the rollback restores it.
+    ...(release.runtime === undefined ? {} : { runtime: release.runtime }),
   }
 }
 

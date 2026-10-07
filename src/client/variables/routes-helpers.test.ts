@@ -15,6 +15,7 @@ import {
   serializeResolvedVariables,
   serializeVariable,
   trimVariableValueOnWrite,
+  variableValueProblem,
   BINDING_OWNED_VARIABLE_ERROR,
   BINDING_KEY_CONFLICT_ERROR,
   type VariableRow,
@@ -89,22 +90,30 @@ test('serializeVariable masks secret values', () => {
 })
 
 test('serializeResolvedVariables mirrors secret masking', () => {
-  const serialized = serializeResolvedVariables(new Map([
-    ['OPEN', {
-      value: '1',
-      isSecret: false,
-      isLiteral: false,
-      forBuild: false,
-      forRuntime: true,
-    }],
-    ['TOKEN', {
-      value: 'secret',
-      isSecret: true,
-      isLiteral: true,
-      forBuild: true,
-      forRuntime: true,
-    }],
-  ]))
+  const serialized = serializeResolvedVariables(
+    new Map([
+      [
+        'OPEN',
+        {
+          value: '1',
+          isSecret: false,
+          isLiteral: false,
+          forBuild: false,
+          forRuntime: true,
+        },
+      ],
+      [
+        'TOKEN',
+        {
+          value: 'secret',
+          isSecret: true,
+          isLiteral: true,
+          forBuild: true,
+          forRuntime: true,
+        },
+      ],
+    ])
+  )
   assertEquals(serialized.OPEN?.value, '1')
   assertEquals(serialized.TOKEN?.value, null)
   assertEquals(serialized.TOKEN?.isLiteral, true)
@@ -145,6 +154,24 @@ test('trimVariableValueOnWrite trims whitespace', () => {
   assertEquals(trimVariableValueOnWrite('  hello  '), 'hello')
 })
 
+test('trimVariableValueOnWrite turns Windows line endings into LF', () => {
+  assertEquals(
+    trimVariableValueOnWrite('-----BEGIN-----\r\nAAAA\r\n-----END-----\r\n'),
+    '-----BEGIN-----\nAAAA\n-----END-----'
+  )
+  assertEquals(trimVariableValueOnWrite('a\nb'), 'a\nb')
+})
+
+test('variableValueProblem refuses a carriage return that is not part of CR LF', () => {
+  assertEquals(variableValueProblem(trimVariableValueOnWrite('a\r\nb')), null)
+  assertEquals(
+    variableValueProblem(trimVariableValueOnWrite('a\rb'))?.includes('carriage return'),
+    true
+  )
+  assertEquals(variableValueProblem(trimVariableValueOnWrite('a\r\r\nb')) !== null, true)
+  assertEquals(variableValueProblem('plain'), null)
+})
+
 test('parseVariableParent requires a single parent field', async () => {
   const c = mockContext()
   assertEquals(parseVariableParent(c, { projectId: 'p1' }), {
@@ -166,7 +193,7 @@ test('buildInsertValues pins parent column only', () => {
       forBuild: false,
       forRuntime: true,
       description: null,
-    },
+    }
   )
   assertEquals(values.environmentId, 'env-1')
   assertEquals(values.projectId, null)
@@ -194,7 +221,7 @@ test('resolvePatchIsSecret toggles secret flag safely', async () => {
 test('isVariableKeyUniqueViolation matches partial unique indexes', () => {
   const match = Object.assign(
     new Error('duplicate key value violates unique constraint "uniq_var_project"'),
-    { code: '23505' },
+    { code: '23505' }
   )
   assertEquals(isVariableKeyUniqueViolation(match), true)
   assertEquals(isVariableKeyUniqueViolation({ code: '23505' }), false)
