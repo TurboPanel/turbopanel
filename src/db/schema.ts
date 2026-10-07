@@ -6001,6 +6001,9 @@ export const metricsGate = pgTable(
       foreignColumns: [server.id],
       name: 'gate_server_id_server_id_fk',
     }).onDelete('cascade'),
-    check('gate_tokens_check', sql`sample_tokens >= 0 AND event_tokens >= 0 AND events_allowed >= 0`),
+    check(
+      'gate_tokens_check',
+      sql`sample_tokens >= 0 AND event_tokens >= 0 AND events_allowed >= 0`
+    ),
   ]
 )
