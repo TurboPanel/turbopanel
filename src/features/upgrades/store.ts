@@ -30,6 +30,7 @@ import {
   UPGRADE_TERMINAL_STATUSES,
 } from './vocabulary.ts'
 import {
+  activeBatchIndex,
   compareUpgradeStepRows,
   failedPlatformPhase,
   FLEET_CELL_PROBE_BUDGET,
@@ -48,6 +49,9 @@ export const RESERVED_UPGRADE_RUN_KEY = 'UPGRADE_RESERVED_RUN_ID'
 export const UPGRADE_TICK_CURSOR_KEY = 'UPGRADE_TICK_CURSOR'
 
 const TERMINAL_STEP_SQL = ['done', 'skipped', 'failed', 'needs_attention'] as const
+
+/** In-flight statuses that pin the open batch (matches `isInFlightStepStatus`). */
+const BATCH_PIN_STEP_SQL = sql`('dispatched', 'preparing', 'downloading', 'installing', 'restarting', 'verifying')`
 
 export type UpgradeTickCursor = {
   phase: UpgradePhase
@@ -388,7 +392,7 @@ export function createMemoryUpgradeStore(input?: {
           .map((step) => structuredClone(step))
       ),
     tickWindow: (upgradeId, cursor, limit) =>
-      Promise.resolve(memoryTickWindow(steps, upgradeId, cursor, limit)),
+      Promise.resolve(memoryTickWindow(steps, facts, upgradeId, cursor, limit)),
     countSteps: (upgradeId) =>
       Promise.resolve(
         summarizeSteps([...steps.values()].filter((step) => step.upgradeId === upgradeId))
@@ -865,6 +869,7 @@ function asTickPhase(value: string): UpgradePhase {
 
 function memoryTickWindow(
   steps: Map<string, UpgradeStepRow>,
+  facts: readonly FleetServerFact[],
   upgradeId: string,
   cursor: UpgradeTickCursor | null,
   limit: number
@@ -888,7 +893,19 @@ function memoryTickWindow(
     }
   }
   const phase = first.phase
-  const batchIndex = lowestOpenBatch(open, phase, first.batchIndex)
+  const batchIndex =
+    activeBatchIndex(
+      open
+        .filter((step) => step.phase === phase)
+        .map((step) => ({
+          batchIndex: step.batchIndex,
+          status: step.status,
+          connected:
+            step.phase === 'fleet'
+              ? facts.some((fact) => fact.serverId === step.serverId && fact.connected)
+              : true,
+        }))
+    ) ?? lowestOpenBatch(open, phase, first.batchIndex)
   const afterId = cursorAfterId(cursor, phase, batchIndex)
   return {
     steps: memoryTickPage(open, phase, batchIndex, afterId, cap),
@@ -987,9 +1004,20 @@ async function loadTickWindow(
         batchIndex: stage.batchIndex,
       })
       .from(stage)
+      .leftJoin(server, eq(server.id, stage.serverId))
       .where(and(eq(stage.upgradeId, upgradeId), notInArray(stage.status, [...TERMINAL_STEP_SQL])))
       .orderBy(
         sql`case coalesce(${stage.detail}->>'phase', 'fleet') when 'colocated_daemon' then 0 when 'control_plane' then 1 else 2 end`,
+        sql`case
+          when coalesce(${stage.detail}->>'phase', 'fleet') <> 'fleet' then 0
+          when exists (
+            select 1 from stage pinned
+            where pinned.upgrade_id = ${stage.upgradeId}
+              and coalesce(pinned.detail->>'phase', 'fleet') = coalesce(${stage.detail}->>'phase', 'fleet')
+              and pinned.status in ${BATCH_PIN_STEP_SQL}
+          ) then case when ${stage.status} in ${BATCH_PIN_STEP_SQL} then 0 else 1 end
+          else case when coalesce(${server.isConnected}, false) then 0 else 1 end
+        end`,
         asc(stage.batchIndex),
         asc(stage.id)
       )

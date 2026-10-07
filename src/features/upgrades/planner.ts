@@ -5,7 +5,8 @@
  * Order (self-hosted / Deno):
  *   colocated_daemon → control_plane → fleet
  * The co-located daemon updates first, then the control plane on that same
- * host, then every other server's daemon in batches. Trunk self-hosted skips
+ * host, then every other server's daemon in batches, connected servers before
+ * offline ones (stable within each group). Trunk self-hosted skips
  * `control_plane` (there is no control-plane package on trunk).
  *
  * Workers: `fleet` only. The control plane is deploy-managed and read-only, so
@@ -51,6 +52,11 @@ export type PlanInput = {
   colocatedServerId: string | null
   /** Every managed server that is not the co-located control-plane host. */
   fleetServerIds: readonly string[]
+  /**
+   * Servers currently connected. Fleet steps are ordered connected-first
+   * (stable within each group). Omitted: every fleet id is treated as connected.
+   */
+  connectedServerIds?: readonly string[]
   batch: BatchPolicy
 }
 
@@ -89,9 +95,31 @@ function dedupeInOrder(ids: readonly string[]): string[] {
   return out
 }
 
-function planFleetSteps(fleetServerIds: readonly string[], batch: BatchPolicy): PlannedStep[] {
-  const size = computeBatchSize(batch, fleetServerIds.length)
-  return fleetServerIds.map((serverId, index) => ({
+/**
+ * Connected ids first, then the rest, each group in the same relative order
+ * as `ids`. Ids not listed in `connectedIds` are treated as offline.
+ */
+export function orderServersConnectedFirst(
+  ids: readonly string[],
+  connectedIds: ReadonlySet<string>
+): string[] {
+  const connected: string[] = []
+  const offline: string[] = []
+  for (const id of ids) {
+    if (connectedIds.has(id)) connected.push(id)
+    else offline.push(id)
+  }
+  return connected.concat(offline)
+}
+
+function planFleetSteps(
+  fleetServerIds: readonly string[],
+  batch: BatchPolicy,
+  connectedIds: ReadonlySet<string>
+): PlannedStep[] {
+  const ordered = orderServersConnectedFirst(fleetServerIds, connectedIds)
+  const size = computeBatchSize(batch, ordered.length)
+  return ordered.map((serverId, index) => ({
     serverId,
     unit: 'daemon',
     phase: 'fleet',
@@ -193,7 +221,8 @@ export function planUpgrade(input: PlanInput): UpgradePlan {
   }
 
   const fleet = dedupeInOrder(input.fleetServerIds).filter((id) => id !== colocated)
-  phases.push({ phase: 'fleet', steps: planFleetSteps(fleet, input.batch) })
+  const connectedIds = new Set(input.connectedServerIds ?? fleet)
+  phases.push({ phase: 'fleet', steps: planFleetSteps(fleet, input.batch, connectedIds) })
 
   return assemble(phases)
 }
