@@ -20,8 +20,9 @@
  *    cannot tie a replica's last contact to the failure any later).
  * 3. Not during a fleet-wide outage: more than half of the organization's
  *    servers offline points at the control plane's own network, not one host.
- * 4. Only PostgreSQL. MySQL and MariaDB replicas read "reconnecting" once the
- *    source is gone and cannot be proven caught up, so they alert only.
+ * 4. Only PostgreSQL, MySQL and MariaDB. A MySQL or MariaDB replica is
+ *    proven caught up by its daemon's `fullyApplied` reading
+ *    (`managed-replica-freshness-v1`); anything else alerts only.
  * 5. Only when the dead primary's daemon advertised `managed-ha-boot-hold-v1`,
  *    because that is what stops it serving writes when it returns.
  * 6. Every other member's server must be connected and must answer a fresh
@@ -37,7 +38,12 @@
 
 import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
 import { MANAGED_HA_BOOT_HOLD_FEATURE } from '../../lib/version-wire.ts'
-import { MAX_FAILURE_SPAN_MS } from './ha-fresh-standby.ts'
+import { isMysqlFamilyEngine, MAX_FAILURE_SPAN_MS } from './ha-fresh-standby.ts'
+
+/** PostgreSQL, MySQL and MariaDB can fail over after a lost server. */
+function isHostLossEngine(engine: string): boolean {
+  return engine === 'postgres' || isMysqlFamilyEngine(engine)
+}
 
 /** `metadata.detector` of a recovery row raised by this path. */
 export const HOST_LOSS_DETECTOR = 'host-loss'
@@ -107,7 +113,7 @@ export const HOST_LOSS_ALERT_MESSAGES: Readonly<Record<HostLossAlertCode, string
   fleet_outage:
     "The primary's server stopped answering, but so did most of the other servers. That points at the control plane's network, not one lost host, so nothing was changed. Check the servers, then promote a replica by hand if the primary is really gone.",
   engine_unsupported:
-    "The primary's server stopped answering. Automatic failover for a lost server is only available for PostgreSQL, so nothing was changed. If the server is really gone, promote a replica from the database page.",
+    "The primary's server stopped answering. Automatic failover for a lost server is not available for this database engine, so nothing was changed. If the server is really gone, promote a replica from the database page.",
   daemon_too_old:
     "The primary's server stopped answering, and its daemon is too old to hold the database back when the server returns, so nothing was changed. If the server is really gone, promote a replica from the database page.",
   not_corroborated:
@@ -158,7 +164,7 @@ export function hostLossPreflight(facts: Readonly<HostLossPreflightFacts>): Host
   ) {
     return { action: 'alert', code: 'fleet_outage' }
   }
-  if (facts.engine !== 'postgres') return { action: 'alert', code: 'engine_unsupported' }
+  if (!isHostLossEngine(facts.engine)) return { action: 'alert', code: 'engine_unsupported' }
   if (!facts.primaryDaemonFeatures.includes(MANAGED_HA_BOOT_HOLD_FEATURE)) {
     return { action: 'alert', code: 'daemon_too_old' }
   }

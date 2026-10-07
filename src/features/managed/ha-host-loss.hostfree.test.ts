@@ -119,13 +119,14 @@ test('more than half of the organization offline is a fleet outage, not one lost
   assertEquals(hostLossPreflight(facts({ orgServers: 2, orgServersOffline: 1 })).action, 'probe')
 })
 
-test('only PostgreSQL is promoted automatically on host loss', () => {
-  for (const engine of ['mysql', 'mariadb']) {
-    assertEquals(hostLossPreflight(facts({ engine })), {
-      action: 'alert',
-      code: 'engine_unsupported',
-    })
+test('PostgreSQL, MySQL and MariaDB are probed on host loss; other engines alert only', () => {
+  for (const engine of ['postgres', 'mysql', 'mariadb']) {
+    assertEquals(hostLossPreflight(facts({ engine })), { action: 'probe' })
   }
+  assertEquals(hostLossPreflight(facts({ engine: 'redis' })), {
+    action: 'alert',
+    code: 'engine_unsupported',
+  })
 })
 
 test('a daemon that cannot hold a returning primary back is never trusted', () => {
@@ -148,7 +149,7 @@ test('another member whose server is also offline cannot corroborate', () => {
 
 test('the first matching refusal wins, in the documented order', () => {
   const everythingWrong = facts({
-    engine: 'mysql',
+    engine: 'redis',
     primaryDaemonFeatures: [],
     orgServers: 3,
     orgServersOffline: 3,

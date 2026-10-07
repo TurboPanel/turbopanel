@@ -63,6 +63,7 @@ export type FreshStandbyRefusal =
   | 'replay_behind'
   | 'last_lag_unknown'
   | 'last_lag_over_limit'
+  | 'not_fully_applied'
 
 export type FreshStandbyVerdict =
   { accepted: true; basis: string } | { accepted: false; reason: FreshStandbyRefusal }
@@ -85,6 +86,18 @@ export type FreshStandbyInput = {
   marginMs: number
   maxLagBytes?: number
   maxLagSeconds?: number
+  /** `mysql` / `mariadb` use the GTID proof instead of the Postgres WAL one. */
+  engine?: string
+}
+
+/** MySQL and MariaDB report `reconnecting` once their source is gone. */
+const MYSQL_FAMILY_DISCONNECTED_STATES: ReadonlySet<string> = new Set([
+  ...DISCONNECTED_STANDBY_STATES,
+  'reconnecting',
+])
+
+export function isMysqlFamilyEngine(engine: string | undefined): boolean {
+  return engine === 'mysql' || engine === 'mariadb'
 }
 
 /** `X/Y` hex `pg_lsn` text → a comparable bigint; null when malformed. */
@@ -187,6 +200,7 @@ function evaluateStillStreaming(
 export function evaluateFreshStandby(input: FreshStandbyInput): FreshStandbyVerdict {
   const replication = input.replication
   if (!replication) return { accepted: false, reason: 'probe_unavailable' }
+  if (isMysqlFamilyEngine(input.engine)) return evaluateMysqlFamilyStandby(input, replication)
   if (replication.state === 'streaming') return evaluateStillStreaming(input, replication)
   if (!DISCONNECTED_STANDBY_STATES.has(replication.state)) {
     return { accepted: false, reason: 'not_a_standby' }
@@ -203,6 +217,42 @@ export function evaluateFreshStandby(input: FreshStandbyInput): FreshStandbyVerd
       `${replication.state}; last streaming ${receipt.value.toFixed(1)} s before failure ` +
       `start (margin ${input.marginMs / 1000} s); received = replayed = ${replay.value}; ` +
       `last receive lag ${lag.value}`,
+  }
+}
+
+/**
+ * MySQL / MariaDB: a replica is proven caught up only when the daemon itself
+ * says every transaction it received is applied (`fullyApplied === true`, from
+ * the GTID sets) AND its last contact with the source was no earlier than the
+ * failure start minus the margin. A missing or false `fullyApplied` refuses:
+ * unknown is never caught up. Still `streaming` goes through the unchanged lag
+ * gate as well. As with Postgres, replication is asynchronous, so what the
+ * source committed after the replica's last contact (bounded by the margin)
+ * can be lost.
+ */
+function evaluateMysqlFamilyStandby(
+  input: FreshStandbyInput,
+  replication: ManagedReplicationHealth
+): FreshStandbyVerdict {
+  const streaming = replication.state === 'streaming'
+  if (!streaming && !MYSQL_FAMILY_DISCONNECTED_STATES.has(replication.state)) {
+    return { accepted: false, reason: 'not_a_standby' }
+  }
+  if (replication.fullyApplied !== true) return { accepted: false, reason: 'not_fully_applied' }
+  if (streaming) {
+    const gate = evaluateManagedPromoteLagGate(replication, input.probeStartedAtMs, {
+      maxLagBytes: input.maxLagBytes,
+      maxLagSeconds: input.maxLagSeconds,
+    })
+    if (gate !== null) return { accepted: false, reason: 'lagging' }
+  }
+  const receipt = checkReceipt(input, replication)
+  if (!receipt.ok) return { accepted: false, reason: receipt.reason }
+  return {
+    accepted: true,
+    basis:
+      `${replication.state}; last contact ${receipt.value.toFixed(1)} s before failure start ` +
+      `(margin ${input.marginMs / 1000} s); every received transaction applied`,
   }
 }
 

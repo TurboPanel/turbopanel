@@ -56,6 +56,7 @@ import {
   DEFAULT_FRESH_STANDBY_MARGIN_MS,
   evaluateFreshStandby,
   type FreshStandbyProbe,
+  isMysqlFamilyEngine,
   pickMostAdvancedStandby,
 } from './ha-fresh-standby.ts'
 import { isAutomaticFailoverHealthy, replicationFromMemberMetadata } from './promote-lag.ts'
@@ -806,7 +807,7 @@ type CandidatePick = {
 }
 
 /**
- * Postgres only: the stored observations name no healthy candidate, so probe
+ * Postgres, MySQL and MariaDB: the stored observations name no healthy candidate, so probe
  * each same-DC `failover` replica now and let the fresh-standby gate accept
  * one that stopped streaming only because its primary died. Probes run in
  * parallel. Of the accepted ones, the standby that received the most WAL
@@ -819,7 +820,11 @@ async function probeFreshStandbys(
 ): Promise<CandidatePick | null> {
   const probe = params.probeStandby
   const failureStartedAtMs = params.failureStartedAtMs
-  if (params.engine !== 'postgres' || !probe || typeof failureStartedAtMs !== 'number') {
+  if (
+    !(params.engine === 'postgres' || isMysqlFamilyEngine(params.engine)) ||
+    !probe ||
+    typeof failureStartedAtMs !== 'number'
+  ) {
     return null
   }
   const now = params.nowMs ?? Date.now
@@ -843,6 +848,7 @@ async function probeFreshStandbys(
         replication,
         probeStartedAtMs,
         failureStartedAtMs,
+        engine: params.engine,
         marginMs: params.freshStandbyMarginMs ?? DEFAULT_FRESH_STANDBY_MARGIN_MS,
       })
       return {
