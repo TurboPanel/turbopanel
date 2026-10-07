@@ -655,6 +655,47 @@ function mostSevereFirst(events: readonly MetricEvent[]): MetricEvent[] {
   )
 }
 
+/**
+ * Ask the ingest gate whether this durable sample may be stored, and trim its
+ * events to the hourly budget. Returns the refusal response (429 over the
+ * limits, 503 when the gate itself cannot answer), or `null` when the sample
+ * goes on to be stored — possibly with fewer events than it arrived with.
+ */
+async function applyMetricsIngestGate<E extends Env>(
+  c: Context<E>,
+  db: Db,
+  serverId: string,
+  sample: AuthenticatedMetricsSample
+): Promise<Response | null> {
+  let gate: Awaited<ReturnType<typeof admitMetricsSample>>
+  try {
+    gate = await admitMetricsSample(db, serverId, sample.metadata.sampledAt, sample.events.length)
+  } catch (err) {
+    // No exact count, no write: an unmetered path is what the gate stops.
+    rateLimitedMetricsLog(serverId, 'metrics_gate_failed', () => {
+      console.warn(`metrics gate failed for ${serverId}: ${describeError(err)}`)
+    })
+    c.header('Retry-After', '60')
+    return c.json({ ok: false, error: 'metrics_gate_unavailable' }, 503)
+  }
+  if (!gate.stored) {
+    rateLimitedMetricsLog(serverId, `metrics_gate_${gate.reason}`, () => {
+      console.warn(`metrics sample refused for ${serverId}: ${gate.reason}`)
+    })
+    c.header('Retry-After', String(gate.retryAfterSeconds))
+    return c.json({ ok: false, error: 'rate_limited', reason: gate.reason }, 429)
+  }
+  if (gate.eventsAllowed < sample.events.length) {
+    rateLimitedMetricsLog(serverId, 'metrics_gate_events_dropped', () => {
+      console.warn(
+        `metrics events over the hourly budget for ${serverId}: kept ${gate.eventsAllowed} of ${sample.events.length}`
+      )
+    })
+    sample.events = mostSevereFirst(sample.events).slice(0, gate.eventsAllowed)
+  }
+  return null
+}
+
 type IngestPlanAndTopology = {
   plan: MetricsCapabilityPlan
   slotMapping: SlotMapping | undefined
@@ -1654,37 +1695,8 @@ export function registerDaemonApiRoutes<E extends Env>(
       // above, it needs the database; every deployment binds one, so its
       // absence only happens in tests that exercise other parts of the route.
       if (db) {
-        let gate: Awaited<ReturnType<typeof admitMetricsSample>>
-        try {
-          gate = await admitMetricsSample(
-            db,
-            serverId,
-            sample.metadata.sampledAt,
-            sample.events.length
-          )
-        } catch (err) {
-          // No exact count, no write: an unmetered path is what the gate stops.
-          rateLimitedMetricsLog(serverId, 'metrics_gate_failed', () => {
-            console.warn(`metrics gate failed for ${serverId}: ${describeError(err)}`)
-          })
-          c.header('Retry-After', '60')
-          return c.json({ ok: false, error: 'metrics_gate_unavailable' }, 503)
-        }
-        if (!gate.stored) {
-          rateLimitedMetricsLog(serverId, `metrics_gate_${gate.reason}`, () => {
-            console.warn(`metrics sample refused for ${serverId}: ${gate.reason}`)
-          })
-          c.header('Retry-After', String(gate.retryAfterSeconds))
-          return c.json({ ok: false, error: 'rate_limited', reason: gate.reason }, 429)
-        }
-        if (gate.eventsAllowed < sample.events.length) {
-          rateLimitedMetricsLog(serverId, 'metrics_gate_events_dropped', () => {
-            console.warn(
-              `metrics events over the hourly budget for ${serverId}: kept ${gate.eventsAllowed} of ${sample.events.length}`
-            )
-          })
-          sample.events = mostSevereFirst(sample.events).slice(0, gate.eventsAllowed)
-        }
+        const refused = await applyMetricsIngestGate(c, db, serverId, sample)
+        if (refused) return refused
       }
 
       if (await isServerLiveSessionActive(metricsChartCache, serverId)) {
