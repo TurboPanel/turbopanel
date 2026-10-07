@@ -21,6 +21,14 @@ import {
   type MetricsCapabilityPlan,
 } from '../../contracts/capability-plan.ts'
 
+/**
+ * Plan generations kept per server. A plan can be changed by an organization
+ * admin as often as they like, so the history is bounded: older rows are
+ * deleted as new ones arrive. Generation numbers are assigned here, in order,
+ * so "newest" is simply the highest numbers.
+ */
+export const MAX_RETAINED_CAPABILITY_PLAN_GENERATIONS = 100
+
 export type CapabilityPlanGenerationRecord = {
   generation: number
   planHash: string
@@ -127,6 +135,12 @@ export async function recordCapabilityPlanGenerationIfChanged(
           'was not persisted with the expected plan hash; conflicting writer under lock'
       )
     }
+
+    await tx.execute(sql`
+      DELETE FROM capability
+      WHERE server_id = ${serverId}::uuid
+        AND generation <= ${generation - MAX_RETAINED_CAPABILITY_PLAN_GENERATIONS}
+    `)
 
     return { generation, changed: true }
   })

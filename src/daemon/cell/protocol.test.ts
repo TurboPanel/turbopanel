@@ -2013,6 +2013,21 @@ it('validateDaemonInboundFrame rejects topology-report field shapes', () => {
     false
   )
   assertEquals(validateDaemonInboundFrame(JSON.stringify({ ...base, generation: -1 })).ok, false)
+  // A generation the table cannot store (a Postgres integer) is refused, not sent to the database.
+  for (const huge of [2_147_483_648, 1e300, Number.MAX_SAFE_INTEGER]) {
+    assertEquals(
+      validateDaemonInboundFrame(JSON.stringify({ ...base, generation: huge })).ok,
+      false
+    )
+    assertEquals(
+      validateDaemonInboundFrame(JSON.stringify({ ...base, bootGeneration: huge })).ok,
+      false
+    )
+  }
+  assertEquals(
+    validateDaemonInboundFrame(JSON.stringify({ ...base, generation: 2_147_483_647 })).ok,
+    true
+  )
   assertEquals(
     validateDaemonInboundFrame(JSON.stringify({ ...base, bootGeneration: 1.5 })).ok,
     false
