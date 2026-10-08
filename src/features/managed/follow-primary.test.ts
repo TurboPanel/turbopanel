@@ -43,6 +43,7 @@ const dbUrl = getDatabaseUrl()
 type ReplicaSpec = {
   status?: string | null
   replicaClass?: 'failover' | 'read'
+  connected?: boolean
 }
 
 type Cluster = {
@@ -50,6 +51,7 @@ type Cluster = {
   organizationId: string
   managedId: string
   primaryMemberId: string
+  primaryServerId: string
   replicaMemberIds: string[]
   replicaServerIds: string[]
   actorId: string
@@ -103,13 +105,13 @@ async function withCluster(
       })
       .returning({ id: server.id })
     const replicaServers = await Promise.all(
-      replicaSpecs.map((_, index) =>
+      replicaSpecs.map((spec, index) =>
         db
           .insert(server)
           .values({
             organizationId,
             name: `Follow Primary Replica ${index + 1}`,
-            isConnected: true,
+            isConnected: spec.connected !== false,
             statusChangedAt: new Date().toISOString(),
           })
           .returning({ id: server.id })
@@ -212,6 +214,7 @@ async function withCluster(
       organizationId,
       managedId: cluster!.id,
       primaryMemberId: primaryMember!.id,
+      primaryServerId: primaryServer!.id,
       replicaMemberIds: replicaMembers.map((rows) => rows[0]!.id),
       replicaServerIds,
       actorId: primaryServer!.id,
@@ -295,10 +298,12 @@ async function insertFollowPrimaryCommand(
     actorId: string
     managedId: string
     memberId?: string
+    targetMemberId?: string
     context?: unknown
     status?: 'queued' | 'succeeded' | 'failed'
   }
 ): Promise<string> {
+  const targetMemberId = params.targetMemberId ?? params.actorId
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
     actorType: 'system',
@@ -307,8 +312,9 @@ async function insertFollowPrimaryCommand(
     payload: {
       managedId: params.managedId,
       sourceMemberId: params.memberId ?? params.serverId,
-      targetMemberId: params.actorId,
+      targetMemberId,
       phase: 'repoint',
+      engine: 'postgres',
       targetHost: '203.0.113.10',
       targetPort: 5432,
     },
@@ -317,6 +323,7 @@ async function insertFollowPrimaryCommand(
       : {
           context: {
             managedId: params.managedId,
+            targetMemberId,
             ...(params.memberId ? { memberId: params.memberId } : {}),
           },
         }),
@@ -327,33 +334,48 @@ async function insertFollowPrimaryCommand(
   return record.id
 }
 
-test('loadEngineDefaultPort finds the postgres listener and publishes a repoint', async () => {
+async function payloadFor(
+  db: ReturnType<typeof createDenoDb>,
+  commandId: string
+): Promise<Record<string, unknown>> {
+  return (await getCommandDispatchPayload(db, commandId)) as Record<string, unknown>
+}
+
+test('loadManagedEnginePort finds the postgres listener and publishes slot-ensure plus a replica repoint', async () => {
   await withCluster({}, async (c) => {
     const queue = collectingQueue()
     await enqueueFollowPrimaryOnReplicas(c.db, queue, {
       managedId: c.managedId,
       newPrimaryMemberId: c.primaryMemberId,
       actorId: c.actorId,
-      engine: 'postgres',
     })
     const rows = await failoverCommandsForManaged(c.db, c.managedId)
-    assertEquals(rows.length, 1)
-    assertEquals(rows[0]?.status, 'queued')
-    assertEquals(rows[0]?.serverId, c.replicaServerIds[0])
-    const context = rows[0]?.context as { memberId?: string; managedId?: string }
-    assertEquals(context.memberId, c.replicaMemberIds[0])
-    assertEquals(context.managedId, c.managedId)
-    const payload = (await getCommandDispatchPayload(c.db, rows[0]!.id)) as {
-      phase?: string
-      targetMemberId?: string
-      sourceMemberId?: string
-    }
-    assertEquals(payload.phase, 'repoint')
-    assertEquals(payload.targetMemberId, c.primaryMemberId)
-    assertEquals(payload.sourceMemberId, c.replicaMemberIds[0])
-    assertEquals(queue.sent.length, 1)
-    assertEquals(queue.sent[0]?.commandId, rows[0]?.id)
-    assertEquals(queue.sent[0]?.type, 'managed.ha.failover')
+    assertEquals(rows.length, 2)
+    assertEquals(queue.sent.length, 2)
+    const slotRow = rows.find((row) => row.serverId === c.primaryServerId)
+    const replicaRow = rows.find((row) => row.serverId === c.replicaServerIds[0])
+    assertEquals(slotRow?.status, 'queued')
+    assertEquals((slotRow?.context as { memberId?: string }).memberId, c.primaryMemberId)
+    const slotPayload = await payloadFor(c.db, slotRow!.id)
+    assertEquals(slotPayload.phase, 'repoint')
+    assertEquals(slotPayload.engine, 'postgres')
+    assertEquals(slotPayload.sourceMemberId, c.primaryMemberId)
+    assertEquals(slotPayload.targetMemberId, c.primaryMemberId)
+    assertEquals(slotPayload.ensureSlots, ['tp_member_2'])
+    assertEquals(slotPayload.targetHost, undefined)
+    assertEquals(replicaRow?.status, 'queued')
+    const replicaContext = replicaRow?.context as { memberId?: string; managedId?: string }
+    assertEquals(replicaContext.memberId, c.replicaMemberIds[0])
+    assertEquals(replicaContext.managedId, c.managedId)
+    const replicaPayload = await payloadFor(c.db, replicaRow!.id)
+    assertEquals(replicaPayload.phase, 'repoint')
+    assertEquals(replicaPayload.engine, 'postgres')
+    assertEquals(replicaPayload.targetMemberId, c.primaryMemberId)
+    assertEquals(replicaPayload.sourceMemberId, c.replicaMemberIds[0])
+    assertEquals(
+      queue.sent.map((item) => item.type),
+      ['managed.ha.failover', 'managed.ha.failover']
+    )
   })
 })
 
@@ -379,6 +401,7 @@ test('outstandingFollowPrimaryMemberIds counts queued repoints and ignores termi
       actorId: c.actorId,
       managedId: c.managedId,
       memberId: queuedMemberId,
+      targetMemberId: c.primaryMemberId,
       status: 'queued',
     })
     await insertFollowPrimaryCommand(c.db, {
@@ -386,6 +409,7 @@ test('outstandingFollowPrimaryMemberIds counts queued repoints and ignores termi
       actorId: c.actorId,
       managedId: c.managedId,
       memberId: terminalMemberId,
+      targetMemberId: c.primaryMemberId,
       status: 'succeeded',
     })
     await insertFollowPrimaryCommand(c.db, {
@@ -432,10 +456,11 @@ test('publishFollowPrimaryCommand marks the record failed when the queue rejects
       actorId: c.actorId,
     })
     const rows = await failoverCommandsForManaged(c.db, c.managedId)
-    assertEquals(rows.length, 1)
-    assertEquals(rows[0]?.status, 'failed')
-    const context = rows[0]?.context as { memberId?: string }
-    assertEquals(context.memberId, c.replicaMemberIds[0])
+    assertEquals(rows.length, 2)
+    assertEquals(
+      rows.map((row) => row.status).sort((a, b) => (a ?? '').localeCompare(b ?? '')),
+      ['failed', 'failed']
+    )
   })
 })
 
@@ -445,18 +470,21 @@ test('enqueueFollowPrimaryOnReplicas with default deps skips the new primary, ol
       replicas: [
         { status: 'needs_resync' },
         { status: 'failed' },
+        { status: 'provisioning' },
+        { status: 'ready', connected: false },
         { status: 'ready' },
         { status: 'ready' },
       ],
     },
     async (c) => {
-      const outstandingMemberId = c.replicaMemberIds[2]!
-      const healthyMemberId = c.replicaMemberIds[3]!
+      const outstandingMemberId = c.replicaMemberIds[4]!
+      const healthyMemberId = c.replicaMemberIds[5]!
       await insertFollowPrimaryCommand(c.db, {
-        serverId: c.replicaServerIds[2]!,
+        serverId: c.replicaServerIds[4]!,
         actorId: c.actorId,
         managedId: c.managedId,
         memberId: outstandingMemberId,
+        targetMemberId: c.primaryMemberId,
         status: 'queued',
       })
       const queue = collectingQueue()
@@ -464,19 +492,50 @@ test('enqueueFollowPrimaryOnReplicas with default deps skips the new primary, ol
         managedId: c.managedId,
         newPrimaryMemberId: c.primaryMemberId,
         actorId: c.actorId,
-        engine: 'postgres',
       })
       const published = (await failoverCommandsForManaged(c.db, c.managedId)).filter((row) =>
         queue.sent.some((item) => item.commandId === row.id)
       )
-      assertEquals(published.length, 1)
-      const context = published[0]?.context as { memberId?: string }
+      const replicaPublished = published.filter((row) => row.serverId !== c.primaryServerId)
+      assertEquals(replicaPublished.length, 1)
+      const context = replicaPublished[0]?.context as { memberId?: string }
       assertEquals(context.memberId, healthyMemberId)
-      assertEquals(published[0]?.serverId, c.replicaServerIds[3])
-      const payload = (await getCommandDispatchPayload(c.db, published[0]!.id)) as {
-        phase?: string
-      }
-      assertEquals(payload.phase, 'repoint')
+      assertEquals(replicaPublished[0]?.serverId, c.replicaServerIds[5])
+      const slotRow = published.find((row) => row.serverId === c.primaryServerId)
+      const slotPayload = await payloadFor(c.db, slotRow!.id)
+      assertEquals(slotPayload.ensureSlots, ['tp_member_6', 'tp_member_7'])
+      assertEquals(slotPayload.engine, 'postgres')
     }
   )
+})
+
+test('a non-terminal repoint to a different target is cancelled and replaced', async () => {
+  await withCluster({ replicas: [{ status: 'ready' }] }, async (c) => {
+    const staleTarget = '00000000-0000-4000-8000-0000000000aa'
+    const staleId = await insertFollowPrimaryCommand(c.db, {
+      serverId: c.replicaServerIds[0]!,
+      actorId: c.actorId,
+      managedId: c.managedId,
+      memberId: c.replicaMemberIds[0],
+      targetMemberId: staleTarget,
+      status: 'queued',
+    })
+    const queue = collectingQueue()
+    await enqueueFollowPrimaryOnReplicas(c.db, queue, {
+      managedId: c.managedId,
+      newPrimaryMemberId: c.primaryMemberId,
+      actorId: c.actorId,
+    })
+    const rows = await failoverCommandsForManaged(c.db, c.managedId)
+    const stale = rows.find((row) => row.id === staleId)
+    assertEquals(stale?.status, 'cancelled')
+    const replacement = rows.filter(
+      (row) =>
+        row.status === 'queued' &&
+        (row.context as { memberId?: string }).memberId === c.replicaMemberIds[0]
+    )
+    assertEquals(replacement.length, 1)
+    const payload = await payloadFor(c.db, replacement[0]!.id)
+    assertEquals(payload.targetMemberId, c.primaryMemberId)
+  })
 })

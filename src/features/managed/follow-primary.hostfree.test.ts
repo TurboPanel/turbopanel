@@ -8,8 +8,11 @@ import type { CommandQueue } from '../commands/queue.ts'
 import type { ManagedMemberPeer, ManagedMemberRow } from './members.ts'
 import {
   enqueueFollowPrimaryOnReplicas,
+  managedMemberSlotName,
   membersEligibleToFollowPrimary,
   replicaFollowPrimaryDial,
+  type FollowPrimaryEnqueueDeps,
+  type OutstandingFollowPrimary,
 } from './follow-primary.ts'
 
 /**
@@ -29,6 +32,7 @@ const SERVER_B = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'
 const SERVER_C = '7ba7b810-9dad-11d1-80b4-00c04fd430c8'
 const ACTOR_ID = '00000000-0000-4000-8000-000000000099'
 const NOW = '2026-01-01T00:00:00.000Z'
+const OLD_PRIMARY_ID = '00000000-0000-4000-8000-000000000019'
 
 function member(overrides: Partial<ManagedMemberRow> = {}): ManagedMemberRow {
   return {
@@ -65,6 +69,37 @@ function okQueue(): CommandQueue {
   return { enqueue: () => Promise.resolve() }
 }
 
+const primaryPeer: ManagedMemberPeer = {
+  memberId: PRIMARY_ID,
+  role: 'primary',
+  readEligible: true,
+  address: '203.0.113.10',
+  transport: 'datacenter',
+  port: 45001,
+}
+
+function followDeps(
+  enqueued: Array<{ serverId: string; memberId: string; payload: Record<string, unknown> }>,
+  overrides: FollowPrimaryEnqueueDeps = {}
+): FollowPrimaryEnqueueDeps {
+  return {
+    listMembers: () => Promise.resolve([member(), replicaMember()]),
+    loadEngine: () => Promise.resolve({ engine: 'postgres', defaultPort: 5432 }),
+    loadConnectedServerIds: (_db, ids) => Promise.resolve(new Set(ids)),
+    outstandingRepoints: () => Promise.resolve([]),
+    resolvePeer: () => Promise.resolve(primaryPeer),
+    enqueue: (_db, _queue, spec) => {
+      enqueued.push({
+        serverId: spec.serverId,
+        memberId: spec.memberId,
+        payload: spec.payload as Record<string, unknown>,
+      })
+      return Promise.resolve(true)
+    },
+    ...overrides,
+  }
+}
+
 test('replicaFollowPrimaryDial uses the container name when the primary is local', () => {
   assertEquals(
     replicaFollowPrimaryDial(MANAGED_ID, {
@@ -90,7 +125,11 @@ test('replicaFollowPrimaryDial uses the leaf SAN and dial IP when the primary is
   )
 })
 
-test('membersEligibleToFollowPrimary skips the new primary and unhealthy members', () => {
+test('managedMemberSlotName follows the apply slot convention', () => {
+  assertEquals(managedMemberSlotName(2), 'tp_member_2')
+})
+
+test('membersEligibleToFollowPrimary is a whitelist of healthy replicas', () => {
   const rows = [
     member(),
     replicaMember(),
@@ -99,31 +138,52 @@ test('membersEligibleToFollowPrimary skips the new primary and unhealthy members
       serverId: SERVER_C,
       replicaClass: 'read',
       ordinal: 3,
-      status: 'needs_resync',
+      status: 'streaming',
     }),
     replicaMember({
       id: '00000000-0000-4000-8000-000000000023',
       serverId: SERVER_C,
       ordinal: 4,
+      status: 'needs_resync',
+    }),
+    replicaMember({
+      id: '00000000-0000-4000-8000-000000000024',
+      serverId: SERVER_C,
+      ordinal: 5,
       status: 'failed',
+    }),
+    replicaMember({
+      id: '00000000-0000-4000-8000-000000000025',
+      serverId: SERVER_C,
+      ordinal: 6,
+      status: 'provisioning',
+    }),
+    replicaMember({
+      id: '00000000-0000-4000-8000-000000000026',
+      serverId: SERVER_C,
+      ordinal: 7,
+      status: 'applying',
+    }),
+    replicaMember({
+      id: '00000000-0000-4000-8000-000000000027',
+      serverId: SERVER_C,
+      ordinal: 8,
+      status: 'stopped',
     }),
   ]
   assertEquals(
     membersEligibleToFollowPrimary(rows, PRIMARY_ID).map((row) => row.id),
+    [REPLICA_ID, READ_ID]
+  )
+  assertEquals(
+    membersEligibleToFollowPrimary(rows, PRIMARY_ID, new Set([SERVER_B])).map((row) => row.id),
     [REPLICA_ID]
   )
 })
 
-test('enqueueFollowPrimaryOnReplicas queues one follow-primary for each remaining replica', async () => {
-  const enqueued: Array<{ serverId: string; payload: Record<string, unknown> }> = []
-  const primaryPeer: ManagedMemberPeer = {
-    memberId: PRIMARY_ID,
-    role: 'primary',
-    readEligible: true,
-    address: '203.0.113.10',
-    transport: 'datacenter',
-    port: 45001,
-  }
+test('enqueueFollowPrimaryOnReplicas queues slot-ensure then one follow-primary per replica', async () => {
+  const enqueued: Array<{ serverId: string; memberId: string; payload: Record<string, unknown> }> =
+    []
   await enqueueFollowPrimaryOnReplicas(
     {} as Db,
     okQueue(),
@@ -133,32 +193,29 @@ test('enqueueFollowPrimaryOnReplicas queues one follow-primary for each remainin
       actorId: ACTOR_ID,
       engine: 'postgres',
     },
-    {
-      listMembers: () => Promise.resolve([member(), replicaMember()]),
-      loadDefaultPort: () => Promise.resolve(5432),
-      outstandingMemberIds: () => Promise.resolve(new Set()),
-      resolvePeers: () => Promise.resolve([primaryPeer]),
-      enqueue: (_db, _queue, spec) => {
-        enqueued.push({
-          serverId: spec.serverId,
-          payload: spec.payload as Record<string, unknown>,
-        })
-        return Promise.resolve(true)
-      },
-    }
+    followDeps(enqueued)
   )
-  assertEquals(enqueued.length, 1)
-  assertEquals(enqueued[0]?.serverId, SERVER_B)
+  assertEquals(enqueued.length, 2)
+  assertEquals(enqueued[0]?.serverId, SERVER_A)
   assertEquals(enqueued[0]?.payload.phase, 'repoint')
-  assertEquals(enqueued[0]?.payload.targetHost, `managed-${MANAGED_ID}`)
-  assertEquals(enqueued[0]?.payload.targetHostaddr, '203.0.113.10')
-  assertEquals(enqueued[0]?.payload.targetPort, 45001)
-  assertEquals(enqueued[0]?.payload.sourceMemberId, REPLICA_ID)
+  assertEquals(enqueued[0]?.payload.engine, 'postgres')
+  assertEquals(enqueued[0]?.payload.sourceMemberId, PRIMARY_ID)
   assertEquals(enqueued[0]?.payload.targetMemberId, PRIMARY_ID)
+  assertEquals(enqueued[0]?.payload.ensureSlots, ['tp_member_2'])
+  assertEquals(enqueued[0]?.payload.targetHost, undefined)
+  assertEquals(enqueued[1]?.serverId, SERVER_B)
+  assertEquals(enqueued[1]?.payload.phase, 'repoint')
+  assertEquals(enqueued[1]?.payload.engine, 'postgres')
+  assertEquals(enqueued[1]?.payload.targetHost, `managed-${MANAGED_ID}`)
+  assertEquals(enqueued[1]?.payload.targetHostaddr, '203.0.113.10')
+  assertEquals(enqueued[1]?.payload.targetPort, 45001)
+  assertEquals(enqueued[1]?.payload.sourceMemberId, REPLICA_ID)
+  assertEquals(enqueued[1]?.payload.targetMemberId, PRIMARY_ID)
 })
 
-test('enqueueFollowPrimaryOnReplicas is a no-op when a follow-primary is already queued', async () => {
-  let enqueueCalls = 0
+test('enqueueFollowPrimaryOnReplicas loads engine from the cluster when omitted', async () => {
+  const enqueued: Array<{ serverId: string; memberId: string; payload: Record<string, unknown> }> =
+    []
   await enqueueFollowPrimaryOnReplicas(
     {} as Db,
     okQueue(),
@@ -167,22 +224,74 @@ test('enqueueFollowPrimaryOnReplicas is a no-op when a follow-primary is already
       newPrimaryMemberId: PRIMARY_ID,
       actorId: ACTOR_ID,
     },
-    {
-      listMembers: () => Promise.resolve([member(), replicaMember()]),
-      loadDefaultPort: () => Promise.resolve(5432),
-      outstandingMemberIds: () => Promise.resolve(new Set([REPLICA_ID])),
-      resolvePeers: () => Promise.reject(new TypeError('must not resolve peers')),
-      enqueue: () => {
-        enqueueCalls += 1
-        return Promise.resolve(true)
-      },
-    }
+    followDeps(enqueued, {
+      loadEngine: () => Promise.resolve({ engine: 'mysql', defaultPort: 3306 }),
+    })
   )
-  assertEquals(enqueueCalls, 0)
+  assertEquals(enqueued[0]?.payload.engine, 'mysql')
+  assertEquals(enqueued[1]?.payload.engine, 'mysql')
+})
+
+test('enqueueFollowPrimaryOnReplicas skips a replica already queued for the same target', async () => {
+  const enqueued: Array<{ serverId: string; memberId: string; payload: Record<string, unknown> }> =
+    []
+  const outstanding: OutstandingFollowPrimary[] = [
+    { commandId: 'cmd-same', memberId: REPLICA_ID, targetMemberId: PRIMARY_ID },
+  ]
+  await enqueueFollowPrimaryOnReplicas(
+    {} as Db,
+    okQueue(),
+    {
+      managedId: MANAGED_ID,
+      newPrimaryMemberId: PRIMARY_ID,
+      actorId: ACTOR_ID,
+      engine: 'postgres',
+    },
+    followDeps(enqueued, {
+      outstandingRepoints: () => Promise.resolve(outstanding),
+    })
+  )
+  assertEquals(
+    enqueued.map((row) => row.memberId),
+    [PRIMARY_ID]
+  )
+})
+
+test('enqueueFollowPrimaryOnReplicas cancels a stale target and queues the new one', async () => {
+  const cancelled: string[] = []
+  const enqueued: Array<{ serverId: string; memberId: string; payload: Record<string, unknown> }> =
+    []
+  await enqueueFollowPrimaryOnReplicas(
+    {} as Db,
+    okQueue(),
+    {
+      managedId: MANAGED_ID,
+      newPrimaryMemberId: PRIMARY_ID,
+      actorId: ACTOR_ID,
+      engine: 'postgres',
+    },
+    followDeps(enqueued, {
+      outstandingRepoints: () =>
+        Promise.resolve([
+          { commandId: 'cmd-stale', memberId: REPLICA_ID, targetMemberId: OLD_PRIMARY_ID },
+        ]),
+      cancelCommand: (_db, commandId) => {
+        cancelled.push(commandId)
+        return Promise.resolve()
+      },
+    })
+  )
+  assertEquals(cancelled, ['cmd-stale'])
+  assertEquals(
+    enqueued.map((row) => row.memberId),
+    [PRIMARY_ID, REPLICA_ID]
+  )
+  assertEquals(enqueued[1]?.payload.targetMemberId, PRIMARY_ID)
 })
 
 test('enqueueFollowPrimaryOnReplicas logs a missing path and does not throw', async () => {
-  let enqueueCalls = 0
+  const enqueued: Array<{ serverId: string; memberId: string; payload: Record<string, unknown> }> =
+    []
   await enqueueFollowPrimaryOnReplicas(
     {} as Db,
     okQueue(),
@@ -190,32 +299,27 @@ test('enqueueFollowPrimaryOnReplicas logs a missing path and does not throw', as
       managedId: MANAGED_ID,
       newPrimaryMemberId: PRIMARY_ID,
       actorId: ACTOR_ID,
+      engine: 'postgres',
     },
-    {
-      listMembers: () => Promise.resolve([member(), replicaMember()]),
-      loadDefaultPort: () => Promise.resolve(5432),
-      outstandingMemberIds: () => Promise.resolve(new Set()),
-      resolvePeers: () =>
+    followDeps(enqueued, {
+      resolvePeer: () =>
         Promise.resolve({
           kind: 'private_path_unavailable',
           fromServerId: SERVER_B,
           toServerId: SERVER_A,
         }),
-      enqueue: () => {
-        enqueueCalls += 1
-        return Promise.resolve(true)
-      },
-    }
+    })
   )
-  assertEquals(enqueueCalls, 0)
+  assertEquals(
+    enqueued.map((row) => row.memberId),
+    [PRIMARY_ID]
+  )
 })
 
 test('enqueueFollowPrimaryOnReplicas keeps going when one replica enqueue fails', async () => {
   const enqueuedMemberIds: string[] = []
-  const primaryPeer: ManagedMemberPeer = {
-    memberId: PRIMARY_ID,
-    role: 'primary',
-    readEligible: true,
+  const localPeer: ManagedMemberPeer = {
+    ...primaryPeer,
     address: 'pg-primary',
     transport: 'local',
     port: 5432,
@@ -228,25 +332,24 @@ test('enqueueFollowPrimaryOnReplicas keeps going when one replica enqueue fails'
       managedId: MANAGED_ID,
       newPrimaryMemberId: PRIMARY_ID,
       actorId: ACTOR_ID,
+      engine: 'postgres',
     },
-    {
+    followDeps([], {
       listMembers: () =>
         Promise.resolve([
           member(),
           replicaMember(),
           replicaMember({ id: READ_ID, serverId: SERVER_C, ordinal: 3, replicaClass: 'read' }),
         ]),
-      loadDefaultPort: () => Promise.resolve(5432),
-      outstandingMemberIds: () => Promise.resolve(new Set()),
-      resolvePeers: () => Promise.resolve([primaryPeer]),
+      resolvePeer: () => Promise.resolve(localPeer),
       enqueue: (_db, _queue, spec) => {
         if (spec.memberId === REPLICA_ID) return Promise.resolve(false)
         enqueuedMemberIds.push(spec.memberId)
         return Promise.resolve(true)
       },
-    }
+    })
   )
-  assertEquals(enqueuedMemberIds, [READ_ID])
+  assertEquals(enqueuedMemberIds, [PRIMARY_ID, READ_ID])
 })
 
 test('enqueueFollowPrimaryOnReplicas never throws when listing members fails', async () => {

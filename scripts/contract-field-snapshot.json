@@ -136,6 +136,27 @@
       { "name": "uploadedCertId", "required": false, "type": "string" }
     ]
   },
+  "ManagedHaFailoverPayload": {
+    "instance": "src/contracts/commands/schemas.ts",
+    "daemon": "src/contracts/commands-contracts.ts",
+    "fields": [
+      { "name": "engine", "required": false, "type": "ManagedEngineCode" },
+      { "name": "ensureSlots", "required": false, "type": "Array<string>" },
+      { "name": "managedId", "required": true, "type": "string" },
+      {
+        "name": "phase",
+        "required": true,
+        "type": "'drain' | 'recover' | 'repoint'"
+      },
+      { "name": "sourceHost", "required": false, "type": "string" },
+      { "name": "sourceMemberId", "required": true, "type": "string" },
+      { "name": "sourcePort", "required": false, "type": "number" },
+      { "name": "targetHost", "required": false, "type": "string" },
+      { "name": "targetHostaddr", "required": false, "type": "string" },
+      { "name": "targetMemberId", "required": true, "type": "string" },
+      { "name": "targetPort", "required": false, "type": "number" }
+    ]
+  },
   "EnvironmentDeployHostAccess": {
     "instance": "src/contracts/commands/schemas.ts",
     "daemon": "src/contracts/commands-contracts.ts",
