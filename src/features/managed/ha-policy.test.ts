@@ -658,10 +658,19 @@ test('orchestratorBindingRejection: a local primary is known by its published pr
     reporterBindsInstance: true,
     expectedPrimary: { host: 'abc-1', port: 3306 },
     localPrivatePort: 45001,
+    localPrimaryHosts: ['172.20.4.10', 'abc-1'],
   }
   assertEquals(
     orchestratorBindingRejection({ ...base, instanceHost: '172.20.4.10', instancePort: 45001 }),
     null
+  )
+  assertEquals(
+    typeof orchestratorBindingRejection({
+      ...base,
+      instanceHost: '172.20.4.11',
+      instancePort: 45001,
+    }),
+    'string'
   )
   assertEquals(
     typeof orchestratorBindingRejection({
@@ -672,13 +681,13 @@ test('orchestratorBindingRejection: a local primary is known by its published pr
     'string'
   )
   assertEquals(
-    orchestratorBindingRejection({
+    typeof orchestratorBindingRejection({
       ...base,
       expectedPrimary: null,
       instanceHost: '172.20.4.10',
       instancePort: 45001,
     }),
-    null
+    'string'
   )
   // A remote primary (no local private port) is unchanged.
   assertEquals(

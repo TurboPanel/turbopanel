@@ -702,7 +702,11 @@ all:
    `managed-ha-instance-v1`), and it must equal the primary's address and port
    as the reporter's Orchestrator knows it (`haMemberDialForReporter`, the same
    dial `managed.ha.reconcile` registered: private address + `privatePort`, or
-   the local container name + engine default port). A mismatch, or a missing
+   the local container name + engine default port). A local primary report may
+   instead name the reporter's published private address (or local container
+   name) plus its `privatePort`; the host check is mandatory because private
+   ports are allocated per server and remote members commonly hold the same
+   number. A mismatch, or a missing
    instance from a daemon that advertises the feature, is recorded as a
    terminal `blocked` row with `metadata.stale = true` and a reason, and
    nothing is fenced or promoted (no in-flight resume, no cooldown). A daemon
