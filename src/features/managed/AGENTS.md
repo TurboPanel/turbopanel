@@ -440,6 +440,11 @@ Postgres backs up via `pg_dump -Fc` (custom format), per-database only —
 `supportsInstanceScope: false` documents `pg_dumpall` as an explicit future
 seam.
 
+Artifacts stay on the host that wrote them. `backup.server_id` is that host
+(the primary when the backup ran); restore after a planned switchover answers
+**409** `backup_on_other_server` rather than sending `managed.restore` to a
+host that does not have the file. See `src/features/backups/AGENTS.md`.
+
 **Scheduled backups** are `retention` rows (routes under
 `/environments/:id/managed/backup-policies`, org owners and managers only;
 `src/client/managed/backup-policies.ts`). The control plane never queues a
