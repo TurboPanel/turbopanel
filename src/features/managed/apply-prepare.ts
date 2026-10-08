@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm'
+import { effectiveManagedImage } from './releases.ts'
 import type { Context } from 'hono'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
 import { ensureServerMonitorCredential } from './monitor-credential.ts'
@@ -1242,7 +1243,7 @@ async function buildPayloadForMember(
     projectName: input.managedRow.id,
     containerName: allocation.containerName,
     managedNetwork: managedNetwork.hostName,
-    image: input.settings.image ?? input.spec.defaultImage,
+    image: effectiveManagedImage(input.spec, input.settings.image),
     // Engine-native listen port inside the container — not the ingress listener.
     containerPort: input.spec.defaultPort,
     composeYaml,

@@ -195,6 +195,10 @@ import {
   parseManagedResidual,
   serializeManagedRow,
 } from '../../features/managed/serialize.ts'
+import {
+  effectiveManagedImage,
+  managedImageFailoverSupport,
+} from '../../features/managed/releases.ts'
 import { isManagedReplicaObservationStale } from '../../features/managed/promote-lag.ts'
 import { findLatestRecovery } from '../../features/managed/recovery-records.ts'
 import { serializeRecovery } from '../../features/managed/recovery.ts'
@@ -650,7 +654,9 @@ async function resolveManagedCreatePlan(
   const version = parseManagedVersionSelection(ctx.spec.engine, body)
   if (!version.ok) return c.json({ error: version.error }, version.status)
 
-  let settings = mergeCreateSettings(ctx.spec, version.image)
+  // Store the resolved image on every new cluster, so a later change of the
+  // catalog default can never change which series an existing row runs.
+  let settings = mergeCreateSettings(ctx.spec, version.image ?? ctx.spec.defaultImage)
   if (!settings) {
     return c.json({ error: 'managed_settings_invalid' }, 400)
   }
@@ -2218,6 +2224,16 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const serverDenied = await assertCanManageOr403(c, 'server', serverId)
     if (serverDenied) return serverDenied
 
+    const options = parseManagedRowOptions(ctx.spec, row.options)
+    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+
+    const failover = managedImageFailoverSupport(
+      effectiveManagedImage(ctx.spec, options.settings.image)
+    )
+    if (!failover.supported) {
+      return c.json({ error: failover.reason, code: 'managed_failover_unsupported' }, 422)
+    }
+
     await ensureManagedPrimaryMember(db, {
       managedId: row.id,
       serverId: primaryServerId,
@@ -2252,9 +2268,6 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       readEligible,
       replicationTransport: placement.toPrimaryTransport,
     })
-
-    const options = parseManagedRowOptions(ctx.spec, row.options)
-    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const prepared = await prepareApplyForManaged(c, db, ctx, row, options, primaryServerId)
     if (prepared instanceof Response) {
@@ -2318,6 +2331,17 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: patchParsed.error }, patchParsed.status)
     }
 
+    const patchOptions = parseManagedRowOptions(ctx.spec, row.options)
+    if (!patchOptions) return c.json({ error: 'Invalid managed options' }, 400)
+    if (patchParsed.replicaClass === 'failover') {
+      const failover = managedImageFailoverSupport(
+        effectiveManagedImage(ctx.spec, patchOptions.settings.image)
+      )
+      if (!failover.supported) {
+        return c.json({ error: failover.reason, code: 'managed_failover_unsupported' }, 422)
+      }
+    }
+
     const classPatched = await applyMemberReplicaClassPatch(c, db, {
       managedServerId: row.serverId,
       member,
@@ -2336,14 +2360,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const options = parseManagedRowOptions(ctx.spec, row.options)
-    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
-
     const applyResp = await runApplyForManaged(c, db, {
       userId: auth.userId,
       ctx,
       managedRow: row,
-      options,
+      options: patchOptions,
       targetServerId,
     })
     return applyResp
