@@ -18,7 +18,9 @@ container / network / address rows), that colocated flag, blocker counts, and
 up to 50 leftover containers / networks / addresses plus a `more` count.
 System-workspace containers (and other system-workspace RESTRICT rows torn down
 by `deleteSystemEnvironmentSubtree`) are omitted the same way as the blocker
-scan.
+scan. `GET /servers/:id/services` uses the same exclusion and the same
+`online` / `canForget` rule so the Services tab and this preview cannot
+disagree.
 
 `DELETE` accepts an explicit `forgetResources=true` query flag (or JSON body
 `{ forgetResources: true }`, same style as managed `detach=true`). Anything else
