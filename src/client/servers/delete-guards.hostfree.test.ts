@@ -1,11 +1,11 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals } from '@std/assert'
 import {
   blockedDatabaseForgetMessage,
   blockedDatabaseReason,
   blockedEnvironmentForgetMessage,
   canForgetServerResources,
   capPreviewList,
-} from "./delete-guards.ts";
+} from './delete-guards.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -13,25 +13,25 @@ import {
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno);
+const test = Deno.test.bind(Deno)
 
-test("blockedDatabaseReason is only_member unless another member exists", () => {
-  assertEquals(blockedDatabaseReason(false), "only_member");
-  assertEquals(blockedDatabaseReason(true), "primary_here");
-});
+test('blockedDatabaseReason is only_member unless another member exists', () => {
+  assertEquals(blockedDatabaseReason(false), 'only_member')
+  assertEquals(blockedDatabaseReason(true), 'primary_here')
+})
 
-test("blockedDatabaseForgetMessage names the database in plain words", () => {
+test('blockedDatabaseForgetMessage names the database in plain words', () => {
   assertEquals(
-    blockedDatabaseForgetMessage("orders", "only_member"),
-    'Database "orders" has its only copy on this server. Delete the database first.',
-  );
+    blockedDatabaseForgetMessage('orders', 'only_member'),
+    'Database "orders" has its only copy on this server. Delete the database first.'
+  )
   assertEquals(
-    blockedDatabaseForgetMessage("orders", "primary_here"),
-    'Database "orders" has its primary copy on this server. Promote another member or delete the database first.',
-  );
-});
+    blockedDatabaseForgetMessage('orders', 'primary_here'),
+    'Database "orders" has its primary copy on this server. Promote another member or delete the database first.'
+  )
+})
 
-test("canForgetServerResources is false when online, colocated, or a database is blocked", () => {
+test('canForgetServerResources is false when online, colocated, or a database is blocked', () => {
   assertEquals(
     canForgetServerResources({
       online: false,
@@ -39,8 +39,8 @@ test("canForgetServerResources is false when online, colocated, or a database is
       blockedDatabaseCount: 0,
       blockedEnvironmentCount: 0,
     }),
-    true,
-  );
+    true
+  )
   assertEquals(
     canForgetServerResources({
       online: true,
@@ -48,8 +48,8 @@ test("canForgetServerResources is false when online, colocated, or a database is
       blockedDatabaseCount: 0,
       blockedEnvironmentCount: 0,
     }),
-    false,
-  );
+    false
+  )
   assertEquals(
     canForgetServerResources({
       online: false,
@@ -57,8 +57,8 @@ test("canForgetServerResources is false when online, colocated, or a database is
       blockedDatabaseCount: 0,
       blockedEnvironmentCount: 0,
     }),
-    false,
-  );
+    false
+  )
   assertEquals(
     canForgetServerResources({
       online: false,
@@ -66,8 +66,8 @@ test("canForgetServerResources is false when online, colocated, or a database is
       blockedDatabaseCount: 2,
       blockedEnvironmentCount: 0,
     }),
-    false,
-  );
+    false
+  )
   assertEquals(
     canForgetServerResources({
       online: false,
@@ -75,19 +75,19 @@ test("canForgetServerResources is false when online, colocated, or a database is
       blockedDatabaseCount: 0,
       blockedEnvironmentCount: 1,
     }),
-    false,
-  );
-});
+    false
+  )
+})
 
-test("blockedEnvironmentForgetMessage names the other server in plain words", () => {
+test('blockedEnvironmentForgetMessage names the other server in plain words', () => {
   assertEquals(
-    blockedEnvironmentForgetMessage("Shop", "staging", ["Edge"]),
-    'App "Shop / staging" also runs on "Edge". Move or delete it first.',
-  );
-});
+    blockedEnvironmentForgetMessage('Shop', 'staging', ['Edge']),
+    'App "Shop / staging" also runs on "Edge". Move or delete it first.'
+  )
+})
 
-test("capPreviewList reports leftover items beyond 50", () => {
-  const items = Array.from({ length: 52 }, (_, i) => i);
-  assertEquals(capPreviewList(items), { items: items.slice(0, 50), more: 2 });
-  assertEquals(capPreviewList(["a"]), { items: ["a"], more: 0 });
-});
+test('capPreviewList reports leftover items beyond 50', () => {
+  const items = Array.from({ length: 52 }, (_, i) => i)
+  assertEquals(capPreviewList(items), { items: items.slice(0, 50), more: 2 })
+  assertEquals(capPreviewList(['a']), { items: ['a'], more: 0 })
+})

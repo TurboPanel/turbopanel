@@ -1,237 +1,230 @@
 import {
   SERVER_DELETE_BLOCKER_KIND_VALUES,
   SERVER_SERVICES_REMOVAL_KIND_VALUES,
-} from "../servers/delete-guards.ts";
+} from '../servers/delete-guards.ts'
 
 function cappedListSchema(item: Record<string, unknown>) {
   return {
-    type: "object",
-    required: ["items", "more"],
+    type: 'object',
+    required: ['items', 'more'],
     properties: {
-      items: { type: "array", items: item },
-      more: { type: "integer", minimum: 0 },
+      items: { type: 'array', items: item },
+      more: { type: 'integer', minimum: 0 },
     },
-  };
+  }
 }
 
 export const serverSchemas = {
   ServerOsMetadata: {
-    type: "object",
+    type: 'object',
     description:
-      "Host OS reported by the daemon from /etc/os-release (plus Deno build arch/family).",
+      'Host OS reported by the daemon from /etc/os-release (plus Deno build arch/family).',
     properties: {
       family: {
-        type: "string",
-        enum: ["linux", "windows", "freebsd", "darwin"],
+        type: 'string',
+        enum: ['linux', 'windows', 'freebsd', 'darwin'],
       },
       id: {
-        type: "string",
-        description: "Distro id from os-release ID= (e.g. debian, raspbian).",
+        type: 'string',
+        description: 'Distro id from os-release ID= (e.g. debian, raspbian).',
       },
       variant: {
-        type: "string",
-        enum: ["raspberry-pi-os"],
+        type: 'string',
+        enum: ['raspberry-pi-os'],
         description:
-          "Set when the host is Raspberry Pi OS (including 64-bit images that still report ID=debian).",
+          'Set when the host is Raspberry Pi OS (including 64-bit images that still report ID=debian).',
       },
       version: {
-        type: "string",
+        type: 'string',
         description:
-          "Point release when available (e.g. 13.5 from DEBIAN_VERSION_FULL), else VERSION_ID.",
+          'Point release when available (e.g. 13.5 from DEBIAN_VERSION_FULL), else VERSION_ID.',
       },
       codename: {
-        type: "string",
-        description: "VERSION_CODENAME (e.g. trixie).",
+        type: 'string',
+        description: 'VERSION_CODENAME (e.g. trixie).',
       },
       prettyName: {
-        type: "string",
-        description: "Raw PRETTY_NAME from os-release.",
+        type: 'string',
+        description: 'Raw PRETTY_NAME from os-release.',
       },
       architecture: {
-        type: "string",
-        description: "CPU arch (e.g. aarch64, x86_64).",
+        type: 'string',
+        description: 'CPU arch (e.g. aarch64, x86_64).',
       },
     },
   },
   ServerCpuSocket: {
-    type: "object",
-    description:
-      "One physical CPU socket. resources.cpus is ordered 0, 1, … by physical id.",
+    type: 'object',
+    description: 'One physical CPU socket. resources.cpus is ordered 0, 1, … by physical id.',
     properties: {
       vendorId: {
-        type: "string",
-        description:
-          "cpuinfo vendor_id (e.g. GenuineIntel) or ARM CPU implementer (e.g. 0x41).",
+        type: 'string',
+        description: 'cpuinfo vendor_id (e.g. GenuineIntel) or ARM CPU implementer (e.g. 0x41).',
       },
       name: {
-        type: "string",
-        description: "cpuinfo model name (or ARM Hardware / Processor).",
+        type: 'string',
+        description: 'cpuinfo model name (or ARM Hardware / Processor).',
       },
-      architecture: { type: "string" },
+      architecture: { type: 'string' },
       cores: {
-        type: "object",
-        required: ["total"],
+        type: 'object',
+        required: ['total'],
         properties: {
           total: {
-            type: "integer",
+            type: 'integer',
             minimum: 1,
-            description: "Physical cores on this socket.",
+            description: 'Physical cores on this socket.',
           },
           p: {
-            type: "integer",
+            type: 'integer',
             minimum: 1,
-            description: "Performance / P-cores (Intel) or big cores.",
+            description: 'Performance / P-cores (Intel) or big cores.',
           },
           e: {
-            type: "integer",
+            type: 'integer',
             minimum: 1,
-            description: "Efficiency / E-cores (Intel) or little cores.",
+            description: 'Efficiency / E-cores (Intel) or little cores.',
           },
         },
       },
       threads: {
-        type: "object",
-        required: ["total"],
+        type: 'object',
+        required: ['total'],
         properties: {
           total: {
-            type: "integer",
+            type: 'integer',
             minimum: 1,
-            description: "Logical CPUs / threads on this socket (load bars).",
+            description: 'Logical CPUs / threads on this socket (load bars).',
           },
-          p: { type: "integer", minimum: 1 },
-          e: { type: "integer", minimum: 1 },
+          p: { type: 'integer', minimum: 1 },
+          e: { type: 'integer', minimum: 1 },
         },
       },
       cache: {
-        type: "object",
-        description:
-          "Cache sizes in bytes (per-core L1/L2; shared L3 when present).",
+        type: 'object',
+        description: 'Cache sizes in bytes (per-core L1/L2; shared L3 when present).',
         properties: {
-          l1: { type: "integer", minimum: 1 },
-          l1d: { type: "integer", minimum: 1 },
-          l1i: { type: "integer", minimum: 1 },
-          l2: { type: "integer", minimum: 1 },
-          l3: { type: "integer", minimum: 1 },
-          l4: { type: "integer", minimum: 1 },
+          l1: { type: 'integer', minimum: 1 },
+          l1d: { type: 'integer', minimum: 1 },
+          l1i: { type: 'integer', minimum: 1 },
+          l2: { type: 'integer', minimum: 1 },
+          l3: { type: 'integer', minimum: 1 },
+          l4: { type: 'integer', minimum: 1 },
         },
       },
       speedMhz: {
-        type: "integer",
+        type: 'integer',
         minimum: 1,
-        description:
-          "Advertised base clock (base_frequency or model-name @ GHz).",
+        description: 'Advertised base clock (base_frequency or model-name @ GHz).',
       },
       turboMhz: {
-        type: "integer",
+        type: 'integer',
         minimum: 1,
-        description: "Max turbo (cpuinfo_max_freq).",
+        description: 'Max turbo (cpuinfo_max_freq).',
       },
     },
   },
   ServerGpu: {
-    type: "object",
-    description: "One GPU from DRM cardN (ordered 0, 1, …).",
+    type: 'object',
+    description: 'One GPU from DRM cardN (ordered 0, 1, …).',
     properties: {
       vendorId: {
-        type: "string",
-        description: "PCI vendor id from sysfs (e.g. 0x10de).",
+        type: 'string',
+        description: 'PCI vendor id from sysfs (e.g. 0x10de).',
       },
-      name: { type: "string" },
-      memoryBytes: { type: "integer", minimum: 1 },
-      driver: { type: "string" },
+      name: { type: 'string' },
+      memoryBytes: { type: 'integer', minimum: 1 },
+      driver: { type: 'string' },
       pciId: {
-        type: "string",
-        description: "vendor:device without 0x (e.g. 10de:2d04).",
+        type: 'string',
+        description: 'vendor:device without 0x (e.g. 10de:2d04).',
       },
       pciSlot: {
-        type: "string",
-        description: "sysfs PCI_SLOT_NAME (e.g. 0000:01:00.0).",
+        type: 'string',
+        description: 'sysfs PCI_SLOT_NAME (e.g. 0000:01:00.0).',
       },
     },
   },
   ServerHostResources: {
-    type: "object",
+    type: 'object',
     description:
-      "Static host capacity from daemon hello (/proc/cpuinfo, /proc/stat, /proc/meminfo, DRM).",
+      'Static host capacity from daemon hello (/proc/cpuinfo, /proc/stat, /proc/meminfo, DRM).',
     properties: {
       cpus: {
-        type: "array",
-        items: { $ref: "#/components/schemas/ServerCpuSocket" },
-        description: "Physical CPU sockets in physical-id order.",
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerCpuSocket' },
+        description: 'Physical CPU sockets in physical-id order.',
       },
       gpus: {
-        type: "array",
-        items: { $ref: "#/components/schemas/ServerGpu" },
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerGpu' },
       },
       memory: {
-        type: "object",
+        type: 'object',
         properties: {
           totalBytes: {
-            type: "integer",
+            type: 'integer',
             minimum: 1,
-            description: "MemTotal from /proc/meminfo in bytes.",
+            description: 'MemTotal from /proc/meminfo in bytes.',
           },
         },
       },
       swap: {
-        type: "object",
+        type: 'object',
         properties: {
           totalBytes: {
-            type: "integer",
+            type: 'integer',
             minimum: 0,
-            description:
-              "SwapTotal from /proc/meminfo in bytes (0 when swap is disabled).",
+            description: 'SwapTotal from /proc/meminfo in bytes (0 when swap is disabled).',
           },
         },
       },
       ips: {
-        type: "array",
-        items: { $ref: "#/components/schemas/ServerReportedIp" },
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerReportedIp' },
         description:
-          "Host interface addresses nested on resources (hello / change-detected heartbeat).",
+          'Host interface addresses nested on resources (hello / change-detected heartbeat).',
       },
     },
   },
   ServerTimeSync: {
-    type: "object",
+    type: 'object',
     description:
-      "Host timezone + NTP state composed from server.timezone / is_time_sync_enabled / ntp_servers / ntp_last_synced_at.",
+      'Host timezone + NTP state composed from server.timezone / is_time_sync_enabled / ntp_servers / ntp_last_synced_at.',
     properties: {
-      timezone: { type: "string" },
-      ntpEnabled: { type: "boolean" },
-      ntpSynced: { type: "boolean" },
-      ntpServers: { type: "array", items: { type: "string" } },
-      fallbackNtpServers: { type: "array", items: { type: "string" } },
-      lastSyncedAt: { type: "string", format: "date-time" },
+      timezone: { type: 'string' },
+      ntpEnabled: { type: 'boolean' },
+      ntpSynced: { type: 'boolean' },
+      ntpServers: { type: 'array', items: { type: 'string' } },
+      fallbackNtpServers: { type: 'array', items: { type: 'string' } },
+      lastSyncedAt: { type: 'string', format: 'date-time' },
     },
   },
   ServerReleaseLinkScan: {
-    type: "object",
+    type: 'object',
     description:
       "The daemon's last check of live releases for symlinks that leave the release or reach into shared/. Link text is never included.",
     properties: {
-      scannedAt: { type: "string", format: "date-time" },
+      scannedAt: { type: 'string', format: 'date-time' },
       findingCount: {
-        type: "integer",
-        description:
-          "Sites flagged in total; findings lists at most the first 20.",
+        type: 'integer',
+        description: 'Sites flagged in total; findings lists at most the first 20.',
       },
       findings: {
-        type: "array",
+        type: 'array',
         items: {
-          type: "object",
+          type: 'object',
           properties: {
             username: {
-              type: "string",
-              description: "Linux user that owns the site.",
+              type: 'string',
+              description: 'Linux user that owns the site.',
             },
-            serviceId: { type: "string" },
-            releaseId: { type: "string" },
-            linkCount: { type: "integer" },
+            serviceId: { type: 'string' },
+            releaseId: { type: 'string' },
+            linkCount: { type: 'integer' },
             error: {
-              type: "string",
-              description:
-                "Set when the daemon could not check the site at all.",
+              type: 'string',
+              description: 'Set when the daemon could not check the site at all.',
             },
           },
         },
@@ -239,86 +232,83 @@ export const serverSchemas = {
     },
   },
   ServerDockerMetadata: {
-    type: "object",
+    type: 'object',
     description:
-      "Docker CLI / Compose plugin versions from daemon hello / change-detected heartbeat. Omitted from server.metadata when Docker is not installed; the API returns null in that case.",
+      'Docker CLI / Compose plugin versions from daemon hello / change-detected heartbeat. Omitted from server.metadata when Docker is not installed; the API returns null in that case.',
     properties: {
       version: {
-        type: "string",
-        description: "Docker CLI version (docker --version), e.g. 28.3.3.",
+        type: 'string',
+        description: 'Docker CLI version (docker --version), e.g. 28.3.3.',
       },
       composeVersion: {
-        type: "string",
-        description:
-          "Docker Compose plugin version (docker compose version), e.g. 2.39.1.",
+        type: 'string',
+        description: 'Docker Compose plugin version (docker compose version), e.g. 2.39.1.',
       },
     },
   },
   ServerReportedIp: {
-    type: "object",
-    description: "One daemon-reported host interface address.",
-    required: ["address", "version", "scope"],
+    type: 'object',
+    description: 'One daemon-reported host interface address.',
+    required: ['address', 'version', 'scope'],
     properties: {
-      address: { type: "string" },
-      version: { type: "integer", enum: [4, 6] },
-      scope: { type: "string", enum: ["private", "public"] },
+      address: { type: 'string' },
+      version: { type: 'integer', enum: [4, 6] },
+      scope: { type: 'string', enum: ['private', 'public'] },
       cidr: {
-        type: "string",
+        type: 'string',
         description:
-          "Aligned interface network CIDR when known. Required to create a datacenter from a private address.",
+          'Aligned interface network CIDR when known. Required to create a datacenter from a private address.',
       },
       interface: {
-        type: "string",
-        description: "Host interface name (e.g. eth0, enp1s0).",
+        type: 'string',
+        description: 'Host interface name (e.g. eth0, enp1s0).',
       },
       link: {
-        type: "string",
-        enum: ["up", "down"],
+        type: 'string',
+        enum: ['up', 'down'],
         description:
-          "Link state of `interface` as the daemon read it from the kernel. Absent when the daemon did not say (older daemon); readers treat absent as up. Server-to-server routing prefers networks whose link is up.",
+          'Link state of `interface` as the daemon read it from the kernel. Absent when the daemon did not say (older daemon); readers treat absent as up. Server-to-server routing prefers networks whose link is up.',
       },
     },
   },
   ServerTierPlacement: {
-    type: "object",
-    required: ["licenseTier", "requiredTier", "recommendedTier", "unwatched"],
+    type: 'object',
+    required: ['licenseTier', 'requiredTier', 'recommendedTier', 'unwatched'],
     properties: {
       licenseTier: {
-        type: ["string", "null"],
-        description:
-          "Bound license `tier.label`, or null when unassigned / self-hosted.",
+        type: ['string', 'null'],
+        description: 'Bound license `tier.label`, or null when unassigned / self-hosted.',
       },
       requiredTier: {
-        type: "string",
-        description: "Hard floor from CPU cores + RAM (rank label, e.g. S2).",
+        type: 'string',
+        description: 'Hard floor from CPU cores + RAM (rank label, e.g. S2).',
       },
       recommendedTier: {
-        type: "string",
-        description:
-          "Harder of required and discovered NIC / drive / GPU counts.",
+        type: 'string',
+        description: 'Harder of required and discovered NIC / drive / GPU counts.',
       },
       unwatched: {
-        type: "object",
-        required: ["nics", "drives", "gpus"],
+        type: 'object',
+        required: ['nics', 'drives', 'gpus'],
         description:
-          "Devices (detail: ids) or counts (list) beyond the effective plan slot counts.",
+          'Devices (detail: ids) or counts (list) beyond the effective plan slot counts.',
         properties: {
           nics: {
             oneOf: [
-              { type: "array", items: { type: "string" } },
-              { type: "integer", minimum: 0 },
+              { type: 'array', items: { type: 'string' } },
+              { type: 'integer', minimum: 0 },
             ],
           },
           drives: {
             oneOf: [
-              { type: "array", items: { type: "string" } },
-              { type: "integer", minimum: 0 },
+              { type: 'array', items: { type: 'string' } },
+              { type: 'integer', minimum: 0 },
             ],
           },
           gpus: {
             oneOf: [
-              { type: "array", items: { type: "string" } },
-              { type: "integer", minimum: 0 },
+              { type: 'array', items: { type: 'string' } },
+              { type: 'integer', minimum: 0 },
             ],
           },
         },
@@ -326,36 +316,29 @@ export const serverSchemas = {
     },
   },
   LocationFields: {
-    type: "object",
-    required: [
-      "city",
-      "region",
-      "regionCode",
-      "country",
-      "asn",
-      "asOrganization",
-    ],
+    type: 'object',
+    required: ['city', 'region', 'regionCode', 'country', 'asn', 'asOrganization'],
     properties: {
-      city: { type: ["string", "null"] },
+      city: { type: ['string', 'null'] },
       region: {
-        type: ["string", "null"],
-        description: "State / province name.",
+        type: ['string', 'null'],
+        description: 'State / province name.',
       },
       regionCode: {
-        type: ["string", "null"],
-        description: "State / province code, e.g. `TX`.",
+        type: ['string', 'null'],
+        description: 'State / province code, e.g. `TX`.',
       },
       country: {
-        type: ["string", "null"],
-        description: "ISO 3166-1 alpha-2, upper-case.",
+        type: ['string', 'null'],
+        description: 'ISO 3166-1 alpha-2, upper-case.',
       },
       asn: {
-        type: ["integer", "null"],
-        description: "Autonomous system number.",
+        type: ['integer', 'null'],
+        description: 'Autonomous system number.',
       },
       asOrganization: {
-        type: ["string", "null"],
-        description: "AS organization name.",
+        type: ['string', 'null'],
+        description: 'AS organization name.',
       },
     },
   },
@@ -363,33 +346,26 @@ export const serverSchemas = {
     description:
       "Effective location: each field is the operator override, else Cloudflare's detected value (a server's connect-time geo; a datacenter's geo seeded from its source server at creation), else null.",
     allOf: [
-      { $ref: "#/components/schemas/LocationFields" },
+      { $ref: '#/components/schemas/LocationFields' },
       {
-        type: "object",
-        required: ["source", "overridden", "detected"],
+        type: 'object',
+        required: ['source', 'overridden', 'detected'],
         properties: {
           source: {
-            type: "string",
-            enum: ["detected", "custom"],
-            description: "`custom` when at least one field is overridden.",
+            type: 'string',
+            enum: ['detected', 'custom'],
+            description: '`custom` when at least one field is overridden.',
           },
           overridden: {
-            type: "array",
+            type: 'array',
             items: {
-              type: "string",
-              enum: [
-                "city",
-                "region",
-                "regionCode",
-                "country",
-                "asn",
-                "asOrganization",
-              ],
+              type: 'string',
+              enum: ['city', 'region', 'regionCode', 'country', 'asn', 'asOrganization'],
             },
-            description: "Fields currently overridden by the operator.",
+            description: 'Fields currently overridden by the operator.',
           },
           detected: {
-            $ref: "#/components/schemas/LocationFields",
+            $ref: '#/components/schemas/LocationFields',
             description: "Cloudflare's values, untouched by overrides.",
           },
         },
@@ -397,311 +373,326 @@ export const serverSchemas = {
     ],
   },
   LocationPatch: {
-    type: ["object", "null"],
+    type: ['object', 'null'],
     additionalProperties: false,
     description:
       'Location override. Each present field sets that field; `null` or `""` clears it back to the detected value; the whole `location: null` resets every field. Strings are trimmed (city/region ≤ 128, regionCode ≤ 16, asOrganization ≤ 256 chars); `country` is two letters (normalised to upper-case); `asn` is a positive integer (or `"AS13335"`). Unknown fields or invalid values → 400.',
     properties: {
-      city: { type: ["string", "null"] },
-      region: { type: ["string", "null"] },
-      regionCode: { type: ["string", "null"] },
-      country: { type: ["string", "null"] },
-      asn: { type: ["integer", "string", "null"] },
-      asOrganization: { type: ["string", "null"] },
+      city: { type: ['string', 'null'] },
+      region: { type: ['string', 'null'] },
+      regionCode: { type: ['string', 'null'] },
+      country: { type: ['string', 'null'] },
+      asn: { type: ['integer', 'string', 'null'] },
+      asOrganization: { type: ['string', 'null'] },
     },
   },
   ServerRow: {
-    type: "object",
+    type: 'object',
     properties: {
-      id: { type: "string" },
-      name: { type: ["string", "null"] },
-      organizationId: { type: ["string", "null"] },
-      licenseId: { type: ["string", "null"] },
+      id: { type: 'string' },
+      name: { type: ['string', 'null'] },
+      organizationId: { type: ['string', 'null'] },
+      licenseId: { type: ['string', 'null'] },
       tierPlacement: {
-        oneOf: [{ $ref: "#/components/schemas/ServerTierPlacement" }, {
-          type: "null",
-        }],
+        oneOf: [
+          { $ref: '#/components/schemas/ServerTierPlacement' },
+          {
+            type: 'null',
+          },
+        ],
         description:
-          "License vs required/recommended hardware placement. List responses use unwatched counts; detail uses device ids.",
+          'License vs required/recommended hardware placement. List responses use unwatched counts; detail uses device ids.',
       },
-      options: { type: ["object", "null"], additionalProperties: true },
-      location: { $ref: "#/components/schemas/Location" },
-      createdAt: { type: "string", format: "date-time" },
+      options: { type: ['object', 'null'], additionalProperties: true },
+      location: { $ref: '#/components/schemas/Location' },
+      createdAt: { type: 'string', format: 'date-time' },
       connected: {
-        type: "boolean",
+        type: 'boolean',
         description:
-          "Live presence from the promoted `server.is_connected` column (not `daemon.status`).",
+          'Live presence from the promoted `server.is_connected` column (not `daemon.status`).',
       },
       hostname: {
-        type: ["string", "null"],
+        type: ['string', 'null'],
         description:
-          "Daemon-reported hostname from the promoted `server.hostname` column (not `metadata.hostname`).",
+          'Daemon-reported hostname from the promoted `server.hostname` column (not `metadata.hostname`).',
       },
       machineClass: {
-        type: ["string", "null"],
-        enum: ["physical", "virtual", null],
+        type: ['string', 'null'],
+        enum: ['physical', 'virtual', null],
         description:
           "Declared `server.machine_class` for metrics capability-plan resolution. Null until pinned via PATCH or inferred `physical` at ingest (sensors discovered, or the daemon's own verdict on its topology snapshot); never inferred `virtual`.",
       },
       layoutPaths: {
-        type: ["object", "null"],
+        type: ['object', 'null'],
         description:
           "Host layout paths the daemon reports on its latest topology snapshot: where managed-engine backups land (`TURBOPANEL_BACKUP_DIR`, `/backup` by default) and its log directory. Read-only — set by the daemon's environment on the host, not by this API. Null until a v6 daemon has reported topology.",
         properties: {
-          backup: { type: "string" },
-          logs: { type: "string" },
+          backup: { type: 'string' },
+          logs: { type: 'string' },
         },
-        required: ["backup", "logs"],
+        required: ['backup', 'logs'],
       },
       remoteAddress: {
-        type: ["string", "null"],
+        type: ['string', 'null'],
         description:
-          "Raw peer address as seen by the control plane (CF-Connecting-IP through a trusted Cloudflare Tunnel, else X-Real-IP from Caddy). Diagnostic — prefer `address`. Null when offline or co-located on a Unix socket.",
+          'Raw peer address as seen by the control plane (CF-Connecting-IP through a trusted Cloudflare Tunnel, else X-Real-IP from Caddy). Diagnostic — prefer `address`. Null when offline or co-located on a Unix socket.',
       },
       address: {
-        type: ["string", "null"],
+        type: ['string', 'null'],
         description:
-          "Best-known network address for this host. The observed peer address when it is routable and agrees with the daemon, otherwise the daemon-reported interface address — the observed one is the proxy or forwarded port on co-located and development installs. Null when unknown or co-located.",
+          'Best-known network address for this host. The observed peer address when it is routable and agrees with the daemon, otherwise the daemon-reported interface address — the observed one is the proxy or forwarded port on co-located and development installs. Null when unknown or co-located.',
       },
       addressSource: {
-        type: ["string", "null"],
-        enum: ["observed", "interface", "local", null],
+        type: ['string', 'null'],
+        enum: ['observed', 'interface', 'local', null],
         description:
-          "Which fact `address` came from: `observed` (peer address on the wire, incl. CF-Connecting-IP through a Cloudflare Tunnel), `interface` (daemon-reported host interface), `local` (co-located Unix socket).",
+          'Which fact `address` came from: `observed` (peer address on the wire, incl. CF-Connecting-IP through a Cloudflare Tunnel), `interface` (daemon-reported host interface), `local` (co-located Unix socket).',
       },
       addressScope: {
-        type: ["string", "null"],
-        enum: ["public", "private", null],
+        type: ['string', 'null'],
+        enum: ['public', 'private', null],
       },
       addressInterface: {
-        type: ["string", "null"],
-        description: "Host interface `address` belongs to, when known.",
+        type: ['string', 'null'],
+        description: 'Host interface `address` belongs to, when known.',
       },
       lastInboundAt: {
-        type: ["string", "null"],
-        format: "date-time",
+        type: ['string', 'null'],
+        format: 'date-time',
         description:
-          "Last inbound WebSocket activity from a live cell snapshot (admin/diagnostics only). Null on the default Postgres status path — there is no `last_inbound_at` column.",
+          'Last inbound WebSocket activity from a live cell snapshot (admin/diagnostics only). Null on the default Postgres status path — there is no `last_inbound_at` column.',
       },
       connectedAt: {
-        type: ["string", "null"],
-        format: "date-time",
+        type: ['string', 'null'],
+        format: 'date-time',
         description:
-          "Last status transition (`server.status_changed_at`) while connected. Null when offline. There is no `connected_at` column.",
+          'Last status transition (`server.status_changed_at`) while connected. Null when offline. There is no `connected_at` column.',
       },
       statusChangedAt: {
-        type: ["string", "null"],
-        format: "date-time",
+        type: ['string', 'null'],
+        format: 'date-time',
         description:
-          "Last online/offline transition (`server.status_changed_at`). Set for both connected and offline rows.",
+          'Last online/offline transition (`server.status_changed_at`). Set for both connected and offline rows.',
       },
       geo: {
-        type: ["object", "null"],
+        type: ['object', 'null'],
         additionalProperties: true,
-        description:
-          "Connecting-IP geolocation from server.metadata.geo when available.",
+        description: 'Connecting-IP geolocation from server.metadata.geo when available.',
       },
       os: {
-        oneOf: [{ $ref: "#/components/schemas/ServerOsMetadata" }, {
-          type: "null",
-        }],
+        oneOf: [
+          { $ref: '#/components/schemas/ServerOsMetadata' },
+          {
+            type: 'null',
+          },
+        ],
         description:
-          "Host OS from server.os_* columns (daemon hello). Null until the daemon has reported it.",
+          'Host OS from server.os_* columns (daemon hello). Null until the daemon has reported it.',
       },
       osDisplay: {
-        type: ["string", "null"],
+        type: ['string', 'null'],
         description:
           'Formatted OS label for UI, e.g. "Debian 13.5 (Trixie)". Null when os is unknown.',
       },
       osLogo: {
-        type: ["string", "null"],
-        enum: ["debian", "raspberry-pi-os", null],
-        description: "Logo key for the UI OS column.",
+        type: ['string', 'null'],
+        enum: ['debian', 'raspberry-pi-os', null],
+        description: 'Logo key for the UI OS column.',
       },
       resources: {
-        oneOf: [{ $ref: "#/components/schemas/ServerHostResources" }, {
-          type: "null",
-        }],
+        oneOf: [
+          { $ref: '#/components/schemas/ServerHostResources' },
+          {
+            type: 'null',
+          },
+        ],
         description:
-          "Host capacity (cpu / RAM / swap totals) plus ips from server.metadata.resources. Null until the daemon hello reports it.",
+          'Host capacity (cpu / RAM / swap totals) plus ips from server.metadata.resources. Null until the daemon hello reports it.',
       },
       ips: {
         oneOf: [
           {
-            type: "array",
-            items: { $ref: "#/components/schemas/ServerReportedIp" },
+            type: 'array',
+            items: { $ref: '#/components/schemas/ServerReportedIp' },
           },
-          { type: "null" },
+          { type: 'null' },
         ],
         description:
-          "Host addresses from server.metadata.resources.ips (also nested on resources). Null until reported.",
+          'Host addresses from server.metadata.resources.ips (also nested on resources). Null until reported.',
       },
       timeSync: {
-        oneOf: [{ $ref: "#/components/schemas/ServerTimeSync" }, {
-          type: "null",
-        }],
+        oneOf: [
+          { $ref: '#/components/schemas/ServerTimeSync' },
+          {
+            type: 'null',
+          },
+        ],
         description:
-          "Host time-sync composed from server timezone / NTP columns. Null until reported.",
+          'Host time-sync composed from server timezone / NTP columns. Null until reported.',
       },
       docker: {
-        oneOf: [{ $ref: "#/components/schemas/ServerDockerMetadata" }, {
-          type: "null",
-        }],
+        oneOf: [
+          { $ref: '#/components/schemas/ServerDockerMetadata' },
+          {
+            type: 'null',
+          },
+        ],
         description:
-          "Docker CLI / Compose plugin versions from server.metadata.docker. Null when Docker is not installed or has not been reported.",
+          'Docker CLI / Compose plugin versions from server.metadata.docker. Null when Docker is not installed or has not been reported.',
       },
       releaseLinkScan: {
-        oneOf: [{ $ref: "#/components/schemas/ServerReleaseLinkScan" }, {
-          type: "null",
-        }],
+        oneOf: [
+          { $ref: '#/components/schemas/ServerReleaseLinkScan' },
+          {
+            type: 'null',
+          },
+        ],
         description:
           "The daemon's last check of live releases for links that leave the release (server.metadata.releaseLinkScan). Null until reported; findingCount 0 means every live release passed.",
       },
       timezone: {
-        type: ["string", "null"],
+        type: ['string', 'null'],
         description:
-          "Effective timezone: datacenter enforce, else org enforce, else server.options.timezone, else daemon-reported server.timezone.",
+          'Effective timezone: datacenter enforce, else org enforce, else server.options.timezone, else daemon-reported server.timezone.',
       },
       timezoneSource: {
-        type: ["string", "null"],
-        enum: ["server", "organization", "datacenter", null],
+        type: ['string', 'null'],
+        enum: ['server', 'organization', 'datacenter', null],
         description:
-          "Which configured layer supplied timezone (null when only the daemon-reported zone is shown).",
+          'Which configured layer supplied timezone (null when only the daemon-reported zone is shown).',
       },
       sshPort: {
-        type: "integer",
+        type: 'integer',
         minimum: 1,
         maximum: 65535,
         description:
-          "Effective SSH listen port: server.options.sshPort, else datacenter, else organization, else 22.",
+          'Effective SSH listen port: server.options.sshPort, else datacenter, else organization, else 22.',
       },
       sshPortSource: {
-        type: ["string", "null"],
-        enum: ["server", "organization", "datacenter", null],
+        type: ['string', 'null'],
+        enum: ['server', 'organization', 'datacenter', null],
         description:
-          "Which configured layer supplied sshPort (null when the platform default 22 is used).",
+          'Which configured layer supplied sshPort (null when the platform default 22 is used).',
       },
       ntpDefaults: {
-        type: ["object", "null"],
+        type: ['object', 'null'],
         description:
-          "Effective desired NTP settings from the host-defaults cascade. Observed host NTP stays on timeSync.",
+          'Effective desired NTP settings from the host-defaults cascade. Observed host NTP stays on timeSync.',
         properties: {
-          enabled: { type: "boolean" },
-          servers: { type: "array", items: { type: "string" } },
-          fallbackServers: { type: "array", items: { type: "string" } },
+          enabled: { type: 'boolean' },
+          servers: { type: 'array', items: { type: 'string' } },
+          fallbackServers: { type: 'array', items: { type: 'string' } },
         },
       },
       ntpDefaultsSource: {
-        type: ["string", "null"],
-        enum: ["server", "organization", "datacenter", null],
-        description:
-          "Which configured layer supplied ntpDefaults (null when none are set).",
+        type: ['string', 'null'],
+        enum: ['server', 'organization', 'datacenter', null],
+        description: 'Which configured layer supplied ntpDefaults (null when none are set).',
       },
       colocatedWithInstance: {
-        type: "boolean",
+        type: 'boolean',
         description:
-          "True when this server is the daemon co-located on the same host as this control plane.",
+          'True when this server is the daemon co-located on the same host as this control plane.',
       },
       datacenters: {
-        type: "array",
+        type: 'array',
         items: {
-          type: "object",
-          required: ["id"],
+          type: 'object',
+          required: ['id'],
           properties: {
-            id: { type: "string", format: "uuid" },
-            name: { type: ["string", "null"] },
+            id: { type: 'string', format: 'uuid' },
+            name: { type: ['string', 'null'] },
           },
         },
         description:
-          "Datacenter membership pins (`ip` rows with scope=datacenter). A server may belong to many sites.",
+          'Datacenter membership pins (`ip` rows with scope=datacenter). A server may belong to many sites.',
       },
     },
   },
   ServerLabel: {
-    type: "object",
-    required: ["key", "value"],
+    type: 'object',
+    required: ['key', 'value'],
     properties: {
       key: {
-        type: "string",
+        type: 'string',
         description:
-          "Docker engine-label charset: starts with alphanumeric, then alphanumerics / `.` / `_` / `-`, 1–255 chars.",
+          'Docker engine-label charset: starts with alphanumeric, then alphanumerics / `.` / `_` / `-`, 1–255 chars.',
       },
       value: {
-        type: "string",
-        description:
-          "Label value, at most 255 characters (empty string allowed).",
+        type: 'string',
+        description: 'Label value, at most 255 characters (empty string allowed).',
       },
     },
   },
   ServerLabelsResponse: {
-    type: "object",
-    required: ["ok", "labels"],
+    type: 'object',
+    required: ['ok', 'labels'],
     properties: {
-      ok: { type: "boolean", const: true },
+      ok: { type: 'boolean', const: true },
       labels: {
-        type: "array",
-        items: { $ref: "#/components/schemas/ServerLabel" },
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerLabel' },
       },
     },
   },
   ServerLabelsPutRequest: {
-    type: "object",
-    required: ["labels"],
+    type: 'object',
+    required: ['labels'],
     properties: {
       labels: {
-        type: "object",
-        additionalProperties: { type: "string" },
+        type: 'object',
+        additionalProperties: { type: 'string' },
         description:
-          "Replace-all map of label key to value (max 64 entries). Empty object clears all labels.",
+          'Replace-all map of label key to value (max 64 entries). Empty object clears all labels.',
       },
     },
   },
   PatchServerRequest: {
-    type: "object",
+    type: 'object',
     properties: {
-      name: { type: "string" },
+      name: { type: 'string' },
       machineClass: {
-        type: ["string", "null"],
-        enum: ["physical", "virtual", null],
+        type: ['string', 'null'],
+        enum: ['physical', 'virtual', null],
         description:
-          "Pins `server.machine_class` for metrics capability-plan resolution: `physical` unlocks hardware-sensor slots, `virtual` suppresses them, null clears the pin so ingest infers the class from topology again.",
+          'Pins `server.machine_class` for metrics capability-plan resolution: `physical` unlocks hardware-sensor slots, `virtual` suppresses them, null clears the pin so ingest infers the class from topology again.',
       },
       options: {
-        type: "object",
+        type: 'object',
         description:
-          "Merged into server.options. sshPort (1–65535 or null to inherit) and ntp (object or null to inherit) participate in the host-defaults cascade.",
+          'Merged into server.options. sshPort (1–65535 or null to inherit) and ntp (object or null to inherit) participate in the host-defaults cascade.',
         properties: {
-          sshPort: { type: ["integer", "null"], minimum: 1, maximum: 65535 },
-          ntp: { type: ["object", "null"] },
+          sshPort: { type: ['integer', 'null'], minimum: 1, maximum: 65535 },
+          ntp: { type: ['object', 'null'] },
           hosting: {
-            type: "object",
-            properties: { enabled: { type: "boolean" } },
+            type: 'object',
+            properties: { enabled: { type: 'boolean' } },
           },
         },
       },
-      location: { $ref: "#/components/schemas/LocationPatch" },
+      location: { $ref: '#/components/schemas/LocationPatch' },
     },
   },
   ServerDetailResponse: {
-    type: "object",
-    required: ["ok", "server"],
+    type: 'object',
+    required: ['ok', 'server'],
     properties: {
-      ok: { type: "boolean", const: true },
+      ok: { type: 'boolean', const: true },
       server: {
         allOf: [
-          { $ref: "#/components/schemas/ServerRow" },
+          { $ref: '#/components/schemas/ServerRow' },
           {
-            type: "object",
+            type: 'object',
             properties: {
-              orgDefaultTimezone: { type: ["string", "null"] },
-              enforceServerTimezone: { type: "boolean" },
-              datacenterDefaultTimezone: { type: ["string", "null"] },
-              datacenterEnforceServerTimezone: { type: "boolean" },
+              orgDefaultTimezone: { type: ['string', 'null'] },
+              enforceServerTimezone: { type: 'boolean' },
+              datacenterDefaultTimezone: { type: ['string', 'null'] },
+              datacenterEnforceServerTimezone: { type: 'boolean' },
               labels: {
-                type: "array",
-                items: { $ref: "#/components/schemas/ServerLabel" },
+                type: 'array',
+                items: { $ref: '#/components/schemas/ServerLabel' },
                 description:
-                  "Server labels from the primary connection (not the cached detail row). Source for placement.constraints node.labels.*.",
+                  'Server labels from the primary connection (not the cached detail row). Source for placement.constraints node.labels.*.',
               },
             },
           },
@@ -710,711 +701,673 @@ export const serverSchemas = {
     },
   },
   CommandEnqueueResponse: {
-    type: "object",
-    required: ["ok", "commandId", "status"],
+    type: 'object',
+    required: ['ok', 'commandId', 'status'],
     properties: {
-      ok: { type: "boolean", const: true },
-      commandId: { type: "string", format: "uuid" },
-      status: { type: "string", const: "queued" },
+      ok: { type: 'boolean', const: true },
+      commandId: { type: 'string', format: 'uuid' },
+      status: { type: 'string', const: 'queued' },
     },
   },
   TimezoneSetRequest: {
-    type: "object",
-    required: ["timezone"],
+    type: 'object',
+    required: ['timezone'],
     properties: {
       timezone: {
-        type: "string",
-        description: "IANA timezone (must be in GET /timezones).",
+        type: 'string',
+        description: 'IANA timezone (must be in GET /timezones).',
       },
     },
   },
   NtpSetRequest: {
-    type: "object",
+    type: 'object',
     properties: {
-      enabled: { type: "boolean" },
-      servers: { type: "array", items: { type: "string" }, minItems: 1 },
+      enabled: { type: 'boolean' },
+      servers: { type: 'array', items: { type: 'string' }, minItems: 1 },
       fallbackServers: {
-        type: "array",
-        items: { type: "string" },
+        type: 'array',
+        items: { type: 'string' },
         minItems: 1,
       },
     },
   },
   FetchServerCellResponse: {
-    type: "object",
-    required: ["ok", "snapshot"],
+    type: 'object',
+    required: ['ok', 'snapshot'],
     properties: {
-      ok: { type: "boolean", const: true },
-      snapshot: { type: "object", additionalProperties: true },
+      ok: { type: 'boolean', const: true },
+      snapshot: { type: 'object', additionalProperties: true },
     },
   },
   ServerStatusResponse: {
-    type: "object",
-    required: [
-      "serverId",
-      "connected",
-      "daemonStatus",
-      "connectedAt",
-      "statusChangedAt",
-    ],
+    type: 'object',
+    required: ['serverId', 'connected', 'daemonStatus', 'connectedAt', 'statusChangedAt'],
     description:
-      "Postgres-backed status row for `GET /servers/{id}/status` (`ServerStatusRecord`).",
+      'Postgres-backed status row for `GET /servers/{id}/status` (`ServerStatusRecord`).',
     properties: {
-      serverId: { type: "string", format: "uuid" },
-      connected: { type: "boolean" },
+      serverId: { type: 'string', format: 'uuid' },
+      connected: { type: 'boolean' },
       daemonStatus: {
-        type: ["string", "null"],
-        enum: ["online", "offline", "unknown", null],
-        description:
-          "Derived from `connected` + `statusChangedAt` — not stored.",
+        type: ['string', 'null'],
+        enum: ['online', 'offline', 'unknown', null],
+        description: 'Derived from `connected` + `statusChangedAt` — not stored.',
       },
-      connectedAt: { type: ["string", "null"], format: "date-time" },
-      statusChangedAt: { type: ["string", "null"], format: "date-time" },
-      hostname: { type: ["string", "null"] },
-      remoteAddress: { type: ["string", "null"] },
+      connectedAt: { type: ['string', 'null'], format: 'date-time' },
+      statusChangedAt: { type: ['string', 'null'], format: 'date-time' },
+      hostname: { type: ['string', 'null'] },
+      remoteAddress: { type: ['string', 'null'] },
       address: {
-        type: ["string", "null"],
+        type: ['string', 'null'],
         description:
-          "Best-known network address for this host. The observed peer address when it is routable and agrees with the daemon, otherwise the daemon-reported interface address — the observed one is the proxy or forwarded port on co-located and development installs. Null when unknown or co-located.",
+          'Best-known network address for this host. The observed peer address when it is routable and agrees with the daemon, otherwise the daemon-reported interface address — the observed one is the proxy or forwarded port on co-located and development installs. Null when unknown or co-located.',
       },
       addressSource: {
-        type: ["string", "null"],
-        enum: ["observed", "interface", "local", null],
+        type: ['string', 'null'],
+        enum: ['observed', 'interface', 'local', null],
         description:
-          "Which fact `address` came from: `observed` (peer address on the wire, incl. CF-Connecting-IP through a Cloudflare Tunnel), `interface` (daemon-reported host interface), `local` (co-located Unix socket).",
+          'Which fact `address` came from: `observed` (peer address on the wire, incl. CF-Connecting-IP through a Cloudflare Tunnel), `interface` (daemon-reported host interface), `local` (co-located Unix socket).',
       },
       addressScope: {
-        type: ["string", "null"],
-        enum: ["public", "private", null],
+        type: ['string', 'null'],
+        enum: ['public', 'private', null],
       },
       addressInterface: {
-        type: ["string", "null"],
-        description: "Host interface `address` belongs to, when known.",
+        type: ['string', 'null'],
+        description: 'Host interface `address` belongs to, when known.',
       },
-      geo: { type: ["object", "null"], additionalProperties: true },
-      colocatedWithInstance: { type: "boolean" },
+      geo: { type: ['object', 'null'], additionalProperties: true },
+      colocatedWithInstance: { type: 'boolean' },
     },
   },
   ServersResponse: {
-    type: "object",
-    required: ["servers"],
+    type: 'object',
+    required: ['servers'],
     properties: {
       servers: {
-        type: "array",
-        items: { $ref: "#/components/schemas/ServerRow" },
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerRow' },
       },
     },
   },
   ServerUpdateCurrent: {
-    type: "object",
+    type: 'object',
     properties: {
-      commit: { type: "string" },
-      buildId: { type: "string" },
-      builtAt: { type: "string" },
+      commit: { type: 'string' },
+      buildId: { type: 'string' },
+      builtAt: { type: 'string' },
       version: {
-        type: "string",
-        description:
-          "The daemon's semver, when it reports one (builds from 0.1.0 on).",
+        type: 'string',
+        description: "The daemon's semver, when it reports one (builds from 0.1.0 on).",
       },
     },
   },
   DaemonSupport: {
-    type: "object",
-    required: ["status", "version", "minVersion"],
+    type: 'object',
+    required: ['status', 'version', 'minVersion'],
     properties: {
       status: {
-        type: "string",
-        enum: ["supported", "unsupported", "unknown"],
+        type: 'string',
+        enum: ['supported', 'unsupported', 'unknown'],
         description:
           "The daemon's reported version held against this control plane's supported minimum. An unsupported daemon stays connected but receives no commands until it is updated; unknown is a build that reports no version.",
       },
-      version: { type: ["string", "null"] },
-      minVersion: { type: "string" },
+      version: { type: ['string', 'null'] },
+      minVersion: { type: 'string' },
     },
   },
   ServerUpdateTarget: {
-    type: "object",
+    type: 'object',
     properties: {
-      commit: { type: "string" },
-      buildId: { type: "string" },
-      builtAt: { type: "string" },
-      manifestUrl: { type: "string" },
+      commit: { type: 'string' },
+      buildId: { type: 'string' },
+      builtAt: { type: 'string' },
+      manifestUrl: { type: 'string' },
       version: {
-        type: "string",
+        type: 'string',
         description:
-          "The release version the channel manifest names (rc/release); absent for trunk drops.",
+          'The release version the channel manifest names (rc/release); absent for trunk drops.',
       },
     },
   },
   ServerUpdateStatusResponse: {
-    type: "object",
-    required: ["ok", "serverId", "channel", "updateAvailable", "status"],
+    type: 'object',
+    required: ['ok', 'serverId', 'channel', 'updateAvailable', 'status'],
     properties: {
-      ok: { type: "boolean", const: true },
-      serverId: { type: "string" },
+      ok: { type: 'boolean', const: true },
+      serverId: { type: 'string' },
       channel: {
-        type: "string",
-        enum: ["trunk", "edge", "canary", "rc", "release"],
+        type: 'string',
+        enum: ['trunk', 'edge', 'canary', 'rc', 'release'],
         description:
           "The update channel this control plane follows (TURBOPANEL_UPDATE_CHANNEL; default release) — the one every queued update targets. rc and release resolve from the daemon's GitHub Releases.",
       },
       current: {
-        oneOf: [{ $ref: "#/components/schemas/ServerUpdateCurrent" }, {
-          type: "null",
-        }],
+        oneOf: [
+          { $ref: '#/components/schemas/ServerUpdateCurrent' },
+          {
+            type: 'null',
+          },
+        ],
       },
       target: {
-        oneOf: [{ $ref: "#/components/schemas/ServerUpdateTarget" }, {
-          type: "null",
-        }],
+        oneOf: [
+          { $ref: '#/components/schemas/ServerUpdateTarget' },
+          {
+            type: 'null',
+          },
+        ],
       },
-      updateAvailable: { type: "boolean" },
+      updateAvailable: { type: 'boolean' },
       colocatedWithInstance: {
-        type: "boolean",
+        type: 'boolean',
         description:
-          "True when this server is the daemon co-located on the same host as this control plane.",
+          'True when this server is the daemon co-located on the same host as this control plane.',
       },
       updateBlocked: {
-        type: "boolean",
+        type: 'boolean',
         description:
-          "True when remote updates are refused for this server; `updateBlockedCode` says why.",
+          'True when remote updates are refused for this server; `updateBlockedCode` says why.',
       },
       updateBlockedCode: {
-        type: "string",
+        type: 'string',
         enum: [
-          "updates_managed",
-          "control_plane_upgrade_required",
-          "upgrade_gate_unavailable",
-          "colocated_with_instance",
+          'updates_managed',
+          'control_plane_upgrade_required',
+          'upgrade_gate_unavailable',
+          'colocated_with_instance',
         ],
         description:
-          "Machine code for why remote updates are blocked; present whenever `updateBlocked` is true. Clients branch on this, never on `updateBlockedReason`.",
+          'Machine code for why remote updates are blocked; present whenever `updateBlocked` is true. Clients branch on this, never on `updateBlockedReason`.',
       },
       updateBlockedReason: {
-        type: "string",
-        description:
-          "Human-readable reason remote updates are blocked for this server.",
+        type: 'string',
+        description: 'Human-readable reason remote updates are blocked for this server.',
       },
       lastUpdateError: {
-        type: "string",
-        description:
-          "Error from the most recent terminal update attempt, when present.",
+        type: 'string',
+        description: 'Error from the most recent terminal update attempt, when present.',
       },
-      status: { type: "string" },
-      daemonSupport: { $ref: "#/components/schemas/DaemonSupport" },
+      status: { type: 'string' },
+      daemonSupport: { $ref: '#/components/schemas/DaemonSupport' },
     },
   },
   TriggerServerUpdateResponse: {
-    type: "object",
-    required: ["ok", "queued", "status"],
+    type: 'object',
+    required: ['ok', 'queued', 'status'],
     properties: {
-      ok: { type: "boolean", const: true },
-      queued: { type: "boolean", const: true },
-      status: { type: "string" },
+      ok: { type: 'boolean', const: true },
+      queued: { type: 'boolean', const: true },
+      status: { type: 'string' },
     },
   },
   DeleteServerResponse: {
-    type: "object",
-    required: ["ok", "serverId"],
+    type: 'object',
+    required: ['ok', 'serverId'],
     properties: {
-      ok: { type: "boolean", const: true },
-      serverId: { type: "string", format: "uuid" },
+      ok: { type: 'boolean', const: true },
+      serverId: { type: 'string', format: 'uuid' },
     },
   },
   DeleteServerPartialFailure: {
-    type: "object",
-    required: ["ok", "serverId", "deleted", "error"],
+    type: 'object',
+    required: ['ok', 'serverId', 'deleted', 'error'],
     properties: {
-      ok: { type: "boolean", const: false },
-      serverId: { type: "string", format: "uuid" },
-      deleted: { type: "boolean", const: true },
+      ok: { type: 'boolean', const: false },
+      serverId: { type: 'string', format: 'uuid' },
+      deleted: { type: 'boolean', const: true },
       error: {
-        type: "string",
-        description:
-          "The Postgres row was deleted but daemon cell purge did not complete.",
+        type: 'string',
+        description: 'The Postgres row was deleted but daemon cell purge did not complete.',
       },
     },
   },
   HierarchyDeleteConflict: {
-    type: "object",
-    required: ["error"],
+    type: 'object',
+    required: ['error'],
     properties: {
       error: {
-        type: "string",
-        const: "Cannot delete while child resources exist",
+        type: 'string',
+        const: 'Cannot delete while child resources exist',
       },
     },
   },
   ServerDeleteBlockersConflict: {
-    type: "object",
-    required: ["error", "code", "blockers"],
+    type: 'object',
+    required: ['error', 'code', 'blockers'],
     properties: {
       error: {
-        type: "string",
-        const:
-          "Cannot delete this server while dependent resources still exist",
+        type: 'string',
+        const: 'Cannot delete this server while dependent resources still exist',
       },
-      code: { type: "string", const: "server_has_blockers" },
+      code: { type: 'string', const: 'server_has_blockers' },
       blockers: {
-        type: "array",
-        items: { $ref: "#/components/schemas/ServerDeleteBlocker" },
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerDeleteBlocker' },
       },
       blockedDatabases: {
-        type: "array",
-        items: { $ref: "#/components/schemas/ServerForgetBlockedDatabase" },
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerForgetBlockedDatabase' },
         description:
-          "Present when `forgetResources=true` is refused because a database still has its only copy or its primary on this server. Capped at 50.",
+          'Present when `forgetResources=true` is refused because a database still has its only copy or its primary on this server. Capped at 50.',
       },
       blockedEnvironments: {
-        type: "array",
-        items: { $ref: "#/components/schemas/ServerForgetBlockedEnvironment" },
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerForgetBlockedEnvironment' },
         description:
-          "Present when `forgetResources=true` is refused because a placed app environment still has containers, slots, deployments, addresses, or binding variables on another server. Capped at 50.",
+          'Present when `forgetResources=true` is refused because a placed app environment still has containers, slots, deployments, addresses, or binding variables on another server. Capped at 50.',
       },
     },
   },
   ServerForgetBlockedEnvironment: {
-    type: "object",
-    required: [
-      "id",
-      "name",
-      "projectId",
-      "projectName",
-      "reason",
-      "serverNames",
-    ],
+    type: 'object',
+    required: ['id', 'name', 'projectId', 'projectName', 'reason', 'serverNames'],
     properties: {
-      id: { type: "string", format: "uuid" },
-      name: { type: "string" },
-      projectId: { type: "string", format: "uuid" },
-      projectName: { type: "string" },
-      reason: { type: "string", enum: ["present_elsewhere"] },
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      projectId: { type: 'string', format: 'uuid' },
+      projectName: { type: 'string' },
+      reason: { type: 'string', enum: ['present_elsewhere'] },
       serverNames: {
-        type: "array",
-        items: { type: "string" },
-        description:
-          "Names of live servers that still carry part of this environment.",
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Names of live servers that still carry part of this environment.',
       },
     },
   },
   ServerForgetBlockedDatabase: {
-    type: "object",
-    required: ["id", "name", "reason"],
+    type: 'object',
+    required: ['id', 'name', 'reason'],
     properties: {
-      id: { type: "string", format: "uuid" },
-      name: { type: "string" },
-      reason: { type: "string", enum: ["only_member", "primary_here"] },
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      reason: { type: 'string', enum: ['only_member', 'primary_here'] },
     },
   },
   ServerBlockerEnvironmentItem: {
-    type: "object",
-    required: ["id", "name", "projectId", "projectName", "hasDatabase"],
+    type: 'object',
+    required: ['id', 'name', 'projectId', 'projectName', 'hasDatabase'],
     properties: {
-      id: { type: "string", format: "uuid" },
-      name: { type: "string" },
-      projectId: { type: "string", format: "uuid" },
-      projectName: { type: "string" },
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      projectId: { type: 'string', format: 'uuid' },
+      projectName: { type: 'string' },
       hasDatabase: {
-        type: "boolean",
+        type: 'boolean',
         description:
-          "True when this environment carries a managed database, so forget will not remove it and the Services tab app list does not show it.",
+          'True when this environment carries a managed database, so forget will not remove it and the Services tab app list does not show it.',
       },
     },
   },
   ServerBlockerDatabaseItem: {
-    type: "object",
-    required: ["id", "name"],
+    type: 'object',
+    required: ['id', 'name'],
     properties: {
-      id: { type: "string", format: "uuid" },
-      name: { type: "string" },
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
     },
   },
   ServerDeleteBlockerItem: {
     oneOf: [
-      { $ref: "#/components/schemas/ServerBlockerEnvironmentItem" },
-      { $ref: "#/components/schemas/ServerBlockerDatabaseItem" },
+      { $ref: '#/components/schemas/ServerBlockerEnvironmentItem' },
+      { $ref: '#/components/schemas/ServerBlockerDatabaseItem' },
     ],
   },
   ServerDeleteBlocker: {
-    type: "object",
-    required: ["kind", "count", "label"],
+    type: 'object',
+    required: ['kind', 'count', 'label'],
     properties: {
       kind: {
-        type: "string",
+        type: 'string',
         enum: [...SERVER_DELETE_BLOCKER_KIND_VALUES],
       },
-      count: { type: "integer", minimum: 1 },
+      count: { type: 'integer', minimum: 1 },
       label: {
-        type: "string",
+        type: 'string',
         description:
           'Plain-words description of the leftover kind, for example "an app environment" or "a database member is still placed on this server".',
       },
       items: {
-        type: "array",
-        items: { $ref: "#/components/schemas/ServerDeleteBlockerItem" },
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerDeleteBlockerItem' },
         description:
-          "The rows behind `count`, by name, so the owner can go find them. Present for `environment` (every placed environment, sorted by project then environment name, including the ones carrying a database) and for `managed` / `replica` (one entry per database). Capped at 50.",
+          'The rows behind `count`, by name, so the owner can go find them. Present for `environment` (every placed environment, sorted by project then environment name, including the ones carrying a database) and for `managed` / `replica` (one entry per database). Capped at 50.',
       },
       more: {
-        type: "integer",
+        type: 'integer',
         minimum: 0,
-        description: "How many named rows are not listed in `items`.",
+        description: 'How many named rows are not listed in `items`.',
       },
     },
   },
   ServerOnlineConflict: {
-    type: "object",
-    required: ["error", "code"],
+    type: 'object',
+    required: ['error', 'code'],
     properties: {
       error: {
-        type: "string",
-        const:
-          "Cannot forget leftover resources while this server is still connected",
+        type: 'string',
+        const: 'Cannot forget leftover resources while this server is still connected',
       },
-      code: { type: "string", const: "server_online" },
+      code: { type: 'string', const: 'server_online' },
     },
   },
   ServerDeletePreview: {
-    type: "object",
+    type: 'object',
     required: [
-      "online",
-      "canForget",
-      "colocated",
-      "blockers",
-      "containers",
-      "networks",
-      "ips",
-      "environments",
-      "members",
-      "blockedDatabases",
-      "blockedEnvironments",
+      'online',
+      'canForget',
+      'colocated',
+      'blockers',
+      'containers',
+      'networks',
+      'ips',
+      'environments',
+      'members',
+      'blockedDatabases',
+      'blockedEnvironments',
     ],
     properties: {
       online: {
-        type: "boolean",
+        type: 'boolean',
         description:
-          "True when the live cell snapshot is connected or the stored `is_connected` column is true.",
+          'True when the live cell snapshot is connected or the stored `is_connected` column is true.',
       },
       canForget: {
-        type: "boolean",
+        type: 'boolean',
         description:
-          "True when the server is offline, is not the co-located control plane host, no database still has its only copy or its primary on this server, and no placed app environment still runs on another server.",
+          'True when the server is offline, is not the co-located control plane host, no database still has its only copy or its primary on this server, and no placed app environment still runs on another server.',
       },
       colocated: {
-        type: "boolean",
-        description:
-          "True when this is the host the control plane itself runs on.",
+        type: 'boolean',
+        description: 'True when this is the host the control plane itself runs on.',
       },
       blockers: {
-        type: "array",
-        items: { $ref: "#/components/schemas/ServerDeleteBlocker" },
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerDeleteBlocker' },
       },
       containers: {
-        type: "object",
-        required: ["items", "more"],
+        type: 'object',
+        required: ['items', 'more'],
         properties: {
           items: {
-            type: "array",
+            type: 'array',
             items: {
-              type: "object",
-              required: ["id", "name", "status"],
+              type: 'object',
+              required: ['id', 'name', 'status'],
               properties: {
-                id: { type: "string", format: "uuid" },
-                name: { type: "string" },
-                status: { type: "string" },
-                serviceName: { type: "string" },
+                id: { type: 'string', format: 'uuid' },
+                name: { type: 'string' },
+                status: { type: 'string' },
+                serviceName: { type: 'string' },
               },
             },
           },
-          more: { type: "integer", minimum: 0 },
+          more: { type: 'integer', minimum: 0 },
         },
       },
       networks: {
-        type: "object",
-        required: ["items", "more"],
+        type: 'object',
+        required: ['items', 'more'],
         properties: {
           items: {
-            type: "array",
+            type: 'array',
             items: {
-              type: "object",
-              required: ["id", "name"],
+              type: 'object',
+              required: ['id', 'name'],
               properties: {
-                id: { type: "string", format: "uuid" },
-                name: { type: "string" },
+                id: { type: 'string', format: 'uuid' },
+                name: { type: 'string' },
               },
             },
           },
-          more: { type: "integer", minimum: 0 },
+          more: { type: 'integer', minimum: 0 },
         },
       },
       ips: {
-        type: "object",
-        required: ["items", "more"],
+        type: 'object',
+        required: ['items', 'more'],
         properties: {
           items: {
-            type: "array",
+            type: 'array',
             items: {
-              type: "object",
-              required: ["id", "address"],
+              type: 'object',
+              required: ['id', 'address'],
               properties: {
-                id: { type: "string", format: "uuid" },
-                address: { type: "string" },
+                id: { type: 'string', format: 'uuid' },
+                address: { type: 'string' },
               },
             },
           },
-          more: { type: "integer", minimum: 0 },
+          more: { type: 'integer', minimum: 0 },
         },
       },
       environments: cappedListSchema({
-        type: "object",
-        required: ["id", "name", "projectName"],
+        type: 'object',
+        required: ['id', 'name', 'projectName'],
         properties: {
-          id: { type: "string", format: "uuid" },
-          name: { type: "string" },
-          projectName: { type: "string" },
+          id: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          projectName: { type: 'string' },
         },
       }),
       members: cappedListSchema({
-        type: "object",
-        required: ["id", "databaseName"],
+        type: 'object',
+        required: ['id', 'databaseName'],
         properties: {
-          id: { type: "string", format: "uuid" },
-          databaseName: { type: "string" },
+          id: { type: 'string', format: 'uuid' },
+          databaseName: { type: 'string' },
         },
       }),
       blockedDatabases: cappedListSchema({
-        type: "object",
-        required: ["id", "name", "reason"],
+        type: 'object',
+        required: ['id', 'name', 'reason'],
         properties: {
-          id: { type: "string", format: "uuid" },
-          name: { type: "string" },
-          reason: { type: "string", enum: ["only_member", "primary_here"] },
+          id: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          reason: { type: 'string', enum: ['only_member', 'primary_here'] },
         },
       }),
       blockedEnvironments: cappedListSchema({
-        type: "object",
-        required: [
-          "id",
-          "name",
-          "projectId",
-          "projectName",
-          "reason",
-          "serverNames",
-        ],
+        type: 'object',
+        required: ['id', 'name', 'projectId', 'projectName', 'reason', 'serverNames'],
         properties: {
-          id: { type: "string", format: "uuid" },
-          name: { type: "string" },
-          projectId: { type: "string", format: "uuid" },
-          projectName: { type: "string" },
-          reason: { type: "string", enum: ["present_elsewhere"] },
-          serverNames: { type: "array", items: { type: "string" } },
+          id: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          projectId: { type: 'string', format: 'uuid' },
+          projectName: { type: 'string' },
+          reason: { type: 'string', enum: ['present_elsewhere'] },
+          serverNames: { type: 'array', items: { type: 'string' } },
         },
       }),
     },
   },
   ServerServicesRemovalReason: {
-    type: "object",
-    required: ["kind", "count", "message"],
+    type: 'object',
+    required: ['kind', 'count', 'message'],
     properties: {
       kind: {
-        type: "string",
+        type: 'string',
         enum: [...SERVER_SERVICES_REMOVAL_KIND_VALUES],
       },
-      count: { type: "integer", minimum: 1 },
+      count: { type: 'integer', minimum: 1 },
       message: {
-        type: "string",
+        type: 'string',
         description:
           'One plain-language sentence for this leftover kind. Kinds match the delete blockers plus `colocated` (this host runs the control panel and cannot be removed). When `items` is present the sentence names up to three of them ("Project / Environment" for an app environment) and then says "and N more". When `removal.canForget` is true, container, network, and address sentences mention Delete server → Host is gone.',
       },
       items: {
-        type: "array",
-        items: { $ref: "#/components/schemas/ServerDeleteBlockerItem" },
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerDeleteBlockerItem' },
         description:
-          "Same rows as `ServerDeleteBlocker.items`, so the console can link each blocking app environment or database.",
+          'Same rows as `ServerDeleteBlocker.items`, so the console can link each blocking app environment or database.',
       },
       more: {
-        type: "integer",
+        type: 'integer',
         minimum: 0,
-        description: "How many named rows are not listed in `items`.",
+        description: 'How many named rows are not listed in `items`.',
       },
     },
   },
   ServerServicesResponse: {
-    type: "object",
+    type: 'object',
     required: [
-      "serverId",
-      "removal",
-      "apps",
-      "databases",
-      "databaseUsers",
-      "backups",
-      "networks",
-      "ipCount",
-      "runtimes",
+      'serverId',
+      'removal',
+      'apps',
+      'databases',
+      'databaseUsers',
+      'backups',
+      'networks',
+      'ipCount',
+      'runtimes',
     ],
     properties: {
-      serverId: { type: "string", format: "uuid" },
+      serverId: { type: 'string', format: 'uuid' },
       removal: {
-        type: "object",
-        required: ["canRemove", "online", "canForget", "reasons"],
+        type: 'object',
+        required: ['canRemove', 'online', 'canForget', 'reasons'],
         properties: {
-          canRemove: { type: "boolean" },
+          canRemove: { type: 'boolean' },
           online: {
-            type: "boolean",
+            type: 'boolean',
             description:
-              "True when the live cell snapshot is connected or the stored `is_connected` column is true.",
+              'True when the live cell snapshot is connected or the stored `is_connected` column is true.',
           },
           canForget: {
-            type: "boolean",
+            type: 'boolean',
             description:
-              "True when the server is offline, is not the co-located control plane host, and no database still has its only copy or its primary on this server. The owner can then use Delete server → Host is gone.",
+              'True when the server is offline, is not the co-located control plane host, and no database still has its only copy or its primary on this server. The owner can then use Delete server → Host is gone.',
           },
           reasons: {
-            type: "array",
-            items: { $ref: "#/components/schemas/ServerServicesRemovalReason" },
+            type: 'array',
+            items: { $ref: '#/components/schemas/ServerServicesRemovalReason' },
           },
         },
       },
       apps: cappedListSchema({
-        type: "object",
-        required: [
-          "serviceId",
-          "name",
-          "project",
-          "environment",
-          "containers",
-          "domains",
-        ],
+        type: 'object',
+        required: ['serviceId', 'name', 'project', 'environment', 'containers', 'domains'],
         properties: {
-          serviceId: { type: "string", format: "uuid" },
-          name: { type: "string" },
-          project: { type: "string" },
-          environment: { type: "string" },
+          serviceId: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          project: { type: 'string' },
+          environment: { type: 'string' },
           containers: cappedListSchema({
-            type: "object",
-            required: ["name", "status", "role"],
+            type: 'object',
+            required: ['name', 'status', 'role'],
             properties: {
-              name: { type: "string" },
-              status: { type: "string" },
-              role: { type: "string" },
+              name: { type: 'string' },
+              status: { type: 'string' },
+              role: { type: 'string' },
             },
           }),
-          domains: cappedListSchema({ type: "string" }),
+          domains: cappedListSchema({ type: 'string' }),
         },
       }),
       databases: {
-        type: "array",
+        type: 'array',
         items: {
-          type: "object",
-          required: [
-            "managedId",
-            "name",
-            "engine",
-            "role",
-            "status",
-            "readEligible",
-            "ordinal",
-          ],
+          type: 'object',
+          required: ['managedId', 'name', 'engine', 'role', 'status', 'readEligible', 'ordinal'],
           properties: {
-            managedId: { type: "string", format: "uuid" },
-            name: { type: "string" },
-            engine: { type: "string" },
-            role: { type: "string", enum: ["primary", "replica"] },
-            status: { type: "string" },
-            readEligible: { type: "boolean" },
-            ordinal: { type: "integer" },
+            managedId: { type: 'string', format: 'uuid' },
+            name: { type: 'string' },
+            engine: { type: 'string' },
+            role: { type: 'string', enum: ['primary', 'replica'] },
+            status: { type: 'string' },
+            readEligible: { type: 'boolean' },
+            ordinal: { type: 'integer' },
           },
         },
       },
       databaseUsers: {
         ...cappedListSchema({
-          type: "object",
-          required: ["serviceId", "serviceName", "databases"],
+          type: 'object',
+          required: ['serviceId', 'serviceName', 'databases'],
           properties: {
-            serviceId: { type: "string", format: "uuid" },
-            serviceName: { type: "string" },
-            databases: { type: "array", items: { type: "string" } },
+            serviceId: { type: 'string', format: 'uuid' },
+            serviceName: { type: 'string' },
+            databases: { type: 'array', items: { type: 'string' } },
           },
         }),
         description:
-          "Apps on this host bound to a managed database, grouped one entry per app with the database names it uses (they reach those databases through this host). Capped like other lists.",
+          'Apps on this host bound to a managed database, grouped one entry per app with the database names it uses (they reach those databases through this host). Capped like other lists.',
       },
       backups: {
         ...cappedListSchema({
-          type: "object",
-          required: ["managedId", "managedName", "count", "latestAt"],
+          type: 'object',
+          required: ['managedId', 'managedName', 'count', 'latestAt'],
           properties: {
-            managedId: { type: "string", format: "uuid" },
-            managedName: { type: "string" },
-            count: { type: "integer", minimum: 0 },
-            latestAt: { type: "string", format: "date-time" },
+            managedId: { type: 'string', format: 'uuid' },
+            managedName: { type: 'string' },
+            count: { type: 'integer', minimum: 0 },
+            latestAt: { type: 'string', format: 'date-time' },
           },
         }),
         description:
-          "Backups of databases that have a member on this server. Counts are per database, not multiplied by how many members sit here.",
+          'Backups of databases that have a member on this server. Counts are per database, not multiplied by how many members sit here.',
       },
       networks: cappedListSchema({
-        type: "object",
-        required: ["id", "name", "kind"],
+        type: 'object',
+        required: ['id', 'name', 'kind'],
         properties: {
-          id: { type: "string", format: "uuid" },
-          name: { type: "string" },
-          kind: { type: "string" },
+          id: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          kind: { type: 'string' },
         },
       }),
-      ipCount: { type: "integer", minimum: 0 },
+      ipCount: { type: 'integer', minimum: 0 },
       runtimes: {
-        type: "array",
+        type: 'array',
         description:
-          "Installed runtimes from stored daemon facts (`server.metadata.runtimes`). Empty when none are stored.",
+          'Installed runtimes from stored daemon facts (`server.metadata.runtimes`). Empty when none are stored.',
         items: {
-          type: "object",
-          required: ["kind", "versions"],
+          type: 'object',
+          required: ['kind', 'versions'],
           properties: {
-            kind: { type: "string" },
-            versions: { type: "array", items: { type: "string" } },
+            kind: { type: 'string' },
+            versions: { type: 'array', items: { type: 'string' } },
           },
         },
       },
     },
   },
-};
+}
 
 export const serverPaths: Record<string, unknown> = {
-  "/api/client/v1/servers": {
+  '/api/client/v1/servers': {
     get: {
-      tags: ["Servers"],
-      summary: "List servers for the signed-in organization",
+      tags: ['Servers'],
+      summary: 'List servers for the signed-in organization',
       security: [{ cookieAuth: [] }],
       responses: {
-        "200": {
-          description: "Organization servers with live connection state",
+        '200': {
+          description: 'Organization servers with live connection state',
           content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ServersResponse" },
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServersResponse' },
             },
           },
         },
-        "401": {
-          description: "Unauthorized",
+        '401': {
+          description: 'Unauthorized',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "503": {
-          description: "Database unavailable",
+        '503': {
+          description: 'Database unavailable',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
@@ -1422,62 +1375,62 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
   },
-  "/api/client/v1/servers/{id}/status": {
+  '/api/client/v1/servers/{id}/status': {
     get: {
-      tags: ["Servers"],
-      summary: "Get Postgres-backed connection status for a visible server",
+      tags: ['Servers'],
+      summary: 'Get Postgres-backed connection status for a visible server',
       description:
-        "Returns `ServerStatusRecord` (connected, daemonStatus, connectedAt, statusChangedAt, …). Prefer this over the admin/debug cell snapshot.",
+        'Returns `ServerStatusRecord` (connected, daemonStatus, connectedAt, statusChangedAt, …). Prefer this over the admin/debug cell snapshot.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
-          name: "id",
-          in: "path",
+          name: 'id',
+          in: 'path',
           required: true,
-          schema: { type: "string", format: "uuid" },
+          schema: { type: 'string', format: 'uuid' },
         },
       ],
       responses: {
-        "200": {
-          description: "Server status",
+        '200': {
+          description: 'Server status',
           content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ServerStatusResponse" },
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerStatusResponse' },
             },
           },
         },
-        "401": {
-          description: "Unauthorized",
+        '401': {
+          description: 'Unauthorized',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "403": {
-          description: "Forbidden",
+        '403': {
+          description: 'Forbidden',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "404": {
-          description: "Server not found",
+        '404': {
+          description: 'Server not found',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
@@ -1485,49 +1438,48 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
   },
-  "/api/client/v1/servers/{id}/cell": {
+  '/api/client/v1/servers/{id}/cell': {
     get: {
-      tags: ["Servers"],
-      summary: "Fetch daemon cell snapshot for a visible server",
+      tags: ['Servers'],
+      summary: 'Fetch daemon cell snapshot for a visible server',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
-          name: "id",
-          in: "path",
+          name: 'id',
+          in: 'path',
           required: true,
-          schema: { type: "string", format: "uuid" },
+          schema: { type: 'string', format: 'uuid' },
         },
       ],
       responses: {
-        "200": {
-          description: "Daemon cell data",
+        '200': {
+          description: 'Daemon cell data',
           content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/FetchServerCellResponse" },
+            'application/json': {
+              schema: { $ref: '#/components/schemas/FetchServerCellResponse' },
             },
           },
         },
-        "403": {
-          description:
-            "Forbidden, or update blocked for the co-located development daemon",
+        '403': {
+          description: 'Forbidden, or update blocked for the co-located development daemon',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "404": {
-          description: "Server not found",
+        '404': {
+          description: 'Server not found',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
@@ -1535,63 +1487,62 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
   },
-  "/api/client/v1/servers/{id}/update": {
+  '/api/client/v1/servers/{id}/update': {
     get: {
-      tags: ["Servers"],
-      summary: "Read daemon update status for a visible server",
+      tags: ['Servers'],
+      summary: 'Read daemon update status for a visible server',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
-          name: "id",
-          in: "path",
+          name: 'id',
+          in: 'path',
           required: true,
-          schema: { type: "string", format: "uuid" },
+          schema: { type: 'string', format: 'uuid' },
         },
       ],
       responses: {
-        "200": {
-          description:
-            "Current daemon build vs the control plane's channel manifest target",
+        '200': {
+          description: "Current daemon build vs the control plane's channel manifest target",
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                $ref: "#/components/schemas/ServerUpdateStatusResponse",
+                $ref: '#/components/schemas/ServerUpdateStatusResponse',
               },
             },
           },
         },
-        "401": {
-          description: "Unauthorized",
+        '401': {
+          description: 'Unauthorized',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "403": {
-          description: "Forbidden",
+        '403': {
+          description: 'Forbidden',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "503": {
-          description: "Database unavailable",
+        '503': {
+          description: 'Database unavailable',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
@@ -1599,88 +1550,86 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
     post: {
-      tags: ["Servers"],
-      summary:
-        "Trigger a daemon update on a connected server, on the control plane's channel",
+      tags: ['Servers'],
+      summary: "Trigger a daemon update on a connected server, on the control plane's channel",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
-          name: "id",
-          in: "path",
+          name: 'id',
+          in: 'path',
           required: true,
-          schema: { type: "string", format: "uuid" },
+          schema: { type: 'string', format: 'uuid' },
         },
       ],
       responses: {
-        "200": {
-          description: "Update queued on the daemon",
+        '200': {
+          description: 'Update queued on the daemon',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                $ref: "#/components/schemas/TriggerServerUpdateResponse",
+                $ref: '#/components/schemas/TriggerServerUpdateResponse',
               },
             },
           },
         },
-        "401": {
-          description: "Unauthorized",
+        '401': {
+          description: 'Unauthorized',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "403": {
-          description:
-            "Forbidden, or update blocked for the co-located development daemon",
+        '403': {
+          description: 'Forbidden, or update blocked for the co-located development daemon',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "404": {
-          description: "Daemon not connected",
+        '404': {
+          description: 'Daemon not connected',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "503": {
-          description: "Daemon cell registry unavailable",
+        '503': {
+          description: 'Daemon cell registry unavailable',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "504": {
-          description: "Timeout waiting for daemon acknowledgement",
+        '504': {
+          description: 'Timeout waiting for daemon acknowledgement',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["ok", "error"],
+                type: 'object',
+                required: ['ok', 'error'],
                 properties: {
-                  ok: { type: "boolean", const: false },
-                  error: { type: "string" },
+                  ok: { type: 'boolean', const: false },
+                  error: { type: 'string' },
                 },
               },
             },
@@ -1689,32 +1638,32 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
   },
-  "/api/client/v1/servers/{id}/update/reset": {
+  '/api/client/v1/servers/{id}/update/reset': {
     post: {
-      tags: ["Servers"],
-      summary: "Clear stale daemon update status after a manual server update",
+      tags: ['Servers'],
+      summary: 'Clear stale daemon update status after a manual server update',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
-          name: "id",
-          in: "path",
+          name: 'id',
+          in: 'path',
           required: true,
-          schema: { type: "string", format: "uuid" },
+          schema: { type: 'string', format: 'uuid' },
         },
       ],
       responses: {
-        "200": {
-          description: "Terminal update request history cleared",
+        '200': {
+          description: 'Terminal update request history cleared',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
                 allOf: [
-                  { $ref: "#/components/schemas/ServerUpdateStatusResponse" },
+                  { $ref: '#/components/schemas/ServerUpdateStatusResponse' },
                   {
-                    type: "object",
-                    required: ["cleared"],
+                    type: 'object',
+                    required: ['cleared'],
                     properties: {
-                      cleared: { type: "integer", minimum: 0 },
+                      cleared: { type: 'integer', minimum: 0 },
                     },
                   },
                 ],
@@ -1722,53 +1671,53 @@ export const serverPaths: Record<string, unknown> = {
             },
           },
         },
-        "401": {
-          description: "Unauthorized",
+        '401': {
+          description: 'Unauthorized',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "403": {
-          description: "Forbidden",
+        '403': {
+          description: 'Forbidden',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "409": {
-          description: "Update in progress",
+        '409': {
+          description: 'Update in progress',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["ok", "error"],
+                type: 'object',
+                required: ['ok', 'error'],
                 properties: {
-                  ok: { type: "boolean", const: false },
-                  error: { type: "string" },
+                  ok: { type: 'boolean', const: false },
+                  error: { type: 'string' },
                 },
               },
             },
           },
         },
-        "503": {
-          description: "Daemon cell registry unavailable",
+        '503': {
+          description: 'Daemon cell registry unavailable',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
@@ -1776,89 +1725,88 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
   },
-  "/api/client/v1/servers/{id}/daemon-key/revoke": {
+  '/api/client/v1/servers/{id}/daemon-key/revoke': {
     post: {
-      tags: ["Servers"],
-      summary: "Revoke the daemon identity key of a compromised server",
+      tags: ['Servers'],
+      summary: 'Revoke the daemon identity key of a compromised server',
       description:
         "The compromised-host cutoff. Marks the server's daemon key revoked (durable: POST /enroll, POST /auth/session and the daemon WebSocket connect all refuse it from then on), then purges the live daemon cell as best effort so an open socket and an unexpired 15-minute JWT do not outlive the revoke. Revocation is sticky — the license token still on the host cannot re-enroll it (refused atomically at the key row, not just by a pre-check). Recovery is DELETE /servers/{id} and a fresh enroll of the rebuilt host; delete itself requires first moving any environments pinned to this server and clearing its blocker resources (networks, containers, IPs) — intentional for a host you no longer trust, since those are suspect too. Idempotent: calling again re-attempts the purge and returns the original revokedAt. Requires server manage permission, same as DELETE.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
-          name: "id",
-          in: "path",
+          name: 'id',
+          in: 'path',
           required: true,
-          schema: { type: "string", format: "uuid" },
+          schema: { type: 'string', format: 'uuid' },
         },
       ],
       responses: {
-        "200": {
+        '200': {
           description:
             "Key revoked. purged=false means the live cell could not be reached (purgeError is a fixed code — purge_failed or registry_unavailable; the driver's own message is logged, never returned, because it names registry internals). Even unpurged, the revoke bites at the next point the key is re-checked: self-hosted, the socket rejects the daemon's next inbound frame (close code key_revoked); hosted, an already-authenticated Durable Object socket is closed by the purge or by the daemon's next reconnect, and either runtime refuses the next session mint.",
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["ok", "revokedAt", "purged"],
+                type: 'object',
+                required: ['ok', 'revokedAt', 'purged'],
                 properties: {
-                  ok: { type: "boolean", enum: [true] },
-                  revokedAt: { type: ["string", "null"], format: "date-time" },
-                  purged: { type: "boolean" },
+                  ok: { type: 'boolean', enum: [true] },
+                  revokedAt: { type: ['string', 'null'], format: 'date-time' },
+                  purged: { type: 'boolean' },
                   purgeError: {
-                    type: "string",
-                    enum: ["purge_failed", "registry_unavailable"],
+                    type: 'string',
+                    enum: ['purge_failed', 'registry_unavailable'],
                   },
                 },
               },
             },
           },
         },
-        "401": {
-          description: "Unauthorized",
+        '401': {
+          description: 'Unauthorized',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "403": {
+        '403': {
           description:
-            "Forbidden, or the co-located control plane server (revoking its key would sever the control plane from its own host)",
+            'Forbidden, or the co-located control plane server (revoking its key would sever the control plane from its own host)',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "404": {
-          description: "Server not found in this organization",
+        '404': {
+          description: 'Server not found in this organization',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "409": {
-          description:
-            "Server is not enrolled — it has no daemon key to revoke",
+        '409': {
+          description: 'Server is not enrolled — it has no daemon key to revoke',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
@@ -1866,62 +1814,62 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
   },
-  "/api/client/v1/servers/{id}/delete-preview": {
+  '/api/client/v1/servers/{id}/delete-preview': {
     get: {
-      tags: ["Servers"],
-      summary: "Preview leftover rows that would block deleting a server",
+      tags: ['Servers'],
+      summary: 'Preview leftover rows that would block deleting a server',
       description:
-        "Same rights as delete (organization manager on this server). Lists leftover containers, networks, addresses, app environments that will be removed, database members that will be forgotten, and databases that still block forget. Each `environment` blocker names every placed app environment (including the ones carrying a database, which the Services tab app list does not show) with its project, and each `managed` / `replica` blocker names its databases, so the console can link them. System-workspace rows are omitted the same way as delete blockers. Each list is capped at 50 rows plus a `more` count. `online` is true when the live cell snapshot is connected or the stored connected flag is true. `canForget` is true only when the server is offline, is not the co-located control plane host, and no database still has its only copy or its primary on this server.",
+        'Same rights as delete (organization manager on this server). Lists leftover containers, networks, addresses, app environments that will be removed, database members that will be forgotten, and databases that still block forget. Each `environment` blocker names every placed app environment (including the ones carrying a database, which the Services tab app list does not show) with its project, and each `managed` / `replica` blocker names its databases, so the console can link them. System-workspace rows are omitted the same way as delete blockers. Each list is capped at 50 rows plus a `more` count. `online` is true when the live cell snapshot is connected or the stored connected flag is true. `canForget` is true only when the server is offline, is not the co-located control plane host, and no database still has its only copy or its primary on this server.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
-          name: "id",
-          in: "path",
+          name: 'id',
+          in: 'path',
           required: true,
-          schema: { type: "string", format: "uuid" },
+          schema: { type: 'string', format: 'uuid' },
         },
       ],
       responses: {
-        "200": {
-          description: "Delete preview",
+        '200': {
+          description: 'Delete preview',
           content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ServerDeletePreview" },
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerDeletePreview' },
             },
           },
         },
-        "401": {
-          description: "Unauthorized",
+        '401': {
+          description: 'Unauthorized',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "403": {
-          description: "Forbidden",
+        '403': {
+          description: 'Forbidden',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "404": {
-          description: "Server not found",
+        '404': {
+          description: 'Server not found',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
@@ -1929,62 +1877,62 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
   },
-  "/api/client/v1/servers/{id}": {
+  '/api/client/v1/servers/{id}': {
     get: {
-      tags: ["Servers"],
-      summary: "Get a single server detail row",
+      tags: ['Servers'],
+      summary: 'Get a single server detail row',
       description:
-        "Returns display fields plus live presence (addresses, timeSync, effective timezone). Uses the server-detail cached read model for the row SELECT; presence enrichment is primary-DB only.",
+        'Returns display fields plus live presence (addresses, timeSync, effective timezone). Uses the server-detail cached read model for the row SELECT; presence enrichment is primary-DB only.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
-          name: "id",
-          in: "path",
+          name: 'id',
+          in: 'path',
           required: true,
-          schema: { type: "string", format: "uuid" },
+          schema: { type: 'string', format: 'uuid' },
         },
       ],
       responses: {
-        "200": {
-          description: "Server detail",
+        '200': {
+          description: 'Server detail',
           content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ServerDetailResponse" },
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerDetailResponse' },
             },
           },
         },
-        "401": {
-          description: "Unauthorized",
+        '401': {
+          description: 'Unauthorized',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "403": {
-          description: "Forbidden",
+        '403': {
+          description: 'Forbidden',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "404": {
-          description: "Server not found",
+        '404': {
+          description: 'Server not found',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
@@ -1992,82 +1940,82 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
     patch: {
-      tags: ["Servers"],
-      summary: "Update server display name, options, machine class or location",
+      tags: ['Servers'],
+      summary: 'Update server display name, options, machine class or location',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
-          name: "id",
-          in: "path",
+          name: 'id',
+          in: 'path',
           required: true,
-          schema: { type: "string", format: "uuid" },
+          schema: { type: 'string', format: 'uuid' },
         },
       ],
       requestBody: {
         required: true,
         content: {
-          "application/json": {
-            schema: { $ref: "#/components/schemas/PatchServerRequest" },
+          'application/json': {
+            schema: { $ref: '#/components/schemas/PatchServerRequest' },
           },
         },
       },
       responses: {
-        "200": {
-          description: "Updated",
+        '200': {
+          description: 'Updated',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["ok"],
-                properties: { ok: { type: "boolean", const: true } },
+                type: 'object',
+                required: ['ok'],
+                properties: { ok: { type: 'boolean', const: true } },
               },
             },
           },
         },
-        "400": {
-          description: "Invalid request",
+        '400': {
+          description: 'Invalid request',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "401": {
-          description: "Unauthorized",
+        '401': {
+          description: 'Unauthorized',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "403": {
-          description: "Forbidden",
+        '403': {
+          description: 'Forbidden',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "404": {
-          description: "Not found",
+        '404': {
+          description: 'Not found',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
@@ -2075,38 +2023,37 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
     delete: {
-      tags: ["Servers"],
-      summary: "Delete a server and purge its daemon cell",
+      tags: ['Servers'],
+      summary: 'Delete a server and purge its daemon cell',
       description:
-        "Without `forgetResources=true`, leftover containers, networks, addresses, or other RESTRICT placements still answer 409 `server_has_blockers`. Pass the flag explicitly (query or JSON body; never implied) to drop leftover app environments, database members whose primary is elsewhere, deployments, slots, storage copies, containers, networks, and addresses on an offline server that is not the co-located control plane host. A connected server (live snapshot or stored flag, re-checked under row lock) answers 409 `server_online`. A database whose only copy or primary is on this server still answers 409 `server_has_blockers` with `blockedDatabases`. System-workspace rows still follow the ordinary hosting-ingress teardown.",
+        'Without `forgetResources=true`, leftover containers, networks, addresses, or other RESTRICT placements still answer 409 `server_has_blockers`. Pass the flag explicitly (query or JSON body; never implied) to drop leftover app environments, database members whose primary is elsewhere, deployments, slots, storage copies, containers, networks, and addresses on an offline server that is not the co-located control plane host. A connected server (live snapshot or stored flag, re-checked under row lock) answers 409 `server_online`. A database whose only copy or primary is on this server still answers 409 `server_has_blockers` with `blockedDatabases`. System-workspace rows still follow the ordinary hosting-ingress teardown.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
-          name: "id",
-          in: "path",
+          name: 'id',
+          in: 'path',
           required: true,
-          schema: { type: "string", format: "uuid" },
+          schema: { type: 'string', format: 'uuid' },
         },
         {
-          name: "forgetResources",
-          in: "query",
+          name: 'forgetResources',
+          in: 'query',
           required: false,
-          schema: { type: "boolean" },
+          schema: { type: 'boolean' },
           description:
-            "When true, remove leftover app environments, forgettable database members, deployments, slots, copies, containers, networks, and addresses for this server inside the same delete. Must be the exact value true; omitted or any other value leaves blocker checks unchanged.",
+            'When true, remove leftover app environments, forgettable database members, deployments, slots, copies, containers, networks, and addresses for this server inside the same delete. Must be the exact value true; omitted or any other value leaves blocker checks unchanged.',
         },
       ],
       requestBody: {
         required: false,
         content: {
-          "application/json": {
+          'application/json': {
             schema: {
-              type: "object",
+              type: 'object',
               properties: {
                 forgetResources: {
-                  type: "boolean",
-                  description:
-                    "Same meaning as the query flag; must be JSON true.",
+                  type: 'boolean',
+                  description: 'Same meaning as the query flag; must be JSON true.',
                 },
               },
             },
@@ -2114,84 +2061,83 @@ export const serverPaths: Record<string, unknown> = {
         },
       },
       responses: {
-        "200": {
-          description: "Server deleted and daemon cell purged",
+        '200': {
+          description: 'Server deleted and daemon cell purged',
           content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/DeleteServerResponse" },
+            'application/json': {
+              schema: { $ref: '#/components/schemas/DeleteServerResponse' },
             },
           },
         },
-        "401": {
-          description: "Unauthorized",
+        '401': {
+          description: 'Unauthorized',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "403": {
-          description: "Forbidden",
+        '403': {
+          description: 'Forbidden',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "404": {
-          description: "Server not found",
+        '404': {
+          description: 'Server not found',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "409": {
+        '409': {
           description:
-            "Dependent resources block deletion, leftover rows cannot be forgotten while the server is connected, or child rows remain",
+            'Dependent resources block deletion, leftover rows cannot be forgotten while the server is connected, or child rows remain',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
                 oneOf: [
-                  { $ref: "#/components/schemas/ServerDeleteBlockersConflict" },
-                  { $ref: "#/components/schemas/ServerOnlineConflict" },
-                  { $ref: "#/components/schemas/HierarchyDeleteConflict" },
+                  { $ref: '#/components/schemas/ServerDeleteBlockersConflict' },
+                  { $ref: '#/components/schemas/ServerOnlineConflict' },
+                  { $ref: '#/components/schemas/HierarchyDeleteConflict' },
                 ],
               },
             },
           },
         },
-        "503": {
-          description: "Database or daemon cell registry unavailable",
+        '503': {
+          description: 'Database or daemon cell registry unavailable',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "500": {
-          description:
-            "Server row deleted but daemon cell purge failed; cleanup is incomplete",
+        '500': {
+          description: 'Server row deleted but daemon cell purge failed; cleanup is incomplete',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                $ref: "#/components/schemas/DeleteServerPartialFailure",
+                $ref: '#/components/schemas/DeleteServerPartialFailure',
               },
             },
           },
@@ -2199,70 +2145,70 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
   },
-  "/api/client/v1/servers/{id}/timezone": {
+  '/api/client/v1/servers/{id}/timezone': {
     post: {
-      tags: ["Servers"],
-      summary: "Set server timezone",
+      tags: ['Servers'],
+      summary: 'Set server timezone',
       description:
-        "Persists server.options.timezone and enqueues server.timezone.set. Manage-gated; poll via GET /servers/{id}/commands/{commandId}.",
+        'Persists server.options.timezone and enqueues server.timezone.set. Manage-gated; poll via GET /servers/{id}/commands/{commandId}.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
-          name: "id",
-          in: "path",
+          name: 'id',
+          in: 'path',
           required: true,
-          schema: { type: "string", format: "uuid" },
+          schema: { type: 'string', format: 'uuid' },
         },
       ],
       requestBody: {
         required: true,
         content: {
-          "application/json": {
-            schema: { $ref: "#/components/schemas/TimezoneSetRequest" },
+          'application/json': {
+            schema: { $ref: '#/components/schemas/TimezoneSetRequest' },
           },
         },
       },
       responses: {
-        "200": {
-          description: "Command queued",
+        '200': {
+          description: 'Command queued',
           content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/CommandEnqueueResponse" },
+            'application/json': {
+              schema: { $ref: '#/components/schemas/CommandEnqueueResponse' },
             },
           },
         },
-        "400": {
-          description: "Invalid timezone",
+        '400': {
+          description: 'Invalid timezone',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "403": {
-          description: "Forbidden",
+        '403': {
+          description: 'Forbidden',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "404": {
-          description: "Server not found",
+        '404': {
+          description: 'Server not found',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
@@ -2270,70 +2216,70 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
   },
-  "/api/client/v1/servers/{id}/ntp": {
+  '/api/client/v1/servers/{id}/ntp': {
     post: {
-      tags: ["Servers"],
-      summary: "Configure server NTP",
+      tags: ['Servers'],
+      summary: 'Configure server NTP',
       description:
-        "Enqueues server.ntp.set. Manage-gated; poll via GET /servers/{id}/commands/{commandId}.",
+        'Enqueues server.ntp.set. Manage-gated; poll via GET /servers/{id}/commands/{commandId}.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
-          name: "id",
-          in: "path",
+          name: 'id',
+          in: 'path',
           required: true,
-          schema: { type: "string", format: "uuid" },
+          schema: { type: 'string', format: 'uuid' },
         },
       ],
       requestBody: {
         required: true,
         content: {
-          "application/json": {
-            schema: { $ref: "#/components/schemas/NtpSetRequest" },
+          'application/json': {
+            schema: { $ref: '#/components/schemas/NtpSetRequest' },
           },
         },
       },
       responses: {
-        "200": {
-          description: "Command queued",
+        '200': {
+          description: 'Command queued',
           content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/CommandEnqueueResponse" },
+            'application/json': {
+              schema: { $ref: '#/components/schemas/CommandEnqueueResponse' },
             },
           },
         },
-        "400": {
-          description: "Invalid NTP payload",
+        '400': {
+          description: 'Invalid NTP payload',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "403": {
-          description: "Forbidden",
+        '403': {
+          description: 'Forbidden',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "404": {
-          description: "Server not found",
+        '404': {
+          description: 'Server not found',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
@@ -2341,74 +2287,74 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
   },
-  "/api/client/v1/servers/{id}/services": {
+  '/api/client/v1/servers/{id}/services': {
     get: {
-      tags: ["Servers"],
-      summary: "List what is attached to a server",
+      tags: ['Servers'],
+      summary: 'List what is attached to a server',
       description:
         "Read-gated, organization-scoped snapshot of apps, databases, bindings, backups of databases that have a member here, networks, and stored runtimes for one server. Lists of apps, containers, domains, database users, networks, and backups are capped (50 plus `more`). Removal reasons reuse `planServerForget` plus the co-located-host rule so this view and DELETE cannot disagree; `online` and `canForget` match delete-preview, and a reason that blocks a named app environment or database carries `items` so the console can link each one. Another organization's server is 404.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
-          name: "id",
-          in: "path",
+          name: 'id',
+          in: 'path',
           required: true,
-          schema: { type: "string", format: "uuid" },
+          schema: { type: 'string', format: 'uuid' },
         },
       ],
       responses: {
-        "200": {
-          description: "Attached services snapshot",
+        '200': {
+          description: 'Attached services snapshot',
           content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ServerServicesResponse" },
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerServicesResponse' },
             },
           },
         },
-        "401": {
-          description: "Unauthorized",
+        '401': {
+          description: 'Unauthorized',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "403": {
-          description: "Forbidden",
+        '403': {
+          description: 'Forbidden',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "404": {
-          description: "Server not found in this organization",
+        '404': {
+          description: 'Server not found in this organization',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "503": {
-          description: "Database unavailable",
+        '503': {
+          description: 'Database unavailable',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
@@ -2416,50 +2362,50 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
   },
-  "/api/client/v1/servers/{id}/labels": {
+  '/api/client/v1/servers/{id}/labels': {
     get: {
-      tags: ["Servers"],
-      summary: "List server labels",
+      tags: ['Servers'],
+      summary: 'List server labels',
       description:
-        "Returns the replace-all label set for placement.constraints (`node.labels.*`). Read-gated so the same viewers who can see the server detail projection can read its labels.",
+        'Returns the replace-all label set for placement.constraints (`node.labels.*`). Read-gated so the same viewers who can see the server detail projection can read its labels.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
-          name: "id",
-          in: "path",
+          name: 'id',
+          in: 'path',
           required: true,
-          schema: { type: "string", format: "uuid" },
+          schema: { type: 'string', format: 'uuid' },
         },
       ],
       responses: {
-        "200": {
-          description: "Label list",
+        '200': {
+          description: 'Label list',
           content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ServerLabelsResponse" },
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerLabelsResponse' },
             },
           },
         },
-        "403": {
-          description: "Forbidden",
+        '403': {
+          description: 'Forbidden',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "404": {
-          description: "Server not found",
+        '404': {
+          description: 'Server not found',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
@@ -2467,68 +2413,68 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
     put: {
-      tags: ["Servers"],
-      summary: "Replace server labels",
+      tags: ['Servers'],
+      summary: 'Replace server labels',
       description:
-        "Replace-all write of the server label set (no per-key DELETE). Manage-gated. Body is `{ labels: { key: value } }`; empty object clears all labels.",
+        'Replace-all write of the server label set (no per-key DELETE). Manage-gated. Body is `{ labels: { key: value } }`; empty object clears all labels.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
-          name: "id",
-          in: "path",
+          name: 'id',
+          in: 'path',
           required: true,
-          schema: { type: "string", format: "uuid" },
+          schema: { type: 'string', format: 'uuid' },
         },
       ],
       requestBody: {
         required: true,
         content: {
-          "application/json": {
-            schema: { $ref: "#/components/schemas/ServerLabelsPutRequest" },
+          'application/json': {
+            schema: { $ref: '#/components/schemas/ServerLabelsPutRequest' },
           },
         },
       },
       responses: {
-        "200": {
-          description: "Updated label list",
+        '200': {
+          description: 'Updated label list',
           content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/ServerLabelsResponse" },
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerLabelsResponse' },
             },
           },
         },
-        "400": {
-          description: "Invalid label payload",
+        '400': {
+          description: 'Invalid label payload',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "403": {
-          description: "Forbidden",
+        '403': {
+          description: 'Forbidden',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
         },
-        "404": {
-          description: "Server not found",
+        '404': {
+          description: 'Server not found',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["error"],
-                properties: { error: { type: "string" } },
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
               },
             },
           },
@@ -2536,4 +2482,4 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
   },
-};
+}
