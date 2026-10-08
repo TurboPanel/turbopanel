@@ -147,6 +147,8 @@ async function staleOrchestratorReason(
     instanceHost: input.instanceHost,
     instancePort: input.instancePort,
     expectedPrimary,
+    localPrivatePort:
+      ctx.primary?.serverId === ctx.reporterServerId ? ctx.primary.privatePort : null,
   })
 }
 

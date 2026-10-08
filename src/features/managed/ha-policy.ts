@@ -336,6 +336,15 @@ export type OrchestratorBindingInput = {
    * (`null` = no primary, or no usable address for it).
    */
   expectedPrimary: { host: string; port: number } | null
+  /**
+   * The primary's private-listener port when the primary runs on the
+   * REPORTING server itself. The daemon registers a local member in
+   * Orchestrator by its published private listener (`<ip>:<privatePort>`),
+   * not by the Docker name this side dials it by, so a report that names that
+   * port on the reporter's own host is the current primary too. Ports are
+   * allocated per server, so the port alone identifies the instance there.
+   */
+  localPrivatePort?: number | null
 }
 
 /**
@@ -350,6 +359,13 @@ export function orchestratorBindingRejection(input: OrchestratorBindingInput): s
     return input.reporterBindsInstance
       ? 'report names no instance although the daemon advertises managed-ha-instance-v1'
       : null
+  }
+  if (
+    input.localPrivatePort !== undefined &&
+    input.localPrivatePort !== null &&
+    input.instancePort === input.localPrivatePort
+  ) {
+    return null
   }
   if (!input.expectedPrimary) return 'the current primary has no known private address and port'
   const sameHost = input.instanceHost?.toLowerCase() === input.expectedPrimary.host.toLowerCase()

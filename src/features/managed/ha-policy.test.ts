@@ -650,3 +650,45 @@ test('orchestratorBindingRejection: a missing instance is legacy only for a daem
     'string'
   )
 })
+
+test('orchestratorBindingRejection: a local primary is known by its published private listener', () => {
+  // The control plane dials a local member by its Docker name; the daemon
+  // registers it in Orchestrator as <private ip>:<privatePort>.
+  const base = {
+    reporterBindsInstance: true,
+    expectedPrimary: { host: 'abc-1', port: 3306 },
+    localPrivatePort: 45001,
+  }
+  assertEquals(
+    orchestratorBindingRejection({ ...base, instanceHost: '172.20.4.10', instancePort: 45001 }),
+    null
+  )
+  assertEquals(
+    typeof orchestratorBindingRejection({
+      ...base,
+      instanceHost: '172.20.4.10',
+      instancePort: 45002,
+    }),
+    'string'
+  )
+  assertEquals(
+    orchestratorBindingRejection({
+      ...base,
+      expectedPrimary: null,
+      instanceHost: '172.20.4.10',
+      instancePort: 45001,
+    }),
+    null
+  )
+  // A remote primary (no local private port) is unchanged.
+  assertEquals(
+    typeof orchestratorBindingRejection({
+      reporterBindsInstance: true,
+      expectedPrimary: BOUND_PRIMARY,
+      localPrivatePort: null,
+      instanceHost: '10.0.0.5',
+      instancePort: 45001,
+    }),
+    'string'
+  )
+})
