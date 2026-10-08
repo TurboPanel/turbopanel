@@ -81,11 +81,11 @@ must still be able to name an image an existing row already holds.
 | Engine   | Creatable (tested) | Catalogued but untested |
 | -------- | ------------------ | ----------------------- |
 | Postgres | **18**             | 17, 16, 15              |
-| MySQL    | **9.7**            | 8.4                     |
-| MariaDB  | **12.3**           | 11.8, 11.4, 10.11       |
+| MySQL    | **9.7**, **8.4**   |                         |
+| MariaDB  | **12.3**, **11.8** | 11.4, 10.11             |
 
 Each creatable series offers both of its base-OS variants, so the derived
-allowlists hold six images in total. `managedCreatableReleasesForEngine` is the
+allowlists hold ten images in total. `managedCreatableReleasesForEngine` is the
 single filter; `managedReleasesForEngine` still returns everything for naming.
 The one way past it is an explicit `ManagedReleaseGate` (`{ includeUntested:
 true }`) passed by a caller that knows better — today only the catalog's own
