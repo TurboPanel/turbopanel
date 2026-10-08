@@ -1169,8 +1169,8 @@ async function applyManagedIngressReconcileSideEffect(
     const payload = parseManagedIngressReconcilePayload(record.payload)
     // The host took the listener addresses: whatever it was told before this
     // command was created is no longer waiting.
-    const { clearManagedExposurePendingForServer } = await import('../managed/exposure-change.ts')
-    await clearManagedExposurePendingForServer(db, {
+    const { confirmManagedExternalAccessForServer } = await import('../managed/external-access.ts')
+    await confirmManagedExternalAccessForServer(db, {
       serverId: payload.serverId,
       commandCreatedAt: record.createdAt,
     })

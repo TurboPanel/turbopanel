@@ -1,5 +1,7 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertMatch } from '@std/assert'
+import { loadFirewallFacts } from '../../features/firewall/facts.ts'
+import { listAuditForOrganization } from '../../features/audit/audit-records.ts'
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -14,9 +16,11 @@ import {
 } from '../../lib/secrets/secrets.ts'
 import { attachDaemonStateToServer } from '../../features/servers/server-identity-db.ts'
 import {
-  clearManagedExposurePendingForServer,
-  runManagedExposurePendingSweep,
-} from '../../features/managed/exposure-change.ts'
+  confirmManagedExternalAccessForServer,
+  loadManagedExternalAccess,
+  saveManagedExternalAccess,
+  runManagedExternalAccessPendingSweep,
+} from '../../features/managed/external-access.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
@@ -737,14 +741,6 @@ test('PATCH rejects denylisted dockerOptions and does not enqueue', async () => 
       assertEquals(denied.status, 400)
       assertEquals(await denied.json(), { error: 'managed_settings_invalid' })
 
-      const badBind = await app.request(`/environments/${environmentId}/managed`, {
-        method: 'PATCH',
-        headers,
-        body: JSON.stringify({
-          settings: { exposure: { enabled: true, scope: 'internet' } },
-        }),
-      })
-      assertEquals(badBind.status, 400)
       assertEquals(commandQueue.envelopes.length, beforeCount)
     }
   )
@@ -2070,16 +2066,18 @@ test('PATCH /environments/:id/managed persists clamped settings', async () => {
         method: 'PATCH',
         headers,
         body: JSON.stringify({
-          settings: { exposure: { enabled: false, scope: 'local' } },
+          settings: { ssl: { mode: 'require' }, exposure: { enabled: true, scope: 'public' } },
         }),
       })
       assertEquals(patch.status, 200)
       const patchBody = (await patch.json()) as {
         ok: boolean
-        settings: { exposure: { enabled: boolean } }
+        settings: { ssl: { mode?: string }; exposure?: unknown }
       }
       assertEquals(patchBody.ok, true)
-      assertEquals(patchBody.settings.exposure.enabled, false)
+      assertEquals(patchBody.settings.ssl.mode, 'require')
+      // Who can connect from outside is the server's setting, not the cluster's.
+      assertEquals(patchBody.settings.exposure, undefined)
     }
   )
 })
@@ -2866,7 +2864,7 @@ async function latestIngressReconcileBindAddresses(
   return (row?.payload as { bindAddresses?: string[] } | undefined)?.bindAddresses
 }
 
-test('a new cluster listens on loopback only, and changing its exposure re-sends the listener addresses at once', async () => {
+test('a new cluster listens on loopback only, and the server external access switch re-sends the listener addresses at once', async () => {
   await withManagedFixtures(
     {},
     async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId, serverId }) => {
@@ -2876,14 +2874,13 @@ test('a new cluster listens on loopback only, and changing its exposure re-sends
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       }
-      const patchExposure = async (exposure: Record<string, unknown>) =>
-        await app.request(`/environments/${environmentId}/managed`, {
-          method: 'PATCH',
+      const setExternalAccess = async (enabled: unknown) =>
+        await app.request(`/servers/${serverId}/managed-external-access`, {
+          method: 'PUT',
           headers,
-          body: JSON.stringify({ settings: { exposure } }),
+          body: JSON.stringify({ enabled }),
         })
 
-      // Created with no exposure argument.
       const create = await app.request(`/environments/${environmentId}/managed`, {
         method: 'POST',
         headers,
@@ -2891,106 +2888,97 @@ test('a new cluster listens on loopback only, and changing its exposure re-sends
       })
       assertEquals(create.status, 200)
       const created = (await create.json()) as { managed: { id: string } }
-      const ready = () =>
-        db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
-      await ready()
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
       assertEquals(await latestIngressReconcileBindAddresses(db, serverId), ['127.0.0.1'])
 
-      // Public: every interface. The new addresses are queued by the PATCH
-      // itself, with no separate apply.
-      const before = commandQueue.envelopes.length
-      const toPublic = await patchExposure({ enabled: true, scope: 'public' })
-      assertEquals(toPublic.status, 200)
-      const toPublicBody = (await toPublic.json()) as {
-        ingressReconcile: { queuedServerIds: string[]; failedServerIds: string[] }
-      }
-      assertEquals(toPublicBody.ingressReconcile, {
-        queuedServerIds: [serverId],
-        failedServerIds: [],
+      const initial = await app.request(`/servers/${serverId}/managed-external-access`, {
+        headers,
       })
+      assertEquals(await initial.json(), { enabled: false, pending: false, clusterCount: 1 })
+
+      // Yes: every address. The new addresses are queued by the PUT itself.
+      const before = commandQueue.envelopes.length
+      const toYes = await setExternalAccess(true)
+      assertEquals(toYes.status, 200)
+      assertEquals(await toYes.json(), { ok: true, enabled: true, pending: true, clusterCount: 1 })
       assertEquals(
         commandQueue.envelopes.slice(before).map((envelope) => [envelope.type, envelope.serverId]),
         [['managed.ingress.reconcile', serverId]]
       )
       assertEquals(await latestIngressReconcileBindAddresses(db, serverId), ['0.0.0.0'])
 
-      // Off: nothing is published.
-      const toOff = await patchExposure({ enabled: false })
-      assertEquals(toOff.status, 200)
-      assertEquals(await latestIngressReconcileBindAddresses(db, serverId), undefined)
+      // The firewall preview lists the listener only while the answer is yes.
+      const proxysqlRules = async () =>
+        (await loadFirewallFacts(db, serverId))?.input.exposures.filter(
+          (exposure) => exposure.source === 'proxysql'
+        ) ?? []
+      assertEquals(
+        (await proxysqlRules()).map((exposure) => [exposure.ports, exposure.reach]),
+        [['15432', 'public']]
+      )
 
-      // Back on with no scope named: loopback again.
-      const toDefault = await patchExposure({ enabled: true })
-      assertEquals(toDefault.status, 200)
-      const toDefaultBody = (await toDefault.json()) as {
-        settings: { exposure: { enabled: boolean; scope: string } }
+      // The cluster detail reports the server's setting, not a per-cluster one.
+      const detail = await app.request(`/environments/${environmentId}/managed`, { headers })
+      const detailBody = (await detail.json()) as {
+        externalAccess: { servers: Array<{ id: string; enabled: boolean; otherClusters: number }> }
+        endpoints: Array<{ reach: string }>
+        settings: { exposure?: unknown }
       }
-      assertEquals(toDefaultBody.settings.exposure, { enabled: true, scope: 'local' })
-      assertEquals(await latestIngressReconcileBindAddresses(db, serverId), ['127.0.0.1'])
+      assertEquals(
+        detailBody.externalAccess.servers.map((entry) => [entry.id, entry.enabled]),
+        [[serverId, true]]
+      )
+      assertEquals(detailBody.externalAccess.servers[0]!.otherClusters, 0)
+      assertEquals(
+        detailBody.endpoints.map((entry) => entry.reach),
+        ['local']
+      )
+      assertEquals(detailBody.settings.exposure, undefined)
 
-      // Saving the same exposure again changes nothing on the host, so nothing is
-      // queued once the servers have confirmed the earlier pushes.
-      await clearManagedExposurePendingForServer(db, {
+      // No: back to loopback only, never "publish nothing" (sites still need 127.0.0.1).
+      const toNo = await setExternalAccess(false)
+      assertEquals(toNo.status, 200)
+      assertEquals(await latestIngressReconcileBindAddresses(db, serverId), ['127.0.0.1'])
+      assertEquals(await proxysqlRules(), [])
+
+      // The server confirms a reconcile created after the change: nothing is pending.
+      await confirmManagedExternalAccessForServer(db, {
         serverId,
         commandCreatedAt: new Date(Date.now() + 60_000).toISOString(),
       })
-      const count = commandQueue.envelopes.length
-      const same = await patchExposure({ enabled: true, scope: 'local' })
-      assertEquals(same.status, 200)
-      assertEquals(
-        ((await same.json()) as { ingressReconcile?: unknown }).ingressReconcile,
-        undefined
-      )
-      assertEquals(commandQueue.envelopes.length, count)
+      const after = await app.request(`/servers/${serverId}/managed-external-access`, { headers })
+      assertEquals(await after.json(), { enabled: false, pending: false, clusterCount: 1 })
     }
   )
 })
 
-test('a scope the server has no address for is refused before it is saved', async () => {
+test("the external access switch refuses a non-boolean and another organization's server", async () => {
   await withManagedFixtures(
     {},
-    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId, serverId }) => {
+    async ({ db, app, secrets, commandQueue, userId, organizationId, serverId }) => {
       const cookie = await sessionCookie(db, secrets, userId)
       const headers = {
         Cookie: cookie,
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       }
-      const create = await app.request(`/environments/${environmentId}/managed`, {
-        method: 'POST',
-        headers,
-        body: '{}',
-      })
-      assertEquals(create.status, 200)
-      await db
-        .update(managed)
-        .set({ status: 'ready' })
-        .where(eq(managed.environmentId, environmentId))
       const count = commandQueue.envelopes.length
 
-      const refused = await app.request(`/environments/${environmentId}/managed`, {
-        method: 'PATCH',
+      const bad = await app.request(`/servers/${serverId}/managed-external-access`, {
+        method: 'PUT',
         headers,
-        body: JSON.stringify({ settings: { exposure: { enabled: true, scope: 'turbofabric' } } }),
+        body: JSON.stringify({ enabled: 'yes' }),
       })
-      assertEquals(refused.status, 422)
-      const refusedBody = (await refused.json()) as {
-        error: string
-        message: string
-        serverId: string
-      }
-      assertEquals(refusedBody.error, 'fabric_address_required')
-      assertEquals(refusedBody.serverId, serverId)
-      // The refusal names the server it is about.
-      assertEquals(refusedBody.message.includes('TurboFabric address'), true)
-      assertEquals(refusedBody.message.startsWith('Server '), true)
-      assertEquals(commandQueue.envelopes.length, count)
+      assertEquals(bad.status, 400)
+      assertEquals(await bad.json(), { error: 'invalid_external_access' })
 
-      const detail = await app.request(`/environments/${environmentId}/managed`, { headers })
-      const body = (await detail.json()) as {
-        settings: { exposure: { enabled: boolean; scope?: string } }
-      }
-      assertEquals(body.settings.exposure, { enabled: true, scope: 'local' })
+      const unknown = await app.request(`/servers/${crypto.randomUUID()}/managed-external-access`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ enabled: true }),
+      })
+      assertEquals(unknown.status, 404)
+      assertEquals(commandQueue.envelopes.length, count)
     }
   )
 })
@@ -3083,7 +3071,110 @@ test('POST managed user without privileges gets the default for its role; an emp
   )
 })
 
-test('a failed exposure push answers 502, stays marked as pending, shows on the detail, and a retry clears it', async () => {
+test('the external access switch is forbidden without a manage grant and changes nothing', async () => {
+  await withManagedFixtures(
+    { withManageGrant: false },
+    async ({ db, app, secrets, commandQueue, userId, organizationId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const count = commandQueue.envelopes.length
+      const get = await app.request(`/servers/${serverId}/managed-external-access`, { headers })
+      assertEquals(get.status, 403)
+      const put = await app.request(`/servers/${serverId}/managed-external-access`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ enabled: true }),
+      })
+      assertEquals(put.status, 403)
+      assertEquals(commandQueue.envelopes.length, count)
+      const [row] = await db
+        .select({ options: server.options })
+        .from(server)
+        .where(eq(server.id, serverId))
+      assertEquals(row?.options, null)
+    }
+  )
+})
+
+test('a real server of another organization is 404 for the external access switch', async () => {
+  await withManagedFixtures(
+    { foreignServer: true },
+    async ({ db, app, secrets, commandQueue, userId, organizationId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const count = commandQueue.envelopes.length
+      const get = await app.request(`/servers/${serverId}/managed-external-access`, { headers })
+      assertEquals(get.status, 404)
+      const put = await app.request(`/servers/${serverId}/managed-external-access`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ enabled: true }),
+      })
+      assertEquals(put.status, 404)
+      assertEquals(commandQueue.envelopes.length, count)
+      const [row] = await db
+        .select({ options: server.options })
+        .from(server)
+        .where(eq(server.id, serverId))
+      assertEquals(row?.options, null)
+    }
+  )
+})
+
+test('saving the external access switch is audited with the new value only', async () => {
+  await withManagedFixtures({}, async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+    const put = await app.request(`/servers/${serverId}/managed-external-access`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ enabled: true }),
+    })
+    assertEquals(put.status, 200)
+    const entries = await listAuditForOrganization(db, { organizationId })
+    const entry = entries.find((row) => row.action === 'server.managed_external_access.update')
+    assertEquals(entry?.targetId, serverId)
+    assertEquals(entry?.context, { enabled: true })
+  })
+})
+
+test('a confirmation of an older ask never reverts or clears a newer one', async () => {
+  await withManagedFixtures({}, async ({ db, serverId }) => {
+    const read = async () =>
+      (await loadManagedExternalAccess(db, serverId)) as { enabled: boolean; pendingSince?: string }
+    const first = await saveManagedExternalAccess(db, serverId, true)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    const second = await saveManagedExternalAccess(db, serverId, false)
+    assertEquals(second > first, true)
+
+    // The server confirms the command built for the first ask: the newer ask
+    // (No) stays, with its own pending mark.
+    await confirmManagedExternalAccessForServer(db, { serverId, commandCreatedAt: first })
+    assertEquals(await read(), { enabled: false, pendingSince: second })
+
+    // A confirmation made after the newer ask clears the mark and keeps the value.
+    await confirmManagedExternalAccessForServer(db, { serverId, commandCreatedAt: second })
+    assertEquals(await read(), { enabled: false })
+
+    // Confirming again, or with nothing pending, changes nothing.
+    await confirmManagedExternalAccessForServer(db, { serverId, commandCreatedAt: second })
+    assertEquals(await read(), { enabled: false })
+  })
+})
+
+test('a failed external access push answers 502, stays marked as pending, shows on the detail, and a confirmation clears it', async () => {
   await withManagedFixtures(
     {},
     async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId, serverId }) => {
@@ -3103,59 +3194,54 @@ test('a failed exposure push answers 502, stays marked as pending, shows on the 
         .update(managed)
         .set({ status: 'ready' })
         .where(eq(managed.environmentId, environmentId))
-      const patchPublic = () =>
-        app.request(`/environments/${environmentId}/managed`, {
-          method: 'PATCH',
+      const putYes = () =>
+        app.request(`/servers/${serverId}/managed-external-access`, {
+          method: 'PUT',
           headers,
-          body: JSON.stringify({ settings: { exposure: { enabled: true, scope: 'public' } } }),
+          body: JSON.stringify({ enabled: true }),
         })
-      const detail = async () =>
-        (await (
-          await app.request(`/environments/${environmentId}/managed`, { headers })
-        ).json()) as {
-          exposure: { pendingServers: Array<{ id: string; name: string }> }
-          settings: { exposure: { scope: string } }
-        }
+      const pendingOnDetail = async () =>
+        (
+          (await (
+            await app.request(`/environments/${environmentId}/managed`, { headers })
+          ).json()) as { externalAccess: { servers: Array<{ id: string; pending: boolean }> } }
+        ).externalAccess.servers
+          .filter((entry) => entry.pending)
+          .map((entry) => entry.id)
 
       // The queue refuses the command (the same outcome as a payload that cannot be built).
       const working = commandQueue.enqueue
       commandQueue.enqueue = () => Promise.reject(new Error('queue down'))
-      const failed = await patchPublic()
+      const failed = await putYes()
       assertEquals(failed.status, 502)
       const failedBody = (await failed.json()) as {
         error: string
         message: string
-        ingressReconcile: { failedServerIds: string[] }
-        settings: { exposure: { scope: string } }
+        enabled: boolean
       }
       assertEquals(failedBody.error, 'ingress_reconcile_failed')
-      assertEquals(failedBody.ingressReconcile.failedServerIds, [serverId])
       assertEquals(failedBody.message.includes('still listens the old way'), true)
       // Saved, and visibly not applied yet.
-      assertEquals(failedBody.settings.exposure.scope, 'public')
-      const pending = await detail()
-      assertEquals(
-        pending.exposure.pendingServers.map((entry) => entry.id),
-        [serverId]
-      )
+      assertEquals(failedBody.enabled, true)
+      assertEquals(await pendingOnDetail(), [serverId])
 
       // Saving again pushes again because the server never confirmed.
       commandQueue.enqueue = working
       const before = commandQueue.envelopes.length
-      const retried = await patchPublic()
+      const retried = await putYes()
       assertEquals(retried.status, 200)
       assertEquals(
         commandQueue.envelopes.slice(before).map((envelope) => envelope.type),
         ['managed.ingress.reconcile']
       )
-      assertEquals((await detail()).exposure.pendingServers.length, 1)
+      assertEquals(await pendingOnDetail(), [serverId])
 
       // The server confirms a reconcile created after the change: nothing is pending.
-      await clearManagedExposurePendingForServer(db, {
+      await confirmManagedExternalAccessForServer(db, {
         serverId,
         commandCreatedAt: new Date(Date.now() + 60_000).toISOString(),
       })
-      assertEquals((await detail()).exposure.pendingServers, [])
+      assertEquals(await pendingOnDetail(), [])
     }
   )
 })
@@ -3180,12 +3266,13 @@ test('the pending sweep re-pushes a server that never confirmed, once the earlie
         .update(managed)
         .set({ status: 'ready' })
         .where(eq(managed.environmentId, environmentId))
-      const patch = await app.request(`/environments/${environmentId}/managed`, {
-        method: 'PATCH',
+      await db.update(server).set({ isConnected: true }).where(eq(server.id, serverId))
+      const put = await app.request(`/servers/${serverId}/managed-external-access`, {
+        method: 'PUT',
         headers,
-        body: JSON.stringify({ settings: { exposure: { enabled: false } } }),
+        body: JSON.stringify({ enabled: false }),
       })
-      assertEquals(patch.status, 200)
+      assertEquals(put.status, 200)
 
       const sweepParams = {
         secretsConfig: parseTestSecretsConfig('deno'),
@@ -3196,7 +3283,7 @@ test('the pending sweep re-pushes a server that never confirmed, once the earlie
       }
       // The earlier push is still valid: nothing to do yet.
       assertEquals(
-        (await runManagedExposurePendingSweep(db, commandQueue, sweepParams)).enqueued,
+        (await runManagedExternalAccessPendingSweep(db, commandQueue, sweepParams)).enqueued,
         0
       )
 
@@ -3207,54 +3294,13 @@ test('the pending sweep re-pushes a server that never confirmed, once the earlie
         .where(and(eq(command.serverId, serverId), eq(command.name, 'managed.ingress.reconcile')))
       const before = commandQueue.envelopes.length
       assertEquals(
-        (await runManagedExposurePendingSweep(db, commandQueue, sweepParams)).enqueued,
+        (await runManagedExternalAccessPendingSweep(db, commandQueue, sweepParams)).enqueued,
         1
       )
       assertEquals(
         commandQueue.envelopes.slice(before).map((envelope) => [envelope.type, envelope.serverId]),
         [['managed.ingress.reconcile', serverId]]
       )
-    }
-  )
-})
-
-test('saving Local on a legacy cluster that stored no scope still re-sends the listener addresses', async () => {
-  await withManagedFixtures(
-    {},
-    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId, serverId }) => {
-      const cookie = await sessionCookie(db, secrets, userId)
-      const headers = {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      }
-      const create = await app.request(`/environments/${environmentId}/managed`, {
-        method: 'POST',
-        headers,
-        body: '{}',
-      })
-      assertEquals(create.status, 200)
-      // A cluster made before `local` was the default: exposure on, no scope stored.
-      await db
-        .update(managed)
-        .set({
-          status: 'ready',
-          options: sql`jsonb_set(${managed.options}, '{settings,exposure}', '{"enabled": true}'::jsonb)`,
-        })
-        .where(eq(managed.environmentId, environmentId))
-
-      const before = commandQueue.envelopes.length
-      const save = await app.request(`/environments/${environmentId}/managed`, {
-        method: 'PATCH',
-        headers,
-        body: JSON.stringify({ settings: { exposure: { enabled: true, scope: 'local' } } }),
-      })
-      assertEquals(save.status, 200)
-      assertEquals(
-        commandQueue.envelopes.slice(before).map((envelope) => [envelope.type, envelope.serverId]),
-        [['managed.ingress.reconcile', serverId]]
-      )
-      assertEquals(await latestIngressReconcileBindAddresses(db, serverId), ['127.0.0.1'])
     }
   )
 })

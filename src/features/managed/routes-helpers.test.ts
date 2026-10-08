@@ -84,7 +84,7 @@ test('isPlainObject accepts records only', () => {
 
 test('managedSessionPaths lists every managed session route', () => {
   const paths = managedSessionPaths()
-  assertEquals(paths.length, 23)
+  assertEquals(paths.length, 24)
   assertEquals(paths.includes('/environments/:id/managed/logs'), true)
   assertEquals(paths.includes('/environments/:id/managed/backup-policies'), true)
   assertEquals(paths.includes('/environments/:id/managed/backup-policies/:policyId'), true)
@@ -93,49 +93,13 @@ test('managedSessionPaths lists every managed session route', () => {
   assertEquals(paths.includes('/environments/:id/managed/members/:memberId/resync'), true)
   assertEquals(paths.includes('/environments/:id/managed/disaster-recovery/promote'), true)
   assertEquals(paths.includes('/organizations/:id/managed'), true)
+  assertEquals(paths.includes('/servers/:id/managed-external-access'), true)
 })
 
-test('mergeCreateSettings returns defaults when body has no exposure', () => {
-  const merged = mergeCreateSettings(postgresEngineSpec, {})
+test('mergeCreateSettings returns the engine defaults', () => {
+  const merged = mergeCreateSettings(postgresEngineSpec)
   if (!merged) throw new TypeError('expected merged settings')
-  assertEquals(merged.exposure.enabled, true)
-  // New clusters are local-only until the owner picks a wider scope.
-  assertEquals(merged.exposure.scope, 'local')
-})
-
-test('mergeCreateSettings merges exposure overrides and re-validates', () => {
-  const merged = mergeCreateSettings(postgresEngineSpec, {
-    exposure: {
-      enabled: true,
-      scope: 'public',
-    },
-  })
-  if (!merged) throw new TypeError('expected merged settings')
-  assertEquals(merged.exposure.enabled, true)
-  assertEquals(merged.exposure.scope, 'public')
-
-  const legacyBind = mergeCreateSettings(postgresEngineSpec, {
-    exposure: { enabled: true, bind: 'datacenter' },
-  })
-  assertEquals(legacyBind, null)
-
-  const invalidScope = mergeCreateSettings(postgresEngineSpec, {
-    exposure: { enabled: true, scope: 'internet' },
-  })
-  assertEquals(invalidScope, null)
-})
-
-test('mergeCreateSettings ignores non-object exposure and invalid scope tokens', () => {
-  const fromString = mergeCreateSettings(postgresEngineSpec, {
-    exposure: 'nope',
-  })
-  if (!fromString) throw new TypeError('expected settings')
-  assertEquals(fromString.exposure.enabled, true)
-
-  const badScope = mergeCreateSettings(postgresEngineSpec, {
-    exposure: { scope: 'internet' },
-  })
-  assertEquals(badScope, null)
+  assertEquals(merged, postgresEngineSpec.parseSettings(postgresEngineSpec.defaultSettings))
 })
 
 test('parseManagedVersionSelection resolves a catalog series and variant', () => {
@@ -251,20 +215,15 @@ test('parseManagedVersionSelection rejects unknown versions and bad types', () =
 })
 
 test('mergeCreateSettings applies a resolved catalog image', () => {
-  const merged = mergeCreateSettings(
-    postgresEngineSpec,
-    { exposure: { enabled: true, scope: 'datacenter' } },
-    'docker.io/library/postgres:18'
-  )
+  const merged = mergeCreateSettings(postgresEngineSpec, 'docker.io/library/postgres:18')
   if (!merged) throw new TypeError('expected merged settings')
   assertEquals(merged.image, 'docker.io/library/postgres:18')
-  assertEquals(merged.exposure.scope, 'datacenter')
 
   // An image outside the engine allowlist is rejected by parseSettings.
-  assertEquals(mergeCreateSettings(postgresEngineSpec, {}, 'docker.io/library/mysql:9.7'), null)
+  assertEquals(mergeCreateSettings(postgresEngineSpec, 'docker.io/library/mysql:9.7'), null)
   // An untested series never reaches settings — the gate is in the parser too.
   assertEquals(
-    mergeCreateSettings(postgresEngineSpec, {}, 'docker.io/library/postgres:17-alpine'),
+    mergeCreateSettings(postgresEngineSpec, 'docker.io/library/postgres:17-alpine'),
     null
   )
 })

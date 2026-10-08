@@ -48,6 +48,7 @@ export const AUDIT_ACTIONS = [
   'organization.acme.set',
   'organization.reauth_for_destructive.set',
   'server.firewall_mode.set',
+  'server.managed_external_access.update',
   'deployment.cancel',
   'hosting.letsencrypt.requested',
   'mail.dead_letter.replay',

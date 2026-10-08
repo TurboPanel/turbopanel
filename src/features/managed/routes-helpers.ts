@@ -14,7 +14,6 @@ import {
 import type { ManagedConnectionRole } from '../../contracts/commands/schemas.ts'
 import { managedIngressPortForEngine, resolveManagedIngressPorts } from './ingress-ports.ts'
 import { type ManagedSslMode, resolveManagedSslMode } from './ssl.ts'
-import { isManagedSqlAccessScope, type ManagedSqlAccessScope } from './access-scope.ts'
 import { organization, server } from '../../db/schema.ts'
 import { parseOrganizationOptions } from '../organizations/organization-options.ts'
 import { BadRequestError, parseName, requireStringField } from '../../lib/http/request-fields.ts'
@@ -26,8 +25,8 @@ import {
   principalNameSchemeOf,
   type PrincipalNameScheme,
 } from '../../lib/principal-name-scheme.ts'
-import { LOOPBACK_BIND, resolveManagedDialHost } from './access-address.ts'
-import { resolveManagedEffectiveExposure } from './host-exposure.ts'
+import { LOOPBACK_BIND, resolveManagedExternalDialHost } from './access-address.ts'
+import { loadManagedExternalAccess } from './external-access.ts'
 import type { ManagedContext } from './managed-context.ts'
 import { type ManagedRowOptions, parseManagedRowOptions } from './options.ts'
 import { evaluateManagedPromoteLagGate } from './promote-lag.ts'
@@ -36,36 +35,13 @@ import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import type { ManagedResidualMetadata } from './serialize.ts'
 
 export { evaluateManagedPromoteLagGate }
-export { type ManagedEffectiveExposure, resolveManagedEffectiveExposure } from './host-exposure.ts'
-import { forEachSequential } from '../../lib/sequential.ts'
 
 /** One reachable client endpoint on the shared ProxySQL frontend. */
 export type ManagedAccessEndpoint = {
-  scope: ManagedSqlAccessScope
+  /** `local`: from this server only (127.0.0.1). `external`: from outside the server. */
+  reach: 'local' | 'external'
   host: string
   port: number
-}
-
-/**
- * Scopes a client can actually dial, given what the frontend publishes.
- *
- * `public` publishes on all interfaces, so every narrower address is reachable
- * too and is worth showing an operator; a narrower scope publishes exactly one
- * address and must not imply the others exist.
- *
- * Input is the **host's** published scopes, not one cluster's request: the
- * shared ProxySQL publishes once for every cluster it fronts, so a cluster with
- * its own toggle off is genuinely dialable when a co-resident cluster is
- * exposed (see `./host-exposure.ts`). Reporting the cluster's own intent here
- * would tell an operator a reachable database is unreachable.
- */
-function dialScopesForPublishedScopes(
-  publishedScopes: readonly ManagedSqlAccessScope[]
-): ManagedSqlAccessScope[] {
-  const widest = publishedScopes[0]
-  if (widest === undefined) return []
-  if (widest !== 'public') return [...publishedScopes]
-  return ['public', 'turbofabric', 'datacenter', 'local']
 }
 
 /**
@@ -98,79 +74,61 @@ async function resolveListenerPortForServer(
   )
 }
 
-/**
- * Every endpoint this cluster is reachable at, widest scope first.
- *
- * Empty when **no** cluster on the host is exposed: nothing is published to the
- * host at all, and co-located consumers dial the ProxySQL container over the
- * organization's managed network (see `resolveBindingEndpoint`) rather than any
- * host address.
- *
- * Non-empty for an unexposed cluster that shares a host with an exposed one —
- * that listener really does front it. Callers that need to distinguish "this
- * cluster asked for it" from "a neighbour did" read
- * {@link resolveManagedEffectiveExposure}.
- */
-export async function resolveManagedAccessEndpoints(
-  db: Db,
-  params: Readonly<{
-    serverId: string
-    engineCode: string
-    engineDefaultPort: number
-    exposure: ManagedSettings['exposure']
-  }>
-): Promise<ManagedAccessEndpoint[]> {
-  const effective = await resolveManagedEffectiveExposure(db, {
-    serverId: params.serverId,
-    exposure: params.exposure,
-  })
-  const scopes = dialScopesForPublishedScopes(effective.scopes)
-  if (scopes.length === 0) return []
+type ManagedAccessParams = Readonly<{
+  serverId: string
+  engineCode: string
+  engineDefaultPort: number
+}>
 
+/**
+ * Every endpoint the server's shared ProxySQL listens on for this cluster,
+ * outside-the-server first.
+ *
+ * The loopback endpoint is always there: sites run by a site owner's Linux user
+ * dial it, and bound containers dial ProxySQL by name over the organization's
+ * managed network (see `resolveBindingEndpoint`). The external endpoint is there
+ * only while the server's "allow external access" setting is on
+ * (`./external-access.ts`) and the server has an address to give out. The
+ * setting belongs to the server, so every cluster on it reports the same thing.
+ */
+async function resolveManagedAccess(
+  db: Db,
+  params: ManagedAccessParams
+): Promise<{ externalAccess: boolean; endpoints: ManagedAccessEndpoint[] }> {
+  const { enabled: externalAccess } = await loadManagedExternalAccess(db, params.serverId)
   const port = await resolveListenerPortForServer(db, params)
   const endpoints: ManagedAccessEndpoint[] = []
-  const seenHosts = new Set<string>()
-  await forEachSequential(scopes, async (scope) => {
-    const host = await resolveManagedDialHost(db, {
-      serverId: params.serverId,
-      scope,
-    })
-    if (host === null || seenHosts.has(host)) return
-    seenHosts.add(host)
-    endpoints.push({ scope, host, port })
-  })
-  return endpoints
+  if (externalAccess) {
+    const host = await resolveManagedExternalDialHost(db, params.serverId)
+    if (host !== null) endpoints.push({ reach: 'external', host, port })
+  }
+  endpoints.push({ reach: 'local', host: LOOPBACK_BIND, port })
+  return { externalAccess, endpoints }
+}
+
+export async function resolveManagedAccessEndpoints(
+  db: Db,
+  params: ManagedAccessParams
+): Promise<ManagedAccessEndpoint[]> {
+  return (await resolveManagedAccess(db, params)).endpoints
 }
 
 /**
- * The single endpoint used for the primary DSN and the listener TLS SANs.
+ * The single endpoint used for the primary DSN and the listener TLS SANs: the
+ * outside-the-server one when allowed, else loopback.
  *
- * Widest scope wins so the advertised host is the one an operator outside the
- * host can actually reach. Clusters on a host that publishes nothing keep
- * reporting loopback: the DSN shape stays useful, and the connection surface
- * separately reports that no host endpoint is published.
- *
- * `null` means "asked to be exposed, but no address resolved" — a real
- * misconfiguration worth surfacing rather than papering over with loopback.
+ * `null` means "external access is on, but the server has no address to give
+ * out" — a real misconfiguration worth surfacing rather than papering over with
+ * loopback.
  */
 export async function resolveManagedConnectionListener(
   db: Db,
-  params: Readonly<{
-    serverId: string
-    engineCode: string
-    engineDefaultPort: number
-    exposure: ManagedSettings['exposure']
-  }>
+  params: ManagedAccessParams
 ): Promise<{ host: string; port: number } | null> {
-  const endpoints = await resolveManagedAccessEndpoints(db, params)
-  const primary = endpoints[0]
-  if (primary) return { host: primary.host, port: primary.port }
-  if (params.exposure.enabled) return null
-
-  return {
-    host: LOOPBACK_BIND,
-    port: await resolveListenerPortForServer(db, params),
-  }
+  const { externalAccess, endpoints } = await resolveManagedAccess(db, params)
+  const primary = endpoints[0]!
+  if (externalAccess && primary.reach !== 'external') return null
+  return { host: primary.host, port: primary.port }
 }
 
 /**
@@ -189,7 +147,6 @@ export function managedStatusListenerParams(
   serverId: string
   engineCode: string
   engineDefaultPort: number
-  exposure: ManagedSettings['exposure']
 } | null {
   if (!row?.serverId) return null
   if (!row.engine || !isManagedEngineCode(row.engine)) return null
@@ -201,7 +158,6 @@ export function managedStatusListenerParams(
     serverId: row.serverId,
     engineCode: spec.engine,
     engineDefaultPort: spec.defaultPort,
-    exposure: parsed.settings.exposure,
   }
 }
 
@@ -270,34 +226,8 @@ export function managedSessionPaths(): string[] {
     '/environments/:id/managed/members/:memberId/resync',
     '/environments/:id/managed/disaster-recovery/promote',
     '/organizations/:id/managed',
+    '/servers/:id/managed-external-access',
   ]
-}
-
-/**
- * Accept only `scope`. Retired `bind` and other keys reject the create.
- */
-function parseCreateExposureScope(
-  exposureRaw: Record<string, unknown>
-): ManagedSqlAccessScope | undefined | null {
-  if (exposureRaw.bind !== undefined) return null
-  if (exposureRaw.scope === undefined) return undefined
-  if (!isManagedSqlAccessScope(exposureRaw.scope)) return null
-  return exposureRaw.scope
-}
-
-function mergeCreateExposure(
-  base: ManagedSettings['exposure'],
-  exposureRaw: unknown
-): ManagedSettings['exposure'] | null | undefined {
-  if (!isPlainObject(exposureRaw)) return undefined
-  const scope = parseCreateExposureScope(exposureRaw)
-  if (scope === null) return null
-  const next = { ...base }
-  if (typeof exposureRaw.enabled === 'boolean') {
-    next.enabled = exposureRaw.enabled
-  }
-  if (scope !== undefined) next.scope = scope
-  return next
 }
 
 export function mergeCreateSettings(
@@ -305,7 +235,6 @@ export function mergeCreateSettings(
     defaultSettings: ManagedSettings
     parseSettings: (v: unknown) => ManagedSettings | null
   },
-  body: Record<string, unknown>,
   /** Resolved catalog image from {@link parseManagedVersionSelection}. */
   image?: string
 ): ManagedSettings | null {
@@ -314,10 +243,6 @@ export function mergeCreateSettings(
 
   const overrides: Record<string, unknown> = {}
   if (image !== undefined) overrides.image = image
-
-  const exposure = mergeCreateExposure(base.exposure, body.exposure)
-  if (exposure === null) return null
-  if (exposure !== undefined) overrides.exposure = exposure
 
   if (Object.keys(overrides).length === 0) return base
   return spec.parseSettings({ ...base, ...overrides })

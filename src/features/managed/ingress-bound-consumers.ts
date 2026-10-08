@@ -1,8 +1,8 @@
 /**
  * Which managed clusters a server's ProxySQL must front for **consumers**.
  *
- * Split out of {@link ./ingress-desired.ts} so the exposure/connection surface
- * ({@link ./host-exposure.ts}) can reuse the same fronting set without importing
+ * Split out of {@link ./ingress-desired.ts} so the external access/connection surface
+ * ({@link ./external-access.ts}) can reuse the same fronting set without importing
  * the reconcile builder — which imports the connection helpers in turn.
  */
 
