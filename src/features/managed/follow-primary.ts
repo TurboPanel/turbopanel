@@ -95,7 +95,7 @@ export type FollowPrimaryFailureRecord = {
 }
 
 export type FollowPrimaryFailureDeps = {
-  enqueue?: FollowPrimaryEnqueueDeps['enqueue']
+  enqueue?: NonNullable<FollowPrimaryEnqueueDeps['enqueue']>
   markReplicaNeedsResync?: (db: Db, memberId: string) => Promise<boolean>
 }
 
