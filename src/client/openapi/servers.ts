@@ -879,6 +879,161 @@ export const serverSchemas = {
       },
     },
   },
+  ServerServicesRemovalReason: {
+    type: 'object',
+    required: ['kind', 'count', 'message'],
+    properties: {
+      kind: {
+        type: 'string',
+        enum: ['network', 'container', 'ip', 'colocated', 'managed', 'backup'],
+      },
+      count: { type: 'integer', minimum: 1 },
+      message: {
+        type: 'string',
+        description:
+          'Plain-language reason this server cannot be removed. Kinds `network`, `container`, and `ip` reuse `listServerDeleteBlockers`; `colocated` is the same co-located-host rule DELETE uses.',
+      },
+    },
+  },
+  ServerServicesResponse: {
+    type: 'object',
+    required: [
+      'serverId',
+      'removal',
+      'apps',
+      'databases',
+      'databaseUsers',
+      'backups',
+      'networks',
+      'ipCount',
+      'hostServices',
+      'runtimes',
+    ],
+    properties: {
+      serverId: { type: 'string', format: 'uuid' },
+      removal: {
+        type: 'object',
+        required: ['canRemove', 'reasons'],
+        properties: {
+          canRemove: { type: 'boolean' },
+          reasons: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/ServerServicesRemovalReason' },
+          },
+        },
+      },
+      apps: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['serviceId', 'name', 'project', 'environment', 'containers', 'domains'],
+          properties: {
+            serviceId: { type: 'string', format: 'uuid' },
+            name: { type: 'string' },
+            project: { type: 'string' },
+            environment: { type: 'string' },
+            containers: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['name', 'status', 'role'],
+                properties: {
+                  name: { type: 'string' },
+                  status: { type: 'string' },
+                  role: { type: 'string' },
+                },
+              },
+            },
+            domains: { type: 'array', items: { type: 'string' } },
+          },
+        },
+      },
+      databases: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['managedId', 'name', 'engine', 'role', 'status', 'readEligible', 'ordinal'],
+          properties: {
+            managedId: { type: 'string', format: 'uuid' },
+            name: { type: 'string' },
+            engine: { type: 'string' },
+            role: { type: 'string', enum: ['primary', 'replica'] },
+            status: { type: 'string' },
+            readEligible: { type: 'boolean' },
+            ordinal: { type: 'integer' },
+          },
+        },
+      },
+      databaseUsers: {
+        type: 'array',
+        description:
+          'Apps on this host that are bound to a managed database (they reach it through this host).',
+        items: {
+          type: 'object',
+          required: ['serviceId', 'serviceName', 'databaseName', 'databaseServiceName'],
+          properties: {
+            serviceId: { type: 'string', format: 'uuid' },
+            serviceName: { type: 'string' },
+            databaseName: { type: 'string' },
+            databaseServiceName: { type: 'string' },
+          },
+        },
+      },
+      backups: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['managedId', 'managedName', 'count', 'latestAt'],
+          properties: {
+            managedId: { type: 'string', format: 'uuid' },
+            managedName: { type: 'string' },
+            count: { type: 'integer', minimum: 0 },
+            latestAt: { type: 'string', format: 'date-time' },
+          },
+        },
+      },
+      networks: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['id', 'name', 'kind'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            name: { type: 'string' },
+            kind: { type: 'string' },
+          },
+        },
+      },
+      ipCount: { type: 'integer', minimum: 0 },
+      hostServices: {
+        type: 'array',
+        description:
+          'Host services already stored on the server (daemon facts). Empty when none are stored.',
+        items: {
+          type: 'object',
+          required: ['key', 'label', 'state'],
+          properties: {
+            key: { type: 'string' },
+            label: { type: 'string' },
+            state: { type: 'string', enum: ['up', 'down', 'unknown'] },
+          },
+        },
+      },
+      runtimes: {
+        type: 'array',
+        description:
+          'Installed runtimes from stored daemon facts (`server.metadata.runtimes`). Empty when none are stored.',
+        items: {
+          type: 'object',
+          required: ['kind', 'versions'],
+          properties: {
+            kind: { type: 'string' },
+            versions: { type: 'array', items: { type: 'string' } },
+          },
+        },
+      },
+    },
+  },
 }
 
 export const serverPaths: Record<string, unknown> = {
@@ -1731,6 +1886,81 @@ export const serverPaths: Record<string, unknown> = {
         },
         '404': {
           description: 'Server not found',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/services': {
+    get: {
+      tags: ['Servers'],
+      summary: 'List what is attached to a server',
+      description:
+        "Read-gated, organization-scoped snapshot of apps, databases, bindings, backups, networks, and stored host facts for one server. Removal reasons reuse `listServerDeleteBlockers` plus the co-located-host rule so this view and DELETE cannot disagree. Another organization's server is 404.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Attached services snapshot',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerServicesResponse' },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Server not found in this organization',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
           content: {
             'application/json': {
               schema: {

@@ -21,10 +21,25 @@ test('ServerDeleteBlockersConflict kind enum includes network and container', ()
       }
     }
   }
-  assertEquals(
-    schema.properties.blockers.items.properties.kind.enum,
-    ['network', 'container'],
-  )
+  assertEquals(schema.properties.blockers.items.properties.kind.enum, ['network', 'container'])
+})
+
+test('ServerServicesResponse documents the attached-services snapshot', () => {
+  const schema = serverSchemas.ServerServicesResponse as {
+    required: string[]
+  }
+  assertEquals(schema.required, [
+    'serverId',
+    'removal',
+    'apps',
+    'databases',
+    'databaseUsers',
+    'backups',
+    'networks',
+    'ipCount',
+    'hostServices',
+    'runtimes',
+  ])
 })
 
 test('ServerRow documents tierPlacement against ServerTierPlacement', () => {
@@ -36,16 +51,11 @@ test('ServerRow documents tierPlacement against ServerTierPlacement', () => {
   const placement = serverSchemas.ServerTierPlacement as {
     required: string[]
   }
-  assertEquals(placement.required, [
-    'licenseTier',
-    'requiredTier',
-    'recommendedTier',
-    'unwatched',
-  ])
+  assertEquals(placement.required, ['licenseTier', 'requiredTier', 'recommendedTier', 'unwatched'])
   assertEquals(
     row.properties.tierPlacement.oneOf.some(
-      (entry) => entry.$ref === '#/components/schemas/ServerTierPlacement',
+      (entry) => entry.$ref === '#/components/schemas/ServerTierPlacement'
     ),
-    true,
+    true
   )
 })

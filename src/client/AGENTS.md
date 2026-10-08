@@ -89,6 +89,16 @@ changes.
   defaults does **not** rewrite sshd or enqueue NTP/timezone commands. Multi-DC
   membership inherits from the first pin after sort by datacenter id (same as
   timezone).
+- **Server services snapshot (client surface):** `GET /servers/:id/services`
+  — read-gated, org-scoped (`404` for another organization's server). One
+  response of what is attached: `removal` (`canRemove` plus `reasons` from
+  `listServerDeleteBlockers` and the co-located-host rule, so the tab and
+  DELETE cannot disagree), `apps` (container → service → environment →
+  project, domains from hosting/hostname), `databases` (replica + managed),
+  `databaseUsers` (binding rows for apps on this host), `backups`,
+  `networks` / `ipCount`, and `hostServices` / `runtimes` only from daemon
+  facts already stored on the server (`server.metadata.runtimes`; otherwise
+  empty). No per-item fan-out. `src/client/servers/server-services.ts`.
 - **Server labels (client surface):** `GET`/`PUT /servers/:id/labels` —
   read-gated GET and manage-gated PUT; PUT is replace-all
   (`{ labels: { key: value } }`, no per-key DELETE). `GET /servers/:id` includes

@@ -96,6 +96,7 @@ import { registerServerCommandRoutes } from './commands-routes.ts'
 import { registerServerMetricsRoutes } from './metrics-routes.ts'
 import { registerServerTrafficMapRoutes } from './traffic-map-routes.ts'
 import { registerServerLabelRoutes } from './labels-routes.ts'
+import { registerServerServicesRoutes } from './services-routes.ts'
 import { resolveOrgRequest } from '../org-request.ts'
 import { cachedServersListReadModel } from '../../query-cache/read-models/servers-list.ts'
 import { applyLocationPatch, resolveLocation } from '../../features/geo/location-override.ts'
@@ -1596,4 +1597,5 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   registerServerMetricsRoutes(router, opts)
   registerServerTrafficMapRoutes(router, opts)
   registerServerLabelRoutes(router, opts)
+  registerServerServicesRoutes(router, opts)
 }
