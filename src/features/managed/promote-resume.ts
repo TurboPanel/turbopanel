@@ -51,14 +51,17 @@ export function promoteResumeRequeueRefusal(
   members: readonly ManagedMemberRow[],
   inflight: RecoveryRecord | null
 ): 'recovery_mismatch' | 'target_mismatch' | 'stray_primary' | null {
-  if (!inflight || inflight.id !== record.id) return 'recovery_mismatch'
+  if (inflight?.id !== record.id) return 'recovery_mismatch'
   if (inflight.targetMemberId !== record.targetMemberId) return 'target_mismatch'
   const sourceId = record.sourcePrimaryMemberId
   const targetId = record.targetMemberId
-  const strayPrimary = members.find(
-    (row) => row.role === 'primary' && row.id !== sourceId && row.id !== targetId
-  )
-  if (strayPrimary) return 'stray_primary'
+  if (
+    members.some(
+      (row) => row.role === 'primary' && row.id !== sourceId && row.id !== targetId
+    )
+  ) {
+    return 'stray_primary'
+  }
   return null
 }
 
