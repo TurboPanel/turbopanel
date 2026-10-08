@@ -3,102 +3,94 @@
  * primary's final GTID position before it is promoted.
  */
 
-import type { ManagedEngineCode } from "./types.ts";
-import type { RecoveryMetadata } from "./recovery.ts";
+import type { ManagedEngineCode } from './types.ts'
+import type { RecoveryMetadata } from './recovery.ts'
 import type {
   ManagedLifecycleCommandResult,
   ManagedPromoteCommandPayload,
-} from "../../contracts/commands/schemas.ts";
+} from '../../contracts/commands/schemas.ts'
 
-export const SWITCHOVER_GTID_WAIT_SECONDS = 120;
+export const SWITCHOVER_GTID_WAIT_SECONDS = 120
 
-const MYSQL_FAMILY: ReadonlySet<ManagedEngineCode> = new Set([
-  "mysql",
-  "mariadb",
-]);
+const MYSQL_FAMILY: ReadonlySet<ManagedEngineCode> = new Set(['mysql', 'mariadb'])
 
-export function engineNeedsSwitchoverGtidProof(
-  engine: ManagedEngineCode,
-): boolean {
-  return MYSQL_FAMILY.has(engine);
+export function engineNeedsSwitchoverGtidProof(engine: ManagedEngineCode): boolean {
+  return MYSQL_FAMILY.has(engine)
 }
 
-export function fenceStopCapturesSwitchoverGtid(
-  kind: string,
-  engine: ManagedEngineCode,
-): boolean {
-  return kind === "switchover" && engineNeedsSwitchoverGtidProof(engine);
+export function fenceStopCapturesSwitchoverGtid(kind: string, engine: ManagedEngineCode): boolean {
+  return kind === 'switchover' && engineNeedsSwitchoverGtidProof(engine)
 }
 
 export function switchoverGtidFromFenceStopResult(
-  result: ManagedLifecycleCommandResult,
+  result: ManagedLifecycleCommandResult
 ): string | null {
-  const gtid = result.switchoverPrimaryExecutedGtidSet;
-  if (typeof gtid !== "string" || gtid.length === 0 || gtid.length > 4096) {
-    return null;
+  const gtid = result.switchoverPrimaryExecutedGtidSet
+  if (typeof gtid !== 'string' || gtid.length === 0 || gtid.length > 4096) {
+    return null
   }
-  return gtid;
+  return gtid
 }
 
 export function recordSwitchoverRequiredGtid(
   metadata: RecoveryMetadata,
-  gtidSet: string,
+  gtidSet: string
 ): RecoveryMetadata {
   return {
     ...metadata,
     switchoverRequiredGtidSet: gtidSet,
-  };
+  }
 }
 
 function attachSwitchoverGtidToPayload<
   T extends {
-    requiredExecutedGtidSet?: string;
-    gtidWaitTimeoutSeconds?: number;
+    requiredExecutedGtidSet?: string
+    gtidWaitTimeoutSeconds?: number
   },
 >(payload: T, metadata: RecoveryMetadata): T {
-  const gtid = metadata.switchoverRequiredGtidSet;
-  if (!gtid) return payload;
+  const gtid = metadata.switchoverRequiredGtidSet
+  if (!gtid) return payload
   return {
     ...payload,
     requiredExecutedGtidSet: gtid,
     gtidWaitTimeoutSeconds: SWITCHOVER_GTID_WAIT_SECONDS,
-  };
+  }
 }
 
 export function promotePayloadWithSwitchoverCatchup(
   payload: ManagedPromoteCommandPayload,
-  metadata: RecoveryMetadata,
+  metadata: RecoveryMetadata
 ): ManagedPromoteCommandPayload {
-  return attachSwitchoverGtidToPayload(payload, metadata);
+  return attachSwitchoverGtidToPayload(payload, metadata)
 }
 
 export function failoverRecoverPayloadWithSwitchoverCatchup<
   T extends {
-    requiredExecutedGtidSet?: string;
-    gtidWaitTimeoutSeconds?: number;
+    requiredExecutedGtidSet?: string
+    gtidWaitTimeoutSeconds?: number
   },
 >(payload: T, metadata: RecoveryMetadata): T {
-  return attachSwitchoverGtidToPayload(payload, metadata);
+  return attachSwitchoverGtidToPayload(payload, metadata)
 }
 
 export function switchoverAbortReactivateLifecyclePayload(params: {
-  managedId: string;
-  memberId: string;
-  engine: ManagedEngineCode;
+  managedId: string
+  memberId: string
+  engine: ManagedEngineCode
 }): {
-  managedId: string;
-  action: "start";
-  memberId: string;
-  engine: ManagedEngineCode;
-  role: "primary";
-  reactivateAfterSwitchoverAbort: true;
+  managedId: string
+  action: 'start'
+  memberId: string
+  engine: ManagedEngineCode
+  role: 'primary'
+  reactivateAfterSwitchoverAbort: true
 } {
   return {
     managedId: params.managedId,
-    action: "start",
+    action: 'start',
     memberId: params.memberId,
     engine: params.engine,
-    role: "primary",
+    role: 'primary',
     reactivateAfterSwitchoverAbort: true,
-  };
+  }
 }

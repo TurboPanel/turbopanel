@@ -278,7 +278,11 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   setIfPresent(metadata, 'stale', optionalBoolean(value.stale))
   setIfPresent(metadata, 'needsOperator', optionalBoolean(value.needsOperator))
   setIfPresent(metadata, 'failedReason', optionalString(value.failedReason))
-  setIfPresent(metadata, 'switchoverRequiredGtidSet', optionalString(value.switchoverRequiredGtidSet))
+  setIfPresent(
+    metadata,
+    'switchoverRequiredGtidSet',
+    optionalString(value.switchoverRequiredGtidSet)
+  )
   return metadata
 }
 
