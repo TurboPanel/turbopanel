@@ -1349,7 +1349,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Daemon-projected host facts jsonb: `resources`, `geo`, `docker`, `runtimes`, `cell` plus the operator `hardwareProfile`; hostname, OS and NTP have own columns.',
       options:
-        'Operator config served by GET /servers: `timezone`, `sshPort`, `ntp`, `hosting`, `cellLocationHint`, `cellGeneration`, `metricsCapabilityPlan`, `phpModes`, `managedExternalAccess` (allow external access to the databases on this server; default no).',
+        'Operator config served by GET /servers: `timezone`, `sshPort`, `ntp`, `hosting`, `cellLocationHint`, `cellGeneration`, `metricsCapabilityPlan`, `phpModes`.',
       organization_id:
         'Owning organization, nullable; ON DELETE RESTRICT so an organization that still has server rows cannot be deleted.',
       name: 'Optional operator-chosen display name, set when the registration key is minted or via PATCH; the UI falls back to `hostname` when null.',
