@@ -207,9 +207,8 @@ const PRINCIPAL_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
  *
  * The `tp*` entries here are documentation of the accounts that exist today —
  * the actual guard is the `tp` **prefix** rule in
- * {@link isReservedPrincipalUsername}. Enumerating them could never keep up:
- * this list already missed `tpnodeapp`, and every runtime-entitlement group
- * (`tpphp84`, `tpnode24`, …) would have to be added by hand.
+ * {@link isReservedPrincipalUsername}. Enumerating them could never keep up
+ * with every `tp*` service account and group a host carries.
  */
 export const RESERVED_PRINCIPAL_USERNAMES: ReadonlySet<string> = new Set([
   'root',

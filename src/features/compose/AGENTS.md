@@ -825,9 +825,6 @@ around it:
   `engines.node` / `.nvmrc` lookup, no Node view in the preview, no Node series
   on its release row. Its series is the pin or the default; reading it from the
   repository (`deno.json`) is deferred.
-- **Runtime grant.** `merge-deploy-principal-runtimes.ts` grants the owner's
-  Linux user `deno@<series>` (`tpdeno<series>` on the host) instead of
-  `node@<series>`.
 - **Preview.** `nativeAppDenoVersions` lists each Deno app once: its series and
   whether it came from the compose pin or the default.
 

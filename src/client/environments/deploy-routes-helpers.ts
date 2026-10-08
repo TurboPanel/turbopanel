@@ -631,16 +631,6 @@ function tryMapDenoPrepareError(prepared: DeployPrepareError): PrepareErrorRespo
       },
     }
   }
-  if (prepared.kind === 'deno_migration_pending') {
-    return {
-      status: 422,
-      body: {
-        error: 'deno_migration_pending',
-        message:
-          "This TurboPanel instance's database has not been updated to run Deno apps yet. Ask the instance owner to apply the pending database migration, then deploy again.",
-      },
-    }
-  }
   if (prepared.kind !== 'deno_version_unsupported') return null
   return {
     status: 422,

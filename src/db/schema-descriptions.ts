@@ -367,19 +367,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Free `SX` units the self-hosted runtime grants to match its active licenses; always at least 1 because writing zero deletes the row instead.',
     },
   },
-  entitlement: {
-    group: 'billing',
-    summary:
-      'Which runtime series a principal may execute on its host: one row per principal, runtime and series, realised by the daemon as a unix group membership.',
-    columns: {
-      runtime:
-        'Runtime family the grant covers, `php`, `node` or `deno` (CHECK `entitlement_runtime_check`).',
-      series:
-        'Exec boundary series such as `8.4` or `24` (digits with an optional dotted minor, CHECKed), never a patch pin; realised as group `tpphp84` or `tpnode24`.',
-      granted_by:
-        '`operator` for an explicit grant via the principal routes, `deploy` for a row deploy-prepare inserted because a service declared the runtime; both revocable.',
-    },
-  },
   license: {
     group: 'billing',
     summary:
