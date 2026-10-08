@@ -79,8 +79,13 @@ import { reconcileFabricMembership } from '../../features/fabric/enqueue.ts'
 import {
   COLOCATED_SERVER_KEY_REVOKE_BLOCKED_REASON,
   colocatedServerDeleteBlockedReason,
+  forgetServerOwnedResources,
   listServerDeleteBlockers,
+  loadServerDeletePreview,
+  parseForgetResourcesFlag,
   serverDeleteBlockersResponse,
+  serverOnlineForgetBlockedResponse,
+  type ForgottenServerResources,
 } from './delete-guards.ts'
 import { resolveColocatedServerId } from '../authn/install-state.ts'
 import { hasActiveColocatedLicenseBinding, resolveColocatedServerIdSet } from './colocated.ts'
@@ -385,7 +390,8 @@ async function assertServerDeletable(
   db: Db,
   registry: DaemonCellRegistry | undefined,
   serverId: string,
-  organizationId: string
+  organizationId: string,
+  opts: Readonly<{ skipBlockers?: boolean; refuseIfOnline?: boolean; isConnected?: boolean }> = {}
 ): Promise<Response | null> {
   const colocated = await assertServerNotColocatedOr403(
     c,
@@ -396,6 +402,12 @@ async function assertServerDeletable(
     colocatedServerDeleteBlockedReason()
   )
   if (colocated) return colocated
+
+  if (opts.refuseIfOnline && opts.isConnected) {
+    return serverOnlineForgetBlockedResponse(c)
+  }
+
+  if (opts.skipBlockers) return null
 
   const blockers = await listServerDeleteBlockers(db, serverId, organizationId)
   if (blockers.length > 0) {
@@ -673,18 +685,24 @@ async function assertSystemEnvironmentIdleOrBlocked(
   return { systemEnvironmentId }
 }
 
-function deleteServerWithSystemSubtree(
+async function deleteServerWithSystemSubtree(
   db: Db,
   serverId: string,
-  systemEnvironmentId: string | null
-): Promise<'ok' | 'has_children'> {
-  return runHierarchyDelete(db, async (tx) => {
+  systemEnvironmentId: string | null,
+  forgetResources: boolean
+): Promise<{ status: 'ok' | 'has_children'; forgotten: ForgottenServerResources | null }> {
+  let forgotten: ForgottenServerResources | null = null
+  const status = await runHierarchyDelete(db, async (tx) => {
+    if (forgetResources) {
+      forgotten = await forgetServerOwnedResources(tx, serverId)
+    }
     if (systemEnvironmentId) {
       await systemHierarchy.deleteSystemEnvironmentSubtree(tx, systemEnvironmentId)
     }
     await deleteServerFabricMembership(tx, serverId)
     await tx.delete(server).where(eq(server.id, serverId))
   })
+  return { status, forgotten: status === 'ok' ? forgotten : null }
 }
 
 async function reconcileFabricAfterServerDelete(
@@ -1067,6 +1085,37 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     entry = batchStatusCoalesce.get(coalesceKey)!
     const result = entry.result ?? (await entry.promise!)
     return c.json(result, 200, { 'Cache-Control': STATUS_CACHE_CONTROL })
+  })
+
+  router.get('/servers/:id/delete-preview', async (c) => {
+    const scope = await resolveOrgRequest(c)
+    if (scope instanceof Response) return scope
+    const { db, organizationId } = scope
+    const id = c.req.param('id')
+
+    const [row] = await db
+      .select({ id: server.id, isConnected: server.isConnected })
+      .from(server)
+      .where(and(eq(server.id, id), eq(server.organizationId, organizationId)))
+      .limit(1)
+    if (!row) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    const denied = await assertCanManageOr403(c, 'server', id)
+    if (denied) return denied
+
+    const registry = getDaemonCellRegistry(c)
+    const colocatedIds = await resolveColocatedServerIdSet(db, registry, [id], {
+      includeSelfHostPin: true,
+    })
+    const colocated =
+      colocatedIds.has(id) || (await hasActiveColocatedLicenseBinding(db, organizationId, id))
+    const preview = await loadServerDeletePreview(db, id, organizationId, {
+      online: row.isConnected,
+      colocated,
+    })
+    return c.json(preview)
   })
 
   router.get('/servers/:id/status', async (c) => {
@@ -1515,7 +1564,12 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const id = c.req.param('id')
 
     const [row] = await db
-      .select({ id: server.id, name: server.name, hostname: server.hostname })
+      .select({
+        id: server.id,
+        name: server.name,
+        hostname: server.hostname,
+        isConnected: server.isConnected,
+      })
       .from(server)
       .where(and(eq(server.id, id), eq(server.organizationId, organizationId)))
       .limit(1)
@@ -1529,10 +1583,18 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const stepUp = await requireStepUpIfConfigured(c, organizationId, 'server.delete')
     if (stepUp) return stepUp
 
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    const forgetResources = parseForgetResourcesFlag(c.req.query('forgetResources'), body)
+
     // Co-located guard before the registry 503 so an unavailable registry can
     // never turn a self-host-pinned (or probe-matched) host into a deletable one.
     const registry = getDaemonCellRegistry(c)
-    const blocked = await assertServerDeletable(c, db, registry, id, organizationId)
+    const blocked = await assertServerDeletable(c, db, registry, id, organizationId, {
+      skipBlockers: forgetResources,
+      refuseIfOnline: forgetResources,
+      isConnected: row.isConnected,
+    })
     if (blocked) return blocked
 
     if (!registry) {
@@ -1548,8 +1610,13 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const idleOrBlocked = await assertSystemEnvironmentIdleOrBlocked(c, db, id)
     if (idleOrBlocked instanceof Response) return idleOrBlocked
 
-    const result = await deleteServerWithSystemSubtree(db, id, idleOrBlocked.systemEnvironmentId)
-    if (result === 'has_children') {
+    const result = await deleteServerWithSystemSubtree(
+      db,
+      id,
+      idleOrBlocked.systemEnvironmentId,
+      forgetResources
+    )
+    if (result.status === 'has_children') {
       return hierarchyDeleteHasChildrenResponse(c)
     }
 
@@ -1584,7 +1651,10 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         action: 'server.delete',
         targetType: 'server',
         targetId: id,
-        context: { purged: purgeError === null },
+        context: {
+          purged: purgeError === null,
+          ...(result.forgotten ? { forgotten: result.forgotten } : {}),
+        },
       },
       { serverName: row.name ?? row.hostname ?? id }
     )

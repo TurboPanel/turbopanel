@@ -89,6 +89,17 @@ changes.
   defaults does **not** rewrite sshd or enqueue NTP/timezone commands. Multi-DC
   membership inherits from the first pin after sort by datacenter id (same as
   timezone).
+- **Forget an offline server (client surface):** `GET /servers/:id/delete-preview`
+  (manage-gated, same as delete) lists leftover containers, networks, and
+  addresses that would 409 a normal delete (`online` is the stored connected
+  flag; `canForget` only when offline and not the co-located control plane
+  host; each list capped at 50 plus `more`; system-workspace containers omitted
+  like the blocker scan). `DELETE /servers/:id?forgetResources=true` (or JSON
+  `{ forgetResources: true }` — never implied) drops those leftover rows in the
+  same transaction as the server row when the host is gone; a connected server
+  answers **409** `server_online`; co-located stays **403**. Without the flag,
+  **409** `server_has_blockers` is unchanged. Audit context `forgotten` counts
+  when the flag was used. `src/client/servers/AGENTS.md`.
 - **Server labels (client surface):** `GET`/`PUT /servers/:id/labels` —
   read-gated GET and manage-gated PUT; PUT is replace-all
   (`{ labels: { key: value } }`, no per-key DELETE). `GET /servers/:id` includes
