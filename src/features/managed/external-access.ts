@@ -86,23 +86,45 @@ async function writeManagedExternalAccess(
     .where(eq(server.id, serverId))
 }
 
-/** Save the setting and remember that the server has been asked to listen this way. */
+/**
+ * Save the setting and remember that the server has been asked to listen this
+ * way. Returns the `pendingSince` mark it wrote.
+ */
 export async function saveManagedExternalAccess(
   db: Db,
   serverId: string,
   enabled: boolean
-): Promise<void> {
-  await writeManagedExternalAccess(db, serverId, {
-    enabled,
-    pendingSince: new Date().toISOString(),
-  })
+): Promise<string> {
+  const pendingSince = new Date().toISOString()
+  await writeManagedExternalAccess(db, serverId, { enabled, pendingSince })
+  return pendingSince
 }
 
-/** Forget the "asked, not confirmed" mark (the server has nothing to reconcile). */
-export async function clearManagedExternalAccessPending(db: Db, serverId: string): Promise<void> {
-  const current = await loadManagedExternalAccess(db, serverId)
-  if (current.pendingSince === undefined) return
-  await writeManagedExternalAccess(db, serverId, { enabled: current.enabled })
+/**
+ * Forget the "asked, not confirmed" mark if it was set at or before `through`.
+ *
+ * One conditional UPDATE that removes only `pendingSince` and never writes
+ * `enabled`: a PUT that lands between a read and this write can neither be
+ * reverted nor lose its own (newer) mark.
+ */
+export async function clearManagedExternalAccessPendingThrough(
+  db: Db,
+  serverId: string,
+  through: string
+): Promise<void> {
+  const setting = sql`${server.options} -> ${MANAGED_EXTERNAL_ACCESS_KEY}`
+  await db
+    .update(server)
+    .set({
+      options: sql`jsonb_set(${server.options}, ARRAY[${MANAGED_EXTERNAL_ACCESS_KEY}]::text[], (${setting}) - 'pendingSince')`,
+    })
+    .where(
+      and(
+        eq(server.id, serverId),
+        sql`(${setting} ->> 'pendingSince') IS NOT NULL`,
+        sql`((${setting} ->> 'pendingSince')::timestamptz) <= ${through}::timestamptz`
+      )
+    )
 }
 
 /**
@@ -113,10 +135,7 @@ export async function confirmManagedExternalAccessForServer(
   db: Db,
   params: Readonly<{ serverId: string; commandCreatedAt: string }>
 ): Promise<void> {
-  const current = await loadManagedExternalAccess(db, params.serverId)
-  if (current.pendingSince === undefined) return
-  if (Date.parse(current.pendingSince) > Date.parse(params.commandCreatedAt)) return
-  await writeManagedExternalAccess(db, params.serverId, { enabled: current.enabled })
+  await clearManagedExternalAccessPendingThrough(db, params.serverId, params.commandCreatedAt)
 }
 
 /** Every managed cluster the server's ProxySQL fronts: members placed there plus bound clusters. */
@@ -274,7 +293,10 @@ export async function runManagedExternalAccessPendingSweep(
   params: Readonly<{ secretsConfig: SecretsConfig; dataEncryptionSecrets: DerivedSecretsConfig }>
 ): Promise<{ enqueued: number }> {
   const connected = await db
-    .select({ id: server.id })
+    .select({
+      id: server.id,
+      pendingSince: sql<string>`${server.options} -> ${MANAGED_EXTERNAL_ACCESS_KEY} ->> 'pendingSince'`,
+    })
     .from(server)
     .where(
       and(
@@ -303,7 +325,7 @@ export async function runManagedExternalAccessPendingSweep(
   let enqueued = 0
   await forEachSequential(
     connected.filter((row) => !busy.has(row.id)),
-    async ({ id }) => {
+    async ({ id, pendingSince }) => {
       const result = await enqueueManagedIngressReconcile(db, commandQueue, {
         serverId: id,
         actorType: 'system',
@@ -312,7 +334,9 @@ export async function runManagedExternalAccessPendingSweep(
         dataEncryptionSecrets: params.dataEncryptionSecrets,
       })
       if (result.ok) enqueued += 1
-      else if (result.reason === 'not_needed') await clearManagedExternalAccessPending(db, id)
+      else if (result.reason === 'not_needed') {
+        await clearManagedExternalAccessPendingThrough(db, id, pendingSince)
+      }
     }
   )
   return { enqueued }

@@ -1,5 +1,7 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertMatch } from '@std/assert'
+import { loadFirewallFacts } from '../../features/firewall/facts.ts'
+import { listAuditForOrganization } from '../../features/audit/audit-records.ts'
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -15,6 +17,8 @@ import {
 import { attachDaemonStateToServer } from '../../features/servers/server-identity-db.ts'
 import {
   confirmManagedExternalAccessForServer,
+  loadManagedExternalAccess,
+  saveManagedExternalAccess,
   runManagedExternalAccessPendingSweep,
 } from '../../features/managed/external-access.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
@@ -2903,6 +2907,16 @@ test('a new cluster listens on loopback only, and the server external access swi
       )
       assertEquals(await latestIngressReconcileBindAddresses(db, serverId), ['0.0.0.0'])
 
+      // The firewall preview lists the listener only while the answer is yes.
+      const proxysqlRules = async () =>
+        (await loadFirewallFacts(db, serverId))?.input.exposures.filter(
+          (exposure) => exposure.source === 'proxysql'
+        ) ?? []
+      assertEquals(
+        (await proxysqlRules()).map((exposure) => [exposure.ports, exposure.reach]),
+        [['15432', 'public']]
+      )
+
       // The cluster detail reports the server's setting, not a per-cluster one.
       const detail = await app.request(`/environments/${environmentId}/managed`, { headers })
       const detailBody = (await detail.json()) as {
@@ -2925,6 +2939,7 @@ test('a new cluster listens on loopback only, and the server external access swi
       const toNo = await setExternalAccess(false)
       assertEquals(toNo.status, 200)
       assertEquals(await latestIngressReconcileBindAddresses(db, serverId), ['127.0.0.1'])
+      assertEquals(await proxysqlRules(), [])
 
       // The server confirms a reconcile created after the change: nothing is pending.
       await confirmManagedExternalAccessForServer(db, {
@@ -3054,6 +3069,109 @@ test('POST managed user without privileges gets the default for its role; an emp
       assertEquals(emptyBody.message.includes('owner, read-write, read-only'), true)
     }
   )
+})
+
+test('the external access switch is forbidden without a manage grant and changes nothing', async () => {
+  await withManagedFixtures(
+    { withManageGrant: false },
+    async ({ db, app, secrets, commandQueue, userId, organizationId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const count = commandQueue.envelopes.length
+      const get = await app.request(`/servers/${serverId}/managed-external-access`, { headers })
+      assertEquals(get.status, 403)
+      const put = await app.request(`/servers/${serverId}/managed-external-access`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ enabled: true }),
+      })
+      assertEquals(put.status, 403)
+      assertEquals(commandQueue.envelopes.length, count)
+      const [row] = await db
+        .select({ options: server.options })
+        .from(server)
+        .where(eq(server.id, serverId))
+      assertEquals(row?.options, null)
+    }
+  )
+})
+
+test('a real server of another organization is 404 for the external access switch', async () => {
+  await withManagedFixtures(
+    { foreignServer: true },
+    async ({ db, app, secrets, commandQueue, userId, organizationId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const count = commandQueue.envelopes.length
+      const get = await app.request(`/servers/${serverId}/managed-external-access`, { headers })
+      assertEquals(get.status, 404)
+      const put = await app.request(`/servers/${serverId}/managed-external-access`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ enabled: true }),
+      })
+      assertEquals(put.status, 404)
+      assertEquals(commandQueue.envelopes.length, count)
+      const [row] = await db
+        .select({ options: server.options })
+        .from(server)
+        .where(eq(server.id, serverId))
+      assertEquals(row?.options, null)
+    }
+  )
+})
+
+test('saving the external access switch is audited with the new value only', async () => {
+  await withManagedFixtures({}, async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+    const put = await app.request(`/servers/${serverId}/managed-external-access`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ enabled: true }),
+    })
+    assertEquals(put.status, 200)
+    const entries = await listAuditForOrganization(db, { organizationId })
+    const entry = entries.find((row) => row.action === 'server.managed_external_access.update')
+    assertEquals(entry?.targetId, serverId)
+    assertEquals(entry?.context, { enabled: true })
+  })
+})
+
+test('a confirmation of an older ask never reverts or clears a newer one', async () => {
+  await withManagedFixtures({}, async ({ db, serverId }) => {
+    const read = async () =>
+      (await loadManagedExternalAccess(db, serverId)) as { enabled: boolean; pendingSince?: string }
+    const first = await saveManagedExternalAccess(db, serverId, true)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    const second = await saveManagedExternalAccess(db, serverId, false)
+    assertEquals(second > first, true)
+
+    // The server confirms the command built for the first ask: the newer ask
+    // (No) stays, with its own pending mark.
+    await confirmManagedExternalAccessForServer(db, { serverId, commandCreatedAt: first })
+    assertEquals(await read(), { enabled: false, pendingSince: second })
+
+    // A confirmation made after the newer ask clears the mark and keeps the value.
+    await confirmManagedExternalAccessForServer(db, { serverId, commandCreatedAt: second })
+    assertEquals(await read(), { enabled: false })
+
+    // Confirming again, or with nothing pending, changes nothing.
+    await confirmManagedExternalAccessForServer(db, { serverId, commandCreatedAt: second })
+    assertEquals(await read(), { enabled: false })
+  })
 })
 
 test('a failed external access push answers 502, stays marked as pending, shows on the detail, and a confirmation clears it', async () => {

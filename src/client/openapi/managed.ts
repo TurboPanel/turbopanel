@@ -267,6 +267,31 @@ export const managedSchemas = {
       settings: { $ref: '#/components/schemas/ManagedSettings' },
     },
   },
+  ServerManagedExternalAccessSaved: {
+    type: 'object',
+    required: ['ok', 'enabled', 'pending', 'clusterCount'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      enabled: { type: 'boolean' },
+      pending: {
+        type: 'boolean',
+        description: 'The server was told and has not confirmed yet. Retried automatically.',
+      },
+      clusterCount: { type: 'integer' },
+    },
+  },
+  ServerManagedExternalAccessPushFailed: {
+    type: 'object',
+    required: ['error', 'message', 'enabled', 'pending', 'clusterCount'],
+    description: 'The setting is saved; the server has not been told yet.',
+    properties: {
+      error: { type: 'string', const: 'ingress_reconcile_failed' },
+      message: { type: 'string' },
+      enabled: { type: 'boolean' },
+      pending: { type: 'boolean', const: true },
+      clusterCount: { type: 'integer' },
+    },
+  },
   ServerManagedExternalAccess: {
     type: 'object',
     required: ['enabled', 'pending', 'clusterCount'],
@@ -1046,6 +1071,7 @@ export const managedPaths = {
       ],
       responses: {
         200: { description: 'The setting', ...jsonSchema('ServerManagedExternalAccess') },
+        403: { description: 'Not an owner or manager of the server' },
         404: { description: 'Server not found in the caller organization' },
       },
     },
@@ -1070,11 +1096,15 @@ export const managedPaths = {
         },
       },
       responses: {
-        200: { description: 'Saved', ...jsonSchema('ServerManagedExternalAccess') },
+        200: { description: 'Saved', ...jsonSchema('ServerManagedExternalAccessSaved') },
         400: { description: '`invalid_external_access`: `enabled` is not a boolean' },
+        403: { description: 'Not an owner or manager of the server' },
         404: { description: 'Server not found in the caller organization' },
         422: { description: '`daemon_key_unavailable`: the server cannot take changes yet' },
-        502: { description: 'Saved, but the server could not be told yet; retried automatically' },
+        502: {
+          description: 'Saved, but the server could not be told yet; retried automatically',
+          ...jsonSchema('ServerManagedExternalAccessPushFailed'),
+        },
         503: { description: 'Command queue or daemon cell registry unavailable' },
       },
     },

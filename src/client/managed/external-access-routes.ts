@@ -17,12 +17,13 @@ import { assertCanManageOr403, parseJsonBody } from '../shared.ts'
 import { resolveOrgRequest } from '../org-request.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import { server } from '../../db/schema.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import {
   preflightManagedApplyInfrastructure,
   prepareErrorResponse,
 } from '../../features/managed/apply-prepare.ts'
 import {
-  clearManagedExternalAccessPending,
+  clearManagedExternalAccessPendingThrough,
   describeFailedExternalAccessPush,
   enqueueManagedExternalAccessReconcile,
   loadFrontedManagedIds,
@@ -73,12 +74,23 @@ export function registerManagedExternalAccessRoutes(router: Hono<AppEnv>) {
     const refusal = await preflightManagedApplyInfrastructure(c, loaded.db, { serverId: loaded.id })
     if (refusal) return prepareErrorResponse(c, refusal)
 
-    await saveManagedExternalAccess(loaded.db, loaded.id, body.enabled)
+    const pendingSince = await saveManagedExternalAccess(loaded.db, loaded.id, body.enabled)
     const outcome = await enqueueManagedExternalAccessReconcile(c, loaded.db, commandQueue, {
       serverId: loaded.id,
       userId: loaded.session.userId,
     })
-    if (outcome === 'not_needed') await clearManagedExternalAccessPending(loaded.db, loaded.id)
+    if (outcome === 'not_needed') {
+      await clearManagedExternalAccessPendingThrough(loaded.db, loaded.id, pendingSince)
+    }
+    await recordAudit(loaded.db, {
+      organizationId: loaded.organizationId,
+      actorUserId: loaded.session.userId,
+      actorEmail: loaded.session.email ?? null,
+      action: 'server.managed_external_access.update',
+      targetType: 'server',
+      targetId: loaded.id,
+      context: { enabled: body.enabled },
+    })
     const clusterCount = (await loadFrontedManagedIds(loaded.db, loaded.id)).length
     if (outcome === 'failed') {
       return c.json(

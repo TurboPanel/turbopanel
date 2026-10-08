@@ -7,7 +7,7 @@
  *  - hosting Caddy: HTTP hostings with hostnames on environments pinned here
  *    (the demand test `system/reconcile.ts` uses), with each hosting's bind scope;
  *  - compose `ports:`: the merged compose of every environment deployed here;
- *  - the shared ProxySQL listeners (`managed/host-exposure.ts`);
+ *  - the shared ProxySQL listeners (`managed/external-access.ts`);
  *  - managed clusters' private listener ports, limited to the exact peer servers;
  *  - TurboFabric's WireGuard port (a relay on this server);
  *  - the HA Raft ports (this server hosts a primary or a failover replica);

@@ -277,7 +277,9 @@ contract is unchanged. Changes go through `PUT /servers/:id/managed-external-acc
 (`client/managed/external-access-routes.ts`, org owners and managers): it saves
 the setting, marks `pendingSince`, and queues the ingress reconcile at once; a
 push that cannot be queued answers 502 `ingress_reconcile_failed` (saved, not
-applied). `pendingSince` clears when the server confirms a reconcile created
+applied). Every PUT is audited as `server.managed_external_access.update` with
+`{ enabled }` only. `pendingSince` clears (one conditional UPDATE that never writes `enabled`, so a
+newer PUT is never reverted) when the server confirms a reconcile created
 after the ask (`consumer.ts` → `confirmManagedExternalAccessForServer`), and
 `runManagedExternalAccessPendingSweep` re-sends it to connected servers that
 never did. `GET …/managed` reports `externalAccess.servers[]` (one row per
