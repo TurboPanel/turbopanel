@@ -151,6 +151,12 @@ export const serverSchemas = {
             minimum: 1,
             description: 'MemTotal from /proc/meminfo in bytes.',
           },
+          pageSizeBytes: {
+            type: 'integer',
+            minimum: 1,
+            description:
+              'Kernel memory page size in bytes from getconf PAGESIZE. Linux only; omitted elsewhere or when unreadable.',
+          },
         },
       },
       swap: {
