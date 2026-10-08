@@ -62,7 +62,7 @@ whenever a host-run binding is placed on the server
 | -------- | ------------------------------------------------ | -------------------- | ---- | ----------- | ------------------------------------ |
 | Postgres | `postgres.ts`                                    | `postgres:18-alpine` | 5432 | 63          | `postgresql.conf`, `pg_hba.conf`     |
 | MySQL    | `mysql.ts` (+ pure helpers in `mysql-family.ts`) | `mysql:9.7`          | 3306 | **32**      | `my.cnf`, `initdb/00-turbopanel.sql` |
-| MariaDB  | `mariadb.ts` (own dialect — never a MySQL alias) | `mariadb:12.3`       | 3306 | **32**      | same as MySQL                        |
+| MariaDB  | `mariadb.ts` (own dialect — never a MySQL alias) | `mariadb:11.8`       | 3306 | **32**      | same as MySQL                        |
 
 ## Release catalog (versions, not image strings)
 
@@ -82,7 +82,7 @@ must still be able to name an image an existing row already holds.
 | -------- | ------------------ | ----------------------- |
 | Postgres | **18**             | 17, 16, 15              |
 | MySQL    | **9.7**, **8.4**   |                         |
-| MariaDB  | **12.3**, **11.8** | 11.4, 10.11             |
+| MariaDB  | **11.8** (default), **12.3** (single server only) | 11.4, 10.11             |
 
 Each creatable series offers both of its base-OS variants, so the derived
 allowlists hold ten images in total. `managedCreatableReleasesForEngine` is the
@@ -93,6 +93,10 @@ suites. There is deliberately **no** environment-variable form: an untested
 series must not become creatable because of a stray env var on a production
 control plane. Promoting a series means flipping `tested` here **and** in both
 mirrors in the same change.
+
+Each release also carries `failoverCapable`. It is `true` except MariaDB 12.3
+(`false`): that series is still creatable as a single server. Replica add
+uses `managedImageFailoverSupport` (an unknown image counts as supported).
 
 PostgreSQL stops at 15 (not upstream's oldest supported major, 14) to bound the
 replication/promotion test matrix. MySQL 8.0 is **absent** — it reached EOL in
@@ -127,7 +131,10 @@ every spec's `parseSettings`, as does `parseManagedApplyPayload`
 `../../client/managed/routes-helpers.ts`), resolved to an image and merged into
 settings; an unknown **or untested** series/variant is **422**
 `managed_version_unsupported`. Omitting both takes the engine default (always a
-tested series).
+tested series). Create always provisions a single primary; a replica is added
+later via `POST …/members`. MariaDB 12.3 is creatable that way; adding a
+member is **422** `managed_failover_unsupported`. Existing single-member 12.3
+databases are left as they are (no migration).
 
 **Series are immutable after create.** `PATCH …/managed` refuses a settings
 change that moves the cluster to a different series (**409**
@@ -440,6 +447,11 @@ Postgres backs up via `pg_dump -Fc` (custom format), per-database only —
 `supportsInstanceScope: false` documents `pg_dumpall` as an explicit future
 seam.
 
+Artifacts stay on the host that wrote them. `backup.server_id` is that host
+(the primary when the backup ran); restore after a planned switchover answers
+**409** `backup_on_other_server` rather than sending `managed.restore` to a
+host that does not have the file. See `src/features/backups/AGENTS.md`.
+
 **Scheduled backups** are `retention` rows (routes under
 `/environments/:id/managed/backup-policies`, org owners and managers only;
 `src/client/managed/backup-policies.ts`). The control plane never queues a
@@ -528,7 +540,9 @@ own identity; standbys inherit the roles via WAL. Leaf `notAfter` + signing `ca_
 on `leaf` only after `managed.apply` succeeds (mint writes `pendingTlsLeaf`
 command metadata — see `src/lib/tls/AGENTS.md` → Leaf tracking + renewal sweep)
 — not at payload generation. Member CRUD: `GET/POST …/managed/members`
-(`replicaClass` default `failover`), `PATCH/DELETE …/members/:memberId`
+(`replicaClass` default `failover`; **422** `managed_failover_unsupported`
+when the cluster image is not failover-capable — today MariaDB 12.3, which
+stays a single-server database until failover tooling can read it), `PATCH/DELETE …/members/:memberId`
 (`readEligible` / `replicaClass` conversion),
 `POST …/members/:memberId/resync` (operator-forced re-seed: full apply fan-out
 with `forceResync` on the target standby payload — the daemon wipes its data
@@ -845,6 +859,16 @@ the control plane holds, not on how it was replaced:
   stopped/failed. It never resyncs: wiping the old primary's data is the
   operator's choice (`POST .../members/:id/resync`), its un-replicated writes
   exist nowhere else.
+
+**Demoted marker (daemon guard):** fence stops of the _old_ primary — the
+`managed.lifecycle` stop in `enqueueFenceCommands` (`params.source`) and the
+return-fence stop above — set optional `demoted: true` on the payload. Ordinary
+operator stops and stops of the new primary omit it. The daemon writes
+`<stateDir>/managed/<managedId>/demoted.json` after that stop succeeds and a
+periodic guard stops the engine again if someone starts the container by hand
+(a host that stayed connected never hits the reconnect sweep). Older daemons
+ignore the field; older control planes omit it. The control plane still marks
+the member `needs_resync`; the daemon owns keeping it from serving writes.
 
 **Alerts**: the offline alert (`server.offline`) now names the HA databases
 whose primary the server hosts and what happens next; the outcome is the

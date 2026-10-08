@@ -87,7 +87,10 @@ import {
   enqueueManagedRestore,
   isManagedBackupApiError,
   mapManagedBackupApiError,
+  refuseRestoreIfBackupOnOtherServer,
   resolveBackupDatabase,
+  resolveManagedBackupArtifactServerId,
+  toManagedBackupListItem,
 } from './backups.ts'
 import { fetchManagedLogs, parseLogsTailQuery } from './logs.ts'
 import {
@@ -169,6 +172,7 @@ import {
   parseDisasterRecoveryPromoteBody,
   parseManagedCreateName,
   parseManagedLifecycleAction,
+  parseManagedPatchName,
   parseManagedUserCreateFields,
   parseManagedVersionSelection,
   parseMemberPatch,
@@ -184,7 +188,6 @@ import {
   resolveManagedServerId,
   serializeContainerRow,
   serializeManagedUser,
-  parseManagedPatchName,
   validateManagedDatabaseCreateName,
 } from '../../features/managed/routes-helpers.ts'
 import {
@@ -192,6 +195,10 @@ import {
   parseManagedResidual,
   serializeManagedRow,
 } from '../../features/managed/serialize.ts'
+import {
+  effectiveManagedImage,
+  managedImageFailoverSupport,
+} from '../../features/managed/releases.ts'
 import { findLatestRecovery } from '../../features/managed/recovery-records.ts'
 import { serializeRecovery } from '../../features/managed/recovery.ts'
 import {
@@ -540,10 +547,19 @@ async function runManagedDeleteFanout(
     await clearPendingNullIdContainersForEnvironment(db, environmentId)
     await detachManagedBindings(db, managedId, detached)
     await deleteManagedRuntimeRows(db, environmentId, managedId)
-    await enqueueBackupsReconcile(db, commandQueue, { actorType: 'user', actorId: userId }, [
-      backupHost,
-    ])
-    return c.json({ ...buildManagedDeleteHardResponse(), ...detachedField(detached) })
+    await enqueueBackupsReconcile(
+      db,
+      commandQueue,
+      {
+        actorType: 'user',
+        actorId: userId,
+      },
+      [backupHost]
+    )
+    return c.json({
+      ...buildManagedDeleteHardResponse(),
+      ...detachedField(detached),
+    })
   }
 
   // The bindings are NOT removed here. They go with the `managed` row when the
@@ -642,7 +658,9 @@ async function resolveManagedCreatePlan(
   const version = parseManagedVersionSelection(ctx.spec.engine, body)
   if (!version.ok) return c.json({ error: version.error }, version.status)
 
-  let settings = mergeCreateSettings(ctx.spec, version.image)
+  // Store the resolved image on every new cluster, so a later change of the
+  // catalog default can never change which series an existing row runs.
+  let settings = mergeCreateSettings(ctx.spec, version.image ?? ctx.spec.defaultImage)
   if (!settings) {
     return c.json({ error: 'managed_settings_invalid' }, 400)
   }
@@ -826,7 +844,9 @@ async function assertManagedApplyReady(
   const commandQueue = assertDispatchInfrastructure(c)
   if (commandQueue instanceof Response) return commandQueue
 
-  const infra = await preflightManagedApplyInfrastructure(c, db, { serverId: targetServerId })
+  const infra = await preflightManagedApplyInfrastructure(c, db, {
+    serverId: targetServerId,
+  })
   if (infra) return mapManagedApplyPrepareError(c, infra)
 
   return commandQueue
@@ -1340,7 +1360,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     }
 
     const patchName = parseManagedPatchName(body)
-    if (!patchName.ok) return c.json({ error: patchName.error }, patchName.status)
+    if (!patchName.ok) {
+      return c.json({ error: patchName.error }, patchName.status)
+    }
 
     // Refuse before anything is persisted: another series, or a PostgreSQL
     // swap between libc families (Alpine <-> Debian), would break the data.
@@ -1472,7 +1494,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // (`?detach=true`: the bindings and their variables are removed).
     const attached = await listBindingImpactForManaged(db, row.id)
     if (attached.count > 0 && c.req.query('detach') !== 'true') {
-      return c.json({ error: 'managed_has_bindings', services: attached.services }, 409)
+      return c.json(
+        {
+          error: 'managed_has_bindings',
+          services: attached.services,
+        },
+        409
+      )
     }
 
     const canHardDelete = canHardDeleteManaged(row.serverId)
@@ -1483,7 +1511,10 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       await clearPendingNullIdContainersForEnvironment(db, environmentId)
       await detachManagedBindings(db, row.id, attached.services)
       await db.delete(managed).where(eq(managed.id, row.id))
-      return c.json({ ...buildManagedDeleteHardResponse(), ...detachedField(attached.services) })
+      return c.json({
+        ...buildManagedDeleteHardResponse(),
+        ...detachedField(attached.services),
+      })
     }
 
     // `canHardDelete` already covers `!row.serverId`, so `managed.server_id`
@@ -2197,6 +2228,16 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const serverDenied = await assertCanManageOr403(c, 'server', serverId)
     if (serverDenied) return serverDenied
 
+    const options = parseManagedRowOptions(ctx.spec, row.options)
+    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+
+    const failover = managedImageFailoverSupport(
+      effectiveManagedImage(ctx.spec, options.settings.image)
+    )
+    if (!failover.supported) {
+      return c.json({ error: failover.reason, code: 'managed_failover_unsupported' }, 422)
+    }
+
     await ensureManagedPrimaryMember(db, {
       managedId: row.id,
       serverId: primaryServerId,
@@ -2231,9 +2272,6 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       readEligible,
       replicationTransport: placement.toPrimaryTransport,
     })
-
-    const options = parseManagedRowOptions(ctx.spec, row.options)
-    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const prepared = await prepareApplyForManaged(c, db, ctx, row, options, primaryServerId)
     if (prepared instanceof Response) {
@@ -2297,6 +2335,17 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: patchParsed.error }, patchParsed.status)
     }
 
+    const patchOptions = parseManagedRowOptions(ctx.spec, row.options)
+    if (!patchOptions) return c.json({ error: 'Invalid managed options' }, 400)
+    if (patchParsed.replicaClass === 'failover') {
+      const failover = managedImageFailoverSupport(
+        effectiveManagedImage(ctx.spec, patchOptions.settings.image)
+      )
+      if (!failover.supported) {
+        return c.json({ error: failover.reason, code: 'managed_failover_unsupported' }, 422)
+      }
+    }
+
     const classPatched = await applyMemberReplicaClassPatch(c, db, {
       managedServerId: row.serverId,
       member,
@@ -2315,14 +2364,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const options = parseManagedRowOptions(ctx.spec, row.options)
-    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
-
     const applyResp = await runApplyForManaged(c, db, {
       userId: auth.userId,
       ctx,
       managedRow: row,
-      options,
+      options: patchOptions,
       targetServerId,
     })
     return applyResp
@@ -2714,7 +2760,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ backups: [] })
 
-    const backups = await listManagedBackups(db, row.id)
+    const backups = (await listManagedBackups(db, row.id)).map(toManagedBackupListItem)
     return c.json({ backups })
   })
 
@@ -2786,10 +2832,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const record = await findManagedBackupById(db, row.id, backupId)
     if (!record) return c.json({ error: 'backup_not_found' }, 404)
 
-    // Backup artifacts live on the host that actually ran the engine —
-    // `managed.server_id`, not the (possibly drifted) environment placement.
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
-    if (targetServerId instanceof Response) return targetServerId
+    // Delete the file on the host that stores it. Fall back to the current
+    // primary only for older rows that never recorded that host.
+    const placementServerId = resolveManagedTargetServerId(c, row.serverId)
+    if (placementServerId instanceof Response) return placementServerId
+    const targetServerId = resolveManagedBackupArtifactServerId(record, placementServerId)
 
     const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
@@ -2841,6 +2888,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // `managed.server_id`, not the (possibly drifted) environment placement.
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
+
+    const wrongHost = await refuseRestoreIfBackupOnOtherServer(c, db, record, targetServerId)
+    if (wrongHost) return wrongHost
 
     const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy

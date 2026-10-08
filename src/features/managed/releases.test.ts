@@ -7,9 +7,11 @@ import {
   MANAGED_ENGINE_RELEASES,
   managedAllowedImagesForEngine,
   managedCreatableReleasesForEngine,
+  managedImageFailoverSupport,
   managedReleasesForEngine,
   requireDefaultManagedImage,
   resolveManagedImage,
+  effectiveManagedImage,
 } from './releases.ts'
 import { MANAGED_ENGINE_SPECS } from './index.ts'
 import {
@@ -80,7 +82,7 @@ test('exactly one default release per engine', () => {
   }
   assertEquals(defaultManagedRelease('postgres')?.series, '18')
   assertEquals(defaultManagedRelease('mysql')?.series, '9.7')
-  assertEquals(defaultManagedRelease('mariadb')?.series, '12.3')
+  assertEquals(defaultManagedRelease('mariadb')?.series, '11.8')
   assertEquals(defaultManagedRelease('redis'), undefined)
 })
 
@@ -186,6 +188,47 @@ test('describeManagedImage round-trips every catalog image', () => {
   })
 })
 
+test('MariaDB 12.3 is creatable but not the default', () => {
+  const twelve = managedReleasesForEngine('mariadb').find((release) => release.series === '12.3')
+  const eleven = managedReleasesForEngine('mariadb').find((release) => release.series === '11.8')
+  assertEquals(twelve?.tested, true)
+  assertEquals(twelve?.isDefault, false)
+  assertEquals(eleven?.tested, true)
+  assertEquals(eleven?.isDefault, true)
+  assertEquals(resolveManagedImage('mariadb', '12.3'), 'docker.io/library/mariadb:12.3')
+})
+
+test('failoverCapable is true except for MariaDB 12.3', () => {
+  for (const release of MANAGED_ENGINE_RELEASES) {
+    const expected = !(release.engine === 'mariadb' && release.series === '12.3')
+    assertEquals(release.failoverCapable, expected)
+  }
+  assertEquals(managedImageFailoverSupport('docker.io/library/mariadb:12.3'), {
+    supported: false,
+    reason: 'MariaDB 12.3 can run on one server; automatic failover needs MariaDB 11.8 for now.',
+  })
+  assertEquals(managedImageFailoverSupport('docker.io/library/mariadb:12.3-ubi'), {
+    supported: false,
+    reason: 'MariaDB 12.3 can run on one server; automatic failover needs MariaDB 11.8 for now.',
+  })
+  assertEquals(managedImageFailoverSupport('docker.io/library/mariadb:11.8'), {
+    supported: true,
+  })
+  assertEquals(managedImageFailoverSupport('docker.io/library/mariadb:11.8-ubi'), {
+    supported: true,
+  })
+  assertEquals(managedImageFailoverSupport('docker.io/library/mysql:9.7'), { supported: true })
+  assertEquals(managedImageFailoverSupport('docker.io/library/postgres:18-alpine'), {
+    supported: true,
+  })
+  // Catalogued-but-untested and unknown images are not locked to a single server.
+  assertEquals(managedImageFailoverSupport('docker.io/library/mariadb:11.4'), {
+    supported: true,
+  })
+  assertEquals(managedImageFailoverSupport('docker.io/library/redis:7'), { supported: true })
+  assertEquals(managedImageFailoverSupport(undefined), { supported: true })
+})
+
 test('isSameManagedSeries allows variant swaps and blocks series changes', () => {
   assertEquals(
     isSameManagedSeries('docker.io/library/postgres:18-alpine', 'docker.io/library/postgres:18'),
@@ -209,4 +252,17 @@ test('isSameManagedSeries allows variant swaps and blocks series changes', () =>
   // Nothing to compare (settings without an explicit image) is not a change.
   assertEquals(isSameManagedSeries(undefined, 'docker.io/library/mysql:9.7'), true)
   assertEquals(isSameManagedSeries('docker.io/library/mysql:9.7', undefined), true)
+})
+
+test('effectiveManagedImage keeps an imageless MariaDB row on 12.3 and gives new rows the default', () => {
+  const mariadb = MANAGED_ENGINE_SPECS.mariadb!
+  assertEquals(mariadb.defaultImage, 'docker.io/library/mariadb:11.8')
+  assertEquals(effectiveManagedImage(mariadb, undefined), 'docker.io/library/mariadb:12.3')
+  assertEquals(
+    effectiveManagedImage(mariadb, 'docker.io/library/mariadb:11.8'),
+    'docker.io/library/mariadb:11.8'
+  )
+  // Engines whose default never moved fall back to the current default.
+  const postgres = MANAGED_ENGINE_SPECS.postgres!
+  assertEquals(effectiveManagedImage(postgres, undefined), postgres.defaultImage)
 })

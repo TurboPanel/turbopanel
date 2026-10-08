@@ -347,4 +347,10 @@ test('enqueueManagedLifecycleFanout never starts a demoted member that needs a r
     stop.map((result) => result.status),
     ['queued', 'queued']
   )
+  assertEquals(
+    dispatchPayloads.every(
+      (payload) => typeof payload === 'object' && payload !== null && !('demoted' in payload)
+    ),
+    true
+  )
 })
