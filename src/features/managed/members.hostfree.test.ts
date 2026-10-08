@@ -19,6 +19,7 @@ import {
   nextReplicaOrdinal,
   replicationPurposeForMemberPair,
   resolveMemberTransports,
+  resolvePeerToMember,
   resolvePeersForMember,
   serializeManagedMember,
   updateManagedMemberObservedReplication,
@@ -1251,6 +1252,52 @@ test('replicationPurposeForMemberPair keeps failover links off fabric and public
   assertEquals(replicationPurposeForMemberPair(failover, legacy), 'failover-replication')
   assertEquals(replicationPurposeForMemberPair(primary, read), 'read-replication')
   assertEquals(replicationPurposeForMemberPair(read, failover), 'read-replication')
+})
+
+test('resolvePeerToMember reaches one target even when another peer is unresolvable', async () => {
+  const primary = member({
+    id: 'p',
+    serverId: 's1',
+    role: 'primary',
+    ordinal: 1,
+    privatePort: 45_001,
+  })
+  const replica = member({
+    id: 'r',
+    serverId: 's2',
+    role: 'replica',
+    ordinal: 2,
+    privatePort: 45_100,
+    readEligible: true,
+  })
+  const dead = member({
+    id: 'd',
+    serverId: 's3',
+    role: 'replica',
+    ordinal: 3,
+    privatePort: null,
+  })
+  const db = peerResolutionDb({
+    containers: [],
+    memberships: [
+      membershipPin('s1', 'dc-a', '10.0.0.1'),
+      membershipPin('s2', 'dc-a', '10.0.0.22'),
+    ],
+  })
+
+  assertEquals(await resolvePeersForMember(db, [primary, replica, dead], replica, 5432), {
+    kind: 'private_path_unavailable',
+    fromServerId: 's2',
+    toServerId: 's3',
+  })
+  assertEquals(await resolvePeerToMember(db, replica, primary, 5432), {
+    memberId: 'p',
+    role: 'primary',
+    readEligible: true,
+    address: '10.0.0.1',
+    transport: 'datacenter',
+    port: 45_001,
+  })
 })
 
 test('resolvePeersForMember routes each peer by its replica class', async () => {

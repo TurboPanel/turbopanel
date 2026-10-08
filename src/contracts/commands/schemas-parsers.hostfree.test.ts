@@ -544,6 +544,68 @@ test('parseManagedHaFailoverPayload and result validate phase and ids', () => {
     { summary: 'drained', phase: 'recover' }
   )
 
+  const repoint = parseManagedHaFailoverPayload({
+    managedId: 'managed-pg-1',
+    sourceMemberId: MEMBER_ID,
+    targetMemberId: '00000000-0000-4000-8000-0000000000ee',
+    phase: 'repoint',
+    targetHost: '203.0.113.11',
+    targetPort: 5432,
+    targetHostaddr: '10.100.0.4',
+  })
+  assertEquals(repoint.phase, 'repoint')
+  assertEquals(repoint.targetHost, '203.0.113.11')
+  assertEquals(repoint.targetHostaddr, '10.100.0.4')
+
+  const withSlots = parseManagedHaFailoverPayload({
+    managedId: 'managed-pg-1',
+    sourceMemberId: MEMBER_ID,
+    targetMemberId: MEMBER_ID,
+    phase: 'repoint',
+    engine: 'postgres',
+    ensureSlots: ['tp_member_2', 'tp_member_3'],
+  })
+  assertEquals(withSlots.ensureSlots, ['tp_member_2', 'tp_member_3'])
+  assertEquals(withSlots.engine, 'postgres')
+  assertEquals(
+    parseManagedHaFailoverPayload({
+      managedId: 'managed-pg-1',
+      sourceMemberId: MEMBER_ID,
+      targetMemberId: MEMBER_ID,
+      phase: 'repoint',
+      ensureSlots: [],
+    }).ensureSlots,
+    undefined
+  )
+  assertThrows(
+    () =>
+      parseManagedHaFailoverPayload({
+        managedId: 'managed-pg-1',
+        sourceMemberId: MEMBER_ID,
+        targetMemberId: MEMBER_ID,
+        phase: 'repoint',
+        ensureSlots: ['TP_Member_2'],
+      }),
+    TypeError,
+    'Invalid managed.ha.failover payload'
+  )
+  assertThrows(
+    () =>
+      parseManagedHaFailoverPayload({
+        managedId: 'managed-pg-1',
+        sourceMemberId: MEMBER_ID,
+        targetMemberId: MEMBER_ID,
+        phase: 'repoint',
+        ensureSlots: Array.from({ length: 33 }, (_, i) => `tp_member_${i}`),
+      }),
+    TypeError,
+    'Invalid managed.ha.failover payload'
+  )
+  assertEquals(
+    parseManagedHaFailoverResult({ summary: 'followed', phase: 'repoint' }).phase,
+    'repoint'
+  )
+
   assertThrows(
     () =>
       parseManagedHaFailoverPayload({

@@ -47,6 +47,7 @@ const SERVER_PATHS = [
   ['GET', `/servers/${SERVER_ID}`],
   ['PATCH', `/servers/${SERVER_ID}`],
   ['DELETE', `/servers/${SERVER_ID}`],
+  ['GET', `/servers/${SERVER_ID}/delete-preview`],
   ['GET', `/servers/${SERVER_ID}/status`],
   ['GET', `/servers/${SERVER_ID}/cell`],
   ['GET', `/servers/${SERVER_ID}/update`],
@@ -64,6 +65,7 @@ const ORG_SCOPED_PATHS = [
   ['GET', `/servers/${SERVER_ID}`],
   ['PATCH', `/servers/${SERVER_ID}`],
   ['DELETE', `/servers/${SERVER_ID}`],
+  ['GET', `/servers/${SERVER_ID}/delete-preview`],
 ] as const
 
 type SessionRole = 'superadmin' | 'admin' | 'user'
@@ -935,6 +937,25 @@ test('DELETE /servers/:id returns 403 for a self-host-pinned server', async () =
     headers: sessionHeaders(cookie),
   })
   await expectJson(res, 403, { error: colocatedServerDeleteBlockedReason() })
+})
+
+test('GET /servers/:id/delete-preview returns 404 when the server is missing', async () => {
+  const { app, cookie } = await buildSessionApp()
+  const res = await app.request(`/servers/${SERVER_ID}/delete-preview`, {
+    headers: sessionHeaders(cookie),
+  })
+  await expectJson(res, 404, { error: 'Not found' })
+})
+
+test('GET /servers/:id/delete-preview returns 403 when manage is denied', async () => {
+  const { app, cookie } = await buildSessionApp({
+    withServerRow: true,
+    defaultAllowed: false,
+  })
+  const res = await app.request(`/servers/${SERVER_ID}/delete-preview`, {
+    headers: sessionHeaders(cookie),
+  })
+  await expectJson(res, 403, { error: 'Forbidden' })
 })
 
 test('GET /servers/:id/labels returns 403 when read is denied', async () => {

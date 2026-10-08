@@ -145,6 +145,10 @@ import {
   recoveryIdFromCommandMetadata,
 } from '../managed/ha-recovery.ts'
 import { settleIngressCommandForRecovery } from '../managed/ha-ingress-gate.ts'
+import {
+  enqueueFollowPrimaryOnReplicas,
+  handleFollowPrimaryFailure,
+} from '../managed/follow-primary.ts'
 import { isManagedEngineCode, type ManagedEngineCode } from '../managed/types.ts'
 import { isValidWireguardPublicKey } from '../fabric/wg.ts'
 import { type CommandType, TERMINAL_COMMAND_STATUSES } from './types.ts'
@@ -2022,6 +2026,7 @@ async function applyManagedRecoveryFailedSideEffect(
   }
 
   if (record.type === 'managed.promote' || record.type === 'managed.ha.failover') {
+    if (isManagedHaFailoverRepoint(record)) return false
     await onRecoveryCommandFailed(db, recoveryId)
   }
   return false
@@ -2042,6 +2047,15 @@ async function settleIngressRecoveryOfCommand(
     await settleIngressCommandForRecovery(db, recoveryId)
   } catch (err) {
     logRecoveryAdvanceFailure(record.id, errorMessage(err))
+  }
+}
+
+function isManagedHaFailoverRepoint(record: DispatchableCommandRecord): boolean {
+  if (record.type !== 'managed.ha.failover') return false
+  try {
+    return parseManagedHaFailoverPayload(record.payload).phase === 'repoint'
+  } catch {
+    return false
   }
 }
 
@@ -2122,6 +2136,21 @@ async function applyManagedFailedSideEffect(
   // from `needs_resync` to `failed` or mark the whole cluster failed; the
   // sweep retries it a few times.
   if (meta?.returnFence === true) return
+  if (isManagedHaFailoverRepoint(record)) {
+    await handleFollowPrimaryFailure(
+      db,
+      {
+        id: record.id,
+        serverId: record.serverId,
+        actorId: record.actorEntityId,
+        payload: record.payload,
+        context: record.context,
+      },
+      deps?.commandQueue,
+      error ?? record.errorMessage ?? undefined
+    )
+    return
+  }
   if (await applyManagedRecoveryFailedSideEffect(db, record, meta, deps)) {
     return
   }
@@ -2335,6 +2364,15 @@ async function applyManagedPromoteSideEffect(
       actorId: envelope.serverId,
     })
 
+    if (promotedMemberId) {
+      await enqueueFollowPrimaryOnReplicas(db, deps?.commandQueue, {
+        managedId,
+        newPrimaryMemberId: promotedMemberId,
+        actorId: envelope.serverId,
+        ...(payload.engine ? { engine: payload.engine } : {}),
+      })
+    }
+
     if (!hasManagedFollowUpDeps(deps)) {
       const meta = await getCommandMetadata(db, record.id)
       const recoveryId = recoveryIdFromCommandMetadata(meta)
@@ -2474,6 +2512,7 @@ async function applyManagedHaFailoverSideEffect(
       })
       return
     }
+    if (payload.phase === 'repoint') return
 
     const backupHost = await captureManagedBackupHost(db, deps?.commandQueue, payload.managedId)
     await applyManagedRoleFlip(db, {
@@ -2487,6 +2526,13 @@ async function applyManagedHaFailoverSideEffect(
       managedId: payload.managedId,
       previousServerId: backupHost,
       actorId: envelope.serverId,
+    })
+
+    await enqueueFollowPrimaryOnReplicas(db, deps?.commandQueue, {
+      managedId: payload.managedId,
+      newPrimaryMemberId: payload.targetMemberId,
+      actorId: envelope.serverId,
+      ...(payload.engine ? { engine: payload.engine } : {}),
     })
 
     if (recoveryId) {

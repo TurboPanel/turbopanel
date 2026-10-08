@@ -1,3 +1,19 @@
+import {
+  SERVER_DELETE_BLOCKER_KIND_VALUES,
+  SERVER_SERVICES_REMOVAL_KIND_VALUES,
+} from '../servers/delete-guards.ts'
+
+function cappedListSchema(item: Record<string, unknown>) {
+  return {
+    type: 'object',
+    required: ['items', 'more'],
+    properties: {
+      items: { type: 'array', items: item },
+      more: { type: 'integer', minimum: 0 },
+    },
+  }
+}
+
 export const serverSchemas = {
   ServerOsMetadata: {
     type: 'object',
@@ -868,12 +884,252 @@ export const serverSchemas = {
       code: { type: 'string', const: 'server_has_blockers' },
       blockers: {
         type: 'array',
+        items: { $ref: '#/components/schemas/ServerDeleteBlocker' },
+      },
+    },
+  },
+  ServerDeleteBlocker: {
+    type: 'object',
+    required: ['kind', 'count', 'label'],
+    properties: {
+      kind: {
+        type: 'string',
+        enum: [...SERVER_DELETE_BLOCKER_KIND_VALUES],
+      },
+      count: { type: 'integer', minimum: 1 },
+      label: {
+        type: 'string',
+        description:
+          'Plain-words description of the leftover kind, for example "an app environment" or "a database member is still placed on this server".',
+      },
+    },
+  },
+  ServerOnlineConflict: {
+    type: 'object',
+    required: ['error', 'code'],
+    properties: {
+      error: {
+        type: 'string',
+        const: 'Cannot forget leftover resources while this server is still connected',
+      },
+      code: { type: 'string', const: 'server_online' },
+    },
+  },
+  ServerDeletePreview: {
+    type: 'object',
+    required: ['online', 'canForget', 'colocated', 'blockers', 'containers', 'networks', 'ips'],
+    properties: {
+      online: {
+        type: 'boolean',
+        description:
+          'True when the live cell snapshot is connected or the stored `is_connected` column is true.',
+      },
+      canForget: {
+        type: 'boolean',
+        description:
+          'True when the server is offline, is not the co-located control plane host, and the only leftovers are forgettable container, network, or address rows.',
+      },
+      colocated: {
+        type: 'boolean',
+        description: 'True when this is the host the control plane itself runs on.',
+      },
+      blockers: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerDeleteBlocker' },
+      },
+      containers: {
+        type: 'object',
+        required: ['items', 'more'],
+        properties: {
+          items: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['id', 'name', 'status'],
+              properties: {
+                id: { type: 'string', format: 'uuid' },
+                name: { type: 'string' },
+                status: { type: 'string' },
+                serviceName: { type: 'string' },
+              },
+            },
+          },
+          more: { type: 'integer', minimum: 0 },
+        },
+      },
+      networks: {
+        type: 'object',
+        required: ['items', 'more'],
+        properties: {
+          items: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['id', 'name'],
+              properties: {
+                id: { type: 'string', format: 'uuid' },
+                name: { type: 'string' },
+              },
+            },
+          },
+          more: { type: 'integer', minimum: 0 },
+        },
+      },
+      ips: {
+        type: 'object',
+        required: ['items', 'more'],
+        properties: {
+          items: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['id', 'address'],
+              properties: {
+                id: { type: 'string', format: 'uuid' },
+                address: { type: 'string' },
+              },
+            },
+          },
+          more: { type: 'integer', minimum: 0 },
+        },
+      },
+    },
+  },
+  ServerServicesRemovalReason: {
+    type: 'object',
+    required: ['kind', 'count', 'message'],
+    properties: {
+      kind: {
+        type: 'string',
+        enum: [...SERVER_SERVICES_REMOVAL_KIND_VALUES],
+      },
+      count: { type: 'integer', minimum: 1 },
+      message: {
+        type: 'string',
+        description:
+          'One plain-language sentence for this leftover kind. Kinds match `listServerDeleteBlockers` plus `colocated` (this host runs the control panel and cannot be removed). When `removal.canForget` is true, container, network, and address sentences mention Delete server → Host is gone.',
+      },
+    },
+  },
+  ServerServicesResponse: {
+    type: 'object',
+    required: [
+      'serverId',
+      'removal',
+      'apps',
+      'databases',
+      'databaseUsers',
+      'backups',
+      'networks',
+      'ipCount',
+      'runtimes',
+    ],
+    properties: {
+      serverId: { type: 'string', format: 'uuid' },
+      removal: {
+        type: 'object',
+        required: ['canRemove', 'online', 'canForget', 'reasons'],
+        properties: {
+          canRemove: { type: 'boolean' },
+          online: {
+            type: 'boolean',
+            description:
+              'True when the live cell snapshot is connected or the stored `is_connected` column is true.',
+          },
+          canForget: {
+            type: 'boolean',
+            description:
+              'True when the server is offline, is not the co-located control plane host, and the only leftovers are forgettable container, network, or address rows. The owner can then use Delete server → Host is gone.',
+          },
+          reasons: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/ServerServicesRemovalReason' },
+          },
+        },
+      },
+      apps: cappedListSchema({
+        type: 'object',
+        required: ['serviceId', 'name', 'project', 'environment', 'containers', 'domains'],
+        properties: {
+          serviceId: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          project: { type: 'string' },
+          environment: { type: 'string' },
+          containers: cappedListSchema({
+            type: 'object',
+            required: ['name', 'status', 'role'],
+            properties: {
+              name: { type: 'string' },
+              status: { type: 'string' },
+              role: { type: 'string' },
+            },
+          }),
+          domains: cappedListSchema({ type: 'string' }),
+        },
+      }),
+      databases: {
+        type: 'array',
         items: {
           type: 'object',
-          required: ['kind', 'count'],
+          required: ['managedId', 'name', 'engine', 'role', 'status', 'readEligible', 'ordinal'],
           properties: {
-            kind: { type: 'string', enum: ['network', 'container'] },
-            count: { type: 'integer', minimum: 1 },
+            managedId: { type: 'string', format: 'uuid' },
+            name: { type: 'string' },
+            engine: { type: 'string' },
+            role: { type: 'string', enum: ['primary', 'replica'] },
+            status: { type: 'string' },
+            readEligible: { type: 'boolean' },
+            ordinal: { type: 'integer' },
+          },
+        },
+      },
+      databaseUsers: {
+        ...cappedListSchema({
+          type: 'object',
+          required: ['serviceId', 'serviceName', 'databases'],
+          properties: {
+            serviceId: { type: 'string', format: 'uuid' },
+            serviceName: { type: 'string' },
+            databases: { type: 'array', items: { type: 'string' } },
+          },
+        }),
+        description:
+          'Apps on this host bound to a managed database, grouped one entry per app with the database names it uses (they reach those databases through this host). Capped like other lists.',
+      },
+      backups: {
+        ...cappedListSchema({
+          type: 'object',
+          required: ['managedId', 'managedName', 'count', 'latestAt'],
+          properties: {
+            managedId: { type: 'string', format: 'uuid' },
+            managedName: { type: 'string' },
+            count: { type: 'integer', minimum: 0 },
+            latestAt: { type: 'string', format: 'date-time' },
+          },
+        }),
+        description:
+          'Backups of databases that have a member on this server. Counts are per database, not multiplied by how many members sit here.',
+      },
+      networks: cappedListSchema({
+        type: 'object',
+        required: ['id', 'name', 'kind'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          kind: { type: 'string' },
+        },
+      }),
+      ipCount: { type: 'integer', minimum: 0 },
+      runtimes: {
+        type: 'array',
+        description:
+          'Installed runtimes from stored daemon facts (`server.metadata.runtimes`). Empty when none are stored.',
+        items: {
+          type: 'object',
+          required: ['kind', 'versions'],
+          properties: {
+            kind: { type: 'string' },
+            versions: { type: 'array', items: { type: 'string' } },
           },
         },
       },
@@ -1362,6 +1618,69 @@ export const serverPaths: Record<string, unknown> = {
       },
     },
   },
+  '/api/client/v1/servers/{id}/delete-preview': {
+    get: {
+      tags: ['Servers'],
+      summary: 'Preview leftover rows that would block deleting a server',
+      description:
+        'Same rights as delete (organization manager on this server). Lists leftover containers, networks, and addresses for a host that is gone, so the console can offer forgetting those rows. System-workspace containers are omitted the same way as delete blockers. Each list is capped at 50 rows plus a `more` count. `online` is true when the live cell snapshot is connected or the stored connected flag is true. `canForget` is true only when the server is offline, is not the co-located control plane host, and leftover blockers are only container, network, or address rows.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Delete preview',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerDeletePreview' },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Server not found',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
   '/api/client/v1/servers/{id}': {
     get: {
       tags: ['Servers'],
@@ -1510,6 +1829,8 @@ export const serverPaths: Record<string, unknown> = {
     delete: {
       tags: ['Servers'],
       summary: 'Delete a server and purge its daemon cell',
+      description:
+        'Without `forgetResources=true`, leftover containers, networks, addresses, or other RESTRICT placements still answer 409 `server_has_blockers`. Pass the flag explicitly (query or JSON body; never implied) to drop leftover container, network, and address rows on an offline server that is not the co-located control plane host. A connected server (live snapshot or stored flag, re-checked under row lock) answers 409 `server_online`. App environments, managed databases, database members, deployments, service slots, and storage copies still 409 `server_has_blockers` even with the flag. System-workspace rows still follow the ordinary hosting-ingress teardown.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1518,7 +1839,31 @@ export const serverPaths: Record<string, unknown> = {
           required: true,
           schema: { type: 'string', format: 'uuid' },
         },
+        {
+          name: 'forgetResources',
+          in: 'query',
+          required: false,
+          schema: { type: 'boolean' },
+          description:
+            'When true, remove leftover container, network, and address rows for this server inside the same delete. Must be the exact value true; omitted or any other value leaves blocker checks unchanged.',
+        },
       ],
+      requestBody: {
+        required: false,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                forgetResources: {
+                  type: 'boolean',
+                  description: 'Same meaning as the query flag; must be JSON true.',
+                },
+              },
+            },
+          },
+        },
+      },
       responses: {
         '200': {
           description: 'Server deleted and daemon cell purged',
@@ -1565,12 +1910,14 @@ export const serverPaths: Record<string, unknown> = {
           },
         },
         '409': {
-          description: 'Dependent resources block deletion',
+          description:
+            'Dependent resources block deletion, leftover rows cannot be forgotten while the server is connected, or child rows remain',
           content: {
             'application/json': {
               schema: {
                 oneOf: [
                   { $ref: '#/components/schemas/ServerDeleteBlockersConflict' },
+                  { $ref: '#/components/schemas/ServerOnlineConflict' },
                   { $ref: '#/components/schemas/HierarchyDeleteConflict' },
                 ],
               },
@@ -1731,6 +2078,81 @@ export const serverPaths: Record<string, unknown> = {
         },
         '404': {
           description: 'Server not found',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/services': {
+    get: {
+      tags: ['Servers'],
+      summary: 'List what is attached to a server',
+      description:
+        "Read-gated, organization-scoped snapshot of apps, databases, bindings, backups of databases that have a member here, networks, and stored runtimes for one server. Lists of apps, containers, domains, database users, networks, and backups are capped (50 plus `more`). Removal reasons reuse `listServerDeleteBlockers` plus the co-located-host rule so this view and DELETE cannot disagree; `online` and `canForget` match delete-preview. Another organization's server is 404.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Attached services snapshot',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerServicesResponse' },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Server not found in this organization',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
           content: {
             'application/json': {
               schema: {

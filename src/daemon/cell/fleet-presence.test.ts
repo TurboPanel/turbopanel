@@ -11,6 +11,7 @@ import type { DaemonCellRegistry, DaemonCellSnapshot } from '../../contracts/cel
 import {
   fleetPresenceToConnection,
   isServerConnected,
+  isServerConnectedStoredOrLive,
   resolveFleetPresence,
   resolveOnlineFleetPresence,
 } from './server-status.ts'
@@ -237,6 +238,33 @@ test('resolveFleetPresence overlays live snapshot when projection marks offline 
   })
   assertEquals(presence.get(serverId)?.connected, true)
   assertEquals(presence.get(serverId)?.lastInboundAt, freshLastSeen)
+})
+
+test('isServerConnectedStoredOrLive is true when the column is false but the live snapshot is connected', async () => {
+  const db = createMockDb(
+    buildMockRow(baseDaemon, {
+      connected: false,
+      statusChangedAt: '2020-01-01T00:00:00.000Z',
+    })
+  )
+  const freshLastSeen = new Date().toISOString()
+  const registry = createSnapshotRegistry({
+    onlineIds: [],
+    snapshots: new Map([
+      [
+        serverId,
+        {
+          serverId,
+          version: 1,
+          updatedAt: freshLastSeen,
+          connected: true,
+          lastSeenAt: freshLastSeen,
+          lastInboundAt: freshLastSeen,
+        },
+      ],
+    ]),
+  })
+  assertEquals(await isServerConnectedStoredOrLive(db, registry, serverId, false), true)
 })
 
 test('resolveFleetPresence prefers live snapshot.connected over stale projection', async () => {

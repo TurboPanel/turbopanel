@@ -562,8 +562,7 @@ the target's daemon for a fresh reading first (`managed-health-request`, 8s,
 `src/client/managed/health-probe.ts`, feature `managed-health-v1`) and runs the
 **unchanged** gate on it. **Fail-closed is preserved:** timeout, offline host,
 a daemon without the feature, a daemon error, a malformed reply, or a reply for
-another member all fall back to the gate on the stored observation — today's
-409. `force` never probes. `GET …/managed/status?refresh=1` (the panel's
+another member all fall back to the gate on the stored observation — today's 409. `force` never probes. `GET …/managed/status?refresh=1` (the panel's
 Refresh) probes every **replica** in parallel (and the primary, while replicas
 exist, so its `slotRetention` is current after a Resync; not counted) and returns
 `healthRefresh: { observed, unavailable }`; a plain GET stays DB-only. The probe
@@ -598,7 +597,23 @@ to `managed.promote` when Orchestrator is absent or the recover API fails.
 Detection is an unsolicited `managed-ha-event` over the daemon WebSocket — not a
 Durable Object poll loop. DR rewrite: members no longer in the new primary's
 datacenter cannot stay `failover` → `read` (keep `readEligible`). Same-DC `read`
-peers are never silently upgraded to `failover`.
+peers are never silently upgraded to `failover`. After a successful
+`managed.promote` or `managed.ha.failover` `recover`, remaining healthy replicas
+(`ready` / `streaming`, not provisioning/applying/stopped/`needs_resync`/`failed`,
+not on an offline or lost server) each get `managed.ha.failover` `phase: 'repoint'`
+so they follow the new primary without a full Resync. The control plane first
+queues one `repoint` on the **new primary** with `ensureSlots` (`tp_member_<ordinal>`
+for those replicas) so the physical slots exist, then one replica-side `repoint`
+that verifies streaming. A non-terminal replica `repoint` to a different
+`targetMemberId` is cancelled and replaced so a stale follow cannot win (a
+single UPDATE that leaves an already terminal command untouched). A failed
+slot-ensure (`ensureSlots` non-empty) is re-queued once with `slotRetry` on
+the command context; a second failure is logged (`replicas may fail to stream
+until the slots exist`) and not retried. A follow-mode replica whose error
+contains `did not reach streaming` is flagged `needs_resync` when it is still
+`role=replica` and `status=ready`. Other repoint failures stay log-only. None
+of this fails the promote. The payload always carries `engine` (loaded from the
+managed row when the caller omits it).
 
 ### Completion gate: every ingress must confirm (`ha-ingress-gate.ts`)
 
