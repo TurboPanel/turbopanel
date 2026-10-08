@@ -5125,7 +5125,17 @@ export type ManagedLifecycleCommandPayload = {
    * releases (defaults to primary on the daemon).
    */
   role?: 'primary' | 'replica'
+  /**
+   * Fence stop of a replaced writer. The daemon writes a durable demoted
+   * marker and keeps the engine stopped if it is started by hand. Absent on
+   * ordinary operator stops and on stops of the new primary. Older daemons
+   * ignore it; older control planes omit it.
+   */
+  demoted?: boolean
 }
+
+/** Twin name of {@link ManagedLifecycleCommandPayload} (expand-only snapshot). */
+export type ManagedLifecyclePayload = ManagedLifecycleCommandPayload
 
 export type ManagedLifecycleCommandResult = {
   status: string
@@ -6209,6 +6219,9 @@ export function parseManagedLifecyclePayload(value: unknown): ManagedLifecycleCo
       throw new Error('Invalid managed.lifecycle payload')
     }
     payload.role = value.role
+  }
+  if (value.demoted === true) {
+    payload.demoted = true
   }
   return payload
 }

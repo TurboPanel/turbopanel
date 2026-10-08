@@ -120,6 +120,21 @@ test('a held primary the control plane still calls primary is told to start', as
   assertEquals(spy.noted, [])
 })
 
+test('a boot-hold start of a still-primary member is not a demotion fence', async () => {
+  const payloads: Array<{ action: string; demoted?: boolean }> = []
+  const { deps } = seams([member(), member({ id: MEM_NEW, serverId: SERVER_NEW, role: 'replica' })])
+  const wrapped: BootHoldDeps = {
+    ...deps,
+    enqueueLifecycle: (_db, _queue, params) => {
+      payloads.push({ action: params.action, demoted: params.demoted })
+      return deps.enqueueLifecycle(_db, _queue, params)
+    },
+  }
+  assertEquals(await report(wrapped), 'released')
+  assertEquals(payloads[0]?.action, 'start')
+  assertEquals(payloads[0]?.demoted, undefined)
+})
+
 test('a held member that was replaced stays stopped and is noted, never started', async () => {
   const { deps, spy } = seams([
     member({ role: 'replica', status: 'needs_resync' }),
@@ -211,13 +226,21 @@ function demoted(metadata: unknown, changedAt: string | null = NOW_ISO): Demoted
 }
 
 test('a demoted member whose server is back gets one stop, marked so nothing is projected', async () => {
-  const stops: Array<{ action: string; metadata: Record<string, unknown> }> = []
+  const stops: Array<{
+    action: string
+    metadata: Record<string, unknown>
+    demoted?: boolean
+  }> = []
   const notes: Array<{ commandId: string; attempts: number }> = []
   const fenced = await runReturnFenceSweep(DB, QUEUE, {
     nowMs: () => Date.parse(NOW_ISO),
     listDemoted: () => Promise.resolve([demoted(null)]),
     enqueueLifecycle: (_db, _queue, params) => {
-      stops.push({ action: params.action, metadata: params.metadata })
+      stops.push({
+        action: params.action,
+        metadata: params.metadata,
+        demoted: params.demoted,
+      })
       return Promise.resolve('cmd-9')
     },
     noteReturnFence: (_db, _member, note) => {
@@ -226,7 +249,7 @@ test('a demoted member whose server is back gets one stop, marked so nothing is 
     },
   })
   assertEquals(fenced, [MEM_OLD])
-  assertEquals(stops, [{ action: 'stop', metadata: { returnFence: true } }])
+  assertEquals(stops, [{ action: 'stop', metadata: { returnFence: true }, demoted: true }])
   assertEquals(notes, [{ commandId: 'cmd-9', attempts: 1 }])
 })
 
