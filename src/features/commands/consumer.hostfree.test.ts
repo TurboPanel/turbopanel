@@ -6,7 +6,10 @@
 import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
-import { recovery } from '../../db/schema.ts'
+import { recovery, replica } from '../../db/schema.ts'
+import type { ManagedMemberRow } from '../managed/members.ts'
+import { ALREADY_WRITABLE_PRIMARY_PROMOTE_ERROR_SAMPLE } from '../managed/promote-resume.ts'
+import { DAEMON_RESTART_INTERRUPTION_MARKER } from '../managed/ha-recovery.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
 import { COMMAND_DISPATCH_FAILURE_RETENTION_MS } from './command-records.ts'
 import type { CommandEnvelope } from './envelope.ts'
@@ -378,6 +381,7 @@ type ConsumerFakeDbOptions = Readonly<{
   recoveryRow?: Record<string, unknown>
   /** The journal read throws (database down), so the failure hook itself fails. */
   throwOnRecoveryRead?: boolean
+  managedMembers?: ManagedMemberRow[]
 }>
 
 function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
@@ -412,6 +416,9 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
             if (table === recovery) {
               if (options.throwOnRecoveryRead) throw new Error('recovery read failed')
               return queryResult(options.recoveryRow ? [options.recoveryRow] : [])
+            }
+            if (table === replica) {
+              return queryResult(options.managedMembers ?? [])
             }
             // getCommandRecord / listServerCommands: explicit command columns
             if (fields && 'name' in fields && 'attempts' in fields) {
@@ -2648,6 +2655,46 @@ function promotingRecoveryRow(): Record<string, unknown> {
 }
 
 const PROMOTE_PAYLOAD = { managedId: MANAGED_ID, memberId: MEMBER_ID, demoteMemberId: DEMOTE_ID }
+const DAEMON_RESTART_PROMOTE_ERROR = `The ${DAEMON_RESTART_INTERRUPTION_MARKER}; the host may be partly changed. Run it again.`
+
+function promoteResumeMembers(): ManagedMemberRow[] {
+  const now = '2020-01-01T00:00:00.000Z'
+  return [
+    {
+      id: DEMOTE_ID,
+      managedId: MANAGED_ID,
+      serverId: SERVER_ID,
+      role: 'primary',
+      replicaClass: null,
+      readEligible: true,
+      ordinal: 1,
+      replicationTransport: 'local',
+      privatePort: null,
+      status: 'needs_resync',
+      metadata: {},
+      options: {},
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: MEMBER_ID,
+      managedId: MANAGED_ID,
+      serverId: SERVER_ID,
+      role: 'replica',
+      replicaClass: 'failover',
+      readEligible: true,
+      ordinal: 2,
+      replicationTransport: 'local',
+      privatePort: 45001,
+      status: 'ready',
+      metadata: {},
+      options: {},
+      createdAt: now,
+      updatedAt: now,
+    },
+  ]
+}
+
 const PROMOTE_RESULT = {
   status: 'ready',
   role: 'primary',
@@ -2719,8 +2766,7 @@ test('a promote lost to a daemon restart still fails its recovery when nothing c
     {
       ...donePending(),
       status: 'failed',
-      error:
-        'The daemon restarted while this command was running; the host may be partly changed. Run it again.',
+      error: DAEMON_RESTART_PROMOTE_ERROR,
       result: undefined,
     },
     {
@@ -2730,6 +2776,70 @@ test('a promote lost to a daemon restart still fails its recovery when nothing c
   )
   assertEquals(fake.recoveryUpdates.length, 1)
   assertEquals(fake.recoveryUpdates[0]?.state, 'failed')
+})
+
+test('a promote lost to a daemon restart re-queues with resume when a queue is available', async () => {
+  const { queue, envelopes } = liveQueue()
+  const fake = await runOnline(
+    'managed.promote',
+    PROMOTE_PAYLOAD,
+    {
+      ...donePending(),
+      status: 'failed',
+      error: DAEMON_RESTART_PROMOTE_ERROR,
+      result: undefined,
+    },
+    {
+      commandMetadata: { recoveryId: RECOVERY_ID },
+      recoveryRow: promotingRecoveryRow(),
+      serverConnected: true,
+      managedMembers: promoteResumeMembers(),
+      deps: { commandQueue: queue, firewallApplyGate: DENY_FIREWALL_APPLY },
+    }
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'failed'),
+    true
+  )
+  assertEquals(
+    fake.recoveryUpdates.some((patch) => patch.state === 'failed'),
+    false
+  )
+  assertEquals(envelopes.length, 1)
+  assertEquals(envelopes[0]?.type, 'managed.promote')
+  const dispatchRow = fake.inserts.find(
+    (row) =>
+      typeof row.payload === 'object' &&
+      row.payload !== null &&
+      (row.payload as { resume?: boolean }).resume === true
+  )
+  assertEquals(dispatchRow !== undefined, true)
+})
+
+test('a resume promote that hits an already-writable primary completes as success', async () => {
+  const fake = await runOnline(
+    'managed.promote',
+    { ...PROMOTE_PAYLOAD, resume: true },
+    {
+      ...donePending(),
+      status: 'failed',
+      error: ALREADY_WRITABLE_PRIMARY_PROMOTE_ERROR_SAMPLE,
+      result: undefined,
+    },
+    {
+      commandMetadata: { recoveryId: RECOVERY_ID },
+      recoveryRow: promotingRecoveryRow(),
+      replicaServerId: SERVER_ID,
+    }
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'succeeded'),
+    true
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'failed'),
+    false
+  )
 })
 
 test('a promote side effect that throws ends its recovery failed for the operator', async () => {

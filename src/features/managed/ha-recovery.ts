@@ -43,6 +43,7 @@ import {
 } from './ha-ingress-gate.ts'
 import type { ManagedIngressFanOutOutcome } from './ingress-desired.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
+import { isTargetAlreadyPrimaryInJournal, promoteResumeRequeueRefusal } from './promote-resume.ts'
 import { findManagedHaHierarchy } from '../system/hierarchy.ts'
 import { loadDatacenterMembershipsForServers } from '../net/datacenter-membership.ts'
 import { isPrivateEndpointError, resolvePrivateEndpoints } from '../net/private-endpoint.ts'
@@ -334,6 +335,8 @@ async function enqueuePromoteOrRecover(
     target: ManagedMemberRow
     actor: RecoveryCommandActor
     haPresent: boolean
+    /** Re-drive after a daemon restart (`resumeInterruptedPromote`). */
+    resume?: boolean
   }
 ): Promise<RecoveryEnqueueResult> {
   const authority = OrchestratorManagedHaAuthority
@@ -383,6 +386,7 @@ async function enqueuePromoteOrRecover(
     memberId: params.target.id,
     engine: params.engine,
     demoteMemberId: params.source.id,
+    ...(params.resume ? { resume: true } : {}),
   }
   const queued = await enqueueCommand(db, commandQueue, {
     serverId: params.target.serverId,
@@ -390,7 +394,10 @@ async function enqueuePromoteOrRecover(
     payload,
     expiresAtMs: PROMOTE_TTL_MS,
     actor: params.actor,
-    metadata: { recoveryId: params.recovery.id },
+    metadata: {
+      recoveryId: params.recovery.id,
+      ...(params.resume ? { promoteResume: true } : {}),
+    },
   })
   if (!queued) {
     await blockUnqueuedPromote(db, params.recovery.id, metadata)
@@ -1360,12 +1367,20 @@ export async function resumeInterruptedPromote(
   try {
     const record = await findRecoveryById(db, params.recoveryId)
     if (record?.state !== 'promoting' || !record.targetMemberId) return false
+    const inflight = await findInFlightRecovery(db, record.managedId)
     const resumes = record.metadata.promoteResumes ?? 0
     if (resumes >= MAX_PROMOTE_RESUMES) return false
     const members = await listManagedMembers(db, record.managedId)
+    const refusal = promoteResumeRequeueRefusal(record, members, inflight)
+    if (refusal) return false
     const source = members.find((row) => row.id === record.sourcePrimaryMemberId)
     const target = members.find((row) => row.id === record.targetMemberId)
-    if (!source || target?.role !== 'replica') return false
+    if (!source || !target) return false
+    if (isTargetAlreadyPrimaryInJournal(record, members)) {
+      await onPromoteSucceeded(db, commandQueue, {}, record.id, params.actor.actorId)
+      return true
+    }
+    if (target.role !== 'replica') return false
     if (!(await isServerConnected(db, target.serverId))) return false
     const result = await enqueuePromoteOrRecover(db, commandQueue, {
       recovery: {
@@ -1377,6 +1392,7 @@ export async function resumeInterruptedPromote(
       target,
       actor: params.actor,
       haPresent: record.metadata.haPresent ?? false,
+      resume: true,
     })
     if (result.ok) {
       compatLogInfo(

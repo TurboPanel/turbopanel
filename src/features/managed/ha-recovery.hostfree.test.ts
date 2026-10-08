@@ -2392,6 +2392,13 @@ test('a promote lost to a daemon restart is queued again while the row is promot
   assertEquals(resumed, true)
   assertEquals(queue.envelopes.length, 1)
   assertEquals((queue.envelopes[0] as { type: string }).type, 'managed.promote')
+  const dispatchRow = harness.commandInserts.find(
+    (row) =>
+      typeof row.payload === 'object' &&
+      row.payload !== null &&
+      (row.payload as { resume?: boolean }).resume === true
+  )
+  assertEquals(dispatchRow !== undefined, true)
   assertEquals(harness.recovery()?.state, 'promoting')
   assertEquals((harness.recovery()?.metadata as { promoteResumes?: number }).promoteResumes, 1)
 })
@@ -2431,7 +2438,7 @@ test('a lost promote is not queued again for another error, without a queue, or 
   assertEquals(await attempt({ state: 'failed' }, DAEMON_RESTART_ERROR, okQueue()), false)
 })
 
-test('a lost promote is not queued again when the target server is offline or the target already is primary', async () => {
+test('a lost promote is not queued again when the target server is offline', async () => {
   const queue = okQueue()
   const offline = createHarness({
     members: [member({ status: 'needs_resync', role: 'replica' }), failoverReplica()],
@@ -2447,6 +2454,11 @@ test('a lost promote is not queued again when the target server is offline or th
     }),
     false
   )
+  assertEquals(queue.envelopes.length, 0)
+})
+
+test('a lost promote completes recovery when the target is already primary in the journal', async () => {
+  const queue = okQueue()
   const promoted = createHarness({
     members: [
       member({ role: 'replica', status: 'needs_resync' }),
@@ -2457,6 +2469,34 @@ test('a lost promote is not queued again when the target server is offline or th
   })
   assertEquals(
     await resumeInterruptedPromote(promoted.db, queue, {
+      recoveryId: REC_ID,
+      engine: 'mysql',
+      actor: ACTOR,
+      error: DAEMON_RESTART_ERROR,
+    }),
+    true
+  )
+  assertEquals(queue.envelopes.length, 0)
+})
+
+test('a lost promote is not queued when another member already became primary', async () => {
+  const queue = okQueue()
+  const harness = createHarness({
+    members: [
+      member({ id: MEM_PRIMARY, role: 'primary' }),
+      failoverReplica({ id: MEM_REPLICA, role: 'replica' }),
+      member({ id: MEM_READ, role: 'primary', serverId: SERVER_B }),
+    ],
+    connected: [true, true, true],
+    recovery: recoveryRow({
+      state: 'promoting',
+      kind: 'switchover',
+      sourcePrimaryMemberId: MEM_PRIMARY,
+      targetMemberId: MEM_REPLICA,
+    }),
+  })
+  assertEquals(
+    await resumeInterruptedPromote(harness.db, queue, {
       recoveryId: REC_ID,
       engine: 'mysql',
       actor: ACTOR,

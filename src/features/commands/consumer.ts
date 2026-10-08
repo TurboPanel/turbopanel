@@ -147,6 +147,10 @@ import {
 } from '../managed/ha-recovery.ts'
 import { settleIngressCommandForRecovery } from '../managed/ha-ingress-gate.ts'
 import {
+  buildSyntheticPromoteSuccessResult,
+  isAlreadyWritablePrimaryPromoteError,
+} from '../managed/promote-resume.ts'
+import {
   enqueueFollowPrimaryOnReplicas,
   handleFollowPrimaryFailure,
 } from '../managed/follow-primary.ts'
@@ -2616,6 +2620,44 @@ export function failureErrorCodeField(
   return {}
 }
 
+async function tryCompleteResumePromoteAsAlreadyWritable(
+  db: Db,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  pending: PendingRequestRecord,
+  deps?: CommandConsumerDeps,
+  error?: string
+): Promise<boolean> {
+  if (record.type !== 'managed.promote') return false
+  let payload: ReturnType<typeof parseManagedPromotePayload>
+  try {
+    payload = parseManagedPromotePayload(record.payload)
+  } catch {
+    return false
+  }
+  if (payload.resume !== true) return false
+  const message = error ?? pending.error ?? record.errorMessage
+  if (!isAlreadyWritablePrimaryPromoteError(message)) return false
+
+  const synthetic = buildSyntheticPromoteSuccessResult(payload)
+  await transitionCommand(db, record.id, {
+    status: 'succeeded',
+    result: resultSummaryForPersist(record.type, synthetic),
+    ackedAt: pending.ackAt ?? pending.finishedAt,
+    startedAt: pending.ackAt ?? pending.finishedAt,
+    finishedAt: pending.finishedAt,
+  })
+  commandConsumerTrace('dispatch-result', {
+    commandId: record.id,
+    commandType: record.type,
+    serverId: envelope.serverId,
+    pendingStatus: pending.status,
+    resultStatus: 'succeeded',
+  })
+  await applySucceededSideEffects(db, record, envelope, synthetic, deps)
+  return true
+}
+
 async function handlePendingFailed(
   db: Db,
   record: DispatchableCommandRecord,
@@ -2624,6 +2666,9 @@ async function handlePendingFailed(
   deps?: CommandConsumerDeps
 ): Promise<void> {
   const error = pending.error ?? 'Command failed'
+  if (await tryCompleteResumePromoteAsAlreadyWritable(db, record, envelope, pending, deps, error)) {
+    return
+  }
   // A sequential deploy that rolled back or needs attention says so in its error
   // text; keep that machine-readable on the row.
   const deployFailure = record.type === 'environment.deploy' ? classifyDeployFailure(error) : null

@@ -5177,6 +5177,12 @@ export type ManagedPromoteCommandPayload = {
    * postgres on the daemon).
    */
   engine?: ManagedEngineCode
+  /**
+   * Set when the control plane re-queues a promote after a daemon restart
+   * (`resumeInterruptedPromote`). The daemon may treat an already-writable
+   * target as success; the instance also completes recovery on that outcome.
+   */
+  resume?: boolean
 }
 
 export type ManagedPromoteCommandResult = {
@@ -6311,6 +6317,12 @@ export function parseManagedPromotePayload(value: unknown): ManagedPromoteComman
       throw new Error('Invalid managed.promote payload')
     }
     payload.engine = value.engine
+  }
+  if (value.resume !== undefined) {
+    if (value.resume !== true) {
+      throw new Error('Invalid managed.promote payload')
+    }
+    payload.resume = true
   }
   return payload
 }
