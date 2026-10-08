@@ -9,22 +9,25 @@ import { serverSchemas } from './servers.ts'
  */
 const test = Deno.test.bind(Deno)
 
-test('ServerDeleteBlockersConflict kind enum includes network and container', () => {
-  const schema = serverSchemas.ServerDeleteBlockersConflict as {
+test('ServerDeleteBlocker kind enum covers forgettable leftovers and remaining RESTRICT FKs', () => {
+  const schema = serverSchemas.ServerDeleteBlocker as {
+    required: string[]
     properties: {
-      blockers: {
-        items: {
-          properties: {
-            kind: { enum: string[] }
-          }
-        }
-      }
+      kind: { enum: string[] }
     }
   }
-  assertEquals(
-    schema.properties.blockers.items.properties.kind.enum,
-    ['network', 'container'],
-  )
+  assertEquals(schema.required, ['kind', 'count', 'label'])
+  assertEquals(schema.properties.kind.enum, [
+    'network',
+    'container',
+    'ip',
+    'environment',
+    'managed',
+    'replica',
+    'deployment',
+    'slot',
+    'copy',
+  ])
 })
 
 test('ServerRow documents tierPlacement against ServerTierPlacement', () => {
@@ -36,16 +39,11 @@ test('ServerRow documents tierPlacement against ServerTierPlacement', () => {
   const placement = serverSchemas.ServerTierPlacement as {
     required: string[]
   }
-  assertEquals(placement.required, [
-    'licenseTier',
-    'requiredTier',
-    'recommendedTier',
-    'unwatched',
-  ])
+  assertEquals(placement.required, ['licenseTier', 'requiredTier', 'recommendedTier', 'unwatched'])
   assertEquals(
     row.properties.tierPlacement.oneOf.some(
-      (entry) => entry.$ref === '#/components/schemas/ServerTierPlacement',
+      (entry) => entry.$ref === '#/components/schemas/ServerTierPlacement'
     ),
-    true,
+    true
   )
 })

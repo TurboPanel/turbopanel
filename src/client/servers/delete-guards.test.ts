@@ -1,15 +1,39 @@
 import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
-import { ip, network, server } from '../../db/schema.ts'
+import {
+  deployment,
+  environment,
+  ip,
+  managed,
+  network,
+  replica,
+  server,
+  slot,
+  storageCopy,
+} from '../../db/schema.ts'
+import { isServerConnectedStoredOrLive } from '../../daemon/cell/server-status.ts'
 import {
   COLOCATED_SERVER_DELETE_BLOCKED_REASON,
+  SERVER_DELETE_BLOCKER_LABELS,
   SERVER_HAS_BLOCKERS_CODE,
   SERVER_HAS_BLOCKERS_ERROR,
+  SERVER_ONLINE_CODE,
+  SERVER_ONLINE_ERROR,
+  assertServerOfflineForForget,
+  blockersThatPreventForget,
+  canForgetServerResources,
   colocatedServerDeleteBlockedReason,
+  isServerOnlineDuringForgetError,
   listServerDeleteBlockers,
+  loadServerDeletePreview,
+  parseForgetResourcesFlag,
+  ServerOnlineDuringForgetError,
   serverDeleteBlockersResponse,
+  serverOnlineForgetBlockedResponse,
   type ServerDeleteBlocker,
+  type ServerDeleteBlockerKind,
 } from './delete-guards.ts'
 
 /**
@@ -30,12 +54,23 @@ function mockContext(): Context {
 
 function thenableRows(rows: unknown[]) {
   const promise = Promise.resolve(rows)
-  return {
+  const chain = {
+    innerJoin: () => chain,
     limit: () => promise,
+    orderBy: () => chain,
     then: promise.then.bind(promise),
     catch: promise.catch.bind(promise),
     finally: promise.finally.bind(promise),
   }
+  return chain
+}
+
+function joinedCount(value: number) {
+  const chain = {
+    innerJoin: () => chain,
+    where: () => thenableRows([{ value }]),
+  }
+  return chain
 }
 
 function deleteBlockersDb(opts: {
@@ -43,45 +78,78 @@ function deleteBlockersDb(opts: {
   networkCount?: number
   containerCount?: number | string
   ipCount?: number
+  environmentCount?: number
+  managedCount?: number
+  replicaCount?: number
+  deploymentCount?: number
+  slotCount?: number
+  copyCount?: number
+  networkRows?: Array<{ id: string; name: string | null }>
+  ipRows?: Array<{ id: string; address: string }>
+  containerRows?: Array<{
+    id: string
+    name: string
+    status: string
+    serviceName: string | null
+  }>
 }): Db {
+  let executeCalls = 0
   return {
-    select: () => ({
-      from: (table: unknown) => ({
-        where: () => {
-          if (table === server) {
-            return {
-              limit: () =>
-                Promise.resolve(
-                  opts.serverMissing ? [] : [{ id: 'server-1' }],
-                ),
+    select: (fields?: Record<string, unknown>) => ({
+      from: (table: unknown) => {
+        if (table === environment) return joinedCount(opts.environmentCount ?? 0)
+        if (table === managed) return joinedCount(opts.managedCount ?? 0)
+        if (table === replica) return joinedCount(opts.replicaCount ?? 0)
+        if (table === deployment) return joinedCount(opts.deploymentCount ?? 0)
+        if (table === slot) return joinedCount(opts.slotCount ?? 0)
+        return {
+          where: () => {
+            if (table === server) {
+              return {
+                limit: () => Promise.resolve(opts.serverMissing ? [] : [{ id: 'server-1' }]),
+                for: () => ({
+                  limit: () => Promise.resolve([{ isConnected: true }]),
+                }),
+              }
             }
-          }
-          if (table === network) {
-            return thenableRows([{ value: opts.networkCount ?? 0 }])
-          }
-          if (table === ip) {
-            return thenableRows([{ value: opts.ipCount ?? 0 }])
-          }
-          return thenableRows([{ value: 0 }])
-        },
-      }),
+            if (table === network) {
+              if (fields && 'name' in fields) {
+                return thenableRows(opts.networkRows ?? [])
+              }
+              return thenableRows([{ value: opts.networkCount ?? 0 }])
+            }
+            if (table === ip) {
+              if (fields && 'address' in fields) {
+                return thenableRows(opts.ipRows ?? [])
+              }
+              return thenableRows([{ value: opts.ipCount ?? 0 }])
+            }
+            if (table === storageCopy) {
+              return thenableRows([{ value: opts.copyCount ?? 0 }])
+            }
+            return thenableRows([{ value: 0 }])
+          },
+        }
+      },
     }),
-    execute: () =>
-      Promise.resolve([{ value: opts.containerCount ?? 0 }]),
+    execute: () => {
+      executeCalls += 1
+      if (executeCalls === 1) {
+        return Promise.resolve([{ value: opts.containerCount ?? 0 }])
+      }
+      return Promise.resolve(opts.containerRows ?? [])
+    },
   } as unknown as Db
 }
 
 test('colocatedServerDeleteBlockedReason returns the stable operator copy', () => {
-  assertEquals(
-    colocatedServerDeleteBlockedReason(),
-    COLOCATED_SERVER_DELETE_BLOCKED_REASON,
-  )
+  assertEquals(colocatedServerDeleteBlockedReason(), COLOCATED_SERVER_DELETE_BLOCKED_REASON)
 })
 
 test('serverDeleteBlockersResponse returns 409 with code and blockers', async () => {
   const blockers: ServerDeleteBlocker[] = [
-    { kind: 'network', count: 2 },
-    { kind: 'container', count: 1 },
+    { kind: 'network', count: 2, label: SERVER_DELETE_BLOCKER_LABELS.network },
+    { kind: 'container', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.container },
   ]
   const response = serverDeleteBlockersResponse(mockContext(), blockers)
   assertEquals(response.status, 409)
@@ -96,7 +164,7 @@ test('listServerDeleteBlockers returns empty when the server is not in the org',
   const blockers = await listServerDeleteBlockers(
     deleteBlockersDb({ serverMissing: true }),
     'server-1',
-    'org-1',
+    'org-1'
   )
   assertEquals(blockers, [])
 })
@@ -109,7 +177,7 @@ test('listServerDeleteBlockers omits zero-count dependency kinds', async () => {
       ipCount: 0,
     }),
     'server-1',
-    'org-1',
+    'org-1'
   )
   assertEquals(blockers, [])
 })
@@ -122,11 +190,246 @@ test('listServerDeleteBlockers reports each positive dependency count', async ()
       ipCount: 4,
     }),
     'server-1',
-    'org-1',
+    'org-1'
   )
   assertEquals(blockers, [
-    { kind: 'network', count: 2 },
-    { kind: 'container', count: 3 },
-    { kind: 'ip', count: 4 },
+    { kind: 'network', count: 2, label: SERVER_DELETE_BLOCKER_LABELS.network },
+    { kind: 'container', count: 3, label: SERVER_DELETE_BLOCKER_LABELS.container },
+    { kind: 'ip', count: 4, label: SERVER_DELETE_BLOCKER_LABELS.ip },
   ])
+})
+
+test('parseForgetResourcesFlag is true only for an explicit true query or body', () => {
+  assertEquals(parseForgetResourcesFlag(undefined, {}), false)
+  assertEquals(parseForgetResourcesFlag('1', {}), false)
+  assertEquals(parseForgetResourcesFlag('false', { forgetResources: 'true' }), false)
+  assertEquals(parseForgetResourcesFlag('true', {}), true)
+  assertEquals(parseForgetResourcesFlag(undefined, { forgetResources: true }), true)
+})
+
+test('serverOnlineForgetBlockedResponse returns 409 server_online', async () => {
+  const response = serverOnlineForgetBlockedResponse(mockContext())
+  assertEquals(response.status, 409)
+  assertEquals(await response.json(), {
+    error: SERVER_ONLINE_ERROR,
+    code: SERVER_ONLINE_CODE,
+  })
+})
+
+test('loadServerDeletePreview lists leftovers and sets canForget when offline', async () => {
+  const preview = await loadServerDeletePreview(
+    deleteBlockersDb({
+      networkCount: 1,
+      containerCount: 1,
+      ipCount: 1,
+      networkRows: [{ id: 'net-1', name: 'leftover-net' }],
+      ipRows: [{ id: 'ip-1', address: '203.0.113.10' }],
+      containerRows: [
+        {
+          id: 'ctr-1',
+          name: 'web-1',
+          status: 'exited',
+          serviceName: 'web',
+        },
+      ],
+    }),
+    'server-1',
+    'org-1',
+    { online: false, colocated: false }
+  )
+  assertEquals(preview.online, false)
+  assertEquals(preview.canForget, true)
+  assertEquals(preview.colocated, false)
+  assertEquals(preview.blockers, [
+    { kind: 'network', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.network },
+    { kind: 'container', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.container },
+    { kind: 'ip', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.ip },
+  ])
+  assertEquals(preview.containers, {
+    items: [{ id: 'ctr-1', name: 'web-1', status: 'exited', serviceName: 'web' }],
+    more: 0,
+  })
+  assertEquals(preview.networks, {
+    items: [{ id: 'net-1', name: 'leftover-net' }],
+    more: 0,
+  })
+  assertEquals(preview.ips, {
+    items: [{ id: 'ip-1', address: '203.0.113.10' }],
+    more: 0,
+  })
+})
+
+test('loadServerDeletePreview caps each list at 50 and reports more', async () => {
+  const preview = await loadServerDeletePreview(
+    deleteBlockersDb({
+      networkCount: 51,
+      containerCount: 51,
+      ipCount: 51,
+      networkRows: Array.from({ length: 50 }, (_, i) => ({
+        id: `net-${i}`,
+        name: `n${i}`,
+      })),
+      ipRows: Array.from({ length: 50 }, (_, i) => ({
+        id: `ip-${i}`,
+        address: `203.0.113.${i}`,
+      })),
+      containerRows: Array.from({ length: 50 }, (_, i) => ({
+        id: `ctr-${i}`,
+        name: `c${i}`,
+        status: 'exited',
+        serviceName: null,
+      })),
+    }),
+    'server-1',
+    'org-1',
+    { online: false, colocated: false }
+  )
+  assertEquals(preview.containers.items.length, 50)
+  assertEquals(preview.containers.more, 1)
+  assertEquals(preview.networks.more, 1)
+  assertEquals(preview.ips.more, 1)
+})
+
+test('loadServerDeletePreview sets canForget false when online or colocated', async () => {
+  const online = await loadServerDeletePreview(deleteBlockersDb({}), 'server-1', 'org-1', {
+    online: true,
+    colocated: false,
+  })
+  assertEquals(online.canForget, false)
+  const colocated = await loadServerDeletePreview(deleteBlockersDb({}), 'server-1', 'org-1', {
+    online: false,
+    colocated: true,
+  })
+  assertEquals(colocated.canForget, false)
+  assertEquals(colocated.colocated, true)
+})
+
+const RESTRICT_BLOCKER_KINDS = [
+  'environment',
+  'managed',
+  'replica',
+  'deployment',
+  'slot',
+  'copy',
+] as const satisfies readonly ServerDeleteBlockerKind[]
+
+const RESTRICT_COUNT_KEYS = {
+  environment: 'environmentCount',
+  managed: 'managedCount',
+  replica: 'replicaCount',
+  deployment: 'deploymentCount',
+  slot: 'slotCount',
+  copy: 'copyCount',
+} as const
+
+for (const kind of RESTRICT_BLOCKER_KINDS) {
+  test(`listServerDeleteBlockers reports ${kind} leftovers with a UI label`, async () => {
+    const blockers = await listServerDeleteBlockers(
+      deleteBlockersDb({ [RESTRICT_COUNT_KEYS[kind]]: 2 }),
+      'server-1',
+      'org-1'
+    )
+    assertEquals(blockers, [{ kind, count: 2, label: SERVER_DELETE_BLOCKER_LABELS[kind] }])
+  })
+
+  test(`loadServerDeletePreview sets canForget false when a ${kind} blocker remains`, async () => {
+    const preview = await loadServerDeletePreview(
+      deleteBlockersDb({ [RESTRICT_COUNT_KEYS[kind]]: 1 }),
+      'server-1',
+      'org-1',
+      { online: false, colocated: false }
+    )
+    assertEquals(preview.canForget, false)
+    assertEquals(preview.blockers[0]?.kind, kind)
+  })
+}
+
+test('blockersThatPreventForget drops only container, network, and address kinds', () => {
+  const blockers: ServerDeleteBlocker[] = [
+    { kind: 'network', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.network },
+    { kind: 'environment', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.environment },
+  ]
+  assertEquals(blockersThatPreventForget(blockers), [blockers[1]])
+})
+
+test('canForgetServerResources is true only for forgettable leftover kinds while offline', () => {
+  const forgettable: ServerDeleteBlocker[] = [
+    { kind: 'ip', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.ip },
+  ]
+  assertEquals(
+    canForgetServerResources({ online: false, colocated: false, blockers: forgettable }),
+    true
+  )
+  assertEquals(
+    canForgetServerResources({
+      online: false,
+      colocated: false,
+      blockers: [{ kind: 'replica', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.replica }],
+    }),
+    false
+  )
+})
+
+test('isServerConnectedStoredOrLive is true when the stored column is connected', async () => {
+  assertEquals(await isServerConnectedStoredOrLive({} as Db, undefined, 'server-1', true), true)
+})
+
+test('isServerConnectedStoredOrLive is true when the column is false but the live snapshot is connected', async () => {
+  const now = new Date().toISOString()
+  const db = {
+    select: () => ({
+      from: () => ({
+        where: () =>
+          Promise.resolve([
+            {
+              id: 'server-1',
+              daemon: {},
+              metadata: {},
+              hostname: null,
+              machineKey: null,
+              osId: null,
+              osFamily: null,
+              osVersion: null,
+              osCodename: null,
+              osPrettyName: null,
+              osArchitecture: null,
+              timezone: null,
+              isTimeSyncEnabled: null,
+              ntpServers: null,
+              ntpLastSyncedAt: null,
+              connected: false,
+              statusChangedAt: '2020-01-01T00:00:00.000Z',
+            },
+          ]),
+      }),
+    }),
+  } as unknown as Db
+  const registry = {
+    getSnapshots: () =>
+      Promise.resolve(
+        new Map([
+          [
+            'server-1',
+            {
+              serverId: 'server-1',
+              version: 1,
+              updatedAt: now,
+              connected: true,
+              lastInboundAt: now,
+            },
+          ],
+        ])
+      ),
+  } as unknown as DaemonCellRegistry
+  assertEquals(await isServerConnectedStoredOrLive(db, registry, 'server-1', false), true)
+})
+
+test('assertServerOfflineForForget refuses when the locked row is connected', async () => {
+  try {
+    await assertServerOfflineForForget(deleteBlockersDb({}), 'server-1')
+    throw new Error('expected ServerOnlineDuringForgetError')
+  } catch (err) {
+    assertEquals(err instanceof ServerOnlineDuringForgetError, true)
+    assertEquals(isServerOnlineDuringForgetError(err), true)
+  }
 })
