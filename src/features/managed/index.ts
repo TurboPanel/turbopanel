@@ -73,6 +73,7 @@ export {
   MANAGED_ENGINE_RELEASES,
   managedAllowedImagesForEngine,
   managedCreatableReleasesForEngine,
+  managedImageFailoverSupport,
   type ManagedEngineLifecycle,
   type ManagedEngineRelease,
   type ManagedImageDescriptor,

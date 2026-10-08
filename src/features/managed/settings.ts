@@ -147,12 +147,13 @@ export function getManagedReservedEnvKeys(engine: string): ReadonlySet<string> {
  * major version.
  *
  * These are the **tested** series only (`ManagedEngineRelease.tested`):
- * PostgreSQL 18, MySQL 9.7, MariaDB 12.3, each with both of its base-OS
- * variants. A series the catalog merely knows about — so an already-persisted
- * image can still be named — is not accepted here.
+ * PostgreSQL 18, MySQL 9.7 and 8.4, MariaDB 12.3 and 11.8, each with both of
+ * its base-OS variants. A series the catalog merely knows about — so an
+ * already-persisted image can still be named — is not accepted here.
  *
- * Ordering is catalog order (default series first, default variant first), so
- * the head of each list is that engine's default image.
+ * Ordering is catalog order (newest series first, default variant first). The
+ * default image is `defaultManagedImage`, not necessarily the head of the list
+ * (MariaDB's default is 11.8 while 12.3 is listed first).
  */
 export const POSTGRES_ALLOWED_IMAGES: readonly string[] =
   managedAllowedImagesForEngine('postgres') ?? []

@@ -2950,6 +2950,46 @@ test('DELETE cluster with no bindings is unchanged and reports no detached list'
   assertEquals('detached' in (await jsonOf(res)), false)
 })
 
+const MARIADB_FAILOVER_UNSUPPORTED_REASON =
+  'MariaDB 12.3 can run on one server; automatic failover needs MariaDB 11.8 for now.'
+
+test('POST members refuses MariaDB 12.3 with 422 managed_failover_unsupported', async () => {
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb({
+      managedRows: [rowFor(mariadbEngineSpec, 'docker.io/library/mariadb:12.3')],
+      projectRows: [{ metadata: { code: 'mariadb' } }],
+    }),
+  })
+  const res = await app.request(envPath('/members'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ serverId: REPLICA_SERVER_ID }),
+  })
+  assertEquals(res.status, 422)
+  assertEquals(await jsonOf(res), {
+    error: MARIADB_FAILOVER_UNSUPPORTED_REASON,
+    code: 'managed_failover_unsupported',
+  })
+})
+
+test('POST members allows MariaDB 11.8 past the failover gate', async () => {
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb({
+      managedRows: [rowFor(mariadbEngineSpec, 'docker.io/library/mariadb:11.8')],
+      projectRows: [{ metadata: { code: 'mariadb' } }],
+    }),
+  })
+  const res = await app.request(envPath('/members'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ serverId: REPLICA_SERVER_ID }),
+  })
+  assertEquals(res.status, 422)
+  const body = await jsonOf(res)
+  assertEquals(body.code, undefined)
+  assertEquals(body.error === MARIADB_FAILOVER_UNSUPPORTED_REASON, false)
+})
+
 test('POST members surfaces a private-path error for an unreachable replica host', async () => {
   const { app, cookie } = await buildApp({
     db: applyReadyDb(),

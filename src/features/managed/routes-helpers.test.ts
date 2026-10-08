@@ -149,6 +149,10 @@ test('create accepts only the verified series', () => {
     parseManagedVersionSelection('mariadb', { engineSeries: '11.8', imageVariant: 'ubi' }),
     { ok: true, image: 'docker.io/library/mariadb:11.8-ubi' }
   )
+  assertEquals(parseManagedVersionSelection('mariadb', { imageVariant: 'ubi' }), {
+    ok: true,
+    image: 'docker.io/library/mariadb:11.8-ubi',
+  })
 
   // Every other catalogued series is refused — it is known, not tested.
   for (const [engine, series] of [

@@ -24,8 +24,8 @@ function defaultSettings(overrides: Partial<MariadbManagedSettings> = {}): Maria
   return parsed as MariadbManagedSettings
 }
 
-test('default image is the approved MariaDB 12.3 LTS reference', () => {
-  assertEquals(mariadbEngineSpec.defaultImage, 'docker.io/library/mariadb:12.3')
+test('default image is the approved MariaDB 11.8 LTS reference', () => {
+  assertEquals(mariadbEngineSpec.defaultImage, 'docker.io/library/mariadb:11.8')
   assertEquals(MARIADB_ALLOWED_IMAGES.includes(mariadbEngineSpec.defaultImage), true)
   assertEquals(mariadbEngineSpec.displayName, 'MariaDB')
   assertEquals(mariadbEngineSpec.principalProvider, 'mysql')
