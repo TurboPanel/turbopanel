@@ -930,9 +930,11 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       checksum:
         'Lowercase SHA-256 hex digest of the artifact computed by the daemon; a restore refuses on mismatch.',
       database: 'Database name for a single-database backup; null for an instance-scope backup.',
-      path: "Absolute artifact path on the primary server's filesystem as reported by the daemon.",
+      path: 'Absolute artifact path on the filesystem of the host that made it, as reported by the daemon.',
       retention_id:
         'The `retention` whose scheduled run made this artifact; null for a manual backup or once that retention is deleted.',
+      server_id:
+        'Host that holds the on-disk artifact (the primary when the backup ran); null on older rows or after that server is deleted.',
     },
   },
   retention: {

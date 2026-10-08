@@ -200,10 +200,16 @@ test('a believed report records the run, the artifact and the next run, once', a
     assertEquals(runs, [{ status: 'succeeded', backupRef: 'bk_new' }])
 
     const artifacts = await fixture.db
-      .select({ backupId: backup.backupId, policyId: backup.retentionId })
+      .select({
+        backupId: backup.backupId,
+        policyId: backup.retentionId,
+        serverId: backup.serverId,
+      })
       .from(backup)
       .where(eq(backup.managedId, fixture.managedId))
-    assertEquals(artifacts, [{ backupId: 'bk_new', policyId: fixture.policyId }])
+    assertEquals(artifacts, [
+      { backupId: 'bk_new', policyId: fixture.policyId, serverId: fixture.serverA },
+    ])
 
     const [policy] = await fixture.db
       .select({ nextRunAt: retention.nextRunAt, updatedAt: retention.updatedAt })

@@ -22,6 +22,11 @@ export type ManagedBackupRecord = {
   path: string
   /** The `retention` whose scheduled run made it; absent for a manual backup. */
   retentionId?: string
+  /**
+   * Host that holds the on-disk artifact (the primary when the backup ran).
+   * Absent on older rows, or after that server was deleted.
+   */
+  serverId?: string
 }
 
 function toRecord(row: typeof backup.$inferSelect): ManagedBackupRecord {
@@ -34,6 +39,7 @@ function toRecord(row: typeof backup.$inferSelect): ManagedBackupRecord {
     ...(row.database !== null ? { database: row.database } : {}),
     path: row.path,
     ...(row.retentionId !== null ? { retentionId: row.retentionId } : {}),
+    ...(row.serverId !== null ? { serverId: row.serverId } : {}),
   }
 }
 
@@ -59,6 +65,8 @@ export async function insertManagedBackup(
     createdAt?: string
     /** The `retention` whose scheduled run made it; omitted for a manual backup. */
     retentionId?: string
+    /** Host that wrote the artifact; omitted only for pre-column callers. */
+    serverId?: string
   }
 ): Promise<ManagedBackupRecord> {
   const [row] = await db
@@ -71,6 +79,7 @@ export async function insertManagedBackup(
       database: params.database ?? null,
       path: params.path,
       retentionId: params.retentionId ?? null,
+      serverId: params.serverId ?? null,
       ...(params.createdAt !== undefined ? { createdAt: params.createdAt } : {}),
     })
     .onConflictDoNothing({ target: [backup.managedId, backup.backupId] })
