@@ -1,4 +1,18 @@
-import { SERVER_DELETE_BLOCKER_KIND_VALUES } from '../servers/delete-guards.ts'
+import {
+  SERVER_DELETE_BLOCKER_KIND_VALUES,
+  SERVER_SERVICES_REMOVAL_KIND_VALUES,
+} from '../servers/delete-guards.ts'
+
+function cappedListSchema(item: Record<string, unknown>) {
+  return {
+    type: 'object',
+    required: ['items', 'more'],
+    properties: {
+      items: { type: 'array', items: item },
+      more: { type: 'integer', minimum: 0 },
+    },
+  }
+}
 
 export const serverSchemas = {
   ServerOsMetadata: {
@@ -981,6 +995,146 @@ export const serverSchemas = {
       },
     },
   },
+  ServerServicesRemovalReason: {
+    type: 'object',
+    required: ['kind', 'count', 'message'],
+    properties: {
+      kind: {
+        type: 'string',
+        enum: [...SERVER_SERVICES_REMOVAL_KIND_VALUES],
+      },
+      count: { type: 'integer', minimum: 1 },
+      message: {
+        type: 'string',
+        description:
+          'One plain-language sentence for this leftover kind. Kinds match `listServerDeleteBlockers` plus `colocated` (this host runs the control panel and cannot be removed). When `removal.canForget` is true, container, network, and address sentences mention Delete server → Host is gone.',
+      },
+    },
+  },
+  ServerServicesResponse: {
+    type: 'object',
+    required: [
+      'serverId',
+      'removal',
+      'apps',
+      'databases',
+      'databaseUsers',
+      'backups',
+      'networks',
+      'ipCount',
+      'runtimes',
+    ],
+    properties: {
+      serverId: { type: 'string', format: 'uuid' },
+      removal: {
+        type: 'object',
+        required: ['canRemove', 'online', 'canForget', 'reasons'],
+        properties: {
+          canRemove: { type: 'boolean' },
+          online: {
+            type: 'boolean',
+            description:
+              'True when the live cell snapshot is connected or the stored `is_connected` column is true.',
+          },
+          canForget: {
+            type: 'boolean',
+            description:
+              'True when the server is offline, is not the co-located control plane host, and the only leftovers are forgettable container, network, or address rows. The owner can then use Delete server → Host is gone.',
+          },
+          reasons: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/ServerServicesRemovalReason' },
+          },
+        },
+      },
+      apps: cappedListSchema({
+        type: 'object',
+        required: ['serviceId', 'name', 'project', 'environment', 'containers', 'domains'],
+        properties: {
+          serviceId: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          project: { type: 'string' },
+          environment: { type: 'string' },
+          containers: cappedListSchema({
+            type: 'object',
+            required: ['name', 'status', 'role'],
+            properties: {
+              name: { type: 'string' },
+              status: { type: 'string' },
+              role: { type: 'string' },
+            },
+          }),
+          domains: cappedListSchema({ type: 'string' }),
+        },
+      }),
+      databases: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['managedId', 'name', 'engine', 'role', 'status', 'readEligible', 'ordinal'],
+          properties: {
+            managedId: { type: 'string', format: 'uuid' },
+            name: { type: 'string' },
+            engine: { type: 'string' },
+            role: { type: 'string', enum: ['primary', 'replica'] },
+            status: { type: 'string' },
+            readEligible: { type: 'boolean' },
+            ordinal: { type: 'integer' },
+          },
+        },
+      },
+      databaseUsers: {
+        ...cappedListSchema({
+          type: 'object',
+          required: ['serviceId', 'serviceName', 'databases'],
+          properties: {
+            serviceId: { type: 'string', format: 'uuid' },
+            serviceName: { type: 'string' },
+            databases: { type: 'array', items: { type: 'string' } },
+          },
+        }),
+        description:
+          'Apps on this host bound to a managed database, grouped one entry per app with the database names it uses (they reach those databases through this host). Capped like other lists.',
+      },
+      backups: {
+        ...cappedListSchema({
+          type: 'object',
+          required: ['managedId', 'managedName', 'count', 'latestAt'],
+          properties: {
+            managedId: { type: 'string', format: 'uuid' },
+            managedName: { type: 'string' },
+            count: { type: 'integer', minimum: 0 },
+            latestAt: { type: 'string', format: 'date-time' },
+          },
+        }),
+        description:
+          'Backups of databases that have a member on this server. Counts are per database, not multiplied by how many members sit here.',
+      },
+      networks: cappedListSchema({
+        type: 'object',
+        required: ['id', 'name', 'kind'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          kind: { type: 'string' },
+        },
+      }),
+      ipCount: { type: 'integer', minimum: 0 },
+      runtimes: {
+        type: 'array',
+        description:
+          'Installed runtimes from stored daemon facts (`server.metadata.runtimes`). Empty when none are stored.',
+        items: {
+          type: 'object',
+          required: ['kind', 'versions'],
+          properties: {
+            kind: { type: 'string' },
+            versions: { type: 'array', items: { type: 'string' } },
+          },
+        },
+      },
+    },
+  },
 }
 
 export const serverPaths: Record<string, unknown> = {
@@ -1924,6 +2078,81 @@ export const serverPaths: Record<string, unknown> = {
         },
         '404': {
           description: 'Server not found',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/services': {
+    get: {
+      tags: ['Servers'],
+      summary: 'List what is attached to a server',
+      description:
+        "Read-gated, organization-scoped snapshot of apps, databases, bindings, backups of databases that have a member here, networks, and stored runtimes for one server. Lists of apps, containers, domains, database users, networks, and backups are capped (50 plus `more`). Removal reasons reuse `listServerDeleteBlockers` plus the co-located-host rule so this view and DELETE cannot disagree; `online` and `canForget` match delete-preview. Another organization's server is 404.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Attached services snapshot',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerServicesResponse' },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '404': {
+          description: 'Server not found in this organization',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error'],
+                properties: { error: { type: 'string' } },
+              },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
           content: {
             'application/json': {
               schema: {
