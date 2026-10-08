@@ -25,7 +25,7 @@ import {
 } from './delete-guards.ts'
 import { hasActiveColocatedLicenseBinding, resolveColocatedServerIdSet } from './colocated.ts'
 
-export type ServerServicesRemovalKind = ServerDeleteBlockerKind | 'colocated' | 'managed' | 'backup'
+export type ServerServicesRemovalKind = ServerDeleteBlockerKind | 'colocated'
 
 export type ServerServicesRemovalReason = {
   kind: ServerServicesRemovalKind
@@ -107,7 +107,8 @@ export type ServerServicesResponse = {
 
 export function serverServicesRemovalMessage(
   kind: ServerServicesRemovalKind,
-  count: number
+  count: number,
+  label: string
 ): string {
   switch (kind) {
     case 'container':
@@ -125,18 +126,12 @@ export function serverServicesRemovalMessage(
         return '1 address is still assigned here: remove it first'
       }
       return `${count} addresses are still assigned here: remove them first`
-    case 'managed':
-      if (count === 1) {
-        return '1 database still runs here: move or remove it first'
-      }
-      return `${count} databases still run here: move or remove them first`
-    case 'backup':
-      if (count === 1) {
-        return '1 backup is still stored here: remove it first'
-      }
-      return `${count} backups are still stored here: remove them first`
     case 'colocated':
       return colocatedServerDeleteBlockedReason()
+    default:
+      return count > 1
+        ? `Still on this server: ${label} (${count})`
+        : `Still on this server: ${label}`
   }
 }
 
@@ -149,14 +144,14 @@ export function serverServicesRemovalReasons(
     reasons.push({
       kind: 'colocated',
       count: 1,
-      message: serverServicesRemovalMessage('colocated', 1),
+      message: serverServicesRemovalMessage('colocated', 1, ''),
     })
   }
   for (const blocker of blockers) {
     reasons.push({
       kind: blocker.kind,
       count: blocker.count,
-      message: serverServicesRemovalMessage(blocker.kind, blocker.count),
+      message: serverServicesRemovalMessage(blocker.kind, blocker.count, blocker.label),
     })
   }
   return reasons

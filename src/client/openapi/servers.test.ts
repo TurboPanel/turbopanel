@@ -9,19 +9,25 @@ import { serverSchemas } from './servers.ts'
  */
 const test = Deno.test.bind(Deno)
 
-test('ServerDeleteBlockersConflict kind enum includes network and container', () => {
-  const schema = serverSchemas.ServerDeleteBlockersConflict as {
+test('ServerDeleteBlocker kind enum covers forgettable leftovers and remaining RESTRICT FKs', () => {
+  const schema = serverSchemas.ServerDeleteBlocker as {
+    required: string[]
     properties: {
-      blockers: {
-        items: {
-          properties: {
-            kind: { enum: string[] }
-          }
-        }
-      }
+      kind: { enum: string[] }
     }
   }
-  assertEquals(schema.properties.blockers.items.properties.kind.enum, ['network', 'container'])
+  assertEquals(schema.required, ['kind', 'count', 'label'])
+  assertEquals(schema.properties.kind.enum, [
+    'network',
+    'container',
+    'ip',
+    'environment',
+    'managed',
+    'replica',
+    'deployment',
+    'slot',
+    'copy',
+  ])
 })
 
 test('ServerServicesResponse documents the attached-services snapshot', () => {

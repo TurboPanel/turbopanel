@@ -16,30 +16,44 @@ const test = Deno.test.bind(Deno)
 
 test('serverServicesRemovalMessage uses plain words for each blocker kind', () => {
   assertEquals(
-    serverServicesRemovalMessage('container', 1),
+    serverServicesRemovalMessage('container', 1, ''),
     '1 container still runs here: stop or move the apps first'
   )
   assertEquals(
-    serverServicesRemovalMessage('container', 2),
+    serverServicesRemovalMessage('container', 2, ''),
     '2 containers still run here: stop or move the apps first'
   )
   assertEquals(
-    serverServicesRemovalMessage('network', 1),
+    serverServicesRemovalMessage('network', 1, ''),
     '1 network still uses this server: remove it first'
   )
   assertEquals(
-    serverServicesRemovalMessage('ip', 3),
+    serverServicesRemovalMessage('ip', 3, ''),
     '3 addresses are still assigned here: remove them first'
   )
-  assertEquals(serverServicesRemovalMessage('colocated', 1), COLOCATED_SERVER_DELETE_BLOCKED_REASON)
+  assertEquals(
+    serverServicesRemovalMessage('colocated', 1, ''),
+    COLOCATED_SERVER_DELETE_BLOCKED_REASON
+  )
+})
+
+test('serverServicesRemovalMessage falls back to the guard label for other blockers', () => {
+  assertEquals(
+    serverServicesRemovalMessage('replica', 1, 'a database member is still placed on this server'),
+    'Still on this server: a database member is still placed on this server'
+  )
+  assertEquals(
+    serverServicesRemovalMessage('deployment', 3, 'a deployment'),
+    'Still on this server: a deployment (3)'
+  )
 })
 
 test('serverServicesRemovalReasons prepends colocated then maps delete blockers', () => {
   assertEquals(
     serverServicesRemovalReasons(
       [
-        { kind: 'network', count: 1 },
-        { kind: 'container', count: 2 },
+        { kind: 'network', count: 1, label: 'a network' },
+        { kind: 'container', count: 2, label: 'a container' },
       ],
       true
     ),
