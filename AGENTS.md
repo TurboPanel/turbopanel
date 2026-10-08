@@ -97,16 +97,14 @@ the systemd table for ownership, ACLs, and `/run/turbopanel` **`2770 tp:tp`**
 | `tpapache`   | 9991    | Apache (optional)                                              |
 | `tpols`      | 9990    | OpenLiteSpeed (optional)                                       |
 | `tplsws`     | 9989    | LiteSpeed Enterprise (reserved)                                |
-| `tpnodeapp`  | 9988    | group only — read+traverse on the vendored tenant Node tree    |
 
 Tenant principals: **15001–60000** (host-picked from that band, or an operator override inside it; 61184–65519 above it is systemd's throwaway build users).
 
-`tpnodeapp` is a **group with no user**: tenant principals join it when their
-first native (`serviceKind: node`) app deploys, and it means only "may execute
-`/opt/turbopanel/vendor/node-app/<series>/current/bin/node`". Principals are
-deliberately never added to `tp`, and `/opt/turbopanel` + `vendor/` stay
-`tp:tp 0750` — the group reaches the tree through a traverse-only POSIX ACL on
-those two directories (`node-app-runtime` role), never through world bits.
+There are **no per-version runtime groups**. Every PHP, Node and Deno version
+installed on a server may be run by every site owner's Linux user: the vendored
+trees are root-owned, readable and executable by everyone, never writable, and
+the daemon sends no per-version list. Principals are still never added to
+`tp`.
 
 **Application logins are unchanged** — `postgres_user`/`postgres_db` =
 `turbopanel`, RabbitMQ user = `turbopanel`, Docker network/volumes =
