@@ -165,10 +165,10 @@ async function withCluster(
     await Promise.all(
       serverIds.map((serverId, index) =>
         db.insert(ip).values({
-          organizationId,
+          organizationId: organizationId!,
           datacenterId: dc!.id,
           networkId: net!.id,
-          serverId,
+          serverId: serverId!,
           address: `10.91.0.${10 + index}`,
           allocation: 'dedicated',
           scope: 'datacenter',
@@ -371,58 +371,57 @@ test('loadEngineDefaultPort is a no-op when the engine has no default port', asy
 })
 
 test('outstandingFollowPrimaryMemberIds counts queued repoints and ignores terminal ones', async () => {
-  await withCluster(
-    { replicas: [{ status: 'ready' }, { status: 'ready' }] },
-    async (c) => {
-      const queuedMemberId = c.replicaMemberIds[0]!
-      const terminalMemberId = c.replicaMemberIds[1]!
-      await insertFollowPrimaryCommand(c.db, {
-        serverId: c.replicaServerIds[0]!,
-        actorId: c.actorId,
-        managedId: c.managedId,
-        memberId: queuedMemberId,
-        status: 'queued',
-      })
-      await insertFollowPrimaryCommand(c.db, {
-        serverId: c.replicaServerIds[1]!,
-        actorId: c.actorId,
-        managedId: c.managedId,
-        memberId: terminalMemberId,
-        status: 'succeeded',
-      })
-      await insertFollowPrimaryCommand(c.db, {
-        serverId: c.replicaServerIds[1]!,
-        actorId: c.actorId,
-        managedId: c.managedId,
-        context: { managedId: c.managedId },
-        status: 'queued',
-      })
-      await insertFollowPrimaryCommand(c.db, {
-        serverId: c.replicaServerIds[0]!,
-        actorId: c.actorId,
-        managedId: c.managedId,
-        context: [{ managedId: c.managedId, memberId: queuedMemberId }],
-        status: 'queued',
-      })
-      const queue = collectingQueue()
-      await enqueueFollowPrimaryOnReplicas(c.db, queue, {
-        managedId: c.managedId,
-        newPrimaryMemberId: c.primaryMemberId,
-        actorId: c.actorId,
-      })
-      const published = (await failoverCommandsForManaged(c.db, c.managedId)).filter((row) => {
-        const context = row.context as { memberId?: string }
-        return context.memberId === terminalMemberId && row.status === 'queued'
-      })
-      assertEquals(published.length, 1)
-      assertEquals(published[0]?.serverId, c.replicaServerIds[1])
-      const skipped = (await failoverCommandsForManaged(c.db, c.managedId)).filter((row) => {
-        const context = row.context as { memberId?: string }
-        return context.memberId === queuedMemberId && queue.sent.some((item) => item.commandId === row.id)
-      })
-      assertEquals(skipped.length, 0)
-    }
-  )
+  await withCluster({ replicas: [{ status: 'ready' }, { status: 'ready' }] }, async (c) => {
+    const queuedMemberId = c.replicaMemberIds[0]!
+    const terminalMemberId = c.replicaMemberIds[1]!
+    await insertFollowPrimaryCommand(c.db, {
+      serverId: c.replicaServerIds[0]!,
+      actorId: c.actorId,
+      managedId: c.managedId,
+      memberId: queuedMemberId,
+      status: 'queued',
+    })
+    await insertFollowPrimaryCommand(c.db, {
+      serverId: c.replicaServerIds[1]!,
+      actorId: c.actorId,
+      managedId: c.managedId,
+      memberId: terminalMemberId,
+      status: 'succeeded',
+    })
+    await insertFollowPrimaryCommand(c.db, {
+      serverId: c.replicaServerIds[1]!,
+      actorId: c.actorId,
+      managedId: c.managedId,
+      context: { managedId: c.managedId },
+      status: 'queued',
+    })
+    await insertFollowPrimaryCommand(c.db, {
+      serverId: c.replicaServerIds[0]!,
+      actorId: c.actorId,
+      managedId: c.managedId,
+      context: [{ managedId: c.managedId, memberId: queuedMemberId }],
+      status: 'queued',
+    })
+    const queue = collectingQueue()
+    await enqueueFollowPrimaryOnReplicas(c.db, queue, {
+      managedId: c.managedId,
+      newPrimaryMemberId: c.primaryMemberId,
+      actorId: c.actorId,
+    })
+    const published = (await failoverCommandsForManaged(c.db, c.managedId)).filter((row) => {
+      const context = row.context as { memberId?: string }
+      return context.memberId === terminalMemberId && row.status === 'queued'
+    })
+    assertEquals(published.length, 1)
+    assertEquals(published[0]?.serverId, c.replicaServerIds[1])
+    const skipped = (await failoverCommandsForManaged(c.db, c.managedId)).filter((row) => {
+      const context = row.context as { memberId?: string }
+      return (
+        context.memberId === queuedMemberId && queue.sent.some((item) => item.commandId === row.id)
+      )
+    })
+    assertEquals(skipped.length, 0)
+  })
 })
 
 test('publishFollowPrimaryCommand marks the record failed when the queue rejects', async () => {
