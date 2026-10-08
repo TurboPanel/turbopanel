@@ -1,4 +1,4 @@
-import { count, eq, inArray, max } from 'drizzle-orm'
+import { and, count, eq, inArray, max, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import {
@@ -15,17 +15,27 @@ import {
   project,
   replica,
   service,
+  workspace,
 } from '../../db/schema.ts'
 import { parseServerRuntimeMetadata } from '../../features/servers/server-metadata.ts'
 import {
-  colocatedServerDeleteBlockedReason,
+  canForgetServerResources,
   listServerDeleteBlockers,
+  notSystemWorkspace,
+  SERVER_DELETE_PREVIEW_LIST_CAP,
+  type CappedPreviewList,
   type ServerDeleteBlocker,
-  type ServerDeleteBlockerKind,
+  type ServerServicesRemovalKind,
 } from './delete-guards.ts'
 import { hasActiveColocatedLicenseBinding, resolveColocatedServerIdSet } from './colocated.ts'
 
-export type ServerServicesRemovalKind = ServerDeleteBlockerKind | 'colocated'
+export type { ServerServicesRemovalKind }
+export { SERVER_SERVICES_REMOVAL_KIND_VALUES } from './delete-guards.ts'
+
+/** Shared with delete-preview leftover lists. */
+export const SERVER_SERVICES_LIST_CAP = SERVER_DELETE_PREVIEW_LIST_CAP
+
+export type ServerServicesCappedList<T> = CappedPreviewList<T>
 
 export type ServerServicesRemovalReason = {
   kind: ServerServicesRemovalKind
@@ -44,8 +54,8 @@ export type ServerServicesApp = {
   name: string
   project: string
   environment: string
-  containers: ServerServicesAppContainer[]
-  domains: string[]
+  containers: ServerServicesCappedList<ServerServicesAppContainer>
+  domains: ServerServicesCappedList<string>
 }
 
 export type ServerServicesDatabase = {
@@ -61,8 +71,7 @@ export type ServerServicesDatabase = {
 export type ServerServicesDatabaseUser = {
   serviceId: string
   serviceName: string
-  databaseName: string
-  databaseServiceName: string
+  databases: string[]
 }
 
 export type ServerServicesBackup = {
@@ -78,12 +87,6 @@ export type ServerServicesNetwork = {
   kind: string
 }
 
-export type ServerServicesHostService = {
-  key: string
-  label: string
-  state: 'up' | 'down' | 'unknown'
-}
-
 export type ServerServicesRuntime = {
   kind: string
   versions: string[]
@@ -93,65 +96,137 @@ export type ServerServicesResponse = {
   serverId: string
   removal: {
     canRemove: boolean
+    online: boolean
+    canForget: boolean
     reasons: ServerServicesRemovalReason[]
   }
-  apps: ServerServicesApp[]
+  apps: ServerServicesCappedList<ServerServicesApp>
   databases: ServerServicesDatabase[]
-  databaseUsers: ServerServicesDatabaseUser[]
-  backups: ServerServicesBackup[]
-  networks: ServerServicesNetwork[]
+  databaseUsers: ServerServicesCappedList<ServerServicesDatabaseUser>
+  backups: ServerServicesCappedList<ServerServicesBackup>
+  networks: ServerServicesCappedList<ServerServicesNetwork>
   ipCount: number
-  hostServices: ServerServicesHostService[]
   runtimes: ServerServicesRuntime[]
+}
+
+export function capServerServicesList<T>(
+  items: T[],
+  cap = SERVER_SERVICES_LIST_CAP
+): ServerServicesCappedList<T> {
+  const capped = items.slice(0, cap)
+  return {
+    items: capped,
+    more: Math.max(0, items.length - capped.length),
+  }
+}
+
+function forCount(count: number, one: string, many: string): string {
+  if (count === 1) return one
+  return many
+}
+
+const SERVER_SERVICES_REMOVAL_COPY: Record<
+  Exclude<ServerServicesRemovalKind, 'container' | 'network' | 'ip' | 'colocated'>,
+  { one: string; many: string }
+> = {
+  environment: {
+    one: 'One app environment is still placed on this server.',
+    many: '%n app environments are still placed on this server.',
+  },
+  managed: {
+    one: 'One managed database is still placed on this server.',
+    many: '%n managed databases are still placed on this server.',
+  },
+  replica: {
+    one: 'One database member is still placed on this server.',
+    many: '%n database members are still placed on this server.',
+  },
+  deployment: {
+    one: 'One deployment is still recorded on this server.',
+    many: '%n deployments are still recorded on this server.',
+  },
+  slot: {
+    one: 'One scheduled app instance is still placed on this server.',
+    many: '%n scheduled app instances are still placed on this server.',
+  },
+  copy: {
+    one: 'One volume copy is still stored on this server.',
+    many: '%n volume copies are still stored on this server.',
+  },
 }
 
 export function serverServicesRemovalMessage(
   kind: ServerServicesRemovalKind,
   count: number,
-  label: string
+  opts: Readonly<{ canForget?: boolean }> = {}
 ): string {
-  switch (kind) {
-    case 'container':
-      if (count === 1) {
-        return '1 container still runs here: stop or move the apps first'
-      }
-      return `${count} containers still run here: stop or move the apps first`
-    case 'network':
-      if (count === 1) {
-        return '1 network still uses this server: remove it first'
-      }
-      return `${count} networks still use this server: remove them first`
-    case 'ip':
-      if (count === 1) {
-        return '1 address is still assigned here: remove it first'
-      }
-      return `${count} addresses are still assigned here: remove them first`
-    case 'colocated':
-      return colocatedServerDeleteBlockedReason()
-    default:
-      return count > 1
-        ? `Still on this server: ${label} (${count})`
-        : `Still on this server: ${label}`
+  if (kind === 'colocated') {
+    return 'This is the machine running the control panel itself and cannot be removed.'
   }
+  if (kind === 'container') {
+    if (opts.canForget) {
+      return forCount(
+        count,
+        'One container is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+        `${count} containers are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.`
+      )
+    }
+    return forCount(
+      count,
+      'One container is still on this server: stop or move the apps first.',
+      `${count} containers are still on this server: stop or move the apps first.`
+    )
+  }
+  if (kind === 'network') {
+    if (opts.canForget) {
+      return forCount(
+        count,
+        'One network is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+        `${count} networks are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.`
+      )
+    }
+    return forCount(
+      count,
+      'One network is still on this server: remove it first.',
+      `${count} networks are still on this server: remove them first.`
+    )
+  }
+  if (kind === 'ip') {
+    if (opts.canForget) {
+      return forCount(
+        count,
+        'One address is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+        `${count} addresses are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.`
+      )
+    }
+    return forCount(
+      count,
+      'One address is still assigned to this server: remove it first.',
+      `${count} addresses are still assigned to this server: remove them first.`
+    )
+  }
+  const copy = SERVER_SERVICES_REMOVAL_COPY[kind]
+  return forCount(count, copy.one, copy.many.replaceAll('%n', String(count)))
 }
 
 export function serverServicesRemovalReasons(
   blockers: ServerDeleteBlocker[],
-  colocated: boolean
+  colocated: boolean,
+  canForget = false
 ): ServerServicesRemovalReason[] {
   const reasons: ServerServicesRemovalReason[] = []
   if (colocated) {
     reasons.push({
       kind: 'colocated',
       count: 1,
-      message: serverServicesRemovalMessage('colocated', 1, ''),
+      message: serverServicesRemovalMessage('colocated', 1),
     })
   }
   for (const blocker of blockers) {
     reasons.push({
       kind: blocker.kind,
       count: blocker.count,
-      message: serverServicesRemovalMessage(blocker.kind, blocker.count, blocker.label),
+      message: serverServicesRemovalMessage(blocker.kind, blocker.count, { canForget }),
     })
   }
   return reasons
@@ -225,8 +300,8 @@ function groupApps(
       name: app.name,
       project: app.project,
       environment: app.environment,
-      containers: app.containers,
-      domains: domainsByService.get(serviceId) ?? [],
+      containers: capServerServicesList(app.containers),
+      domains: capServerServicesList(domainsByService.get(serviceId) ?? []),
     })
   }
   apps.sort((a, b) => {
@@ -237,6 +312,39 @@ function groupApps(
     return compareName(a.name, b.name)
   })
   return apps
+}
+
+function groupDatabaseUsers(
+  rows: Array<{
+    serviceId: string
+    serviceName: string | null
+    composeServiceName: string
+    databaseName: string
+  }>
+): ServerServicesDatabaseUser[] {
+  const byService = new Map<string, { serviceName: string; databases: string[] }>()
+  for (const row of rows) {
+    const serviceName = row.serviceName ?? row.composeServiceName
+    let entry = byService.get(row.serviceId)
+    if (!entry) {
+      entry = { serviceName, databases: [] }
+      byService.set(row.serviceId, entry)
+    }
+    if (!entry.databases.includes(row.databaseName)) {
+      entry.databases.push(row.databaseName)
+    }
+  }
+  const users: ServerServicesDatabaseUser[] = []
+  for (const [serviceId, entry] of byService) {
+    entry.databases.sort((a, b) => compareName(a, b))
+    users.push({
+      serviceId,
+      serviceName: entry.serviceName,
+      databases: entry.databases,
+    })
+  }
+  users.sort((a, b) => compareName(a.serviceName, b.serviceName))
+  return users
 }
 
 function loadAppRows(db: Db, serverId: string) {
@@ -255,7 +363,8 @@ function loadAppRows(db: Db, serverId: string) {
     .innerJoin(service, eq(service.id, container.serviceId))
     .innerJoin(environment, eq(environment.id, service.environmentId))
     .innerJoin(project, eq(project.id, environment.projectId))
-    .where(eq(container.serverId, serverId))
+    .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+    .where(and(eq(container.serverId, serverId), notSystemWorkspace()))
 }
 
 async function loadDomainsByService(db: Db, serviceIds: string[]): Promise<Map<string, string[]>> {
@@ -293,7 +402,10 @@ async function loadDatabaseRows(db: Db, serverId: string): Promise<ServerService
     })
     .from(replica)
     .innerJoin(managed, eq(managed.id, replica.managedId))
-    .where(eq(replica.serverId, serverId))
+    .innerJoin(environment, eq(environment.id, managed.environmentId))
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+    .where(and(eq(replica.serverId, serverId), notSystemWorkspace()))
   const databases = rows.map((row) => ({
     managedId: row.managedId,
     name: row.name ?? row.engine,
@@ -316,32 +428,22 @@ async function loadDatabaseUserRows(
   serverId: string
 ): Promise<ServerServicesDatabaseUser[]> {
   const rows = await db
-    .selectDistinct({
+    .select({
       serviceId: binding.serviceId,
       serviceName: service.name,
       composeServiceName: service.composeServiceName,
       databaseName: binding.databaseName,
-      managedName: managed.name,
-      engine: managed.engine,
     })
     .from(binding)
     .innerJoin(service, eq(service.id, binding.serviceId))
     .innerJoin(container, eq(container.serviceId, service.id))
+    .innerJoin(environment, eq(environment.id, service.environmentId))
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .innerJoin(workspace, eq(workspace.id, project.workspaceId))
     .innerJoin(principal, eq(principal.id, binding.principalId))
     .innerJoin(managed, eq(managed.id, principal.managedId))
-    .where(eq(container.serverId, serverId))
-  const users = rows.map((row) => ({
-    serviceId: row.serviceId,
-    serviceName: row.serviceName ?? row.composeServiceName,
-    databaseName: row.databaseName,
-    databaseServiceName: row.managedName ?? row.engine,
-  }))
-  users.sort((a, b) => {
-    const serviceCmp = compareName(a.serviceName, b.serviceName)
-    if (serviceCmp !== 0) return serviceCmp
-    return compareName(a.databaseName, b.databaseName)
-  })
-  return users
+    .where(and(eq(container.serverId, serverId), notSystemWorkspace()))
+  return groupDatabaseUsers(rows)
 }
 
 async function loadBackupRows(db: Db, serverId: string): Promise<ServerServicesBackup[]> {
@@ -355,8 +457,20 @@ async function loadBackupRows(db: Db, serverId: string): Promise<ServerServicesB
     })
     .from(backup)
     .innerJoin(managed, eq(managed.id, backup.managedId))
-    .innerJoin(replica, eq(replica.managedId, managed.id))
-    .where(eq(replica.serverId, serverId))
+    .innerJoin(environment, eq(environment.id, managed.environmentId))
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+    .where(
+      and(
+        notSystemWorkspace(),
+        sql`EXISTS (
+          SELECT 1
+          FROM replica AS member
+          WHERE member.managed_id = ${managed.id}
+            AND member.server_id = ${serverId}::uuid
+        )`
+      )
+    )
     .groupBy(backup.managedId, managed.name, managed.engine)
   const backups = rows
     .filter((row) => row.latestAt)
@@ -375,7 +489,8 @@ export async function loadServerServices(
   registry: DaemonCellRegistry | undefined,
   serverId: string,
   organizationId: string,
-  metadata: unknown
+  metadata: unknown,
+  online: boolean
 ): Promise<ServerServicesResponse> {
   const [
     blockers,
@@ -405,21 +520,26 @@ export async function loadServerServices(
   const serviceIds = [...new Set(appRows.map((row) => row.serviceId))]
   const domainsByService = await loadDomainsByService(db, serviceIds)
   const colocated = colocatedIds.has(serverId) || colocatedLicense
-  const reasons = serverServicesRemovalReasons(blockers, colocated)
+  const canForget = canForgetServerResources({ online, colocated, blockers })
+  const reasons = serverServicesRemovalReasons(blockers, colocated, canForget)
   const networks = networkRows
     .map((row) => ({ id: row.id, name: row.name ?? '', kind: row.kind }))
     .sort((a, b) => compareName(a.name, b.name) || compareName(a.id, b.id))
 
   return {
     serverId,
-    removal: { canRemove: reasons.length === 0, reasons },
-    apps: groupApps(appRows, domainsByService),
+    removal: {
+      canRemove: reasons.length === 0,
+      online,
+      canForget,
+      reasons,
+    },
+    apps: capServerServicesList(groupApps(appRows, domainsByService)),
     databases,
-    databaseUsers,
-    backups,
-    networks,
+    databaseUsers: capServerServicesList(databaseUsers),
+    backups: capServerServicesList(backups),
+    networks: capServerServicesList(networks),
     ipCount: Number(ipCountRow?.value ?? 0),
-    hostServices: [],
     runtimes: serverServicesRuntimesFromMetadata(metadata),
   }
 }

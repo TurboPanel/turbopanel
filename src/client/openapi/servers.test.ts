@@ -1,4 +1,8 @@
 import { assertEquals } from '@std/assert'
+import {
+  SERVER_DELETE_BLOCKER_KIND_VALUES,
+  SERVER_SERVICES_REMOVAL_KIND_VALUES,
+} from '../servers/delete-guards.ts'
 import { serverSchemas } from './servers.ts'
 
 /**
@@ -30,9 +34,24 @@ test('ServerDeleteBlocker kind enum covers forgettable leftovers and remaining R
   ])
 })
 
+test('ServerServicesRemovalReason kind enum matches delete blockers plus colocated', () => {
+  const schema = serverSchemas.ServerServicesRemovalReason as {
+    properties: {
+      kind: { enum: string[] }
+    }
+  }
+  assertEquals(schema.properties.kind.enum, [...SERVER_DELETE_BLOCKER_KIND_VALUES, 'colocated'])
+  assertEquals(schema.properties.kind.enum, [...SERVER_SERVICES_REMOVAL_KIND_VALUES])
+  assertEquals(schema.properties.kind.enum.includes('backup'), false)
+})
+
 test('ServerServicesResponse documents the attached-services snapshot', () => {
   const schema = serverSchemas.ServerServicesResponse as {
     required: string[]
+    properties: {
+      removal: { required: string[] }
+      hostServices?: unknown
+    }
   }
   assertEquals(schema.required, [
     'serverId',
@@ -43,9 +62,10 @@ test('ServerServicesResponse documents the attached-services snapshot', () => {
     'backups',
     'networks',
     'ipCount',
-    'hostServices',
     'runtimes',
   ])
+  assertEquals(schema.properties.removal.required, ['canRemove', 'online', 'canForget', 'reasons'])
+  assertEquals(schema.properties.hostServices, undefined)
 })
 
 test('ServerRow documents tierPlacement against ServerTierPlacement', () => {

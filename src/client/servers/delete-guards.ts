@@ -31,6 +31,14 @@ export const SERVER_DELETE_BLOCKER_KIND_VALUES = [
 
 export type ServerDeleteBlockerKind = (typeof SERVER_DELETE_BLOCKER_KIND_VALUES)[number]
 
+/** Server-services removal kinds: every delete blocker, plus the co-located host. */
+export const SERVER_SERVICES_REMOVAL_KIND_VALUES = [
+  ...SERVER_DELETE_BLOCKER_KIND_VALUES,
+  'colocated',
+] as const
+
+export type ServerServicesRemovalKind = (typeof SERVER_SERVICES_REMOVAL_KIND_VALUES)[number]
+
 /** Leftover rows `forgetResources` may drop. Other kinds still 409. */
 export const FORGETTABLE_SERVER_DELETE_BLOCKER_KINDS = new Set<ServerDeleteBlockerKind>([
   'network',
@@ -135,7 +143,7 @@ export function isServerOnlineDuringForgetError(error: unknown): boolean {
  * `deleteSystemEnvironmentSubtree` during DELETE — exclude them from the
  * generic blocker scan so stopped system inventory does not 409 the delete.
  */
-function nonSystemContainerWhere(serverId: string) {
+export function nonSystemContainerWhere(serverId: string) {
   return sql`
       FROM container c
       WHERE c.server_id = ${serverId}::uuid
@@ -151,7 +159,7 @@ function nonSystemContainerWhere(serverId: string) {
     `
 }
 
-function notSystemWorkspace() {
+export function notSystemWorkspace() {
   return ne(workspace.kind, WORKSPACE_KIND_TURBOPANEL)
 }
 

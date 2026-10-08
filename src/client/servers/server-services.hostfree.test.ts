@@ -1,6 +1,7 @@
 import { assertEquals } from '@std/assert'
-import { COLOCATED_SERVER_DELETE_BLOCKED_REASON } from './delete-guards.ts'
 import {
+  capServerServicesList,
+  SERVER_SERVICES_LIST_CAP,
   serverServicesRemovalMessage,
   serverServicesRemovalReasons,
   serverServicesRuntimesFromMetadata,
@@ -14,37 +15,61 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-test('serverServicesRemovalMessage uses plain words for each blocker kind', () => {
+test('serverServicesRemovalMessage uses one plain sentence per kind', () => {
   assertEquals(
-    serverServicesRemovalMessage('container', 1, ''),
-    '1 container still runs here: stop or move the apps first'
+    serverServicesRemovalMessage('container', 1),
+    'One container is still on this server: stop or move the apps first.'
   )
   assertEquals(
-    serverServicesRemovalMessage('container', 2, ''),
-    '2 containers still run here: stop or move the apps first'
+    serverServicesRemovalMessage('container', 2),
+    '2 containers are still on this server: stop or move the apps first.'
   )
   assertEquals(
-    serverServicesRemovalMessage('network', 1, ''),
-    '1 network still uses this server: remove it first'
+    serverServicesRemovalMessage('network', 1),
+    'One network is still on this server: remove it first.'
   )
   assertEquals(
-    serverServicesRemovalMessage('ip', 3, ''),
-    '3 addresses are still assigned here: remove them first'
+    serverServicesRemovalMessage('ip', 3),
+    '3 addresses are still assigned to this server: remove them first.'
   )
   assertEquals(
-    serverServicesRemovalMessage('colocated', 1, ''),
-    COLOCATED_SERVER_DELETE_BLOCKED_REASON
+    serverServicesRemovalMessage('colocated', 1),
+    'This is the machine running the control panel itself and cannot be removed.'
+  )
+  assertEquals(
+    serverServicesRemovalMessage('managed', 1),
+    'One managed database is still placed on this server.'
+  )
+  assertEquals(
+    serverServicesRemovalMessage('replica', 1),
+    'One database member is still placed on this server.'
+  )
+  assertEquals(
+    serverServicesRemovalMessage('slot', 1),
+    'One scheduled app instance is still placed on this server.'
+  )
+  assertEquals(
+    serverServicesRemovalMessage('copy', 2),
+    '2 volume copies are still stored on this server.'
+  )
+  assertEquals(
+    serverServicesRemovalMessage('environment', 2),
+    '2 app environments are still placed on this server.'
+  )
+  assertEquals(
+    serverServicesRemovalMessage('deployment', 3),
+    '3 deployments are still recorded on this server.'
   )
 })
 
-test('serverServicesRemovalMessage falls back to the guard label for other blockers', () => {
+test('serverServicesRemovalMessage mentions Host is gone when the leftovers can be forgotten', () => {
   assertEquals(
-    serverServicesRemovalMessage('replica', 1, 'a database member is still placed on this server'),
-    'Still on this server: a database member is still placed on this server'
+    serverServicesRemovalMessage('container', 1, { canForget: true }),
+    'One container is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.'
   )
   assertEquals(
-    serverServicesRemovalMessage('deployment', 3, 'a deployment'),
-    'Still on this server: a deployment (3)'
+    serverServicesRemovalMessage('network', 2, { canForget: true }),
+    '2 networks are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.'
   )
 })
 
@@ -61,23 +86,32 @@ test('serverServicesRemovalReasons prepends colocated then maps delete blockers'
       {
         kind: 'colocated',
         count: 1,
-        message: COLOCATED_SERVER_DELETE_BLOCKED_REASON,
+        message: 'This is the machine running the control panel itself and cannot be removed.',
       },
       {
         kind: 'network',
         count: 1,
-        message: '1 network still uses this server: remove it first',
+        message: 'One network is still on this server: remove it first.',
       },
       {
         kind: 'container',
         count: 2,
-        message: '2 containers still run here: stop or move the apps first',
+        message: '2 containers are still on this server: stop or move the apps first.',
       },
     ]
   )
 })
 
-test('serverServicesRuntimesFromMetadata maps stored facts and ignores the rest', () => {
+test('capServerServicesList keeps 50 items and reports the remainder', () => {
+  const items = Array.from({ length: SERVER_SERVICES_LIST_CAP + 3 }, (_, i) => i)
+  assertEquals(capServerServicesList(items), {
+    items: items.slice(0, SERVER_SERVICES_LIST_CAP),
+    more: 3,
+  })
+  assertEquals(capServerServicesList(['a', 'b']), { items: ['a', 'b'], more: 0 })
+})
+
+test('serverServicesRuntimesFromMetadata maps stored facts including lsphp', () => {
   assertEquals(serverServicesRuntimesFromMetadata(null), [])
   assertEquals(serverServicesRuntimesFromMetadata({}), [])
   assertEquals(

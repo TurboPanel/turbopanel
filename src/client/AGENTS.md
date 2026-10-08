@@ -90,15 +90,21 @@ changes.
   membership inherits from the first pin after sort by datacenter id (same as
   timezone).
 - **Server services snapshot (client surface):** `GET /servers/:id/services`
-  — read-gated, org-scoped (`404` for another organization's server). One
-  response of what is attached: `removal` (`canRemove` plus `reasons` from
+  — read-gated, org-scoped (`404` for another organization's server). Bounded
+  queries per server (never per-item fan-out). One response of what is
+  attached: `removal` (`canRemove`, `online`, `canForget`, plus `reasons` from
   `listServerDeleteBlockers` and the co-located-host rule, so the tab and
-  DELETE cannot disagree), `apps` (container → service → environment →
-  project, domains from hosting/hostname), `databases` (replica + managed),
-  `databaseUsers` (binding rows for apps on this host), `backups`,
-  `networks` / `ipCount`, and `hostServices` / `runtimes` only from daemon
-  facts already stored on the server (`server.metadata.runtimes`; otherwise
-  empty). No per-item fan-out. `src/client/servers/server-services.ts`.
+  DELETE cannot disagree; `canForget` is the same Host is gone path as
+  delete-preview), `apps` (container → service → environment → project,
+  domains from hosting/hostname; system-workspace rows omitted like the
+  blocker scan), `databases` (replica + managed, same exclusion),
+  `databaseUsers` (one entry per app on this host with the database names it
+  is bound to), `backups` of databases that have a member on this server,
+  `networks` / `ipCount`, and `runtimes` only from daemon facts already stored
+  on the server (`server.metadata.runtimes`; otherwise empty). Apps,
+  containers per app, domains per app, database users, networks, and backups
+  are capped at 50 plus `more` (`{ items, more }`).
+  `src/client/servers/server-services.ts`.
 - **Forget an offline server (client surface):** `GET /servers/:id/delete-preview`
   (manage-gated, same as delete) lists leftover containers, networks, and
   addresses that would 409 a normal delete (`online` is the live snapshot or

@@ -1,4 +1,18 @@
-import { SERVER_DELETE_BLOCKER_KIND_VALUES } from '../servers/delete-guards.ts'
+import {
+  SERVER_DELETE_BLOCKER_KIND_VALUES,
+  SERVER_SERVICES_REMOVAL_KIND_VALUES,
+} from '../servers/delete-guards.ts'
+
+function cappedListSchema(item: Record<string, unknown>) {
+  return {
+    type: 'object',
+    required: ['items', 'more'],
+    properties: {
+      items: { type: 'array', items: item },
+      more: { type: 'integer', minimum: 0 },
+    },
+  }
+}
 
 export const serverSchemas = {
   ServerOsMetadata: {
@@ -987,13 +1001,13 @@ export const serverSchemas = {
     properties: {
       kind: {
         type: 'string',
-        enum: ['network', 'container', 'ip', 'colocated', 'managed', 'backup'],
+        enum: [...SERVER_SERVICES_REMOVAL_KIND_VALUES],
       },
       count: { type: 'integer', minimum: 1 },
       message: {
         type: 'string',
         description:
-          'Plain-language reason this server cannot be removed. Kinds `network`, `container`, and `ip` reuse `listServerDeleteBlockers`; `colocated` is the same co-located-host rule DELETE uses.',
+          'One plain-language sentence for this leftover kind. Kinds match `listServerDeleteBlockers` plus `colocated` (this host runs the control panel and cannot be removed). When `removal.canForget` is true, container, network, and address sentences mention Delete server → Host is gone.',
       },
     },
   },
@@ -1008,48 +1022,51 @@ export const serverSchemas = {
       'backups',
       'networks',
       'ipCount',
-      'hostServices',
       'runtimes',
     ],
     properties: {
       serverId: { type: 'string', format: 'uuid' },
       removal: {
         type: 'object',
-        required: ['canRemove', 'reasons'],
+        required: ['canRemove', 'online', 'canForget', 'reasons'],
         properties: {
           canRemove: { type: 'boolean' },
+          online: {
+            type: 'boolean',
+            description:
+              'True when the live cell snapshot is connected or the stored `is_connected` column is true.',
+          },
+          canForget: {
+            type: 'boolean',
+            description:
+              'True when the server is offline, is not the co-located control plane host, and the only leftovers are forgettable container, network, or address rows. The owner can then use Delete server → Host is gone.',
+          },
           reasons: {
             type: 'array',
             items: { $ref: '#/components/schemas/ServerServicesRemovalReason' },
           },
         },
       },
-      apps: {
-        type: 'array',
-        items: {
-          type: 'object',
-          required: ['serviceId', 'name', 'project', 'environment', 'containers', 'domains'],
-          properties: {
-            serviceId: { type: 'string', format: 'uuid' },
-            name: { type: 'string' },
-            project: { type: 'string' },
-            environment: { type: 'string' },
-            containers: {
-              type: 'array',
-              items: {
-                type: 'object',
-                required: ['name', 'status', 'role'],
-                properties: {
-                  name: { type: 'string' },
-                  status: { type: 'string' },
-                  role: { type: 'string' },
-                },
-              },
+      apps: cappedListSchema({
+        type: 'object',
+        required: ['serviceId', 'name', 'project', 'environment', 'containers', 'domains'],
+        properties: {
+          serviceId: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          project: { type: 'string' },
+          environment: { type: 'string' },
+          containers: cappedListSchema({
+            type: 'object',
+            required: ['name', 'status', 'role'],
+            properties: {
+              name: { type: 'string' },
+              status: { type: 'string' },
+              role: { type: 'string' },
             },
-            domains: { type: 'array', items: { type: 'string' } },
-          },
+          }),
+          domains: cappedListSchema({ type: 'string' }),
         },
-      },
+      }),
       databases: {
         type: 'array',
         items: {
@@ -1067,23 +1084,20 @@ export const serverSchemas = {
         },
       },
       databaseUsers: {
-        type: 'array',
-        description:
-          'Apps on this host that are bound to a managed database (they reach it through this host).',
-        items: {
+        ...cappedListSchema({
           type: 'object',
-          required: ['serviceId', 'serviceName', 'databaseName', 'databaseServiceName'],
+          required: ['serviceId', 'serviceName', 'databases'],
           properties: {
             serviceId: { type: 'string', format: 'uuid' },
             serviceName: { type: 'string' },
-            databaseName: { type: 'string' },
-            databaseServiceName: { type: 'string' },
+            databases: { type: 'array', items: { type: 'string' } },
           },
-        },
+        }),
+        description:
+          'Apps on this host bound to a managed database, grouped one entry per app with the database names it uses (they reach those databases through this host). Capped like other lists.',
       },
       backups: {
-        type: 'array',
-        items: {
+        ...cappedListSchema({
           type: 'object',
           required: ['managedId', 'managedName', 'count', 'latestAt'],
           properties: {
@@ -1092,35 +1106,20 @@ export const serverSchemas = {
             count: { type: 'integer', minimum: 0 },
             latestAt: { type: 'string', format: 'date-time' },
           },
-        },
-      },
-      networks: {
-        type: 'array',
-        items: {
-          type: 'object',
-          required: ['id', 'name', 'kind'],
-          properties: {
-            id: { type: 'string', format: 'uuid' },
-            name: { type: 'string' },
-            kind: { type: 'string' },
-          },
-        },
-      },
-      ipCount: { type: 'integer', minimum: 0 },
-      hostServices: {
-        type: 'array',
+        }),
         description:
-          'Host services already stored on the server (daemon facts). Empty when none are stored.',
-        items: {
-          type: 'object',
-          required: ['key', 'label', 'state'],
-          properties: {
-            key: { type: 'string' },
-            label: { type: 'string' },
-            state: { type: 'string', enum: ['up', 'down', 'unknown'] },
-          },
-        },
+          'Backups of databases that have a member on this server. Counts are per database, not multiplied by how many members sit here.',
       },
+      networks: cappedListSchema({
+        type: 'object',
+        required: ['id', 'name', 'kind'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          kind: { type: 'string' },
+        },
+      }),
+      ipCount: { type: 'integer', minimum: 0 },
       runtimes: {
         type: 'array',
         description:
@@ -2097,7 +2096,7 @@ export const serverPaths: Record<string, unknown> = {
       tags: ['Servers'],
       summary: 'List what is attached to a server',
       description:
-        "Read-gated, organization-scoped snapshot of apps, databases, bindings, backups, networks, and stored host facts for one server. Removal reasons reuse `listServerDeleteBlockers` plus the co-located-host rule so this view and DELETE cannot disagree. Another organization's server is 404.",
+        "Read-gated, organization-scoped snapshot of apps, databases, bindings, backups of databases that have a member here, networks, and stored runtimes for one server. Lists of apps, containers, domains, database users, networks, and backups are capped (50 plus `more`). Removal reasons reuse `listServerDeleteBlockers` plus the co-located-host rule so this view and DELETE cannot disagree; `online` and `canForget` match delete-preview. Another organization's server is 404.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
