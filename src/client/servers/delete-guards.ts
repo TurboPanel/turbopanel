@@ -1,99 +1,114 @@
-import { and, count, eq, inArray, ne, or, sql } from 'drizzle-orm'
-import type { Context } from 'hono'
-import type { Db } from '../../db/connection.ts'
-import { dropEnvironmentSubtreeInTx } from '../../features/projects/project-delete.ts'
+import { and, count, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
+import type { Context } from "hono";
+import type { Db } from "../../db/connection.ts";
+import { dropEnvironmentSubtreeInTx } from "../../features/projects/project-delete.ts";
 import {
   container,
   deployment,
   environment,
+  hosting,
   ip,
   managed,
   network,
   project,
   replica,
   server,
+  service,
   slot,
   storageCopy,
+  variable,
   workspace,
-} from '../../db/schema.ts'
-import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
+} from "../../db/schema.ts";
+import { WORKSPACE_KIND_TURBOPANEL } from "../../db/workspace-kind.ts";
 
 export const SERVER_DELETE_BLOCKER_KIND_VALUES = [
-  'network',
-  'container',
-  'ip',
-  'environment',
-  'managed',
-  'replica',
-  'deployment',
-  'slot',
-  'copy',
-] as const
+  "network",
+  "container",
+  "ip",
+  "environment",
+  "managed",
+  "replica",
+  "deployment",
+  "slot",
+  "copy",
+] as const;
 
-export type ServerDeleteBlockerKind = (typeof SERVER_DELETE_BLOCKER_KIND_VALUES)[number]
+export type ServerDeleteBlockerKind =
+  (typeof SERVER_DELETE_BLOCKER_KIND_VALUES)[number];
 
 /** Server-services removal kinds: every delete blocker, plus the co-located host. */
 export const SERVER_SERVICES_REMOVAL_KIND_VALUES = [
   ...SERVER_DELETE_BLOCKER_KIND_VALUES,
-  'colocated',
-] as const
+  "colocated",
+  "present_elsewhere",
+] as const;
 
-export type ServerServicesRemovalKind = (typeof SERVER_SERVICES_REMOVAL_KIND_VALUES)[number]
+export type ServerServicesRemovalKind =
+  (typeof SERVER_SERVICES_REMOVAL_KIND_VALUES)[number];
 
 /**
  * Leftover kinds `forgetResources` always drops (container / network / address
  * rows, plus app environments, forgettable members, leftover deployments,
  * slots, and copies). Blocked databases still 409.
  */
-export const FORGETTABLE_SERVER_DELETE_BLOCKER_KINDS = new Set<ServerDeleteBlockerKind>([
-  'network',
-  'container',
-  'ip',
-  'environment',
-  'deployment',
-  'slot',
-  'copy',
-  'replica',
-])
+export const FORGETTABLE_SERVER_DELETE_BLOCKER_KINDS = new Set<
+  ServerDeleteBlockerKind
+>([
+  "network",
+  "container",
+  "ip",
+  "environment",
+  "deployment",
+  "slot",
+  "copy",
+  "replica",
+]);
 
-export const SERVER_DELETE_BLOCKER_LABELS: Record<ServerDeleteBlockerKind, string> = {
-  network: 'a network',
-  container: 'a container',
-  ip: 'an address',
-  environment: 'an app environment',
-  managed: 'a managed database is still placed on this server',
-  replica: 'a database member is still placed on this server',
-  deployment: 'a deployment',
-  slot: 'a replica slot',
-  copy: 'a storage copy',
-}
+export const SERVER_DELETE_BLOCKER_LABELS: Record<
+  ServerDeleteBlockerKind,
+  string
+> = {
+  network: "a network",
+  container: "a container",
+  ip: "an address",
+  environment: "an app environment",
+  managed: "a managed database is still placed on this server",
+  replica: "a database member is still placed on this server",
+  deployment: "a deployment",
+  slot: "a replica slot",
+  copy: "a storage copy",
+};
 
 /** A named app environment behind an `environment` blocker. */
 export type ServerBlockerEnvironmentItem = {
-  id: string
-  name: string
-  projectId: string
-  projectName: string
-  hasDatabase: boolean
-}
+  id: string;
+  name: string;
+  projectId: string;
+  projectName: string;
+  hasDatabase: boolean;
+};
 
 /** A named database behind a `managed` or `replica` blocker. */
 export type ServerBlockerDatabaseItem = {
-  id: string
-  name: string
-}
+  id: string;
+  name: string;
+};
 
-export type ServerDeleteBlockerItem = ServerBlockerEnvironmentItem | ServerBlockerDatabaseItem
+export type ServerDeleteBlockerItem =
+  | ServerBlockerEnvironmentItem
+  | ServerBlockerDatabaseItem;
 
 /** `"Project / Environment"` for an environment item, the plain name otherwise. */
 export function serverBlockerItemName(item: ServerDeleteBlockerItem): string {
-  return 'projectName' in item ? `${item.projectName} / ${item.name}` : item.name
+  return "projectName" in item
+    ? `${item.projectName} / ${item.name}`
+    : item.name;
 }
 
 export type ServerDeleteBlocker = {
-  kind: ServerDeleteBlockerKind
-  count: number
-  label: string
+  kind: ServerDeleteBlockerKind;
+  count: number;
+  label: string;
   /**
    * The rows behind `count`, by name, so the owner can go find them. Present
    * for `environment` (every placed environment, including the ones carrying a
@@ -101,140 +116,166 @@ export type ServerDeleteBlocker = {
    * `managed` / `replica` (one entry per database). Capped at 50; `more` says
    * how many are not listed.
    */
-  items?: ServerDeleteBlockerItem[]
-  more?: number
-}
+  items?: ServerDeleteBlockerItem[];
+  more?: number;
+};
 
-export const SERVER_HAS_BLOCKERS_CODE = 'server_has_blockers'
+export const SERVER_HAS_BLOCKERS_CODE = "server_has_blockers";
 
 export const SERVER_HAS_BLOCKERS_ERROR =
-  'Cannot delete this server while dependent resources still exist'
+  "Cannot delete this server while dependent resources still exist";
 
-export const SERVER_ONLINE_CODE = 'server_online'
+export const SERVER_ONLINE_CODE = "server_online";
 
 export const SERVER_ONLINE_ERROR =
-  'Cannot forget leftover resources while this server is still connected'
+  "Cannot forget leftover resources while this server is still connected";
 
-export const SERVER_DELETE_PREVIEW_LIST_CAP = 50
+export const SERVER_DELETE_PREVIEW_LIST_CAP = 50;
 
 export const COLOCATED_SERVER_DELETE_BLOCKED_REASON =
-  'The co-located control plane server cannot be deleted'
+  "The co-located control plane server cannot be deleted";
 
 export function colocatedServerDeleteBlockedReason(): string {
-  return COLOCATED_SERVER_DELETE_BLOCKED_REASON
+  return COLOCATED_SERVER_DELETE_BLOCKED_REASON;
 }
 
 /** Revoking the co-located daemon's key would cut the control plane off from its own host. */
 export const COLOCATED_SERVER_KEY_REVOKE_BLOCKED_REASON =
-  "The co-located control plane server's daemon key cannot be revoked"
+  "The co-located control plane server's daemon key cannot be revoked";
 
 export type ForgottenServerResources = {
-  containers: number
-  networks: number
-  ips: number
-  environments: number
-  members: number
-  deployments: number
-  slots: number
-  copies: number
-}
+  containers: number;
+  networks: number;
+  ips: number;
+  environments: number;
+  members: number;
+  deployments: number;
+  slots: number;
+  copies: number;
+};
 
-export const BLOCKED_DATABASE_REASON_VALUES = ['only_member', 'primary_here'] as const
+export const BLOCKED_DATABASE_REASON_VALUES = [
+  "only_member",
+  "primary_here",
+] as const;
 
-export type BlockedDatabaseReason = (typeof BLOCKED_DATABASE_REASON_VALUES)[number]
+export type BlockedDatabaseReason =
+  (typeof BLOCKED_DATABASE_REASON_VALUES)[number];
+
+export const BLOCKED_ENVIRONMENT_REASON_VALUES = ["present_elsewhere"] as const;
+
+export type BlockedEnvironmentReason =
+  (typeof BLOCKED_ENVIRONMENT_REASON_VALUES)[number];
 
 export type ServerForgetBlockedDatabase = {
-  id: string
-  name: string
-  reason: BlockedDatabaseReason
-}
+  id: string;
+  name: string;
+  reason: BlockedDatabaseReason;
+};
+
+export type ServerForgetBlockedEnvironment = {
+  id: string;
+  name: string;
+  projectId: string;
+  projectName: string;
+  reason: BlockedEnvironmentReason;
+  serverNames: string[];
+};
 
 export type ServerForgetEnvironment = {
-  id: string
-  name: string
-  projectName: string
-}
+  id: string;
+  name: string;
+  projectName: string;
+};
 
 export type ServerForgetMember = {
-  id: string
-  databaseName: string
-}
+  id: string;
+  databaseName: string;
+};
 
 export type ServerForgetPlan = {
-  blockers: ServerDeleteBlocker[]
-  environmentIds: string[]
-  memberIds: string[]
-  environments: ServerForgetEnvironment[]
-  members: ServerForgetMember[]
-  blockedDatabases: ServerForgetBlockedDatabase[]
-  blockingBlockers: ServerDeleteBlocker[]
-}
+  blockers: ServerDeleteBlocker[];
+  environmentIds: string[];
+  memberIds: string[];
+  environments: ServerForgetEnvironment[];
+  members: ServerForgetMember[];
+  blockedDatabases: ServerForgetBlockedDatabase[];
+  blockedEnvironments: ServerForgetBlockedEnvironment[];
+  blockingBlockers: ServerDeleteBlocker[];
+};
 
 export type ServerDeletePreviewContainer = {
-  id: string
-  name: string
-  status: string
-  serviceName?: string
-}
+  id: string;
+  name: string;
+  status: string;
+  serviceName?: string;
+};
 
 export type ServerDeletePreviewNetwork = {
-  id: string
-  name: string
-}
+  id: string;
+  name: string;
+};
 
 export type ServerDeletePreviewIp = {
-  id: string
-  address: string
-}
+  id: string;
+  address: string;
+};
 
 export type CappedPreviewList<T> = {
-  items: T[]
-  more: number
-}
+  items: T[];
+  more: number;
+};
 
 export type ServerDeletePreview = {
-  online: boolean
-  canForget: boolean
-  colocated: boolean
-  blockers: ServerDeleteBlocker[]
-  containers: CappedPreviewList<ServerDeletePreviewContainer>
-  networks: CappedPreviewList<ServerDeletePreviewNetwork>
-  ips: CappedPreviewList<ServerDeletePreviewIp>
-  environments: CappedPreviewList<ServerForgetEnvironment>
-  members: CappedPreviewList<ServerForgetMember>
-  blockedDatabases: CappedPreviewList<ServerForgetBlockedDatabase>
-}
+  online: boolean;
+  canForget: boolean;
+  colocated: boolean;
+  blockers: ServerDeleteBlocker[];
+  containers: CappedPreviewList<ServerDeletePreviewContainer>;
+  networks: CappedPreviewList<ServerDeletePreviewNetwork>;
+  ips: CappedPreviewList<ServerDeletePreviewIp>;
+  environments: CappedPreviewList<ServerForgetEnvironment>;
+  members: CappedPreviewList<ServerForgetMember>;
+  blockedDatabases: CappedPreviewList<ServerForgetBlockedDatabase>;
+  blockedEnvironments: CappedPreviewList<ServerForgetBlockedEnvironment>;
+};
 
 export class ServerOnlineDuringForgetError extends Error {
-  readonly code = SERVER_ONLINE_CODE
+  readonly code = SERVER_ONLINE_CODE;
 
   constructor() {
-    super(SERVER_ONLINE_ERROR)
-    this.name = 'ServerOnlineDuringForgetError'
+    super(SERVER_ONLINE_ERROR);
+    this.name = "ServerOnlineDuringForgetError";
   }
 }
 
 export function isServerOnlineDuringForgetError(error: unknown): boolean {
-  return error instanceof ServerOnlineDuringForgetError
+  return error instanceof ServerOnlineDuringForgetError;
 }
 
 export class ServerHasBlockersDuringForgetError extends Error {
-  readonly code = SERVER_HAS_BLOCKERS_CODE
-  readonly blockers: ServerDeleteBlocker[]
-  readonly blockedDatabases: ServerForgetBlockedDatabase[]
+  readonly code = SERVER_HAS_BLOCKERS_CODE;
+  readonly blockers: ServerDeleteBlocker[];
+  readonly blockedDatabases: ServerForgetBlockedDatabase[];
+  readonly blockedEnvironments: ServerForgetBlockedEnvironment[];
 
-  constructor(blockers: ServerDeleteBlocker[], blockedDatabases: ServerForgetBlockedDatabase[]) {
-    super(SERVER_HAS_BLOCKERS_ERROR)
-    this.name = 'ServerHasBlockersDuringForgetError'
-    this.blockers = blockers
-    this.blockedDatabases = blockedDatabases
+  constructor(
+    blockers: ServerDeleteBlocker[],
+    blockedDatabases: ServerForgetBlockedDatabase[],
+    blockedEnvironments: ServerForgetBlockedEnvironment[] = [],
+  ) {
+    super(SERVER_HAS_BLOCKERS_ERROR);
+    this.name = "ServerHasBlockersDuringForgetError";
+    this.blockers = blockers;
+    this.blockedDatabases = blockedDatabases;
+    this.blockedEnvironments = blockedEnvironments;
   }
 }
 
 export function isServerHasBlockersDuringForgetError(
-  error: unknown
+  error: unknown,
 ): error is ServerHasBlockersDuringForgetError {
-  return error instanceof ServerHasBlockersDuringForgetError
+  return error instanceof ServerHasBlockersDuringForgetError;
 }
 
 /**
@@ -255,103 +296,141 @@ export function nonSystemContainerWhere(serverId: string) {
           WHERE s.id = c.service_id
             AND w.kind = ${WORKSPACE_KIND_TURBOPANEL}
         )
-    `
+    `;
 }
 
 export function notSystemWorkspace() {
-  return ne(workspace.kind, WORKSPACE_KIND_TURBOPANEL)
+  return ne(workspace.kind, WORKSPACE_KIND_TURBOPANEL);
 }
 
 function pushBlocker(
   blockers: ServerDeleteBlocker[],
   kind: ServerDeleteBlockerKind,
-  countValue: number
+  countValue: number,
 ): void {
   if (countValue > 0) {
     blockers.push({
       kind,
       count: countValue,
       label: SERVER_DELETE_BLOCKER_LABELS[kind],
-    })
+    });
   }
 }
 
 export function blockersThatPreventForget(
-  blockers: readonly ServerDeleteBlocker[]
+  blockers: readonly ServerDeleteBlocker[],
 ): ServerDeleteBlocker[] {
-  return blockers.filter((row) => !FORGETTABLE_SERVER_DELETE_BLOCKER_KINDS.has(row.kind))
+  return blockers.filter((row) =>
+    !FORGETTABLE_SERVER_DELETE_BLOCKER_KINDS.has(row.kind)
+  );
 }
 
 export function canForgetServerResources(
   opts: Readonly<{
-    online: boolean
-    colocated: boolean
-    blockedDatabaseCount: number
-  }>
+    online: boolean;
+    colocated: boolean;
+    blockedDatabaseCount: number;
+    blockedEnvironmentCount: number;
+  }>,
 ): boolean {
-  return !opts.online && !opts.colocated && opts.blockedDatabaseCount === 0
+  return (
+    !opts.online &&
+    !opts.colocated &&
+    opts.blockedDatabaseCount === 0 &&
+    opts.blockedEnvironmentCount === 0
+  );
 }
 
-export function blockedDatabaseForgetMessage(name: string, reason: BlockedDatabaseReason): string {
-  if (reason === 'only_member') {
-    return `Database "${name}" has its only copy on this server. Delete the database first.`
+export function blockedDatabaseForgetMessage(
+  name: string,
+  reason: BlockedDatabaseReason,
+): string {
+  if (reason === "only_member") {
+    return `Database "${name}" has its only copy on this server. Delete the database first.`;
   }
-  return `Database "${name}" has its primary copy on this server. Promote another member or delete the database first.`
+  return `Database "${name}" has its primary copy on this server. Promote another member or delete the database first.`;
+}
+
+function joinQuotedNames(parts: readonly string[]): string {
+  if (parts.length <= 1) return parts[0] ?? "";
+  return `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+}
+
+export function blockedEnvironmentForgetMessage(
+  projectName: string,
+  environmentName: string,
+  serverNames: readonly string[],
+): string {
+  const label = serverBlockerItemName({
+    id: "",
+    name: environmentName,
+    projectId: "",
+    projectName,
+    hasDatabase: false,
+  });
+  const hosts = joinQuotedNames(serverNames.map((name) => `"${name}"`));
+  return `App "${label}" also runs on ${hosts}. Move or delete it first.`;
 }
 
 function managedDisplayName(name: string | null, engine: string): string {
-  return name ?? engine
+  return name ?? engine;
 }
 
 function comparePreviewName(a: string, b: string): number {
-  return a.localeCompare(b)
+  return a.localeCompare(b);
 }
 
-export function blockedDatabaseReason(hasMemberOnAnotherServer: boolean): BlockedDatabaseReason {
-  return hasMemberOnAnotherServer ? 'primary_here' : 'only_member'
+export function blockedDatabaseReason(
+  hasMemberOnAnotherServer: boolean,
+): BlockedDatabaseReason {
+  return hasMemberOnAnotherServer ? "primary_here" : "only_member";
 }
 
 type ReplicaTouch = {
-  id: string
-  managedId: string
-  serverId: string
-  role: string
-  databaseName: string
-}
+  id: string;
+  managedId: string;
+  serverId: string;
+  role: string;
+  databaseName: string;
+};
 
 type ManagedTouch = {
-  id: string
-  name: string
-  managedServerId: string | null
-  environmentServerId: string | null
-}
+  id: string;
+  name: string;
+  managedServerId: string | null;
+  environmentServerId: string | null;
+};
 
 /** One entry per database, deduped by id, named for the owner to find it. */
 function databaseItems(
-  rows: ReadonlyArray<{ managedId: string; databaseName: string }>
+  rows: ReadonlyArray<{ managedId: string; databaseName: string }>,
 ): ServerBlockerDatabaseItem[] {
-  const byId = new Map<string, ServerBlockerDatabaseItem>()
+  const byId = new Map<string, ServerBlockerDatabaseItem>();
   for (const row of rows) {
     if (!byId.has(row.managedId)) {
-      byId.set(row.managedId, { id: row.managedId, name: row.databaseName })
+      byId.set(row.managedId, { id: row.managedId, name: row.databaseName });
     }
   }
-  const items = [...byId.values()]
-  items.sort((a, b) => comparePreviewName(a.name, b.name) || a.id.localeCompare(b.id))
-  return items
+  const items = [...byId.values()];
+  items.sort((a, b) =>
+    comparePreviewName(a.name, b.name) || a.id.localeCompare(b.id)
+  );
+  return items;
 }
 
 /** Name the rows behind the counted kinds, capped like every preview list. */
 function withBlockerItems(
   blockers: readonly ServerDeleteBlocker[],
-  itemsByKind: Partial<Record<ServerDeleteBlockerKind, ServerDeleteBlockerItem[]>>
+  itemsByKind: Partial<
+    Record<ServerDeleteBlockerKind, ServerDeleteBlockerItem[]>
+  >,
 ): ServerDeleteBlocker[] {
   return blockers.map((blocker) => {
-    const items = itemsByKind[blocker.kind]
-    if (!items || items.length === 0) return blocker
-    const capped = capPreviewList(items)
-    return { ...blocker, items: capped.items, more: capped.more }
-  })
+    const items = itemsByKind[blocker.kind];
+    if (!items || items.length === 0) return blocker;
+    const capped = capPreviewList(items);
+    return { ...blocker, items: capped.items, more: capped.more };
+  });
 }
 
 function emptyForgetPlan(): ServerForgetPlan {
@@ -362,18 +441,154 @@ function emptyForgetPlan(): ServerForgetPlan {
     environments: [],
     members: [],
     blockedDatabases: [],
+    blockedEnvironments: [],
     blockingBlockers: [],
+  };
+}
+
+function noteEnvironmentServer(
+  byEnvironment: Map<string, Set<string>>,
+  environmentId: string,
+  otherServerId: string | null,
+  forgetServerId: string,
+): void {
+  if (!otherServerId || otherServerId === forgetServerId) return;
+  const set = byEnvironment.get(environmentId) ?? new Set();
+  set.add(otherServerId);
+  byEnvironment.set(environmentId, set);
+}
+
+/**
+ * Servers other than `forgetServerId` that still carry rows under these
+ * environments (containers, slots, deployments, hosting addresses, binding vars).
+ */
+export async function listEnvironmentOtherServerIds(
+  db: Db,
+  environmentIds: readonly string[],
+  forgetServerId: string,
+): Promise<Map<string, Set<string>>> {
+  const byEnvironment = new Map<string, Set<string>>();
+  if (environmentIds.length === 0) return byEnvironment;
+  const ids = [...environmentIds];
+
+  const [containerRows, slotRows, deploymentRows, ipRows, variableRows] =
+    await Promise.all([
+      db
+        .select({
+          environmentId: service.environmentId,
+          serverId: container.serverId,
+        })
+        .from(container)
+        .innerJoin(service, eq(service.id, container.serviceId))
+        .where(
+          and(
+            inArray(service.environmentId, ids),
+            ne(container.serverId, forgetServerId),
+          ),
+        ),
+      db
+        .select({ environmentId: slot.environmentId, serverId: slot.serverId })
+        .from(slot)
+        .where(
+          and(
+            inArray(slot.environmentId, ids),
+            ne(slot.serverId, forgetServerId),
+          ),
+        ),
+      db
+        .select({
+          environmentId: deployment.environmentId,
+          serverId: deployment.serverId,
+        })
+        .from(deployment)
+        .where(
+          and(
+            inArray(deployment.environmentId, ids),
+            ne(deployment.serverId, forgetServerId),
+          ),
+        ),
+      db
+        .select({ environmentId: service.environmentId, serverId: ip.serverId })
+        .from(hosting)
+        .innerJoin(service, eq(service.id, hosting.serviceId))
+        .innerJoin(ip, eq(ip.id, hosting.ipId))
+        .where(
+          and(
+            inArray(service.environmentId, ids),
+            isNotNull(ip.serverId),
+            ne(ip.serverId, forgetServerId),
+          ),
+        ),
+      db
+        .select({
+          environmentId: service.environmentId,
+          serverId: variable.serverId,
+        })
+        .from(variable)
+        .innerJoin(service, eq(service.id, variable.serviceId))
+        .where(
+          and(
+            inArray(service.environmentId, ids),
+            isNotNull(variable.bindingId),
+            isNotNull(variable.serverId),
+            ne(variable.serverId, forgetServerId),
+          ),
+        ),
+    ]);
+
+  for (const row of containerRows) {
+    noteEnvironmentServer(
+      byEnvironment,
+      row.environmentId,
+      row.serverId,
+      forgetServerId,
+    );
   }
+  for (const row of slotRows) {
+    noteEnvironmentServer(
+      byEnvironment,
+      row.environmentId,
+      row.serverId,
+      forgetServerId,
+    );
+  }
+  for (const row of deploymentRows) {
+    noteEnvironmentServer(
+      byEnvironment,
+      row.environmentId,
+      row.serverId,
+      forgetServerId,
+    );
+  }
+  for (const row of ipRows) {
+    noteEnvironmentServer(
+      byEnvironment,
+      row.environmentId,
+      row.serverId,
+      forgetServerId,
+    );
+  }
+  for (const row of variableRows) {
+    noteEnvironmentServer(
+      byEnvironment,
+      row.environmentId,
+      row.serverId,
+      forgetServerId,
+    );
+  }
+  return byEnvironment;
 }
 
 function isDatabaseBlockedOnServer(
   cluster: ManagedTouch,
   replicas: readonly ReplicaTouch[],
-  serverId: string
+  serverId: string,
 ): boolean {
-  if (cluster.managedServerId === serverId) return true
-  if (cluster.environmentServerId === serverId) return true
-  return replicas.some((row) => row.serverId === serverId && row.role === 'primary')
+  if (cluster.managedServerId === serverId) return true;
+  if (cluster.environmentServerId === serverId) return true;
+  return replicas.some((row) =>
+    row.serverId === serverId && row.role === "primary"
+  );
 }
 
 /**
@@ -384,64 +599,70 @@ function isDatabaseBlockedOnServer(
 export async function planServerForget(
   db: Db,
   serverId: string,
-  organizationId: string
+  organizationId: string,
 ): Promise<ServerForgetPlan> {
   const [serverRow] = await db
     .select({ id: server.id })
     .from(server)
-    .where(and(eq(server.id, serverId), eq(server.organizationId, organizationId)))
-    .limit(1)
-  if (!serverRow) return emptyForgetPlan()
+    .where(
+      and(eq(server.id, serverId), eq(server.organizationId, organizationId)),
+    )
+    .limit(1);
+  if (!serverRow) return emptyForgetPlan();
 
-  const [placedEnvironments, managedTouches, replicasHere, blockers] = await Promise.all([
-    db
-      .select({
-        id: environment.id,
-        name: environment.name,
-        projectId: project.id,
-        projectName: project.name,
-        managedId: managed.id,
-      })
-      .from(environment)
-      .innerJoin(project, eq(project.id, environment.projectId))
-      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
-      .leftJoin(managed, eq(managed.environmentId, environment.id))
-      .where(and(eq(environment.serverId, serverId), notSystemWorkspace())),
-    db
-      .select({
-        id: managed.id,
-        name: managed.name,
-        engine: managed.engine,
-        managedServerId: managed.serverId,
-        environmentServerId: environment.serverId,
-      })
-      .from(managed)
-      .innerJoin(environment, eq(environment.id, managed.environmentId))
-      .innerJoin(project, eq(project.id, environment.projectId))
-      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
-      .where(
-        and(
-          notSystemWorkspace(),
-          or(eq(managed.serverId, serverId), eq(environment.serverId, serverId))
-        )
-      ),
-    db
-      .select({
-        id: replica.id,
-        managedId: replica.managedId,
-        serverId: replica.serverId,
-        role: replica.role,
-        databaseName: managed.name,
-        engine: managed.engine,
-      })
-      .from(replica)
-      .innerJoin(managed, eq(managed.id, replica.managedId))
-      .innerJoin(environment, eq(environment.id, managed.environmentId))
-      .innerJoin(project, eq(project.id, environment.projectId))
-      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
-      .where(and(eq(replica.serverId, serverId), notSystemWorkspace())),
-    listServerDeleteBlockers(db, serverId, organizationId),
-  ])
+  const [placedEnvironments, managedTouches, replicasHere, blockers] =
+    await Promise.all([
+      db
+        .select({
+          id: environment.id,
+          name: environment.name,
+          projectId: project.id,
+          projectName: project.name,
+          managedId: managed.id,
+        })
+        .from(environment)
+        .innerJoin(project, eq(project.id, environment.projectId))
+        .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+        .leftJoin(managed, eq(managed.environmentId, environment.id))
+        .where(and(eq(environment.serverId, serverId), notSystemWorkspace())),
+      db
+        .select({
+          id: managed.id,
+          name: managed.name,
+          engine: managed.engine,
+          managedServerId: managed.serverId,
+          environmentServerId: environment.serverId,
+        })
+        .from(managed)
+        .innerJoin(environment, eq(environment.id, managed.environmentId))
+        .innerJoin(project, eq(project.id, environment.projectId))
+        .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+        .where(
+          and(
+            notSystemWorkspace(),
+            or(
+              eq(managed.serverId, serverId),
+              eq(environment.serverId, serverId),
+            ),
+          ),
+        ),
+      db
+        .select({
+          id: replica.id,
+          managedId: replica.managedId,
+          serverId: replica.serverId,
+          role: replica.role,
+          databaseName: managed.name,
+          engine: managed.engine,
+        })
+        .from(replica)
+        .innerJoin(managed, eq(managed.id, replica.managedId))
+        .innerJoin(environment, eq(environment.id, managed.environmentId))
+        .innerJoin(project, eq(project.id, environment.projectId))
+        .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+        .where(and(eq(replica.serverId, serverId), notSystemWorkspace())),
+      listServerDeleteBlockers(db, serverId, organizationId),
+    ]);
 
   const replicaTouches: ReplicaTouch[] = replicasHere.map((row) => ({
     id: row.id,
@@ -449,16 +670,16 @@ export async function planServerForget(
     serverId: row.serverId,
     role: row.role,
     databaseName: managedDisplayName(row.databaseName, row.engine),
-  }))
+  }));
 
-  const clusters = new Map<string, ManagedTouch>()
+  const clusters = new Map<string, ManagedTouch>();
   for (const row of managedTouches) {
     clusters.set(row.id, {
       id: row.id,
       name: managedDisplayName(row.name, row.engine),
       managedServerId: row.managedServerId,
       environmentServerId: row.environmentServerId,
-    })
+    });
   }
   for (const row of replicaTouches) {
     if (!clusters.has(row.managedId)) {
@@ -467,31 +688,33 @@ export async function planServerForget(
         name: row.databaseName,
         managedServerId: null,
         environmentServerId: null,
-      })
+      });
     }
   }
 
-  const clusterIds = [...clusters.keys()]
-  const otherReplicas =
-    clusterIds.length === 0
-      ? []
-      : await db
-          .select({
-            id: replica.id,
-            managedId: replica.managedId,
-            serverId: replica.serverId,
-            role: replica.role,
-          })
-          .from(replica)
-          .where(and(inArray(replica.managedId, clusterIds), ne(replica.serverId, serverId)))
+  const clusterIds = [...clusters.keys()];
+  const otherReplicas = clusterIds.length === 0 ? [] : await db
+    .select({
+      id: replica.id,
+      managedId: replica.managedId,
+      serverId: replica.serverId,
+      role: replica.role,
+    })
+    .from(replica)
+    .where(
+      and(
+        inArray(replica.managedId, clusterIds),
+        ne(replica.serverId, serverId),
+      ),
+    );
 
-  const replicasByManaged = new Map<string, ReplicaTouch[]>()
+  const replicasByManaged = new Map<string, ReplicaTouch[]>();
   const addReplica = (row: ReplicaTouch) => {
-    const list = replicasByManaged.get(row.managedId) ?? []
-    list.push(row)
-    replicasByManaged.set(row.managedId, list)
-  }
-  for (const row of replicaTouches) addReplica(row)
+    const list = replicasByManaged.get(row.managedId) ?? [];
+    list.push(row);
+    replicasByManaged.set(row.managedId, list);
+  };
+  for (const row of replicaTouches) addReplica(row);
   for (const row of otherReplicas) {
     addReplica({
       id: row.id,
@@ -499,58 +722,124 @@ export async function planServerForget(
       serverId: row.serverId,
       role: row.role,
       databaseName: clusters.get(row.managedId)?.name ?? row.managedId,
-    })
+    });
   }
 
-  const blockedDatabases: ServerForgetBlockedDatabase[] = []
-  const blockedIds = new Set<string>()
+  const blockedDatabases: ServerForgetBlockedDatabase[] = [];
+  const blockedIds = new Set<string>();
   for (const cluster of clusters.values()) {
-    const replicas = replicasByManaged.get(cluster.id) ?? []
-    if (!isDatabaseBlockedOnServer(cluster, replicas, serverId)) continue
-    const hasMemberOnAnotherServer = replicas.some((row) => row.serverId !== serverId)
-    blockedIds.add(cluster.id)
+    const replicas = replicasByManaged.get(cluster.id) ?? [];
+    if (!isDatabaseBlockedOnServer(cluster, replicas, serverId)) continue;
+    const hasMemberOnAnotherServer = replicas.some((row) =>
+      row.serverId !== serverId
+    );
+    blockedIds.add(cluster.id);
     blockedDatabases.push({
       id: cluster.id,
       name: cluster.name,
       reason: blockedDatabaseReason(hasMemberOnAnotherServer),
-    })
+    });
   }
-  blockedDatabases.sort((a, b) => comparePreviewName(a.name, b.name) || a.id.localeCompare(b.id))
+  blockedDatabases.sort((a, b) =>
+    comparePreviewName(a.name, b.name) || a.id.localeCompare(b.id)
+  );
 
-  const environmentItems: ServerBlockerEnvironmentItem[] = placedEnvironments.map((row) => ({
-    id: row.id,
-    name: row.name ?? '',
-    projectId: row.projectId,
-    projectName: row.projectName ?? '',
-    hasDatabase: row.managedId !== null,
-  }))
+  const environmentItems: ServerBlockerEnvironmentItem[] = placedEnvironments
+    .map((row) => ({
+      id: row.id,
+      name: row.name ?? "",
+      projectId: row.projectId,
+      projectName: row.projectName ?? "",
+      hasDatabase: row.managedId !== null,
+    }));
   environmentItems.sort(
     (a, b) =>
       comparePreviewName(a.projectName, b.projectName) ||
       comparePreviewName(a.name, b.name) ||
-      a.id.localeCompare(b.id)
-  )
+      a.id.localeCompare(b.id),
+  );
 
-  const environments: ServerForgetEnvironment[] = environmentItems
-    .filter((row) => !row.hasDatabase)
-    .map((row) => ({ id: row.id, name: row.name, projectName: row.projectName }))
+  const forgetCandidateItems = environmentItems.filter((row) =>
+    !row.hasDatabase
+  );
+  const otherServersByEnvironment = await listEnvironmentOtherServerIds(
+    db,
+    forgetCandidateItems.map((row) => row.id),
+    serverId,
+  );
+
+  const blockedEnvironments: ServerForgetBlockedEnvironment[] = [];
+  const blockedEnvironmentIds = new Set<string>();
+  const otherServerIds = new Set<string>();
+  for (const row of forgetCandidateItems) {
+    const serverIdSet = otherServersByEnvironment.get(row.id);
+    if (!serverIdSet || serverIdSet.size === 0) continue;
+    blockedEnvironmentIds.add(row.id);
+    for (const id of serverIdSet) otherServerIds.add(id);
+  }
+
+  const serverNameById = new Map<string, string>();
+  if (otherServerIds.size > 0) {
+    const nameRows = await db
+      .select({ id: server.id, name: server.name })
+      .from(server)
+      .where(inArray(server.id, [...otherServerIds]));
+    for (const row of nameRows) {
+      serverNameById.set(row.id, row.name ?? row.id);
+    }
+  }
+
+  for (const row of forgetCandidateItems) {
+    const serverIdSet = otherServersByEnvironment.get(row.id);
+    if (!serverIdSet || serverIdSet.size === 0) continue;
+    const serverNames = [...serverIdSet]
+      .map((id) => serverNameById.get(id) ?? id)
+      .sort((a, b) => comparePreviewName(a, b));
+    blockedEnvironments.push({
+      id: row.id,
+      name: row.name,
+      projectId: row.projectId,
+      projectName: row.projectName,
+      reason: "present_elsewhere",
+      serverNames,
+    });
+  }
+  blockedEnvironments.sort(
+    (a, b) =>
+      comparePreviewName(a.projectName, b.projectName) ||
+      comparePreviewName(a.name, b.name) ||
+      a.id.localeCompare(b.id),
+  );
+
+  const environments: ServerForgetEnvironment[] = forgetCandidateItems
+    .filter((row) => !blockedEnvironmentIds.has(row.id))
+    .map((row) => ({
+      id: row.id,
+      name: row.name,
+      projectName: row.projectName,
+    }));
 
   const members = replicaTouches
     .filter((row) => !blockedIds.has(row.managedId))
-    .map((row) => ({ id: row.id, databaseName: row.databaseName }))
+    .map((row) => ({ id: row.id, databaseName: row.databaseName }));
   members.sort(
-    (a, b) => comparePreviewName(a.databaseName, b.databaseName) || a.id.localeCompare(b.id)
-  )
+    (a, b) =>
+      comparePreviewName(a.databaseName, b.databaseName) ||
+      a.id.localeCompare(b.id),
+  );
 
   const blockedHere = blockedDatabases.filter((row) => {
-    const cluster = clusters.get(row.id)
-    return cluster?.managedServerId === serverId || cluster?.environmentServerId === serverId
-  })
-  const blockedMembers = replicaTouches.filter((row) => blockedIds.has(row.managedId))
-  const blockingBlockers: ServerDeleteBlocker[] = []
+    const cluster = clusters.get(row.id);
+    return cluster?.managedServerId === serverId ||
+      cluster?.environmentServerId === serverId;
+  });
+  const blockedMembers = replicaTouches.filter((row) =>
+    blockedIds.has(row.managedId)
+  );
+  const blockingBlockers: ServerDeleteBlocker[] = [];
   if (blockedDatabases.length > 0) {
-    pushBlocker(blockingBlockers, 'managed', blockedHere.length)
-    pushBlocker(blockingBlockers, 'replica', blockedMembers.length)
+    pushBlocker(blockingBlockers, "managed", blockedHere.length);
+    pushBlocker(blockingBlockers, "replica", blockedMembers.length);
   }
 
   const placedDatabases = managedTouches
@@ -558,7 +847,7 @@ export async function planServerForget(
     .map((row) => ({
       managedId: row.id,
       databaseName: managedDisplayName(row.name, row.engine),
-    }))
+    }));
 
   return {
     blockers: withBlockerItems(blockers, {
@@ -571,15 +860,16 @@ export async function planServerForget(
     environments,
     members,
     blockedDatabases,
+    blockedEnvironments,
     blockingBlockers: withBlockerItems(blockingBlockers, {
       managed: blockedHere.map((row) => ({ id: row.id, name: row.name })),
       replica: databaseItems(blockedMembers),
     }),
-  }
+  };
 }
 
 function countValue(row: { value: number | string } | undefined): number {
-  return Number(row?.value ?? 0)
+  return Number(row?.value ?? 0);
 }
 
 /**
@@ -592,14 +882,16 @@ function countValue(row: { value: number | string } | undefined): number {
 export async function listServerDeleteBlockers(
   db: Db,
   serverId: string,
-  organizationId: string
+  organizationId: string,
 ): Promise<ServerDeleteBlocker[]> {
   const [serverRow] = await db
     .select({ id: server.id })
     .from(server)
-    .where(and(eq(server.id, serverId), eq(server.organizationId, organizationId)))
-    .limit(1)
-  if (!serverRow) return []
+    .where(
+      and(eq(server.id, serverId), eq(server.organizationId, organizationId)),
+    )
+    .limit(1);
+  if (!serverRow) return [];
 
   const [
     [networkCountRow],
@@ -612,7 +904,9 @@ export async function listServerDeleteBlockers(
     [slotCountRow],
     [copyCountRow],
   ] = await Promise.all([
-    db.select({ value: count() }).from(network).where(eq(network.serverId, serverId)),
+    db.select({ value: count() }).from(network).where(
+      eq(network.serverId, serverId),
+    ),
     db.execute<{ value: number | string }>(sql`
       SELECT count(*)::int AS value
       ${nonSystemContainerWhere(serverId)}
@@ -653,59 +947,66 @@ export async function listServerDeleteBlockers(
       .innerJoin(project, eq(project.id, environment.projectId))
       .innerJoin(workspace, eq(workspace.id, project.workspaceId))
       .where(and(eq(slot.serverId, serverId), notSystemWorkspace())),
-    db.select({ value: count() }).from(storageCopy).where(eq(storageCopy.serverId, serverId)),
-  ])
-  const containerCountRow = containerCountRows[0]
+    db.select({ value: count() }).from(storageCopy).where(
+      eq(storageCopy.serverId, serverId),
+    ),
+  ]);
+  const containerCountRow = containerCountRows[0];
 
-  const blockers: ServerDeleteBlocker[] = []
-  pushBlocker(blockers, 'network', countValue(networkCountRow))
-  pushBlocker(blockers, 'container', countValue(containerCountRow))
-  pushBlocker(blockers, 'ip', countValue(ipCountRow))
-  pushBlocker(blockers, 'environment', countValue(environmentCountRow))
-  pushBlocker(blockers, 'managed', countValue(managedCountRow))
-  pushBlocker(blockers, 'replica', countValue(replicaCountRow))
-  pushBlocker(blockers, 'deployment', countValue(deploymentCountRow))
-  pushBlocker(blockers, 'slot', countValue(slotCountRow))
-  pushBlocker(blockers, 'copy', countValue(copyCountRow))
-  return blockers
+  const blockers: ServerDeleteBlocker[] = [];
+  pushBlocker(blockers, "network", countValue(networkCountRow));
+  pushBlocker(blockers, "container", countValue(containerCountRow));
+  pushBlocker(blockers, "ip", countValue(ipCountRow));
+  pushBlocker(blockers, "environment", countValue(environmentCountRow));
+  pushBlocker(blockers, "managed", countValue(managedCountRow));
+  pushBlocker(blockers, "replica", countValue(replicaCountRow));
+  pushBlocker(blockers, "deployment", countValue(deploymentCountRow));
+  pushBlocker(blockers, "slot", countValue(slotCountRow));
+  pushBlocker(blockers, "copy", countValue(copyCountRow));
+  return blockers;
 }
 
-export function capPreviewList<T>(items: T[], total = items.length): CappedPreviewList<T> {
-  const capped = items.slice(0, SERVER_DELETE_PREVIEW_LIST_CAP)
+export function capPreviewList<T>(
+  items: T[],
+  total = items.length,
+): CappedPreviewList<T> {
+  const capped = items.slice(0, SERVER_DELETE_PREVIEW_LIST_CAP);
   return {
     items: capped,
     more: Math.max(0, total - capped.length),
-  }
+  };
 }
 
 export async function loadServerDeletePreview(
   db: Db,
   serverId: string,
   organizationId: string,
-  opts: Readonly<{ online: boolean; colocated: boolean }>
+  opts: Readonly<{ online: boolean; colocated: boolean }>,
 ): Promise<ServerDeletePreview> {
-  const plan = await planServerForget(db, serverId, organizationId)
-  const blockers = plan.blockers
-  const containerTotal = blockers.find((row) => row.kind === 'container')?.count ?? 0
-  const networkTotal = blockers.find((row) => row.kind === 'network')?.count ?? 0
-  const ipTotal = blockers.find((row) => row.kind === 'ip')?.count ?? 0
+  const plan = await planServerForget(db, serverId, organizationId);
+  const blockers = plan.blockers;
+  const containerTotal =
+    blockers.find((row) => row.kind === "container")?.count ?? 0;
+  const networkTotal = blockers.find((row) => row.kind === "network")?.count ??
+    0;
+  const ipTotal = blockers.find((row) => row.kind === "ip")?.count ?? 0;
 
   const [containerRows, networkRows, ipRows] = await Promise.all([
     containerTotal === 0
       ? Promise.resolve(
-          [] as Array<{
-            id: string
-            name: string
-            status: string
-            serviceName: string | null
-          }>
-        )
+        [] as Array<{
+          id: string;
+          name: string;
+          status: string;
+          serviceName: string | null;
+        }>,
+      )
       : db.execute<{
-          id: string
-          name: string
-          status: string
-          serviceName: string | null
-        }>(sql`
+        id: string;
+        name: string;
+        status: string;
+        serviceName: string | null;
+      }>(sql`
           SELECT c.id, c.container_name AS name, c.status, c.compose_service_name AS "serviceName"
           ${nonSystemContainerWhere(serverId)}
           ORDER BY c.container_name ASC
@@ -723,7 +1024,7 @@ export async function loadServerDeletePreview(
       .where(eq(ip.serverId, serverId))
       .orderBy(ip.address)
       .limit(SERVER_DELETE_PREVIEW_LIST_CAP),
-  ])
+  ]);
 
   const containers = capPreviewList(
     containerRows.map((row) => {
@@ -731,20 +1032,20 @@ export async function loadServerDeletePreview(
         id: row.id,
         name: row.name,
         status: row.status,
-      }
-      if (row.serviceName) item.serviceName = row.serviceName
-      return item
+      };
+      if (row.serviceName) item.serviceName = row.serviceName;
+      return item;
     }),
-    containerTotal
-  )
+    containerTotal,
+  );
   const networks = capPreviewList(
-    networkRows.map((row) => ({ id: row.id, name: row.name ?? '' })),
-    networkTotal
-  )
+    networkRows.map((row) => ({ id: row.id, name: row.name ?? "" })),
+    networkTotal,
+  );
   const ips = capPreviewList(
     ipRows.map((row) => ({ id: row.id, address: String(row.address) })),
-    ipTotal
-  )
+    ipTotal,
+  );
 
   return {
     online: opts.online,
@@ -752,6 +1053,7 @@ export async function loadServerDeletePreview(
       online: opts.online,
       colocated: opts.colocated,
       blockedDatabaseCount: plan.blockedDatabases.length,
+      blockedEnvironmentCount: plan.blockedEnvironments.length,
     }),
     colocated: opts.colocated,
     blockers,
@@ -761,7 +1063,8 @@ export async function loadServerDeletePreview(
     environments: capPreviewList(plan.environments),
     members: capPreviewList(plan.members),
     blockedDatabases: capPreviewList(plan.blockedDatabases),
-  }
+    blockedEnvironments: capPreviewList(plan.blockedEnvironments),
+  };
 }
 
 /**
@@ -770,9 +1073,9 @@ export async function loadServerDeletePreview(
  */
 export function parseForgetResourcesFlag(
   queryValue: string | undefined,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
 ): boolean {
-  return queryValue === 'true' || body.forgetResources === true
+  return queryValue === "true" || body.forgetResources === true;
 }
 
 export function serverOnlineForgetBlockedResponse(c: Context): Response {
@@ -781,92 +1084,106 @@ export function serverOnlineForgetBlockedResponse(c: Context): Response {
       error: SERVER_ONLINE_ERROR,
       code: SERVER_ONLINE_CODE,
     },
-    409
-  )
+    409,
+  );
 }
 
 export function serverDeleteBlockersResponse(
   c: Context,
   blockers: ServerDeleteBlocker[],
-  blockedDatabases?: readonly ServerForgetBlockedDatabase[]
+  blockedDatabases?: readonly ServerForgetBlockedDatabase[],
+  blockedEnvironments?: readonly ServerForgetBlockedEnvironment[],
 ): Response {
-  const capped =
-    blockedDatabases === undefined
-      ? undefined
-      : blockedDatabases.slice(0, SERVER_DELETE_PREVIEW_LIST_CAP)
+  const cappedDatabases = blockedDatabases === undefined
+    ? undefined
+    : blockedDatabases.slice(0, SERVER_DELETE_PREVIEW_LIST_CAP);
+  const cappedEnvironments = blockedEnvironments === undefined
+    ? undefined
+    : blockedEnvironments.slice(0, SERVER_DELETE_PREVIEW_LIST_CAP);
   return c.json(
     {
       error: SERVER_HAS_BLOCKERS_ERROR,
       code: SERVER_HAS_BLOCKERS_CODE,
       blockers,
-      ...(capped && capped.length > 0 ? { blockedDatabases: capped } : {}),
+      ...(cappedDatabases && cappedDatabases.length > 0
+        ? { blockedDatabases: cappedDatabases }
+        : {}),
+      ...(cappedEnvironments && cappedEnvironments.length > 0
+        ? { blockedEnvironments: cappedEnvironments }
+        : {}),
     },
-    409
-  )
+    409,
+  );
 }
 
 /**
  * Re-read `is_connected` under a row lock immediately before forgetting so a
  * reconnect that won the race after the live-snapshot preflight still 409s.
  */
-export async function assertServerOfflineForForget(tx: Db, serverId: string): Promise<void> {
+export async function assertServerOfflineForForget(
+  tx: Db,
+  serverId: string,
+): Promise<void> {
   const [locked] = await tx
     .select({ isConnected: server.isConnected })
     .from(server)
     .where(eq(server.id, serverId))
-    .for('update')
-    .limit(1)
+    .for("update")
+    .limit(1);
   if (locked?.isConnected) {
-    throw new ServerOnlineDuringForgetError()
+    throw new ServerOnlineDuringForgetError();
   }
 }
 
 export async function forgetServerOwnedResources(
   tx: Db,
   serverId: string,
-  organizationId: string
+  organizationId: string,
 ): Promise<ForgottenServerResources> {
-  const plan = await planServerForget(tx, serverId, organizationId)
-  if (plan.blockedDatabases.length > 0) {
+  const plan = await planServerForget(tx, serverId, organizationId);
+  if (plan.blockedDatabases.length > 0 || plan.blockedEnvironments.length > 0) {
     throw new ServerHasBlockersDuringForgetError(
       plan.blockingBlockers,
-      capPreviewList(plan.blockedDatabases).items
-    )
+      capPreviewList(plan.blockedDatabases).items,
+      capPreviewList(plan.blockedEnvironments).items,
+    );
   }
 
-  const environmentIds = plan.environments.map((row) => row.id)
-  const dropped = await dropEnvironmentSubtreeInTx(tx, environmentIds)
+  const environmentIds = plan.environments.map((row) => row.id);
+  const dropped = await dropEnvironmentSubtreeInTx(tx, environmentIds);
 
-  const memberIds = plan.members.map((row) => row.id)
+  const memberIds = plan.members.map((row) => row.id);
   if (memberIds.length > 0) {
-    await tx.delete(replica).where(inArray(replica.id, memberIds))
+    await tx.delete(replica).where(inArray(replica.id, memberIds));
   }
   const deploymentRows = await tx
     .delete(deployment)
     .where(eq(deployment.serverId, serverId))
-    .returning({ id: deployment.id })
+    .returning({ id: deployment.id });
   const slotRows = await tx
     .delete(slot)
     .where(eq(slot.serverId, serverId))
-    .returning({ id: slot.id })
+    .returning({ id: slot.id });
   const copyRows = await tx
     .delete(storageCopy)
     .where(eq(storageCopy.serverId, serverId))
-    .returning({ id: storageCopy.id })
+    .returning({ id: storageCopy.id });
 
   const containerRows = await tx.execute<{ id: string }>(sql`
     SELECT c.id
     ${nonSystemContainerWhere(serverId)}
-  `)
-  const containerIds = containerRows.map((row) => row.id)
+  `);
+  const containerIds = containerRows.map((row) => row.id);
   if (containerIds.length > 0) {
-    await tx.delete(container).where(inArray(container.id, containerIds))
+    await tx.delete(container).where(inArray(container.id, containerIds));
   }
-  const ipRows = await tx.delete(ip).where(eq(ip.serverId, serverId)).returning({ id: ip.id })
+  const ipRows = await tx.delete(ip).where(eq(ip.serverId, serverId)).returning(
+    { id: ip.id },
+  );
   const networkRows = await tx
     .delete(network)
     .where(eq(network.serverId, serverId))
-    .returning({ id: network.id })
+    .returning({ id: network.id });
   return {
     containers: dropped.containers + containerIds.length,
     networks: networkRows.length,
@@ -876,5 +1193,5 @@ export async function forgetServerOwnedResources(
     deployments: deploymentRows.length,
     slots: slotRows.length,
     copies: copyRows.length,
-  }
+  };
 }

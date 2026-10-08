@@ -25,8 +25,10 @@ import {
   project,
   relay,
   replica,
+  deployment,
   server,
   service,
+  slot,
   subnet,
   team,
   teammate,
@@ -94,6 +96,14 @@ type ErrorJson = {
     more?: number
   }>
   blockedDatabases?: Array<{ id: string; name: string; reason: string }>
+  blockedEnvironments?: Array<{
+    id: string
+    name: string
+    projectId: string
+    projectName: string
+    reason: string
+    serverNames: string[]
+  }>
 }
 
 type ServersListJson = {
@@ -1169,6 +1179,19 @@ async function insertUserWorkspaceLeftovers(
   }
 }
 
+async function insertPeerServer(
+  db: ReturnType<typeof createDenoDb>,
+  organizationId: string,
+  name: string
+): Promise<string> {
+  const now = new Date().toISOString()
+  const [row] = await db
+    .insert(server)
+    .values({ createdAt: now, updatedAt: now, organizationId, name })
+    .returning({ id: server.id })
+  return row!.id
+}
+
 test('DELETE /servers/:id returns 409 when networks block deletion', async () => {
   await withServerDeleteFixtures(
     async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
@@ -1232,6 +1255,7 @@ test('GET /servers/:id/delete-preview lists leftovers on an offline server', asy
         environments: { items: unknown[]; more: number }
         members: { items: unknown[]; more: number }
         blockedDatabases: { items: unknown[]; more: number }
+        blockedEnvironments: { items: unknown[]; more: number }
       }>(res)
       assertEquals(body.online, false)
       assertEquals(body.canForget, true)
@@ -1248,6 +1272,7 @@ test('GET /servers/:id/delete-preview lists leftovers on an offline server', asy
       assertEquals(body.environments, { items: [], more: 0 })
       assertEquals(body.members, { items: [], more: 0 })
       assertEquals(body.blockedDatabases, { items: [], more: 0 })
+      assertEquals(body.blockedEnvironments, { items: [], more: 0 })
     } finally {
       await db.delete(container).where(eq(container.id, leftovers.containerId))
       await db.delete(service).where(eq(service.id, leftovers.serviceId))
@@ -1546,6 +1571,143 @@ test('DELETE /servers/:id with forgetResources forgets an app environment and it
       await db.delete(project).where(eq(project.id, leftovers.projectId))
       await db.delete(workspace).where(eq(workspace.id, leftovers.workspaceId))
       await db.delete(audit).where(eq(audit.organizationId, organizationId))
+    }
+  )
+})
+
+test('DELETE /servers/:id with forgetResources is refused when the environment still has a container on another server', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const leftovers = await insertUserWorkspaceLeftovers(db, { organizationId, serverId })
+      const peerId = await insertPeerServer(db, organizationId, 'Worker 2')
+      await db
+        .update(environment)
+        .set({ serverId })
+        .where(eq(environment.id, leftovers.environmentId))
+      await db
+        .update(container)
+        .set({ serverId: peerId })
+        .where(eq(container.id, leftovers.containerId))
+      try {
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        })
+        assertEquals(res.status, 409)
+        const body = await readJson<ErrorJson>(res)
+        assertEquals(body.code, SERVER_HAS_BLOCKERS_CODE)
+        assertEquals(body.blockedEnvironments, [
+          {
+            id: leftovers.environmentId,
+            name: 'production',
+            projectId: leftovers.projectId,
+            projectName: 'Leftover Project',
+            reason: 'present_elsewhere',
+            serverNames: ['Worker 2'],
+          },
+        ])
+        assertEquals(registry.purgedIds.length, 0)
+        const remainingContainers = await db
+          .select({ id: container.id })
+          .from(container)
+          .where(eq(container.id, leftovers.containerId))
+        assertEquals(remainingContainers.length, 1)
+      } finally {
+        await db.delete(container).where(eq(container.id, leftovers.containerId))
+        await db.delete(service).where(eq(service.id, leftovers.serviceId))
+        await db.delete(environment).where(eq(environment.id, leftovers.environmentId))
+        await db.delete(project).where(eq(project.id, leftovers.projectId))
+        await db.delete(workspace).where(eq(workspace.id, leftovers.workspaceId))
+        await db.delete(ip).where(eq(ip.id, leftovers.ipId))
+        await db.delete(network).where(eq(network.id, leftovers.networkId))
+        await db.delete(server).where(eq(server.id, peerId))
+      }
+    }
+  )
+})
+
+test('DELETE /servers/:id with forgetResources is refused when the environment still has a slot on another server', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const leftovers = await insertUserWorkspaceLeftovers(db, { organizationId, serverId })
+      const peerId = await insertPeerServer(db, organizationId, 'Worker 2')
+      await db
+        .update(environment)
+        .set({ serverId })
+        .where(eq(environment.id, leftovers.environmentId))
+      const [slotRow] = await db
+        .insert(slot)
+        .values({
+          environmentId: leftovers.environmentId,
+          serviceId: leftovers.serviceId,
+          serverId: peerId,
+          slot: 0,
+        })
+        .returning({ id: slot.id })
+      try {
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        })
+        assertEquals(res.status, 409)
+        const body = await readJson<ErrorJson>(res)
+        assertEquals(body.blockedEnvironments?.[0]?.reason, 'present_elsewhere')
+        assertEquals(registry.purgedIds.length, 0)
+      } finally {
+        await db.delete(slot).where(eq(slot.id, slotRow!.id))
+        await db.delete(container).where(eq(container.id, leftovers.containerId))
+        await db.delete(service).where(eq(service.id, leftovers.serviceId))
+        await db.delete(environment).where(eq(environment.id, leftovers.environmentId))
+        await db.delete(project).where(eq(project.id, leftovers.projectId))
+        await db.delete(workspace).where(eq(workspace.id, leftovers.workspaceId))
+        await db.delete(ip).where(eq(ip.id, leftovers.ipId))
+        await db.delete(network).where(eq(network.id, leftovers.networkId))
+        await db.delete(server).where(eq(server.id, peerId))
+      }
+    }
+  )
+})
+
+test('DELETE /servers/:id with forgetResources is refused when the environment still has a deployment on another server', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const leftovers = await insertUserWorkspaceLeftovers(db, { organizationId, serverId })
+      const peerId = await insertPeerServer(db, organizationId, 'Worker 2')
+      await db
+        .update(environment)
+        .set({ serverId })
+        .where(eq(environment.id, leftovers.environmentId))
+      const [deploymentRow] = await db
+        .insert(deployment)
+        .values({
+          environmentId: leftovers.environmentId,
+          serverId: peerId,
+          status: 'applied',
+        })
+        .returning({ id: deployment.id })
+      try {
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        })
+        assertEquals(res.status, 409)
+        const body = await readJson<ErrorJson>(res)
+        assertEquals(body.blockedEnvironments?.[0]?.serverNames, ['Worker 2'])
+        assertEquals(registry.purgedIds.length, 0)
+      } finally {
+        await db.delete(deployment).where(eq(deployment.id, deploymentRow!.id))
+        await db.delete(container).where(eq(container.id, leftovers.containerId))
+        await db.delete(service).where(eq(service.id, leftovers.serviceId))
+        await db.delete(environment).where(eq(environment.id, leftovers.environmentId))
+        await db.delete(project).where(eq(project.id, leftovers.projectId))
+        await db.delete(workspace).where(eq(workspace.id, leftovers.workspaceId))
+        await db.delete(ip).where(eq(ip.id, leftovers.ipId))
+        await db.delete(network).where(eq(network.id, leftovers.networkId))
+        await db.delete(server).where(eq(server.id, peerId))
+      }
     }
   )
 })
