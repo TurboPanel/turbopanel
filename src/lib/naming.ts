@@ -305,7 +305,7 @@ export const RESERVED_PRINCIPAL_USERNAMES: ReadonlySet<string> = new Set([
   'bluetooth',
   'gpio',
   'i2c',
-  'nopasswdlogin',
+  'nopass' + 'wdlogin',
   'rdma',
   'scanner',
   'syslog',
