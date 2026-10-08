@@ -238,7 +238,7 @@ async function evaluateSwitchoverReseed(
   const members = await listMembers(db, record.managedId)
   const source = memberById(members, recordReady.sourceId)
   const target = memberById(members, recordReady.targetId)
-  if (!source || source.role !== 'replica' || source.status !== 'needs_resync') {
+  if (source?.role !== 'replica' || source.status !== 'needs_resync') {
     skip('source member is not a needs_resync replica')
     return null
   }
