@@ -1182,8 +1182,64 @@ export function buildManagedDestroyQueuedResponse(params: { commandId: string; s
   }
 }
 
-export function buildManagedDeleteHardResponse() {
-  return { ok: true as const, deleted: true as const }
+export type ManagedHostCleanupRow = {
+  serverId: string
+  status: 'queued' | 'failed'
+  online: boolean
+}
+
+/**
+ * One row per member host for a force-delete: enqueue outcome plus whether
+ * that host is connected right now (offline hosts still get a long-lived
+ * destroy; they run it when they reconnect).
+ */
+export function buildManagedForceHostCleanup(
+  members: readonly { serverId: string }[],
+  enqueued: readonly { serverId: string; status: 'queued' | 'failed' }[],
+  onlineByServerId: ReadonlyMap<string, boolean>
+): ManagedHostCleanupRow[] {
+  const statusByServer = new Map<string, 'queued' | 'failed'>()
+  for (const row of enqueued) {
+    if (row.status === 'failed') {
+      statusByServer.set(row.serverId, 'failed')
+      continue
+    }
+    if (statusByServer.get(row.serverId) !== 'failed') {
+      statusByServer.set(row.serverId, 'queued')
+    }
+  }
+  const seen = new Set<string>()
+  const hostCleanup: ManagedHostCleanupRow[] = []
+  for (const member of members) {
+    if (seen.has(member.serverId)) continue
+    seen.add(member.serverId)
+    hostCleanup.push({
+      serverId: member.serverId,
+      status: statusByServer.get(member.serverId) ?? 'failed',
+      online: onlineByServerId.get(member.serverId) === true,
+    })
+  }
+  return hostCleanup
+}
+
+export function buildManagedDeleteHardResponse(params?: {
+  hostCleanup?: readonly ManagedHostCleanupRow[]
+}) {
+  const hostCleanup = params?.hostCleanup
+  if (!hostCleanup || hostCleanup.length === 0) {
+    return { ok: true as const, deleted: true as const }
+  }
+  const offlineCount = hostCleanup.filter((row) => !row.online).length
+  return {
+    ok: true as const,
+    deleted: true as const,
+    hostCleanup: [...hostCleanup],
+    ...(offlineCount > 0
+      ? {
+          note: `The cleanup will run when ${offlineCount} offline server(s) reconnect within 7 days.`,
+        }
+      : {}),
+  }
 }
 
 export function buildManagedDeleteQueuedResponse<T extends QueuedCommandFanoutRow>(

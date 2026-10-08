@@ -88,9 +88,18 @@ export {
   parseManagedDestroyGate,
   type PendingManagedDestroy,
 } from './destroy-gate.ts'
+import { logWarn } from '../../lib/logger.ts'
 import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
 
 const APPLY_EXPIRES_MS = 600_000
+/** Normal (online, sequenced) `managed.destroy` — 10 minutes. */
+const MANAGED_DESTROY_EXPIRES_MS = 600_000
+/**
+ * Force-delete and failed-create compensation: keep the teardown queued long
+ * enough for a host that is offline or restarting for an update to run it
+ * when it returns.
+ */
+export const MANAGED_FORCE_DESTROY_EXPIRES_MS = 7 * 24 * 60 * 60 * 1000
 /** Polling cadence while awaiting primary apply before standby enqueue. */
 const COMMAND_AWAIT_POLL_MS = 1_000
 
@@ -1800,8 +1809,13 @@ export async function enqueueManagedDestroyFanout(
      * enqueue everything at once and let sweeps mop up leftovers.
      */
     force?: boolean
+    /** Command expiry. Force-delete and compensation default to 7 days. */
+    expiresAtMs?: number
   }
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
+  const expiresAtMs =
+    params.expiresAtMs ??
+    (params.force ? MANAGED_FORCE_DESTROY_EXPIRES_MS : MANAGED_DESTROY_EXPIRES_MS)
   const enqueueOne = async (
     member: ManagedMemberRow,
     metadata?: Record<string, unknown>
@@ -1811,7 +1825,7 @@ export async function enqueueManagedDestroyFanout(
       serverId: member.serverId,
       type: 'managed.destroy',
       payload: buildManagedDestroyPayload(params, member),
-      expiresAtMs: 600_000,
+      expiresAtMs,
       ...(metadata ? { metadata } : {}),
     })
     if (enqueued instanceof Response) {
@@ -1956,6 +1970,7 @@ export function enqueueManagedDestroy(
     removeVolumes: boolean
     deleteAfterDestroy?: boolean
     memberId?: string
+    expiresAtMs?: number
   }
 ): Promise<{ ok: true; commandId: string; status: 'queued'; serverId: string } | Response> {
   const payload: Record<string, unknown> = {
@@ -1971,6 +1986,52 @@ export function enqueueManagedDestroy(
     serverId: params.serverId,
     type: 'managed.destroy',
     payload,
-    expiresAtMs: 600_000,
+    expiresAtMs: params.expiresAtMs ?? MANAGED_DESTROY_EXPIRES_MS,
   })
+}
+
+/**
+ * Best-effort host teardown for a managed row that is about to be deleted
+ * (failed/incomplete create). Never throws: a queue miss still lets the
+ * caller drop the row. Empty member set means nothing was pinned on a host.
+ */
+export async function enqueueBestEffortManagedDestroy(
+  c: Context,
+  db: Db,
+  commandQueue: CommandQueue | undefined,
+  params: {
+    userId: string
+    managedId: string
+    environmentId: string
+  }
+): Promise<void> {
+  try {
+    const members = await listManagedMembers(db, params.managedId)
+    if (members.length === 0) return
+    if (!commandQueue) {
+      logWarn(
+        'managed',
+        `Could not queue host cleanup for managed ${params.managedId}: command queue unavailable`
+      )
+      return
+    }
+    const enqueued = await enqueueManagedDestroyFanout(c, db, commandQueue, {
+      userId: params.userId,
+      managedId: params.managedId,
+      removeVolumes: true,
+      members,
+      deleteAfterDestroy: false,
+      environmentId: params.environmentId,
+      force: true,
+      expiresAtMs: MANAGED_FORCE_DESTROY_EXPIRES_MS,
+    })
+    if (enqueued instanceof Response || enqueued.some((row) => row.status === 'failed')) {
+      logWarn(
+        'managed',
+        `Could not queue host cleanup for managed ${params.managedId} on every member host`
+      )
+    }
+  } catch (error) {
+    logWarn('managed', `Could not queue host cleanup for managed ${params.managedId}`, error)
+  }
 }

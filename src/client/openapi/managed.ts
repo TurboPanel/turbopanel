@@ -464,7 +464,7 @@ export const managedSchemas = {
       deleted: {
         type: 'boolean',
         description:
-          'True when the row was hard-deleted (unplaced cluster); false when `managed.destroy` was enqueued for a placed cluster',
+          'True when the row was hard-deleted (unplaced cluster or `?force=true`); false when `managed.destroy` was enqueued for a placed cluster',
       },
       commandId: { type: 'string' },
       serverId: { type: 'string' },
@@ -473,6 +473,25 @@ export const managedSchemas = {
         items: { type: 'object' },
         description:
           'Present when `detach=true` and services were bound: the services (`serviceId`, `name`, `environmentId`, `projectId`, `keyPrefix`) whose bindings and database variables go with the cluster. Removed at once on a forced or unplaced delete; otherwise removed only when the queued destroy succeeds (a destroy that fails leaves the cluster and its bindings in place)',
+      },
+      hostCleanup: {
+        type: 'array',
+        description:
+          'Present on `?force=true`: one entry per member host. `status` is whether `managed.destroy` was queued; `online` is the live connection right now (an offline host still receives a destroy that runs when it reconnects within 7 days)',
+        items: {
+          type: 'object',
+          required: ['serverId', 'status', 'online'],
+          properties: {
+            serverId: { type: 'string', format: 'uuid' },
+            status: { type: 'string', enum: ['queued', 'failed'] },
+            online: { type: 'boolean' },
+          },
+        },
+      },
+      note: {
+        type: 'string',
+        description:
+          'Present on `?force=true` when any member host is offline: the cleanup will run when those servers reconnect within 7 days',
       },
     },
   },
@@ -1237,7 +1256,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Destroy managed service (two-step when running)',
       description:
-        "Refused with 409 `managed_has_bindings` (and the bound `services`) while any service is bound to one of the cluster's logins. Pass `detach=true` to remove those bindings and their variables with the cluster (when the destroy succeeds; at once on a forced or unplaced delete); the response then lists them in `detached`. New bindings are refused with 409 `managed_busy` (`destroy_in_flight`) while a destroy is queued. Needs the same rights as the destroy itself. The services keep running with the values they already have until their next deploy.",
+        "Refused with 409 `managed_has_bindings` (and the bound `services`) while any service is bound to one of the cluster's logins. Pass `detach=true` to remove those bindings and their variables with the cluster (when the destroy succeeds; at once on a forced or unplaced delete); the response then lists them in `detached`. `?force=true` skips online checks, enqueues a 7-day `managed.destroy` per member host, hard-deletes the row, and returns `hostCleanup` (plus `note` when any host is offline). New bindings are refused with 409 `managed_busy` (`destroy_in_flight`) while a destroy is queued. Needs the same rights as the destroy itself. The services keep running with the values they already have until their next deploy.",
       parameters: [
         ENV_ID_PARAM,
         {
@@ -1247,6 +1266,14 @@ export const managedPaths = {
           schema: { type: 'boolean' },
           description:
             "Remove the cluster's service bindings (and their variables) with the cluster, once the destroy succeeds",
+        },
+        {
+          name: 'force',
+          in: 'query',
+          required: false,
+          schema: { type: 'boolean' },
+          description:
+            'Best-effort teardown: skip online checks, enqueue destroy on every member host with a 7-day expiry, and hard-delete the row immediately',
         },
       ],
       responses: {
