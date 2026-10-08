@@ -11,10 +11,7 @@ import type {
 } from "../../lib/secrets/secrets.ts";
 import type { CommandQueue } from "../commands/queue.ts";
 import type { CommandType } from "../commands/types.ts";
-import type {
-  ManagedHaFailoverCommandPayload,
-  ManagedPromoteCommandPayload,
-} from "../../contracts/commands/schemas.ts";
+import type { ManagedHaFailoverCommandPayload } from "../../contracts/commands/schemas.ts";
 import type { ManagedEngineCode } from "./types.ts";
 import {
   createCommandRecord,
@@ -1165,6 +1162,27 @@ function applyFenceSettlement(
   return { state: advance.state, metadata: advance.metadata };
 }
 
+async function abortSwitchoverWhenGtidMissing(
+  db: Db,
+  record: RecoveryRecord,
+  engine: ManagedEngineCode,
+): Promise<boolean> {
+  if (
+    record.kind !== "switchover" ||
+    !fenceStopCapturesSwitchoverGtid(record.kind, engine) ||
+    record.metadata.switchoverRequiredGtidSet
+  ) {
+    return false;
+  }
+  await failRecoveryForOperator(
+    db,
+    record.id,
+    "Planned switchover could not record the old primary GTID position after fence stop",
+  );
+  await stampManagedReady(db, record.managedId);
+  return true;
+}
+
 /** After the lock is released: act on the state the settlement produced. */
 async function followFenceAdvance(
   db: Db,
@@ -1186,16 +1204,8 @@ async function followFenceAdvance(
   if (!source || !target) return;
 
   if (
-    record.kind === "switchover" &&
-    fenceStopCapturesSwitchoverGtid(record.kind, settlement.engine) &&
-    !record.metadata.switchoverRequiredGtidSet
+    await abortSwitchoverWhenGtidMissing(db, record, settlement.engine)
   ) {
-    await failRecoveryForOperator(
-      db,
-      record.id,
-      "Planned switchover could not record the old primary GTID position after fence stop",
-    );
-    await stampManagedReady(db, record.managedId);
     return;
   }
 
@@ -1235,12 +1245,10 @@ export async function onFenceCommandSucceeded(
     switchoverPrimaryExecutedGtidSet?: string;
   },
 ): Promise<void> {
-  if (params.switchoverPrimaryExecutedGtidSet) {
+  const switchoverGtid = params.switchoverPrimaryExecutedGtidSet;
+  if (switchoverGtid) {
     await updateRecoveryLocked(db, params.recoveryId, (current) => ({
-      metadata: recordSwitchoverRequiredGtid(
-        current.metadata,
-        params.switchoverPrimaryExecutedGtidSet!,
-      ),
+      metadata: recordSwitchoverRequiredGtid(current.metadata, switchoverGtid),
     }));
   }
   await settleFenceCommand(db, commandQueue, {

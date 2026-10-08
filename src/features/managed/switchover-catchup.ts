@@ -5,8 +5,10 @@
 
 import type { ManagedEngineCode } from "./types.ts";
 import type { RecoveryMetadata } from "./recovery.ts";
-import type { ManagedLifecycleCommandResult } from "../../contracts/commands/schemas.ts";
-import type { ManagedPromoteCommandPayload } from "../../contracts/commands/schemas.ts";
+import type {
+  ManagedLifecycleCommandResult,
+  ManagedPromoteCommandPayload,
+} from "../../contracts/commands/schemas.ts";
 
 export const SWITCHOVER_GTID_WAIT_SECONDS = 120;
 
@@ -48,20 +50,7 @@ export function recordSwitchoverRequiredGtid(
   };
 }
 
-export function promotePayloadWithSwitchoverCatchup(
-  payload: ManagedPromoteCommandPayload,
-  metadata: RecoveryMetadata,
-): ManagedPromoteCommandPayload {
-  const gtid = metadata.switchoverRequiredGtidSet;
-  if (!gtid) return payload;
-  return {
-    ...payload,
-    requiredExecutedGtidSet: gtid,
-    gtidWaitTimeoutSeconds: SWITCHOVER_GTID_WAIT_SECONDS,
-  };
-}
-
-export function failoverRecoverPayloadWithSwitchoverCatchup<
+function attachSwitchoverGtidToPayload<
   T extends {
     requiredExecutedGtidSet?: string;
     gtidWaitTimeoutSeconds?: number;
@@ -74,6 +63,22 @@ export function failoverRecoverPayloadWithSwitchoverCatchup<
     requiredExecutedGtidSet: gtid,
     gtidWaitTimeoutSeconds: SWITCHOVER_GTID_WAIT_SECONDS,
   };
+}
+
+export function promotePayloadWithSwitchoverCatchup(
+  payload: ManagedPromoteCommandPayload,
+  metadata: RecoveryMetadata,
+): ManagedPromoteCommandPayload {
+  return attachSwitchoverGtidToPayload(payload, metadata);
+}
+
+export function failoverRecoverPayloadWithSwitchoverCatchup<
+  T extends {
+    requiredExecutedGtidSet?: string;
+    gtidWaitTimeoutSeconds?: number;
+  },
+>(payload: T, metadata: RecoveryMetadata): T {
+  return attachSwitchoverGtidToPayload(payload, metadata);
 }
 
 export function switchoverAbortReactivateLifecyclePayload(params: {
