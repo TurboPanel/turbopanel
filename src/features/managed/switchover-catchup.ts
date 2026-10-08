@@ -1,0 +1,99 @@
+/**
+ * MySQL-family planned switchover: prove the promotion target applied the old
+ * primary's final GTID position before it is promoted.
+ */
+
+import type { ManagedEngineCode } from "./types.ts";
+import type { RecoveryMetadata } from "./recovery.ts";
+import type { ManagedLifecycleCommandResult } from "../../contracts/commands/schemas.ts";
+import type { ManagedPromoteCommandPayload } from "../../contracts/commands/schemas.ts";
+
+export const SWITCHOVER_GTID_WAIT_SECONDS = 120;
+
+const MYSQL_FAMILY: ReadonlySet<ManagedEngineCode> = new Set([
+  "mysql",
+  "mariadb",
+]);
+
+export function engineNeedsSwitchoverGtidProof(
+  engine: ManagedEngineCode,
+): boolean {
+  return MYSQL_FAMILY.has(engine);
+}
+
+export function fenceStopCapturesSwitchoverGtid(
+  kind: string,
+  engine: ManagedEngineCode,
+): boolean {
+  return kind === "switchover" && engineNeedsSwitchoverGtidProof(engine);
+}
+
+export function switchoverGtidFromFenceStopResult(
+  result: ManagedLifecycleCommandResult,
+): string | null {
+  const gtid = result.switchoverPrimaryExecutedGtidSet;
+  if (typeof gtid !== "string" || gtid.length === 0 || gtid.length > 4096) {
+    return null;
+  }
+  return gtid;
+}
+
+export function recordSwitchoverRequiredGtid(
+  metadata: RecoveryMetadata,
+  gtidSet: string,
+): RecoveryMetadata {
+  return {
+    ...metadata,
+    switchoverRequiredGtidSet: gtidSet,
+  };
+}
+
+export function promotePayloadWithSwitchoverCatchup(
+  payload: ManagedPromoteCommandPayload,
+  metadata: RecoveryMetadata,
+): ManagedPromoteCommandPayload {
+  const gtid = metadata.switchoverRequiredGtidSet;
+  if (!gtid) return payload;
+  return {
+    ...payload,
+    requiredExecutedGtidSet: gtid,
+    gtidWaitTimeoutSeconds: SWITCHOVER_GTID_WAIT_SECONDS,
+  };
+}
+
+export function failoverRecoverPayloadWithSwitchoverCatchup<
+  T extends {
+    requiredExecutedGtidSet?: string;
+    gtidWaitTimeoutSeconds?: number;
+  },
+>(payload: T, metadata: RecoveryMetadata): T {
+  const gtid = metadata.switchoverRequiredGtidSet;
+  if (!gtid) return payload;
+  return {
+    ...payload,
+    requiredExecutedGtidSet: gtid,
+    gtidWaitTimeoutSeconds: SWITCHOVER_GTID_WAIT_SECONDS,
+  };
+}
+
+export function switchoverAbortReactivateLifecyclePayload(params: {
+  managedId: string;
+  memberId: string;
+  engine: ManagedEngineCode;
+}): {
+  managedId: string;
+  action: "start";
+  memberId: string;
+  engine: ManagedEngineCode;
+  role: "primary";
+  reactivateAfterSwitchoverAbort: true;
+} {
+  return {
+    managedId: params.managedId,
+    action: "start",
+    memberId: params.memberId,
+    engine: params.engine,
+    role: "primary",
+    reactivateAfterSwitchoverAbort: true,
+  };
+}

@@ -151,7 +151,7 @@ import {
   evaluateManagedDatabaseDelete,
   evaluateManagedUserDropGuard,
   evaluateManagedUserRotateGuard,
-  evaluatePromoteLagHttpGate,
+  evaluateOperatorPromoteGate,
   evaluatePromoteMemberRole,
   evaluatePromoteReplicaClass,
   evaluateReadOnlyLoginTargetsLazy,
@@ -339,7 +339,7 @@ async function assertManagedPromoteLagAllowed(
     })
     if (probe.status === 'observed') replication = probe.replication
   }
-  const gate = evaluatePromoteLagHttpGate(replication, force)
+  const gate = evaluateOperatorPromoteGate(replication, params.engine, force)
   return gate !== null ? c.json({ error: gate }, 409) : null
 }
 

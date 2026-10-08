@@ -1030,9 +1030,26 @@ export function evaluatePromoteLagHttpGate(
   | null
   | 'managed_replica_not_streaming'
   | 'managed_replica_lagging'
-  | 'managed_replica_health_stale' {
+  | 'managed_replica_health_stale'
+  | 'managed_replica_not_fully_applied' {
   if (force) return null
   return evaluateManagedPromoteLagGate(replication, nowMs)
+}
+
+/**
+ * Operator promote gate: lag/streaming freshness plus, for MySQL-family
+ * engines, `fullyApplied === true` on the probe reading (always re-probe when
+ * stale via the route — see `assertManagedPromoteLagAllowed`).
+ */
+export function evaluateOperatorPromoteGate(
+  replication: unknown,
+  engine: string,
+  force: boolean,
+  nowMs?: number
+): ReturnType<typeof evaluatePromoteLagHttpGate> {
+  if (force) return null
+  const requireFullyApplied = engine === 'mysql' || engine === 'mariadb'
+  return evaluateManagedPromoteLagGate(replication, nowMs, { requireFullyApplied })
 }
 
 export type QueuedCommandFanoutRow = {

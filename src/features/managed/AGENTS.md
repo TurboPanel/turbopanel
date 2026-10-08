@@ -608,6 +608,11 @@ per `managed_id`. Orchestrator HTTP stays on the daemon (`managed.ha.reconcile`
 / `managed.ha.failover`); instance `ManagedHaAuthority` is policy only
 (`Recover: false` on Orchestrator). Designated recover on the daemon falls back
 to `managed.promote` when Orchestrator is absent or the recover API fails.
+**MySQL-family planned switchover** (`switchover-catchup.ts`): after ProxySQL
+drain, fence stop captures the old primary's final GTID (`captureSwitchoverGtid`
+on `managed.lifecycle`); promotion carries `requiredExecutedGtidSet` so the
+daemon waits on the target before `managed.promote`. Operator promote also
+requires `fullyApplied === true` on a fresh health probe (`evaluateOperatorPromoteGate`).
 Detection is an unsolicited `managed-ha-event` over the daemon WebSocket — not a
 Durable Object poll loop. DR rewrite: members no longer in the new primary's
 datacenter cannot stay `failover` → `read` (keep `readEligible`). Same-DC `read`
