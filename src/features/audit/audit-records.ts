@@ -51,6 +51,9 @@ export const AUDIT_ACTIONS = [
   'deployment.cancel',
   'hosting.letsencrypt.requested',
   'mail.dead_letter.replay',
+  'binding.create',
+  'binding.update',
+  'binding.delete',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
