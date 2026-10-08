@@ -6,7 +6,6 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import {
   consumerServerIdsForManaged,
-  hasRemoteConsumerServers,
   isBindingEndpointError,
   loadServicePlacementServerId,
   memberServerIdsForManaged,
@@ -144,6 +143,18 @@ test('consumerServerIdsForManaged unions task pin with effective placement', asy
   assertEquals(ids.length, 2)
 })
 
+test('consumerServerIdsForManaged uses a slot-only remote host', async () => {
+  const taskServer = '00000000-0000-4000-8000-0000000000c5'
+  const db = consumerServerQuery([
+    {
+      environmentServerId: null,
+      projectOptions: null,
+      taskServerId: taskServer,
+    },
+  ])
+  assertEquals(await consumerServerIdsForManaged(db, 'm1'), [taskServer])
+})
+
 test('memberServerIdsForManaged maps node rows', async () => {
   const db = {
     select: () => ({
@@ -231,13 +242,6 @@ test('resolveBindingEndpoint unavailable when listener server has no organizatio
     }),
     { kind: 'binding_endpoint_unavailable' }
   )
-})
-
-test('hasRemoteConsumerServers is true only when a consumer is off the member hosts', () => {
-  assertEquals(hasRemoteConsumerServers(['srv-db'], ['srv-db']), false)
-  assertEquals(hasRemoteConsumerServers(['srv-db'], ['srv-db', 'srv-app']), true)
-  assertEquals(hasRemoteConsumerServers(['srv-db'], []), false)
-  assertEquals(hasRemoteConsumerServers(['srv-db'], ['']), false)
 })
 
 test('isBindingEndpointError covers unavailable and non-errors', () => {

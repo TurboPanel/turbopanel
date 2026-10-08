@@ -21,6 +21,8 @@ import { ageReplicationHealth, type ReplicationHealthView } from './replica-fres
 import { MANAGED_PRIVATE_PORT_MAX, MANAGED_PRIVATE_PORT_MIN } from './ingress-ports.ts'
 import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
+import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
+import { hasRemoteConsumerServers } from '../bindings/remote-consumers.ts'
 
 /**
  * High contiguous host-port range for multi-member private listeners
@@ -455,13 +457,15 @@ function findFreePrivatePort(used: ReadonlySet<number>): number | null {
 }
 
 /**
- * Allocate or clear private listener ports.
+ * Allocate private listener ports, or return in-memory null ports when unused.
  *
  * Multi-member clusters always allocate. A single-member cluster allocates
  * when a bound consumer lives on another host (that host's ProxySQL dials this
- * engine's private listener); otherwise leftover `private_port` rows are
- * cleared. Under a `fabric` transport the port is published on the relay `tp0`
- * address.
+ * engine's private listener). Clearing leftover `private_port` rows is deferred
+ * until `commitClearedPrivatePortsIfUnused` after apply is queued, so a failed
+ * enqueue cannot leave the database saying there is no listener while the host
+ * still publishes one. Under a `fabric` transport the port is published on the
+ * relay `tp0` address.
  */
 export async function ensureMemberPrivatePorts(
   db: Db,
@@ -479,15 +483,9 @@ export async function ensureMemberPrivatePorts(
   const keepPrivatePorts = members.length > 1 || options?.hasRemoteConsumers === true
 
   if (!keepPrivatePorts) {
-    await forEachSequential(members, async (member) => {
-      if (member.privatePort !== null) {
-        await db
-          .update(replica)
-          .set({ privatePort: null, updatedAt: new Date().toISOString() })
-          .where(eq(replica.id, member.id))
-      }
-    })
-    return (await listManagedMembers(db, members[0]!.managedId)).filter((m) => inputIds.has(m.id))
+    return members
+      .filter((member) => inputIds.has(member.id))
+      .map((member) => (member.privatePort === null ? member : { ...member, privatePort: null }))
   }
 
   const managedId = members[0]!.managedId
@@ -543,6 +541,32 @@ export async function ensureMemberPrivatePorts(
         .where(eq(replica.managedId, managedId))
         .orderBy(asc(replica.ordinal))
     ).filter((m) => inputIds.has(m.id))
+  })
+}
+
+/**
+ * Persist a deferred private-port teardown after `managed.apply` is queued.
+ * No-op while the cluster still has replicas or a remote consumer, or when
+ * enqueue failed (callers skip this). The next successful apply retries it.
+ */
+export async function commitClearedPrivatePortsIfUnused(db: Db, managedId: string): Promise<void> {
+  const members = await listManagedMembers(db, managedId)
+  if (members.length !== 1) return
+  const consumers = await consumerServerIdsForManaged(db, managedId)
+  if (
+    hasRemoteConsumerServers(
+      members.map((member) => member.serverId),
+      consumers
+    )
+  ) {
+    return
+  }
+  await forEachSequential(members, async (member) => {
+    if (member.privatePort === null) return
+    await db
+      .update(replica)
+      .set({ privatePort: null, updatedAt: new Date().toISOString() })
+      .where(eq(replica.id, member.id))
   })
 }
 

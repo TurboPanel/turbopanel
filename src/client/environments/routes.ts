@@ -267,10 +267,11 @@ async function parseCreateEnvironmentInput(
 /** A row created while the delete ran trips an FK: report it as "has children". */
 async function deleteEnvironmentCascadeGuarded(
   db: Db,
-  id: string
+  id: string,
+  listenerSync?: Parameters<typeof deleteEnvironmentCascade>[2]
 ): Promise<EnvironmentDeleteResult | 'has_children'> {
   try {
-    return await deleteEnvironmentCascade(db, id)
+    return await deleteEnvironmentCascade(db, id, listenerSync)
   } catch (error) {
     if (isForeignKeyViolation(error)) return 'has_children'
     throw error
@@ -502,7 +503,11 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
 
     // Refuses (409) while a container is running or a deploy is in progress;
     // otherwise drops the environment and everything under it.
-    const result = await deleteEnvironmentCascadeGuarded(db, id)
+    const result = await deleteEnvironmentCascadeGuarded(db, id, {
+      c,
+      actorId: session.userId,
+      organizationId,
+    })
     if (result === 'has_children') return hierarchyDeleteHasChildrenResponse(c)
     if (!result.ok) return environmentDeleteRefusal(c, result.error)
 

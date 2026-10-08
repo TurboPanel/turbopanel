@@ -224,9 +224,22 @@ re-asserted at the daemon command-contract boundary.
    TLS material (the daemon refuses it otherwise). Client traffic still enters
    via the shared ProxySQL client listeners (see Client listener ports) — never
    a per-service published map for public SQL clients and never per-managed
-   Traefik. A binding change that places the app on another host enqueues
-   `managed.apply` so that listener exists before the consumer's
-   `managed.ingress.reconcile` can emit frontend users.
+   Traefik.   A binding change that places the app on another host enqueues
+  `managed.apply` so that listener exists before the consumer's
+  `managed.ingress.reconcile` can emit frontend users. Binding create
+  and remove (including project/environment cascade and cluster detach)
+  share `enqueueIngressForBindingChange`: apply first, then ingress.
+  A PATCH that only changes `keyPrefix` / emit flags does not apply.
+  `private_port` is allocated during prepare; it is cleared only after
+  at least one apply command is queued (`commitClearedPrivatePortsIfUnused`).
+  A failed enqueue leaves the port allocated — the failed command is
+  visible, and the next successful apply (operator Apply or another
+  binding change) retries the teardown. A remote app with no private
+  path is skipped at apply (warning) so one unreachable consumer cannot
+  fail the cluster; binding create refuses that case with a plain-words
+  422 instead. Peers still fail apply hard. When peers dial one
+  transport and a consumer another, the peer bind wins and that
+  consumer is skipped — the published address is never widened.
 3. **Named volumes only.** `volumes[]` are Docker named volumes — never host
    bind paths. Config/TLS dirs are relative mounts under managed state. Volume
    **names** must satisfy `SAFE_IDENTIFIER_RE` / `SAFE_VOLUME_NAME_RE`
@@ -500,7 +513,10 @@ server; local/datacenter/fabric/public). Ordinals start at 2 with no ceiling.
 primary (`failover-replication` vs `read-replication` purpose). `private_port`
 is an instance-allocated high port (range in `members.ts`) unique per
 `(server_id, private_port)` for multi-member clusters — the host-side half of
-the private listener; cleared when the cluster falls back to one member.
+the private listener. A single-member cluster keeps a port while a remote
+consumer exists; the row is cleared only after the apply that unpublishes
+the listener is queued (not before, so a failed enqueue cannot desync the
+database from the host).
 Create/apply call `ensureManagedPrimaryMember` so pre-member rows self-heal
 without a data migration. Multi-member apply also ensures a platform
 `managedReplication` principal (not listed as a client user), builds

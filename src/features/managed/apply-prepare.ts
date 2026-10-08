@@ -1,9 +1,8 @@
 import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
-import {
-  consumerServerIdsForManaged,
-  hasRemoteConsumerServers,
-} from '../bindings/resolve-endpoint.ts'
+import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
+import { hasRemoteConsumerServers } from '../bindings/remote-consumers.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
 import { ensureServerMonitorCredential } from './monitor-credential.ts'
 import {
   decryptSecret,
@@ -71,6 +70,7 @@ import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
 import { enqueueManagedIngressReconcile } from './ingress-desired.ts'
 import {
+  commitClearedPrivatePortsIfUnused,
   ensureManagedPrimaryMember,
   ensureMemberPrivatePorts,
   isManagedPrivatePortExhaustedError,
@@ -357,6 +357,14 @@ function principalPrivileges(metadata: unknown): string[] | undefined {
     (entry): entry is string => typeof entry === 'string'
   )
   return privileges.length > 0 ? privileges : undefined
+}
+
+/** Org-CA engine TLS when there are peers, or a private listener for remote consumers. */
+export function resolveManagedApplyUseOrgTls(
+  multiMember: boolean,
+  memberInput: BuildRuntimeSpecInput['member'] | undefined
+): boolean {
+  return multiMember || memberInput?.privateListener !== undefined
 }
 
 function composeFromRuntimeSpec(
@@ -655,11 +663,15 @@ type ResolvedMemberPrivateBind = {
  * Returns `undefined` when no remote peer or remote consumer needs a published
  * bind (single-member with only co-resident consumers — those dial the
  * container name on the organization's managed network),
- * a `PrivateEndpointError` when a peer has no path to this member, and
- * `managed_listener_bind_conflict` when peers disagree on the address or
+ * a `PrivateEndpointError` when a **peer** has no path to this member, and
+ * `managed_listener_bind_conflict` when **peers** disagree on the address or
  * transport: the wire payload carries exactly one `privateListener`, so a mixed
  * datacenter/fabric/public peer set is rejected instead of shipping a bind that
  * only some peers can reach.
+ *
+ * Consumers are best-effort: no private path, or a path that disagrees with
+ * the peer-chosen bind, skips that consumer with a warning — it must not fail
+ * apply for every other app, and it must not widen the published bind.
  *
  * The returned `transport` tags the wire payload so the daemon can mandate
  * org-CA TLS for a public bind.
@@ -692,8 +704,11 @@ export async function resolveMemberPrivateBindAddress(
     })),
   ]
 
+  const peerDialers = dialers.filter((dialer) => dialer.purpose !== 'client-backend')
+  const consumerOnlyDialers = dialers.filter((dialer) => dialer.purpose === 'client-backend')
+
   let bind: ResolvedMemberPrivateBind | undefined
-  for (const dialer of dialers) {
+  for (const dialer of peerDialers) {
     const resolved = await resolvePrivateEndpoint(db, {
       fromServerId: dialer.serverId,
       toServerId: member.serverId,
@@ -715,6 +730,37 @@ export async function resolveMemberPrivateBindAddress(
         kind: 'managed_listener_bind_conflict',
         serverId: member.serverId,
       }
+    }
+  }
+
+  for (const dialer of consumerOnlyDialers) {
+    const resolved = await resolvePrivateEndpoint(db, {
+      fromServerId: dialer.serverId,
+      toServerId: member.serverId,
+      purpose: dialer.purpose,
+    })
+    if (isPrivateEndpointError(resolved)) {
+      compatLogWarn(
+        'managed-apply',
+        `skipping consumer ${dialer.serverId}: no private path to ${member.serverId}`
+      )
+      continue
+    }
+    if (resolved.transport === 'local') continue
+
+    const candidate: ResolvedMemberPrivateBind = {
+      address: resolved.address,
+      transport: resolved.transport,
+    }
+    if (!bind) {
+      bind = candidate
+      continue
+    }
+    if (bind.address !== candidate.address || bind.transport !== candidate.transport) {
+      compatLogWarn(
+        'managed-apply',
+        `skipping consumer ${dialer.serverId}: private listener stays on ${bind.transport} ${bind.address}`
+      )
     }
   }
   return bind
@@ -1208,7 +1254,7 @@ async function buildPayloadForMember(
   }
 
   const rootUsername = resolveRootUsername(input)
-  const useOrgTls = multiMember || memberInput?.privateListener !== undefined
+  const useOrgTls = resolveManagedApplyUseOrgTls(multiMember, memberInput)
   const { composeYaml, runtime } = composeFromRuntimeSpec(
     input.spec,
     input.settings,
@@ -1722,6 +1768,12 @@ async function finalizePreparedManagedApplyResults(
       .where(eq(managed.id, params.managedId))
     return c.json({ error: 'Command queue unavailable' }, 503)
   }
+
+  // Tear down unused private ports only after at least one apply is queued, so
+  // a failed enqueue cannot leave the DB saying "no listener" while the host
+  // still publishes it. Retry is the next successful apply (operator Apply or
+  // a later binding change); the failed command stays visible.
+  await commitClearedPrivatePortsIfUnused(db, params.managedId)
 
   const secretsConfig = c.get('secretsConfig')
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')

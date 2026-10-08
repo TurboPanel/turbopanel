@@ -7,7 +7,7 @@
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import type { ManagedMemberRow } from './members.ts'
-import { resolveMemberPrivateBindAddress } from './apply-prepare.ts'
+import { resolveManagedApplyUseOrgTls, resolveMemberPrivateBindAddress } from './apply-prepare.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -337,6 +337,64 @@ test('agreeing remote peers collapse to one bind', async () => {
     [member, failoverReplica(), readReplica()]
   )
   assertEquals(bind, { address: '10.0.0.1', transport: 'datacenter' })
+})
+
+test('a consumer with no private path is skipped and apply still gets a bind', async () => {
+  const sole = primary()
+  const unreachable = '66666666-6666-4666-8666-666666666666'
+  const bind = await resolveMemberPrivateBindAddress(
+    fixtureDb({
+      memberships: [
+        membershipPin(PRIMARY_SERVER, 'dc-a', '10.0.0.1'),
+        membershipPin(CONSUMER_SERVER, 'dc-a', '10.0.0.9'),
+      ],
+    }),
+    sole,
+    [sole],
+    [unreachable, CONSUMER_SERVER]
+  )
+  assertEquals(bind, { address: '10.0.0.1', transport: 'datacenter' })
+})
+
+test('a consumer on another transport does not override the peer bind', async () => {
+  const member = primary()
+  const bind = await resolveMemberPrivateBindAddress(
+    fixtureDb({
+      memberships: [
+        membershipPin(PRIMARY_SERVER, 'dc-a', '10.0.0.1'),
+        membershipPin(FAILOVER_SERVER, 'dc-a', '10.0.0.2'),
+      ],
+      relays: [relayRow(PRIMARY_SERVER, '10.90.0.1'), relayRow(CONSUMER_SERVER, '10.90.0.9')],
+    }),
+    member,
+    [member, failoverReplica()],
+    [CONSUMER_SERVER]
+  )
+  assertEquals(bind, { address: '10.0.0.1', transport: 'datacenter' })
+})
+
+test('an unreachable consumer does not fail a single-member bind that has no other dialer', async () => {
+  const sole = primary()
+  const bind = await resolveMemberPrivateBindAddress(
+    fixtureDb({}),
+    sole,
+    [sole],
+    ['66666666-6666-4666-8666-666666666666']
+  )
+  assertEquals(bind, undefined)
+})
+
+test('useOrgTls is true for a single member with a private listener', () => {
+  assertEquals(
+    resolveManagedApplyUseOrgTls(false, {
+      role: 'primary',
+      ordinal: 1,
+      privateListener: { address: '10.0.0.1', port: 45_001, transport: 'datacenter' },
+    }),
+    true
+  )
+  assertEquals(resolveManagedApplyUseOrgTls(false, { role: 'primary', ordinal: 1 }), false)
+  assertEquals(resolveManagedApplyUseOrgTls(true, { role: 'primary', ordinal: 1 }), true)
 })
 
 test('a replica publishes the address the primary dials', async () => {

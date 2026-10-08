@@ -44,10 +44,8 @@ import {
 import { ensureOrganizationManagedNetwork, listServerSubnets } from '../fabric/fabric-records.ts'
 import { loadListenerAttachedSubnetNames } from './ingress-attachments.ts'
 import { LOOPBACK_BIND, resolveManagedExternalDialHost } from './access-address.ts'
-import {
-  consumerServerIdsForManaged,
-  hasRemoteConsumerServers,
-} from '../bindings/resolve-endpoint.ts'
+import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
+import { hasRemoteConsumerServers } from '../bindings/remote-consumers.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
 import { loadManagedExternalAccess } from './external-access.ts'
 import { materializeBindingsForPrincipal } from '../bindings/materialize.ts'

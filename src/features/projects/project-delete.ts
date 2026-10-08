@@ -7,12 +7,17 @@ import {
   environment,
   hosting,
   managed,
+  principal,
   project,
   service,
   tenancy,
 } from '../../db/schema.ts'
 import { applyStorageRetentionOnParentDelete } from '../storage/storage-records.ts'
 import { purgeEnvironmentsComposeNetworks } from '../fabric/fabric-records.ts'
+import {
+  enqueueIngressForBindingChange,
+  type BindingListenerSync,
+} from '../bindings/enqueue-change.ts'
 
 /** Docker Compose states that are considered fully stopped (safe to cascade-delete). */
 const STOPPED_CONTAINER_STATUSES = new Set(['exited', 'dead', 'removing'])
@@ -74,6 +79,46 @@ type EnvironmentRowSet = {
  * net on a direct service delete), so those edges go before services.
  * Shared by project delete and environment delete; run inside a transaction.
  */
+async function loadBindingListenerTargets(
+  db: Db,
+  serviceIds: readonly string[]
+): Promise<Array<{ managedId: string; serviceId: string }>> {
+  if (serviceIds.length === 0) return []
+  const rows = await db
+    .select({
+      managedId: principal.managedId,
+      serviceId: binding.serviceId,
+    })
+    .from(binding)
+    .innerJoin(principal, eq(binding.principalId, principal.id))
+    .where(inArray(binding.serviceId, [...serviceIds]))
+  return rows.filter((row): row is { managedId: string; serviceId: string } =>
+    Boolean(row.managedId)
+  )
+}
+
+async function syncRemovedBindingListeners(
+  db: Db,
+  targets: ReadonlyArray<{ managedId: string; serviceId: string }>,
+  listenerSync?: BindingListenerSync
+): Promise<void> {
+  if (!listenerSync || targets.length === 0) return
+  const serviceIdsByManaged = new Map<string, string[]>()
+  for (const row of targets) {
+    const list = serviceIdsByManaged.get(row.managedId) ?? []
+    list.push(row.serviceId)
+    serviceIdsByManaged.set(row.managedId, list)
+  }
+  for (const [managedId, serviceIds] of serviceIdsByManaged) {
+    await enqueueIngressForBindingChange(listenerSync.c, db, {
+      serviceIds: [...new Set(serviceIds)],
+      managedId,
+      actorId: listenerSync.actorId,
+      organizationId: listenerSync.organizationId,
+    })
+  }
+}
+
 async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<void> {
   const { environmentIds, serviceIds, containerIds, hostingIds } = rows
   await applyStorageRetentionOnParentDelete(tx, {
@@ -135,7 +180,8 @@ async function loadEnvironmentChildren(
  */
 export async function deleteProjectCascade(
   db: Db,
-  projectId: string
+  projectId: string,
+  listenerSync?: BindingListenerSync
 ): Promise<ProjectDeleteResult> {
   const envRows = await db
     .select({ id: environment.id })
@@ -165,6 +211,7 @@ export async function deleteProjectCascade(
     return { ok: false, error: 'project_has_running_services' }
   }
 
+  const bindingTargets = await loadBindingListenerTargets(db, children.serviceIds)
   await db.transaction(async (tx) => {
     await dropEnvironmentRows(tx, {
       projectId,
@@ -175,6 +222,7 @@ export async function deleteProjectCascade(
     })
     await tx.delete(project).where(eq(project.id, projectId))
   })
+  await syncRemovedBindingListeners(db, bindingTargets, listenerSync)
   return { ok: true }
 }
 
@@ -206,7 +254,8 @@ async function hasInProgressDeployment(db: Db, environmentId: string): Promise<b
  */
 export async function deleteEnvironmentCascade(
   db: Db,
-  environmentId: string
+  environmentId: string,
+  listenerSync?: BindingListenerSync
 ): Promise<EnvironmentDeleteResult> {
   const managedRows = await db
     .select({ id: managed.id })
@@ -225,6 +274,7 @@ export async function deleteEnvironmentCascade(
     return { ok: false, error: ENVIRONMENT_RUNNING_ERROR }
   }
 
+  const bindingTargets = await loadBindingListenerTargets(db, children.serviceIds)
   await db.transaction((tx) =>
     dropEnvironmentRows(tx, {
       environmentIds: [environmentId],
@@ -233,5 +283,6 @@ export async function deleteEnvironmentCascade(
       hostingIds: children.hostingIds,
     })
   )
+  await syncRemovedBindingListeners(db, bindingTargets, listenerSync)
   return { ok: true }
 }

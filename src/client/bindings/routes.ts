@@ -16,11 +16,8 @@ import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { recordAudit, type AuditAction } from '../../features/audit/audit-records.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db/connection.ts'
-import { forEachSequential, mapSequential } from '../../lib/sequential.ts'
-import { binding, managed, principal, service, slot } from '../../db/schema.ts'
-import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
-import { getCommandQueue } from '../../features/commands/queue.ts'
-import { compatLogWarn } from '../../lib/log-compat.ts'
+import { mapSequential } from '../../lib/sequential.ts'
+import { binding, managed, principal, service } from '../../db/schema.ts'
 import {
   assertCanManageOr403,
   assertCanReadOr403,
@@ -30,14 +27,11 @@ import {
   requireStringField,
 } from '../shared.ts'
 import { hasOutstandingManagedDestroy } from '../../features/managed/destroy-pending.ts'
-import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
-import { enqueueApplyForManagedCluster } from '../tls/changeover-fanout.ts'
+import { remoteBindingReachError } from '../../features/bindings/binding-reach.ts'
 import {
-  consumerServerIdsForManaged,
-  hasRemoteConsumerServers,
-  loadServicePlacementServerId,
-  memberServerIdsForManaged,
-} from '../../features/bindings/resolve-endpoint.ts'
+  enqueueIngressForBindingChange,
+  loadServiceConsumerServerIds,
+} from '../../features/bindings/enqueue-change.ts'
 import {
   materializeBinding,
   type MaterializeBindingError,
@@ -69,89 +63,6 @@ const BINDING_SELECT = {
   emitEngineDefaults: binding.isEmitEngineDefaults,
   createdAt: binding.createdAt,
   updatedAt: binding.updatedAt,
-}
-
-/**
- * After binding create/update/delete, reconcile ProxySQL on the consumer
- * placement server and every managed cluster member (backend + frontend users).
- * A consumer on another host also needs `managed.apply` so the engine publishes
- * its private listener and admits that ProxySQL (pg_hba / MySQL account hosts).
- */
-async function enqueueIngressForBindingChange(
-  c: Context<AppEnv>,
-  db: Db,
-  params: Readonly<{
-    serviceId: string
-    managedId: string
-    actorId: string
-    organizationId: string
-  }>
-): Promise<void> {
-  const secretsConfig = c.get('secretsConfig')
-  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
-  const commandQueue = getCommandQueue(c)
-  if (
-    !secretsConfig ||
-    !dataEncryptionSecrets ||
-    !commandQueue ||
-    isNoopCommandQueue(commandQueue)
-  ) {
-    return
-  }
-
-  const serverIds = new Set<string>()
-  const placement = await loadServicePlacementServerId(db, params.serviceId)
-  if (placement) serverIds.add(placement)
-  const memberServerIds = await memberServerIdsForManaged(db, params.managedId)
-  for (const memberServerId of memberServerIds) {
-    serverIds.add(memberServerId)
-  }
-  const consumerTasks = await db
-    .select({ serverId: slot.serverId })
-    .from(slot)
-    .where(eq(slot.serviceId, params.serviceId))
-  for (const row of consumerTasks) {
-    serverIds.add(row.serverId)
-  }
-
-  const remainingConsumers = await consumerServerIdsForManaged(db, params.managedId)
-  const thisPlacement = placement ? [placement] : []
-  if (
-    hasRemoteConsumerServers(memberServerIds, remainingConsumers) ||
-    hasRemoteConsumerServers(memberServerIds, thisPlacement)
-  ) {
-    try {
-      await enqueueApplyForManagedCluster(c, db, commandQueue, {
-        actorId: params.actorId,
-        organizationId: params.organizationId,
-        managedId: params.managedId,
-      })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      compatLogWarn(
-        'bindings',
-        `managed.apply after remote binding change failed for ${params.managedId}: ${message}`
-      )
-    }
-  }
-
-  await forEachSequential(serverIds, async (serverId) => {
-    try {
-      await enqueueManagedIngressReconcile(db, commandQueue, {
-        serverId,
-        actorType: 'user',
-        actorId: params.actorId,
-        secretsConfig,
-        dataEncryptionSecrets,
-      })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      compatLogWarn(
-        'bindings',
-        `managed.ingress.reconcile after binding change failed for ${serverId}: ${message}`
-      )
-    }
-  })
 }
 
 /**
@@ -472,7 +383,7 @@ async function insertAndMaterializeBinding(
     }
 
     await enqueueIngressForBindingChange(c, db, {
-      serviceId: params.serviceId,
+      serviceIds: [params.serviceId],
       managedId: params.managedId,
       actorId: params.actorId,
       organizationId: params.organizationId,
@@ -643,6 +554,15 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'managed_busy', reason: 'destroy_in_flight' }, 409)
     }
 
+    const consumerHosts = await loadServiceConsumerServerIds(db, input.serviceId)
+    const reachDenied = await remoteBindingReachError(db, {
+      managedId: managedResult.id,
+      consumerServerIds: consumerHosts,
+    })
+    if (reachDenied) {
+      return c.json(reachDenied, 422)
+    }
+
     const conflictDenied = await assertBindingCreateConflicts(
       db,
       {
@@ -736,10 +656,11 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     if (managedId) {
       await enqueueIngressForBindingChange(c, db, {
-        serviceId: row.serviceId,
+        serviceIds: [row.serviceId],
         managedId,
         actorId: session.userId,
         organizationId,
+        apply: false,
       })
     }
 
@@ -790,7 +711,7 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     if (managedId) {
       await enqueueIngressForBindingChange(c, db, {
-        serviceId: row.serviceId,
+        serviceIds: [row.serviceId],
         managedId,
         actorId: session.userId,
         organizationId,

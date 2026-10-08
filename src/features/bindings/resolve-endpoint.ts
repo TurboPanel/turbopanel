@@ -239,19 +239,6 @@ export async function listManagedIdsForServer(db: Db, serverId: string): Promise
 }
 
 /**
- * True when a bound consumer is placed on a host that does not run a cluster
- * member. That consumer's ProxySQL must dial the engine's private listener, so
- * apply has to publish the port even for a single-member cluster.
- */
-export function hasRemoteConsumerServers(
-  memberServerIds: readonly string[],
-  consumerServerIds: readonly string[]
-): boolean {
-  const members = new Set(memberServerIds)
-  return consumerServerIds.some((id) => id.length > 0 && !members.has(id))
-}
-
-/**
  * Servers that host a compose service bound to this managed cluster.
  * Inverse of `loadBoundManagedIdsForServer`: env pin, project default, and
  * any `slot.serverId`. One query — no per-service round trips.
