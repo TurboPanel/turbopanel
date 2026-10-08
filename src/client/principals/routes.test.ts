@@ -262,19 +262,31 @@ test('POST /projects/:projectId/principals persists default shell when options o
 test('POST /projects/:projectId/principals rejects reserved usernames', async () => {
   await withPrincipalFixtures(async ({ db, app, secrets, userId, organizationId, projectId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
-    const res = await app.request(`/projects/${projectId}/principals`, {
-      method: 'POST',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ username: 'www-data' }),
-    })
-
-    assertEquals(res.status, 400)
-    const body = (await res.json()) as { error: string }
-    assertEquals(body.error, 'username_reserved')
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+    for (const username of [
+      'ftp',
+      'git',
+      'FTP',
+      ' git ',
+      'ubuntu',
+      'www',
+      'root',
+      'www-data',
+      'sudo',
+    ]) {
+      const res = await app.request(`/projects/${projectId}/principals`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ username }),
+      })
+      assertEquals(res.status, 400, username)
+      const body = (await res.json()) as { error: string }
+      assertEquals(body.error, 'username_reserved', username)
+    }
   })
 })
 
