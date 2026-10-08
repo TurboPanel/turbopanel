@@ -11,7 +11,9 @@ import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
 import { command, environment, managed, project, server } from '../../db/schema.ts'
 import { compatLogInfo, compatLogWarn } from '../../lib/log-compat.ts'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
+import { getResolveFleetPresence } from '../../platform/ports/fleet-presence.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import { COMMAND_STATUSES, TERMINAL_COMMAND_STATUSES } from '../commands/types.ts'
 import {
@@ -37,11 +39,14 @@ const OUTSTANDING_COMMAND_STATUSES = COMMAND_STATUSES.filter(
 export type ReseedDemotedPrimarySecrets = {
   secretsConfig?: SecretsConfig
   dataEncryptionSecrets?: DerivedSecretsConfig
+  /** Live daemon connections; absent = fall back to the stored column. */
+  registry?: DaemonCellRegistry
 }
 
 export type ReseedDemotedPrimaryDeps = {
   listMembers?: typeof listManagedMembers
-  isServerConnected?: (db: Db, serverId: string) => Promise<boolean>
+  /** True when every listed server is connected right now. */
+  serversConnected?: (db: Db, serverIds: string[]) => Promise<boolean>
   findInFlightRecovery?: typeof findInFlightRecovery
   hasOutstandingApply?: (db: Db, managedId: string, memberId: string) => Promise<boolean>
   loadCluster?: (db: Db, managedId: string) => Promise<ManagedApplyCluster | null>
@@ -84,10 +89,6 @@ function warn(detail: string): void {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
-}
-
-function fenceStopProven(record: RecoveryRecord): boolean {
-  return record.metadata.stopApplied === true
 }
 
 function contextMemberId(context: unknown): string | null {
@@ -143,13 +144,27 @@ export async function hasOutstandingManagedApplyForMember(
   return rows.some((row) => applyTargetsMember(row, memberId))
 }
 
-async function memberServerConnected(db: Db, serverId: string): Promise<boolean> {
-  const [row] = await db
-    .select({ connected: server.isConnected })
+async function storedServersConnected(db: Db, serverIds: string[]): Promise<boolean> {
+  const rows = await db
+    .select({ id: server.id, connected: server.isConnected })
     .from(server)
-    .where(eq(server.id, serverId))
-    .limit(1)
-  return row?.connected === true
+    .where(inArray(server.id, serverIds))
+  const connected = new Set(rows.filter((row) => row.connected === true).map((row) => row.id))
+  return serverIds.every((id) => connected.has(id))
+}
+
+/**
+ * The route asks the live daemon registry (`assertTargetServerOnline`); the
+ * stored column lags a reconnect, so use the registry whenever there is one.
+ */
+async function liveServersConnected(
+  db: Db,
+  registry: DaemonCellRegistry | undefined,
+  serverIds: string[]
+): Promise<boolean> {
+  if (!registry) return storedServersConnected(db, serverIds)
+  const presence = await getResolveFleetPresence()(db, registry, serverIds)
+  return serverIds.every((id) => presence.get(id)?.connected === true)
 }
 
 export async function loadManagedApplyCluster(
@@ -198,7 +213,12 @@ function switchoverRecordReady(
   if (!record.sourcePrimaryMemberId || !record.targetMemberId) {
     return 'source or target member is missing'
   }
-  if (!fenceStopProven(record)) return 'fence stop is unproven'
+  // Drain AND stop proven. A stop alone lets an operator switchover go on.
+  if (record.metadata.fenced !== true) return 'old primary is not proven fenced'
+  if (record.metadata.forced === true) return 'switchover was forced'
+  if (record.metadata.targetCaughtUp !== true) {
+    return `target was not proven caught up (${record.metadata.targetCaughtUpBasis ?? 'no reading'})`
+  }
   return { sourceId: record.sourcePrimaryMemberId, targetId: record.targetMemberId }
 }
 
@@ -247,9 +267,13 @@ async function evaluateSwitchoverReseed(
     return null
   }
 
-  const connected = deps.isServerConnected ?? memberServerConnected
-  if (!(await connected(db, source.serverId))) {
-    skip(`source server ${source.serverId} is offline`)
+  // Both ends must be reachable now: the apply goes to the new primary's
+  // server and the wipe happens on the old primary's.
+  const connected =
+    deps.serversConnected ??
+    ((d: Db, ids: string[]) => liveServersConnected(d, secrets.registry, ids))
+  if (!(await connected(db, [...new Set([source.serverId, target.serverId])]))) {
+    skip('the old or the new primary server is offline')
     return null
   }
 

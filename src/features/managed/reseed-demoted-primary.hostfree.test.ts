@@ -36,6 +36,15 @@ const NOW = '2026-01-01T00:00:00.000Z'
 const ENV_ID = '00000000-0000-4000-8000-000000000030'
 const ORG_ID = '00000000-0000-4000-8000-000000000040'
 
+const CLEAN_METADATA = {
+  drainApplied: true,
+  stopApplied: true,
+  fenced: true,
+  forced: false,
+  targetCaughtUp: true,
+  targetCaughtUpBasis: 'streaming with zero lag',
+}
+
 const db = {} as Db
 const secretsConfig = {} as SecretsConfig
 const dataEncryptionSecrets = {} as DerivedSecretsConfig
@@ -88,7 +97,7 @@ function switchoverRecord(overrides: Partial<RecoveryRecord> = {}): RecoveryReco
     state: 'repointing',
     startedAt: NOW,
     completedAt: null,
-    metadata: { stopApplied: true },
+    metadata: { ...CLEAN_METADATA },
     createdAt: NOW,
     updatedAt: NOW,
     ...overrides,
@@ -121,7 +130,7 @@ function capturingDeps(enqueued: EnqueueCall[], extra: ReseedDemotedPrimaryDeps 
   let forceResyncMemberIds: string[] | undefined
   const deps: ReseedDemotedPrimaryDeps = {
     listMembers: () => Promise.resolve([demoted(), promoted()]),
-    isServerConnected: () => Promise.resolve(true),
+    serversConnected: () => Promise.resolve(true),
     findInFlightRecovery: () => Promise.resolve(switchoverRecord()),
     hasOutstandingApply: () => Promise.resolve(false),
     loadCluster: () => Promise.resolve(clusterRow()),
@@ -211,14 +220,19 @@ test('a source member that is not needs_resync is a no-op', async () => {
   assertEquals(enqueued.length, 0)
 })
 
-test('an offline source server is a no-op', async () => {
+test('an offline old or new primary server is a no-op and both servers are checked', async () => {
   const enqueued: EnqueueCall[] = []
+  let asked: string[] = []
   await reseed(
     capturingDeps(enqueued, {
-      isServerConnected: () => Promise.resolve(false),
+      serversConnected: (_db, ids) => {
+        asked = ids
+        return Promise.resolve(false)
+      },
     })
   )
   assertEquals(enqueued.length, 0)
+  assertEquals([...asked].sort(), [SERVER_OLD, SERVER_NEW].sort())
 })
 
 test('missing secrets are a no-op', async () => {
@@ -245,9 +259,39 @@ test('another recovery in flight is a no-op', async () => {
   assertEquals(enqueued.length, 0)
 })
 
-test('an unproven fence stop is a no-op', async () => {
+test('a stop without a proven drain is a no-op (fenced must be true)', async () => {
   const enqueued: EnqueueCall[] = []
-  await reseed(capturingDeps(enqueued), switchoverRecord({ metadata: {} }))
+  await reseed(
+    capturingDeps(enqueued),
+    switchoverRecord({ metadata: { ...CLEAN_METADATA, fenced: false, drainApplied: false } })
+  )
+  await reseed(capturingDeps(enqueued), switchoverRecord({ metadata: { stopApplied: true } }))
+  assertEquals(enqueued.length, 0)
+})
+
+test('a forced switchover is a no-op', async () => {
+  const enqueued: EnqueueCall[] = []
+  await reseed(
+    capturingDeps(enqueued),
+    switchoverRecord({ metadata: { ...CLEAN_METADATA, forced: true } })
+  )
+  assertEquals(enqueued.length, 0)
+})
+
+test('a target not proven caught up (false, absent or unknown lag) is a no-op', async () => {
+  const enqueued: EnqueueCall[] = []
+  await reseed(
+    capturingDeps(enqueued),
+    switchoverRecord({
+      metadata: {
+        ...CLEAN_METADATA,
+        targetCaughtUp: false,
+        targetCaughtUpBasis: 'lag is not zero or unknown',
+      },
+    })
+  )
+  const { targetCaughtUp: _omit, ...withoutProof } = CLEAN_METADATA
+  await reseed(capturingDeps(enqueued), switchoverRecord({ metadata: withoutProof }))
   assertEquals(enqueued.length, 0)
 })
 
