@@ -6,6 +6,7 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import {
   deleteProjectCascade,
+  dropEnvironmentSubtreeInTx,
   isActiveContainerStatus,
   MANAGED_RUNTIME_PRESENT_ERROR,
   PROJECT_HAS_RUNNING_SERVICES_ERROR,
@@ -98,6 +99,11 @@ function createCascadeMockDb(scenario: {
 
   return { db, deletes, stats }
 }
+
+test('dropEnvironmentSubtreeInTx is a no-op for an empty id list', async () => {
+  const result = await dropEnvironmentSubtreeInTx({} as Db, [])
+  assertEquals(result, { containers: 0 })
+})
 
 test('isActiveContainerStatus treats dead and removing as inactive', () => {
   assertEquals(isActiveContainerStatus('dead'), false)

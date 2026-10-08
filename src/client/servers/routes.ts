@@ -81,17 +81,19 @@ import { deleteServerFabricMembership } from '../../features/fabric/fabric-recor
 import { reconcileFabricMembership } from '../../features/fabric/enqueue.ts'
 import {
   assertServerOfflineForForget,
-  blockersThatPreventForget,
   COLOCATED_SERVER_KEY_REVOKE_BLOCKED_REASON,
   colocatedServerDeleteBlockedReason,
   forgetServerOwnedResources,
+  isServerHasBlockersDuringForgetError,
   isServerOnlineDuringForgetError,
-  listServerDeleteBlockers,
   loadServerDeletePreview,
   parseForgetResourcesFlag,
+  planServerForget,
   serverDeleteBlockersResponse,
   serverOnlineForgetBlockedResponse,
   type ForgottenServerResources,
+  type ServerDeleteBlocker,
+  type ServerForgetBlockedDatabase,
 } from './delete-guards.ts'
 import { resolveColocatedServerId } from '../authn/install-state.ts'
 import { hasActiveColocatedLicenseBinding, resolveColocatedServerIdSet } from './colocated.ts'
@@ -426,11 +428,15 @@ async function assertServerDeletable(
     }
   }
 
-  const listed = await listServerDeleteBlockers(db, serverId, organizationId)
-  const blockers =
-    opts.skipForgettableBlockers === true ? blockersThatPreventForget(listed) : listed
-  if (blockers.length > 0) {
-    return serverDeleteBlockersResponse(c, blockers)
+  const plan = await planServerForget(db, serverId, organizationId)
+  if (opts.skipForgettableBlockers === true) {
+    if (plan.blockedDatabases.length > 0) {
+      return serverDeleteBlockersResponse(c, plan.blockingBlockers, plan.blockedDatabases)
+    }
+    return null
+  }
+  if (plan.blockers.length > 0) {
+    return serverDeleteBlockersResponse(c, plan.blockers)
   }
 
   return null
@@ -707,18 +713,21 @@ async function assertSystemEnvironmentIdleOrBlocked(
 async function deleteServerWithSystemSubtree(
   db: Db,
   serverId: string,
+  organizationId: string,
   systemEnvironmentId: string | null,
   forgetResources: boolean
 ): Promise<{
-  status: 'ok' | 'has_children' | 'online'
+  status: 'ok' | 'has_children' | 'online' | 'blockers'
   forgotten: ForgottenServerResources | null
+  blockers: ServerDeleteBlocker[]
+  blockedDatabases: ServerForgetBlockedDatabase[]
 }> {
   let forgotten: ForgottenServerResources | null = null
   try {
     const status = await runHierarchyDelete(db, async (tx) => {
       if (forgetResources) {
         await assertServerOfflineForForget(tx, serverId)
-        forgotten = await forgetServerOwnedResources(tx, serverId)
+        forgotten = await forgetServerOwnedResources(tx, serverId, organizationId)
       }
       if (systemEnvironmentId) {
         await systemHierarchy.deleteSystemEnvironmentSubtree(tx, systemEnvironmentId)
@@ -726,10 +735,23 @@ async function deleteServerWithSystemSubtree(
       await deleteServerFabricMembership(tx, serverId)
       await tx.delete(server).where(eq(server.id, serverId))
     })
-    return { status, forgotten: status === 'ok' ? forgotten : null }
+    return {
+      status,
+      forgotten: status === 'ok' ? forgotten : null,
+      blockers: [],
+      blockedDatabases: [],
+    }
   } catch (error) {
     if (isServerOnlineDuringForgetError(error)) {
-      return { status: 'online', forgotten: null }
+      return { status: 'online', forgotten: null, blockers: [], blockedDatabases: [] }
+    }
+    if (isServerHasBlockersDuringForgetError(error)) {
+      return {
+        status: 'blockers',
+        forgotten: null,
+        blockers: error.blockers,
+        blockedDatabases: error.blockedDatabases,
+      }
     }
     throw error
   }
@@ -1643,11 +1665,15 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const result = await deleteServerWithSystemSubtree(
       db,
       id,
+      organizationId,
       idleOrBlocked.systemEnvironmentId,
       forgetResources
     )
     if (result.status === 'online') {
       return serverOnlineForgetBlockedResponse(c)
+    }
+    if (result.status === 'blockers') {
+      return serverDeleteBlockersResponse(c, result.blockers, result.blockedDatabases)
     }
     if (result.status === 'has_children') {
       return hierarchyDeleteHasChildrenResponse(c)

@@ -19,12 +19,16 @@ import {
 } from '../../db/schema.ts'
 import { parseServerRuntimeMetadata } from '../../features/servers/server-metadata.ts'
 import {
+  blockedDatabaseForgetMessage,
   canForgetServerResources,
-  listServerDeleteBlockers,
   notSystemWorkspace,
+  planServerForget,
+  serverBlockerItemName,
   SERVER_DELETE_PREVIEW_LIST_CAP,
   type CappedPreviewList,
   type ServerDeleteBlocker,
+  type ServerDeleteBlockerItem,
+  type ServerForgetBlockedDatabase,
   type ServerServicesRemovalKind,
 } from './delete-guards.ts'
 import { hasActiveColocatedLicenseBinding, resolveColocatedServerIdSet } from './colocated.ts'
@@ -41,6 +45,9 @@ export type ServerServicesRemovalReason = {
   kind: ServerServicesRemovalKind
   count: number
   message: string
+  /** Named rows behind this reason (see `ServerDeleteBlocker.items`). */
+  items?: ServerDeleteBlockerItem[]
+  more?: number
 }
 
 export type ServerServicesAppContainer = {
@@ -155,13 +162,102 @@ const SERVER_SERVICES_REMOVAL_COPY: Record<
   },
 }
 
+/** How many names a reason sentence spells out before it says "and N more". */
+export const SERVER_SERVICES_REMOVAL_NAME_LIMIT = 3
+
+type NamedRemovalCopy = { one: string; many: string }
+
+/**
+ * Reason copy that names the rows (`%s`). The owner cannot act on "3 app
+ * environments" without knowing which ones, so these replace the counted
+ * sentences whenever the blocker carries items.
+ */
+const SERVER_SERVICES_REMOVAL_NAMED_COPY: Partial<
+  Record<ServerServicesRemovalKind, { placed: NamedRemovalCopy; forgettable?: NamedRemovalCopy }>
+> = {
+  environment: {
+    placed: {
+      one: 'App environment %s is still placed on this server.',
+      many: 'App environments %s are still placed on this server.',
+    },
+    forgettable: {
+      one: 'App environment %s lived only on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+      many: 'App environments %s lived only on this server. Because the host is offline, you can remove them with Delete server → Host is gone.',
+    },
+  },
+  // A database placed here always blocks forget, so there is no Host is gone
+  // variant to offer.
+  managed: {
+    placed: {
+      one: 'Managed database %s is still placed on this server.',
+      many: 'Managed databases %s are still placed on this server.',
+    },
+  },
+  replica: {
+    placed: {
+      one: 'Database %s still has a member on this server.',
+      many: 'Databases %s still have members on this server.',
+    },
+    forgettable: {
+      one: 'Database %s still has a member recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+      many: 'Databases %s still have members recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.',
+    },
+  },
+}
+
+function joinNames(parts: readonly string[]): string {
+  if (parts.length <= 1) return parts[0] ?? ''
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+}
+
+/** Up to three quoted names, then "and N more". */
+export function serverServicesRemovalNames(
+  items: readonly ServerDeleteBlockerItem[],
+  more = 0
+): string {
+  const shown = items
+    .slice(0, SERVER_SERVICES_REMOVAL_NAME_LIMIT)
+    .map((item) => `"${serverBlockerItemName(item)}"`)
+  const hidden = items.length - shown.length + more
+  if (hidden > 0) shown.push(`${hidden} more`)
+  return joinNames(shown)
+}
+
+function namedRemovalMessage(
+  kind: ServerServicesRemovalKind,
+  items: readonly ServerDeleteBlockerItem[],
+  more: number,
+  canForget: boolean
+): string | null {
+  const copy = SERVER_SERVICES_REMOVAL_NAMED_COPY[kind]
+  if (!copy || items.length === 0) return null
+  const template = (canForget ? copy.forgettable : undefined) ?? copy.placed
+  const sentence = items.length + more === 1 ? template.one : template.many
+  return sentence.replace('%s', serverServicesRemovalNames(items, more))
+}
+
 export function serverServicesRemovalMessage(
   kind: ServerServicesRemovalKind,
   count: number,
-  opts: Readonly<{ canForget?: boolean }> = {}
+  opts: Readonly<{
+    canForget?: boolean
+    items?: readonly ServerDeleteBlockerItem[]
+    more?: number
+  }> = {}
 ): string {
   if (kind === 'colocated') {
     return 'This is the machine running the control panel itself and cannot be removed.'
+  }
+  const named = namedRemovalMessage(kind, opts.items ?? [], opts.more ?? 0, opts.canForget === true)
+  if (named) return named
+  if (kind === 'environment') {
+    if (opts.canForget) {
+      return forCount(
+        count,
+        'One app environment lived only on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+        `${count} app environments lived only on this server. Because the host is offline, you can remove them with Delete server → Host is gone.`
+      )
+    }
   }
   if (kind === 'container') {
     if (opts.canForget) {
@@ -205,6 +301,36 @@ export function serverServicesRemovalMessage(
       `${count} addresses are still assigned to this server: remove them first.`
     )
   }
+  if (opts.canForget && kind !== 'managed') {
+    if (kind === 'replica') {
+      return forCount(
+        count,
+        'One database member is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+        `${count} database members are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.`
+      )
+    }
+    if (kind === 'deployment') {
+      return forCount(
+        count,
+        'One deployment is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+        `${count} deployments are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.`
+      )
+    }
+    if (kind === 'slot') {
+      return forCount(
+        count,
+        'One scheduled app instance is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+        `${count} scheduled app instances are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.`
+      )
+    }
+    if (kind === 'copy') {
+      return forCount(
+        count,
+        'One volume copy is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+        `${count} volume copies are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.`
+      )
+    }
+  }
   const copy = SERVER_SERVICES_REMOVAL_COPY[kind]
   return forCount(count, copy.one, copy.many.replaceAll('%n', String(count)))
 }
@@ -212,7 +338,8 @@ export function serverServicesRemovalMessage(
 export function serverServicesRemovalReasons(
   blockers: ServerDeleteBlocker[],
   colocated: boolean,
-  canForget = false
+  canForget = false,
+  blockedDatabases: readonly ServerForgetBlockedDatabase[] = []
 ): ServerServicesRemovalReason[] {
   const reasons: ServerServicesRemovalReason[] = []
   if (colocated) {
@@ -222,11 +349,31 @@ export function serverServicesRemovalReasons(
       message: serverServicesRemovalMessage('colocated', 1),
     })
   }
+  const skipManagedKinds = blockedDatabases.length > 0
   for (const blocker of blockers) {
+    if (skipManagedKinds && (blocker.kind === 'managed' || blocker.kind === 'replica')) {
+      continue
+    }
+    const items = blocker.items ?? []
+    const more = blocker.more ?? 0
     reasons.push({
       kind: blocker.kind,
       count: blocker.count,
-      message: serverServicesRemovalMessage(blocker.kind, blocker.count, { canForget }),
+      message: serverServicesRemovalMessage(blocker.kind, blocker.count, {
+        canForget,
+        items,
+        more,
+      }),
+      ...(items.length > 0 ? { items, more } : {}),
+    })
+  }
+  for (const database of blockedDatabases) {
+    reasons.push({
+      kind: database.reason === 'primary_here' ? 'replica' : 'managed',
+      count: 1,
+      message: blockedDatabaseForgetMessage(database.name, database.reason),
+      items: [{ id: database.id, name: database.name }],
+      more: 0,
     })
   }
   return reasons
@@ -493,7 +640,7 @@ export async function loadServerServices(
   online: boolean
 ): Promise<ServerServicesResponse> {
   const [
-    blockers,
+    plan,
     colocatedIds,
     colocatedLicense,
     appRows,
@@ -503,7 +650,7 @@ export async function loadServerServices(
     networkRows,
     [ipCountRow],
   ] = await Promise.all([
-    listServerDeleteBlockers(db, serverId, organizationId),
+    planServerForget(db, serverId, organizationId),
     resolveColocatedServerIdSet(db, registry, [serverId], { includeSelfHostPin: true }),
     hasActiveColocatedLicenseBinding(db, organizationId, serverId),
     loadAppRows(db, serverId),
@@ -520,8 +667,17 @@ export async function loadServerServices(
   const serviceIds = [...new Set(appRows.map((row) => row.serviceId))]
   const domainsByService = await loadDomainsByService(db, serviceIds)
   const colocated = colocatedIds.has(serverId) || colocatedLicense
-  const canForget = canForgetServerResources({ online, colocated, blockers })
-  const reasons = serverServicesRemovalReasons(blockers, colocated, canForget)
+  const canForget = canForgetServerResources({
+    online,
+    colocated,
+    blockedDatabaseCount: plan.blockedDatabases.length,
+  })
+  const reasons = serverServicesRemovalReasons(
+    plan.blockers,
+    colocated,
+    canForget,
+    plan.blockedDatabases
+  )
   const networks = networkRows
     .map((row) => ({ id: row.id, name: row.name ?? '', kind: row.kind }))
     .sort((a, b) => compareName(a.name, b.name) || compareName(a.id, b.id))

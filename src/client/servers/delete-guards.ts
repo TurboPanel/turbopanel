@@ -1,6 +1,7 @@
-import { and, count, eq, inArray, ne, sql } from 'drizzle-orm'
+import { and, count, eq, inArray, ne, or, sql } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
+import { dropEnvironmentSubtreeInTx } from '../../features/projects/project-delete.ts'
 import {
   container,
   deployment,
@@ -39,11 +40,20 @@ export const SERVER_SERVICES_REMOVAL_KIND_VALUES = [
 
 export type ServerServicesRemovalKind = (typeof SERVER_SERVICES_REMOVAL_KIND_VALUES)[number]
 
-/** Leftover rows `forgetResources` may drop. Other kinds still 409. */
+/**
+ * Leftover kinds `forgetResources` always drops (container / network / address
+ * rows, plus app environments, forgettable members, leftover deployments,
+ * slots, and copies). Blocked databases still 409.
+ */
 export const FORGETTABLE_SERVER_DELETE_BLOCKER_KINDS = new Set<ServerDeleteBlockerKind>([
   'network',
   'container',
   'ip',
+  'environment',
+  'deployment',
+  'slot',
+  'copy',
+  'replica',
 ])
 
 export const SERVER_DELETE_BLOCKER_LABELS: Record<ServerDeleteBlockerKind, string> = {
@@ -58,10 +68,41 @@ export const SERVER_DELETE_BLOCKER_LABELS: Record<ServerDeleteBlockerKind, strin
   copy: 'a storage copy',
 }
 
+/** A named app environment behind an `environment` blocker. */
+export type ServerBlockerEnvironmentItem = {
+  id: string
+  name: string
+  projectId: string
+  projectName: string
+  hasDatabase: boolean
+}
+
+/** A named database behind a `managed` or `replica` blocker. */
+export type ServerBlockerDatabaseItem = {
+  id: string
+  name: string
+}
+
+export type ServerDeleteBlockerItem = ServerBlockerEnvironmentItem | ServerBlockerDatabaseItem
+
+/** `"Project / Environment"` for an environment item, the plain name otherwise. */
+export function serverBlockerItemName(item: ServerDeleteBlockerItem): string {
+  return 'projectName' in item ? `${item.projectName} / ${item.name}` : item.name
+}
+
 export type ServerDeleteBlocker = {
   kind: ServerDeleteBlockerKind
   count: number
   label: string
+  /**
+   * The rows behind `count`, by name, so the owner can go find them. Present
+   * for `environment` (every placed environment, including the ones carrying a
+   * database, which the Services tab app list does not show) and for
+   * `managed` / `replica` (one entry per database). Capped at 50; `more` says
+   * how many are not listed.
+   */
+  items?: ServerDeleteBlockerItem[]
+  more?: number
 }
 
 export const SERVER_HAS_BLOCKERS_CODE = 'server_has_blockers'
@@ -91,6 +132,42 @@ export type ForgottenServerResources = {
   containers: number
   networks: number
   ips: number
+  environments: number
+  members: number
+  deployments: number
+  slots: number
+  copies: number
+}
+
+export const BLOCKED_DATABASE_REASON_VALUES = ['only_member', 'primary_here'] as const
+
+export type BlockedDatabaseReason = (typeof BLOCKED_DATABASE_REASON_VALUES)[number]
+
+export type ServerForgetBlockedDatabase = {
+  id: string
+  name: string
+  reason: BlockedDatabaseReason
+}
+
+export type ServerForgetEnvironment = {
+  id: string
+  name: string
+  projectName: string
+}
+
+export type ServerForgetMember = {
+  id: string
+  databaseName: string
+}
+
+export type ServerForgetPlan = {
+  blockers: ServerDeleteBlocker[]
+  environmentIds: string[]
+  memberIds: string[]
+  environments: ServerForgetEnvironment[]
+  members: ServerForgetMember[]
+  blockedDatabases: ServerForgetBlockedDatabase[]
+  blockingBlockers: ServerDeleteBlocker[]
 }
 
 export type ServerDeletePreviewContainer = {
@@ -123,6 +200,9 @@ export type ServerDeletePreview = {
   containers: CappedPreviewList<ServerDeletePreviewContainer>
   networks: CappedPreviewList<ServerDeletePreviewNetwork>
   ips: CappedPreviewList<ServerDeletePreviewIp>
+  environments: CappedPreviewList<ServerForgetEnvironment>
+  members: CappedPreviewList<ServerForgetMember>
+  blockedDatabases: CappedPreviewList<ServerForgetBlockedDatabase>
 }
 
 export class ServerOnlineDuringForgetError extends Error {
@@ -136,6 +216,25 @@ export class ServerOnlineDuringForgetError extends Error {
 
 export function isServerOnlineDuringForgetError(error: unknown): boolean {
   return error instanceof ServerOnlineDuringForgetError
+}
+
+export class ServerHasBlockersDuringForgetError extends Error {
+  readonly code = SERVER_HAS_BLOCKERS_CODE
+  readonly blockers: ServerDeleteBlocker[]
+  readonly blockedDatabases: ServerForgetBlockedDatabase[]
+
+  constructor(blockers: ServerDeleteBlocker[], blockedDatabases: ServerForgetBlockedDatabase[]) {
+    super(SERVER_HAS_BLOCKERS_ERROR)
+    this.name = 'ServerHasBlockersDuringForgetError'
+    this.blockers = blockers
+    this.blockedDatabases = blockedDatabases
+  }
+}
+
+export function isServerHasBlockersDuringForgetError(
+  error: unknown
+): error is ServerHasBlockersDuringForgetError {
+  return error instanceof ServerHasBlockersDuringForgetError
 }
 
 /**
@@ -184,9 +283,299 @@ export function blockersThatPreventForget(
 }
 
 export function canForgetServerResources(
-  opts: Readonly<{ online: boolean; colocated: boolean; blockers: readonly ServerDeleteBlocker[] }>
+  opts: Readonly<{
+    online: boolean
+    colocated: boolean
+    blockedDatabaseCount: number
+  }>
 ): boolean {
-  return !opts.online && !opts.colocated && blockersThatPreventForget(opts.blockers).length === 0
+  return !opts.online && !opts.colocated && opts.blockedDatabaseCount === 0
+}
+
+export function blockedDatabaseForgetMessage(name: string, reason: BlockedDatabaseReason): string {
+  if (reason === 'only_member') {
+    return `Database "${name}" has its only copy on this server. Delete the database first.`
+  }
+  return `Database "${name}" has its primary copy on this server. Promote another member or delete the database first.`
+}
+
+function managedDisplayName(name: string | null, engine: string): string {
+  return name ?? engine
+}
+
+function comparePreviewName(a: string, b: string): number {
+  return a.localeCompare(b)
+}
+
+export function blockedDatabaseReason(hasMemberOnAnotherServer: boolean): BlockedDatabaseReason {
+  return hasMemberOnAnotherServer ? 'primary_here' : 'only_member'
+}
+
+type ReplicaTouch = {
+  id: string
+  managedId: string
+  serverId: string
+  role: string
+  databaseName: string
+}
+
+type ManagedTouch = {
+  id: string
+  name: string
+  managedServerId: string | null
+  environmentServerId: string | null
+}
+
+/** One entry per database, deduped by id, named for the owner to find it. */
+function databaseItems(
+  rows: ReadonlyArray<{ managedId: string; databaseName: string }>
+): ServerBlockerDatabaseItem[] {
+  const byId = new Map<string, ServerBlockerDatabaseItem>()
+  for (const row of rows) {
+    if (!byId.has(row.managedId)) {
+      byId.set(row.managedId, { id: row.managedId, name: row.databaseName })
+    }
+  }
+  const items = [...byId.values()]
+  items.sort((a, b) => comparePreviewName(a.name, b.name) || a.id.localeCompare(b.id))
+  return items
+}
+
+/** Name the rows behind the counted kinds, capped like every preview list. */
+function withBlockerItems(
+  blockers: readonly ServerDeleteBlocker[],
+  itemsByKind: Partial<Record<ServerDeleteBlockerKind, ServerDeleteBlockerItem[]>>
+): ServerDeleteBlocker[] {
+  return blockers.map((blocker) => {
+    const items = itemsByKind[blocker.kind]
+    if (!items || items.length === 0) return blocker
+    const capped = capPreviewList(items)
+    return { ...blocker, items: capped.items, more: capped.more }
+  })
+}
+
+function emptyForgetPlan(): ServerForgetPlan {
+  return {
+    blockers: [],
+    environmentIds: [],
+    memberIds: [],
+    environments: [],
+    members: [],
+    blockedDatabases: [],
+    blockingBlockers: [],
+  }
+}
+
+function isDatabaseBlockedOnServer(
+  cluster: ManagedTouch,
+  replicas: readonly ReplicaTouch[],
+  serverId: string
+): boolean {
+  if (cluster.managedServerId === serverId) return true
+  if (cluster.environmentServerId === serverId) return true
+  return replicas.some((row) => row.serverId === serverId && row.role === 'primary')
+}
+
+/**
+ * Decide which app environments and database members a gone host may drop, and
+ * which databases still block forget. Callers re-run this inside the delete
+ * transaction after locking the server row.
+ */
+export async function planServerForget(
+  db: Db,
+  serverId: string,
+  organizationId: string
+): Promise<ServerForgetPlan> {
+  const [serverRow] = await db
+    .select({ id: server.id })
+    .from(server)
+    .where(and(eq(server.id, serverId), eq(server.organizationId, organizationId)))
+    .limit(1)
+  if (!serverRow) return emptyForgetPlan()
+
+  const [placedEnvironments, managedTouches, replicasHere, blockers] = await Promise.all([
+    db
+      .select({
+        id: environment.id,
+        name: environment.name,
+        projectId: project.id,
+        projectName: project.name,
+        managedId: managed.id,
+      })
+      .from(environment)
+      .innerJoin(project, eq(project.id, environment.projectId))
+      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+      .leftJoin(managed, eq(managed.environmentId, environment.id))
+      .where(and(eq(environment.serverId, serverId), notSystemWorkspace())),
+    db
+      .select({
+        id: managed.id,
+        name: managed.name,
+        engine: managed.engine,
+        managedServerId: managed.serverId,
+        environmentServerId: environment.serverId,
+      })
+      .from(managed)
+      .innerJoin(environment, eq(environment.id, managed.environmentId))
+      .innerJoin(project, eq(project.id, environment.projectId))
+      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+      .where(
+        and(
+          notSystemWorkspace(),
+          or(eq(managed.serverId, serverId), eq(environment.serverId, serverId))
+        )
+      ),
+    db
+      .select({
+        id: replica.id,
+        managedId: replica.managedId,
+        serverId: replica.serverId,
+        role: replica.role,
+        databaseName: managed.name,
+        engine: managed.engine,
+      })
+      .from(replica)
+      .innerJoin(managed, eq(managed.id, replica.managedId))
+      .innerJoin(environment, eq(environment.id, managed.environmentId))
+      .innerJoin(project, eq(project.id, environment.projectId))
+      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+      .where(and(eq(replica.serverId, serverId), notSystemWorkspace())),
+    listServerDeleteBlockers(db, serverId, organizationId),
+  ])
+
+  const replicaTouches: ReplicaTouch[] = replicasHere.map((row) => ({
+    id: row.id,
+    managedId: row.managedId,
+    serverId: row.serverId,
+    role: row.role,
+    databaseName: managedDisplayName(row.databaseName, row.engine),
+  }))
+
+  const clusters = new Map<string, ManagedTouch>()
+  for (const row of managedTouches) {
+    clusters.set(row.id, {
+      id: row.id,
+      name: managedDisplayName(row.name, row.engine),
+      managedServerId: row.managedServerId,
+      environmentServerId: row.environmentServerId,
+    })
+  }
+  for (const row of replicaTouches) {
+    if (!clusters.has(row.managedId)) {
+      clusters.set(row.managedId, {
+        id: row.managedId,
+        name: row.databaseName,
+        managedServerId: null,
+        environmentServerId: null,
+      })
+    }
+  }
+
+  const clusterIds = [...clusters.keys()]
+  const otherReplicas =
+    clusterIds.length === 0
+      ? []
+      : await db
+          .select({
+            id: replica.id,
+            managedId: replica.managedId,
+            serverId: replica.serverId,
+            role: replica.role,
+          })
+          .from(replica)
+          .where(and(inArray(replica.managedId, clusterIds), ne(replica.serverId, serverId)))
+
+  const replicasByManaged = new Map<string, ReplicaTouch[]>()
+  const addReplica = (row: ReplicaTouch) => {
+    const list = replicasByManaged.get(row.managedId) ?? []
+    list.push(row)
+    replicasByManaged.set(row.managedId, list)
+  }
+  for (const row of replicaTouches) addReplica(row)
+  for (const row of otherReplicas) {
+    addReplica({
+      id: row.id,
+      managedId: row.managedId,
+      serverId: row.serverId,
+      role: row.role,
+      databaseName: clusters.get(row.managedId)?.name ?? row.managedId,
+    })
+  }
+
+  const blockedDatabases: ServerForgetBlockedDatabase[] = []
+  const blockedIds = new Set<string>()
+  for (const cluster of clusters.values()) {
+    const replicas = replicasByManaged.get(cluster.id) ?? []
+    if (!isDatabaseBlockedOnServer(cluster, replicas, serverId)) continue
+    const hasMemberOnAnotherServer = replicas.some((row) => row.serverId !== serverId)
+    blockedIds.add(cluster.id)
+    blockedDatabases.push({
+      id: cluster.id,
+      name: cluster.name,
+      reason: blockedDatabaseReason(hasMemberOnAnotherServer),
+    })
+  }
+  blockedDatabases.sort((a, b) => comparePreviewName(a.name, b.name) || a.id.localeCompare(b.id))
+
+  const environmentItems: ServerBlockerEnvironmentItem[] = placedEnvironments.map((row) => ({
+    id: row.id,
+    name: row.name ?? '',
+    projectId: row.projectId,
+    projectName: row.projectName ?? '',
+    hasDatabase: row.managedId !== null,
+  }))
+  environmentItems.sort(
+    (a, b) =>
+      comparePreviewName(a.projectName, b.projectName) ||
+      comparePreviewName(a.name, b.name) ||
+      a.id.localeCompare(b.id)
+  )
+
+  const environments: ServerForgetEnvironment[] = environmentItems
+    .filter((row) => !row.hasDatabase)
+    .map((row) => ({ id: row.id, name: row.name, projectName: row.projectName }))
+
+  const members = replicaTouches
+    .filter((row) => !blockedIds.has(row.managedId))
+    .map((row) => ({ id: row.id, databaseName: row.databaseName }))
+  members.sort(
+    (a, b) => comparePreviewName(a.databaseName, b.databaseName) || a.id.localeCompare(b.id)
+  )
+
+  const blockedHere = blockedDatabases.filter((row) => {
+    const cluster = clusters.get(row.id)
+    return cluster?.managedServerId === serverId || cluster?.environmentServerId === serverId
+  })
+  const blockedMembers = replicaTouches.filter((row) => blockedIds.has(row.managedId))
+  const blockingBlockers: ServerDeleteBlocker[] = []
+  if (blockedDatabases.length > 0) {
+    pushBlocker(blockingBlockers, 'managed', blockedHere.length)
+    pushBlocker(blockingBlockers, 'replica', blockedMembers.length)
+  }
+
+  const placedDatabases = managedTouches
+    .filter((row) => row.managedServerId === serverId)
+    .map((row) => ({
+      managedId: row.id,
+      databaseName: managedDisplayName(row.name, row.engine),
+    }))
+
+  return {
+    blockers: withBlockerItems(blockers, {
+      environment: environmentItems,
+      managed: databaseItems(placedDatabases),
+      replica: databaseItems(replicaTouches),
+    }),
+    environmentIds: environments.map((row) => row.id),
+    memberIds: members.map((row) => row.id),
+    environments,
+    members,
+    blockedDatabases,
+    blockingBlockers: withBlockerItems(blockingBlockers, {
+      managed: blockedHere.map((row) => ({ id: row.id, name: row.name })),
+      replica: databaseItems(blockedMembers),
+    }),
+  }
 }
 
 function countValue(row: { value: number | string } | undefined): number {
@@ -195,10 +584,10 @@ function countValue(row: { value: number | string } | undefined): number {
 
 /**
  * Placement and dependency blockers for server delete.
- * RESTRICT / NO ACTION FKs to `server.id` that forget and the system-subtree /
- * fabric teardown do not drop: environment, managed, replica, deployment,
- * slot, copy — excluding TurboPanel-workspace rows the system-env delete
- * already removes (and anything that cascades from that).
+ * Counts leftover rows on `server.id`, excluding system-workspace rows
+ * the system-env delete already removes. Forget drops app environments,
+ * forgettable members, leftover deployments/slots/copies, then containers,
+ * addresses, and networks; blocked databases still 409.
  */
 export async function listServerDeleteBlockers(
   db: Db,
@@ -281,7 +670,7 @@ export async function listServerDeleteBlockers(
   return blockers
 }
 
-function capPreviewList<T>(items: T[], total: number): CappedPreviewList<T> {
+export function capPreviewList<T>(items: T[], total = items.length): CappedPreviewList<T> {
   const capped = items.slice(0, SERVER_DELETE_PREVIEW_LIST_CAP)
   return {
     items: capped,
@@ -295,7 +684,8 @@ export async function loadServerDeletePreview(
   organizationId: string,
   opts: Readonly<{ online: boolean; colocated: boolean }>
 ): Promise<ServerDeletePreview> {
-  const blockers = await listServerDeleteBlockers(db, serverId, organizationId)
+  const plan = await planServerForget(db, serverId, organizationId)
+  const blockers = plan.blockers
   const containerTotal = blockers.find((row) => row.kind === 'container')?.count ?? 0
   const networkTotal = blockers.find((row) => row.kind === 'network')?.count ?? 0
   const ipTotal = blockers.find((row) => row.kind === 'ip')?.count ?? 0
@@ -361,13 +751,16 @@ export async function loadServerDeletePreview(
     canForget: canForgetServerResources({
       online: opts.online,
       colocated: opts.colocated,
-      blockers,
+      blockedDatabaseCount: plan.blockedDatabases.length,
     }),
     colocated: opts.colocated,
     blockers,
     containers,
     networks,
     ips,
+    environments: capPreviewList(plan.environments),
+    members: capPreviewList(plan.members),
+    blockedDatabases: capPreviewList(plan.blockedDatabases),
   }
 }
 
@@ -394,13 +787,19 @@ export function serverOnlineForgetBlockedResponse(c: Context): Response {
 
 export function serverDeleteBlockersResponse(
   c: Context,
-  blockers: ServerDeleteBlocker[]
+  blockers: ServerDeleteBlocker[],
+  blockedDatabases?: readonly ServerForgetBlockedDatabase[]
 ): Response {
+  const capped =
+    blockedDatabases === undefined
+      ? undefined
+      : blockedDatabases.slice(0, SERVER_DELETE_PREVIEW_LIST_CAP)
   return c.json(
     {
       error: SERVER_HAS_BLOCKERS_ERROR,
       code: SERVER_HAS_BLOCKERS_CODE,
       blockers,
+      ...(capped && capped.length > 0 ? { blockedDatabases: capped } : {}),
     },
     409
   )
@@ -424,8 +823,37 @@ export async function assertServerOfflineForForget(tx: Db, serverId: string): Pr
 
 export async function forgetServerOwnedResources(
   tx: Db,
-  serverId: string
+  serverId: string,
+  organizationId: string
 ): Promise<ForgottenServerResources> {
+  const plan = await planServerForget(tx, serverId, organizationId)
+  if (plan.blockedDatabases.length > 0) {
+    throw new ServerHasBlockersDuringForgetError(
+      plan.blockingBlockers,
+      capPreviewList(plan.blockedDatabases).items
+    )
+  }
+
+  const environmentIds = plan.environments.map((row) => row.id)
+  const dropped = await dropEnvironmentSubtreeInTx(tx, environmentIds)
+
+  const memberIds = plan.members.map((row) => row.id)
+  if (memberIds.length > 0) {
+    await tx.delete(replica).where(inArray(replica.id, memberIds))
+  }
+  const deploymentRows = await tx
+    .delete(deployment)
+    .where(eq(deployment.serverId, serverId))
+    .returning({ id: deployment.id })
+  const slotRows = await tx
+    .delete(slot)
+    .where(eq(slot.serverId, serverId))
+    .returning({ id: slot.id })
+  const copyRows = await tx
+    .delete(storageCopy)
+    .where(eq(storageCopy.serverId, serverId))
+    .returning({ id: storageCopy.id })
+
   const containerRows = await tx.execute<{ id: string }>(sql`
     SELECT c.id
     ${nonSystemContainerWhere(serverId)}
@@ -440,8 +868,13 @@ export async function forgetServerOwnedResources(
     .where(eq(network.serverId, serverId))
     .returning({ id: network.id })
   return {
-    containers: containerIds.length,
+    containers: dropped.containers + containerIds.length,
     networks: networkRows.length,
     ips: ipRows.length,
+    environments: environmentIds.length,
+    members: memberIds.length,
+    deployments: deploymentRows.length,
+    slots: slotRows.length,
+    copies: copyRows.length,
   }
 }

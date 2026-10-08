@@ -344,12 +344,7 @@ test('GET /servers/:id/services lists a container app and a database replica', a
       {
         kind: 'managed',
         count: 1,
-        message: 'One managed database is still placed on this server.',
-      },
-      {
-        kind: 'replica',
-        count: 1,
-        message: 'One database member is still placed on this server.',
+        message: 'Database "App Data" has its only copy on this server. Delete the database first.',
       },
     ])
     assertEquals(body.apps, {

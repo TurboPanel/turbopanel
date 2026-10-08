@@ -886,7 +886,51 @@ export const serverSchemas = {
         type: 'array',
         items: { $ref: '#/components/schemas/ServerDeleteBlocker' },
       },
+      blockedDatabases: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerForgetBlockedDatabase' },
+        description:
+          'Present when `forgetResources=true` is refused because a database still has its only copy or its primary on this server. Capped at 50.',
+      },
     },
+  },
+  ServerForgetBlockedDatabase: {
+    type: 'object',
+    required: ['id', 'name', 'reason'],
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      reason: { type: 'string', enum: ['only_member', 'primary_here'] },
+    },
+  },
+  ServerBlockerEnvironmentItem: {
+    type: 'object',
+    required: ['id', 'name', 'projectId', 'projectName', 'hasDatabase'],
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      projectId: { type: 'string', format: 'uuid' },
+      projectName: { type: 'string' },
+      hasDatabase: {
+        type: 'boolean',
+        description:
+          'True when this environment carries a managed database, so forget will not remove it and the Services tab app list does not show it.',
+      },
+    },
+  },
+  ServerBlockerDatabaseItem: {
+    type: 'object',
+    required: ['id', 'name'],
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+    },
+  },
+  ServerDeleteBlockerItem: {
+    oneOf: [
+      { $ref: '#/components/schemas/ServerBlockerEnvironmentItem' },
+      { $ref: '#/components/schemas/ServerBlockerDatabaseItem' },
+    ],
   },
   ServerDeleteBlocker: {
     type: 'object',
@@ -901,6 +945,17 @@ export const serverSchemas = {
         type: 'string',
         description:
           'Plain-words description of the leftover kind, for example "an app environment" or "a database member is still placed on this server".',
+      },
+      items: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerDeleteBlockerItem' },
+        description:
+          'The rows behind `count`, by name, so the owner can go find them. Present for `environment` (every placed environment, sorted by project then environment name, including the ones carrying a database) and for `managed` / `replica` (one entry per database). Capped at 50.',
+      },
+      more: {
+        type: 'integer',
+        minimum: 0,
+        description: 'How many named rows are not listed in `items`.',
       },
     },
   },
@@ -917,7 +972,18 @@ export const serverSchemas = {
   },
   ServerDeletePreview: {
     type: 'object',
-    required: ['online', 'canForget', 'colocated', 'blockers', 'containers', 'networks', 'ips'],
+    required: [
+      'online',
+      'canForget',
+      'colocated',
+      'blockers',
+      'containers',
+      'networks',
+      'ips',
+      'environments',
+      'members',
+      'blockedDatabases',
+    ],
     properties: {
       online: {
         type: 'boolean',
@@ -927,7 +993,7 @@ export const serverSchemas = {
       canForget: {
         type: 'boolean',
         description:
-          'True when the server is offline, is not the co-located control plane host, and the only leftovers are forgettable container, network, or address rows.',
+          'True when the server is offline, is not the co-located control plane host, and no database still has its only copy or its primary on this server.',
       },
       colocated: {
         type: 'boolean',
@@ -993,6 +1059,32 @@ export const serverSchemas = {
           more: { type: 'integer', minimum: 0 },
         },
       },
+      environments: cappedListSchema({
+        type: 'object',
+        required: ['id', 'name', 'projectName'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          projectName: { type: 'string' },
+        },
+      }),
+      members: cappedListSchema({
+        type: 'object',
+        required: ['id', 'databaseName'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          databaseName: { type: 'string' },
+        },
+      }),
+      blockedDatabases: cappedListSchema({
+        type: 'object',
+        required: ['id', 'name', 'reason'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          name: { type: 'string' },
+          reason: { type: 'string', enum: ['only_member', 'primary_here'] },
+        },
+      }),
     },
   },
   ServerServicesRemovalReason: {
@@ -1007,7 +1099,18 @@ export const serverSchemas = {
       message: {
         type: 'string',
         description:
-          'One plain-language sentence for this leftover kind. Kinds match `listServerDeleteBlockers` plus `colocated` (this host runs the control panel and cannot be removed). When `removal.canForget` is true, container, network, and address sentences mention Delete server → Host is gone.',
+          'One plain-language sentence for this leftover kind. Kinds match the delete blockers plus `colocated` (this host runs the control panel and cannot be removed). When `items` is present the sentence names up to three of them ("Project / Environment" for an app environment) and then says "and N more". When `removal.canForget` is true, container, network, and address sentences mention Delete server → Host is gone.',
+      },
+      items: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/ServerDeleteBlockerItem' },
+        description:
+          'Same rows as `ServerDeleteBlocker.items`, so the console can link each blocking app environment or database.',
+      },
+      more: {
+        type: 'integer',
+        minimum: 0,
+        description: 'How many named rows are not listed in `items`.',
       },
     },
   },
@@ -1039,7 +1142,7 @@ export const serverSchemas = {
           canForget: {
             type: 'boolean',
             description:
-              'True when the server is offline, is not the co-located control plane host, and the only leftovers are forgettable container, network, or address rows. The owner can then use Delete server → Host is gone.',
+              'True when the server is offline, is not the co-located control plane host, and no database still has its only copy or its primary on this server. The owner can then use Delete server → Host is gone.',
           },
           reasons: {
             type: 'array',
@@ -1623,7 +1726,7 @@ export const serverPaths: Record<string, unknown> = {
       tags: ['Servers'],
       summary: 'Preview leftover rows that would block deleting a server',
       description:
-        'Same rights as delete (organization manager on this server). Lists leftover containers, networks, and addresses for a host that is gone, so the console can offer forgetting those rows. System-workspace containers are omitted the same way as delete blockers. Each list is capped at 50 rows plus a `more` count. `online` is true when the live cell snapshot is connected or the stored connected flag is true. `canForget` is true only when the server is offline, is not the co-located control plane host, and leftover blockers are only container, network, or address rows.',
+        'Same rights as delete (organization manager on this server). Lists leftover containers, networks, addresses, app environments that will be removed, database members that will be forgotten, and databases that still block forget. Each `environment` blocker names every placed app environment (including the ones carrying a database, which the Services tab app list does not show) with its project, and each `managed` / `replica` blocker names its databases, so the console can link them. System-workspace rows are omitted the same way as delete blockers. Each list is capped at 50 rows plus a `more` count. `online` is true when the live cell snapshot is connected or the stored connected flag is true. `canForget` is true only when the server is offline, is not the co-located control plane host, and no database still has its only copy or its primary on this server.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1830,7 +1933,7 @@ export const serverPaths: Record<string, unknown> = {
       tags: ['Servers'],
       summary: 'Delete a server and purge its daemon cell',
       description:
-        'Without `forgetResources=true`, leftover containers, networks, addresses, or other RESTRICT placements still answer 409 `server_has_blockers`. Pass the flag explicitly (query or JSON body; never implied) to drop leftover container, network, and address rows on an offline server that is not the co-located control plane host. A connected server (live snapshot or stored flag, re-checked under row lock) answers 409 `server_online`. App environments, managed databases, database members, deployments, service slots, and storage copies still 409 `server_has_blockers` even with the flag. System-workspace rows still follow the ordinary hosting-ingress teardown.',
+        'Without `forgetResources=true`, leftover containers, networks, addresses, or other RESTRICT placements still answer 409 `server_has_blockers`. Pass the flag explicitly (query or JSON body; never implied) to drop leftover app environments, database members whose primary is elsewhere, deployments, slots, storage copies, containers, networks, and addresses on an offline server that is not the co-located control plane host. A connected server (live snapshot or stored flag, re-checked under row lock) answers 409 `server_online`. A database whose only copy or primary is on this server still answers 409 `server_has_blockers` with `blockedDatabases`. System-workspace rows still follow the ordinary hosting-ingress teardown.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1845,7 +1948,7 @@ export const serverPaths: Record<string, unknown> = {
           required: false,
           schema: { type: 'boolean' },
           description:
-            'When true, remove leftover container, network, and address rows for this server inside the same delete. Must be the exact value true; omitted or any other value leaves blocker checks unchanged.',
+            'When true, remove leftover app environments, forgettable database members, deployments, slots, copies, containers, networks, and addresses for this server inside the same delete. Must be the exact value true; omitted or any other value leaves blocker checks unchanged.',
         },
       ],
       requestBody: {
@@ -2096,7 +2199,7 @@ export const serverPaths: Record<string, unknown> = {
       tags: ['Servers'],
       summary: 'List what is attached to a server',
       description:
-        "Read-gated, organization-scoped snapshot of apps, databases, bindings, backups of databases that have a member here, networks, and stored runtimes for one server. Lists of apps, containers, domains, database users, networks, and backups are capped (50 plus `more`). Removal reasons reuse `listServerDeleteBlockers` plus the co-located-host rule so this view and DELETE cannot disagree; `online` and `canForget` match delete-preview. Another organization's server is 404.",
+        "Read-gated, organization-scoped snapshot of apps, databases, bindings, backups of databases that have a member here, networks, and stored runtimes for one server. Lists of apps, containers, domains, database users, networks, and backups are capped (50 plus `more`). Removal reasons reuse `planServerForget` plus the co-located-host rule so this view and DELETE cannot disagree; `online` and `canForget` match delete-preview, and a reason that blocks a named app environment or database carries `items` so the console can link each one. Another organization's server is 404.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
