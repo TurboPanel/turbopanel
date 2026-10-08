@@ -47,8 +47,8 @@ as `sites[].dbCa` and sets `<PREFIX>_CA_FILE` to a file only the owner can read
 native app keeps `_CA_CERT` as text (its private environment file carries
 multi-line values). The kind is decided at deploy from the merged compose
 document; any other re-materialize keeps the stored form (`inferStoredDelivery`).
-A PHP site can only use a MySQL-family database on the default listener port
-(the daemon's `tp-php-loopback` firewall names 13306): anything else is refused
+A PHP site can use any engine on its default listener port (the daemon's
+`tp-php-loopback` firewall names 13306 and 15432): a changed port is refused
 with `binding_host_site_unsupported`. Loopback needs the ProxySQL frontend
 published on `127.0.0.1`: `managed.ingress.reconcile` adds the `local` scope
 whenever a host-run binding is placed on the server
