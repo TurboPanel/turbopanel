@@ -264,6 +264,12 @@ export type ManagedEngineSpec = {
   engine: ManagedEngineCode
   displayName: string
   defaultImage: string
+  /**
+   * Image meant by a stored row that has no `settings.image`, when the default
+   * moved after that row was written (MariaDB: 12.3 before 11.8 became the
+   * default). Unset means `defaultImage` has never moved.
+   */
+  legacyDefaultImage?: string
   defaultPort: number
   principalProvider: string
   rootUsername: string
