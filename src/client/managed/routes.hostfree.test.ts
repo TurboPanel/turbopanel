@@ -3529,6 +3529,8 @@ function streamingHealth(over: Record<string, unknown> = {}) {
         lagBytes: 0,
         lagSeconds: 0,
         observedAt: new Date().toISOString(),
+        receivedLsn: '0/3000100',
+        replayLsn: '0/3000100',
         ...over,
       },
     },
