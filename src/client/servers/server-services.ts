@@ -132,13 +132,48 @@ function forCount(count: number, one: string, many: string): string {
   return many
 }
 
-const SERVER_SERVICES_REMOVAL_COPY: Record<
-  Exclude<ServerServicesRemovalKind, 'container' | 'network' | 'ip' | 'colocated'>,
-  { one: string; many: string }
+type ServerServicesRemovalCountTemplates = {
+  one: string
+  many: string
+  forgettableOne?: string
+  forgettableMany?: string
+}
+
+const SERVER_SERVICES_REMOVAL_TEMPLATES: Record<
+  Exclude<ServerServicesRemovalKind, 'colocated'>,
+  ServerServicesRemovalCountTemplates
 > = {
   environment: {
     one: 'One app environment is still placed on this server.',
     many: '%n app environments are still placed on this server.',
+    forgettableOne:
+      'One app environment lived only on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+    forgettableMany:
+      '%n app environments lived only on this server. Because the host is offline, you can remove them with Delete server → Host is gone.',
+  },
+  container: {
+    one: 'One container is still on this server: stop or move the apps first.',
+    many: '%n containers are still on this server: stop or move the apps first.',
+    forgettableOne:
+      'One container is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+    forgettableMany:
+      '%n containers are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.',
+  },
+  network: {
+    one: 'One network is still on this server: remove it first.',
+    many: '%n networks are still on this server: remove them first.',
+    forgettableOne:
+      'One network is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+    forgettableMany:
+      '%n networks are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.',
+  },
+  ip: {
+    one: 'One address is still assigned to this server: remove it first.',
+    many: '%n addresses are still assigned to this server: remove them first.',
+    forgettableOne:
+      'One address is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+    forgettableMany:
+      '%n addresses are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.',
   },
   managed: {
     one: 'One managed database is still placed on this server.',
@@ -147,18 +182,34 @@ const SERVER_SERVICES_REMOVAL_COPY: Record<
   replica: {
     one: 'One database member is still placed on this server.',
     many: '%n database members are still placed on this server.',
+    forgettableOne:
+      'One database member is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+    forgettableMany:
+      '%n database members are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.',
   },
   deployment: {
     one: 'One deployment is still recorded on this server.',
     many: '%n deployments are still recorded on this server.',
+    forgettableOne:
+      'One deployment is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+    forgettableMany:
+      '%n deployments are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.',
   },
   slot: {
     one: 'One scheduled app instance is still placed on this server.',
     many: '%n scheduled app instances are still placed on this server.',
+    forgettableOne:
+      'One scheduled app instance is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+    forgettableMany:
+      '%n scheduled app instances are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.',
   },
   copy: {
     one: 'One volume copy is still stored on this server.',
     many: '%n volume copies are still stored on this server.',
+    forgettableOne:
+      'One volume copy is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
+    forgettableMany:
+      '%n volume copies are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.',
   },
 }
 
@@ -207,7 +258,7 @@ const SERVER_SERVICES_REMOVAL_NAMED_COPY: Partial<
 
 function joinNames(parts: readonly string[]): string {
   if (parts.length <= 1) return parts[0] ?? ''
-  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+  return `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`
 }
 
 /** Up to three quoted names, then "and N more". */
@@ -236,6 +287,23 @@ function namedRemovalMessage(
   return sentence.replace('%s', serverServicesRemovalNames(items, more))
 }
 
+function serverServicesRemovalCountMessage(
+  templates: ServerServicesRemovalCountTemplates,
+  count: number,
+  canForget: boolean,
+  kind: ServerServicesRemovalKind
+): string {
+  const useForgettable = canForget && kind !== 'managed' && templates.forgettableOne !== undefined
+  if (useForgettable) {
+    return forCount(
+      count,
+      templates.forgettableOne!,
+      templates.forgettableMany!.replaceAll('%n', String(count))
+    )
+  }
+  return forCount(count, templates.one, templates.many.replaceAll('%n', String(count)))
+}
+
 export function serverServicesRemovalMessage(
   kind: ServerServicesRemovalKind,
   count: number,
@@ -250,89 +318,12 @@ export function serverServicesRemovalMessage(
   }
   const named = namedRemovalMessage(kind, opts.items ?? [], opts.more ?? 0, opts.canForget === true)
   if (named) return named
-  if (kind === 'environment') {
-    if (opts.canForget) {
-      return forCount(
-        count,
-        'One app environment lived only on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
-        `${count} app environments lived only on this server. Because the host is offline, you can remove them with Delete server → Host is gone.`
-      )
-    }
-  }
-  if (kind === 'container') {
-    if (opts.canForget) {
-      return forCount(
-        count,
-        'One container is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
-        `${count} containers are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.`
-      )
-    }
-    return forCount(
-      count,
-      'One container is still on this server: stop or move the apps first.',
-      `${count} containers are still on this server: stop or move the apps first.`
-    )
-  }
-  if (kind === 'network') {
-    if (opts.canForget) {
-      return forCount(
-        count,
-        'One network is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
-        `${count} networks are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.`
-      )
-    }
-    return forCount(
-      count,
-      'One network is still on this server: remove it first.',
-      `${count} networks are still on this server: remove them first.`
-    )
-  }
-  if (kind === 'ip') {
-    if (opts.canForget) {
-      return forCount(
-        count,
-        'One address is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
-        `${count} addresses are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.`
-      )
-    }
-    return forCount(
-      count,
-      'One address is still assigned to this server: remove it first.',
-      `${count} addresses are still assigned to this server: remove them first.`
-    )
-  }
-  if (opts.canForget && kind !== 'managed') {
-    if (kind === 'replica') {
-      return forCount(
-        count,
-        'One database member is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
-        `${count} database members are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.`
-      )
-    }
-    if (kind === 'deployment') {
-      return forCount(
-        count,
-        'One deployment is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
-        `${count} deployments are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.`
-      )
-    }
-    if (kind === 'slot') {
-      return forCount(
-        count,
-        'One scheduled app instance is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
-        `${count} scheduled app instances are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.`
-      )
-    }
-    if (kind === 'copy') {
-      return forCount(
-        count,
-        'One volume copy is still recorded on this server. Because the host is offline, you can remove it with Delete server → Host is gone.',
-        `${count} volume copies are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.`
-      )
-    }
-  }
-  const copy = SERVER_SERVICES_REMOVAL_COPY[kind]
-  return forCount(count, copy.one, copy.many.replaceAll('%n', String(count)))
+  return serverServicesRemovalCountMessage(
+    SERVER_SERVICES_REMOVAL_TEMPLATES[kind],
+    count,
+    opts.canForget === true,
+    kind
+  )
 }
 
 export function serverServicesRemovalReasons(
