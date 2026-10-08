@@ -973,10 +973,14 @@ test('materializing a binding writes the form the deploy asks for and keeps it o
         assertEquals(container.get('DATABASE_HOST')?.endsWith('-in'), true)
         assertEquals(container.has('DATABASE_CA_CERT'), true)
 
-        // A PHP site cannot use a Postgres listener: refused, rows untouched.
-        const refused = await materializeBinding(db, dataEncryptionSecrets, bindingId, 'host-site')
-        assertEquals('kind' in refused && refused.kind, 'binding_host_site_unsupported')
-        assertEquals((await rows()).get('DATABASE_HOST'), container.get('DATABASE_HOST'))
+        // A PHP site reaches a Postgres listener on loopback: no CA text, same port.
+        assertEquals(await materializeBinding(db, dataEncryptionSecrets, bindingId, 'host-site'), {
+          ok: true,
+        })
+        const site = await rows()
+        assertEquals(site.get('DATABASE_HOST'), '127.0.0.1')
+        assertEquals(site.get('DATABASE_PORT'), container.get('DATABASE_PORT'))
+        assertEquals(site.has('DATABASE_CA_CERT'), false)
 
         // A native app dials loopback on the same listener port and keeps the CA text.
         assertEquals(await materializeBinding(db, dataEncryptionSecrets, bindingId, 'host-node'), {
