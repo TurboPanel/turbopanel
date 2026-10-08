@@ -605,10 +605,15 @@ so they follow the new primary without a full Resync. The control plane first
 queues one `repoint` on the **new primary** with `ensureSlots` (`tp_member_<ordinal>`
 for those replicas) so the physical slots exist, then one replica-side `repoint`
 that verifies streaming. A non-terminal replica `repoint` to a different
-`targetMemberId` is cancelled and replaced so a stale follow cannot win. A failed
-follow is logged and left to health checks; it does not fail the promote. The
-payload always carries `engine` (loaded from the managed row when the caller
-omits it).
+`targetMemberId` is cancelled and replaced so a stale follow cannot win (a
+single UPDATE that leaves an already terminal command untouched). A failed
+slot-ensure (`ensureSlots` non-empty) is re-queued once with `slotRetry` on
+the command context; a second failure is logged (`replicas may fail to stream
+until the slots exist`) and not retried. A follow-mode replica whose error
+contains `did not reach streaming` is flagged `needs_resync` when it is still
+`role=replica` and `status=ready`. Other repoint failures stay log-only. None
+of this fails the promote. The payload always carries `engine` (loaded from the
+managed row when the caller omits it).
 
 ### Completion gate: every ingress must confirm (`ha-ingress-gate.ts`)
 

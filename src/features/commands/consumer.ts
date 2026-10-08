@@ -145,7 +145,10 @@ import {
   recoveryIdFromCommandMetadata,
 } from '../managed/ha-recovery.ts'
 import { settleIngressCommandForRecovery } from '../managed/ha-ingress-gate.ts'
-import { enqueueFollowPrimaryOnReplicas } from '../managed/follow-primary.ts'
+import {
+  enqueueFollowPrimaryOnReplicas,
+  handleFollowPrimaryFailure,
+} from '../managed/follow-primary.ts'
 import { isManagedEngineCode, type ManagedEngineCode } from '../managed/types.ts'
 import { isValidWireguardPublicKey } from '../fabric/wg.ts'
 import { type CommandType, TERMINAL_COMMAND_STATUSES } from './types.ts'
@@ -2134,9 +2137,17 @@ async function applyManagedFailedSideEffect(
   // sweep retries it a few times.
   if (meta?.returnFence === true) return
   if (isManagedHaFailoverRepoint(record)) {
-    compatLogWarn(
-      'command-consumer',
-      `follow-primary failed for command ${record.id}: ${error ?? record.errorMessage ?? 'unknown'}`
+    await handleFollowPrimaryFailure(
+      db,
+      {
+        id: record.id,
+        serverId: record.serverId,
+        actorId: record.actorEntityId,
+        payload: record.payload,
+        context: record.context,
+      },
+      deps?.commandQueue,
+      error ?? record.errorMessage ?? undefined
     )
     return
   }
