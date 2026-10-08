@@ -1204,9 +1204,11 @@ async function createdImage(
   return options.settings.image
 }
 
-test('POST create persists the requested variant and keeps the default when none is sent', async () => {
-  // Neither field: no image is written, so the engine default applies as before.
-  assertEquals(await createdImage({}), undefined)
+test('POST create persists the requested variant and stores the default when none is sent', async () => {
+  // Neither field: the resolved default image is stored, so a later change of the
+  // catalog default can never change which series this row runs.
+  assertEquals(await createdImage({}), 'docker.io/library/postgres:18-alpine')
+  assertEquals(await createdImage({}, 'mariadb'), 'docker.io/library/mariadb:11.8')
   assertEquals(await createdImage({ engineSeries: '18' }), 'docker.io/library/postgres:18-alpine')
   assertEquals(
     await createdImage({ engineSeries: '18', imageVariant: 'debian' }),
@@ -2986,8 +2988,61 @@ test('POST members allows MariaDB 11.8 past the failover gate', async () => {
   })
   assertEquals(res.status, 422)
   const body = await jsonOf(res)
-  assertEquals(body.code, undefined)
-  assertEquals(body.error === MARIADB_FAILOVER_UNSUPPORTED_REASON, false)
+  // Past the failover gate: the request now fails on placement, not on the series.
+  assertEquals(body, { error: 'private_path_unavailable' })
+})
+
+test('POST members treats an imageless MariaDB row as 12.3 and refuses it', async () => {
+  const legacy = managedRow({
+    engine: 'mariadb',
+    options: {
+      settings: mariadbEngineSpec.parseSettings({ ...mariadbEngineSpec.defaultSettings }),
+      databases: ['defaultdb'],
+    },
+  })
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb({ managedRows: [legacy], projectRows: [{ metadata: { code: 'mariadb' } }] }),
+  })
+  const res = await app.request(envPath('/members'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ serverId: REPLICA_SERVER_ID }),
+  })
+  assertEquals(res.status, 422)
+  assertEquals(await jsonOf(res), {
+    error: MARIADB_FAILOVER_UNSUPPORTED_REASON,
+    code: 'managed_failover_unsupported',
+  })
+})
+
+test('PATCH member to failover is refused on MariaDB 12.3 but not on 11.8', async () => {
+  for (const [image, refused] of [
+    ['docker.io/library/mariadb:12.3', true],
+    ['docker.io/library/mariadb:11.8', false],
+  ] as const) {
+    const { app, cookie } = await buildApp({
+      db: applyReadyDb({
+        managedRows: [rowFor(mariadbEngineSpec, image)],
+        memberRows: [memberRow({ replicaClass: 'read' })],
+        projectRows: [{ metadata: { code: 'mariadb' } }],
+      }),
+    })
+    const res = await app.request(envPath(`/members/${MEMBER_ID}`), {
+      method: 'PATCH',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({ replicaClass: 'failover' }),
+    })
+    const body = await jsonOf(res)
+    if (refused) {
+      assertEquals(res.status, 422)
+      assertEquals(body, {
+        error: MARIADB_FAILOVER_UNSUPPORTED_REASON,
+        code: 'managed_failover_unsupported',
+      })
+    } else {
+      assertEquals(body.code === 'managed_failover_unsupported', false)
+    }
+  }
 })
 
 test('POST members surfaces a private-path error for an unreachable replica host', async () => {

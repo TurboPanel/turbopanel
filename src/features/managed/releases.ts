@@ -330,6 +330,20 @@ export function describeManagedImage(image: string): ManagedImageDescriptor | un
   return undefined
 }
 
+/**
+ * The image a stored row actually runs: its own `settings.image`, else the
+ * spec's legacy default (the default before it moved), else the current
+ * default. New clusters always store their image at create time, so only rows
+ * written before the default moved reach the legacy branch — they must keep
+ * the series their data directory was initialised with.
+ */
+export function effectiveManagedImage(
+  spec: { defaultImage: string; legacyDefaultImage?: string },
+  image: string | undefined
+): string {
+  return image ?? spec.legacyDefaultImage ?? spec.defaultImage
+}
+
 const MARIADB_FAILOVER_UNSUPPORTED_REASON =
   'MariaDB 12.3 can run on one server; automatic failover needs MariaDB 11.8 for now.'
 

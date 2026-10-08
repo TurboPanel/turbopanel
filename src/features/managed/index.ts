@@ -92,19 +92,14 @@ export { mariadbEngineSpec } from './mariadb.ts'
 export type { MariadbManagedSettings } from './mariadb.ts'
 
 /** Registry keyed by engine code. Only engines with a shipped spec appear here. */
-export const MANAGED_ENGINE_SPECS: Partial<
-  Record<ManagedEngineCode, ManagedEngineSpec>
-> = {
+export const MANAGED_ENGINE_SPECS: Partial<Record<ManagedEngineCode, ManagedEngineSpec>> = {
   postgres: postgresEngineSpec,
   mysql: mysqlEngineSpec,
   mariadb: mariadbEngineSpec,
 }
 
 /** Availability for every managed engine code (UI / API source of truth). */
-export const MANAGED_ENGINE_STATUS: Record<
-  ManagedEngineCode,
-  ManagedEngineStatus
-> = {
+export const MANAGED_ENGINE_STATUS: Record<ManagedEngineCode, ManagedEngineStatus> = {
   postgres: 'available',
   mysql: 'available',
   mariadb: 'available',
@@ -118,9 +113,7 @@ export function getManagedEngineSpec(code: string): ManagedEngineSpec | null {
 }
 
 /** Convenience accessor for the optional backup descriptor of an engine. */
-export function getManagedBackupDescriptor(
-  code: string,
-): ManagedEngineSpec['backup'] | null {
+export function getManagedBackupDescriptor(code: string): ManagedEngineSpec['backup'] | null {
   return getManagedEngineSpec(code)?.backup ?? null
 }
 
@@ -131,11 +124,10 @@ export function isManagedBackupSupported(code: string): boolean {
 
 export function listManagedEngineSpecs(): ManagedEngineSpec[] {
   return Object.values(MANAGED_ENGINE_SPECS).filter(
-    (spec): spec is ManagedEngineSpec => spec !== undefined,
+    (spec): spec is ManagedEngineSpec => spec !== undefined
   )
 }
 
 export function isManagedEngineAvailable(code: string): boolean {
-  return isManagedEngineCode(code) &&
-    MANAGED_ENGINE_STATUS[code] === 'available'
+  return isManagedEngineCode(code) && MANAGED_ENGINE_STATUS[code] === 'available'
 }

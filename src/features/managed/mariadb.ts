@@ -40,6 +40,8 @@ import {
 } from './types.ts'
 
 const DEFAULT_IMAGE = requireDefaultManagedImage('mariadb')
+/** MariaDB 12.3 was the default before 11.8; imageless stored rows are 12.3 clusters. */
+const LEGACY_DEFAULT_IMAGE = 'docker.io/library/mariadb:12.3'
 const DEFAULT_PORT = 3306
 const ROOT_USERNAME = 'root'
 const DEFAULT_DATABASE = 'defaultdb'
@@ -350,6 +352,7 @@ export const mariadbEngineSpec: ManagedEngineSpec = {
   engine: 'mariadb',
   displayName: 'MariaDB',
   defaultImage: DEFAULT_IMAGE,
+  legacyDefaultImage: LEGACY_DEFAULT_IMAGE,
   defaultPort: DEFAULT_PORT,
   principalProvider: 'mysql',
   rootUsername: ROOT_USERNAME,

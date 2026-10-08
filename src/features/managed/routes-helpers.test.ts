@@ -1,6 +1,7 @@
 import { assertEquals, assertStringIncludes } from '@std/assert'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { mariadbEngineSpec } from './mariadb.ts'
 import { mysqlEngineSpec } from './mysql.ts'
 import { postgresEngineSpec } from './postgres.ts'
 import { isManagedVariantSwapSafe } from './releases.ts'
@@ -702,4 +703,22 @@ test('PATCH name: absent leaves it, null clears it, a string is validated', () =
   assertEquals(parseManagedPatchName({ name: '  Orders DB ' }), { ok: true, name: 'Orders DB' })
   const bad = parseManagedPatchName({ name: 42 })
   assertEquals(bad.ok, false)
+})
+
+test('assertManagedSeriesUnchanged treats an imageless MariaDB row as 12.3, not the new default', () => {
+  const imageless = mariadbEngineSpec.parseSettings({ ...mariadbEngineSpec.defaultSettings })
+  const onEleven = mariadbEngineSpec.parseSettings({
+    ...mariadbEngineSpec.defaultSettings,
+    image: 'docker.io/library/mariadb:11.8',
+  })
+  const onTwelve = mariadbEngineSpec.parseSettings({
+    ...mariadbEngineSpec.defaultSettings,
+    image: 'docker.io/library/mariadb:12.3',
+  })
+  if (!imageless || !onEleven || !onTwelve) throw new TypeError('settings did not parse')
+  assertEquals(assertManagedSeriesUnchanged(mariadbEngineSpec, imageless, onTwelve), null)
+  assertEquals(
+    assertManagedSeriesUnchanged(mariadbEngineSpec, imageless, onEleven)?.error,
+    'managed_series_immutable'
+  )
 })
