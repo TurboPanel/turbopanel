@@ -532,7 +532,9 @@ command metadata — see `src/lib/tls/AGENTS.md` → Leaf tracking + renewal swe
 (`readEligible` / `replicaClass` conversion),
 `POST …/members/:memberId/resync` (operator-forced re-seed: full apply fan-out
 with `forceResync` on the target standby payload — the daemon wipes its data
-dir and re-basebackups from the primary; the only way past `needs_resync`),
+dir and re-basebackups from the primary; the only way past `needs_resync`
+except after a planned switchover, which re-seeds the former primary on its
+own),
 `DELETE …/managed` destroys **replicas first (awaited, bounded 180s), then the
 primary** — the primary's `deleteAfterDestroy` outcome removes the managed row,
 and destroy side effects are row-independent (`payload.environmentId`) so
@@ -612,7 +614,10 @@ the command context; a second failure is logged (`replicas may fail to stream
 until the slots exist`) and not retried. A follow-mode replica whose error
 contains `did not reach streaming` is flagged `needs_resync` when it is still
 `role=replica` and `status=ready`. Other repoint failures stay log-only. None
-of this fails the promote. The payload always carries `engine` (loaded from the
+of this fails the promote. After a planned switchover the former primary is
+re-seeded automatically from the new primary; after an automatic failover or
+disaster recovery it stays `needs_resync` until an operator runs Resync. The
+payload always carries `engine` (loaded from the
 managed row when the caller omits it).
 
 ### Completion gate: every ingress must confirm (`ha-ingress-gate.ts`)

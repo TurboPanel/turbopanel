@@ -1601,6 +1601,24 @@ test('onPromoteSucceeded never completes when no ingress repoint could be queued
   ])
 })
 
+test('onPromoteSucceeded still finishes when planned-switchover reseed cannot run', async () => {
+  const harness = createHarness({
+    members: [
+      member({ role: 'replica', status: 'needs_resync' }),
+      failoverReplica({ role: 'primary', serverId: SERVER_B }),
+    ],
+    recovery: recoveryRow({
+      kind: 'switchover',
+      state: 'promoting',
+      metadata: { stopApplied: true },
+    }),
+  })
+  const deps = await promoteFanOutDeps()
+  await onPromoteSucceeded(harness.db, deps.queue, deps.secrets, REC_ID, ACTOR_ID)
+  const row = harness.recovery()
+  assertEquals(row?.state === 'completed' || row?.state === 'reconciling-ingress', true)
+})
+
 test('onPromoteSucceeded fans out ingress and HA reconcile when secrets are present', async () => {
   const queue = okQueue()
   const harness = createHarness({

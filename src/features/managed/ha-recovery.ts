@@ -36,6 +36,7 @@ import {
 } from './ha-recovery-pure.ts'
 import { fanOutManagedHaReconcile } from './ha-desired.ts'
 import { enqueueFollowPrimaryOnReplicas } from './follow-primary.ts'
+import { reseedDemotedPrimaryAfterSwitchover } from './reseed-demoted-primary.ts'
 import {
   failRecoveryIngressNotQueued,
   parkRecoveryAtIngressGate,
@@ -1256,6 +1257,27 @@ async function fanOutAfterPromote(
   return ingress
 }
 
+async function reseedAfterPlannedSwitchover(
+  db: Db,
+  commandQueue: CommandQueue | undefined,
+  secrets: {
+    secretsConfig?: SecretsConfig
+    dataEncryptionSecrets?: DerivedSecretsConfig
+  },
+  record: RecoveryRecord,
+  actorId: string
+): Promise<void> {
+  if (record.kind !== 'switchover') return
+  try {
+    await reseedDemotedPrimaryAfterSwitchover(db, commandQueue, secrets, record, actorId)
+  } catch (err) {
+    compatLogWarn(
+      'managed-ha',
+      `managed.member.reseed.auto: ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+}
+
 export async function onPromoteSucceeded(
   db: Db,
   commandQueue: CommandQueue | undefined,
@@ -1296,6 +1318,7 @@ export async function onPromoteSucceeded(
         ingress,
         attestedLostServerIds(record.metadata)
       )
+      await reseedAfterPlannedSwitchover(db, commandQueue, secrets, record, actorId)
       return
     }
     // Nothing could be queued, so no ingress was told about the new primary.
@@ -1303,6 +1326,7 @@ export async function onPromoteSucceeded(
     await failRecoveryIngressNotQueued(db, record.id, [
       ...new Set(members.map((row) => row.serverId)),
     ])
+    await reseedAfterPlannedSwitchover(db, commandQueue, secrets, record, actorId)
   } catch (error) {
     logRecoveryAdvanceFailure(
       record.id,
