@@ -20,7 +20,7 @@ import {
   MYSQL_ACCOUNT_MAX_LENGTH,
   MYSQL_IDENTIFIER_PATTERN,
 } from './mysql-family.ts'
-import { requireDefaultManagedImage } from './releases.ts'
+import { effectiveManagedImage, requireDefaultManagedImage } from './releases.ts'
 import { mysqlFamilySslMode } from './ssl.ts'
 import {
   DEFAULT_MANAGED_SETTINGS,
@@ -245,7 +245,11 @@ function applyDockerOptions(
 function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
   const settings = input.settings as MariadbManagedSettings
   const initialDatabase = settings.initialDatabase ?? DEFAULT_DATABASE
-  const image = settings.image ?? DEFAULT_IMAGE
+  // A stored row without an image is a pre-11.8 cluster: it keeps its series.
+  const image = effectiveManagedImage(
+    { defaultImage: DEFAULT_IMAGE, legacyDefaultImage: LEGACY_DEFAULT_IMAGE },
+    settings.image
+  )
   const volumeName = `managed_${input.managedId.replaceAll('-', '_')}_data`
 
   const env: Record<string, string> = {
