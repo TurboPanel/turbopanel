@@ -297,6 +297,21 @@ test('GET /servers/:id/services lists a container app and a database replica', a
         count: 1,
         message: '1 container still runs here: stop or move the apps first',
       },
+      {
+        kind: 'environment',
+        count: 2,
+        message: 'Still on this server: an app environment (2)',
+      },
+      {
+        kind: 'managed',
+        count: 1,
+        message: 'Still on this server: a managed database is still placed on this server',
+      },
+      {
+        kind: 'replica',
+        count: 1,
+        message: 'Still on this server: a database member is still placed on this server',
+      },
     ])
     assertEquals(body.apps, [
       {
