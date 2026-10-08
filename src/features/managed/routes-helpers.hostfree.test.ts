@@ -746,14 +746,55 @@ test('evaluateOperatorPromoteGate refuses a reading older than a few seconds', (
 test('evaluateOperatorPromoteGate refuses a replica that has not applied what it received', () => {
   const now = Date.parse('2026-08-10T12:00:00.000Z')
   const base = { state: 'streaming', observedAt: '2026-08-10T11:59:55.000Z' }
-  assertEquals(evaluateOperatorPromoteGate({ ...base, fullyApplied: true }, false, now), null)
+  const mysql = 'mysql'
   assertEquals(
-    evaluateOperatorPromoteGate({ ...base, fullyApplied: false }, false, now),
+    evaluateOperatorPromoteGate({ ...base, fullyApplied: true }, false, now, mysql),
+    null
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...base, fullyApplied: false }, false, now, mysql),
     'managed_replica_lagging'
   )
   assertEquals(
-    evaluateOperatorPromoteGate({ ...base, state: 'reconnecting' }, false, now),
+    evaluateOperatorPromoteGate({ ...base }, false, now, mysql),
+    'managed_replica_lagging'
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...base, state: 'reconnecting' }, false, now, mysql),
     'managed_replica_not_streaming'
   )
-  assertEquals(evaluateOperatorPromoteGate({ ...base, fullyApplied: false }, true, now), null)
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...base, fullyApplied: false }, true, now, mysql),
+    null
+  )
+})
+
+test('evaluateOperatorPromoteGate postgres received vs replayed LSN', () => {
+  const now = Date.parse('2026-08-10T12:00:00.000Z')
+  const base = {
+    state: 'streaming',
+    observedAt: '2026-08-10T11:59:55.000Z',
+    lagBytes: 0,
+    lagSeconds: 0,
+  }
+  const pg = 'postgres'
+  assertEquals(
+    evaluateOperatorPromoteGate(
+      { ...base, receivedLsn: '0/3000148', replayLsn: '0/2FFC147' },
+      false,
+      now,
+      pg
+    ),
+    'managed_replica_lagging'
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate(
+      { ...base, receivedLsn: '0/3000100', replayLsn: '0/3000100' },
+      false,
+      now,
+      pg
+    ),
+    null
+  )
+  assertEquals(evaluateOperatorPromoteGate({ ...base }, false, now, pg), 'managed_replica_lagging')
 })

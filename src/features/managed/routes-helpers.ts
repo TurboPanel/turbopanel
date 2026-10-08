@@ -30,6 +30,7 @@ import { loadManagedExternalAccess } from './external-access.ts'
 import type { ManagedContext } from './managed-context.ts'
 import { type ManagedRowOptions, parseManagedRowOptions } from './options.ts'
 import { evaluateManagedPromoteLagGate } from './promote-lag.ts'
+import { isMysqlFamilyEngine, MAX_REPLAY_DELTA_BYTES, parsePgLsn } from './ha-fresh-standby.ts'
 import { loadManagedStatusError } from './last-error.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import type { ManagedResidualMetadata } from './serialize.ts'
@@ -1045,14 +1046,16 @@ export const OPERATOR_PROMOTE_MAX_OBSERVATION_AGE_MS = 15_000
 
 /**
  * Gate for the operator promote route: {@link evaluatePromoteLagHttpGate} on
- * a tight reading age, plus the engine's own word that the replica has not
- * applied everything it received (`fullyApplied: false`). `force` bypasses
- * both, as before. Automatic failover keeps its own probe and thresholds.
+ * a tight reading age, plus engine-specific proof the replica applied what it
+ * received (MySQL/MariaDB: `fullyApplied === true`; Postgres: received LSN
+ * replayed within {@link MAX_REPLAY_DELTA_BYTES}). `force` bypasses both, as
+ * before. Automatic failover keeps its own probe and thresholds.
  */
 export function evaluateOperatorPromoteGate(
   replication: unknown,
   force: boolean,
-  nowMs?: number
+  nowMs?: number,
+  engine?: string
 ):
   | null
   | 'managed_replica_not_streaming'
@@ -1063,7 +1066,17 @@ export function evaluateOperatorPromoteGate(
     staleMs: OPERATOR_PROMOTE_MAX_OBSERVATION_AGE_MS,
   })
   if (gate !== null) return gate
-  if (isPlainObject(replication) && replication.fullyApplied === false) {
+  if (!isPlainObject(replication)) return null
+  if (engine === 'postgres') {
+    const received = parsePgLsn(replication.receivedLsn)
+    const replayed = parsePgLsn(replication.replayLsn)
+    if (received === null || replayed === null) return 'managed_replica_lagging'
+    if (received - replayed > BigInt(MAX_REPLAY_DELTA_BYTES)) {
+      return 'managed_replica_lagging'
+    }
+    return null
+  }
+  if (isMysqlFamilyEngine(engine) && replication.fullyApplied !== true) {
     return 'managed_replica_lagging'
   }
   return null

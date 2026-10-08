@@ -336,7 +336,7 @@ async function assertManagedPromoteLagAllowed(
     })
     if (probe.status === 'observed') replication = probe.replication
   }
-  const gate = evaluateOperatorPromoteGate(replication, force)
+  const gate = evaluateOperatorPromoteGate(replication, force, undefined, params.engine)
   return gate !== null ? c.json({ error: gate }, 409) : null
 }
 
