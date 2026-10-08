@@ -124,7 +124,7 @@ test('parseManagedVersionSelection resolves a catalog series and variant', () =>
   })
 })
 
-test('create accepts only the three verified series', () => {
+test('create accepts only the verified series', () => {
   // The only creatable series per engine, both of their base-OS variants.
   assertEquals(parseManagedVersionSelection('mysql', { engineSeries: '9.7' }), {
     ok: true,
@@ -141,14 +141,20 @@ test('create accepts only the three verified series', () => {
     ok: true,
     image: 'docker.io/library/mariadb:12.3',
   })
+  assertEquals(parseManagedVersionSelection('mysql', { engineSeries: '8.4' }), {
+    ok: true,
+    image: 'docker.io/library/mysql:8.4',
+  })
+  assertEquals(
+    parseManagedVersionSelection('mariadb', { engineSeries: '11.8', imageVariant: 'ubi' }),
+    { ok: true, image: 'docker.io/library/mariadb:11.8-ubi' }
+  )
 
   // Every other catalogued series is refused — it is known, not tested.
   for (const [engine, series] of [
     ['postgres', '17'],
     ['postgres', '16'],
     ['postgres', '15'],
-    ['mysql', '8.4'],
-    ['mariadb', '11.8'],
     ['mariadb', '11.4'],
     ['mariadb', '10.11'],
   ] as const) {

@@ -161,7 +161,7 @@ function mariadbRelease(series: string, isDefault = false, tested = false): Mana
  * creatable.
  *
  * **Knowing about a series is not offering it.** Only PostgreSQL 18, MySQL 9.7
- * and MariaDB 12.3 carry `tested: true`; every other entry exists so
+ * and 8.4, and MariaDB 12.3 and 11.8 carry `tested: true`; every other entry exists so
  * {@link describeManagedImage} can still name an already-persisted image, and
  * is refused everywhere a new image can be chosen. Promote a series by
  * flipping its `tested` argument here **and** in the two mirrors
@@ -174,9 +174,9 @@ export const MANAGED_ENGINE_RELEASES: readonly ManagedEngineRelease[] = [
   postgresRelease('16'),
   postgresRelease('15'),
   mysqlRelease('9.7', true, true),
-  mysqlRelease('8.4'),
+  mysqlRelease('8.4', false, true),
   mariadbRelease('12.3', true, true),
-  mariadbRelease('11.8'),
+  mariadbRelease('11.8', false, true),
   mariadbRelease('11.4'),
   mariadbRelease('10.11'),
 ]

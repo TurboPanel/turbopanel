@@ -1225,9 +1225,14 @@ test('POST create resolves MySQL and MariaDB versions through the same helper', 
     await createdImage({ engineSeries: '12.3' }, 'mariadb'),
     'docker.io/library/mariadb:12.3'
   )
+  assertEquals(await createdImage({ engineSeries: '8.4' }, 'mysql'), 'docker.io/library/mysql:8.4')
+  assertEquals(
+    await createdImage({ engineSeries: '11.8', imageVariant: 'ubi' }, 'mariadb'),
+    'docker.io/library/mariadb:11.8-ubi'
+  )
   for (const [code, series] of [
-    ['mysql', '8.4'],
-    ['mariadb', '11.8'],
+    ['mysql', '8.0'],
+    ['mariadb', '11.4'],
   ] as const) {
     const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = []
     const res = await postCreate({ engineSeries: series }, inserted, code)
