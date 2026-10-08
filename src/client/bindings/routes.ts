@@ -31,7 +31,10 @@ import {
 } from '../shared.ts'
 import { hasOutstandingManagedDestroy } from '../../features/managed/destroy-pending.ts'
 import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
+import { enqueueApplyForManagedCluster } from '../tls/changeover-fanout.ts'
 import {
+  consumerServerIdsForManaged,
+  hasRemoteConsumerServers,
   loadServicePlacementServerId,
   memberServerIdsForManaged,
 } from '../../features/bindings/resolve-endpoint.ts'
@@ -71,6 +74,8 @@ const BINDING_SELECT = {
 /**
  * After binding create/update/delete, reconcile ProxySQL on the consumer
  * placement server and every managed cluster member (backend + frontend users).
+ * A consumer on another host also needs `managed.apply` so the engine publishes
+ * its private listener and admits that ProxySQL (pg_hba / MySQL account hosts).
  */
 async function enqueueIngressForBindingChange(
   c: Context<AppEnv>,
@@ -79,6 +84,7 @@ async function enqueueIngressForBindingChange(
     serviceId: string
     managedId: string
     actorId: string
+    organizationId: string
   }>
 ): Promise<void> {
   const secretsConfig = c.get('secretsConfig')
@@ -96,7 +102,8 @@ async function enqueueIngressForBindingChange(
   const serverIds = new Set<string>()
   const placement = await loadServicePlacementServerId(db, params.serviceId)
   if (placement) serverIds.add(placement)
-  for (const memberServerId of await memberServerIdsForManaged(db, params.managedId)) {
+  const memberServerIds = await memberServerIdsForManaged(db, params.managedId)
+  for (const memberServerId of memberServerIds) {
     serverIds.add(memberServerId)
   }
   const consumerTasks = await db
@@ -105,6 +112,27 @@ async function enqueueIngressForBindingChange(
     .where(eq(slot.serviceId, params.serviceId))
   for (const row of consumerTasks) {
     serverIds.add(row.serverId)
+  }
+
+  const remainingConsumers = await consumerServerIdsForManaged(db, params.managedId)
+  const thisPlacement = placement ? [placement] : []
+  if (
+    hasRemoteConsumerServers(memberServerIds, remainingConsumers) ||
+    hasRemoteConsumerServers(memberServerIds, thisPlacement)
+  ) {
+    try {
+      await enqueueApplyForManagedCluster(c, db, commandQueue, {
+        actorId: params.actorId,
+        organizationId: params.organizationId,
+        managedId: params.managedId,
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      compatLogWarn(
+        'bindings',
+        `managed.apply after remote binding change failed for ${params.managedId}: ${message}`
+      )
+    }
   }
 
   await forEachSequential(serverIds, async (serverId) => {
@@ -447,6 +475,7 @@ async function insertAndMaterializeBinding(
       serviceId: params.serviceId,
       managedId: params.managedId,
       actorId: params.actorId,
+      organizationId: params.organizationId,
     })
 
     await recordBindingAudit(c, db, params.organizationId, 'binding.create', id, {
@@ -710,6 +739,7 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         serviceId: row.serviceId,
         managedId,
         actorId: session.userId,
+        organizationId,
       })
     }
 
@@ -763,6 +793,7 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         serviceId: row.serviceId,
         managedId,
         actorId: session.userId,
+        organizationId,
       })
     }
 

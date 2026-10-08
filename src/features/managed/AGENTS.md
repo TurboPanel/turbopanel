@@ -215,16 +215,18 @@ re-asserted at the daemon command-contract boundary.
    decrypted `credentials[]` envelope. Plaintext passwords must never appear in
    a runtime spec.
 2. **Native port, no remap; private listener is the only published port.**
-   Compose fragments never publish host ports for single-member clusters.
-   Multi-member clusters may include one deliberate `ports:` entry
-   (`privateListener.address:private_port:enginePort`) for cross-host
+   Compose fragments never publish host ports unless a remote peer or a bound
+   consumer on another host must dial the engine. Then one deliberate `ports:`
+   entry (`privateListener.address:private_port:enginePort`) covers cross-host
    replication and remote ProxySQL backends. The address comes from the `fabric`
    → `datacenter` → `public` ladder and is tagged on
    `privateListener.transport`; a `public` bind is only ever emitted with org-CA
    TLS material (the daemon refuses it otherwise). Client traffic still enters
    via the shared ProxySQL client listeners (see Client listener ports) — never
    a per-service published map for public SQL clients and never per-managed
-   Traefik.
+   Traefik. A binding change that places the app on another host enqueues
+   `managed.apply` so that listener exists before the consumer's
+   `managed.ingress.reconcile` can emit frontend users.
 3. **Named volumes only.** `volumes[]` are Docker named volumes — never host
    bind paths. Config/TLS dirs are relative mounts under managed state. Volume
    **names** must satisfy `SAFE_IDENTIFIER_RE` / `SAFE_VOLUME_NAME_RE`

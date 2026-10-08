@@ -44,7 +44,10 @@ import {
 import { ensureOrganizationManagedNetwork, listServerSubnets } from '../fabric/fabric-records.ts'
 import { loadListenerAttachedSubnetNames } from './ingress-attachments.ts'
 import { LOOPBACK_BIND, resolveManagedExternalDialHost } from './access-address.ts'
-import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
+import {
+  consumerServerIdsForManaged,
+  hasRemoteConsumerServers,
+} from '../bindings/resolve-endpoint.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
 import { loadManagedExternalAccess } from './external-access.ts'
 import { materializeBindingsForPrincipal } from '../bindings/materialize.ts'
@@ -803,7 +806,13 @@ export async function enqueueManagedIngressReconcile(
  */
 async function recomputeManagedMemberTransports(db: Db, managedId: string): Promise<void> {
   const members = await listManagedMembers(db, managedId)
-  const withPorts = await ensureMemberPrivatePorts(db, members)
+  const consumerServerIds = await consumerServerIdsForManaged(db, managedId)
+  const withPorts = await ensureMemberPrivatePorts(db, members, {
+    hasRemoteConsumers: hasRemoteConsumerServers(
+      members.map((member) => member.serverId),
+      consumerServerIds
+    ),
+  })
   if (isManagedPrivatePortExhaustedError(withPorts)) {
     compatLogWarn(
       'managed-ingress',

@@ -455,13 +455,18 @@ function findFreePrivatePort(used: ReadonlySet<number>): number | null {
 }
 
 /**
- * Allocate or clear private listener ports for a multi-member cluster.
- * Single-member clusters clear any leftover `private_port`.
- * Under a `fabric` transport the port is published on the relay `tp0` address.
+ * Allocate or clear private listener ports.
+ *
+ * Multi-member clusters always allocate. A single-member cluster allocates
+ * when a bound consumer lives on another host (that host's ProxySQL dials this
+ * engine's private listener); otherwise leftover `private_port` rows are
+ * cleared. Under a `fabric` transport the port is published on the relay `tp0`
+ * address.
  */
 export async function ensureMemberPrivatePorts(
   db: Db,
-  members: readonly ManagedMemberRow[]
+  members: readonly ManagedMemberRow[],
+  options?: { hasRemoteConsumers?: boolean }
 ): Promise<ManagedMemberRow[] | ManagedPrivatePortExhaustedError> {
   if (members.length === 0) return []
 
@@ -471,8 +476,9 @@ export async function ensureMemberPrivatePorts(
   // payload for it against the just-cleared primary listener and failed with
   // `private_path_unavailable`.
   const inputIds = new Set(members.map((m) => m.id))
+  const keepPrivatePorts = members.length > 1 || options?.hasRemoteConsumers === true
 
-  if (members.length <= 1) {
+  if (!keepPrivatePorts) {
     await forEachSequential(members, async (member) => {
       if (member.privatePort !== null) {
         await db

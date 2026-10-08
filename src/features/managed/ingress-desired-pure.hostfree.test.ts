@@ -286,6 +286,20 @@ test('buildLocalOrMissingPortBackend local and remote paths', () => {
   )
   assertEquals(remote, { kind: 'remote', role: 'replica' })
 
+  const remotePrimary = buildLocalOrMissingPortBackend(
+    'consumer-host',
+    {
+      memberId: 'm1',
+      serverId: 'db-host',
+      role: 'primary',
+      readEligible: true,
+      containerName: 'engine-1',
+      privatePort: 45001,
+    },
+    5432
+  )
+  assertEquals(remotePrimary, { kind: 'remote', role: 'primary' })
+
   assertEquals(
     buildRemoteIngressBackend({
       memberId: 'm2',

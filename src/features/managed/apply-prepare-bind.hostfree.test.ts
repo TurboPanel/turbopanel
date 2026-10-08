@@ -20,6 +20,7 @@ const test = Deno.test.bind(Deno)
 const PRIMARY_SERVER = '11111111-1111-4111-8111-111111111111'
 const FAILOVER_SERVER = '22222222-2222-4222-8222-222222222222'
 const READ_SERVER = '33333333-3333-4333-8333-333333333333'
+const CONSUMER_SERVER = '55555555-5555-4555-8555-555555555555'
 
 type MembershipPinRow = {
   ipId: string
@@ -43,11 +44,7 @@ type Fixture = {
   publicAddresses?: Array<{ serverId: string; address: string }>
 }
 
-function membershipPin(
-  serverId: string,
-  datacenterId: string,
-  address: string,
-): MembershipPinRow {
+function membershipPin(serverId: string, datacenterId: string, address: string): MembershipPinRow {
   return {
     ipId: `ip-${serverId}-${datacenterId}-${address}`,
     serverId,
@@ -83,9 +80,7 @@ function fixtureDb(fixture: Fixture): Db {
   const memberships = fixture.memberships ?? []
   const relays = fixture.relays ?? []
   const publicAddresses = fixture.publicAddresses ?? []
-  const datacenterOptions = [
-    ...new Set(memberships.map((row) => row.datacenterId)),
-  ]
+  const datacenterOptions = [...new Set(memberships.map((row) => row.datacenterId))]
     .sort((a, b) => a.localeCompare(b))
     .map((id) => ({ id, options: {} }))
 
@@ -112,8 +107,7 @@ function fixtureDb(fixture: Fixture): Db {
       if (keys.length === 1 && keySet.has('fabricId')) {
         return {
           from: () => ({
-            where: () =>
-              thenable(relays.map((row) => ({ fabricId: row.fabricId }))),
+            where: () => thenable(relays.map((row) => ({ fabricId: row.fabricId }))),
           }),
         }
       }
@@ -141,7 +135,7 @@ function fixtureDb(fixture: Fixture): Db {
 
 function memberRow(
   overrides: Pick<ManagedMemberRow, 'id' | 'serverId' | 'role' | 'ordinal'> &
-    Partial<ManagedMemberRow>,
+    Partial<ManagedMemberRow>
 ): ManagedMemberRow {
   const now = '2026-01-01T00:00:00.000Z'
   return {
@@ -191,21 +185,31 @@ function readReplica(serverId = READ_SERVER): ManagedMemberRow {
 
 test('a single-member cluster publishes no private listener', async () => {
   const sole = primary()
-  assertEquals(
-    await resolveMemberPrivateBindAddress({} as Db, sole, [sole]),
-    undefined,
+  assertEquals(await resolveMemberPrivateBindAddress({} as Db, sole, [sole]), undefined)
+})
+
+test('a single-member cluster binds for a remote consumer ProxySQL', async () => {
+  const sole = primary()
+  const bind = await resolveMemberPrivateBindAddress(
+    fixtureDb({
+      memberships: [
+        membershipPin(PRIMARY_SERVER, 'dc-a', '10.0.0.1'),
+        membershipPin(CONSUMER_SERVER, 'dc-a', '10.0.0.9'),
+      ],
+    }),
+    sole,
+    [sole],
+    [CONSUMER_SERVER]
   )
+  assertEquals(bind, { address: '10.0.0.1', transport: 'datacenter' })
 })
 
 test('co-resident members need no published bind', async () => {
   const member = primary()
   const coResident = readReplica(PRIMARY_SERVER)
   assertEquals(
-    await resolveMemberPrivateBindAddress({} as Db, member, [
-      member,
-      coResident,
-    ]),
-    undefined,
+    await resolveMemberPrivateBindAddress({} as Db, member, [member, coResident]),
+    undefined
   )
 })
 
@@ -219,7 +223,7 @@ test('the bind is the datacenter address a same-datacenter peer dials', async ()
       ],
     }),
     member,
-    [member, failoverReplica()],
+    [member, failoverReplica()]
   )
   assertEquals(bind, { address: '10.0.0.1', transport: 'datacenter' })
 })
@@ -228,13 +232,10 @@ test('a read replica on the fabric binds this member relay address', async () =>
   const member = primary()
   const bind = await resolveMemberPrivateBindAddress(
     fixtureDb({
-      relays: [
-        relayRow(PRIMARY_SERVER, '10.90.0.1'),
-        relayRow(READ_SERVER, '10.90.0.3'),
-      ],
+      relays: [relayRow(PRIMARY_SERVER, '10.90.0.1'), relayRow(READ_SERVER, '10.90.0.3')],
     }),
     member,
-    [member, readReplica()],
+    [member, readReplica()]
   )
   assertEquals(bind, { address: '10.90.0.1', transport: 'fabric' })
 })
@@ -249,7 +250,7 @@ test('a remote public read replica binds this member public address', async () =
       ],
     }),
     member,
-    [member, readReplica()],
+    [member, readReplica()]
   )
   assertEquals(bind, { address: '203.0.113.1', transport: 'public' })
 })
@@ -268,7 +269,7 @@ test('a same-datacenter failover replica plus a remote public read replica is re
       ],
     }),
     member,
-    [member, failoverReplica(), readReplica()],
+    [member, failoverReplica(), readReplica()]
   )
   // One `privateListener` cannot serve a datacenter dial and a public dial.
   assertEquals(result, {
@@ -283,17 +284,14 @@ test('a failover peer never falls back to fabric or public on re-apply', async (
     fixtureDb({
       // No shared datacenter: fabric + public exist but are off-limits for a
       // failover link, so the bind must fail instead of publishing one.
-      relays: [
-        relayRow(PRIMARY_SERVER, '10.90.0.1'),
-        relayRow(FAILOVER_SERVER, '10.90.0.2'),
-      ],
+      relays: [relayRow(PRIMARY_SERVER, '10.90.0.1'), relayRow(FAILOVER_SERVER, '10.90.0.2')],
       publicAddresses: [
         { serverId: PRIMARY_SERVER, address: '203.0.113.1' },
         { serverId: FAILOVER_SERVER, address: '203.0.113.2' },
       ],
     }),
     member,
-    [member, failoverReplica()],
+    [member, failoverReplica()]
   )
   assertEquals(result, {
     kind: 'private_path_unavailable',
@@ -313,13 +311,10 @@ test('a legacy null replica class is treated as failover for the bind', async ()
   })
   const result = await resolveMemberPrivateBindAddress(
     fixtureDb({
-      relays: [
-        relayRow(PRIMARY_SERVER, '10.90.0.1'),
-        relayRow(FAILOVER_SERVER, '10.90.0.2'),
-      ],
+      relays: [relayRow(PRIMARY_SERVER, '10.90.0.1'), relayRow(FAILOVER_SERVER, '10.90.0.2')],
     }),
     member,
-    [member, legacy],
+    [member, legacy]
   )
   assertEquals(result, {
     kind: 'private_path_unavailable',
@@ -339,7 +334,7 @@ test('agreeing remote peers collapse to one bind', async () => {
       ],
     }),
     member,
-    [member, failoverReplica(), readReplica()],
+    [member, failoverReplica(), readReplica()]
   )
   assertEquals(bind, { address: '10.0.0.1', transport: 'datacenter' })
 })
@@ -354,7 +349,7 @@ test('a replica publishes the address the primary dials', async () => {
       ],
     }),
     replica,
-    [primary(), replica],
+    [primary(), replica]
   )
   assertEquals(bind, { address: '10.0.0.2', transport: 'datacenter' })
 })

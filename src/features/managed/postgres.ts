@@ -465,8 +465,8 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
   volumes.push(`./tls:${TLS_DIR_CONTAINER}:ro`)
 
   // Private listener: the one deliberate exception to "no published engine ports".
-  // Multi-member only — binds solely on the member's private address at the
-  // instance-allocated `private_port` (cross-host replication + ProxySQL backends).
+  // Binds solely on the member's private address at the instance-allocated
+  // `private_port` (cross-host replication and remote consumer ProxySQL).
   if (input.member?.privateListener) {
     const { address, port } = input.member.privateListener
     service.ports = [`${address}:${port}:5432`]

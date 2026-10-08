@@ -816,6 +816,52 @@ test('ensureMemberPrivatePorts clears leftover ports on single-member clusters',
   assertEquals(await ensureMemberPrivatePorts({} as Db, []), [])
 })
 
+test('ensureMemberPrivatePorts allocates a private port for a single member with remote consumers', async () => {
+  const sole = member({
+    id: 'p',
+    serverId: 's',
+    role: 'primary',
+    ordinal: 1,
+    privatePort: null,
+  })
+  const assigned = [{ ...sole, privatePort: MANAGED_PRIVATE_PORT_MIN }]
+  let selectN = 0
+  const updates: number[] = []
+  const tx = {
+    select: () => ({
+      from: () => ({
+        where: () => {
+          selectN += 1
+          if (selectN === 2) {
+            return Promise.resolve([])
+          }
+          return {
+            orderBy: () => Promise.resolve(selectN === 1 ? [sole] : assigned),
+          }
+        },
+      }),
+    }),
+    update: () => ({
+      set: (patch: { privatePort: number }) => ({
+        where: () => {
+          updates.push(patch.privatePort)
+          return Promise.resolve([])
+        },
+      }),
+    }),
+  }
+  const db = {
+    transaction: (fn: (inner: typeof tx) => Promise<unknown>) => fn(tx),
+  } as unknown as Db
+
+  const result = await ensureMemberPrivatePorts(db, [sole], { hasRemoteConsumers: true })
+  assertEquals(Array.isArray(result), true)
+  if (Array.isArray(result)) {
+    assertEquals(result[0]?.privatePort, MANAGED_PRIVATE_PORT_MIN)
+  }
+  assertEquals(updates, [MANAGED_PRIVATE_PORT_MIN])
+})
+
 test('ensureMemberPrivatePorts never resurrects members excluded from the input', async () => {
   // Delete-member prepare passes only the surviving primary; the DB still
   // holds the replica being destroyed. The refreshed result must not include

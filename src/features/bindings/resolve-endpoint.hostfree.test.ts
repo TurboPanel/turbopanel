@@ -6,6 +6,7 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import {
   consumerServerIdsForManaged,
+  hasRemoteConsumerServers,
   isBindingEndpointError,
   loadServicePlacementServerId,
   memberServerIdsForManaged,
@@ -80,10 +81,7 @@ test('loadServicePlacementServerId prefers environment server over project defau
       }),
     }),
   } as unknown as Db
-  assertEquals(
-    await loadServicePlacementServerId(projectOnly, 'svc'),
-    projectServer,
-  )
+  assertEquals(await loadServicePlacementServerId(projectOnly, 'svc'), projectServer)
 })
 
 function consumerServerQuery(rows: unknown[]) {
@@ -150,11 +148,7 @@ test('memberServerIdsForManaged maps node rows', async () => {
   const db = {
     select: () => ({
       from: () => ({
-        where: () =>
-          Promise.resolve([
-            { serverId: 's1' },
-            { serverId: 's2' },
-          ]),
+        where: () => Promise.resolve([{ serverId: 's1' }, { serverId: 's2' }]),
       }),
     }),
   } as unknown as Db
@@ -178,7 +172,7 @@ test('resolveBindingEndpoint unavailable when cluster has no members', async () 
       engineCode: 'postgres',
       engineDefaultPort: 5432,
     }),
-    { kind: 'binding_endpoint_unavailable' },
+    { kind: 'binding_endpoint_unavailable' }
   )
 })
 
@@ -235,15 +229,19 @@ test('resolveBindingEndpoint unavailable when listener server has no organizatio
       engineCode: 'postgres',
       engineDefaultPort: 5432,
     }),
-    { kind: 'binding_endpoint_unavailable' },
+    { kind: 'binding_endpoint_unavailable' }
   )
 })
 
+test('hasRemoteConsumerServers is true only when a consumer is off the member hosts', () => {
+  assertEquals(hasRemoteConsumerServers(['srv-db'], ['srv-db']), false)
+  assertEquals(hasRemoteConsumerServers(['srv-db'], ['srv-db', 'srv-app']), true)
+  assertEquals(hasRemoteConsumerServers(['srv-db'], []), false)
+  assertEquals(hasRemoteConsumerServers(['srv-db'], ['']), false)
+})
+
 test('isBindingEndpointError covers unavailable and non-errors', () => {
-  assertEquals(
-    isBindingEndpointError({ kind: 'binding_endpoint_unavailable' }),
-    true,
-  )
+  assertEquals(isBindingEndpointError({ kind: 'binding_endpoint_unavailable' }), true)
   assertEquals(isBindingEndpointError({ host: 'x', port: 1 }), false)
   assertEquals(isBindingEndpointError(null), false)
 })
