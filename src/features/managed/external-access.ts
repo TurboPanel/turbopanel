@@ -38,7 +38,6 @@ import { parseManagedRowOptions } from './options.ts'
 import {
   MANAGED_EXTERNAL_ACCESS_KEY,
   type ManagedExternalAccess,
-  parseManagedExternalAccess,
   readManagedExternalAccess,
 } from './external-access-setting.ts'
 import type { ManagedEngineCode } from './types.ts'
@@ -53,7 +52,7 @@ export {
   type ManagedExternalAccess,
   parseManagedExternalAccess,
   readManagedExternalAccess,
-}
+} from './external-access-setting.ts'
 
 async function loadServerOptions(db: Db, serverId: string): Promise<unknown> {
   const [row] = await db
@@ -223,7 +222,7 @@ export async function loadManagedExternalAccessView(
     .from(server)
     .where(inArray(server.id, serverIds))
   const views: ManagedExternalAccessServerView[] = []
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     const setting = readManagedExternalAccess(row.options)
     const fronted = await loadFrontedManagedIds(db, row.id)
     views.push({
@@ -233,7 +232,7 @@ export async function loadManagedExternalAccessView(
       pending: setting.pendingSince !== undefined,
       otherClusters: fronted.filter((id) => id !== managedId).length,
     })
-  }
+  })
   return views
 }
 
