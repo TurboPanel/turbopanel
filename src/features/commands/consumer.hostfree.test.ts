@@ -2656,6 +2656,60 @@ const PROMOTE_RESULT = {
   demoted: true,
 }
 
+test('processCommandEnvelope managed.ha.failover repoint failure with recoveryId does not fail the recovery', async () => {
+  const fake = await runOnline(
+    'managed.ha.failover',
+    {
+      ...VALID_HA_FAILOVER_PAYLOAD,
+      phase: 'repoint',
+      targetHost: '203.0.113.11',
+      targetPort: 5432,
+    },
+    {
+      ...donePending(),
+      status: 'failed',
+      error: 'follow-primary failed',
+      result: undefined,
+    },
+    {
+      commandMetadata: { recoveryId: RECOVERY_ID },
+      recoveryRow: promotingRecoveryRow(),
+    }
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'failed'),
+    true
+  )
+  assertEquals(
+    fake.managedUpdates.some((patch) => patch.status === 'failed'),
+    false
+  )
+  assertEquals(fake.recoveryUpdates.length, 0)
+})
+
+test('processCommandEnvelope managed.ha.failover failure with an unparseable payload still fails the recovery', async () => {
+  const fake = await runOnline(
+    'managed.ha.failover',
+    { not: 'a failover payload' },
+    {
+      ...donePending(),
+      status: 'failed',
+      error: 'bad payload',
+      result: undefined,
+    },
+    {
+      commandMetadata: { recoveryId: RECOVERY_ID },
+      recoveryRow: promotingRecoveryRow(),
+    }
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'failed'),
+    true
+  )
+  assertEquals(fake.recoveryUpdates.length, 1)
+  assertEquals(fake.recoveryUpdates[0]?.state, 'failed')
+})
+
 test('a promote side effect that throws ends its recovery failed for the operator', async () => {
   const fake = await runOnline('managed.promote', PROMOTE_PAYLOAD, doneWith(PROMOTE_RESULT), {
     replicaServerId: SERVER_ID,
