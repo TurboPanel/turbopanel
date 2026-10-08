@@ -30,14 +30,8 @@ test('parseManagedSettingsBase returns defaults for undefined/null', () => {
   // An absent `ssl.mode` inherits (org default → platform `require`); the
   // parser must not stamp a concrete mode, or an org-level change would stop
   // reaching services that never overrode it.
-  assertEquals(parseManagedSettingsBase(undefined), {
-    ssl: {},
-    exposure: { enabled: true, scope: 'local' },
-  })
-  assertEquals(parseManagedSettingsBase(null), {
-    ssl: {},
-    exposure: { enabled: true, scope: 'local' },
-  })
+  assertEquals(parseManagedSettingsBase(undefined), { ssl: {} })
+  assertEquals(parseManagedSettingsBase(null), { ssl: {} })
   assertEquals(parseManagedSettingsBase(undefined)?.ssl, DEFAULT_MANAGED_SETTINGS.ssl)
 })
 
@@ -189,64 +183,12 @@ test('dockerOptions returns null on each denied key', () => {
   assertEquals(parseManagedSettingsBase({ dockerOptions: { unknownKey: 1 } }), null)
 })
 
-test('exposure accept/reject scope only', () => {
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: true, scope: 'public' },
-    })?.exposure,
-    { enabled: true, scope: 'public' }
-  )
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: true, scope: 'turbofabric' },
-    })?.exposure,
-    { enabled: true, scope: 'turbofabric' }
-  )
-  // An enabled exposure that names no scope is the local default, named out.
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: true },
-    })?.exposure,
-    { enabled: true, scope: 'local' }
-  )
-  // Off stays off, with no scope invented.
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: false },
-    })?.exposure,
-    { enabled: false }
-  )
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: true, scope: 'internet' },
-    }),
-    null
-  )
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: true, bind: 'public' },
-    }),
-    null
-  )
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: true, bind: 'internet' },
-    }),
-    null
-  )
-  // Unknown exposure keys (e.g. retired publishedPort) reject the document.
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: true, publishedPort: 22, scope: 'local' },
-    }),
-    null
-  )
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: false, scope: 'local' },
-    })?.exposure,
-    { enabled: false, scope: 'local' }
-  )
+test('a leftover per-cluster exposure key from an old row is ignored', () => {
+  // Who can connect from outside is a per-server setting now; old rows may
+  // still carry the retired per-cluster key and must keep parsing.
+  const parsed = parseManagedSettingsBase({ exposure: { enabled: true, scope: 'public' } })
+  assertEquals(parsed, { ssl: {} })
+  assertEquals(parseManagedSettingsBase({ exposure: 'public' }), { ssl: {} })
 })
 
 test('clampManagedResources clamps against org and server limits', () => {
@@ -332,7 +274,7 @@ test('image digest and tag edge cases', () => {
   assertEquals(parseManagedSettingsBase({ image: 'a'.repeat(257) }), null)
 })
 
-test('ssl / resources / engineConfig / exposure reject malformed input', () => {
+test('ssl / resources / engineConfig reject malformed input', () => {
   assertEquals(parseManagedSettingsBase({ ssl: 'on' }), null)
   assertEquals(parseManagedSettingsBase({ ssl: { mode: 'yes' } }), null)
   assertEquals(parseManagedSettingsBase({ resources: [] }), null)
@@ -340,14 +282,6 @@ test('ssl / resources / engineConfig / exposure reject malformed input', () => {
   assertEquals(parseManagedSettingsBase({ resources: { memoryBytes: 0 } }), null)
   assertEquals(parseManagedSettingsBase({ resources: { memoryReservationBytes: -5 } }), null)
   assertEquals(parseManagedSettingsBase({ engineConfig: 12 }), null)
-  assertEquals(parseManagedSettingsBase({ exposure: 'public' }), null)
-  assertEquals(parseManagedSettingsBase({ exposure: { enabled: 1 } }), null)
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: false, bind: 'local' },
-    }),
-    null
-  )
   assertEquals(parseManagedSettingsBase([]), null)
   assertEquals(parseManagedSettingsBase('nope'), null)
 })

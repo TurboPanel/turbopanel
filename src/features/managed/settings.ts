@@ -9,11 +9,6 @@
 
 import { clampServiceResources, type ResourceLimits } from '../organizations/resource-limits.ts'
 import type { ServiceOptions } from '../projects/service-options.ts'
-import {
-  DEFAULT_MANAGED_SQL_ACCESS_SCOPE,
-  isManagedSqlAccessScope,
-  type ManagedSqlAccessScope,
-} from './access-scope.ts'
 import { managedAllowedImagesForEngine } from './releases.ts'
 import { type ManagedSslMode, parseManagedSslMode } from './ssl.ts'
 
@@ -50,8 +45,6 @@ const ALLOWED_DOCKER_KEYS = new Set([
   'labels',
   'extraEnv',
 ])
-
-/** Client access scopes — shared ProxySQL listeners use org ingress ports (15432/13306). */
 
 const MAX_IMAGE_REF_LENGTH = 256
 /**
@@ -229,15 +222,6 @@ export type ManagedSettings = {
   dockerOptions?: ManagedDockerOptions
   /** Free-form engine-native config text (e.g. postgresql.conf snippet). */
   engineConfig?: string
-  /**
-   * Where clients may reach this cluster through the shared ProxySQL frontend.
-   * `scope` omitted while enabled means {@link DEFAULT_MANAGED_SQL_ACCESS_SCOPE}.
-   * Never a per-member engine publish — see `access-scope.ts`.
-   */
-  exposure: {
-    enabled: boolean
-    scope?: ManagedSqlAccessScope
-  }
   /** Only meaningful for engines with a `backup` descriptor. */
   backups?: ManagedBackupSettings
 }
@@ -245,12 +229,6 @@ export type ManagedSettings = {
 export const DEFAULT_MANAGED_SETTINGS: ManagedSettings = {
   /** No override — inherit the org default, then `require`. */
   ssl: {},
-  /**
-   * Local by default: ProxySQL listens on the server's own loopback address
-   * only, which is all a site run by a site owner's Linux user on the same
-   * server needs. Wider scopes are an explicit choice per cluster.
-   */
-  exposure: { enabled: true, scope: DEFAULT_MANAGED_SQL_ACCESS_SCOPE },
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -490,29 +468,6 @@ function parseEngineConfig(value: unknown): string | null | undefined {
   return normalizeEngineConfig(value)
 }
 
-function parseExposure(value: unknown): ManagedSettings['exposure'] | null {
-  if (value === undefined) return { ...DEFAULT_MANAGED_SETTINGS.exposure }
-  if (!isRecord(value)) return null
-  for (const key of Object.keys(value)) {
-    if (key !== 'enabled' && key !== 'scope') return null
-  }
-  if (typeof value.enabled !== 'boolean') return null
-
-  const exposure: ManagedSettings['exposure'] = { enabled: value.enabled }
-
-  if (value.scope !== undefined) {
-    if (!isManagedSqlAccessScope(value.scope)) return null
-    exposure.scope = value.scope
-  } else if (value.enabled) {
-    // Name the scope instead of leaving it implied, so every reader (the
-    // connection panel, a settings save that echoes it back) sees the same
-    // answer the reconcile uses.
-    exposure.scope = DEFAULT_MANAGED_SQL_ACCESS_SCOPE
-  }
-
-  return exposure
-}
-
 /**
  * Parse `settings.backups`. Absent → `undefined` (engine defaults apply);
  * malformed or out-of-range → `null` (reject). `retentionKeep` is clamped to
@@ -550,10 +505,7 @@ export function parseManagedSettingsBase(
   engine?: string
 ): ManagedSettings | null {
   if (value === null || value === undefined) {
-    return {
-      ssl: { ...DEFAULT_MANAGED_SETTINGS.ssl },
-      exposure: { ...DEFAULT_MANAGED_SETTINGS.exposure },
-    }
+    return { ssl: { ...DEFAULT_MANAGED_SETTINGS.ssl } }
   }
   if (!isRecord(value)) return null
   return parseManagedSettingsRecord(value, reservedEnvKeys, engine)
@@ -586,15 +538,11 @@ function parseManagedSettingsRecord(
   const engineConfig = parseEngineConfig(value.engineConfig)
   if (engineConfig === null) return null
 
-  const exposure = parseExposure(value.exposure)
-  if (exposure === null) return null
-
   const backups = parseBackupSettings(value.backups)
   if (backups === null) return null
 
   return assembleManagedSettings({
     ssl,
-    exposure,
     image,
     routing,
     resources,
@@ -606,7 +554,6 @@ function parseManagedSettingsRecord(
 
 function assembleManagedSettings(parts: {
   ssl: ManagedSettings['ssl']
-  exposure: ManagedSettings['exposure']
   image: string | undefined
   routing: ManagedRoutingSettings | undefined
   resources: ManagedSettings['resources'] | undefined
@@ -616,7 +563,6 @@ function assembleManagedSettings(parts: {
 }): ManagedSettings {
   const settings: ManagedSettings = {
     ssl: parts.ssl,
-    exposure: parts.exposure,
   }
   if (parts.routing !== undefined) settings.routing = parts.routing
   if (parts.image !== undefined) settings.image = parts.image

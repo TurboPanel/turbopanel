@@ -2188,10 +2188,7 @@ test('disaster-recovery promote cannot verify a session when the database is uns
 })
 
 test('GET managed serializes a placed cluster with a loopback listener', async () => {
-  // Exposure is on by default now, so opt this cluster out to keep the
-  // loopback fallback covered.
   const options = validOptions()
-  options.settings.exposure = { enabled: false }
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow({ options })],
@@ -2449,26 +2446,6 @@ test('POST create rejects an invalid name after the host is online', async () =>
     }),
     400,
     { error: 'Invalid request' }
-  )
-})
-
-test('POST create rejects invalid settings after the host is online', async () => {
-  const { app, cookie } = await buildApp({
-    db: fakeDb({
-      envRows: [envRow({ serverId: SERVER_ID })],
-      serverRows: [presenceServer(true)],
-    }),
-    registry: stubRegistry(),
-    commandQueue: recordingQueue(),
-  })
-  await expectJson(
-    await app.request(envPath(), {
-      method: 'POST',
-      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
-      body: JSON.stringify({ exposure: { bind: 'public' } }),
-    }),
-    400,
-    { error: 'managed_settings_invalid' }
   )
 })
 

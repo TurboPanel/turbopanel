@@ -9,6 +9,10 @@ import { type LocationFields, parseLocationOverride } from '../geo/location-over
 import type { DatacenterOptions } from '../datacenters/datacenter-options.ts'
 import { type NtpDefaults, parseNtpDefaults, parseSshPort } from './host-defaults.ts'
 import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
+import {
+  type ManagedExternalAccess,
+  parseManagedExternalAccess,
+} from '../managed/external-access-setting.ts'
 import type { OrganizationOptions } from '../organizations/organization-options.ts'
 import { isExactCpuCatalogMatch, resolveCpuCatalogEntry } from '../hardware/cpu-catalog.ts'
 import {
@@ -389,6 +393,12 @@ export type ServerOptions = {
    * list. Omitted offers every mode; set through `/servers/:id/php-modes`.
    */
   phpModes?: PhpMode[]
+  /**
+   * "Allow external access to the databases on this server": whether the
+   * server's shared ProxySQL listens beyond the server itself. Absent means no.
+   * Set through `/servers/:id/managed-external-access`, never a server PATCH.
+   */
+  managedExternalAccess?: ManagedExternalAccess
 }
 
 const OS_FAMILIES = new Set<ServerOsFamily>(['linux', 'windows', 'freebsd', 'darwin'])
@@ -1854,6 +1864,9 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   const location = parseLocationOverride(value.location)
   if (location) options.location = location
   assignServerPhpModes(options, value.phpModes)
+  if ('managedExternalAccess' in value) {
+    options.managedExternalAccess = parseManagedExternalAccess(value.managedExternalAccess)
+  }
   return Object.keys(options).length > 0 ? options : {}
 }
 

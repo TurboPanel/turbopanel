@@ -244,40 +244,47 @@ re-asserted at the daemon command-contract boundary.
 Shared shape in `settings.ts` (`ManagedSettings`): `image`, `ssl`, `routing`
 (`ManagedRoutingSettings`), `resources` (reuses `ServiceOptions['resources']` +
 `clampManagedResources`), `dockerOptions` (strict allowlist), `engineConfig` (16
-KiB cap), `exposure` (`ManagedSqlAccessScope` from `access-scope.ts`: `local` |
-`datacenter` | `turbofabric` | `public`), `backups` (`retentionKeep`,
-`parseBackupSettings`). Parser semantics: absent → defaults; malformed/denied →
+KiB cap), `backups` (`retentionKeep`, `parseBackupSettings`). Parser semantics: absent → defaults; malformed/denied →
 `null`. **`ssl.mode` is optional and unset by default** — an absent mode means
 "inherit" (see **Client TLS (SSL mode)**), so `DEFAULT_MANAGED_SETTINGS.ssl` is
 `{}`. Legacy stored `ssl.enabled` booleans still parse: `false` → `disable`,
-`true` → `require`; explicit `mode` wins when both are present. Exposure decides where the
-shared ProxySQL **publishes** its listener ports on each server, and the daemon
-publishes exactly the addresses it is sent: `local` → `127.0.0.1`, `datacenter` →
-the server's datacenter address, `turbofabric` → its `tp0` address, `public` →
-`0.0.0.0`, exposure off → no host publish at all (`decideIngressBindScopes` in
-`ingress-desired-pure.ts`; an unresolvable scope fails the reconcile, it never
-widens). One ProxySQL fronts every cluster on a server, so the published set is
-the union over the clusters it fronts. **Exposure defaults to `local`**
-(`DEFAULT_MANAGED_SETTINGS`, `DEFAULT_MANAGED_SQL_ACCESS_SCOPE`, and the parser
-names the scope when a stored `{ enabled: true }` row has none): loopback is all
-a site run by a site owner's Linux user needs (`127.0.0.1:13306`), and bound
-containers dial ProxySQL by name over the organization's managed Docker network
-with no host publish. Wider scopes are an explicit per-cluster choice in the
-settings panel. Changing a cluster's exposure via `PATCH` (also saving a
-legacy no-scope cluster, or any save while an earlier push is unconfirmed)
-queues a `managed.ingress.reconcile` on every fronting server at once
-(`exposure-change.ts`; the response carries `ingressReconcile`), after refusing
-a scope a server has no address for (422 naming the server). Every asked server
-is kept in `managed.metadata.exposurePending` until a reconcile created after
-the ask succeeds (`consumer.ts`); a push that cannot be built or queued answers
-502 `ingress_reconcile_failed` (saved, not applied), `GET` lists the servers as
-`exposure.pendingServers`, and `runManagedExposurePendingSweep` re-pushes them
-once the earlier command has expired. One public cluster on a server still
-widens every other cluster there (one listener serves all). Access control on a published listener is
-credential auth + org-CA TLS; the host firewall (`features/firewall/`, preview
-only so far) will enforce `exposure.scope`. One-release read of retired
-`exposure.bind` (`public` | `datacenter` | `local`) migrates to the same-named
-`scope`; new writes must use `scope`.
+`true` → `require`; explicit `mode` wins when both are present.
+
+### External access (one setting per server)
+
+Who can connect from outside the server is **not** a cluster setting. One
+ProxySQL runs per server and fronts every cluster on it with one listener pair
+and no per-user source rule, so "allow external access to the databases on this
+server" is one yes/no on the server, default **no**
+(`server.options.managedExternalAccess = { enabled, pendingSince? }`, parsed by
+`external-access-setting.ts`, used through `external-access.ts`). A leftover
+per-cluster `exposure` key in an old stored row is ignored. The old four-way
+scope menu (`local | datacenter | turbofabric | public`) is gone; address detail
+stays internal.
+
+- **No**: the listener is published on `127.0.0.1` only (never an empty
+  publish): sites run by a site owner's Linux user dial `127.0.0.1:13306`
+  (MySQL/MariaDB) or `:15432` (Postgres), and bound containers dial ProxySQL by
+  name over the organization's managed Docker network with no host publish.
+- **Yes**: published on `0.0.0.0`; the firewall (`features/firewall/`, preview
+  only so far) and the network rules decide who can reach it. Every cluster on
+  the server is reachable that way, by design.
+
+`decideIngressBindAddresses` in `ingress-desired-pure.ts` turns the setting into
+the one `bindAddresses` entry sent in `managed.ingress.reconcile` (a server with
+no cluster to front still takes the `not_needed` / teardown path). The wire
+contract is unchanged. Changes go through `PUT /servers/:id/managed-external-access`
+(`client/managed/external-access-routes.ts`, org owners and managers): it saves
+the setting, marks `pendingSince`, and queues the ingress reconcile at once; a
+push that cannot be queued answers 502 `ingress_reconcile_failed` (saved, not
+applied). `pendingSince` clears when the server confirms a reconcile created
+after the ask (`consumer.ts` → `confirmManagedExternalAccessForServer`), and
+`runManagedExternalAccessPendingSweep` re-sends it to connected servers that
+never did. `GET …/managed` reports `externalAccess.servers[]` (one row per
+fronting server: `enabled`, `pending`, `otherClusters`) and `endpoints[]` as
+`{ reach: 'local' | 'external', host, port }`. Access control on a published
+listener is credential auth + org-CA TLS. Out of scope (future hardening idea):
+per-login host restrictions via the admin login.
 
 ## Client routing (connection role, not regex)
 
@@ -404,8 +411,9 @@ named. Store/serve `ports` (configured, `null` per family = inherit) and
 | Organization CA scoping    | Organization CA and frontend leaf for ProxySQL come from **`server.organization_id`**, with SANs for advertised listener host/IP — not only synthetic names                                                                                                                                                                                             |
 | Username uniqueness        | Logins unique across every cluster on servers owned by the same organization (see Login namespace)                                                                                                                                                                                                                                                      |
 
-Connection info helpers surface the ProxySQL frontend port/host when exposure is
-enabled (`resolveManagedAccessEndpoints` on `GET …/managed` → `endpoints[]`);
+Connection info helpers surface the ProxySQL frontend port/host: loopback
+always, plus the server's public address or hostname when external access is on
+(`resolveManagedAccessEndpoints` on `GET …/managed` → `endpoints[]`);
 they never invent remapped engine ports. Public clients always dial ProxySQL,
 not native engine container ports.
 
@@ -855,7 +863,7 @@ still walk, on PostgreSQL, MySQL, and MariaDB:
 3. Primary site down, remote replica up — no auto-promote; DR action available.
 4. Manual DR of the remote replica — one writer; leftover failover class
    rewritten to `read`.
-5. Access scopes `local` / `datacenter` / `turbofabric` / `public`; org port
+5. The server's external access switch (no / yes); org port
    override; SSL modes `disable` → `verify-full`.
 
 ## Login namespace

@@ -1,9 +1,9 @@
 /**
  * Coverage for managed ProxySQL ingress reconcile pure helpers, plus
  * DB-gated regression tests for the bind-address decision made by
- * {@link buildManagedIngressReconcilePayload} (Comment 2: disabled exposure
- * must never translate into a public ProxySQL publish, and enabled exposure
- * must publish only the intended address).
+ * {@link buildManagedIngressReconcilePayload}: the server's "allow external
+ * access" setting off must never translate into a public ProxySQL publish, and
+ * on must publish on every address.
  */
 
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
@@ -19,12 +19,10 @@ import {
   binding,
   command,
   container,
-  datacenter,
   environment,
   ip,
   leaf,
   managed,
-  network,
   organization,
   principal,
   project,
@@ -50,7 +48,6 @@ import {
   hostgroupsForClusterIndex,
   loadBoundManagedIdsForServer,
   runManagedIngressOrphanSweep,
-  unionExposureScopes,
 } from './ingress-desired.ts'
 import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 
@@ -64,10 +61,8 @@ const test = Deno.test.bind(Deno)
 
 const dbUrl = getDatabaseUrl()
 
-type ExposureInput = ManagedSettings['exposure']
-
-function exposureSettings(exposure: ExposureInput): ManagedSettings {
-  const parsed = postgresEngineSpec.parseSettings({ exposure })
+function defaultSettings(): ManagedSettings {
+  const parsed = postgresEngineSpec.parseSettings(postgresEngineSpec.defaultSettings)
   if (!parsed) throw new TypeError('expected valid managed settings')
   return parsed
 }
@@ -85,10 +80,10 @@ async function testEncryptionContext() {
  * One org/server/managed-cluster fixture with a single primary member on
  * `serverId`, sealed root principal, and org CA/daemon-key prerequisites for
  * {@link buildManagedIngressReconcilePayload}. Isolated per test (own server)
- * so `unionExposureBind` never mixes exposure across unrelated clusters.
+ * so the server's external access setting never mixes across unrelated clusters.
  */
 async function withSingleClusterIngressFixture(
-  exposure: ExposureInput,
+  externalAccess: boolean,
   fn: (ctx: {
     db: ReturnType<typeof createDenoDb>
     serverId: string
@@ -129,6 +124,7 @@ async function withSingleClusterIngressFixture(
       updatedAt: now,
       isConnected: true,
       statusChangedAt: now,
+      options: { managedExternalAccess: { enabled: externalAccess } },
     })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
@@ -163,7 +159,7 @@ async function withSingleClusterIngressFixture(
     .returning({ id: environment.id })
   const environmentId = insertedEnvironment!.id
 
-  const settings = exposureSettings(exposure)
+  const settings = defaultSettings()
   const [insertedManaged] = await db
     .insert(managed)
     .values({
@@ -377,15 +373,6 @@ test('hostgroupsForClusterIndex rejects non-integer and negative indices', () =>
   assertThrows(() => hostgroupsForClusterIndex(1.5), TypeError, 'Invalid cluster index')
 })
 
-test('unionExposureScopes deduplicates and collapses public', () => {
-  assertEquals(unionExposureScopes([]), [])
-  assertEquals(unionExposureScopes([undefined, undefined]), [])
-  assertEquals(unionExposureScopes(['local']), ['local'])
-  assertEquals(unionExposureScopes(['local', 'datacenter']), ['datacenter', 'local'])
-  assertEquals(unionExposureScopes(['local', 'public', 'datacenter']), ['public'])
-  assertEquals(unionExposureScopes(['datacenter', undefined, 'local']), ['datacenter', 'local'])
-})
-
 test('collectProxySqlListenerSans covers connection/bind host and peer IPs', () => {
   const sans = collectProxySqlListenerSans({
     hostname: 'pg-primary.example',
@@ -515,7 +502,7 @@ test('orphan sweep skips a frontend that was never observed on Docker', async ()
 
 test('orphan sweep skips servers that still host managed members', async () => {
   await withSingleClusterIngressFixture(
-    { enabled: false },
+    false,
     async ({ db, serverId, organizationId, secretsConfig, dataEncryptionSecrets }) => {
       const hierarchy = await ensureManagedIngressHierarchy(db, {
         organizationId,
@@ -538,9 +525,9 @@ test('orphan sweep skips servers that still host managed members', async () => {
   )
 })
 
-test('exposure disabled omits bindAddresses — no public ProxySQL publish', async () => {
+test('external access off (the default) publishes loopback only — no public ProxySQL publish', async () => {
   await withSingleClusterIngressFixture(
-    { enabled: false },
+    false,
     async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
       const built = await buildManagedIngressReconcilePayload(db, {
         serverId,
@@ -550,7 +537,9 @@ test('exposure disabled omits bindAddresses — no public ProxySQL publish', asy
       if (built === null || 'kind' in built) {
         throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`)
       }
-      assertEquals('bindAddresses' in built, false)
+      // Loopback, not an empty publish: sites run by a site owner's Linux user
+      // dial 127.0.0.1 on the ProxySQL port.
+      assertEquals(built.bindAddresses, ['127.0.0.1'])
       assertEquals(built.clusters.length, 1)
       assertEquals(built.identity?.composeServiceName, 'proxysql')
       assertEquals(built.identity?.containerName.endsWith('-in'), true)
@@ -563,9 +552,9 @@ test('exposure disabled omits bindAddresses — no public ProxySQL publish', asy
   )
 })
 
-test('exposure enabled + scope public resolves bindAddresses to all-interfaces', async () => {
+test('external access on publishes on every address of the server', async () => {
   await withSingleClusterIngressFixture(
-    { enabled: true, scope: 'public' },
+    true,
     async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
       const built = await buildManagedIngressReconcilePayload(db, {
         serverId,
@@ -576,100 +565,6 @@ test('exposure enabled + scope public resolves bindAddresses to all-interfaces',
         throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`)
       }
       assertEquals(built.bindAddresses, ['0.0.0.0'])
-    }
-  )
-})
-
-test('exposure enabled + scope local resolves bindAddresses to loopback only', async () => {
-  await withSingleClusterIngressFixture(
-    { enabled: true, scope: 'local' },
-    async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
-      const built = await buildManagedIngressReconcilePayload(db, {
-        serverId,
-        secretsConfig,
-        dataEncryptionSecrets,
-      })
-      if (built === null || 'kind' in built) {
-        throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`)
-      }
-      assertEquals(built.bindAddresses, ['127.0.0.1'])
-    }
-  )
-})
-
-test('exposure enabled + scope datacenter publishes only the pinned datacenter address', async () => {
-  await withSingleClusterIngressFixture(
-    { enabled: true, scope: 'datacenter' },
-    async ({ db, serverId, organizationId, secretsConfig, dataEncryptionSecrets }) => {
-      const now = new Date().toISOString()
-      const [dc] = await db
-        .insert(datacenter)
-        .values({
-          organizationId,
-          name: 'Ingress Datacenter',
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning({ id: datacenter.id })
-      const [siteNet] = await db
-        .insert(network)
-        .values({
-          organizationId,
-          datacenterId: dc!.id,
-          kind: 'datacenter',
-          cidr: '10.20.30.0/24',
-          name: 'Ingress LAN',
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning({ id: network.id })
-      await db.insert(ip).values({
-        organizationId,
-        datacenterId: dc!.id,
-        networkId: siteNet!.id,
-        serverId,
-        address: '10.20.30.40',
-        allocation: 'dedicated',
-        scope: 'datacenter',
-        createdAt: now,
-        updatedAt: now,
-      })
-
-      const built = await buildManagedIngressReconcilePayload(db, {
-        serverId,
-        secretsConfig,
-        dataEncryptionSecrets,
-      })
-      if (built === null || 'kind' in built) {
-        throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`)
-      }
-      assertEquals(built.bindAddresses, ['10.20.30.40'])
-      // Never widens to all-interfaces just because exposure is enabled.
-      assertEquals(built.bindAddresses?.includes('0.0.0.0'), false)
-
-      await db.delete(ip).where(eq(ip.serverId, serverId))
-      await db.delete(network).where(eq(network.id, siteNet!.id))
-      await db.delete(datacenter).where(eq(datacenter.id, dc!.id))
-    }
-  )
-})
-
-test('exposure enabled + scope datacenter without a pinned IP is a typed prepare error, never a silent public publish', async () => {
-  await withSingleClusterIngressFixture(
-    { enabled: true, scope: 'datacenter' },
-    async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
-      const built = await buildManagedIngressReconcilePayload(db, {
-        serverId,
-        secretsConfig,
-        dataEncryptionSecrets,
-      })
-      assertEquals(
-        typeof built === 'object' &&
-          built !== null &&
-          'kind' in built &&
-          built.kind === 'datacenter_ip_required',
-        true
-      )
     }
   )
 })
@@ -1014,84 +909,9 @@ test('serverHasHostRunBinding sees only loopback-form bindings placed on the ser
   }
 })
 
-test('a host-run binding on the server publishes loopback with exposure off and names it in the certificate', async () => {
-  await withSingleClusterIngressFixture(
-    { enabled: false },
-    async ({ db, serverId, organizationId, secretsConfig, dataEncryptionSecrets }) => {
-      const build = async () => {
-        const built = await buildManagedIngressReconcilePayload(db, {
-          serverId,
-          secretsConfig,
-          dataEncryptionSecrets,
-        })
-        if (built === null || 'kind' in built) {
-          throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`)
-        }
-        return built
-      }
-      assertEquals('bindAddresses' in (await build()), false)
-
-      const [clusterRow] = await db
-        .select({ id: managed.id, environmentId: managed.environmentId })
-        .from(managed)
-        .where(eq(managed.serverId, serverId))
-      const [ws] = await db
-        .select({ id: workspace.id })
-        .from(workspace)
-        .where(eq(workspace.organizationId, organizationId))
-      const [projectRow] = await db
-        .insert(project)
-        .values({
-          name: 'Host Run Site Project',
-          workspaceId: ws!.id,
-          organizationId,
-          options: { defaultServerId: serverId },
-        })
-        .returning({ id: project.id })
-      const [envRow] = await db
-        .insert(environment)
-        .values({ name: 'Production', projectId: projectRow!.id, serverId })
-        .returning({ id: environment.id })
-      const [serviceRow] = await db
-        .insert(service)
-        .values({ environmentId: envRow!.id, composeServiceName: 'wordpress' })
-        .returning({ id: service.id })
-      const principalRow = await createManagedPrincipal(db, dataEncryptionSecrets, {
-        managedId: clusterRow!.id,
-        provider: 'postgres',
-        username: 'wp_user',
-      })
-      try {
-        await db.insert(binding).values({
-          principalId: principalRow.principalId,
-          serviceId: serviceRow!.id,
-          databaseName: 'postgres',
-          keyPrefix: 'DATABASE',
-          isEmitEngineDefaults: false,
-        })
-        // Stored the container way: still nothing published.
-        await insertBindingHostRow(db, serviceRow!.id, 'DATABASE', 'abc-in')
-        assertEquals('bindAddresses' in (await build()), false)
-        await db
-          .update(variable)
-          .set({ value: '127.0.0.1' })
-          .where(eq(variable.serviceId, serviceRow!.id))
-        assertEquals((await build()).bindAddresses, ['127.0.0.1'])
-      } finally {
-        await db.delete(variable).where(eq(variable.serviceId, serviceRow!.id))
-        await db.delete(binding).where(eq(binding.serviceId, serviceRow!.id))
-        await db.delete(principal).where(eq(principal.id, principalRow.principalId))
-        await db.delete(service).where(eq(service.id, serviceRow!.id))
-        await db.delete(environment).where(eq(environment.id, envRow!.id))
-        await db.delete(project).where(eq(project.id, projectRow!.id))
-      }
-    }
-  )
-})
-
 test('materializing a binding writes the form the deploy asks for and keeps it otherwise', async () => {
   await withSingleClusterIngressFixture(
-    { enabled: false },
+    false,
     async ({ db, serverId, organizationId, dataEncryptionSecrets }) => {
       const [clusterRow] = await db
         .select({ id: managed.id })

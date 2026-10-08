@@ -337,10 +337,9 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
     env: { ...env },
     healthcheck,
     exposure: {
-      enabled: settings.exposure.enabled,
+      enabled: true,
       protocol: 'tcp',
       containerPort: DEFAULT_PORT,
-      ...(settings.exposure.scope !== undefined ? { scope: settings.exposure.scope } : {}),
     },
   }
 
@@ -387,10 +386,7 @@ export const mysqlEngineSpec: ManagedEngineSpec = {
   principalProvider: 'mysql',
   rootUsername: ROOT_USERNAME,
   exposeProtocol: 'tcp',
-  defaultSettings: {
-    ...DEFAULT_MANAGED_SETTINGS,
-    exposure: { enabled: true },
-  },
+  defaultSettings: { ...DEFAULT_MANAGED_SETTINGS },
   parseSettings: parseMysqlSettings,
   buildRuntimeSpec,
   buildConnectionInfo,
