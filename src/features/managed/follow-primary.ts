@@ -187,41 +187,31 @@ function followPrimaryPayload(params: {
   }
 }
 
-async function enqueueOneReplicaFollowPrimary(
-  db: Db,
-  commandQueue: CommandQueue,
-  params: FollowPrimaryEnqueueParams,
-  replica: ManagedMemberRow,
-  members: readonly ManagedMemberRow[],
-  defaultPort: number,
-  outstanding: ReadonlySet<string>,
+type FollowPrimaryRun = {
+  db: Db
+  commandQueue: CommandQueue
+  params: FollowPrimaryEnqueueParams
+  members: readonly ManagedMemberRow[]
+  defaultPort: number
   deps: FollowPrimaryEnqueueDeps
+}
+
+async function enqueueOneReplicaFollowPrimary(
+  run: FollowPrimaryRun,
+  replica: ManagedMemberRow
 ): Promise<void> {
-  if (outstanding.has(replica.id)) return
   try {
-    await enqueueOneReplicaFollowPrimaryInner(
-      db,
-      commandQueue,
-      params,
-      replica,
-      members,
-      defaultPort,
-      deps
-    )
+    await enqueueOneReplicaFollowPrimaryInner(run, replica)
   } catch (err) {
     logFollowPrimaryFailure(`member ${replica.id}: ${errorMessage(err)}`)
   }
 }
 
 async function enqueueOneReplicaFollowPrimaryInner(
-  db: Db,
-  commandQueue: CommandQueue,
-  params: FollowPrimaryEnqueueParams,
-  replica: ManagedMemberRow,
-  members: readonly ManagedMemberRow[],
-  defaultPort: number,
-  deps: FollowPrimaryEnqueueDeps
+  run: FollowPrimaryRun,
+  replica: ManagedMemberRow
 ): Promise<void> {
+  const { db, commandQueue, params, members, defaultPort, deps } = run
   const resolvePeers = deps.resolvePeers ?? resolvePeersForMember
   const peers = await resolvePeers(db, members, replica, defaultPort)
   if (!Array.isArray(peers)) {
@@ -274,17 +264,10 @@ export async function enqueueFollowPrimaryOnReplicas(
     }
     const loadOutstanding = deps.outstandingMemberIds ?? outstandingFollowPrimaryMemberIds
     const outstanding = await loadOutstanding(db, params.managedId)
-    await forEachSequential(eligible, (replica) =>
-      enqueueOneReplicaFollowPrimary(
-        db,
-        commandQueue,
-        params,
-        replica,
-        members,
-        defaultPort,
-        outstanding,
-        deps
-      )
+    const run: FollowPrimaryRun = { db, commandQueue, params, members, defaultPort, deps }
+    await forEachSequential(
+      eligible.filter((replica) => !outstanding.has(replica.id)),
+      (replica) => enqueueOneReplicaFollowPrimary(run, replica)
     )
   } catch (err) {
     logFollowPrimaryFailure(errorMessage(err))
