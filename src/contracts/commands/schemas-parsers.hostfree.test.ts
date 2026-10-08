@@ -311,6 +311,54 @@ test('parseManagedReplicationHealth accepts valid snapshots and drops malformed 
   )
 })
 
+test('parseManagedHaReconcilePayload carries the org topology account, sealed only', () => {
+  const base = {
+    serverId: SERVER_ID,
+    managedNetwork: MANAGED_NETWORK,
+    desired: 'present',
+    raft: null,
+    clusters: [],
+    identity: {
+      serviceId: HA_SERVICE_ID,
+      composeServiceName: 'orchestrator',
+      containerName: managedHaContainerNameFromService(HA_SERVICE_ID),
+    },
+  }
+
+  // Absent on a daemon old enough not to send it, and on a server with no
+  // MySQL-family cluster.
+  assertEquals(parseManagedHaReconcilePayload(base).topologyUser, undefined)
+
+  const payload = parseManagedHaReconcilePayload({
+    ...base,
+    topologyUser: {
+      username: 'tp_topology_111111111111',
+      password: 'tpdaemon.v1.server.key.payload',
+    },
+  })
+  assertEquals(payload.topologyUser?.username, 'tp_topology_111111111111')
+
+  // A plaintext password is a refusal, not something to pass along.
+  assertThrows(
+    () =>
+      parseManagedHaReconcilePayload({
+        ...base,
+        topologyUser: { username: 'tp_topology_111111111111', password: 'topo-pass' },
+      }),
+    TypeError,
+    'Invalid managed.ha.reconcile topologyUser'
+  )
+  assertThrows(
+    () =>
+      parseManagedHaReconcilePayload({
+        ...base,
+        topologyUser: { username: 'tp topology; DROP', password: 'tpdaemon.v1.a.b.c' },
+      }),
+    TypeError,
+    'Invalid managed.ha.reconcile topologyUser'
+  )
+})
+
 test('parseManagedHaReconcilePayload accepts raft peers and cluster members', () => {
   const containerName = managedHaContainerNameFromService(HA_SERVICE_ID)
   const payload = parseManagedHaReconcilePayload({

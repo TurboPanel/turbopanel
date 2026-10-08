@@ -6103,6 +6103,25 @@ test('parseManagedApplyPayload covers volumes, config files, privileges, and mon
   assertEquals(payload.monitorUsers?.[0]?.username, 'tp_monitor')
   assertEquals(payload.credentials[0]?.privileges, ['CONNECT', 'CREATE'])
 
+  const withTopology = parseManagedApplyPayload({
+    ...VALID_MANAGED_APPLY,
+    topologyUser: {
+      username: 'tp_topology_111111111111',
+      password: 'tpdaemon.v1.server.key.payload',
+    },
+  })
+  assertEquals(withTopology.topologyUser?.username, 'tp_topology_111111111111')
+  assertEquals(parseManagedApplyPayload(VALID_MANAGED_APPLY).topologyUser, undefined)
+  assertThrows(
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        topologyUser: { username: 'tp_topology_111111111111', password: 'topo-pass' },
+      }),
+    TypeError,
+    'Invalid managed.apply topologyUser'
+  )
+
   const withSources = parseManagedApplyPayload({
     ...VALID_MANAGED_APPLY,
     ingressSourceAddresses: ['203.0.113.50'],
