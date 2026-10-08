@@ -603,6 +603,18 @@ function resolveCoResidentPeer(
   }
 }
 
+function resolveMemberPeer(
+  fromMember: ManagedMemberRow,
+  other: ManagedMemberRow,
+  defaultPort: number,
+  containerNames: ReadonlyMap<string, string>,
+  endpoints: ReadonlyMap<string, ResolvedPrivateEndpoint | PrivateEndpointError>
+): ManagedMemberPeer | PrivateEndpointError {
+  return other.serverId === fromMember.serverId
+    ? resolveCoResidentPeer(fromMember, other, containerNames, defaultPort)
+    : resolveRemotePeer(fromMember, other, endpoints)
+}
+
 function resolveRemotePeer(
   fromMember: ManagedMemberRow,
   other: ManagedMemberRow,
@@ -659,6 +671,25 @@ async function resolvePeerEndpointsByPurpose(
 }
 
 /**
+ * Path from one member to a single peer — co-resident container DNS or the
+ * remote private listener. Unlike {@link resolvePeersForMember}, an
+ * unreachable sibling does not fail this lookup.
+ */
+export async function resolvePeerToMember(
+  db: Db,
+  fromMember: ManagedMemberRow,
+  toMember: ManagedMemberRow,
+  defaultPort: number
+): Promise<ManagedMemberPeer | PrivateEndpointError> {
+  if (fromMember.id === toMember.id) return unavailablePeerError(fromMember, toMember)
+  const pair = [fromMember, toMember]
+  const containerNames = await loadMemberContainerNames(db, pair)
+  const remote = toMember.serverId === fromMember.serverId ? [] : [toMember]
+  const endpoints = await resolvePeerEndpointsByPurpose(db, fromMember, remote)
+  return resolveMemberPeer(fromMember, toMember, defaultPort, containerNames, endpoints)
+}
+
+/**
  * Resolve peer endpoints for one member (reachability of every other member
  * from this member's server). Used when building apply payloads.
  *
@@ -686,10 +717,7 @@ export async function resolvePeersForMember(
 
   const peers: ManagedMemberPeer[] = []
   for (const other of others) {
-    const peer =
-      other.serverId === fromMember.serverId
-        ? resolveCoResidentPeer(fromMember, other, containerNames, defaultPort)
-        : resolveRemotePeer(fromMember, other, endpoints)
+    const peer = resolveMemberPeer(fromMember, other, defaultPort, containerNames, endpoints)
     if ('kind' in peer) return peer
     peers.push(peer)
   }

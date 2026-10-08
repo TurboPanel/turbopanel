@@ -5386,7 +5386,7 @@ export type ManagedHaReconcileCommandResult = {
   containers?: EnvironmentDeployContainer[]
 }
 
-export type ManagedHaFailoverPhase = 'drain' | 'recover'
+export type ManagedHaFailoverPhase = 'drain' | 'recover' | 'repoint'
 
 /** Must stay in sync with the daemon `managed.ha.failover` shape. */
 export type ManagedHaFailoverCommandPayload = {
@@ -5399,6 +5399,16 @@ export type ManagedHaFailoverCommandPayload = {
   sourcePort?: number
   targetHost?: string
   targetPort?: number
+  /**
+   * Dial IP when `targetHost` is the leaf SAN (Postgres `hostaddr`).
+   * Omitted when `targetHost` is already the address to dial.
+   */
+  targetHostaddr?: string
+  /**
+   * Slot names the new primary must create before replicas stream
+   * (`tp_member_<ordinal>`). Max 32; each `/^[a-z0-9_]{1,63}$/`.
+   */
+  ensureSlots?: string[]
 }
 
 export type ManagedHaFailoverCommandResult = {
@@ -7346,7 +7356,9 @@ export function parseManagedIngressReconcileResult(
 }
 
 const HA_PROMOTION_RULES = new Set<string>([HA_PROMOTION_RULE_PREFER, HA_PROMOTION_RULE_MUST_NOT])
-const HA_FAILOVER_PHASES = new Set<string>(['drain', 'recover'])
+const HA_FAILOVER_PHASES = new Set<string>(['drain', 'recover', 'repoint'])
+const HA_FAILOVER_SLOT_RE = /^[a-z0-9_]{1,63}$/
+const MAX_HA_FAILOVER_ENSURE_SLOTS = 32
 const MAX_HA_CLUSTERS = 64
 const MAX_HA_MEMBERS = 32
 const MAX_HA_PEERS = 32
@@ -7574,6 +7586,21 @@ function parseOptionalManagedHaFailoverPort(value: unknown): number | undefined 
   return value
 }
 
+function parseOptionalManagedHaFailoverEnsureSlots(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > MAX_HA_FAILOVER_ENSURE_SLOTS) {
+    throw new TypeError('Invalid managed.ha.failover payload')
+  }
+  const slots: string[] = []
+  for (const slot of value) {
+    if (!isString(slot) || !HA_FAILOVER_SLOT_RE.test(slot)) {
+      throw new TypeError('Invalid managed.ha.failover payload')
+    }
+    slots.push(slot)
+  }
+  return slots.length > 0 ? slots : undefined
+}
+
 /** Must stay in sync with the daemon `managed.ha.failover` validator. */
 export function parseManagedHaFailoverPayload(value: unknown): ManagedHaFailoverCommandPayload {
   if (!isRecord(value)) {
@@ -7601,6 +7628,8 @@ export function parseManagedHaFailoverPayload(value: unknown): ManagedHaFailover
       sourcePort: parseOptionalManagedHaFailoverPort(value.sourcePort),
       targetHost: parseOptionalManagedHaFailoverHost(value.targetHost),
       targetPort: parseOptionalManagedHaFailoverPort(value.targetPort),
+      targetHostaddr: parseOptionalManagedHaFailoverHost(value.targetHostaddr),
+      ensureSlots: parseOptionalManagedHaFailoverEnsureSlots(value.ensureSlots),
     }),
   }
 }
