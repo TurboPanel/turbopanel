@@ -2860,7 +2860,7 @@ function isValidPrincipalShellPath(value: string): boolean {
 
 /** Must stay in sync with the daemon `PRINCIPAL_USERNAME_RE` / max length. */
 const PRINCIPAL_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
-/** Cap so `<username>-grp` fits the Linux 32-char group-name limit. */
+/** Longest site owner's Linux user name; its group carries the same name. */
 const MAX_PRINCIPAL_USERNAME_LENGTH = 28
 
 function isValidPrincipalUsername(value: unknown): value is string {
@@ -4363,7 +4363,7 @@ export type EnvironmentStopCommandPayload = {
    * Principals (applied Linux logins) that no project, site or app on this
    * server uses once the delete commits. The daemon retires each after the
    * rest of the stop through `tp-host principal-remove` (slice, processes, key
-   * file, group memberships, home tree, account and `<name>-grp`), which
+   * file, group memberships, home tree, account and its own group), which
    * re-checks on the host that nothing there still references the account.
    * Only a delete teardown sets it, on the last stop it sends to a server.
    */
