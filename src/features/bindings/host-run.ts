@@ -14,16 +14,21 @@ import type { Db } from '../../db/connection.ts'
 import { binding, principal, managed, variable } from '../../db/schema.ts'
 import { isNodeComposeService, isSiteComposeService } from '../compose/service-kind.ts'
 import { getManagedEngineSpec } from '../managed/index.ts'
+import { MANAGED_INGRESS_MYSQL_PORT, MANAGED_INGRESS_PGSQL_PORT } from '../managed/ingress-ports.ts'
 import { bindingPrefixedKeys, HOST_RUN_LOOPBACK_HOST } from '../../lib/naming.ts'
 
 export { HOST_RUN_LOOPBACK_HOST }
 
 /**
- * The only database port a PHP site's Linux user may reach on loopback. The
- * daemon's `tp-php-loopback` firewall script refuses every other loopback
- * destination for that user and names this port; keep the two in step.
+ * The only database ports a PHP site's Linux user may reach on loopback: the
+ * default MySQL-family and Postgres listeners. The daemon's `tp-php-loopback`
+ * firewall script refuses every other loopback destination for that user and
+ * names these two ports; keep them in step.
  */
-export const HOST_SITE_PROXY_PORT = 13306
+export const HOST_SITE_PROXY_PORTS: readonly number[] = [
+  MANAGED_INGRESS_MYSQL_PORT,
+  MANAGED_INGRESS_PGSQL_PORT,
+]
 
 /**
  * `container`: the compose service (container name, CA as PEM text).
@@ -92,12 +97,13 @@ export async function loadStoredDelivery(
 }
 
 /**
- * Plain-words reason a PHP site cannot use this binding, or `null`. Only the
- * MySQL family on the default listener is reachable from a site's Linux user.
+ * Plain-words reason a PHP site cannot use this binding, or `null`. Any engine
+ * works on its default listener port; a changed port is not open to a site's
+ * Linux user.
  */
 export function hostSiteBindingRefusal(listenerPort: number): string | null {
-  if (listenerPort === HOST_SITE_PROXY_PORT) return null
-  return `A PHP site can only reach a MySQL or MariaDB database on the default database port (${HOST_SITE_PROXY_PORT}); this database is on port ${listenerPort} (Postgres, or a changed port). Run the app in a container to use it.`
+  if (HOST_SITE_PROXY_PORTS.includes(listenerPort)) return null
+  return `A PHP site can only reach a database on a default database port (${HOST_SITE_PROXY_PORTS.join(' or ')}); this database is on port ${listenerPort}. Run the app in a container to use it.`
 }
 
 /** Variable names a host-run service cannot work without. */
