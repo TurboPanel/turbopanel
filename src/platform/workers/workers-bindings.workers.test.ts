@@ -306,24 +306,27 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
 
   it('resolveWorkersDaemonRateLimiters returns noop adapters on dev surface when bindings absent', async () => {
     const env = { TURBOPANEL_DEV_SURFACE: '1' } as CloudflareBindings
-    const { connect, rest, metrics } = resolveWorkersDaemonRateLimiters(env)
+    const { connect, rest, metrics, topology } = resolveWorkersDaemonRateLimiters(env)
     expect(await connect.limit({ key: 'k' })).toEqual({ success: true })
     expect(await rest.limit({ key: 'k' })).toEqual({ success: true })
     expect(await metrics.limit({ key: 'k' })).toEqual({ success: true })
+    expect(await topology.limit({ key: 'k' })).toEqual({ success: true })
   })
 
   it('resolveWorkersDaemonRateLimiters fails closed in production when bindings absent', async () => {
     const env = {} as CloudflareBindings
-    const { connect, rest, metrics } = resolveWorkersDaemonRateLimiters(env)
+    const { connect, rest, metrics, topology } = resolveWorkersDaemonRateLimiters(env)
     expect(await connect.limit({ key: 'k' })).toEqual({ success: false })
     expect(await rest.limit({ key: 'k' })).toEqual({ success: false })
     expect(await metrics.limit({ key: 'k' })).toEqual({ success: false })
+    expect(await topology.limit({ key: 'k' })).toEqual({ success: false })
   })
 
   it('resolveWorkersDaemonRateLimiters wraps present RateLimit bindings', async () => {
     const connectKeys: string[] = []
     const restKeys: string[] = []
     const metricsKeys: string[] = []
+    const topologyKeys: string[] = []
     const env = {
       DAEMON_CONNECT_RATE_LIMITER: {
         limit: (options: { key: string }) => {
@@ -343,11 +346,19 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
           return Promise.resolve({ success: true })
         },
       },
+      DAEMON_TOPOLOGY_RATE_LIMITER: {
+        limit: (options: { key: string }) => {
+          topologyKeys.push(options.key)
+          return Promise.resolve({ success: false })
+        },
+      },
     } as unknown as CloudflareBindings
 
-    const { connect, rest, metrics } = resolveWorkersDaemonRateLimiters(env)
+    const { connect, rest, metrics, topology } = resolveWorkersDaemonRateLimiters(env)
     expect(await connect.limit({ key: 'connect-a' })).toEqual({ success: true })
     expect(await rest.limit({ key: 'rest-b' })).toEqual({ success: false })
+    expect(await topology.limit({ key: 'topology-c' })).toEqual({ success: false })
+    expect(topologyKeys).toEqual(['topology-c'])
     expect(await metrics.limit({ key: 'metrics-c' })).toEqual({ success: true })
     expect(connectKeys).toEqual(['connect-a'])
     expect(restKeys).toEqual(['rest-b'])
@@ -593,6 +604,7 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
         DAEMON_CONNECT_RATE_LIMITER: noopLimiter,
         DAEMON_REST_RATE_LIMITER: noopLimiter,
         DAEMON_METRICS_RATE_LIMITER: noopLimiter,
+        DAEMON_TOPOLOGY_RATE_LIMITER: noopLimiter,
       } as unknown as CloudflareBindings)
       expect(messages).toHaveLength(0)
     } finally {

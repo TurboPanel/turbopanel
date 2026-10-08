@@ -320,15 +320,6 @@ function entityValuesFromRecord(
   return values
 }
 
-function mergeTopologyGenerations(
-  existing: readonly number[] | undefined,
-  generation: number
-): number[] | undefined {
-  const merged = new Set(existing ?? [])
-  merged.add(generation)
-  return [...merged].sort((a, b) => a - b)
-}
-
 function overlayPoint<P extends { at: string }>(
   points: P[],
   next: P,
@@ -360,7 +351,6 @@ export function mergeLiveSampleIntoHostSeries(
     values: hostValuesFromSample(sample, result.metrics),
     sampleCount: 1,
     expectedSampleCount: 1,
-    topologyGeneration: sample.metadata.topologyGeneration,
   }
   const overlay = overlayPoint(result.points, point, bucketMs)
   if (overlay.points === result.points) return result
@@ -368,10 +358,6 @@ export function mergeLiveSampleIntoHostSeries(
     ...result,
     points: overlay.points,
     sampleCount: result.sampleCount + (overlay.appended ? 1 : 0),
-    topologyGenerations: mergeTopologyGenerations(
-      result.topologyGenerations,
-      sample.metadata.topologyGeneration
-    ),
   }
 }
 

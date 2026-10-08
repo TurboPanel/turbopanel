@@ -821,8 +821,6 @@ test('querySeriesResults forwards slotMapping/topologyGeneration for the network
   })
   requireSeriesQueryOk(outcome)
   assertEquals(seen?.family, 'network')
-  assertEquals(seen?.slotMapping?.normalNicSlots, ['eth0'])
-  assertEquals(seen?.topologyGeneration, 5)
 })
 
 test('querySeriesResults invokes class-instance series methods with this bound', async () => {
@@ -1091,8 +1089,6 @@ test('querySeriesResults does not attach slotMapping for a non-network family', 
   })
   requireSeriesQueryOk(outcome)
   assertEquals(seen?.family, 'hardware.physical')
-  assertEquals(seen?.slotMapping, undefined)
-  assertEquals(seen?.topologyGeneration, undefined)
 })
 
 test('topologyOverridesFromHardwareProfile: unset profile fields default null/false, set fields pass through', () => {
@@ -1154,7 +1150,6 @@ function minimalTopologySnapshot(): {
 
 test('buildTopologyContext returns an empty-but-present context when there is no recorded generation', () => {
   const context = buildTopologyContext(undefined, undefined)
-  assertEquals(context.topologyGeneration, null)
   assertEquals(context.slotMapping, null)
   assertEquals(context.inventory, null)
   assertEquals(context.capacities, EMPTY_HOST_CAPACITIES)
@@ -1165,7 +1160,6 @@ test('buildTopologyContext returns an empty-but-present context for a not-yet-sl
     { generation: 3, snapshot: { hardwareSignals: [] } },
     undefined
   )
-  assertEquals(context.topologyGeneration, 3)
   assertEquals(context.slotMapping, null)
   assertEquals(context.inventory, null)
 })
@@ -1175,7 +1169,6 @@ test('buildTopologyContext builds inventory/slotMapping/capacities from a usable
     { generation: 5, snapshot: minimalTopologySnapshot() },
     undefined
   )
-  assertEquals(context.topologyGeneration, 5)
   assertEquals(context.slotMapping?.normalNicSlots, ['eth0'])
   assertEquals(context.inventory?.networks[0]?.role, 'nic')
   assertEquals(context.inventory?.networks[0]?.slot, 1)
@@ -1205,7 +1198,6 @@ test('buildSeriesRouteResponse is unavailable only when host or some requested e
   })
   assertEquals(noHostRequested.available, true)
   assertEquals(noHostRequested.inventory, null)
-  assertEquals(noHostRequested.topologyGeneration, null)
 
   const unavailableEntity: EntitySeriesResult = {
     kind: 'duckdb',

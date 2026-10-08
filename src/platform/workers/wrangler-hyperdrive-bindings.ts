@@ -21,19 +21,18 @@ function extractHyperdriveCachedId(block: string): string | undefined {
   return match?.[1]
 }
 
-export function readHyperdriveCachedIdsFromWranglerJsonc(
-  wranglerText: string,
-): { topLevel?: string; testing?: string; live?: string } {
+export function readHyperdriveCachedIdsFromWranglerJsonc(wranglerText: string): {
+  topLevel?: string
+  testing?: string
+  live?: string
+} {
   const text = stripJsoncLineComments(wranglerText)
   const topLevelEnd = text.indexOf('"env"')
   const topLevelBlock = topLevelEnd < 0 ? text : text.slice(0, topLevelEnd)
   const testingMatch = /"testing"\s*:\s*\{/.exec(text)
   const liveMatch = /"live"\s*:\s*\{/.exec(text)
   const testingBlock = testingMatch
-    ? text.slice(
-      testingMatch.index,
-      liveMatch?.index ?? text.length,
-    )
+    ? text.slice(testingMatch.index, liveMatch?.index ?? text.length)
     : ''
   const liveBlock = liveMatch ? text.slice(liveMatch.index) : ''
 
@@ -44,15 +43,16 @@ export function readHyperdriveCachedIdsFromWranglerJsonc(
   }
 }
 
-export function assertExercisedHyperdriveCachedBindings(
-  ids: { testing?: string; live?: string },
-): void {
+export function assertExercisedHyperdriveCachedBindings(ids: {
+  testing?: string
+  live?: string
+}): void {
   for (const [envName, id] of Object.entries(ids) as Array<
     ['testing' | 'live', string | undefined]
   >) {
     if (!id || id === HYPERDRIVE_CACHED_PLACEHOLDER_ID) {
       throw new Error(
-        `${envName} HYPERDRIVE_CACHED must use a real Hyperdrive config id (not ${HYPERDRIVE_CACHED_PLACEHOLDER_ID})`,
+        `${envName} HYPERDRIVE_CACHED must use a real Hyperdrive config id (not ${HYPERDRIVE_CACHED_PLACEHOLDER_ID})`
       )
     }
   }

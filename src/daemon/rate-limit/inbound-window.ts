@@ -12,10 +12,7 @@ export type InboundWindowGate = {
   release(connectionId: string): void
 }
 
-export function createInboundWindowGate(
-  limit: number,
-  windowMs: number,
-): InboundWindowGate {
+export function createInboundWindowGate(limit: number, windowMs: number): InboundWindowGate {
   const windows = new Map<string, { windowStartMs: number; count: number }>()
 
   return {

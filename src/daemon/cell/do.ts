@@ -50,6 +50,10 @@ import {
 } from '../../features/upgrades/persist.ts'
 import { enqueueLatestRecordedCapabilityPlan } from '../../client/servers/capability-plan-push.ts'
 import { recordTopologyGeneration } from '../../features/servers/server-topology-records.ts'
+import { resolveWorkersDaemonRateLimiters } from '../../platform/workers/workers-bindings.ts'
+import type { RateLimiter } from '../rate-limit/contracts.ts'
+import { topologyReportAllowed } from '../rate-limit/topology-report-limit.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
 import { touchServerMetadata } from '../../features/servers/server-registry.ts'
 import { parseServiceRunStates, type ServiceRunState } from '../../contracts/service-run-state.ts'
 import { instanceAttachVersionFrame } from '../attach-version.ts'
@@ -419,6 +423,8 @@ export class DaemonCellObject {
   /** Per-connection inbound message counters (in-memory; no timers). */
   readonly #inboundRate = new Map<string, { windowStartMs: number; count: number }>()
   readonly #inboundLimit: number
+  /** Burst limit in front of the hardware write; resolved on first use (see `topology-report-limit.ts`). */
+  #topologyLimiter: RateLimiter | undefined
   readonly #inboundWindowMs: number
   readonly #sql: (
     callSite: string,
@@ -1882,6 +1888,21 @@ export class DaemonCellObject {
       return true
     }
     if (parsed.type === 'topology-report') {
+      // Before any Postgres work: a flood of 64 KiB reports must cost the
+      // database nothing past this check.
+      this.#topologyLimiter ??= resolveWorkersDaemonRateLimiters(this.#env).topology
+      const allowed = await topologyReportAllowed(
+        this.#topologyLimiter,
+        attachment.serverId,
+        (err) => compatLogWarn('daemon-cell', `topology rate limit check failed: ${String(err)}`)
+      )
+      if (!allowed) {
+        compatLogWarn(
+          'daemon-cell',
+          `topology report from ${attachment.serverId} dropped: over the report rate limit`
+        )
+        return true
+      }
       await this.#recordInboundRepairingPresence(attachment, parsed.at)
       await this.#withProjectionDb('topology-report', attachment.serverId, async (db) => {
         await recordTopologyGeneration(db, attachment.serverId, {

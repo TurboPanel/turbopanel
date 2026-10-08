@@ -59,6 +59,10 @@
       {
         "name": "DAEMON_CELL",
         "class_name": "DaemonCellObject"
+      },
+      {
+        "name": "METRICS_GATE",
+        "class_name": "MetricsGateObject"
       }
     ]
   },
@@ -95,6 +99,14 @@
       "name": "DAEMON_METRICS_RATE_LIMITER",
       "namespace_id": "1004",
       "simple": { "limit": 12, "period": 60 }
+    },
+    {
+      // Topology reports (the only writer of server.metadata.hardware): a healthy daemon sends
+      // one on connect and on a device change; this allows a short burst and blunts a flood.
+      // Per Cloudflare location and eventually consistent: the exact limit is the 5-minute overwrite cooldown.
+      "name": "DAEMON_TOPOLOGY_RATE_LIMITER",
+      "namespace_id": "1011",
+      "simple": { "limit": 4, "period": 60 }
     },
     {
       // Inbound GitHub webhooks. Keyed per peer address (the caller has no
@@ -179,6 +191,10 @@
     "DaemonCellObject": {
       "type": "durable-object",
       "storage": "sqlite"
+    },
+    "MetricsGateObject": {
+      "type": "durable-object",
+      "storage": "sqlite"
     }
   },
   "env": {
@@ -203,6 +219,10 @@
           {
             "name": "DAEMON_CELL",
             "class_name": "DaemonCellObject"
+          },
+          {
+            "name": "METRICS_GATE",
+            "class_name": "MetricsGateObject"
           }
         ]
       },
@@ -231,6 +251,14 @@
           "name": "DAEMON_METRICS_RATE_LIMITER",
           "namespace_id": "2004",
           "simple": { "limit": 12, "period": 60 }
+        },
+        {
+          // Topology reports (the only writer of server.metadata.hardware): a healthy daemon sends
+          // one on connect and on a device change; this allows a short burst and blunts a flood.
+          // Per Cloudflare location and eventually consistent: the exact limit is the 5-minute overwrite cooldown.
+          "name": "DAEMON_TOPOLOGY_RATE_LIMITER",
+          "namespace_id": "2011",
+          "simple": { "limit": 4, "period": 60 }
         },
         {
           "name": "GITHUB_WEBHOOK_RATE_LIMITER",
@@ -364,6 +392,10 @@
           {
             "name": "DAEMON_CELL",
             "class_name": "DaemonCellObject"
+          },
+          {
+            "name": "METRICS_GATE",
+            "class_name": "MetricsGateObject"
           }
         ]
       },
@@ -392,6 +424,14 @@
           "name": "DAEMON_METRICS_RATE_LIMITER",
           "namespace_id": "4004",
           "simple": { "limit": 12, "period": 60 }
+        },
+        {
+          // Topology reports (the only writer of server.metadata.hardware): a healthy daemon sends
+          // one on connect and on a device change; this allows a short burst and blunts a flood.
+          // Per Cloudflare location and eventually consistent: the exact limit is the 5-minute overwrite cooldown.
+          "name": "DAEMON_TOPOLOGY_RATE_LIMITER",
+          "namespace_id": "4011",
+          "simple": { "limit": 4, "period": 60 }
         },
         {
           "name": "GITHUB_WEBHOOK_RATE_LIMITER",
@@ -497,6 +537,10 @@
           {
             "name": "DAEMON_CELL",
             "class_name": "DaemonCellObject"
+          },
+          {
+            "name": "METRICS_GATE",
+            "class_name": "MetricsGateObject"
           }
         ]
       },
@@ -525,6 +569,14 @@
           "name": "DAEMON_METRICS_RATE_LIMITER",
           "namespace_id": "3004",
           "simple": { "limit": 12, "period": 60 }
+        },
+        {
+          // Topology reports (the only writer of server.metadata.hardware): a healthy daemon sends
+          // one on connect and on a device change; this allows a short burst and blunts a flood.
+          // Per Cloudflare location and eventually consistent: the exact limit is the 5-minute overwrite cooldown.
+          "name": "DAEMON_TOPOLOGY_RATE_LIMITER",
+          "namespace_id": "3011",
+          "simple": { "limit": 4, "period": 60 }
         },
         {
           "name": "GITHUB_WEBHOOK_RATE_LIMITER",

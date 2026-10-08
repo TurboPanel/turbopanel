@@ -58,7 +58,6 @@ import type {
   MetricEventsResult,
   PerEntityHostedFamily,
   ServerStatusTransitionReason,
-  SlotMapping,
   StatusHistoryEvent,
   StatusHistoryQuery,
   StatusHistoryResult,
@@ -84,7 +83,6 @@ import {
   AE_BLOB_SCHEMA_VERSION_INDEX,
   AE_BLOB_ENTITY_IDS_INDEX,
   AE_BLOB_SOURCE_OR_IDENTITY_INDEX,
-  AE_BLOB_TOPOLOGY_GENERATION_INDEX,
   AE_DATASET_NAME,
   AE_STORAGE_VERSION,
   AE_FAMILY_HOST_NETWORK,
@@ -1176,26 +1174,6 @@ function parseHostMetricValues(
   return values
 }
 
-/**
- * A bucket/group's topology generation is the single value shared by every
- * contributing `host.system` row, or `null` when unknown (no rows) or mixed
- * (a reassignment happened inside the window). `MIN`/`MAX` over the
- * `toUInt32`-converted blob are compared for equality only — same
- * discipline as v3's `parseBucketHardwareProfileGeneration`.
- */
-function parseTopologyGeneration(row: Record<string, unknown>): number | null {
-  const min = row.topology_gen_min
-  const max = row.topology_gen_max
-  if (min === null || min === undefined || max === null || max === undefined) {
-    return null
-  }
-  if (typeof min !== 'string' && typeof min !== 'number') return null
-  if (typeof max !== 'string' && typeof max !== 'number') return null
-  if (String(min) !== String(max)) return null
-  const num = typeof min === 'number' ? min : Number(min)
-  return Number.isFinite(num) ? num : null
-}
-
 function parseBucketEpochSeconds(bucket: unknown): number {
   if (typeof bucket === 'number') return bucket
   if (typeof bucket === 'string') return Number(bucket)
@@ -1249,7 +1227,6 @@ function buildHostSeriesSql(
   const discriminators = hostMetricsDiscriminatorPredicates()
   const aliases = metrics.map((_, i) => metricAlias(i))
   const metricSelects = metrics.map((name, i) => hostMetricSelectExpression(name, aliases[i]))
-  const generationCol = blobColumn(AE_BLOB_TOPOLOGY_GENERATION_INDEX)
   const hostSystemPred = familyPredicate(AE_FAMILY_HOST_SYSTEM)
   const allSelects = metricSelects
 
@@ -1263,14 +1240,6 @@ function buildHostSeriesSql(
     // rows that gap detection needs (see computeSeriesCoverage).
     `  SUM(if(${hostSystemPred}, 1.0, 0.0)) AS row_count,`,
     `  ${latestAtExpression()} AS last_sample_at,`,
-    // MIN/MAX over toUInt32(blob7), no if()-guard needed: WHERE already
-    // scopes every row to metrics-kind host families, and every one of a
-    // sample's rows carries the identical blob7 (topology generation, a
-    // stringified integer — see field-map.ts's buildMetricsBlobs). AE SQL
-    // refuses MIN/MAX over a String column (422 "cannot use the String type
-    // as argument 1 in max"), hence the documented toUInt32 conversion.
-    `  MIN(toUInt32(${generationCol})) AS topology_gen_min,`,
-    `  MAX(toUInt32(${generationCol})) AS topology_gen_max,`,
     `  ${allSelects.join(',\n  ')}`,
     `FROM ${opts.dataset}`,
     `WHERE ${serverFamiliesPredicate(serverId, hostFamiliesFor(metrics))}`,
@@ -1283,50 +1252,6 @@ function buildHostSeriesSql(
   ].join('\n')
 
   return { sql, metrics, aliases, bucketSeconds }
-}
-
-/**
- * Distinct topology generations observed anywhere in a server's queried
- * range, scoped to `host.system` (every sample writes exactly one). Paired
- * with {@link buildHostSeriesSql} by {@link queryHostSeriesViaSqlApi} to
- * populate `HostSeriesResult.topologyGenerations`.
- */
-function buildTopologyGenerationsSql(
-  input: HostSeriesQuery,
-  opts: { dataset: string; maxRangeSeconds: number }
-): string {
-  const serverId = assertSafeServerId(input.serverId)
-  const from = assertIsoTimestamp('from', input.from)
-  const to = assertIsoTimestamp('to', input.to)
-  assertRange(from, to, opts.maxRangeSeconds)
-  assertSafeDatasetName(opts.dataset)
-
-  const fromUnix = Math.floor(from.getTime() / 1000)
-  const toUnix = Math.floor(to.getTime() / 1000)
-  const discriminators = hostMetricsDiscriminatorPredicates()
-  const generationCol = blobColumn(AE_BLOB_TOPOLOGY_GENERATION_INDEX)
-
-  return [
-    'SELECT',
-    `  ${generationCol} AS generation`,
-    `FROM ${opts.dataset}`,
-    `WHERE ${serverIdPredicate(serverId)}`,
-    `  AND ${discriminators[0]}`,
-    `  AND ${discriminators[1]}`,
-    `  AND ${familyPredicate(AE_FAMILY_HOST_SYSTEM)}`,
-    `  AND ${timeRangePredicate(fromUnix, toUnix)}`,
-    `GROUP BY generation`,
-  ].join('\n')
-}
-
-function parseTopologyGenerationsRows(data: Array<Record<string, unknown>>): number[] {
-  const generations = new Set<number>()
-  for (const row of data) {
-    const raw = row.generation
-    const num = typeof raw === 'number' ? raw : Number(raw)
-    if (Number.isFinite(num)) generations.add(num)
-  }
-  return [...generations].sort((a, b) => a - b)
 }
 
 function parseHostSeriesRows(
@@ -1361,7 +1286,6 @@ function parseHostSeriesRows(
       sampleCount: hasSamples ? rowSamples : undefined,
       expectedSampleCount,
       ...storedSampleSpacing(row, rowSamples, avgIntervalSeconds),
-      topologyGeneration: parseTopologyGeneration(row),
     })
   }
   return { points, sampleCount }
@@ -1408,14 +1332,10 @@ export async function queryHostSeriesViaSqlApi(
     (chunk) => buildHostSeriesSql({ ...input, metrics: chunk }, opts).sql.length
   ).map((chunk) => buildHostSeriesSql({ ...input, metrics: chunk }, opts))
   const bucketSeconds = built[0].bucketSeconds
-  const generationsSql = buildTopologyGenerationsSql(input, opts)
   const client = new CloudflareAnalyticsSqlClient(config)
-  const [seriesResults, generationsResult] = await Promise.all([
-    mapWithConcurrency(built, AE_SQL_CHUNK_CONCURRENCY, (chunk, i) =>
-      client.executeSql(chunk.sql, chunkLabel('hostSeries', i, built.length))
-    ),
-    client.executeSql(generationsSql, 'topologyGenerations'),
-  ])
+  const seriesResults = await mapWithConcurrency(built, AE_SQL_CHUNK_CONCURRENCY, (chunk, i) =>
+    client.executeSql(chunk.sql, chunkLabel('hostSeries', i, built.length))
+  )
   const points = mergePointsByAt(
     built.map(
       (chunk, i) =>
@@ -1424,7 +1344,6 @@ export async function queryHostSeriesViaSqlApi(
     )
   )
   const sampleCount = points.reduce((sum, point) => sum + (point.sampleCount ?? 0), 0)
-  const topologyGenerations = parseTopologyGenerationsRows(generationsResult.data)
   return finalizeHostSeriesResult(input.from, input.to, {
     kind: 'analytics-engine',
     available: true,
@@ -1434,7 +1353,6 @@ export async function queryHostSeriesViaSqlApi(
     resolutionSeconds: bucketSeconds,
     gapCount: 0,
     sampleCount,
-    topologyGenerations,
   })
 }
 
@@ -1523,21 +1441,12 @@ function buildFleetHostSnapshotSql(
   const discriminators = hostMetricsDiscriminatorPredicates()
   const aliases = metrics.map((_, i) => metricAlias(i))
   const metricSelects = metrics.map((name, i) => hostMetricSelectExpression(name, aliases[i]))
-  const generationCol = blobColumn(AE_BLOB_TOPOLOGY_GENERATION_INDEX)
 
   const sql = [
     'SELECT',
     `  substring(${AE_INDEX_SERVER_ID_COLUMN}, 1, ${SERVER_ID_LENGTH}) AS server_id,`,
     `  ${sampleCountExpression()} AS sample_count,`,
     `  ${latestAtExpression()} AS latest_at,`,
-    // MIN/MAX over toUInt32(blob7), no if()-guard needed: WHERE already
-    // scopes every row to metrics-kind host families, and every one of a
-    // sample's rows carries the identical blob7 (topology generation, a
-    // stringified integer — see field-map.ts's buildMetricsBlobs). AE SQL
-    // refuses MIN/MAX over a String column (422 "cannot use the String type
-    // as argument 1 in max"), hence the documented toUInt32 conversion.
-    `  MIN(toUInt32(${generationCol})) AS topology_gen_min,`,
-    `  MAX(toUInt32(${generationCol})) AS topology_gen_max,`,
     `  ${metricSelects.join(',\n  ')}`,
     `FROM ${opts.dataset}`,
     `WHERE ${AE_INDEX_SERVER_ID_COLUMN} IN (${indexInList})`,
@@ -1572,7 +1481,6 @@ function parseFleetHostSnapshotRows(
       sampleCount,
       latestAt: latestAtMs === null || sampleCount <= 0 ? null : new Date(latestAtMs).toISOString(),
       values: parseHostMetricValues(metrics, aliases, row),
-      topologyGeneration: parseTopologyGeneration(row),
     })
   }
   servers.sort((a, b) => a.serverId.localeCompare(b.serverId))
@@ -2326,92 +2234,91 @@ function parsePagedEntitySeriesRows(
 
 // ---------------------------------------------------------------------------
 // Embedded-NIC reconstruction (`network` family only) — see
-// `types.ts`'s `EntitySeriesQuery` doc comment and
-// `field-map.ts`'s `HOST_IO_EMBEDDED_NIC_FIELDS` for what's
-// reconstructable and why. A slot-mapped NIC never pages as a standalone
-// `network` row on this backend, so its series comes from `host.io`'s own
-// rows instead of the paged-family machinery above.
+// `field-map.ts`'s `HOST_IO_EMBEDDED_NIC_FIELDS` for what's reconstructable
+// and why. NIC 1 and NIC 2 never page as standalone `network` rows on this
+// backend: their numbers sit on `host.network`, whose blob6 names them
+// (`nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>`, see `v8HostRowEntityIds`).
+// The reader matches each requested id against that text, so a NIC keeps its
+// own history whichever slot it held when each row was written.
 // ---------------------------------------------------------------------------
 
 /**
- * `slotMapping.normalNicSlots[0]`/`[1]` -> 0/1 (the two `host.io`-embedded
- * slots — see `field-map.ts`'s `HOST_IO_EMBEDDED_NIC_SLOT_COUNT`),
- * restricted to ids actually present in `entityIds`. Slots 3+ are paged
- * `network` rows and resolve via the paged path like any other entity.
+ * `true` on a `host.network` row whose blob6 names `entityId` as embedded NIC
+ * `slot` (0 = NIC 1). The `nicN=` token is either the first one or follows a
+ * `;`, and its id always ends at the `@` before the link speed. Only
+ * documented string functions (see {@link entityIdInPageIdentityPredicate}).
  */
-function embeddedNicSlotForEntityId(
-  entityIds: readonly string[],
-  slotMapping: SlotMapping | undefined
-): Map<string, 0 | 1> {
-  const bySlot = new Map<string, 0 | 1>()
-  if (!slotMapping) return bySlot
-  const requested = new Set(entityIds)
-  const [slot1, slot2] = slotMapping.normalNicSlots
-  if (slot1 && requested.has(slot1)) bySlot.set(slot1, 0)
-  if (slot2 && requested.has(slot2)) bySlot.set(slot2, 1)
-  return bySlot
+function embeddedNicPredicate(slot: 0 | 1, entityId: string): string {
+  const col = blobColumn(AE_BLOB_ENTITY_IDS_INDEX)
+  const token = `nic${slot + 1}=${entityId}@`
+  const atStart = quoteSqlString(token)
+  const afterSeparator = quoteSqlString(';' + token)
+  return `(startsWith(${col}, ${atStart}) OR position(${afterSeparator} IN ${col}) > 0)`
 }
 
-function embeddedNicAlias(slot: 0 | 1, field: string): string {
-  return `nic${slot}_${field}`
+function embeddedNicAlias(entityIndex: number, field: string): string {
+  return `e${entityIndex}_${field}`
 }
 
 /**
- * Builds the shared `host.io` reconstruction query for both embedded NIC
- * slots at once (one row set carries both slots' columns per bucket — see
- * `field-map.ts`'s `packHostIoDoubles`). Returns `null` when
- * `input.topologyGeneration` is unresolved: `host.io` rows carry no per-row
- * NIC identity, so without a generation to scope by, reconstruction cannot
- * safely tell today's slot assignment apart from an older one (see
- * `EntitySeriesQuery`'s doc comment) — callers report empty-but-present
- * results for embedded entities in that case rather than querying.
+ * Builds one `host.network` query for every requested NIC id: per id, its
+ * sample count, average interval and, per reconstructable field, the
+ * interval-weighted average over the rows that name it as NIC 1 (slot 0
+ * doubles) or NIC 2 (slot 1 doubles).
  */
 function buildEmbeddedNicEntitySeriesSql(
   input: EntitySeriesQuery,
   fields: readonly string[],
+  entityIds: readonly string[],
   opts: { dataset: string; maxRangeSeconds: number }
-): { sql: string; bucketSeconds: number; embeddableFields: string[] } | null {
-  if (input.topologyGeneration == null) return null
-
+): { sql: string; bucketSeconds: number; embeddableFields: string[] } {
   const { serverId, bucketSeconds, fromUnix, toUnix } = resolveSeriesWindow(input, opts)
   const discriminators = hostMetricsDiscriminatorPredicates()
-  const hostIoPred = familyPredicate(AE_FAMILY_HOST_NETWORK)
-  const generationCol = blobColumn(AE_BLOB_TOPOLOGY_GENERATION_INDEX)
-  const generationPred = `${generationCol} = ${quoteSqlString(String(input.topologyGeneration))}`
+  const hostNetworkPred = familyPredicate(AE_FAMILY_HOST_NETWORK)
+  const weight = `${intervalSecondsColumn()} * _sample_interval`
 
   const embeddableFields = fields.filter((field) =>
     (HOST_IO_EMBEDDED_NIC_FIELDS as readonly string[]).includes(field)
   )
   const selects: string[] = []
-  for (const slot of [0, 1] as const) {
+  const anyMatch: string[] = []
+  entityIds.forEach((entityId, i) => {
+    const matches = [embeddedNicPredicate(0, entityId), embeddedNicPredicate(1, entityId)] as const
+    const either = `(${matches[0]} OR ${matches[1]})`
+    anyMatch.push(either)
+    // `_sample_interval * 1.0`: AE's if() refuses an Integer branch beside
+    // a Double one (`422 … must have the same type`).
+    selects.push(
+      `SUM(if(${either}, _sample_interval * 1.0, 0.0)) AS ${embeddedNicAlias(i, 'samples')}`,
+      `SUM(if(${either}, ${weight}, 0.0)) / SUM(if(${either}, _sample_interval * 1.0, 0.0)) AS ${embeddedNicAlias(i, 'interval')}`
+    )
     for (const field of embeddableFields) {
-      const doubleIndex = hostIoEmbeddedNicDoubleIndex(
-        slot,
-        field as (typeof HOST_IO_EMBEDDED_NIC_FIELDS)[number]
-      )
+      const numerators: string[] = []
+      const denominators: string[] = []
+      for (const slot of [0, 1] as const) {
+        const col = doubleColumn(
+          hostIoEmbeddedNicDoubleIndex(slot, field as (typeof HOST_IO_EMBEDDED_NIC_FIELDS)[number])
+        )
+        const present = aePresentValueSql(col)
+        numerators.push(`SUM(if(${matches[slot]}, if(${present}, ${col} * ${weight}, 0.0), 0.0))`)
+        denominators.push(`SUM(if(${matches[slot]}, if(${present}, ${weight} * 1.0, 0.0), 0.0))`)
+      }
       selects.push(
-        `${weightedAvgExpressionForColumn(
-          AE_FAMILY_HOST_NETWORK,
-          doubleIndex
-        )} AS ${embeddedNicAlias(slot, field)}`
+        `(${numerators.join(' + ')}) / (${denominators.join(' + ')}) AS ${embeddedNicAlias(i, field)}`
       )
     }
-  }
+  })
 
   const sql = [
     'SELECT',
     `  intDiv(toUnixTimestamp(${AE_TIMESTAMP_COLUMN}), ${bucketSeconds}) * ${bucketSeconds} AS bucket,`,
-    // `_sample_interval * 1.0`: AE's if() refuses an Integer branch beside
-    // a Double one (`422 … must have the same type`).
-    `  SUM(if(${hostIoPred}, _sample_interval * 1.0, 0.0)) AS sample_count,`,
-    `  SUM(if(${hostIoPred}, ${intervalSecondsColumn()} * _sample_interval, 0.0)) / SUM(if(${hostIoPred}, _sample_interval * 1.0, 0.0)) AS avg_interval_seconds` +
-      (selects.length > 0 ? `,\n  ${selects.join(',\n  ')}` : ''),
+    `  ${selects.join(',\n  ')}`,
     `FROM ${opts.dataset}`,
     `WHERE ${serverFamiliesPredicate(serverId, [AE_FAMILY_HOST_NETWORK])}`,
     `  AND ${discriminators[0]}`,
     `  AND ${discriminators[1]}`,
-    `  AND ${hostIoPred}`,
-    `  AND ${generationPred}`,
+    `  AND ${hostNetworkPred}`,
+    `  AND (${anyMatch.join(' OR ')})`,
     `  AND ${timeRangePredicate(fromUnix, toUnix)}`,
     `GROUP BY bucket`,
     `ORDER BY bucket ASC`,
@@ -2431,26 +2338,27 @@ function embeddedNicFieldValue(
   field: string,
   embeddableFields: readonly string[],
   row: Record<string, unknown>,
-  slot: 0 | 1
+  entityIndex: number
 ): number | null {
   if (!embeddableFields.includes(field)) return null
-  const raw = row[embeddedNicAlias(slot, field)]
+  const raw = row[embeddedNicAlias(entityIndex, field)]
+  if (raw === null || raw === undefined) return null
   const num = typeof raw === 'number' ? raw : Number(raw)
   return Number.isFinite(num) ? stripAeSentinel(num) : null
 }
 
 /**
- * Parses one embedded NIC slot's points out of the shared query result (see
+ * Parses one requested NIC's points out of the shared query result (see
  * {@link buildEmbeddedNicEntitySeriesSql}) — every requested field not in
  * `embeddableFields` (the 4 error/drop rates, never individually embedded)
  * resolves to `null`, never a fabricated split of the combined
- * problem-packets rate `host.io` actually carries.
+ * problem-packets rate `host.network` actually carries.
  */
 function parseEmbeddedNicEntitySeriesRows(
   fields: readonly string[],
   embeddableFields: readonly string[],
   data: Array<Record<string, unknown>>,
-  slot: 0 | 1,
+  entityIndex: number,
   resolutionSeconds: number
 ): { points: EntitySeriesPoint[]; sampleCount: number } {
   const points: EntitySeriesPoint[] = []
@@ -2458,14 +2366,14 @@ function parseEmbeddedNicEntitySeriesRows(
   for (const row of data) {
     const bucketEpochSeconds = parseBucketEpochSeconds(row.bucket)
     if (!Number.isFinite(bucketEpochSeconds)) continue
-    const sampleCountRaw = Number(row.sample_count ?? 0)
+    const sampleCountRaw = Number(row[embeddedNicAlias(entityIndex, 'samples')] ?? 0)
     if (!Number.isFinite(sampleCountRaw)) continue
     if (sampleCountRaw <= 0) continue
     sampleCount += sampleCountRaw
 
     const values: Partial<Record<string, number | null>> = {}
     for (const field of fields) {
-      values[field] = embeddedNicFieldValue(field, embeddableFields, row, slot)
+      values[field] = embeddedNicFieldValue(field, embeddableFields, row, entityIndex)
     }
 
     points.push({
@@ -2474,11 +2382,39 @@ function parseEmbeddedNicEntitySeriesRows(
       sampleCount: sampleCountRaw,
       expectedSampleCount: expectedSamplesFromAvg(
         resolutionSeconds,
-        Number(row.avg_interval_seconds)
+        Number(row[embeddedNicAlias(entityIndex, 'interval')])
       ),
     })
   }
   return { points, sampleCount }
+}
+
+/**
+ * One NIC's points from both places it can be stored (paged `network` rows
+ * when it was NIC 3 or later, `host.network` when it was NIC 1 or 2). A
+ * sample stores a NIC in exactly one place, so a bucket found in both only
+ * happens when the NIC changed slot inside it: sample counts add up and each
+ * field keeps the value that is present.
+ */
+function mergeNicPointSources(
+  a: readonly EntitySeriesPoint[],
+  b: readonly EntitySeriesPoint[]
+): EntitySeriesPoint[] {
+  if (a.length === 0) return [...b]
+  if (b.length === 0) return [...a]
+  const byAt = new Map<string, EntitySeriesPoint>()
+  for (const point of [...a, ...b]) {
+    const existing = byAt.get(point.at)
+    if (!existing) {
+      byAt.set(point.at, { ...point, values: { ...point.values } })
+      continue
+    }
+    for (const [field, value] of Object.entries(point.values)) {
+      if (value !== null && value !== undefined) existing.values[field] = value
+    }
+    existing.sampleCount = (existing.sampleCount ?? 0) + (point.sampleCount ?? 0)
+  }
+  return [...byAt.values()].sort((x, y) => Date.parse(x.at) - Date.parse(y.at))
 }
 
 function withGapCounts(
@@ -2551,17 +2487,10 @@ function entitySeriesSqlLength(
   opts: { dataset: string; maxRangeSeconds: number }
 ): number {
   if (input.family === 'network') {
-    const embeddedSlotForId = embeddedNicSlotForEntityId(entityIds, input.slotMapping)
-    const pagedIds = entityIds.filter((id) => !embeddedSlotForId.has(id))
-    const pagedLength =
-      pagedIds.length > 0
-        ? buildPagedEntitySeriesSql(input, 'network', fields, pagedIds, opts).sql.length
-        : 0
-    const embeddedLength =
-      embeddedSlotForId.size > 0
-        ? (buildEmbeddedNicEntitySeriesSql(input, fields, opts)?.sql.length ?? 0)
-        : 0
-    return Math.max(pagedLength, embeddedLength)
+    return Math.max(
+      buildPagedEntitySeriesSql(input, 'network', fields, entityIds, opts).sql.length,
+      buildEmbeddedNicEntitySeriesSql(input, fields, entityIds, opts).sql.length
+    )
   }
   if (SINGLE_ROW_FAMILIES.has(input.family)) {
     const family = input.family as Extract<
@@ -2617,94 +2546,37 @@ async function queryEntitySeriesChunk(
   let bucketSeconds: number
 
   if (input.family === 'network') {
-    const embeddedSlotForId = embeddedNicSlotForEntityId(entityIds, input.slotMapping)
-    const pagedIds = entityIds.filter((id) => !embeddedSlotForId.has(id))
-    const embeddedIds = entityIds.filter((id) => embeddedSlotForId.has(id))
-
-    const pagedPromise =
-      pagedIds.length > 0
-        ? (async () => {
-            const built = buildPagedEntitySeriesSql(input, 'network', fields, pagedIds, {
-              dataset,
-              maxRangeSeconds,
-            })
-            const result = await client.executeSql(built.sql, label)
-            return {
-              bucketSeconds: built.bucketSeconds,
-              entities: parsePagedEntitySeriesRows(
-                fields,
-                built.plans,
-                pagedIds,
-                result.data,
-                built.bucketSeconds
-              ),
-            }
-          })()
-        : null
-
-    const embeddedPromise =
-      embeddedIds.length > 0
-        ? (async () => {
-            const built = buildEmbeddedNicEntitySeriesSql(input, fields, {
-              dataset,
-              maxRangeSeconds,
-            })
-            if (!built) {
-              // No resolved topology generation — see
-              // buildEmbeddedNicEntitySeriesSql's doc comment. Still validate
-              // the query shape so a malformed request fails the same way it
-              // would on any other path.
-              assertSafeServerId(input.serverId)
-              const from = assertIsoTimestamp('from', input.from)
-              const to = assertIsoTimestamp('to', input.to)
-              assertRange(from, to, maxRangeSeconds)
-              const fallbackBucketSeconds = assertPositiveInt(
-                'resolutionSeconds',
-                input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS
-              )
-              return {
-                bucketSeconds: fallbackBucketSeconds,
-                entities: embeddedIds.map((entityId) => ({
-                  entityId,
-                  points: [],
-                  sampleCount: 0,
-                  gapCount: 0,
-                })),
-              }
-            }
-            const result = await client.executeSql(built.sql, label)
-            return {
-              bucketSeconds: built.bucketSeconds,
-              entities: embeddedIds.map((entityId) => {
-                const slot = embeddedSlotForId.get(entityId)!
-                const { points, sampleCount } = parseEmbeddedNicEntitySeriesRows(
-                  fields,
-                  built.embeddableFields,
-                  result.data,
-                  slot,
-                  built.bucketSeconds
-                )
-                return { entityId, points, sampleCount, gapCount: 0 }
-              }),
-            }
-          })()
-        : null
-
-    const [pagedResult, embeddedResult] = await Promise.all([pagedPromise, embeddedPromise])
-
-    bucketSeconds =
-      pagedResult?.bucketSeconds ??
-      embeddedResult?.bucketSeconds ??
-      assertPositiveInt('resolutionSeconds', input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS)
-
-    const byEntityId = new Map<string, EntitySeriesEntityResult>()
-    for (const entity of pagedResult?.entities ?? []) {
-      byEntityId.set(entity.entityId, entity)
-    }
-    for (const entity of embeddedResult?.entities ?? []) {
-      byEntityId.set(entity.entityId, entity)
-    }
-    entities = entityIds.map((id) => byEntityId.get(id)!)
+    // Every requested NIC is looked up in both places: a NIC that was NIC 1
+    // or 2 for part of the range and NIC 3+ for the rest has points in each.
+    const pagedBuilt = buildPagedEntitySeriesSql(input, 'network', fields, entityIds, opts)
+    const embeddedBuilt = buildEmbeddedNicEntitySeriesSql(input, fields, entityIds, opts)
+    const [pagedResult, embeddedResult] = await Promise.all([
+      client.executeSql(pagedBuilt.sql, label),
+      client.executeSql(embeddedBuilt.sql, label),
+    ])
+    bucketSeconds = pagedBuilt.bucketSeconds
+    const paged = parsePagedEntitySeriesRows(
+      fields,
+      pagedBuilt.plans,
+      entityIds,
+      pagedResult.data,
+      bucketSeconds
+    )
+    entities = paged.map((entity, i) => {
+      const embedded = parseEmbeddedNicEntitySeriesRows(
+        fields,
+        embeddedBuilt.embeddableFields,
+        embeddedResult.data,
+        i,
+        bucketSeconds
+      )
+      return {
+        entityId: entity.entityId,
+        points: mergeNicPointSources(entity.points, embedded.points),
+        sampleCount: entity.sampleCount + embedded.sampleCount,
+        gapCount: 0,
+      }
+    })
   } else if (SINGLE_ROW_FAMILIES.has(input.family)) {
     const family = input.family as Extract<
       PerEntityHostedFamily,

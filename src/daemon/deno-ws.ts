@@ -56,6 +56,8 @@ import {
 } from '../features/servers/server-identity-db.ts'
 import type { CommandQueue } from '../features/commands/queue.ts'
 import type { RateLimiter } from './rate-limit/contracts.ts'
+import { createLocalTokenBucketLimiter } from './rate-limit/redis-rate-limiter.ts'
+import { TOPOLOGY_REPORT_RATE, topologyReportAllowed } from './rate-limit/topology-report-limit.ts'
 import {
   backupRunReportResultMessage,
   createBackupRunReportStore,
@@ -457,14 +459,35 @@ async function handleInstanceAcmeIssuanceInbound(params: {
   })
 }
 
+let processTopologyLimiter: RateLimiter | undefined
+
+/** The in-process fallback: same limit and period as the Workers binding, shared by the process. */
+function defaultTopologyLimiter(): RateLimiter {
+  processTopologyLimiter ??= createLocalTokenBucketLimiter(TOPOLOGY_REPORT_RATE)
+  return processTopologyLimiter
+}
+
 async function handleDaemonTopologyReportInbound(params: {
   cell: ReturnType<DaemonCellRegistry['getCell']>
   db: Db
   connectionId: string | undefined
   message: Extract<DaemonMessage, { type: 'topology-report' }>
   reporterServerId: string
+  limiter: RateLimiter
 }): Promise<void> {
   const { cell, db, connectionId, message } = params
+  // Before any Postgres work: a flood of 64 KiB reports must cost the database
+  // nothing past this check (`topology-report-limit.ts`).
+  const allowed = await topologyReportAllowed(params.limiter, params.reporterServerId, (err) =>
+    compatLogWarn('daemon-ws', `topology rate limit check failed: ${String(err)}`)
+  )
+  if (!allowed) {
+    compatLogWarn(
+      'daemon-ws',
+      `topology report from ${params.reporterServerId} dropped: over the report rate limit`
+    )
+    return
+  }
   await recordTopologyGeneration(db, params.reporterServerId, {
     generation: message.generation,
     bootGeneration: message.bootGeneration,
@@ -533,6 +556,8 @@ type DaemonInboundDispatch = {
   dataEncryptionSecrets?: DerivedSecretsConfig
   /** Answer on the socket the frame arrived on (daemon-initiated requests). */
   reply: (message: BackupRunReportResultMessage) => void
+  /** Burst limit on `topology-report`; absent means the shared in-process bucket. */
+  topologyLimiter?: RateLimiter
 }
 
 /**
@@ -639,6 +664,7 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
         connectionId,
         message,
         reporterServerId: serverId,
+        limiter: params.topologyLimiter ?? defaultTopologyLimiter(),
       })
       return
     case 'acme-issuance-event':
@@ -705,6 +731,12 @@ export type DaemonWebSocketOptions = {
   dataEncryptionSecrets?: DerivedSecretsConfig
   daemonCellRegistry?: DaemonCellRegistry
   connectLimiter?: RateLimiter
+  /**
+   * Burst limit on `topology-report` messages, per server. Defaults to an
+   * in-process token bucket (same limit and period as the Workers binding)
+   * when none is given, so self-hosted is limited with or without Redis.
+   */
+  topologyLimiter?: RateLimiter
   inboundMessageLimit?: number
   inboundMessageWindowMs?: number
   commandQueue?: CommandQueue
@@ -876,6 +908,7 @@ export function registerDaemonWebSocket<E extends Env>(
           serverId: payload.sub,
           connectionId,
           commandQueue: options.commandQueue,
+          topologyLimiter: options.topologyLimiter,
           registry,
           message,
           dataEncryptionSecrets: options.dataEncryptionSecrets,

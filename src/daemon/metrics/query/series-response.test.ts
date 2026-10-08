@@ -3,7 +3,6 @@ import type { HostSeriesResult } from '../types.ts'
 import {
   computeSeriesCoverage,
   computeSeriesGapCount,
-  computeTopologyGenerationBreaks,
   defaultExpectedSamplesPerBucket,
   finalizeHostSeriesResult,
   toHostSeriesChartResponse,
@@ -103,19 +102,6 @@ test('finalizeHostSeriesResult leaves unavailable or unparseable ranges unchange
   assertEquals(finalizeHostSeriesResult('not-from', 'not-to', badRange), badRange)
 })
 
-test('computeTopologyGenerationBreaks ignores unknown generations', () => {
-  assertEquals(
-    computeTopologyGenerationBreaks([
-      { topologyGeneration: null },
-      { topologyGeneration: 1 },
-      {},
-      { topologyGeneration: 1 },
-      { topologyGeneration: 3 },
-    ]),
-    [4]
-  )
-})
-
 const NO_CAPACITIES = {
   memoryTotalBytes: null,
   swapTotalBytes: null,
@@ -139,7 +125,6 @@ test('derived percentages are taken against the size each point carries, so a re
             'host.memory.usedBytes': 6_000,
             'extended.sizes.memoryTotalBytes': 8_000,
           },
-          topologyGeneration: 1,
         },
         {
           at: '2026-01-01T00:01:00.000Z',
@@ -147,7 +132,6 @@ test('derived percentages are taken against the size each point carries, so a re
             'host.memory.usedBytes': 6_000,
             'extended.sizes.memoryTotalBytes': 16_000,
           },
-          topologyGeneration: 1,
         },
       ],
     }),
@@ -194,7 +178,6 @@ test('a point that carries no size falls back to the latest topology totals', ()
         {
           at: '2026-01-01T00:00:00.000Z',
           values: { 'host.memory.usedBytes': 4_000 },
-          topologyGeneration: 99,
         },
       ],
     }),

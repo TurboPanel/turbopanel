@@ -5400,68 +5400,12 @@ export const verification = pgTable(
   (table) => [unique('verification_identifier_unique').on(table.identifier)]
 )
 /**
- * Append-only history of every topology generation a server has ever
- * reported (stable device/filesystem/GPU/signal identity + a generation
- * counter, pushed by the daemon over the `topology-report` cell message).
- * One row per (server, generation) — never updated in place, so later
- * "resolve historical generation N" query-reconstruction work can replay
- * exactly what the daemon saw at that generation.
- *
- * `snapshot` is the full topology snapshot as reported by the daemon, minus
- * daemon-internal-only fields. jsonb, so no migration for its shape.
- *
- * Bounded: at most 12 new generations per server per hour and 24 per day,
- * and only the newest 200 rows kept per server (see `server-topology-records.ts`). This
- * table has no partner `options` column (that jsonb-pairing convention only
- * applies to columns literally named `metadata`/`options`; ours is
- * `snapshot`).
- */
-export const topologyGeneration = pgTable(
-  'generation',
-  {
-    id: uuid()
-      .default(sql`uuidv7()`)
-      .primaryKey()
-      .notNull(),
-    createdAt: timestamp('created_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    })
-      .defaultNow()
-      .notNull(),
-    serverId: uuid('server_id').notNull(),
-    generation: integer().notNull(),
-    bootGeneration: integer('boot_generation').notNull(),
-    snapshot: jsonb(),
-    appliedAt: timestamp('applied_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    }).notNull(),
-  },
-  (table) => [
-    unique('uniq_generation_server_generation').on(table.serverId, table.generation),
-    index('idx_generation_server_generation').using(
-      'btree',
-      table.serverId.asc(),
-      table.generation.desc()
-    ),
-    foreignKey({
-      columns: [table.serverId],
-      foreignColumns: [server.id],
-      name: 'generation_server_id_server_id_fk',
-    }).onDelete('cascade'),
-  ]
-)
-
-/**
  * Append-only history of resolved v5 metrics-capability-plan generations
  * (see `../../daemon/metrics/capability-plan.ts`) — one row per
  * `(server, generation)`, written only when the *resolved* plan for a server
  * actually changes (`plan_hash` differs from the last recorded row), never
- * on every sample. Mirrors `topologyGeneration`'s shape/spirit, scoped to
- * capability-plan config instead of daemon-reported topology.
+ * on every sample. Scoped to capability-plan config, not daemon-reported
+ * topology (that is `server.metadata.hardware`, latest only).
  *
  * `plan` is the full resolved `MetricsCapabilityPlan` snapshot, stored for
  * audit/debugging; `plan_hash` is the cheap "did it change" comparison key.

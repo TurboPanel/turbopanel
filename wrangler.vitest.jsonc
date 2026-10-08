@@ -26,13 +26,29 @@
       {
         "name": "DAEMON_CELL",
         "class_name": "DaemonCellObject"
+      },
+      {
+        "name": "METRICS_GATE",
+        "class_name": "MetricsGateObject"
       }
     ]
   },
+  // The topology-report burst limit the cell reads; production-like surfaces fail closed without it.
+  "ratelimits": [
+    {
+      "name": "DAEMON_TOPOLOGY_RATE_LIMITER",
+      "namespace_id": "9011",
+      "simple": { "limit": 4, "period": 60 }
+    }
+  ],
   "migrations": [
     {
       "tag": "v1-daemon-cell",
       "new_sqlite_classes": ["DaemonCellObject"]
+    },
+    {
+      "tag": "v2-metrics-gate",
+      "new_sqlite_classes": ["MetricsGateObject"]
     }
   ],
   "vars": {

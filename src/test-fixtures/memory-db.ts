@@ -344,11 +344,32 @@ function applyInsertDefaults(table: Table, values: Row, now: string): Row {
   return row
 }
 
+/**
+ * A per-row jsonb key removal (`serverMetadataWithoutHardware`): the column
+ * minus one key. Not an aggregate, so it is evaluated against its own row.
+ */
+const ROW_KEY_REMOVAL_SHAPE = '(<col> - ?::text)'
+
+function isRowKeyRemoval(field: SQL): boolean {
+  return tokens(field).map(tokenText).join('') === ROW_KEY_REMOVAL_SHAPE
+}
+
+function evaluateRowKeyRemoval(field: SQL, ctx: RowContext): unknown {
+  const list = tokens(field)
+  const value = readColumn(ctx, firstColumn(list)!)
+  const removed = list.find((token) => token.kind === 'param')
+  if (value === null || typeof value !== 'object' || removed?.kind !== 'param') return value
+  const { [String(removed.value)]: _dropped, ...rest } = value as Row
+  return rest
+}
+
 function project(fields: Row | undefined, ctx: RowContext, primary: Table): Row {
   if (!fields) return { ...ctx.get(primary) }
   const out: Row = {}
   for (const [key, field] of Object.entries(fields)) {
     if (field instanceof Column) out[key] = readColumn(ctx, field)
+    else if (field instanceof SQL && isRowKeyRemoval(field))
+      out[key] = evaluateRowKeyRemoval(field, ctx)
     else out[key] = field
   }
   return out
@@ -502,6 +523,8 @@ function projectGroup(fields: Row, bucket: RowContext[]): Row {
   const row: Row = {}
   for (const [key, field] of Object.entries(fields)) {
     if (field instanceof Column) row[key] = readColumn(first, field)
+    else if (field instanceof SQL && isRowKeyRemoval(field))
+      row[key] = evaluateRowKeyRemoval(field, first)
     else if (field instanceof SQL) row[key] = evaluateAggregate(field, bucket)
     else row[key] = field
   }
@@ -520,7 +543,10 @@ function aggregate(fields: Row, groupBy: Column[], contexts: RowContext[]): Row[
 }
 
 function hasAggregate(fields: Row | undefined): boolean {
-  return fields !== undefined && Object.values(fields).some((f) => f instanceof SQL)
+  return (
+    fields !== undefined &&
+    Object.values(fields).some((f) => f instanceof SQL && !isRowKeyRemoval(f))
+  )
 }
 
 type OrderKey = Readonly<{ column: Column; descending: boolean }>

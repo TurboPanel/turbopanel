@@ -30,6 +30,7 @@ import {
   getDaemonCellRegistry,
   getDb,
   getExecutionLogStore,
+  getMetricsGate,
   getServerMetricsStore,
 } from '../db/connection.ts'
 import { contentLengthExceeds, readBodyWithByteLimit } from '../lib/http/bounded-body.ts'
@@ -83,11 +84,13 @@ import {
 } from '../features/tiers/tier-enforcement.ts'
 import {
   getLatestTopologyGeneration,
-  getTopologyGeneration,
   markTopologyResyncRequested,
   topologyChurnLimitedRecently,
 } from '../features/servers/server-topology-records.ts'
+import { recordOverPlan } from './metrics/over-plan-flag.ts'
 import { recordCapabilityPlanGenerationIfChanged } from '../client/servers/capability-plan-records.ts'
+import type { GateDecision, MetricsGate } from './metrics/ingest-gate.ts'
+import type { MetricEvent } from '../contracts/metrics-contract.ts'
 import { enqueueCapabilityPlanUpdate } from '../client/servers/capability-plan-push.ts'
 import { computeSlotMapping } from '../contracts/topology-slot-mapping.ts'
 import {
@@ -589,14 +592,14 @@ function isSlotMappableTopologySnapshot(value: Record<string, unknown>): value i
 }
 
 /**
- * Resolve the {@link SlotMapping} for a sample's own
- * `metadata.topologyGeneration`, given that exact generation's snapshot (not
- * the latest one — reinterpreting a sample under a different generation's
- * layout is exactly what a `SlotMapping` must never do) and the operator's
- * `hardwareProfile` overrides. `undefined` when the snapshot is missing/not a
- * plausible topology report (unknown generation) or resolution otherwise
- * fails — callers must fall back to topology-agnostic packing in that case
- * (see `field-map.ts`).
+ * Resolve the {@link SlotMapping} from the server's latest hardware facts and
+ * the operator's `hardwareProfile` overrides. It only decides which device
+ * sits in NIC 1/NIC 2 and the page order: every stored row names its own
+ * devices (blob6), and a device the mapping does not know yet is packed after
+ * the known ones, so a sample sent just before a hardware change still stores
+ * every device under its own id. `undefined` when there are no facts yet or
+ * they are not a plausible topology report — callers fall back to
+ * topology-agnostic packing (see `field-map.ts`).
  */
 function resolveSlotMappingForIngest(
   serverId: string,
@@ -638,6 +641,93 @@ export function topologyResyncRecentlyRequested(
   return Number.isFinite(requestedMs) && nowMs - requestedMs < TOPOLOGY_RESYNC_MARK_COOLDOWN_MS
 }
 
+const EVENT_SEVERITY_RANK: Readonly<Record<MetricEvent['severity'], number>> = {
+  critical: 0,
+  warning: 1,
+  info: 2,
+}
+
+/** Events ordered most severe first, then oldest: what survives a budget cut. */
+function mostSevereFirst(events: readonly MetricEvent[]): MetricEvent[] {
+  return [...events].sort(
+    (a, b) =>
+      EVENT_SEVERITY_RANK[a.severity] - EVENT_SEVERITY_RANK[b.severity] ||
+      Date.parse(a.at) - Date.parse(b.at)
+  )
+}
+
+/**
+ * Ask the ingest gate whether this durable sample may be stored, and trim its
+ * events to the hourly budget. Returns the refusal response (429 over the
+ * limits, 503 when the gate itself cannot answer), or `null` when the sample
+ * goes on to be stored — possibly with fewer events than it arrived with.
+ */
+async function applyMetricsIngestGate<E extends Env>(
+  c: Context<E>,
+  metricsGate: MetricsGate,
+  serverId: string,
+  sample: AuthenticatedMetricsSample
+): Promise<Response | null> {
+  let gate: GateDecision
+  try {
+    gate = await metricsGate.admit(serverId, sample.metadata.sampledAt, sample.events.length)
+  } catch (err) {
+    // No exact count, no write: an unmetered path is what the gate stops.
+    rateLimitedMetricsLog(serverId, 'metrics_gate_failed', () => {
+      console.warn(`metrics gate failed for ${serverId}: ${describeError(err)}`)
+    })
+    c.header('Retry-After', '60')
+    return c.json({ ok: false, error: 'metrics_gate_unavailable' }, 503)
+  }
+  if (!gate.stored) {
+    rateLimitedMetricsLog(serverId, `metrics_gate_${gate.reason}`, () => {
+      console.warn(`metrics sample refused for ${serverId}: ${gate.reason}`)
+    })
+    // A duplicate (or replayed) sample can never be accepted later, so it gets
+    // 409, which the daemon does not retry; only an early sample is worth
+    // retrying, so only that one gets 429 with a Retry-After.
+    if (gate.reason === 'duplicate') {
+      return c.json({ ok: false, error: 'duplicate_sample' }, 409)
+    }
+    c.header('Retry-After', String(gate.retryAfterSeconds))
+    return c.json({ ok: false, error: 'rate_limited', reason: gate.reason }, 429)
+  }
+  if (gate.eventsAllowed < sample.events.length) {
+    rateLimitedMetricsLog(serverId, 'metrics_gate_events_dropped', () => {
+      console.warn(
+        `metrics events over the hourly budget for ${serverId}: kept ${gate.eventsAllowed} of ${sample.events.length}`
+      )
+    })
+    sample.events = mostSevereFirst(sample.events).slice(0, gate.eventsAllowed)
+  }
+  return null
+}
+
+/**
+ * A server with more RAM or more physical CPU cores than its licensed box size
+ * keeps its metrics and gets flagged on the server record (`over-plan-flag.ts`).
+ * Fire-and-forget, like the other ingest-side marks: a failure logs and never
+ * blocks the sample.
+ */
+function flagOverPlanInBackground(
+  db: Db,
+  serverId: string,
+  sample: AuthenticatedMetricsSample,
+  planRow: IngestServerPlanRow
+): void {
+  recordOverPlan(
+    db,
+    serverId,
+    planRow.tierRank,
+    sample.extended?.sizes?.memoryTotalBytes,
+    planRow.serverMetadata
+  ).catch((err) => {
+    rateLimitedMetricsLog(serverId, 'over_plan_record_failed', () => {
+      console.warn(`metrics over-plan flag failed for ${serverId}: ${describeError(err)}`)
+    })
+  })
+}
+
 type IngestPlanAndTopology = {
   plan: MetricsCapabilityPlan
   slotMapping: SlotMapping | undefined
@@ -646,6 +736,7 @@ type IngestPlanAndTopology = {
 }
 
 type IngestServerPlanRow = {
+  tierRank?: number | null
   serverOptions: unknown
   orgOptions: unknown
   serverMetadata: unknown
@@ -691,6 +782,7 @@ async function loadIngestServerPlanRow(
     orgOptions: joined.orgOptions,
     serverMetadata: joined.serverMetadata,
     machineClass: joined.machineClass,
+    tierRank: joined.tierRank,
     tier: metricsCapabilityTierEntitlementsForRank(joined.tierRank),
   }
 }
@@ -700,8 +792,8 @@ async function loadIngestServerPlanRow(
  * `POST /api/daemon/v1/metrics`. Resolves the effective v5 metrics
  * capability plan from persisted server/org state (replacing the
  * conservative default-only resolution) and, alongside it, checks whether
- * the sample's `metadata.topologyGeneration` has ever been recorded via
- * `recordTopologyGeneration` — an unknown generation stamps
+ * the sample's `metadata.topologyGeneration` matches the server's stored
+ * hardware facts (`recordTopologyGeneration`) — a mismatch stamps
  * `markTopologyResyncRequested` (fire-and-forget; never blocks ingestion,
  * never reaches the daemon cell directly — see that function's doc comment)
  * — and resolves the sample's {@link SlotMapping} (see
@@ -724,13 +816,12 @@ async function resolveIngestPlanAndReconcileTopology(
   // record. The durable 60 s baseline owns all of those.
   const durable = isDurableSample(sample)
   try {
-    const [topologyMatch, latestTopology, planRow] = await Promise.all([
-      getTopologyGeneration(db, serverId, sample.metadata.topologyGeneration),
+    const [latestTopology, planRow] = await Promise.all([
       getLatestTopologyGeneration(db, serverId),
       loadIngestServerPlanRow(db, serverId, deployment),
     ])
 
-    const topologyKnown = topologyMatch !== undefined
+    const topologyKnown = latestTopology?.generation === sample.metadata.topologyGeneration
     if (
       !topologyKnown &&
       durable &&
@@ -746,7 +837,7 @@ async function resolveIngestPlanAndReconcileTopology(
       })
     }
 
-    const snapshotForClass = topologyMatch?.snapshot ?? latestTopology?.snapshot
+    const snapshotForClass = latestTopology?.snapshot
     const machineClass = resolveServerMachineClass(
       planRow?.machineClass,
       snapshotForClass,
@@ -776,6 +867,8 @@ async function resolveIngestPlanAndReconcileTopology(
         })
     }
 
+    if (durable && planRow !== undefined) flagOverPlanInBackground(db, serverId, sample, planRow)
+
     const serverOptions = parseServerOptions(planRow?.serverOptions) ?? undefined
     const orgOptions: OrganizationOptions = parseOrganizationOptions(planRow?.orgOptions)
 
@@ -789,7 +882,7 @@ async function resolveIngestPlanAndReconcileTopology(
 
     const slotMapping = resolveSlotMappingForIngest(
       serverId,
-      topologyMatch?.snapshot,
+      latestTopology?.snapshot,
       planRow?.serverMetadata
     )
 
@@ -954,6 +1047,9 @@ export function registerDaemonApiRoutes<E extends Env>(
       key: daemonMetricsRateLimitKey(serverId),
     })
     if (!success) {
+      // The binding's window is 60 s: telling the daemon when to try again
+      // stops a well-behaved one from hammering the limit.
+      c.header('Retry-After', '60')
       return c.json({ ok: false, error: 'rate_limited' }, 429)
     }
     return null
@@ -1629,6 +1725,16 @@ export function registerDaemonApiRoutes<E extends Env>(
         await cacheLiveSample(metricsChartCache, sample)
         return c.json({ ok: true }, 202)
       }
+      // Exactly one stored sample a minute per server, and a bounded number of
+      // events an hour (`metrics/ingest-gate.ts`): a Durable Object per server
+      // on Workers, an in-process map on Deno. Every deployment binds one, so
+      // its absence only happens in tests that exercise other parts of the route.
+      const metricsGate = getMetricsGate(c)
+      if (metricsGate) {
+        const refused = await applyMetricsIngestGate(c, metricsGate, serverId, sample)
+        if (refused) return refused
+      }
+
       if (await isServerLiveSessionActive(metricsChartCache, serverId)) {
         await cacheLiveSample(metricsChartCache, sample)
       }

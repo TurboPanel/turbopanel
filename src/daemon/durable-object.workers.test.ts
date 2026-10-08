@@ -1768,6 +1768,39 @@ describe.sequential('DaemonCellObject', () => {
     ws.close(1000, 'test done')
   })
 
+  it('a flood of topology-reports reaches Postgres at most as often as the Workers rate limit allows', async () => {
+    const serverId = 'test-srv-topology-flood'
+    const base = createProjectionRecordingDb()
+    const { db, inserted } = withTopologyReportRecording(
+      base.db as unknown as Record<string, unknown>
+    )
+    setDaemonCellProjectionDbFactoryForTests(() => db)
+
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const { ws } = await openDaemonWebSocket(stub, serverId)
+    for (let generation = 1; generation <= 12; generation++) {
+      ws.send(
+        JSON.stringify({
+          type: 'topology-report',
+          generation,
+          bootGeneration: 1,
+          snapshot: { generation },
+          at: '2026-01-01T00:05:00.000Z',
+        })
+      )
+    }
+
+    await waitFor(() => {
+      expect(inserted.length).toBeGreaterThan(0)
+    })
+    // Let the rest of the flood be handled, then count what got through
+    // (the vitest config binds the topology limiter at 4 a minute).
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(inserted.length).toBeLessThanOrEqual(4)
+
+    ws.close(1000, 'test done')
+  })
+
   it('purge-cell clears storage and resets snapshot', async () => {
     const serverId = 'test-srv-purge'
     const stub = env.DAEMON_CELL.getByName(serverId)

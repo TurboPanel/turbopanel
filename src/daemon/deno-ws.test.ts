@@ -2,7 +2,8 @@ import {
   withTopologyReportRecording,
   type RecordedTopologyInsert,
 } from '../test-fixtures/topology-report-db.ts'
-import { assertEquals, assertStringIncludes } from '@std/assert'
+import { TOPOLOGY_REPORT_RATE } from './rate-limit/topology-report-limit.ts'
+import { assert, assertEquals, assertStringIncludes } from '@std/assert'
 import { stub } from '@std/testing/mock'
 import { Hono } from 'hono'
 import { it } from '@std/testing/bdd'
@@ -1657,6 +1658,7 @@ async function withLiveDaemonServer(
     inboundMessageLimit?: number
     inboundMessageWindowMs?: number
     connectLimiter?: RateLimiter
+    topologyLimiter?: RateLimiter
     developerSurface?: boolean
     sessionSecrets?: DerivedSecretsConfig
     setDbOnContext?: Db
@@ -1679,6 +1681,7 @@ async function withLiveDaemonServer(
     inboundMessageLimit: options.inboundMessageLimit,
     inboundMessageWindowMs: options.inboundMessageWindowMs,
     connectLimiter: options.connectLimiter,
+    topologyLimiter: options.topologyLimiter,
     developerSurface: options.developerSurface,
     sessionSecrets: options.sessionSecrets,
   })
@@ -2589,6 +2592,78 @@ test('live WS topology-report writes the daemon-reported snapshot and its own ti
 
       ws.close(1000, 'done')
       await waitForWsClose(ws)
+    }
+  )
+})
+
+/** Send `count` topology reports (a new generation each time) and give the server a moment to handle them. */
+async function floodTopologyReports(
+  port: number,
+  serverId: string,
+  secrets: Awaited<ReturnType<typeof createDaemonJwtSecrets>>,
+  count: number
+) {
+  const issued = await issueDaemonJwt({ sub: serverId, kid: 'key-test' }, secrets)
+  const ws = await openLiveDaemonWs({ port, token: issued.token, remoteIp: LIVE_REMOTE_IP })
+  for (let generation = 1; generation <= count; generation++) {
+    ws.send(
+      JSON.stringify({
+        type: 'topology-report',
+        generation,
+        bootGeneration: 1,
+        snapshot: { generation },
+        at: '2026-01-01T00:05:00.000Z',
+      })
+    )
+  }
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  ws.close(1000, 'done')
+  await waitForWsClose(ws)
+}
+
+test('live WS topology-report flood: with no limiter given, the in-process bucket lets only the burst reach the database', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-live-topology-flood'
+  const tracking = createTrackingDaemonCell(serverId)
+  const { db, getInsertedValues } = createTopologyInsertTrackingDb()
+
+  await withLiveDaemonServer(
+    { secrets, db, registry: createTrackingRegistry(tracking.cell), inboundMessageLimit: 1000 },
+    async ({ port }) => {
+      await floodTopologyReports(port, serverId, secrets, 12)
+      // Every report the fixture db sees would be stored; the limiter keeps most of them out.
+      assert(getInsertedValues().length >= 1)
+      assert(
+        getInsertedValues().length <= TOPOLOGY_REPORT_RATE.limit,
+        `${getInsertedValues().length} reports reached the database`
+      )
+    }
+  )
+})
+
+test('live WS topology-report: a limiter that says no means no Postgres work at all', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-live-topology-limited'
+  const tracking = createTrackingDaemonCell(serverId)
+  const { db, getInsertedValues } = createTopologyInsertTrackingDb()
+  const seenKeys: string[] = []
+
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db,
+      registry: createTrackingRegistry(tracking.cell),
+      topologyLimiter: {
+        limit: ({ key }) => {
+          seenKeys.push(key)
+          return Promise.resolve({ success: false })
+        },
+      },
+    },
+    async ({ port }) => {
+      await floodTopologyReports(port, serverId, secrets, 3)
+      assertEquals(getInsertedValues().length, 0)
+      assertEquals(seenKeys, Array(3).fill(`daemon:topology:${serverId}`))
     }
   )
 })

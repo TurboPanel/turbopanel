@@ -50,6 +50,7 @@ import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import { reconcileFabricMembership } from '../fabric/enqueue.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { isPostgresUniqueViolation as isUniqueViolation } from '../../db/unique-violation.ts'
+import { serverMetadataWithoutHardware } from './server-metadata-select.ts'
 
 export type FabricMembershipDeps = {
   commandQueue: CommandQueue
@@ -313,7 +314,7 @@ export async function touchServerMetadata(
 ): Promise<void> {
   const rows = await db
     .select({
-      metadata: server.metadata,
+      metadata: serverMetadataWithoutHardware,
       hostname: server.hostname,
       machineKey: server.machineKey,
       osId: server.osId,
