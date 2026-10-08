@@ -531,7 +531,12 @@ Redis) — shipped on
 `managed.ingress.reconcile` (`payload.monitor`, this server's own) and on
 primary `managed.apply` (`monitorUsers[]`, every fronting server: members +
 bound consumers) so each server's ProxySQL monitors every backend with its
-own identity; standbys inherit the roles via WAL. Leaf `notAfter` + signing `ca_generation` are persisted
+own identity; standbys inherit the roles via WAL. Orchestrator topology uses a
+**separate** organization-wide account (`topology-credential.ts`: derived
+`tp_topology_<org prefix>`, never stored — HMAC off the root secret) shipped on
+primary `managed.apply` (`topologyUser`) and `managed.ha.reconcile` (same field
+for `MySQLTopologyUser`); Postgres HA clusters are omitted from the reconcile
+cluster list (`orchestratorManagesEngine`). Leaf `notAfter` + signing `ca_generation` are persisted
 on `leaf` only after `managed.apply` succeeds (mint writes `pendingTlsLeaf`
 command metadata — see `src/lib/tls/AGENTS.md` → Leaf tracking + renewal sweep)
 — not at payload generation. Member CRUD: `GET/POST …/managed/members`

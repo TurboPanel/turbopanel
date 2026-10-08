@@ -78,6 +78,17 @@ export function orchestratorPromotionRule(replicaClass: string | null): HaPromot
 }
 
 /**
+ * Engines the bundled Orchestrator can run. It speaks the MySQL protocol
+ * only: a Postgres member answers `/api/discover` with HTTP 500 `invalid
+ * connection`, and Postgres HA is not Orchestrator's to manage at all. A
+ * Postgres cluster is therefore left out of `managed.ha.reconcile` entirely
+ * rather than registered and skipped daemon-side.
+ */
+export function orchestratorManagesEngine(engine: string): boolean {
+  return engine === 'mysql' || engine === 'mariadb'
+}
+
+/**
  * Automatic failover must not continue when the old primary cannot be fenced.
  * Operator switchover and disaster recovery may continue (`needs_resync`).
  */

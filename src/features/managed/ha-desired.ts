@@ -28,10 +28,12 @@ import { ensureOrganizationManagedNetwork } from '../fabric/fabric-records.ts'
 import { container, managed, replica, principal, server, service } from '../../db/schema.ts'
 import { MANAGED_HA_HTTP_PORT, MANAGED_HA_RAFT_PORT } from './ha-ports.ts'
 import {
+  orchestratorManagesEngine,
   orchestratorPromotionRule,
   selectHaRaftMembers,
   serverHostsManagedHa,
 } from './ha-policy.ts'
+import { buildOrganizationTopologyUser } from './topology-credential.ts'
 import { getManagedEngineSpec, type ManagedEngineSpec } from './index.ts'
 import { loadDatacenterMembershipsForServers } from '../net/datacenter-membership.ts'
 import { loadDatacenterPolicies } from '../net/datacenter-networks.ts'
@@ -355,7 +357,10 @@ async function buildHaClusterIfReady(
   const members = await listManagedMembers(db, managedId)
   if (members.length < 2) return null
   const spec = await loadManagedEngineSpecById(db, managedId)
-  if (!spec) return null
+  // Postgres never reaches Orchestrator: it answers `/api/discover` with HTTP
+  // 500 `invalid connection`, which used to abort the whole reconcile and
+  // leave every MySQL/MariaDB cluster behind it unregistered.
+  if (!spec || !orchestratorManagesEngine(spec.engine)) return null
   const repl = await resealReplicationPassword(
     db,
     params.secretsConfig,
@@ -482,6 +487,16 @@ export async function buildManagedHaReconcilePayload(
     [raft.advertiseAddress]
   )
 
+  // One account for the whole organization: Orchestrator has a single
+  // `MySQLTopologyUser` and the same login has to work on every MySQL and
+  // MariaDB member of every cluster it registers. Derived, so this value is
+  // identical to the one `managed.apply` puts on the members.
+  const topologyUser = await buildOrganizationTopologyUser(
+    params.secretsConfig,
+    { serverId: params.serverId, keyId: daemonState.key.id },
+    organizationId
+  )
+
   return {
     serverId: params.serverId,
     managedNetwork: await resolveManagedNetworkName(),
@@ -489,6 +504,7 @@ export async function buildManagedHaReconcilePayload(
     raft,
     clusters,
     identity,
+    topologyUser,
     orgTlsMaterial,
   }
 }
