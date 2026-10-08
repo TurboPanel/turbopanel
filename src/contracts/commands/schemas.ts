@@ -5411,9 +5411,6 @@ export type ManagedHaFailoverCommandPayload = {
   ensureSlots?: string[]
 }
 
-/** Daemon twin name for {@link ManagedHaFailoverCommandPayload}. */
-export type ManagedHaFailoverPayload = ManagedHaFailoverCommandPayload
-
 export type ManagedHaFailoverCommandResult = {
   summary: string
   phase: ManagedHaFailoverPhase
