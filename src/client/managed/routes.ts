@@ -39,6 +39,8 @@ import {
 import { loadPrincipalNamePolicy } from '../../features/managed/load-org-defaults.ts'
 import { resolveRequestedNameScheme } from '../../lib/principal-name-scheme.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
+import { getCommandQueue } from '../../features/commands/queue.ts'
+import { loadServerStatusRecords } from '../servers/update-status.ts'
 import { assertCanManageOr403, getOrgId, parseJsonBody, requireStringField } from '../shared.ts'
 import { assertServerDatacenterReady } from '../../features/net/datacenter-networks.ts'
 import {
@@ -68,9 +70,11 @@ import {
 import { materializeBindingsForPrincipal } from '../../features/bindings/materialize.ts'
 import { rollBackPrincipalRotation } from '../../features/managed/principal-rotation.ts'
 import {
+  enqueueBestEffortManagedDestroy,
   enqueueManagedDestroyFanout,
   enqueueManagedLifecycleFanout,
   enqueuePreparedManagedApply,
+  MANAGED_FORCE_DESTROY_EXPIRES_MS,
   enqueueTypedCommand,
   isPrepareError,
   type ManagedApplyPrepareError,
@@ -137,6 +141,7 @@ import {
   buildEmptyManagedDetailResponse,
   buildManagedDeleteHardResponse,
   buildManagedDeleteQueuedResponse,
+  buildManagedForceHostCleanup,
   buildManagedDestroyQueuedResponse,
   buildManagedReleaseView,
   buildManagedSslView,
@@ -518,6 +523,7 @@ async function runManagedDeleteFanout(
     deleteAfterDestroy: true,
     environmentId,
     force,
+    ...(force ? { expiresAtMs: MANAGED_FORCE_DESTROY_EXPIRES_MS } : {}),
   })
   if (enqueued instanceof Response) return enqueued
 
@@ -536,6 +542,8 @@ async function runManagedDeleteFanout(
     // stops gating on them, regardless of destroy outcomes. Report as
     // deleted — the UI has nothing left to track. The engine's backup
     // policies cascade with the row, so its host gets the smaller set.
+    // Destroy commands keep a 7-day expiry so an offline host still
+    // tears down when it reconnects.
     const backupHost = await captureManagedBackupHost(db, commandQueue, managedId)
     await clearPendingNullIdContainersForEnvironment(db, environmentId)
     await detachManagedBindings(db, managedId, detached)
@@ -543,7 +551,20 @@ async function runManagedDeleteFanout(
     await enqueueBackupsReconcile(db, commandQueue, { actorType: 'user', actorId: userId }, [
       backupHost,
     ])
-    return c.json({ ...buildManagedDeleteHardResponse(), ...detachedField(detached) })
+    const uniqueServerIds = [...new Set(members.map((member) => member.serverId))]
+    const onlineRecords = await loadServerStatusRecords(
+      db,
+      getDaemonCellRegistry(c),
+      uniqueServerIds
+    )
+    const onlineByServerId = new Map(
+      onlineRecords.map((row) => [row.serverId, row.connected] as const)
+    )
+    const hostCleanup = buildManagedForceHostCleanup(members, enqueued, onlineByServerId)
+    return c.json({
+      ...buildManagedDeleteHardResponse({ hostCleanup }),
+      ...detachedField(detached),
+    })
   }
 
   // The bindings are NOT removed here. They go with the `managed` row when the
@@ -574,12 +595,21 @@ async function detachManagedBindings(
 }
 
 async function deleteManagedCompensation(
+  c: Context<AppEnv>,
   db: NonNullable<ReturnType<typeof getDb>>,
-  managedId: string,
-  environmentId: string
+  params: {
+    userId: string
+    managedId: string
+    environmentId: string
+  }
 ): Promise<void> {
-  await clearPendingNullIdContainersForEnvironment(db, environmentId)
-  await db.delete(managed).where(eq(managed.id, managedId))
+  await enqueueBestEffortManagedDestroy(c, db, getCommandQueue(c), {
+    userId: params.userId,
+    managedId: params.managedId,
+    environmentId: params.environmentId,
+  })
+  await clearPendingNullIdContainersForEnvironment(db, params.environmentId)
+  await db.delete(managed).where(eq(managed.id, params.managedId))
 }
 
 const MANAGED_RETURNING = {
@@ -601,10 +631,15 @@ async function clearIncompleteManagedCreate(
   c: Context<AppEnv>,
   db: NonNullable<ReturnType<typeof getDb>>,
   existing: ManagedRow,
-  fallbackServerId: string | null
+  fallbackServerId: string | null,
+  userId: string
 ): Promise<Response | null> {
   if (existing.status === 'provisioning') {
-    await deleteManagedCompensation(db, existing.id, existing.environmentId)
+    await deleteManagedCompensation(c, db, {
+      userId,
+      managedId: existing.id,
+      environmentId: existing.environmentId,
+    })
     return null
   }
   const serverId = resolveManagedServerId(existing, fallbackServerId)
@@ -954,7 +989,11 @@ async function createManagedAndEnqueueApply(
     members: created.prepared,
   })
   if (enqueued instanceof Response) {
-    await deleteManagedCompensation(db, created.row.id, environmentId)
+    await deleteManagedCompensation(c, db, {
+      userId,
+      managedId: created.row.id,
+      environmentId,
+    })
     return enqueued
   }
 
@@ -1192,7 +1231,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       // provisioning. This is not itself a create, so it displays whichever
       // server id is known (`managed.server_id`, falling back to the
       // environment's current placement) rather than hard-requiring one.
-      const idempotent = await clearIncompleteManagedCreate(c, db, existing, ctx.serverId)
+      const idempotent = await clearIncompleteManagedCreate(
+        c,
+        db,
+        existing,
+        ctx.serverId,
+        auth.userId
+      )
       if (idempotent) return idempotent
     }
 

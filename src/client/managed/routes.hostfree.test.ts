@@ -196,7 +196,7 @@ function presenceServer(connected = false, overrides: Record<string, unknown> = 
   }
 }
 
-function applyReadyServer(connected = true) {
+function applyReadyServer(connected = true, overrides: Record<string, unknown> = {}) {
   // `getServerDaemonStateByServerId` is `server ⋈ key` with the key row's
   // columns flattened onto the result (the jsonb `daemon` is projection-only
   // now). This fake answers every `server` query with the same rows, so the
@@ -208,6 +208,7 @@ function applyReadyServer(connected = true) {
     ...keyColumns,
     revokedAt: null,
     lastUsedAt: null,
+    ...overrides,
   })
 }
 
@@ -267,6 +268,24 @@ function recordingQueue(): CommandQueue {
 function countingQueue(sink: CommandEnvelope[]): CommandQueue {
   return {
     enqueue: (envelope: CommandEnvelope) => {
+      sink.push(envelope)
+      return Promise.resolve()
+    },
+  }
+}
+
+function failingQueue(): CommandQueue {
+  return {
+    enqueue: () => Promise.reject(new TypeError('queue down')),
+  }
+}
+
+function partiallyFailingMemberQueue(sink: CommandEnvelope[], failServerId: string): CommandQueue {
+  return {
+    enqueue: (envelope: CommandEnvelope) => {
+      if (envelope.serverId === failServerId) {
+        return Promise.reject(new TypeError('queue down'))
+      }
       sink.push(envelope)
       return Promise.resolve()
     },
@@ -1107,6 +1126,75 @@ test('POST create clears a provisioning row then requires placement', async () =
     409,
     { error: 'server_placement_required' }
   )
+})
+
+test('POST create compensation enqueues destroy before deleting the provisioning row', async () => {
+  const events: string[] = []
+  const config: FakeDbConfig = {
+    managedRows: [managedRow({ status: 'provisioning' })],
+    envRows: [envRow({ serverId: null })],
+    memberRows: [memberRow({ role: 'primary', replicaClass: null, ordinal: 1 })],
+    onInsert: (_table, values) => {
+      if (values.name === 'managed.destroy') events.push('enqueue-destroy')
+    },
+  }
+  const base = fakeDb(config)
+  const db = {
+    ...base,
+    delete: (table: unknown) => {
+      if (table === managed) events.push('delete-managed')
+      return base.delete(table as never)
+    },
+    transaction: (fn: (tx: Db) => Promise<unknown>) => fn(db),
+  } as unknown as Db
+  const { app, cookie } = await buildApp({
+    db,
+    commandQueue: countingQueue([]),
+  })
+  await expectJson(
+    await app.request(envPath(), {
+      method: 'POST',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+    409,
+    { error: 'server_placement_required' }
+  )
+  assertEquals(events.includes('enqueue-destroy'), true)
+  assertEquals(events.includes('delete-managed'), true)
+  assertEquals(events.indexOf('enqueue-destroy') < events.indexOf('delete-managed'), true)
+})
+
+test('POST create compensation still deletes the row when destroy enqueue fails', async () => {
+  const deleted: unknown[] = []
+  const config: FakeDbConfig = {
+    managedRows: [managedRow({ status: 'provisioning' })],
+    envRows: [envRow({ serverId: null })],
+    memberRows: [memberRow({ role: 'primary', replicaClass: null, ordinal: 1 })],
+  }
+  const base = fakeDb(config)
+  const db = {
+    ...base,
+    delete: (table: unknown) => {
+      deleted.push(table)
+      return base.delete(table as never)
+    },
+    transaction: (fn: (tx: Db) => Promise<unknown>) => fn(db),
+  } as unknown as Db
+  const { app, cookie } = await buildApp({
+    db,
+    commandQueue: failingQueue(),
+  })
+  await expectJson(
+    await app.request(envPath(), {
+      method: 'POST',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+    409,
+    { error: 'server_placement_required' }
+  )
+  assertEquals(deleted.includes(managed), true)
 })
 
 test('POST create requires encryption secrets after placement', async () => {
@@ -2672,12 +2760,6 @@ function applyReadyDb(extra: FakeDbConfig = {}) {
   })
 }
 
-function failingQueue(): CommandQueue {
-  return {
-    enqueue: () => Promise.reject(new TypeError('queue down')),
-  }
-}
-
 async function expectQueued(
   response: Response,
   extras: Record<string, unknown> = {}
@@ -2939,6 +3021,42 @@ test('DELETE cluster with ?force=true&detach=true removes the bindings before th
     ['web']
   )
   assertEquals(deletedTables.indexOf(binding) < deletedTables.indexOf(managed), true)
+})
+
+test('DELETE ?force=true reports hostCleanup with an offline member', async () => {
+  const replicaMemberId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+  const failed: CommandEnvelope[] = []
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb({
+      serverRows: [
+        applyReadyServer(true),
+        applyReadyServer(false, { id: REPLICA_SERVER_ID, name: 'host-2', hostname: 'host-2' }),
+      ],
+      memberRows: [
+        memberRow({ role: 'primary', replicaClass: null, ordinal: 1 }),
+        memberRow({
+          id: replicaMemberId,
+          role: 'replica',
+          serverId: REPLICA_SERVER_ID,
+          ordinal: 2,
+        }),
+      ],
+    }),
+    registry: stubRegistry(),
+    commandQueue: partiallyFailingMemberQueue(failed, REPLICA_SERVER_ID),
+  })
+  const res = await app.request(envPath('?force=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(res.status, 200)
+  const body = await jsonOf(res)
+  assertEquals(body.deleted, true)
+  assertEquals(body.hostCleanup, [
+    { serverId: SERVER_ID, status: 'queued', online: true },
+    { serverId: REPLICA_SERVER_ID, status: 'failed', online: false },
+  ])
+  assertEquals(body.note, 'The cleanup will run when 1 offline server(s) reconnect within 7 days.')
 })
 
 test('DELETE cluster with no bindings is unchanged and reports no detached list', async () => {

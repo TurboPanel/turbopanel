@@ -11,6 +11,7 @@ import {
   buildFencePromotePendingResponse,
   buildManagedDeleteHardResponse,
   buildManagedDeleteQueuedResponse,
+  buildManagedForceHostCleanup,
   buildManagedDestroyQueuedResponse,
   buildManagedSslView,
   buildOrgManagedListEntry,
@@ -465,6 +466,50 @@ test('empty detail / delete / destroy / promote response shapes', () => {
     organizationDefault: 'verify-full',
   })
   assertEquals(buildManagedDeleteHardResponse(), { ok: true, deleted: true })
+  assertEquals(
+    buildManagedForceHostCleanup(
+      [{ serverId: 's-online' }, { serverId: 's-offline' }, { serverId: 's-offline' }],
+      [
+        { serverId: 's-online', status: 'queued' },
+        { serverId: 's-offline', status: 'failed' },
+      ],
+      new Map([
+        ['s-online', true],
+        ['s-offline', false],
+      ])
+    ),
+    [
+      { serverId: 's-online', status: 'queued', online: true },
+      { serverId: 's-offline', status: 'failed', online: false },
+    ]
+  )
+  assertEquals(
+    buildManagedDeleteHardResponse({
+      hostCleanup: [
+        { serverId: 's-online', status: 'queued', online: true },
+        { serverId: 's-offline', status: 'failed', online: false },
+      ],
+    }),
+    {
+      ok: true,
+      deleted: true,
+      hostCleanup: [
+        { serverId: 's-online', status: 'queued', online: true },
+        { serverId: 's-offline', status: 'failed', online: false },
+      ],
+      note: 'The cleanup will run when 1 offline server(s) reconnect within 7 days.',
+    }
+  )
+  assertEquals(
+    buildManagedDeleteHardResponse({
+      hostCleanup: [{ serverId: 's-online', status: 'queued', online: true }],
+    }),
+    {
+      ok: true,
+      deleted: true,
+      hostCleanup: [{ serverId: 's-online', status: 'queued', online: true }],
+    }
+  )
   assertEquals(buildManagedDeleteQueuedResponse([{ commandId: 'd1', serverId: 's1' }], 'fb'), {
     ok: true,
     deleted: false,

@@ -78,10 +78,10 @@ only a tested series can be created, saved into `settings.image`, or reach the
 daemon. Untested entries stay in the catalog for one reason: `describeManagedImage`
 must still be able to name an image an existing row already holds.
 
-| Engine   | Creatable (tested) | Catalogued but untested |
-| -------- | ------------------ | ----------------------- |
-| Postgres | **18**             | 17, 16, 15              |
-| MySQL    | **9.7**, **8.4**   |                         |
+| Engine   | Creatable (tested)                                | Catalogued but untested |
+| -------- | ------------------------------------------------- | ----------------------- |
+| Postgres | **18**                                            | 17, 16, 15              |
+| MySQL    | **9.7**, **8.4**                                  |                         |
 | MariaDB  | **11.8** (default), **12.3** (single server only) | 11.4, 10.11             |
 
 Each creatable series offers both of its base-OS variants, so the derived
@@ -547,8 +547,16 @@ primary** — the primary's `deleteAfterDestroy` outcome removes the managed row
 and destroy side effects are row-independent (`payload.environmentId`) so
 concurrent outcomes never skip container-row cleanup or ingress teardown.
 `?force=true` skips online checks and replica gating, enqueues best-effort
-destroys, hard-deletes the runtime rows, and returns `deleted: true` (sweeps
-mop up leftover containers). While any service is bound to one of the
+destroys with a **7-day** expiry (`MANAGED_FORCE_DESTROY_EXPIRES_MS`) so a host
+that is offline or restarting for an update still runs teardown when it
+returns, hard-deletes the runtime rows, and returns `deleted: true` plus
+`hostCleanup[]` (`queued` / `failed` and whether each member host is online
+now) and a plain-words `note` when any host is offline. A normal delete keeps
+the 10-minute destroy expiry. Failed or incomplete create compensation deletes
+the managed row only after a best-effort `managed.destroy` (volumes on,
+`deleteAfterDestroy` off, same 7-day expiry) to every member host; enqueue
+failure is logged and never blocks the row delete. Sweeps mop up leftover
+containers. While any service is bound to one of the
 cluster's logins the destroy is refused with 409 `managed_has_bindings` and the
 bound `services` (same list shape as `managed_user_has_bindings`), for every
 engine and also with `force`; `?detach=true` lets the destroy go ahead and the bindings
