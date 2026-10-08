@@ -1,3 +1,5 @@
+import { SERVER_DELETE_BLOCKER_KIND_VALUES } from '../servers/delete-guards.ts'
+
 export const serverSchemas = {
   ServerOsMetadata: {
     type: 'object',
@@ -868,14 +870,23 @@ export const serverSchemas = {
       code: { type: 'string', const: 'server_has_blockers' },
       blockers: {
         type: 'array',
-        items: {
-          type: 'object',
-          required: ['kind', 'count'],
-          properties: {
-            kind: { type: 'string', enum: ['network', 'container', 'ip'] },
-            count: { type: 'integer', minimum: 1 },
-          },
-        },
+        items: { $ref: '#/components/schemas/ServerDeleteBlocker' },
+      },
+    },
+  },
+  ServerDeleteBlocker: {
+    type: 'object',
+    required: ['kind', 'count', 'label'],
+    properties: {
+      kind: {
+        type: 'string',
+        enum: [...SERVER_DELETE_BLOCKER_KIND_VALUES],
+      },
+      count: { type: 'integer', minimum: 1 },
+      label: {
+        type: 'string',
+        description:
+          'Plain-words description of the leftover kind, for example "an app environment" or "a database member is still placed on this server".',
       },
     },
   },
@@ -896,12 +907,13 @@ export const serverSchemas = {
     properties: {
       online: {
         type: 'boolean',
-        description: 'True when this server row is marked connected.',
+        description:
+          'True when the live cell snapshot is connected or the stored `is_connected` column is true.',
       },
       canForget: {
         type: 'boolean',
         description:
-          'True when the server is offline and is not the co-located control plane host, so leftover rows may be forgotten with the delete.',
+          'True when the server is offline, is not the co-located control plane host, and the only leftovers are forgettable container, network, or address rows.',
       },
       colocated: {
         type: 'boolean',
@@ -909,14 +921,7 @@ export const serverSchemas = {
       },
       blockers: {
         type: 'array',
-        items: {
-          type: 'object',
-          required: ['kind', 'count'],
-          properties: {
-            kind: { type: 'string', enum: ['network', 'container', 'ip'] },
-            count: { type: 'integer', minimum: 1 },
-          },
-        },
+        items: { $ref: '#/components/schemas/ServerDeleteBlocker' },
       },
       containers: {
         type: 'object',
@@ -1464,7 +1469,7 @@ export const serverPaths: Record<string, unknown> = {
       tags: ['Servers'],
       summary: 'Preview leftover rows that would block deleting a server',
       description:
-        'Same rights as delete (organization manager on this server). Lists leftover containers, networks, and addresses for a host that is gone, so the console can offer forgetting those rows. System-workspace containers are omitted the same way as delete blockers. Each list is capped at 50 rows plus a `more` count. `online` is the stored connected flag. `canForget` is true only when the server is offline and is not the co-located control plane host.',
+        'Same rights as delete (organization manager on this server). Lists leftover containers, networks, and addresses for a host that is gone, so the console can offer forgetting those rows. System-workspace containers are omitted the same way as delete blockers. Each list is capped at 50 rows plus a `more` count. `online` is true when the live cell snapshot is connected or the stored connected flag is true. `canForget` is true only when the server is offline, is not the co-located control plane host, and leftover blockers are only container, network, or address rows.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1671,7 +1676,7 @@ export const serverPaths: Record<string, unknown> = {
       tags: ['Servers'],
       summary: 'Delete a server and purge its daemon cell',
       description:
-        'Without `forgetResources=true`, leftover containers, networks, or addresses still answer 409 `server_has_blockers`. Pass the flag explicitly (query or JSON body; never implied) to drop those leftover rows on an offline server that is not the co-located control plane host. A connected server answers 409 `server_online`. System-workspace rows still follow the ordinary hosting-ingress teardown.',
+        'Without `forgetResources=true`, leftover containers, networks, addresses, or other RESTRICT placements still answer 409 `server_has_blockers`. Pass the flag explicitly (query or JSON body; never implied) to drop leftover container, network, and address rows on an offline server that is not the co-located control plane host. A connected server (live snapshot or stored flag, re-checked under row lock) answers 409 `server_online`. App environments, managed databases, database members, deployments, service slots, and storage copies still 409 `server_has_blockers` even with the flag. System-workspace rows still follow the ordinary hosting-ingress teardown.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {

@@ -11,18 +11,24 @@ offline daemon cannot clear those rows, so the owner would be stuck.
 
 `GET /servers/:id/delete-preview` uses the same rights as delete (organization
 scope plus manage on the server). It returns whether the server is connected
-(`online` = `is_connected`), whether leftover rows may be forgotten
-(`canForget` = offline and not the co-located control plane host), that
-colocated flag, blocker counts, and up to 50 leftover containers / networks /
-addresses plus a `more` count. System-workspace containers are omitted the same
-way as the blocker scan — `deleteSystemEnvironmentSubtree` still tears those
-down.
+(`online` = live cell snapshot via `isSnapshotConnected`, or stored
+`is_connected`), whether leftover rows may be forgotten (`canForget` = offline,
+not the co-located control plane host, and leftover blockers are only
+container / network / address rows), that colocated flag, blocker counts, and
+up to 50 leftover containers / networks / addresses plus a `more` count.
+System-workspace containers (and other system-workspace RESTRICT rows torn down
+by `deleteSystemEnvironmentSubtree`) are omitted the same way as the blocker
+scan.
 
 `DELETE` accepts an explicit `forgetResources=true` query flag (or JSON body
 `{ forgetResources: true }`, same style as managed `detach=true`). Anything else
 leaves the 409 blockers check unchanged. With the flag:
 
-- a connected server answers **409** `server_online`
+- a connected server answers **409** `server_online` (live snapshot or stored
+  flag; the delete transaction re-reads `is_connected` `FOR UPDATE` and refuses
+  if it became true)
+- leftover app environments, managed databases, database members, deployments,
+  service slots, or storage copies still answer **409** `server_has_blockers`
 - the co-located control plane host is still **403**
 - otherwise the same transaction drops non-system container rows, then address
   rows, then network rows, then continues the ordinary delete (system subtree,

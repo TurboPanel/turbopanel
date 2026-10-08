@@ -5,7 +5,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
-import type { DaemonCell, DaemonCellRegistry } from '../../contracts/cell.ts'
+import type { DaemonCell, DaemonCellRegistry, DaemonCellSnapshot } from '../../contracts/cell.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -36,6 +36,7 @@ import * as systemHierarchy from '../../features/system/hierarchy.ts'
 import {
   COLOCATED_SERVER_KEY_REVOKE_BLOCKED_REASON,
   colocatedServerDeleteBlockedReason,
+  SERVER_DELETE_BLOCKER_LABELS,
   SERVER_HAS_BLOCKERS_CODE,
   SERVER_HAS_BLOCKERS_ERROR,
   SERVER_ONLINE_CODE,
@@ -83,7 +84,7 @@ const test = Deno.test.bind(Deno)
 type ErrorJson = {
   error: string
   code?: string
-  blockers?: Array<{ kind: string; count: number }>
+  blockers?: Array<{ kind: string; count: number; label?: string }>
 }
 
 type ServersListJson = {
@@ -188,6 +189,7 @@ function createTrackingRegistry(options?: {
   getSnapshotsThrows?: boolean
   listOnlineServerIdsThrows?: boolean
   onlineIds?: string[]
+  snapshots?: Map<string, DaemonCellSnapshot>
 }): DaemonCellRegistry & { purgedIds: string[] } {
   const purgedIds: string[] = []
   const failPurgeIds = options?.failPurgeIds ?? new Set<string>()
@@ -216,7 +218,7 @@ function createTrackingRegistry(options?: {
       : () => Promise.resolve(onlineIds),
     getSnapshots: options?.getSnapshotsThrows
       ? () => Promise.reject(new Error('getSnapshots must not be called'))
-      : () => Promise.resolve(new Map()),
+      : () => Promise.resolve(options?.snapshots ?? new Map()),
     purge: async (serverId: string) => {
       await getCell(serverId).purge()
     },
@@ -491,7 +493,8 @@ async function withServerDeleteFixtures(
     organizationId: string
     serverId: string
     registry: DaemonCellRegistry & { purgedIds: string[] }
-  }) => Promise<void>
+  }) => Promise<void>,
+  registryOptions?: Parameters<typeof createTrackingRegistry>[0]
 ): Promise<void> {
   if (!dbUrl) {
     skipWithoutDatabase('server route tests')
@@ -499,7 +502,7 @@ async function withServerDeleteFixtures(
   }
 
   const db = createDenoDb()
-  const registry = createTrackingRegistry()
+  const registry = createTrackingRegistry(registryOptions)
   const { app, secrets } = await createServerRoutesTestApp(db, registry)
 
   const email = `server-delete-test-${crypto.randomUUID()}@example.com`
@@ -1187,7 +1190,9 @@ test('DELETE /servers/:id returns 409 when networks block deletion', async () =>
         const body = await readJson<ErrorJson>(res)
         assertEquals(body.error, SERVER_HAS_BLOCKERS_ERROR)
         assertEquals(body.code, SERVER_HAS_BLOCKERS_CODE)
-        assertEquals(body.blockers, [{ kind: 'network', count: 1 }])
+        assertEquals(body.blockers, [
+          { kind: 'network', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.network },
+        ])
         assertEquals(registry.purgedIds.length, 0)
       } finally {
         if (insertedNetwork) {
@@ -1211,7 +1216,7 @@ test('GET /servers/:id/delete-preview lists leftovers on an offline server', asy
         online: boolean
         canForget: boolean
         colocated: boolean
-        blockers: Array<{ kind: string; count: number }>
+        blockers: Array<{ kind: string; count: number; label: string }>
         containers: { items: Array<{ id: string; name: string }>; more: number }
         networks: { items: Array<{ id: string }>; more: number }
         ips: { items: Array<{ id: string }>; more: number }
@@ -1220,9 +1225,9 @@ test('GET /servers/:id/delete-preview lists leftovers on an offline server', asy
       assertEquals(body.canForget, true)
       assertEquals(body.colocated, false)
       assertEquals(body.blockers, [
-        { kind: 'network', count: 1 },
-        { kind: 'container', count: 1 },
-        { kind: 'ip', count: 1 },
+        { kind: 'network', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.network },
+        { kind: 'container', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.container },
+        { kind: 'ip', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.ip },
       ])
       assertEquals(body.containers.items[0]?.id, leftovers.containerId)
       assertEquals(body.networks.items[0]?.id, leftovers.networkId)
@@ -1238,6 +1243,68 @@ test('GET /servers/:id/delete-preview lists leftovers on an offline server', asy
       await db.delete(network).where(eq(network.id, leftovers.networkId))
     }
   })
+})
+
+test('GET /servers/:id/delete-preview treats a live snapshot as online even when is_connected is false', async () => {
+  const snapshots = new Map<string, DaemonCellSnapshot>()
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId }) => {
+      const now = new Date().toISOString()
+      snapshots.set(serverId, {
+        serverId,
+        version: 1,
+        updatedAt: now,
+        connected: true,
+        lastInboundAt: now,
+      })
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}/delete-preview`, {
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(res.status, 200)
+      const body = await readJson<{ online: boolean; canForget: boolean }>(res)
+      assertEquals(body.online, true)
+      assertEquals(body.canForget, false)
+    },
+    { snapshots }
+  )
+})
+
+test('DELETE /servers/:id with forgetResources is refused when a live snapshot is connected', async () => {
+  const snapshots = new Map<string, DaemonCellSnapshot>()
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const leftovers = await insertUserWorkspaceLeftovers(db, { organizationId, serverId })
+      const now = new Date().toISOString()
+      snapshots.set(serverId, {
+        serverId,
+        version: 1,
+        updatedAt: now,
+        connected: true,
+        lastInboundAt: now,
+      })
+      try {
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        })
+        assertEquals(res.status, 409)
+        const body = await readJson<ErrorJson>(res)
+        assertEquals(body.code, SERVER_ONLINE_CODE)
+        assertEquals(registry.purgedIds.length, 0)
+      } finally {
+        await db.delete(container).where(eq(container.id, leftovers.containerId))
+        await db.delete(service).where(eq(service.id, leftovers.serviceId))
+        await db.delete(environment).where(eq(environment.id, leftovers.environmentId))
+        await db.delete(project).where(eq(project.id, leftovers.projectId))
+        await db.delete(workspace).where(eq(workspace.id, leftovers.workspaceId))
+        await db.delete(ip).where(eq(ip.id, leftovers.ipId))
+        await db.delete(network).where(eq(network.id, leftovers.networkId))
+      }
+    },
+    { snapshots }
+  )
 })
 
 test('DELETE /servers/:id with forgetResources is refused while the server is connected', async () => {
@@ -1334,6 +1401,84 @@ test('DELETE /servers/:id with forgetResources removes leftover rows and audits 
       await db.delete(project).where(eq(project.id, leftovers.projectId))
       await db.delete(workspace).where(eq(workspace.id, leftovers.workspaceId))
       await db.delete(audit).where(eq(audit.organizationId, organizationId))
+    }
+  )
+})
+
+test('DELETE /servers/:id with forgetResources is refused if is_connected flips true under the row lock', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const leftovers = await insertUserWorkspaceLeftovers(db, { organizationId, serverId })
+      const originalTransaction = db.transaction.bind(db)
+      db.transaction = (async (fn: Parameters<typeof db.transaction>[0]) => {
+        await db.update(server).set({ isConnected: true }).where(eq(server.id, serverId))
+        return originalTransaction(fn)
+      }) as typeof db.transaction
+      try {
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        })
+        assertEquals(res.status, 409)
+        const body = await readJson<ErrorJson>(res)
+        assertEquals(body.code, SERVER_ONLINE_CODE)
+        assertEquals(registry.purgedIds.length, 0)
+        const remaining = await db
+          .select({ id: server.id })
+          .from(server)
+          .where(eq(server.id, serverId))
+        assertEquals(remaining.length, 1)
+        const leftoverContainer = await db
+          .select({ id: container.id })
+          .from(container)
+          .where(eq(container.id, leftovers.containerId))
+        assertEquals(leftoverContainer.length, 1)
+      } finally {
+        db.transaction = originalTransaction
+        await db.delete(container).where(eq(container.id, leftovers.containerId))
+        await db.delete(service).where(eq(service.id, leftovers.serviceId))
+        await db.delete(environment).where(eq(environment.id, leftovers.environmentId))
+        await db.delete(project).where(eq(project.id, leftovers.projectId))
+        await db.delete(workspace).where(eq(workspace.id, leftovers.workspaceId))
+        await db.delete(ip).where(eq(ip.id, leftovers.ipId))
+        await db.delete(network).where(eq(network.id, leftovers.networkId))
+        await db.update(server).set({ isConnected: false }).where(eq(server.id, serverId))
+      }
+    }
+  )
+})
+
+test('DELETE /servers/:id with forgetResources returns 409 when a non-forgettable placement remains', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const leftovers = await insertUserWorkspaceLeftovers(db, { organizationId, serverId })
+      await db
+        .update(environment)
+        .set({ serverId })
+        .where(eq(environment.id, leftovers.environmentId))
+      try {
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        })
+        assertEquals(res.status, 409)
+        const body = await readJson<ErrorJson>(res)
+        assertEquals(body.code, SERVER_HAS_BLOCKERS_CODE)
+        assertEquals(body.blockers, [
+          { kind: 'environment', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.environment },
+        ])
+        assertEquals(registry.purgedIds.length, 0)
+      } finally {
+        await db.delete(container).where(eq(container.id, leftovers.containerId))
+        await db.delete(service).where(eq(service.id, leftovers.serviceId))
+        await db.delete(environment).where(eq(environment.id, leftovers.environmentId))
+        await db.delete(project).where(eq(project.id, leftovers.projectId))
+        await db.delete(workspace).where(eq(workspace.id, leftovers.workspaceId))
+        await db.delete(ip).where(eq(ip.id, leftovers.ipId))
+        await db.delete(network).where(eq(network.id, leftovers.networkId))
+      }
     }
   )
 })

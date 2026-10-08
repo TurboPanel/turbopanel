@@ -1,14 +1,59 @@
-import { and, count, eq, inArray, sql } from 'drizzle-orm'
+import { and, count, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
-import { container, ip, network, server } from '../../db/schema.ts'
+import {
+  container,
+  deployment,
+  environment,
+  ip,
+  managed,
+  network,
+  project,
+  replica,
+  server,
+  slot,
+  storageCopy,
+  workspace,
+} from '../../db/schema.ts'
 import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
 
-export type ServerDeleteBlockerKind = 'network' | 'container' | 'ip'
+export const SERVER_DELETE_BLOCKER_KIND_VALUES = [
+  'network',
+  'container',
+  'ip',
+  'environment',
+  'managed',
+  'replica',
+  'deployment',
+  'slot',
+  'copy',
+] as const
+
+export type ServerDeleteBlockerKind = (typeof SERVER_DELETE_BLOCKER_KIND_VALUES)[number]
+
+/** Leftover rows `forgetResources` may drop. Other kinds still 409. */
+export const FORGETTABLE_SERVER_DELETE_BLOCKER_KINDS = new Set<ServerDeleteBlockerKind>([
+  'network',
+  'container',
+  'ip',
+])
+
+export const SERVER_DELETE_BLOCKER_LABELS: Record<ServerDeleteBlockerKind, string> = {
+  network: 'a network',
+  container: 'a container',
+  ip: 'an address',
+  environment: 'an app environment',
+  managed: 'a managed database is still placed on this server',
+  replica: 'a database member is still placed on this server',
+  deployment: 'a deployment',
+  slot: 'a replica slot',
+  copy: 'a storage copy',
+}
 
 export type ServerDeleteBlocker = {
   kind: ServerDeleteBlockerKind
   count: number
+  label: string
 }
 
 export const SERVER_HAS_BLOCKERS_CODE = 'server_has_blockers'
@@ -72,6 +117,19 @@ export type ServerDeletePreview = {
   ips: CappedPreviewList<ServerDeletePreviewIp>
 }
 
+export class ServerOnlineDuringForgetError extends Error {
+  readonly code = SERVER_ONLINE_CODE
+
+  constructor() {
+    super(SERVER_ONLINE_ERROR)
+    this.name = 'ServerOnlineDuringForgetError'
+  }
+}
+
+export function isServerOnlineDuringForgetError(error: unknown): boolean {
+  return error instanceof ServerOnlineDuringForgetError
+}
+
 /**
  * System-workspace ingress rows are torn down by
  * `deleteSystemEnvironmentSubtree` during DELETE — exclude them from the
@@ -93,9 +151,46 @@ function nonSystemContainerWhere(serverId: string) {
     `
 }
 
+function notSystemWorkspace() {
+  return ne(workspace.kind, WORKSPACE_KIND_TURBOPANEL)
+}
+
+function pushBlocker(
+  blockers: ServerDeleteBlocker[],
+  kind: ServerDeleteBlockerKind,
+  countValue: number
+): void {
+  if (countValue > 0) {
+    blockers.push({
+      kind,
+      count: countValue,
+      label: SERVER_DELETE_BLOCKER_LABELS[kind],
+    })
+  }
+}
+
+export function blockersThatPreventForget(
+  blockers: readonly ServerDeleteBlocker[]
+): ServerDeleteBlocker[] {
+  return blockers.filter((row) => !FORGETTABLE_SERVER_DELETE_BLOCKER_KINDS.has(row.kind))
+}
+
+export function canForgetServerResources(
+  opts: Readonly<{ online: boolean; colocated: boolean; blockers: readonly ServerDeleteBlocker[] }>
+): boolean {
+  return !opts.online && !opts.colocated && blockersThatPreventForget(opts.blockers).length === 0
+}
+
+function countValue(row: { value: number | string } | undefined): number {
+  return Number(row?.value ?? 0)
+}
+
 /**
  * Placement and dependency blockers for server delete.
- * Future: extend when service.options carries server/replica placement.
+ * RESTRICT / NO ACTION FKs to `server.id` that forget and the system-subtree /
+ * fabric teardown do not drop: environment, managed, replica, deployment,
+ * slot, copy — excluding TurboPanel-workspace rows the system-env delete
+ * already removes (and anything that cascades from that).
  */
 export async function listServerDeleteBlockers(
   db: Db,
@@ -109,29 +204,72 @@ export async function listServerDeleteBlockers(
     .limit(1)
   if (!serverRow) return []
 
-  const [[networkCountRow], containerCountRows, [ipCountRow]] = await Promise.all([
+  const [
+    [networkCountRow],
+    containerCountRows,
+    [ipCountRow],
+    [environmentCountRow],
+    [managedCountRow],
+    [replicaCountRow],
+    [deploymentCountRow],
+    [slotCountRow],
+    [copyCountRow],
+  ] = await Promise.all([
     db.select({ value: count() }).from(network).where(eq(network.serverId, serverId)),
     db.execute<{ value: number | string }>(sql`
       SELECT count(*)::int AS value
       ${nonSystemContainerWhere(serverId)}
     `),
     db.select({ value: count() }).from(ip).where(eq(ip.serverId, serverId)),
+    db
+      .select({ value: count() })
+      .from(environment)
+      .innerJoin(project, eq(project.id, environment.projectId))
+      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+      .where(and(eq(environment.serverId, serverId), notSystemWorkspace())),
+    db
+      .select({ value: count() })
+      .from(managed)
+      .innerJoin(environment, eq(environment.id, managed.environmentId))
+      .innerJoin(project, eq(project.id, environment.projectId))
+      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+      .where(and(eq(managed.serverId, serverId), notSystemWorkspace())),
+    db
+      .select({ value: count() })
+      .from(replica)
+      .innerJoin(managed, eq(managed.id, replica.managedId))
+      .innerJoin(environment, eq(environment.id, managed.environmentId))
+      .innerJoin(project, eq(project.id, environment.projectId))
+      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+      .where(and(eq(replica.serverId, serverId), notSystemWorkspace())),
+    db
+      .select({ value: count() })
+      .from(deployment)
+      .innerJoin(environment, eq(environment.id, deployment.environmentId))
+      .innerJoin(project, eq(project.id, environment.projectId))
+      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+      .where(and(eq(deployment.serverId, serverId), notSystemWorkspace())),
+    db
+      .select({ value: count() })
+      .from(slot)
+      .innerJoin(environment, eq(environment.id, slot.environmentId))
+      .innerJoin(project, eq(project.id, environment.projectId))
+      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+      .where(and(eq(slot.serverId, serverId), notSystemWorkspace())),
+    db.select({ value: count() }).from(storageCopy).where(eq(storageCopy.serverId, serverId)),
   ])
   const containerCountRow = containerCountRows[0]
 
   const blockers: ServerDeleteBlocker[] = []
-  const networkCount = Number(networkCountRow?.value ?? 0)
-  if (networkCount > 0) {
-    blockers.push({ kind: 'network', count: networkCount })
-  }
-  const containerCount = Number(containerCountRow?.value ?? 0)
-  if (containerCount > 0) {
-    blockers.push({ kind: 'container', count: containerCount })
-  }
-  const ipCount = Number(ipCountRow?.value ?? 0)
-  if (ipCount > 0) {
-    blockers.push({ kind: 'ip', count: ipCount })
-  }
+  pushBlocker(blockers, 'network', countValue(networkCountRow))
+  pushBlocker(blockers, 'container', countValue(containerCountRow))
+  pushBlocker(blockers, 'ip', countValue(ipCountRow))
+  pushBlocker(blockers, 'environment', countValue(environmentCountRow))
+  pushBlocker(blockers, 'managed', countValue(managedCountRow))
+  pushBlocker(blockers, 'replica', countValue(replicaCountRow))
+  pushBlocker(blockers, 'deployment', countValue(deploymentCountRow))
+  pushBlocker(blockers, 'slot', countValue(slotCountRow))
+  pushBlocker(blockers, 'copy', countValue(copyCountRow))
   return blockers
 }
 
@@ -212,7 +350,11 @@ export async function loadServerDeletePreview(
 
   return {
     online: opts.online,
-    canForget: !opts.online && !opts.colocated,
+    canForget: canForgetServerResources({
+      online: opts.online,
+      colocated: opts.colocated,
+      blockers,
+    }),
     colocated: opts.colocated,
     blockers,
     containers,
@@ -254,6 +396,22 @@ export function serverDeleteBlockersResponse(
     },
     409
   )
+}
+
+/**
+ * Re-read `is_connected` under a row lock immediately before forgetting so a
+ * reconnect that won the race after the live-snapshot preflight still 409s.
+ */
+export async function assertServerOfflineForForget(tx: Db, serverId: string): Promise<void> {
+  const [locked] = await tx
+    .select({ isConnected: server.isConnected })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .for('update')
+    .limit(1)
+  if (locked?.isConnected) {
+    throw new ServerOnlineDuringForgetError()
+  }
 }
 
 export async function forgetServerOwnedResources(

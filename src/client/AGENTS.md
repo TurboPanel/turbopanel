@@ -91,13 +91,15 @@ changes.
   timezone).
 - **Forget an offline server (client surface):** `GET /servers/:id/delete-preview`
   (manage-gated, same as delete) lists leftover containers, networks, and
-  addresses that would 409 a normal delete (`online` is the stored connected
-  flag; `canForget` only when offline and not the co-located control plane
-  host; each list capped at 50 plus `more`; system-workspace containers omitted
-  like the blocker scan). `DELETE /servers/:id?forgetResources=true` (or JSON
-  `{ forgetResources: true }` — never implied) drops those leftover rows in the
-  same transaction as the server row when the host is gone; a connected server
-  answers **409** `server_online`; co-located stays **403**. Without the flag,
+  addresses that would 409 a normal delete (`online` is the live snapshot or
+  stored connected flag; `canForget` only when offline, not co-located, and
+  leftovers are only container / network / address; each list capped at 50 plus
+  `more`; system-workspace rows omitted like the blocker scan).
+  `DELETE /servers/:id?forgetResources=true` (or JSON `{ forgetResources: true }`
+  — never implied) drops those leftover rows in the same transaction as the
+  server row when the host is gone; a connected server answers **409**
+  `server_online` (re-checked under row lock); remaining RESTRICT placements
+  still 409 `server_has_blockers`; co-located stays **403**. Without the flag,
   **409** `server_has_blockers` is unchanged. Audit context `forgotten` counts
   when the flag was used. `src/client/servers/AGENTS.md`.
 - **Server labels (client surface):** `GET`/`PUT /servers/:id/labels` —
@@ -229,7 +231,7 @@ changes.
   may carry only the three tuning keys as defaults. Absent strategy = `inplace`
   (existing environments); every user-facing create path stamps `sequential` on a new
   environment (system-owned environments are not stamped) (`stampNewEnvironmentDeployOptions`). Writes are validated (`400
-  deploy_options_invalid` on environments; the reason string on projects) and a
+deploy_options_invalid` on environments; the reason string on projects) and a
   PATCH that omits these keys keeps the stored ones (`settleDeployOptions`) because
   `options` is replaced wholesale and the compose editor sends only `compose`.
   `null` clears a key. The deploy request accepts `strategy` / `migration`
@@ -493,7 +495,7 @@ sourceServerId? }`
   rival up by 10, capped at 1000) and writes only the numbers that change, in
   one transaction, then runs the same routing fan-out a priority PATCH does.
   An untrusted datacenter is **409** `datacenter_not_trusted`. `GET
-  /datacenters` adds `serverTraffic: { wins, tied }` per row and a top-level
+/datacenters` adds `serverTraffic: { wins, tied }` per row and a top-level
   `warnings` list (`equal_priority`, one per shared number among trusted
   datacenters); the raw number stays editable through PATCH under Advanced.
 
@@ -508,7 +510,7 @@ sourceServerId? }`
   by the sweep tick and cap, there is no hold-down timer). `splitTrustedByLink`
   (`private-endpoint.ts`) splits the trusted shared datacenters into the ones
   that are up on both servers and the ones that are not, both in `(priority,
-  id)` order. `resolveOneFromCaches` walks the up list first; a down network is
+id)` order. `resolveOneFromCaches` walks the up list first; a down network is
   only a last resort (after fabric and public for `read-replication` /
   `client-backend`, straight away for `failover-replication`, which never
   leaves the datacenter), and the result then carries `linkDown: true`. When

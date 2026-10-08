@@ -23,7 +23,10 @@ import { isActiveContainerStatus } from '../../features/projects/project-delete.
 import { cachedServerDetailReadModel } from '../../query-cache/read-models/server-detail.ts'
 import { listServerLabels } from '../../features/servers/label-records.ts'
 import { fetchDaemonServerCell } from '../../daemon/cell/server-diagnostics.ts'
-import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
+import {
+  isServerConnectedStoredOrLive,
+  resolveFleetPresence,
+} from '../../daemon/cell/fleet-presence.ts'
 import { readProjectionsForServers } from '../../daemon/cell/postgres-projection.ts'
 import {
   onDaemonUpdateExpired,
@@ -77,9 +80,12 @@ import { assertDispatchInfrastructure } from './command-dispatch.ts'
 import { deleteServerFabricMembership } from '../../features/fabric/fabric-records.ts'
 import { reconcileFabricMembership } from '../../features/fabric/enqueue.ts'
 import {
+  assertServerOfflineForForget,
+  blockersThatPreventForget,
   COLOCATED_SERVER_KEY_REVOKE_BLOCKED_REASON,
   colocatedServerDeleteBlockedReason,
   forgetServerOwnedResources,
+  isServerOnlineDuringForgetError,
   listServerDeleteBlockers,
   loadServerDeletePreview,
   parseForgetResourcesFlag,
@@ -391,7 +397,11 @@ async function assertServerDeletable(
   registry: DaemonCellRegistry | undefined,
   serverId: string,
   organizationId: string,
-  opts: Readonly<{ skipBlockers?: boolean; refuseIfOnline?: boolean; isConnected?: boolean }> = {}
+  opts: Readonly<{
+    skipForgettableBlockers?: boolean
+    refuseIfOnline?: boolean
+    storedConnected?: boolean
+  }> = {}
 ): Promise<Response | null> {
   const colocated = await assertServerNotColocatedOr403(
     c,
@@ -403,13 +413,21 @@ async function assertServerDeletable(
   )
   if (colocated) return colocated
 
-  if (opts.refuseIfOnline && opts.isConnected) {
-    return serverOnlineForgetBlockedResponse(c)
+  if (opts.refuseIfOnline) {
+    const online = await isServerConnectedStoredOrLive(
+      db,
+      registry,
+      serverId,
+      opts.storedConnected === true
+    )
+    if (online) {
+      return serverOnlineForgetBlockedResponse(c)
+    }
   }
 
-  if (opts.skipBlockers) return null
-
-  const blockers = await listServerDeleteBlockers(db, serverId, organizationId)
+  const listed = await listServerDeleteBlockers(db, serverId, organizationId)
+  const blockers =
+    opts.skipForgettableBlockers === true ? blockersThatPreventForget(listed) : listed
   if (blockers.length > 0) {
     return serverDeleteBlockersResponse(c, blockers)
   }
@@ -690,19 +708,30 @@ async function deleteServerWithSystemSubtree(
   serverId: string,
   systemEnvironmentId: string | null,
   forgetResources: boolean
-): Promise<{ status: 'ok' | 'has_children'; forgotten: ForgottenServerResources | null }> {
+): Promise<{
+  status: 'ok' | 'has_children' | 'online'
+  forgotten: ForgottenServerResources | null
+}> {
   let forgotten: ForgottenServerResources | null = null
-  const status = await runHierarchyDelete(db, async (tx) => {
-    if (forgetResources) {
-      forgotten = await forgetServerOwnedResources(tx, serverId)
+  try {
+    const status = await runHierarchyDelete(db, async (tx) => {
+      if (forgetResources) {
+        await assertServerOfflineForForget(tx, serverId)
+        forgotten = await forgetServerOwnedResources(tx, serverId)
+      }
+      if (systemEnvironmentId) {
+        await systemHierarchy.deleteSystemEnvironmentSubtree(tx, systemEnvironmentId)
+      }
+      await deleteServerFabricMembership(tx, serverId)
+      await tx.delete(server).where(eq(server.id, serverId))
+    })
+    return { status, forgotten: status === 'ok' ? forgotten : null }
+  } catch (error) {
+    if (isServerOnlineDuringForgetError(error)) {
+      return { status: 'online', forgotten: null }
     }
-    if (systemEnvironmentId) {
-      await systemHierarchy.deleteSystemEnvironmentSubtree(tx, systemEnvironmentId)
-    }
-    await deleteServerFabricMembership(tx, serverId)
-    await tx.delete(server).where(eq(server.id, serverId))
-  })
-  return { status, forgotten: status === 'ok' ? forgotten : null }
+    throw error
+  }
 }
 
 async function reconcileFabricAfterServerDelete(
@@ -1112,7 +1141,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const colocated =
       colocatedIds.has(id) || (await hasActiveColocatedLicenseBinding(db, organizationId, id))
     const preview = await loadServerDeletePreview(db, id, organizationId, {
-      online: row.isConnected,
+      online: await isServerConnectedStoredOrLive(db, registry, id, row.isConnected),
       colocated,
     })
     return c.json(preview)
@@ -1591,9 +1620,9 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     // never turn a self-host-pinned (or probe-matched) host into a deletable one.
     const registry = getDaemonCellRegistry(c)
     const blocked = await assertServerDeletable(c, db, registry, id, organizationId, {
-      skipBlockers: forgetResources,
+      skipForgettableBlockers: forgetResources,
       refuseIfOnline: forgetResources,
-      isConnected: row.isConnected,
+      storedConnected: row.isConnected,
     })
     if (blocked) return blocked
 
@@ -1616,6 +1645,9 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       idleOrBlocked.systemEnvironmentId,
       forgetResources
     )
+    if (result.status === 'online') {
+      return serverOnlineForgetBlockedResponse(c)
+    }
     if (result.status === 'has_children') {
       return hierarchyDeleteHasChildrenResponse(c)
     }
