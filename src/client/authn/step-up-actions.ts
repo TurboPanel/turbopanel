@@ -27,6 +27,7 @@ export const STEP_UP_ACTIONS = {
   'license.revoke': 'Revoke a license key',
   'managed.delete': 'Delete a managed database',
   'managed.database.delete': 'Delete a database inside a managed database',
+  'binding.delete': 'Remove the link between an app and a managed database',
   'member.remove': 'Remove a member from the organization',
   'storage.delete': 'Delete a storage volume',
   'storage.copy.delete': 'Delete a copy of a storage volume',
