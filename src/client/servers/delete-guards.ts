@@ -591,6 +591,224 @@ function isDatabaseBlockedOnServer(
   );
 }
 
+function buildForgetClusterMap(
+  managedTouches: ReadonlyArray<{
+    id: string;
+    name: string | null;
+    engine: string;
+    managedServerId: string | null;
+    environmentServerId: string | null;
+  }>,
+  replicaTouches: readonly ReplicaTouch[],
+): Map<string, ManagedTouch> {
+  const clusters = new Map<string, ManagedTouch>();
+  for (const row of managedTouches) {
+    clusters.set(row.id, {
+      id: row.id,
+      name: managedDisplayName(row.name, row.engine),
+      managedServerId: row.managedServerId,
+      environmentServerId: row.environmentServerId,
+    });
+  }
+  for (const row of replicaTouches) {
+    if (!clusters.has(row.managedId)) {
+      clusters.set(row.managedId, {
+        id: row.managedId,
+        name: row.databaseName,
+        managedServerId: null,
+        environmentServerId: null,
+      });
+    }
+  }
+  return clusters;
+}
+
+async function loadReplicasByManagedForForget(
+  db: Db,
+  clusterIds: string[],
+  serverId: string,
+  replicaTouches: readonly ReplicaTouch[],
+  clusters: ReadonlyMap<string, ManagedTouch>,
+): Promise<Map<string, ReplicaTouch[]>> {
+  const otherReplicas = clusterIds.length === 0 ? [] : await db
+    .select({
+      id: replica.id,
+      managedId: replica.managedId,
+      serverId: replica.serverId,
+      role: replica.role,
+    })
+    .from(replica)
+    .where(
+      and(
+        inArray(replica.managedId, clusterIds),
+        ne(replica.serverId, serverId),
+      ),
+    );
+
+  const replicasByManaged = new Map<string, ReplicaTouch[]>();
+  const addReplica = (row: ReplicaTouch) => {
+    const list = replicasByManaged.get(row.managedId) ?? [];
+    list.push(row);
+    replicasByManaged.set(row.managedId, list);
+  };
+  for (const row of replicaTouches) addReplica(row);
+  for (const row of otherReplicas) {
+    addReplica({
+      id: row.id,
+      managedId: row.managedId,
+      serverId: row.serverId,
+      role: row.role,
+      databaseName: clusters.get(row.managedId)?.name ?? row.managedId,
+    });
+  }
+  return replicasByManaged;
+}
+
+function computeForgetBlockedDatabases(
+  clusters: ReadonlyMap<string, ManagedTouch>,
+  replicasByManaged: ReadonlyMap<string, ReplicaTouch[]>,
+  serverId: string,
+): {
+  blockedDatabases: ServerForgetBlockedDatabase[];
+  blockedIds: Set<string>;
+} {
+  const blockedDatabases: ServerForgetBlockedDatabase[] = [];
+  const blockedIds = new Set<string>();
+  for (const cluster of clusters.values()) {
+    const replicas = replicasByManaged.get(cluster.id) ?? [];
+    if (!isDatabaseBlockedOnServer(cluster, replicas, serverId)) continue;
+    const hasMemberOnAnotherServer = replicas.some((row) =>
+      row.serverId !== serverId
+    );
+    blockedIds.add(cluster.id);
+    blockedDatabases.push({
+      id: cluster.id,
+      name: cluster.name,
+      reason: blockedDatabaseReason(hasMemberOnAnotherServer),
+    });
+  }
+  blockedDatabases.sort((a, b) =>
+    comparePreviewName(a.name, b.name) || a.id.localeCompare(b.id)
+  );
+  return { blockedDatabases, blockedIds };
+}
+
+function buildPlacedEnvironmentBlockerItems(
+  placedEnvironments: ReadonlyArray<{
+    id: string;
+    name: string | null;
+    projectId: string;
+    projectName: string | null;
+    managedId: string | null;
+  }>,
+): ServerBlockerEnvironmentItem[] {
+  const environmentItems: ServerBlockerEnvironmentItem[] = placedEnvironments
+    .map((row) => ({
+      id: row.id,
+      name: row.name ?? "",
+      projectId: row.projectId,
+      projectName: row.projectName ?? "",
+      hasDatabase: row.managedId !== null,
+    }));
+  environmentItems.sort(
+    (a, b) =>
+      comparePreviewName(a.projectName, b.projectName) ||
+      comparePreviewName(a.name, b.name) ||
+      a.id.localeCompare(b.id),
+  );
+  return environmentItems;
+}
+
+async function resolveForgetBlockedEnvironments(
+  db: Db,
+  serverId: string,
+  forgetCandidateItems: ReadonlyArray<
+    Pick<
+      ServerBlockerEnvironmentItem,
+      "id" | "name" | "projectId" | "projectName"
+    >
+  >,
+): Promise<{
+  blockedEnvironments: ServerForgetBlockedEnvironment[];
+  blockedEnvironmentIds: Set<string>;
+}> {
+  const otherServersByEnvironment = await listEnvironmentOtherServerIds(
+    db,
+    forgetCandidateItems.map((row) => row.id),
+    serverId,
+  );
+
+  const blockedEnvironmentIds = new Set<string>();
+  const otherServerIds = new Set<string>();
+  for (const row of forgetCandidateItems) {
+    const serverIdSet = otherServersByEnvironment.get(row.id);
+    if (!serverIdSet || serverIdSet.size === 0) continue;
+    blockedEnvironmentIds.add(row.id);
+    for (const id of serverIdSet) otherServerIds.add(id);
+  }
+
+  const serverNameById = new Map<string, string>();
+  if (otherServerIds.size > 0) {
+    const nameRows = await db
+      .select({ id: server.id, name: server.name })
+      .from(server)
+      .where(inArray(server.id, [...otherServerIds]));
+    for (const row of nameRows) {
+      serverNameById.set(row.id, row.name ?? row.id);
+    }
+  }
+
+  const blockedEnvironments: ServerForgetBlockedEnvironment[] = [];
+  for (const row of forgetCandidateItems) {
+    const serverIdSet = otherServersByEnvironment.get(row.id);
+    if (!serverIdSet || serverIdSet.size === 0) continue;
+    const serverNames = [...serverIdSet]
+      .map((id) => serverNameById.get(id) ?? id)
+      .sort((a, b) => comparePreviewName(a, b));
+    blockedEnvironments.push({
+      id: row.id,
+      name: row.name,
+      projectId: row.projectId,
+      projectName: row.projectName,
+      reason: "present_elsewhere",
+      serverNames,
+    });
+  }
+  blockedEnvironments.sort(
+    (a, b) =>
+      comparePreviewName(a.projectName, b.projectName) ||
+      comparePreviewName(a.name, b.name) ||
+      a.id.localeCompare(b.id),
+  );
+  return { blockedEnvironments, blockedEnvironmentIds };
+}
+
+function buildForgetDatabaseBlockingBlockers(
+  blockedDatabases: readonly ServerForgetBlockedDatabase[],
+  blockedIds: ReadonlySet<string>,
+  clusters: ReadonlyMap<string, ManagedTouch>,
+  serverId: string,
+  replicaTouches: readonly ReplicaTouch[],
+): ServerDeleteBlocker[] {
+  const blockedHere = blockedDatabases.filter((row) => {
+    const cluster = clusters.get(row.id);
+    return cluster?.managedServerId === serverId ||
+      cluster?.environmentServerId === serverId;
+  });
+  const blockedMembers = replicaTouches.filter((row) =>
+    blockedIds.has(row.managedId)
+  );
+  const blockingBlockers: ServerDeleteBlocker[] = [];
+  if (blockedDatabases.length > 0) {
+    pushBlocker(blockingBlockers, "managed", blockedHere.length);
+    pushBlocker(blockingBlockers, "replica", blockedMembers.length);
+  }
+  return withBlockerItems(blockingBlockers, {
+    managed: blockedHere.map((row) => ({ id: row.id, name: row.name })),
+    replica: databaseItems(blockedMembers),
+  });
+}
+
 /**
  * Decide which app environments and database members a gone host may drop, and
  * which databases still block forget. Callers re-run this inside the delete
@@ -672,144 +890,32 @@ export async function planServerForget(
     databaseName: managedDisplayName(row.databaseName, row.engine),
   }));
 
-  const clusters = new Map<string, ManagedTouch>();
-  for (const row of managedTouches) {
-    clusters.set(row.id, {
-      id: row.id,
-      name: managedDisplayName(row.name, row.engine),
-      managedServerId: row.managedServerId,
-      environmentServerId: row.environmentServerId,
-    });
-  }
-  for (const row of replicaTouches) {
-    if (!clusters.has(row.managedId)) {
-      clusters.set(row.managedId, {
-        id: row.managedId,
-        name: row.databaseName,
-        managedServerId: null,
-        environmentServerId: null,
-      });
-    }
-  }
-
-  const clusterIds = [...clusters.keys()];
-  const otherReplicas = clusterIds.length === 0 ? [] : await db
-    .select({
-      id: replica.id,
-      managedId: replica.managedId,
-      serverId: replica.serverId,
-      role: replica.role,
-    })
-    .from(replica)
-    .where(
-      and(
-        inArray(replica.managedId, clusterIds),
-        ne(replica.serverId, serverId),
-      ),
-    );
-
-  const replicasByManaged = new Map<string, ReplicaTouch[]>();
-  const addReplica = (row: ReplicaTouch) => {
-    const list = replicasByManaged.get(row.managedId) ?? [];
-    list.push(row);
-    replicasByManaged.set(row.managedId, list);
-  };
-  for (const row of replicaTouches) addReplica(row);
-  for (const row of otherReplicas) {
-    addReplica({
-      id: row.id,
-      managedId: row.managedId,
-      serverId: row.serverId,
-      role: row.role,
-      databaseName: clusters.get(row.managedId)?.name ?? row.managedId,
-    });
-  }
-
-  const blockedDatabases: ServerForgetBlockedDatabase[] = [];
-  const blockedIds = new Set<string>();
-  for (const cluster of clusters.values()) {
-    const replicas = replicasByManaged.get(cluster.id) ?? [];
-    if (!isDatabaseBlockedOnServer(cluster, replicas, serverId)) continue;
-    const hasMemberOnAnotherServer = replicas.some((row) =>
-      row.serverId !== serverId
-    );
-    blockedIds.add(cluster.id);
-    blockedDatabases.push({
-      id: cluster.id,
-      name: cluster.name,
-      reason: blockedDatabaseReason(hasMemberOnAnotherServer),
-    });
-  }
-  blockedDatabases.sort((a, b) =>
-    comparePreviewName(a.name, b.name) || a.id.localeCompare(b.id)
-  );
-
-  const environmentItems: ServerBlockerEnvironmentItem[] = placedEnvironments
-    .map((row) => ({
-      id: row.id,
-      name: row.name ?? "",
-      projectId: row.projectId,
-      projectName: row.projectName ?? "",
-      hasDatabase: row.managedId !== null,
-    }));
-  environmentItems.sort(
-    (a, b) =>
-      comparePreviewName(a.projectName, b.projectName) ||
-      comparePreviewName(a.name, b.name) ||
-      a.id.localeCompare(b.id),
-  );
-
-  const forgetCandidateItems = environmentItems.filter((row) =>
-    !row.hasDatabase
-  );
-  const otherServersByEnvironment = await listEnvironmentOtherServerIds(
+  const clusters = buildForgetClusterMap(managedTouches, replicaTouches);
+  const replicasByManaged = await loadReplicasByManagedForForget(
     db,
-    forgetCandidateItems.map((row) => row.id),
+    [...clusters.keys()],
+    serverId,
+    replicaTouches,
+    clusters,
+  );
+  const { blockedDatabases, blockedIds } = computeForgetBlockedDatabases(
+    clusters,
+    replicasByManaged,
     serverId,
   );
 
-  const blockedEnvironments: ServerForgetBlockedEnvironment[] = [];
-  const blockedEnvironmentIds = new Set<string>();
-  const otherServerIds = new Set<string>();
-  for (const row of forgetCandidateItems) {
-    const serverIdSet = otherServersByEnvironment.get(row.id);
-    if (!serverIdSet || serverIdSet.size === 0) continue;
-    blockedEnvironmentIds.add(row.id);
-    for (const id of serverIdSet) otherServerIds.add(id);
-  }
-
-  const serverNameById = new Map<string, string>();
-  if (otherServerIds.size > 0) {
-    const nameRows = await db
-      .select({ id: server.id, name: server.name })
-      .from(server)
-      .where(inArray(server.id, [...otherServerIds]));
-    for (const row of nameRows) {
-      serverNameById.set(row.id, row.name ?? row.id);
-    }
-  }
-
-  for (const row of forgetCandidateItems) {
-    const serverIdSet = otherServersByEnvironment.get(row.id);
-    if (!serverIdSet || serverIdSet.size === 0) continue;
-    const serverNames = [...serverIdSet]
-      .map((id) => serverNameById.get(id) ?? id)
-      .sort((a, b) => comparePreviewName(a, b));
-    blockedEnvironments.push({
-      id: row.id,
-      name: row.name,
-      projectId: row.projectId,
-      projectName: row.projectName,
-      reason: "present_elsewhere",
-      serverNames,
-    });
-  }
-  blockedEnvironments.sort(
-    (a, b) =>
-      comparePreviewName(a.projectName, b.projectName) ||
-      comparePreviewName(a.name, b.name) ||
-      a.id.localeCompare(b.id),
+  const environmentItems = buildPlacedEnvironmentBlockerItems(
+    placedEnvironments,
   );
+  const forgetCandidateItems = environmentItems.filter((row) =>
+    !row.hasDatabase
+  );
+  const { blockedEnvironments, blockedEnvironmentIds } =
+    await resolveForgetBlockedEnvironments(
+      db,
+      serverId,
+      forgetCandidateItems,
+    );
 
   const environments: ServerForgetEnvironment[] = forgetCandidateItems
     .filter((row) => !blockedEnvironmentIds.has(row.id))
@@ -827,20 +933,6 @@ export async function planServerForget(
       comparePreviewName(a.databaseName, b.databaseName) ||
       a.id.localeCompare(b.id),
   );
-
-  const blockedHere = blockedDatabases.filter((row) => {
-    const cluster = clusters.get(row.id);
-    return cluster?.managedServerId === serverId ||
-      cluster?.environmentServerId === serverId;
-  });
-  const blockedMembers = replicaTouches.filter((row) =>
-    blockedIds.has(row.managedId)
-  );
-  const blockingBlockers: ServerDeleteBlocker[] = [];
-  if (blockedDatabases.length > 0) {
-    pushBlocker(blockingBlockers, "managed", blockedHere.length);
-    pushBlocker(blockingBlockers, "replica", blockedMembers.length);
-  }
 
   const placedDatabases = managedTouches
     .filter((row) => row.managedServerId === serverId)
@@ -861,10 +953,13 @@ export async function planServerForget(
     members,
     blockedDatabases,
     blockedEnvironments,
-    blockingBlockers: withBlockerItems(blockingBlockers, {
-      managed: blockedHere.map((row) => ({ id: row.id, name: row.name })),
-      replica: databaseItems(blockedMembers),
-    }),
+    blockingBlockers: buildForgetDatabaseBlockingBlockers(
+      blockedDatabases,
+      blockedIds,
+      clusters,
+      serverId,
+      replicaTouches,
+    ),
   };
 }
 

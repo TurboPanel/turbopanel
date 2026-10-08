@@ -12,7 +12,6 @@ import {
   network,
   replica,
   server,
-  service,
   slot,
   storageCopy,
   variable,
