@@ -143,6 +143,7 @@ import {
   onRecoveryCommandFailed,
   onRecoveryStepFailed,
   recoveryIdFromCommandMetadata,
+  resumeInterruptedPromote,
 } from '../managed/ha-recovery.ts'
 import { settleIngressCommandForRecovery } from '../managed/ha-ingress-gate.ts'
 import {
@@ -2002,7 +2003,8 @@ async function applyManagedRecoveryFailedSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
   meta: Record<string, unknown> | null | undefined,
-  deps?: CommandConsumerDeps
+  deps?: CommandConsumerDeps,
+  error?: string
 ): Promise<boolean> {
   const recoveryId = recoveryIdFromCommandMetadata(meta)
   if (!recoveryId) return false
@@ -2027,6 +2029,15 @@ async function applyManagedRecoveryFailedSideEffect(
 
   if (record.type === 'managed.promote' || record.type === 'managed.ha.failover') {
     if (isManagedHaFailoverRepoint(record)) return false
+    // A promote lost to a daemon restart is queued again (the old primary is
+    // already fenced, so failing the row would leave no writer).
+    const resumed = await resumeInterruptedPromote(db, deps?.commandQueue, {
+      recoveryId,
+      engine: recoveryEngine(payloadEngine(record.payload)),
+      actor: recoveryActor(record),
+      error: error ?? record.errorMessage,
+    })
+    if (resumed) return false
     await onRecoveryCommandFailed(db, recoveryId)
   }
   return false
@@ -2151,7 +2162,7 @@ async function applyManagedFailedSideEffect(
     )
     return
   }
-  if (await applyManagedRecoveryFailedSideEffect(db, record, meta, deps)) {
+  if (await applyManagedRecoveryFailedSideEffect(db, record, meta, deps, error)) {
     return
   }
   if (!shouldMarkManagedFailedOnCommandType(record.type)) return

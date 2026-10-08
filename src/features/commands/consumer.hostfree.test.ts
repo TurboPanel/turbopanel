@@ -2710,6 +2710,28 @@ test('processCommandEnvelope managed.ha.failover failure with an unparseable pay
   assertEquals(fake.recoveryUpdates[0]?.state, 'failed')
 })
 
+test('a promote lost to a daemon restart still fails its recovery when nothing can be queued again', async () => {
+  // The consumer has no command queue here, so the resume declines and the
+  // row ends failed for the operator exactly as before.
+  const fake = await runOnline(
+    'managed.promote',
+    PROMOTE_PAYLOAD,
+    {
+      ...donePending(),
+      status: 'failed',
+      error:
+        'The daemon restarted while this command was running; the host may be partly changed. Run it again.',
+      result: undefined,
+    },
+    {
+      commandMetadata: { recoveryId: RECOVERY_ID },
+      recoveryRow: promotingRecoveryRow(),
+    }
+  )
+  assertEquals(fake.recoveryUpdates.length, 1)
+  assertEquals(fake.recoveryUpdates[0]?.state, 'failed')
+})
+
 test('a promote side effect that throws ends its recovery failed for the operator', async () => {
   const fake = await runOnline('managed.promote', PROMOTE_PAYLOAD, doneWith(PROMOTE_RESULT), {
     replicaServerId: SERVER_ID,
