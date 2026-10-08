@@ -1755,6 +1755,54 @@ test('processCommandEnvelope managed.promote success flips roles in the fake tra
   )
 })
 
+test('processCommandEnvelope managed.ha.failover repoint success does not flip roles', async () => {
+  const fake = await runOnline(
+    'managed.ha.failover',
+    {
+      ...VALID_HA_FAILOVER_PAYLOAD,
+      phase: 'repoint',
+      targetHost: '203.0.113.11',
+      targetPort: 5432,
+    },
+    doneWith({ summary: 'followed', phase: 'repoint' }),
+    { replicaServerId: SERVER_ID }
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'succeeded'),
+    true
+  )
+  assertEquals(
+    fake.managedUpdates.some((patch) => patch.serverId !== undefined),
+    false
+  )
+})
+
+test('processCommandEnvelope managed.ha.failover repoint failure does not mark the cluster failed', async () => {
+  const fake = await runOnline(
+    'managed.ha.failover',
+    {
+      ...VALID_HA_FAILOVER_PAYLOAD,
+      phase: 'repoint',
+      targetHost: '203.0.113.11',
+      targetPort: 5432,
+    },
+    {
+      ...donePending(),
+      status: 'failed',
+      error: 'follow-primary failed',
+      result: undefined,
+    }
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'failed'),
+    true
+  )
+  assertEquals(
+    fake.managedUpdates.some((patch) => patch.status === 'failed'),
+    false
+  )
+})
+
 test('processCommandEnvelope managed.ha.failover drain without recoveryId is a no-op', async () => {
   const fake = await runOnline(
     'managed.ha.failover',

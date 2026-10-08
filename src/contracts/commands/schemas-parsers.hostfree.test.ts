@@ -544,6 +544,23 @@ test('parseManagedHaFailoverPayload and result validate phase and ids', () => {
     { summary: 'drained', phase: 'recover' }
   )
 
+  const repoint = parseManagedHaFailoverPayload({
+    managedId: 'managed-pg-1',
+    sourceMemberId: MEMBER_ID,
+    targetMemberId: '00000000-0000-4000-8000-0000000000ee',
+    phase: 'repoint',
+    targetHost: '203.0.113.11',
+    targetPort: 5432,
+    targetHostaddr: '10.100.0.4',
+  })
+  assertEquals(repoint.phase, 'repoint')
+  assertEquals(repoint.targetHost, '203.0.113.11')
+  assertEquals(repoint.targetHostaddr, '10.100.0.4')
+  assertEquals(
+    parseManagedHaFailoverResult({ summary: 'followed', phase: 'repoint' }).phase,
+    'repoint'
+  )
+
   assertThrows(
     () =>
       parseManagedHaFailoverPayload({

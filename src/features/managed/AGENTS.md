@@ -598,7 +598,12 @@ to `managed.promote` when Orchestrator is absent or the recover API fails.
 Detection is an unsolicited `managed-ha-event` over the daemon WebSocket — not a
 Durable Object poll loop. DR rewrite: members no longer in the new primary's
 datacenter cannot stay `failover` → `read` (keep `readEligible`). Same-DC `read`
-peers are never silently upgraded to `failover`.
+peers are never silently upgraded to `failover`. After a successful
+`managed.promote` or `managed.ha.failover` `recover`, remaining healthy replicas
+(not the new primary, not `needs_resync` / `failed`) each get
+`managed.ha.failover` `phase: 'repoint'` so they follow the new primary without
+a full Resync. A failed follow is logged and left to health checks; it does not
+fail the promote.
 
 ### Completion gate: every ingress must confirm (`ha-ingress-gate.ts`)
 

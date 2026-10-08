@@ -35,6 +35,7 @@ import {
   nextStateAfterPromoteSuccess,
 } from './ha-recovery-pure.ts'
 import { fanOutManagedHaReconcile } from './ha-desired.ts'
+import { enqueueFollowPrimaryOnReplicas } from './follow-primary.ts'
 import {
   failRecoveryIngressNotQueued,
   parkRecoveryAtIngressGate,
@@ -1278,6 +1279,13 @@ export async function onPromoteSucceeded(
   try {
     if (record.kind === 'disaster-recovery' && record.targetMemberId) {
       await reclassifyAfterDisasterRecovery(db, record)
+    }
+    if (record.targetMemberId) {
+      await enqueueFollowPrimaryOnReplicas(db, commandQueue, {
+        managedId: record.managedId,
+        newPrimaryMemberId: record.targetMemberId,
+        actorId,
+      })
     }
     const ingress = await fanOutAfterPromote(db, commandQueue, secrets, record, actorId)
     if (ingress) {

@@ -5386,7 +5386,7 @@ export type ManagedHaReconcileCommandResult = {
   containers?: EnvironmentDeployContainer[]
 }
 
-export type ManagedHaFailoverPhase = 'drain' | 'recover'
+export type ManagedHaFailoverPhase = 'drain' | 'recover' | 'repoint'
 
 /** Must stay in sync with the daemon `managed.ha.failover` shape. */
 export type ManagedHaFailoverCommandPayload = {
@@ -5399,6 +5399,11 @@ export type ManagedHaFailoverCommandPayload = {
   sourcePort?: number
   targetHost?: string
   targetPort?: number
+  /**
+   * Dial IP when `targetHost` is the leaf SAN (Postgres `hostaddr`).
+   * Omitted when `targetHost` is already the address to dial.
+   */
+  targetHostaddr?: string
 }
 
 export type ManagedHaFailoverCommandResult = {
@@ -7346,7 +7351,7 @@ export function parseManagedIngressReconcileResult(
 }
 
 const HA_PROMOTION_RULES = new Set<string>([HA_PROMOTION_RULE_PREFER, HA_PROMOTION_RULE_MUST_NOT])
-const HA_FAILOVER_PHASES = new Set<string>(['drain', 'recover'])
+const HA_FAILOVER_PHASES = new Set<string>(['drain', 'recover', 'repoint'])
 const MAX_HA_CLUSTERS = 64
 const MAX_HA_MEMBERS = 32
 const MAX_HA_PEERS = 32
@@ -7601,6 +7606,7 @@ export function parseManagedHaFailoverPayload(value: unknown): ManagedHaFailover
       sourcePort: parseOptionalManagedHaFailoverPort(value.sourcePort),
       targetHost: parseOptionalManagedHaFailoverHost(value.targetHost),
       targetPort: parseOptionalManagedHaFailoverPort(value.targetPort),
+      targetHostaddr: parseOptionalManagedHaFailoverHost(value.targetHostaddr),
     }),
   }
 }
