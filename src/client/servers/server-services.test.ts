@@ -330,23 +330,40 @@ test('GET /servers/:id/services lists a container app and a database replica', a
     assertEquals(body.removal.canRemove, false)
     assertEquals(body.removal.online, false)
     assertEquals(body.removal.canForget, false)
-    assertEquals(body.removal.reasons, [
-      {
-        kind: 'container',
-        count: 1,
-        message: 'One container is still on this server: stop or move the apps first.',
-      },
-      {
-        kind: 'environment',
-        count: 2,
-        message: '2 app environments are still placed on this server.',
-      },
-      {
-        kind: 'managed',
-        count: 1,
-        message: 'Database "App Data" has its only copy on this server. Delete the database first.',
-      },
-    ])
+    assertEquals(
+      body.removal.reasons.map(({ kind, count, message }) => ({ kind, count, message })),
+      [
+        {
+          kind: 'container',
+          count: 1,
+          message: 'One container is still on this server: stop or move the apps first.',
+        },
+        {
+          kind: 'environment',
+          count: 2,
+          message:
+            'App environments "Data / Production" and "Shop / Production" are still placed on this server.',
+        },
+        {
+          kind: 'managed',
+          count: 1,
+          message:
+            'Database "App Data" has its only copy on this server. Delete the database first.',
+        },
+      ]
+    )
+    const envReason = body.removal.reasons.find((row) => row.kind === 'environment')
+    assertEquals(
+      envReason?.items?.map((row) => ({
+        name: row.name,
+        projectName: 'projectName' in row ? row.projectName : null,
+        hasDatabase: 'hasDatabase' in row ? row.hasDatabase : null,
+      })),
+      [
+        { name: 'Production', projectName: 'Data', hasDatabase: true },
+        { name: 'Production', projectName: 'Shop', hasDatabase: false },
+      ]
+    )
     assertEquals(body.apps, {
       items: [
         {
