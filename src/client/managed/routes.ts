@@ -193,6 +193,7 @@ import {
   serializeManagedRow,
 } from '../../features/managed/serialize.ts'
 import { isManagedReplicaObservationStale } from '../../features/managed/promote-lag.ts'
+import { SWITCHOVER_CATCHUP_MAX_AGE_MS } from '../../features/managed/switchover-catchup.ts'
 import { findLatestRecovery } from '../../features/managed/recovery-records.ts'
 import { serializeRecovery } from '../../features/managed/recovery.ts'
 import {
@@ -334,6 +335,36 @@ async function assertManagedPromoteLagAllowed(
   }
   const gate = evaluatePromoteLagHttpGate(replication, force)
   return gate !== null ? c.json({ error: gate }, 409) : null
+}
+
+/**
+ * The target's replication reading for the switchover journal: the stored one
+ * when it is fresh enough to prove the target caught up, otherwise one fresh
+ * probe (`switchover-catchup.ts`). Never throws; `undefined` = no proof.
+ */
+async function readSwitchoverTargetReplication(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  params: { member: ManagedMemberRow; managedId: string; engine: string }
+): Promise<unknown> {
+  try {
+    const stored = await findManagedMember(db, params.member.id)
+    const current = serializeManagedMember(stored ?? params.member, null).replication
+    if (!isManagedReplicaObservationStale(current, Date.now(), SWITCHOVER_CATCHUP_MAX_AGE_MS)) {
+      return current
+    }
+    const probe = await probeManagedMemberHealth(db, getDaemonCellRegistry(c), {
+      serverId: params.member.serverId,
+      managedId: params.managedId,
+      memberId: params.member.id,
+      role: 'replica',
+      engine: params.engine,
+      timeoutMs: MANAGED_HEALTH_PROBE_PROMOTE_TIMEOUT_MS,
+    })
+    return probe.status === 'observed' ? probe.replication : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -2543,6 +2574,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       })
     }
 
+    const targetReplication = force
+      ? undefined
+      : await readSwitchoverTargetReplication(c, db, {
+          member,
+          managedId: row.id,
+          engine: ctx.spec.engine,
+        })
     const recovery = await beginOperatorSwitchover({
       db,
       commandQueue,
@@ -2552,6 +2590,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       target: member,
       members,
       actor: { actorType: 'user', actorId: auth.userId },
+      forced: force,
+      targetReplication,
     })
     const http = operatorPromoteHttpResult(recovery)
     return c.json(http.body, http.status)

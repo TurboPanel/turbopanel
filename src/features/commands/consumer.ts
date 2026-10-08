@@ -172,6 +172,8 @@ export type CommandConsumerDeps = {
   resealDeps?: CommandResealDeps
   secretsConfig?: SecretsConfig
   dataEncryptionSecrets?: DerivedSecretsConfig
+  /** Set by `processCommandEnvelope` for result side effects that need live daemon presence. */
+  registry?: DaemonCellRegistry
   /** The deploy-time firewall apply key; required so a dropped gate fails the type check. */
   firewallApplyGate: FirewallApplyGate
 }
@@ -2398,6 +2400,7 @@ async function applyManagedPromoteSideEffect(
         {
           secretsConfig: deps.secretsConfig,
           dataEncryptionSecrets: deps.dataEncryptionSecrets,
+          registry: deps.registry,
         },
         recoveryId,
         envelope.serverId
@@ -2542,6 +2545,7 @@ async function applyManagedHaFailoverSideEffect(
         {
           secretsConfig: deps?.secretsConfig,
           dataEncryptionSecrets: deps?.dataEncryptionSecrets,
+          registry: deps?.registry,
         },
         recoveryId,
         envelope.serverId
@@ -2731,5 +2735,5 @@ export async function processCommandEnvelope(
   const pending = await enqueueAndAwaitOutcome(db, registry, record, envelope, deps)
   if (!pending) return
 
-  await applyPendingOutcome(db, record, envelope, pending, deps)
+  await applyPendingOutcome(db, record, envelope, pending, deps ? { ...deps, registry } : deps)
 }

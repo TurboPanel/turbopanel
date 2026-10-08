@@ -6,6 +6,7 @@
  * never imports `client/`.
  */
 
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -19,10 +20,10 @@ export type RecoveryCommandActor = {
 
 export type ManagedHaRecoveryHooks = {
   fencePhaseFromCommandMetadata: (
-    metadata: Record<string, unknown> | null | undefined,
+    metadata: Record<string, unknown> | null | undefined
   ) => RecoveryFencePhase | null
   recoveryIdFromCommandMetadata: (
-    metadata: Record<string, unknown> | null | undefined,
+    metadata: Record<string, unknown> | null | undefined
   ) => string | null
   onFenceCommandSucceeded: (
     db: Db,
@@ -33,7 +34,7 @@ export type ManagedHaRecoveryHooks = {
       fencePhase: RecoveryFencePhase
       engine: string
       actor: RecoveryCommandActor
-    },
+    }
   ) => Promise<void>
   onFenceCommandFailed: (
     db: Db,
@@ -43,7 +44,7 @@ export type ManagedHaRecoveryHooks = {
       commandId: string
       engine: string
       actor: RecoveryCommandActor
-    },
+    }
   ) => Promise<void>
   onPromoteSucceeded: (
     db: Db,
@@ -51,9 +52,10 @@ export type ManagedHaRecoveryHooks = {
     secrets: {
       secretsConfig?: SecretsConfig
       dataEncryptionSecrets?: DerivedSecretsConfig
+      registry?: DaemonCellRegistry
     },
     recoveryId: string,
-    actorId: string,
+    actorId: string
   ) => Promise<void>
   onRecoveryCommandFailed: (db: Db, recoveryId: string) => Promise<void>
 }

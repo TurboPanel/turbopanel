@@ -5,6 +5,7 @@
 
 import { and, eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import type { CommandType } from '../commands/types.ts'
@@ -36,6 +37,8 @@ import {
 } from './ha-recovery-pure.ts'
 import { fanOutManagedHaReconcile } from './ha-desired.ts'
 import { enqueueFollowPrimaryOnReplicas } from './follow-primary.ts'
+import { reseedDemotedPrimaryAfterSwitchover } from './reseed-demoted-primary.ts'
+import { evaluateSwitchoverCatchUp } from './switchover-catchup.ts'
 import {
   failRecoveryIngressNotQueued,
   parkRecoveryAtIngressGate,
@@ -673,8 +676,22 @@ export function beginOperatorSwitchover(params: {
   target: ManagedMemberRow
   members: readonly ManagedMemberRow[]
   actor: RecoveryCommandActor
+  /** The operator forced the switchover past the lag gate. */
+  forced?: boolean
+  /** The target's fresh replication reading taken before the fence. */
+  targetReplication?: unknown
 }): Promise<RecoveryEnqueueResult> {
-  return beginRecovery({ ...params, kind: 'switchover' })
+  const { forced, targetReplication, ...rest } = params
+  const catchUp = evaluateSwitchoverCatchUp(params.engine, targetReplication)
+  return beginRecovery({
+    ...rest,
+    kind: 'switchover',
+    extraMetadata: {
+      forced: forced === true,
+      targetCaughtUp: catchUp.caughtUp,
+      targetCaughtUpBasis: catchUp.basis,
+    },
+  })
 }
 
 export function beginDisasterRecovery(params: {
@@ -1256,15 +1273,45 @@ async function fanOutAfterPromote(
   return ingress
 }
 
+export type PromoteFollowUpRuntime = {
+  secretsConfig?: SecretsConfig
+  dataEncryptionSecrets?: DerivedSecretsConfig
+  /** Live daemon connections, for the planned-switchover re-seed. */
+  registry?: DaemonCellRegistry
+}
+
+/** Test seam: replaces the planned-switchover re-seed. */
+export type PromoteFollowUpHooks = {
+  reseed?: typeof reseedDemotedPrimaryAfterSwitchover
+}
+
+async function reseedAfterPlannedSwitchover(
+  db: Db,
+  commandQueue: CommandQueue | undefined,
+  runtime: PromoteFollowUpRuntime,
+  record: RecoveryRecord,
+  actorId: string,
+  hooks: PromoteFollowUpHooks
+): Promise<void> {
+  if (record.kind !== 'switchover') return
+  try {
+    const reseed = hooks.reseed ?? reseedDemotedPrimaryAfterSwitchover
+    await reseed(db, commandQueue, runtime, record, actorId)
+  } catch (err) {
+    compatLogWarn(
+      'managed-ha',
+      `managed.member.reseed.auto: ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+}
+
 export async function onPromoteSucceeded(
   db: Db,
   commandQueue: CommandQueue | undefined,
-  secrets: {
-    secretsConfig?: SecretsConfig
-    dataEncryptionSecrets?: DerivedSecretsConfig
-  },
+  secrets: PromoteFollowUpRuntime,
   recoveryId: string,
-  actorId: string
+  actorId: string,
+  hooks: PromoteFollowUpHooks = {}
 ): Promise<void> {
   const existing = await findRecoveryById(db, recoveryId)
   if (!existing || isTerminalRecoveryState(existing.state)) return
@@ -1296,6 +1343,7 @@ export async function onPromoteSucceeded(
         ingress,
         attestedLostServerIds(record.metadata)
       )
+      await reseedAfterPlannedSwitchover(db, commandQueue, secrets, record, actorId, hooks)
       return
     }
     // Nothing could be queued, so no ingress was told about the new primary.

@@ -133,6 +133,18 @@ export type RecoveryMetadata = {
   fenced?: boolean
   drainApplied?: boolean
   stopApplied?: boolean
+  /**
+   * Operator switchover only: the operator forced it past the lag gate. A
+   * forced switchover never triggers the automatic re-seed of the old primary.
+   */
+  forced?: boolean
+  /**
+   * Operator switchover only: a fresh reading taken before the fence showed
+   * the target fully caught up (`switchover-catchup.ts`). Absent / false =
+   * not proven, so the old primary is left `needs_resync` for an operator.
+   */
+  targetCaughtUp?: boolean
+  targetCaughtUpBasis?: string
   blockedReason?: string
   /** Times the same refusal was seen; absent = once. */
   blockedCount?: number
@@ -256,6 +268,9 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   setIfPresent(metadata, 'fenced', optionalBoolean(value.fenced))
   setIfPresent(metadata, 'drainApplied', optionalBoolean(value.drainApplied))
   setIfPresent(metadata, 'stopApplied', optionalBoolean(value.stopApplied))
+  setIfPresent(metadata, 'forced', optionalBoolean(value.forced))
+  setIfPresent(metadata, 'targetCaughtUp', optionalBoolean(value.targetCaughtUp))
+  setIfPresent(metadata, 'targetCaughtUpBasis', optionalString(value.targetCaughtUpBasis))
   setIfPresent(metadata, 'blockedReason', optionalString(value.blockedReason))
   setIfPresent(metadata, 'blockedCount', optionalNullableNumber(value.blockedCount) ?? undefined)
   setIfPresent(metadata, 'lastBlockedAt', optionalString(value.lastBlockedAt))

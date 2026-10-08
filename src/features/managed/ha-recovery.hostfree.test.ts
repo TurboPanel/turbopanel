@@ -1601,6 +1601,124 @@ test('onPromoteSucceeded never completes when no ingress repoint could be queued
   ])
 })
 
+function reseedSpy() {
+  const calls: string[] = []
+  const reseed = (
+    _db: Db,
+    _queue: CommandQueue | undefined,
+    _runtime: unknown,
+    record: RecoveryRecord
+  ) => {
+    calls.push(record.kind)
+    return Promise.resolve()
+  }
+  return { calls, hooks: { reseed } }
+}
+
+const CLEAN_SWITCHOVER_METADATA = {
+  drainApplied: true,
+  stopApplied: true,
+  fenced: true,
+  forced: false,
+  targetCaughtUp: true,
+}
+
+async function promoteWithSpy(kind: string, metadata: Record<string, unknown>, queued = true) {
+  const harness = createHarness({
+    members: [
+      member({ role: 'replica', status: 'needs_resync' }),
+      failoverReplica({ role: 'primary', serverId: SERVER_B }),
+    ],
+    recovery: recoveryRow({ kind, state: 'promoting', metadata }),
+  })
+  const spy = reseedSpy()
+  const deps = await promoteFanOutDeps()
+  if (queued) {
+    await onPromoteSucceeded(harness.db, deps.queue, deps.secrets, REC_ID, ACTOR_ID, spy.hooks)
+  } else {
+    await onPromoteSucceeded(harness.db, undefined, {}, REC_ID, ACTOR_ID, spy.hooks)
+  }
+  return { spy, harness }
+}
+
+test('onPromoteSucceeded calls the planned-switchover reseed for a clean switchover', async () => {
+  const { spy, harness } = await promoteWithSpy('switchover', CLEAN_SWITCHOVER_METADATA)
+  assertEquals(spy.calls, ['switchover'])
+  const state = harness.recovery()?.state
+  assertEquals(state === 'completed' || state === 'reconciling-ingress', true)
+})
+
+test('onPromoteSucceeded does not reseed after an automatic failover or disaster recovery', async () => {
+  const failover = await promoteWithSpy('automatic-failover', CLEAN_SWITCHOVER_METADATA)
+  const dr = await promoteWithSpy('disaster-recovery', CLEAN_SWITCHOVER_METADATA)
+  assertEquals(failover.spy.calls, [])
+  assertEquals(dr.spy.calls, [])
+})
+
+test('onPromoteSucceeded does not reseed when no ingress repoint could be queued', async () => {
+  const { spy, harness } = await promoteWithSpy('switchover', CLEAN_SWITCHOVER_METADATA, false)
+  assertEquals(spy.calls, [])
+  assertEquals(harness.recovery()?.state, 'failed')
+})
+
+test('onPromoteSucceeded still finishes when the reseed throws', async () => {
+  const harness = createHarness({
+    members: [
+      member({ role: 'replica', status: 'needs_resync' }),
+      failoverReplica({ role: 'primary', serverId: SERVER_B }),
+    ],
+    recovery: recoveryRow({
+      kind: 'switchover',
+      state: 'promoting',
+      metadata: CLEAN_SWITCHOVER_METADATA,
+    }),
+  })
+  const deps = await promoteFanOutDeps()
+  await onPromoteSucceeded(harness.db, deps.queue, deps.secrets, REC_ID, ACTOR_ID, {
+    reseed: () => Promise.reject(new TypeError('boom')),
+  })
+  const state = harness.recovery()?.state
+  assertEquals(state === 'completed' || state === 'reconciling-ingress', true)
+})
+
+test('beginOperatorSwitchover records forced and the target catch-up evidence', async () => {
+  const caughtUp = {
+    state: 'streaming',
+    observedAt: new Date().toISOString(),
+    lagBytes: 0,
+    receiveLagBytes: 0,
+    lagSeconds: 0,
+  }
+  const run = async (extra: { forced?: boolean; targetReplication?: unknown }) => {
+    const harness = createHarness({ connected: [true] })
+    const result = await beginOperatorSwitchover({
+      db: harness.db,
+      commandQueue: okQueue(),
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      source: member(),
+      target: failoverReplica(),
+      members: [member(), failoverReplica()],
+      actor: ACTOR,
+      ...extra,
+    })
+    expectOk(result)
+    return harness.recovery()?.metadata as {
+      forced?: boolean
+      targetCaughtUp?: boolean
+      targetCaughtUpBasis?: string
+    }
+  }
+  const clean = await run({ targetReplication: caughtUp })
+  assertEquals(clean.forced, false)
+  assertEquals(clean.targetCaughtUp, true)
+  const forced = await run({ forced: true })
+  assertEquals(forced.forced, true)
+  assertEquals(forced.targetCaughtUp, false)
+  const lagging = await run({ targetReplication: { ...caughtUp, lagBytes: 10 } })
+  assertEquals(lagging.targetCaughtUp, false)
+})
+
 test('onPromoteSucceeded fans out ingress and HA reconcile when secrets are present', async () => {
   const queue = okQueue()
   const harness = createHarness({
