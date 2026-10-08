@@ -244,7 +244,7 @@ function groupApps(
   return apps
 }
 
-async function loadAppRows(db: Db, serverId: string) {
+function loadAppRows(db: Db, serverId: string) {
   return db
     .select({
       serviceId: service.id,
