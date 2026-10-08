@@ -5109,7 +5109,7 @@ export type ManagedApplyCommandResult = {
   status?: string
 }
 
-export type ManagedLifecycleCommandPayload = {
+export type ManagedLifecyclePayload = {
   managedId: string
   action: 'start' | 'stop' | 'restart'
   memberId?: string
@@ -5133,9 +5133,6 @@ export type ManagedLifecycleCommandPayload = {
    */
   demoted?: boolean
 }
-
-/** Twin name of {@link ManagedLifecycleCommandPayload} (expand-only snapshot). */
-export type ManagedLifecyclePayload = ManagedLifecycleCommandPayload
 
 export type ManagedLifecycleCommandResult = {
   status: string
@@ -6186,7 +6183,7 @@ export function parseManagedApplyResult(value: unknown): ManagedApplyCommandResu
   return result
 }
 
-export function parseManagedLifecyclePayload(value: unknown): ManagedLifecycleCommandPayload {
+export function parseManagedLifecyclePayload(value: unknown): ManagedLifecyclePayload {
   if (!isRecord(value)) {
     throw new Error('Invalid managed.lifecycle payload')
   }
@@ -6198,9 +6195,9 @@ export function parseManagedLifecyclePayload(value: unknown): ManagedLifecycleCo
   ) {
     throw new Error('Invalid managed.lifecycle payload')
   }
-  const payload: ManagedLifecycleCommandPayload = {
+  const payload: ManagedLifecyclePayload = {
     managedId: value.managedId,
-    action: value.action as ManagedLifecycleCommandPayload['action'],
+    action: value.action as ManagedLifecyclePayload['action'],
   }
   if (value.memberId !== undefined) {
     if (!isString(value.memberId) || !UUID_RE.test(value.memberId)) {
@@ -7680,7 +7677,7 @@ export function parseCommandPayload(
   | EnvironmentLifecycleCommandPayload
   | EnvironmentStopCommandPayload
   | ManagedApplyCommandPayload
-  | ManagedLifecycleCommandPayload
+  | ManagedLifecyclePayload
   | ManagedDestroyCommandPayload
   | ManagedBackupCommandPayload
   | ManagedRestoreCommandPayload
