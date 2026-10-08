@@ -855,6 +855,16 @@ the control plane holds, not on how it was replaced:
   operator's choice (`POST .../members/:id/resync`), its un-replicated writes
   exist nowhere else.
 
+**Demoted marker (daemon guard):** fence stops of the _old_ primary — the
+`managed.lifecycle` stop in `enqueueFenceCommands` (`params.source`) and the
+return-fence stop above — set optional `demoted: true` on the payload. Ordinary
+operator stops and stops of the new primary omit it. The daemon writes
+`<stateDir>/managed/<managedId>/demoted.json` after that stop succeeds and a
+periodic guard stops the engine again if someone starts the container by hand
+(a host that stayed connected never hits the reconnect sweep). Older daemons
+ignore the field; older control planes omit it. The control plane still marks
+the member `needs_resync`; the daemon owns keeping it from serving writes.
+
 **Alerts**: the offline alert (`server.offline`) now names the HA databases
 whose primary the server hosts and what happens next; the outcome is the
 recovery row in the journal. No new notification event (that needs a
