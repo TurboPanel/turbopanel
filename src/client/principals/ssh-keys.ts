@@ -2,7 +2,7 @@
  * Storage for the public keys that may authenticate as a principal.
  *
  * Separate from `src/features/principals/store.ts` because the read shape differs in a way that
- * matters: entitlements are loaded to *render* a form, keys are loaded to
+ * matters: the rows there are loaded to *render* a form, keys are loaded to
  * *build a payload the host authenticates against*, and the two have different
  * containment rules. Keeping them apart makes it hard to accidentally hand a
  * serializer the raw key rows or hand the daemon a display shape.
@@ -10,12 +10,7 @@
 
 import { and, asc, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import {
-  principal,
-  sshKey,
-  project,
-  workspace,
-} from '../../db/schema.ts'
+import { principal, sshKey, project, workspace } from '../../db/schema.ts'
 import { parseSshPublicKey } from '../../features/principals/ssh-public-key.ts'
 
 /**
@@ -49,10 +44,7 @@ export class SshKeyRejected extends Error {
   }
 }
 
-export async function listSshKeys(
-  db: Db,
-  principalId: string,
-): Promise<PrincipalSshKeyRow[]> {
+export async function listSshKeys(db: Db, principalId: string): Promise<PrincipalSshKeyRow[]> {
   return await db
     .select({
       id: sshKey.id,
@@ -80,11 +72,9 @@ export async function listSshKeys(
  */
 export async function loadSshKeysByPrincipalIds(
   tx: Db,
-  principalIds: readonly string[],
+  principalIds: readonly string[]
 ): Promise<Map<string, string[]>> {
-  const byPrincipal = new Map<string, string[]>(
-    principalIds.map((id) => [id, []]),
-  )
+  const byPrincipal = new Map<string, string[]>(principalIds.map((id) => [id, []]))
   if (principalIds.length > 0) {
     const rows = await tx
       .select({
@@ -104,7 +94,7 @@ export async function loadSshKeysByPrincipalIds(
 /** How many keys each of these principals holds. */
 export async function countSshKeysByPrincipalIds(
   tx: Db,
-  principalIds: readonly string[],
+  principalIds: readonly string[]
 ): Promise<Map<string, number>> {
   const keys = await loadSshKeysByPrincipalIds(tx, principalIds)
   return new Map([...keys].map(([id, list]) => [id, list.length]))
@@ -127,10 +117,7 @@ export type AddSshKeyInput = {
  * fixable ways (a stray options field, a DSA key, the private half), and each
  * of those deserves the sentence that says what to do.
  */
-export async function addSshKey(
-  db: Db,
-  input: AddSshKeyInput,
-): Promise<PrincipalSshKeyRow> {
+export async function addSshKey(db: Db, input: AddSshKeyInput): Promise<PrincipalSshKeyRow> {
   const name = input.name.trim()
   if (name.length === 0 || name.length > 255) {
     throw new SshKeyRejected('name must be between 1 and 255 characters')
@@ -182,11 +169,7 @@ export async function addSshKey(
 }
 
 /** Remove one key. Returns false when it was not this principal's to remove. */
-export async function removeSshKey(
-  db: Db,
-  principalId: string,
-  keyId: string,
-): Promise<boolean> {
+export async function removeSshKey(db: Db, principalId: string, keyId: string): Promise<boolean> {
   const deleted = await db
     .delete(sshKey)
     .where(
@@ -194,8 +177,8 @@ export async function removeSshKey(
         eq(sshKey.id, keyId),
         // Scoped by principal, so a key id from another account cannot be
         // deleted by guessing it.
-        eq(sshKey.principalId, principalId),
-      ),
+        eq(sshKey.principalId, principalId)
+      )
     )
     .returning({ id: sshKey.id })
   return deleted.length > 0
@@ -211,7 +194,7 @@ export async function removeSshKey(
 export async function principalsWithFingerprint(
   db: Db,
   organizationId: string,
-  fingerprint: string,
+  fingerprint: string
 ): Promise<Array<{ principalId: string; username: string }>> {
   return await db
     .select({
@@ -223,10 +206,5 @@ export async function principalsWithFingerprint(
     .innerJoin(principal, eq(principal.id, sshKey.principalId))
     .innerJoin(project, eq(principal.projectId, project.id))
     .innerJoin(workspace, eq(project.workspaceId, workspace.id))
-    .where(
-      and(
-        eq(workspace.organizationId, organizationId),
-        eq(sshKey.fingerprint, fingerprint),
-      ),
-    )
+    .where(and(eq(workspace.organizationId, organizationId), eq(sshKey.fingerprint, fingerprint)))
 }

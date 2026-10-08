@@ -242,8 +242,7 @@ test('hasPlainPrincipalDashes refuses a trailing dash and dash runs', () => {
 
 test('isReservedPrincipalUsername reserves the whole tp prefix', () => {
   // Every TurboPanel-owned account and group is tp-prefixed. Enumerating them
-  // could never keep up: tpnodeapp is not in the denylist, and each
-  // runtime-entitlement group (tpphp84, tpnode24, ...) would need adding by hand.
+  // could never keep up with every tp* account and group a host carries.
   assertEquals(isReservedPrincipalUsername('tpnodeapp'), true)
   assertEquals(isReservedPrincipalUsername('tpphp84'), true)
   assertEquals(isReservedPrincipalUsername('TPANYTHING'), true)

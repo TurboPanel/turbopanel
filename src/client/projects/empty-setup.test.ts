@@ -185,7 +185,7 @@ test('projectNeedsSetup is true when type is absent or empty', () => {
 
 test('projectNeedsSetup is false once a real type is set', () => {
   assertEquals(projectNeedsSetup({ type: 'docker-compose' }), false)
-  assertEquals(projectNeedsSetup({ type: 'template', code: 'static-site' }), false)
+  assertEquals(projectNeedsSetup({ type: 'template', code: 'custom-template' }), false)
   assertEquals(projectNeedsSetup({ type: 'managed', code: 'postgres' }), false)
   assertEquals(projectNeedsSetup({ type: 'system' }), false)
 })
@@ -465,7 +465,7 @@ test('configureProjectType rejects changing configured type', async () => {
     {
       projectId: 'p1',
       projectType: 'template',
-      catalogCode: 'static-site',
+      catalogCode: 'custom-template',
       dataEncryptionSecrets: stubSecrets(),
     }
   )
@@ -481,14 +481,14 @@ test('configureProjectType rejects catalog code mismatch when already set', asyn
     createProjectSelectDb([
       {
         id: 'p1',
-        metadata: { type: 'template', code: 'static-site' },
+        metadata: { type: 'managed', code: 'postgres' },
         options: {},
       },
     ]),
     {
       projectId: 'p1',
-      projectType: 'template',
-      catalogCode: 'wordpress-mysql',
+      projectType: 'managed',
+      catalogCode: 'mysql',
       dataEncryptionSecrets: stubSecrets(),
     }
   )
@@ -504,14 +504,14 @@ test('configureProjectType is idempotent for matching template code', async () =
     createProjectSelectDb([
       {
         id: 'p1',
-        metadata: { type: 'template', code: 'static-site' },
+        metadata: { type: 'template', code: 'custom-template' },
         options: {},
       },
     ]),
     {
       projectId: 'p1',
       projectType: 'template',
-      catalogCode: 'static-site',
+      catalogCode: 'custom-template',
       dataEncryptionSecrets: stubSecrets(),
     }
   )
@@ -584,8 +584,8 @@ test('configureProjectType rejects catalog kind mismatch', async () => {
     createProjectSelectDb([{ id: 'p1', metadata: null, options: null }]),
     {
       projectId: 'p1',
-      projectType: 'managed',
-      catalogCode: 'static-site',
+      projectType: 'template',
+      catalogCode: 'postgres',
       dataEncryptionSecrets: stubSecrets(),
     }
   )
@@ -623,9 +623,9 @@ test('configureProjectType catalog configure keeps stored deploy tuning on the p
     createProjectSelectDb([{ id: 'p1', metadata: {}, options: { ...TUNING, stale: 1 } }], tx),
     {
       projectId: 'p1',
-      projectType: 'template',
-      catalogCode: 'static-site',
-      dataEncryptionSecrets: stubSecrets(),
+      projectType: 'managed',
+      catalogCode: 'postgres',
+      dataEncryptionSecrets: await realDataEncryptionSecrets(),
     }
   )
   assertEquals(result, { ok: true, alreadyConfigured: false })
@@ -651,19 +651,6 @@ test('configureProjectType docker-compose configure keeps stored deploy tuning',
   assertEquals(options.drainSeconds, 45)
   assertEquals(options.rollbackWindowMinutes, 10)
   assertEquals('compose' in options, true)
-})
-
-test('configureProjectType configures static-site template', async () => {
-  const result = await configureProjectType(
-    createProjectSelectDb([{ id: 'p1', metadata: {}, options: null }]),
-    {
-      projectId: 'p1',
-      projectType: 'template',
-      catalogCode: 'static-site',
-      dataEncryptionSecrets: stubSecrets(),
-    }
-  )
-  assertEquals(result, { ok: true, alreadyConfigured: false })
 })
 
 test('configureProjectType configures managed postgres with secret vars', async () => {
@@ -742,8 +729,8 @@ test('configureProjectType maps encryption unavailable from transaction', async 
     ),
     {
       projectId: 'p1',
-      projectType: 'template',
-      catalogCode: 'static-site',
+      projectType: 'managed',
+      catalogCode: 'postgres',
       dataEncryptionSecrets: stubSecrets(),
     }
   )
@@ -765,27 +752,12 @@ test('configureProjectType rethrows unrelated transaction errors', async () => {
         ),
         {
           projectId: 'p1',
-          projectType: 'template',
-          catalogCode: 'static-site',
+          projectType: 'managed',
+          catalogCode: 'postgres',
           dataEncryptionSecrets: stubSecrets(),
         }
       ),
     Error,
     'disk full'
   )
-})
-
-test('configureProjectType configures wordpress template with entry options', async () => {
-  const secrets = await realDataEncryptionSecrets()
-  const result = await configureProjectType(
-    createProjectSelectDb([{ id: 'p1', metadata: null, options: null }]),
-    {
-      projectId: 'p1',
-      projectType: 'template',
-      catalogCode: 'wordpress-mysql',
-      dataEncryptionSecrets: secrets,
-      defaultEnvironmentName: 'Production',
-    }
-  )
-  assertEquals(result, { ok: true, alreadyConfigured: false })
 })

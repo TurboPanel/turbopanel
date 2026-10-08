@@ -103,10 +103,6 @@ import {
   resolvePrincipalIdOverride,
   resolvePrincipalShell,
 } from '../../features/principals/principal-options.ts'
-import {
-  insertDeployEntitlementsIfMissing,
-  loadEntitlementsByPrincipalIds,
-} from '../../features/principals/store.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
 import {
@@ -117,12 +113,10 @@ import {
 } from './deploy-node-version.ts'
 import {
   DEFAULT_NATIVE_APP_DENO_SERIES,
-  denoEntitlementSeries,
+  denoRuntimeSeries,
 } from '../../contracts/runtime-registry.ts'
-import { isCheckViolationOn } from '../../db/check-violation.ts'
 import {
   type DenoAppFeatureError,
-  type DenoMigrationPendingError,
   withDenoNativeApps,
   withRecordedRuntimes,
 } from './deploy-deno-gate.ts'
@@ -269,10 +263,6 @@ import {
   readWwwMode,
   tlsPinErrorCode,
 } from './deploy-routes-helpers.ts'
-import {
-  type DeployRuntimeEntitlement,
-  mergeDeployPrincipalRuntimes,
-} from './merge-deploy-principal-runtimes.ts'
 import {
   ensureSystemHierarchy,
   SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
@@ -534,7 +524,7 @@ export function nativeAppDenoVersionViews(
       const pinned = app.denoVersion?.trim()
       return {
         composeServiceName: app.composeServiceName,
-        denoVersion: denoEntitlementSeries(pinned || DEFAULT_NATIVE_APP_DENO_SERIES),
+        denoVersion: denoRuntimeSeries(pinned || DEFAULT_NATIVE_APP_DENO_SERIES),
         source: pinned ? ('compose' as const) : ('default' as const),
       }
     })
@@ -617,7 +607,6 @@ export type DeployPrepareError =
   | SiteEngineFeatureError
   /** A Deno app goes to a daemon that cannot run it, or asks for a series nothing offers. */
   | DenoAppFeatureError
-  | DenoMigrationPendingError
   /**
    * The repository asks for a Node version no offered series satisfies, names
    * one that is not a version range, or (a deploy only) could not be read.
@@ -726,7 +715,6 @@ type HardDeployPrepareError =
   | SiteEngineFeatureError
   // Hard in preview too: a Deno app sent to a daemon that cannot run it would start on Node.
   | DenoAppFeatureError
-  | DenoMigrationPendingError
   // Hard in preview too: the build would get a Node the app says it cannot run on.
   | NodeVersionPrepareError
   // Hard in preview too: previewing a deploy that would silently ignore a field
@@ -1368,10 +1356,6 @@ export async function loadPrincipalMaterial(
     .from(principal)
     .where(inArray(principal.id, uniqueIds))
 
-  // Explicit grants. The daemon reconciles unix group membership from exactly
-  // this set — it never derives entitlements itself, because a derived grant
-  // could only ever be added and would therefore never be revocable.
-  const entitlements = await loadEntitlementsByPrincipalIds(db, uniqueIds)
   // Always present for every id asked about, so `[]` genuinely means "this
   // account holds no keys" rather than "we did not look".
   const sshKeys = await loadSshKeysByPrincipalIds(db, uniqueIds)
@@ -1380,10 +1364,6 @@ export async function loadPrincipalMaterial(
   for (const row of rows) {
     const options = parsePrincipalOptions(row.options)
     const override = resolvePrincipalIdOverride(options)
-    const runtimes = (entitlements.get(row.id) ?? []).map((entry) => ({
-      runtime: entry.runtime,
-      series: entry.series,
-    }))
     const shell = resolvePrincipalShell(options)
     const keys = sshKeys.get(row.id) ?? []
     // Password sign-in is on exactly when the row holds a crypt hash. The
@@ -1408,7 +1388,6 @@ export async function loadPrincipalMaterial(
       sshKeys: keys,
       ...(passwordHash === undefined ? {} : { passwordHash }),
       ...(override ? { uid: override.uid, gid: override.gid } : {}),
-      ...(runtimes.length > 0 ? { runtimes } : {}),
     })
   }
   return material
@@ -3060,52 +3039,20 @@ async function resolveManagedNetworkHostName(
 }
 
 /**
- * Persist the runtime entitlements this deploy implies (Node for native apps,
- * PHP for per-site FastCGI / php-fpm runtimes).
- *
- * Preview must not write. Empty lists are a no-op inside the store helper.
- */
-async function persistDeployRuntimeEntitlements(
-  db: Db,
-  mode: DeployPrepareMode,
-  entitlements: readonly DeployRuntimeEntitlement[]
-): Promise<DenoMigrationPendingError | undefined> {
-  if (mode === 'preview') return undefined
-  try {
-    await insertDeployEntitlementsIfMissing(db, entitlements)
-  } catch (err) {
-    // A database that predates Deno apps refuses the `deno` runtime on this
-    // table. Say so in plain words rather than failing the deploy with a 500.
-    if (
-      entitlements.some((entry) => entry.runtime === 'deno') &&
-      isCheckViolationOn(err, 'entitlement_runtime_check')
-    ) {
-      return { kind: 'deno_migration_pending' }
-    }
-    throw err
-  }
-  return undefined
-}
-
-/**
  * Everything that depends on which runtime each local native app runs: the
- * Deno feature gate, the repository's Node version, the runtime groups each
- * site owner's Linux user is granted, and the stored entitlements. The first
- * refusal wins; a Deno app is refused before anything reads it as Node.
+ * Deno feature gate and the repository's Node version. The first refusal wins;
+ * a Deno app is refused before anything reads it as Node.
  */
 async function prepareNativeAppRuntimes(
   c: Context<AppEnv>,
   db: Db,
   args: Omit<Parameters<typeof prepareLocalSourcesWithNodeVersions>[2], 'nativeApps'> & {
     nativeApps: readonly PreparedNativeAppService[]
-    principalMaterial: Parameters<typeof mergeDeployPrincipalRuntimes>[0]['principalMaterial']
-    sites: Parameters<typeof mergeDeployPrincipalRuntimes>[0]['sites']
   }
 ): Promise<
   | {
       localSourceMaterial: EnvironmentDeploySource[]
       nodeVersions: { apps: PreparedNativeAppService[]; views: NativeAppNodeVersionView[] }
-      principalMaterialWithRuntimes: EnvironmentDeployPrincipalMaterial[]
     }
   | DeployPrepareError
   | Response
@@ -3115,27 +3062,13 @@ async function prepareNativeAppRuntimes(
   const denoGate = await withDenoNativeApps(db, args.params.serverId, nativeApps)
   if ('kind' in denoGate) return denoGate
 
-  // Before the runtime merge: the group a native app's Linux user is granted
-  // follows the series it runs, and an app with no `nodeVersion` gets it here
-  // from its repository at the commit being deployed.
+  // An app with no `nodeVersion` gets one here from its repository at the
+  // commit being deployed.
   const localSources = await prepareLocalSourcesWithNodeVersions(c, db, { ...args, nativeApps })
   if (!('sourceMaterial' in localSources)) return localSources
   const { sourceMaterial: localSourceMaterial, nodeVersions } = localSources
 
-  const { principalMaterial: principalMaterialWithRuntimes, deployEntitlements } =
-    mergeDeployPrincipalRuntimes({
-      principalMaterial: args.principalMaterial,
-      nativeAppServices: nodeVersions.apps,
-      sourceMaterial: localSourceMaterial,
-      sites: args.sites,
-    })
-  const entitlementsPersisted = await persistDeployRuntimeEntitlements(
-    db,
-    args.mode,
-    deployEntitlements
-  )
-  if (entitlementsPersisted) return entitlementsPersisted
-  return { localSourceMaterial, nodeVersions, principalMaterialWithRuntimes }
+  return { localSourceMaterial, nodeVersions }
 }
 
 export async function prepareDeployCompose(
@@ -3420,10 +3353,9 @@ export async function prepareDeployCompose(
     principalResolution,
     localServiceNames: pipeline.localServiceNames,
     nativeApps: localNativeApps,
-    sites: localSiteBound,
   })
   if ('kind' in runtimes || runtimes instanceof Response) return runtimes
-  const { localSourceMaterial, nodeVersions, principalMaterialWithRuntimes } = runtimes
+  const { localSourceMaterial, nodeVersions } = runtimes
 
   const dockerExternalNetworks = collectComposeExternalDockerNetworkNames(split.composeYaml)
   const externalNetworks = await resolveExternalNetworks(
@@ -3491,7 +3423,7 @@ export async function prepareDeployCompose(
     hooks,
     variableMaterial,
     storageMaterial,
-    principalMaterial: principalMaterialWithRuntimes,
+    principalMaterial,
     sites: localSiteBound,
     nativeAppServices: nodeVersions.apps,
     nativeAppVariables: nativeAppVariableViews(nodeVersions.apps, nativeVariables),
