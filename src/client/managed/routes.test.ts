@@ -1408,6 +1408,11 @@ test('DELETE backup dispatches to the stored host when that host is online', asy
         },
         fingerprint: 'managed-artifact-host-fingerprint',
       })
+      // Attaching daemon state resets presence; mark the host online again.
+      await db
+        .update(server)
+        .set({ isConnected: true, statusChangedAt: now, updatedAt: now })
+        .where(eq(server.id, storedOnId))
 
       try {
         await db.insert(backup).values({
@@ -1498,7 +1503,7 @@ test('DELETE backup returns server_offline when the stored host is down', async 
           { method: 'DELETE', headers }
         )
         assertEquals(remove.status, 409)
-        assertEquals(await remove.json(), { error: 'server_offline' })
+        assertEquals(((await remove.json()) as { error: string }).error, 'server_offline')
         assertEquals(commandQueue.envelopes.length, beforeCount)
       } finally {
         await db.delete(backup).where(eq(backup.managedId, created.managed.id))
