@@ -471,16 +471,15 @@ test('enqueueFollowPrimaryOnReplicas with default deps skips the new primary, ol
         { status: 'needs_resync' },
         { status: 'failed' },
         { status: 'provisioning' },
-        { status: 'ready', connected: false },
         { status: 'ready' },
         { status: 'ready' },
       ],
     },
     async (c) => {
-      const outstandingMemberId = c.replicaMemberIds[4]!
-      const healthyMemberId = c.replicaMemberIds[5]!
+      const outstandingMemberId = c.replicaMemberIds[3]!
+      const healthyMemberId = c.replicaMemberIds[4]!
       await insertFollowPrimaryCommand(c.db, {
-        serverId: c.replicaServerIds[4]!,
+        serverId: c.replicaServerIds[3]!,
         actorId: c.actorId,
         managedId: c.managedId,
         memberId: outstandingMemberId,
@@ -500,10 +499,10 @@ test('enqueueFollowPrimaryOnReplicas with default deps skips the new primary, ol
       assertEquals(replicaPublished.length, 1)
       const context = replicaPublished[0]?.context as { memberId?: string }
       assertEquals(context.memberId, healthyMemberId)
-      assertEquals(replicaPublished[0]?.serverId, c.replicaServerIds[5])
+      assertEquals(replicaPublished[0]?.serverId, c.replicaServerIds[4])
       const slotRow = published.find((row) => row.serverId === c.primaryServerId)
       const slotPayload = await payloadFor(c.db, slotRow!.id)
-      assertEquals(slotPayload.ensureSlots, ['tp_member_6', 'tp_member_7'])
+      assertEquals(slotPayload.ensureSlots, ['tp_member_5', 'tp_member_6'])
       assertEquals(slotPayload.engine, 'postgres')
     }
   )

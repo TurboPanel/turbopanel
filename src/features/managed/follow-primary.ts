@@ -8,7 +8,7 @@
 
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { command, managed, server } from '../../db/schema.ts'
+import { command, managed } from '../../db/schema.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { commandContextFromPayload } from '../commands/context.ts'
@@ -62,7 +62,6 @@ export type FollowPrimaryEnqueueDeps = {
   listMembers?: typeof listManagedMembers
   resolvePeer?: typeof resolvePeerToMember
   loadEngine?: (db: Db, managedId: string) => Promise<FollowPrimaryEnginePort | null>
-  loadConnectedServerIds?: (db: Db, serverIds: readonly string[]) => Promise<Set<string>>
   outstandingRepoints?: (db: Db, managedId: string) => Promise<OutstandingFollowPrimary[]>
   cancelCommand?: (db: Db, commandId: string) => Promise<void>
   enqueue?: (
@@ -111,13 +110,11 @@ export function replicaFollowPrimaryDial(
 /** Remaining replicas that should follow the new primary. */
 export function membersEligibleToFollowPrimary(
   members: readonly ManagedMemberRow[],
-  newPrimaryMemberId: string,
-  connectedServerIds?: ReadonlySet<string>
+  newPrimaryMemberId: string
 ): ManagedMemberRow[] {
   return members.filter((row) => {
     if (row.id === newPrimaryMemberId || row.role === 'primary') return false
     if (!FOLLOW_PRIMARY_STATUSES.has(row.status ?? '')) return false
-    if (connectedServerIds && !connectedServerIds.has(row.serverId)) return false
     return true
   })
 }
@@ -146,15 +143,6 @@ function resolveEngineAndPort(
   const defaultPort = getManagedEngineSpec(engine)?.defaultPort ?? loaded?.defaultPort
   if (defaultPort === undefined) return null
   return { engine, defaultPort }
-}
-
-async function loadConnectedServerIds(db: Db, serverIds: readonly string[]): Promise<Set<string>> {
-  if (serverIds.length === 0) return new Set()
-  const rows = await db
-    .select({ id: server.id })
-    .from(server)
-    .where(and(inArray(server.id, [...serverIds]), eq(server.isConnected, true)))
-  return new Set(rows.map((row) => row.id))
 }
 
 function followPrimaryTargetFromContext(context: unknown): {
@@ -410,19 +398,6 @@ async function enqueueOneReplicaFollowPrimaryInner(
   })
 }
 
-async function connectedIdsForMembers(
-  db: Db,
-  members: readonly ManagedMemberRow[],
-  loadConnected: (db: Db, serverIds: readonly string[]) => Promise<Set<string>>
-): Promise<Set<string> | undefined> {
-  try {
-    return await loadConnected(db, [...new Set(members.map((row) => row.serverId))])
-  } catch (err) {
-    logFollowPrimaryFailure(`could not load server liveness: ${errorMessage(err)}`)
-    return undefined
-  }
-}
-
 /**
  * Queue slot-ensure on the new primary, then one follow-primary per remaining
  * healthy replica. Never throws.
@@ -444,9 +419,7 @@ export async function enqueueFollowPrimaryOnReplicas(
       logFollowPrimaryFailure(`no engine port for managed ${params.managedId}`)
       return
     }
-    const loadConnected = deps.loadConnectedServerIds ?? loadConnectedServerIds
-    const connected = await connectedIdsForMembers(db, members, loadConnected)
-    const eligible = membersEligibleToFollowPrimary(members, params.newPrimaryMemberId, connected)
+    const eligible = membersEligibleToFollowPrimary(members, params.newPrimaryMemberId)
     if (eligible.length === 0) return
     const loadOutstanding = deps.outstandingRepoints ?? outstandingFollowPrimaryRepoints
     const outstanding = await loadOutstanding(db, params.managedId)

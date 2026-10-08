@@ -85,7 +85,6 @@ function followDeps(
   return {
     listMembers: () => Promise.resolve([member(), replicaMember()]),
     loadEngine: () => Promise.resolve({ engine: 'postgres', defaultPort: 5432 }),
-    loadConnectedServerIds: (_db, ids) => Promise.resolve(new Set(ids)),
     outstandingRepoints: () => Promise.resolve([]),
     resolvePeer: () => Promise.resolve(primaryPeer),
     enqueue: (_db, _queue, spec) => {
@@ -174,10 +173,6 @@ test('membersEligibleToFollowPrimary is a whitelist of healthy replicas', () => 
   assertEquals(
     membersEligibleToFollowPrimary(rows, PRIMARY_ID).map((row) => row.id),
     [REPLICA_ID, READ_ID]
-  )
-  assertEquals(
-    membersEligibleToFollowPrimary(rows, PRIMARY_ID, new Set([SERVER_B])).map((row) => row.id),
-    [REPLICA_ID]
   )
 })
 
