@@ -24,8 +24,8 @@ function defaultSettings(overrides: Partial<MariadbManagedSettings> = {}): Maria
   return parsed as MariadbManagedSettings
 }
 
-test('default image is the approved MariaDB 12.3 LTS reference', () => {
-  assertEquals(mariadbEngineSpec.defaultImage, 'docker.io/library/mariadb:12.3')
+test('default image is the approved MariaDB 11.8 LTS reference', () => {
+  assertEquals(mariadbEngineSpec.defaultImage, 'docker.io/library/mariadb:11.8')
   assertEquals(MARIADB_ALLOWED_IMAGES.includes(mariadbEngineSpec.defaultImage), true)
   assertEquals(mariadbEngineSpec.displayName, 'MariaDB')
   assertEquals(mariadbEngineSpec.principalProvider, 'mysql')
@@ -232,7 +232,7 @@ test('parseSettings rejects non-objects, includes, and reserved MariaDB GTID key
   assertEquals((fromUndefined as MariadbManagedSettings).initialDatabase, 'defaultdb')
 })
 
-test('buildRuntimeSpec falls back when settings omit image and initialDatabase', () => {
+test('buildRuntimeSpec keeps an imageless stored row on 12.3 and defaults initialDatabase', () => {
   const settings = {
     ssl: {},
   } as MariadbManagedSettings
@@ -241,7 +241,7 @@ test('buildRuntimeSpec falls back when settings omit image and initialDatabase',
     settings,
     rootUsername: 'root',
   })
-  assertEquals(spec.service.image, mariadbEngineSpec.defaultImage)
+  assertEquals(spec.service.image, 'docker.io/library/mariadb:12.3')
   assertEquals(spec.env.MARIADB_DATABASE, 'defaultdb')
 })
 

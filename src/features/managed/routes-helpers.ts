@@ -6,6 +6,7 @@ import type { ManagedSettings } from './settings.ts'
 import {
   defaultManagedRelease,
   describeManagedImage,
+  effectiveManagedImage,
   isManagedVariantSwapSafe,
   isSameManagedSeries,
   type ManagedReleaseGate,
@@ -319,12 +320,12 @@ export type ManagedImageRefusal = {
  * {@link assertManagedVariantSwapSafe}.
  */
 export function assertManagedSeriesUnchanged(
-  spec: { defaultImage: string },
+  spec: { defaultImage: string; legacyDefaultImage?: string },
   currentSettings: ManagedSettings,
   nextSettings: ManagedSettings
 ): ManagedImageRefusal | null {
-  const current = currentSettings.image ?? spec.defaultImage
-  const next = nextSettings.image ?? spec.defaultImage
+  const current = effectiveManagedImage(spec, currentSettings.image)
+  const next = effectiveManagedImage(spec, nextSettings.image)
   if (isSameManagedSeries(current, next)) return null
   return {
     ok: false,
@@ -348,12 +349,12 @@ export function assertManagedSeriesUnchanged(
  * (MySQL, MariaDB) pass. The policy lives in {@link isManagedVariantSwapSafe}.
  */
 export function assertManagedVariantSwapSafe(
-  spec: { defaultImage: string },
+  spec: { defaultImage: string; legacyDefaultImage?: string },
   currentSettings: ManagedSettings,
   nextSettings: ManagedSettings
 ): ManagedImageRefusal | null {
-  const current = currentSettings.image ?? spec.defaultImage
-  const next = nextSettings.image ?? spec.defaultImage
+  const current = effectiveManagedImage(spec, currentSettings.image)
+  const next = effectiveManagedImage(spec, nextSettings.image)
   if (isManagedVariantSwapSafe(current, next)) return null
   return {
     ok: false,
@@ -369,7 +370,7 @@ export function assertManagedVariantSwapSafe(
 
 /** Run the series guard, then the variant guard; first refusal wins. */
 export function assertManagedImageChangeAllowed(
-  spec: { defaultImage: string },
+  spec: { defaultImage: string; legacyDefaultImage?: string },
   currentSettings: ManagedSettings,
   nextSettings: ManagedSettings
 ): ManagedImageRefusal | null {
@@ -1129,10 +1130,10 @@ export type ManagedReleaseView = {
  * the raw image.
  */
 export function buildManagedReleaseView(
-  spec: { defaultImage: string },
+  spec: { defaultImage: string; legacyDefaultImage?: string },
   settings: ManagedSettings
 ): ManagedReleaseView | null {
-  const image = settings.image ?? spec.defaultImage
+  const image = effectiveManagedImage(spec, settings.image)
   const descriptor = describeManagedImage(image)
   if (!descriptor) return null
   return {

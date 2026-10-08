@@ -20,7 +20,7 @@ import {
   MYSQL_ACCOUNT_MAX_LENGTH,
   MYSQL_IDENTIFIER_PATTERN,
 } from './mysql-family.ts'
-import { requireDefaultManagedImage } from './releases.ts'
+import { effectiveManagedImage, requireDefaultManagedImage } from './releases.ts'
 import { mysqlFamilySslMode } from './ssl.ts'
 import {
   DEFAULT_MANAGED_SETTINGS,
@@ -40,6 +40,8 @@ import {
 } from './types.ts'
 
 const DEFAULT_IMAGE = requireDefaultManagedImage('mariadb')
+/** MariaDB 12.3 was the default before 11.8; imageless stored rows are 12.3 clusters. */
+const LEGACY_DEFAULT_IMAGE = 'docker.io/library/mariadb:12.3'
 const DEFAULT_PORT = 3306
 const ROOT_USERNAME = 'root'
 const DEFAULT_DATABASE = 'defaultdb'
@@ -243,7 +245,11 @@ function applyDockerOptions(
 function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
   const settings = input.settings as MariadbManagedSettings
   const initialDatabase = settings.initialDatabase ?? DEFAULT_DATABASE
-  const image = settings.image ?? DEFAULT_IMAGE
+  // A stored row without an image is a pre-11.8 cluster: it keeps its series.
+  const image = effectiveManagedImage(
+    { defaultImage: DEFAULT_IMAGE, legacyDefaultImage: LEGACY_DEFAULT_IMAGE },
+    settings.image
+  )
   const volumeName = `managed_${input.managedId.replaceAll('-', '_')}_data`
 
   const env: Record<string, string> = {
@@ -350,6 +356,7 @@ export const mariadbEngineSpec: ManagedEngineSpec = {
   engine: 'mariadb',
   displayName: 'MariaDB',
   defaultImage: DEFAULT_IMAGE,
+  legacyDefaultImage: LEGACY_DEFAULT_IMAGE,
   defaultPort: DEFAULT_PORT,
   principalProvider: 'mysql',
   rootUsername: ROOT_USERNAME,
