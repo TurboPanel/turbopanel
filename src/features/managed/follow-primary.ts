@@ -2,21 +2,28 @@
  * After a promote or recover, remaining replicas follow the new primary
  * (`managed.ha.failover` phase `repoint`) without a full Resync.
  *
- * Failures are logged and left to health checks; they must never fail the
- * promote.
+ * Failures never fail the promote. Slot-ensure is re-queued once; a replica
+ * that cannot stream is flagged `needs_resync`; other failures are logged.
  */
 
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { command, managed } from '../../db/schema.ts'
-import { compatLogWarn } from '../../lib/log-compat.ts'
+import { command, managed, replica } from '../../db/schema.ts'
+import { compatLogError, compatLogWarn } from '../../lib/log-compat.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { commandContextFromPayload } from '../commands/context.ts'
-import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
+import {
+  cancelNonTerminalCommand,
+  createCommandRecord,
+  transitionCommand,
+} from '../commands/command-records.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import { COMMAND_STATUSES, TERMINAL_COMMAND_STATUSES } from '../commands/types.ts'
-import type { ManagedHaFailoverCommandPayload } from '../../contracts/commands/schemas.ts'
+import {
+  parseManagedHaFailoverPayload,
+  type ManagedHaFailoverCommandPayload,
+} from '../../contracts/commands/schemas.ts'
 import { getManagedEngineSpec } from './index.ts'
 import {
   listManagedMembers,
@@ -33,6 +40,10 @@ const OUTSTANDING_COMMAND_STATUSES = COMMAND_STATUSES.filter(
   (status) => !TERMINAL_COMMAND_STATUSES.has(status)
 )
 const SUPERSEDED_FOLLOW_PRIMARY_ERROR = 'Superseded by a follow-primary to a newer primary'
+/** Context marker so a failed slot-ensure is re-queued at most once. */
+export const FOLLOW_PRIMARY_SLOT_RETRY_KEY = 'slotRetry'
+const DID_NOT_REACH_STREAMING = 'did not reach streaming'
+const SLOT_ENSURE_RETRY_EXHAUSTED = 'replicas may fail to stream until the slots exist'
 
 export type ReplicaFollowPrimaryDial = {
   targetHost: string
@@ -58,22 +69,34 @@ export type FollowPrimaryEnginePort = {
   defaultPort: number
 }
 
+export type FollowPrimaryPublishSpec = {
+  serverId: string
+  payload: ManagedHaFailoverCommandPayload
+  actorId: string
+  memberId: string
+  slotRetry?: boolean
+}
+
 export type FollowPrimaryEnqueueDeps = {
   listMembers?: typeof listManagedMembers
   resolvePeer?: typeof resolvePeerToMember
   loadEngine?: (db: Db, managedId: string) => Promise<FollowPrimaryEnginePort | null>
   outstandingRepoints?: (db: Db, managedId: string) => Promise<OutstandingFollowPrimary[]>
   cancelCommand?: (db: Db, commandId: string) => Promise<void>
-  enqueue?: (
-    db: Db,
-    commandQueue: CommandQueue,
-    spec: {
-      serverId: string
-      payload: ManagedHaFailoverCommandPayload
-      actorId: string
-      memberId: string
-    }
-  ) => Promise<boolean>
+  enqueue?: (db: Db, commandQueue: CommandQueue, spec: FollowPrimaryPublishSpec) => Promise<boolean>
+}
+
+export type FollowPrimaryFailureRecord = {
+  id: string
+  serverId: string
+  actorId: string
+  payload: unknown
+  context: unknown
+}
+
+export type FollowPrimaryFailureDeps = {
+  enqueue?: NonNullable<FollowPrimaryEnqueueDeps['enqueue']>
+  markReplicaNeedsResync?: (db: Db, memberId: string) => Promise<boolean>
 }
 
 function errorMessage(err: unknown): string {
@@ -187,21 +210,13 @@ async function outstandingFollowPrimaryRepoints(
 }
 
 async function cancelSupersededFollowPrimary(db: Db, commandId: string): Promise<void> {
-  await transitionCommand(db, commandId, {
-    status: 'cancelled',
-    error: SUPERSEDED_FOLLOW_PRIMARY_ERROR,
-  })
+  await cancelNonTerminalCommand(db, commandId, { error: SUPERSEDED_FOLLOW_PRIMARY_ERROR })
 }
 
 async function publishFollowPrimaryCommand(
   db: Db,
   commandQueue: CommandQueue,
-  spec: {
-    serverId: string
-    payload: ManagedHaFailoverCommandPayload
-    actorId: string
-    memberId: string
-  }
+  spec: FollowPrimaryPublishSpec
 ): Promise<boolean> {
   const fromPayload = commandContextFromPayload(spec.payload)
   const record = await createCommandRecord(db, {
@@ -211,7 +226,11 @@ async function publishFollowPrimaryCommand(
     type: 'managed.ha.failover',
     payload: spec.payload,
     expiresAt: new Date(Date.now() + FOLLOW_PRIMARY_TTL_MS).toISOString(),
-    context: { ...fromPayload, memberId: spec.memberId },
+    context: {
+      ...fromPayload,
+      memberId: spec.memberId,
+      ...(spec.slotRetry === true ? { [FOLLOW_PRIMARY_SLOT_RETRY_KEY]: true } : {}),
+    },
   })
   try {
     await commandQueue.enqueue({
@@ -437,5 +456,110 @@ export async function enqueueFollowPrimaryOnReplicas(
     await forEachSequential(eligible, (replica) => enqueueOneReplicaFollowPrimary(run, replica))
   } catch (err) {
     logFollowPrimaryFailure(errorMessage(err))
+  }
+}
+
+function parseRepointPayload(payload: unknown): ManagedHaFailoverCommandPayload | null {
+  try {
+    const parsed = parseManagedHaFailoverPayload(payload)
+    return parsed.phase === 'repoint' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function ensureSlotsFromPayload(payload: ManagedHaFailoverCommandPayload): string[] {
+  return payload.ensureSlots ?? []
+}
+
+function contextHasSlotRetry(context: unknown): boolean {
+  if (typeof context !== 'object' || context === null || Array.isArray(context)) return false
+  return (context as { slotRetry?: unknown }).slotRetry === true
+}
+
+function memberIdFromContext(context: unknown): string | null {
+  return followPrimaryTargetFromContext(context)?.memberId ?? null
+}
+
+async function markReplicaNeedsResyncIfReady(db: Db, memberId: string): Promise<boolean> {
+  const rows = await db
+    .update(replica)
+    .set({ status: 'needs_resync', updatedAt: new Date().toISOString() })
+    .where(and(eq(replica.id, memberId), eq(replica.role, 'replica'), eq(replica.status, 'ready')))
+    .returning({ id: replica.id })
+  return rows.length > 0
+}
+
+async function retrySlotEnsureOnce(
+  db: Db,
+  record: FollowPrimaryFailureRecord,
+  payload: ManagedHaFailoverCommandPayload,
+  commandQueue: CommandQueue | undefined,
+  deps: FollowPrimaryFailureDeps
+): Promise<void> {
+  if (contextHasSlotRetry(record.context)) {
+    compatLogError(
+      'managed-ha',
+      `follow-primary: slot-ensure retry already used for command ${record.id}; ${SLOT_ENSURE_RETRY_EXHAUSTED}`
+    )
+    return
+  }
+  if (!commandQueue || isNoopCommandQueue(commandQueue)) return
+  const memberId = memberIdFromContext(record.context)
+  if (!memberId) return
+  const enqueue = deps.enqueue ?? publishFollowPrimaryCommand
+  const queued = await enqueue(db, commandQueue, {
+    serverId: record.serverId,
+    actorId: record.actorId,
+    memberId,
+    payload,
+    slotRetry: true,
+  })
+  if (!queued) {
+    logFollowPrimaryFailure(`could not re-queue slot-ensure after command ${record.id}`)
+  }
+}
+
+async function flagReplicaIfNotStreaming(
+  db: Db,
+  record: FollowPrimaryFailureRecord,
+  error: string,
+  deps: FollowPrimaryFailureDeps
+): Promise<void> {
+  if (!error.includes(DID_NOT_REACH_STREAMING)) return
+  const memberId = memberIdFromContext(record.context)
+  if (!memberId) return
+  const mark = deps.markReplicaNeedsResync ?? markReplicaNeedsResyncIfReady
+  const marked = await mark(db, memberId)
+  if (!marked) return
+  compatLogWarn(
+    'managed-ha',
+    `follow-primary: replica ${memberId} did not reach streaming; marked needs_resync`
+  )
+}
+
+/**
+ * Slot-ensure is retried once. A follow-mode replica that never streams is
+ * flagged `needs_resync`. Never throws.
+ */
+export async function handleFollowPrimaryFailure(
+  db: Db,
+  record: FollowPrimaryFailureRecord,
+  commandQueue: CommandQueue | undefined,
+  error?: string,
+  deps: FollowPrimaryFailureDeps = {}
+): Promise<void> {
+  const detail = error ?? 'unknown'
+  try {
+    logFollowPrimaryFailure(`command ${record.id}: ${detail}`)
+    const payload = parseRepointPayload(record.payload)
+    if (!payload) return
+    if (ensureSlotsFromPayload(payload).length > 0) {
+      await retrySlotEnsureOnce(db, record, payload, commandQueue, deps)
+      return
+    }
+    await flagReplicaIfNotStreaming(db, record, detail, deps)
+  } catch (err) {
+    logFollowPrimaryFailure(`failure handler: ${errorMessage(err)}`)
   }
 }

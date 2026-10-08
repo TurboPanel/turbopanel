@@ -24,11 +24,12 @@ import {
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import {
+  cancelNonTerminalCommand,
   createCommandRecord,
   getCommandDispatchPayload,
   transitionCommand,
 } from '../commands/command-records.ts'
-import { enqueueFollowPrimaryOnReplicas } from './follow-primary.ts'
+import { enqueueFollowPrimaryOnReplicas, handleFollowPrimaryFailure } from './follow-primary.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -536,5 +537,245 @@ test('a non-terminal repoint to a different target is cancelled and replaced', a
     assertEquals(replacement.length, 1)
     const payload = await payloadFor(c.db, replacement[0]!.id)
     assertEquals(payload.targetMemberId, c.primaryMemberId)
+  })
+})
+
+test('a completed repoint to a different target stays completed', async () => {
+  await withCluster({ replicas: [{ status: 'ready' }] }, async (c) => {
+    const staleTarget = '00000000-0000-4000-8000-0000000000aa'
+    const completedId = await insertFollowPrimaryCommand(c.db, {
+      serverId: c.replicaServerIds[0]!,
+      actorId: c.actorId,
+      managedId: c.managedId,
+      memberId: c.replicaMemberIds[0],
+      targetMemberId: staleTarget,
+      status: 'succeeded',
+    })
+    assertEquals(
+      await cancelNonTerminalCommand(c.db, completedId, {
+        error: 'Superseded by a follow-primary to a newer primary',
+      }),
+      false
+    )
+    const queue = collectingQueue()
+    await enqueueFollowPrimaryOnReplicas(c.db, queue, {
+      managedId: c.managedId,
+      newPrimaryMemberId: c.primaryMemberId,
+      actorId: c.actorId,
+    })
+    const rows = await failoverCommandsForManaged(c.db, c.managedId)
+    const completed = rows.find((row) => row.id === completedId)
+    assertEquals(completed?.status, 'succeeded')
+    const replacement = rows.filter(
+      (row) =>
+        row.status === 'queued' &&
+        (row.context as { memberId?: string }).memberId === c.replicaMemberIds[0]
+    )
+    assertEquals(replacement.length, 1)
+  })
+})
+
+async function replicaStatus(
+  db: ReturnType<typeof createDenoDb>,
+  memberId: string
+): Promise<string | null> {
+  const [row] = await db
+    .select({ status: replica.status })
+    .from(replica)
+    .where(eq(replica.id, memberId))
+    .limit(1)
+  return row?.status ?? null
+}
+
+test('a failed slot-ensure is re-queued once with the slotRetry marker', async () => {
+  await withCluster({}, async (c) => {
+    const payload = {
+      managedId: c.managedId,
+      sourceMemberId: c.primaryMemberId,
+      targetMemberId: c.primaryMemberId,
+      phase: 'repoint' as const,
+      engine: 'postgres' as const,
+      ensureSlots: ['tp_member_2'],
+    }
+    const failed = await createCommandRecord(c.db, {
+      serverId: c.primaryServerId,
+      actorType: 'system',
+      actorId: c.actorId,
+      type: 'managed.ha.failover',
+      payload,
+      context: { managedId: c.managedId, memberId: c.primaryMemberId },
+    })
+    await transitionCommand(c.db, failed.id, { status: 'failed', error: 'ensure slots failed' })
+    const queue = collectingQueue()
+    await handleFollowPrimaryFailure(
+      c.db,
+      {
+        id: failed.id,
+        serverId: c.primaryServerId,
+        actorId: c.actorId,
+        payload,
+        context: { managedId: c.managedId, memberId: c.primaryMemberId },
+      },
+      queue,
+      'ensure slots failed'
+    )
+    const rows = await failoverCommandsForManaged(c.db, c.managedId)
+    const retried = rows.filter((row) => row.id !== failed.id)
+    assertEquals(retried.length, 1)
+    assertEquals(retried[0]?.status, 'queued')
+    assertEquals((retried[0]?.context as { slotRetry?: boolean }).slotRetry, true)
+    assertEquals((await payloadFor(c.db, retried[0]!.id)).ensureSlots, ['tp_member_2'])
+    assertEquals(queue.sent.length, 1)
+  })
+})
+
+test('a failed slot-ensure that already retried is not re-queued', async () => {
+  await withCluster({}, async (c) => {
+    const payload = {
+      managedId: c.managedId,
+      sourceMemberId: c.primaryMemberId,
+      targetMemberId: c.primaryMemberId,
+      phase: 'repoint' as const,
+      engine: 'postgres' as const,
+      ensureSlots: ['tp_member_2'],
+    }
+    const failed = await createCommandRecord(c.db, {
+      serverId: c.primaryServerId,
+      actorType: 'system',
+      actorId: c.actorId,
+      type: 'managed.ha.failover',
+      payload,
+      context: { managedId: c.managedId, memberId: c.primaryMemberId, slotRetry: true },
+    })
+    const queue = collectingQueue()
+    await handleFollowPrimaryFailure(
+      c.db,
+      {
+        id: failed.id,
+        serverId: c.primaryServerId,
+        actorId: c.actorId,
+        payload,
+        context: { managedId: c.managedId, memberId: c.primaryMemberId, slotRetry: true },
+      },
+      queue,
+      'ensure slots failed again'
+    )
+    const rows = await failoverCommandsForManaged(c.db, c.managedId)
+    assertEquals(rows.filter((row) => row.id !== failed.id).length, 0)
+    assertEquals(queue.sent.length, 0)
+  })
+})
+
+test('a follow-mode streaming miss flags a ready replica needs_resync', async () => {
+  await withCluster({}, async (c) => {
+    const replicaId = c.replicaMemberIds[0]!
+    await handleFollowPrimaryFailure(
+      c.db,
+      {
+        id: '00000000-0000-4000-8000-0000000000c2',
+        serverId: c.replicaServerIds[0]!,
+        actorId: c.actorId,
+        payload: {
+          managedId: c.managedId,
+          sourceMemberId: replicaId,
+          targetMemberId: c.primaryMemberId,
+          phase: 'repoint',
+          engine: 'postgres',
+          targetHost: '203.0.113.10',
+          targetPort: 5432,
+        },
+        context: { managedId: c.managedId, memberId: replicaId },
+      },
+      collectingQueue(),
+      'standby did not reach streaming after repoint (last state: startup)'
+    )
+    assertEquals(await replicaStatus(c.db, replicaId), 'needs_resync')
+  })
+})
+
+test('a follow-mode streaming miss does not touch a primary', async () => {
+  await withCluster({}, async (c) => {
+    await handleFollowPrimaryFailure(
+      c.db,
+      {
+        id: '00000000-0000-4000-8000-0000000000c3',
+        serverId: c.primaryServerId,
+        actorId: c.actorId,
+        payload: {
+          managedId: c.managedId,
+          sourceMemberId: c.primaryMemberId,
+          targetMemberId: c.primaryMemberId,
+          phase: 'repoint',
+          engine: 'postgres',
+          targetHost: '203.0.113.10',
+          targetPort: 5432,
+        },
+        context: { managedId: c.managedId, memberId: c.primaryMemberId },
+      },
+      collectingQueue(),
+      'standby did not reach streaming after repoint (last state: startup)'
+    )
+    assertEquals(await replicaStatus(c.db, c.primaryMemberId), 'ready')
+  })
+})
+
+test('a follow-mode streaming miss does not overwrite needs_resync or other statuses', async () => {
+  await withCluster(
+    { replicas: [{ status: 'needs_resync' }, { status: 'applying' }, { status: 'failed' }] },
+    async (c) => {
+      const error = 'standby did not reach streaming after repoint (last state: startup)'
+      for (const memberId of c.replicaMemberIds) {
+        await handleFollowPrimaryFailure(
+          c.db,
+          {
+            id: memberId,
+            serverId: c.replicaServerIds[c.replicaMemberIds.indexOf(memberId)]!,
+            actorId: c.actorId,
+            payload: {
+              managedId: c.managedId,
+              sourceMemberId: memberId,
+              targetMemberId: c.primaryMemberId,
+              phase: 'repoint',
+              engine: 'postgres',
+              targetHost: '203.0.113.10',
+              targetPort: 5432,
+            },
+            context: { managedId: c.managedId, memberId },
+          },
+          collectingQueue(),
+          error
+        )
+      }
+      assertEquals(await replicaStatus(c.db, c.replicaMemberIds[0]!), 'needs_resync')
+      assertEquals(await replicaStatus(c.db, c.replicaMemberIds[1]!), 'applying')
+      assertEquals(await replicaStatus(c.db, c.replicaMemberIds[2]!), 'failed')
+    }
+  )
+})
+
+test('other follow-mode error text leaves a ready replica alone', async () => {
+  await withCluster({}, async (c) => {
+    const replicaId = c.replicaMemberIds[0]!
+    await handleFollowPrimaryFailure(
+      c.db,
+      {
+        id: '00000000-0000-4000-8000-0000000000c4',
+        serverId: c.replicaServerIds[0]!,
+        actorId: c.actorId,
+        payload: {
+          managedId: c.managedId,
+          sourceMemberId: replicaId,
+          targetMemberId: c.primaryMemberId,
+          phase: 'repoint',
+          engine: 'postgres',
+          targetHost: '203.0.113.10',
+          targetPort: 5432,
+        },
+        context: { managedId: c.managedId, memberId: replicaId },
+      },
+      collectingQueue(),
+      'could not rewrite recovery.conf'
+    )
+    assertEquals(await replicaStatus(c.db, replicaId), 'ready')
   })
 })

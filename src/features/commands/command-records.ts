@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, notInArray, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, notInArray, type SQL, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { commandContextFromPayload } from './context.ts'
 import { lastErrorLine } from './error-line.ts'
@@ -511,6 +511,30 @@ export async function transitionCommand(
   return serializeCommandRecord(row)
 }
 
+async function cancelCommandWhen(
+  db: Db,
+  commandId: string,
+  patch: { error: string; errorCode?: string },
+  extraWhere: SQL
+): Promise<boolean> {
+  const now = nowIso()
+  const rows = await db
+    .update(command)
+    .set({
+      status: 'cancelled',
+      updatedAt: now,
+      finishedAt: now,
+      errorMessage: redactUrlSecrets(patch.error),
+      ...(patch.errorCode === undefined ? {} : { errorCode: patch.errorCode }),
+    })
+    .where(and(eq(command.id, commandId), extraWhere))
+    .returning({ id: command.id })
+  if (rows.length === 0) return false
+  await finalizeCommandDispatch(db, commandId, 'cancelled')
+  await sealExecutionLogOnTerminal(commandId)
+  return true
+}
+
 /**
  * Cancel a command nothing has picked up yet: one conditional update, so it
  * only wins while the row is still `queued`. Returns `false` when the consumer
@@ -521,20 +545,22 @@ export async function cancelQueuedCommand(
   commandId: string,
   patch: { error: string; errorCode?: string }
 ): Promise<boolean> {
-  const now = nowIso()
-  const rows = await db
-    .update(command)
-    .set({
-      status: 'cancelled',
-      updatedAt: now,
-      finishedAt: now,
-      errorMessage: patch.error,
-      ...(patch.errorCode === undefined ? {} : { errorCode: patch.errorCode }),
-    })
-    .where(and(eq(command.id, commandId), eq(command.status, 'queued')))
-    .returning({ id: command.id })
-  if (rows.length === 0) return false
-  await finalizeCommandDispatch(db, commandId, 'cancelled')
-  await sealExecutionLogOnTerminal(commandId)
-  return true
+  return cancelCommandWhen(db, commandId, patch, eq(command.status, 'queued'))
+}
+
+/**
+ * Cancel a command that has not finished yet. A row that is already
+ * succeeded, failed, timed out, or cancelled is left as-is.
+ */
+export async function cancelNonTerminalCommand(
+  db: Db,
+  commandId: string,
+  patch: { error: string; errorCode?: string }
+): Promise<boolean> {
+  return cancelCommandWhen(
+    db,
+    commandId,
+    patch,
+    notInArray(command.status, [...TERMINAL_COMMAND_STATUSES])
+  )
 }

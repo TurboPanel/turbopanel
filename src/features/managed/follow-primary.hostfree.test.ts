@@ -4,14 +4,17 @@
 
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
+import { createNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import type { ManagedMemberPeer, ManagedMemberRow } from './members.ts'
 import {
   enqueueFollowPrimaryOnReplicas,
+  handleFollowPrimaryFailure,
   managedMemberSlotName,
   membersEligibleToFollowPrimary,
   replicaFollowPrimaryDial,
   type FollowPrimaryEnqueueDeps,
+  type FollowPrimaryPublishSpec,
   type OutstandingFollowPrimary,
 } from './follow-primary.ts'
 
@@ -380,4 +383,232 @@ test('enqueueFollowPrimaryOnReplicas is a no-op without a command queue', async 
     }
   )
   assertEquals(listed, false)
+})
+
+const SLOT_PAYLOAD = {
+  managedId: MANAGED_ID,
+  sourceMemberId: PRIMARY_ID,
+  targetMemberId: PRIMARY_ID,
+  phase: 'repoint' as const,
+  engine: 'postgres' as const,
+  ensureSlots: ['tp_member_2'],
+}
+
+const FOLLOW_PAYLOAD = {
+  managedId: MANAGED_ID,
+  sourceMemberId: REPLICA_ID,
+  targetMemberId: PRIMARY_ID,
+  phase: 'repoint' as const,
+  engine: 'postgres' as const,
+  targetHost: '203.0.113.10',
+  targetPort: 5432,
+}
+
+function failureRecord(
+  overrides: Partial<{ payload: unknown; context: unknown; id: string }> = {}
+) {
+  return {
+    id: overrides.id ?? '00000000-0000-4000-8000-0000000000c1',
+    serverId: SERVER_A,
+    actorId: ACTOR_ID,
+    payload: overrides.payload ?? FOLLOW_PAYLOAD,
+    context: overrides.context ?? { memberId: REPLICA_ID, managedId: MANAGED_ID },
+  }
+}
+
+test('handleFollowPrimaryFailure re-queues a failed slot-ensure once', async () => {
+  const enqueued: FollowPrimaryPublishSpec[] = []
+  await handleFollowPrimaryFailure(
+    {} as Db,
+    failureRecord({
+      payload: SLOT_PAYLOAD,
+      context: { memberId: PRIMARY_ID, managedId: MANAGED_ID },
+    }),
+    okQueue(),
+    'ensure slots failed',
+    {
+      enqueue: (_db, _queue, spec) => {
+        enqueued.push(spec)
+        return Promise.resolve(true)
+      },
+    }
+  )
+  assertEquals(enqueued.length, 1)
+  assertEquals(enqueued[0]?.payload, SLOT_PAYLOAD)
+  assertEquals(enqueued[0]?.slotRetry, true)
+  assertEquals(enqueued[0]?.memberId, PRIMARY_ID)
+})
+
+test('handleFollowPrimaryFailure does not retry a slot-ensure that already has the marker', async () => {
+  const enqueued: FollowPrimaryPublishSpec[] = []
+  await handleFollowPrimaryFailure(
+    {} as Db,
+    failureRecord({
+      payload: SLOT_PAYLOAD,
+      context: { memberId: PRIMARY_ID, managedId: MANAGED_ID, slotRetry: true },
+    }),
+    okQueue(),
+    'ensure slots failed again',
+    {
+      enqueue: (_db, _queue, spec) => {
+        enqueued.push(spec)
+        return Promise.resolve(true)
+      },
+    }
+  )
+  assertEquals(enqueued.length, 0)
+})
+
+test('handleFollowPrimaryFailure flags a replica that did not reach streaming', async () => {
+  const marked: string[] = []
+  await handleFollowPrimaryFailure(
+    {} as Db,
+    failureRecord(),
+    okQueue(),
+    'standby did not reach streaming after repoint (last state: catching_up)',
+    {
+      markReplicaNeedsResync: (_db, memberId) => {
+        marked.push(memberId)
+        return Promise.resolve(true)
+      },
+    }
+  )
+  assertEquals(marked, [REPLICA_ID])
+})
+
+test('handleFollowPrimaryFailure is silent when the replica was not marked', async () => {
+  await handleFollowPrimaryFailure(
+    {} as Db,
+    failureRecord(),
+    okQueue(),
+    'standby did not reach streaming after repoint (last state: startup)',
+    {
+      markReplicaNeedsResync: () => Promise.resolve(false),
+    }
+  )
+})
+
+test('handleFollowPrimaryFailure leaves other follow-mode errors log-only', async () => {
+  const marked: string[] = []
+  await handleFollowPrimaryFailure(
+    {} as Db,
+    failureRecord(),
+    okQueue(),
+    'could not rewrite primary_conninfo',
+    {
+      markReplicaNeedsResync: (_db, memberId) => {
+        marked.push(memberId)
+        return Promise.resolve(true)
+      },
+    }
+  )
+  assertEquals(marked, [])
+})
+
+test('handleFollowPrimaryFailure logs when a slot-ensure retry cannot be queued', async () => {
+  await handleFollowPrimaryFailure(
+    {} as Db,
+    failureRecord({
+      payload: SLOT_PAYLOAD,
+      context: { memberId: PRIMARY_ID, managedId: MANAGED_ID },
+    }),
+    okQueue(),
+    'ensure slots failed',
+    {
+      enqueue: () => Promise.resolve(false),
+    }
+  )
+})
+
+test('handleFollowPrimaryFailure does not throw when the retry enqueue throws', async () => {
+  await handleFollowPrimaryFailure(
+    {} as Db,
+    failureRecord({
+      payload: SLOT_PAYLOAD,
+      context: { memberId: PRIMARY_ID, managedId: MANAGED_ID },
+    }),
+    okQueue(),
+    'ensure slots failed',
+    {
+      enqueue: () => Promise.reject(new Error('broker down')),
+    }
+  )
+})
+
+test('handleFollowPrimaryFailure skips a slot-ensure retry on a noop queue', async () => {
+  const enqueued: FollowPrimaryPublishSpec[] = []
+  await handleFollowPrimaryFailure(
+    {} as Db,
+    failureRecord({
+      payload: SLOT_PAYLOAD,
+      context: { memberId: PRIMARY_ID, managedId: MANAGED_ID },
+    }),
+    createNoopCommandQueue(),
+    'ensure slots failed',
+    {
+      enqueue: (_db, _queue, spec) => {
+        enqueued.push(spec)
+        return Promise.resolve(true)
+      },
+    }
+  )
+  assertEquals(enqueued.length, 0)
+})
+
+test('handleFollowPrimaryFailure ignores a non-repoint payload', async () => {
+  const enqueued: FollowPrimaryPublishSpec[] = []
+  await handleFollowPrimaryFailure(
+    {} as Db,
+    failureRecord({ payload: { phase: 'drain' } }),
+    okQueue(),
+    'ensure slots failed',
+    {
+      enqueue: (_db, _queue, spec) => {
+        enqueued.push(spec)
+        return Promise.resolve(true)
+      },
+    }
+  )
+  assertEquals(enqueued.length, 0)
+})
+
+test('handleFollowPrimaryFailure skips a slot-ensure retry without a memberId', async () => {
+  const enqueued: FollowPrimaryPublishSpec[] = []
+  await handleFollowPrimaryFailure(
+    {} as Db,
+    failureRecord({
+      payload: SLOT_PAYLOAD,
+      context: { managedId: MANAGED_ID },
+    }),
+    okQueue(),
+    'ensure slots failed',
+    {
+      enqueue: (_db, _queue, spec) => {
+        enqueued.push(spec)
+        return Promise.resolve(true)
+      },
+    }
+  )
+  assertEquals(enqueued.length, 0)
+})
+
+test('handleFollowPrimaryFailure does not flag a replica when ensureSlots is set', async () => {
+  const marked: string[] = []
+  await handleFollowPrimaryFailure(
+    {} as Db,
+    failureRecord({
+      payload: SLOT_PAYLOAD,
+      context: { memberId: PRIMARY_ID, managedId: MANAGED_ID },
+    }),
+    okQueue(),
+    'standby did not reach streaming after repoint (last state: startup)',
+    {
+      enqueue: () => Promise.resolve(true),
+      markReplicaNeedsResync: (_db, memberId) => {
+        marked.push(memberId)
+        return Promise.resolve(true)
+      },
+    }
+  )
+  assertEquals(marked, [])
 })
