@@ -168,7 +168,7 @@ const NIC0_RX_DOUBLE_INDEX = V8_HOST_ROW_SPECS['host.network'].doubles.indexOf('
 // ---------------------------------------------------------------------------
 
 it('a host.network row embeds the slot-mapped NIC and names it in blob6', () => {
-  const sampleGen1 = buildSample({
+  const sampleA = buildSample({
     metadata: {
       version: 6,
       sampledAt: '2026-01-01T00:00:00.000Z',
@@ -179,14 +179,14 @@ it('a host.network row embeds the slot-mapped NIC and names it in blob6', () => 
     },
     networks: [nic('eth0', 100)],
   })
-  const slotMappingGen1 = emptySlotMapping({ normalNicSlots: ['eth0'] })
-  const point = hostNetworkPoint(buildMetricsDataPoints(sampleGen1, slotMappingGen1))
+  const slotMappingA = emptySlotMapping({ normalNicSlots: ['eth0'] })
+  const point = hostNetworkPoint(buildMetricsDataPoints(sampleA, slotMappingA))
   assertEquals(point.doubles[NIC0_RX_DOUBLE_INDEX], 100)
   assertEquals(point.blobs[AE_BLOB_ENTITY_IDS_INDEX], 'nic1=eth0@')
 })
 
 it('a replaced NIC is embedded and named under its own id', () => {
-  const sampleGen2 = buildSample({
+  const sampleB = buildSample({
     metadata: {
       version: 6,
       sampledAt: '2026-01-02T00:00:00.000Z',
@@ -197,14 +197,14 @@ it('a replaced NIC is embedded and named under its own id', () => {
     },
     networks: [nic('eth1', 300)],
   })
-  const slotMappingGen2 = emptySlotMapping({ normalNicSlots: ['eth1'] })
-  const point = hostNetworkPoint(buildMetricsDataPoints(sampleGen2, slotMappingGen2))
+  const slotMappingB = emptySlotMapping({ normalNicSlots: ['eth1'] })
+  const point = hostNetworkPoint(buildMetricsDataPoints(sampleB, slotMappingB))
   assertEquals(point.doubles[NIC0_RX_DOUBLE_INDEX], 300)
   assertEquals(point.blobs[AE_BLOB_ENTITY_IDS_INDEX], 'nic1=eth1@')
 })
 
 it("packing a sample with a mapping that does not name its device never reads another device's value (identity-addressed, not positional)", () => {
-  const sampleGen2 = buildSample({
+  const sampleB = buildSample({
     metadata: {
       version: 6,
       sampledAt: '2026-01-02T00:00:00.000Z',
@@ -216,7 +216,7 @@ it("packing a sample with a mapping that does not name its device never reads an
     networks: [nic('eth1', 300)],
   })
   const staleMapping = emptySlotMapping({ normalNicSlots: ['eth0'] })
-  const point = hostNetworkPoint(buildMetricsDataPoints(sampleGen2, staleMapping))
+  const point = hostNetworkPoint(buildMetricsDataPoints(sampleB, staleMapping))
   // eth0 does not exist in this sample under the stale mapping —
   // the slot goes missing rather than silently reading eth1's value under
   // eth0's name.
