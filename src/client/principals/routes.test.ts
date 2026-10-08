@@ -385,7 +385,7 @@ test('POST /projects/:projectId/principals accepts max-length username and rejec
       })
       .where(eq(organization.id, organizationId))
 
-    // 28 chars — longest that still fits `<username>-grp` in 32.
+    // 28 chars — the longest site owner's Linux user name.
     const longest = `u${'a'.repeat(27)}`
     assertEquals(longest.length, 28)
     const okBare = await app.request(`/projects/${projectId}/principals`, {

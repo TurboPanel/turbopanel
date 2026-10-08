@@ -9,7 +9,6 @@ import { environment, organization, project, variable, workspace } from '../../.
 import { parseTestSecretsConfig } from '../../../test-fixtures/secrets.ts'
 import { scaffoldCatalogEnvironments } from '../routes.ts'
 import {
-  getCatalogEntry,
   listManagedCatalogEntries,
   resolveCatalogVariablePlaintext,
   type CatalogEntry,
@@ -81,9 +80,25 @@ test('scaffoldCatalogEnvironments seals managed secrets as enc without placehold
     return
   }
 
-  const entry = getCatalogEntry('wordpress-mysql')
-  if (!entry || entry.kind !== 'template') {
-    throw new TypeError('expected wordpress-mysql template catalog entry')
+  const entry: CatalogEntry = {
+    code: 'two-secret-fixture',
+    kind: 'template',
+    displayName: 'Two Secret Fixture',
+    description: 'Test-only entry with two independent secrets',
+    compose: {
+      version: 1,
+      data: { services: {} },
+      presentation: { keyOrder: ['services'], comments: {} },
+    },
+    environments: [
+      {
+        displayName: 'production',
+        variables: [
+          { key: 'SECRET_A', isSecret: true },
+          { key: 'SECRET_B', isSecret: true },
+        ],
+      },
+    ],
   }
 
   const db = createDenoDb()

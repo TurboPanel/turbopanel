@@ -13,7 +13,7 @@ import {
   clusterAutoReadSplit,
   clusterRequireTls,
   collectProxySqlListenerSans,
-  decideIngressBindScopes,
+  decideIngressBindAddresses,
   hostgroupsForClusterIndex,
   isAtRestSealedPassword,
   isIngressRecord,
@@ -29,7 +29,6 @@ import {
   protocolListenerForEngine,
   shouldSkipIngressFrontendUser,
   sortManagedIds,
-  unionExposureScopes,
   WILDCARD_BIND_ADDRESSES,
 } from './ingress-desired-pure.ts'
 import type { ManagedSslMode } from './ssl.ts'
@@ -54,14 +53,6 @@ test('hostgroupsForClusterIndex pairs writer/reader and rejects bad indices', ()
   })
   assertThrows(() => hostgroupsForClusterIndex(-1), TypeError)
   assertThrows(() => hostgroupsForClusterIndex(1.5), TypeError)
-})
-
-test('unionExposureScopes unions distinct scopes and collapses public', () => {
-  assertEquals(unionExposureScopes([]), [])
-  assertEquals(unionExposureScopes([undefined]), [])
-  assertEquals(unionExposureScopes(['local']), ['local'])
-  assertEquals(unionExposureScopes(['local', 'datacenter']), ['datacenter', 'local'])
-  assertEquals(unionExposureScopes(['datacenter', 'public', 'local']), ['public'])
 })
 
 test('protocolListenerForEngine returns the platform default port and family', () => {
@@ -212,72 +203,20 @@ test('collectProxySqlListenerSans and hierarchy merge', () => {
   assertEquals(merged.ipAddresses, sans.ipAddresses)
 })
 
-test('decideIngressBindScopes covers omit/public/resolve', () => {
-  assertEquals(decideIngressBindScopes([]), { kind: 'omit' })
-  assertEquals(decideIngressBindScopes([undefined]), { kind: 'omit' })
-  assertEquals(decideIngressBindScopes([undefined, undefined]), {
-    kind: 'omit',
-  })
-  assertEquals(decideIngressBindScopes(['public']), {
-    kind: 'public_all_interfaces',
-    addresses: ['0.0.0.0'],
-  })
-  assertEquals(decideIngressBindScopes(['local']), {
-    kind: 'resolve',
-    scopes: ['local'],
-  })
-  assertEquals(decideIngressBindScopes(['datacenter', 'local']), {
-    kind: 'resolve',
-    scopes: ['datacenter', 'local'],
-  })
+test('decideIngressBindAddresses: no keeps loopback, yes opens every address', () => {
+  // Regression: "no" must be loopback, never an empty publish. Sites run by a
+  // site owner's Linux user dial 127.0.0.1, so an empty publish would cut every
+  // one of them off from its database.
+  assertEquals(decideIngressBindAddresses(false), ['127.0.0.1'])
+  assertEquals(decideIngressBindAddresses(true), ['0.0.0.0'])
 })
 
-test('decideIngressBindScopes omits the publish when no cluster is exposed', () => {
-  // Regression: the exposure toggle is the only thing standing between a
-  // disabled cluster and the network (no host firewall, no ProxySQL source
-  // ACL), so an all-zero host must publish nothing — never `0.0.0.0` on the
-  // grounds that the setting is "recorded intent".
-  for (const scopes of [[], [undefined], [undefined, undefined, undefined]]) {
-    assertEquals(decideIngressBindScopes(scopes), { kind: 'omit' })
+test('decideIngressBindAddresses never widens a "no" to a wildcard', () => {
+  // The publish is the enforcement (no host firewall rule, no ProxySQL source
+  // rule yet), so "no" must stay on the loopback address and nothing else.
+  for (const address of decideIngressBindAddresses(false)) {
+    assertEquals(WILDCARD_BIND_ADDRESSES.has(address), false)
   }
-})
-
-test('decideIngressBindScopes publishes for a mixed host from the enabled clusters only', () => {
-  // One host, three clusters: two disabled, one asking for `datacenter`. The
-  // shared listener publishes exactly the enabled cluster's address — it does
-  // not widen to all interfaces because two neighbours are off, and it does not
-  // omit because one neighbour is on.
-  assertEquals(decideIngressBindScopes([undefined, 'datacenter', undefined]), {
-    kind: 'resolve',
-    scopes: ['datacenter'],
-  })
-  // A disabled cluster next to a `public` one: the publish really is
-  // all-interfaces, and the connection surface reports the disabled cluster as
-  // reachable (`viaCoResidentCluster`) rather than private.
-  assertEquals(decideIngressBindScopes([undefined, 'public']), {
-    kind: 'public_all_interfaces',
-    addresses: ['0.0.0.0'],
-  })
-  // Two enabled clusters on different interfaces publish both, not the widest.
-  assertEquals(decideIngressBindScopes([undefined, 'datacenter', 'turbofabric']), {
-    kind: 'resolve',
-    scopes: ['turbofabric', 'datacenter'],
-  })
-})
-
-test('decideIngressBindScopes ignores undefined and collapses public', () => {
-  assertEquals(decideIngressBindScopes([undefined, 'local', undefined]), {
-    kind: 'resolve',
-    scopes: ['local'],
-  })
-  assertEquals(decideIngressBindScopes([undefined, 'public', 'local']), {
-    kind: 'public_all_interfaces',
-    addresses: ['0.0.0.0'],
-  })
-  assertEquals(decideIngressBindScopes(['local', 'datacenter']), {
-    kind: 'resolve',
-    scopes: ['datacenter', 'local'],
-  })
 })
 
 test('buildLocalOrMissingPortBackend local and remote paths', () => {
@@ -496,25 +435,14 @@ test('reservedIngressHostsForServer scopes the reserved address to each consumer
   assertEquals(hosts.has('worker'), false)
 })
 
-test("a host-run consumer's loopback publish survives next to wider scopes, and its SAN is explicit", () => {
-  // `local` is added when a PHP site or native app is bound on the server.
-  for (const wider of ['datacenter', 'turbofabric'] as const) {
-    assertEquals(decideIngressBindScopes([wider, 'local']), {
-      kind: 'resolve',
-      scopes: [wider, 'local'],
-    })
-  }
-  assertEquals(decideIngressBindScopes([undefined, 'local']), {
-    kind: 'resolve',
-    scopes: ['local'],
-  })
-  // A public cluster covers loopback through the wildcard bind.
-  assertEquals(decideIngressBindScopes(['public', 'local']).kind, 'public_all_interfaces')
+test('the certificate always names loopback, including under an all-interfaces publish', () => {
+  // A site run by a site owner's Linux user verifies against 127.0.0.1.
+  assertEquals(sanBindAddresses(['127.0.0.1']), ['127.0.0.1'])
   // The wildcard has no SAN of its own, so loopback is named explicitly.
-  assertEquals(sanBindAddresses(['0.0.0.0'], []), ['0.0.0.0'])
+  assertEquals(sanBindAddresses(['0.0.0.0']), ['0.0.0.0', '127.0.0.1'])
   const sans = collectProxySqlListenerSans({
     hostname: null,
-    bindAddresses: sanBindAddresses(['0.0.0.0'], ['local']),
+    bindAddresses: sanBindAddresses(['0.0.0.0']),
     backendAddresses: [],
   })
   assertEquals(sans.ipAddresses, ['127.0.0.1'])

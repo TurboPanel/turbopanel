@@ -278,11 +278,9 @@ type ComposeServiceExtensionFields = {
    * Scheduled jobs for a `site` or `node` service.
    *
    * Rendered by the daemon as a systemd timer per entry, with `User=` set to
-   * the service's principal. That is what makes this the cleanest proof
-   * entitlement had to be an OS grant: `ExecStart` reaches `execve` **after**
-   * systemd has dropped privileges, so `/usr/bin/php8.4` succeeds or fails
-   * purely on the account's group membership. Nothing in the generated unit
-   * grants anything.
+   * the service's principal: `ExecStart` runs **after** systemd has dropped
+   * privileges, as the site owner's Linux user, which may run every PHP,
+   * Node or Deno version installed on the server.
    */
   cron?: ComposeServiceCronJob[]
   /**

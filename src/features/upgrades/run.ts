@@ -8,50 +8,51 @@ import type {
   UpgradeRunErrorCode,
   UpgradeStatus,
   UpgradeStepStatus,
-} from "./vocabulary.ts";
-import type { UpgradeRuntime } from "./planner.ts";
+} from './vocabulary.ts'
+import type { UpgradeRuntime } from './planner.ts'
+import { isInFlightStepStatus } from './transitions.ts'
 
 /**
  * Workers caps enqueues per tick below the subrequest ceiling it shares with
  * the offline sweep, so a 100% batch drains over several ticks instead of one
  * over-budget invocation. Deno has no such ceiling.
  */
-export const WORKERS_DISPATCH_BUDGET = 50;
+export const WORKERS_DISPATCH_BUDGET = 50
 
 /**
  * Active step rows a maintenance tick may read. The cursor is durable, so
  * the rest of a large batch is the next tick's page. Same ceiling as the
  * Workers dispatch budget: one tick must not materialize the fleet.
  */
-export const UPGRADE_TICK_STEP_BUDGET = WORKERS_DISPATCH_BUDGET;
+export const UPGRADE_TICK_STEP_BUDGET = WORKERS_DISPATCH_BUDGET
 
 /**
  * Cell probes on a fleet tick. One extra slot is the co-located host; the
  * rest match the Workers dispatch budget so a page of the fleet never wakes
  * every Durable Object.
  */
-export const FLEET_CELL_PROBE_BUDGET = WORKERS_DISPATCH_BUDGET + 1;
+export const FLEET_CELL_PROBE_BUDGET = WORKERS_DISPATCH_BUDGET + 1
 
 const PHASE_RANK: Record<UpgradePhase, number> = {
   colocated_daemon: 0,
   control_plane: 1,
   fleet: 2,
-};
+}
 
 /** Planned order: co-located daemon, then the control plane, then the fleet. */
 export function upgradePhaseRank(phase: UpgradePhase): number {
-  return PHASE_RANK[phase];
+  return PHASE_RANK[phase]
 }
 
 /** Stable step order: phase rank, then batch, then step id. */
 export function compareUpgradeStepRows(
   a: { phase: UpgradePhase; batchIndex: number; id: string },
-  b: { phase: UpgradePhase; batchIndex: number; id: string },
+  b: { phase: UpgradePhase; batchIndex: number; id: string }
 ): number {
-  const phase = upgradePhaseRank(a.phase) - upgradePhaseRank(b.phase);
-  if (phase !== 0) return phase;
-  if (a.batchIndex !== b.batchIndex) return a.batchIndex - b.batchIndex;
-  return a.id.localeCompare(b.id);
+  const phase = upgradePhaseRank(a.phase) - upgradePhaseRank(b.phase)
+  if (phase !== 0) return phase
+  if (a.batchIndex !== b.batchIndex) return a.batchIndex - b.batchIndex
+  return a.id.localeCompare(b.id)
 }
 
 /**
@@ -59,19 +60,19 @@ export function compareUpgradeStepRows(
  * step that Postgres returned first cannot open before the co-located daemon.
  */
 export function earliestOpenPhase(
-  steps: readonly { phase: UpgradePhase; status: UpgradeStepStatus }[],
+  steps: readonly { phase: UpgradePhase; status: UpgradeStepStatus }[]
 ): UpgradePhase | null {
-  let best: UpgradePhase | null = null;
-  let rank = Number.POSITIVE_INFINITY;
+  let best: UpgradePhase | null = null
+  let rank = Number.POSITIVE_INFINITY
   for (const step of steps) {
-    if (isTerminalStepStatus(step.status)) continue;
-    const next = upgradePhaseRank(step.phase);
+    if (isTerminalStepStatus(step.status)) continue
+    const next = upgradePhaseRank(step.phase)
     if (next < rank) {
-      best = step.phase;
-      rank = next;
+      best = step.phase
+      rank = next
     }
   }
-  return best;
+  return best
 }
 
 /**
@@ -81,74 +82,81 @@ export function earliestOpenPhase(
 export function fleetCellProbeIds(
   colocatedServerId: string | null,
   candidateIds: readonly string[],
-  budget: number = FLEET_CELL_PROBE_BUDGET,
+  budget: number = FLEET_CELL_PROBE_BUDGET
 ): string[] {
-  const ids: string[] = [];
-  const cap = Math.max(0, budget);
-  if (colocatedServerId && cap > 0) ids.push(colocatedServerId);
+  const ids: string[] = []
+  const cap = Math.max(0, budget)
+  if (colocatedServerId && cap > 0) ids.push(colocatedServerId)
   for (const id of candidateIds) {
-    if (ids.length >= cap) break;
-    if (id.length === 0 || ids.includes(id)) continue;
-    ids.push(id);
+    if (ids.length >= cap) break
+    if (id.length === 0 || ids.includes(id)) continue
+    ids.push(id)
   }
-  return ids;
+  return ids
 }
 
 /** A step the tick will not touch again (excludes `rolled_back`, still retrying). */
 export function isTerminalStepStatus(status: UpgradeStepStatus): boolean {
   return (
-    status === "done" ||
-    status === "skipped" ||
-    status === "failed" ||
-    status === "needs_attention"
-  );
+    status === 'done' || status === 'skipped' || status === 'failed' || status === 'needs_attention'
+  )
 }
 
 export type BatchStepView = {
-  batchIndex: number;
-  status: UpgradeStepStatus;
-};
+  batchIndex: number
+  status: UpgradeStepStatus
+  /**
+   * When present, a later connected fleet step can open before an earlier
+   * offline one. An in-flight step still pins its batch so two installs never
+   * overlap. Omitted `connected` is ignored (same as the lowest open batch).
+   */
+  connected?: boolean
+}
 
 /**
  * The batch the tick should be dispatching: the lowest index that still has a
  * non-terminal step. `null` when every step is terminal. The next batch only
  * opens once every step in the current one is terminal — failed / needs_attention
  * steps count as terminal, so a failure never blocks the following batch.
+ *
+ * When `connected` is set on the views, an open batch of only disconnected
+ * servers yields to a later connected one so offline hosts wait at the end.
+ * An in-flight step still pins its batch.
  */
-export function activeBatchIndex(
-  steps: readonly BatchStepView[],
-): number | null {
-  let active: number | null = null;
+export function activeBatchIndex(steps: readonly BatchStepView[]): number | null {
+  let active: number | null = null
+  let connected: number | null = null
+  let pinned: number | null = null
   for (const step of steps) {
-    if (isTerminalStepStatus(step.status)) continue;
-    if (active === null || step.batchIndex < active) active = step.batchIndex;
+    if (isTerminalStepStatus(step.status)) continue
+    active = lowerBatch(active, step.batchIndex)
+    if (isInFlightStepStatus(step.status)) pinned = lowerBatch(pinned, step.batchIndex)
+    if (step.connected === true) connected = lowerBatch(connected, step.batchIndex)
   }
-  return active;
+  return pinned ?? connected ?? active
+}
+
+function lowerBatch(current: number | null, candidate: number): number {
+  return current === null || candidate < current ? candidate : current
 }
 
 /** True once every step in `batchIndex` is terminal (and the batch exists). */
-export function batchComplete(
-  steps: readonly BatchStepView[],
-  batchIndex: number,
-): boolean {
-  const inBatch = steps.filter((step) => step.batchIndex === batchIndex);
-  return inBatch.length > 0 &&
-    inBatch.every((step) => isTerminalStepStatus(step.status));
+export function batchComplete(steps: readonly BatchStepView[], batchIndex: number): boolean {
+  const inBatch = steps.filter((step) => step.batchIndex === batchIndex)
+  return inBatch.length > 0 && inBatch.every((step) => isTerminalStepStatus(step.status))
 }
 
 export type StepSummary = {
-  total: number;
-  done: number;
-  skipped: number;
-  failed: number;
-  needsAttention: number;
-  inProgress: number;
-};
+  total: number
+  done: number
+  skipped: number
+  failed: number
+  needsAttention: number
+  inProgress: number
+}
 
 /** Terminal-status totals — the shape written to `upgrade.counts`. */
-export function summarizeSteps(
-  steps: readonly { status: UpgradeStepStatus }[],
-): StepSummary {
+export function summarizeSteps(steps: readonly { status: UpgradeStepStatus }[]): StepSummary {
   const summary: StepSummary = {
     total: steps.length,
     done: 0,
@@ -156,15 +164,15 @@ export function summarizeSteps(
     failed: 0,
     needsAttention: 0,
     inProgress: 0,
-  };
-  for (const step of steps) {
-    if (step.status === "done") summary.done += 1;
-    else if (step.status === "skipped") summary.skipped += 1;
-    else if (step.status === "failed") summary.failed += 1;
-    else if (step.status === "needs_attention") summary.needsAttention += 1;
-    else summary.inProgress += 1;
   }
-  return summary;
+  for (const step of steps) {
+    if (step.status === 'done') summary.done += 1
+    else if (step.status === 'skipped') summary.skipped += 1
+    else if (step.status === 'failed') summary.failed += 1
+    else if (step.status === 'needs_attention') summary.needsAttention += 1
+    else summary.inProgress += 1
+  }
+  return summary
 }
 
 /**
@@ -174,28 +182,26 @@ export function summarizeSteps(
  *   - otherwise → `partially_failed`
  */
 export function finalRunStatusFromSummary(summary: StepSummary): UpgradeStatus {
-  const ok = summary.done + summary.skipped;
-  const bad = summary.failed + summary.needsAttention;
-  if (bad === 0) return "succeeded";
-  if (ok === 0) return "failed";
-  return "partially_failed";
+  const ok = summary.done + summary.skipped
+  const bad = summary.failed + summary.needsAttention
+  if (bad === 0) return 'succeeded'
+  if (ok === 0) return 'failed'
+  return 'partially_failed'
 }
 
-export function finalRunStatus(
-  steps: readonly { status: UpgradeStepStatus }[],
-): UpgradeStatus {
-  return finalRunStatusFromSummary(summarizeSteps(steps));
+export function finalRunStatus(steps: readonly { status: UpgradeStepStatus }[]): UpgradeStatus {
+  return finalRunStatusFromSummary(summarizeSteps(steps))
 }
 
 export type PhaseStepView = {
-  phase: UpgradePhase;
-  status: UpgradeStepStatus;
-};
+  phase: UpgradePhase
+  status: UpgradeStepStatus
+}
 
 /** The phases the fleet gate waits on. Neither may end the run still open. */
-export const PLATFORM_PHASES = ["colocated_daemon", "control_plane"] as const;
+export const PLATFORM_PHASES = ['colocated_daemon', 'control_plane'] as const
 
-export type PlatformPhase = (typeof PLATFORM_PHASES)[number];
+export type PlatformPhase = (typeof PLATFORM_PHASES)[number]
 
 /**
  * The first platform phase with a step that failed (or needs attention), or
@@ -203,34 +209,31 @@ export type PlatformPhase = (typeof PLATFORM_PHASES)[number];
  * so a fleet phase behind a failed co-located daemon or control plane could
  * never open, and the single instance-wide run would stay `running` forever.
  */
-export function failedPlatformPhase(
-  steps: readonly PhaseStepView[],
-): PlatformPhase | null {
+export function failedPlatformPhase(steps: readonly PhaseStepView[]): PlatformPhase | null {
   for (const phase of PLATFORM_PHASES) {
     const failed = steps.some(
       (step) =>
-        step.phase === phase &&
-        (step.status === "failed" || step.status === "needs_attention"),
-    );
-    if (failed) return phase;
+        step.phase === phase && (step.status === 'failed' || step.status === 'needs_attention')
+    )
+    if (failed) return phase
   }
-  return null;
+  return null
 }
 
 /** `upgrade.error` for a run ended by {@link failedPlatformPhase}. */
 export function platformFailureError(phase: PlatformPhase): UpgradeRunErrorCode {
-  return `${phase}_failed`;
+  return `${phase}_failed`
 }
 
 export type FleetGateInput = {
   /** Developer surface / dev update overlay / source-run control plane. */
-  development: boolean;
-  runtime: UpgradeRuntime;
+  development: boolean
+  runtime: UpgradeRuntime
   /** False for trunk self-hosted (no control-plane package). */
-  channelHasInstancePackage: boolean;
-  colocatedDaemonOnTarget: boolean;
-  controlPlaneOnTarget: boolean;
-};
+  channelHasInstancePackage: boolean
+  colocatedDaemonOnTarget: boolean
+  controlPlaneOnTarget: boolean
+}
 
 /**
  * The fleet hard-gate. Self-hosted requires the co-located daemon on target,
@@ -239,13 +242,13 @@ export type FleetGateInput = {
  * the gate is not applicable and always open. Development treats it satisfied.
  */
 export function isFleetGateSatisfied(input: FleetGateInput): boolean {
-  if (input.development) return true;
-  if (input.runtime === "workers") return true;
-  if (!input.colocatedDaemonOnTarget) return false;
+  if (input.development) return true
+  if (input.runtime === 'workers') return true
+  if (!input.colocatedDaemonOnTarget) return false
   if (input.channelHasInstancePackage && !input.controlPlaneOnTarget) {
-    return false;
+    return false
   }
-  return true;
+  return true
 }
 
 /**
@@ -255,8 +258,8 @@ export function isFleetGateSatisfied(input: FleetGateInput): boolean {
 export function capWorkersDispatch<T>(
   runtime: UpgradeRuntime,
   items: readonly T[],
-  budget: number = WORKERS_DISPATCH_BUDGET,
+  budget: number = WORKERS_DISPATCH_BUDGET
 ): T[] {
-  if (runtime !== "workers") return [...items];
-  return items.slice(0, Math.max(0, budget));
+  if (runtime !== 'workers') return [...items]
+  return items.slice(0, Math.max(0, budget))
 }

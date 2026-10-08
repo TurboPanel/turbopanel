@@ -12,12 +12,14 @@ import { createDenoDb } from '../../db/connection.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import { createSession } from '../authn/session-store.ts'
+import { STEP_UP_WINDOW_MS } from '../authn/step-up.ts'
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
   type SecretsConfig,
 } from '../../lib/secrets/secrets.ts'
 import {
+  audit,
   binding,
   command,
   container,
@@ -30,6 +32,7 @@ import {
   replica,
   server,
   service,
+  session,
   tls,
   user,
   variable,
@@ -135,6 +138,7 @@ async function cleanupBindingRoutesOrg(
     await db.delete(workspace).where(inArray(workspace.id, workspaceIds))
   }
 
+  await db.delete(audit).where(eq(audit.organizationId, organizationId))
   await db.delete(tls).where(eq(tls.organizationId, organizationId))
   await db.delete(server).where(eq(server.organizationId, organizationId))
   await db.delete(grant).where(and(eq(grant.actorId, userId), eq(grant.entityId, organizationId)))
@@ -442,6 +446,22 @@ test('GET /bindings list filters and CRUD round-trip', async () => {
         throw new TypeError('expected binding id string')
       }
       const bindingId = created.id
+      const auditActions = async () =>
+        await db
+          .select({ action: audit.action, context: audit.context, actorUserId: audit.actorUserId })
+          .from(audit)
+          .where(and(eq(audit.organizationId, organizationId), eq(audit.targetId, bindingId)))
+          .orderBy(audit.id)
+      const afterCreate = await auditActions()
+      assertEquals(
+        afterCreate.map((r) => r.action),
+        ['binding.create']
+      )
+      assertEquals(afterCreate[0]?.actorUserId, userId)
+      assertEquals(
+        (afterCreate[0]?.context as Record<string, unknown>).serviceId,
+        consumerServiceId
+      )
 
       const varsAfterCreate = await db
         .select({ key: variable.key })
@@ -520,6 +540,10 @@ test('GET /bindings list filters and CRUD round-trip', async () => {
         .where(eq(binding.id, bindingId))
         .limit(1)
       assertEquals(patchedRow?.keyPrefix, 'APP')
+      assertEquals(
+        (await auditActions()).map((r) => r.action),
+        ['binding.create', 'binding.update']
+      )
 
       const patchMissing = await app.request(`/bindings/${crypto.randomUUID()}`, {
         method: 'PATCH',
@@ -547,6 +571,67 @@ test('GET /bindings list filters and CRUD round-trip', async () => {
         .where(eq(binding.id, bindingId))
         .limit(1)
       assertEquals(afterDelete.length, 0)
+
+      const finalTrail = await auditActions()
+      assertEquals(
+        finalTrail.map((r) => r.action),
+        ['binding.create', 'binding.update', 'binding.delete']
+      )
+      // Ids and key names only: never a password or connection string.
+      assertEquals(JSON.stringify(finalTrail).toLowerCase().includes('password'), false)
+    }
+  )
+})
+
+test('DELETE /bindings/:id needs step-up while the organization requires it, and a refused delete leaves no trace', async () => {
+  await withBindingFixtures(
+    async ({ db, app, secrets, userId, organizationId, principalId, consumerServiceId }) => {
+      const { token } = await createSession(db, userId, {})
+      await db
+        .update(session)
+        .set({ createdAt: new Date(Date.now() - 2 * STEP_UP_WINDOW_MS).toISOString() })
+        .where(eq(session.token, token))
+      const signed = await buildSignedCookie(token, secrets)
+      const headers = authHeaders(`${HTTP_SESSION_COOKIE_NAME}=${signed}`, organizationId)
+
+      const create = await app.request('/bindings', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          principalId,
+          serviceId: consumerServiceId,
+          databaseName: 'postgres',
+          keyPrefix: 'DATABASE',
+          emitEngineDefaults: false,
+        }),
+      })
+      assertEquals(create.status, 200)
+      const { id } = (await create.json()) as { id: string }
+
+      await db
+        .update(organization)
+        .set({ options: { requireReauthForDestructive: true } })
+        .where(eq(organization.id, organizationId))
+
+      const refused = await app.request(`/bindings/${id}`, { method: 'DELETE', headers })
+      assertEquals(refused.status, 403)
+      const body = (await refused.json()) as { error: string; action: string }
+      assertEquals(body.error, 'reauth_required')
+      assertEquals(body.action, 'binding.delete')
+      const kept = await db.select({ id: binding.id }).from(binding).where(eq(binding.id, id))
+      assertEquals(kept.length, 1)
+      const deleteAudits = await db
+        .select({ id: audit.id })
+        .from(audit)
+        .where(and(eq(audit.targetId, id), eq(audit.action, 'binding.delete')))
+      assertEquals(deleteAudits.length, 0)
+
+      await db
+        .update(organization)
+        .set({ options: { requireReauthForDestructive: false } })
+        .where(eq(organization.id, organizationId))
+      const allowed = await app.request(`/bindings/${id}`, { method: 'DELETE', headers })
+      assertEquals(allowed.status, 200)
     }
   )
 })

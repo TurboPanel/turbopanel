@@ -351,9 +351,11 @@ places on that server (pinned there or holding a `deployment` row there) and
 names the rest on the **last** stop sent to that server. The daemon retires each
 after everything else in the stop through `tp-host principal-remove` (slice
 stopped and removed, processes killed, key file and group memberships cleared,
-the home tree removed without following symlinks, `userdel`, `groupdel
-<name>-grp`), then re-renders the `sshd` drop-in. tp-host refuses an account
-whose uid or `<name>-grp` gid is outside 15001–60000, whose home is not under
+the home tree removed without following symlinks, `userdel`, `groupdel`
+of its own group `<name>` (or `<name>-grp` on a host set up before the group
+took the user's name)), then re-renders the `sshd` drop-in. tp-host refuses an
+account whose uid or primary gid is outside 15001–60000, whose primary group is
+not its own group, whose home is not under
 the principal root, or that the host still references (a `turbopanel-*` unit
 running as it or in its slice, or a tree left under its `sites/`); a refusal is
 logged and the account kept, never a stop failure. An older daemon ignores the

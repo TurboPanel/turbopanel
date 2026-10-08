@@ -1168,6 +1168,38 @@ test('DELETE /servers/:id succeeds with stopped system ingress inventory', async
   )
 })
 
+test('DELETE /servers/:id succeeds with a never-started pending system ingress container', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const hierarchy = await systemHierarchy.ensureSystemHierarchy(db, {
+        organizationId,
+        serverId,
+      })
+      await db
+        .update(container)
+        .set({ status: 'pending', containerId: null })
+        .where(eq(container.id, hierarchy.containerRowId))
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+
+      assertEquals(res.status, 200)
+      assertEquals(registry.purgedIds, [serverId])
+      const remainingContainers = await db
+        .select({ id: container.id })
+        .from(container)
+        .where(eq(container.id, hierarchy.containerRowId))
+      assertEquals(remainingContainers.length, 0)
+
+      await db.delete(project).where(eq(project.id, hierarchy.projectId))
+      await db.delete(workspace).where(eq(workspace.id, hierarchy.workspaceId))
+    }
+  )
+})
+
 test('DELETE /servers/:id invalidates the bound license', async () => {
   await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
     const { licenseId } = await createLicense(db, { organizationId })
@@ -1328,6 +1360,36 @@ test('DELETE /servers/:id returns 409 when child resources block deletion', asyn
           .from(server)
           .where(eq(server.id, serverId))
         assertEquals(remaining.length, 1)
+      } finally {
+        await cleanupOrgSystemSubtree(db, organizationId)
+      }
+    }
+  )
+})
+
+test('DELETE /servers/:id returns 409 for a pending ingress container on a connected server', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      // A start may be in flight while the daemon is connected, so it still blocks.
+      const hierarchy = await systemHierarchy.ensureSystemHierarchy(db, {
+        organizationId,
+        serverId,
+      })
+      await db
+        .update(container)
+        .set({ status: 'pending', containerId: null })
+        .where(eq(container.id, hierarchy.containerRowId))
+      await db.update(server).set({ isConnected: true }).where(eq(server.id, serverId))
+
+      try {
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/servers/${serverId}`, {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        })
+
+        assertEquals(res.status, 409)
+        assertEquals(registry.purgedIds.length, 0)
       } finally {
         await cleanupOrgSystemSubtree(db, organizationId)
       }

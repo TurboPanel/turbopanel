@@ -8,7 +8,7 @@ import { bindingPrefixedKeys } from '../../lib/naming.ts'
 import {
   bindingRequiredKeys,
   deliveryByServiceId,
-  HOST_SITE_PROXY_PORT,
+  HOST_SITE_PROXY_PORTS,
   hostRunDeliveryByComposeName,
   hostSiteBindingRefusal,
   inferStoredDelivery,
@@ -69,6 +69,25 @@ test('a PHP site dials loopback and gets no multi-line value at all', () => {
   for (const row of rows.values()) assertEquals(row.value.includes('\n'), false)
 })
 
+test('a PHP site on Postgres gets the same set at the Postgres listener port', () => {
+  const rows = render({
+    delivery: 'host-site',
+    engineCode: 'postgres',
+    port: 15432,
+    emitEngineDefaults: true,
+    sslMode: 'require',
+  })
+  assertEquals(rows.get(keys.host)?.value, '127.0.0.1')
+  assertEquals(rows.get(keys.port)?.value, '15432')
+  assertEquals(rows.get('PGHOST')?.value, '127.0.0.1')
+  assertEquals(rows.get('PGPORT')?.value, '15432')
+  assertEquals(rows.get('PGSSLMODE')?.value, 'require')
+  assertEquals(rows.get(keys.url)?.value.startsWith('postgresql://'), true)
+  assertEquals(rows.get(keys.url)?.value.includes('127.0.0.1:15432'), true)
+  assertEquals(rows.has(keys.caCert), false)
+  for (const row of rows.values()) assertEquals(row.value.includes('\n'), false)
+})
+
 test('a native Node app dials loopback and keeps the CA as text', () => {
   const rows = render({ delivery: 'host-node' })
   assertEquals(rows.get(keys.host)?.value, '127.0.0.1')
@@ -122,11 +141,14 @@ test('a re-materialize that is not a deploy keeps the stored form', () => {
   assertEquals(inferStoredDelivery([], 'DATABASE'), 'container')
 })
 
-test('a PHP site is refused any database listener but the default MySQL one', () => {
-  assertEquals(hostSiteBindingRefusal(HOST_SITE_PROXY_PORT), null)
-  const refusal = hostSiteBindingRefusal(15432) ?? ''
-  assertEquals(refusal.includes('15432'), true)
+test('a PHP site is refused any database listener but the two defaults', () => {
+  for (const port of HOST_SITE_PROXY_PORTS) assertEquals(hostSiteBindingRefusal(port), null)
+  assertEquals(HOST_SITE_PROXY_PORTS, [13306, 15432])
+  const refusal = hostSiteBindingRefusal(16432) ?? ''
+  assertEquals(refusal.includes('16432'), true)
   assertEquals(refusal.includes('13306'), true)
+  assertEquals(refusal.includes('15432'), true)
+  assertEquals(refusal.includes('Postgres'), false)
 })
 
 test('required keys name the connection set, plus the engine defaults when emitted', () => {
@@ -173,9 +195,9 @@ test('a deploy decides the form; any other re-materialize keeps the stored one',
   assertEquals(await resolveBindingDelivery(hostSiteRows, target, 'container'), 'container')
 })
 
-test('a PHP site on another listener port is refused, a native app or container is not', async () => {
+test('a PHP site on a changed listener port is refused (Postgres default is allowed), a native app or container is not', async () => {
   const db = dbWithStoredRows([])
-  const odd = { ...target, listenerPort: 15432 }
+  const odd = { ...target, listenerPort: 16432 }
   const refused = await resolveBindingDelivery(db, odd, 'host-site')
   assertEquals(typeof refused === 'object' && refused.kind, 'binding_host_site_unsupported')
   assertEquals(await resolveBindingDelivery(db, odd, 'host-node'), 'host-node')

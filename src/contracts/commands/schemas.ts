@@ -1616,15 +1616,9 @@ export type EnvironmentDeployPrincipalMaterial = {
    */
   shell?: string
   /**
-   * Runtime series this principal may execute, as the daemon's
-   * `ensurePrincipalManagedGroups` reconciles them into unix groups. The
-   * **effective** set, resolved here — the daemon adds *and revokes* from
-   * exactly this list rather than deriving anything itself.
-   */
-  runtimes?: { runtime: string; series: string }[]
-  /**
-   * SSH access groups (`tpsftp` / `tpshell`), reconciled by the same daemon
-   * pass as `runtimes` and with the same add-and-revoke semantics.
+   * SSH access groups (`tpsftp` / `tpshell`), reconciled by the daemon's
+   * `ensurePrincipalManagedGroups`, which adds *and revokes* from exactly this
+   * list rather than deriving anything itself.
    *
    * Derived here from the account's shell **and** whether it holds any key, so
    * one place decides: see `resolvePrincipalAccessGroups`. `[]` is the normal
@@ -2866,7 +2860,7 @@ function isValidPrincipalShellPath(value: string): boolean {
 
 /** Must stay in sync with the daemon `PRINCIPAL_USERNAME_RE` / max length. */
 const PRINCIPAL_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
-/** Cap so `<username>-grp` fits the Linux 32-char group-name limit. */
+/** Longest site owner's Linux user name; its group carries the same name. */
 const MAX_PRINCIPAL_USERNAME_LENGTH = 28
 
 function isValidPrincipalUsername(value: unknown): value is string {
@@ -2900,30 +2894,9 @@ function requirePrincipalPath(value: unknown, isValid: (path: string) => boolean
 }
 
 /**
- * Rejected, not dropped: this is a grant. Silently discarding a malformed
- * list would revoke every entitlement the principal should have held.
- */
-function parseDeployPrincipalRuntimes(value: unknown): { runtime: string; series: string }[] {
-  if (!Array.isArray(value)) {
-    throw new TypeError('Invalid environment.deploy payload')
-  }
-  return value.map((raw) => {
-    if (
-      !isRecord(raw) ||
-      !isString(raw.runtime) ||
-      !isString(raw.series) ||
-      !RUNTIME_SERIES_RE.test(raw.series)
-    ) {
-      throw new Error('Invalid environment.deploy payload')
-    }
-    return { runtime: raw.runtime, series: raw.series }
-  })
-}
-
-/**
- * A granted list where every entry must be valid — same reject-don't-drop rule
- * as `runtimes`: dropping a malformed grant silently revokes the login or the
- * access it describes.
+ * A granted list where every entry must be valid — rejected, not dropped:
+ * dropping a malformed grant silently revokes the login or the access it
+ * describes.
  */
 function requireGrantedTokens(value: unknown, isValid: (token: string) => boolean): string[] {
   if (!Array.isArray(value)) {
@@ -2962,9 +2935,6 @@ function parseDeployPrincipalMaterialEntry(entry: unknown): EnvironmentDeployPri
   if (entry.shell !== undefined) {
     material.shell = requirePrincipalPath(entry.shell, isValidPrincipalShellPath)
   }
-  if (entry.runtimes !== undefined) {
-    material.runtimes = parseDeployPrincipalRuntimes(entry.runtimes)
-  }
   if (entry.accessGroups !== undefined) {
     material.accessGroups = requireGrantedTokens(entry.accessGroups, (raw) =>
       ACCESS_GROUP_RE.test(raw)
@@ -2990,9 +2960,6 @@ const ACCESS_GROUP_RE = /^[a-z][a-z0-9-]{0,31}$/
  * `../sha512-crypt.ts` and the daemon's own gates.
  */
 const PASSWORD_HASH_RE = /^\$6\$(?:rounds=\d{4,9}\$)?[./0-9A-Za-z]{8,16}\$[./0-9A-Za-z]{86}$/
-
-/** `8.4` or `24` — the exec boundary a group protects, never a patch pin. */
-const RUNTIME_SERIES_RE = /^\d{1,3}(\.\d{1,3})?$/
 
 function parseDeployPrincipalMaterial(
   value: unknown
@@ -4396,7 +4363,7 @@ export type EnvironmentStopCommandPayload = {
    * Principals (applied Linux logins) that no project, site or app on this
    * server uses once the delete commits. The daemon retires each after the
    * rest of the stop through `tp-host principal-remove` (slice, processes, key
-   * file, group memberships, home tree, account and `<name>-grp`), which
+   * file, group memberships, home tree, account and its own group), which
    * re-checks on the host that nothing there still references the account.
    * Only a delete teardown sets it, on the last stop it sends to a server.
    */
@@ -5301,9 +5268,10 @@ export type ManagedIngressReconcileCommandPayload = {
    */
   managedNetwork: string
   /**
-   * Every host address the client listeners publish on. More than one entry
-   * when an access scope resolves to distinct interfaces (datacenter private IP
-   * plus TurboFabric `tp0`); empty/absent means no host publish at all.
+   * Every host address the client listeners publish on. The control plane sends
+   * exactly one entry, from the server's single "allow external access to the
+   * databases on this server" setting: `127.0.0.1` for no, `0.0.0.0` for yes.
+   * Empty/absent still means no host publish at all.
    */
   bindAddresses?: string[]
   /**

@@ -174,7 +174,7 @@ export const managedSchemas = {
     type: 'object',
     additionalProperties: true,
     description:
-      'Engine settings (`image`, `ssl`, `resources`, `dockerOptions`, `engineConfig`, `exposure`, plus engine extras such as `initialDatabase`).',
+      'Engine settings (`image`, `ssl`, `resources`, `dockerOptions`, `engineConfig`, plus engine extras such as `initialDatabase`).',
   },
   ManagedConnectionInfo: {
     type: 'object',
@@ -212,10 +212,10 @@ export const managedSchemas = {
         },
       },
       rootUsername: { type: 'string', nullable: true },
-      exposure: {
-        oneOf: [{ $ref: '#/components/schemas/ManagedEffectiveExposure' }, { type: 'null' }],
+      externalAccess: {
+        $ref: '#/components/schemas/ManagedExternalAccess',
         description:
-          "What the shared connection listener on the cluster's server really publishes, which is not always what this cluster asked for: one exposed cluster publishes for every cluster on the same server.",
+          'The "allow external access to the databases on this server" setting of every server that fronts this cluster. The setting belongs to the server and covers every cluster on it.',
       },
       members: {
         type: 'array',
@@ -227,44 +227,35 @@ export const managedSchemas = {
       },
     },
   },
-  ManagedEffectiveExposure: {
+  ManagedExternalAccess: {
     type: 'object',
-    required: ['requested', 'published', 'scopes', 'viaCoResidentCluster', 'pendingServers'],
+    required: ['servers'],
     properties: {
-      requested: { type: 'boolean', description: "This cluster's own exposure toggle." },
-      published: {
-        type: 'boolean',
-        description: 'A host listener publishes in front of this cluster.',
-      },
-      scopes: {
+      servers: {
         type: 'array',
-        items: { type: 'string', enum: ['local', 'datacenter', 'turbofabric', 'public'] },
-        description: 'Scopes the shared listener covers, widest first.',
-      },
-      viaCoResidentCluster: {
-        type: 'boolean',
-        description: 'Published only because another cluster on the same server asked for it.',
-      },
-      pendingServers: {
-        type: 'array',
-        description:
-          'Servers told to listen the new way that have not confirmed it yet (still applying, offline, or the push failed). Retried automatically; Apply retries at once.',
         items: {
           type: 'object',
-          required: ['id', 'name'],
-          properties: { id: { type: 'string' }, name: { type: 'string' } },
+          required: ['id', 'name', 'enabled', 'pending', 'otherClusters'],
+          properties: {
+            id: { type: 'string' },
+            name: { type: 'string' },
+            enabled: {
+              type: 'boolean',
+              description:
+                'Yes: the databases on this server can be reached from outside it. No (the default): only services on the server itself can connect.',
+            },
+            pending: {
+              type: 'boolean',
+              description:
+                'The server was told the new setting and has not confirmed it yet (still applying, offline, or the push failed). Retried automatically.',
+            },
+            otherClusters: {
+              type: 'integer',
+              description: 'Other clusters on this server that the setting also covers.',
+            },
+          },
         },
       },
-    },
-  },
-  ExposureReconcileOutcome: {
-    type: 'object',
-    required: ['queuedServerIds', 'failedServerIds'],
-    description:
-      'The new listener addresses sent to every server that fronts the cluster. `failedServerIds` could not be built or queued; the setting is saved and those servers are retried.',
-    properties: {
-      queuedServerIds: { type: 'array', items: { type: 'string' } },
-      failedServerIds: { type: 'array', items: { type: 'string' } },
     },
   },
   ManagedPatchResponse: {
@@ -274,36 +265,50 @@ export const managedSchemas = {
       ok: { type: 'boolean', const: true },
       managed: { $ref: '#/components/schemas/ManagedEnvironmentRow' },
       settings: { $ref: '#/components/schemas/ManagedSettings' },
-      ingressReconcile: {
-        $ref: '#/components/schemas/ExposureReconcileOutcome',
-        description: 'Present when the servers were told the listener addresses.',
-      },
-      pendingServerIds: { type: 'array', items: { type: 'string' } },
     },
   },
-  ManagedExposureRefusalError: {
+  ServerManagedExternalAccessSaved: {
     type: 'object',
-    required: ['error', 'message'],
+    required: ['ok', 'enabled', 'pending', 'clusterCount'],
     properties: {
-      error: {
-        type: 'string',
-        enum: ['datacenter_ip_required', 'fabric_address_required', 'daemon_key_unavailable'],
+      ok: { type: 'boolean', const: true },
+      enabled: { type: 'boolean' },
+      pending: {
+        type: 'boolean',
+        description: 'The server was told and has not confirmed yet. Retried automatically.',
       },
-      message: { type: 'string', description: 'Plain words; names the server.' },
-      serverId: { type: 'string' },
+      clusterCount: { type: 'integer' },
     },
   },
-  ManagedIngressReconcileFailedError: {
+  ServerManagedExternalAccessPushFailed: {
     type: 'object',
-    required: ['error', 'message', 'managed', 'settings', 'ingressReconcile'],
-    description: 'The setting is saved; the host has not been told yet.',
+    required: ['error', 'message', 'enabled', 'pending', 'clusterCount'],
+    description: 'The setting is saved; the server has not been told yet.',
     properties: {
       error: { type: 'string', const: 'ingress_reconcile_failed' },
       message: { type: 'string' },
-      managed: { $ref: '#/components/schemas/ManagedEnvironmentRow' },
-      settings: { $ref: '#/components/schemas/ManagedSettings' },
-      ingressReconcile: { $ref: '#/components/schemas/ExposureReconcileOutcome' },
-      pendingServerIds: { type: 'array', items: { type: 'string' } },
+      enabled: { type: 'boolean' },
+      pending: { type: 'boolean', const: true },
+      clusterCount: { type: 'integer' },
+    },
+  },
+  ServerManagedExternalAccess: {
+    type: 'object',
+    required: ['enabled', 'pending', 'clusterCount'],
+    properties: {
+      enabled: {
+        type: 'boolean',
+        description:
+          "Yes: the databases on this server are published beyond the server (every address; the firewall and network rules decide who can reach them). No (the default): only services on the server itself can connect, either sites run by a site owner's Linux user through 127.0.0.1 or containers bound to the cluster over the managed Docker network.",
+      },
+      pending: {
+        type: 'boolean',
+        description: 'The server was told and has not confirmed yet. Retried automatically.',
+      },
+      clusterCount: {
+        type: 'integer',
+        description: 'Managed clusters on this server that the setting covers.',
+      },
     },
   },
   ManagedRecoveryRecord: {
@@ -390,18 +395,6 @@ export const managedSchemas = {
         type: 'string',
         description:
           'Optional base-OS image variant of the series (for example `alpine` or `debian`). Alone, it selects that variant of the default series; omitted = the first variant of the series. A non-string answers 400; an unknown variant answers 422 `managed_version_unsupported`.',
-      },
-      exposure: {
-        type: 'object',
-        properties: {
-          enabled: { type: 'boolean' },
-          scope: {
-            type: 'string',
-            enum: ['public', 'datacenter', 'local', 'turbofabric'],
-            description:
-              "Where SQL clients may connect when enabled: `local` (this server only: 127.0.0.1, which is what sites run by a site owner's Linux user need), `datacenter`, `turbofabric` or `public` (every interface). Omitted = `local`. Legacy `bind` is read-only migration input.",
-          },
-        },
       },
     },
   },
@@ -1067,6 +1060,55 @@ export const managedSchemas = {
 }
 
 export const managedPaths = {
+  '/api/client/v1/servers/{id}/managed-external-access': {
+    get: {
+      tags: ['Managed services'],
+      summary: 'Get "allow external access to the databases on this server"',
+      description:
+        'Owners and managers only; a server of another organization is 404. One setting for the whole server, because one connection listener serves every managed cluster on it. Default no.',
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        200: { description: 'The setting', ...jsonSchema('ServerManagedExternalAccess') },
+        403: { description: 'Not an owner or manager of the server' },
+        404: { description: 'Server not found in the caller organization' },
+      },
+    },
+    put: {
+      tags: ['Managed services'],
+      summary: 'Set "allow external access to the databases on this server"',
+      description:
+        "Owners and managers only. No (the default): only services on the server itself can connect (sites run by a site owner's Linux user through 127.0.0.1 on port 13306 for MySQL/MariaDB or 15432 for Postgres, and bound containers over the managed Docker network). Yes: those ports are published on all the server's addresses; the firewall and network rules decide who can then reach them. Saving tells the server at once; a push that cannot be queued answers 502 `ingress_reconcile_failed` (saved, retried automatically).",
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['enabled'],
+              properties: { enabled: { type: 'boolean' } },
+            },
+          },
+        },
+      },
+      responses: {
+        200: { description: 'Saved', ...jsonSchema('ServerManagedExternalAccessSaved') },
+        400: { description: '`invalid_external_access`: `enabled` is not a boolean' },
+        403: { description: 'Not an owner or manager of the server' },
+        404: { description: 'Server not found in the caller organization' },
+        422: { description: '`daemon_key_unavailable`: the server cannot take changes yet' },
+        502: {
+          description: 'Saved, but the server could not be told yet; retried automatically',
+          ...jsonSchema('ServerManagedExternalAccessPushFailed'),
+        },
+        503: { description: 'Command queue or daemon cell registry unavailable' },
+      },
+    },
+  },
   '/api/client/v1/environments/{id}/managed': {
     get: {
       tags: ['Managed services'],
@@ -1139,7 +1181,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Update managed settings (does not apply)',
       description:
-        "Saves settings and, optionally, the cluster `name` (a label only; `null` clears it). Settings reach the engine on the next apply, with one exception: when `exposure` changes (or the cluster still has the old no-scope exposure, or an earlier push is unconfirmed) the database's listener addresses are re-sent at once to every server that fronts the cluster, and the response carries `ingressReconcile` and `pendingServerIds`. A scope a server has no address for is refused with 422 before anything is saved; a push that cannot be built or queued answers 502 `ingress_reconcile_failed` (the setting is saved, the servers stay listed as pending, and a background sweep retries them; Apply retries at once). A public cluster on the same server also makes every other cluster on that server reachable from outside, because one listener serves them all.",
+        'Saves settings and, optionally, the cluster `name` (a label only; `null` clears it). Settings reach the engine on the next apply. Who can reach the database from outside the server is not a cluster setting: it is the server\'s "allow external access" setting (`/servers/{id}/managed-external-access`).',
       parameters: [ENV_ID_PARAM],
       requestBody: {
         content: {
@@ -1162,28 +1204,6 @@ export const managedPaths = {
         400: {
           description: 'managed_settings_invalid, or a name that is not valid (Invalid request)',
           ...jsonSchema('ManagedSettingsInvalidError'),
-        },
-        422: {
-          description:
-            'The new exposure cannot be applied on a server that fronts the cluster; nothing was saved',
-          ...jsonSchema('ManagedExposureRefusalError'),
-        },
-        502: {
-          description:
-            'Saved, but the listener addresses could not be built or queued for a server',
-          ...jsonSchema('ManagedIngressReconcileFailedError'),
-        },
-        503: {
-          description: 'Command queue or daemon cell registry unavailable (exposure changes only)',
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                required: ['error'],
-                properties: { error: { type: 'string' } },
-              },
-            },
-          },
         },
         409: {
           description:

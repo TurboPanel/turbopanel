@@ -28,6 +28,7 @@
 import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
 import {
   DEFAULT_MANAGED_PROMOTE_MAX_LAG_BYTES,
+  DEFAULT_MANAGED_PROMOTE_MAX_LAG_SECONDS,
   evaluateManagedPromoteLagGate,
 } from './promote-lag.ts'
 
@@ -63,6 +64,7 @@ export type FreshStandbyRefusal =
   | 'replay_behind'
   | 'last_lag_unknown'
   | 'last_lag_over_limit'
+  | 'not_fully_applied'
 
 export type FreshStandbyVerdict =
   { accepted: true; basis: string } | { accepted: false; reason: FreshStandbyRefusal }
@@ -85,6 +87,18 @@ export type FreshStandbyInput = {
   marginMs: number
   maxLagBytes?: number
   maxLagSeconds?: number
+  /** `mysql` / `mariadb` use the GTID proof instead of the Postgres WAL one. */
+  engine?: string
+}
+
+/** MySQL and MariaDB report `reconnecting` once their source is gone. */
+const MYSQL_FAMILY_DISCONNECTED_STATES: ReadonlySet<string> = new Set([
+  ...DISCONNECTED_STANDBY_STATES,
+  'reconnecting',
+])
+
+export function isMysqlFamilyEngine(engine: string | undefined): boolean {
+  return engine === 'mysql' || engine === 'mariadb'
 }
 
 /** `X/Y` hex `pg_lsn` text → a comparable bigint; null when malformed. */
@@ -187,6 +201,7 @@ function evaluateStillStreaming(
 export function evaluateFreshStandby(input: FreshStandbyInput): FreshStandbyVerdict {
   const replication = input.replication
   if (!replication) return { accepted: false, reason: 'probe_unavailable' }
+  if (isMysqlFamilyEngine(input.engine)) return evaluateMysqlFamilyStandby(input, replication)
   if (replication.state === 'streaming') return evaluateStillStreaming(input, replication)
   if (!DISCONNECTED_STANDBY_STATES.has(replication.state)) {
     return { accepted: false, reason: 'not_a_standby' }
@@ -204,6 +219,68 @@ export function evaluateFreshStandby(input: FreshStandbyInput): FreshStandbyVerd
       `start (margin ${input.marginMs / 1000} s); received = replayed = ${replay.value}; ` +
       `last receive lag ${lag.value}`,
   }
+}
+
+/**
+ * MySQL / MariaDB: a replica is proven caught up only when the daemon itself
+ * says every transaction it received is applied (`fullyApplied === true`, from
+ * the GTID sets) AND its last contact with the source was no earlier than the
+ * failure start minus the margin. A missing or false `fullyApplied` refuses:
+ * unknown is never caught up. Still `streaming` goes through the unchanged lag
+ * gate as well. As with Postgres, replication is asynchronous, so what the
+ * source committed after the replica's last contact (bounded by the margin)
+ * can be lost.
+ */
+function evaluateMysqlFamilyStandby(
+  input: FreshStandbyInput,
+  replication: ManagedReplicationHealth
+): FreshStandbyVerdict {
+  const streaming = replication.state === 'streaming'
+  if (!streaming && !MYSQL_FAMILY_DISCONNECTED_STATES.has(replication.state)) {
+    return { accepted: false, reason: 'not_a_standby' }
+  }
+  if (replication.fullyApplied !== true) return { accepted: false, reason: 'not_fully_applied' }
+  if (streaming) {
+    const gate = evaluateManagedPromoteLagGate(replication, input.probeStartedAtMs, {
+      maxLagBytes: input.maxLagBytes,
+      maxLagSeconds: input.maxLagSeconds,
+    })
+    if (gate !== null) return { accepted: false, reason: 'lagging' }
+  }
+  // A replica that was already far behind when it lost its source is not proven current.
+  const lastLagSeconds = replication.lastStreaming?.lagSeconds
+  if (
+    !streaming &&
+    isNonNegativeFinite(lastLagSeconds) &&
+    lastLagSeconds > (input.maxLagSeconds ?? DEFAULT_MANAGED_PROMOTE_MAX_LAG_SECONDS)
+  ) {
+    return { accepted: false, reason: 'last_lag_over_limit' }
+  }
+  const receipt = checkReceipt(input, replication)
+  if (!receipt.ok) return { accepted: false, reason: receipt.reason }
+  return {
+    accepted: true,
+    basis:
+      `${replication.state}; last contact ${receipt.value.toFixed(1)} s before failure start ` +
+      `(margin ${input.marginMs / 1000} s); every received transaction applied`,
+  }
+}
+
+/**
+ * MySQL / MariaDB: GTID sets are opaque text and cannot be ranked here, so
+ * several accepted replicas are only safe to choose between when they report
+ * the same executed set. Otherwise `null`: no automatic pick, the operator
+ * chooses.
+ */
+export function pickMysqlFamilyStandby<
+  T extends { id: string; ordinal: number; executedGtid?: string },
+>(accepted: readonly T[]): T | null {
+  if (accepted.length === 0) return null
+  const first = accepted[0]!.executedGtid
+  if (accepted.length > 1 && (!first || accepted.some((row) => row.executedGtid !== first))) {
+    return null
+  }
+  return pickMostAdvancedStandby(accepted.map((row) => ({ ...row, receivedLsn: undefined })))
 }
 
 /**

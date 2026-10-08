@@ -27,7 +27,6 @@ import {
 import { composeDocumentToYaml } from '../compose/convert.ts'
 import type { ComposeDocument } from '../compose/types.ts'
 import type { BuildRuntimeSpecInput, ManagedEngineSpec } from './index.ts'
-import { DEFAULT_MANAGED_SQL_ACCESS_SCOPE } from './access-scope.ts'
 import type { ManagedSettings } from './settings.ts'
 import {
   isPrivateEndpointError,
@@ -45,7 +44,6 @@ import {
   splitTlsMetadata,
 } from '../../lib/tls/index.ts'
 import type { Db } from '../../db/connection.ts'
-import { isManagedAccessAddressError, resolveManagedBindAddress } from './access-address.ts'
 import {
   ensureManagedReplicationPrincipal,
   listManagedPrincipals,
@@ -212,8 +210,6 @@ async function enqueueOneManagedApplyMember(
 }
 
 export type ManagedApplyPrepareError =
-  | { kind: 'datacenter_ip_required'; serverId: string }
-  | { kind: 'fabric_address_required'; serverId: string }
   | { kind: 'daemon_key_unavailable'; serverId: string }
   | { kind: 'managed_credential_not_sealed' }
   | { kind: 'managed_settings_invalid' }
@@ -277,16 +273,13 @@ export type ManagedApplyEnqueueResult = {
 }
 
 /**
- * Verify daemon-key + bind resolution before generating show-once passwords or
+ * Verify the daemon key before generating show-once passwords or
  * committing irreversible managed mutations. Does not require principals to exist.
  */
 export async function preflightManagedApplyInfrastructure(
   c: Context,
   db: Db,
-  params: {
-    serverId: string
-    scope: ManagedSettings['exposure']['scope']
-  }
+  params: { serverId: string }
 ): Promise<ManagedApplyPrepareError | null> {
   const secretsConfig = c.get('secretsConfig')
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
@@ -299,15 +292,6 @@ export async function preflightManagedApplyInfrastructure(
     return { kind: 'daemon_key_unavailable', serverId: params.serverId }
   }
 
-  // The engine container never publishes a client listener, but an access scope
-  // that cannot resolve an address means the operator's chosen ingress will fail
-  // at reconcile — catch it before minting show-once passwords.
-  const bindResolved = await resolveManagedBindAddress(db, {
-    serverId: params.serverId,
-    scope: params.scope ?? DEFAULT_MANAGED_SQL_ACCESS_SCOPE,
-  })
-  if (isManagedAccessAddressError(bindResolved)) return bindResolved
-
   return null
 }
 
@@ -319,8 +303,6 @@ export function prepareErrorResponse(c: Context, error: ManagedApplyPrepareError
   switch (error.kind) {
     case 'datacenter_ip_required':
       return c.json({ error: 'datacenter_ip_required' }, 422)
-    case 'fabric_address_required':
-      return c.json({ error: 'fabric_address_required' }, 422)
     case 'daemon_key_unavailable':
       return c.json({ error: 'daemon_key_unavailable' }, 422)
     case 'managed_credential_not_sealed':
@@ -1147,7 +1129,6 @@ async function buildPayloadForMember(
 
   const infra = await preflightManagedApplyInfrastructure(c, db, {
     serverId: member.serverId,
-    scope: input.settings.exposure.scope,
   })
   if (infra) return infra
 
@@ -1208,9 +1189,9 @@ async function buildPayloadForMember(
 
   // No `bindAddress`: managed engines are loopback-only and the daemon resolves
   // them that way (`resolveManagedApplyHost`). Client reachability is entirely
-  // the shared ProxySQL frontend's job — see `access-scope.ts`.
+  // the shared ProxySQL frontend's job — see `external-access.ts`.
   const exposure: ManagedApplyCommandPayload['exposure'] = {
-    enabled: input.settings.exposure.enabled,
+    enabled: true,
     protocol: input.spec.exposeProtocol,
   }
 

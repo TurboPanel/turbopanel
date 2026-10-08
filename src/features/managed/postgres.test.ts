@@ -63,9 +63,7 @@ test('parseSettings accepts every approved image and rejects everything else', (
 test('runtime spec has no ports key and container port stays 5432', () => {
   const spec = postgresEngineSpec.buildRuntimeSpec({
     managedId: '11111111-1111-1111-1111-111111111111',
-    settings: defaultSettings({
-      exposure: { enabled: true, scope: 'public' },
-    }),
+    settings: defaultSettings(),
     rootUsername: 'postgres',
   })
   assertEquals('ports' in spec.service, false)
@@ -569,7 +567,6 @@ test('buildRuntimeSpec applies dockerOptions onto compose service and env', () =
       labels: { 'app.tier': 'db' },
       extraEnv: { MY_FLAG: '1' },
     },
-    exposure: { enabled: true, scope: 'local' },
     resources: { memoryBytes: 256 * 1024 * 1024 },
   })
   const spec = postgresEngineSpec.buildRuntimeSpec({
@@ -586,7 +583,6 @@ test('buildRuntimeSpec applies dockerOptions onto compose service and env', () =
   assertEquals(spec.service.labels, { 'app.tier': 'db' })
   assertEquals((spec.service.environment as Record<string, string>).MY_FLAG, '1')
   assertEquals(spec.env.MY_FLAG, '1')
-  assertEquals(spec.exposure.scope, 'local')
   assertEquals(spec.configFiles[0]?.contents.includes("shared_buffers = '"), true)
 })
 
@@ -726,7 +722,6 @@ test('parseSettings rejects non-objects; null/undefined fall through to defaults
   const fromNull = postgresEngineSpec.parseSettings(null)
   if (!fromNull) throw new TypeError('expected defaults for null settings')
   assertEquals((fromNull as PostgresManagedSettings).initialDatabase, 'defaultdb')
-  assertEquals(fromNull.exposure.enabled, true)
   const fromUndefined = postgresEngineSpec.parseSettings(undefined)
   if (!fromUndefined) {
     throw new TypeError('expected defaults for undefined settings')
@@ -737,7 +732,6 @@ test('parseSettings rejects non-objects; null/undefined fall through to defaults
 test('buildRuntimeSpec falls back when settings omit image and initialDatabase', () => {
   const settings = {
     ssl: {},
-    exposure: { enabled: false },
   } as PostgresManagedSettings
   const spec = postgresEngineSpec.buildRuntimeSpec({
     managedId: '11111111-1111-1111-1111-111111111111',

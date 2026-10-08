@@ -23,18 +23,8 @@ import {
 } from '../../db/schema.ts'
 import { getManagedEngineSpec } from '../../features/managed/index.ts'
 import { clampManagedResources, type ManagedSettings } from '../../features/managed/settings.ts'
-import {
-  describeExposureRefusal,
-  describeFailedExposurePush,
-  enqueueManagedExposureReconcile,
-  loadManagedFrontendServerIds,
-  loadServerLabels,
-  managedExposureNeedsPush,
-  markManagedExposurePending,
-  preflightManagedExposureChange,
-  readManagedExposurePending,
-  unmarkManagedExposurePending,
-} from '../../features/managed/exposure-change.ts'
+import { registerManagedExternalAccessRoutes } from './external-access-routes.ts'
+import { loadManagedExternalAccessView } from '../../features/managed/external-access.ts'
 import { parseResourceLimits } from '../../features/organizations/resource-limits.ts'
 import {
   createManagedPrincipal,
@@ -191,7 +181,6 @@ import {
   replicaPlacementNeedsDatacenter,
   resolveManagedAccessEndpoints,
   resolveManagedConnectionListener,
-  resolveManagedEffectiveExposure,
   resolveManagedServerId,
   serializeContainerRow,
   serializeManagedUser,
@@ -649,7 +638,7 @@ async function resolveManagedCreatePlan(
   const version = parseManagedVersionSelection(ctx.spec.engine, body)
   if (!version.ok) return c.json({ error: version.error }, version.status)
 
-  let settings = mergeCreateSettings(ctx.spec, body, version.image)
+  let settings = mergeCreateSettings(ctx.spec, version.image)
   if (!settings) {
     return c.json({ error: 'managed_settings_invalid' }, 400)
   }
@@ -657,10 +646,7 @@ async function resolveManagedCreatePlan(
   const { orgLimits, serverLimits } = await loadResourceLimits(db, organizationId, serverId)
   settings = clampManagedResources(settings, orgLimits, serverLimits)
 
-  const infra = await preflightManagedApplyInfrastructure(c, db, {
-    serverId,
-    scope: settings.exposure.scope,
-  })
+  const infra = await preflightManagedApplyInfrastructure(c, db, { serverId })
   if (infra) return mapManagedApplyPrepareError(c, infra)
 
   const initialDatabase = readInitialDatabase(ctx.spec)
@@ -820,93 +806,11 @@ type PreparedManagedApply = {
   members: PreparedManagedMemberApply[]
 }
 
-type ManagedExposurePlan = { commandQueue: CommandQueue; serverIds: string[] }
-
-/**
- * `null` when the servers need not be told anything; a plan when they do; a
- * refusal (naming the server) when they cannot be told or have no address for
- * the new scope.
- */
-async function planManagedExposureChange(
-  c: Context<AppEnv>,
-  db: NonNullable<ReturnType<typeof getDb>>,
-  params: Readonly<{
-    managedId: string
-    before: ManagedSettings['exposure']
-    after: ManagedSettings['exposure']
-    storedOptions: unknown
-    metadata: unknown
-  }>
-): Promise<ManagedExposurePlan | Response | null> {
-  if (!managedExposureNeedsPush(params)) return null
-  const commandQueue = assertDispatchInfrastructure(c)
-  if (commandQueue instanceof Response) return commandQueue
-  const serverIds = await loadManagedFrontendServerIds(db, params.managedId)
-  const refusal = await preflightManagedExposureChange(c, db, {
-    serverIds,
-    // Turning exposure off needs no address, whatever scope is remembered.
-    scope: params.after.enabled ? params.after.scope : undefined,
-  })
-  if (!refusal) return { commandQueue, serverIds }
-  const serverId = 'serverId' in refusal ? refusal.serverId : undefined
-  const label = serverId ? (await loadServerLabels(db, [serverId])).get(serverId) : undefined
-  const described = describeExposureRefusal(refusal, label ?? 'this server')
-  if (!described) return mapManagedApplyPrepareError(c, refusal)
-  return c.json({ ...described, ...(serverId ? { serverId } : {}) }, 422)
-}
-
-/**
- * Tell the servers, remembering who was asked until each confirms. A push that
- * could not be built or queued answers 502 (the setting is saved, the host is
- * not yet), never a plain success: this is a security setting.
- */
-async function pushManagedExposureChange(
-  c: Context<AppEnv>,
-  db: NonNullable<ReturnType<typeof getDb>>,
-  params: Readonly<{
-    plan: ManagedExposurePlan
-    managedId: string
-    userId: string
-    saved: { managed: unknown; settings: unknown }
-  }>
-): Promise<Response | { queuedServerIds: string[]; pendingServerIds: string[] }> {
-  await markManagedExposurePending(db, params.managedId, params.plan.serverIds)
-  const outcome = await enqueueManagedExposureReconcile(c, db, params.plan.commandQueue, {
-    serverIds: params.plan.serverIds,
-    userId: params.userId,
-  })
-  const settled = params.plan.serverIds.filter(
-    (id) => !outcome.queuedServerIds.includes(id) && !outcome.failedServerIds.includes(id)
-  )
-  await unmarkManagedExposurePending(db, params.managedId, settled)
-  if (outcome.failedServerIds.length > 0) {
-    const labels = await loadServerLabels(db, outcome.failedServerIds)
-    return c.json(
-      {
-        error: 'ingress_reconcile_failed',
-        message: describeFailedExposurePush(
-          outcome.failedServerIds.map((id) => labels.get(id) ?? id)
-        ),
-        ...params.saved,
-        ingressReconcile: {
-          queuedServerIds: outcome.queuedServerIds,
-          failedServerIds: outcome.failedServerIds,
-        },
-        pendingServerIds: [...outcome.queuedServerIds, ...outcome.failedServerIds],
-      },
-      502
-    )
-  }
-  return { queuedServerIds: outcome.queuedServerIds, pendingServerIds: outcome.queuedServerIds }
-}
-
 /** Busy / online / dispatch / daemon-key / bind checks — no credential payload. */
 async function assertManagedApplyReady(
   c: Context<AppEnv>,
   db: NonNullable<ReturnType<typeof getDb>>,
-  _ctx: ManagedContext,
   managedRow: NonNullable<Awaited<ReturnType<typeof findManagedForEnvironment>>>,
-  options: ManagedRowOptions,
   targetServerId: string
 ): Promise<CommandQueue | Response> {
   const busy = await assertManagedIdle(c, db, managedRow)
@@ -918,10 +822,7 @@ async function assertManagedApplyReady(
   const commandQueue = assertDispatchInfrastructure(c)
   if (commandQueue instanceof Response) return commandQueue
 
-  const infra = await preflightManagedApplyInfrastructure(c, db, {
-    serverId: targetServerId,
-    scope: options.settings.exposure.scope,
-  })
+  const infra = await preflightManagedApplyInfrastructure(c, db, { serverId: targetServerId })
   if (infra) return mapManagedApplyPrepareError(c, infra)
 
   return commandQueue
@@ -942,14 +843,7 @@ async function prepareApplyForManaged(
     forceResyncMemberIds?: string[]
   }
 ): Promise<PreparedManagedApply | Response> {
-  const commandQueue = await assertManagedApplyReady(
-    c,
-    db,
-    ctx,
-    managedRow,
-    options,
-    targetServerId
-  )
+  const commandQueue = await assertManagedApplyReady(c, db, managedRow, targetServerId)
   if (commandQueue instanceof Response) return commandQueue
 
   const residual = parseManagedResidual(managedRow.metadata)
@@ -1278,6 +1172,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   for (const path of managedSessionPaths()) {
     router.use(path, createSessionMiddleware(opts.secrets))
   }
+  registerManagedExternalAccessRoutes(router)
 
   router.post('/environments/:id/managed', async (c) => {
     const scope = await loadManagedContextScope(c)
@@ -1360,7 +1255,6 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           serverId,
           engineCode: ctx.spec.engine,
           engineDefaultPort: ctx.spec.defaultPort,
-          exposure: parsed.settings.exposure,
         })
       : null
     const connection = listener
@@ -1377,29 +1271,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           serverId,
           engineCode: ctx.spec.engine,
           engineDefaultPort: ctx.spec.defaultPort,
-          exposure: parsed.settings.exposure,
         })
       : []
-    // What the shared ProxySQL actually publishes, which is not always what
-    // this cluster asked for: an exposed co-resident cluster publishes the
-    // listener for every cluster on the host. The UI labels the toggle from
-    // this, not from `settings.exposure` alone.
-    const exposure = serverId
-      ? await resolveManagedEffectiveExposure(db, {
-          serverId,
-          exposure: parsed.settings.exposure,
-        })
-      : null
-
-    // Servers asked to listen the new way that have not confirmed it yet.
-    const pendingIds = Object.keys(readManagedExposurePending(row.metadata))
-    const pendingLabels = await loadServerLabels(db, pendingIds)
-    const exposureView = exposure
-      ? {
-          ...exposure,
-          pendingServers: pendingIds.map((id) => ({ id, name: pendingLabels.get(id) ?? id })),
-        }
-      : null
+    // The "allow external access" setting of every server that fronts this
+    // cluster, with how many other clusters share each server.
+    const externalAccessServers = await loadManagedExternalAccessView(db, row.id)
 
     const serverRows = serverId
       ? await db
@@ -1423,7 +1299,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       }),
       connection,
       endpoints,
-      exposure: exposureView,
+      externalAccess: { servers: externalAccessServers },
       settings: parsed.settings,
       ssl: buildManagedSslView(parsed.settings.ssl.mode, ctx.orgDefaults.sslMode),
       release: buildManagedReleaseView(ctx.spec, parsed.settings),
@@ -1479,18 +1355,6 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     const clamped = clampManagedResources(mergedSettings, orgLimits, serverLimits)
 
-    // A changed exposure only takes effect once every server that fronts the
-    // cluster is told the new listener addresses. Check that can happen before
-    // anything is saved.
-    const exposurePlan = await planManagedExposureChange(c, db, {
-      managedId: row.id,
-      before: current.settings.exposure,
-      after: clamped.exposure,
-      storedOptions: row.options,
-      metadata: row.metadata,
-    })
-    if (exposurePlan instanceof Response) return exposurePlan
-
     const nextOptions = writeManagedRowOptions({
       settings: clamped,
       databases: current.databases,
@@ -1517,32 +1381,10 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         updatedAt: managed.updatedAt,
       })
 
-    const saved = {
-      managed: serializeManagedRow(updated ?? row, targetServerId),
-      settings: clamped,
-    }
-    const pushed = exposurePlan
-      ? await pushManagedExposureChange(c, db, {
-          plan: exposurePlan,
-          managedId: row.id,
-          userId: auth.userId,
-          saved,
-        })
-      : undefined
-    if (pushed instanceof Response) return pushed
-
     return c.json({
       ok: true,
-      ...saved,
-      ...(pushed
-        ? {
-            ingressReconcile: {
-              queuedServerIds: pushed.queuedServerIds,
-              failedServerIds: [],
-            },
-            pendingServerIds: pushed.pendingServerIds,
-          }
-        : {}),
+      managed: serializeManagedRow(updated ?? row, targetServerId),
+      settings: clamped,
     })
   })
 
@@ -1684,7 +1526,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const commandQueue = await assertManagedApplyReady(c, db, ctx, row, options, targetServerId)
+    const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
 
     const [previous] = await db
@@ -1809,7 +1651,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const commandQueue = await assertManagedApplyReady(c, db, ctx, row, options, targetServerId)
+    const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
 
     // A read-only login needs a read-eligible replica to land on; refuse it
@@ -1962,7 +1804,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const commandQueue = await assertManagedApplyReady(c, db, ctx, row, options, targetServerId)
+    const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
 
     const [previous] = await db

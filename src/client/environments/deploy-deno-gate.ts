@@ -6,7 +6,7 @@
  */
 import type { Db } from '../../db/connection.ts'
 import {
-  denoEntitlementSeries,
+  denoRuntimeSeries,
   runtimeSeries,
   DEFAULT_NATIVE_APP_DENO_SERIES,
 } from '../../contracts/runtime-registry.ts'
@@ -24,13 +24,6 @@ export type DenoAppFeatureError =
       supported: string[]
     }
 
-/**
- * The database still has the `entitlement_runtime_check` that allows only php
- * and node, so the Deno grant cannot be recorded. The instance's migration
- * (the owner's to apply) widens it; until then a Deno deploy stops here.
- */
-export type DenoMigrationPendingError = { kind: 'deno_migration_pending' }
-
 type DenoGateApp = { composeServiceName: string; runtime?: 'node' | 'deno'; denoVersion?: string }
 
 function denoApps<T extends DenoGateApp>(apps: readonly T[]): T[] {
@@ -44,7 +37,7 @@ export function denoAppWithUnsupportedVersion(
   const offered = runtimeSeries('deno')
   for (const app of denoApps(apps)) {
     const requested = app.denoVersion?.trim() || DEFAULT_NATIVE_APP_DENO_SERIES
-    if (offered.includes(denoEntitlementSeries(requested))) continue
+    if (offered.includes(denoRuntimeSeries(requested))) continue
     return {
       kind: 'deno_version_unsupported',
       composeServiceName: app.composeServiceName,
@@ -70,8 +63,8 @@ export function denoAppNeedingFeature(
 /**
  * On a rollback, each pinned native app runs on the runtime its release ran on,
  * not the one the compose document names now. Without this a site switched
- * from Node to Deno would be sent back as a Deno app (and the Deno gate and
- * runtime grant would follow the document, not the release). A pin without a
+ * from Node to Deno would be sent back as a Deno app (and the Deno gate would
+ * follow the document, not the release). A pin without a
  * runtime is a Node release, so `deno` is cleared. Apps without a pin, and
  * every non-rollback deploy (`pins` undefined), are returned as they are.
  */

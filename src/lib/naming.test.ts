@@ -5,7 +5,6 @@ import {
   PRINCIPAL_RESERVED_UID_MAX,
   PRINCIPAL_RESERVED_UID_MIN,
   PRINCIPAL_UID_START,
-  PRINCIPAL_UNIX_GROUP_SUFFIX,
   MAX_PRINCIPAL_USERNAME_LENGTH,
   MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH,
   PRINCIPAL_APPLIED_SUFFIX_LENGTH,
@@ -174,12 +173,11 @@ test('principal path helpers reject invalid usernames', () => {
   assertThrows(() => principalVolumePath('ok_user', '../x'), TypeError)
 })
 
-test('assertSafePrincipalUsername accepts max length that fits username-grp', () => {
-  assertEquals(MAX_PRINCIPAL_USERNAME_LENGTH + PRINCIPAL_UNIX_GROUP_SUFFIX.length, 32)
+test('assertSafePrincipalUsername accepts the max length of 28', () => {
+  assertEquals(MAX_PRINCIPAL_USERNAME_LENGTH, 28)
   const longest = `u${'a'.repeat(MAX_PRINCIPAL_USERNAME_LENGTH - 1)}`
   assertEquals(longest.length, MAX_PRINCIPAL_USERNAME_LENGTH)
   assertEquals(assertSafePrincipalUsername(longest), longest)
-  assertEquals(`${longest}${PRINCIPAL_UNIX_GROUP_SUFFIX}`.length, 32)
 
   const overlong = `u${'a'.repeat(MAX_PRINCIPAL_USERNAME_LENGTH)}`
   assertEquals(overlong.length, MAX_PRINCIPAL_USERNAME_LENGTH + 1)
@@ -204,6 +202,28 @@ test('isReservedPrincipalUsername reserves the platform slice names', () => {
   assertEquals(isReservedPrincipalUsername('container'), false)
 })
 
+test('isReservedPrincipalUsername reserves privileged and system group names', () => {
+  // A site owner's Linux user gets a group of its own name; sudoers, PAM and
+  // polkit grant power by group name.
+  for (const name of [
+    'sudo',
+    'admin',
+    'Wheel',
+    'adm',
+    'staff',
+    'lxd',
+    'docker',
+    'shadow',
+    'disk',
+    '_ssh',
+  ]) {
+    assertEquals(isReservedPrincipalUsername(name), true, name)
+  }
+  assertEquals(isReservedPrincipalUsername('wireshark'), true)
+  assertEquals(isReservedPrincipalUsername('bob-grp'), true)
+  assertEquals(isReservedPrincipalUsername('admins'), false)
+})
+
 test('assertSafePrincipalUsername never allows a dot', () => {
   // The host writes each `-` of the name as `.` in slice names, which is only
   // collision-free while no name can hold a `.` itself.
@@ -222,8 +242,7 @@ test('hasPlainPrincipalDashes refuses a trailing dash and dash runs', () => {
 
 test('isReservedPrincipalUsername reserves the whole tp prefix', () => {
   // Every TurboPanel-owned account and group is tp-prefixed. Enumerating them
-  // could never keep up: tpnodeapp is not in the denylist, and each
-  // runtime-entitlement group (tpphp84, tpnode24, ...) would need adding by hand.
+  // could never keep up with every tp* account and group a host carries.
   assertEquals(isReservedPrincipalUsername('tpnodeapp'), true)
   assertEquals(isReservedPrincipalUsername('tpphp84'), true)
   assertEquals(isReservedPrincipalUsername('TPANYTHING'), true)

@@ -127,6 +127,14 @@ test('parseServerPatchCore validates name, options, and emptiness', () => {
   if (!withSsh.ok) throw new TypeError('expected sshPort patch')
   assertEquals(withSsh.patch.options?.sshPort, 2222)
 
+  // The external access setting only changes through its own route.
+  const withExternalAccess = parseServerPatchCore({
+    options: { sshPort: 2222, managedExternalAccess: { enabled: true } },
+  })
+  if (!withExternalAccess.ok) throw new TypeError('expected options patch')
+  assertEquals(withExternalAccess.patch.options?.sshPort, 2222)
+  assertEquals('managedExternalAccess' in (withExternalAccess.patch.options ?? {}), false)
+
   const clearSsh = parseServerPatchCore({ options: { sshPort: null } })
   if (!clearSsh.ok) throw new TypeError('expected sshPort clear')
   assertEquals(clearSsh.patch.options?.sshPort, null)
