@@ -3569,20 +3569,51 @@ test('POST promote sends no probe to a daemon without managed-health-v1', async 
   assertEquals(sent.length, 0)
 })
 
-test('POST promote does not probe a fresh stored observation', async () => {
+test('POST promote probes even when the stored observation is recent', async () => {
   const { response, sent } = await promoteVia({
     features: [HEALTH_FEATURE],
     metadata: {
       replication: {
         state: 'streaming',
-        observedAt: new Date().toISOString(),
+        observedAt: new Date(Date.now() - 60_000).toISOString(),
         lagBytes: 0,
       },
     },
     reply: { status: 'done', result: streamingHealth() },
   })
   await expectQueued(response, { status: 'queued' })
-  assertEquals(sent.length, 0)
+  assertEquals(sent.length, 1)
+})
+
+test('POST promote refuses a replica whose threads stopped after the stored reading', async () => {
+  const { response, sent } = await promoteVia({
+    features: [HEALTH_FEATURE],
+    metadata: {
+      replication: {
+        state: 'streaming',
+        observedAt: new Date(Date.now() - 3_000).toISOString(),
+        lagBytes: 0,
+      },
+    },
+    reply: { status: 'done', result: streamingHealth({ state: 'reconnecting' }) },
+  })
+  await expectJson(response, 409, { error: 'managed_replica_not_streaming' })
+  assertEquals(sent.length, 1)
+})
+
+test('POST promote does not act on a minute-old stored reading when the daemon cannot answer', async () => {
+  const { response } = await promoteVia({
+    features: [HEALTH_FEATURE],
+    metadata: {
+      replication: {
+        state: 'streaming',
+        observedAt: new Date(Date.now() - 60_000).toISOString(),
+        lagBytes: 0,
+      },
+    },
+    reply: { status: 'expired' },
+  })
+  await expectJson(response, 409, { error: 'managed_replica_health_stale' })
 })
 
 test('POST promote with force never probes', async () => {

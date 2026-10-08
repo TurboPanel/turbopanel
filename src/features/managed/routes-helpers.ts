@@ -1034,6 +1034,41 @@ export function evaluatePromoteLagHttpGate(
   return evaluateManagedPromoteLagGate(replication, nowMs)
 }
 
+/**
+ * Oldest replica reading an operator (non-force) promote will act on. The
+ * stored reading is refreshed from the daemon first; this only matters when
+ * the daemon cannot answer, and then a reading from before the last few
+ * seconds proves nothing (a replication thread that stopped a moment ago
+ * still looks `streaming` in an older one).
+ */
+export const OPERATOR_PROMOTE_MAX_OBSERVATION_AGE_MS = 15_000
+
+/**
+ * Gate for the operator promote route: {@link evaluatePromoteLagHttpGate} on
+ * a tight reading age, plus the engine's own word that the replica has not
+ * applied everything it received (`fullyApplied: false`). `force` bypasses
+ * both, as before. Automatic failover keeps its own probe and thresholds.
+ */
+export function evaluateOperatorPromoteGate(
+  replication: unknown,
+  force: boolean,
+  nowMs?: number
+):
+  | null
+  | 'managed_replica_not_streaming'
+  | 'managed_replica_lagging'
+  | 'managed_replica_health_stale' {
+  if (force) return null
+  const gate = evaluateManagedPromoteLagGate(replication, nowMs, {
+    staleMs: OPERATOR_PROMOTE_MAX_OBSERVATION_AGE_MS,
+  })
+  if (gate !== null) return gate
+  if (isPlainObject(replication) && replication.fullyApplied === false) {
+    return 'managed_replica_lagging'
+  }
+  return null
+}
+
 export type QueuedCommandFanoutRow = {
   commandId?: string
   serverId?: string
