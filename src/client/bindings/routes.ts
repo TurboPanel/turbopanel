@@ -12,6 +12,8 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { assertCanOr403 } from '../authz/index.ts'
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
+import { recordAudit, type AuditAction } from '../../features/audit/audit-records.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db/connection.ts'
 import { forEachSequential, mapSequential } from '../../lib/sequential.ts'
@@ -121,6 +123,30 @@ async function enqueueIngressForBindingChange(
         `managed.ingress.reconcile after binding change failed for ${serverId}: ${message}`
       )
     }
+  })
+}
+
+/**
+ * Record one binding change. Facts and ids only: never the generated
+ * password, the connection string or any variable value.
+ */
+async function recordBindingAudit(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  action: Extract<AuditAction, `binding.${string}`>,
+  bindingId: string,
+  context: Record<string, unknown>
+): Promise<void> {
+  const session = c.get('session')
+  await recordAudit(db, {
+    organizationId,
+    actorUserId: session?.userId ?? null,
+    actorEmail: session?.email ?? null,
+    action,
+    targetType: 'binding',
+    targetId: bindingId,
+    context,
   })
 }
 
@@ -390,6 +416,7 @@ async function insertAndMaterializeBinding(
     emitEngineDefaults: boolean
     managedId: string
     actorId: string
+    organizationId: string
   }>
 ): Promise<Response> {
   try {
@@ -420,6 +447,15 @@ async function insertAndMaterializeBinding(
       serviceId: params.serviceId,
       managedId: params.managedId,
       actorId: params.actorId,
+    })
+
+    await recordBindingAudit(c, db, params.organizationId, 'binding.create', id, {
+      serviceId: params.serviceId,
+      principalId: params.principalId,
+      managedId: params.managedId,
+      databaseName: params.databaseName,
+      keyPrefix: params.keyPrefix,
+      emitEngineDefaults: params.emitEngineDefaults,
     })
 
     return c.json({ ok: true as const, id })
@@ -603,6 +639,7 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       emitEngineDefaults: input.emitEngineDefaults,
       managedId: managedResult.id,
       actorId: session.userId,
+      organizationId,
     })
   })
 
@@ -676,6 +713,13 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       })
     }
 
+    await recordBindingAudit(c, db, organizationId, 'binding.update', id, {
+      serviceId: row.serviceId,
+      principalId: row.principalId,
+      keyPrefix: { from: row.keyPrefix, to: nextPrefix },
+      emitEngineDefaults: { from: row.emitEngineDefaults, to: nextEmit },
+    })
+
     return c.json({ ok: true as const })
   })
 
@@ -696,6 +740,8 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         id: binding.id,
         serviceId: binding.serviceId,
         principalId: binding.principalId,
+        databaseName: binding.databaseName,
+        keyPrefix: binding.keyPrefix,
       })
       .from(binding)
       .where(eq(binding.id, id))
@@ -704,6 +750,9 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const serviceDenied = await assertServiceMutable(c, db, organizationId, row.serviceId)
     if (serviceDenied) return serviceDenied
+
+    const stepUp = await requireStepUpIfConfigured(c, organizationId, 'binding.delete')
+    if (stepUp) return stepUp
 
     const managedId = await resolveBindingPrincipalManagedId(db, row.principalId)
 
@@ -716,6 +765,14 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         actorId: session.userId,
       })
     }
+
+    await recordBindingAudit(c, db, organizationId, 'binding.delete', id, {
+      serviceId: row.serviceId,
+      principalId: row.principalId,
+      managedId,
+      databaseName: row.databaseName,
+      keyPrefix: row.keyPrefix,
+    })
 
     return c.json({ ok: true as const })
   })

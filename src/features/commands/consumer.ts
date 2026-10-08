@@ -2670,6 +2670,10 @@ export async function processCommandEnvelope(
 
   const notReady = await ensureServerAndDaemonOnline(db, registry, record, envelope)
   if (notReady !== null) {
+    // A managed apply/restore flips its row to `applying` before enqueue; a command
+    // that never reached its server must release that row or it blocks every
+    // later change until the stale sweep gets to it.
+    await applyManagedFailedSideEffect(db, record, deps, notReady)
     // A deploy that never reached its server fails its row and halts the
     // rollout, or later batches would wait on an `applying` row forever.
     await applyEnvironmentDeployFailedSideEffect(db, record, envelope, notReady, 'failed', deps)

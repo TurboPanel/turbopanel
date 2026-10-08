@@ -233,15 +233,12 @@ test('the host returned before the window: it is no longer a candidate and nothi
   assertEquals(calls.probes.length + calls.alerts.length + calls.failovers.length, 0)
 })
 
-test('MySQL and MariaDB alert only: no probe, no failover', async () => {
+test('MySQL and MariaDB are probed like Postgres: the peers decide', async () => {
   for (const engine of ['mysql', 'mariadb']) {
     const { outcomes, calls } = await sweep({ candidates: [candidate({ engine })] })
-    assertEquals(outcomes[0], {
-      managedId: MANAGED_ID,
-      result: 'alert',
-      code: 'engine_unsupported',
-    })
-    assertEquals(calls.probes.length + calls.failovers.length, 0)
+    const first = outcomes[0]
+    assertEquals(first?.result === 'alert' && first.code === 'engine_unsupported', false)
+    assertEquals(calls.probes.length > 0, true)
   }
 })
 
