@@ -87,6 +87,22 @@ function thenableWhere(rows: unknown[]) {
   }
 }
 
+/** Drizzle join chains used by Organization CA rotation reconcile; default empty. */
+function emptyJoinSelect(rows: unknown[] = []) {
+  const self = {
+    innerJoin: () => self,
+    leftJoin: () => self,
+    where: () => self,
+    limit: () => self,
+    orderBy: () => Promise.resolve(rows),
+    then: (
+      onFulfilled?: (value: unknown[]) => unknown,
+      onRejected?: (reason: unknown) => unknown
+    ) => Promise.resolve(rows).then(onFulfilled, onRejected),
+  }
+  return self
+}
+
 function organizationCaRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id: TLS_ID,
@@ -135,6 +151,8 @@ function journalRow(overrides: Record<string, unknown> = {}): Record<string, unk
 type TlsAppOptions = {
   tlsRows?: unknown[] | (() => unknown[])
   rotationRows?: unknown[]
+  /** Servers that exist for Organization CA rotation reconcile (host-free mock). */
+  rotationServers?: string[]
   executeRows?: unknown[] | ((phase: number) => unknown[])
   encryption?: boolean
   transaction?: (fn: (tx: Db) => Promise<unknown>) => Promise<unknown>
@@ -203,6 +221,20 @@ async function buildTlsApp(opts: TlsAppOptions = {}): Promise<{
         }
         if (name === 'leaf') {
           return thenableWhere([{ dueCount: 0 }])
+        }
+        if (
+          name === 'replica' ||
+          name === 'managed' ||
+          name === 'server' ||
+          name === 'command' ||
+          name === 'workspace' ||
+          name === 'environment' ||
+          name === 'project' ||
+          name === 'binding' ||
+          name === 'principal'
+        ) {
+          const rows = name === 'server' ? (opts.rotationServers ?? []).map((id) => ({ id })) : []
+          return emptyJoinSelect(rows)
         }
         return origSelect(fields).from(table)
       },
@@ -887,6 +919,7 @@ test('GET /tls/ca/rotation and POST /tls/ca/retire cover missing journals', asyn
   })
 
   const notConverged = await buildTlsApp({
+    rotationServers: [SERVER_ID],
     rotationRows: [
       journalRow({
         state: 'awaiting_retire',
