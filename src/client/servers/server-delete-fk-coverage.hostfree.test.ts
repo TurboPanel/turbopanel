@@ -33,13 +33,13 @@ test(
   'every RESTRICT server_id FK in migrations is covered by the delete path',
   { permissions: { read: true } },
   async () => {
-  const chunks = await loadMigrationSqlInJournalOrder()
-  const tables = listServerRestrictForeignKeyTablesFromMigrationSql(chunks)
-  assertServerRestrictForeignKeyCoverage(tables)
-  assertEquals(
-    Object.keys(SERVER_RESTRICT_FOREIGN_KEY_HANDLERS).sort((a, b) => a.localeCompare(b)),
-    tables
-  )
+    const chunks = await loadMigrationSqlInJournalOrder()
+    const tables = listServerRestrictForeignKeyTablesFromMigrationSql(chunks)
+    assertServerRestrictForeignKeyCoverage(tables)
+    assertEquals(
+      Object.keys(SERVER_RESTRICT_FOREIGN_KEY_HANDLERS).sort((a, b) => a.localeCompare(b)),
+      tables
+    )
   }
 )
 
@@ -47,10 +47,14 @@ test(
   'migration SQL lists every handler table as a RESTRICT server_id FK',
   { permissions: { read: true } },
   async () => {
-  const chunks = await loadMigrationSqlInJournalOrder()
-  const tables = new Set(listServerRestrictForeignKeyTablesFromMigrationSql(chunks))
-  for (const table of Object.keys(SERVER_RESTRICT_FOREIGN_KEY_HANDLERS)) {
-    assertEquals(tables.has(table), true, `expected migrations to declare RESTRICT FK on ${table}`)
-  }
+    const chunks = await loadMigrationSqlInJournalOrder()
+    const tables = new Set(listServerRestrictForeignKeyTablesFromMigrationSql(chunks))
+    for (const table of Object.keys(SERVER_RESTRICT_FOREIGN_KEY_HANDLERS)) {
+      assertEquals(
+        tables.has(table),
+        true,
+        `expected migrations to declare RESTRICT FK on ${table}`
+      )
+    }
   }
 )

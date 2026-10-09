@@ -92,15 +92,11 @@ export function parsePostgresForeignKeyViolation(
   return null
 }
 
-export function hierarchyDeleteHasChildrenMessage(
-  _violation?: HierarchyDeleteFkViolation
-): string {
+export function hierarchyDeleteHasChildrenMessage(_violation?: HierarchyDeleteFkViolation): string {
   return HIERARCHY_DELETE_HAS_CHILDREN_ERROR
 }
 
-export function hierarchyDeleteFkBlockerDetails(
-  violation?: HierarchyDeleteFkViolation
-): string[] {
+export function hierarchyDeleteFkBlockerDetails(violation?: HierarchyDeleteFkViolation): string[] {
   if (!violation?.referringTable) return []
   return [`still referenced by: ${violation.referringTable}`]
 }

@@ -67,7 +67,9 @@ export function listServerRestrictForeignKeyTablesFromMigrationSql(
 }
 
 export function assertServerRestrictForeignKeyCoverage(tables: readonly string[]): void {
-  const missing = tables.filter((table) => SERVER_RESTRICT_FOREIGN_KEY_HANDLERS[table] === undefined)
+  const missing = tables.filter(
+    (table) => SERVER_RESTRICT_FOREIGN_KEY_HANDLERS[table] === undefined
+  )
   if (missing.length > 0) {
     throw new Error(
       `server delete: unhandled RESTRICT server_id FK on table(s): ${missing.join(', ')} — extend SERVER_RESTRICT_FOREIGN_KEY_HANDLERS and the purge/forget path`

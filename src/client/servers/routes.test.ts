@@ -792,7 +792,10 @@ test('DELETE /servers/:id with forgetResources clears relay and subnet rows and 
       assertEquals(res.status, 200)
       assertEquals(registry.purgedIds, [serverId])
 
-      const peerRelays = await db.select({ id: relay.id }).from(relay).where(eq(relay.serverId, peerId))
+      const peerRelays = await db
+        .select({ id: relay.id })
+        .from(relay)
+        .where(eq(relay.serverId, peerId))
       const peerSubnets = await db
         .select({ id: subnet.id })
         .from(subnet)
@@ -800,7 +803,10 @@ test('DELETE /servers/:id with forgetResources clears relay and subnet rows and 
       assertEquals(peerRelays.length, 1)
       assertEquals(peerSubnets.length, 1)
 
-      const goneRelays = await db.select({ id: relay.id }).from(relay).where(eq(relay.serverId, serverId))
+      const goneRelays = await db
+        .select({ id: relay.id })
+        .from(relay)
+        .where(eq(relay.serverId, serverId))
       const goneSubnets = await db
         .select({ id: subnet.id })
         .from(subnet)
