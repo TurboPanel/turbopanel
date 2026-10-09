@@ -654,6 +654,90 @@ type ResolvedMemberPrivateBind = {
   transport: 'datacenter' | 'fabric' | 'public'
 }
 
+type PrivateBindDialer = {
+  serverId: string
+  purpose: PrivateEndpointPurpose
+}
+
+function adoptPrivateBindCandidate(
+  bind: ResolvedMemberPrivateBind | undefined,
+  candidate: ResolvedMemberPrivateBind
+): ResolvedMemberPrivateBind {
+  return bind ?? candidate
+}
+
+function peerPrivateBindConflict(
+  bind: ResolvedMemberPrivateBind,
+  candidate: ResolvedMemberPrivateBind,
+  memberServerId: string
+): ManagedApplyPrepareError | undefined {
+  if (bind.address === candidate.address && bind.transport === candidate.transport) {
+    return undefined
+  }
+  return {
+    kind: 'managed_listener_bind_conflict',
+    serverId: memberServerId,
+  }
+}
+
+async function resolvePrivateBindFromDialers(
+  db: Db,
+  params: Readonly<{
+    memberServerId: string
+    dialers: readonly PrivateBindDialer[]
+    peerConflict: boolean
+  }>
+): Promise<ResolvedMemberPrivateBind | undefined | ManagedApplyPrepareError> {
+  let bind: ResolvedMemberPrivateBind | undefined
+  let failure: ManagedApplyPrepareError | undefined
+
+  await forEachSequential(params.dialers, async (dialer) => {
+    if (failure) return
+    const resolved = await resolvePrivateEndpoint(db, {
+      fromServerId: dialer.serverId,
+      toServerId: params.memberServerId,
+      purpose: dialer.purpose,
+    })
+    if (isPrivateEndpointError(resolved)) {
+      if (params.peerConflict) {
+        failure = resolved
+        return
+      }
+      compatLogWarn(
+        'managed-apply',
+        `skipping consumer ${dialer.serverId}: no private path to ${params.memberServerId}`
+      )
+      return
+    }
+    if (resolved.transport === 'local') return
+
+    const candidate: ResolvedMemberPrivateBind = {
+      address: resolved.address,
+      transport: resolved.transport,
+    }
+    if (!bind) {
+      bind = adoptPrivateBindCandidate(bind, candidate)
+      return
+    }
+    if (params.peerConflict) {
+      const conflict = peerPrivateBindConflict(bind, candidate, params.memberServerId)
+      if (conflict) {
+        failure = conflict
+      }
+      return
+    }
+    if (bind.address !== candidate.address || bind.transport !== candidate.transport) {
+      compatLogWarn(
+        'managed-apply',
+        `skipping consumer ${dialer.serverId}: private listener stays on ${bind.transport} ${bind.address}`
+      )
+    }
+  })
+
+  if (failure) return failure
+  return bind
+}
+
 /**
  * Resolve the address this member publishes its private listener on by asking
  * the reverse question for every remote peer: "which address does that peer
@@ -708,63 +792,26 @@ export async function resolveMemberPrivateBindAddress(
   const peerDialers = dialers.filter((dialer) => dialer.purpose !== 'client-backend')
   const consumerOnlyDialers = dialers.filter((dialer) => dialer.purpose === 'client-backend')
 
-  let bind: ResolvedMemberPrivateBind | undefined
-  for (const dialer of peerDialers) {
-    const resolved = await resolvePrivateEndpoint(db, {
-      fromServerId: dialer.serverId,
-      toServerId: member.serverId,
-      purpose: dialer.purpose,
-    })
-    if (isPrivateEndpointError(resolved)) return resolved
-    if (resolved.transport === 'local') continue
+  const peerBind = await resolvePrivateBindFromDialers(db, {
+    memberServerId: member.serverId,
+    dialers: peerDialers,
+    peerConflict: true,
+  })
+  if (peerBind && 'kind' in peerBind) return peerBind
 
-    const candidate: ResolvedMemberPrivateBind = {
-      address: resolved.address,
-      transport: resolved.transport,
-    }
-    if (!bind) {
-      bind = candidate
-      continue
-    }
-    if (bind.address !== candidate.address || bind.transport !== candidate.transport) {
-      return {
-        kind: 'managed_listener_bind_conflict',
-        serverId: member.serverId,
-      }
-    }
+  const consumerBind = await resolvePrivateBindFromDialers(db, {
+    memberServerId: member.serverId,
+    dialers: consumerOnlyDialers,
+    peerConflict: false,
+  })
+  if (consumerBind && 'kind' in consumerBind) return consumerBind
+
+  if (!peerBind) return consumerBind ?? undefined
+  if (!consumerBind) return peerBind
+  if (peerBind.address === consumerBind.address && peerBind.transport === consumerBind.transport) {
+    return peerBind
   }
-
-  for (const dialer of consumerOnlyDialers) {
-    const resolved = await resolvePrivateEndpoint(db, {
-      fromServerId: dialer.serverId,
-      toServerId: member.serverId,
-      purpose: dialer.purpose,
-    })
-    if (isPrivateEndpointError(resolved)) {
-      compatLogWarn(
-        'managed-apply',
-        `skipping consumer ${dialer.serverId}: no private path to ${member.serverId}`
-      )
-      continue
-    }
-    if (resolved.transport === 'local') continue
-
-    const candidate: ResolvedMemberPrivateBind = {
-      address: resolved.address,
-      transport: resolved.transport,
-    }
-    if (!bind) {
-      bind = candidate
-      continue
-    }
-    if (bind.address !== candidate.address || bind.transport !== candidate.transport) {
-      compatLogWarn(
-        'managed-apply',
-        `skipping consumer ${dialer.serverId}: private listener stays on ${bind.transport} ${bind.address}`
-      )
-    }
-  }
-  return bind
+  return peerBind
 }
 
 /**

@@ -149,8 +149,10 @@ export async function enqueueIngressForBindingChange(
 
   const ingressServerIds = new Set<string>()
   const affectedHosts: string[] = []
-  for (const serviceId of params.serviceIds) {
-    const hosts = await deps.loadServiceConsumerServerIds(db, serviceId)
+  const hostLists = await Promise.all(
+    params.serviceIds.map((serviceId) => deps.loadServiceConsumerServerIds(db, serviceId))
+  )
+  for (const hosts of hostLists) {
     for (const host of hosts) {
       ingressServerIds.add(host)
       affectedHosts.push(host)

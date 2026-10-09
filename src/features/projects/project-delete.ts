@@ -18,6 +18,7 @@ import {
   enqueueIngressForBindingChange,
   type BindingListenerSync,
 } from '../bindings/enqueue-change.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 /** Docker Compose states that are considered fully stopped (safe to cascade-delete). */
 const STOPPED_CONTAINER_STATUSES = new Set(['exited', 'dead', 'removing'])
@@ -111,14 +112,14 @@ async function syncRemovedBindingListeners(
     list.push(row.serviceId)
     serviceIdsByManaged.set(row.managedId, list)
   }
-  for (const [managedId, serviceIds] of serviceIdsByManaged) {
+  await forEachSequential([...serviceIdsByManaged.entries()], async ([managedId, serviceIds]) => {
     await enqueueIngressForBindingChange(listenerSync.c, db, {
       serviceIds: [...new Set(serviceIds)],
       managedId,
       actorId: listenerSync.actorId,
       organizationId: listenerSync.organizationId,
     })
-  }
+  })
 }
 
 async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<void> {
