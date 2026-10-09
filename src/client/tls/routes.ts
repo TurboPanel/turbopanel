@@ -480,6 +480,20 @@ async function loadReconciledRotationRows(
   return rows
 }
 
+async function loadReconciledRotationWithCommandRecords(
+  db: TlsDb,
+  organizationId: string,
+  journal: Pick<CaRotationJournalRow, 'id' | 'results' | 'startedAt'>
+): Promise<{
+  rows: CaRotationResultRow[]
+  records: Awaited<ReturnType<typeof listCommandRecordsByIds>>
+}> {
+  const rows = await loadReconciledRotationRows(db, organizationId, journal)
+  const commandIds = rows.flatMap((row) => (row.commandId ? [row.commandId] : []))
+  const records = await listCommandRecordsByIds(db, commandIds)
+  return { rows, records }
+}
+
 export function rotationNeedsCommands(targets: {
   managedIds: readonly string[]
   ingressServerIds: readonly string[]
@@ -815,9 +829,11 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     const journal = await loadLatestCaRotation(db, organizationId)
     if (!journal) return c.json({ error: 'Not found' }, 404)
 
-    const rows = await loadReconciledRotationRows(db, organizationId, journal)
-    const commandIds = rows.flatMap((row) => (row.commandId ? [row.commandId] : []))
-    const records = await listCommandRecordsByIds(db, commandIds)
+    const { rows, records } = await loadReconciledRotationWithCommandRecords(
+      db,
+      organizationId,
+      journal
+    )
     return c.json(
       rotationStatusResponse({
         rotationId: journal.id,
@@ -848,9 +864,11 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       return conflictJson(c, 'no_pending_rotation')
     }
 
-    const rows = await loadReconciledRotationRows(db, organizationId, journal)
-    const commandIds = rows.flatMap((row) => (row.commandId ? [row.commandId] : []))
-    const records = await listCommandRecordsByIds(db, commandIds)
+    const { rows, records } = await loadReconciledRotationWithCommandRecords(
+      db,
+      organizationId,
+      journal
+    )
     if (!rotationConvergedForRetire(rows, records)) {
       return conflictJson(c, 'ca_rotation_not_converged')
     }

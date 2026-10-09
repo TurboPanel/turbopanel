@@ -90,27 +90,71 @@ function asDb(stub: unknown): Db {
   return stub as unknown as Db
 }
 
-function createReconcileDb(serverIds: readonly string[]): Db {
+type ReconcileFixture = {
+  servers?: readonly string[]
+  managed?: readonly string[]
+  replicas?: readonly { managedId: string; serverId: string }[]
+  commands?: readonly {
+    id: string
+    managedId: string
+    serverId: string
+    status: string
+    error?: string | null
+  }[]
+}
+
+function drizzleSelectChain(rows: unknown[]) {
+  const promise = Promise.resolve(rows)
+  const afterOrderBy = {
+    then: promise.then.bind(promise),
+    catch: promise.catch.bind(promise),
+    finally: promise.finally.bind(promise),
+    limit: () => Promise.resolve(rows),
+  }
+  const chain = {
+    innerJoin: () => chain,
+    leftJoin: () => chain,
+    where: () => chain,
+    limit: () => Promise.resolve(rows),
+    orderBy: () => afterOrderBy,
+    then: (
+      onFulfilled?: (value: unknown[]) => unknown,
+      onRejected?: (reason: unknown) => unknown
+    ) => promise.then(onFulfilled, onRejected),
+  }
+  return chain
+}
+
+function createReconcileDb(fixture: ReconcileFixture = {}): Db {
+  const servers = fixture.servers ?? []
+  const managed = fixture.managed ?? []
+  const replicas = fixture.replicas ?? []
+  const commands = fixture.commands ?? []
+
   return asDb({
     select: () => ({
       from: (table: unknown) => {
         const name = tableName(table)
-        const chain = {
-          innerJoin: () => chain,
-          leftJoin: () => chain,
-          where: () => chain,
-          limit: () => chain,
-          orderBy: () => Promise.resolve(name === 'server' ? serverIds.map((id) => ({ id })) : []),
-          then: (
-            onFulfilled?: (value: unknown[]) => unknown,
-            onRejected?: (reason: unknown) => unknown
-          ) =>
-            Promise.resolve(name === 'server' ? serverIds.map((id) => ({ id })) : []).then(
-              onFulfilled,
-              onRejected
-            ),
+        if (name === 'server') {
+          return drizzleSelectChain(servers.map((id) => ({ id })))
         }
-        return chain
+        if (name === 'managed') {
+          return drizzleSelectChain(managed.map((id) => ({ id })))
+        }
+        if (name === 'replica') {
+          return drizzleSelectChain(
+            replicas.map((row) => ({ managedId: row.managedId, serverId: row.serverId }))
+          )
+        }
+        if (name === 'command') {
+          const rows = commands.map((row) => ({
+            id: row.id,
+            status: row.status,
+            error: row.error ?? null,
+          }))
+          return drizzleSelectChain(rows)
+        }
+        return drizzleSelectChain([])
       },
     }),
   })
@@ -123,7 +167,7 @@ test('rotationApplyRowKey joins managed and server ids', () => {
 test('reconcileCaRotationResults skips ingress rows when the server is gone', async () => {
   const rows: CaRotationResultRow[] = [{ serverId: SERVER, kind: 'ingress', status: 'queued' }]
   const reconciled = await reconcileCaRotationResults(
-    createReconcileDb([]),
+    createReconcileDb({ servers: [] }),
     '00000000-0000-4000-8000-000000000099',
     rows,
     '2020-01-01T00:00:00.000Z'
@@ -142,7 +186,7 @@ test('reconcileCaRotationResults skips apply rows when the managed cluster is go
     },
   ]
   const reconciled = await reconcileCaRotationResults(
-    createReconcileDb([SERVER]),
+    createReconcileDb({ servers: [SERVER] }),
     '00000000-0000-4000-8000-000000000099',
     rows,
     '2020-01-01T00:00:00.000Z'
@@ -168,6 +212,105 @@ test('rotationRowConverged treats failed binding with target_gone as converged',
   )
 })
 
+test('reconcileCaRotationResults skips binding rows when the managed cluster is gone', async () => {
+  const rows: CaRotationResultRow[] = [
+    {
+      serverId: SERVER,
+      kind: 'binding',
+      managedId: MANAGED,
+      status: 'queued',
+    },
+  ]
+  const reconciled = await reconcileCaRotationResults(
+    createReconcileDb({ servers: [SERVER], managed: [] }),
+    '00000000-0000-4000-8000-000000000099',
+    rows,
+    '2020-01-01T00:00:00.000Z'
+  )
+  assertEquals(reconciled[0]?.status, 'skipped')
+  assertEquals(reconciled[0]?.error, CA_ROTATION_TARGET_GONE)
+})
+
+test('reconcileCaRotationResults backfills apply command ids from managed.apply rows', async () => {
+  const rows: CaRotationResultRow[] = [
+    {
+      serverId: SERVER,
+      kind: 'apply',
+      managedId: MANAGED,
+      status: 'queued',
+    },
+  ]
+  const reconciled = await reconcileCaRotationResults(
+    createReconcileDb({
+      servers: [SERVER],
+      managed: [MANAGED],
+      replicas: [{ managedId: MANAGED, serverId: SERVER }],
+      commands: [
+        {
+          id: COMMAND,
+          managedId: MANAGED,
+          serverId: SERVER,
+          status: 'queued',
+        },
+      ],
+    }),
+    '00000000-0000-4000-8000-000000000099',
+    rows,
+    '2020-01-01T00:00:00.000Z'
+  )
+  assertEquals(reconciled[0]?.commandId, COMMAND)
+  assertEquals(reconciled[0]?.status, 'queued')
+})
+
+test('reconcileCaRotationResults marks apply rows skipped when command failed target_gone', async () => {
+  const rows: CaRotationResultRow[] = [
+    {
+      serverId: SERVER,
+      kind: 'apply',
+      managedId: MANAGED,
+      status: 'queued',
+    },
+  ]
+  const reconciled = await reconcileCaRotationResults(
+    createReconcileDb({
+      servers: [SERVER],
+      managed: [MANAGED],
+      replicas: [{ managedId: MANAGED, serverId: SERVER }],
+      commands: [
+        {
+          id: COMMAND,
+          managedId: MANAGED,
+          serverId: SERVER,
+          status: 'failed',
+          error: CA_ROTATION_TARGET_GONE,
+        },
+      ],
+    }),
+    '00000000-0000-4000-8000-000000000099',
+    rows,
+    '2020-01-01T00:00:00.000Z'
+  )
+  assertEquals(reconciled[0]?.status, 'skipped')
+  assertEquals(reconciled[0]?.error, CA_ROTATION_TARGET_GONE)
+})
+
+test('rotationRowConverged rejects failed binding without target_gone', () => {
+  assertEquals(
+    rotationRowConverged(
+      {
+        serverId: SERVER,
+        kind: 'binding',
+        managedId: MANAGED,
+        status: 'failed',
+        error: 'other',
+      },
+      'failed',
+      'other'
+    ),
+    false
+  )
+})
+
 test('rotationResultReason explains deferred apply rows in plain words', () => {
   assertEquals(
     rotationResultReason({
@@ -183,5 +326,20 @@ test('rotationResultReason explains deferred apply rows in plain words', () => {
       effectiveError: CA_ROTATION_TARGET_GONE,
     }),
     'Skipped because the managed cluster, member, or server no longer exists.'
+  )
+  assertEquals(
+    rotationResultReason({
+      row: applyRow({ commandId: COMMAND }),
+      effectiveStatus: 'running',
+    }),
+    'Waiting for the command to finish.'
+  )
+  assertEquals(
+    rotationResultReason({
+      row: applyRow({ commandId: COMMAND }),
+      effectiveStatus: 'failed',
+      effectiveError: 'apply exploded',
+    }),
+    'Failed: apply exploded'
   )
 })
