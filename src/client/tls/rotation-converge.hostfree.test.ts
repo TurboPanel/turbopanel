@@ -2,8 +2,13 @@ import { assertEquals } from '@std/assert'
 import { getTableName } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import type { CaRotationResultRow } from './changeover-fanout.ts'
+import type { Context } from 'hono'
+import type { AppEnv } from '../../app/app.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   CA_ROTATION_TARGET_GONE,
+  enqueueMissingCaRotationApplies,
+  loadReconciledRotationWithCommandRecords,
   reconcileCaRotationResults,
   rotationApplyRowKey,
   rotationConvergedForRetire,
@@ -22,6 +27,10 @@ const test = Deno.test.bind(Deno)
 const SERVER = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const MANAGED = 'bbbbbbbb-bbbb-4bbb-8bbb-000000000001'
 const COMMAND = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+const ORG_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+
+const noopQueue: CommandQueue = { enqueue: () => Promise.resolve() }
+const noopContext = {} as Context<AppEnv>
 
 function applyRow(overrides: Partial<CaRotationResultRow> = {}): CaRotationResultRow {
   return {
@@ -91,6 +100,7 @@ function asDb(stub: unknown): Db {
 }
 
 type ReconcileFixture = {
+  organizationId?: string
   servers?: readonly string[]
   managed?: readonly string[]
   replicas?: readonly { managedId: string; serverId: string }[]
@@ -126,12 +136,20 @@ function drizzleSelectChain(rows: unknown[]) {
 }
 
 function createReconcileDb(fixture: ReconcileFixture = {}): Db {
+  const organizationId = fixture.organizationId ?? ORG_ID
   const servers = fixture.servers ?? []
   const managed = fixture.managed ?? []
   const replicas = fixture.replicas ?? []
   const commands = fixture.commands ?? []
 
   return asDb({
+    update: () => ({
+      set: () => ({
+        where: () => ({
+          returning: () => Promise.resolve([]),
+        }),
+      }),
+    }),
     select: () => ({
       from: (table: unknown) => {
         const name = tableName(table)
@@ -143,7 +161,12 @@ function createReconcileDb(fixture: ReconcileFixture = {}): Db {
         }
         if (name === 'replica') {
           return drizzleSelectChain(
-            replicas.map((row) => ({ managedId: row.managedId, serverId: row.serverId }))
+            replicas.map((row) => ({
+              managedId: row.managedId,
+              serverId: row.serverId,
+              serverOrganizationId: organizationId,
+              workspaceOrganizationId: organizationId,
+            }))
           )
         }
         if (name === 'command') {
@@ -210,6 +233,29 @@ test('rotationRowConverged treats failed binding with target_gone as converged',
     ),
     true
   )
+})
+
+test('enqueueMissingCaRotationApplies skips apply rows when the managed cluster is gone', async () => {
+  const rows: CaRotationResultRow[] = []
+  const result = await enqueueMissingCaRotationApplies(
+    noopContext,
+    createReconcileDb({
+      organizationId: ORG_ID,
+      servers: [SERVER],
+      managed: [],
+      replicas: [{ managedId: MANAGED, serverId: SERVER }],
+    }),
+    noopQueue,
+    {
+      organizationId: ORG_ID,
+      actorId: '00000000-0000-4000-8000-000000000001',
+      rows,
+      rotationStartedAt: '2020-01-01T00:00:00.000Z',
+    }
+  )
+  assertEquals(result.length, 1)
+  assertEquals(result[0]?.status, 'skipped')
+  assertEquals(result[0]?.error, CA_ROTATION_TARGET_GONE)
 })
 
 test('reconcileCaRotationResults skips binding rows when the managed cluster is gone', async () => {
@@ -309,6 +355,22 @@ test('rotationRowConverged rejects failed binding without target_gone', () => {
     ),
     false
   )
+})
+
+test('loadReconciledRotationWithCommandRecords skips gone ingress rows', async () => {
+  const journal = {
+    id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    startedAt: '2020-01-01T00:00:00.000Z',
+    results: [{ serverId: SERVER, kind: 'ingress', status: 'queued' }],
+  }
+  const { rows, records } = await loadReconciledRotationWithCommandRecords(
+    createReconcileDb({ servers: [] }),
+    '00000000-0000-4000-8000-000000000099',
+    journal
+  )
+  assertEquals(rows[0]?.status, 'skipped')
+  assertEquals(rows[0]?.error, CA_ROTATION_TARGET_GONE)
+  assertEquals(records.length, 0)
 })
 
 test('rotationResultReason explains deferred apply rows in plain words', () => {

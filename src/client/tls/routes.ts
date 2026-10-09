@@ -25,9 +25,9 @@ import { organization, tls } from '../../db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
-  getOrgId,
   parseName,
   parseJsonBody,
+  requireDbSessionAndOrg,
 } from '../shared.ts'
 import {
   parseOrganizationOptions,
@@ -80,8 +80,8 @@ import {
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import { listCommandRecordsByIds } from '../../features/commands/command-records.ts'
 import {
-  enqueueMissingCaRotationApplies,
-  reconcileCaRotationResults,
+  loadReconciledRotationWithCommandRecords,
+  persistSyncedRotationResults,
   rotationConvergedForRetire,
   rotationResultReason,
 } from './rotation-converge.ts'
@@ -432,68 +432,6 @@ export function rotationCommandsSucceeded(
   return rotationConvergedForRetire(rows, records)
 }
 
-async function persistSyncedRotationResults(
-  c: Context<AppEnv>,
-  db: TlsDb,
-  params: {
-    organizationId: string
-    rotationId: string
-    actorId: string
-    startedAt: string
-    rows: CaRotationResultRow[]
-    enqueueGaps: boolean
-  }
-): Promise<CaRotationResultRow[]> {
-  let rows = await reconcileCaRotationResults(
-    db,
-    params.organizationId,
-    params.rows,
-    params.startedAt
-  )
-  if (params.enqueueGaps) {
-    const commandQueue = assertDispatchInfrastructure(c)
-    if (!(commandQueue instanceof Response)) {
-      const commandIds = rows.flatMap((row) => (row.commandId ? [row.commandId] : []))
-      const records = await listCommandRecordsByIds(db, commandIds)
-      rows = await enqueueMissingCaRotationApplies(c, db, commandQueue, {
-        organizationId: params.organizationId,
-        actorId: params.actorId,
-        rows,
-        rotationStartedAt: params.startedAt,
-        commandRecords: records,
-      })
-      rows = await reconcileCaRotationResults(db, params.organizationId, rows, params.startedAt)
-    }
-  }
-  await updateCaRotationJournal(db, params.rotationId, { results: rows })
-  return rows
-}
-
-async function loadReconciledRotationRows(
-  db: TlsDb,
-  organizationId: string,
-  journal: Pick<CaRotationJournalRow, 'id' | 'results' | 'startedAt'>
-): Promise<CaRotationResultRow[]> {
-  let rows = parseCaRotationResults(journal.results)
-  rows = await reconcileCaRotationResults(db, organizationId, rows, journal.startedAt)
-  await updateCaRotationJournal(db, journal.id, { results: rows })
-  return rows
-}
-
-async function loadReconciledRotationWithCommandRecords(
-  db: TlsDb,
-  organizationId: string,
-  journal: Pick<CaRotationJournalRow, 'id' | 'results' | 'startedAt'>
-): Promise<{
-  rows: CaRotationResultRow[]
-  records: Awaited<ReturnType<typeof listCommandRecordsByIds>>
-}> {
-  const rows = await loadReconciledRotationRows(db, organizationId, journal)
-  const commandIds = rows.flatMap((row) => (row.commandId ? [row.commandId] : []))
-  const records = await listCommandRecordsByIds(db, commandIds)
-  return { rows, records }
-}
-
 export function rotationNeedsCommands(targets: {
   managedIds: readonly string[]
   ingressServerIds: readonly string[]
@@ -658,15 +596,9 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.use('/tls/:id', createSessionMiddleware(secrets))
 
   router.get('/tls', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const sessionOrg = await requireDbSessionAndOrg(c)
+    if (sessionOrg instanceof Response) return sessionOrg
+    const { db, session, organizationId } = sessionOrg
 
     const visibleIds = await listVisible(db, {
       kind: 'tls',
@@ -696,15 +628,9 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
    * Managed provisioning later reuses this path without a dedicated wizard.
    */
   router.get('/tls/ca', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const sessionOrg = await requireDbSessionAndOrg(c)
+    if (sessionOrg instanceof Response) return sessionOrg
+    const { db, session, organizationId } = sessionOrg
 
     const existing = await findActiveOrganizationCa(db, organizationId)
     if (existing) {
@@ -742,15 +668,9 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   router.post('/tls/ca/rotate', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const sessionOrg = await requireDbSessionAndOrg(c)
+    if (sessionOrg instanceof Response) return sessionOrg
+    const { db, session, organizationId } = sessionOrg
 
     const denied = await assertCanOr403(c, 'organization:manage', 'organization', organizationId)
     if (denied) return denied
@@ -813,15 +733,9 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   router.get('/tls/ca/rotation', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const sessionOrg = await requireDbSessionAndOrg(c)
+    if (sessionOrg instanceof Response) return sessionOrg
+    const { db, session, organizationId } = sessionOrg
 
     const denied = await assertCanReadOr403(c, 'organization', organizationId)
     if (denied) return denied
@@ -846,15 +760,9 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   router.post('/tls/ca/retire', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const sessionOrg = await requireDbSessionAndOrg(c)
+    if (sessionOrg instanceof Response) return sessionOrg
+    const { db, session, organizationId } = sessionOrg
 
     const denied = await assertCanOr403(c, 'organization:manage', 'organization', organizationId)
     if (denied) return denied
@@ -882,15 +790,9 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   router.get('/tls/ca/download', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const sessionOrg = await requireDbSessionAndOrg(c)
+    if (sessionOrg instanceof Response) return sessionOrg
+    const { db, session, organizationId } = sessionOrg
 
     const set = await findActiveOrganizationCa(db, organizationId)
     if (!set?.trustBundlePem) {
@@ -907,15 +809,9 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   router.get('/tls/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const sessionOrg = await requireDbSessionAndOrg(c)
+    if (sessionOrg instanceof Response) return sessionOrg
+    const { db, session, organizationId } = sessionOrg
 
     const id = c.req.param('id')
     const entityOrgId = await resolveEntityOrganizationId(db, 'tls', id)
@@ -936,15 +832,9 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   router.post('/tls', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const sessionOrg = await requireDbSessionAndOrg(c)
+    if (sessionOrg instanceof Response) return sessionOrg
+    const { db, session, organizationId } = sessionOrg
 
     const denied = await assertCanCreateOr403(c, 'organization', organizationId)
     if (denied) return denied
@@ -976,15 +866,9 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   router.patch('/tls/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const sessionOrg = await requireDbSessionAndOrg(c)
+    if (sessionOrg instanceof Response) return sessionOrg
+    const { db, session, organizationId } = sessionOrg
 
     const id = c.req.param('id')
     const entityOrgId = await resolveEntityOrganizationId(db, 'tls', id)
@@ -1022,15 +906,9 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   router.delete('/tls/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const sessionOrg = await requireDbSessionAndOrg(c)
+    if (sessionOrg instanceof Response) return sessionOrg
+    const { db, session, organizationId } = sessionOrg
 
     const id = c.req.param('id')
     if (!isTlsUuid(id)) {

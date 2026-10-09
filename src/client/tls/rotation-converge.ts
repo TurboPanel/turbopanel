@@ -21,7 +21,13 @@ import type {
   OrganizationRotationMember,
   OrganizationRotationTargets,
 } from './changeover-fanout.ts'
-import { enumerateOrganizationRotationTargets } from './changeover-fanout.ts'
+import {
+  enumerateOrganizationRotationTargets,
+  parseCaRotationResults,
+} from './changeover-fanout.ts'
+import { type CaRotationJournalRow, updateCaRotationJournal } from './changeover-lease.ts'
+import { listCommandRecordsByIds } from '../../features/commands/command-records.ts'
+import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 
 export const CA_ROTATION_TARGET_GONE = 'target_gone'
 
@@ -650,4 +656,67 @@ export async function enqueueMissingCaRotationApplies(
   )
 
   return rows
+}
+
+async function loadReconciledRotationRows(
+  db: Db,
+  organizationId: string,
+  journal: Pick<CaRotationJournalRow, 'id' | 'results' | 'startedAt'>
+): Promise<CaRotationResultRow[]> {
+  let rows = parseCaRotationResults(journal.results)
+  rows = await reconcileCaRotationResults(db, organizationId, rows, journal.startedAt)
+  await updateCaRotationJournal(db, journal.id, { results: rows })
+  return rows
+}
+
+/** Reconcile journal fan-out rows and optionally enqueue missing managed applies. */
+export async function persistSyncedRotationResults(
+  c: Context<AppEnv>,
+  db: Db,
+  params: {
+    organizationId: string
+    rotationId: string
+    actorId: string
+    startedAt: string
+    rows: CaRotationResultRow[]
+    enqueueGaps: boolean
+  }
+): Promise<CaRotationResultRow[]> {
+  let rows = await reconcileCaRotationResults(
+    db,
+    params.organizationId,
+    params.rows,
+    params.startedAt
+  )
+  if (params.enqueueGaps) {
+    const commandQueue = assertDispatchInfrastructure(c)
+    if (!(commandQueue instanceof Response)) {
+      const commandIds = rows.flatMap((row) => (row.commandId ? [row.commandId] : []))
+      const records = await listCommandRecordsByIds(db, commandIds)
+      rows = await enqueueMissingCaRotationApplies(c, db, commandQueue, {
+        organizationId: params.organizationId,
+        actorId: params.actorId,
+        rows,
+        rotationStartedAt: params.startedAt,
+        commandRecords: records,
+      })
+      rows = await reconcileCaRotationResults(db, params.organizationId, rows, params.startedAt)
+    }
+  }
+  await updateCaRotationJournal(db, params.rotationId, { results: rows })
+  return rows
+}
+
+export async function loadReconciledRotationWithCommandRecords(
+  db: Db,
+  organizationId: string,
+  journal: Pick<CaRotationJournalRow, 'id' | 'results' | 'startedAt'>
+): Promise<{
+  rows: CaRotationResultRow[]
+  records: Awaited<ReturnType<typeof listCommandRecordsByIds>>
+}> {
+  const rows = await loadReconciledRotationRows(db, organizationId, journal)
+  const commandIds = rows.flatMap((row) => (row.commandId ? [row.commandId] : []))
+  const records = await listCommandRecordsByIds(db, commandIds)
+  return { rows, records }
 }

@@ -998,6 +998,52 @@ test('POST /tls/ca/rotate keeps kind and managedId when one server hosts two clu
   })
 })
 
+test('POST /tls/ca/retire completes when ingress target server was removed', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
+
+    const ensure = await app.request('/tls/ca', { headers })
+    assertEquals(ensure.status, 200)
+
+    const rotate = await app.request('/tls/ca/rotate', {
+      method: 'POST',
+      headers,
+    })
+    assertEquals(rotate.status, 200)
+    const rotateBody = (await rotate.json()) as { rotationId: string }
+
+    const [serverRow] = await db
+      .insert(server)
+      .values({ organizationId, name: 'removed rotation ingress host' })
+      .returning({ id: server.id })
+    const serverId = serverRow!.id
+
+    await db
+      .update(changeover)
+      .set({
+        state: 'awaiting_retire',
+        results: [{ serverId, kind: 'ingress', status: 'queued' }],
+      })
+      .where(eq(changeover.id, rotateBody.rotationId))
+
+    await db.delete(server).where(eq(server.id, serverId))
+
+    const retire = await app.request('/tls/ca/retire', {
+      method: 'POST',
+      headers,
+    })
+    assertEquals(retire.status, 200)
+    const retireBody = (await retire.json()) as { ok: true; rotationId: string }
+    assertEquals(retireBody.ok, true)
+    assertEquals(retireBody.rotationId, rotateBody.rotationId)
+  })
+})
+
 test('POST /tls/ca/retire stays blocked when binding rematerialize failed', async () => {
   await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
