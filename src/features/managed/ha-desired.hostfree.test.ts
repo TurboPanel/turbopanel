@@ -18,6 +18,7 @@ import {
   resolveLocalHaMemberDial,
   resolveRemoteHaMemberDial,
   toHaClusterMember,
+  orchestratorManagedClusterIdsFromRows,
   type HaEndpointMap,
 } from './ha-desired.ts'
 
@@ -54,6 +55,20 @@ function member(overrides: Partial<ManagedMemberRow> = {}): ManagedMemberRow {
     ...overrides,
   }
 }
+
+test('orchestratorManagedClusterIdsFromRows lists only multi-member MySQL-family clusters', () => {
+  assertEquals(
+    orchestratorManagedClusterIdsFromRows([
+      { managedId: 'mysql-ha', engine: 'mysql' },
+      { managedId: 'mysql-ha', engine: 'mysql' },
+      { managedId: 'mysql-ha', engine: 'mysql' },
+      { managedId: 'pg-ha', engine: 'postgres' },
+      { managedId: 'pg-ha', engine: 'postgres' },
+      { managedId: 'single', engine: 'mysql' },
+    ]),
+    ['mysql-ha']
+  )
+})
 
 test('haClusterMemberRole and replicaClass stay on the wire vocabulary', () => {
   assertEquals(haClusterMemberRole('primary'), 'primary')

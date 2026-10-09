@@ -25,7 +25,17 @@ import type {
 } from '../../contracts/commands/schemas.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import { ensureOrganizationManagedNetwork } from '../fabric/fabric-records.ts'
-import { container, managed, replica, principal, server, service } from '../../db/schema.ts'
+import {
+  container,
+  environment,
+  managed,
+  principal,
+  project,
+  replica,
+  server,
+  service,
+  workspace,
+} from '../../db/schema.ts'
 import { MANAGED_HA_HTTP_PORT, MANAGED_HA_RAFT_PORT } from './ha-ports.ts'
 import {
   orchestratorManagesEngine,
@@ -58,6 +68,8 @@ import {
   type SystemHierarchyIds,
 } from '../system/hierarchy.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { ensureManagedReplicationPrincipal } from '../principals/store.ts'
+import { loadPrincipalNamePolicy } from './load-org-defaults.ts'
 
 export const MANAGED_HA_RECONCILE_TTL_MS = 300_000
 
@@ -110,6 +122,54 @@ async function loadHaMembersOnServer(db: Db, serverId: string): Promise<HaMember
   }))
 }
 
+/**
+ * Managed ids for every multi-member MySQL/MariaDB cluster on servers owned by
+ * the organization. Used so Orchestrator reconcile registers org-wide SQL HA
+ * even when a fan-out only targeted one cluster id.
+ */
+export function orchestratorManagedClusterIdsFromRows(
+  rows: ReadonlyArray<{ managedId: string; engine: string }>
+): string[] {
+  const counts = new Map<string, { engine: string; count: number }>()
+  for (const row of rows) {
+    const current = counts.get(row.managedId)
+    if (!current) {
+      counts.set(row.managedId, { engine: row.engine, count: 1 })
+      continue
+    }
+    current.count += 1
+  }
+  return [...counts.entries()]
+    .filter(([, meta]) => meta.count >= 2 && orchestratorManagesEngine(meta.engine))
+    .map(([managedId]) => managedId)
+    .toSorted((a, b) => a.localeCompare(b))
+}
+
+async function listOrchestratorManagedClusterIds(
+  db: Db,
+  organizationId: string
+): Promise<string[]> {
+  const rows = await db
+    .select({ managedId: replica.managedId, engine: managed.engine })
+    .from(replica)
+    .innerJoin(managed, eq(managed.id, replica.managedId))
+    .innerJoin(server, eq(server.id, replica.serverId))
+    .where(eq(server.organizationId, organizationId))
+  return orchestratorManagedClusterIdsFromRows(rows)
+}
+
+async function resolveManagedOrganizationId(db: Db, managedId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ organizationId: workspace.organizationId })
+    .from(managed)
+    .innerJoin(environment, eq(environment.id, managed.environmentId))
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+    .where(eq(managed.id, managedId))
+    .limit(1)
+  return row?.organizationId ?? null
+}
+
 async function resealReplicationPassword(
   db: Db,
   secretsConfig: SecretsConfig,
@@ -139,6 +199,40 @@ async function resealReplicationPassword(
     repl.password
   )
   return { username: repl.username, envelope: resealed }
+}
+
+async function resolveReplicationCredentialForHa(
+  db: Db,
+  params: HaSecretsParams,
+  managedId: string,
+  spec: ManagedEngineSpec
+): Promise<{ username: string; envelope: string } | null> {
+  const resealed = await resealReplicationPassword(
+    db,
+    params.secretsConfig,
+    params.dataEncryptionSecrets,
+    managedId,
+    params.serverId
+  )
+  if (resealed) return resealed
+
+  const organizationId = await resolveManagedOrganizationId(db, managedId)
+  if (!organizationId) return null
+  const policy = await loadPrincipalNamePolicy(db, organizationId)
+  await ensureManagedReplicationPrincipal(db, params.dataEncryptionSecrets, {
+    managedId,
+    preferredUsername: 'tp_repl',
+    provider: spec.principalProvider,
+    identifier: spec.userOperations.identifier,
+    nameScheme: policy.defaultScheme,
+  })
+  return resealReplicationPassword(
+    db,
+    params.secretsConfig,
+    params.dataEncryptionSecrets,
+    managedId,
+    params.serverId
+  )
 }
 
 async function loadLocalEngineContainerNames(
@@ -379,13 +473,7 @@ async function buildHaClusterIfReady(
   // 500 `invalid connection`, which used to abort the whole reconcile and
   // leave every MySQL/MariaDB cluster behind it unregistered.
   if (!spec || !orchestratorManagesEngine(spec.engine)) return null
-  const repl = await resealReplicationPassword(
-    db,
-    params.secretsConfig,
-    params.dataEncryptionSecrets,
-    managedId,
-    params.serverId
-  )
+  const repl = await resolveReplicationCredentialForHa(db, params, managedId, spec)
   if (!repl) return null
   const haMembers = await buildHaClusterMembers(db, params.serverId, members, spec.defaultPort)
   if (haMembers.length < 2) return null
@@ -402,11 +490,13 @@ async function buildHaClusterIfReady(
 async function buildHaClustersForServer(
   db: Db,
   params: HaSecretsParams,
+  organizationId: string,
   localMembers: readonly ManagedMemberRow[]
 ): Promise<ManagedHaCluster[]> {
-  const managedIds = [...new Set(localMembers.map((row) => row.managedId))].toSorted((a, b) =>
-    a.localeCompare(b)
-  )
+  const orchestratorIds = await listOrchestratorManagedClusterIds(db, organizationId)
+  const managedIds = [
+    ...new Set([...orchestratorIds, ...localMembers.map((row) => row.managedId)]),
+  ].toSorted((a, b) => a.localeCompare(b))
   const clusters: ManagedHaCluster[] = []
   await forEachSequential(managedIds, async (managedId) => {
     const cluster = await buildHaClusterIfReady(db, params, managedId)
@@ -481,7 +571,7 @@ export async function buildManagedHaReconcilePayload(
     }
   }
 
-  const clusters = await buildHaClustersForServer(db, params, localMembers)
+  const clusters = await buildHaClustersForServer(db, params, organizationId, localMembers)
 
   const daemonState = await getServerDaemonStateByServerId(db, params.serverId)
   if (!daemonState || !isDaemonKeyActive(daemonState.key)) return null

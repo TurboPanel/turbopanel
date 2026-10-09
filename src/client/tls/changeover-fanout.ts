@@ -1,6 +1,7 @@
 /**
  * Organization CA rotation fan-out: enumerate org-scoped managed targets and
- * enqueue `managed.apply` / `managed.ingress.reconcile` plus binding rematerialize.
+ * enqueue `managed.apply` / `managed.ingress.reconcile` / `managed.ha.reconcile`
+ * plus binding rematerialize.
  *
  * Does **not** enqueue `environment.deploy` — consumer compose pick-up of the
  * new `<PREFIX>_CA_CERT` is surfaced as `needsRedeploy`.
@@ -15,6 +16,7 @@ import {
   isPrepareError,
   prepareManagedApplyPayloads,
 } from '../../features/managed/apply-prepare.ts'
+import { fanOutManagedHaReconcile } from '../../features/managed/ha-desired.ts'
 import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
 import { parseManagedRowOptions } from '../../features/managed/options.ts'
 import { parseManagedResidual } from '../../features/managed/serialize.ts'
@@ -663,6 +665,14 @@ async function fanOutOneManagedCluster(
     alreadyQueued: state.alreadyQueuedIngress,
   })
   state.results.push(...ingressRows)
+
+  await fanOutManagedHaReconcile(db, commandQueue, {
+    managedId,
+    actorType: params.actorType,
+    actorId: params.actorId,
+    secretsConfig: params.secretsConfig,
+    dataEncryptionSecrets: params.dataEncryptionSecrets,
+  })
 
   const rematerialized = await rematerializeClusterBindings(
     db,
