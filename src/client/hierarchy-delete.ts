@@ -160,3 +160,15 @@ export function hierarchyDeleteHasChildrenResponseIfNeeded(
   if (result.status !== 'has_children') return null
   return hierarchyDeleteHasChildrenResponse(c, result.blockers)
 }
+
+/** Run a hierarchy delete in a transaction and map FK blocks to the standard 409. */
+export async function respondAfterHierarchyDelete(
+  c: Context,
+  db: Db,
+  deleteOp: (tx: Db) => Promise<void>
+): Promise<Response> {
+  const deleteResult = await runHierarchyDelete(db, deleteOp)
+  const blocked = hierarchyDeleteHasChildrenResponseIfNeeded(c, deleteResult)
+  if (blocked) return blocked
+  return c.json({ ok: true as const })
+}

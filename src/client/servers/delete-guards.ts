@@ -1179,9 +1179,9 @@ async function purgeRemainingPlacedEnvironmentsInTx(
       )
     )
   const ordered = rows.map((row) => row.id).sort((a, b) => a.localeCompare(b))
-  for (const environmentId of ordered) {
+  await forEachSequential(ordered, async (environmentId) => {
     await dropEnvironmentSubtreeInTx(tx, [environmentId], { serverId })
-  }
+  })
 }
 
 async function dropForgetEnvironmentsInTx(

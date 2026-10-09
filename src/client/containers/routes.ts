@@ -14,10 +14,7 @@ import {
   getOrgId,
   parseJsonBody,
 } from '../shared.ts'
-import {
-  hierarchyDeleteHasChildrenResponseIfNeeded,
-  runHierarchyDelete,
-} from '../hierarchy-delete.ts'
+import { respondAfterHierarchyDelete } from '../hierarchy-delete.ts'
 import {
   parseCreateContainerFields,
   parsePatchContainerFields,
@@ -324,12 +321,8 @@ export function registerContainerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     const immutable = await assertNotSystemOwnedOr403(c, 'container', id)
     if (immutable) return immutable
 
-    const deleteResult = await runHierarchyDelete(db, async (tx) => {
+    return respondAfterHierarchyDelete(c, db, async (tx) => {
       await tx.delete(container).where(eq(container.id, id))
     })
-    const blocked = hierarchyDeleteHasChildrenResponseIfNeeded(c, deleteResult)
-    if (blocked) return blocked
-
-    return c.json({ ok: true as const })
   })
 }

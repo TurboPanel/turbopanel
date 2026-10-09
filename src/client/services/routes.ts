@@ -23,10 +23,7 @@ import {
   parseJsonBody,
   requireStringField,
 } from '../shared.ts'
-import {
-  hierarchyDeleteHasChildrenResponseIfNeeded,
-  runHierarchyDelete,
-} from '../hierarchy-delete.ts'
+import { respondAfterHierarchyDelete } from '../hierarchy-delete.ts'
 import {
   parseServiceCreateFields,
   parseServicePatchFields,
@@ -263,13 +260,9 @@ export function registerServiceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const immutable = await assertNotSystemOwnedOr403(c, 'service', id)
     if (immutable) return immutable
 
-    const deleteResult = await runHierarchyDelete(db, async (tx) => {
+    return respondAfterHierarchyDelete(c, db, async (tx) => {
       await applyStorageRetentionOnParentDelete(tx, { serviceIds: [id] })
       await tx.delete(service).where(eq(service.id, id))
     })
-    const blocked = hierarchyDeleteHasChildrenResponseIfNeeded(c, deleteResult)
-    if (blocked) return blocked
-
-    return c.json({ ok: true as const })
   })
 }

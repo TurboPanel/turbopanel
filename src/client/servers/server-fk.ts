@@ -41,10 +41,10 @@ export type ForeignKeyMigrationRow = {
 }
 
 function normalizeOnDelete(rule: string): string {
-  return rule
-    .replace(/\s+ON UPDATE.*$/i, '')
-    .trim()
-    .toLowerCase()
+  const lower = rule.toLowerCase()
+  const onUpdate = lower.indexOf(' on update ')
+  const base = onUpdate === -1 ? lower : lower.slice(0, onUpdate)
+  return base.trim()
 }
 
 function collectForeignKeysFromMigrationSql(

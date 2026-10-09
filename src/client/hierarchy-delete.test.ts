@@ -9,6 +9,7 @@ import {
   hierarchyDeleteHasChildrenResponseIfNeeded,
   isForeignKeyViolation,
   parsePostgresForeignKeyViolation,
+  respondAfterHierarchyDelete,
   runHierarchyDelete,
 } from './hierarchy-delete.ts'
 
@@ -127,6 +128,20 @@ test('runHierarchyDelete rethrows unrelated errors', async () => {
 test('hierarchyDeleteHasChildrenResponseIfNeeded returns null on success', () => {
   const c = {} as Parameters<typeof hierarchyDeleteHasChildrenResponseIfNeeded>[0]
   assertEquals(hierarchyDeleteHasChildrenResponseIfNeeded(c, { status: 'ok' }), null)
+})
+
+test('respondAfterHierarchyDelete returns ok JSON when delete succeeds', async () => {
+  const db = {
+    transaction: async (fn: (tx: Db) => Promise<void>) => {
+      await fn({} as Db)
+    },
+  } as unknown as Db
+  const app = new Hono()
+  app.delete('/resource', async (c) => respondAfterHierarchyDelete(c, db, async () => {}))
+
+  const res = await app.request('http://localhost/resource', { method: 'DELETE' })
+  assertEquals(res.status, 200)
+  assertEquals(await res.json(), { ok: true })
 })
 
 test('hierarchyDeleteHasChildrenResponse returns 409 JSON with structured blockers', async () => {
