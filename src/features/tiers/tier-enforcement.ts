@@ -343,9 +343,7 @@ export function toTierPlacementDto(
   }
 }
 
-export function withTierPlacementExtras<
-  U extends TierUnwatchedIds | TierUnwatchedCounts,
->(
+export function withTierPlacementExtras<U extends TierUnwatchedIds | TierUnwatchedCounts>(
   dto: TierPlacementDto<U>,
   extras: Readonly<{
     pickedTier: string | null

@@ -58,7 +58,10 @@ export function registerServerLicenseTierRoutes(router: Hono<AppEnv>, opts: Auth
     const result = await setServerPreferredTier(db, organizationId, serverId, tierId)
     if (!result.ok) {
       if (result.code === 'tier_below_required') {
-        return c.json({ error: 'Tier is below what this server needs', code: 'tier_below_required' }, 422)
+        return c.json(
+          { error: 'Tier is below what this server needs', code: 'tier_below_required' },
+          422
+        )
       }
       if (result.code === 'tier_not_found') {
         return c.json({ error: 'Not found', code: 'tier_not_found' }, 404)

@@ -140,6 +140,12 @@
       "tag": "0022_server_preferred_tier_id",
       "when": 1791550444346,
       "sha256": "1b3375f359129f96975ce40d3faaacc5693dc6004aeb36f6fd51eca401ea4fd6"
+    },
+    {
+      "idx": 23,
+      "tag": "0023_server_assigned_tier_comment",
+      "when": 1791551527301,
+      "sha256": "eb3517dd17edf8d79a34bbc41924e53912e4fef05443a1cd0ffcec104180fdd5"
     }
   ]
 }

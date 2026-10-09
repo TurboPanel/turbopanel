@@ -162,6 +162,13 @@
       "when": 1791550444346,
       "tag": "0022_server_preferred_tier_id",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1791551527301,
+      "tag": "0023_server_assigned_tier_comment",
+      "breakpoints": true
     }
   ]
 }

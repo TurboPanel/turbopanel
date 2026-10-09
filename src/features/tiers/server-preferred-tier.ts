@@ -85,8 +85,7 @@ export async function setServerPreferredTier(
   const assignedTierId = assignment.byServer.get(serverId) ?? null
   const wantedLabel = tierId ? preferredLabel : null
   const unfulfilled = assignment.pickUnfulfilled.get(serverId)
-  const notice =
-    wantedLabel && unfulfilled ? tierPickNotice(wantedLabel) : null
+  const notice = wantedLabel && unfulfilled ? tierPickNotice(wantedLabel) : null
 
   let assignedTierLabel: string | null = null
   if (assignedTierId) {

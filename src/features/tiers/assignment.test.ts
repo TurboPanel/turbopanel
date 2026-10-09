@@ -388,7 +388,9 @@ test('clearing a pick is the default smallest-that-fits path', () => {
   const withPick = computeAssignment(purchased(1, 1, 0), [
     server('a', 1, '2026-09-01T00:00:00.000Z', { tierId: S3, rank: 3, label: 'S3' }),
   ])
-  const derived = computeAssignment(purchased(1, 1, 0), [server('a', 1, '2026-09-01T00:00:00.000Z')])
+  const derived = computeAssignment(purchased(1, 1, 0), [
+    server('a', 1, '2026-09-01T00:00:00.000Z'),
+  ])
   assertEquals(withPick.byServer.get('a'), S3)
   assertEquals(derived.byServer.get('a'), S1)
 })
