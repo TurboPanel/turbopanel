@@ -1727,16 +1727,8 @@ async function finalizePreparedManagedApplyResults(
     const serverIds = new Set(
       params.results.filter((r) => r.status === 'queued').map((r) => r.serverId)
     )
-    const { enqueueManagedHaReconcile } = await import('./ha-desired.ts')
     await forEachSequential(serverIds, async (serverId) => {
       await enqueueManagedIngressReconcile(db, commandQueue, {
-        serverId,
-        actorType: 'user',
-        actorId: params.userId,
-        secretsConfig,
-        dataEncryptionSecrets,
-      })
-      await enqueueManagedHaReconcile(db, commandQueue, {
         serverId,
         actorType: 'user',
         actorId: params.userId,

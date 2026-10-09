@@ -544,7 +544,9 @@ for `MySQLTopologyUser`). Orchestrator HTTP basic auth and `RaftAuthToken` are
 also organization-wide (`orchestrator-api-credential.ts`, sealed as
 `orchestratorApiUser` + `orchestratorRaftToken` on `managed.ha.reconcile` so
 every Raft peer shares one `HTTPAuthPassword` and followers can proxy to the
-leader). Postgres HA clusters are omitted from the reconcile cluster list and
+leader). **`managed.ha.reconcile` is enqueued only after a successful primary
+`managed.apply`** (the topology login is created during that apply); apply-prepare
+still enqueues `managed.ingress.reconcile` when apply is queued. Postgres HA clusters are omitted from the reconcile cluster list and
 from the Raft voter set (`orchestratorManagesEngine` / `serverHostsManagedHa`). Leaf `notAfter` + signing `ca_generation` are persisted
 on `leaf` only after `managed.apply` succeeds (mint writes `pendingTlsLeaf`
 command metadata — see `src/lib/tls/AGENTS.md` → Leaf tracking + renewal sweep)
