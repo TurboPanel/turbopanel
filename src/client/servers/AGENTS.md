@@ -50,7 +50,12 @@ disagree; blocked-database reasons name the database.
 
 `DELETE` accepts an explicit `forgetResources=true` query flag (or JSON body
 `{ forgetResources: true }`, same style as managed `detach=true`). Anything else
-leaves the 409 blockers check unchanged. With the flag:
+leaves the 409 blockers check unchanged. Active hosting-ingress system
+containers on an **offline** host without the flag answer **409**
+`server_system_containers_active` with named `blockers` (use Host is gone); with
+the flag those rows are removed with the system subtree. A **connected** host
+still answers **409** `hierarchy_delete_has_children` with the same container
+names in `blockers`. With the flag:
 
 - a connected server answers **409** `server_online` (live snapshot or stored
   flag; the delete transaction re-reads `is_connected` `FOR UPDATE` and refuses

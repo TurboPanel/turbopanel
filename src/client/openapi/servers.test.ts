@@ -57,6 +57,7 @@ test('ServerDeletePreview requires the Host-is-gone lists', () => {
     'colocated',
     'blockers',
     'containers',
+    'systemContainers',
     'networks',
     'ips',
     'environments',

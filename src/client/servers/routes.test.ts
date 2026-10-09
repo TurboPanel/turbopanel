@@ -49,6 +49,8 @@ import {
   SERVER_HAS_BLOCKERS_ERROR,
   SERVER_ONLINE_CODE,
   SERVER_ONLINE_ERROR,
+  SERVER_SYSTEM_CONTAINERS_ACTIVE_CODE,
+  SERVER_SYSTEM_CONTAINERS_ACTIVE_ERROR,
 } from './delete-guards.ts'
 import { WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
 import { COLOCATED_SERVER_DISPLAY_NAME } from '../authn/install-state.ts'
@@ -2613,10 +2615,9 @@ test('DELETE /servers/:id invalidates the bound license on Workers runtime', asy
   }
 })
 
-test('DELETE /servers/:id returns 409 when child resources block deletion', async () => {
+test('DELETE /servers/:id returns 409 when stale system containers block deletion on an offline host', async () => {
   await withServerDeleteFixtures(
     async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
-      // Active system hosting-ingress containers block delete with 409 has_children.
       const hierarchy = await systemHierarchy.ensureSystemHierarchy(db, {
         organizationId,
         serverId,
@@ -2644,8 +2645,20 @@ test('DELETE /servers/:id returns 409 when child resources block deletion', asyn
         })
 
         assertEquals(res.status, 409)
-        const body = await readJson<ErrorJson>(res)
-        assertEquals(body.error, hierarchyDelete.HIERARCHY_DELETE_HAS_CHILDREN_ERROR)
+        const body = await readJson<{
+          error: string
+          code: string
+          blockers?: Array<{ id: string; name: string; status: string }>
+        }>(res)
+        assertEquals(body.code, SERVER_SYSTEM_CONTAINERS_ACTIVE_CODE)
+        assertEquals(body.error, SERVER_SYSTEM_CONTAINERS_ACTIVE_ERROR)
+        assertExists(body.blockers)
+        assertEquals(body.blockers!.length > 0, true)
+        assertEquals(
+          body.code === hierarchyDelete.HIERARCHY_DELETE_HAS_CHILDREN_CODE &&
+            (body.blockers?.length ?? 0) === 0,
+          false
+        )
         assertEquals(registry.purgedIds.length, 0)
 
         const remaining = await db
@@ -2682,12 +2695,109 @@ test('DELETE /servers/:id returns 409 for a pending ingress container on a conne
         })
 
         assertEquals(res.status, 409)
+        const body = await readJson<{
+          code: string
+          blockers?: unknown[]
+        }>(res)
+        assertEquals(body.code, hierarchyDelete.HIERARCHY_DELETE_HAS_CHILDREN_CODE)
+        assertExists(body.blockers)
+        assertEquals(body.blockers!.length > 0, true)
         assertEquals(registry.purgedIds.length, 0)
       } finally {
         await cleanupOrgSystemSubtree(db, organizationId)
       }
     }
   )
+})
+
+test('DELETE /servers/:id with forgetResources removes stale running system containers and leaves another server intact', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const now = new Date().toISOString()
+      const [otherServer] = await db
+        .insert(server)
+        .values({
+          createdAt: now,
+          updatedAt: now,
+          organizationId,
+          name: 'Other Host',
+        })
+        .returning({ id: server.id })
+      const otherServerId = otherServer!.id
+
+      const targetHierarchy = await systemHierarchy.ensureSystemHierarchy(db, {
+        organizationId,
+        serverId,
+      })
+      const otherHierarchy = await systemHierarchy.ensureSystemHierarchy(db, {
+        organizationId,
+        serverId: otherServerId,
+      })
+
+      await db
+        .update(container)
+        .set({ status: 'running', updatedAt: now })
+        .where(eq(container.id, targetHierarchy.containerRowId))
+
+      try {
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        })
+
+        assertEquals(res.status, 200)
+        assertEquals(registry.purgedIds, [serverId])
+
+        const otherContainers = await db
+          .select({ id: container.id })
+          .from(container)
+          .where(eq(container.id, otherHierarchy.containerRowId))
+        assertEquals(otherContainers.length, 1)
+
+        await db.delete(server).where(eq(server.id, otherServerId))
+        await db.delete(project).where(eq(project.id, otherHierarchy.projectId))
+        await db.delete(workspace).where(eq(workspace.id, otherHierarchy.workspaceId))
+      } finally {
+        await cleanupOrgSystemSubtree(db, organizationId)
+      }
+    }
+  )
+})
+
+test('GET /servers/:id/delete-preview lists stale system containers on an offline host', async () => {
+  await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    const hierarchy = await systemHierarchy.ensureSystemHierarchy(db, {
+      organizationId,
+      serverId,
+    })
+    const now = new Date().toISOString()
+    await db
+      .update(container)
+      .set({ status: 'running', updatedAt: now })
+      .where(eq(container.id, hierarchy.containerRowId))
+
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}/delete-preview`, {
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(res.status, 200)
+      const body = await readJson<{
+        canForget: boolean
+        systemContainers: {
+          items: Array<{ id: string; name: string; status: string }>
+          more: number
+        }
+      }>(res)
+      assertEquals(body.canForget, true)
+      assertEquals(body.systemContainers.items.length, 1)
+      assertEquals(body.systemContainers.items[0]?.status, 'running')
+      assertEquals(body.systemContainers.more, 0)
+    } finally {
+      await cleanupOrgSystemSubtree(db, organizationId)
+    }
+  })
 })
 
 test('DELETE /servers/:id returns 503 when daemon cell registry is unavailable', async () => {

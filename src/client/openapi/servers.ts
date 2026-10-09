@@ -1072,6 +1072,7 @@ export const serverSchemas = {
       'colocated',
       'blockers',
       'containers',
+      'systemContainers',
       'networks',
       'ips',
       'environments',
@@ -1101,6 +1102,28 @@ export const serverSchemas = {
       containers: {
         type: 'object',
         required: ['items', 'more'],
+        properties: {
+          items: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['id', 'name', 'status'],
+              properties: {
+                id: { type: 'string', format: 'uuid' },
+                name: { type: 'string' },
+                status: { type: 'string' },
+                serviceName: { type: 'string' },
+              },
+            },
+          },
+          more: { type: 'integer', minimum: 0 },
+        },
+      },
+      systemContainers: {
+        type: 'object',
+        required: ['items', 'more'],
+        description:
+          'Hosting-ingress system containers on this server that Host is gone forget will remove.',
         properties: {
           items: {
             type: 'array',
