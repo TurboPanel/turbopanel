@@ -125,7 +125,14 @@ test('ServerRow documents tierPlacement against ServerTierPlacement', () => {
   const placement = serverSchemas.ServerTierPlacement as {
     required: string[]
   }
-  assertEquals(placement.required, ['licenseTier', 'requiredTier', 'recommendedTier', 'unwatched'])
+  assertEquals(placement.required, [
+    'licenseTier',
+    'requiredTier',
+    'recommendedTier',
+    'unwatched',
+    'pickedTier',
+    'tierPickNotice',
+  ])
   assertEquals(
     row.properties.tierPlacement.oneOf.some(
       (entry) => entry.$ref === '#/components/schemas/ServerTierPlacement'

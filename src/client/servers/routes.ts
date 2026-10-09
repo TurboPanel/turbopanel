@@ -68,7 +68,10 @@ import { resolveUpdateManifest } from '../../features/update/manifest.ts'
 import { resolveInstanceUpdateChannel, type UpdateChannel } from '../../contracts/update-channel.ts'
 import { getServerUpdatePreparer } from '../../features/update/prepare.ts'
 import { revokeLicense } from '../../features/licenses/license.ts'
-import { recomputeOrganizationAssignments } from '../../features/tiers/assignment-records.ts'
+import {
+  peekOrganizationAssignment,
+  recomputeOrganizationAssignments,
+} from '../../features/tiers/assignment-records.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import {
@@ -116,6 +119,10 @@ import { registerServerMetricsRoutes } from './metrics-routes.ts'
 import { registerServerTrafficMapRoutes } from './traffic-map-routes.ts'
 import { registerServerLabelRoutes } from './labels-routes.ts'
 import { registerServerServicesRoutes } from './services-routes.ts'
+import {
+  enrichServerDetailTierPlacement,
+  registerServerLicenseTierRoutes,
+} from './license-tier-routes.ts'
 import { resolveOrgRequest } from '../org-request.ts'
 import { cachedServersListReadModel } from '../../query-cache/read-models/servers-list.ts'
 import { applyLocationPatch, resolveLocation } from '../../features/geo/location-override.ts'
@@ -863,10 +870,16 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       distinctNonEmptyIds(membershipDcIds)
     )
     const layoutPathsByServer = await loadServerLayoutPaths(db, serverIds)
+    const deployment = metricsDeploymentKindForRuntime(opts.runtime)
+    const pickUnfulfilled =
+      deployment === 'self-hosted'
+        ? undefined
+        : (await peekOrganizationAssignment(db, organizationId)).pickUnfulfilled
     const placementByServer = await loadTierPlacementsForServers(db, serverIds, {
-      deployment: metricsDeploymentKindForRuntime(opts.runtime),
+      deployment,
       orgOptions,
       unwatched: 'counts',
+      pickUnfulfilled,
     })
 
     return c.json({
@@ -1444,6 +1457,12 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       orgOptions,
       unwatched: 'ids',
     })
+    const tierPlacement = await enrichServerDetailTierPlacement(
+      db,
+      organizationId,
+      id,
+      placementByServer.get(id) ?? null
+    )
 
     return c.json({
       ok: true,
@@ -1466,7 +1485,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         datacenterDefaultTimezone: dcOptions?.defaultServerTimezone ?? null,
         datacenterEnforceServerTimezone: dcOptions?.enforceServerTimezone ?? false,
         licenseId: display.row.licenseId ?? null,
-        tierPlacement: placementByServer.get(id) ?? null,
+        tierPlacement,
         layoutPaths: layoutPathsByServer.get(id) ?? null,
         labels: labelRows.map((row) => ({ key: row.key, value: row.value })),
       },
@@ -1735,4 +1754,5 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   registerServerTrafficMapRoutes(router, opts)
   registerServerLabelRoutes(router, opts)
   registerServerServicesRoutes(router, opts)
+  registerServerLicenseTierRoutes(router, opts)
 }

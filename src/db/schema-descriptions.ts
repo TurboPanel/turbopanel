@@ -1379,7 +1379,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       ntp_last_synced_at:
         'Last successful NTP sync: set from the daemon stamp or first synced observation, cleared when the host reports unsynced, never bumped to now() per heartbeat.',
       assigned_tier_id:
-        'Derived, never chosen: the purchased tier covering this server, recomputed by assignment-records.ts on seat, grant, enroll or hardware change; NULL if none.',
+        'Purchased tier covering this server, recomputed by assignment-records.ts from seats, `preferred_tier_id`, and hardware; NULL if none.',
+      preferred_tier_id:
+        'Optional operator pick: assignment uses a spare license at this tier or the smallest tier above before the derived smallest that fits; NULL derives only.',
       is_connected:
         'Daemon liveness flag written by the cell projection on connect and disconnect; `online`, `offline` or `unknown` is derived from it and `status_changed_at`.',
       status_changed_at:
