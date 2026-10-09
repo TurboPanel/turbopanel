@@ -343,6 +343,35 @@ export function errorMessage(err: unknown): string {
  * The payload is read exactly once per processing attempt and kept in memory for
  * the side effects that need it — it is never re-read from `command`.
  */
+function managedIdFromCommandContext(context: unknown): string | null {
+  if (typeof context !== 'object' || context === null || Array.isArray(context)) {
+    return null
+  }
+  const id = (context as { managedId?: unknown }).managedId
+  return typeof id === 'string' ? id : null
+}
+
+async function failExpiredManagedApplyWhenClusterGone(
+  db: Db,
+  record: { id: string; type: string; context: unknown }
+): Promise<boolean> {
+  if (record.type !== 'managed.apply') return false
+  const managedId = managedIdFromCommandContext(record.context)
+  if (!managedId) return false
+  const [row] = await db
+    .select({ id: managed.id })
+    .from(managed)
+    .where(eq(managed.id, managedId))
+    .limit(1)
+  if (row) return false
+  await transitionCommand(db, record.id, {
+    status: 'failed',
+    error: 'Managed cluster no longer exists',
+    errorCode: 'target_gone',
+  })
+  return true
+}
+
 async function loadDispatchableRecord(
   db: Db,
   envelope: CommandEnvelope
@@ -357,6 +386,9 @@ async function loadDispatchableRecord(
   }
 
   if (record.expiresAt && Date.parse(record.expiresAt) < Date.now()) {
+    if (await failExpiredManagedApplyWhenClusterGone(db, record)) {
+      return null
+    }
     await transitionCommand(db, record.id, { status: 'timed_out' })
     await settleIngressCommandForRecovery(
       db,

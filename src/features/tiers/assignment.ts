@@ -119,14 +119,19 @@ function smallestDerivedSeat(pool: readonly PoolEntry[], need: number): PoolEntr
 function takePreferredSeat(
   pool: PoolEntry[],
   preferredTierId: string,
-  preferredRank: number
+  preferredRank: number,
+  minRank: number
 ): PoolEntry | undefined {
-  const exact = pool.find((entry) => entry.tierId === preferredTierId && entry.left > 0)
+  const exact = pool.find(
+    (entry) => entry.tierId === preferredTierId && entry.left > 0 && entry.rank >= minRank
+  )
   if (exact) {
     decrementPoolSeat(exact)
     return exact
   }
-  const above = pool.find((entry) => entry.left > 0 && entry.rank > preferredRank)
+  const above = pool.find(
+    (entry) => entry.left > 0 && entry.rank > preferredRank && entry.rank >= minRank
+  )
   if (above) {
     decrementPoolSeat(above)
     return above
@@ -156,7 +161,7 @@ function takeSeatForServer(
   const need = effectiveRequiredRank(server)
   const wantRank = server.preferredRank ?? null
   if (wantRank != null && server.preferredTierId) {
-    const preferred = takePreferredSeat(pool, server.preferredTierId, wantRank)
+    const preferred = takePreferredSeat(pool, server.preferredTierId, wantRank, need)
     if (preferred) {
       honoredPreferredPick.add(server.serverId)
       return preferred

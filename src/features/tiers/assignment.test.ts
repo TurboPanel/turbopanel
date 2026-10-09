@@ -360,6 +360,14 @@ test('swap pass never lowers coverage or places a server under its required tier
   assertEquals(swapped.byServer.get('d'), 'S3')
 })
 
+test('preferred tier does not take a spare below effectiveRequiredRank after hardware grows', () => {
+  const result = computeAssignment(purchased(1, 1, 0), [
+    server('picker', 3, '2026-09-01T00:00:00.000Z', { tierId: S1, rank: 1, label: 'S1' }),
+  ])
+  assertEquals(result.byServer.get('picker'), S3)
+  assertEquals(result.uncovered, [])
+})
+
 test('preferred tier takes a spare S2 seat before the derived S1 when both fit', () => {
   const result = computeAssignment(
     [
