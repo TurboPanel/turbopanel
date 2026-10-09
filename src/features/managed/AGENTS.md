@@ -574,9 +574,11 @@ age, not on the gate's error code, because the gate answers
 `managed_replica_not_streaming` _before_ it reads `observedAt`), the route asks
 the target's daemon for a fresh reading first (`managed-health-request`, 8s,
 `src/client/managed/health-probe.ts`, feature `managed-health-v1`) and runs the
-**unchanged** gate on it. **Fail-closed is preserved:** timeout, offline host,
-a daemon without the feature, a daemon error, a malformed reply, or a reply for
-another member all fall back to the gate on the stored observation — today's 409. `force` never probes. `GET …/managed/status?refresh=1` (the panel's
+lag gate only on an `observed` answer. Timeout, offline host, a daemon without
+the feature, a daemon error, a malformed reply, or a reply for another member
+refuses with **409** `managed_replica_live_check_failed` and a plain-words
+message (stored metadata is never enough without a live answer). `force` never
+probes. `GET …/managed/status?refresh=1` (the panel's
 Refresh) probes every **replica** in parallel (and the primary, while replicas
 exist, so its `slotRetention` is current after a Resync; not counted) and returns
 `healthRefresh: { observed, unavailable }`; a plain GET stays DB-only. The probe

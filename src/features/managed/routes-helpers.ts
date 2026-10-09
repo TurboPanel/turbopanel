@@ -1037,13 +1037,28 @@ export function evaluatePromoteLagHttpGate(
 }
 
 /**
- * Oldest replica reading an operator (non-force) promote will act on. The
- * stored reading is refreshed from the daemon first; this only matters when
- * the daemon cannot answer, and then a reading from before the last few
- * seconds proves nothing (a replication thread that stopped a moment ago
+ * Oldest replica reading an operator (non-force) promote will act on after a
+ * live `managed-health-request` answer. A stored reading from before the last
+ * few seconds proves nothing (a replication thread that stopped a moment ago
  * still looks `streaming` in an older one).
  */
 export const OPERATOR_PROMOTE_MAX_OBSERVATION_AGE_MS = 15_000
+
+/** Operator promote when the replica daemon did not return a live health probe. */
+export const MANAGED_REPLICA_LIVE_CHECK_FAILED = 'managed_replica_live_check_failed'
+
+export const MANAGED_REPLICA_LIVE_CHECK_FAILED_MESSAGE =
+  'The replica did not answer a live check, so it cannot be proven caught up. Try again, or force the promote if you accept possible data loss.'
+
+export function buildManagedReplicaLiveCheckFailedBody(): {
+  error: typeof MANAGED_REPLICA_LIVE_CHECK_FAILED
+  message: string
+} {
+  return {
+    error: MANAGED_REPLICA_LIVE_CHECK_FAILED,
+    message: MANAGED_REPLICA_LIVE_CHECK_FAILED_MESSAGE,
+  }
+}
 
 /**
  * Gate for the operator promote route: {@link evaluatePromoteLagHttpGate} on

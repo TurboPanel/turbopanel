@@ -24,9 +24,8 @@ import { loadServerStatusRecords } from '../servers/update-status.ts'
  * observation ages past the promote gate's staleness window. This asks the
  * member's daemon for a fresh reading and persists it.
  *
- * Never throws and never blocks past `timeoutMs`. Every non-`observed`
- * outcome means "keep using the stored observation" — callers (the promote
- * pre-check) fall back to today's fail-closed behaviour.
+ * Never throws and never blocks past `timeoutMs`. Operator promote requires
+ * `observed`; other callers may treat non-`observed` outcomes differently.
  */
 
 /** Promote pre-check: the operator is waiting on a button. */

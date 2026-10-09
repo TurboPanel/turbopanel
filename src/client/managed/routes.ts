@@ -151,6 +151,7 @@ import {
   evaluateManagedDatabaseDelete,
   evaluateManagedUserDropGuard,
   evaluateManagedUserRotateGuard,
+  buildManagedReplicaLiveCheckFailedBody,
   evaluateOperatorPromoteGate,
   evaluatePromoteMemberRole,
   evaluatePromoteReplicaClass,
@@ -309,11 +310,11 @@ async function loadManagedRowScope(c: Context<AppEnv>, stepUpAction?: StepUpActi
  * (`managed-health-request`, short timeout) and gates on that reading. A
  * stored reading under two minutes old still says `streaming` for a replica
  * whose replication threads stopped seconds ago, so it is never trusted on its
- * own. Fail-closed: on timeout, an offline server, a daemon without
- * `managed-health-v1`, or any error the gate runs on the stored observation,
- * which counts only while it is a few seconds old
- * (`OPERATOR_PROMOTE_MAX_OBSERVATION_AGE_MS`). `force` never probes. Automatic failover does not come
- * through here; its own event-time probe is `ha-fresh-standby.ts`.
+ * own. Non-force promotes require a fresh `observed` probe; timeout, offline,
+ * unsupported, or any other non-answer refuses with
+ * {@link MANAGED_REPLICA_LIVE_CHECK_FAILED}. `force` never probes. Automatic
+ * failover does not come through here; its own event-time probe is
+ * `ha-fresh-standby.ts`.
  */
 async function assertManagedPromoteLagAllowed(
   c: Context<AppEnv>,
@@ -327,11 +328,6 @@ async function assertManagedPromoteLagAllowed(
 ): Promise<Response | null> {
   const { member, force } = params
   let replication = serializeManagedMember(member, null).replication
-  // Always ask the daemon for a fresh reading: a stored one that is under two
-  // minutes old still says `streaming` for a replica whose replication threads
-  // stopped seconds ago, and promoting that replica loses the writes it never
-  // received. When the daemon cannot answer, only a reading a few seconds old
-  // is acted on (see `evaluateOperatorPromoteGate`).
   if (!force) {
     const probe = await probeManagedMemberHealth(db, getDaemonCellRegistry(c), {
       serverId: member.serverId,
@@ -341,7 +337,10 @@ async function assertManagedPromoteLagAllowed(
       engine: params.engine,
       timeoutMs: MANAGED_HEALTH_PROBE_PROMOTE_TIMEOUT_MS,
     })
-    if (probe.status === 'observed') replication = probe.replication
+    if (probe.status !== 'observed') {
+      return c.json(buildManagedReplicaLiveCheckFailedBody(), 409)
+    }
+    replication = probe.replication
   }
   const gate = evaluateOperatorPromoteGate(replication, force, undefined, params.engine)
   return gate !== null ? c.json({ error: gate }, 409) : null

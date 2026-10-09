@@ -47,7 +47,10 @@ import { postgresEngineSpec } from '../../features/managed/postgres.ts'
 import { POSTGRES_ALLOWED_IMAGES } from '../../features/managed/settings.ts'
 import type { ManagedEngineSpec } from '../../features/managed/types.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
-import { managedSessionPaths } from '../../features/managed/routes-helpers.ts'
+import {
+  buildManagedReplicaLiveCheckFailedBody,
+  managedSessionPaths,
+} from '../../features/managed/routes-helpers.ts'
 import { registerManagedRoutes } from './routes.ts'
 import { SERVER_OFFLINE_BODY } from './context.ts'
 
@@ -2538,7 +2541,7 @@ test('DELETE hard-deletes pending containers for environment services', async ()
   assertEquals(body.deleted, true)
 })
 
-test('POST promote returns 409 when replica lag is unknown', async () => {
+test('POST promote returns 409 when replica lag is unknown and no live probe', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
@@ -2552,11 +2555,11 @@ test('POST promote returns 409 when replica lag is unknown', async () => {
       body: JSON.stringify({}),
     }),
     409,
-    { error: 'managed_replica_not_streaming' }
+    LIVE_CHECK_FAILED
   )
 })
 
-test('POST promote returns 409 when replica health is stale', async () => {
+test('POST promote returns 409 when stored health is stale and no live probe', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
@@ -2581,7 +2584,7 @@ test('POST promote returns 409 when replica health is stale', async () => {
       body: JSON.stringify({}),
     }),
     409,
-    { error: 'managed_replica_health_stale' }
+    LIVE_CHECK_FAILED
   )
 })
 
@@ -3510,6 +3513,8 @@ test('PATCH member replica class still requires apply-ready after conversion', a
 
 const HEALTH_FEATURE = 'managed-health-v1'
 
+const LIVE_CHECK_FAILED = buildManagedReplicaLiveCheckFailedBody()
+
 /** An enrolled, online server whose stored hello advertised `features`. */
 function serverAdvertising(features: string[]) {
   return { ...applyReadyServer(true), daemon: { projection: { features } } }
@@ -3645,7 +3650,7 @@ test('POST promote fails closed when the probe times out', async () => {
     features: [HEALTH_FEATURE],
     reply: { status: 'expired' },
   })
-  await expectJson(response, 409, { error: 'managed_replica_health_stale' })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
   assertEquals(sent.length, 1)
 })
 
@@ -3654,7 +3659,7 @@ test('POST promote fails closed when the daemon cannot read health', async () =>
     features: [HEALTH_FEATURE],
     reply: { status: 'failed', error: 'engine not running' },
   })
-  await expectJson(response, 409, { error: 'managed_replica_health_stale' })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
 })
 
 test('POST promote sends no probe to a daemon without managed-health-v1', async () => {
@@ -3662,7 +3667,7 @@ test('POST promote sends no probe to a daemon without managed-health-v1', async 
     features: ['update-progress-v1'],
     reply: { status: 'done', result: streamingHealth() },
   })
-  await expectJson(response, 409, { error: 'managed_replica_health_stale' })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
   assertEquals(sent.length, 0)
 })
 
@@ -3710,7 +3715,37 @@ test('POST promote does not act on a minute-old stored reading when the daemon c
     },
     reply: { status: 'expired' },
   })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
+})
+
+test('POST promote does not trust a recent stored reading when the live probe fails', async () => {
+  const { response, sent } = await promoteVia({
+    features: [HEALTH_FEATURE],
+    metadata: {
+      replication: {
+        state: 'streaming',
+        observedAt: new Date(Date.now() - 3_000).toISOString(),
+        lagBytes: 0,
+        receivedLsn: '0/3000100',
+        replayLsn: '0/3000100',
+      },
+    },
+    reply: { status: 'expired' },
+  })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
+  assertEquals(sent.length, 1)
+})
+
+test('POST promote still returns health_stale when the live probe answers with an old reading', async () => {
+  const { response, sent } = await promoteVia({
+    features: [HEALTH_FEATURE],
+    reply: {
+      status: 'done',
+      result: streamingHealth({ observedAt: '2020-01-01T00:00:00.000Z' }),
+    },
+  })
   await expectJson(response, 409, { error: 'managed_replica_health_stale' })
+  assertEquals(sent.length, 1)
 })
 
 test('POST promote with force never probes', async () => {

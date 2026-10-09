@@ -1131,6 +1131,18 @@ export const managedSchemas = {
   ManagedReplicaNotStreamingError: errorSchema('managed_replica_not_streaming'),
   ManagedReplicaLaggingError: errorSchema('managed_replica_lagging'),
   ManagedReplicaHealthStaleError: errorSchema('managed_replica_health_stale'),
+  ManagedReplicaLiveCheckFailedError: {
+    type: 'object',
+    required: ['error', 'message'],
+    properties: {
+      error: { type: 'string', const: 'managed_replica_live_check_failed' },
+      message: {
+        type: 'string',
+        description:
+          'The replica did not answer a live check, so it cannot be proven caught up. Try again, or force the promote if you accept possible data loss.',
+      },
+    },
+  },
 }
 
 export const managedPaths = {
@@ -2077,7 +2089,7 @@ export const managedPaths = {
         },
         409: {
           description:
-            'managed_replica_not_streaming / managed_replica_lagging / managed_replica_health_stale / managed_busy / server_offline',
+            'managed_replica_not_streaming / managed_replica_lagging / managed_replica_health_stale / managed_replica_live_check_failed / managed_busy / server_offline',
           content: {
             'application/json': {
               schema: {
@@ -2088,6 +2100,9 @@ export const managedPaths = {
                   { $ref: '#/components/schemas/ManagedReplicaLaggingError' },
                   {
                     $ref: '#/components/schemas/ManagedReplicaHealthStaleError',
+                  },
+                  {
+                    $ref: '#/components/schemas/ManagedReplicaLiveCheckFailedError',
                   },
                   { $ref: '#/components/schemas/ManagedBusyError' },
                   { $ref: '#/components/schemas/ServerOfflineError' },
