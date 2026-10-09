@@ -3,11 +3,11 @@
  * Mock queries ignore `where`; in-memory org filters must still drop foreign rows.
  */
 
-import { assertEquals } from "@std/assert";
-import { getTableName } from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
-import type { CommandQueue } from "../../features/commands/queue.ts";
-import type { DerivedSecretsConfig, SecretsConfig } from "../../lib/secrets/secrets.ts";
+import { assertEquals } from '@std/assert'
+import { getTableName } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
+import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
   enumerateOrganizationRotationTargets,
   parseCaRotationResults,
@@ -15,7 +15,7 @@ import {
   parseResumeAfterManagedId,
   runOrganizationCaRotationFanout,
   selectManagedBatchForRotation,
-} from "./changeover-fanout.ts";
+} from './changeover-fanout.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -23,37 +23,37 @@ import {
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno);
+const test = Deno.test.bind(Deno)
 
-const ORG_A = "11111111-1111-4111-8111-111111111111";
-const ORG_B = "22222222-2222-4222-8222-222222222222";
-const SERVER_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const SERVER_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-const MANAGED_A = "aaaaaaaa-aaaa-4aaa-8aaa-000000000001";
-const MANAGED_B = "bbbbbbbb-bbbb-4bbb-8bbb-000000000001";
+const ORG_A = '11111111-1111-4111-8111-111111111111'
+const ORG_B = '22222222-2222-4222-8222-222222222222'
+const SERVER_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const SERVER_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+const MANAGED_A = 'aaaaaaaa-aaaa-4aaa-8aaa-000000000001'
+const MANAGED_B = 'bbbbbbbb-bbbb-4bbb-8bbb-000000000001'
 
 type QueryRows = {
-  memberNodes: Record<string, unknown>[];
-  ownedManaged: Record<string, unknown>[];
-  ownedClusterMembers: Record<string, unknown>[];
-  consumers: Record<string, unknown>[];
-  principals?: Record<string, unknown>[];
-  bindingIds?: Record<string, unknown>[];
-  materializeBindings?: Record<string, unknown>[];
+  memberNodes: Record<string, unknown>[]
+  ownedManaged: Record<string, unknown>[]
+  ownedClusterMembers: Record<string, unknown>[]
+  consumers: Record<string, unknown>[]
+  principals?: Record<string, unknown>[]
+  bindingIds?: Record<string, unknown>[]
+  materializeBindings?: Record<string, unknown>[]
   /** After the first managed listing query, return no rows (simulates delete before load). */
-  dropManagedRowsAfterFirstSelect?: boolean;
-};
+  dropManagedRowsAfterFirstSelect?: boolean
+}
 
 function tableName(value: unknown): string {
   try {
-    return getTableName(value as never);
+    return getTableName(value as never)
   } catch {
-    return "";
+    return ''
   }
 }
 
 function rotationTargetsDb(rows: QueryRows): Db {
-  let managedSelectCount = 0;
+  let managedSelectCount = 0
   return {
     update: () => ({
       set: () => ({
@@ -64,136 +64,127 @@ function rotationTargetsDb(rows: QueryRows): Db {
     }),
     select: () => ({
       from: (table: unknown) => {
-        const joinNames: string[] = [];
+        const joinNames: string[] = []
         const resolveRows = () => {
-          const fromName = tableName(table);
-          const joinName = joinNames[0] ?? "";
-          if (fromName === "replica" && joinName === "server") {
-            return rows.memberNodes;
+          const fromName = tableName(table)
+          const joinName = joinNames[0] ?? ''
+          if (fromName === 'replica' && joinName === 'server') {
+            return rows.memberNodes
           }
-          if (fromName === "replica" && joinName === "managed") {
-            return rows.ownedClusterMembers;
+          if (fromName === 'replica' && joinName === 'managed') {
+            return rows.ownedClusterMembers
           }
-          if (fromName === "managed") {
-            managedSelectCount += 1;
+          if (fromName === 'managed') {
+            managedSelectCount += 1
             if (rows.dropManagedRowsAfterFirstSelect && managedSelectCount > 1) {
-              return [];
+              return []
             }
-            return rows.ownedManaged;
+            return rows.ownedManaged
           }
-          if (fromName === "principal") return rows.principals ?? [];
-          if (fromName === "binding") {
-            if (joinNames.length === 0) return rows.bindingIds ?? [];
-            if (joinNames.includes("task")) return rows.consumers;
-            if (joinNames.includes("organization")) {
-              return rows.materializeBindings ?? [];
+          if (fromName === 'principal') return rows.principals ?? []
+          if (fromName === 'binding') {
+            if (joinNames.length === 0) return rows.bindingIds ?? []
+            if (joinNames.includes('task')) return rows.consumers
+            if (joinNames.includes('organization')) {
+              return rows.materializeBindings ?? []
             }
-            return rows.consumers;
+            return rows.consumers
           }
-          return [];
-        };
+          return []
+        }
         const self = {
           innerJoin: (joinTable: unknown) => {
-            joinNames.push(tableName(joinTable));
-            return self;
+            joinNames.push(tableName(joinTable))
+            return self
           },
           leftJoin: (joinTable: unknown) => {
-            joinNames.push(tableName(joinTable));
-            return self;
+            joinNames.push(tableName(joinTable))
+            return self
           },
           where: () => self,
           limit: () => self,
           orderBy: () => Promise.resolve(resolveRows()),
           then: (
             onFulfilled?: (value: Record<string, unknown>[]) => unknown,
-            onRejected?: (reason: unknown) => unknown,
+            onRejected?: (reason: unknown) => unknown
           ) => Promise.resolve(resolveRows()).then(onFulfilled, onRejected),
-        };
-        return self;
+        }
+        return self
       },
     }),
-  } as unknown as Db;
+  } as unknown as Db
 }
 
-test("selectManagedBatchForRotation pages by id and reports completion", () => {
-  const ids = ["a", "b", "c", "d"];
+test('selectManagedBatchForRotation pages by id and reports completion', () => {
+  const ids = ['a', 'b', 'c', 'd']
   assertEquals(selectManagedBatchForRotation(ids, undefined, 2), {
-    batch: ["a", "b"],
-    nextCursor: "b",
+    batch: ['a', 'b'],
+    nextCursor: 'b',
     complete: false,
-  });
-  assertEquals(selectManagedBatchForRotation(ids, "b", 2), {
-    batch: ["c", "d"],
+  })
+  assertEquals(selectManagedBatchForRotation(ids, 'b', 2), {
+    batch: ['c', 'd'],
     nextCursor: null,
     complete: true,
-  });
+  })
   assertEquals(selectManagedBatchForRotation([], undefined, 10), {
     batch: [],
     nextCursor: null,
     complete: true,
-  });
-});
+  })
+})
 
-test("parseCaRotationResults and parseResumeAfterManagedId ignore malformed entries", () => {
-  assertEquals(parseCaRotationResults(null), []);
+test('parseCaRotationResults and parseResumeAfterManagedId ignore malformed entries', () => {
+  assertEquals(parseCaRotationResults(null), [])
   assertEquals(
     parseCaRotationResults([
-      { serverId: "s1", kind: "ingress", status: "queued", commandId: "c1" },
+      { serverId: 's1', kind: 'ingress', status: 'queued', commandId: 'c1' },
       {
-        serverId: "s2",
-        kind: "binding",
-        status: "failed",
-        error: "binding_ca_unavailable",
+        serverId: 's2',
+        kind: 'binding',
+        status: 'failed',
+        error: 'binding_ca_unavailable',
       },
-      { serverId: "s2", kind: "nope", status: "queued" },
-      { status: "queued" },
+      { serverId: 's2', kind: 'nope', status: 'queued' },
+      { status: 'queued' },
     ]),
     [
-      { serverId: "s1", kind: "ingress", status: "queued", commandId: "c1" },
+      { serverId: 's1', kind: 'ingress', status: 'queued', commandId: 'c1' },
       {
-        serverId: "s2",
-        kind: "binding",
-        status: "failed",
-        error: "binding_ca_unavailable",
+        serverId: 's2',
+        kind: 'binding',
+        status: 'failed',
+        error: 'binding_ca_unavailable',
       },
-    ],
-  );
-  assertEquals(
-    parseResumeAfterManagedId({ resumeAfterManagedId: "mid-1" }),
-    "mid-1",
-  );
-  assertEquals(
-    parseResumeAfterManagedId({ resumeAfterManagedId: "" }),
-    undefined,
-  );
-  assertEquals(parseResumeAfterManagedId(null), undefined);
+    ]
+  )
+  assertEquals(parseResumeAfterManagedId({ resumeAfterManagedId: 'mid-1' }), 'mid-1')
+  assertEquals(parseResumeAfterManagedId({ resumeAfterManagedId: '' }), undefined)
+  assertEquals(parseResumeAfterManagedId(null), undefined)
   assertEquals(
     parseNeedsRedeploy({
-      needsRedeploy: [
-        { serverId: "s1", environmentId: "e1" },
-        { serverId: 1 },
-      ],
+      needsRedeploy: [{ serverId: 's1', environmentId: 'e1' }, { serverId: 1 }],
     }),
-    [{ serverId: "s1", environmentId: "e1" }],
-  );
-  assertEquals(parseNeedsRedeploy(null), []);
-});
+    [{ serverId: 's1', environmentId: 'e1' }]
+  )
+  assertEquals(parseNeedsRedeploy(null), [])
+})
 
-test("enumerateOrganizationRotationTargets drops blank member ids", async () => {
+test('enumerateOrganizationRotationTargets drops blank member ids', async () => {
   const db = rotationTargetsDb({
     memberNodes: [
-      { serverId: "", managedId: MANAGED_A, serverOrganizationId: ORG_A },
-      { serverId: SERVER_A, managedId: "", serverOrganizationId: ORG_A },
+      { serverId: '', managedId: MANAGED_A, serverOrganizationId: ORG_A },
+      { serverId: SERVER_A, managedId: '', serverOrganizationId: ORG_A },
     ],
     ownedManaged: [],
     ownedClusterMembers: [],
     consumers: [],
-  });
-  const targets = await enumerateOrganizationRotationTargets(db, ORG_A);
-  assertEquals(targets.members, []);
-  assertEquals(targets.managedIds, []);
-  assertEquals(targets.ingressServerIds, []);
-});
+  })
+  const targets = await enumerateOrganizationRotationTargets(db, ORG_A)
+  assertEquals(targets.members, [])
+  assertEquals(targets.managedIds, [])
+  assertEquals(targets.ingressServerIds, [])
+})
 
 test("enumerateOrganizationRotationTargets never returns another org's node or managed ids", async () => {
   const db = rotationTargetsDb({
@@ -233,25 +224,26 @@ test("enumerateOrganizationRotationTargets never returns another org's node or m
         workspaceOrganizationId: ORG_B,
       },
     ],
-  });
+  })
 
-  const targets = await enumerateOrganizationRotationTargets(db, ORG_A);
-  assertEquals(targets.managedIds, [MANAGED_A]);
-  assertEquals(targets.ingressServerIds, [SERVER_A]);
-  assertEquals(targets.members.every((row) => row.serverId !== SERVER_B), true);
+  const targets = await enumerateOrganizationRotationTargets(db, ORG_A)
+  assertEquals(targets.managedIds, [MANAGED_A])
+  assertEquals(targets.ingressServerIds, [SERVER_A])
+  assertEquals(
+    targets.members.every((row) => row.serverId !== SERVER_B),
+    true
+  )
   assertEquals(
     targets.members.every((row) => row.managedId !== MANAGED_B),
-    true,
-  );
+    true
+  )
   assertEquals(
-    targets.members.some((row) =>
-      row.serverId === SERVER_A && row.managedId === MANAGED_A
-    ),
-    true,
-  );
-});
+    targets.members.some((row) => row.serverId === SERVER_A && row.managedId === MANAGED_A),
+    true
+  )
+})
 
-test("runOrganizationCaRotationFanout records per-member target_gone when the managed row disappeared", async () => {
+test('runOrganizationCaRotationFanout records per-member target_gone when the managed row disappeared', async () => {
   const db = rotationTargetsDb({
     memberNodes: [],
     ownedManaged: [{ id: MANAGED_A, workspaceOrganizationId: ORG_A }],
@@ -264,7 +256,7 @@ test("runOrganizationCaRotationFanout records per-member target_gone when the ma
     ],
     consumers: [],
     dropManagedRowsAfterFirstSelect: true,
-  });
+  })
 
   const outcome = await runOrganizationCaRotationFanout(
     {} as never,
@@ -274,26 +266,26 @@ test("runOrganizationCaRotationFanout records per-member target_gone when the ma
       organizationId: ORG_A,
       secretsConfig: {} as SecretsConfig,
       dataEncryptionSecrets: {} as DerivedSecretsConfig,
-      actorType: "user",
-      actorId: "user-1",
-      rotationId: "11111111-1111-4111-8111-111111111111",
-    },
-  );
-  const applyRows = outcome.results.filter((row) => row.kind === "apply");
-  assertEquals(applyRows.length, 1);
-  assertEquals(applyRows[0]?.managedId, MANAGED_A);
-  assertEquals(applyRows[0]?.serverId, SERVER_A);
-  assertEquals(applyRows[0]?.status, "skipped");
-  assertEquals(applyRows[0]?.error, "target_gone");
-});
+      actorType: 'user',
+      actorId: 'user-1',
+      rotationId: '11111111-1111-4111-8111-111111111111',
+    }
+  )
+  const applyRows = outcome.results.filter((row) => row.kind === 'apply')
+  assertEquals(applyRows.length, 1)
+  assertEquals(applyRows[0]?.managedId, MANAGED_A)
+  assertEquals(applyRows[0]?.serverId, SERVER_A)
+  assertEquals(applyRows[0]?.status, 'skipped')
+  assertEquals(applyRows[0]?.error, 'target_gone')
+})
 
-test("runOrganizationCaRotationFanout completes with empty results when the org has no targets", async () => {
+test('runOrganizationCaRotationFanout completes with empty results when the org has no targets', async () => {
   const db = rotationTargetsDb({
     memberNodes: [],
     ownedManaged: [],
     ownedClusterMembers: [],
     consumers: [],
-  });
+  })
   const outcome = await runOrganizationCaRotationFanout(
     {} as never,
     db,
@@ -302,32 +294,34 @@ test("runOrganizationCaRotationFanout completes with empty results when the org 
       organizationId: ORG_A,
       secretsConfig: {} as SecretsConfig,
       dataEncryptionSecrets: {} as DerivedSecretsConfig,
-      actorType: "user",
-      actorId: "user-1",
-    },
-  );
-  assertEquals(outcome.complete, true);
-  assertEquals(outcome.results, []);
-  assertEquals(outcome.needsRedeploy, []);
-  assertEquals(outcome.cursor, null);
-});
+      actorType: 'user',
+      actorId: 'user-1',
+    }
+  )
+  assertEquals(outcome.complete, true)
+  assertEquals(outcome.results, [])
+  assertEquals(outcome.needsRedeploy, [])
+  assertEquals(outcome.cursor, null)
+})
 
-test("runOrganizationCaRotationFanout records binding rematerialize failure and skips needsRedeploy", async () => {
+test('runOrganizationCaRotationFanout records binding rematerialize failure and skips needsRedeploy', async () => {
   const db = rotationTargetsDb({
     memberNodes: [],
-    ownedManaged: [{
-      id: MANAGED_A,
-      workspaceOrganizationId: ORG_A,
-      environmentId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
-      serverId: SERVER_A,
-      engine: null,
-    }],
+    ownedManaged: [
+      {
+        id: MANAGED_A,
+        workspaceOrganizationId: ORG_A,
+        environmentId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        serverId: SERVER_A,
+        engine: null,
+      },
+    ],
     ownedClusterMembers: [],
     consumers: [],
-    principals: [{ id: "p1" }],
-    bindingIds: [{ id: "b1" }],
-    materializeBindings: [{ id: "b1" }],
-  });
+    principals: [{ id: 'p1' }],
+    bindingIds: [{ id: 'b1' }],
+    materializeBindings: [{ id: 'b1' }],
+  })
   const outcome = await runOrganizationCaRotationFanout(
     {} as never,
     db,
@@ -336,19 +330,20 @@ test("runOrganizationCaRotationFanout records binding rematerialize failure and 
       organizationId: ORG_A,
       secretsConfig: {} as SecretsConfig,
       dataEncryptionSecrets: {} as DerivedSecretsConfig,
-      actorType: "user",
-      actorId: "user-1",
-    },
-  );
-  assertEquals(outcome.complete, false);
-  assertEquals(outcome.needsRedeploy, []);
+      actorType: 'user',
+      actorId: 'user-1',
+    }
+  )
+  assertEquals(outcome.complete, false)
+  assertEquals(outcome.needsRedeploy, [])
   assertEquals(
-    outcome.results.some((row) =>
-      row.kind === "binding" &&
-      row.managedId === MANAGED_A &&
-      row.status === "failed" &&
-      row.error === "binding_principal_invalid"
+    outcome.results.some(
+      (row) =>
+        row.kind === 'binding' &&
+        row.managedId === MANAGED_A &&
+        row.status === 'failed' &&
+        row.error === 'binding_principal_invalid'
     ),
-    true,
-  );
-});
+    true
+  )
+})
