@@ -1,6 +1,6 @@
 import {
-  HOSTNAME_MAX_LENGTH,
   type HostingWwwMode,
+  HOSTNAME_MAX_LENGTH,
   isHostingWwwMode,
   isValidHostname,
 } from './hostname.ts'
@@ -3602,7 +3602,9 @@ const NATIVE_APP_MAX_VARIABLES = 256
 const NATIVE_APP_MAX_VARIABLE_VALUE = 65_536
 
 function parseNativeAppVariable(value: unknown): EnvironmentDeployNativeAppVariable {
-  if (!isRecord(value)) throw new Error('Invalid nativeAppServices variables entry')
+  if (!isRecord(value)) {
+    throw new Error('Invalid nativeAppServices variables entry')
+  }
   if (typeof value.name !== 'string' || !NATIVE_APP_VARIABLE_NAME_RE.test(value.name)) {
     throw new Error('Invalid nativeAppServices variables name')
   }
@@ -5139,12 +5141,15 @@ export type ManagedLifecyclePayload = {
    * ignore it; older control planes omit it.
    */
   demoted?: boolean
+  captureSwitchoverGtid?: boolean
+  reactivateAfterSwitchoverAbort?: boolean
 }
 
 export type ManagedLifecycleCommandResult = {
   status: string
   summary?: string
   member?: ManagedMemberObservedResult
+  switchoverPrimaryExecutedGtidSet?: string
 }
 
 export type ManagedDestroyCommandPayload = {
@@ -5191,6 +5196,8 @@ export type ManagedPromoteCommandPayload = {
    * postgres on the daemon).
    */
   engine?: ManagedEngineCode
+  requiredExecutedGtidSet?: string
+  gtidWaitTimeoutSeconds?: number
   /**
    * Set when the control plane re-queues a promote after a daemon restart
    * (`resumeInterruptedPromote`). The daemon may treat an already-writable
@@ -5428,7 +5435,7 @@ export type ManagedHaReconcileCommandResult = {
   containers?: EnvironmentDeployContainer[]
 }
 
-export type ManagedHaFailoverPhase = 'drain' | 'recover' | 'repoint'
+export type ManagedHaFailoverPhase = 'drain' | 'undrain' | 'recover' | 'repoint'
 
 /** Must stay in sync with the daemon `managed.ha.failover` shape. */
 export type ManagedHaFailoverCommandPayload = {
@@ -5451,6 +5458,8 @@ export type ManagedHaFailoverCommandPayload = {
    * (`tp_member_<ordinal>`). Max 32; each `/^[a-z0-9_]{1,63}$/`.
    */
   ensureSlots?: string[]
+  requiredExecutedGtidSet?: string
+  gtidWaitTimeoutSeconds?: number
 }
 
 export type ManagedHaFailoverCommandResult = {
@@ -5840,7 +5849,9 @@ export function parseManagedSlotRetention(value: unknown): ManagedSlotRetention 
   const retention: ManagedSlotRetention = {
     state: value.state as ManagedSlotRetention['state'],
   }
-  if (isString(value.slot) && value.slot.length <= 64) retention.slot = value.slot
+  if (isString(value.slot) && value.slot.length <= 64) {
+    retention.slot = value.slot
+  }
   if (isString(value.walStatus) && value.walStatus.length <= 32) {
     retention.walStatus = value.walStatus
   }
@@ -5872,7 +5883,9 @@ function withStandbyPositions(
   }
   if (isGtidText(value.receivedGtid)) health.receivedGtid = value.receivedGtid
   if (isGtidText(value.executedGtid)) health.executedGtid = value.executedGtid
-  if (typeof value.fullyApplied === 'boolean') health.fullyApplied = value.fullyApplied
+  if (typeof value.fullyApplied === 'boolean') {
+    health.fullyApplied = value.fullyApplied
+  }
   return health
 }
 
@@ -6224,6 +6237,12 @@ export function parseManagedApplyResult(value: unknown): ManagedApplyCommandResu
   return result
 }
 
+function parseOptionalLifecycleTrueOnly(value: unknown): true | undefined {
+  if (value === undefined) return undefined
+  if (value === true) return true
+  throw new Error('Invalid managed.lifecycle payload')
+}
+
 export function parseManagedLifecyclePayload(value: unknown): ManagedLifecyclePayload {
   if (!isRecord(value)) {
     throw new Error('Invalid managed.lifecycle payload')
@@ -6258,8 +6277,12 @@ export function parseManagedLifecyclePayload(value: unknown): ManagedLifecyclePa
     }
     payload.role = value.role
   }
-  if (value.demoted === true) {
-    payload.demoted = true
+  if (value.demoted === true) payload.demoted = true
+  if (parseOptionalLifecycleTrueOnly(value.captureSwitchoverGtid)) {
+    payload.captureSwitchoverGtid = true
+  }
+  if (parseOptionalLifecycleTrueOnly(value.reactivateAfterSwitchoverAbort)) {
+    payload.reactivateAfterSwitchoverAbort = true
   }
   return payload
 }
@@ -6274,6 +6297,14 @@ export function parseManagedLifecycleResult(value: unknown): ManagedLifecycleCom
   if (isString(value.summary)) result.summary = value.summary
   const member = parseManagedMemberObservedResult(value.member)
   if (member !== undefined) result.member = member
+  if (isString(value.switchoverPrimaryExecutedGtidSet)) {
+    if (
+      value.switchoverPrimaryExecutedGtidSet.length > 0 &&
+      value.switchoverPrimaryExecutedGtidSet.length <= 4096
+    ) {
+      result.switchoverPrimaryExecutedGtidSet = value.switchoverPrimaryExecutedGtidSet
+    }
+  }
   return result
 }
 
@@ -6335,6 +6366,44 @@ export function parseManagedDestroyResult(value: unknown): ManagedDestroyCommand
   return result
 }
 
+function parseManagedPromoteSwitchoverCatchupFields(
+  value: Record<string, unknown>,
+  payload: ManagedPromoteCommandPayload
+): void {
+  if (value.requiredExecutedGtidSet !== undefined) {
+    if (
+      !isString(value.requiredExecutedGtidSet) ||
+      value.requiredExecutedGtidSet.length === 0 ||
+      value.requiredExecutedGtidSet.length > 4096
+    ) {
+      throw new Error('Invalid managed.promote payload')
+    }
+    payload.requiredExecutedGtidSet = value.requiredExecutedGtidSet
+  }
+  if (value.gtidWaitTimeoutSeconds !== undefined) {
+    if (
+      typeof value.gtidWaitTimeoutSeconds !== 'number' ||
+      !Number.isInteger(value.gtidWaitTimeoutSeconds) ||
+      value.gtidWaitTimeoutSeconds < 1 ||
+      value.gtidWaitTimeoutSeconds > 600
+    ) {
+      throw new Error('Invalid managed.promote payload')
+    }
+    payload.gtidWaitTimeoutSeconds = value.gtidWaitTimeoutSeconds
+  }
+}
+
+function parseManagedPromoteResumeField(
+  value: Record<string, unknown>,
+  payload: ManagedPromoteCommandPayload
+): void {
+  if (value.resume === undefined) return
+  if (value.resume !== true) {
+    throw new Error('Invalid managed.promote payload')
+  }
+  payload.resume = true
+}
+
 export function parseManagedPromotePayload(value: unknown): ManagedPromoteCommandPayload {
   if (!isRecord(value)) {
     throw new Error('Invalid managed.promote payload')
@@ -6363,12 +6432,8 @@ export function parseManagedPromotePayload(value: unknown): ManagedPromoteComman
     }
     payload.engine = value.engine
   }
-  if (value.resume !== undefined) {
-    if (value.resume !== true) {
-      throw new Error('Invalid managed.promote payload')
-    }
-    payload.resume = true
-  }
+  parseManagedPromoteSwitchoverCatchupFields(value, payload)
+  parseManagedPromoteResumeField(value, payload)
   return payload
 }
 
@@ -7428,7 +7493,7 @@ export function parseManagedIngressReconcileResult(
 }
 
 const HA_PROMOTION_RULES = new Set<string>([HA_PROMOTION_RULE_PREFER, HA_PROMOTION_RULE_MUST_NOT])
-const HA_FAILOVER_PHASES = new Set<string>(['drain', 'recover', 'repoint'])
+const HA_FAILOVER_PHASES = new Set<string>(['drain', 'undrain', 'recover', 'repoint'])
 const HA_FAILOVER_SLOT_RE = /^[a-z0-9_]{1,63}$/
 const MAX_HA_FAILOVER_ENSURE_SLOTS = 32
 const MAX_HA_CLUSTERS = 64
@@ -7720,8 +7785,28 @@ export function parseManagedHaFailoverPayload(value: unknown): ManagedHaFailover
       targetPort: parseOptionalManagedHaFailoverPort(value.targetPort),
       targetHostaddr: parseOptionalManagedHaFailoverHost(value.targetHostaddr),
       ensureSlots: parseOptionalManagedHaFailoverEnsureSlots(value.ensureSlots),
+      requiredExecutedGtidSet: parseOptionalManagedHaFailoverGtidSet(value.requiredExecutedGtidSet),
+      gtidWaitTimeoutSeconds: parseOptionalManagedHaFailoverGtidWaitSeconds(
+        value.gtidWaitTimeoutSeconds
+      ),
     }),
   }
+}
+
+function parseOptionalManagedHaFailoverGtidSet(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (!isString(value) || value.length === 0 || value.length > 4096) {
+    throw new TypeError('Invalid managed.ha.failover payload')
+  }
+  return value
+}
+
+function parseOptionalManagedHaFailoverGtidWaitSeconds(value: unknown): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 600) {
+    throw new TypeError('Invalid managed.ha.failover payload')
+  }
+  return value
 }
 
 /** Must stay in sync with the daemon `managed.ha.failover` result parser. */

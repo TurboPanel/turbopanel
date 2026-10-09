@@ -407,6 +407,35 @@ test('evaluatePromoteLagHttpGate honors force bypass', () => {
   )
 })
 
+test('evaluateOperatorPromoteGate requires fullyApplied for mysql-family engines', () => {
+  const fresh = {
+    state: 'streaming',
+    lagBytes: 0,
+    lagSeconds: 0,
+    observedAt: '2026-08-10T12:00:00.000Z',
+    fullyApplied: false,
+  }
+  const now = Date.parse('2026-08-10T12:00:01.000Z')
+  assertEquals(
+    evaluateOperatorPromoteGate(
+      { ...fresh, receivedLsn: '0/100', replayLsn: '0/100' },
+      false,
+      now,
+      'postgres'
+    ),
+    null
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate(fresh, false, now, 'mariadb'),
+    'managed_replica_not_fully_applied'
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...fresh, fullyApplied: true }, false, now, 'mysql'),
+    null
+  )
+  assertEquals(evaluateOperatorPromoteGate(fresh, true, now, 'mariadb'), null)
+})
+
 test('pickPrimaryCommandResult and queued response builders', () => {
   assertEquals(pickPrimaryCommandResult([]), undefined)
   assertEquals(
@@ -753,11 +782,11 @@ test('evaluateOperatorPromoteGate refuses a replica that has not applied what it
   )
   assertEquals(
     evaluateOperatorPromoteGate({ ...base, fullyApplied: false }, false, now, mysql),
-    'managed_replica_lagging'
+    'managed_replica_not_fully_applied'
   )
   assertEquals(
     evaluateOperatorPromoteGate({ ...base }, false, now, mysql),
-    'managed_replica_lagging'
+    'managed_replica_not_fully_applied'
   )
   assertEquals(
     evaluateOperatorPromoteGate({ ...base, state: 'reconnecting' }, false, now, mysql),

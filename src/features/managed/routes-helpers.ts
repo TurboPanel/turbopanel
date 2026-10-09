@@ -1031,7 +1031,8 @@ export function evaluatePromoteLagHttpGate(
   | null
   | 'managed_replica_not_streaming'
   | 'managed_replica_lagging'
-  | 'managed_replica_health_stale' {
+  | 'managed_replica_health_stale'
+  | 'managed_replica_not_fully_applied' {
   if (force) return null
   return evaluateManagedPromoteLagGate(replication, nowMs)
 }
@@ -1076,7 +1077,8 @@ export function evaluateOperatorPromoteGate(
   | null
   | 'managed_replica_not_streaming'
   | 'managed_replica_lagging'
-  | 'managed_replica_health_stale' {
+  | 'managed_replica_health_stale'
+  | 'managed_replica_not_fully_applied' {
   if (force) return null
   const gate = evaluateManagedPromoteLagGate(replication, nowMs, {
     staleMs: OPERATOR_PROMOTE_MAX_OBSERVATION_AGE_MS,
@@ -1093,7 +1095,7 @@ export function evaluateOperatorPromoteGate(
     return null
   }
   if (isMysqlFamilyEngine(engine) && replication.fullyApplied !== true) {
-    return 'managed_replica_lagging'
+    return 'managed_replica_not_fully_applied'
   }
   return null
 }

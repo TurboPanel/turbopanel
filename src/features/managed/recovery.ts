@@ -178,6 +178,11 @@ export type RecoveryMetadata = {
    */
   needsOperator?: boolean
   failedReason?: string
+  /**
+   * MySQL-family switchover: final GTID position captured when the old primary
+   * was quiesced before fence stop. The promotion target must apply it first.
+   */
+  switchoverRequiredGtidSet?: string
 }
 
 export type RecoveryRecord = {
@@ -283,6 +288,11 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   setIfPresent(metadata, 'stale', optionalBoolean(value.stale))
   setIfPresent(metadata, 'needsOperator', optionalBoolean(value.needsOperator))
   setIfPresent(metadata, 'failedReason', optionalString(value.failedReason))
+  setIfPresent(
+    metadata,
+    'switchoverRequiredGtidSet',
+    optionalString(value.switchoverRequiredGtidSet)
+  )
   return metadata
 }
 
