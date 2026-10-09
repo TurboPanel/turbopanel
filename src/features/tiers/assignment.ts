@@ -147,6 +147,26 @@ function recordPickUnfulfilled(
   }
 }
 
+function takeSeatForServer(
+  pool: PoolEntry[],
+  server: AssignableServer,
+  pickUnfulfilled: Map<string, string>
+): PoolEntry | undefined {
+  const need = effectiveRequiredRank(server)
+  const wantRank = server.preferredRank ?? null
+  if (wantRank != null && server.preferredTierId) {
+    const preferred = takePreferredSeat(pool, server.preferredTierId, wantRank)
+    if (preferred) return preferred
+    const derived = smallestDerivedSeat(pool, need)
+    if (derived) decrementPoolSeat(derived)
+    recordPickUnfulfilled(pickUnfulfilled, server, derived?.rank ?? null)
+    return derived
+  }
+  const derived = smallestDerivedSeat(pool, need)
+  if (derived) decrementPoolSeat(derived)
+  return derived
+}
+
 export function computeAssignment(
   quantities: readonly TierQuantity[],
   servers: readonly AssignableServer[]
@@ -162,20 +182,8 @@ export function computeAssignment(
   const uncovered: string[] = []
   const ordered = sortByBindOrder(servers)
   for (const server of ordered) {
-    const need = effectiveRequiredRank(server)
     const wantRank = server.preferredRank ?? null
-    let slot: PoolEntry | undefined
-    if (wantRank != null && server.preferredTierId) {
-      slot = takePreferredSeat(pool, server.preferredTierId, wantRank)
-      if (!slot) {
-        slot = smallestDerivedSeat(pool, need)
-        if (slot) decrementPoolSeat(slot)
-        recordPickUnfulfilled(pickUnfulfilled, server, slot?.rank ?? null)
-      }
-    } else {
-      slot = smallestDerivedSeat(pool, need)
-      if (slot) decrementPoolSeat(slot)
-    }
+    const slot = takeSeatForServer(pool, server, pickUnfulfilled)
     if (slot) {
       byServer.set(server.serverId, slot.tierId)
       placed.set(server.serverId, { tierId: slot.tierId, rank: slot.rank })

@@ -4,9 +4,9 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertOrgOwnerOr403 } from '../authz/index.ts'
 import { recordAuditAndNotify } from '../../features/notifications/audit-bridge.ts'
-import { setServerPreferredTier } from '../../features/tiers/server-preferred-tier.ts'
 import {
   loadOrganizationTierSpare,
+  setServerPreferredTier,
   tierPickNoticeForServer,
 } from '../../features/tiers/server-preferred-tier.ts'
 import { withTierPlacementExtras } from '../../features/tiers/tier-enforcement.ts'
@@ -14,12 +14,14 @@ import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { getDb } from '../../db/connection.ts'
 import { getOrgId, parseJsonBody } from '../shared.ts'
 
-function parseTierIdBody(body: unknown): string | null | 'invalid' {
-  if (body === null || typeof body !== 'object') return 'invalid'
+type ParsedTierIdBody = Readonly<{ ok: true; tierId: string | null }> | Readonly<{ ok: false }>
+
+function parseTierIdBody(body: unknown): ParsedTierIdBody {
+  if (body === null || typeof body !== 'object') return { ok: false }
   const tierId = (body as { tierId?: unknown }).tierId
-  if (tierId === null) return null
-  if (typeof tierId !== 'string' || tierId.length === 0) return 'invalid'
-  return tierId
+  if (tierId === null) return { ok: true, tierId: null }
+  if (typeof tierId !== 'string' || tierId.length === 0) return { ok: false }
+  return { ok: true, tierId }
 }
 
 export function registerServerLicenseTierRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -50,12 +52,12 @@ export function registerServerLicenseTierRoutes(router: Hono<AppEnv>, opts: Auth
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const tierId = parseTierIdBody(body)
-    if (tierId === 'invalid') {
+    const parsed = parseTierIdBody(body)
+    if (!parsed.ok) {
       return c.json({ error: 'invalid_body', code: 'invalid_body' }, 400)
     }
 
-    const result = await setServerPreferredTier(db, organizationId, serverId, tierId)
+    const result = await setServerPreferredTier(db, organizationId, serverId, parsed.tierId)
     if (!result.ok) {
       if (result.code === 'tier_below_required') {
         return c.json(
