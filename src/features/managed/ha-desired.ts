@@ -33,6 +33,10 @@ import {
   selectHaRaftMembers,
   serverHostsManagedHa,
 } from './ha-policy.ts'
+import {
+  buildOrganizationOrchestratorApiUser,
+  buildOrganizationOrchestratorRaftToken,
+} from './orchestrator-api-credential.ts'
 import { buildOrganizationTopologyUser } from './topology-credential.ts'
 import { getManagedEngineSpec, type ManagedEngineSpec } from './index.ts'
 import { loadDatacenterMembershipsForServers } from '../net/datacenter-membership.ts'
@@ -76,9 +80,18 @@ function haTeardownPayload(
   }
 }
 
-async function loadHaMembersOnServer(db: Db, serverId: string): Promise<ManagedMemberRow[]> {
-  const rows = await db.select().from(replica).where(eq(replica.serverId, serverId))
-  return rows.map((row) => ({
+type HaMemberOnServer = ManagedMemberRow & { engine: string }
+
+async function loadHaMembersOnServer(db: Db, serverId: string): Promise<HaMemberOnServer[]> {
+  const rows = await db
+    .select({
+      replica,
+      engine: managed.engine,
+    })
+    .from(replica)
+    .innerJoin(managed, eq(managed.id, replica.managedId))
+    .where(eq(replica.serverId, serverId))
+  return rows.map(({ replica: row, engine }) => ({
     id: row.id,
     managedId: row.managedId,
     serverId: row.serverId,
@@ -93,6 +106,7 @@ async function loadHaMembersOnServer(db: Db, serverId: string): Promise<ManagedM
     options: row.options,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    engine,
   }))
 }
 
@@ -292,16 +306,20 @@ async function buildRaftConfig(
       serverId: replica.serverId,
       role: replica.role,
       replicaClass: replica.replicaClass,
+      engine: managed.engine,
     })
     .from(replica)
     .innerJoin(managed, eq(managed.id, replica.managedId))
     .innerJoin(server, eq(server.id, replica.serverId))
     .where(eq(server.organizationId, organizationId))
 
-  const byServer = new Map<string, Array<{ role: string; replicaClass: string | null }>>()
+  const byServer = new Map<
+    string,
+    Array<{ role: string; replicaClass: string | null; engine: string }>
+  >()
   for (const row of orgMembers) {
     const list = byServer.get(row.serverId) ?? []
-    list.push({ role: row.role, replicaClass: row.replicaClass })
+    list.push({ role: row.role, replicaClass: row.replicaClass, engine: row.engine })
     byServer.set(row.serverId, list)
   }
 
@@ -496,6 +514,16 @@ export async function buildManagedHaReconcilePayload(
     { serverId: params.serverId, keyId: daemonState.key.id },
     organizationId
   )
+  const orchestratorApiUser = await buildOrganizationOrchestratorApiUser(
+    params.secretsConfig,
+    { serverId: params.serverId, keyId: daemonState.key.id },
+    organizationId
+  )
+  const orchestratorRaftToken = await buildOrganizationOrchestratorRaftToken(
+    params.secretsConfig,
+    { serverId: params.serverId, keyId: daemonState.key.id },
+    organizationId
+  )
 
   return {
     serverId: params.serverId,
@@ -505,6 +533,8 @@ export async function buildManagedHaReconcilePayload(
     clusters,
     identity,
     topologyUser,
+    orchestratorApiUser,
+    orchestratorRaftToken,
     orgTlsMaterial,
   }
 }
@@ -572,8 +602,10 @@ export async function fanOutManagedHaReconcile(
       serverId: replica.serverId,
       role: replica.role,
       replicaClass: replica.replicaClass,
+      engine: managed.engine,
     })
     .from(replica)
+    .innerJoin(managed, eq(managed.id, replica.managedId))
     .where(eq(replica.managedId, params.managedId))
   const serverIds = new Set<string>(params.extraServerIds ?? [])
   for (const row of memberIds) {

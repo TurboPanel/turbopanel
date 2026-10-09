@@ -26,6 +26,7 @@ import {
   fabric,
   instanceHostname,
   organization,
+  managed,
   relay,
   replica,
   server,
@@ -254,8 +255,13 @@ async function loadFabricExposures(db: Db, serverId: string): Promise<DerivedExp
 /** The org Orchestrator's Raft and HTTP ports; peers are this organization's other servers. */
 async function loadHaExposures(db: Db, serverId: string): Promise<DerivedExposure[]> {
   const members = await db
-    .select({ role: replica.role, replicaClass: replica.replicaClass })
+    .select({
+      role: replica.role,
+      replicaClass: replica.replicaClass,
+      engine: managed.engine,
+    })
     .from(replica)
+    .innerJoin(managed, eq(managed.id, replica.managedId))
     .where(eq(replica.serverId, serverId))
   if (!serverHostsManagedHa(members)) return []
   return [MANAGED_HA_HTTP_PORT, MANAGED_HA_RAFT_PORT].map((port) => ({

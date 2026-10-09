@@ -357,6 +357,17 @@ test('parseManagedHaReconcilePayload carries the org topology account, sealed on
     TypeError,
     'Invalid managed.ha.reconcile topologyUser'
   )
+
+  const withOrchApi = parseManagedHaReconcilePayload({
+    ...base,
+    orchestratorApiUser: {
+      username: 'tp_orchapi_111111111111',
+      password: 'tpdaemon.v1.server.key.payload',
+    },
+    orchestratorRaftToken: 'tpdaemon.v1.server.key.raft',
+  })
+  assertEquals(withOrchApi.orchestratorApiUser?.username, 'tp_orchapi_111111111111')
+  assertEquals(withOrchApi.orchestratorRaftToken, 'tpdaemon.v1.server.key.raft')
 })
 
 test('parseManagedHaReconcilePayload accepts raft peers and cluster members', () => {

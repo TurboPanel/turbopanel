@@ -540,8 +540,12 @@ own identity; standbys inherit the roles via WAL. Orchestrator topology uses a
 **separate** organization-wide account (`topology-credential.ts`: derived
 `tp_topology_<org prefix>`, never stored — HMAC off the root secret) shipped on
 primary `managed.apply` (`topologyUser`) and `managed.ha.reconcile` (same field
-for `MySQLTopologyUser`); Postgres HA clusters are omitted from the reconcile
-cluster list (`orchestratorManagesEngine`). Leaf `notAfter` + signing `ca_generation` are persisted
+for `MySQLTopologyUser`). Orchestrator HTTP basic auth and `RaftAuthToken` are
+also organization-wide (`orchestrator-api-credential.ts`, sealed as
+`orchestratorApiUser` + `orchestratorRaftToken` on `managed.ha.reconcile` so
+every Raft peer shares one `HTTPAuthPassword` and followers can proxy to the
+leader). Postgres HA clusters are omitted from the reconcile cluster list and
+from the Raft voter set (`orchestratorManagesEngine` / `serverHostsManagedHa`). Leaf `notAfter` + signing `ca_generation` are persisted
 on `leaf` only after `managed.apply` succeeds (mint writes `pendingTlsLeaf`
 command metadata — see `src/lib/tls/AGENTS.md` → Leaf tracking + renewal sweep)
 — not at payload generation. Member CRUD: `GET/POST …/managed/members`

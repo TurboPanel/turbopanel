@@ -124,12 +124,17 @@ export function replicaClassAfterDisasterRecovery(input: {
   return 'read'
 }
 
-/** Primary and same-DC failover replicas join the org Orchestrator Raft group. */
+/**
+ * Primary and same-DC `failover` replicas on **MySQL/MariaDB** HA clusters join
+ * the org Orchestrator Raft group. Postgres-only hosts never run Orchestrator.
+ */
 export function serverHostsManagedHa(
-  membersOnServer: ReadonlyArray<{ role: string; replicaClass: string | null }>
+  membersOnServer: ReadonlyArray<{ role: string; replicaClass: string | null; engine: string }>
 ): boolean {
   return membersOnServer.some(
-    (member) => member.role === 'primary' || member.replicaClass === 'failover'
+    (member) =>
+      orchestratorManagesEngine(member.engine) &&
+      (member.role === 'primary' || member.replicaClass === 'failover')
   )
 }
 
