@@ -241,10 +241,14 @@ re-asserted at the daemon command-contract boundary.
   at least one apply command is queued (`commitClearedPrivatePortsIfUnused`).
   A failed enqueue leaves the port allocated — the failed command is
   visible, and the next successful apply (operator Apply or another
-  binding change) retries the teardown. When binding create/delete
+  binding change) retries the teardown.   When binding create/delete
   cannot queue `managed.apply`, `enqueueIngressForBindingChange` skips
   `managed.ingress.reconcile` and returns
   `BINDING_PRIVATE_LISTENER_PENDING_WARNING` on the binding response;
+  a successful apply with a failed ingress reconcile returns
+  `BINDING_INGRESS_RECONCILE_PENDING_WARNING`. Binding-side apply uses
+  `enqueuePreparedManagedApply` with `updateManagedStatus: false` so a
+  saved credential never flips `managed.status` to `applying` / `failed`.
   the next operator **Apply** or binding change runs the same apply-first
   path again (no separate pending marker). A remote app with no private
   path is skipped at apply (warning) so one unreachable consumer cannot

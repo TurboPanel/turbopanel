@@ -79,6 +79,9 @@ export type BindingListenerSyncOutcome = Readonly<{
 export const BINDING_PRIVATE_LISTENER_PENDING_WARNING =
   'The binding was saved, but the database could not publish its private listener yet; the next managed apply or binding change will retry.'
 
+export const BINDING_INGRESS_RECONCILE_PENDING_WARNING =
+  'The binding was saved, but the database proxy could not be refreshed yet; use Apply on the managed database or change the binding again.'
+
 export type BindingManagedApplyEnqueueStatus = 'enqueued' | 'failed' | 'skipped'
 
 /** When apply was required but did not enqueue, ingress must not run ahead of the listener. */
@@ -195,11 +198,12 @@ export async function enqueueIngressForBindingChange(
     }
   }
 
-  const warning = bindingListenerSyncWarning(plan, applyStatus)
-  if (warning) {
-    return { warning }
+  const applyWarning = bindingListenerSyncWarning(plan, applyStatus)
+  if (applyWarning) {
+    return { warning: applyWarning }
   }
 
+  let ingressFailed = false
   await forEachSequential(plan.ingressServerIds, async (serverId) => {
     try {
       await deps.enqueueManagedIngressReconcile(db, commandQueue, {
@@ -210,6 +214,7 @@ export async function enqueueIngressForBindingChange(
         dataEncryptionSecrets,
       })
     } catch (err) {
+      ingressFailed = true
       const message = err instanceof Error ? err.message : String(err)
       compatLogWarn(
         'bindings',
@@ -217,6 +222,9 @@ export async function enqueueIngressForBindingChange(
       )
     }
   })
+  if (ingressFailed) {
+    return { warning: BINDING_INGRESS_RECONCILE_PENDING_WARNING }
+  }
   return {}
 }
 
@@ -293,6 +301,7 @@ async function enqueueApplyForBindingManaged(
     userId: params.actorId,
     managedId: row.id,
     members: prepared.members,
+    updateManagedStatus: false,
   })
   if (enqueued instanceof Response) {
     compatLogWarn(

@@ -1,8 +1,10 @@
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
+import type { ManagedMemberRow } from '../managed/members.ts'
 import {
   BINDING_ENDPOINT_UNAVAILABLE_ERROR,
   BINDING_NO_PRIVATE_PATH_MESSAGE,
+  BINDING_PUBLISHED_LISTENER_UNREACHABLE_MESSAGE,
   remoteBindingReachError,
 } from './binding-reach.ts'
 
@@ -15,7 +17,9 @@ import {
 const test = Deno.test.bind(Deno)
 
 const DB_SERVER = '11111111-1111-4111-8111-111111111111'
+const FAILOVER_SERVER = '22222222-2222-4222-8222-222222222222'
 const APP_SERVER = '55555555-5555-4555-8555-555555555555'
+const MANAGED_ID = '00000000-0000-4000-8000-000000000001'
 
 type MembershipPinRow = {
   ipId: string
@@ -23,6 +27,25 @@ type MembershipPinRow = {
   datacenterId: string
   networkId: string | null
   address: string
+}
+
+function memberRow(serverId: string, role: 'primary' | 'replica' = 'primary'): ManagedMemberRow {
+  return {
+    id: `member-${serverId}`,
+    managedId: MANAGED_ID,
+    serverId,
+    role,
+    replicaClass: role === 'replica' ? 'failover' : null,
+    readEligible: true,
+    ordinal: role === 'primary' ? 1 : 2,
+    replicationTransport: null,
+    privatePort: 45_001,
+    status: 'ready',
+    metadata: {},
+    options: {},
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  }
 }
 
 function thenable<T>(value: T) {
@@ -34,7 +57,7 @@ function thenable<T>(value: T) {
 }
 
 function fixtureDb(params: {
-  memberServerIds: string[]
+  members: ManagedMemberRow[]
   memberships?: MembershipPinRow[]
   relays?: Array<{
     relayId: string
@@ -51,17 +74,17 @@ function fixtureDb(params: {
   const datacenterOptions = [...new Set(memberships.map((row) => row.datacenterId))]
     .sort((a, b) => a.localeCompare(b))
     .map((id) => ({ id, options: {} }))
-  let selectN = 0
 
   return {
     select(fields: Record<string, unknown>) {
       const keys = Object.keys(fields).sort((a, b) => a.localeCompare(b))
       const keySet = new Set(keys)
-      selectN += 1
-      if (selectN === 1 && keySet.has('serverId') && keys.length === 1) {
+      if (keySet.has('managedId') && keySet.has('serverId') && keySet.has('ordinal')) {
         return {
           from: () => ({
-            where: () => thenable(params.memberServerIds.map((serverId) => ({ serverId }))),
+            where: () => ({
+              orderBy: () => thenable(params.members),
+            }),
           }),
         }
       }
@@ -100,8 +123,8 @@ function fixtureDb(params: {
 }
 
 test('remoteBindingReachError is null when the app is co-resident', async () => {
-  const error = await remoteBindingReachError(fixtureDb({ memberServerIds: [DB_SERVER] }), {
-    managedId: 'm1',
+  const error = await remoteBindingReachError(fixtureDb({ members: [memberRow(DB_SERVER)] }), {
+    managedId: MANAGED_ID,
     consumerServerIds: [DB_SERVER],
   })
   assertEquals(error, null)
@@ -110,7 +133,7 @@ test('remoteBindingReachError is null when the app is co-resident', async () => 
 test('remoteBindingReachError is null when a private datacenter path exists', async () => {
   const error = await remoteBindingReachError(
     fixtureDb({
-      memberServerIds: [DB_SERVER],
+      members: [memberRow(DB_SERVER)],
       memberships: [
         {
           ipId: 'ip-db',
@@ -128,18 +151,63 @@ test('remoteBindingReachError is null when a private datacenter path exists', as
         },
       ],
     }),
-    { managedId: 'm1', consumerServerIds: [APP_SERVER] }
+    { managedId: MANAGED_ID, consumerServerIds: [APP_SERVER] }
   )
   assertEquals(error, null)
 })
 
 test('remoteBindingReachError refuses when the app host has no private path', async () => {
-  const error = await remoteBindingReachError(fixtureDb({ memberServerIds: [DB_SERVER] }), {
-    managedId: 'm1',
+  const error = await remoteBindingReachError(fixtureDb({ members: [memberRow(DB_SERVER)] }), {
+    managedId: MANAGED_ID,
     consumerServerIds: [APP_SERVER],
   })
   assertEquals(error, {
     error: BINDING_ENDPOINT_UNAVAILABLE_ERROR,
     message: BINDING_NO_PRIVATE_PATH_MESSAGE,
+  })
+})
+
+test('remoteBindingReachError refuses when the published bind disagrees with the consumer path', async () => {
+  const error = await remoteBindingReachError(
+    fixtureDb({
+      members: [memberRow(DB_SERVER), memberRow(FAILOVER_SERVER, 'replica')],
+      memberships: [
+        {
+          ipId: 'ip-db',
+          serverId: DB_SERVER,
+          datacenterId: 'dc-a',
+          networkId: null,
+          address: '10.0.0.1',
+        },
+        {
+          ipId: 'ip-failover',
+          serverId: FAILOVER_SERVER,
+          datacenterId: 'dc-a',
+          networkId: null,
+          address: '10.0.0.2',
+        },
+      ],
+      relays: [
+        {
+          relayId: 'relay-app',
+          serverId: APP_SERVER,
+          fabricId: 'fab-1',
+          fabricCreatedAt: '2026-01-01T00:00:00.000Z',
+          address: '10.90.0.9',
+        },
+        {
+          relayId: 'relay-db',
+          serverId: DB_SERVER,
+          fabricId: 'fab-1',
+          fabricCreatedAt: '2026-01-01T00:00:00.000Z',
+          address: '10.90.0.1',
+        },
+      ],
+    }),
+    { managedId: MANAGED_ID, consumerServerIds: [APP_SERVER] }
+  )
+  assertEquals(error, {
+    error: BINDING_ENDPOINT_UNAVAILABLE_ERROR,
+    message: BINDING_PUBLISHED_LISTENER_UNREACHABLE_MESSAGE,
   })
 })

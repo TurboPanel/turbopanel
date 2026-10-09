@@ -942,6 +942,9 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     await reclaimDeletedEnvironmentHosts(c, db, teardownPlans, userId)
 
-    return c.json({ ok: true as const })
+    return c.json({
+      ok: true as const,
+      ...(result.warning ? { warning: result.warning } : {}),
+    })
   })
 }

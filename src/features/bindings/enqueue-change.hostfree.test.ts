@@ -7,6 +7,7 @@ import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { postgresEngineSpec } from '../managed/postgres.ts'
 import {
+  BINDING_INGRESS_RECONCILE_PENDING_WARNING,
   BINDING_PRIVATE_LISTENER_PENDING_WARNING,
   bindingListenerEnqueueDeps,
   type BindingListenerEnqueueDeps,
@@ -226,4 +227,42 @@ test('enqueueIngressForBindingChange enqueues ingress after managed.apply succee
     ingressCalls.toSorted((a, b) => a.localeCompare(b)),
     [APP_SERVER_ID, DB_SERVER_ID].toSorted((a, b) => a.localeCompare(b))
   )
+})
+
+test('enqueueIngressForBindingChange warns when ingress reconcile fails after apply', async () => {
+  const queue: CommandQueue = { enqueue: () => Promise.resolve() }
+  const memberId = '00000000-0000-4000-8000-000000000020'
+  const deps: BindingListenerEnqueueDeps = {
+    ...bindingListenerEnqueueDeps,
+    loadServiceConsumerServerIds: () => Promise.resolve([APP_SERVER_ID]),
+    memberServerIdsForManaged: () => Promise.resolve([DB_SERVER_ID]),
+    consumerServerIdsForManaged: () => Promise.resolve([APP_SERVER_ID]),
+    prepareManagedApplyPayloads: () =>
+      Promise.resolve({
+        members: [{ memberId, serverId: DB_SERVER_ID, payload: { managedId: MANAGED_ID } }],
+      } as Awaited<ReturnType<typeof bindingListenerEnqueueDeps.prepareManagedApplyPayloads>>),
+    enqueuePreparedManagedApply: () =>
+      Promise.resolve([
+        {
+          memberId,
+          serverId: DB_SERVER_ID,
+          commandId: '00000000-0000-4000-8000-000000000077',
+          status: 'queued' as const,
+        },
+      ]),
+    enqueueManagedIngressReconcile: () => Promise.reject(new Error('queue down')),
+  }
+  const c = await bindingEnqueueContext(queue)
+  const outcome = await enqueueIngressForBindingChange(
+    c,
+    managedRowDb(),
+    {
+      serviceIds: [SERVICE_ID],
+      managedId: MANAGED_ID,
+      actorId: ACTOR_ID,
+      organizationId: ORG_ID,
+    },
+    deps
+  )
+  assertEquals(outcome.warning, BINDING_INGRESS_RECONCILE_PENDING_WARNING)
 })

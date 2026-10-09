@@ -1657,32 +1657,46 @@ export async function enqueuePreparedManagedApply(
     userId: string
     managedId: string
     members: PreparedManagedMemberApply[]
+    /**
+     * When false, do not flip `managed.status` to `applying` / `failed` — used
+     * by binding listener sync so a saved credential does not perturb cluster
+     * health while apply is best-effort.
+     */
+    updateManagedStatus?: boolean
   }
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
   if (params.members.length === 0) {
     return []
   }
 
-  await db
-    .update(managed)
-    .set({ status: 'applying', updatedAt: new Date().toISOString() })
-    .where(eq(managed.id, params.managedId))
+  const updateManagedStatus = params.updateManagedStatus !== false
+
+  if (updateManagedStatus) {
+    await db
+      .update(managed)
+      .set({ status: 'applying', updatedAt: new Date().toISOString() })
+      .where(eq(managed.id, params.managedId))
+  }
 
   const primaryMembers = params.members.filter(isPrimaryMemberPayload)
   const standbyMembers = params.members.filter((m) => !isPrimaryMemberPayload(m))
 
+  const enqueueParams = {
+    userId: params.userId,
+    managedId: params.managedId,
+    updateManagedStatus,
+  }
+
   // Single-phase when no standby depends on primary prep.
   if (standbyMembers.length === 0) {
     return enqueueSinglePhaseManagedApply(c, db, commandQueue, {
-      userId: params.userId,
-      managedId: params.managedId,
+      ...enqueueParams,
       members: params.members,
     })
   }
 
   return enqueueTwoPhaseManagedApply(c, db, commandQueue, {
-    userId: params.userId,
-    managedId: params.managedId,
+    ...enqueueParams,
     primaryMembers,
     standbyMembers,
   })
@@ -1697,6 +1711,7 @@ async function enqueueSinglePhaseManagedApply(
     userId: string
     managedId: string
     members: PreparedManagedMemberApply[]
+    updateManagedStatus: boolean
   }
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
   const results = await Promise.all(
@@ -1711,6 +1726,7 @@ async function enqueueSinglePhaseManagedApply(
     userId: params.userId,
     managedId: params.managedId,
     results,
+    updateManagedStatus: params.updateManagedStatus,
   })
 }
 
@@ -1727,6 +1743,7 @@ async function enqueueTwoPhaseManagedApply(
     managedId: string
     primaryMembers: PreparedManagedMemberApply[]
     standbyMembers: PreparedManagedMemberApply[]
+    updateManagedStatus: boolean
   }
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
   const { primaryMembers, standbyMembers } = params
@@ -1745,6 +1762,7 @@ async function enqueueTwoPhaseManagedApply(
       userId: params.userId,
       managedId: params.managedId,
       results,
+      updateManagedStatus: params.updateManagedStatus,
     })
   }
 
@@ -1778,6 +1796,7 @@ async function enqueueTwoPhaseManagedApply(
         userId: params.userId,
         managedId: params.managedId,
         results,
+        updateManagedStatus: params.updateManagedStatus,
       })
     }
   }
@@ -1795,6 +1814,7 @@ async function enqueueTwoPhaseManagedApply(
     userId: params.userId,
     managedId: params.managedId,
     results,
+    updateManagedStatus: params.updateManagedStatus,
   })
 }
 
@@ -1806,14 +1826,17 @@ async function finalizePreparedManagedApplyResults(
     userId: string
     managedId: string
     results: ManagedApplyEnqueueResult[]
+    updateManagedStatus: boolean
   }
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
   const allFailed = params.results.every((r) => r.status === 'failed')
   if (allFailed) {
-    await db
-      .update(managed)
-      .set({ status: 'failed', updatedAt: new Date().toISOString() })
-      .where(eq(managed.id, params.managedId))
+    if (params.updateManagedStatus) {
+      await db
+        .update(managed)
+        .set({ status: 'failed', updatedAt: new Date().toISOString() })
+        .where(eq(managed.id, params.managedId))
+    }
     return c.json({ error: 'Command queue unavailable' }, 503)
   }
 
