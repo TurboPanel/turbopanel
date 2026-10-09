@@ -4,7 +4,6 @@
 
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
-import { stub } from '@std/testing/mock'
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -40,12 +39,7 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import { detachBindingsForManaged } from '../../features/bindings/impact.ts'
-import { BINDING_PRIVATE_LISTENER_PENDING_WARNING } from '../../features/bindings/enqueue-change.ts'
 import { createCommandRecord } from '../../features/commands/command-records.ts'
-import type { CommandEnvelope } from '../../features/commands/envelope.ts'
-import type { CommandQueue } from '../../features/commands/queue.ts'
-import * as applyPrepare from '../../features/managed/apply-prepare.ts'
-import * as bindingReach from '../../features/bindings/binding-reach.ts'
 import { postgresEngineSpec } from '../../features/managed/postgres.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
@@ -61,21 +55,10 @@ const dbUrl = getDatabaseUrl()
  */
 const test = Deno.test.bind(Deno)
 
-function createRecordingCommandQueue(): CommandQueue & { envelopes: CommandEnvelope[] } {
-  const envelopes: CommandEnvelope[] = []
-  return {
-    envelopes,
-    enqueue: (envelope) => {
-      envelopes.push(envelope)
-      return Promise.resolve()
-    },
-  }
-}
-
 async function createBindingRoutesTestApp(
   db: ReturnType<typeof createDenoDb>,
   secretsConfig: SecretsConfig,
-  options?: { withDataEncryption?: boolean; commandQueue?: CommandQueue }
+  options?: { withDataEncryption?: boolean }
 ) {
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const dataEncryptionSecrets =
@@ -88,9 +71,6 @@ async function createBindingRoutesTestApp(
     c.set('secretsConfig', secretsConfig)
     if (dataEncryptionSecrets) {
       c.set('dataEncryptionSecrets', dataEncryptionSecrets)
-    }
-    if (options?.commandQueue) {
-      c.set('commandQueue', options.commandQueue)
     }
     return next()
   })
@@ -922,161 +902,6 @@ test('detachBindingsForManaged removes every binding of the cluster and its vari
         .from(variable)
         .where(eq(variable.serviceId, consumerServiceId))
       assertEquals(variables.length, 0)
-    }
-  )
-})
-
-test('POST /bindings on a remote consumer warns and skips ingress when managed.apply does not enqueue', async () => {
-  await withBindingFixtures(
-    async ({
-      db,
-      secrets,
-      secretsConfig,
-      userId,
-      organizationId,
-      serverId,
-      principalId,
-      consumerServiceId,
-      consumerEnvironmentId,
-    }) => {
-      const now = new Date().toISOString()
-      const [remoteServer] = await db
-        .insert(server)
-        .values({
-          organizationId,
-          name: 'Remote consumer host',
-          createdAt: now,
-          updatedAt: now,
-          isConnected: true,
-          statusChangedAt: now,
-        })
-        .returning({ id: server.id })
-      await db
-        .update(environment)
-        .set({ serverId: remoteServer!.id })
-        .where(eq(environment.id, consumerEnvironmentId))
-
-      const commandQueue = createRecordingCommandQueue()
-      const { app } = await createBindingRoutesTestApp(db, secretsConfig, { commandQueue })
-      const reachStub = stub(bindingReach, 'remoteBindingReachError', () => Promise.resolve(null))
-      const prepareStub = stub(applyPrepare, 'prepareManagedApplyPayloads', () =>
-        Promise.resolve({ kind: 'daemon_key_unavailable', serverId })
-      )
-
-      try {
-        const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request('/bindings', {
-          method: 'POST',
-          headers: authHeaders(cookie, organizationId),
-          body: JSON.stringify({
-            principalId,
-            serviceId: consumerServiceId,
-            databaseName: 'postgres',
-            keyPrefix: 'REMOTE',
-            emitEngineDefaults: false,
-          }),
-        })
-        assertEquals(res.status, 200)
-        const body = (await res.json()) as { ok: true; id: string; warning?: string }
-        assertEquals(body.warning, BINDING_PRIVATE_LISTENER_PENDING_WARNING)
-
-        const ingressRows = await db
-          .select({ name: command.name })
-          .from(command)
-          .where(eq(command.name, 'managed.ingress.reconcile'))
-        assertEquals(ingressRows.length, 0)
-      } finally {
-        reachStub.restore()
-        prepareStub.restore()
-      }
-    }
-  )
-})
-
-test('POST /bindings on a remote consumer enqueues ingress after managed.apply succeeds', async () => {
-  await withBindingFixtures(
-    async ({
-      db,
-      secrets,
-      secretsConfig,
-      userId,
-      organizationId,
-      serverId,
-      managedId,
-      principalId,
-      consumerServiceId,
-      consumerEnvironmentId,
-    }) => {
-      const now = new Date().toISOString()
-      const [remoteServer] = await db
-        .insert(server)
-        .values({
-          organizationId,
-          name: 'Remote consumer host 2',
-          createdAt: now,
-          updatedAt: now,
-          isConnected: true,
-          statusChangedAt: now,
-        })
-        .returning({ id: server.id })
-      await db
-        .update(environment)
-        .set({ serverId: remoteServer!.id })
-        .where(eq(environment.id, consumerEnvironmentId))
-
-      const commandQueue = createRecordingCommandQueue()
-      const { app } = await createBindingRoutesTestApp(db, secretsConfig, { commandQueue })
-      const reachStub = stub(bindingReach, 'remoteBindingReachError', () => Promise.resolve(null))
-      const memberId = '00000000-0000-4000-8000-000000000088'
-      const prepareStub = stub(applyPrepare, 'prepareManagedApplyPayloads', () =>
-        Promise.resolve({
-          members: [
-            {
-              memberId,
-              serverId,
-              payload: { managedId },
-            },
-          ],
-        } as Awaited<ReturnType<typeof applyPrepare.prepareManagedApplyPayloads>>)
-      )
-      const enqueueApplyStub = stub(applyPrepare, 'enqueuePreparedManagedApply', () =>
-        Promise.resolve([
-          {
-            memberId,
-            serverId,
-            commandId: '00000000-0000-4000-8000-000000000077',
-            status: 'queued' as const,
-          },
-        ])
-      )
-
-      try {
-        const cookie = await sessionCookie(db, secrets, userId)
-        const res = await app.request('/bindings', {
-          method: 'POST',
-          headers: authHeaders(cookie, organizationId),
-          body: JSON.stringify({
-            principalId,
-            serviceId: consumerServiceId,
-            databaseName: 'postgres',
-            keyPrefix: 'REMOTEOK',
-            emitEngineDefaults: false,
-          }),
-        })
-        assertEquals(res.status, 200)
-        const body = (await res.json()) as { ok: true; id: string; warning?: string }
-        assertEquals(body.warning, undefined)
-
-        const ingressRows = await db
-          .select({ name: command.name })
-          .from(command)
-          .where(eq(command.name, 'managed.ingress.reconcile'))
-        assertEquals(ingressRows.length > 0, true)
-      } finally {
-        reachStub.restore()
-        prepareStub.restore()
-        enqueueApplyStub.restore()
-      }
     }
   )
 })

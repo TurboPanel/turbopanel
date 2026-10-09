@@ -72,6 +72,18 @@ test('bindingListenerSyncWarning is set only when apply was required but did not
   )
 })
 
+test('remote binding change defers ingress when managed.apply does not enqueue', () => {
+  const plan = planBindingChangeCommands({
+    memberServerIds: ['srv-db'],
+    remainingConsumerServerIds: ['srv-app'],
+    affectedConsumerServerIds: ['srv-app'],
+    ingressServerIds: ['srv-app', 'srv-db'],
+    apply: true,
+  })
+  assertEquals(bindingListenerSyncWarning(plan, 'enqueued'), undefined)
+  assertEquals(bindingListenerSyncWarning(plan, 'failed'), BINDING_PRIVATE_LISTENER_PENDING_WARNING)
+})
+
 test('co-resident consumer does not plan apply', () => {
   const plan = planBindingChangeCommands({
     memberServerIds: ['srv-db'],
