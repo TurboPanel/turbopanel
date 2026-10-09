@@ -34,6 +34,9 @@ const HA_SERVICE_ID = "00000000-0000-4000-8000-0000000000cc";
 const MEMBER_ID = "00000000-0000-4000-8000-0000000000dd";
 /** Org-wide managed Docker network name — a `network.kind='managed'` row id. */
 const MANAGED_NETWORK = "00000000-0000-4000-8000-0000000000ee";
+const DAEMON_SEALED_REPLICATION = daemonSealedEnvelopeFixture(
+  "server.key.payload",
+);
 const PEM = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
 
 test("parsePrincipalsReconcilePayload accepts principals and rejects duplicates", () => {
@@ -427,7 +430,7 @@ test("parseManagedHaReconcilePayload accepts raft peers and cluster members", ()
           },
         ],
         replicationUsername: "tp_repl",
-        replicationPasswordEnvelope: "tpdaemon.v1.server.key.payload",
+        replicationPasswordEnvelope: DAEMON_SEALED_REPLICATION,
       },
     ],
     identity: {
@@ -789,7 +792,7 @@ test("parseManagedHaReconcilePayload rejects raft, cluster, and member field err
     engine: "postgres",
     members: [member],
     replicationUsername: "tp_repl",
-    replicationPasswordEnvelope: "tpdaemon.v1.server.key.payload",
+    replicationPasswordEnvelope: DAEMON_SEALED_REPLICATION,
   };
   const parsed = parseManagedHaReconcilePayload({
     serverId: SERVER_ID,
