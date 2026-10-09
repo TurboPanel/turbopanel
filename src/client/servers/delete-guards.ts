@@ -210,8 +210,6 @@ export type ServerDeletePreviewContainer = {
   serviceName?: string
 }
 
-export type ServerDeleteSystemContainerBlocker = ServerDeletePreviewContainer
-
 export type ServerDeletePreviewNetwork = {
   id: string
   name: string
@@ -366,12 +364,12 @@ export async function listSystemContainersBlockingServerDelete(
   db: Db,
   serverId: string,
   serverConnected: boolean
-): Promise<ServerDeleteSystemContainerBlocker[]> {
+): Promise<ServerDeletePreviewContainer[]> {
   const rows = await listSystemContainersOnServer(db, serverId)
   return rows
     .filter((row) => systemContainerRowBlocksServerDelete(row, serverConnected))
     .map((row) => {
-      const item: ServerDeleteSystemContainerBlocker = {
+      const item: ServerDeletePreviewContainer = {
         id: row.id,
         name: row.name,
         status: row.status,
@@ -1223,7 +1221,7 @@ export function serverSystemContainersDeleteBlockedResponse(
   c: Context,
   opts: Readonly<{
     serverConnected: boolean
-    containers: readonly ServerDeleteSystemContainerBlocker[]
+    containers: readonly ServerDeletePreviewContainer[]
   }>
 ): Response {
   const blockers = [...opts.containers]
