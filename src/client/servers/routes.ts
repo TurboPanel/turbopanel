@@ -75,7 +75,7 @@ import { compatLogWarn } from '../../lib/log-compat.ts'
 import {
   hierarchyDeleteHasChildrenResponse,
   type HierarchyDeleteFkBlocker,
-  runHierarchyDelete,
+  runHierarchyDeleteResult,
 } from '../hierarchy-delete.ts'
 import { purgeServerForeignKeysForDelete } from './server-fk.ts'
 import * as systemHierarchy from '../../features/system/hierarchy.ts'
@@ -736,7 +736,7 @@ async function deleteServerWithSystemSubtree(
 }> {
   let forgotten: ForgottenServerResources | null = null
   try {
-    const deleteResult = await runHierarchyDelete(db, async (tx) => {
+    const deleteResult = await runHierarchyDeleteResult(db, async (tx) => {
       if (forgetResources) {
         await assertServerOfflineForForget(tx, serverId)
         forgotten = await forgetServerOwnedResources(tx, serverId, organizationId)

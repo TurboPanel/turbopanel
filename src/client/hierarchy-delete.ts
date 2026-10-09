@@ -21,12 +21,12 @@ export type HierarchyDeleteFkBlocker = {
   column?: string
 }
 
-/** Outcome of {@link runHierarchyDelete} — blockers travel with the result (no module globals). */
+/** Outcome of {@link runHierarchyDeleteResult} — blockers travel with the result (no module globals). */
 export type HierarchyDeleteRunResult =
   { status: 'ok' } | { status: 'has_children'; blockers: HierarchyDeleteFkBlocker[] }
 
-/** @deprecated Use {@link HierarchyDeleteRunResult} and `.status` instead. */
-export type HierarchyDeleteResult = HierarchyDeleteRunResult['status']
+/** Result of {@link runHierarchyDelete} (string form for routes that omit FK blockers). */
+export type HierarchyDeleteResult = 'ok' | 'has_children'
 
 function readStringField(layer: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const key of keys) {
@@ -120,7 +120,7 @@ export function hierarchyDeleteFkBlockersFromViolation(
   return [GENERIC_HIERARCHY_DELETE_FK_BLOCKER]
 }
 
-export async function runHierarchyDelete(
+export async function runHierarchyDeleteResult(
   db: Db,
   deleteOp: (tx: Db) => Promise<void>
 ): Promise<HierarchyDeleteRunResult> {
@@ -141,6 +141,13 @@ export async function runHierarchyDelete(
     }
     return { status: 'has_children', blockers }
   }
+}
+
+export async function runHierarchyDelete(
+  db: Db,
+  deleteOp: (tx: Db) => Promise<void>
+): Promise<HierarchyDeleteResult> {
+  return (await runHierarchyDeleteResult(db, deleteOp)).status
 }
 
 export function hierarchyDeleteHasChildrenResponse(
@@ -172,7 +179,7 @@ export async function respondAfterHierarchyDelete(
   db: Db,
   deleteOp: (tx: Db) => Promise<void>
 ): Promise<Response> {
-  const deleteResult = await runHierarchyDelete(db, deleteOp)
+  const deleteResult = await runHierarchyDeleteResult(db, deleteOp)
   const blocked = hierarchyDeleteHasChildrenResponseIfNeeded(c, deleteResult)
   if (blocked) return blocked
   return c.json({ ok: true as const })

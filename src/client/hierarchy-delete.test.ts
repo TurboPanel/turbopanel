@@ -12,6 +12,7 @@ import {
   parsePostgresForeignKeyViolation,
   respondAfterHierarchyDelete,
   runHierarchyDelete,
+  runHierarchyDeleteResult,
 } from './hierarchy-delete.ts'
 
 /**
@@ -130,10 +131,10 @@ test('runHierarchyDelete returns ok when the transaction succeeds', async () => 
   } as unknown as Db
 
   const result = await runHierarchyDelete(db, async () => {})
-  assertEquals(result, { status: 'ok' })
+  assertEquals(result, 'ok')
 })
 
-test('runHierarchyDelete maps FK violations to has_children with table detail', async () => {
+test('runHierarchyDeleteResult maps FK violations to has_children with table detail', async () => {
   const db = {
     transaction: async () => {
       throw {
@@ -144,14 +145,14 @@ test('runHierarchyDelete maps FK violations to has_children with table detail', 
     },
   } as unknown as Db
 
-  const result = await runHierarchyDelete(db, async () => {})
+  const result = await runHierarchyDeleteResult(db, async () => {})
   assertEquals(result, {
     status: 'has_children',
     blockers: [{ table: 'relay', constraint: 'relay_server_id_server_id_fk' }],
   })
 })
 
-test('concurrent runHierarchyDelete results do not share FK blockers', async () => {
+test('concurrent runHierarchyDeleteResult values do not share FK blockers', async () => {
   const dbFor = (table: string, constraint: string) =>
     ({
       transaction: async () => {
@@ -160,8 +161,8 @@ test('concurrent runHierarchyDelete results do not share FK blockers', async () 
     }) as unknown as Db
 
   const [first, second] = await Promise.all([
-    runHierarchyDelete(dbFor('relay', 'relay_server_id_server_id_fk'), async () => {}),
-    runHierarchyDelete(dbFor('subnet', 'subnet_server_id_server_id_fk'), async () => {}),
+    runHierarchyDeleteResult(dbFor('relay', 'relay_server_id_server_id_fk'), async () => {}),
+    runHierarchyDeleteResult(dbFor('subnet', 'subnet_server_id_server_id_fk'), async () => {}),
   ])
   assertEquals(first, {
     status: 'has_children',
