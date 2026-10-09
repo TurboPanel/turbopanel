@@ -6236,7 +6236,7 @@ export function parseManagedLifecyclePayload(value: unknown): ManagedLifecyclePa
     }
     payload.role = value.role
   }
-  if (parseOptionalLifecycleTrueOnly(value.demoted)) payload.demoted = true
+  if (value.demoted === true) payload.demoted = true
   if (parseOptionalLifecycleTrueOnly(value.captureSwitchoverGtid)) {
     payload.captureSwitchoverGtid = true
   }

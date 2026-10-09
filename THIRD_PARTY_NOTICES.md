@@ -5,7 +5,7 @@ This file is generated from the resolved dependency graph. Do not edit it by han
 Third-party components remain under their own copyright and license terms and are not relicensed by TurboPanel Control Plane's repository license (AGPL-3.0-only).
 
 <!-- lockfiles
-deno.lock sha256:567525770a55f3f24757fde7276f50f0c92d968d4b82e29b309c9cb68aadfb5d
+deno.lock sha256:83a160e9f47a7588f40fc473cefce02c38df9edd6d6c98e836a2656415e84e44
 pnpm-lock.yaml sha256:1ed04c21aca44d4fdb173ddd6d1d387431b446a569578062bce17b684596e856
 -->
 
@@ -209,6 +209,11 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: The Babel Team
 - Homepage: https://babel.dev/docs/en/next/babel-parser
 
+### @babel/parser@7.29.9
+
+- License: MIT
+- Source: deno.lock (npm)
+
 ### @babel/template@7.29.7
 
 - License: MIT
@@ -243,7 +248,7 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Homepage: https://github.com/cloudflare/workers-sdk/tree/main/packages/vitest-pool-workers#readme
 
-### @cloudflare/workerd-linux-64@1.20260815.1
+### @cloudflare/workerd-darwin-arm64@1.20260815.1
 
 - License: Apache-2.0
 - Homepage: https://github.com/cloudflare/workerd#readme
@@ -253,6 +258,11 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT OR Apache-2.0
 - Copyright: Cloudflare Workers DevProd Team
 - Homepage: https://github.com/cloudflare/workerd#readme
+
+### @cloudflare/workers-types@5.20261002.1
+
+- License: MIT OR Apache-2.0
+- Source: deno.lock (npm)
 
 ### @cspotcode/source-map-support@0.8.1
 
@@ -265,7 +275,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Drizzle Team
 - Homepage: https://github.com/drizzle-team/brocli
 
-### @duckdb/node-bindings-linux-x64@1.5.5-r.4
+### @duckdb/node-bindings-darwin-arm64@1.5.5-r.4
 
 - License: MIT
 - Homepage: https://github.com/duckdb/duckdb-node-neo#readme
@@ -282,7 +292,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Hiroki Osame
 - Homepage: https://github.com/esbuild-kit/esm-loader#readme
 
-### @esbuild/linux-x64@0.25.12
+### @esbuild/darwin-arm64@0.25.12
 
 - License: MIT
 - Homepage: https://github.com/evanw/esbuild#readme
@@ -297,15 +307,15 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Homepage: https://github.com/lovell/colour#readme
 
-### @img/sharp-libvips-linux-x64@1.3.4
+### @img/sharp-darwin-arm64@0.35.5
 
-- License: LGPL-3.0-or-later
+- License: Apache-2.0
 - Copyright: Lovell Fuller
 - Homepage: https://sharp.pixelplumbing.com
 
-### @img/sharp-linux-x64@0.35.5
+### @img/sharp-libvips-darwin-arm64@1.3.4
 
-- License: Apache-2.0
+- License: LGPL-3.0-or-later
 - Copyright: Lovell Fuller
 - Homepage: https://sharp.pixelplumbing.com
 
@@ -339,6 +349,11 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Justin Ridgewell
 - Homepage: https://github.com/jridgewell/sourcemaps/tree/main/packages/sourcemap-codec
 
+### @jridgewell/sourcemap-codec@1.6.0
+
+- License: MIT
+- Source: deno.lock (npm)
+
 ### @jridgewell/trace-mapping@0.3.31
 
 - License: MIT
@@ -350,6 +365,11 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Copyright: Justin Ridgewell
 - Homepage: https://github.com/jridgewell/sourcemaps/tree/main/packages/trace-mapping
+
+### @oxc-project/types@0.152.0
+
+- License: MIT
+- Source: deno.lock (npm)
 
 ### @poppinss/colors@4.1.6
 
@@ -369,7 +389,12 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Harminder Virk
 - Homepage: https://github.com/poppinss/exception#readme
 
-### @rollup/rollup-linux-x64-gnu@4.62.2
+### @rolldown/pluginutils@1.0.1
+
+- License: MIT
+- Source: deno.lock (npm)
+
+### @rollup/rollup-darwin-arm64@4.62.2
 
 - License: MIT
 - Copyright: Lukas Taegert-Atkinson
@@ -438,6 +463,11 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Homepage: https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/node
 
+### @types/node@26.6.4
+
+- License: MIT
+- Source: deno.lock (npm)
+
 ### @vitest/coverage-istanbul@4.1.11
 
 - License: MIT
@@ -479,6 +509,11 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Homepage: https://github.com/vitest-dev/vitest/tree/main/packages/utils
 
+### amqplib@2.2.0
+
+- License: MIT
+- Source: deno.lock (npm)
+
 ### assertion-error@2.0.1
 
 - License: MIT
@@ -489,6 +524,11 @@ These packages are used for development, test, or build tooling and are not bund
 
 - License: Apache-2.0
 - Homepage: https://github.com/web-platform-dx/baseline-browser-mapping#readme
+
+### baseline-browser-mapping@2.11.27
+
+- License: Apache-2.0
+- Source: deno.lock (npm)
 
 ### blake3-wasm@2.1.5
 
@@ -502,6 +542,11 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Andrey Sitnik
 - Homepage: https://github.com/browserslist/browserslist#readme
 
+### browserslist@4.29.3
+
+- License: MIT
+- Source: deno.lock (npm)
+
 ### buffer-from@1.1.2
 
 - License: MIT
@@ -513,11 +558,21 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Ben Briggs
 - Homepage: https://github.com/browserslist/caniuse-lite#readme
 
+### caniuse-lite@1.0.30001814
+
+- License: CC-BY-4.0
+- Source: deno.lock (npm)
+
 ### chai@6.2.2
 
 - License: MIT
 - Copyright: Jake Luer
 - Homepage: http://chaijs.com
+
+### chai@6.3.0
+
+- License: MIT
+- Source: deno.lock (npm)
 
 ### cjs-module-lexer@1.2.3
 
@@ -543,11 +598,26 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Drizzle Team
 - Homepage: https://orm.drizzle.team
 
+### drizzle-kit@0.31.11
+
+- License: MIT
+- Source: deno.lock (npm)
+
+### drizzle-orm@0.45.3
+
+- License: Apache-2.0
+- Source: deno.lock (npm)
+
 ### electron-to-chromium@1.5.401
 
 - License: ISC
 - Copyright: Kilian Valkhof
 - Homepage: https://github.com/Kilian/electron-to-chromium#readme
+
+### electron-to-chromium@1.5.444
+
+- License: ISC
+- Source: deno.lock (npm)
 
 ### error-stack-parser-es@1.0.5
 
@@ -560,10 +630,25 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Guy Bedford
 - Homepage: https://github.com/guybedford/es-module-lexer#readme
 
+### es-module-lexer@2.3.2
+
+- License: MIT
+- Source: deno.lock (npm)
+
+### esbuild@0.18.20
+
+- License: MIT
+- Source: deno.lock (npm)
+
 ### esbuild@0.25.12
 
 - License: MIT
 - Homepage: https://github.com/evanw/esbuild#readme
+
+### esbuild@0.28.1
+
+- License: MIT
+- Source: deno.lock (npm)
 
 ### escalade@3.2.0
 
@@ -582,11 +667,21 @@ These packages are used for development, test, or build tooling and are not bund
 - License: Apache-2.0
 - Homepage: https://github.com/mmkal/expect-type#readme
 
+### expect-type@1.4.0
+
+- License: Apache-2.0
+- Source: deno.lock (npm)
+
 ### fdir@6.5.0
 
 - License: MIT
 - Copyright: thecodrr
 - Homepage: https://github.com/thecodrr/fdir#readme
+
+### fsevents@2.3.3
+
+- License: MIT
+- Homepage: https://github.com/fsevents/fsevents
 
 ### gensync@1.0.0-beta.2
 
@@ -599,6 +694,11 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Copyright: Hiroki Osame
 - Homepage: https://github.com/privatenumber/get-tsconfig#readme
+
+### get-tsconfig@4.14.3
+
+- License: MIT
+- Source: deno.lock (npm)
 
 ### has-flag@4.0.0
 
@@ -654,6 +754,11 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Luke Edwards
 - Homepage: https://github.com/lukeed/kleur#readme
 
+### lightningcss@1.33.0
+
+- License: MPL-2.0
+- Source: deno.lock (npm)
+
 ### lru-cache@5.1.1
 
 - License: ISC
@@ -670,6 +775,11 @@ These packages are used for development, test, or build tooling and are not bund
 
 - License: MIT
 - Homepage: https://github.com/unjs/magicast#readme
+
+### magicast@0.5.5
+
+- License: MIT
+- Source: deno.lock (npm)
 
 ### make-dir@4.0.0
 
@@ -695,11 +805,26 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Sergey Rubanov
 - Homepage: https://github.com/chicoxyzzy/node-releases#readme
 
+### node-releases@2.0.57
+
+- License: MIT
+- Source: deno.lock (npm)
+
+### nodemailer@10.0.13
+
+- License: MIT-0
+- Source: deno.lock (npm)
+
 ### obug@2.1.4
 
 - License: MIT
 - Copyright: Kevin Deng
 - Homepage: https://github.com/sxzz/obug#readme
+
+### obug@2.2.1
+
+- License: MIT
+- Source: deno.lock (npm)
 
 ### path-to-regexp@6.3.0
 
@@ -723,6 +848,11 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Jon Schlinkert
 - Homepage: https://github.com/micromatch/picomatch
 
+### picomatch@4.0.7
+
+- License: MIT
+- Source: deno.lock (npm)
+
 ### postcss@8.5.28
 
 - License: MIT
@@ -741,6 +871,11 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Hiroki Osame
 - Homepage: https://github.com/privatenumber/resolve-pkg-maps#readme
 
+### rolldown@1.2.12
+
+- License: MIT
+- Source: deno.lock (npm)
+
 ### rollup@4.62.2
 
 - License: MIT
@@ -758,6 +893,11 @@ These packages are used for development, test, or build tooling and are not bund
 - License: ISC
 - Copyright: GitHub Inc.
 - Homepage: https://github.com/npm/node-semver#readme
+
+### sharp@0.35.2
+
+- License: Apache-2.0
+- Source: deno.lock (npm)
 
 ### sharp@0.35.5
 
@@ -799,6 +939,11 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Homepage: https://github.com/unjs/std-env#readme
 
+### std-env@4.3.0
+
+- License: MIT
+- Source: deno.lock (npm)
+
 ### supports-color@10.2.2
 
 - License: MIT
@@ -822,6 +967,11 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: James Garbutt
 - Homepage: https://github.com/tinylibs/tinyexec#readme
 
+### tinyexec@1.3.1
+
+- License: MIT
+- Source: deno.lock (npm)
+
 ### tinyglobby@0.2.17
 
 - License: MIT
@@ -833,17 +983,32 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Homepage: https://github.com/tinylibs/tinyrainbow#readme
 
+### tinyrainbow@3.2.0
+
+- License: MIT
+- Source: deno.lock (npm)
+
 ### tsx@4.22.4
 
 - License: MIT
 - Copyright: Hiroki Osame
 - Homepage: https://tsx.hirok.io
 
+### tsx@4.23.15
+
+- License: MIT
+- Source: deno.lock (npm)
+
 ### typescript@5.9.3
 
 - License: Apache-2.0
 - Copyright: Microsoft Corp.
 - Homepage: https://www.typescriptlang.org/
+
+### undici@7.29.0
+
+- License: MIT
+- Source: deno.lock (npm)
 
 ### undici@7.29.1
 
@@ -854,6 +1019,11 @@ These packages are used for development, test, or build tooling and are not bund
 
 - License: MIT
 - Homepage: https://undici.nodejs.org
+
+### undici-types@8.9.0
+
+- License: MIT
+- Source: deno.lock (npm)
 
 ### unenv@2.0.0-rc.24
 
@@ -866,11 +1036,21 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Andrey Sitnik
 - Homepage: https://github.com/browserslist/update-db#readme
 
+### update-browserslist-db@1.3.3
+
+- License: MIT
+- Source: deno.lock (npm)
+
 ### vite@6.4.3
 
 - License: MIT
 - Copyright: Evan You
 - Homepage: https://vite.dev
+
+### vite@8.3.2
+
+- License: MIT
+- Source: deno.lock (npm)
 
 ### vitest@4.1.11
 
@@ -906,6 +1086,11 @@ These packages are used for development, test, or build tooling and are not bund
 - License: ISC
 - Copyright: Isaac Z. Schlueter
 - Homepage: https://github.com/isaacs/yallist#readme
+
+### yaml@2.9.1
+
+- License: ISC
+- Source: deno.lock (npm)
 
 ### youch@4.1.0-beta.10
 
