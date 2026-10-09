@@ -1,6 +1,6 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertExists, assertThrows } from '@std/assert'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -30,8 +30,10 @@ import {
   service,
   slot,
   subnet,
+  stage,
   team,
   teammate,
+  upgrade,
   user,
   workspace,
 } from '../../db/schema.ts'
@@ -84,6 +86,50 @@ const dbUrl = getDatabaseUrl()
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
+
+test('schema pins foreign keys that reference server.id', async () => {
+  if (!dbUrl) {
+    skipWithoutDatabase('schema pins foreign keys that reference server.id')
+    return
+  }
+  const db = createDenoDb()
+  try {
+    const rows = await db.execute<{
+      table_name: string
+      column_name: string
+      delete_rule: string
+    }>(sql`
+      SELECT kcu.table_name, kcu.column_name, rc.delete_rule
+      FROM information_schema.table_constraints tc
+      JOIN information_schema.key_column_usage kcu
+        ON tc.constraint_name = kcu.constraint_name
+        AND tc.table_schema = kcu.table_schema
+      JOIN information_schema.referential_constraints rc
+        ON tc.constraint_name = rc.constraint_name
+        AND tc.table_schema = rc.constraint_schema
+      JOIN information_schema.constraint_column_usage ccu
+        ON ccu.constraint_name = tc.constraint_name
+        AND ccu.table_schema = tc.table_schema
+      WHERE tc.constraint_type = 'FOREIGN KEY'
+        AND tc.table_schema = 'public'
+        AND ccu.table_name = 'server'
+        AND ccu.column_name = 'id'
+        AND kcu.column_name = 'server_id'
+      ORDER BY kcu.table_name
+    `)
+    assertEquals(rows.length, 26)
+    const names = rows.map((row) => row.table_name)
+    assertEquals(new Set(names).size, names.length)
+    const onDelete = new Map(rows.map((row) => [row.table_name, row.delete_rule]))
+    assertEquals(onDelete.get('backup'), 'SET NULL')
+    assertEquals(onDelete.get('license'), 'SET NULL')
+    assertEquals(onDelete.get('stage'), 'CASCADE')
+    assertEquals(onDelete.get('managed'), 'RESTRICT')
+    assertEquals(onDelete.get('environment'), 'RESTRICT')
+  } finally {
+    await endDbConnection(db)
+  }
+})
 
 type ErrorJson = {
   error: string
@@ -3789,6 +3835,68 @@ test('GET /servers/:id still issues exactly one cached select after labels are a
     assertEquals(recordingCache.readModels, ['server-detail'])
     assertEquals(readDb.selectCallCount, 1)
   })
+})
+
+test('DELETE /servers/:id with forgetResources deletes the server when a fleet upgrade stage row references it', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const now = new Date().toISOString()
+      const [upgradeRow] = await db
+        .insert(upgrade)
+        .values({
+          createdAt: now,
+          updatedAt: now,
+          source: 'manual',
+          channel: 'release',
+          status: 'succeeded',
+          finishedAt: now,
+        })
+        .returning({ id: upgrade.id })
+      await db.insert(stage).values({
+        upgradeId: upgradeRow!.id,
+        serverId,
+        unit: 'daemon',
+        status: 'done',
+        statusChangedAt: now,
+      })
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(res.status, 200)
+      assertEquals(registry.purgedIds, [serverId])
+    }
+  )
+})
+
+test('DELETE /servers/:id with forgetResources tears down every system environment on the host', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const hosting = await systemHierarchy.ensureSystemHierarchy(db, { organizationId, serverId })
+      const managedIngress = await systemHierarchy.ensureManagedIngressHierarchy(db, {
+        organizationId,
+        serverId,
+      })
+      const now = new Date().toISOString()
+      await db
+        .update(container)
+        .set({ status: 'exited', updatedAt: now })
+        .where(inArray(container.id, [hosting.containerRowId, managedIngress.containerRowId]))
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(res.status, 200)
+      assertEquals(registry.purgedIds, [serverId])
+
+      const envIds = await systemHierarchy.listSystemEnvironmentIdsForServer(db, serverId)
+      assertEquals(envIds.length, 0)
+    }
+  )
 })
 
 test("DELETE /servers/:id raises server.deleted once, with the server's name, to the managers' bell", async () => {

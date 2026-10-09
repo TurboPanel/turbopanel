@@ -72,7 +72,12 @@ import { revokeLicense } from '../../features/licenses/license.ts'
 import { recomputeOrganizationAssignments } from '../../features/tiers/assignment-records.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
-import { hierarchyDeleteHasChildrenResponse, runHierarchyDelete } from '../hierarchy-delete.ts'
+import {
+  hierarchyDeleteHasChildrenResponse,
+  peekHierarchyDeleteFkViolation,
+  runHierarchyDelete,
+} from '../hierarchy-delete.ts'
+import { purgeServerRestrictForeignKeys } from './server-fk.ts'
 import * as systemHierarchy from '../../features/system/hierarchy.ts'
 import { enqueueSystemReconcile } from '../../features/system/reconcile.ts'
 import type { SystemReconcileAction } from '../../contracts/commands/schemas.ts'
@@ -695,32 +700,32 @@ async function assertSystemEnvironmentIdleOrBlocked(
   c: Context,
   db: Db,
   serverId: string
-): Promise<{ systemEnvironmentId: string | null } | Response> {
-  const systemEnvironmentId = await systemHierarchy.findSystemEnvironmentForServer(db, serverId)
-  if (!systemEnvironmentId) return { systemEnvironmentId: null }
+): Promise<{ systemEnvironmentIds: string[] } | Response> {
+  const systemEnvironmentIds = await systemHierarchy.listSystemEnvironmentIdsForServer(db, serverId)
+  if (systemEnvironmentIds.length === 0) return { systemEnvironmentIds: [] }
 
   const [serverRow] = await db
     .select({ isConnected: server.isConnected })
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1)
-  if (
-    await systemEnvironmentHasActiveContainers(
-      db,
-      systemEnvironmentId,
-      serverRow?.isConnected ?? false
+  const serverConnected = serverRow?.isConnected ?? false
+  const activeOnSystemEnvs = await Promise.all(
+    systemEnvironmentIds.map((environmentId) =>
+      systemEnvironmentHasActiveContainers(db, environmentId, serverConnected)
     )
-  ) {
+  )
+  if (activeOnSystemEnvs.some(Boolean)) {
     return hierarchyDeleteHasChildrenResponse(c)
   }
-  return { systemEnvironmentId }
+  return { systemEnvironmentIds }
 }
 
 async function deleteServerWithSystemSubtree(
   db: Db,
   serverId: string,
   organizationId: string,
-  systemEnvironmentId: string | null,
+  systemEnvironmentIds: readonly string[],
   forgetResources: boolean
 ): Promise<{
   status: 'ok' | 'has_children' | 'online' | 'blockers'
@@ -728,26 +733,31 @@ async function deleteServerWithSystemSubtree(
   blockers: ServerDeleteBlocker[]
   blockedDatabases: ServerForgetBlockedDatabase[]
   blockedEnvironments: ServerForgetBlockedEnvironment[]
+  fkViolation?: { referringTable: string; constraintName?: string }
 }> {
   let forgotten: ForgottenServerResources | null = null
   try {
-    const status = await runHierarchyDelete(db, async (tx) => {
+    const deleteResult = await runHierarchyDelete(db, async (tx) => {
       if (forgetResources) {
         await assertServerOfflineForForget(tx, serverId)
         forgotten = await forgetServerOwnedResources(tx, serverId, organizationId)
       }
-      if (systemEnvironmentId) {
-        await systemHierarchy.deleteSystemEnvironmentSubtree(tx, systemEnvironmentId)
-      }
+      await Promise.all(
+        systemEnvironmentIds.map((environmentId) =>
+          systemHierarchy.deleteSystemEnvironmentSubtree(tx, environmentId)
+        )
+      )
       await deleteServerFabricMembership(tx, serverId)
+      await purgeServerRestrictForeignKeys(tx, serverId)
       await tx.delete(server).where(eq(server.id, serverId))
     })
     return {
-      status,
-      forgotten: status === 'ok' ? forgotten : null,
+      status: deleteResult === 'ok' ? 'ok' : 'has_children',
+      forgotten: deleteResult === 'ok' ? forgotten : null,
       blockers: [],
       blockedDatabases: [],
       blockedEnvironments: [],
+      ...(deleteResult === 'has_children' ? { fkViolation: peekHierarchyDeleteFkViolation() } : {}),
     }
   } catch (error) {
     if (isServerOnlineDuringForgetError(error)) {
@@ -1681,7 +1691,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       db,
       id,
       organizationId,
-      idleOrBlocked.systemEnvironmentId,
+      idleOrBlocked.systemEnvironmentIds,
       forgetResources
     )
     if (result.status === 'online') {
@@ -1696,7 +1706,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       )
     }
     if (result.status === 'has_children') {
-      return hierarchyDeleteHasChildrenResponse(c)
+      return hierarchyDeleteHasChildrenResponse(c, result.fkViolation)
     }
 
     await reconcileFabricAfterServerDelete(c, db, organizationId, session.userId)
