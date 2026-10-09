@@ -67,11 +67,7 @@ test('haClusterMemberRole and replicaClass stay on the wire vocabulary', () => {
 })
 
 test('resolveLocalHaMemberDial prefers the allocated container name', () => {
-  const named = resolveLocalHaMemberDial(
-    member(),
-    new Map([[1, 'pg-1']]),
-    5432,
-  )
+  const named = resolveLocalHaMemberDial(member(), new Map([[1, 'pg-1']]), 5432)
   assertEquals(named, { host: 'pg-1', port: 5432, containerName: 'pg-1' })
 
   const fallback = resolveLocalHaMemberDial(member(), new Map(), 5433)
@@ -80,9 +76,7 @@ test('resolveLocalHaMemberDial prefers the allocated container name', () => {
 
 test('resolveRemoteHaMemberDial requires a resolved endpoint and private port', () => {
   const remote = member({ id: 'mem-remote', serverId: SERVER_B, privatePort: 15432 })
-  const ok: HaEndpointMap = new Map([
-    [SERVER_B, { address: REMOTE_HOST, transport: 'datacenter' }],
-  ])
+  const ok: HaEndpointMap = new Map([[SERVER_B, { address: REMOTE_HOST, transport: 'datacenter' }]])
   assertEquals(resolveRemoteHaMemberDial(remote, ok), {
     host: REMOTE_HOST,
     port: 15432,
@@ -98,7 +92,7 @@ test('resolveRemoteHaMemberDial requires a resolved endpoint and private port', 
 
   assertEquals(
     resolveRemoteHaMemberDial(member({ serverId: SERVER_B, privatePort: null }), ok),
-    null,
+    null
   )
 })
 
@@ -106,13 +100,7 @@ test('resolveHaMemberDial splits local versus remote members', () => {
   const endpoints: HaEndpointMap = new Map([
     [SERVER_B, { address: REMOTE_HOST, transport: 'fabric' }],
   ])
-  const local = resolveHaMemberDial(
-    member(),
-    SERVER_A,
-    new Map([[1, 'pg-1']]),
-    5432,
-    endpoints,
-  )
+  const local = resolveHaMemberDial(member(), SERVER_A, new Map([[1, 'pg-1']]), 5432, endpoints)
   assertEquals(local?.containerName, 'pg-1')
 
   const remote = resolveHaMemberDial(
@@ -120,16 +108,17 @@ test('resolveHaMemberDial splits local versus remote members', () => {
     SERVER_A,
     new Map(),
     5432,
-    endpoints,
+    endpoints
   )
   assertEquals(remote, { host: REMOTE_HOST, port: 15432 })
 })
 
 test('toHaClusterMember copies dial fields and promotion rule', () => {
-  const mapped = toHaClusterMember(
-    member({ replicaClass: 'failover' }),
-    { host: 'pg-1', port: 5432, containerName: 'pg-1' },
-  )
+  const mapped = toHaClusterMember(member({ replicaClass: 'failover' }), {
+    host: 'pg-1',
+    port: 5432,
+    containerName: 'pg-1',
+  })
   assertEquals(mapped.memberId, 'mem-local')
   assertEquals(mapped.role, 'primary')
   assertEquals(mapped.replicaClass, 'failover')
@@ -146,14 +135,18 @@ test('haIdentity and haTeardownIfPresent describe an absent Orchestrator', () =>
   })
   assertEquals(haTeardownIfPresent(SERVER_A, null, MANAGED_NETWORK), null)
 
-  const payload = haTeardownIfPresent(SERVER_A, {
-    workspaceId: 'ws',
-    projectId: 'proj',
-    environmentId: 'env',
-    serviceId: 'svc-ha',
-    containerRowId: 'row',
-    containerName: 'svc-ha-ha',
-  }, MANAGED_NETWORK)
+  const payload = haTeardownIfPresent(
+    SERVER_A,
+    {
+      workspaceId: 'ws',
+      projectId: 'proj',
+      environmentId: 'env',
+      serviceId: 'svc-ha',
+      containerRowId: 'row',
+      containerName: 'svc-ha-ha',
+    },
+    MANAGED_NETWORK
+  )
   assertEquals(payload?.desired, 'absent')
   assertEquals(payload?.serverId, SERVER_A)
   assertEquals(payload?.managedNetwork, MANAGED_NETWORK)
@@ -161,14 +154,18 @@ test('haIdentity and haTeardownIfPresent describe an absent Orchestrator', () =>
   assertEquals(payload?.clusters, [])
   assertEquals(payload?.raft, null)
 
-  const unnamed = haTeardownIfPresent(SERVER_A, {
-    workspaceId: 'ws',
-    projectId: 'proj',
-    environmentId: 'env',
-    serviceId: 'svc-ha',
-    containerRowId: 'row',
-    containerName: undefined as unknown as string,
-  }, MANAGED_NETWORK)
+  const unnamed = haTeardownIfPresent(
+    SERVER_A,
+    {
+      workspaceId: 'ws',
+      projectId: 'proj',
+      environmentId: 'env',
+      serviceId: 'svc-ha',
+      containerRowId: 'row',
+      containerName: undefined as unknown as string,
+    },
+    MANAGED_NETWORK
+  )
   assertEquals(unnamed?.identity.containerName, 'svc-ha')
 })
 
@@ -193,7 +190,7 @@ test('enqueueManagedHaReconcile is not_needed when the server has no organizatio
       actorId: 'actor-1',
       secretsConfig: secrets,
       dataEncryptionSecrets,
-    },
+    }
   )
   assertEquals(result, { ok: false, reason: 'not_needed' })
 })

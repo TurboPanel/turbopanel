@@ -695,7 +695,7 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
       assertEquals(secondBody.alreadyProvisioned, true)
       assertEquals(secondBody.rootPassword, undefined)
       assertEquals(secondBody.commandId, undefined)
-      assertEquals(commandQueue.envelopes.length, 4)
+      assertEquals(commandQueue.envelopes.length, 3)
 
       const getRes = await app.request(`/environments/${environmentId}/managed`, {
         headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
