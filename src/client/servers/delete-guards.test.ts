@@ -16,6 +16,7 @@ import {
   storageCopy,
   variable,
 } from '../../db/schema.ts'
+import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
 import { isServerConnectedStoredOrLive } from '../../daemon/cell/server-status.ts'
 import {
   assertServerOfflineForForget,
@@ -31,6 +32,7 @@ import {
   loadServerDeletePreview,
   parseForgetResourcesFlag,
   planServerForget,
+  systemContainerRowBlocksServerDelete,
   SERVER_DELETE_BLOCKER_LABELS,
   SERVER_HAS_BLOCKERS_CODE,
   SERVER_HAS_BLOCKERS_ERROR,
@@ -137,6 +139,14 @@ function deleteBlockersDb(opts: {
   /** Rows returned on the second and later `listEnvironmentOtherServerIds` scans. */
   environmentOtherServerTouchesAfterPlan?: Array<{ environmentId: string; serverId: string }>
   serverNameRows?: Array<{ id: string; name: string | null }>
+  systemContainerCount?: number
+  systemContainerRows?: Array<{
+    id: string
+    name: string
+    status: string
+    serviceName: string | null
+    containerId: string | null
+  }>
 }): Db {
   let executeCalls = 0
   let presenceListPass = 0
@@ -283,9 +293,19 @@ function deleteBlockersDb(opts: {
         }
       },
     }),
-    execute: () => {
+    execute: (query: unknown) => {
       executeCalls += 1
-      if (executeCalls === 1) {
+      const sqlText = JSON.stringify(query)
+      const isSystemContainerQuery =
+        sqlText.includes('e.server_id') && sqlText.includes(WORKSPACE_KIND_TURBOPANEL)
+      const isCountQuery = sqlText.includes('count(*)')
+      if (isSystemContainerQuery) {
+        if (isCountQuery) {
+          return Promise.resolve([{ value: opts.systemContainerCount ?? 0 }])
+        }
+        return Promise.resolve(opts.systemContainerRows ?? [])
+      }
+      if (isCountQuery) {
         return Promise.resolve([{ value: opts.containerCount ?? 0 }])
       }
       return Promise.resolve(opts.containerRows ?? [])
@@ -295,6 +315,52 @@ function deleteBlockersDb(opts: {
 
 test('colocatedServerDeleteBlockedReason returns the stable operator copy', () => {
   assertEquals(colocatedServerDeleteBlockedReason(), COLOCATED_SERVER_DELETE_BLOCKED_REASON)
+})
+
+test('systemContainerRowBlocksServerDelete treats pending-without-id as blocking only when connected', () => {
+  assertEquals(
+    systemContainerRowBlocksServerDelete({ status: 'pending', containerId: null }, false),
+    false
+  )
+  assertEquals(
+    systemContainerRowBlocksServerDelete({ status: 'pending', containerId: null }, true),
+    true
+  )
+  assertEquals(
+    systemContainerRowBlocksServerDelete({ status: 'running', containerId: 'abc' }, false),
+    true
+  )
+})
+
+test('loadServerDeletePreview lists system containers separately from app leftovers', async () => {
+  const preview = await loadServerDeletePreview(
+    deleteBlockersDb({
+      systemContainerCount: 1,
+      systemContainerRows: [
+        {
+          id: 'sys-ctr-1',
+          name: 'ingress-1',
+          status: 'running',
+          serviceName: 'caddy',
+          containerId: 'docker-1',
+        },
+      ],
+    }),
+    'server-1',
+    'org-1',
+    { online: false, colocated: false }
+  )
+  assertEquals(preview.systemContainers, {
+    items: [
+      {
+        id: 'sys-ctr-1',
+        name: 'ingress-1',
+        status: 'running',
+        serviceName: 'caddy',
+      },
+    ],
+    more: 0,
+  })
 })
 
 test('serverDeleteBlockersResponse returns 409 with code and blockers', async () => {
@@ -435,6 +501,7 @@ test('loadServerDeletePreview lists leftovers and sets canForget when offline', 
     ],
     more: 0,
   })
+  assertEquals(preview.systemContainers, { items: [], more: 0 })
   assertEquals(preview.networks, {
     items: [{ id: 'net-1', name: 'leftover-net' }],
     more: 0,

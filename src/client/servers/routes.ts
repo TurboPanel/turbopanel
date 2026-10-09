@@ -19,7 +19,6 @@ import {
 import { metricsDeploymentKindForRuntime } from '../../contracts/capability-plan.ts'
 import { loadTierPlacementsForServers } from '../../features/tiers/tier-enforcement.ts'
 import { loadServerLayoutPaths } from '../../features/servers/server-topology-records.ts'
-import { isActiveContainerStatus } from '../../features/projects/project-delete.ts'
 import { cachedServerDetailReadModel } from '../../query-cache/read-models/server-detail.ts'
 import { listServerLabels } from '../../features/servers/label-records.ts'
 import { fetchDaemonServerCell } from '../../daemon/cell/server-diagnostics.ts'
@@ -48,7 +47,7 @@ import {
   isDaemonKeyActive,
   revokeDaemonKey,
 } from '../../features/servers/server-identity-db.ts'
-import { container, datacenter, license, organization, server, service } from '../../db/schema.ts'
+import { datacenter, license, organization, server } from '../../db/schema.ts'
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveInstanceRevision } from '../../app/build-info.ts'
 import { isExplicitDevelopmentMode } from '../../lib/dev-mode.ts'
@@ -92,6 +91,7 @@ import {
   isServerHasBlockersDuringForgetError,
   isServerOnlineDuringForgetError,
   loadServerDeletePreview,
+  listSystemContainersBlockingServerDelete,
   parseForgetResourcesFlag,
   planServerForget,
   type ServerDeleteBlocker,
@@ -99,6 +99,7 @@ import {
   type ServerForgetBlockedDatabase,
   type ServerForgetBlockedEnvironment,
   serverOnlineForgetBlockedResponse,
+  serverSystemContainersDeleteBlockedResponse,
 } from './delete-guards.ts'
 import { resolveColocatedServerId } from '../authn/install-state.ts'
 import { hasActiveColocatedLicenseBinding, resolveColocatedServerIdSet } from './colocated.ts'
@@ -664,58 +665,34 @@ async function enqueueHostingReconcileBestEffort(
   }
 }
 
-async function systemEnvironmentHasActiveContainers(
-  db: Db,
-  systemEnvironmentId: string,
-  serverConnected: boolean
-): Promise<boolean> {
-  const serviceRows = await db
-    .select({ id: service.id })
-    .from(service)
-    .where(eq(service.environmentId, systemEnvironmentId))
-  const serviceIds = serviceRows.map((svc) => svc.id)
-  if (serviceIds.length === 0) return false
-
-  const containerRows = await db
-    .select({ status: container.status, containerId: container.containerId })
-    .from(container)
-    .where(inArray(container.serviceId, serviceIds))
-  // A row still `pending` with no runtime container id was allocated but never
-  // started (for example the host went offline before first boot). On an
-  // offline server nothing can start it, so it must not block deleting the
-  // server. On a connected server a start may be in flight, so it still blocks.
-  return containerRows.some(
-    (row) =>
-      isActiveContainerStatus(row.status) &&
-      (serverConnected || !(row.status === 'pending' && row.containerId === null))
-  )
-}
-
 /**
  * Blocks delete while system hosting-ingress containers are still active.
- * Operator must let hosting-disable reconciliation stop ingress first.
+ * On an offline host, `forgetResources` skips this — stale rows are removed
+ * with the system subtree. Otherwise every refusal lists the containers.
  */
 async function assertSystemEnvironmentIdleOrBlocked(
   c: Context,
   db: Db,
-  serverId: string
+  serverId: string,
+  opts: Readonly<{ forgetResources: boolean; serverConnected: boolean }>
 ): Promise<{ systemEnvironmentIds: string[] } | Response> {
   const systemEnvironmentIds = await systemHierarchy.listSystemEnvironmentIdsForServer(db, serverId)
   if (systemEnvironmentIds.length === 0) return { systemEnvironmentIds: [] }
 
-  const [serverRow] = await db
-    .select({ isConnected: server.isConnected })
-    .from(server)
-    .where(eq(server.id, serverId))
-    .limit(1)
-  const serverConnected = serverRow?.isConnected ?? false
-  const activeOnSystemEnvs = await Promise.all(
-    systemEnvironmentIds.map((environmentId) =>
-      systemEnvironmentHasActiveContainers(db, environmentId, serverConnected)
-    )
+  if (opts.forgetResources && !opts.serverConnected) {
+    return { systemEnvironmentIds }
+  }
+
+  const blockingContainers = await listSystemContainersBlockingServerDelete(
+    db,
+    serverId,
+    opts.serverConnected
   )
-  if (activeOnSystemEnvs.some(Boolean)) {
-    return hierarchyDeleteHasChildrenResponse(c)
+  if (blockingContainers.length > 0) {
+    return serverSystemContainersDeleteBlockedResponse(c, {
+      serverConnected: opts.serverConnected,
+      containers: blockingContainers,
+    })
   }
   return { systemEnvironmentIds }
 }
@@ -1682,7 +1659,11 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       .where(eq(license.serverId, id))
       .limit(1)
 
-    const idleOrBlocked = await assertSystemEnvironmentIdleOrBlocked(c, db, id)
+    const serverConnected = await isServerConnectedStoredOrLive(db, registry, id, row.isConnected)
+    const idleOrBlocked = await assertSystemEnvironmentIdleOrBlocked(c, db, id, {
+      forgetResources,
+      serverConnected,
+    })
     if (idleOrBlocked instanceof Response) return idleOrBlocked
 
     const result = await deleteServerWithSystemSubtree(

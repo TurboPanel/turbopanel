@@ -1,7 +1,14 @@
 import { and, asc, count, eq, inArray, isNotNull, ne, or, sql } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
-import { dropEnvironmentSubtreeInTx } from '../../features/projects/project-delete.ts'
+import {
+  dropEnvironmentSubtreeInTx,
+  isActiveContainerStatus,
+} from '../../features/projects/project-delete.ts'
+import {
+  HIERARCHY_DELETE_HAS_CHILDREN_CODE,
+  HIERARCHY_DELETE_HAS_CHILDREN_ERROR,
+} from '../hierarchy-delete.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import {
   container,
@@ -122,6 +129,11 @@ export const SERVER_ONLINE_CODE = 'server_online'
 export const SERVER_ONLINE_ERROR =
   'Cannot forget leftover resources while this server is still connected'
 
+export const SERVER_SYSTEM_CONTAINERS_ACTIVE_CODE = 'server_system_containers_active'
+
+export const SERVER_SYSTEM_CONTAINERS_ACTIVE_ERROR =
+  'This server still has hosting containers marked as running. The host is offline, so use Host is gone → Forget these and delete server.'
+
 export const SERVER_DELETE_PREVIEW_LIST_CAP = 50
 
 export const COLOCATED_SERVER_DELETE_BLOCKED_REASON =
@@ -219,6 +231,8 @@ export type ServerDeletePreview = {
   colocated: boolean
   blockers: ServerDeleteBlocker[]
   containers: CappedPreviewList<ServerDeletePreviewContainer>
+  /** Hosting-ingress system containers on this server that forget will remove. */
+  systemContainers: CappedPreviewList<ServerDeletePreviewContainer>
   networks: CappedPreviewList<ServerDeletePreviewNetwork>
   ips: CappedPreviewList<ServerDeletePreviewIp>
   environments: CappedPreviewList<ServerForgetEnvironment>
@@ -284,6 +298,95 @@ export function nonSystemContainerWhere(serverId: string) {
             AND w.kind = ${WORKSPACE_KIND_TURBOPANEL}
         )
     `
+}
+
+function systemContainerFromWhere(serverId: string) {
+  return sql`
+      FROM container c
+      INNER JOIN service s ON s.id = c.service_id
+      INNER JOIN environment e ON e.id = s.environment_id
+      INNER JOIN project p ON p.id = e.project_id
+      INNER JOIN workspace w ON w.id = p.workspace_id
+      WHERE e.server_id = ${serverId}::uuid
+        AND w.kind = ${WORKSPACE_KIND_TURBOPANEL}
+    `
+}
+
+type SystemContainerRow = {
+  id: string
+  name: string
+  status: string
+  serviceName: string | null
+  containerId: string | null
+}
+
+/** Whether a system ingress container still blocks server delete. */
+export function systemContainerRowBlocksServerDelete(
+  row: Pick<SystemContainerRow, 'status' | 'containerId'>,
+  serverConnected: boolean
+): boolean {
+  return (
+    isActiveContainerStatus(row.status) &&
+    (serverConnected || !(row.status === 'pending' && row.containerId === null))
+  )
+}
+
+async function listSystemContainersOnServer(
+  db: Db,
+  serverId: string,
+  limit?: number
+): Promise<SystemContainerRow[]> {
+  const limitSql = limit === undefined ? sql`` : sql`LIMIT ${limit}`
+  const rows = await db.execute<SystemContainerRow>(sql`
+    SELECT
+      c.id,
+      c.container_name AS name,
+      c.status,
+      c.compose_service_name AS "serviceName",
+      c.container_id AS "containerId"
+    ${systemContainerFromWhere(serverId)}
+    ORDER BY c.container_name ASC
+    ${limitSql}
+  `)
+  return rows
+}
+
+async function countSystemContainersOnServer(db: Db, serverId: string): Promise<number> {
+  const [row] = await db.execute<{ value: number | string }>(sql`
+    SELECT count(*)::int AS value
+    ${systemContainerFromWhere(serverId)}
+  `)
+  return Number(row?.value ?? 0)
+}
+
+/** System ingress containers that still block delete (unless forget on an offline host). */
+export async function listSystemContainersBlockingServerDelete(
+  db: Db,
+  serverId: string,
+  serverConnected: boolean
+): Promise<ServerDeletePreviewContainer[]> {
+  const rows = await listSystemContainersOnServer(db, serverId)
+  return rows
+    .filter((row) => systemContainerRowBlocksServerDelete(row, serverConnected))
+    .map((row) => {
+      const item: ServerDeletePreviewContainer = {
+        id: row.id,
+        name: row.name,
+        status: row.status,
+      }
+      if (row.serviceName) item.serviceName = row.serviceName
+      return item
+    })
+}
+
+function mapSystemContainerPreviewRow(row: SystemContainerRow): ServerDeletePreviewContainer {
+  const item: ServerDeletePreviewContainer = {
+    id: row.id,
+    name: row.name,
+    status: row.status,
+  }
+  if (row.serviceName) item.serviceName = row.serviceName
+  return item
 }
 
 export function notSystemWorkspace() {
@@ -1052,6 +1155,17 @@ export async function loadServerDeletePreview(
     }),
     containerTotal
   )
+
+  const systemContainerTotal = await countSystemContainersOnServer(db, serverId)
+  const systemContainerRows =
+    systemContainerTotal === 0
+      ? []
+      : await listSystemContainersOnServer(db, serverId, SERVER_DELETE_PREVIEW_LIST_CAP)
+  const systemContainers = capPreviewList(
+    systemContainerRows.map(mapSystemContainerPreviewRow),
+    systemContainerTotal
+  )
+
   const networks = capPreviewList(
     networkRows.map((row) => ({ id: row.id, name: row.name ?? '' })),
     networkTotal
@@ -1072,6 +1186,7 @@ export async function loadServerDeletePreview(
     colocated: opts.colocated,
     blockers,
     containers,
+    systemContainers,
     networks,
     ips,
     environments: capPreviewList(plan.environments),
@@ -1097,6 +1212,37 @@ export function serverOnlineForgetBlockedResponse(c: Context): Response {
     {
       error: SERVER_ONLINE_ERROR,
       code: SERVER_ONLINE_CODE,
+    },
+    409
+  )
+}
+
+export function serverSystemContainersDeleteBlockedResponse(
+  c: Context,
+  opts: Readonly<{
+    serverConnected: boolean
+    containers: readonly ServerDeletePreviewContainer[]
+  }>
+): Response {
+  const blockers = [...opts.containers]
+  if (blockers.length === 0) {
+    throw new Error('serverSystemContainersDeleteBlockedResponse requires blockers')
+  }
+  if (opts.serverConnected) {
+    return c.json(
+      {
+        error: HIERARCHY_DELETE_HAS_CHILDREN_ERROR,
+        code: HIERARCHY_DELETE_HAS_CHILDREN_CODE,
+        blockers,
+      },
+      409
+    )
+  }
+  return c.json(
+    {
+      error: SERVER_SYSTEM_CONTAINERS_ACTIVE_ERROR,
+      code: SERVER_SYSTEM_CONTAINERS_ACTIVE_CODE,
+      blockers,
     },
     409
   )
