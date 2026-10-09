@@ -17,8 +17,15 @@ export type HierarchyDeleteFkViolation = {
   constraintName?: string
 }
 
-export type HierarchyDeleteResult =
-  { status: 'ok' } | { status: 'has_children'; violation: HierarchyDeleteFkViolation }
+/** Result of {@link runHierarchyDelete} (string form keeps legacy call sites unchanged). */
+export type HierarchyDeleteResult = 'ok' | 'has_children'
+
+let lastHierarchyDeleteFkViolation: HierarchyDeleteFkViolation | undefined
+
+/** FK detail from the most recent `has_children` result; cleared on the next delete run. */
+export function peekHierarchyDeleteFkViolation(): HierarchyDeleteFkViolation | undefined {
+  return lastHierarchyDeleteFkViolation
+}
 
 function getPostgresErrorCode(error: unknown): string | undefined {
   if (!error || typeof error !== 'object') return undefined
@@ -85,12 +92,14 @@ export async function runHierarchyDelete(
   db: Db,
   deleteOp: (tx: Db) => Promise<void>
 ): Promise<HierarchyDeleteResult> {
+  lastHierarchyDeleteFkViolation = undefined
   try {
     await db.transaction(deleteOp)
-    return { status: 'ok' }
+    return 'ok'
   } catch (error) {
     if (!isForeignKeyViolation(error)) throw error
     const violation = parsePostgresForeignKeyViolation(error)
+    lastHierarchyDeleteFkViolation = violation ?? { referringTable: 'child resources' }
     if (violation?.constraintName) {
       compatLogWarn(
         'hierarchy-delete',
@@ -102,10 +111,7 @@ export async function runHierarchyDelete(
         `server delete blocked by FK on ${violation.referringTable}`
       )
     }
-    return {
-      status: 'has_children',
-      violation: violation ?? { referringTable: 'child resources' },
-    }
+    return 'has_children'
   }
 }
 
@@ -127,6 +133,6 @@ export function hierarchyDeleteHasChildrenResponseIfNeeded(
   c: Context,
   result: HierarchyDeleteResult
 ): Response | null {
-  if (result.status !== 'has_children') return null
-  return hierarchyDeleteHasChildrenResponse(c, result.violation)
+  if (result !== 'has_children') return null
+  return hierarchyDeleteHasChildrenResponse(c, peekHierarchyDeleteFkViolation())
 }

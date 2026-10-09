@@ -72,7 +72,11 @@ import { revokeLicense } from '../../features/licenses/license.ts'
 import { recomputeOrganizationAssignments } from '../../features/tiers/assignment-records.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
-import { hierarchyDeleteHasChildrenResponse, runHierarchyDelete } from '../hierarchy-delete.ts'
+import {
+  hierarchyDeleteHasChildrenResponse,
+  peekHierarchyDeleteFkViolation,
+  runHierarchyDelete,
+} from '../hierarchy-delete.ts'
 import { purgeServerRestrictForeignKeys } from './server-fk.ts'
 import * as systemHierarchy from '../../features/system/hierarchy.ts'
 import { enqueueSystemReconcile } from '../../features/system/reconcile.ts'
@@ -744,12 +748,12 @@ async function deleteServerWithSystemSubtree(
       await tx.delete(server).where(eq(server.id, serverId))
     })
     return {
-      status: deleteResult.status === 'ok' ? 'ok' : 'has_children',
-      forgotten: deleteResult.status === 'ok' ? forgotten : null,
+      status: deleteResult === 'ok' ? 'ok' : 'has_children',
+      forgotten: deleteResult === 'ok' ? forgotten : null,
       blockers: [],
       blockedDatabases: [],
       blockedEnvironments: [],
-      ...(deleteResult.status === 'has_children' ? { fkViolation: deleteResult.violation } : {}),
+      ...(deleteResult === 'has_children' ? { fkViolation: peekHierarchyDeleteFkViolation() } : {}),
     }
   } catch (error) {
     if (isServerOnlineDuringForgetError(error)) {

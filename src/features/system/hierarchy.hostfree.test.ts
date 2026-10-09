@@ -17,7 +17,6 @@ import {
   ensureSystemHierarchy,
   ensureSystemWorkspace,
   findSystemEnvironmentForServer,
-  listSystemEnvironmentIdsForServer,
   isSystemSelfHostComposeServiceName,
   SYSTEM_HOSTING_INGRESS_COMPONENT,
   SYSTEM_MANAGED_HA_COMPONENT,
@@ -199,13 +198,6 @@ test('findSystemEnvironmentForServer returns first match or null', async () => {
     execute: () => [],
   } as unknown as Db
   assertEquals(await findSystemEnvironmentForServer(miss, 'srv'), null)
-})
-
-test('listSystemEnvironmentIdsForServer returns every system environment on the server', async () => {
-  const db = {
-    execute: () => [{ id: 'env-a' }, { id: 'env-b' }],
-  } as unknown as Db
-  assertEquals(await listSystemEnvironmentIdsForServer(db, 'srv'), ['env-a', 'env-b'])
 })
 
 test('ensureSystemWorkspace returns insert id or existing row', async () => {
