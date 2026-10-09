@@ -121,9 +121,17 @@ async function loadRotationTargetExistence(
   db: Db,
   organizationId: string,
   targets: OrganizationRotationTargets,
+  rowRefs: { serverIds: readonly string[]; managedIds: readonly string[] },
 ): Promise<TargetExistence> {
-  const managedIds = [...new Set(targets.managedIds)];
-  const serverIds = [...new Set(targets.members.map((m) => m.serverId))];
+  const managedIds = [
+    ...new Set([...targets.managedIds, ...rowRefs.managedIds]),
+  ];
+  const serverIds = [
+    ...new Set([
+      ...targets.members.map((m) => m.serverId),
+      ...rowRefs.serverIds,
+    ]),
+  ];
 
   const managedRows = managedIds.length === 0
     ? []
@@ -233,7 +241,24 @@ function reconcileIngressAndBindingRows(
   existence: TargetExistence,
 ): void {
   for (const row of rows) {
-    if (row.kind === "ingress" || row.kind === "binding") {
+    if (row.kind === "ingress") {
+      if (!existence.serverIds.has(row.serverId)) {
+        row.status = "skipped";
+        row.error = CA_ROTATION_TARGET_GONE;
+        row.commandId = undefined;
+      }
+      continue;
+    }
+    if (row.kind === "binding") {
+      if (row.status === "failed" && row.error !== CA_ROTATION_TARGET_GONE) {
+        continue;
+      }
+      if (row.managedId && !existence.managedIds.has(row.managedId)) {
+        row.status = "skipped";
+        row.error = CA_ROTATION_TARGET_GONE;
+        row.commandId = undefined;
+        continue;
+      }
       if (!existence.serverIds.has(row.serverId)) {
         row.status = "skipped";
         row.error = CA_ROTATION_TARGET_GONE;
@@ -406,6 +431,19 @@ async function enqueueRotationApplyMembers(
 /**
  * Reconcile stored fan-out rows (gone targets, command backfill) without enqueueing.
  */
+function rotationRowRefs(rows: readonly CaRotationResultRow[]): {
+  serverIds: string[];
+  managedIds: string[];
+} {
+  const serverIds: string[] = [];
+  const managedIds: string[] = [];
+  for (const row of rows) {
+    serverIds.push(row.serverId);
+    if (row.managedId) managedIds.push(row.managedId);
+  }
+  return { serverIds, managedIds };
+}
+
 export async function reconcileCaRotationResults(
   db: Db,
   organizationId: string,
@@ -413,7 +451,12 @@ export async function reconcileCaRotationResults(
   rotationStartedAt: string,
 ): Promise<CaRotationResultRow[]> {
   const targets = await enumerateOrganizationRotationTargets(db, organizationId);
-  const existence = await loadRotationTargetExistence(db, organizationId, targets);
+  const existence = await loadRotationTargetExistence(
+    db,
+    organizationId,
+    targets,
+    rotationRowRefs(rows),
+  );
   const next = rows.map((row) => ({ ...row }));
   reconcileIngressAndBindingRows(next, existence);
   await backfillApplyCommandIds(db, next, rotationStartedAt);
@@ -440,6 +483,7 @@ export async function enqueueMissingCaRotationApplies(
     db,
     params.organizationId,
     targets,
+    rotationRowRefs(rows),
   );
   const records = new Map(
     (params.commandRecords ?? []).map((record) => [record.id, record]),
