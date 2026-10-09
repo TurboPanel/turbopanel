@@ -7,19 +7,9 @@ import type { Db } from '../../db/connection.ts'
 import { ENVELOPE_PREFIX_SECRET, resealSecretForDaemon } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { getServerDaemonStateByServerId, isDaemonKeyActive } from '../servers/server-identity-db.ts'
-import {
-  environment,
-  managed,
-  principal,
-  project,
-  replica,
-  server,
-  workspace,
-} from '../../db/schema.ts'
+import { environment, managed, principal, project, replica, workspace } from '../../db/schema.ts'
 import { orchestratorManagesEngine } from './ha-policy.ts'
 import { isManagedReplicationPrincipal } from './ingress-desired-pure.ts'
-import { ensureManagedReplicationPrincipal } from '../principals/store.ts'
-import { loadPrincipalNamePolicy } from './load-org-defaults.ts'
 import type { ManagedEngineSpec } from './index.ts'
 
 export type HaSecretsParams = {
@@ -64,21 +54,11 @@ export async function listOrchestratorManagedClusterIds(
     .select({ managedId: replica.managedId, engine: managed.engine })
     .from(replica)
     .innerJoin(managed, eq(managed.id, replica.managedId))
-    .innerJoin(server, eq(server.id, replica.serverId))
-    .where(eq(server.organizationId, organizationId))
-  return orchestratorManagedClusterIdsFromRows(rows)
-}
-
-async function resolveManagedOrganizationId(db: Db, managedId: string): Promise<string | null> {
-  const [row] = await db
-    .select({ organizationId: workspace.organizationId })
-    .from(managed)
     .innerJoin(environment, eq(environment.id, managed.environmentId))
     .innerJoin(project, eq(project.id, environment.projectId))
     .innerJoin(workspace, eq(workspace.id, project.workspaceId))
-    .where(eq(managed.id, managedId))
-    .limit(1)
-  return row?.organizationId ?? null
+    .where(eq(workspace.organizationId, organizationId))
+  return orchestratorManagedClusterIdsFromRows(rows)
 }
 
 async function resealReplicationPassword(
@@ -116,7 +96,7 @@ export async function resolveReplicationCredentialForHa(
   db: Db,
   params: HaSecretsParams,
   managedId: string,
-  spec: ManagedEngineSpec
+  _spec: ManagedEngineSpec
 ): Promise<{ username: string; envelope: string } | null> {
   const resealed = await resealReplicationPassword(
     db,
@@ -127,21 +107,8 @@ export async function resolveReplicationCredentialForHa(
   )
   if (resealed) return resealed
 
-  const organizationId = await resolveManagedOrganizationId(db, managedId)
-  if (!organizationId) return null
-  const policy = await loadPrincipalNamePolicy(db, organizationId)
-  await ensureManagedReplicationPrincipal(db, params.dataEncryptionSecrets, {
-    managedId,
-    preferredUsername: 'tp_repl',
-    provider: spec.principalProvider,
-    identifier: spec.userOperations.identifier,
-    nameScheme: policy.defaultScheme,
-  })
-  return resealReplicationPassword(
-    db,
-    params.secretsConfig,
-    params.dataEncryptionSecrets,
-    managedId,
-    params.serverId
-  )
+  // Replication credentials are created on primary `managed.apply`
+  // (`ensureManagedReplicationPrincipal`). Never mint a Postgres-only password
+  // here — Orchestrator must not receive a credential the engine does not hold.
+  return null
 }

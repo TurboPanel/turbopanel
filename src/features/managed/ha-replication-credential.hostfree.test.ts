@@ -23,6 +23,8 @@ const test = Deno.test.bind(Deno)
 const SERVER_ID = '550e8400-e29b-41d4-a716-446655440000'
 const MANAGED_ID = 'mgd-mysql-ha'
 const KEY_ID = '22222222-2222-4222-8222-222222222222'
+const ORG_A = '11111111-1111-4111-8111-111111111111'
+const ORG_B = '22222222-2222-4222-8222-222222222222'
 
 test('orchestratorManagedClusterIdsFromRows lists only multi-member MySQL-family clusters', () => {
   assertEquals(
@@ -45,23 +47,47 @@ test('mergeOrchestratorManagedClusterIds unions and sorts unique managed ids', (
   )
 })
 
-test('listOrchestratorManagedClusterIds loads replicas for an organization', async () => {
-  const db = {
+type WorkspaceScopedReplicaRow = {
+  managedId: string
+  engine: string
+  workspaceOrganizationId: string
+}
+
+function listOrchestratorDb(organizationId: string, rows: WorkspaceScopedReplicaRow[]): Db {
+  return {
     select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () =>
-              Promise.resolve([
-                { managedId: 'mysql-ha', engine: 'mysql' },
-                { managedId: 'mysql-ha', engine: 'mysql' },
-              ]),
-          }),
-        }),
-      }),
+      from: () => {
+        const chain = {
+          innerJoin: () => chain,
+          where: () =>
+            Promise.resolve(
+              rows
+                .filter((row) => row.workspaceOrganizationId === organizationId)
+                .map((row) => ({ managedId: row.managedId, engine: row.engine }))
+            ),
+        }
+        return chain
+      },
     }),
   } as unknown as Db
-  assertEquals(await listOrchestratorManagedClusterIds(db, 'org-1'), ['mysql-ha'])
+}
+
+test('listOrchestratorManagedClusterIds scopes HA clusters to the workspace organization', async () => {
+  const db = listOrchestratorDb(ORG_A, [
+    { managedId: 'mysql-ha', engine: 'mysql', workspaceOrganizationId: ORG_A },
+    { managedId: 'mysql-ha', engine: 'mysql', workspaceOrganizationId: ORG_A },
+    { managedId: 'foreign-ha', engine: 'mysql', workspaceOrganizationId: ORG_B },
+    { managedId: 'foreign-ha', engine: 'mysql', workspaceOrganizationId: ORG_B },
+  ])
+  assertEquals(await listOrchestratorManagedClusterIds(db, ORG_A), ['mysql-ha'])
+})
+
+test('listOrchestratorManagedClusterIds counts every member of a workspace-org cluster', async () => {
+  const db = listOrchestratorDb(ORG_A, [
+    { managedId: 'cross-host', engine: 'mysql', workspaceOrganizationId: ORG_A },
+    { managedId: 'cross-host', engine: 'mysql', workspaceOrganizationId: ORG_A },
+  ])
+  assertEquals(await listOrchestratorManagedClusterIds(db, ORG_A), ['cross-host'])
 })
 
 function daemonJoinRow() {
@@ -179,7 +205,7 @@ test('resolveReplicationCredentialForHa returns null when replication password i
   assertEquals(await resolveReplicationCredentialForHa(db, params, MANAGED_ID, spec), null)
 })
 
-test('resolveReplicationCredentialForHa returns null when managed organization cannot be resolved', async () => {
+test('resolveReplicationCredentialForHa returns null when replication principal row is absent', async () => {
   const secrets = parseTestSecretsConfig()
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(secrets, 'data-encryption')
   const spec = getManagedEngineSpec('mysql')
@@ -189,31 +215,17 @@ test('resolveReplicationCredentialForHa returns null when managed organization c
     secretsConfig: secrets,
     dataEncryptionSecrets,
   }
-  let selectN = 0
+  let selectCalls = 0
   const db = {
     select: () => {
-      selectN += 1
-      if (selectN === 1) {
-        return {
-          from: () => ({
-            where: () => Promise.resolve([]),
-          }),
-        }
-      }
+      selectCalls += 1
       return {
         from: () => ({
-          innerJoin: () => ({
-            innerJoin: () => ({
-              innerJoin: () => ({
-                where: () => ({
-                  limit: () => Promise.resolve([]),
-                }),
-              }),
-            }),
-          }),
+          where: () => Promise.resolve([]),
         }),
       }
     },
   } as unknown as Db
   assertEquals(await resolveReplicationCredentialForHa(db, params, MANAGED_ID, spec), null)
+  assertEquals(selectCalls, 1)
 })
