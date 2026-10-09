@@ -6331,6 +6331,44 @@ export function parseManagedDestroyResult(value: unknown): ManagedDestroyCommand
   return result
 }
 
+function parseManagedPromoteSwitchoverCatchupFields(
+  value: Record<string, unknown>,
+  payload: ManagedPromoteCommandPayload
+): void {
+  if (value.requiredExecutedGtidSet !== undefined) {
+    if (
+      !isString(value.requiredExecutedGtidSet) ||
+      value.requiredExecutedGtidSet.length === 0 ||
+      value.requiredExecutedGtidSet.length > 4096
+    ) {
+      throw new Error('Invalid managed.promote payload')
+    }
+    payload.requiredExecutedGtidSet = value.requiredExecutedGtidSet
+  }
+  if (value.gtidWaitTimeoutSeconds !== undefined) {
+    if (
+      typeof value.gtidWaitTimeoutSeconds !== 'number' ||
+      !Number.isInteger(value.gtidWaitTimeoutSeconds) ||
+      value.gtidWaitTimeoutSeconds < 1 ||
+      value.gtidWaitTimeoutSeconds > 600
+    ) {
+      throw new Error('Invalid managed.promote payload')
+    }
+    payload.gtidWaitTimeoutSeconds = value.gtidWaitTimeoutSeconds
+  }
+}
+
+function parseManagedPromoteResumeField(
+  value: Record<string, unknown>,
+  payload: ManagedPromoteCommandPayload
+): void {
+  if (value.resume === undefined) return
+  if (value.resume !== true) {
+    throw new Error('Invalid managed.promote payload')
+  }
+  payload.resume = true
+}
+
 export function parseManagedPromotePayload(value: unknown): ManagedPromoteCommandPayload {
   if (!isRecord(value)) {
     throw new Error('Invalid managed.promote payload')
@@ -6359,33 +6397,8 @@ export function parseManagedPromotePayload(value: unknown): ManagedPromoteComman
     }
     payload.engine = value.engine
   }
-  if (value.requiredExecutedGtidSet !== undefined) {
-    if (
-      !isString(value.requiredExecutedGtidSet) ||
-      value.requiredExecutedGtidSet.length === 0 ||
-      value.requiredExecutedGtidSet.length > 4096
-    ) {
-      throw new Error('Invalid managed.promote payload')
-    }
-    payload.requiredExecutedGtidSet = value.requiredExecutedGtidSet
-  }
-  if (value.gtidWaitTimeoutSeconds !== undefined) {
-    if (
-      typeof value.gtidWaitTimeoutSeconds !== 'number' ||
-      !Number.isInteger(value.gtidWaitTimeoutSeconds) ||
-      value.gtidWaitTimeoutSeconds < 1 ||
-      value.gtidWaitTimeoutSeconds > 600
-    ) {
-      throw new Error('Invalid managed.promote payload')
-    }
-    payload.gtidWaitTimeoutSeconds = value.gtidWaitTimeoutSeconds
-  }
-  if (value.resume !== undefined) {
-    if (value.resume !== true) {
-      throw new Error('Invalid managed.promote payload')
-    }
-    payload.resume = true
-  }
+  parseManagedPromoteSwitchoverCatchupFields(value, payload)
+  parseManagedPromoteResumeField(value, payload)
   return payload
 }
 

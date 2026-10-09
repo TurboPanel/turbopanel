@@ -2005,6 +2005,74 @@ function payloadEngine(payload: unknown): unknown {
   return (payload as { engine?: unknown }).engine
 }
 
+async function handleHaFailoverRecoveryCommandFailed(
+  db: Db,
+  commandQueue: CommandQueue | undefined,
+  params: {
+    recoveryId: string
+    engine: ReturnType<typeof recoveryEngine>
+    actor: ReturnType<typeof recoveryActor>
+    commandError?: string
+    payload: unknown
+  }
+): Promise<void> {
+  try {
+    const phase = parseManagedHaFailoverPayload(params.payload).phase
+    if (phase === 'recover') {
+      await onSwitchoverPromoteFailed(db, commandQueue, {
+        recoveryId: params.recoveryId,
+        engine: params.engine,
+        actor: params.actor,
+        commandError: params.commandError,
+      })
+      return
+    }
+  } catch {
+    // Unparseable failover payloads still fail the recovery row.
+  }
+  await onRecoveryCommandFailed(db, params.recoveryId)
+}
+
+/**
+ * Returns true when the failure was absorbed (resume re-queued or fence path).
+ */
+async function handlePromoteOrFailoverRecoveryFailure(
+  db: Db,
+  record: DispatchableCommandRecord,
+  recoveryId: string,
+  deps?: CommandConsumerDeps,
+  error?: string
+): Promise<boolean> {
+  if (isManagedHaFailoverRepoint(record)) return false
+  const engine = recoveryEngine(payloadEngine(record.payload))
+  const actor = recoveryActor(record)
+  const resumed = await resumeInterruptedPromote(db, deps?.commandQueue, {
+    recoveryId,
+    engine,
+    actor,
+    error: error ?? record.errorMessage,
+  })
+  if (resumed) return true
+  const commandError = typeof error === 'string' ? error : undefined
+  if (record.type === 'managed.promote') {
+    await onSwitchoverPromoteFailed(db, deps?.commandQueue, {
+      recoveryId,
+      engine,
+      actor,
+      commandError,
+    })
+    return false
+  }
+  await handleHaFailoverRecoveryCommandFailed(db, deps?.commandQueue, {
+    recoveryId,
+    engine,
+    actor,
+    commandError,
+    payload: record.payload,
+  })
+  return false
+}
+
 /**
  * Advance / fail the HA recovery journal when a fenced or promote/failover
  * command fails. Returns true when the fence path already handled the failure
@@ -2039,43 +2107,7 @@ async function applyManagedRecoveryFailedSideEffect(
   }
 
   if (record.type === 'managed.promote' || record.type === 'managed.ha.failover') {
-    if (isManagedHaFailoverRepoint(record)) return false
-    const engine = recoveryEngine(payloadEngine(record.payload))
-    const actor = recoveryActor(record)
-    // A promote lost to a daemon restart is queued again (the old primary is
-    // already fenced, so failing the row would leave no writer).
-    const resumed = await resumeInterruptedPromote(db, deps?.commandQueue, {
-      recoveryId,
-      engine,
-      actor,
-      error: error ?? record.errorMessage,
-    })
-    if (resumed) return true
-    const commandError = typeof error === 'string' ? error : undefined
-    if (record.type === 'managed.promote') {
-      await onSwitchoverPromoteFailed(db, deps?.commandQueue, {
-        recoveryId,
-        engine,
-        actor,
-        commandError,
-      })
-    } else {
-      try {
-        const phase = parseManagedHaFailoverPayload(record.payload).phase
-        if (phase === 'recover') {
-          await onSwitchoverPromoteFailed(db, deps?.commandQueue, {
-            recoveryId,
-            engine,
-            actor,
-            commandError,
-          })
-        } else {
-          await onRecoveryCommandFailed(db, recoveryId)
-        }
-      } catch {
-        await onRecoveryCommandFailed(db, recoveryId)
-      }
-    }
+    return await handlePromoteOrFailoverRecoveryFailure(db, record, recoveryId, deps, error)
   }
   return false
 }
