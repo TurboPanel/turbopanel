@@ -79,8 +79,19 @@ const SERVER_STATUS_RECORD_KEYS: (keyof ServerStatusRecord)[] = [
 
 const dbUrl = getDatabaseUrl()
 
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
 test('schema pins foreign keys that reference server.id', async () => {
-  skipWithoutDatabase(dbUrl)
+  if (!dbUrl) {
+    skipWithoutDatabase('schema pins foreign keys that reference server.id')
+    return
+  }
   const db = createDenoDb()
   try {
     const rows = await db.execute<{
@@ -119,14 +130,6 @@ test('schema pins foreign keys that reference server.id', async () => {
     await endDbConnection(db)
   }
 })
-
-/**
- * Jest/Mocha-shaped alias for {@link Deno.test}.
- *
- * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
- * reports Deno suites as empty; keep this alias so analysis sees real tests.
- */
-const test = Deno.test.bind(Deno)
 
 type ErrorJson = {
   error: string
