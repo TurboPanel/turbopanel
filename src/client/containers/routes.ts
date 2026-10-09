@@ -14,10 +14,7 @@ import {
   getOrgId,
   parseJsonBody,
 } from '../shared.ts'
-import {
-  hierarchyDeleteHasChildrenResponse,
-  runHierarchyDelete,
-} from '../hierarchy-delete.ts'
+import { hierarchyDeleteHasChildrenResponse, runHierarchyDelete } from '../hierarchy-delete.ts'
 import {
   parseCreateContainerFields,
   parsePatchContainerFields,
@@ -102,10 +99,11 @@ export function registerContainerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
       conditions.push(
         inArray(
           service.environmentId,
-          db.select({ id: environment.id }).from(environment).where(
-            eq(environment.projectId, projectId),
-          ),
-        ),
+          db
+            .select({ id: environment.id })
+            .from(environment)
+            .where(eq(environment.projectId, projectId))
+        )
       )
     }
 
@@ -295,10 +293,7 @@ export function registerContainerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     }
     const patchFields = parsed.patch
 
-    await db
-      .update(container)
-      .set(patchFields)
-      .where(eq(container.id, id))
+    await db.update(container).set(patchFields).where(eq(container.id, id))
 
     return c.json({ ok: true as const })
   })

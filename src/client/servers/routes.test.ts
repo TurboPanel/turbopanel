@@ -3812,7 +3812,7 @@ test('DELETE /servers/:id with forgetResources deletes the server when a fleet u
         upgradeId: upgradeRow!.id,
         serverId,
         unit: 'daemon',
-        status: 'succeeded',
+        status: 'done',
         statusChangedAt: now,
       })
 
@@ -3839,9 +3839,7 @@ test('DELETE /servers/:id with forgetResources tears down every system environme
       await db
         .update(container)
         .set({ status: 'exited', updatedAt: now })
-        .where(
-          inArray(container.id, [hosting.containerRowId, managedIngress.containerRowId])
-        )
+        .where(inArray(container.id, [hosting.containerRowId, managedIngress.containerRowId]))
 
       const cookie = await sessionCookie(db, secrets, userId)
       const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
