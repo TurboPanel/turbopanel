@@ -1,7 +1,11 @@
 import { assertEquals } from '@std/assert'
 import { dirname, fromFileUrl, join } from '@std/path'
 import {
+  assertEnvironmentForgetForeignKeyCoverage,
   assertServerRestrictForeignKeyCoverage,
+  ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS,
+  listEnvironmentForeignKeysFromMigrationSql,
+  listServerForeignKeysFromMigrationSql,
   listServerRestrictForeignKeyTablesFromMigrationSql,
   SERVER_RESTRICT_FOREIGN_KEY_HANDLERS,
 } from './server-fk.ts'
@@ -38,6 +42,36 @@ test(
     assertServerRestrictForeignKeyCoverage(tables)
     assertEquals(
       Object.keys(SERVER_RESTRICT_FOREIGN_KEY_HANDLERS).sort((a, b) => a.localeCompare(b)),
+      tables
+    )
+  }
+)
+
+test(
+  'migrations list every server_id FK to server (all ON DELETE rules)',
+  { permissions: { read: true } },
+  async () => {
+    const chunks = await loadMigrationSqlInJournalOrder()
+    const rows = listServerForeignKeysFromMigrationSql(chunks)
+    const tables = new Set(rows.map((row) => row.table))
+    for (const table of Object.keys(SERVER_RESTRICT_FOREIGN_KEY_HANDLERS)) {
+      assertEquals(tables.has(table), true, `expected migrations to declare server_id FK on ${table}`)
+    }
+    assertEquals(rows.some((row) => row.table === 'backup' && row.onDelete === 'set null'), true)
+    assertEquals(rows.some((row) => row.table === 'stage' && row.onDelete === 'cascade'), true)
+  }
+)
+
+test(
+  'every environment_id FK in migrations is covered by the forget subtree path',
+  { permissions: { read: true } },
+  async () => {
+    const chunks = await loadMigrationSqlInJournalOrder()
+    const rows = listEnvironmentForeignKeysFromMigrationSql(chunks)
+    const tables = rows.map((row) => row.table).sort((a, b) => a.localeCompare(b))
+    assertEnvironmentForgetForeignKeyCoverage(tables)
+    assertEquals(
+      Object.keys(ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS).sort((a, b) => a.localeCompare(b)),
       tables
     )
   }

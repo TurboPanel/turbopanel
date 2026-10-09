@@ -324,10 +324,10 @@ export function registerContainerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     const immutable = await assertNotSystemOwnedOr403(c, 'container', id)
     if (immutable) return immutable
 
-    const result = await runHierarchyDelete(db, async (tx) => {
+    const deleteResult = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(container).where(eq(container.id, id))
     })
-    const blocked = hierarchyDeleteHasChildrenResponseIfNeeded(c, result)
+    const blocked = hierarchyDeleteHasChildrenResponseIfNeeded(c, deleteResult)
     if (blocked) return blocked
 
     return c.json({ ok: true as const })

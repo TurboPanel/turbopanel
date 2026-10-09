@@ -1161,6 +1161,29 @@ async function loadForgetEnvironmentRecheckCandidates(
   }))
 }
 
+async function purgeRemainingPlacedEnvironmentsInTx(
+  tx: Db,
+  serverId: string,
+  organizationId: string
+): Promise<void> {
+  const rows = await tx
+    .select({ id: environment.id })
+    .from(environment)
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+    .where(
+      and(
+        eq(environment.serverId, serverId),
+        eq(project.organizationId, organizationId),
+        notSystemWorkspace()
+      )
+    )
+  const ordered = rows.map((row) => row.id).sort((a, b) => a.localeCompare(b))
+  for (const environmentId of ordered) {
+    await dropEnvironmentSubtreeInTx(tx, [environmentId], { serverId })
+  }
+}
+
 async function dropForgetEnvironmentsInTx(
   tx: Db,
   serverId: string,
@@ -1184,7 +1207,7 @@ async function dropForgetEnvironmentsInTx(
         capPreviewList(blockedEnvironments).items
       )
     }
-    const dropped = await dropEnvironmentSubtreeInTx(tx, [environmentId])
+    const dropped = await dropEnvironmentSubtreeInTx(tx, [environmentId], { serverId })
     droppedContainers += dropped.containers
   })
   return {
@@ -1214,6 +1237,8 @@ export async function forgetServerOwnedResources(
     plan.blockingBlockers,
     plan.blockedDatabases
   )
+
+  await purgeRemainingPlacedEnvironmentsInTx(tx, serverId, organizationId)
 
   const memberIds = plan.members.map((row) => row.id)
   if (memberIds.length > 0) {

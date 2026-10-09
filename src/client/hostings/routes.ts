@@ -23,7 +23,7 @@ import {
   stripPromotedMetadataKeys,
 } from "../shared.ts";
 import {
-  hierarchyDeleteHasChildrenResponse,
+  hierarchyDeleteHasChildrenResponseIfNeeded,
   runHierarchyDelete,
 } from "../hierarchy-delete.ts";
 import {
@@ -421,12 +421,11 @@ export function registerHostingRoutes(
     const composeOwned = await assertHostingNotComposeOwnedOr409(c, db, id);
     if (composeOwned) return composeOwned;
 
-    const result = await runHierarchyDelete(db, async (tx) => {
+    const deleteResult = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(hosting).where(eq(hosting.id, id));
     });
-    if (result === "has_children") {
-      return hierarchyDeleteHasChildrenResponse(c);
-    }
+    const blocked = hierarchyDeleteHasChildrenResponseIfNeeded(c, deleteResult);
+    if (blocked) return blocked;
 
     return c.json({ ok: true as const });
   });
