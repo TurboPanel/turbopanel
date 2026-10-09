@@ -254,6 +254,7 @@ type HarnessOpts = {
   recoveryInsertError?: unknown
   /** Reading the cluster's members throws (a database blip mid-recovery). */
   replicaReadError?: Error
+  managedEngine?: string
 }
 
 type RecoveryHarness = {
@@ -325,6 +326,9 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
         if (table === replica) {
           if (opts.replicaReadError) throw opts.replicaReadError
           return thenableRows(members)
+        }
+        if (table === managed) {
+          return thenableRows([{ engine: opts.managedEngine ?? 'postgres', id: MANAGED_ID }])
         }
         return thenableRows([])
       },
@@ -1163,6 +1167,14 @@ test('mariadb switchover aborts promote when fence stop did not record a GTID', 
     harness.commandInserts.some((insert) => insert.name === 'managed.promote'),
     false
   )
+  assertEquals(
+    harness.commandInserts.some(
+      (insert) =>
+        (insert.payload as Record<string, unknown> | undefined)?.reactivateAfterSwitchoverAbort ===
+        true
+    ),
+    true
+  )
 })
 
 test('mariadb switchover promote carries the fence-captured GTID', async () => {
@@ -1217,6 +1229,34 @@ test('onSwitchoverPromoteFailed reactivates the old primary when GTID proof was 
     .map((row) => row.payload as Record<string, unknown> | undefined)
     .find((row) => row?.reactivateAfterSwitchoverAbort === true)
   assertEquals(payload?.action, 'start')
+})
+
+test('onSwitchoverPromoteFailed reactivates on gtid_wait_error before promotion started', async () => {
+  const queue = okQueue()
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    connected: [true, true],
+    recovery: recoveryRow({
+      kind: 'switchover',
+      state: 'promoting',
+      metadata: { switchoverRequiredGtidSet: '0-1-5' },
+    }),
+  })
+  await onSwitchoverPromoteFailed(harness.db, queue, {
+    recoveryId: REC_ID,
+    engine: 'mariadb',
+    actor: ACTOR,
+    commandError:
+      'switchover_promote:gtid_wait_error: the promotion target could not run the GTID catch-up check',
+  })
+  assertEquals(
+    harness.commandInserts.some(
+      (row) =>
+        (row.payload as Record<string, unknown> | undefined)?.reactivateAfterSwitchoverAbort ===
+        true
+    ),
+    true
+  )
 })
 
 test('onSwitchoverPromoteFailed does not reactivate after promote_started on the target', async () => {
@@ -2207,6 +2247,42 @@ test('a timed-out promote command fails the row for the operator and releases th
   assertEquals(row?.state, 'failed')
   assertEquals((row?.metadata as Record<string, unknown>).needsOperator, true)
   assertEquals(harness.managedStatus.includes('failed'), true)
+})
+
+test('a timed-out mysql switchover promote reactivates the old primary when a queue is available', async () => {
+  const queue = okQueue()
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    connected: [true, true],
+    recovery: recoveryRow({
+      kind: 'switchover',
+      state: 'promoting',
+      metadata: { promoteCommandId: 'cmd-promote', switchoverRequiredGtidSet: '0-1-5' },
+    }),
+    managedEngine: 'mariadb',
+  })
+  await onRecoveryCommandTimedOut(
+    harness.db,
+    {
+      recoveryId: REC_ID,
+      commandId: 'cmd-promote',
+      type: 'managed.promote',
+      fencePhase: null,
+    },
+    { commandQueue: queue }
+  )
+  const row = harness.recovery()
+  assertEquals(row?.state, 'failed')
+  assertEquals((row?.metadata as Record<string, unknown>).needsOperator, true)
+  assertEquals(harness.managedStatus.at(-1), 'ready')
+  assertEquals(
+    harness.commandInserts.some(
+      (insert) =>
+        (insert.payload as Record<string, unknown> | undefined)?.reactivateAfterSwitchoverAbort ===
+        true
+    ),
+    true
+  )
 })
 
 test('a timed-out command that is not part of a recovery step leaves the row alone', async () => {

@@ -2061,7 +2061,7 @@ async function handlePromoteOrFailoverRecoveryFailure(
       actor,
       commandError,
     })
-    return false
+    return true
   }
   await handleHaFailoverRecoveryCommandFailed(db, deps?.commandQueue, {
     recoveryId,

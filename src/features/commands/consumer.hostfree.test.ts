@@ -2705,6 +2705,35 @@ const PROMOTE_RESULT = {
   demoted: true,
 }
 
+test('processCommandEnvelope switchover promote failure with GTID proof does not mark managed failed', async () => {
+  const { queue } = liveQueue()
+  const fake = await runOnline(
+    'managed.promote',
+    { ...PROMOTE_PAYLOAD, engine: 'mariadb' },
+    {
+      ...donePending(),
+      status: 'failed',
+      error:
+        'switchover_promote:gtid_wait_timeout: the promotion target did not apply the old primary GTID position within 90s',
+      result: undefined,
+    },
+    {
+      commandMetadata: { recoveryId: RECOVERY_ID },
+      recoveryRow: {
+        ...promotingRecoveryRow(),
+        metadata: { promoteCommandId: COMMAND_ID, switchoverRequiredGtidSet: '0-1-5' },
+      },
+      managedMembers: promoteResumeMembers(),
+      deps: { commandQueue: queue, firewallApplyGate: DENY_FIREWALL_APPLY },
+    }
+  )
+  assertEquals(fake.managedUpdates.at(-1)?.status, 'ready')
+  assertEquals(
+    fake.recoveryUpdates.some((patch) => patch.state === 'failed'),
+    true
+  )
+})
+
 test('processCommandEnvelope managed.ha.failover repoint failure with recoveryId does not fail the recovery', async () => {
   const fake = await runOnline(
     'managed.ha.failover',

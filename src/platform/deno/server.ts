@@ -337,8 +337,8 @@ async function runCleanupPhase(label: string, fn: () => Promise<unknown>): Promi
   }
 }
 
-async function sweepStaleCommandsPhase(db: Db): Promise<void> {
-  const swept = await sweepStaleCommands(db)
+async function sweepStaleCommandsPhase(db: Db, commandQueue?: CommandQueue): Promise<void> {
+  const swept = await sweepStaleCommands(db, { commandQueue })
   // Recoveries first: a row that is still in flight keeps its managed row at
   // `applying`, and an expired one releases it itself.
   const expired = (
@@ -736,7 +736,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       // Recover commands stranded non-terminal by a mid-run restart (the
       // consumer's timeout lives only in memory), then unwedge managed rows
       // stuck at 'applying' with no live command left.
-      await runCleanupPhase('stale command sweep', () => sweepStaleCommandsPhase(db))
+      await runCleanupPhase('stale command sweep', () =>
+        sweepStaleCommandsPhase(db, isNoopCommandQueue(commandQueue) ? undefined : commandQueue)
+      )
       // Workers parity (offline-sweep cron): drop webhook delivery ids past the
       // replay-protection retention window.
       await runCleanupPhase('webhook delivery sweep', () =>

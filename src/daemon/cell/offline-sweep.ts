@@ -80,6 +80,7 @@ import {
 import { isMassDisconnect } from './mass-disconnect.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { createWorkersCommandQueue } from '../../features/commands/workers-queue.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   COMMAND_DISPATCH_SWEEP_LIMIT,
   sweepExpiredCommandDispatch,
@@ -890,7 +891,10 @@ async function runLeafRenewalSweepTickSafely(
  * Reuses this cron's already-open db; isolated so a failure here never aborts
  * the other sweeps.
  */
-export async function sweepExpiredCommandDispatchSafely(db: Db): Promise<void> {
+export async function sweepExpiredCommandDispatchSafely(
+  db: Db,
+  opts?: { commandQueue?: CommandQueue }
+): Promise<void> {
   try {
     const deleted = await sweepExpiredCommandDispatch(db, {
       limit: COMMAND_DISPATCH_SWEEP_LIMIT,
@@ -908,7 +912,7 @@ export async function sweepExpiredCommandDispatchSafely(db: Db): Promise<void> {
   // stuck at 'applying' with no live command left. Same isolation: a
   // failure here never aborts the other sweeps.
   try {
-    const timedOut = await sweepStaleCommands(db)
+    const timedOut = await sweepStaleCommands(db, { commandQueue: opts?.commandQueue })
     // Recoveries first: a row still in flight keeps its managed row at
     // `applying`, and an expired one releases it itself.
     const expiredDetecting = await expireStaleRecoveries(db, {
@@ -1410,7 +1414,17 @@ async function runOptionalCronPhases(
       'command-dispatch',
       opts.scheduledTime,
       phasesSkipped,
-      () => runWithDbTimeout(db, sweepExpiredCommandDispatchSafely, capDbTimeout(deadlineMs))
+      () =>
+        runWithDbTimeout(
+          db,
+          () =>
+            sweepExpiredCommandDispatchSafely(db, {
+              commandQueue: env.TURBOPANEL_COMMAND_QUEUE
+                ? createWorkersCommandQueue(env.TURBOPANEL_COMMAND_QUEUE)
+                : undefined,
+            }),
+          capDbTimeout(deadlineMs)
+        )
     ))
   ) {
     return

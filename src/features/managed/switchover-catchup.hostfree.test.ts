@@ -8,6 +8,8 @@ import {
   switchoverAbortReactivateLifecyclePayload,
   switchoverGtidFromFenceStopResult,
   parseSwitchoverPromoteFailureCode,
+  switchoverPromoteFailureShouldReactivateOldPrimary,
+  switchoverPromoteTimedOutCommandError,
   SWITCHOVER_GTID_WAIT_SECONDS,
 } from './switchover-catchup.ts'
 
@@ -85,6 +87,20 @@ test('parseSwitchoverPromoteFailureCode reads daemon promote failure codes', () 
       'switchover_promote:gtid_wait_timeout: the promotion target did not apply the old primary GTID position within 90s'
     ),
     'gtid_wait_timeout'
+  )
+})
+
+test('switchoverPromoteFailureShouldReactivateOldPrimary covers pre-writable failures only', () => {
+  assertEquals(switchoverPromoteFailureShouldReactivateOldPrimary('gtid_wait_timeout'), true)
+  assertEquals(switchoverPromoteFailureShouldReactivateOldPrimary('gtid_wait_error'), true)
+  assertEquals(switchoverPromoteFailureShouldReactivateOldPrimary('promote_started'), false)
+  assertEquals(switchoverPromoteFailureShouldReactivateOldPrimary(null), false)
+})
+
+test('switchoverPromoteTimedOutCommandError prefixes stale-sweep timeouts for the promote path', () => {
+  assertEquals(
+    switchoverPromoteTimedOutCommandError('command timed out'),
+    'switchover_promote:gtid_wait_timeout: command timed out'
   )
 })
 

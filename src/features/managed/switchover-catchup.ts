@@ -28,6 +28,17 @@ export function parseSwitchoverPromoteFailureCode(
   return match[1] as SwitchoverPromoteFailureCode
 }
 
+/** Promotion never started on the target — safe to bring the old primary back. */
+export function switchoverPromoteFailureShouldReactivateOldPrimary(
+  code: SwitchoverPromoteFailureCode | null
+): boolean {
+  return code === 'gtid_wait_timeout' || code === 'gtid_wait_error'
+}
+
+export function switchoverPromoteTimedOutCommandError(message: string): string {
+  return `${SWITCHOVER_PROMOTE_ERROR_PREFIX}gtid_wait_timeout: ${message}`
+}
+
 const MYSQL_FAMILY: ReadonlySet<ManagedEngineCode> = new Set(['mysql', 'mariadb'])
 
 export function engineNeedsSwitchoverGtidProof(engine: ManagedEngineCode): boolean {

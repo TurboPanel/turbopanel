@@ -27,6 +27,7 @@
 
 import { and, eq, inArray, lt, notExists, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
+import type { CommandQueue } from './queue.ts'
 import { command, deployment, managed, recovery } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { transitionCommand } from './command-records.ts'
@@ -130,17 +131,22 @@ function asRecord(value: unknown): Record<string, unknown> | null {
  */
 export async function settleRecoveryOfTimedOutCommand(
   db: Db,
-  row: StaleCommandCandidate
+  row: StaleCommandCandidate,
+  opts?: { commandQueue?: CommandQueue }
 ): Promise<void> {
   const metadata = asRecord(row.metadata)
   const recoveryId = recoveryIdFromCommandMetadata(metadata)
   if (!recoveryId) return
-  await onRecoveryCommandTimedOut(db, {
-    recoveryId,
-    commandId: row.id,
-    type: row.name,
-    fencePhase: fencePhaseFromCommandMetadata(metadata),
-  })
+  await onRecoveryCommandTimedOut(
+    db,
+    {
+      recoveryId,
+      commandId: row.id,
+      type: row.name,
+      fencePhase: fencePhaseFromCommandMetadata(metadata),
+    },
+    opts
+  )
 }
 
 const IN_FLIGHT_RECOVERY_STATES = RECOVERY_STATES.filter(
@@ -153,7 +159,7 @@ const IN_FLIGHT_RECOVERY_STATES = RECOVERY_STATES.filter(
  */
 export async function sweepStaleCommands(
   db: Db,
-  opts?: { limit?: number; now?: number; graceMs?: number }
+  opts?: { limit?: number; now?: number; graceMs?: number; commandQueue?: CommandQueue }
 ): Promise<number> {
   const limit = Math.min(Math.max(opts?.limit ?? STALE_COMMAND_SWEEP_LIMIT, 1), 200)
   const nowMs = opts?.now ?? Date.now()
@@ -209,7 +215,11 @@ export async function sweepStaleCommands(
         : 'command stalled: the daemon never acknowledged it, so nothing ran on the host. Safe to run again.',
     })
     if (record) swept += 1
-    if (record) await settleRecoveryOfTimedOutCommand(db, row)
+    if (record) {
+      await settleRecoveryOfTimedOutCommand(db, row, {
+        commandQueue: opts?.commandQueue,
+      })
+    }
     if (record && row.name === 'environment.deploy' && row.serverId !== undefined) {
       // A rolling deploy waits on this server: flag it and stop the rollout.
       await failTimedOutDeploy(db, {

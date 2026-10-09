@@ -1095,7 +1095,7 @@ export function evaluateOperatorPromoteGate(
     return null
   }
   if (isMysqlFamilyEngine(engine) && replication.fullyApplied !== true) {
-    return 'managed_replica_lagging'
+    return 'managed_replica_not_fully_applied'
   }
   return null
 }
