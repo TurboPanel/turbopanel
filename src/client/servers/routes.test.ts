@@ -1,6 +1,6 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertExists, assertThrows } from '@std/assert'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -78,6 +78,47 @@ const SERVER_STATUS_RECORD_KEYS: (keyof ServerStatusRecord)[] = [
 ]
 
 const dbUrl = getDatabaseUrl()
+
+test('schema pins foreign keys that reference server.id', async () => {
+  skipWithoutDatabase(dbUrl)
+  const db = createDenoDb()
+  try {
+    const rows = await db.execute<{
+      table_name: string
+      column_name: string
+      delete_rule: string
+    }>(sql`
+      SELECT kcu.table_name, kcu.column_name, rc.delete_rule
+      FROM information_schema.table_constraints tc
+      JOIN information_schema.key_column_usage kcu
+        ON tc.constraint_name = kcu.constraint_name
+        AND tc.table_schema = kcu.table_schema
+      JOIN information_schema.referential_constraints rc
+        ON tc.constraint_name = rc.constraint_name
+        AND tc.table_schema = rc.constraint_schema
+      JOIN information_schema.constraint_column_usage ccu
+        ON ccu.constraint_name = tc.constraint_name
+        AND ccu.table_schema = tc.table_schema
+      WHERE tc.constraint_type = 'FOREIGN KEY'
+        AND tc.table_schema = 'public'
+        AND ccu.table_name = 'server'
+        AND ccu.column_name = 'id'
+        AND kcu.column_name = 'server_id'
+      ORDER BY kcu.table_name
+    `)
+    assertEquals(rows.length, 26)
+    const names = rows.map((row) => row.table_name)
+    assertEquals(new Set(names).size, names.length)
+    const onDelete = new Map(rows.map((row) => [row.table_name, row.delete_rule]))
+    assertEquals(onDelete.get('backup'), 'SET NULL')
+    assertEquals(onDelete.get('license'), 'SET NULL')
+    assertEquals(onDelete.get('stage'), 'CASCADE')
+    assertEquals(onDelete.get('managed'), 'RESTRICT')
+    assertEquals(onDelete.get('environment'), 'RESTRICT')
+  } finally {
+    await endDbConnection(db)
+  }
+})
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
