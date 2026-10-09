@@ -479,6 +479,7 @@ export async function enqueueMissingCaRotationApplies(
   },
 ): Promise<CaRotationResultRow[]> {
   const targets = await enumerateOrganizationRotationTargets(db, params.organizationId);
+  const rows = params.rows;
   const existence = await loadRotationTargetExistence(
     db,
     params.organizationId,
@@ -488,7 +489,6 @@ export async function enqueueMissingCaRotationApplies(
   const records = new Map(
     (params.commandRecords ?? []).map((record) => [record.id, record]),
   );
-  const rows = params.rows;
 
   const byManaged = new Map<string, OrganizationRotationMember[]>();
   for (const member of targets.members) {

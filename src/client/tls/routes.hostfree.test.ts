@@ -887,7 +887,7 @@ test("GET /tls/ca/rotation and POST /tls/ca/retire cover missing journals", asyn
   await expectJson(retire, 409, { error: "no_pending_rotation" });
 
   const resume = await buildTlsApp({
-    tlsRows: [tlsRow()],
+    tlsRows: [organizationCaRow()],
     rotationRows: [journalRow({ state: "awaiting_retire", toCaGeneration: 2 })],
   });
   const resumed = await resume.app.request("/tls/ca/rotate", {
