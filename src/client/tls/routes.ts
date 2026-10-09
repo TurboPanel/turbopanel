@@ -82,6 +82,12 @@ import {
 } from "./changeover-fanout.ts";
 import { assertDispatchInfrastructure } from "../servers/command-dispatch.ts";
 import { listCommandRecordsByIds } from "../../features/commands/command-records.ts";
+import {
+  enqueueMissingCaRotationApplies,
+  reconcileCaRotationResults,
+  rotationConvergedForRetire,
+  rotationResultReason,
+} from "./rotation-converge.ts";
 
 const TLS_PUBLIC_SELECT = {
   id: tls.id,
@@ -428,27 +434,76 @@ export function overlayRotationResults(
   const byId = new Map(records.map((record) => [record.id, record]));
   return rows.map((row) => {
     const record = row.commandId ? byId.get(row.commandId) : undefined;
+    const effectiveStatus = row.status === "skipped"
+      ? "skipped"
+      : (record?.status ?? row.status);
+    const effectiveError = row.error ?? record?.error ?? undefined;
+    const reason = rotationResultReason({
+      row,
+      effectiveStatus,
+      effectiveError,
+    });
     return toCaRotationApiResult({
       serverId: row.serverId,
       kind: row.kind,
       managedId: row.managedId,
-      status: record?.status ?? row.status,
+      status: effectiveStatus,
       commandId: row.commandId,
-      error: record?.error ?? row.error,
+      error: effectiveError,
+      reason,
     });
   });
 }
 
 export function rotationCommandsSucceeded(
   rows: readonly CaRotationResultRow[],
-  records: readonly { id: string; status: string }[],
+  records: readonly { id: string; status: string; error?: string | null }[],
 ): boolean {
-  const byId = new Map(records.map((record) => [record.id, record]));
-  for (const row of rows) {
-    if (!row.commandId) return false;
-    if (byId.get(row.commandId)?.status !== "succeeded") return false;
+  return rotationConvergedForRetire(rows, records);
+}
+
+async function persistSyncedRotationResults(
+  c: Context<AppEnv>,
+  db: TlsDb,
+  params: {
+    organizationId: string;
+    rotationId: string;
+    actorId: string;
+    startedAt: string;
+    rows: CaRotationResultRow[];
+    enqueueGaps: boolean;
+  },
+): Promise<CaRotationResultRow[]> {
+  let rows = await reconcileCaRotationResults(
+    db,
+    params.organizationId,
+    params.rows,
+    params.startedAt,
+  );
+  if (params.enqueueGaps) {
+    const commandQueue = assertDispatchInfrastructure(c);
+    if (!(commandQueue instanceof Response)) {
+      const commandIds = rows.flatMap((row) =>
+        row.commandId ? [row.commandId] : []
+      );
+      const records = await listCommandRecordsByIds(db, commandIds);
+      rows = await enqueueMissingCaRotationApplies(c, db, commandQueue, {
+        organizationId: params.organizationId,
+        actorId: params.actorId,
+        rows,
+        rotationStartedAt: params.startedAt,
+        commandRecords: records,
+      });
+      rows = await reconcileCaRotationResults(
+        db,
+        params.organizationId,
+        rows,
+        params.startedAt,
+      );
+    }
   }
-  return true;
+  await updateCaRotationJournal(db, params.rotationId, { results: rows });
+  return rows;
 }
 
 export function rotationNeedsCommands(targets: {
@@ -753,23 +808,42 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     });
     if (signer instanceof Response) return signer;
 
-    const fanout = await runRotationFanoutStep(c, db, {
+    let fanoutResults = parseCaRotationResults(journal.results);
+    let needsRedeploy = parseNeedsRedeploy(journal.metadata);
+    if (journal.state === "in_progress") {
+      const fanout = await runRotationFanoutStep(c, db, {
+        organizationId,
+        rotationId: journal.id,
+        actorId: session.userId,
+        cursor: parseResumeAfterManagedId(journal.metadata),
+        priorResults: fanoutResults,
+        priorNeedsRedeploy: needsRedeploy,
+      });
+      if (fanout instanceof Response) return fanout;
+      fanoutResults = fanout.results;
+      needsRedeploy = fanout.needsRedeploy;
+    }
+
+    const synced = await persistSyncedRotationResults(c, db, {
       organizationId,
       rotationId: journal.id,
       actorId: session.userId,
-      cursor: parseResumeAfterManagedId(journal.metadata),
-      priorResults: parseCaRotationResults(journal.results),
-      priorNeedsRedeploy: parseNeedsRedeploy(journal.metadata),
+      startedAt: journal.startedAt,
+      rows: fanoutResults,
+      enqueueGaps: true,
     });
-    if (fanout instanceof Response) return fanout;
+    const commandIds = synced.flatMap((row) =>
+      row.commandId ? [row.commandId] : []
+    );
+    const records = await listCommandRecordsByIds(db, commandIds);
 
     return c.json({
       ok: true as const,
       id: signer.activeCaId,
       rotationId: journal.id,
       generation: signer.generation,
-      results: overlayRotationResults(fanout.results, []),
-      needsRedeploy: fanout.needsRedeploy,
+      results: overlayRotationResults(synced, records),
+      needsRedeploy,
     });
   });
 
@@ -790,7 +864,14 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     const journal = await loadLatestCaRotation(db, organizationId);
     if (!journal) return c.json({ error: "Not found" }, 404);
 
-    const rows = parseCaRotationResults(journal.results);
+    let rows = parseCaRotationResults(journal.results);
+    rows = await reconcileCaRotationResults(
+      db,
+      organizationId,
+      rows,
+      journal.startedAt,
+    );
+    await updateCaRotationJournal(db, journal.id, { results: rows });
     const commandIds = rows.flatMap((
       row,
     ) => (row.commandId ? [row.commandId] : []));
@@ -828,12 +909,19 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       return conflictJson(c, "no_pending_rotation");
     }
 
-    const rows = parseCaRotationResults(journal.results);
+    let rows = parseCaRotationResults(journal.results);
+    rows = await reconcileCaRotationResults(
+      db,
+      organizationId,
+      rows,
+      journal.startedAt,
+    );
+    await updateCaRotationJournal(db, journal.id, { results: rows });
     const commandIds = rows.flatMap((
       row,
     ) => (row.commandId ? [row.commandId] : []));
     const records = await listCommandRecordsByIds(db, commandIds);
-    if (!rotationCommandsSucceeded(rows, records)) {
+    if (!rotationConvergedForRetire(rows, records)) {
       return conflictJson(c, "ca_rotation_not_converged");
     }
 

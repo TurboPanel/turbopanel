@@ -886,17 +886,17 @@ test("GET /tls/ca/rotation and POST /tls/ca/retire cover missing journals", asyn
   });
   await expectJson(retire, 409, { error: "no_pending_rotation" });
 
-  const blocked = await buildTlsApp({
-    rotationRows: [journalRow({ state: "awaiting_retire" })],
+  const resume = await buildTlsApp({
+    rotationRows: [journalRow({ state: "awaiting_retire", toCaGeneration: 2 })],
   });
-  const inFlight = await blocked.app.request("/tls/ca/rotate", {
+  const resumed = await resume.app.request("/tls/ca/rotate", {
     method: "POST",
-    headers: authHeaders(blocked.cookie),
+    headers: authHeaders(resume.cookie),
   });
-  await expectJson(inFlight, 409, { error: "ca_rotation_in_progress" });
+  assertEquals(resumed.status, 200);
 
-  const status = await blocked.app.request("/tls/ca/rotation", {
-    headers: authHeaders(blocked.cookie),
+  const status = await resume.app.request("/tls/ca/rotation", {
+    headers: authHeaders(resume.cookie),
   });
   await expectJson(status, 200, {
     rotationId: ROTATION_ID,

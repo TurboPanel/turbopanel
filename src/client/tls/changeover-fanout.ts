@@ -611,7 +611,7 @@ async function recordMissingManagedCluster(
 ): Promise<void> {
   const { db, params, state, complete } = ctx
   state.results.push(
-    applyResultRow(managedId, params.organizationId, 'failed', undefined, 'managed_not_found')
+    applyResultRow(managedId, params.organizationId, 'skipped', undefined, 'target_gone')
   )
   state.resumeAfter = managedId
   await persistRotationProgress(db, params.rotationId, state, journalCursor(complete, managedId))

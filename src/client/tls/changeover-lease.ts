@@ -180,7 +180,7 @@ async function stealStaleInProgressRotation(
 
 /**
  * Begin or resume an Organization CA changeover. Returns `null` when another
- * changeover is `awaiting_retire`, or `in_progress` without a minted generation
+ * changeover is `in_progress` without a minted generation
  * and not yet stale (mint still in flight on another isolate).
  *
  * An `in_progress` row that already minted `toCaGeneration` is returned so
@@ -193,7 +193,7 @@ export async function tryBeginCaRotation(
 ): Promise<CaRotationJournalRow | null> {
   const blocking = await loadBlockingCaRotation(db, organizationId);
   if (blocking) {
-    if (blocking.state === "awaiting_retire") return null;
+    if (blocking.state === "awaiting_retire") return blocking;
     if (caRotationHasMintedGeneration(blocking)) return blocking;
     if (!journalIsStale(blocking.startedAt, nowMs)) return null;
     return stealStaleInProgressRotation(db, blocking, nowMs);

@@ -101,7 +101,7 @@ test("tryBeginCaRotation inserts an in_progress journal when none exists", async
   assertEquals(store.length, 1);
 });
 
-test("tryBeginCaRotation returns null while awaiting_retire", async () => {
+test("tryBeginCaRotation resumes while awaiting_retire", async () => {
   const now = new Date().toISOString();
   const store: StoredRow[] = [{
     id: "rot-await",
@@ -118,7 +118,8 @@ test("tryBeginCaRotation returns null while awaiting_retire", async () => {
     options: null,
   }];
   const row = await tryBeginCaRotation(leaseDb(store), ORG_ID);
-  assertEquals(row, null);
+  assertEquals(row?.id, "rot-await");
+  assertEquals(row?.state, "awaiting_retire");
 });
 
 test("tryBeginCaRotation returns null for a fresh in_progress lease", async () => {

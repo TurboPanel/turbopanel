@@ -97,8 +97,10 @@ Read-only reference — no behavior claims beyond today:
   caGeneration, caNotAfter }` (one
   indexed COUNT on `leaf` for this org plus the active Organization CA
   generation and expiry). `TlsPublicRow` includes `caGeneration`.
-  `POST /tls/ca/retire` advances `retired` → `revoked` only after every tracked
-  command succeeded and binding rematerialize rows are not failed).
+  `POST /tls/ca/retire` advances `retired` → `revoked` only after every live
+  fan-out row converged (`rotation-converge.ts`: backfill deferred
+  `managed.apply` command ids, `POST /tls/ca/rotate` resumes from
+  `awaiting_retire`, gone targets `skipped` + `target_gone` do not block).
   `PATCH /tls/:id` with `revoke: true` on an Organization CA row is rejected
   (`409` `organization_ca_retire_required`); Organization CA retirement is
   exclusively `POST /tls/ca/retire`.
