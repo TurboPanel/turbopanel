@@ -452,6 +452,7 @@ async function enqueueRotationApplyMembers(
     managedId: params.managedId,
     members,
     updateManagedStatus: false,
+    fanOutMembersConcurrently: true,
   })
   if (enqueued instanceof Response) {
     return params.serverIds.map((serverId) => ({

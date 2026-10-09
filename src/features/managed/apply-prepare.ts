@@ -1715,6 +1715,14 @@ export async function enqueuePreparedManagedApply(
      * health while apply is best-effort.
      */
     updateManagedStatus?: boolean
+    /**
+     * Enqueue every member's `managed.apply` immediately instead of deferring
+     * standbys until the primary succeeds. Required for Organization CA
+     * rotation and leaf renewal: the primary must not present a leaf signed by
+     * the new CA while a streaming standby still trusts only the retired CA on
+     * disk (`sslrootcert` / `ssl_ca`).
+     */
+    fanOutMembersConcurrently?: boolean
   }
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
   if (params.members.length === 0) {
@@ -1737,6 +1745,13 @@ export async function enqueuePreparedManagedApply(
     userId: params.userId,
     managedId: params.managedId,
     updateManagedStatus,
+  }
+
+  if (params.fanOutMembersConcurrently && standbyMembers.length > 0) {
+    return enqueueSinglePhaseManagedApply(c, db, commandQueue, {
+      ...enqueueParams,
+      members: params.members,
+    })
   }
 
   // Single-phase when no standby depends on primary prep.
