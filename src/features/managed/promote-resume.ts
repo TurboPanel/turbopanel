@@ -55,11 +55,7 @@ export function promoteResumeRequeueRefusal(
   if (inflight.targetMemberId !== record.targetMemberId) return 'target_mismatch'
   const sourceId = record.sourcePrimaryMemberId
   const targetId = record.targetMemberId
-  if (
-    members.some(
-      (row) => row.role === 'primary' && row.id !== sourceId && row.id !== targetId
-    )
-  ) {
+  if (members.some((row) => row.role === 'primary' && row.id !== sourceId && row.id !== targetId)) {
     return 'stray_primary'
   }
   return null
