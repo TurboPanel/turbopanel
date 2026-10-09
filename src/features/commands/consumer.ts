@@ -2042,7 +2042,7 @@ async function applyManagedRecoveryFailedSideEffect(
       actor: recoveryActor(record),
       error: error ?? record.errorMessage,
     })
-    if (resumed) return false
+    if (resumed) return true
     await onRecoveryCommandFailed(db, recoveryId)
   }
   return false

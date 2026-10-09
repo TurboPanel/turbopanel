@@ -9,7 +9,7 @@ import type { Db } from '../../db/connection.ts'
 import { recovery, replica } from '../../db/schema.ts'
 import type { ManagedMemberRow } from '../managed/members.ts'
 import { ALREADY_WRITABLE_PRIMARY_PROMOTE_ERROR_SAMPLE } from '../managed/promote-resume.ts'
-import { DAEMON_RESTART_INTERRUPTION_MARKER } from '../managed/ha-recovery.ts'
+import { DAEMON_RESTART_INTERRUPTION_MARKER, MAX_PROMOTE_RESUMES } from '../managed/ha-recovery.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
 import { COMMAND_DISPATCH_FAILURE_RETENTION_MS } from './command-records.ts'
 import type { CommandEnvelope } from './envelope.ts'
@@ -2807,6 +2807,10 @@ test('a promote lost to a daemon restart re-queues with resume when a queue is a
     fake.recoveryUpdates.some((patch) => patch.state === 'failed'),
     false
   )
+  assertEquals(
+    fake.managedUpdates.some((patch) => patch.status === 'failed'),
+    false
+  )
   assertEquals(envelopes.length, 1)
   assertEquals(envelopes[0]?.type, 'managed.promote')
   const dispatchRow = fake.inserts.find(
@@ -2816,6 +2820,41 @@ test('a promote lost to a daemon restart re-queues with resume when a queue is a
       (row.payload as { resume?: boolean }).resume === true
   )
   assertEquals(dispatchRow !== undefined, true)
+})
+
+test('a promote lost to a daemon restart marks failed when the resume cap is reached', async () => {
+  const { queue, envelopes } = liveQueue()
+  const fake = await runOnline(
+    'managed.promote',
+    PROMOTE_PAYLOAD,
+    {
+      ...donePending(),
+      status: 'failed',
+      error: DAEMON_RESTART_PROMOTE_ERROR,
+      result: undefined,
+    },
+    {
+      commandMetadata: { recoveryId: RECOVERY_ID },
+      recoveryRow: {
+        ...promotingRecoveryRow(),
+        metadata: { promoteResumes: MAX_PROMOTE_RESUMES, promoteCommandId: COMMAND_ID },
+      },
+      serverConnected: true,
+      managedMembers: promoteResumeMembers(),
+      deps: { commandQueue: queue, firewallApplyGate: DENY_FIREWALL_APPLY },
+    }
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'failed'),
+    true
+  )
+  assertEquals(fake.recoveryUpdates.length, 1)
+  assertEquals(fake.recoveryUpdates[0]?.state, 'failed')
+  assertEquals(
+    fake.managedUpdates.some((patch) => patch.status === 'failed'),
+    true
+  )
+  assertEquals(envelopes.length, 0)
 })
 
 test('a resume promote that hits an already-writable primary completes as success', async () => {
