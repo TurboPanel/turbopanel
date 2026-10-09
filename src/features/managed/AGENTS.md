@@ -778,6 +778,20 @@ stop`; an unreachable old primary blocks) then promote.
    row terminal `blocked` (`FENCE_STOP_UNQUEUED_MESSAGE` /
    `PROMOTE_UNQUEUED_MESSAGE`) instead of leaving `fencing` / `promoting`
    holding the in-flight slot.
+   A promote (or failover `recover`) command the target's daemon lost to a
+   restart (the daemon answers `The daemon restarted while this command was
+   running…`) is **queued again** by `resumeInterruptedPromote`
+   (`ha-recovery.ts`, called from the consumer's failure path) while the row is
+   still `promoting`, the in-flight journal row still matches, no other member
+   has become primary, the target is still a replica on a connected server (or
+   already primary in the journal — then recovery completes without a second
+   promote), and fewer than `MAX_PROMOTE_RESUMES` (2, `metadata.promoteResumes`)
+   resumes happened. Re-queued promotes carry `resume: true` on the payload;
+   a resume promote whose engine is already writable is completed as success on
+   the instance (`promote-resume.ts`). The old primary is already fenced, so
+   failing the row would leave no writer until an operator repaired it.
+   Anything else (other errors, a limit reached, no queue) ends the row `failed`
+   as before.
 9. Safety net: the stale sweep (Deno cleanup lane and the Workers
    offline-sweep cron) runs `expireStaleRecoveries`: a `detecting`/`fencing`
    row older than `STALE_DETECTING_RECOVERY_MS` (10 min) with no command
