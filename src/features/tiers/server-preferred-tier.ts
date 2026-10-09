@@ -5,7 +5,7 @@
 
 import { and, eq, isNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { license, server, tier } from '../../db/schema.ts'
+import { license, organization, server, tier } from '../../db/schema.ts'
 import {
   peekOrganizationAssignment,
   recomputeOrganizationAssignments,
@@ -28,6 +28,15 @@ export type SetServerPreferredTierResult =
 
 function tierPickNotice(wantedLabel: string): string {
   return `${wantedLabel} wanted, none free`
+}
+
+/** Notice for one server from the assignment's post-swap `pickUnfulfilled` map. */
+export function resolveTierPickNotice(
+  serverId: string,
+  pickUnfulfilled: ReadonlyMap<string, string>
+): string | null {
+  const label = pickUnfulfilled.get(serverId)
+  return label ? tierPickNotice(label) : null
 }
 
 export function spareCountsFromAssignment(
@@ -76,16 +85,23 @@ export async function setServerPreferredTier(
   }
 
   const now = new Date().toISOString()
-  await db
-    .update(server)
-    .set({ preferredTierId: tierId, updatedAt: now })
-    .where(eq(server.id, serverId))
+  const { assignment, assignedTierId } = await db.transaction(async (tx) => {
+    await tx
+      .select({ id: organization.id })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .for('update')
+      .limit(1)
+    await tx
+      .update(server)
+      .set({ preferredTierId: tierId, updatedAt: now })
+      .where(eq(server.id, serverId))
+    const { assignment } = await recomputeOrganizationAssignments(tx, organizationId)
+    const assignedTierId = assignment.byServer.get(serverId) ?? null
+    return { assignment, assignedTierId }
+  })
 
-  const { assignment } = await recomputeOrganizationAssignments(db, organizationId)
-  const assignedTierId = assignment.byServer.get(serverId) ?? null
-  const wantedLabel = tierId ? preferredLabel : null
-  const unfulfilled = assignment.pickUnfulfilled.get(serverId)
-  const notice = wantedLabel && unfulfilled ? tierPickNotice(wantedLabel) : null
+  const notice = tierId ? resolveTierPickNotice(serverId, assignment.pickUnfulfilled) : null
 
   let assignedTierLabel: string | null = null
   if (assignedTierId) {
@@ -132,6 +148,5 @@ export async function tierPickNoticeForServer(
     .limit(1)
   if (!row?.preferredTierId) return null
   const assignment = await peekOrganizationAssignment(db, organizationId)
-  const label = assignment.pickUnfulfilled.get(serverId)
-  return label ? tierPickNotice(label) : null
+  return resolveTierPickNotice(serverId, assignment.pickUnfulfilled)
 }

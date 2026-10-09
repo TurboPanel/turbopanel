@@ -150,13 +150,17 @@ function recordPickUnfulfilled(
 function takeSeatForServer(
   pool: PoolEntry[],
   server: AssignableServer,
-  pickUnfulfilled: Map<string, string>
+  pickUnfulfilled: Map<string, string>,
+  honoredPreferredPick: Set<string>
 ): PoolEntry | undefined {
   const need = effectiveRequiredRank(server)
   const wantRank = server.preferredRank ?? null
   if (wantRank != null && server.preferredTierId) {
     const preferred = takePreferredSeat(pool, server.preferredTierId, wantRank)
-    if (preferred) return preferred
+    if (preferred) {
+      honoredPreferredPick.add(server.serverId)
+      return preferred
+    }
     const derived = smallestDerivedSeat(pool, need)
     if (derived) decrementPoolSeat(derived)
     recordPickUnfulfilled(pickUnfulfilled, server, derived?.rank ?? null)
@@ -179,11 +183,12 @@ export function computeAssignment(
   const byServer = new Map<string, string | null>()
   const placed = new Map<string, { tierId: string; rank: number }>()
   const pickUnfulfilled = new Map<string, string>()
+  const honoredPreferredPick = new Set<string>()
   const uncovered: string[] = []
   const ordered = sortByBindOrder(servers)
   for (const server of ordered) {
     const wantRank = server.preferredRank ?? null
-    const slot = takeSeatForServer(pool, server, pickUnfulfilled)
+    const slot = takeSeatForServer(pool, server, pickUnfulfilled, honoredPreferredPick)
     if (slot) {
       byServer.set(server.serverId, slot.tierId)
       placed.set(server.serverId, { tierId: slot.tierId, rank: slot.rank })
@@ -193,7 +198,8 @@ export function computeAssignment(
       uncovered.push(server.serverId)
     }
   }
-  swapTowardRecommended(ordered, placed)
+  swapTowardRecommended(ordered, placed, honoredPreferredPick)
+  reconcilePickUnfulfilled(ordered, placed, pickUnfulfilled)
   for (const [serverId, seat] of placed) byServer.set(serverId, seat.tierId)
   const spare = new Map<string, number>()
   for (const entry of pool) spare.set(entry.tierId, entry.left)
@@ -207,11 +213,32 @@ function fitsBetter(candidate: number, incumbent: number, want: number): boolean
   return incumbent < want && candidate > incumbent
 }
 
+/** Align pick-unfulfilled notices with final seats after the swap pass. */
+function reconcilePickUnfulfilled(
+  ordered: readonly AssignableServer[],
+  placed: ReadonlyMap<string, Seat>,
+  pickUnfulfilled: Map<string, string>
+): void {
+  for (const server of ordered) {
+    if (server.preferredRank == null) continue
+    const seat = placed.get(server.serverId)
+    const placedRank = seat?.rank ?? null
+    const want = server.preferredRank
+    const label = server.preferredLabel ?? 'that tier'
+    if (placedRank == null || placedRank < want) {
+      pickUnfulfilled.set(server.serverId, label)
+    } else {
+      pickUnfulfilled.delete(server.serverId)
+    }
+  }
+}
+
 /** The donor for `server`'s upgrade: holds a higher seat and needs none of it. */
 function pickDonor(
   server: AssignableServer,
   ordered: readonly AssignableServer[],
-  placed: ReadonlyMap<string, Seat>
+  placed: ReadonlyMap<string, Seat>,
+  honoredPreferredPick: ReadonlySet<string>
 ): AssignableServer | undefined {
   const mine = placed.get(server.serverId)!.rank
   const want = effectiveRecommendedRank(server)
@@ -220,6 +247,7 @@ function pickDonor(
   for (const other of ordered) {
     const seat = placed.get(other.serverId)
     if (!seat || seat.rank <= mine) continue
+    if (honoredPreferredPick.has(other.serverId)) continue
     if (effectiveRecommendedRank(other) > mine) continue
     if (!best || fitsBetter(seat.rank, bestRank, want)) {
       best = other
@@ -232,7 +260,8 @@ function pickDonor(
 /** Rule 4: trade seats until no server recommends more than it holds while a donor exists. */
 function swapTowardRecommended(
   ordered: readonly AssignableServer[],
-  placed: Map<string, Seat>
+  placed: Map<string, Seat>,
+  honoredPreferredPick: ReadonlySet<string>
 ): void {
   let swapped = true
   while (swapped) {
@@ -240,7 +269,7 @@ function swapTowardRecommended(
     for (const server of ordered) {
       const mine = placed.get(server.serverId)
       if (!mine || mine.rank >= effectiveRecommendedRank(server)) continue
-      const donor = pickDonor(server, ordered, placed)
+      const donor = pickDonor(server, ordered, placed, honoredPreferredPick)
       if (!donor) continue
       const theirs = placed.get(donor.serverId)!
       placed.set(server.serverId, theirs)

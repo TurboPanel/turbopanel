@@ -395,6 +395,70 @@ test('clearing a pick is the default smallest-that-fits path', () => {
   assertEquals(derived.byServer.get('a'), S1)
 })
 
+test('pickUnfulfilled matches final placement after greedy placement and swap', () => {
+  const rankByTier = new Map([
+    [S1, 1],
+    [S2, 2],
+    [S3, 3],
+  ])
+  const fleets: AssignableServer[][] = [
+    [
+      server('first', 1, '2026-09-01T00:00:00.000Z', { tierId: S2, rank: 2, label: 'S2' }),
+      server('second', 1, '2026-09-02T00:00:00.000Z', { tierId: S2, rank: 2, label: 'S2' }),
+    ],
+    [
+      server('holder', 1, '2026-09-01T00:00:00.000Z', { tierId: S2, rank: 2, label: 'S2' }),
+      { ...server('swapper', 1, '2026-09-02T00:00:00.000Z'), recommendedRank: 2 },
+    ],
+    swapRealFleet(),
+  ]
+  const quantities: TierQuantity[][] = [
+    [
+      { tierId: S1, rank: 1, quantity: 2 },
+      { tierId: S2, rank: 2, quantity: 1 },
+    ],
+    [
+      { tierId: S1, rank: 1, quantity: 1 },
+      { tierId: S2, rank: 2, quantity: 1 },
+    ],
+    swapTiers(6, 6),
+  ]
+  for (let i = 0; i < fleets.length; i++) {
+    const result = computeAssignment(quantities[i], fleets[i])
+    for (const row of fleets[i]) {
+      if (row.preferredRank == null) continue
+      const tierId = result.byServer.get(row.serverId) ?? null
+      const rank = tierId ? (rankByTier.get(tierId) ?? null) : null
+      const notice = result.pickUnfulfilled.get(row.serverId)
+      const want = row.preferredRank
+      if (rank == null || rank < want) {
+        assertEquals(notice, row.preferredLabel ?? 'that tier', row.serverId)
+      } else {
+        assertEquals(notice, undefined, row.serverId)
+      }
+    }
+  }
+})
+
+test('swap pass does not downgrade a server sitting on its honored preferred tier', () => {
+  const result = computeAssignment(
+    [
+      { tierId: S1, rank: 1, quantity: 1 },
+      { tierId: S2, rank: 2, quantity: 1 },
+    ],
+    [
+      server('holder', 1, '2026-09-01T00:00:00.000Z', { tierId: S2, rank: 2, label: 'S2' }),
+      {
+        ...server('swapper', 1, '2026-09-02T00:00:00.000Z'),
+        recommendedRank: 2,
+      },
+    ]
+  )
+  assertEquals(result.byServer.get('holder'), S2)
+  assertEquals(result.byServer.get('swapper'), S1)
+  assertEquals(result.pickUnfulfilled.has('holder'), false)
+})
+
 test('two servers competing for one S2 spare: bind order wins', () => {
   const result = computeAssignment(
     [

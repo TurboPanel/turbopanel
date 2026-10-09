@@ -8,6 +8,7 @@
 import { assertEquals } from '@std/assert'
 import {
   license,
+  organization,
   payer,
   allowance,
   server,
@@ -20,13 +21,14 @@ import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
   clearAssignmentsForServers,
   loadAssignableServers,
+  peekOrganizationAssignment,
   recomputeAssignmentsForServer,
   recomputeOrganizationAssignments,
   requiredRankFromMetadata,
   requiredRankFromResources,
   tierQuantitiesFromState,
 } from './assignment-records.ts'
-import { setServerPreferredTier } from './server-preferred-tier.ts'
+import { resolveTierPickNotice, setServerPreferredTier } from './server-preferred-tier.ts'
 import { CUSTOM_TIER_LABEL } from './ladder.ts'
 
 /**
@@ -123,6 +125,19 @@ function seed(opts: {
     : []
   return createMemoryDb(
     [
+      [
+        organization,
+        [
+          {
+            id: ORG,
+            createdAt: NOW,
+            updatedAt: NOW,
+            metadata: null,
+            options: null,
+            name: 'Test org',
+          },
+        ],
+      ],
       [tier, [tierRow(S1, 'S1', 1), tierRow(S3, 'S3', 3), tierRow(S5, 'S5', 5), sxRow]],
       [allowance, grantRows],
       [
@@ -431,6 +446,30 @@ test('setServerPreferredTier refuses a tier below the server requirement', async
   })
   const result = await setServerPreferredTier(db, ORG, SERVER_A, S1)
   assertEquals(result, { ok: false, code: 'tier_below_required' })
+})
+
+test('post-swap pickUnfulfilled drives tierPickNotice for list and detail rows', async () => {
+  const db = seed({
+    seats: [{ tierId: S1, quantity: 2 }],
+    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), null, ORG, S3)],
+    licenses: [licenseRow('l-a', SERVER_A)],
+  })
+  const assignment = await peekOrganizationAssignment(db, ORG)
+  assertEquals(resolveTierPickNotice(SERVER_A, assignment.pickUnfulfilled), 'S3 wanted, none free')
+})
+
+test('setServerPreferredTier recomputes assignment inside a transaction', async () => {
+  const db = seed({
+    seats: [
+      { tierId: S1, quantity: 1 },
+      { tierId: S3, quantity: 1 },
+    ],
+    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), null, ORG, S3)],
+    licenses: [licenseRow('l-a', SERVER_A)],
+  })
+  await setServerPreferredTier(db, ORG, SERVER_A, S3)
+  assertEquals(db.ops.includes('begin'), true)
+  assertEquals(db.ops.includes('commit'), true)
 })
 
 test('setServerPreferredTier clears the pick and returns to smallest that fits', async () => {

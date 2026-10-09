@@ -69,7 +69,10 @@ import { resolveUpdateManifest } from '../../features/update/manifest.ts'
 import { resolveInstanceUpdateChannel, type UpdateChannel } from '../../contracts/update-channel.ts'
 import { getServerUpdatePreparer } from '../../features/update/prepare.ts'
 import { revokeLicense } from '../../features/licenses/license.ts'
-import { recomputeOrganizationAssignments } from '../../features/tiers/assignment-records.ts'
+import {
+  peekOrganizationAssignment,
+  recomputeOrganizationAssignments,
+} from '../../features/tiers/assignment-records.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import {
@@ -77,12 +80,11 @@ import {
   peekHierarchyDeleteFkViolation,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
-import { purgeServerRestrictForeignKeys } from './server-fk.ts'
+import { purgeServerForeignKeysForDelete } from './server-fk.ts'
 import * as systemHierarchy from '../../features/system/hierarchy.ts'
 import { enqueueSystemReconcile } from '../../features/system/reconcile.ts'
 import type { SystemReconcileAction } from '../../contracts/commands/schemas.ts'
 import { assertDispatchInfrastructure } from './command-dispatch.ts'
-import { deleteServerFabricMembership } from '../../features/fabric/fabric-records.ts'
 import { reconcileFabricMembership } from '../../features/fabric/enqueue.ts'
 import {
   assertServerOfflineForForget,
@@ -751,8 +753,7 @@ async function deleteServerWithSystemSubtree(
           systemHierarchy.deleteSystemEnvironmentSubtree(tx, environmentId)
         )
       )
-      await deleteServerFabricMembership(tx, serverId)
-      await purgeServerRestrictForeignKeys(tx, serverId)
+      await purgeServerForeignKeysForDelete(tx, serverId)
       await tx.delete(server).where(eq(server.id, serverId))
     })
     return {
@@ -892,10 +893,16 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       distinctNonEmptyIds(membershipDcIds)
     )
     const layoutPathsByServer = await loadServerLayoutPaths(db, serverIds)
+    const deployment = metricsDeploymentKindForRuntime(opts.runtime)
+    const pickUnfulfilled =
+      deployment === 'self-hosted'
+        ? undefined
+        : (await peekOrganizationAssignment(db, organizationId)).pickUnfulfilled
     const placementByServer = await loadTierPlacementsForServers(db, serverIds, {
-      deployment: metricsDeploymentKindForRuntime(opts.runtime),
+      deployment,
       orgOptions,
       unwatched: 'counts',
+      pickUnfulfilled,
     })
 
     return c.json({

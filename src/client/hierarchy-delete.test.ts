@@ -4,6 +4,7 @@ import type { Db } from '../db/connection.ts'
 import {
   HIERARCHY_DELETE_HAS_CHILDREN_CODE,
   HIERARCHY_DELETE_HAS_CHILDREN_ERROR,
+  hierarchyDeleteFkBlockerDetails,
   hierarchyDeleteHasChildrenMessage,
   hierarchyDeleteHasChildrenResponse,
   hierarchyDeleteHasChildrenResponseIfNeeded,
@@ -48,12 +49,19 @@ test('parsePostgresForeignKeyViolation reads table_name and constraint_name', ()
   )
 })
 
-test('hierarchyDeleteHasChildrenMessage names the referring table', () => {
+test('hierarchyDeleteHasChildrenMessage keeps the generic error string', () => {
   assertEquals(
     hierarchyDeleteHasChildrenMessage({ referringTable: 'stage' }),
-    'Something still refers to this server: stage'
+    HIERARCHY_DELETE_HAS_CHILDREN_ERROR
   )
   assertEquals(hierarchyDeleteHasChildrenMessage(), HIERARCHY_DELETE_HAS_CHILDREN_ERROR)
+})
+
+test('hierarchyDeleteFkBlockerDetails names the referring table for the UI', () => {
+  assertEquals(hierarchyDeleteFkBlockerDetails({ referringTable: 'subnet' }), [
+    'still referenced by: subnet',
+  ])
+  assertEquals(hierarchyDeleteFkBlockerDetails(), [])
 })
 
 test('runHierarchyDelete returns ok when the transaction succeeds', async () => {
@@ -109,7 +117,8 @@ test('hierarchyDeleteHasChildrenResponse returns 409 JSON', async () => {
   const res = await app.request('http://localhost/resource', { method: 'DELETE' })
   assertEquals(res.status, 409)
   assertEquals(await res.json(), {
-    error: 'Something still refers to this server: managed',
+    error: HIERARCHY_DELETE_HAS_CHILDREN_ERROR,
     code: HIERARCHY_DELETE_HAS_CHILDREN_CODE,
+    blockers: ['still referenced by: managed'],
   })
 })

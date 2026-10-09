@@ -35,6 +35,7 @@ import {
 } from './topology-recommendation.ts'
 import { computeAssignment } from './assignment.ts'
 import { loadAssignableServers, tierQuantitiesFromState } from './assignment-records.ts'
+import { resolveTierPickNotice } from './server-preferred-tier.ts'
 import {
   resolveRecommendedTier,
   resolveRequiredTier,
@@ -408,6 +409,7 @@ export async function loadTierPlacementsForServers(
     deployment: MetricsDeploymentKind
     orgOptions?: ReturnType<typeof parseOrganizationOptions>
     unwatched: 'ids'
+    pickUnfulfilled?: ReadonlyMap<string, string>
   }
 ): Promise<Map<string, TierPlacementDto<TierUnwatchedIds>>>
 export async function loadTierPlacementsForServers(
@@ -417,6 +419,7 @@ export async function loadTierPlacementsForServers(
     deployment: MetricsDeploymentKind
     orgOptions?: ReturnType<typeof parseOrganizationOptions>
     unwatched: 'counts'
+    pickUnfulfilled?: ReadonlyMap<string, string>
   }
 ): Promise<Map<string, TierPlacementDto<TierUnwatchedCounts>>>
 export async function loadTierPlacementsForServers(
@@ -426,6 +429,7 @@ export async function loadTierPlacementsForServers(
     deployment: MetricsDeploymentKind
     orgOptions?: ReturnType<typeof parseOrganizationOptions>
     unwatched: 'ids' | 'counts'
+    pickUnfulfilled?: ReadonlyMap<string, string>
   }
 ): Promise<Map<string, TierPlacementDto<TierUnwatchedIds | TierUnwatchedCounts>>> {
   const result = new Map<string, TierPlacementDto<TierUnwatchedIds | TierUnwatchedCounts>>()
@@ -448,6 +452,9 @@ export async function loadTierPlacementsForServers(
     result.set(serverId, {
       ...base,
       pickedTier: row.preferredTierLabel ?? null,
+      tierPickNotice: opts.pickUnfulfilled
+        ? resolveTierPickNotice(serverId, opts.pickUnfulfilled)
+        : null,
     })
   }
   return result
