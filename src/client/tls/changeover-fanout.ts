@@ -458,6 +458,7 @@ export async function fanOutApplyForCluster(
     userId: params.actorId,
     managedId: params.row.id,
     members: prepared.members,
+    fanOutMembersConcurrently: true,
   })
   if (enqueued instanceof Response) {
     return [
