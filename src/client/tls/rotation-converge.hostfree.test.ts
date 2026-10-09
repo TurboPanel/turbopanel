@@ -85,8 +85,13 @@ function tableName(value: unknown): string {
   }
 }
 
+/** Host-free drizzle stub — real `Db` is wider than the methods under test. */
+function asDb(stub: unknown): Db {
+  return stub as unknown as Db
+}
+
 function createReconcileDb(serverIds: readonly string[]): Db {
-  return {
+  return asDb({
     select: () => ({
       from: (table: unknown) => {
         const name = tableName(table)
@@ -108,7 +113,7 @@ function createReconcileDb(serverIds: readonly string[]): Db {
         return chain
       },
     }),
-  } as Db
+  })
 }
 
 test('rotationApplyRowKey joins managed and server ids', () => {
