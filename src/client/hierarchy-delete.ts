@@ -92,11 +92,17 @@ export function parsePostgresForeignKeyViolation(
   return null
 }
 
-export function hierarchyDeleteHasChildrenMessage(violation?: HierarchyDeleteFkViolation): string {
-  if (violation?.referringTable) {
-    return `Something still refers to this server: ${violation.referringTable}`
-  }
+export function hierarchyDeleteHasChildrenMessage(
+  _violation?: HierarchyDeleteFkViolation
+): string {
   return HIERARCHY_DELETE_HAS_CHILDREN_ERROR
+}
+
+export function hierarchyDeleteFkBlockerDetails(
+  violation?: HierarchyDeleteFkViolation
+): string[] {
+  if (!violation?.referringTable) return []
+  return [`still referenced by: ${violation.referringTable}`]
 }
 
 export async function runHierarchyDelete(
@@ -130,10 +136,12 @@ export function hierarchyDeleteHasChildrenResponse(
   c: Context,
   violation?: HierarchyDeleteFkViolation
 ): Response {
+  const blockers = hierarchyDeleteFkBlockerDetails(violation)
   return c.json(
     {
       error: hierarchyDeleteHasChildrenMessage(violation),
       code: HIERARCHY_DELETE_HAS_CHILDREN_CODE,
+      ...(blockers.length > 0 ? { blockers } : {}),
     },
     409
   )

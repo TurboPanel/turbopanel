@@ -117,15 +117,18 @@ test('schema pins foreign keys that reference server.id', async () => {
         AND kcu.column_name = 'server_id'
       ORDER BY kcu.table_name
     `)
-    assertEquals(rows.length, 26)
-    const names = rows.map((row) => row.table_name)
-    assertEquals(new Set(names).size, names.length)
+    const restrictTables = rows
+      .filter((row) => row.delete_rule === 'RESTRICT' || row.delete_rule === 'NO ACTION')
+      .map((row) => row.table_name)
+      .sort((a, b) => a.localeCompare(b))
+    const { assertServerRestrictForeignKeyCoverage } = await import('./server-fk.ts')
+    assertServerRestrictForeignKeyCoverage(restrictTables)
     const onDelete = new Map(rows.map((row) => [row.table_name, row.delete_rule]))
     assertEquals(onDelete.get('backup'), 'SET NULL')
     assertEquals(onDelete.get('license'), 'SET NULL')
     assertEquals(onDelete.get('stage'), 'CASCADE')
-    assertEquals(onDelete.get('managed'), 'RESTRICT')
-    assertEquals(onDelete.get('environment'), 'RESTRICT')
+    assertEquals(onDelete.get('relay'), 'RESTRICT')
+    assertEquals(onDelete.get('subnet'), 'RESTRICT')
   } finally {
     await endDbConnection(db)
   }
@@ -699,6 +702,117 @@ test('DELETE /servers/:id deletes the server relay and its segments', async () =
       assertEquals(remainingSegments.length, 0)
       assertEquals(remainingServers.length, 0)
       assertEquals(registry.purgedIds, [serverId])
+    }
+  )
+})
+
+test('DELETE /servers/:id with forgetResources clears relay and subnet rows and leaves another server intact', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const now = new Date().toISOString()
+      const [peer] = await db
+        .insert(server)
+        .values({
+          createdAt: now,
+          updatedAt: now,
+          organizationId,
+          name: 'peer',
+          hostname: `peer-${crypto.randomUUID()}`,
+        })
+        .returning({ id: server.id })
+      const peerId = peer!.id
+
+      const [insertedFabric] = await db
+        .insert(fabric)
+        .values({
+          createdAt: now,
+          updatedAt: now,
+          organizationId,
+          cidr: '10.251.0.0/16',
+        })
+        .returning({ id: fabric.id })
+      const fabricId = insertedFabric!.id
+
+      await db.insert(relay).values([
+        {
+          createdAt: now,
+          updatedAt: now,
+          fabricId,
+          serverId,
+          address: '10.251.0.1',
+          prefix: '10.193.0.0/16',
+        },
+        {
+          createdAt: now,
+          updatedAt: now,
+          fabricId,
+          serverId: peerId,
+          address: '10.251.0.2',
+          prefix: '10.194.0.0/16',
+        },
+      ])
+
+      const [insertedNetwork] = await db
+        .insert(network)
+        .values({
+          createdAt: now,
+          updatedAt: now,
+          organizationId,
+          kind: 'compose',
+        })
+        .returning({ id: network.id })
+      const networkId = insertedNetwork!.id
+
+      await db.insert(subnet).values([
+        {
+          createdAt: now,
+          updatedAt: now,
+          networkId,
+          serverId,
+          cidr: '10.193.0.0/24',
+        },
+        {
+          createdAt: now,
+          updatedAt: now,
+          networkId,
+          serverId: peerId,
+          cidr: '10.194.0.0/24',
+        },
+      ])
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
+        method: 'DELETE',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      })
+
+      assertEquals(res.status, 200)
+      assertEquals(registry.purgedIds, [serverId])
+
+      const peerRelays = await db.select({ id: relay.id }).from(relay).where(eq(relay.serverId, peerId))
+      const peerSubnets = await db
+        .select({ id: subnet.id })
+        .from(subnet)
+        .where(eq(subnet.serverId, peerId))
+      assertEquals(peerRelays.length, 1)
+      assertEquals(peerSubnets.length, 1)
+
+      const goneRelays = await db.select({ id: relay.id }).from(relay).where(eq(relay.serverId, serverId))
+      const goneSubnets = await db
+        .select({ id: subnet.id })
+        .from(subnet)
+        .where(eq(subnet.serverId, serverId))
+      assertEquals(goneRelays.length, 0)
+      assertEquals(goneSubnets.length, 0)
+
+      await db.delete(subnet).where(eq(subnet.serverId, peerId))
+      await db.delete(relay).where(eq(relay.serverId, peerId))
+      await db.delete(network).where(eq(network.id, networkId))
+      await db.delete(fabric).where(eq(fabric.id, fabricId))
+      await db.delete(server).where(eq(server.id, peerId))
     }
   )
 })

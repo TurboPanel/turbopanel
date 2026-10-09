@@ -21,6 +21,7 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
+import { purgeServerFabricForeignKeys } from './server-fk.ts'
 
 export const SERVER_DELETE_BLOCKER_KIND_VALUES = [
   'network',
@@ -1244,6 +1245,7 @@ export async function forgetServerOwnedResources(
     .delete(network)
     .where(eq(network.serverId, serverId))
     .returning({ id: network.id })
+  await purgeServerFabricForeignKeys(tx, serverId)
   return {
     containers: dropped.containers + containerIds.length,
     networks: networkRows.length,

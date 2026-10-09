@@ -77,12 +77,11 @@ import {
   peekHierarchyDeleteFkViolation,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
-import { purgeServerRestrictForeignKeys } from './server-fk.ts'
+import { purgeServerForeignKeysForDelete } from './server-fk.ts'
 import * as systemHierarchy from '../../features/system/hierarchy.ts'
 import { enqueueSystemReconcile } from '../../features/system/reconcile.ts'
 import type { SystemReconcileAction } from '../../contracts/commands/schemas.ts'
 import { assertDispatchInfrastructure } from './command-dispatch.ts'
-import { deleteServerFabricMembership } from '../../features/fabric/fabric-records.ts'
 import { reconcileFabricMembership } from '../../features/fabric/enqueue.ts'
 import {
   assertServerOfflineForForget,
@@ -747,8 +746,7 @@ async function deleteServerWithSystemSubtree(
           systemHierarchy.deleteSystemEnvironmentSubtree(tx, environmentId)
         )
       )
-      await deleteServerFabricMembership(tx, serverId)
-      await purgeServerRestrictForeignKeys(tx, serverId)
+      await purgeServerForeignKeysForDelete(tx, serverId)
       await tx.delete(server).where(eq(server.id, serverId))
     })
     return {
