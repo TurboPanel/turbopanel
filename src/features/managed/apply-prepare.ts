@@ -5,6 +5,8 @@ import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
 import { hasRemoteConsumerServers } from '../bindings/remote-consumers.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { ensureServerMonitorCredential } from './monitor-credential.ts'
+import { buildOrganizationTopologyUser } from './topology-credential.ts'
+import { orchestratorManagesEngine } from './ha-policy.ts'
 import {
   decryptSecret,
   encryptSecret,
@@ -1006,6 +1008,7 @@ function attachOptionalPayloadFields(
     memberId: string
     roleForSpec: 'primary' | 'standby'
     monitorUsers?: NonNullable<ManagedApplyCommandPayload['monitorUsers']>
+    topologyUser?: NonNullable<ManagedApplyCommandPayload['topologyUser']>
   }
 ): void {
   if (memberInput?.privateListener) {
@@ -1034,9 +1037,11 @@ function attachMemberApplyFlags(
     memberId: string
     roleForSpec: 'primary' | 'standby'
     monitorUsers?: NonNullable<ManagedApplyCommandPayload['monitorUsers']>
+    topologyUser?: NonNullable<ManagedApplyCommandPayload['topologyUser']>
   }
 ): void {
   if (extra.monitorUsers !== undefined) payload.monitorUsers = extra.monitorUsers
+  if (extra.topologyUser !== undefined) payload.topologyUser = extra.topologyUser
   if (
     extra.roleForSpec === 'standby' &&
     (input.forceResyncMemberIds?.includes(extra.memberId) ?? false)
@@ -1243,6 +1248,42 @@ async function resolvePayloadMonitorUsers(
   return buildPrimaryMonitorUsers(db, secretsConfig, dataEncryptionSecrets, input, members, member)
 }
 
+/**
+ * The organization's single Orchestrator topology account, on MySQL/MariaDB
+ * primary payloads only.
+ *
+ * Primary only because the account is created once and reaches the standbys
+ * through the binlog, exactly like the monitor roles: a standby boots
+ * `read_only=ON, super_read_only=ON` and cannot mint it locally. Engine-gated
+ * because Orchestrator never dials a Postgres member, so a Postgres cluster
+ * has no topology account at all. Derived per organization rather than read
+ * back from a table — see `topology-credential.ts`.
+ */
+async function resolvePayloadTopologyUser(
+  db: Db,
+  secretsConfig: SecretsConfig,
+  input: BuildManagedApplyInput,
+  member: ManagedMemberRow,
+  memberOrganizationId: string,
+  roleForSpec: 'primary' | 'standby'
+): Promise<
+  | { topologyUser?: NonNullable<ManagedApplyCommandPayload['topologyUser']> }
+  | ManagedApplyPrepareError
+> {
+  if (roleForSpec !== 'primary' || !orchestratorManagesEngine(input.spec.engine)) return {}
+  const daemonState = await getServerDaemonStateByServerId(db, member.serverId)
+  if (!daemonState || !isDaemonKeyActive(daemonState.key)) {
+    return { kind: 'daemon_key_unavailable', serverId: member.serverId }
+  }
+  return {
+    topologyUser: await buildOrganizationTopologyUser(
+      secretsConfig,
+      { serverId: member.serverId, keyId: daemonState.key.id },
+      memberOrganizationId
+    ),
+  }
+}
+
 async function buildPayloadForMember(
   c: Context,
   db: Db,
@@ -1375,6 +1416,16 @@ async function buildPayloadForMember(
   )
   if (isPrepareError(builtMonitorUsers)) return builtMonitorUsers
 
+  const builtTopologyUser = await resolvePayloadTopologyUser(
+    db,
+    secretsConfig,
+    input,
+    member,
+    memberOrganizationId,
+    roleForSpec
+  )
+  if (isPrepareError(builtTopologyUser)) return builtTopologyUser
+
   const payload: ManagedApplyCommandPayload = {
     managedId: input.managedRow.id,
     environmentId: input.environmentId,
@@ -1403,6 +1454,7 @@ async function buildPayloadForMember(
     memberId: member.id,
     roleForSpec,
     monitorUsers: builtMonitorUsers.monitorUsers,
+    topologyUser: builtTopologyUser.topologyUser,
   })
 
   const tlsResult = await attachManagedOrgTlsMaterial(db, secretsConfig, dataEncryptionSecrets, {
@@ -1852,16 +1904,8 @@ async function finalizePreparedManagedApplyResults(
     const serverIds = new Set(
       params.results.filter((r) => r.status === 'queued').map((r) => r.serverId)
     )
-    const { enqueueManagedHaReconcile } = await import('./ha-desired.ts')
     await forEachSequential(serverIds, async (serverId) => {
       await enqueueManagedIngressReconcile(db, commandQueue, {
-        serverId,
-        actorType: 'user',
-        actorId: params.userId,
-        secretsConfig,
-        dataEncryptionSecrets,
-      })
-      await enqueueManagedHaReconcile(db, commandQueue, {
         serverId,
         actorType: 'user',
         actorId: params.userId,

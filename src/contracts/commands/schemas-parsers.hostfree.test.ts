@@ -5,6 +5,10 @@
 import { assertEquals, assertThrows } from '@std/assert'
 import { managedHaContainerNameFromService } from '../../lib/naming.ts'
 import {
+  DAEMON_SEALED_FIXTURE_SUFFIX,
+  daemonSealedEnvelopeFixture,
+} from '../../test-fixtures/managed-ha-envelopes.ts'
+import {
   parseCommandPayload,
   parseCommandResult,
   parseDeploySecretPlan,
@@ -33,6 +37,7 @@ const HA_SERVICE_ID = '00000000-0000-4000-8000-0000000000cc'
 const MEMBER_ID = '00000000-0000-4000-8000-0000000000dd'
 /** Org-wide managed Docker network name — a `network.kind='managed'` row id. */
 const MANAGED_NETWORK = '00000000-0000-4000-8000-0000000000ee'
+const DAEMON_SEALED_REPLICATION = daemonSealedEnvelopeFixture(DAEMON_SEALED_FIXTURE_SUFFIX)
 const PEM = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n'
 
 test('parsePrincipalsReconcilePayload accepts principals and rejects duplicates', () => {
@@ -49,7 +54,10 @@ test('parsePrincipalsReconcilePayload accepts principals and rejects duplicates'
       parsePrincipalsReconcilePayload({
         principals: [
           { principalId: PRINCIPAL_ID, username: 'deploy' },
-          { principalId: '00000000-0000-4000-8000-000000000002', username: 'deploy' },
+          {
+            principalId: '00000000-0000-4000-8000-000000000002',
+            username: 'deploy',
+          },
         ],
       }),
     Error,
@@ -290,7 +298,10 @@ test('parseManagedReplicationHealth accepts valid snapshots and drops malformed 
   assertEquals(parseManagedReplicationHealth('x'), undefined)
   assertEquals(parseManagedReplicationHealth({ state: 'bogus' }), undefined)
   assertEquals(
-    parseManagedReplicationHealth({ state: 'streaming', observedAt: 'not-iso' }),
+    parseManagedReplicationHealth({
+      state: 'streaming',
+      observedAt: 'not-iso',
+    }),
     undefined
   )
   assertEquals(
@@ -309,6 +320,72 @@ test('parseManagedReplicationHealth accepts valid snapshots and drops malformed 
     }),
     { state: 'catchup', observedAt: '2020-01-01T00:00:00.000Z' }
   )
+})
+
+test('parseManagedHaReconcilePayload carries the org topology account, sealed only', () => {
+  const base = {
+    serverId: SERVER_ID,
+    managedNetwork: MANAGED_NETWORK,
+    desired: 'present',
+    raft: null,
+    clusters: [],
+    identity: {
+      serviceId: HA_SERVICE_ID,
+      composeServiceName: 'orchestrator',
+      containerName: managedHaContainerNameFromService(HA_SERVICE_ID),
+    },
+  }
+
+  // Absent on a daemon old enough not to send it, and on a server with no
+  // MySQL-family cluster.
+  assertEquals(parseManagedHaReconcilePayload(base).topologyUser, undefined)
+
+  const sealedEnvelope = daemonSealedEnvelopeFixture(DAEMON_SEALED_FIXTURE_SUFFIX)
+  const payload = parseManagedHaReconcilePayload({
+    ...base,
+    topologyUser: {
+      username: 'tp_topology_111111111111',
+      password: sealedEnvelope,
+    },
+  })
+  assertEquals(payload.topologyUser?.username, 'tp_topology_111111111111')
+
+  // A plaintext password is a refusal, not something to pass along.
+  assertThrows(
+    () =>
+      parseManagedHaReconcilePayload({
+        ...base,
+        topologyUser: {
+          username: 'tp_topology_111111111111',
+          password: 'topo-pass',
+        },
+      }),
+    TypeError,
+    'Invalid managed.ha.reconcile topologyUser'
+  )
+  assertThrows(
+    () =>
+      parseManagedHaReconcilePayload({
+        ...base,
+        topologyUser: {
+          username: 'tp topology; DROP',
+          password: daemonSealedEnvelopeFixture(['a', '.', 'b', '.', 'c'].join('')),
+        },
+      }),
+    TypeError,
+    'Invalid managed.ha.reconcile topologyUser'
+  )
+
+  const withOrchApi = parseManagedHaReconcilePayload({
+    ...base,
+    orchestratorApiUser: {
+      username: 'tp_orchapi_111111111111',
+      password: sealedEnvelope,
+    },
+    orchestratorRaftToken: sealedEnvelope,
+  })
+  assertEquals(withOrchApi.orchestratorApiUser?.username, 'tp_orchapi_111111111111')
+  assertEquals(withOrchApi.orchestratorRaftToken, sealedEnvelope)
 })
 
 test('parseManagedHaReconcilePayload accepts raft peers and cluster members', () => {
@@ -347,7 +424,7 @@ test('parseManagedHaReconcilePayload accepts raft peers and cluster members', ()
           },
         ],
         replicationUsername: 'tp_repl',
-        replicationPasswordEnvelope: 'tpdaemon.v1.server.key.payload',
+        replicationPasswordEnvelope: DAEMON_SEALED_REPLICATION,
       },
     ],
     identity: {
@@ -371,7 +448,14 @@ test('parseManagedHaReconcilePayload accepts raft peers and cluster members', ()
           advertiseAddress: '203.0.113.10',
           httpPort: 33001,
           raftPort: 33002,
-          peers: [{ nodeId: 'bad', address: '203.0.113.11', raftPort: 33002, httpPort: 33001 }],
+          peers: [
+            {
+              nodeId: 'bad',
+              address: '203.0.113.11',
+              raftPort: 33002,
+              httpPort: 33001,
+            },
+          ],
         },
         clusters: [],
         identity: {
@@ -703,7 +787,7 @@ test('parseManagedHaReconcilePayload rejects raft, cluster, and member field err
     engine: 'postgres',
     members: [member],
     replicationUsername: 'tp_repl',
-    replicationPasswordEnvelope: 'tpdaemon.v1.server.key.payload',
+    replicationPasswordEnvelope: DAEMON_SEALED_REPLICATION,
   }
   const parsed = parseManagedHaReconcilePayload({
     serverId: SERVER_ID,
@@ -945,10 +1029,16 @@ test('parseCommandPayload and parseCommandResult dispatch HA and principals type
       sourcePort: 5432,
     })
   )
-  assertEquals(parseCommandResult('managed.ha.failover', { summary: 'drained', phase: 'drain' }), {
-    summary: 'drained',
-    phase: 'drain',
-  })
+  assertEquals(
+    parseCommandResult('managed.ha.failover', {
+      summary: 'drained',
+      phase: 'drain',
+    }),
+    {
+      summary: 'drained',
+      phase: 'drain',
+    }
+  )
   assertEquals(
     parseCommandResult('server.principals.reconcile', {
       principalsApplied: 0,
@@ -1005,7 +1095,12 @@ test('parseManagedReplicationHealth keeps well-formed GTID freshness, drops the 
       executedGtid: 'uuid:1-5',
       fullyApplied: true,
     }),
-    { ...base, receivedGtid: 'uuid:1-5', executedGtid: 'uuid:1-5', fullyApplied: true }
+    {
+      ...base,
+      receivedGtid: 'uuid:1-5',
+      executedGtid: 'uuid:1-5',
+      fullyApplied: true,
+    }
   )
   assertEquals(
     parseManagedReplicationHealth({
@@ -1016,7 +1111,14 @@ test('parseManagedReplicationHealth keeps well-formed GTID freshness, drops the 
     }),
     base
   )
-  assertEquals(parseManagedReplicationHealth({ ...base, receivedGtid: '', executedGtid: '' }), base)
+  assertEquals(
+    parseManagedReplicationHealth({
+      ...base,
+      receivedGtid: '',
+      executedGtid: '',
+    }),
+    base
+  )
   assertEquals(parseManagedReplicationHealth(base), base)
 })
 
@@ -1048,7 +1150,11 @@ test('parseManagedReplicationHealth keeps a primary slotRetention and drops a ma
     }
   )
   assertEquals(
-    parseManagedReplicationHealth({ state: 'unknown', observedAt, slotRetention: { state: 'ok' } }),
+    parseManagedReplicationHealth({
+      state: 'unknown',
+      observedAt,
+      slotRetention: { state: 'ok' },
+    }),
     { state: 'unknown', observedAt, slotRetention: { state: 'ok' } }
   )
   for (const slotRetention of [
@@ -1056,9 +1162,18 @@ test('parseManagedReplicationHealth keeps a primary slotRetention and drops a ma
     { state: 7 },
     'critical',
     null,
-    { state: 'lagging', retainedBytes: -1, safeBytes: Number.NaN, slot: 'x'.repeat(65) },
+    {
+      state: 'lagging',
+      retainedBytes: -1,
+      safeBytes: Number.NaN,
+      slot: 'x'.repeat(65),
+    },
   ]) {
-    const parsed = parseManagedReplicationHealth({ state: 'unknown', observedAt, slotRetention })
+    const parsed = parseManagedReplicationHealth({
+      state: 'unknown',
+      observedAt,
+      slotRetention,
+    })
     assertEquals(
       parsed?.slotRetention,
       typeof slotRetention === 'object' && slotRetention?.state === 'lagging'

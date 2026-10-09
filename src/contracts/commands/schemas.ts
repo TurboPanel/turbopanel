@@ -5069,6 +5069,13 @@ export type ManagedApplyCommandPayload = {
    */
   monitorUsers?: Array<{ username: string; password: string }>
   /**
+   * The organization's single Orchestrator topology account (username +
+   * `tpdaemon` envelope). MySQL/MariaDB primary payloads only: the engine
+   * creates it once and standbys inherit it through the binlog, and
+   * Orchestrator never dials a Postgres member.
+   */
+  topologyUser?: { username: string; password: string }
+  /**
    * Operator-forced standby re-seed: the daemon skips bootstrap probes,
    * clears the data directory, and seeds fresh from the primary. Standby
    * payloads only — the sanctioned way past `needs_resync`.
@@ -5377,12 +5384,34 @@ export type ManagedHaReconcileCommandPayload = {
   managedNetwork: string
   desired: ManagedHaReconcileDesired
   raft: ManagedHaRaftConfig | null
+  /**
+   * MySQL and MariaDB clusters only. A Postgres cluster is left out entirely:
+   * Orchestrator speaks the MySQL protocol and does not manage Postgres HA.
+   */
   clusters: ManagedHaCluster[]
   identity: {
     serviceId: string
     composeServiceName: string
     containerName: string
   }
+  /**
+   * The organization's single Orchestrator topology account (username +
+   * `tpdaemon` envelope) — the same account `managed.apply` creates on every
+   * MySQL/MariaDB member of every HA cluster in the organization. Absent on
+   * teardown payloads.
+   */
+  topologyUser?: { username: string; password: string }
+  /**
+   * Organization-wide Orchestrator HTTP basic auth (`HTTPAuthUser` /
+   * `HTTPAuthPassword`). Same derived value on every Raft peer so followers can
+   * proxy to the leader. Sealed to the target daemon; absent on teardown.
+   */
+  orchestratorApiUser?: { username: string; password: string }
+  /**
+   * Organization-wide Orchestrator `RaftAuthToken`, sealed to the target
+   * daemon. Absent on teardown.
+   */
+  orchestratorRaftToken?: string
   /**
    * Organization CA leaf + Organization CA trust bundle. `caCertPem` is the
    * concatenated active+retired Organization CA PEMs of the server-owner
@@ -6037,13 +6066,19 @@ function parseManagedApplyOrgTlsMaterial(value: unknown): ManagedApplyOrgTlsMate
 /** Optional wire fields added after the base payload shape (skew-tolerant). */
 function parseManagedApplyOptionalWireFields(
   value: Record<string, unknown>
-): Pick<ManagedApplyCommandPayload, 'monitorUsers' | 'forceResync' | 'ingressSourceAddresses'> {
+): Pick<
+  ManagedApplyCommandPayload,
+  'monitorUsers' | 'topologyUser' | 'forceResync' | 'ingressSourceAddresses'
+> {
   const out: Pick<
     ManagedApplyCommandPayload,
-    'monitorUsers' | 'forceResync' | 'ingressSourceAddresses'
+    'monitorUsers' | 'topologyUser' | 'forceResync' | 'ingressSourceAddresses'
   > = {}
   if (value.monitorUsers !== undefined) {
     out.monitorUsers = parseManagedMonitorUsers(value.monitorUsers)
+  }
+  if (value.topologyUser !== undefined) {
+    out.topologyUser = parseManagedTopologyUser(value.topologyUser, 'managed.apply')
   }
   if (value.forceResync === true) {
     out.forceResync = true
@@ -7097,9 +7132,10 @@ function parseManagedIngressReconcileBackend(value: unknown): ManagedIngressReco
 }
 
 /** One `{ username, password-envelope }` monitor credential. */
-function parseManagedMonitorCredential(
+/** Username plus a daemon-bound (`tpdaemon`) sealed password. */
+function parseManagedSealedCredential(
   value: unknown,
-  label: string
+  message: string
 ): { username: string; password: string } {
   if (
     !isRecord(value) ||
@@ -7108,9 +7144,23 @@ function parseManagedMonitorCredential(
     !isString(value.password) ||
     !value.password.startsWith(DAEMON_ENVELOPE_PREFIX)
   ) {
-    throw new TypeError(`Invalid ${label} monitor credential`)
+    throw new TypeError(message)
   }
   return { username: value.username, password: value.password }
+}
+
+function parseManagedMonitorCredential(
+  value: unknown,
+  label: string
+): { username: string; password: string } {
+  return parseManagedSealedCredential(value, `Invalid ${label} monitor credential`)
+}
+
+function parseManagedTopologyUser(
+  value: unknown,
+  label: string
+): { username: string; password: string } {
+  return parseManagedSealedCredential(value, `Invalid ${label} topologyUser`)
 }
 
 function parseManagedMonitorUsers(value: unknown): Array<{ username: string; password: string }> {
@@ -7546,6 +7596,24 @@ export function parseManagedHaReconcilePayload(value: unknown): ManagedHaReconci
     raft,
     clusters: value.clusters.map(parseManagedHaCluster),
     identity: parseManagedHaIdentity(value.identity),
+  }
+  if (value.topologyUser !== undefined) {
+    payload.topologyUser = parseManagedTopologyUser(value.topologyUser, 'managed.ha.reconcile')
+  }
+  if (value.orchestratorApiUser !== undefined) {
+    payload.orchestratorApiUser = parseManagedTopologyUser(
+      value.orchestratorApiUser,
+      'managed.ha.reconcile orchestratorApiUser'
+    )
+  }
+  if (value.orchestratorRaftToken !== undefined) {
+    if (
+      !isString(value.orchestratorRaftToken) ||
+      !value.orchestratorRaftToken.startsWith(DAEMON_ENVELOPE_PREFIX)
+    ) {
+      throw new TypeError('Invalid managed.ha.reconcile orchestratorRaftToken')
+    }
+    payload.orchestratorRaftToken = value.orchestratorRaftToken
   }
   if (orgTlsMaterial !== undefined) {
     payload.orgTlsMaterial = orgTlsMaterial

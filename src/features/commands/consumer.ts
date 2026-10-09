@@ -128,6 +128,7 @@ import {
   parseTimezoneSetResult,
 } from '../../contracts/commands/schemas.ts'
 import { updateManagedMemberObservedReplication } from '../managed/members.ts'
+import { orchestratorManagesEngine } from '../managed/ha-policy.ts'
 import { findManagedHaHierarchy, findManagedIngressHierarchy } from '../system/hierarchy.ts'
 import {
   commitPendingTlsLeafTracking,
@@ -1334,6 +1335,19 @@ async function applyManagedApplySideEffect(
     // Primary success → enqueue deferred standby applies (if any).
     if (isPrimary && deps?.commandQueue && !isNoopCommandQueue(deps.commandQueue)) {
       await enqueuePendingStandbyApplies(db, record, deps)
+    }
+    // Orchestrator's topology login is created on the primary during apply
+    // (`ensureOrchestratorTopologyRole`); HA reconcile must not run until then.
+    if (isPrimary && orchestratorManagesEngine(payload.engine) && hasManagedFollowUpDeps(deps)) {
+      const { fanOutManagedHaReconcile } = await import('../managed/ha-desired.ts')
+      await fanOutManagedHaReconcile(db, deps.commandQueue, {
+        managedId: payload.managedId,
+        actorType: record.actorEntityType === 'user' ? 'user' : 'system',
+        actorId: record.actorEntityId,
+        secretsConfig: deps.secretsConfig,
+        dataEncryptionSecrets: deps.dataEncryptionSecrets,
+        extraServerIds: [envelope.serverId],
+      })
     }
   } catch (err) {
     const message = errorMessage(err)

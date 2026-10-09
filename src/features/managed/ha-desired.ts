@@ -28,10 +28,16 @@ import { ensureOrganizationManagedNetwork } from '../fabric/fabric-records.ts'
 import { container, managed, replica, principal, server, service } from '../../db/schema.ts'
 import { MANAGED_HA_HTTP_PORT, MANAGED_HA_RAFT_PORT } from './ha-ports.ts'
 import {
+  orchestratorManagesEngine,
   orchestratorPromotionRule,
   selectHaRaftMembers,
   serverHostsManagedHa,
 } from './ha-policy.ts'
+import {
+  buildOrganizationOrchestratorApiUser,
+  buildOrganizationOrchestratorRaftToken,
+} from './orchestrator-api-credential.ts'
+import { buildOrganizationTopologyUser } from './topology-credential.ts'
 import { getManagedEngineSpec, type ManagedEngineSpec } from './index.ts'
 import { loadDatacenterMembershipsForServers } from '../net/datacenter-membership.ts'
 import { loadDatacenterPolicies } from '../net/datacenter-networks.ts'
@@ -74,9 +80,18 @@ function haTeardownPayload(
   }
 }
 
-async function loadHaMembersOnServer(db: Db, serverId: string): Promise<ManagedMemberRow[]> {
-  const rows = await db.select().from(replica).where(eq(replica.serverId, serverId))
-  return rows.map((row) => ({
+type HaMemberOnServer = ManagedMemberRow & { engine: string }
+
+async function loadHaMembersOnServer(db: Db, serverId: string): Promise<HaMemberOnServer[]> {
+  const rows = await db
+    .select({
+      replica,
+      engine: managed.engine,
+    })
+    .from(replica)
+    .innerJoin(managed, eq(managed.id, replica.managedId))
+    .where(eq(replica.serverId, serverId))
+  return rows.map(({ replica: row, engine }) => ({
     id: row.id,
     managedId: row.managedId,
     serverId: row.serverId,
@@ -91,6 +106,7 @@ async function loadHaMembersOnServer(db: Db, serverId: string): Promise<ManagedM
     options: row.options,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    engine,
   }))
 }
 
@@ -290,16 +306,20 @@ async function buildRaftConfig(
       serverId: replica.serverId,
       role: replica.role,
       replicaClass: replica.replicaClass,
+      engine: managed.engine,
     })
     .from(replica)
     .innerJoin(managed, eq(managed.id, replica.managedId))
     .innerJoin(server, eq(server.id, replica.serverId))
     .where(eq(server.organizationId, organizationId))
 
-  const byServer = new Map<string, Array<{ role: string; replicaClass: string | null }>>()
+  const byServer = new Map<
+    string,
+    Array<{ role: string; replicaClass: string | null; engine: string }>
+  >()
   for (const row of orgMembers) {
     const list = byServer.get(row.serverId) ?? []
-    list.push({ role: row.role, replicaClass: row.replicaClass })
+    list.push({ role: row.role, replicaClass: row.replicaClass, engine: row.engine })
     byServer.set(row.serverId, list)
   }
 
@@ -355,7 +375,10 @@ async function buildHaClusterIfReady(
   const members = await listManagedMembers(db, managedId)
   if (members.length < 2) return null
   const spec = await loadManagedEngineSpecById(db, managedId)
-  if (!spec) return null
+  // Postgres never reaches Orchestrator: it answers `/api/discover` with HTTP
+  // 500 `invalid connection`, which used to abort the whole reconcile and
+  // leave every MySQL/MariaDB cluster behind it unregistered.
+  if (!spec || !orchestratorManagesEngine(spec.engine)) return null
   const repl = await resealReplicationPassword(
     db,
     params.secretsConfig,
@@ -482,6 +505,26 @@ export async function buildManagedHaReconcilePayload(
     [raft.advertiseAddress]
   )
 
+  // One account for the whole organization: Orchestrator has a single
+  // `MySQLTopologyUser` and the same login has to work on every MySQL and
+  // MariaDB member of every cluster it registers. Derived, so this value is
+  // identical to the one `managed.apply` puts on the members.
+  const topologyUser = await buildOrganizationTopologyUser(
+    params.secretsConfig,
+    { serverId: params.serverId, keyId: daemonState.key.id },
+    organizationId
+  )
+  const orchestratorApiUser = await buildOrganizationOrchestratorApiUser(
+    params.secretsConfig,
+    { serverId: params.serverId, keyId: daemonState.key.id },
+    organizationId
+  )
+  const orchestratorRaftToken = await buildOrganizationOrchestratorRaftToken(
+    params.secretsConfig,
+    { serverId: params.serverId, keyId: daemonState.key.id },
+    organizationId
+  )
+
   return {
     serverId: params.serverId,
     managedNetwork: await resolveManagedNetworkName(),
@@ -489,6 +532,9 @@ export async function buildManagedHaReconcilePayload(
     raft,
     clusters,
     identity,
+    topologyUser,
+    orchestratorApiUser,
+    orchestratorRaftToken,
     orgTlsMaterial,
   }
 }
@@ -556,8 +602,10 @@ export async function fanOutManagedHaReconcile(
       serverId: replica.serverId,
       role: replica.role,
       replicaClass: replica.replicaClass,
+      engine: managed.engine,
     })
     .from(replica)
+    .innerJoin(managed, eq(managed.id, replica.managedId))
     .where(eq(replica.managedId, params.managedId))
   const serverIds = new Set<string>(params.extraServerIds ?? [])
   for (const row of memberIds) {
