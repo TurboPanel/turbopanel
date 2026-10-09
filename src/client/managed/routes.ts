@@ -491,6 +491,7 @@ async function runManagedDeleteFanout(
   commandQueue: CommandQueue,
   params: {
     userId: string
+    organizationId: string
     environmentId: string
     managedId: string
     targetServerId: string
@@ -498,7 +499,7 @@ async function runManagedDeleteFanout(
     detached: readonly BindingImpactService[]
   }
 ): Promise<Response> {
-  const { userId, environmentId, managedId, targetServerId, detached } = params
+  const { userId, organizationId, environmentId, managedId, targetServerId, detached } = params
   const force = c.req.query('force') === 'true'
   const members = await listManagedMembers(db, managedId)
   if (!force) {
@@ -544,7 +545,7 @@ async function runManagedDeleteFanout(
     // policies cascade with the row, so its host gets the smaller set.
     const backupHost = await captureManagedBackupHost(db, commandQueue, managedId)
     await clearPendingNullIdContainersForEnvironment(db, environmentId)
-    await detachManagedBindings(db, managedId, detached)
+    await detachManagedBindings(c, db, managedId, detached, userId, organizationId)
     await deleteManagedRuntimeRows(db, environmentId, managedId)
     await enqueueBackupsReconcile(
       db,
@@ -581,11 +582,16 @@ function detachedField(detached: readonly BindingImpactService[]) {
 }
 
 async function detachManagedBindings(
+  c: Context<AppEnv>,
   db: NonNullable<ReturnType<typeof getDb>>,
   managedId: string,
-  detached: readonly BindingImpactService[]
+  detached: readonly BindingImpactService[],
+  actorId: string,
+  organizationId: string
 ): Promise<void> {
-  if (detached.length > 0) await detachBindingsForManaged(db, managedId)
+  if (detached.length > 0) {
+    await detachBindingsForManaged(db, managedId, { c, actorId, organizationId })
+  }
 }
 
 async function deleteManagedCompensation(
@@ -1508,7 +1514,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       // Clear never-applied pending container rows so deleteProjectCascade does
       // not treat them as active (`isActiveContainerStatus('pending')` is true).
       await clearPendingNullIdContainersForEnvironment(db, environmentId)
-      await detachManagedBindings(db, row.id, attached.services)
+      await detachManagedBindings(
+        c,
+        db,
+        row.id,
+        attached.services,
+        auth.userId,
+        auth.organizationId
+      )
       await db.delete(managed).where(eq(managed.id, row.id))
       return c.json({
         ...buildManagedDeleteHardResponse(),
@@ -1531,6 +1544,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     })
     return await runManagedDeleteFanout(c, db, commandQueue, {
       userId: auth.userId,
+      organizationId: auth.organizationId,
       environmentId,
       managedId: row.id,
       targetServerId,

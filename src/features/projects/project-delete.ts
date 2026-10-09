@@ -7,12 +7,18 @@ import {
   environment,
   hosting,
   managed,
+  principal,
   project,
   service,
   tenancy,
 } from '../../db/schema.ts'
 import { applyStorageRetentionOnParentDelete } from '../storage/storage-records.ts'
 import { purgeEnvironmentsComposeNetworks } from '../fabric/fabric-records.ts'
+import {
+  enqueueIngressForBindingChange,
+  type BindingListenerSync,
+} from '../bindings/enqueue-change.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 /** Docker Compose states that are considered fully stopped (safe to cascade-delete). */
 const STOPPED_CONTAINER_STATUSES = new Set(['exited', 'dead', 'removing'])
@@ -31,7 +37,7 @@ export function isActiveContainerStatus(status: string | undefined): boolean {
 }
 
 export type ProjectDeleteResult =
-  | { ok: true }
+  | { ok: true; warning?: string }
   | {
       ok: false
       error: 'project_has_running_services' | 'managed_runtime_present'
@@ -76,6 +82,57 @@ type EnvironmentRowSet = {
  * inside a transaction. Does not check running state — callers that need
  * that gate do it before calling.
  */
+async function loadBindingListenerTargets(
+  db: Db,
+  serviceIds: readonly string[]
+): Promise<Array<{ managedId: string; serviceId: string }>> {
+  if (serviceIds.length === 0) return []
+  const rows = await db
+    .select({
+      managedId: principal.managedId,
+      serviceId: binding.serviceId,
+    })
+    .from(binding)
+    .innerJoin(principal, eq(binding.principalId, principal.id))
+    .where(inArray(binding.serviceId, [...serviceIds]))
+  return rows.filter((row): row is { managedId: string; serviceId: string } =>
+    Boolean(row.managedId)
+  )
+}
+
+function mergeBindingListenerWarning(
+  current: string | undefined,
+  outcome: Readonly<{ warning?: string }>
+): string | undefined {
+  if (current) return current
+  return outcome.warning
+}
+
+async function syncRemovedBindingListeners(
+  db: Db,
+  targets: ReadonlyArray<{ managedId: string; serviceId: string }>,
+  listenerSync?: BindingListenerSync
+): Promise<string | undefined> {
+  if (!listenerSync || targets.length === 0) return undefined
+  const serviceIdsByManaged = new Map<string, string[]>()
+  for (const row of targets) {
+    const list = serviceIdsByManaged.get(row.managedId) ?? []
+    list.push(row.serviceId)
+    serviceIdsByManaged.set(row.managedId, list)
+  }
+  let warning: string | undefined
+  await forEachSequential([...serviceIdsByManaged.entries()], async ([managedId, serviceIds]) => {
+    const outcome = await enqueueIngressForBindingChange(listenerSync.c, db, {
+      serviceIds: [...new Set(serviceIds)],
+      managedId,
+      actorId: listenerSync.actorId,
+      organizationId: listenerSync.organizationId,
+    })
+    warning = mergeBindingListenerWarning(warning, outcome)
+  })
+  return warning
+}
+
 async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<void> {
   const { environmentIds, serviceIds, containerIds, hostingIds } = rows
   await applyStorageRetentionOnParentDelete(tx, {
@@ -140,7 +197,8 @@ async function loadEnvironmentChildren(
  */
 export async function deleteProjectCascade(
   db: Db,
-  projectId: string
+  projectId: string,
+  listenerSync?: BindingListenerSync
 ): Promise<ProjectDeleteResult> {
   const envRows = await db
     .select({ id: environment.id })
@@ -170,6 +228,7 @@ export async function deleteProjectCascade(
     return { ok: false, error: 'project_has_running_services' }
   }
 
+  const bindingTargets = await loadBindingListenerTargets(db, children.serviceIds)
   await db.transaction(async (tx) => {
     await dropEnvironmentRows(tx, {
       projectId,
@@ -180,13 +239,15 @@ export async function deleteProjectCascade(
     })
     await tx.delete(project).where(eq(project.id, projectId))
   })
-  return { ok: true }
+  const listenerWarning = await syncRemovedBindingListeners(db, bindingTargets, listenerSync)
+  return listenerWarning ? { ok: true, warning: listenerWarning } : { ok: true }
 }
 
 export type EnvironmentDeleteRefusal =
   typeof ENVIRONMENT_RUNNING_ERROR | typeof MANAGED_RUNTIME_PRESENT_ERROR
 
-export type EnvironmentDeleteResult = { ok: true } | { ok: false; error: EnvironmentDeleteRefusal }
+export type EnvironmentDeleteResult =
+  { ok: true; warning?: string } | { ok: false; error: EnvironmentDeleteRefusal }
 
 async function hasInProgressDeployment(db: Db, environmentId: string): Promise<boolean> {
   const rows = await db
@@ -236,7 +297,8 @@ export async function dropEnvironmentSubtreeInTx(
  */
 export async function deleteEnvironmentCascade(
   db: Db,
-  environmentId: string
+  environmentId: string,
+  listenerSync?: BindingListenerSync
 ): Promise<EnvironmentDeleteResult> {
   const managedRows = await db
     .select({ id: managed.id })
@@ -255,6 +317,7 @@ export async function deleteEnvironmentCascade(
     return { ok: false, error: ENVIRONMENT_RUNNING_ERROR }
   }
 
+  const bindingTargets = await loadBindingListenerTargets(db, children.serviceIds)
   await db.transaction((tx) =>
     dropEnvironmentRows(tx, {
       environmentIds: [environmentId],
@@ -263,5 +326,6 @@ export async function deleteEnvironmentCascade(
       hostingIds: children.hostingIds,
     })
   )
-  return { ok: true }
+  const listenerWarning = await syncRemovedBindingListeners(db, bindingTargets, listenerSync)
+  return listenerWarning ? { ok: true, warning: listenerWarning } : { ok: true }
 }

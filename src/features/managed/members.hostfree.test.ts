@@ -8,6 +8,7 @@ import {
   countReplicas,
   deleteManagedMember,
   ensureManagedPrimaryMember,
+  commitClearedPrivatePortsIfUnused,
   ensureMemberPrivatePorts,
   findManagedMember,
   insertManagedReplicaMember,
@@ -791,30 +792,160 @@ test('ensureMemberPrivatePorts clears leftover ports on single-member clusters',
     ordinal: 1,
     privatePort: 45_010,
   })
-  const cleared = member({ ...sole, privatePort: null })
-  let clearedId: string | null = null
-  const simpleDb = {
+  const result = await ensureMemberPrivatePorts({} as Db, [sole])
+  assertEquals(result, [{ ...sole, privatePort: null }])
+  assertEquals(await ensureMemberPrivatePorts({} as Db, []), [])
+})
+
+test('commitClearedPrivatePortsIfUnused writes the clear after apply is queued', async () => {
+  const sole = member({
+    id: 'p',
+    serverId: 's',
+    role: 'primary',
+    ordinal: 1,
+    privatePort: 45_010,
+  })
+  let cleared = false
+  const db = {
+    select: (fields: Record<string, unknown>) => {
+      if (Object.keys(fields).includes('taskServerId')) {
+        return {
+          from: () => ({
+            innerJoin: () => ({
+              innerJoin: () => ({
+                innerJoin: () => ({
+                  innerJoin: () => ({
+                    leftJoin: () => ({
+                      where: () => Promise.resolve([]),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          }),
+        }
+      }
+      return {
+        from: () => ({
+          where: () => ({
+            orderBy: () => Promise.resolve([sole]),
+          }),
+        }),
+      }
+    },
     update: () => ({
       set: () => ({
         where: () => {
-          clearedId = 'p'
+          cleared = true
           return Promise.resolve([])
         },
       }),
     }),
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          orderBy: () => Promise.resolve([cleared]),
+  } as unknown as Db
+  await commitClearedPrivatePortsIfUnused(db, 'managed-1')
+  assertEquals(cleared, true)
+})
+
+test('commitClearedPrivatePortsIfUnused keeps the port when a remote consumer remains', async () => {
+  const sole = member({
+    id: 'p',
+    serverId: 's',
+    role: 'primary',
+    ordinal: 1,
+    privatePort: 45_010,
+  })
+  let cleared = false
+  const db = {
+    select: (fields: Record<string, unknown>) => {
+      if (Object.keys(fields).includes('taskServerId')) {
+        return {
+          from: () => ({
+            innerJoin: () => ({
+              innerJoin: () => ({
+                innerJoin: () => ({
+                  innerJoin: () => ({
+                    leftJoin: () => ({
+                      where: () =>
+                        Promise.resolve([
+                          {
+                            environmentServerId: 'srv-app',
+                            projectOptions: null,
+                            taskServerId: null,
+                          },
+                        ]),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          }),
+        }
+      }
+      return {
+        from: () => ({
+          where: () => ({
+            orderBy: () => Promise.resolve([sole]),
+          }),
         }),
+      }
+    },
+    update: () => ({
+      set: () => ({
+        where: () => {
+          cleared = true
+          return Promise.resolve([])
+        },
       }),
     }),
   } as unknown as Db
+  await commitClearedPrivatePortsIfUnused(db, 'managed-1')
+  assertEquals(cleared, false)
+})
 
-  const result = await ensureMemberPrivatePorts(simpleDb, [sole])
-  assertEquals(clearedId, 'p')
-  assertEquals(result, [cleared])
-  assertEquals(await ensureMemberPrivatePorts({} as Db, []), [])
+test('ensureMemberPrivatePorts allocates a private port for a single member with remote consumers', async () => {
+  const sole = member({
+    id: 'p',
+    serverId: 's',
+    role: 'primary',
+    ordinal: 1,
+    privatePort: null,
+  })
+  const assigned = [{ ...sole, privatePort: MANAGED_PRIVATE_PORT_MIN }]
+  let selectN = 0
+  const updates: number[] = []
+  const tx = {
+    select: () => ({
+      from: () => ({
+        where: () => {
+          selectN += 1
+          if (selectN === 2) {
+            return Promise.resolve([])
+          }
+          return {
+            orderBy: () => Promise.resolve(selectN === 1 ? [sole] : assigned),
+          }
+        },
+      }),
+    }),
+    update: () => ({
+      set: (patch: { privatePort: number }) => ({
+        where: () => {
+          updates.push(patch.privatePort)
+          return Promise.resolve([])
+        },
+      }),
+    }),
+  }
+  const db = {
+    transaction: (fn: (inner: typeof tx) => Promise<unknown>) => fn(tx),
+  } as unknown as Db
+
+  const result = await ensureMemberPrivatePorts(db, [sole], { hasRemoteConsumers: true })
+  assertEquals(Array.isArray(result), true)
+  if (Array.isArray(result)) {
+    assertEquals(result[0]?.privatePort, MANAGED_PRIVATE_PORT_MIN)
+  }
+  assertEquals(updates, [MANAGED_PRIVATE_PORT_MIN])
 })
 
 test('ensureMemberPrivatePorts never resurrects members excluded from the input', async () => {
@@ -829,29 +960,9 @@ test('ensureMemberPrivatePorts never resurrects members excluded from the input'
     ordinal: 1,
     privatePort: 45_010,
   })
-  const cleared = member({ ...sole, privatePort: null })
-  const doomedReplica = member({
-    id: 'r',
-    serverId: 's2',
-    role: 'replica',
-    ordinal: 2,
-    privatePort: 45_000,
-  })
-  const simpleDb = {
-    update: () => ({
-      set: () => ({ where: () => Promise.resolve([]) }),
-    }),
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          orderBy: () => Promise.resolve([cleared, doomedReplica]),
-        }),
-      }),
-    }),
-  } as unknown as Db
-
-  const result = await ensureMemberPrivatePorts(simpleDb, [sole])
-  assertEquals(result, [cleared])
+  const result = await ensureMemberPrivatePorts({} as Db, [sole])
+  assertEquals(result, [{ ...sole, privatePort: null }])
+  assertEquals(Array.isArray(result) && result.some((row) => row.id === 'r'), false)
 })
 
 test('ensureMemberPrivatePorts allocates free private ports per server', async () => {

@@ -77,13 +77,21 @@ function createCascadeMockDb(scenario: {
 
   const db = {
     select: () => ({
-      from: () => ({
-        where: () => {
+      from: () => {
+        const next = () => {
           const rows = selectQueue[selectIndex] ?? []
           selectIndex += 1
           return Promise.resolve(rows)
-        },
-      }),
+        }
+        const join = {
+          innerJoin: () => join,
+          where: next,
+        }
+        return {
+          where: next,
+          innerJoin: () => join,
+        }
+      },
     }),
     delete: (_table: unknown) => ({
       where: () => {

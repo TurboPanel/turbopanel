@@ -38,6 +38,7 @@ import { parseFabricOptions } from '../fabric/cidr.ts'
 import { resolveHostingBind } from '../hostings/hosting-options.ts'
 import { MANAGED_HA_HTTP_PORT, MANAGED_HA_RAFT_PORT } from '../managed/ha-ports.ts'
 import { serverHostsManagedHa } from '../managed/ha-policy.ts'
+import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
 import { loadHostIngressListeners } from '../managed/external-access.ts'
 import {
   isPrepareError,
@@ -283,7 +284,10 @@ async function loadMemberPeerExposure(
   port: number,
   notes: string[]
 ): Promise<DerivedExposure | null> {
-  const bind = await resolveMemberPrivateBindAddress(db, member, members)
+  const extraFromServerIds = (await consumerServerIdsForManaged(db, member.managedId)).filter(
+    (id) => id !== member.serverId && !members.some((row) => row.serverId === id)
+  )
+  const bind = await resolveMemberPrivateBindAddress(db, member, members, extraFromServerIds)
   if (bind === undefined) return null
   const peers = await resolvePeersForMember(db, members, member, port)
   if (isPrepareError(bind) || 'kind' in peers) {

@@ -301,8 +301,8 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
   const volumes = service.volumes as string[]
   volumes.push(`./tls:${TLS_DIR_CONTAINER}:ro`)
 
-  // Private listener: multi-member only (shared platform rule — never remap
-  // the native 3306 inside the container).
+  // Private listener: never remap the native 3306 inside the container.
+  // Published for replicas and for a single member with remote consumer ProxySQL.
   if (input.member?.privateListener) {
     const { address, port } = input.member.privateListener
     service.ports = [`${address}:${port}:3306`]

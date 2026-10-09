@@ -6,6 +6,7 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { binding, environment, principal, service } from '../../db/schema.ts'
+import { enqueueIngressForBindingChange, type BindingListenerSync } from './enqueue-change.ts'
 
 export type BindingImpactService = {
   serviceId: string
@@ -113,7 +114,13 @@ export async function listBindingImpactForManaged(
  * services stop receiving the cluster's connection variables at their next
  * deploy instead of keeping dangling ones.
  */
-export async function detachBindingsForManaged(db: Db, managedId: string): Promise<void> {
+export async function detachBindingsForManaged(
+  db: Db,
+  managedId: string,
+  listenerSync?: BindingListenerSync
+): Promise<void> {
+  const impact = await listManagedBindingImpact(db, managedId)
+  const serviceIds = [...new Set(impact.map((row) => row.serviceId))]
   await db
     .delete(binding)
     .where(
@@ -122,6 +129,14 @@ export async function detachBindingsForManaged(db: Db, managedId: string): Promi
         db.select({ id: principal.id }).from(principal).where(eq(principal.managedId, managedId))
       )
     )
+  if (listenerSync && serviceIds.length > 0) {
+    await enqueueIngressForBindingChange(listenerSync.c, db, {
+      serviceIds,
+      managedId,
+      actorId: listenerSync.actorId,
+      organizationId: listenerSync.organizationId,
+    })
+  }
 }
 
 export async function hasBindingsForPrincipal(db: Db, principalId: string): Promise<boolean> {

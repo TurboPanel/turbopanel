@@ -931,13 +931,20 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       environmentIds.map((row) => row.id)
     )
 
-    const result = await deleteProjectCascade(db, id)
+    const result = await deleteProjectCascade(db, id, {
+      c,
+      actorId: userId,
+      organizationId,
+    })
     if (!result.ok) {
       return c.json({ error: result.error }, 409)
     }
 
     await reclaimDeletedEnvironmentHosts(c, db, teardownPlans, userId)
 
-    return c.json({ ok: true as const })
+    return c.json({
+      ok: true as const,
+      ...(result.warning ? { warning: result.warning } : {}),
+    })
   })
 }

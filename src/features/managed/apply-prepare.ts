@@ -2,6 +2,8 @@ import { eq } from 'drizzle-orm'
 import { effectiveManagedImage } from './releases.ts'
 import type { Context } from 'hono'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
+import { hasRemoteConsumerServers } from '../bindings/remote-consumers.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
 import { ensureServerMonitorCredential } from './monitor-credential.ts'
 import {
   decryptSecret,
@@ -32,6 +34,7 @@ import type { ManagedSettings } from './settings.ts'
 import {
   isPrivateEndpointError,
   type PrivateEndpointError,
+  type PrivateEndpointPurpose,
   privateEndpointErrorResponse,
   resolvePrivateEndpoint,
   resolvePrivateEndpoints,
@@ -68,6 +71,7 @@ import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
 import { enqueueManagedIngressReconcile } from './ingress-desired.ts'
 import {
+  commitClearedPrivatePortsIfUnused,
   ensureManagedPrimaryMember,
   ensureMemberPrivatePorts,
   isManagedPrivatePortExhaustedError,
@@ -356,6 +360,14 @@ function principalPrivileges(metadata: unknown): string[] | undefined {
   return privileges.length > 0 ? privileges : undefined
 }
 
+/** Org-CA engine TLS when there are peers, or a private listener for remote consumers. */
+export function resolveManagedApplyUseOrgTls(
+  multiMember: boolean,
+  memberInput: BuildRuntimeSpecInput['member'] | undefined
+): boolean {
+  return multiMember || memberInput?.privateListener !== undefined
+}
+
 function composeFromRuntimeSpec(
   spec: ManagedEngineSpec,
   settings: ManagedSettings,
@@ -642,6 +654,90 @@ type ResolvedMemberPrivateBind = {
   transport: 'datacenter' | 'fabric' | 'public'
 }
 
+type PrivateBindDialer = {
+  serverId: string
+  purpose: PrivateEndpointPurpose
+}
+
+function adoptPrivateBindCandidate(
+  bind: ResolvedMemberPrivateBind | undefined,
+  candidate: ResolvedMemberPrivateBind
+): ResolvedMemberPrivateBind {
+  return bind ?? candidate
+}
+
+function peerPrivateBindConflict(
+  bind: ResolvedMemberPrivateBind,
+  candidate: ResolvedMemberPrivateBind,
+  memberServerId: string
+): ManagedApplyPrepareError | undefined {
+  if (bind.address === candidate.address && bind.transport === candidate.transport) {
+    return undefined
+  }
+  return {
+    kind: 'managed_listener_bind_conflict',
+    serverId: memberServerId,
+  }
+}
+
+async function resolvePrivateBindFromDialers(
+  db: Db,
+  params: Readonly<{
+    memberServerId: string
+    dialers: readonly PrivateBindDialer[]
+    peerConflict: boolean
+  }>
+): Promise<ResolvedMemberPrivateBind | undefined | ManagedApplyPrepareError> {
+  let bind: ResolvedMemberPrivateBind | undefined
+  let failure: ManagedApplyPrepareError | undefined
+
+  await forEachSequential(params.dialers, async (dialer) => {
+    if (failure) return
+    const resolved = await resolvePrivateEndpoint(db, {
+      fromServerId: dialer.serverId,
+      toServerId: params.memberServerId,
+      purpose: dialer.purpose,
+    })
+    if (isPrivateEndpointError(resolved)) {
+      if (params.peerConflict) {
+        failure = resolved
+        return
+      }
+      compatLogWarn(
+        'managed-apply',
+        `skipping consumer ${dialer.serverId}: no private path to ${params.memberServerId}`
+      )
+      return
+    }
+    if (resolved.transport === 'local') return
+
+    const candidate: ResolvedMemberPrivateBind = {
+      address: resolved.address,
+      transport: resolved.transport,
+    }
+    if (!bind) {
+      bind = adoptPrivateBindCandidate(bind, candidate)
+      return
+    }
+    if (params.peerConflict) {
+      const conflict = peerPrivateBindConflict(bind, candidate, params.memberServerId)
+      if (conflict) {
+        failure = conflict
+      }
+      return
+    }
+    if (bind.address !== candidate.address || bind.transport !== candidate.transport) {
+      compatLogWarn(
+        'managed-apply',
+        `skipping consumer ${dialer.serverId}: private listener stays on ${bind.transport} ${bind.address}`
+      )
+    }
+  })
+
+  if (failure) return failure
+  return bind
+}
+
 /**
  * Resolve the address this member publishes its private listener on by asking
  * the reverse question for every remote peer: "which address does that peer
@@ -649,14 +745,18 @@ type ResolvedMemberPrivateBind = {
  * (`replicationPurposeForMemberPair`) the peer list itself was built with, so
  * the publish can never disagree with the dial.
  *
- * Returns `undefined` when no remote peer needs a published bind (single-member
- * or all co-resident — those dial the container name on the organization's
- * managed network),
- * a `PrivateEndpointError` when a peer has no path to this member, and
- * `managed_listener_bind_conflict` when peers disagree on the address or
+ * Returns `undefined` when no remote peer or remote consumer needs a published
+ * bind (single-member with only co-resident consumers — those dial the
+ * container name on the organization's managed network),
+ * a `PrivateEndpointError` when a **peer** has no path to this member, and
+ * `managed_listener_bind_conflict` when **peers** disagree on the address or
  * transport: the wire payload carries exactly one `privateListener`, so a mixed
  * datacenter/fabric/public peer set is rejected instead of shipping a bind that
  * only some peers can reach.
+ *
+ * Consumers are best-effort: no private path, or a path that disagrees with
+ * the peer-chosen bind, skips that consumer with a warning — it must not fail
+ * apply for every other app, and it must not widen the published bind.
  *
  * The returned `transport` tags the wire payload so the daemon can mandate
  * org-CA TLS for a public bind.
@@ -666,49 +766,65 @@ type ResolvedMemberPrivateBind = {
 export async function resolveMemberPrivateBindAddress(
   db: Db,
   member: ManagedMemberRow,
-  members: readonly ManagedMemberRow[]
+  members: readonly ManagedMemberRow[],
+  extraFromServerIds: readonly string[] = []
 ): Promise<ResolvedMemberPrivateBind | undefined | ManagedApplyPrepareError> {
   const remotePeers = members.filter(
     (row) => row.id !== member.id && row.serverId !== member.serverId
   )
-  if (remotePeers.length === 0) return undefined
+  const memberServerIds = new Set(members.map((row) => row.serverId))
+  const consumerDialers = extraFromServerIds.filter(
+    (id) => id !== member.serverId && !memberServerIds.has(id)
+  )
+  if (remotePeers.length === 0 && consumerDialers.length === 0) return undefined
 
-  let bind: ResolvedMemberPrivateBind | undefined
-  for (const peer of remotePeers) {
-    const resolved = await resolvePrivateEndpoint(db, {
-      fromServerId: peer.serverId,
-      toServerId: member.serverId,
+  const dialers: Array<{ serverId: string; purpose: PrivateEndpointPurpose }> = [
+    ...remotePeers.map((peer) => ({
+      serverId: peer.serverId,
       purpose: replicationPurposeForMemberPair(member, peer),
-    })
-    if (isPrivateEndpointError(resolved)) return resolved
-    if (resolved.transport === 'local') continue
+    })),
+    ...consumerDialers.map((serverId) => ({
+      serverId,
+      purpose: 'client-backend' as const,
+    })),
+  ]
 
-    const candidate: ResolvedMemberPrivateBind = {
-      address: resolved.address,
-      transport: resolved.transport,
-    }
-    if (!bind) {
-      bind = candidate
-      continue
-    }
-    if (bind.address !== candidate.address || bind.transport !== candidate.transport) {
-      return {
-        kind: 'managed_listener_bind_conflict',
-        serverId: member.serverId,
-      }
-    }
+  const peerDialers = dialers.filter((dialer) => dialer.purpose !== 'client-backend')
+  const consumerOnlyDialers = dialers.filter((dialer) => dialer.purpose === 'client-backend')
+
+  const peerBind = await resolvePrivateBindFromDialers(db, {
+    memberServerId: member.serverId,
+    dialers: peerDialers,
+    peerConflict: true,
+  })
+  if (peerBind && 'kind' in peerBind) return peerBind
+
+  const consumerBind = await resolvePrivateBindFromDialers(db, {
+    memberServerId: member.serverId,
+    dialers: consumerOnlyDialers,
+    peerConflict: false,
+  })
+  if (consumerBind && 'kind' in consumerBind) return consumerBind
+
+  if (!peerBind) return consumerBind ?? undefined
+  if (!consumerBind) return peerBind
+  if (peerBind.address === consumerBind.address && peerBind.transport === consumerBind.transport) {
+    return peerBind
   }
-  return bind
+  return peerBind
 }
 
 /**
  * Resolve this member's private-listener address (when it has a private
  * port) and its `BuildRuntimeSpecInput['member']` replication shape (primary
  * desired-slots / peer addresses, or standby slot + upstream primary).
- * Returns `undefined` for single-member clusters (no replication username).
+ * A single-member cluster with remote consumers still returns
+ * `{ privateListener }` so the engine publishes that port and admits
+ * consumer ProxySQL — no replication username.
  *
- * Bind is whatever address remote peers actually dial for this member (see
- * `resolveMemberPrivateBindAddress`), not an independent ladder walk.
+ * Bind is whatever address remote peers or consumers actually dial for this
+ * member (see `resolveMemberPrivateBindAddress`), not an independent ladder
+ * walk.
  */
 async function resolveMemberReplicationInput(
   db: Db,
@@ -720,15 +836,28 @@ async function resolveMemberReplicationInput(
     replicationUsername: string | null
     multiMember: boolean
     peers: ManagedMemberPeer[]
+    consumerServerIds: readonly string[]
   }
 ): Promise<BuildRuntimeSpecInput['member'] | undefined | ManagedApplyPrepareError> {
-  const { members, member, roleForSpec, replicationUsername, multiMember, peers } = params
-  if (!multiMember || !replicationUsername) return undefined
+  const {
+    members,
+    member,
+    roleForSpec,
+    replicationUsername,
+    multiMember,
+    peers,
+    consumerServerIds,
+  } = params
 
   let privateListener:
     NonNullable<NonNullable<BuildRuntimeSpecInput['member']>['privateListener']> | undefined
   if (member.privatePort !== null) {
-    const privateBind = await resolveMemberPrivateBindAddress(db, member, members)
+    const privateBind = await resolveMemberPrivateBindAddress(
+      db,
+      member,
+      members,
+      consumerServerIds
+    )
     if (isPrepareError(privateBind)) return privateBind
     if (privateBind) {
       privateListener = {
@@ -738,6 +867,15 @@ async function resolveMemberReplicationInput(
       }
     }
     // All co-resident: no private listener publish needed.
+  }
+
+  if (!multiMember || !replicationUsername) {
+    if (!privateListener) return undefined
+    return {
+      role: roleForSpec,
+      ordinal: member.ordinal,
+      privateListener,
+    }
   }
 
   if (roleForSpec === 'primary') {
@@ -1029,9 +1167,8 @@ export async function resolveConsumerSourceAddresses(
 /**
  * Cross-host consumer servers (bound apps elsewhere) run ProxySQL ingress
  * that dials this engine's private listener — pg_hba / engine account host
- * scoping must admit them. Multi-member only: single-member engines have no
- * private listener for a remote consumer to dial. Best effort per consumer:
- * one without a private path cannot reach the listener anyway.
+ * scoping must admit them. Best effort per consumer: one without a private
+ * path cannot reach the listener anyway.
  */
 async function attachConsumerSourceAddresses(
   db: Db,
@@ -1116,12 +1253,14 @@ async function buildPayloadForMember(
     multiMember: boolean
     replicationUsername: string | null
     containerSans: readonly string[]
+    consumerServerIds: readonly string[]
   }
 ): Promise<
   | { payload: ManagedApplyCommandPayload; pendingTlsLeaf: UpsertTlsLeafTrackingParams }
   | ManagedApplyPrepareError
 > {
-  const { members, member, multiMember, replicationUsername, containerSans } = params
+  const { members, member, multiMember, replicationUsername, containerSans, consumerServerIds } =
+    params
   const secretsConfig = c.get('secretsConfig')
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   if (!secretsConfig || !dataEncryptionSecrets) {
@@ -1153,6 +1292,7 @@ async function buildPayloadForMember(
     replicationUsername,
     multiMember,
     peers,
+    consumerServerIds,
   })
   if (isPrepareError(resolvedMemberInput)) return resolvedMemberInput
   const memberInput = resolvedMemberInput
@@ -1162,13 +1302,14 @@ async function buildPayloadForMember(
   }
 
   const rootUsername = resolveRootUsername(input)
+  const useOrgTls = resolveManagedApplyUseOrgTls(multiMember, memberInput)
   const { composeYaml, runtime } = composeFromRuntimeSpec(
     input.spec,
     input.settings,
     input.managedRow.id,
     rootUsername,
     memberInput,
-    multiMember,
+    useOrgTls,
     members.length
   )
 
@@ -1301,7 +1442,12 @@ export async function prepareManagedApplyPayloads(
     return { kind: 'managed_primary_missing' }
   }
 
-  const ports = await ensureMemberPrivatePorts(db, members)
+  const consumerServerIds = await consumerServerIdsForManaged(db, input.managedRow.id)
+  const hasRemoteConsumers = hasRemoteConsumerServers(
+    members.map((m) => m.serverId),
+    consumerServerIds
+  )
+  const ports = await ensureMemberPrivatePorts(db, members, { hasRemoteConsumers })
   if (isManagedPrivatePortExhaustedError(ports)) {
     return ports
   }
@@ -1325,6 +1471,7 @@ export async function prepareManagedApplyPayloads(
       multiMember,
       replicationUsername,
       containerSans,
+      consumerServerIds,
     })
     if (isPrepareError(result)) return result
     prepared.push(result)
@@ -1399,6 +1546,7 @@ async function prepareOneMemberApply(
     multiMember: boolean
     replicationUsername: string | null
     containerSans: readonly string[]
+    consumerServerIds: readonly string[]
   }
 ): Promise<PreparedManagedMemberApply | ManagedApplyPrepareError> {
   const { member } = params
@@ -1509,32 +1657,46 @@ export async function enqueuePreparedManagedApply(
     userId: string
     managedId: string
     members: PreparedManagedMemberApply[]
+    /**
+     * When false, do not flip `managed.status` to `applying` / `failed` — used
+     * by binding listener sync so a saved credential does not perturb cluster
+     * health while apply is best-effort.
+     */
+    updateManagedStatus?: boolean
   }
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
   if (params.members.length === 0) {
     return []
   }
 
-  await db
-    .update(managed)
-    .set({ status: 'applying', updatedAt: new Date().toISOString() })
-    .where(eq(managed.id, params.managedId))
+  const updateManagedStatus = params.updateManagedStatus !== false
+
+  if (updateManagedStatus) {
+    await db
+      .update(managed)
+      .set({ status: 'applying', updatedAt: new Date().toISOString() })
+      .where(eq(managed.id, params.managedId))
+  }
 
   const primaryMembers = params.members.filter(isPrimaryMemberPayload)
   const standbyMembers = params.members.filter((m) => !isPrimaryMemberPayload(m))
 
+  const enqueueParams = {
+    userId: params.userId,
+    managedId: params.managedId,
+    updateManagedStatus,
+  }
+
   // Single-phase when no standby depends on primary prep.
   if (standbyMembers.length === 0) {
     return enqueueSinglePhaseManagedApply(c, db, commandQueue, {
-      userId: params.userId,
-      managedId: params.managedId,
+      ...enqueueParams,
       members: params.members,
     })
   }
 
   return enqueueTwoPhaseManagedApply(c, db, commandQueue, {
-    userId: params.userId,
-    managedId: params.managedId,
+    ...enqueueParams,
     primaryMembers,
     standbyMembers,
   })
@@ -1549,6 +1711,7 @@ async function enqueueSinglePhaseManagedApply(
     userId: string
     managedId: string
     members: PreparedManagedMemberApply[]
+    updateManagedStatus: boolean
   }
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
   const results = await Promise.all(
@@ -1563,6 +1726,7 @@ async function enqueueSinglePhaseManagedApply(
     userId: params.userId,
     managedId: params.managedId,
     results,
+    updateManagedStatus: params.updateManagedStatus,
   })
 }
 
@@ -1579,6 +1743,7 @@ async function enqueueTwoPhaseManagedApply(
     managedId: string
     primaryMembers: PreparedManagedMemberApply[]
     standbyMembers: PreparedManagedMemberApply[]
+    updateManagedStatus: boolean
   }
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
   const { primaryMembers, standbyMembers } = params
@@ -1597,6 +1762,7 @@ async function enqueueTwoPhaseManagedApply(
       userId: params.userId,
       managedId: params.managedId,
       results,
+      updateManagedStatus: params.updateManagedStatus,
     })
   }
 
@@ -1630,6 +1796,7 @@ async function enqueueTwoPhaseManagedApply(
         userId: params.userId,
         managedId: params.managedId,
         results,
+        updateManagedStatus: params.updateManagedStatus,
       })
     }
   }
@@ -1647,6 +1814,7 @@ async function enqueueTwoPhaseManagedApply(
     userId: params.userId,
     managedId: params.managedId,
     results,
+    updateManagedStatus: params.updateManagedStatus,
   })
 }
 
@@ -1658,16 +1826,25 @@ async function finalizePreparedManagedApplyResults(
     userId: string
     managedId: string
     results: ManagedApplyEnqueueResult[]
+    updateManagedStatus: boolean
   }
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
   const allFailed = params.results.every((r) => r.status === 'failed')
   if (allFailed) {
-    await db
-      .update(managed)
-      .set({ status: 'failed', updatedAt: new Date().toISOString() })
-      .where(eq(managed.id, params.managedId))
+    if (params.updateManagedStatus) {
+      await db
+        .update(managed)
+        .set({ status: 'failed', updatedAt: new Date().toISOString() })
+        .where(eq(managed.id, params.managedId))
+    }
     return c.json({ error: 'Command queue unavailable' }, 503)
   }
+
+  // Tear down unused private ports only after at least one apply is queued, so
+  // a failed enqueue cannot leave the DB saying "no listener" while the host
+  // still publishes it. Retry is the next successful apply (operator Apply or
+  // a later binding change); the failed command stays visible.
+  await commitClearedPrivatePortsIfUnused(db, params.managedId)
 
   const secretsConfig = c.get('secretsConfig')
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')

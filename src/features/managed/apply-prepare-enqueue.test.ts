@@ -10,6 +10,7 @@ import {
   enqueueManagedDestroy,
   enqueueManagedLifecycle,
   enqueueManagedLifecycleFanout,
+  enqueuePreparedManagedApply,
   enqueueTypedCommand,
 } from './apply-prepare.ts'
 
@@ -203,6 +204,31 @@ test('enqueueTypedCommand returns 503 and marks failed when the queue is unavail
     commandUpdates.some((entry) => entry.patch.status === 'failed'),
     true
   )
+})
+
+test('enqueuePreparedManagedApply skips managed.status when updateManagedStatus is false', async () => {
+  const c = mockContext()
+  const { db, managedUpdates } = createEnqueueDb()
+  const queue = recordingQueue(true)
+
+  const result = await enqueuePreparedManagedApply(c, db, queue, {
+    userId: 'user-1',
+    managedId: 'managed-1',
+    updateManagedStatus: false,
+    members: [
+      {
+        memberId: '00000000-0000-4000-8000-0000000000a1',
+        serverId: 'server-1',
+        payload: { managedId: 'managed-1', engine: 'postgres' } as never,
+      },
+    ],
+  })
+
+  if (!(result instanceof Response)) {
+    throw new TypeError('expected Response when every enqueue fails')
+  }
+  assertEquals(result.status, 503)
+  assertEquals(managedUpdates.length, 0)
 })
 
 test('enqueueManagedApply delegates to managed.apply with setApplying', async () => {
