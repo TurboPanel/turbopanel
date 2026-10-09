@@ -6,7 +6,7 @@
 import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
-import { recovery, replica } from '../../db/schema.ts'
+import { managed, recovery, replica } from '../../db/schema.ts'
 import type { ManagedMemberRow } from '../managed/members.ts'
 import { ALREADY_WRITABLE_PRIMARY_PROMOTE_ERROR_SAMPLE } from '../managed/promote-resume.ts'
 import { DAEMON_RESTART_INTERRUPTION_MARKER, MAX_PROMOTE_RESUMES } from '../managed/ha-recovery.ts'
@@ -382,6 +382,8 @@ type ConsumerFakeDbOptions = Readonly<{
   /** The journal read throws (database down), so the failure hook itself fails. */
   throwOnRecoveryRead?: boolean
   managedMembers?: ManagedMemberRow[]
+  /** When false, `managed` existence lookups return no row (cluster deleted). */
+  managedClusterExists?: boolean
 }>
 
 function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
@@ -413,6 +415,10 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
         const source = {
           innerJoin: () => source,
           where: () => {
+            if (table === managed) {
+              const clusterExists = options.managedClusterExists ?? true
+              return queryResult(clusterExists ? [{ id: MANAGED_ID }] : [])
+            }
             if (table === recovery) {
               if (options.throwOnRecoveryRead) throw new Error('recovery read failed')
               return queryResult(options.recoveryRow ? [options.recoveryRow] : [])
@@ -713,6 +719,34 @@ test('processCommandEnvelope marks expired commands timed_out', async () => {
   assertEquals(
     transitions.some((t) => t.status === 'timed_out'),
     true
+  )
+})
+
+test('processCommandEnvelope fails expired managed.apply when the cluster is gone', async () => {
+  const { db, transitions } = createConsumerFakeDb({
+    commandRow: baseCommandRow({
+      name: 'managed.apply',
+      expiresAt: '2020-01-01T00:00:01.000Z',
+      context: { managedId: MANAGED_ID },
+    }),
+    managedClusterExists: false,
+  })
+  await processCommandEnvelope(db, emptyRegistry(), {
+    commandId: COMMAND_ID,
+    serverId: SERVER_ID,
+    type: 'managed.apply',
+    attempt: 1,
+    queuedAt: '2020-01-01T00:00:00.000Z',
+  })
+  assertEquals(
+    transitions.some(
+      (t) => t.status === 'failed' && t.error === 'Managed cluster no longer exists'
+    ),
+    true
+  )
+  assertEquals(
+    transitions.some((t) => t.status === 'timed_out'),
+    false
   )
 })
 

@@ -1,4 +1,6 @@
 import type { Context } from 'hono'
+import type { AppEnv } from '../app/app.ts'
+import type { Db } from '../db/connection.ts'
 import { getDb } from '../db/connection.ts'
 import {
   isValidDescription,
@@ -16,6 +18,21 @@ export { assertNotSystemOwnedOr403, SYSTEM_RESOURCE_IMMUTABLE_ERROR } from './au
 
 export function getOrgId(c: Context, userId: string): Promise<string | Response> {
   return resolveOrgId(c, userId)
+}
+
+export async function requireDbSessionAndOrg(
+  c: Context<AppEnv>
+): Promise<
+  | { db: Db; session: NonNullable<AppEnv['Variables']['session']>; organizationId: string }
+  | Response
+> {
+  const db = getDb(c)
+  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  const session = c.get('session')
+  if (!session) return c.json({ error: 'Unauthorized' }, 401)
+  const orgResult = await getOrgId(c, session.userId)
+  if (orgResult instanceof Response) return orgResult
+  return { db, session, organizationId: orgResult }
 }
 
 export function parseDescription(body: Record<string, unknown>): string | null {
