@@ -1,7 +1,11 @@
 import { assertEquals } from '@std/assert'
+import { getTableName } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
 import type { CaRotationResultRow } from './changeover-fanout.ts'
 import {
   CA_ROTATION_TARGET_GONE,
+  reconcileCaRotationResults,
+  rotationApplyRowKey,
   rotationConvergedForRetire,
   rotationResultReason,
   rotationRowConverged,
@@ -70,6 +74,92 @@ test('rotationConvergedForRetire blocks while a live apply row is still queued',
       [{ id: COMMAND, status: 'queued' }]
     ),
     false
+  )
+})
+
+function tableName(value: unknown): string {
+  try {
+    return getTableName(value as never)
+  } catch {
+    return ''
+  }
+}
+
+function createReconcileDb(serverIds: readonly string[]): Db {
+  return {
+    select: () => ({
+      from: (table: unknown) => {
+        const name = tableName(table)
+        const chain = {
+          innerJoin: () => chain,
+          leftJoin: () => chain,
+          where: () => chain,
+          limit: () => chain,
+          orderBy: () => Promise.resolve(name === 'server' ? serverIds.map((id) => ({ id })) : []),
+          then: (
+            onFulfilled?: (value: unknown[]) => unknown,
+            onRejected?: (reason: unknown) => unknown
+          ) =>
+            Promise.resolve(name === 'server' ? serverIds.map((id) => ({ id })) : []).then(
+              onFulfilled,
+              onRejected
+            ),
+        }
+        return chain
+      },
+    }),
+  } as Db
+}
+
+test('rotationApplyRowKey joins managed and server ids', () => {
+  assertEquals(rotationApplyRowKey(MANAGED, SERVER), `${MANAGED}:${SERVER}`)
+})
+
+test('reconcileCaRotationResults skips ingress rows when the server is gone', async () => {
+  const rows: CaRotationResultRow[] = [{ serverId: SERVER, kind: 'ingress', status: 'queued' }]
+  const reconciled = await reconcileCaRotationResults(
+    createReconcileDb([]),
+    '00000000-0000-4000-8000-000000000099',
+    rows,
+    '2020-01-01T00:00:00.000Z'
+  )
+  assertEquals(reconciled[0]?.status, 'skipped')
+  assertEquals(reconciled[0]?.error, CA_ROTATION_TARGET_GONE)
+})
+
+test('reconcileCaRotationResults skips apply rows when the managed cluster is gone', async () => {
+  const rows: CaRotationResultRow[] = [
+    {
+      serverId: SERVER,
+      kind: 'apply',
+      managedId: MANAGED,
+      status: 'queued',
+    },
+  ]
+  const reconciled = await reconcileCaRotationResults(
+    createReconcileDb([SERVER]),
+    '00000000-0000-4000-8000-000000000099',
+    rows,
+    '2020-01-01T00:00:00.000Z'
+  )
+  assertEquals(reconciled[0]?.status, 'skipped')
+  assertEquals(reconciled[0]?.error, CA_ROTATION_TARGET_GONE)
+})
+
+test('rotationRowConverged treats failed binding with target_gone as converged', () => {
+  assertEquals(
+    rotationRowConverged(
+      {
+        serverId: SERVER,
+        kind: 'binding',
+        managedId: MANAGED,
+        status: 'failed',
+        error: CA_ROTATION_TARGET_GONE,
+      },
+      'failed',
+      CA_ROTATION_TARGET_GONE
+    ),
+    true
   )
 })
 

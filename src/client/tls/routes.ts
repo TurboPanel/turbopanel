@@ -469,6 +469,17 @@ async function persistSyncedRotationResults(
   return rows
 }
 
+async function loadReconciledRotationRows(
+  db: TlsDb,
+  organizationId: string,
+  journal: Pick<CaRotationJournalRow, 'id' | 'results' | 'startedAt'>
+): Promise<CaRotationResultRow[]> {
+  let rows = parseCaRotationResults(journal.results)
+  rows = await reconcileCaRotationResults(db, organizationId, rows, journal.startedAt)
+  await updateCaRotationJournal(db, journal.id, { results: rows })
+  return rows
+}
+
 export function rotationNeedsCommands(targets: {
   managedIds: readonly string[]
   ingressServerIds: readonly string[]
@@ -804,9 +815,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     const journal = await loadLatestCaRotation(db, organizationId)
     if (!journal) return c.json({ error: 'Not found' }, 404)
 
-    let rows = parseCaRotationResults(journal.results)
-    rows = await reconcileCaRotationResults(db, organizationId, rows, journal.startedAt)
-    await updateCaRotationJournal(db, journal.id, { results: rows })
+    const rows = await loadReconciledRotationRows(db, organizationId, journal)
     const commandIds = rows.flatMap((row) => (row.commandId ? [row.commandId] : []))
     const records = await listCommandRecordsByIds(db, commandIds)
     return c.json(
@@ -839,9 +848,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       return conflictJson(c, 'no_pending_rotation')
     }
 
-    let rows = parseCaRotationResults(journal.results)
-    rows = await reconcileCaRotationResults(db, organizationId, rows, journal.startedAt)
-    await updateCaRotationJournal(db, journal.id, { results: rows })
+    const rows = await loadReconciledRotationRows(db, organizationId, journal)
     const commandIds = rows.flatMap((row) => (row.commandId ? [row.commandId] : []))
     const records = await listCommandRecordsByIds(db, commandIds)
     if (!rotationConvergedForRetire(rows, records)) {

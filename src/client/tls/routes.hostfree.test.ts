@@ -939,6 +939,27 @@ test('GET /tls/ca/rotation and POST /tls/ca/retire cover missing journals', asyn
   })
   await expectJson(waiting, 409, { error: 'ca_rotation_not_converged' })
 
+  const retired = await buildTlsApp({
+    rotationServers: [],
+    rotationRows: [
+      journalRow({
+        state: 'awaiting_retire',
+        results: [
+          {
+            serverId: SERVER_ID,
+            kind: 'ingress',
+            status: 'queued',
+          },
+        ],
+      }),
+    ],
+  })
+  const retiredRes = await retired.app.request('/tls/ca/retire', {
+    method: 'POST',
+    headers: authHeaders(retired.cookie),
+  })
+  await expectJson(retiredRes, 200, { ok: true, rotationId: ROTATION_ID })
+
   const denied = await buildTlsApp({
     rotationRows: [journalRow({ state: 'awaiting_retire' })],
     executeRows: [{ allowed: false }],
