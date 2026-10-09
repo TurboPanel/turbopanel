@@ -202,6 +202,9 @@ test('fanOutManagedHaReconcile no-ops when no HA hosts are present', async () =>
   const db = {
     select: () => ({
       from: () => ({
+        innerJoin: () => ({
+          where: () => Promise.resolve([]),
+        }),
         where: () => Promise.resolve([]),
       }),
     }),

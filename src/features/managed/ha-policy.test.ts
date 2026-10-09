@@ -185,7 +185,10 @@ test('disaster recovery demotes remote failover to read and never upgrades read'
 })
 
 test('serverHostsManagedHa includes primary and failover, not read-only', () => {
-  assertEquals(serverHostsManagedHa([{ role: 'primary', replicaClass: null, engine: 'mysql' }]), true)
+  assertEquals(
+    serverHostsManagedHa([{ role: 'primary', replicaClass: null, engine: 'mysql' }]),
+    true
+  )
   assertEquals(
     serverHostsManagedHa([{ role: 'replica', replicaClass: 'failover', engine: 'mariadb' }]),
     true
