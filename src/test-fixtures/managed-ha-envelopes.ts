@@ -4,10 +4,8 @@
  * Avoids static daemon-envelope literals that secret scanners flag on PR diffs.
  */
 
-export const DAEMON_SEALED_ENVELOPE_PREFIX = ["tp", "daemon", ".v", "1."].join(
-  "",
-);
+export const DAEMON_SEALED_ENVELOPE_PREFIX = ['tp', 'daemon', '.v', '1.'].join('')
 
 export function daemonSealedEnvelopeFixture(suffix: string): string {
-  return `${DAEMON_SEALED_ENVELOPE_PREFIX}${suffix}`;
+  return `${DAEMON_SEALED_ENVELOPE_PREFIX}${suffix}`
 }
