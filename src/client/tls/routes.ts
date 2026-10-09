@@ -13,7 +13,7 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb } from '../../db/connection.ts'
+import type { Db } from '../../db/connection.ts'
 import {
   assembleTlsMetadata,
   parseTlsOptions,
@@ -103,7 +103,7 @@ const TLS_PUBLIC_SELECT = {
 } as const
 
 function findActiveOrganizationCa(
-  db: NonNullable<ReturnType<typeof getDb>>,
+  db: Db,
   organizationId: string
 ): Promise<OrganizationCaSet | null> {
   return loadOrganizationCaSet(db, organizationId)
@@ -116,7 +116,7 @@ function createTlsFailureResponse(c: Context<AppEnv>, material: CreateTlsFailure
 
 async function refuseTlsCreateSource(
   c: Context<AppEnv>,
-  db: NonNullable<ReturnType<typeof getDb>>,
+  db: Db,
   organizationId: string,
   source: TlsSource
 ): Promise<Response | null> {
@@ -176,7 +176,7 @@ async function prepareTlsCreateMaterial(
 
 async function organizationCaRowResponse(
   c: Context<AppEnv>,
-  db: NonNullable<ReturnType<typeof getDb>>,
+  db: Db,
   set: OrganizationCaSet
 ): Promise<Response> {
   const publicRow = toPublicTlsRow(set.tls, {
@@ -204,7 +204,7 @@ async function organizationCaRowResponse(
  */
 async function ensureOrganizationCaId(
   c: Context<AppEnv>,
-  db: NonNullable<ReturnType<typeof getDb>>,
+  db: Db,
   organizationId: string,
   material: CreateTlsMaterial
 ): Promise<string | Response> {
@@ -247,7 +247,7 @@ async function ensureOrganizationCaId(
 
 async function insertTlsRow(
   c: Context<AppEnv>,
-  db: NonNullable<ReturnType<typeof getDb>>,
+  db: Db,
   params: {
     organizationId: string
     name: string | null
@@ -298,7 +298,7 @@ async function insertTlsRow(
   }
 }
 
-type TlsDb = NonNullable<ReturnType<typeof getDb>>
+type TlsDb = Db
 
 function conflictJson(
   c: Context<AppEnv>,
@@ -630,7 +630,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.get('/tls/ca', async (c) => {
     const sessionOrg = await requireDbSessionAndOrg(c)
     if (sessionOrg instanceof Response) return sessionOrg
-    const { db, session, organizationId } = sessionOrg
+    const { db, organizationId } = sessionOrg
 
     const existing = await findActiveOrganizationCa(db, organizationId)
     if (existing) {
@@ -735,7 +735,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.get('/tls/ca/rotation', async (c) => {
     const sessionOrg = await requireDbSessionAndOrg(c)
     if (sessionOrg instanceof Response) return sessionOrg
-    const { db, session, organizationId } = sessionOrg
+    const { db, organizationId } = sessionOrg
 
     const denied = await assertCanReadOr403(c, 'organization', organizationId)
     if (denied) return denied
@@ -762,7 +762,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.post('/tls/ca/retire', async (c) => {
     const sessionOrg = await requireDbSessionAndOrg(c)
     if (sessionOrg instanceof Response) return sessionOrg
-    const { db, session, organizationId } = sessionOrg
+    const { db, organizationId } = sessionOrg
 
     const denied = await assertCanOr403(c, 'organization:manage', 'organization', organizationId)
     if (denied) return denied
@@ -792,7 +792,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.get('/tls/ca/download', async (c) => {
     const sessionOrg = await requireDbSessionAndOrg(c)
     if (sessionOrg instanceof Response) return sessionOrg
-    const { db, session, organizationId } = sessionOrg
+    const { db, organizationId } = sessionOrg
 
     const set = await findActiveOrganizationCa(db, organizationId)
     if (!set?.trustBundlePem) {
@@ -811,7 +811,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.get('/tls/:id', async (c) => {
     const sessionOrg = await requireDbSessionAndOrg(c)
     if (sessionOrg instanceof Response) return sessionOrg
-    const { db, session, organizationId } = sessionOrg
+    const { db, organizationId } = sessionOrg
 
     const id = c.req.param('id')
     const entityOrgId = await resolveEntityOrganizationId(db, 'tls', id)
@@ -834,7 +834,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.post('/tls', async (c) => {
     const sessionOrg = await requireDbSessionAndOrg(c)
     if (sessionOrg instanceof Response) return sessionOrg
-    const { db, session, organizationId } = sessionOrg
+    const { db, organizationId } = sessionOrg
 
     const denied = await assertCanCreateOr403(c, 'organization', organizationId)
     if (denied) return denied
@@ -868,7 +868,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.patch('/tls/:id', async (c) => {
     const sessionOrg = await requireDbSessionAndOrg(c)
     if (sessionOrg instanceof Response) return sessionOrg
-    const { db, session, organizationId } = sessionOrg
+    const { db, organizationId } = sessionOrg
 
     const id = c.req.param('id')
     const entityOrgId = await resolveEntityOrganizationId(db, 'tls', id)
@@ -908,7 +908,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.delete('/tls/:id', async (c) => {
     const sessionOrg = await requireDbSessionAndOrg(c)
     if (sessionOrg instanceof Response) return sessionOrg
-    const { db, session, organizationId } = sessionOrg
+    const { db, organizationId } = sessionOrg
 
     const id = c.req.param('id')
     if (!isTlsUuid(id)) {
