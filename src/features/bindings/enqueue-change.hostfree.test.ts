@@ -1,7 +1,17 @@
 import { assertEquals } from '@std/assert'
+import type { Context } from 'hono'
+import type { AppEnv } from '../../app/app.ts'
+import type { Db } from '../../db/connection.ts'
+import type { CommandQueue } from '../commands/queue.ts'
+import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { postgresEngineSpec } from '../managed/postgres.ts'
 import {
   BINDING_PRIVATE_LISTENER_PENDING_WARNING,
+  bindingListenerEnqueueDeps,
+  type BindingListenerEnqueueDeps,
   bindingListenerSyncWarning,
+  enqueueIngressForBindingChange,
   planBindingChangeCommands,
 } from './enqueue-change.ts'
 
@@ -93,4 +103,127 @@ test('co-resident consumer does not plan apply', () => {
     apply: true,
   })
   assertEquals(plan.apply, false)
+})
+
+const MANAGED_ID = '00000000-0000-4000-8000-000000000001'
+const ORG_ID = '00000000-0000-4000-8000-000000000002'
+const ACTOR_ID = '00000000-0000-4000-8000-000000000003'
+const SERVICE_ID = '00000000-0000-4000-8000-000000000004'
+const DB_SERVER_ID = '00000000-0000-4000-8000-000000000010'
+const APP_SERVER_ID = '00000000-0000-4000-8000-000000000011'
+
+function managedRowDb(): Db {
+  const settings = postgresEngineSpec.defaultSettings
+  return {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () =>
+            Promise.resolve([
+              {
+                id: MANAGED_ID,
+                environmentId: '00000000-0000-4000-8000-000000000099',
+                serverId: DB_SERVER_ID,
+                engine: 'postgres',
+                metadata: {},
+                options: { settings, databases: ['postgres'] },
+              },
+            ]),
+        }),
+      }),
+    }),
+  } as unknown as Db
+}
+
+async function bindingEnqueueContext(commandQueue: CommandQueue): Promise<Context<AppEnv>> {
+  const secretsConfig = parseTestSecretsConfig('deno')
+  const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+    secretsConfig,
+    'data-encryption'
+  )
+  return {
+    get(key: string) {
+      if (key === 'secretsConfig') return secretsConfig
+      if (key === 'dataEncryptionSecrets') return dataEncryptionSecrets
+      if (key === 'commandQueue') return commandQueue
+      return undefined
+    },
+  } as unknown as Context<AppEnv>
+}
+
+test('enqueueIngressForBindingChange warns and skips ingress when managed.apply does not enqueue', async () => {
+  const ingressCalls: string[] = []
+  const queue: CommandQueue = { enqueue: () => Promise.resolve() }
+  const deps: BindingListenerEnqueueDeps = {
+    ...bindingListenerEnqueueDeps,
+    loadServiceConsumerServerIds: () => Promise.resolve([APP_SERVER_ID]),
+    memberServerIdsForManaged: () => Promise.resolve([DB_SERVER_ID]),
+    consumerServerIdsForManaged: () => Promise.resolve([APP_SERVER_ID]),
+    prepareManagedApplyPayloads: () =>
+      Promise.resolve({ kind: 'daemon_key_unavailable', serverId: DB_SERVER_ID }),
+    enqueueManagedIngressReconcile: async (_db, _queue, params) => {
+      ingressCalls.push(params.serverId)
+      return { ok: true, commandId: 'cmd-ingress', serverId: params.serverId }
+    },
+  }
+  const c = await bindingEnqueueContext(queue)
+  const outcome = await enqueueIngressForBindingChange(
+    c,
+    managedRowDb(),
+    {
+      serviceIds: [SERVICE_ID],
+      managedId: MANAGED_ID,
+      actorId: ACTOR_ID,
+      organizationId: ORG_ID,
+    },
+    deps
+  )
+  assertEquals(outcome.warning, BINDING_PRIVATE_LISTENER_PENDING_WARNING)
+  assertEquals(ingressCalls.length, 0)
+})
+
+test('enqueueIngressForBindingChange enqueues ingress after managed.apply succeeds', async () => {
+  const ingressCalls: string[] = []
+  const queue: CommandQueue = { enqueue: () => Promise.resolve() }
+  const memberId = '00000000-0000-4000-8000-000000000020'
+  const deps: BindingListenerEnqueueDeps = {
+    ...bindingListenerEnqueueDeps,
+    loadServiceConsumerServerIds: () => Promise.resolve([APP_SERVER_ID]),
+    memberServerIdsForManaged: () => Promise.resolve([DB_SERVER_ID]),
+    consumerServerIdsForManaged: () => Promise.resolve([APP_SERVER_ID]),
+    prepareManagedApplyPayloads: () =>
+      Promise.resolve({
+        members: [{ memberId, serverId: DB_SERVER_ID, payload: { managedId: MANAGED_ID } }],
+      } as Awaited<ReturnType<typeof bindingListenerEnqueueDeps.prepareManagedApplyPayloads>>),
+    enqueuePreparedManagedApply: () =>
+      Promise.resolve([
+        {
+          memberId,
+          serverId: DB_SERVER_ID,
+          commandId: '00000000-0000-4000-8000-000000000077',
+          status: 'queued' as const,
+        },
+      ]),
+    enqueueManagedIngressReconcile: async (_db, _queue, params) => {
+      ingressCalls.push(params.serverId)
+      return { ok: true, commandId: 'cmd-ingress', serverId: params.serverId }
+    },
+  }
+  const c = await bindingEnqueueContext(queue)
+  const outcome = await enqueueIngressForBindingChange(
+    c,
+    managedRowDb(),
+    {
+      serviceIds: [SERVICE_ID],
+      managedId: MANAGED_ID,
+      actorId: ACTOR_ID,
+      organizationId: ORG_ID,
+    },
+    deps
+  )
+  assertEquals(outcome.warning, undefined)
+  assertEquals(
+    ingressCalls.toSorted((a, b) => a.localeCompare(b)),
+    [APP_SERVER_ID, DB_SERVER_ID].toSorted((a, b) => a.localeCompare(b))
+  )
 })

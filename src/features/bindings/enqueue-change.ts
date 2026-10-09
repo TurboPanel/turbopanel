@@ -29,6 +29,25 @@ import {
 } from './resolve-endpoint.ts'
 import { hasRemoteConsumerServers } from './remote-consumers.ts'
 
+/** Injectable collaborators (defaults to production modules; tests override). */
+export type BindingListenerEnqueueDeps = Readonly<{
+  loadServiceConsumerServerIds: typeof loadServiceConsumerServerIds
+  memberServerIdsForManaged: typeof memberServerIdsForManaged
+  consumerServerIdsForManaged: typeof consumerServerIdsForManaged
+  prepareManagedApplyPayloads: typeof prepareManagedApplyPayloads
+  enqueuePreparedManagedApply: typeof enqueuePreparedManagedApply
+  enqueueManagedIngressReconcile: typeof enqueueManagedIngressReconcile
+}>
+
+export const bindingListenerEnqueueDeps: BindingListenerEnqueueDeps = {
+  loadServiceConsumerServerIds,
+  memberServerIdsForManaged,
+  consumerServerIdsForManaged,
+  prepareManagedApplyPayloads,
+  enqueuePreparedManagedApply,
+  enqueueManagedIngressReconcile,
+}
+
 export type BindingListenerSync = {
   c: Context
   actorId: string
@@ -113,7 +132,8 @@ export function planBindingChangeCommands(
 export async function enqueueIngressForBindingChange(
   c: Context,
   db: Db,
-  params: EnqueueBindingChangeParams
+  params: EnqueueBindingChangeParams,
+  deps: BindingListenerEnqueueDeps = bindingListenerEnqueueDeps
 ): Promise<BindingListenerSyncOutcome> {
   const secretsConfig = c.get('secretsConfig')
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
@@ -130,18 +150,18 @@ export async function enqueueIngressForBindingChange(
   const ingressServerIds = new Set<string>()
   const affectedHosts: string[] = []
   for (const serviceId of params.serviceIds) {
-    const hosts = await loadServiceConsumerServerIds(db, serviceId)
+    const hosts = await deps.loadServiceConsumerServerIds(db, serviceId)
     for (const host of hosts) {
       ingressServerIds.add(host)
       affectedHosts.push(host)
     }
   }
-  const memberServerIds = await memberServerIdsForManaged(db, params.managedId)
+  const memberServerIds = await deps.memberServerIdsForManaged(db, params.managedId)
   for (const memberServerId of memberServerIds) {
     ingressServerIds.add(memberServerId)
   }
 
-  const remainingConsumers = await consumerServerIdsForManaged(db, params.managedId)
+  const remainingConsumers = await deps.consumerServerIdsForManaged(db, params.managedId)
   const plan = planBindingChangeCommands({
     memberServerIds,
     remainingConsumerServerIds: remainingConsumers,
@@ -153,11 +173,16 @@ export async function enqueueIngressForBindingChange(
   let applyStatus: BindingManagedApplyEnqueueStatus = 'skipped'
   if (plan.apply) {
     try {
-      applyStatus = await enqueueApplyForBindingManaged(c, db, {
-        actorId: params.actorId,
-        organizationId: params.organizationId,
-        managedId: params.managedId,
-      })
+      applyStatus = await enqueueApplyForBindingManaged(
+        c,
+        db,
+        {
+          actorId: params.actorId,
+          organizationId: params.organizationId,
+          managedId: params.managedId,
+        },
+        deps
+      )
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       compatLogWarn(
@@ -175,7 +200,7 @@ export async function enqueueIngressForBindingChange(
 
   await forEachSequential(plan.ingressServerIds, async (serverId) => {
     try {
-      await enqueueManagedIngressReconcile(db, commandQueue, {
+      await deps.enqueueManagedIngressReconcile(db, commandQueue, {
         serverId,
         actorType: 'user',
         actorId: params.actorId,
@@ -200,7 +225,8 @@ async function enqueueApplyForBindingManaged(
     actorId: string
     organizationId: string
     managedId: string
-  }>
+  }>,
+  deps: BindingListenerEnqueueDeps
 ): Promise<BindingManagedApplyEnqueueStatus> {
   const commandQueue = getCommandQueue(c)
   if (!commandQueue || isNoopCommandQueue(commandQueue)) return 'skipped'
@@ -243,7 +269,7 @@ async function enqueueApplyForBindingManaged(
   }
 
   const residual = parseManagedResidual(row.metadata)
-  const prepared = await prepareManagedApplyPayloads(c, db, {
+  const prepared = await deps.prepareManagedApplyPayloads(c, db, {
     managedRow: row,
     spec,
     settings: parsed.settings,
@@ -261,7 +287,7 @@ async function enqueueApplyForBindingManaged(
     return 'failed'
   }
 
-  const enqueued = await enqueuePreparedManagedApply(c, db, commandQueue, {
+  const enqueued = await deps.enqueuePreparedManagedApply(c, db, commandQueue, {
     userId: params.actorId,
     managedId: row.id,
     members: prepared.members,
