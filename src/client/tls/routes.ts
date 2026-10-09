@@ -5,38 +5,35 @@
  * handlers must never read or write the **Platform CA** files under
  * `<stateDir>/tls/` (see `src/lib/tls/AGENTS.md`).
  */
-import { and, eq, inArray } from "drizzle-orm";
-import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app/app.ts";
-import type { AuthRouteOpts } from "../authn/http.ts";
-import type { DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
-import { createSessionMiddleware } from "../authn/middleware.ts";
-import { assertCanOr403, listVisible } from "../authz/index.ts";
-import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
-import { getDb } from "../../db/connection.ts";
+import { and, eq, inArray } from 'drizzle-orm'
+import type { Context, Hono } from 'hono'
+import type { AppEnv } from '../../app/app.ts'
+import type { AuthRouteOpts } from '../authn/http.ts'
+import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { createSessionMiddleware } from '../authn/middleware.ts'
+import { assertCanOr403, listVisible } from '../authz/index.ts'
+import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
+import { getDb } from '../../db/connection.ts'
 import {
   assembleTlsMetadata,
   parseTlsOptions,
   splitTlsMetadata,
   type TlsOptions,
   type TlsSource,
-} from "../../lib/tls/index.ts";
-import { organization, tls } from "../../db/schema.ts";
+} from '../../lib/tls/index.ts'
+import { organization, tls } from '../../db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
   getOrgId,
   parseName,
   parseJsonBody,
-} from "../shared.ts";
+} from '../shared.ts'
 import {
   parseOrganizationOptions,
   resolveAcmeEnabled,
-} from "../../features/organizations/organization-options.ts";
-import {
-  hierarchyDeleteHasChildrenResponse,
-  runHierarchyDelete,
-} from "../hierarchy-delete.ts";
+} from '../../features/organizations/organization-options.ts'
+import { hierarchyDeleteHasChildrenResponse, runHierarchyDelete } from '../hierarchy-delete.ts'
 import {
   applyTlsOptionsPatch,
   buildCreateTlsMaterial,
@@ -58,20 +55,20 @@ import {
   toCaRotationApiResult,
   toPublicTlsRow,
   withPreferOption,
-} from "./routes-helpers.ts";
+} from './routes-helpers.ts'
 import {
   loadOrganizationCaSet,
   nextOrganizationCaGeneration,
   type OrganizationCaSet,
-} from "../../features/tls/organization-ca.ts";
+} from '../../features/tls/organization-ca.ts'
 import {
   caRotationHasMintedGeneration,
   loadLatestCaRotation,
   tryBeginCaRotation,
   updateCaRotationJournal,
   type CaRotationJournalRow,
-} from "./changeover-lease.ts";
-import { countDueTlsLeavesForOrganization } from "./leaf-renewal-sweep.ts";
+} from './changeover-lease.ts'
+import { countDueTlsLeavesForOrganization } from './leaf-renewal-sweep.ts'
 import {
   type CaRotationResultRow,
   enumerateOrganizationRotationTargets,
@@ -79,9 +76,9 @@ import {
   parseNeedsRedeploy,
   parseResumeAfterManagedId,
   runOrganizationCaRotationFanout,
-} from "./changeover-fanout.ts";
-import { assertDispatchInfrastructure } from "../servers/command-dispatch.ts";
-import { listCommandRecordsByIds } from "../../features/commands/command-records.ts";
+} from './changeover-fanout.ts'
+import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
+import { listCommandRecordsByIds } from '../../features/commands/command-records.ts'
 
 const TLS_PUBLIC_SELECT = {
   id: tls.id,
@@ -97,102 +94,92 @@ const TLS_PUBLIC_SELECT = {
   createdAt: tls.createdAt,
   updatedAt: tls.updatedAt,
   caGeneration: tls.caGeneration,
-} as const;
+} as const
 
 function findActiveOrganizationCa(
   db: NonNullable<ReturnType<typeof getDb>>,
-  organizationId: string,
+  organizationId: string
 ): Promise<OrganizationCaSet | null> {
-  return loadOrganizationCaSet(db, organizationId);
+  return loadOrganizationCaSet(db, organizationId)
 }
 
-function createTlsFailureResponse(
-  c: Context<AppEnv>,
-  material: CreateTlsFailure,
-): Response {
-  const payload = tlsFailurePayload(material);
-  return c.json(payload.body, payload.status);
+function createTlsFailureResponse(c: Context<AppEnv>, material: CreateTlsFailure): Response {
+  const payload = tlsFailurePayload(material)
+  return c.json(payload.body, payload.status)
 }
 
 async function refuseTlsCreateSource(
   c: Context<AppEnv>,
   db: NonNullable<ReturnType<typeof getDb>>,
   organizationId: string,
-  source: TlsSource,
+  source: TlsSource
 ): Promise<Response | null> {
-  if (source === "organization_ca") {
-    const existing = await findActiveOrganizationCa(db, organizationId);
-    if (existing) return c.json({ error: "organization_ca_exists" }, 409);
+  if (source === 'organization_ca') {
+    const existing = await findActiveOrganizationCa(db, organizationId)
+    if (existing) return c.json({ error: 'organization_ca_exists' }, 409)
   }
-  if (source !== "lets_encrypt") return null;
+  if (source !== 'lets_encrypt') return null
   const [orgRow] = await db
     .select({ options: organization.options })
     .from(organization)
     .where(eq(organization.id, organizationId))
-    .limit(1);
-  const acmeEnabled = resolveAcmeEnabled(
-    parseOrganizationOptions(orgRow?.options),
-  );
+    .limit(1)
+  const acmeEnabled = resolveAcmeEnabled(parseOrganizationOptions(orgRow?.options))
   if (!acmeEnabled) {
-    return c.json({ error: "lets_encrypt_not_enabled" }, 403);
+    return c.json({ error: 'lets_encrypt_not_enabled' }, 403)
   }
-  return null;
+  return null
 }
 
 async function prepareTlsCreateMaterial(
   c: Context<AppEnv>,
   organizationId: string,
   source: TlsSource,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): Promise<
-  | { name: string | null; material: CreateTlsMaterial; options: TlsOptions | null }
-  | Response
+  { name: string | null; material: CreateTlsMaterial; options: TlsOptions | null } | Response
 > {
-  let name: string | null;
+  let name: string | null
   try {
-    name = parseName(body);
+    name = parseName(body)
   } catch {
-    return c.json({ error: "Invalid request" }, 400);
+    return c.json({ error: 'Invalid request' }, 400)
   }
 
-  const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   if (!dataEncryptionSecrets) {
-    return c.json({
-      error: "Encryption unavailable — no encryption key configured",
-    }, 503);
+    return c.json(
+      {
+        error: 'Encryption unavailable — no encryption key configured',
+      },
+      503
+    )
   }
 
-  const material = await buildCreateTlsMaterial(
-    source,
-    body,
-    dataEncryptionSecrets,
-    organizationId,
-  );
+  const material = await buildCreateTlsMaterial(source, body, dataEncryptionSecrets, organizationId)
   if (isCreateTlsFailure(material)) {
-    return createTlsFailureResponse(c, material);
+    return createTlsFailureResponse(c, material)
   }
 
   return {
     name,
     material,
     options: withPreferOption(material.options, body.prefer),
-  };
+  }
 }
 
 async function organizationCaRowResponse(
   c: Context<AppEnv>,
   db: NonNullable<ReturnType<typeof getDb>>,
-  set: OrganizationCaSet,
+  set: OrganizationCaSet
 ): Promise<Response> {
   const publicRow = toPublicTlsRow(set.tls, {
     trustBundlePem: set.trustBundlePem,
-  });
-  if (!publicRow) return c.json({ error: "Invalid request" }, 500);
-  const dueCount = await countDueTlsLeavesForOrganization(
-    db,
-    set.tls.organizationId,
-    { activeCaGeneration: set.signer.caGeneration },
-  );
+  })
+  if (!publicRow) return c.json({ error: 'Invalid request' }, 500)
+  const dueCount = await countDueTlsLeavesForOrganization(db, set.tls.organizationId, {
+    activeCaGeneration: set.signer.caGeneration,
+  })
   return c.json({
     tls: publicRow,
     trustBundlePem: set.trustBundlePem,
@@ -201,7 +188,7 @@ async function organizationCaRowResponse(
       caGeneration: set.signer.caGeneration,
       caNotAfter: set.tls.notAfter,
     },
-  });
+  })
 }
 
 /**
@@ -213,25 +200,22 @@ async function ensureOrganizationCaId(
   c: Context<AppEnv>,
   db: NonNullable<ReturnType<typeof getDb>>,
   organizationId: string,
-  material: CreateTlsMaterial,
+  material: CreateTlsMaterial
 ): Promise<string | Response> {
-  const { columns, residual } = splitTlsMetadata(material.metadata);
+  const { columns, residual } = splitTlsMetadata(material.metadata)
   try {
     return await db.transaction(async (tx) => {
       // Race: another concurrent ensure may have inserted first.
-      const race = await loadOrganizationCaSet(tx, organizationId);
-      if (race) return race.signer.id;
+      const race = await loadOrganizationCaSet(tx, organizationId)
+      if (race) return race.signer.id
 
-      const caGeneration = await nextOrganizationCaGeneration(
-        tx,
-        organizationId,
-      );
+      const caGeneration = await nextOrganizationCaGeneration(tx, organizationId)
       const [inserted] = await tx
         .insert(tls)
         .values({
           organizationId,
-          name: "Organization CA",
-          source: "organization_ca",
+          name: 'Organization CA',
+          source: 'organization_ca',
           certificatePem: material.certificatePem,
           privateKeyPem: material.privateKeyPemSealed,
           status: columns.status,
@@ -239,22 +223,19 @@ async function ensureOrganizationCaId(
           fingerprintSha256: columns.fingerprintSha256,
           metadata: residual,
           options: null,
-          caState: "active",
+          caState: 'active',
           caGeneration,
         })
-        .returning({ id: tls.id });
-      return inserted.id;
-    });
+        .returning({ id: tls.id })
+      return inserted.id
+    })
   } catch (err) {
-    if (
-      isOrganizationCaUniqueViolation(err) ||
-      isTlsFingerprintUniqueViolation(err)
-    ) {
-      const raced = await loadOrganizationCaSet(db, organizationId);
-      if (raced) return organizationCaRowResponse(c, db, raced);
-      return c.json({ error: "organization_ca_exists" }, 409);
+    if (isOrganizationCaUniqueViolation(err) || isTlsFingerprintUniqueViolation(err)) {
+      const raced = await loadOrganizationCaSet(db, organizationId)
+      if (raced) return organizationCaRowResponse(c, db, raced)
+      return c.json({ error: 'organization_ca_exists' }, 409)
     }
-    throw err;
+    throw err
   }
 }
 
@@ -262,27 +243,28 @@ async function insertTlsRow(
   c: Context<AppEnv>,
   db: NonNullable<ReturnType<typeof getDb>>,
   params: {
-    organizationId: string;
-    name: string | null;
-    source: TlsSource;
-    material: CreateTlsMaterial;
-    options: TlsOptions | null;
-  },
+    organizationId: string
+    name: string | null
+    source: TlsSource
+    material: CreateTlsMaterial
+    options: TlsOptions | null
+  }
 ): Promise<string | Response> {
-  const { columns, residual } = splitTlsMetadata(params.material.metadata);
+  const { columns, residual } = splitTlsMetadata(params.material.metadata)
   try {
     return await db.transaction(async (tx) => {
-      if (params.source === "organization_ca") {
-        const race = await loadOrganizationCaSet(tx, params.organizationId);
+      if (params.source === 'organization_ca') {
+        const race = await loadOrganizationCaSet(tx, params.organizationId)
         if (race) {
-          throw Object.assign(new Error("organization_ca_exists"), {
-            code: "ORGANIZATION_CA_EXISTS",
-          });
+          throw Object.assign(new Error('organization_ca_exists'), {
+            code: 'ORGANIZATION_CA_EXISTS',
+          })
         }
       }
-      const caGeneration = params.source === "organization_ca"
-        ? await nextOrganizationCaGeneration(tx, params.organizationId)
-        : null;
+      const caGeneration =
+        params.source === 'organization_ca'
+          ? await nextOrganizationCaGeneration(tx, params.organizationId)
+          : null
       const [inserted] = await tx
         .insert(tls)
         .values({
@@ -296,66 +278,61 @@ async function insertTlsRow(
           fingerprintSha256: columns.fingerprintSha256,
           metadata: residual,
           options: params.options,
-          ...(caGeneration === null
-            ? {}
-            : { caState: "active" as const, caGeneration }),
+          ...(caGeneration === null ? {} : { caState: 'active' as const, caGeneration }),
         })
-        .returning({ id: tls.id });
-      return inserted.id;
-    });
+        .returning({ id: tls.id })
+      return inserted.id
+    })
   } catch (err) {
-    const conflict = classifyTlsInsertConflict(err);
+    const conflict = classifyTlsInsertConflict(err)
     if (conflict) {
-      return c.json({ error: conflict.error }, conflict.status);
+      return c.json({ error: conflict.error }, conflict.status)
     }
-    throw err;
+    throw err
   }
 }
 
-type TlsDb = NonNullable<ReturnType<typeof getDb>>;
+type TlsDb = NonNullable<ReturnType<typeof getDb>>
 
 function conflictJson(
   c: Context<AppEnv>,
-  reason: Parameters<typeof rotationConflictResponse>[0],
+  reason: Parameters<typeof rotationConflictResponse>[0]
 ): Response {
-  const payload = rotationConflictResponse(reason);
-  return c.json(payload.body, payload.status);
+  const payload = rotationConflictResponse(reason)
+  return c.json(payload.body, payload.status)
 }
 
-async function markRotationFailed(
-  db: TlsDb,
-  rotationId: string,
-): Promise<void> {
-  await updateCaRotationJournal(db, rotationId, { state: "failed" });
+async function markRotationFailed(db: TlsDb, rotationId: string): Promise<void> {
+  await updateCaRotationJournal(db, rotationId, { state: 'failed' })
 }
 
 async function mintRotatedOrganizationCa(
   db: TlsDb,
   organizationId: string,
-  material: CreateTlsMaterial,
+  material: CreateTlsMaterial
 ): Promise<{ id: string; fromGeneration: number; toGeneration: number }> {
-  const { columns, residual } = splitTlsMetadata(material.metadata);
-  const now = new Date().toISOString();
+  const { columns, residual } = splitTlsMetadata(material.metadata)
+  const now = new Date().toISOString()
   return await db.transaction(async (tx) => {
-    const current = await loadOrganizationCaSet(tx, organizationId);
-    const fromGeneration = current?.signer.caGeneration ?? 0;
-    const toGeneration = await nextOrganizationCaGeneration(tx, organizationId);
+    const current = await loadOrganizationCaSet(tx, organizationId)
+    const fromGeneration = current?.signer.caGeneration ?? 0
+    const toGeneration = await nextOrganizationCaGeneration(tx, organizationId)
     await tx
       .update(tls)
-      .set({ caState: "retired", updatedAt: now })
+      .set({ caState: 'retired', updatedAt: now })
       .where(
         and(
           eq(tls.organizationId, organizationId),
-          eq(tls.source, "organization_ca"),
-          eq(tls.caState, "active"),
-        ),
-      );
+          eq(tls.source, 'organization_ca'),
+          eq(tls.caState, 'active')
+        )
+      )
     const [inserted] = await tx
       .insert(tls)
       .values({
         organizationId,
-        name: "Organization CA",
-        source: "organization_ca",
+        name: 'Organization CA',
+        source: 'organization_ca',
         certificatePem: material.certificatePem,
         privateKeyPem: material.privateKeyPemSealed,
         status: columns.status,
@@ -363,71 +340,66 @@ async function mintRotatedOrganizationCa(
         fingerprintSha256: columns.fingerprintSha256,
         metadata: residual,
         options: null,
-        caState: "active",
+        caState: 'active',
         caGeneration: toGeneration,
       })
-      .returning({ id: tls.id });
-    return { id: inserted.id, fromGeneration, toGeneration };
-  });
+      .returning({ id: tls.id })
+    return { id: inserted.id, fromGeneration, toGeneration }
+  })
 }
 
 async function resolveRotatedOrganizationCa(
   c: Context<AppEnv>,
   db: TlsDb,
   params: {
-    organizationId: string;
-    journal: CaRotationJournalRow;
-    dataEncryptionSecrets: DerivedSecretsConfig;
-  },
+    organizationId: string
+    journal: CaRotationJournalRow
+    dataEncryptionSecrets: DerivedSecretsConfig
+  }
 ): Promise<{ activeCaId: string; generation: number } | Response> {
   if (caRotationHasMintedGeneration(params.journal)) {
-    const current = await findActiveOrganizationCa(db, params.organizationId);
+    const current = await findActiveOrganizationCa(db, params.organizationId)
     if (!current) {
-      await markRotationFailed(db, params.journal.id);
-      return c.json({ error: "Not found" }, 404);
+      await markRotationFailed(db, params.journal.id)
+      return c.json({ error: 'Not found' }, 404)
     }
     return {
       activeCaId: current.signer.id,
       generation: params.journal.toCaGeneration,
-    };
+    }
   }
 
-  const material = await materialFromOrganizationCa(
-    params.dataEncryptionSecrets,
-    { organizationId: params.organizationId },
-  );
+  const material = await materialFromOrganizationCa(params.dataEncryptionSecrets, {
+    organizationId: params.organizationId,
+  })
   if (isCreateTlsFailure(material)) {
-    await markRotationFailed(db, params.journal.id);
-    return createTlsFailureResponse(c, material);
+    await markRotationFailed(db, params.journal.id)
+    return createTlsFailureResponse(c, material)
   }
 
   try {
-    const minted = await mintRotatedOrganizationCa(
-      db,
-      params.organizationId,
-      material,
-    );
+    const minted = await mintRotatedOrganizationCa(db, params.organizationId, material)
     await updateCaRotationJournal(db, params.journal.id, {
       fromCaGeneration: minted.fromGeneration,
       toCaGeneration: minted.toGeneration,
-    });
-    return { activeCaId: minted.id, generation: minted.toGeneration };
+    })
+    return { activeCaId: minted.id, generation: minted.toGeneration }
   } catch (err) {
-    await markRotationFailed(db, params.journal.id);
+    await markRotationFailed(db, params.journal.id)
     if (isTlsFingerprintUniqueViolation(err)) {
-      return c.json({ error: "tls_fingerprint_conflict" }, 409);
+      return c.json({ error: 'tls_fingerprint_conflict' }, 409)
     }
-    throw err;
+    throw err
   }
 }
 
 export function overlayRotationResults(
   rows: readonly CaRotationResultRow[],
-  records: readonly { id: string; status: string; error: string | null }[],
+  records: readonly { id: string; status: string; error: string | null }[]
 ) {
-  const byId = new Map(records.map((record) => [record.id, record]));
+  const byId = new Map(records.map((record) => [record.id, record]))
   return rows.map((row) => {
-    const record = row.commandId ? byId.get(row.commandId) : undefined;
+    const record = row.commandId ? byId.get(row.commandId) : undefined
     return toCaRotationApiResult({
       serverId: row.serverId,
       kind: row.kind,
@@ -435,74 +407,74 @@ export function overlayRotationResults(
       status: record?.status ?? row.status,
       commandId: row.commandId,
       error: record?.error ?? row.error,
-    });
-  });
+    })
+  })
 }
 
 export function rotationCommandsSucceeded(
   rows: readonly CaRotationResultRow[],
-  records: readonly { id: string; status: string }[],
+  records: readonly { id: string; status: string }[]
 ): boolean {
-  const byId = new Map(records.map((record) => [record.id, record]));
+  const byId = new Map(records.map((record) => [record.id, record]))
   for (const row of rows) {
-    if (!row.commandId) return false;
-    if (byId.get(row.commandId)?.status !== "succeeded") return false;
+    if (!row.commandId) return false
+    if (byId.get(row.commandId)?.status !== 'succeeded') return false
   }
-  return true;
+  return true
 }
 
 export function rotationNeedsCommands(targets: {
-  managedIds: readonly string[];
-  ingressServerIds: readonly string[];
+  managedIds: readonly string[]
+  ingressServerIds: readonly string[]
 }): boolean {
-  return targets.managedIds.length > 0 || targets.ingressServerIds.length > 0;
+  return targets.managedIds.length > 0 || targets.ingressServerIds.length > 0
 }
 
 async function runRotationFanoutStep(
   c: Context<AppEnv>,
   db: TlsDb,
   params: {
-    organizationId: string;
-    rotationId: string;
-    actorId: string;
-    cursor?: string;
-    priorResults?: CaRotationResultRow[];
-    priorNeedsRedeploy?: { serverId: string; environmentId: string }[];
-  },
+    organizationId: string
+    rotationId: string
+    actorId: string
+    cursor?: string
+    priorResults?: CaRotationResultRow[]
+    priorNeedsRedeploy?: { serverId: string; environmentId: string }[]
+  }
 ): Promise<
   | {
-    results: CaRotationResultRow[];
-    needsRedeploy: { serverId: string; environmentId: string }[];
-  }
+      results: CaRotationResultRow[]
+      needsRedeploy: { serverId: string; environmentId: string }[]
+    }
   | Response
 > {
-  const targets = await enumerateOrganizationRotationTargets(
-    db,
-    params.organizationId,
-  );
+  const targets = await enumerateOrganizationRotationTargets(db, params.organizationId)
   if (!rotationNeedsCommands(targets)) {
     await updateCaRotationJournal(db, params.rotationId, {
-      state: "awaiting_retire",
-    });
+      state: 'awaiting_retire',
+    })
     return {
       results: params.priorResults ?? [],
       needsRedeploy: params.priorNeedsRedeploy ?? [],
-    };
+    }
   }
 
-  const commandQueue = assertDispatchInfrastructure(c);
+  const commandQueue = assertDispatchInfrastructure(c)
   if (commandQueue instanceof Response) {
-    await markRotationFailed(db, params.rotationId);
-    return commandQueue;
+    await markRotationFailed(db, params.rotationId)
+    return commandQueue
   }
 
-  const secretsConfig = c.get("secretsConfig");
-  const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
+  const secretsConfig = c.get('secretsConfig')
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   if (!secretsConfig || !dataEncryptionSecrets) {
-    await markRotationFailed(db, params.rotationId);
-    return c.json({
-      error: "Encryption unavailable — no encryption key configured",
-    }, 503);
+    await markRotationFailed(db, params.rotationId)
+    return c.json(
+      {
+        error: 'Encryption unavailable — no encryption key configured',
+      },
+      503
+    )
   }
 
   try {
@@ -510,90 +482,82 @@ async function runRotationFanoutStep(
       organizationId: params.organizationId,
       secretsConfig,
       dataEncryptionSecrets,
-      actorType: "user",
+      actorType: 'user',
       actorId: params.actorId,
       rotationId: params.rotationId,
       cursor: params.cursor,
       priorResults: params.priorResults,
       priorNeedsRedeploy: params.priorNeedsRedeploy,
-    });
+    })
     if (outcome.complete) {
       await updateCaRotationJournal(db, params.rotationId, {
-        state: "awaiting_retire",
-      });
+        state: 'awaiting_retire',
+      })
     }
-    return { results: outcome.results, needsRedeploy: outcome.needsRedeploy };
+    return { results: outcome.results, needsRedeploy: outcome.needsRedeploy }
   } catch (err) {
-    await markRotationFailed(db, params.rotationId);
-    throw err;
+    await markRotationFailed(db, params.rotationId)
+    throw err
   }
 }
 
-async function revokeRetiredOrganizationCas(
-  db: TlsDb,
-  organizationId: string,
-): Promise<void> {
-  const now = new Date().toISOString();
+async function revokeRetiredOrganizationCas(db: TlsDb, organizationId: string): Promise<void> {
+  const now = new Date().toISOString()
   await db
     .update(tls)
-    .set({ caState: "revoked", status: "revoked", updatedAt: now })
+    .set({ caState: 'revoked', status: 'revoked', updatedAt: now })
     .where(
       and(
         eq(tls.organizationId, organizationId),
-        eq(tls.source, "organization_ca"),
-        eq(tls.caState, "retired"),
-      ),
-    );
+        eq(tls.source, 'organization_ca'),
+        eq(tls.caState, 'retired')
+      )
+    )
 }
 
 type TlsRowPatch = {
-  name?: string | null;
-  options?: TlsOptions | null;
-  status?: string;
-  updatedAt: string;
-};
+  name?: string | null
+  options?: TlsOptions | null
+  status?: string
+  updatedAt: string
+}
 
 export function buildTlsRowPatch(
   body: Record<string, unknown>,
   existing: {
-    options: unknown;
-    status: string;
-    notAfter: string | null;
-    fingerprintSha256: string | null;
-    metadata: unknown;
-    source: string;
-  },
-):
-  | { ok: true; patch: TlsRowPatch }
-  | { ok: false; error: string; status: 400 | 409 | 500 } {
-  const patch: TlsRowPatch = { updatedAt: new Date().toISOString() };
+    options: unknown
+    status: string
+    notAfter: string | null
+    fingerprintSha256: string | null
+    metadata: unknown
+    source: string
+  }
+): { ok: true; patch: TlsRowPatch } | { ok: false; error: string; status: 400 | 409 | 500 } {
+  const patch: TlsRowPatch = { updatedAt: new Date().toISOString() }
 
   if (body.name !== undefined) {
     try {
-      patch.name = parseName(body);
+      patch.name = parseName(body)
     } catch {
-      return { ok: false, error: "Invalid request", status: 400 };
+      return { ok: false, error: 'Invalid request', status: 400 }
     }
   }
 
-  const optionsPatch = applyTlsOptionsPatch(
-    parseTlsOptions(existing.options) ?? {},
-    body,
-  );
+  const optionsPatch = applyTlsOptionsPatch(parseTlsOptions(existing.options) ?? {}, body)
   if (!optionsPatch.ok) {
-    return { ok: false, error: "Invalid request", status: 400 };
+    return { ok: false, error: 'Invalid request', status: 400 }
   }
   if (optionsPatch.changed) {
-    patch.options = optionsPatch.options;
+    patch.options = optionsPatch.options
   }
 
   if (shouldRevokeTlsFromBody(body)) {
-    if (existing.source === "organization_ca") {
+    if (existing.source === 'organization_ca') {
       return {
         ok: false,
-        error: "organization_ca_retire_required",
+        error: 'organization_ca_retire_required',
         status: 409,
-      };
+      }
     }
     const metadata = assembleTlsMetadata(
       {
@@ -601,157 +565,144 @@ export function buildTlsRowPatch(
         notAfter: existing.notAfter,
         fingerprintSha256: existing.fingerprintSha256,
       },
-      existing.metadata,
-    );
+      existing.metadata
+    )
     if (!metadata) {
-      return { ok: false, error: "Invalid request", status: 500 };
+      return { ok: false, error: 'Invalid request', status: 500 }
     }
-    patch.status = "revoked";
+    patch.status = 'revoked'
   }
 
-  return { ok: true, patch };
+  return { ok: true, patch }
 }
 
 export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
-    throw new TypeError("session secrets are required for tls routes");
+    throw new TypeError('session secrets are required for tls routes')
   }
-  const secrets = opts.secrets;
+  const secrets = opts.secrets
 
-  router.use("/tls", createSessionMiddleware(secrets));
-  router.use("/tls/*", createSessionMiddleware(secrets));
-  router.use("/tls/:id", createSessionMiddleware(secrets));
+  router.use('/tls', createSessionMiddleware(secrets))
+  router.use('/tls/*', createSessionMiddleware(secrets))
+  router.use('/tls/:id', createSessionMiddleware(secrets))
 
-  router.get("/tls", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.get('/tls', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
-    const organizationId = orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
     const visibleIds = await listVisible(db, {
-      kind: "tls",
+      kind: 'tls',
       userId: session.userId,
       organizationId,
-    });
+    })
 
     if (visibleIds.length === 0) {
-      return c.json({ tls: [] });
+      return c.json({ tls: [] })
     }
 
     const rows = await db
       .select(TLS_PUBLIC_SELECT)
       .from(tls)
-      .where(
-        and(
-          inArray(tls.id, visibleIds),
-          eq(tls.organizationId, organizationId),
-        ),
-      )
-      .orderBy(tls.createdAt);
+      .where(and(inArray(tls.id, visibleIds), eq(tls.organizationId, organizationId)))
+      .orderBy(tls.createdAt)
 
     const publicRows = rows
       .map((row) => toPublicTlsRow(row))
-      .filter((row): row is TlsPublicRow => row !== null);
+      .filter((row): row is TlsPublicRow => row !== null)
 
-    return c.json({ tls: publicRows });
-  });
+    return c.json({ tls: publicRows })
+  })
 
   /**
    * Ensure-or-create the organization CA (at most one active row per org).
    * Managed provisioning later reuses this path without a dedicated wizard.
    */
-  router.get("/tls/ca", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.get('/tls/ca', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
-    const organizationId = orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
-    const existing = await findActiveOrganizationCa(db, organizationId);
+    const existing = await findActiveOrganizationCa(db, organizationId)
     if (existing) {
-      const denied = await assertCanReadOr403(c, "tls", existing.signer.id);
-      if (denied) return denied;
-      return organizationCaRowResponse(c, db, existing);
+      const denied = await assertCanReadOr403(c, 'tls', existing.signer.id)
+      if (denied) return denied
+      return organizationCaRowResponse(c, db, existing)
     }
 
-    const deniedCreate = await assertCanCreateOr403(
-      c,
-      "organization",
-      organizationId,
-    );
-    if (deniedCreate) return deniedCreate;
+    const deniedCreate = await assertCanCreateOr403(c, 'organization', organizationId)
+    if (deniedCreate) return deniedCreate
 
-    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
+    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
-      return c.json({
-        error: "Encryption unavailable — no encryption key configured",
-      }, 503);
+      return c.json(
+        {
+          error: 'Encryption unavailable — no encryption key configured',
+        },
+        503
+      )
     }
 
     const material = await materialFromOrganizationCa(dataEncryptionSecrets, {
       organizationId,
-    });
+    })
     if (isCreateTlsFailure(material)) {
-      return createTlsFailureResponse(c, material);
+      return createTlsFailureResponse(c, material)
     }
 
-    const idOrResponse = await ensureOrganizationCaId(
-      c,
-      db,
-      organizationId,
-      material,
-    );
-    if (idOrResponse instanceof Response) return idOrResponse;
+    const idOrResponse = await ensureOrganizationCaId(c, db, organizationId, material)
+    if (idOrResponse instanceof Response) return idOrResponse
 
-    const created = await findActiveOrganizationCa(db, organizationId);
-    if (!created) return c.json({ error: "Not found" }, 404);
-    return organizationCaRowResponse(c, db, created);
-  });
+    const created = await findActiveOrganizationCa(db, organizationId)
+    if (!created) return c.json({ error: 'Not found' }, 404)
+    return organizationCaRowResponse(c, db, created)
+  })
 
-  router.post("/tls/ca/rotate", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.post('/tls/ca/rotate', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
-    const organizationId = orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
-    const denied = await assertCanOr403(
-      c,
-      "organization:manage",
-      "organization",
-      organizationId,
-    );
-    if (denied) return denied;
+    const denied = await assertCanOr403(c, 'organization:manage', 'organization', organizationId)
+    if (denied) return denied
 
-    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
+    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
-      return c.json({
-        error: "Encryption unavailable — no encryption key configured",
-      }, 503);
+      return c.json(
+        {
+          error: 'Encryption unavailable — no encryption key configured',
+        },
+        503
+      )
     }
 
-    const journal = await tryBeginCaRotation(db, organizationId);
-    if (!journal) return conflictJson(c, "ca_rotation_in_progress");
+    const journal = await tryBeginCaRotation(db, organizationId)
+    if (!journal) return conflictJson(c, 'ca_rotation_in_progress')
 
     const signer = await resolveRotatedOrganizationCa(c, db, {
       organizationId,
       journal,
       dataEncryptionSecrets,
-    });
-    if (signer instanceof Response) return signer;
+    })
+    if (signer instanceof Response) return signer
 
     const fanout = await runRotationFanoutStep(c, db, {
       organizationId,
@@ -760,8 +711,8 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       cursor: parseResumeAfterManagedId(journal.metadata),
       priorResults: parseCaRotationResults(journal.results),
       priorNeedsRedeploy: parseNeedsRedeploy(journal.metadata),
-    });
-    if (fanout instanceof Response) return fanout;
+    })
+    if (fanout instanceof Response) return fanout
 
     return c.json({
       ok: true as const,
@@ -770,180 +721,155 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       generation: signer.generation,
       results: overlayRotationResults(fanout.results, []),
       needsRedeploy: fanout.needsRedeploy,
-    });
-  });
+    })
+  })
 
-  router.get("/tls/ca/rotation", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.get('/tls/ca/rotation', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
-    const organizationId = orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
-    const denied = await assertCanReadOr403(c, "organization", organizationId);
-    if (denied) return denied;
+    const denied = await assertCanReadOr403(c, 'organization', organizationId)
+    if (denied) return denied
 
-    const journal = await loadLatestCaRotation(db, organizationId);
-    if (!journal) return c.json({ error: "Not found" }, 404);
+    const journal = await loadLatestCaRotation(db, organizationId)
+    if (!journal) return c.json({ error: 'Not found' }, 404)
 
-    const rows = parseCaRotationResults(journal.results);
-    const commandIds = rows.flatMap((
-      row,
-    ) => (row.commandId ? [row.commandId] : []));
-    const records = await listCommandRecordsByIds(db, commandIds);
-    return c.json(rotationStatusResponse({
-      rotationId: journal.id,
-      fromGeneration: journal.fromCaGeneration,
-      toGeneration: journal.toCaGeneration,
-      state: journal.state,
-      results: overlayRotationResults(rows, records),
-    }));
-  });
+    const rows = parseCaRotationResults(journal.results)
+    const commandIds = rows.flatMap((row) => (row.commandId ? [row.commandId] : []))
+    const records = await listCommandRecordsByIds(db, commandIds)
+    return c.json(
+      rotationStatusResponse({
+        rotationId: journal.id,
+        fromGeneration: journal.fromCaGeneration,
+        toGeneration: journal.toCaGeneration,
+        state: journal.state,
+        results: overlayRotationResults(rows, records),
+      })
+    )
+  })
 
-  router.post("/tls/ca/retire", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.post('/tls/ca/retire', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
-    const organizationId = orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
-    const denied = await assertCanOr403(
-      c,
-      "organization:manage",
-      "organization",
-      organizationId,
-    );
-    if (denied) return denied;
+    const denied = await assertCanOr403(c, 'organization:manage', 'organization', organizationId)
+    if (denied) return denied
 
-    const journal = await loadLatestCaRotation(db, organizationId);
-    if (journal?.state !== "awaiting_retire") {
-      return conflictJson(c, "no_pending_rotation");
+    const journal = await loadLatestCaRotation(db, organizationId)
+    if (journal?.state !== 'awaiting_retire') {
+      return conflictJson(c, 'no_pending_rotation')
     }
 
-    const rows = parseCaRotationResults(journal.results);
-    const commandIds = rows.flatMap((
-      row,
-    ) => (row.commandId ? [row.commandId] : []));
-    const records = await listCommandRecordsByIds(db, commandIds);
+    const rows = parseCaRotationResults(journal.results)
+    const commandIds = rows.flatMap((row) => (row.commandId ? [row.commandId] : []))
+    const records = await listCommandRecordsByIds(db, commandIds)
     if (!rotationCommandsSucceeded(rows, records)) {
-      return conflictJson(c, "ca_rotation_not_converged");
+      return conflictJson(c, 'ca_rotation_not_converged')
     }
 
-    await revokeRetiredOrganizationCas(db, organizationId);
+    await revokeRetiredOrganizationCas(db, organizationId)
     await updateCaRotationJournal(db, journal.id, {
-      state: "completed",
+      state: 'completed',
       completedAt: new Date().toISOString(),
-    });
-    return c.json({ ok: true as const, rotationId: journal.id });
-  });
+    })
+    return c.json({ ok: true as const, rotationId: journal.id })
+  })
 
-  router.get("/tls/ca/download", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.get('/tls/ca/download', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
-    const organizationId = orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
-    const set = await findActiveOrganizationCa(db, organizationId);
+    const set = await findActiveOrganizationCa(db, organizationId)
     if (!set?.trustBundlePem) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanReadOr403(c, "tls", set.signer.id);
-    if (denied) return denied;
+    const denied = await assertCanReadOr403(c, 'tls', set.signer.id)
+    if (denied) return denied
 
     return new Response(set.trustBundlePem, {
       status: 200,
       headers: { ...ORGANIZATION_CA_DOWNLOAD_HEADERS },
-    });
-  });
+    })
+  })
 
-  router.get("/tls/:id", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.get('/tls/:id', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
-    const organizationId = orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
-    const id = c.req.param("id");
-    const entityOrgId = await resolveEntityOrganizationId(db, "tls", id);
+    const id = c.req.param('id')
+    const entityOrgId = await resolveEntityOrganizationId(db, 'tls', id)
     if (!entityOrgId || entityOrgId !== organizationId) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanReadOr403(c, "tls", id);
-    if (denied) return denied;
+    const denied = await assertCanReadOr403(c, 'tls', id)
+    if (denied) return denied
 
-    const [row] = await db
-      .select(TLS_PUBLIC_SELECT)
-      .from(tls)
-      .where(eq(tls.id, id))
-      .limit(1);
+    const [row] = await db.select(TLS_PUBLIC_SELECT).from(tls).where(eq(tls.id, id)).limit(1)
 
-    if (!row) return c.json({ error: "Not found" }, 404);
-    const publicRow = toPublicTlsRow(row);
-    if (!publicRow) return c.json({ error: "Invalid request" }, 500);
+    if (!row) return c.json({ error: 'Not found' }, 404)
+    const publicRow = toPublicTlsRow(row)
+    if (!publicRow) return c.json({ error: 'Invalid request' }, 500)
 
-    return c.json({ tls: publicRow });
-  });
+    return c.json({ tls: publicRow })
+  })
 
-  router.post("/tls", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.post('/tls', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
-    const organizationId = orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
-    const denied = await assertCanCreateOr403(
-      c,
-      "organization",
-      organizationId,
-    );
-    if (denied) return denied;
+    const denied = await assertCanCreateOr403(c, 'organization', organizationId)
+    if (denied) return denied
 
-    const body = await parseJsonBody(c);
-    if (body instanceof Response) return body;
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
 
-    const source = parseSource(body.source);
+    const source = parseSource(body.source)
     if (!source) {
-      return c.json({ error: "Invalid request" }, 400);
+      return c.json({ error: 'Invalid request' }, 400)
     }
 
-    const sourceDenied = await refuseTlsCreateSource(
-      c,
-      db,
-      organizationId,
-      source,
-    );
-    if (sourceDenied) return sourceDenied;
+    const sourceDenied = await refuseTlsCreateSource(c, db, organizationId, source)
+    if (sourceDenied) return sourceDenied
 
-    const prepared = await prepareTlsCreateMaterial(
-      c,
-      organizationId,
-      source,
-      body,
-    );
-    if (prepared instanceof Response) return prepared;
+    const prepared = await prepareTlsCreateMaterial(c, organizationId, source, body)
+    if (prepared instanceof Response) return prepared
 
     const idOrResponse = await insertTlsRow(c, db, {
       organizationId,
@@ -951,34 +877,34 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       source,
       material: prepared.material,
       options: prepared.options,
-    });
-    if (idOrResponse instanceof Response) return idOrResponse;
+    })
+    if (idOrResponse instanceof Response) return idOrResponse
 
-    return c.json({ ok: true as const, id: idOrResponse });
-  });
+    return c.json({ ok: true as const, id: idOrResponse })
+  })
 
-  router.patch("/tls/:id", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.patch('/tls/:id', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
-    const organizationId = orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
-    const id = c.req.param("id");
-    const entityOrgId = await resolveEntityOrganizationId(db, "tls", id);
+    const id = c.req.param('id')
+    const entityOrgId = await resolveEntityOrganizationId(db, 'tls', id)
     if (!entityOrgId || entityOrgId !== organizationId) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, "organization:manage", "tls", id);
-    if (denied) return denied;
+    const denied = await assertCanOr403(c, 'organization:manage', 'tls', id)
+    if (denied) return denied
 
-    const body = await parseJsonBody(c);
-    if (body instanceof Response) return body;
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
 
     const [existing] = await db
       .select({
@@ -991,49 +917,49 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       })
       .from(tls)
       .where(eq(tls.id, id))
-      .limit(1);
-    if (!existing) return c.json({ error: "Not found" }, 404);
+      .limit(1)
+    if (!existing) return c.json({ error: 'Not found' }, 404)
 
-    const built = buildTlsRowPatch(body, existing);
+    const built = buildTlsRowPatch(body, existing)
     if (!built.ok) {
-      return c.json({ error: built.error }, built.status);
+      return c.json({ error: built.error }, built.status)
     }
 
-    await db.update(tls).set(built.patch).where(eq(tls.id, id));
-    return c.json({ ok: true as const });
-  });
+    await db.update(tls).set(built.patch).where(eq(tls.id, id))
+    return c.json({ ok: true as const })
+  })
 
-  router.delete("/tls/:id", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.delete('/tls/:id', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
-    const organizationId = orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
-    const id = c.req.param("id");
+    const id = c.req.param('id')
     if (!isTlsUuid(id)) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    const entityOrgId = await resolveEntityOrganizationId(db, "tls", id);
+    const entityOrgId = await resolveEntityOrganizationId(db, 'tls', id)
     if (!entityOrgId || entityOrgId !== organizationId) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, "organization:manage", "tls", id);
-    if (denied) return denied;
+    const denied = await assertCanOr403(c, 'organization:manage', 'tls', id)
+    if (denied) return denied
 
     const result = await runHierarchyDelete(db, async (tx) => {
-      await tx.delete(tls).where(eq(tls.id, id));
-    });
-    if (result.status === "has_children") {
-      return hierarchyDeleteHasChildrenResponse(c, result.blockers);
+      await tx.delete(tls).where(eq(tls.id, id))
+    })
+    if (result.status === 'has_children') {
+      return hierarchyDeleteHasChildrenResponse(c, result.blockers)
     }
 
-    return c.json({ ok: true as const });
-  });
+    return c.json({ ok: true as const })
+  })
 }
