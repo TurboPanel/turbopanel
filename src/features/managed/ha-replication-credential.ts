@@ -4,10 +4,7 @@
 
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import {
-  ENVELOPE_PREFIX_SECRET,
-  resealSecretForDaemon,
-} from '../../lib/secrets/data-encryption.ts'
+import { ENVELOPE_PREFIX_SECRET, resealSecretForDaemon } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { getServerDaemonStateByServerId, isDaemonKeyActive } from '../servers/server-identity-db.ts'
 import {
@@ -29,6 +26,16 @@ export type HaSecretsParams = {
   serverId: string
   secretsConfig: SecretsConfig
   dataEncryptionSecrets: DerivedSecretsConfig
+}
+
+/** Union of org-wide SQL HA clusters and managed ids present on the target server. */
+export function mergeOrchestratorManagedClusterIds(
+  orchestratorIds: readonly string[],
+  localManagedIds: readonly string[]
+): string[] {
+  return [...new Set([...orchestratorIds, ...localManagedIds])].toSorted((a, b) =>
+    a.localeCompare(b)
+  )
 }
 
 export function orchestratorManagedClusterIdsFromRows(

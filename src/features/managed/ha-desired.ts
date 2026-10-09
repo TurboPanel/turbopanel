@@ -47,6 +47,7 @@ import { compatLogWarn } from '../../lib/log-compat.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import {
   listOrchestratorManagedClusterIds,
+  mergeOrchestratorManagedClusterIds,
   resolveReplicationCredentialForHa,
   type HaSecretsParams,
 } from './ha-replication-credential.ts'
@@ -365,9 +366,10 @@ async function buildHaClustersForServer(
   localMembers: readonly ManagedMemberRow[]
 ): Promise<ManagedHaCluster[]> {
   const orchestratorIds = await listOrchestratorManagedClusterIds(db, organizationId)
-  const managedIds = [
-    ...new Set([...orchestratorIds, ...localMembers.map((row) => row.managedId)]),
-  ].toSorted((a, b) => a.localeCompare(b))
+  const managedIds = mergeOrchestratorManagedClusterIds(
+    orchestratorIds,
+    localMembers.map((row) => row.managedId)
+  )
   const clusters: ManagedHaCluster[] = []
   await forEachSequential(managedIds, async (managedId) => {
     const cluster = await buildHaClusterIfReady(db, params, managedId)
