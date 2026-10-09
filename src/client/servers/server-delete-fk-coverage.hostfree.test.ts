@@ -34,71 +34,40 @@ async function loadMigrationSqlInJournalOrder(): Promise<string[]> {
 }
 
 test(
-  'every RESTRICT server_id FK in migrations is covered by the delete path',
+  'shipped migrations match server delete and environment forget FK handler registries',
   { permissions: { read: true } },
   async () => {
     const chunks = await loadMigrationSqlInJournalOrder()
-    const tables = listServerRestrictForeignKeyTablesFromMigrationSql(chunks)
-    assertServerRestrictForeignKeyCoverage(tables)
+
+    const serverRestrictTables = listServerRestrictForeignKeyTablesFromMigrationSql(chunks)
+    assertServerRestrictForeignKeyCoverage(serverRestrictTables)
     assertEquals(
       Object.keys(SERVER_RESTRICT_FOREIGN_KEY_HANDLERS).sort((a, b) => a.localeCompare(b)),
-      tables
+      serverRestrictTables
     )
-  }
-)
 
-test(
-  'migrations list every server_id FK to server (all ON DELETE rules)',
-  { permissions: { read: true } },
-  async () => {
-    const chunks = await loadMigrationSqlInJournalOrder()
-    const rows = listServerForeignKeysFromMigrationSql(chunks)
-    const tables = new Set(rows.map((row) => row.table))
+    const serverRows = listServerForeignKeysFromMigrationSql(chunks)
+    const serverTables = new Set(serverRows.map((row) => row.table))
     for (const table of Object.keys(SERVER_RESTRICT_FOREIGN_KEY_HANDLERS)) {
-      assertEquals(
-        tables.has(table),
-        true,
-        `expected migrations to declare server_id FK on ${table}`
-      )
+      assertEquals(serverTables.has(table), true, `expected server_id FK on ${table}`)
     }
     assertEquals(
-      rows.some((row) => row.table === 'backup' && row.onDelete === 'set null'),
+      serverRows.some((row) => row.table === 'backup' && row.onDelete === 'set null'),
       true
     )
     assertEquals(
-      rows.some((row) => row.table === 'stage' && row.onDelete === 'cascade'),
+      serverRows.some((row) => row.table === 'stage' && row.onDelete === 'cascade'),
       true
     )
-  }
-)
 
-test(
-  'every environment_id FK in migrations is covered by the forget subtree path',
-  { permissions: { read: true } },
-  async () => {
-    const chunks = await loadMigrationSqlInJournalOrder()
-    const rows = listEnvironmentForeignKeysFromMigrationSql(chunks)
-    const tables = rows.map((row) => row.table).sort((a, b) => a.localeCompare(b))
-    assertEnvironmentForgetForeignKeyCoverage(tables)
+    const environmentRows = listEnvironmentForeignKeysFromMigrationSql(chunks)
+    const environmentTables = environmentRows
+      .map((row) => row.table)
+      .sort((a, b) => a.localeCompare(b))
+    assertEnvironmentForgetForeignKeyCoverage(environmentTables)
     assertEquals(
       Object.keys(ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS).sort((a, b) => a.localeCompare(b)),
-      tables
+      environmentTables
     )
-  }
-)
-
-test(
-  'migration SQL lists every handler table as a RESTRICT server_id FK',
-  { permissions: { read: true } },
-  async () => {
-    const chunks = await loadMigrationSqlInJournalOrder()
-    const tables = new Set(listServerRestrictForeignKeyTablesFromMigrationSql(chunks))
-    for (const table of Object.keys(SERVER_RESTRICT_FOREIGN_KEY_HANDLERS)) {
-      assertEquals(
-        tables.has(table),
-        true,
-        `expected migrations to declare RESTRICT FK on ${table}`
-      )
-    }
   }
 )

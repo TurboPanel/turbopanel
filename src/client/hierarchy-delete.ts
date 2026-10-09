@@ -21,12 +21,6 @@ export type HierarchyDeleteFkBlocker = {
   column?: string
 }
 
-/** @deprecated Use {@link HierarchyDeleteFkBlocker} */
-export type HierarchyDeleteFkViolation = {
-  referringTable: string
-  constraintName?: string
-}
-
 export type HierarchyDeleteRunResult =
   { status: 'ok' } | { status: 'has_children'; blockers: HierarchyDeleteFkBlocker[] }
 

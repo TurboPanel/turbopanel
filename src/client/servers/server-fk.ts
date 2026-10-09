@@ -47,13 +47,13 @@ function normalizeOnDelete(rule: string): string {
     .toLowerCase()
 }
 
-/** Last `ON DELETE` rule per (table, column) from shipped migration SQL (journal order). */
-export function listServerForeignKeysFromMigrationSql(
-  migrationSqlChunks: readonly string[]
+function collectForeignKeysFromMigrationSql(
+  migrationSqlChunks: readonly string[],
+  pattern: RegExp
 ): ForeignKeyMigrationRow[] {
   const byKey = new Map<string, ForeignKeyMigrationRow>()
   for (const chunk of migrationSqlChunks) {
-    for (const match of chunk.matchAll(SERVER_FK_MIGRATION_PATTERN)) {
+    for (const match of chunk.matchAll(pattern)) {
       const table = match[1]
       const column = match[2]
       const onDelete = normalizeOnDelete(match[3])
@@ -65,21 +65,17 @@ export function listServerForeignKeysFromMigrationSql(
   )
 }
 
+/** Last `ON DELETE` rule per (table, column) from shipped migration SQL (journal order). */
+export function listServerForeignKeysFromMigrationSql(
+  migrationSqlChunks: readonly string[]
+): ForeignKeyMigrationRow[] {
+  return collectForeignKeysFromMigrationSql(migrationSqlChunks, SERVER_FK_MIGRATION_PATTERN)
+}
+
 export function listEnvironmentForeignKeysFromMigrationSql(
   migrationSqlChunks: readonly string[]
 ): ForeignKeyMigrationRow[] {
-  const byKey = new Map<string, ForeignKeyMigrationRow>()
-  for (const chunk of migrationSqlChunks) {
-    for (const match of chunk.matchAll(ENVIRONMENT_FK_MIGRATION_PATTERN)) {
-      const table = match[1]
-      const column = match[2]
-      const onDelete = normalizeOnDelete(match[3])
-      byKey.set(`${table}.${column}`, { table, column, onDelete })
-    }
-  }
-  return [...byKey.values()].sort(
-    (a, b) => a.table.localeCompare(b.table) || a.column.localeCompare(b.column)
-  )
+  return collectForeignKeysFromMigrationSql(migrationSqlChunks, ENVIRONMENT_FK_MIGRATION_PATTERN)
 }
 
 export function listServerRestrictForeignKeyTablesFromMigrationSql(
@@ -130,26 +126,31 @@ export const ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS: Readonly<
   variable: 'cascade-on-environment',
 }
 
-export function assertServerRestrictForeignKeyCoverage(tables: readonly string[]): void {
-  const missing = tables.filter(
-    (table) => SERVER_RESTRICT_FOREIGN_KEY_HANDLERS[table] === undefined
-  )
+function assertForeignKeyHandlerCoverage(
+  tables: readonly string[],
+  handlers: Readonly<Record<string, string>>,
+  context: string
+): void {
+  const missing = tables.filter((table) => handlers[table] === undefined)
   if (missing.length > 0) {
-    throw new Error(
-      `server delete: unhandled RESTRICT server_id FK on table(s): ${missing.join(', ')} — extend SERVER_RESTRICT_FOREIGN_KEY_HANDLERS and the purge/forget path`
-    )
+    throw new Error(`${context}: unhandled FK on table(s): ${missing.join(', ')}`)
   }
 }
 
-export function assertEnvironmentForgetForeignKeyCoverage(tables: readonly string[]): void {
-  const missing = tables.filter(
-    (table) => ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS[table] === undefined
+export function assertServerRestrictForeignKeyCoverage(tables: readonly string[]): void {
+  assertForeignKeyHandlerCoverage(
+    tables,
+    SERVER_RESTRICT_FOREIGN_KEY_HANDLERS,
+    'server delete — extend SERVER_RESTRICT_FOREIGN_KEY_HANDLERS and the purge/forget path'
   )
-  if (missing.length > 0) {
-    throw new Error(
-      `server forget: unhandled environment_id FK on table(s): ${missing.join(', ')} — extend ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS and dropEnvironmentSubtree`
-    )
-  }
+}
+
+export function assertEnvironmentForgetForeignKeyCoverage(tables: readonly string[]): void {
+  assertForeignKeyHandlerCoverage(
+    tables,
+    ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS,
+    'server forget — extend ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS and dropEnvironmentSubtree'
+  )
 }
 
 /** TurboFabric rows keyed only by this host (`subnet` before `relay` — independent FKs). */

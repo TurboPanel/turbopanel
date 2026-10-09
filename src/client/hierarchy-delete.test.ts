@@ -29,57 +29,56 @@ test('isForeignKeyViolation detects Postgres FK and restrict codes', () => {
   assertEquals(isForeignKeyViolation('nope'), false)
 })
 
-test('parsePostgresForeignKeyViolation reads postgres.js table and constraint fields', () => {
-  assertEquals(
-    parsePostgresForeignKeyViolation({
-      code: '23503',
-      table: 'stage',
-      constraint: 'stage_server_id_server_id_fk',
-      column: 'server_id',
-    }),
+test('parsePostgresForeignKeyViolation reads postgres.js, detail, and cause chain', () => {
+  const cases: Array<{
+    input: unknown
+    expected: ReturnType<typeof parsePostgresForeignKeyViolation>
+  }> = [
     {
-      table: 'stage',
-      constraint: 'stage_server_id_server_id_fk',
-      column: 'server_id',
-    }
-  )
-})
-
-test('parsePostgresForeignKeyViolation reads information_schema-style names', () => {
-  assertEquals(
-    parsePostgresForeignKeyViolation({
-      code: '23503',
-      table_name: 'container',
-      constraint_name: 'container_server_id_server_id_fk',
-    }),
-    { table: 'container', constraint: 'container_server_id_server_id_fk' }
-  )
-})
-
-test('parsePostgresForeignKeyViolation reads detail when table fields are absent', () => {
-  assertEquals(
-    parsePostgresForeignKeyViolation({
-      code: '23503',
-      detail:
-        'Key (id)=(2030f113-0000-7000-8000-000000000001) is still referenced from table "environment".',
-      constraint: 'environment_server_id_server_id_fk',
-    }),
-    { table: 'environment', constraint: 'environment_server_id_server_id_fk' }
-  )
-})
-
-test('parsePostgresForeignKeyViolation walks drizzle cause chain', () => {
-  assertEquals(
-    parsePostgresForeignKeyViolation({
-      message: 'Failed query',
-      cause: {
+      input: {
         code: '23503',
-        table: 'relay',
-        constraint: 'relay_server_id_server_id_fk',
+        table: 'stage',
+        constraint: 'stage_server_id_server_id_fk',
+        column: 'server_id',
       },
-    }),
-    { table: 'relay', constraint: 'relay_server_id_server_id_fk' }
-  )
+      expected: {
+        table: 'stage',
+        constraint: 'stage_server_id_server_id_fk',
+        column: 'server_id',
+      },
+    },
+    {
+      input: {
+        code: '23503',
+        table_name: 'container',
+        constraint_name: 'container_server_id_server_id_fk',
+      },
+      expected: { table: 'container', constraint: 'container_server_id_server_id_fk' },
+    },
+    {
+      input: {
+        code: '23503',
+        detail:
+          'Key (id)=(2030f113-0000-7000-8000-000000000001) is still referenced from table "environment".',
+        constraint: 'environment_server_id_server_id_fk',
+      },
+      expected: { table: 'environment', constraint: 'environment_server_id_server_id_fk' },
+    },
+    {
+      input: {
+        message: 'Failed query',
+        cause: {
+          code: '23503',
+          table: 'relay',
+          constraint: 'relay_server_id_server_id_fk',
+        },
+      },
+      expected: { table: 'relay', constraint: 'relay_server_id_server_id_fk' },
+    },
+  ]
+  for (const { input, expected } of cases) {
+    assertEquals(parsePostgresForeignKeyViolation(input), expected)
+  }
 })
 
 test('hierarchyDeleteHasChildrenMessage keeps the generic error string', () => {
