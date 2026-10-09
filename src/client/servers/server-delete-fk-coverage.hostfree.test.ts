@@ -55,10 +55,20 @@ test(
     const rows = listServerForeignKeysFromMigrationSql(chunks)
     const tables = new Set(rows.map((row) => row.table))
     for (const table of Object.keys(SERVER_RESTRICT_FOREIGN_KEY_HANDLERS)) {
-      assertEquals(tables.has(table), true, `expected migrations to declare server_id FK on ${table}`)
+      assertEquals(
+        tables.has(table),
+        true,
+        `expected migrations to declare server_id FK on ${table}`
+      )
     }
-    assertEquals(rows.some((row) => row.table === 'backup' && row.onDelete === 'set null'), true)
-    assertEquals(rows.some((row) => row.table === 'stage' && row.onDelete === 'cascade'), true)
+    assertEquals(
+      rows.some((row) => row.table === 'backup' && row.onDelete === 'set null'),
+      true
+    )
+    assertEquals(
+      rows.some((row) => row.table === 'stage' && row.onDelete === 'cascade'),
+      true
+    )
   }
 )
 

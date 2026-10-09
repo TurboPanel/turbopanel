@@ -941,8 +941,7 @@ export const serverSchemas = {
             column: { type: 'string' },
           },
         },
-        description:
-          'Postgres FK rows that still reference the deleted parent (no tenant ids).',
+        description: 'Postgres FK rows that still reference the deleted parent (no tenant ids).',
       },
     },
   },

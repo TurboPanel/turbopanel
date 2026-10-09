@@ -755,9 +755,7 @@ async function deleteServerWithSystemSubtree(
       blockers: [],
       blockedDatabases: [],
       blockedEnvironments: [],
-      ...(deleteResult.status === 'has_children'
-        ? { fkBlockers: deleteResult.blockers }
-        : {}),
+      ...(deleteResult.status === 'has_children' ? { fkBlockers: deleteResult.blockers } : {}),
     }
   } catch (error) {
     if (isServerOnlineDuringForgetError(error)) {

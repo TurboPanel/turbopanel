@@ -1777,6 +1777,8 @@ test('DELETE /servers/:id with forgetResources clears deployment slot and storag
       const [storageRow] = await db
         .insert(storage)
         .values({
+          organizationId,
+          name: 'forget-test-vol',
           environmentId: leftovers.environmentId,
           kind: 'volume',
           accessMode: 'single_writer',

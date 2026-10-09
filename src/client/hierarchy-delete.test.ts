@@ -60,7 +60,8 @@ test('parsePostgresForeignKeyViolation reads detail when table fields are absent
   assertEquals(
     parsePostgresForeignKeyViolation({
       code: '23503',
-      detail: 'Key (id)=(2030f113-0000-7000-8000-000000000001) is still referenced from table "environment".',
+      detail:
+        'Key (id)=(2030f113-0000-7000-8000-000000000001) is still referenced from table "environment".',
       constraint: 'environment_server_id_server_id_fk',
     }),
     { table: 'environment', constraint: 'environment_server_id_server_id_fk' }
