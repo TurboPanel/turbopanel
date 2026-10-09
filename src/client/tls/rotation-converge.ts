@@ -216,45 +216,80 @@ function upsertApplyRow(
   })
 }
 
+function skipRowForGoneTarget(row: CaRotationResultRow): void {
+  row.status = 'skipped'
+  row.error = CA_ROTATION_TARGET_GONE
+  row.commandId = undefined
+}
+
+function applyRowTargetGone(row: CaRotationResultRow, existence: TargetExistence): boolean {
+  const managedId = row.managedId
+  if (!managedId) return false
+  if (!existence.managedIds.has(managedId)) return true
+  if (!existence.serverIds.has(row.serverId)) return true
+  return !existence.members.has(rotationApplyRowKey(managedId, row.serverId))
+}
+
+function reconcileIngressRow(row: CaRotationResultRow, existence: TargetExistence): void {
+  if (!existence.serverIds.has(row.serverId)) {
+    skipRowForGoneTarget(row)
+  }
+}
+
+function reconcileBindingRow(row: CaRotationResultRow, existence: TargetExistence): void {
+  if (row.status === 'failed' && row.error !== CA_ROTATION_TARGET_GONE) {
+    return
+  }
+  if (row.managedId && !existence.managedIds.has(row.managedId)) {
+    skipRowForGoneTarget(row)
+    return
+  }
+  if (!existence.serverIds.has(row.serverId)) {
+    skipRowForGoneTarget(row)
+  }
+}
+
+function reconcileApplyRow(row: CaRotationResultRow, existence: TargetExistence): void {
+  if (applyRowTargetGone(row, existence)) {
+    Object.assign(row, markRowSkipped(row))
+  }
+}
+
 function reconcileIngressAndBindingRows(
   rows: CaRotationResultRow[],
   existence: TargetExistence
 ): void {
   for (const row of rows) {
     if (row.kind === 'ingress') {
-      if (!existence.serverIds.has(row.serverId)) {
-        row.status = 'skipped'
-        row.error = CA_ROTATION_TARGET_GONE
-        row.commandId = undefined
-      }
+      reconcileIngressRow(row, existence)
       continue
     }
     if (row.kind === 'binding') {
-      if (row.status === 'failed' && row.error !== CA_ROTATION_TARGET_GONE) {
-        continue
-      }
-      if (row.managedId && !existence.managedIds.has(row.managedId)) {
-        row.status = 'skipped'
-        row.error = CA_ROTATION_TARGET_GONE
-        row.commandId = undefined
-        continue
-      }
-      if (!existence.serverIds.has(row.serverId)) {
-        row.status = 'skipped'
-        row.error = CA_ROTATION_TARGET_GONE
-        row.commandId = undefined
-      }
+      reconcileBindingRow(row, existence)
       continue
     }
-    if (row.kind === 'apply' && row.managedId) {
-      if (!existence.managedIds.has(row.managedId)) {
-        Object.assign(row, markRowSkipped(row))
-      } else if (!existence.serverIds.has(row.serverId)) {
-        Object.assign(row, markRowSkipped(row))
-      } else if (!existence.members.has(rotationApplyRowKey(row.managedId, row.serverId))) {
-        Object.assign(row, markRowSkipped(row))
-      }
+    if (row.kind === 'apply') {
+      reconcileApplyRow(row, existence)
     }
+  }
+}
+
+async function backfillOneApplyCommandId(
+  db: Db,
+  row: CaRotationResultRow,
+  rotationStartedAt: string
+): Promise<void> {
+  if (row.kind !== 'apply' || !row.managedId || row.commandId) return
+  if (row.status === 'skipped') return
+  const match = await findRotationApplyCommand(db, {
+    managedId: row.managedId,
+    serverId: row.serverId,
+    rotationStartedAt,
+  })
+  if (!match) return
+  row.commandId = match.id
+  if (match.status === 'failed' && match.error?.includes(CA_ROTATION_TARGET_GONE)) {
+    Object.assign(row, markRowSkipped(row))
   }
 }
 
@@ -263,20 +298,7 @@ async function backfillApplyCommandIds(
   rows: CaRotationResultRow[],
   rotationStartedAt: string
 ): Promise<void> {
-  for (const row of rows) {
-    if (row.kind !== 'apply' || !row.managedId || row.commandId) continue
-    if (row.status === 'skipped') continue
-    const match = await findRotationApplyCommand(db, {
-      managedId: row.managedId,
-      serverId: row.serverId,
-      rotationStartedAt,
-    })
-    if (!match) continue
-    row.commandId = match.id
-    if (match.status === 'failed' && match.error?.includes(CA_ROTATION_TARGET_GONE)) {
-      Object.assign(row, markRowSkipped(row))
-    }
-  }
+  await Promise.all(rows.map((row) => backfillOneApplyCommandId(db, row, rotationStartedAt)))
 }
 
 function primaryApplySucceeded(
@@ -438,6 +460,154 @@ export async function reconcileCaRotationResults(
   return next
 }
 
+function membersByManagedId(
+  members: readonly OrganizationRotationMember[]
+): Map<string, OrganizationRotationMember[]> {
+  const byManaged = new Map<string, OrganizationRotationMember[]>()
+  for (const member of members) {
+    const list = byManaged.get(member.managedId) ?? []
+    list.push(member)
+    byManaged.set(member.managedId, list)
+  }
+  return byManaged
+}
+
+function skipApplyMembersForGoneManaged(
+  rows: CaRotationResultRow[],
+  managedId: string,
+  members: readonly OrganizationRotationMember[]
+): void {
+  for (const member of members) {
+    upsertApplyRow(
+      rows,
+      managedId,
+      member.serverId,
+      markRowSkipped({
+        serverId: member.serverId,
+        kind: 'apply',
+        managedId,
+        status: 'queued',
+      })
+    )
+  }
+}
+
+function applyRowStillPending(
+  row: CaRotationResultRow | undefined,
+  records: Map<string, { status: string }>
+): boolean {
+  if (!row?.commandId) return false
+  const status = records.get(row.commandId)?.status ?? row.status
+  if (status === 'succeeded') return false
+  return PENDING_STATUSES.has(status) || status === 'queued'
+}
+
+async function collectMissingApplyServerIds(
+  db: Db,
+  params: {
+    rows: CaRotationResultRow[]
+    members: readonly OrganizationRotationMember[]
+    existence: TargetExistence
+    rotationStartedAt: string
+    records: Map<string, { status: string }>
+    primaryServerId: string | null
+    primaryDone: boolean
+  }
+): Promise<string[]> {
+  const backfillTasks = params.members.map(async (member) => {
+    if (targetGoneForApplyMember(params.existence, member)) {
+      upsertApplyRow(
+        params.rows,
+        member.managedId,
+        member.serverId,
+        markRowSkipped({
+          serverId: member.serverId,
+          kind: 'apply',
+          managedId: member.managedId,
+          status: 'queued',
+        })
+      )
+      return null
+    }
+    let row = findApplyRow(params.rows, member.managedId, member.serverId)
+    if (row?.status === 'skipped') return null
+
+    if (!row?.commandId) {
+      const match = await findRotationApplyCommand(db, {
+        managedId: member.managedId,
+        serverId: member.serverId,
+        rotationStartedAt: params.rotationStartedAt,
+      })
+      if (match) {
+        upsertApplyRow(params.rows, member.managedId, member.serverId, {
+          commandId: match.id,
+          status: 'queued',
+        })
+        row = findApplyRow(params.rows, member.managedId, member.serverId)
+      }
+    }
+
+    if (applyRowStillPending(row, params.records)) return null
+
+    const isPrimary = member.serverId === params.primaryServerId
+    if (!isPrimary && !params.primaryDone) return null
+    if (row?.commandId) return null
+    return member.serverId
+  })
+  const resolved = await Promise.all(backfillTasks)
+  return [...new Set(resolved.filter((serverId): serverId is string => serverId !== null))]
+}
+
+async function enqueueMissingAppliesForManagedCluster(
+  c: Context<AppEnv>,
+  db: Db,
+  commandQueue: CommandQueue,
+  params: {
+    organizationId: string
+    actorId: string
+    rows: CaRotationResultRow[]
+    rotationStartedAt: string
+    records: Map<string, { status: string }>
+    existence: TargetExistence
+    managedId: string
+    members: readonly OrganizationRotationMember[]
+  }
+): Promise<void> {
+  const { managedId, members, rows, existence } = params
+  if (!existence.managedIds.has(managedId)) {
+    skipApplyMembersForGoneManaged(rows, managedId, members)
+    return
+  }
+
+  const primaryServerId = await loadManagedPrimaryServerId(db, managedId)
+  const primaryDone = primaryApplySucceeded(rows, params.records, managedId, primaryServerId)
+  const toEnqueue = await collectMissingApplyServerIds(db, {
+    rows,
+    members,
+    existence,
+    rotationStartedAt: params.rotationStartedAt,
+    records: params.records,
+    primaryServerId,
+    primaryDone,
+  })
+  if (toEnqueue.length === 0) return
+
+  const enqueued = await enqueueRotationApplyMembers(c, db, commandQueue, {
+    actorId: params.actorId,
+    organizationId: params.organizationId,
+    managedId,
+    serverIds: toEnqueue,
+  })
+  for (const entry of enqueued) {
+    if (!entry.managedId) continue
+    upsertApplyRow(rows, entry.managedId, entry.serverId, {
+      status: entry.status,
+      commandId: entry.commandId,
+      error: entry.error,
+    })
+  }
+}
+
 /**
  * Enqueue apply commands for live rotation members that still lack a tracked command.
  */
@@ -462,98 +632,22 @@ export async function enqueueMissingCaRotationApplies(
     rotationRowRefs(rows)
   )
   const records = new Map((params.commandRecords ?? []).map((record) => [record.id, record]))
+  const byManaged = membersByManagedId(targets.members)
 
-  const byManaged = new Map<string, OrganizationRotationMember[]>()
-  for (const member of targets.members) {
-    const list = byManaged.get(member.managedId) ?? []
-    list.push(member)
-    byManaged.set(member.managedId, list)
-  }
-
-  for (const [managedId, members] of byManaged) {
-    if (!existence.managedIds.has(managedId)) {
-      for (const member of members) {
-        upsertApplyRow(
-          rows,
-          managedId,
-          member.serverId,
-          markRowSkipped({
-            serverId: member.serverId,
-            kind: 'apply',
-            managedId,
-            status: 'queued',
-          })
-        )
-      }
-      continue
-    }
-
-    const primaryServerId = await loadManagedPrimaryServerId(db, managedId)
-    const primaryDone = primaryApplySucceeded(rows, records, managedId, primaryServerId)
-
-    const toEnqueue: string[] = []
-    for (const member of members) {
-      if (targetGoneForApplyMember(existence, member)) {
-        upsertApplyRow(
-          rows,
-          member.managedId,
-          member.serverId,
-          markRowSkipped({
-            serverId: member.serverId,
-            kind: 'apply',
-            managedId: member.managedId,
-            status: 'queued',
-          })
-        )
-        continue
-      }
-      let row = findApplyRow(rows, member.managedId, member.serverId)
-      if (row?.status === 'skipped') continue
-
-      if (!row?.commandId) {
-        const match = await findRotationApplyCommand(db, {
-          managedId: member.managedId,
-          serverId: member.serverId,
-          rotationStartedAt: params.rotationStartedAt,
-        })
-        if (match) {
-          upsertApplyRow(rows, member.managedId, member.serverId, {
-            commandId: match.id,
-            status: 'queued',
-          })
-          row = findApplyRow(rows, member.managedId, member.serverId)
-        }
-      }
-
-      if (row?.commandId) {
-        const status = records.get(row.commandId)?.status ?? row.status
-        if (status === 'succeeded') continue
-        if (PENDING_STATUSES.has(status) || status === 'queued') continue
-      }
-
-      const isPrimary = member.serverId === primaryServerId
-      if (!isPrimary && !primaryDone) continue
-      if (!row?.commandId && !toEnqueue.includes(member.serverId)) {
-        toEnqueue.push(member.serverId)
-      }
-    }
-
-    if (toEnqueue.length === 0) continue
-    const enqueued = await enqueueRotationApplyMembers(c, db, commandQueue, {
-      actorId: params.actorId,
-      organizationId: params.organizationId,
-      managedId,
-      serverIds: toEnqueue,
-    })
-    for (const entry of enqueued) {
-      if (!entry.managedId) continue
-      upsertApplyRow(rows, entry.managedId, entry.serverId, {
-        status: entry.status,
-        commandId: entry.commandId,
-        error: entry.error,
+  await Promise.all(
+    [...byManaged.entries()].map(([managedId, members]) =>
+      enqueueMissingAppliesForManagedCluster(c, db, commandQueue, {
+        organizationId: params.organizationId,
+        actorId: params.actorId,
+        rows,
+        rotationStartedAt: params.rotationStartedAt,
+        records,
+        existence,
+        managedId,
+        members,
       })
-    }
-  }
+    )
+  )
 
   return rows
 }
