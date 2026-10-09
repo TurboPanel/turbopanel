@@ -16,6 +16,7 @@ import {
   server,
   service,
   slot,
+  storage,
   storageCopy,
   variable,
   workspace,
@@ -435,7 +436,8 @@ function noteEnvironmentServer(
 
 /**
  * Servers other than `forgetServerId` that still carry rows under these
- * environments (containers, slots, deployments, hosting addresses, binding vars).
+ * environments (containers, slots, deployments, storage copies, hosting addresses,
+ * binding vars).
  */
 export async function listEnvironmentOtherServerIds(
   db: Db,
@@ -446,54 +448,71 @@ export async function listEnvironmentOtherServerIds(
   if (environmentIds.length === 0) return byEnvironment
   const ids = [...environmentIds]
 
-  const [containerRows, slotRows, deploymentRows, ipRows, variableRows] = await Promise.all([
-    db
-      .select({
-        environmentId: service.environmentId,
-        serverId: container.serverId,
-      })
-      .from(container)
-      .innerJoin(service, eq(service.id, container.serviceId))
-      .where(and(inArray(service.environmentId, ids), ne(container.serverId, forgetServerId))),
-    db
-      .select({ environmentId: slot.environmentId, serverId: slot.serverId })
-      .from(slot)
-      .where(and(inArray(slot.environmentId, ids), ne(slot.serverId, forgetServerId))),
-    db
-      .select({
-        environmentId: deployment.environmentId,
-        serverId: deployment.serverId,
-      })
-      .from(deployment)
-      .where(and(inArray(deployment.environmentId, ids), ne(deployment.serverId, forgetServerId))),
-    db
-      .select({ environmentId: service.environmentId, serverId: ip.serverId })
-      .from(hosting)
-      .innerJoin(service, eq(service.id, hosting.serviceId))
-      .innerJoin(ip, eq(ip.id, hosting.ipId))
-      .where(
-        and(
-          inArray(service.environmentId, ids),
-          isNotNull(ip.serverId),
-          ne(ip.serverId, forgetServerId)
-        )
-      ),
-    db
-      .select({
-        environmentId: service.environmentId,
-        serverId: variable.serverId,
-      })
-      .from(variable)
-      .innerJoin(service, eq(service.id, variable.serviceId))
-      .where(
-        and(
-          inArray(service.environmentId, ids),
-          isNotNull(variable.bindingId),
-          isNotNull(variable.serverId),
-          ne(variable.serverId, forgetServerId)
-        )
-      ),
-  ])
+  const [containerRows, slotRows, deploymentRows, copyRows, ipRows, variableRows] =
+    await Promise.all([
+      db
+        .select({
+          environmentId: service.environmentId,
+          serverId: container.serverId,
+        })
+        .from(container)
+        .innerJoin(service, eq(service.id, container.serviceId))
+        .where(and(inArray(service.environmentId, ids), ne(container.serverId, forgetServerId))),
+      db
+        .select({ environmentId: slot.environmentId, serverId: slot.serverId })
+        .from(slot)
+        .where(and(inArray(slot.environmentId, ids), ne(slot.serverId, forgetServerId))),
+      db
+        .select({
+          environmentId: deployment.environmentId,
+          serverId: deployment.serverId,
+        })
+        .from(deployment)
+        .where(
+          and(inArray(deployment.environmentId, ids), ne(deployment.serverId, forgetServerId))
+        ),
+      db
+        .select({
+          environmentId: storage.environmentId,
+          serverId: storageCopy.serverId,
+        })
+        .from(storageCopy)
+        .innerJoin(storage, eq(storage.id, storageCopy.storageId))
+        .where(
+          and(
+            inArray(storage.environmentId, ids),
+            isNotNull(storage.environmentId),
+            ne(storageCopy.serverId, forgetServerId)
+          )
+        ),
+      db
+        .select({ environmentId: service.environmentId, serverId: ip.serverId })
+        .from(hosting)
+        .innerJoin(service, eq(service.id, hosting.serviceId))
+        .innerJoin(ip, eq(ip.id, hosting.ipId))
+        .where(
+          and(
+            inArray(service.environmentId, ids),
+            isNotNull(ip.serverId),
+            ne(ip.serverId, forgetServerId)
+          )
+        ),
+      db
+        .select({
+          environmentId: service.environmentId,
+          serverId: variable.serverId,
+        })
+        .from(variable)
+        .innerJoin(service, eq(service.id, variable.serviceId))
+        .where(
+          and(
+            inArray(service.environmentId, ids),
+            isNotNull(variable.bindingId),
+            isNotNull(variable.serverId),
+            ne(variable.serverId, forgetServerId)
+          )
+        ),
+    ])
 
   for (const row of containerRows) {
     noteEnvironmentServer(byEnvironment, row.environmentId, row.serverId, forgetServerId)
@@ -503,6 +522,11 @@ export async function listEnvironmentOtherServerIds(
   }
   for (const row of deploymentRows) {
     noteEnvironmentServer(byEnvironment, row.environmentId, row.serverId, forgetServerId)
+  }
+  for (const row of copyRows) {
+    if (row.environmentId) {
+      noteEnvironmentServer(byEnvironment, row.environmentId, row.serverId, forgetServerId)
+    }
   }
   for (const row of ipRows) {
     noteEnvironmentServer(byEnvironment, row.environmentId, row.serverId, forgetServerId)

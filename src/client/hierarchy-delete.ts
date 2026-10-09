@@ -21,15 +21,12 @@ export type HierarchyDeleteFkBlocker = {
   column?: string
 }
 
-/** Result of {@link runHierarchyDelete} (string form keeps legacy call sites unchanged). */
-export type HierarchyDeleteResult = 'ok' | 'has_children'
+/** Outcome of {@link runHierarchyDelete} — blockers travel with the result (no module globals). */
+export type HierarchyDeleteRunResult =
+  { status: 'ok' } | { status: 'has_children'; blockers: HierarchyDeleteFkBlocker[] }
 
-let lastHierarchyDeleteFkBlockers: HierarchyDeleteFkBlocker[] = []
-
-/** FK blockers from the most recent `has_children` result; cleared on the next delete run. */
-export function peekHierarchyDeleteFkBlockers(): readonly HierarchyDeleteFkBlocker[] {
-  return lastHierarchyDeleteFkBlockers
-}
+/** @deprecated Use {@link HierarchyDeleteRunResult} and `.status` instead. */
+export type HierarchyDeleteResult = HierarchyDeleteRunResult['status']
 
 function readStringField(layer: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const key of keys) {
@@ -99,9 +96,6 @@ export function parsePostgresForeignKeyViolation(error: unknown): HierarchyDelet
     const layer = current as Record<string, unknown>
     const blocker = hierarchyDeleteFkBlockerFromLayer(layer)
     if (blocker) return blocker
-    if (layer.code === POSTGRES_FK_VIOLATION || layer.code === POSTGRES_RESTRICT_VIOLATION) {
-      return null
-    }
     if (layer.cause && layer.cause !== current) {
       current = layer.cause
       continue
@@ -115,26 +109,28 @@ export function hierarchyDeleteHasChildrenMessage(): string {
   return HIERARCHY_DELETE_HAS_CHILDREN_ERROR
 }
 
+const GENERIC_HIERARCHY_DELETE_FK_BLOCKER: HierarchyDeleteFkBlocker = {
+  table: 'child resources',
+}
+
 export function hierarchyDeleteFkBlockersFromViolation(
   violation: HierarchyDeleteFkBlocker | null | undefined
 ): HierarchyDeleteFkBlocker[] {
-  if (!violation?.table) return []
-  return [violation]
+  if (violation?.table) return [violation]
+  return [GENERIC_HIERARCHY_DELETE_FK_BLOCKER]
 }
 
 export async function runHierarchyDelete(
   db: Db,
   deleteOp: (tx: Db) => Promise<void>
-): Promise<HierarchyDeleteResult> {
-  lastHierarchyDeleteFkBlockers = []
+): Promise<HierarchyDeleteRunResult> {
   try {
     await db.transaction(deleteOp)
-    return 'ok'
+    return { status: 'ok' }
   } catch (error) {
     if (!isForeignKeyViolation(error)) throw error
     const blocker = parsePostgresForeignKeyViolation(error)
     const blockers = hierarchyDeleteFkBlockersFromViolation(blocker)
-    lastHierarchyDeleteFkBlockers = blockers
     if (blocker?.constraint) {
       compatLogWarn(
         'hierarchy-delete',
@@ -143,7 +139,7 @@ export async function runHierarchyDelete(
     } else if (blocker?.table) {
       compatLogWarn('hierarchy-delete', `delete blocked by FK on ${blocker.table}`)
     }
-    return 'has_children'
+    return { status: 'has_children', blockers }
   }
 }
 
@@ -164,10 +160,10 @@ export function hierarchyDeleteHasChildrenResponse(
 /** When delete hit a child FK, return the 409 response; otherwise `null`. */
 export function hierarchyDeleteHasChildrenResponseIfNeeded(
   c: Context,
-  result: HierarchyDeleteResult
+  result: HierarchyDeleteRunResult
 ): Response | null {
-  if (result !== 'has_children') return null
-  return hierarchyDeleteHasChildrenResponse(c, peekHierarchyDeleteFkBlockers())
+  if (result.status !== 'has_children') return null
+  return hierarchyDeleteHasChildrenResponse(c, result.blockers)
 }
 
 /** Run a hierarchy delete in a transaction and map FK blocks to the standard 409. */

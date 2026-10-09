@@ -4,12 +4,12 @@ import type { Db } from '../db/connection.ts'
 import {
   HIERARCHY_DELETE_HAS_CHILDREN_CODE,
   HIERARCHY_DELETE_HAS_CHILDREN_ERROR,
+  hierarchyDeleteFkBlockersFromViolation,
   hierarchyDeleteHasChildrenMessage,
   hierarchyDeleteHasChildrenResponse,
   hierarchyDeleteHasChildrenResponseIfNeeded,
   isForeignKeyViolation,
   parsePostgresForeignKeyViolation,
-  peekHierarchyDeleteFkBlockers,
   respondAfterHierarchyDelete,
   runHierarchyDelete,
 } from './hierarchy-delete.ts'
@@ -77,10 +77,45 @@ test('parsePostgresForeignKeyViolation reads postgres.js, detail, and cause chai
       },
       expected: { table: 'relay', constraint: 'relay_server_id_server_id_fk' },
     },
+    {
+      input: {
+        code: '23503',
+        message: 'update or delete on table "project" violates foreign key constraint',
+        cause: {
+          code: '23503',
+          table: 'environment',
+          constraint: 'environment_project_id_project_id_fk',
+        },
+      },
+      expected: {
+        table: 'environment',
+        constraint: 'environment_project_id_project_id_fk',
+      },
+    },
   ]
   for (const { input, expected } of cases) {
     assertEquals(parsePostgresForeignKeyViolation(input), expected)
   }
+})
+
+test('parsePostgresForeignKeyViolation walks cause when outer layer has FK code only', () => {
+  assertEquals(
+    parsePostgresForeignKeyViolation({
+      code: '23503',
+      message: 'Failed query',
+      cause: {
+        code: '23503',
+        constraint_name: 'slot_environment_id_environment_id_fk',
+        table_name: 'slot',
+      },
+    }),
+    { table: 'slot', constraint: 'slot_environment_id_environment_id_fk' }
+  )
+})
+
+test('hierarchyDeleteFkBlockersFromViolation returns a generic blocker when unparsable', () => {
+  assertEquals(hierarchyDeleteFkBlockersFromViolation(null), [{ table: 'child resources' }])
+  assertEquals(hierarchyDeleteFkBlockersFromViolation(undefined), [{ table: 'child resources' }])
 })
 
 test('hierarchyDeleteHasChildrenMessage keeps the generic error string', () => {
@@ -95,7 +130,7 @@ test('runHierarchyDelete returns ok when the transaction succeeds', async () => 
   } as unknown as Db
 
   const result = await runHierarchyDelete(db, async () => {})
-  assertEquals(result, 'ok')
+  assertEquals(result, { status: 'ok' })
 })
 
 test('runHierarchyDelete maps FK violations to has_children with table detail', async () => {
@@ -110,11 +145,32 @@ test('runHierarchyDelete maps FK violations to has_children with table detail', 
   } as unknown as Db
 
   const result = await runHierarchyDelete(db, async () => {})
-  assertEquals(result, 'has_children')
-  assertEquals(
-    [...peekHierarchyDeleteFkBlockers()],
-    [{ table: 'relay', constraint: 'relay_server_id_server_id_fk' }]
-  )
+  assertEquals(result, {
+    status: 'has_children',
+    blockers: [{ table: 'relay', constraint: 'relay_server_id_server_id_fk' }],
+  })
+})
+
+test('concurrent runHierarchyDelete results do not share FK blockers', async () => {
+  const dbFor = (table: string, constraint: string) =>
+    ({
+      transaction: async () => {
+        throw { code: '23503', table, constraint }
+      },
+    }) as unknown as Db
+
+  const [first, second] = await Promise.all([
+    runHierarchyDelete(dbFor('relay', 'relay_server_id_server_id_fk'), async () => {}),
+    runHierarchyDelete(dbFor('subnet', 'subnet_server_id_server_id_fk'), async () => {}),
+  ])
+  assertEquals(first, {
+    status: 'has_children',
+    blockers: [{ table: 'relay', constraint: 'relay_server_id_server_id_fk' }],
+  })
+  assertEquals(second, {
+    status: 'has_children',
+    blockers: [{ table: 'subnet', constraint: 'subnet_server_id_server_id_fk' }],
+  })
 })
 
 test('runHierarchyDelete rethrows unrelated errors', async () => {
@@ -129,7 +185,7 @@ test('runHierarchyDelete rethrows unrelated errors', async () => {
 
 test('hierarchyDeleteHasChildrenResponseIfNeeded returns null on success', () => {
   const c = {} as Parameters<typeof hierarchyDeleteHasChildrenResponseIfNeeded>[0]
-  assertEquals(hierarchyDeleteHasChildrenResponseIfNeeded(c, 'ok'), null)
+  assertEquals(hierarchyDeleteHasChildrenResponseIfNeeded(c, { status: 'ok' }), null)
 })
 
 test('respondAfterHierarchyDelete returns ok JSON when delete succeeds', async () => {

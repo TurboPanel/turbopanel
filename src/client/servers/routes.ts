@@ -75,7 +75,6 @@ import { compatLogWarn } from '../../lib/log-compat.ts'
 import {
   hierarchyDeleteHasChildrenResponse,
   type HierarchyDeleteFkBlocker,
-  peekHierarchyDeleteFkBlockers,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
 import { purgeServerForeignKeysForDelete } from './server-fk.ts'
@@ -751,14 +750,12 @@ async function deleteServerWithSystemSubtree(
       await tx.delete(server).where(eq(server.id, serverId))
     })
     return {
-      status: deleteResult === 'ok' ? 'ok' : 'has_children',
-      forgotten: deleteResult === 'ok' ? forgotten : null,
+      status: deleteResult.status === 'ok' ? 'ok' : 'has_children',
+      forgotten: deleteResult.status === 'ok' ? forgotten : null,
       blockers: [],
       blockedDatabases: [],
       blockedEnvironments: [],
-      ...(deleteResult === 'has_children'
-        ? { fkBlockers: [...peekHierarchyDeleteFkBlockers()] }
-        : {}),
+      ...(deleteResult.status === 'has_children' ? { fkBlockers: [...deleteResult.blockers] } : {}),
     }
   } catch (error) {
     if (isServerOnlineDuringForgetError(error)) {

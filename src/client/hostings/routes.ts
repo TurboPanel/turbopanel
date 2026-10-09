@@ -424,8 +424,8 @@ export function registerHostingRoutes(
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(hosting).where(eq(hosting.id, id));
     });
-    if (result === "has_children") {
-      return hierarchyDeleteHasChildrenResponse(c);
+    if (result.status === "has_children") {
+      return hierarchyDeleteHasChildrenResponse(c, result.blockers);
     }
 
     return c.json({ ok: true as const });
