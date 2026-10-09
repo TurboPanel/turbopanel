@@ -2009,7 +2009,8 @@ async function applyManagedRecoveryFailedSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
   meta: Record<string, unknown> | null | undefined,
-  deps?: CommandConsumerDeps
+  deps?: CommandConsumerDeps,
+  error?: string
 ): Promise<boolean> {
   const recoveryId = recoveryIdFromCommandMetadata(meta)
   if (!recoveryId) return false
@@ -2034,14 +2035,28 @@ async function applyManagedRecoveryFailedSideEffect(
 
   if (record.type === 'managed.promote' || record.type === 'managed.ha.failover') {
     if (isManagedHaFailoverRepoint(record)) return false
+    const engine = recoveryEngine(payloadEngine(record.payload))
+    const actor = recoveryActor(record)
+    const commandError = typeof error === 'string' ? error : undefined
     if (record.type === 'managed.promote') {
       await onSwitchoverPromoteFailed(db, deps?.commandQueue, {
         recoveryId,
-        engine: recoveryEngine(payloadEngine(record.payload)),
-        actor: recoveryActor(record),
+        engine,
+        actor,
+        commandError,
       })
     } else {
-      await onRecoveryCommandFailed(db, recoveryId)
+      const phase = parseManagedHaFailoverPayload(record.payload).phase
+      if (phase === 'recover') {
+        await onSwitchoverPromoteFailed(db, deps?.commandQueue, {
+          recoveryId,
+          engine,
+          actor,
+          commandError,
+        })
+      } else {
+        await onRecoveryCommandFailed(db, recoveryId)
+      }
     }
   }
   return false
@@ -2166,7 +2181,7 @@ async function applyManagedFailedSideEffect(
     )
     return
   }
-  if (await applyManagedRecoveryFailedSideEffect(db, record, meta, deps)) {
+  if (await applyManagedRecoveryFailedSideEffect(db, record, meta, deps, error)) {
     return
   }
   if (!shouldMarkManagedFailedOnCommandType(record.type)) return

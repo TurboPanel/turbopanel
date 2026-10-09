@@ -10,7 +10,25 @@ import type {
   ManagedPromoteCommandPayload,
 } from '../../contracts/commands/schemas.ts'
 
-export const SWITCHOVER_GTID_WAIT_SECONDS = 120
+export const SWITCHOVER_GTID_WAIT_SECONDS = 90
+
+export type SwitchoverPromoteFailureCode =
+  | 'gtid_wait_timeout'
+  | 'gtid_wait_error'
+  | 'promote_started'
+
+const SWITCHOVER_PROMOTE_ERROR_PREFIX = 'switchover_promote:'
+
+export function parseSwitchoverPromoteFailureCode(
+  error: string | undefined
+): SwitchoverPromoteFailureCode | null {
+  if (!error) return null
+  const match = /^switchover_promote:(gtid_wait_timeout|gtid_wait_error|promote_started):/.exec(
+    error
+  )
+  if (!match) return null
+  return match[1] as SwitchoverPromoteFailureCode
+}
 
 const MYSQL_FAMILY: ReadonlySet<ManagedEngineCode> = new Set(['mysql', 'mariadb'])
 

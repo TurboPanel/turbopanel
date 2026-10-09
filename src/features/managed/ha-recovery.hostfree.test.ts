@@ -1154,7 +1154,7 @@ test('mariadb switchover aborts promote when fence stop did not record a GTID', 
   assertEquals(row?.state, 'failed')
   assertEquals(
     (row?.metadata as { failedReason?: string }).failedReason,
-    'Planned switchover could not record the old primary GTID position after fence stop'
+    'Planned switchover stopped: the old primary GTID position was not recorded before promotion'
   )
   assertEquals(
     harness.commandInserts.some((insert) => insert.name === 'managed.promote'),
@@ -1206,12 +1206,41 @@ test('onSwitchoverPromoteFailed reactivates the old primary when GTID proof was 
     recoveryId: REC_ID,
     engine: 'mariadb',
     actor: ACTOR,
+    commandError:
+      'switchover_promote:gtid_wait_timeout: the promotion target did not apply the old primary GTID position within 90s',
   })
   assertEquals(harness.recovery()?.state, 'failed')
   const payload = harness.commandInserts
     .map((row) => row.payload as Record<string, unknown> | undefined)
     .find((row) => row?.reactivateAfterSwitchoverAbort === true)
   assertEquals(payload?.action, 'start')
+})
+
+test('onSwitchoverPromoteFailed does not reactivate after promote_started on the target', async () => {
+  const queue = okQueue()
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    connected: [true, true],
+    recovery: recoveryRow({
+      kind: 'switchover',
+      state: 'promoting',
+      metadata: { switchoverRequiredGtidSet: '0-1-5' },
+    }),
+  })
+  await onSwitchoverPromoteFailed(harness.db, queue, {
+    recoveryId: REC_ID,
+    engine: 'mariadb',
+    actor: ACTOR,
+    commandError: 'switchover_promote:promote_started: mysql promote did not become writable within 60s',
+  })
+  assertEquals(
+    harness.commandInserts.some(
+      (row) =>
+        (row.payload as Record<string, unknown> | undefined)?.reactivateAfterSwitchoverAbort ===
+        true
+    ),
+    false
+  )
 })
 
 test('beginOperatorSwitchover skips drain on disconnected peers and still stops the writer', async () => {

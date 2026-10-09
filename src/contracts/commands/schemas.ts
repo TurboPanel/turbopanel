@@ -5400,7 +5400,7 @@ export type ManagedHaReconcileCommandResult = {
   containers?: EnvironmentDeployContainer[]
 }
 
-export type ManagedHaFailoverPhase = 'drain' | 'recover' | 'repoint'
+export type ManagedHaFailoverPhase = 'drain' | 'undrain' | 'recover' | 'repoint'
 
 /** Must stay in sync with the daemon `managed.ha.failover` shape. */
 export type ManagedHaFailoverCommandPayload = {
@@ -7418,7 +7418,7 @@ export function parseManagedIngressReconcileResult(
 }
 
 const HA_PROMOTION_RULES = new Set<string>([HA_PROMOTION_RULE_PREFER, HA_PROMOTION_RULE_MUST_NOT])
-const HA_FAILOVER_PHASES = new Set<string>(['drain', 'recover', 'repoint'])
+const HA_FAILOVER_PHASES = new Set<string>(['drain', 'undrain', 'recover', 'repoint'])
 const HA_FAILOVER_SLOT_RE = /^[a-z0-9_]{1,63}$/
 const MAX_HA_FAILOVER_ENSURE_SLOTS = 32
 const MAX_HA_CLUSTERS = 64

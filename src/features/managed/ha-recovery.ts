@@ -45,7 +45,9 @@ import {
   fenceStopCapturesSwitchoverGtid,
   promotePayloadWithSwitchoverCatchup,
   recordSwitchoverRequiredGtid,
+  parseSwitchoverPromoteFailureCode,
   switchoverAbortReactivateLifecyclePayload,
+  type SwitchoverPromoteFailureCode,
 } from './switchover-catchup.ts'
 import { findManagedHaHierarchy } from '../system/hierarchy.ts'
 import { loadDatacenterMembershipsForServers } from '../net/datacenter-membership.ts'
@@ -310,7 +312,7 @@ async function failoverPayload(
     source: ManagedMemberRow
     target: ManagedMemberRow
     engine: ManagedEngineCode
-    phase: 'drain' | 'recover'
+    phase: 'drain' | 'undrain' | 'recover'
   }
 ): Promise<ManagedHaFailoverCommandPayload> {
   const sourceHost = await memberDialHost(db, observerServerId, params.source)
@@ -1089,10 +1091,57 @@ function applyFenceSettlement(
   return { state: advance.state, metadata: advance.metadata }
 }
 
+async function enqueueSwitchoverAbortReactivation(
+  db: Db,
+  commandQueue: CommandQueue,
+  params: {
+    record: RecoveryRecord
+    engine: ManagedEngineCode
+    actor: RecoveryCommandActor
+    source: ManagedMemberRow
+    members: readonly ManagedMemberRow[]
+  }
+): Promise<void> {
+  await enqueueCommand(db, commandQueue, {
+    serverId: params.source.serverId,
+    type: 'managed.lifecycle',
+    payload: switchoverAbortReactivateLifecyclePayload({
+      managedId: params.record.managedId,
+      memberId: params.source.id,
+      engine: params.engine,
+    }),
+    expiresAtMs: FENCE_TTL_MS,
+    actor: params.actor,
+  })
+  const target =
+    params.members.find((row) => row.id === params.record.targetMemberId) ??
+    params.source
+  const undrainServers = [...new Set(params.members.map((row) => row.serverId))]
+  await forEachSequential(undrainServers, async (serverId) => {
+    if (!(await isServerConnected(db, serverId))) return
+    const payload = await failoverPayload(db, serverId, {
+      managedId: params.record.managedId,
+      source: params.source,
+      target,
+      engine: params.engine,
+      phase: 'undrain',
+    })
+    await enqueueCommand(db, commandQueue, {
+      serverId,
+      type: 'managed.ha.failover',
+      payload,
+      expiresAtMs: FENCE_TTL_MS,
+      actor: params.actor,
+    })
+  })
+}
+
 async function abortSwitchoverWhenGtidMissing(
   db: Db,
+  commandQueue: CommandQueue | undefined,
   record: RecoveryRecord,
-  engine: ManagedEngineCode
+  engine: ManagedEngineCode,
+  actor: RecoveryCommandActor
 ): Promise<boolean> {
   if (
     record.kind !== 'switchover' ||
@@ -1101,10 +1150,21 @@ async function abortSwitchoverWhenGtidMissing(
   ) {
     return false
   }
+  const members = await listManagedMembers(db, record.managedId)
+  const source = members.find((row) => row.id === record.sourcePrimaryMemberId)
+  if (commandQueue && source) {
+    await enqueueSwitchoverAbortReactivation(db, commandQueue, {
+      record,
+      engine,
+      actor,
+      source,
+      members,
+    })
+  }
   await failRecoveryForOperator(
     db,
     record.id,
-    'Planned switchover could not record the old primary GTID position after fence stop'
+    'Planned switchover stopped: the old primary GTID position was not recorded before promotion'
   )
   await stampManagedReady(db, record.managedId)
   return true
@@ -1130,7 +1190,15 @@ async function followFenceAdvance(
     : null
   if (!source || !target) return
 
-  if (await abortSwitchoverWhenGtidMissing(db, record, settlement.engine)) {
+  if (
+    await abortSwitchoverWhenGtidMissing(
+      db,
+      commandQueue,
+      record,
+      settlement.engine,
+      settlement.actor
+    )
+  ) {
     return
   }
 
@@ -1375,12 +1443,24 @@ export async function onRecoveryCommandFailed(db: Db, recoveryId: string): Promi
   await failRecoveryForOperator(db, recoveryId, RECOVERY_COMMAND_TIMED_OUT_MESSAGE)
 }
 
-const SWITCHOVER_PROMOTE_ABORT_MESSAGE =
-  'Planned switchover aborted: the promotion target did not apply the old primary GTID position before the wait timed out'
+function switchoverPromoteFailedMessage(
+  code: SwitchoverPromoteFailureCode | null
+): string {
+  if (code === 'gtid_wait_timeout') {
+    return 'Planned switchover aborted: the promotion target did not apply the old primary GTID position before the wait timed out'
+  }
+  if (code === 'gtid_wait_error') {
+    return 'Planned switchover aborted: the promotion target could not run the GTID catch-up check'
+  }
+  if (code === 'promote_started') {
+    return 'Planned switchover aborted after promotion began on the target; the old primary was left read-only to avoid two writers — operator action required'
+  }
+  return 'Planned switchover aborted before the role change finished'
+}
 
 /**
- * A switchover promote failed before roles flipped: try to make the old primary
- * writable again and end the journal for the operator.
+ * A switchover promote failed before roles flipped: reactivate the old primary
+ * only when promotion never started on the target (GTID wait failure).
  */
 export async function onSwitchoverPromoteFailed(
   db: Db,
@@ -1389,6 +1469,7 @@ export async function onSwitchoverPromoteFailed(
     recoveryId: string
     engine: ManagedEngineCode
     actor: RecoveryCommandActor
+    commandError?: string
   }
 ): Promise<void> {
   const record = await findRecoveryById(db, params.recoveryId)
@@ -1396,25 +1477,22 @@ export async function onSwitchoverPromoteFailed(
     await onRecoveryCommandFailed(db, params.recoveryId)
     return
   }
+  const failureCode = parseSwitchoverPromoteFailureCode(params.commandError)
   const members = await listManagedMembers(db, record.managedId)
   const source = members.find((row) => row.id === record.sourcePrimaryMemberId)
-  if (commandQueue && source) {
-    await enqueueCommand(db, commandQueue, {
-      serverId: source.serverId,
-      type: 'managed.lifecycle',
-      payload: switchoverAbortReactivateLifecyclePayload({
-        managedId: record.managedId,
-        memberId: source.id,
-        engine: params.engine,
-      }),
-      expiresAtMs: FENCE_TTL_MS,
+  if (failureCode === 'gtid_wait_timeout' && commandQueue && source) {
+    await enqueueSwitchoverAbortReactivation(db, commandQueue, {
+      record,
+      engine: params.engine,
       actor: params.actor,
+      source,
+      members,
     })
   }
   const failed = await failRecoveryForOperator(
     db,
     params.recoveryId,
-    SWITCHOVER_PROMOTE_ABORT_MESSAGE
+    switchoverPromoteFailedMessage(failureCode)
   )
   if (failed) await stampManagedReady(db, failed.managedId)
 }

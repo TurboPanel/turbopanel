@@ -7,6 +7,7 @@ import {
   recordSwitchoverRequiredGtid,
   switchoverAbortReactivateLifecyclePayload,
   switchoverGtidFromFenceStopResult,
+  parseSwitchoverPromoteFailureCode,
   SWITCHOVER_GTID_WAIT_SECONDS,
 } from './switchover-catchup.ts'
 
@@ -70,6 +71,20 @@ test('switchoverGtidFromFenceStopResult rejects empty or oversized values', () =
   assertEquals(
     switchoverGtidFromFenceStopResult({ ...base, switchoverPrimaryExecutedGtidSet: '0-1-9' }),
     '0-1-9'
+  )
+})
+
+test('parseSwitchoverPromoteFailureCode reads daemon promote failure codes', () => {
+  assertEquals(parseSwitchoverPromoteFailureCode(undefined), null)
+  assertEquals(
+    parseSwitchoverPromoteFailureCode('switchover_promote:promote_started: writable check'),
+    'promote_started'
+  )
+  assertEquals(
+    parseSwitchoverPromoteFailureCode(
+      'switchover_promote:gtid_wait_timeout: the promotion target did not apply the old primary GTID position within 90s'
+    ),
+    'gtid_wait_timeout'
   )
 })
 
