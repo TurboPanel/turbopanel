@@ -1,5 +1,9 @@
 import { assertEquals } from '@std/assert'
-import { planBindingChangeCommands } from './enqueue-change.ts'
+import {
+  BINDING_PRIVATE_LISTENER_PENDING_WARNING,
+  bindingListenerSyncWarning,
+  planBindingChangeCommands,
+} from './enqueue-change.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -53,6 +57,19 @@ test('last remote binding removed still plans apply so the listener can come dow
     apply: true,
   })
   assertEquals(plan.apply, true)
+})
+
+test('bindingListenerSyncWarning is set only when apply was required but did not enqueue', () => {
+  assertEquals(bindingListenerSyncWarning({ apply: false }, 'failed'), undefined)
+  assertEquals(bindingListenerSyncWarning({ apply: true }, 'enqueued'), undefined)
+  assertEquals(
+    bindingListenerSyncWarning({ apply: true }, 'failed'),
+    BINDING_PRIVATE_LISTENER_PENDING_WARNING
+  )
+  assertEquals(
+    bindingListenerSyncWarning({ apply: true }, 'skipped'),
+    BINDING_PRIVATE_LISTENER_PENDING_WARNING
+  )
 })
 
 test('co-resident consumer does not plan apply', () => {

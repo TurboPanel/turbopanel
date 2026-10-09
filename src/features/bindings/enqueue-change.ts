@@ -52,6 +52,26 @@ export type BindingChangePlan = {
   ingressServerIds: string[]
 }
 
+/** Returned on binding create/update/delete when listener sync is incomplete. */
+export type BindingListenerSyncOutcome = Readonly<{
+  warning?: string
+}>
+
+export const BINDING_PRIVATE_LISTENER_PENDING_WARNING =
+  'The binding was saved, but the database could not publish its private listener yet; the next managed apply or binding change will retry.'
+
+export type BindingManagedApplyEnqueueStatus = 'enqueued' | 'failed' | 'skipped'
+
+/** When apply was required but did not enqueue, ingress must not run ahead of the listener. */
+export function bindingListenerSyncWarning(
+  plan: Pick<BindingChangePlan, 'apply'>,
+  applyStatus: BindingManagedApplyEnqueueStatus
+): string | undefined {
+  if (!plan.apply) return undefined
+  if (applyStatus === 'enqueued') return undefined
+  return BINDING_PRIVATE_LISTENER_PENDING_WARNING
+}
+
 /** Hosts this service may run on: env pin / project default, plus any slot. */
 export async function loadServiceConsumerServerIds(db: Db, serviceId: string): Promise<string[]> {
   const ids = new Set<string>()
@@ -94,7 +114,7 @@ export async function enqueueIngressForBindingChange(
   c: Context,
   db: Db,
   params: EnqueueBindingChangeParams
-): Promise<void> {
+): Promise<BindingListenerSyncOutcome> {
   const secretsConfig = c.get('secretsConfig')
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   const commandQueue = getCommandQueue(c)
@@ -104,7 +124,7 @@ export async function enqueueIngressForBindingChange(
     !commandQueue ||
     isNoopCommandQueue(commandQueue)
   ) {
-    return
+    return {}
   }
 
   const ingressServerIds = new Set<string>()
@@ -130,9 +150,10 @@ export async function enqueueIngressForBindingChange(
     apply: params.apply !== false,
   })
 
+  let applyStatus: BindingManagedApplyEnqueueStatus = 'skipped'
   if (plan.apply) {
     try {
-      await enqueueApplyForBindingManaged(c, db, {
+      applyStatus = await enqueueApplyForBindingManaged(c, db, {
         actorId: params.actorId,
         organizationId: params.organizationId,
         managedId: params.managedId,
@@ -143,7 +164,13 @@ export async function enqueueIngressForBindingChange(
         'bindings',
         `managed.apply after remote binding change failed for ${params.managedId}: ${message}`
       )
+      applyStatus = 'failed'
     }
+  }
+
+  const warning = bindingListenerSyncWarning(plan, applyStatus)
+  if (warning) {
+    return { warning }
   }
 
   await forEachSequential(plan.ingressServerIds, async (serverId) => {
@@ -163,6 +190,7 @@ export async function enqueueIngressForBindingChange(
       )
     }
   })
+  return {}
 }
 
 async function enqueueApplyForBindingManaged(
@@ -173,9 +201,9 @@ async function enqueueApplyForBindingManaged(
     organizationId: string
     managedId: string
   }>
-): Promise<void> {
+): Promise<BindingManagedApplyEnqueueStatus> {
   const commandQueue = getCommandQueue(c)
-  if (!commandQueue || isNoopCommandQueue(commandQueue)) return
+  if (!commandQueue || isNoopCommandQueue(commandQueue)) return 'skipped'
 
   const [row] = await db
     .select({
@@ -194,7 +222,7 @@ async function enqueueApplyForBindingManaged(
       'bindings',
       `managed.apply after binding change skipped for ${params.managedId}: cluster is missing`
     )
-    return
+    return 'failed'
   }
 
   const spec = getManagedEngineSpec(row.engine)
@@ -203,7 +231,7 @@ async function enqueueApplyForBindingManaged(
       'bindings',
       `managed.apply after binding change skipped for ${params.managedId}: engine is unknown`
     )
-    return
+    return 'failed'
   }
   const parsed = parseManagedRowOptions(spec, row.options)
   if (!parsed) {
@@ -211,7 +239,7 @@ async function enqueueApplyForBindingManaged(
       'bindings',
       `managed.apply after binding change skipped for ${params.managedId}: settings are invalid`
     )
-    return
+    return 'failed'
   }
 
   const residual = parseManagedResidual(row.metadata)
@@ -230,7 +258,7 @@ async function enqueueApplyForBindingManaged(
       'bindings',
       `managed.apply after binding change failed for ${params.managedId}: ${prepared.kind}`
     )
-    return
+    return 'failed'
   }
 
   const enqueued = await enqueuePreparedManagedApply(c, db, commandQueue, {
@@ -243,5 +271,14 @@ async function enqueueApplyForBindingManaged(
       'bindings',
       `managed.apply after binding change failed for ${params.managedId}: command queue unavailable`
     )
+    return 'failed'
   }
+  if (enqueued.length === 0 || enqueued.some((entry) => entry.status === 'failed')) {
+    compatLogWarn(
+      'bindings',
+      `managed.apply after binding change failed for ${params.managedId}: enqueue returned no queued commands`
+    )
+    return 'failed'
+  }
+  return 'enqueued'
 }

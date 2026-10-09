@@ -241,7 +241,12 @@ re-asserted at the daemon command-contract boundary.
   at least one apply command is queued (`commitClearedPrivatePortsIfUnused`).
   A failed enqueue leaves the port allocated — the failed command is
   visible, and the next successful apply (operator Apply or another
-  binding change) retries the teardown. A remote app with no private
+  binding change) retries the teardown. When binding create/delete
+  cannot queue `managed.apply`, `enqueueIngressForBindingChange` skips
+  `managed.ingress.reconcile` and returns
+  `BINDING_PRIVATE_LISTENER_PENDING_WARNING` on the binding response;
+  the next operator **Apply** or binding change runs the same apply-first
+  path again (no separate pending marker). A remote app with no private
   path is skipped at apply (warning) so one unreachable consumer cannot
   fail the cluster; binding create refuses that case with a plain-words
   422 instead. Peers still fail apply hard. When peers dial one

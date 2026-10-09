@@ -382,7 +382,7 @@ async function insertAndMaterializeBinding(
       return materializeErrorResponse(c, materializeResult)
     }
 
-    await enqueueIngressForBindingChange(c, db, {
+    const listenerSync = await enqueueIngressForBindingChange(c, db, {
       serviceIds: [params.serviceId],
       managedId: params.managedId,
       actorId: params.actorId,
@@ -398,7 +398,11 @@ async function insertAndMaterializeBinding(
       emitEngineDefaults: params.emitEngineDefaults,
     })
 
-    return c.json({ ok: true as const, id })
+    return c.json({
+      ok: true as const,
+      id,
+      ...(listenerSync.warning ? { warning: listenerSync.warning } : {}),
+    })
   } catch (err) {
     const mapped = mapBindingUniqueViolation(err)
     if (mapped) {
@@ -654,14 +658,16 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return materializeErrorResponse(c, materializeResult)
     }
 
+    let listenerWarning: string | undefined
     if (managedId) {
-      await enqueueIngressForBindingChange(c, db, {
+      const listenerSync = await enqueueIngressForBindingChange(c, db, {
         serviceIds: [row.serviceId],
         managedId,
         actorId: session.userId,
         organizationId,
         apply: false,
       })
+      listenerWarning = listenerSync.warning
     }
 
     await recordBindingAudit(c, db, organizationId, 'binding.update', id, {
@@ -671,7 +677,10 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       emitEngineDefaults: { from: row.emitEngineDefaults, to: nextEmit },
     })
 
-    return c.json({ ok: true as const })
+    return c.json({
+      ok: true as const,
+      ...(listenerWarning ? { warning: listenerWarning } : {}),
+    })
   })
 
   router.delete('/bindings/:id', async (c) => {
@@ -709,13 +718,15 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     await db.delete(binding).where(eq(binding.id, id))
 
+    let listenerWarning: string | undefined
     if (managedId) {
-      await enqueueIngressForBindingChange(c, db, {
+      const listenerSync = await enqueueIngressForBindingChange(c, db, {
         serviceIds: [row.serviceId],
         managedId,
         actorId: session.userId,
         organizationId,
       })
+      listenerWarning = listenerSync.warning
     }
 
     await recordBindingAudit(c, db, organizationId, 'binding.delete', id, {
@@ -726,6 +737,9 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       keyPrefix: row.keyPrefix,
     })
 
-    return c.json({ ok: true as const })
+    return c.json({
+      ok: true as const,
+      ...(listenerWarning ? { warning: listenerWarning } : {}),
+    })
   })
 }
