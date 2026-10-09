@@ -18,7 +18,11 @@ import { isManagedEngineCode } from './types.ts'
 import type { RecoveryRecord } from './recovery.ts'
 import { beginAutomaticFailover, recordStaleDeadPrimaryReport } from './ha-recovery.ts'
 import { BOOT_HOLD_DETECTOR, handleBootHoldReport } from './ha-return-fence.ts'
-import { listManagedMembers, type ManagedMemberRow } from './members.ts'
+import {
+  listManagedMembers,
+  replicationPurposeForMemberPair,
+  type ManagedMemberRow,
+} from './members.ts'
 import { haMemberDialForReporter } from './ha-desired.ts'
 import { getManagedEngineSpec } from './index.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
@@ -31,6 +35,11 @@ import {
 import { compatLogInfo, compatLogWarn } from '../../lib/log-compat.ts'
 import type { AutoFailoverSetting } from './auto-failover-switch.ts'
 import { failureStartedAtMs, type FreshStandbyProbe } from './ha-fresh-standby.ts'
+import {
+  isPrivateEndpointError,
+  resolvePrivateEndpoints,
+  type PrivateEndpointPurpose,
+} from '../net/private-endpoint.ts'
 
 export type ManagedHaEventInput = {
   managedId: string
@@ -98,6 +107,12 @@ export type HaBindingLoaders = {
     engine: string,
     primary: ManagedMemberRow | null
   ) => Promise<{ host: string; port: number } | null>
+  reporterPrivateHosts: (
+    db: Db,
+    reporterServerId: string,
+    primary: ManagedMemberRow,
+    members: readonly ManagedMemberRow[]
+  ) => Promise<string[]>
 }
 
 async function reporterBindsInstance(db: Db, serverId: string): Promise<boolean> {
@@ -117,9 +132,37 @@ async function currentPrimaryDial(
   return dial ? { host: dial.host, port: dial.port } : null
 }
 
+export async function reporterPrivateHosts(
+  db: Db,
+  reporterServerId: string,
+  primary: ManagedMemberRow,
+  members: readonly ManagedMemberRow[],
+  resolveEndpoints: typeof resolvePrivateEndpoints = resolvePrivateEndpoints
+): Promise<string[]> {
+  const remoteRoutes = new Map<string, { fromServerId: string; purpose: PrivateEndpointPurpose }>()
+  for (const member of members) {
+    if (member.serverId === reporterServerId) continue
+    const purpose = replicationPurposeForMemberPair(primary, member)
+    remoteRoutes.set(`${member.serverId}:${purpose}`, { fromServerId: member.serverId, purpose })
+  }
+  const hosts = await Promise.all(
+    [...remoteRoutes.values()].map(async ({ fromServerId, purpose }) => {
+      const endpoints = await resolveEndpoints(db, {
+        fromServerId,
+        toServerIds: [reporterServerId],
+        purpose,
+      })
+      const endpoint = endpoints.get(reporterServerId)
+      return endpoint && !isPrivateEndpointError(endpoint) ? endpoint.address : null
+    })
+  )
+  return hosts.filter((host): host is string => host !== null)
+}
+
 const DEFAULT_BINDING_LOADERS: HaBindingLoaders = {
   reporterBindsInstance,
   primaryDial: currentPrimaryDial,
+  reporterPrivateHosts,
 }
 
 /**
@@ -133,6 +176,7 @@ async function staleOrchestratorReason(
     reporterServerId: string
     engine: string
     primary: ManagedMemberRow | null
+    members: readonly ManagedMemberRow[]
     loaders: HaBindingLoaders
   }
 ): Promise<string | null> {
@@ -142,11 +186,27 @@ async function staleOrchestratorReason(
   const expectedPrimary = named
     ? await ctx.loaders.primaryDial(db, ctx.reporterServerId, ctx.engine, ctx.primary)
     : null
+  const localPrivatePort =
+    ctx.primary?.serverId === ctx.reporterServerId ? ctx.primary.privatePort : null
+  const localPrimaryHosts =
+    expectedPrimary && ctx.primary && localPrivatePort !== null
+      ? [
+          expectedPrimary.host,
+          ...(await ctx.loaders.reporterPrivateHosts(
+            db,
+            ctx.reporterServerId,
+            ctx.primary,
+            ctx.members
+          )),
+        ]
+      : undefined
   return orchestratorBindingRejection({
     reporterBindsInstance: bindsInstance,
     instanceHost: input.instanceHost,
     instancePort: input.instancePort,
     expectedPrimary,
+    localPrivatePort,
+    localPrimaryHosts,
   })
 }
 
@@ -232,6 +292,7 @@ export async function handleManagedHaEvent(
     reporterServerId: deps.reporterServerId,
     engine,
     primary,
+    members,
     loaders: deps.binding ?? DEFAULT_BINDING_LOADERS,
   })
   if (stale) {

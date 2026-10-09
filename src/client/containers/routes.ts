@@ -15,7 +15,7 @@ import {
   parseJsonBody,
 } from '../shared.ts'
 import {
-  hierarchyDeleteHasChildrenResponse,
+  hierarchyDeleteHasChildrenResponseIfNeeded,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
 import {
@@ -102,10 +102,11 @@ export function registerContainerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
       conditions.push(
         inArray(
           service.environmentId,
-          db.select({ id: environment.id }).from(environment).where(
-            eq(environment.projectId, projectId),
-          ),
-        ),
+          db
+            .select({ id: environment.id })
+            .from(environment)
+            .where(eq(environment.projectId, projectId))
+        )
       )
     }
 
@@ -295,10 +296,7 @@ export function registerContainerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     }
     const patchFields = parsed.patch
 
-    await db
-      .update(container)
-      .set(patchFields)
-      .where(eq(container.id, id))
+    await db.update(container).set(patchFields).where(eq(container.id, id))
 
     return c.json({ ok: true as const })
   })
@@ -329,9 +327,8 @@ export function registerContainerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(container).where(eq(container.id, id))
     })
-    if (result === 'has_children') {
-      return hierarchyDeleteHasChildrenResponse(c)
-    }
+    const blocked = hierarchyDeleteHasChildrenResponseIfNeeded(c, result)
+    if (blocked) return blocked
 
     return c.json({ ok: true as const })
   })

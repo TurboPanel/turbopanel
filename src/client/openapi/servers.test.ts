@@ -40,9 +40,56 @@ test('ServerServicesRemovalReason kind enum matches delete blockers plus colocat
       kind: { enum: string[] }
     }
   }
-  assertEquals(schema.properties.kind.enum, [...SERVER_DELETE_BLOCKER_KIND_VALUES, 'colocated'])
+  assertEquals(schema.properties.kind.enum, [
+    ...SERVER_DELETE_BLOCKER_KIND_VALUES,
+    'colocated',
+    'present_elsewhere',
+  ])
   assertEquals(schema.properties.kind.enum, [...SERVER_SERVICES_REMOVAL_KIND_VALUES])
   assertEquals(schema.properties.kind.enum.includes('backup'), false)
+})
+
+test('ServerDeletePreview requires the Host-is-gone lists', () => {
+  const schema = serverSchemas.ServerDeletePreview as { required: string[] }
+  assertEquals(schema.required, [
+    'online',
+    'canForget',
+    'colocated',
+    'blockers',
+    'containers',
+    'networks',
+    'ips',
+    'environments',
+    'members',
+    'blockedDatabases',
+    'blockedEnvironments',
+  ])
+})
+
+test('ServerDeleteBlocker can name the rows behind the count', () => {
+  const schema = serverSchemas.ServerDeleteBlocker as {
+    required: string[]
+    properties: Record<string, { items?: { $ref?: string } }>
+  }
+  assertEquals(schema.required.includes('items'), false)
+  assertEquals(schema.properties.items?.items?.$ref, '#/components/schemas/ServerDeleteBlockerItem')
+  const environmentItem = serverSchemas.ServerBlockerEnvironmentItem as {
+    required: string[]
+  }
+  assertEquals(environmentItem.required, ['id', 'name', 'projectId', 'projectName', 'hasDatabase'])
+  const databaseItem = serverSchemas.ServerBlockerDatabaseItem as {
+    required: string[]
+  }
+  assertEquals(databaseItem.required, ['id', 'name'])
+})
+
+test('ServerServicesRemovalReason carries the same named items', () => {
+  const schema = serverSchemas.ServerServicesRemovalReason as {
+    required: string[]
+    properties: Record<string, { items?: { $ref?: string } }>
+  }
+  assertEquals(schema.required, ['kind', 'count', 'message'])
+  assertEquals(schema.properties.items?.items?.$ref, '#/components/schemas/ServerDeleteBlockerItem')
 })
 
 test('ServerServicesResponse documents the attached-services snapshot', () => {

@@ -416,16 +416,24 @@ test('evaluateOperatorPromoteGate requires fullyApplied for mysql-family engines
     fullyApplied: false,
   }
   const now = Date.parse('2026-08-10T12:00:01.000Z')
-  assertEquals(evaluateOperatorPromoteGate(fresh, 'postgres', false, now), null)
   assertEquals(
-    evaluateOperatorPromoteGate(fresh, 'mariadb', false, now),
-    'managed_replica_not_fully_applied'
-  )
-  assertEquals(
-    evaluateOperatorPromoteGate({ ...fresh, fullyApplied: true }, 'mysql', false, now),
+    evaluateOperatorPromoteGate(
+      { ...fresh, receivedLsn: '0/100', replayLsn: '0/100' },
+      false,
+      now,
+      'postgres'
+    ),
     null
   )
-  assertEquals(evaluateOperatorPromoteGate(fresh, 'mariadb', true, now), null)
+  assertEquals(
+    evaluateOperatorPromoteGate(fresh, false, now, 'mariadb'),
+    'managed_replica_lagging'
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...fresh, fullyApplied: true }, false, now, 'mysql'),
+    null
+  )
+  assertEquals(evaluateOperatorPromoteGate(fresh, true, now, 'mariadb'), null)
 })
 
 test('pickPrimaryCommandResult and queued response builders', () => {
@@ -744,4 +752,78 @@ test('buildDisasterRecoveryQueuedResponse names source and target', () => {
       },
     }
   )
+})
+
+test('evaluateOperatorPromoteGate refuses a reading older than a few seconds', () => {
+  const now = Date.parse('2026-08-10T12:00:00.000Z')
+  const reading = (observedAt: string) => ({
+    state: 'streaming',
+    lagBytes: 0,
+    lagSeconds: 0,
+    observedAt,
+  })
+  // A replica whose threads stopped 3 s ago still reads `streaming` in a
+  // reading taken a minute ago: the stored 120 s window used to accept it.
+  assertEquals(evaluatePromoteLagHttpGate(reading('2026-08-10T11:59:00.000Z'), false, now), null)
+  assertEquals(
+    evaluateOperatorPromoteGate(reading('2026-08-10T11:59:00.000Z'), false, now),
+    'managed_replica_health_stale'
+  )
+  assertEquals(evaluateOperatorPromoteGate(reading('2026-08-10T11:59:50.000Z'), false, now), null)
+})
+
+test('evaluateOperatorPromoteGate refuses a replica that has not applied what it received', () => {
+  const now = Date.parse('2026-08-10T12:00:00.000Z')
+  const base = { state: 'streaming', observedAt: '2026-08-10T11:59:55.000Z' }
+  const mysql = 'mysql'
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...base, fullyApplied: true }, false, now, mysql),
+    null
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...base, fullyApplied: false }, false, now, mysql),
+    'managed_replica_lagging'
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...base }, false, now, mysql),
+    'managed_replica_lagging'
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...base, state: 'reconnecting' }, false, now, mysql),
+    'managed_replica_not_streaming'
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...base, fullyApplied: false }, true, now, mysql),
+    null
+  )
+})
+
+test('evaluateOperatorPromoteGate postgres received vs replayed LSN', () => {
+  const now = Date.parse('2026-08-10T12:00:00.000Z')
+  const base = {
+    state: 'streaming',
+    observedAt: '2026-08-10T11:59:55.000Z',
+    lagBytes: 0,
+    lagSeconds: 0,
+  }
+  const pg = 'postgres'
+  assertEquals(
+    evaluateOperatorPromoteGate(
+      { ...base, receivedLsn: '0/3000148', replayLsn: '0/2FFC147' },
+      false,
+      now,
+      pg
+    ),
+    'managed_replica_lagging'
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate(
+      { ...base, receivedLsn: '0/3000100', replayLsn: '0/3000100' },
+      false,
+      now,
+      pg
+    ),
+    null
+  )
+  assertEquals(evaluateOperatorPromoteGate({ ...base }, false, now, pg), 'managed_replica_lagging')
 })

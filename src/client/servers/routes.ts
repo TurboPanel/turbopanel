@@ -72,7 +72,12 @@ import { revokeLicense } from '../../features/licenses/license.ts'
 import { recomputeOrganizationAssignments } from '../../features/tiers/assignment-records.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
-import { hierarchyDeleteHasChildrenResponse, runHierarchyDelete } from '../hierarchy-delete.ts'
+import {
+  hierarchyDeleteHasChildrenResponse,
+  peekHierarchyDeleteFkViolation,
+  runHierarchyDelete,
+} from '../hierarchy-delete.ts'
+import { purgeServerRestrictForeignKeys } from './server-fk.ts'
 import * as systemHierarchy from '../../features/system/hierarchy.ts'
 import { enqueueSystemReconcile } from '../../features/system/reconcile.ts'
 import type { SystemReconcileAction } from '../../contracts/commands/schemas.ts'
@@ -81,17 +86,20 @@ import { deleteServerFabricMembership } from '../../features/fabric/fabric-recor
 import { reconcileFabricMembership } from '../../features/fabric/enqueue.ts'
 import {
   assertServerOfflineForForget,
-  blockersThatPreventForget,
   COLOCATED_SERVER_KEY_REVOKE_BLOCKED_REASON,
   colocatedServerDeleteBlockedReason,
   forgetServerOwnedResources,
+  type ForgottenServerResources,
+  isServerHasBlockersDuringForgetError,
   isServerOnlineDuringForgetError,
-  listServerDeleteBlockers,
   loadServerDeletePreview,
   parseForgetResourcesFlag,
+  planServerForget,
+  type ServerDeleteBlocker,
   serverDeleteBlockersResponse,
+  type ServerForgetBlockedDatabase,
+  type ServerForgetBlockedEnvironment,
   serverOnlineForgetBlockedResponse,
-  type ForgottenServerResources,
 } from './delete-guards.ts'
 import { resolveColocatedServerId } from '../authn/install-state.ts'
 import { hasActiveColocatedLicenseBinding, resolveColocatedServerIdSet } from './colocated.ts'
@@ -426,11 +434,20 @@ async function assertServerDeletable(
     }
   }
 
-  const listed = await listServerDeleteBlockers(db, serverId, organizationId)
-  const blockers =
-    opts.skipForgettableBlockers === true ? blockersThatPreventForget(listed) : listed
-  if (blockers.length > 0) {
-    return serverDeleteBlockersResponse(c, blockers)
+  const plan = await planServerForget(db, serverId, organizationId)
+  if (opts.skipForgettableBlockers === true) {
+    if (plan.blockedDatabases.length > 0 || plan.blockedEnvironments.length > 0) {
+      return serverDeleteBlockersResponse(
+        c,
+        plan.blockingBlockers,
+        plan.blockedDatabases,
+        plan.blockedEnvironments
+      )
+    }
+    return null
+  }
+  if (plan.blockers.length > 0) {
+    return serverDeleteBlockersResponse(c, plan.blockers)
   }
 
   return null
@@ -683,53 +700,83 @@ async function assertSystemEnvironmentIdleOrBlocked(
   c: Context,
   db: Db,
   serverId: string
-): Promise<{ systemEnvironmentId: string | null } | Response> {
-  const systemEnvironmentId = await systemHierarchy.findSystemEnvironmentForServer(db, serverId)
-  if (!systemEnvironmentId) return { systemEnvironmentId: null }
+): Promise<{ systemEnvironmentIds: string[] } | Response> {
+  const systemEnvironmentIds = await systemHierarchy.listSystemEnvironmentIdsForServer(db, serverId)
+  if (systemEnvironmentIds.length === 0) return { systemEnvironmentIds: [] }
 
   const [serverRow] = await db
     .select({ isConnected: server.isConnected })
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1)
-  if (
-    await systemEnvironmentHasActiveContainers(
-      db,
-      systemEnvironmentId,
-      serverRow?.isConnected ?? false
+  const serverConnected = serverRow?.isConnected ?? false
+  const activeOnSystemEnvs = await Promise.all(
+    systemEnvironmentIds.map((environmentId) =>
+      systemEnvironmentHasActiveContainers(db, environmentId, serverConnected)
     )
-  ) {
+  )
+  if (activeOnSystemEnvs.some(Boolean)) {
     return hierarchyDeleteHasChildrenResponse(c)
   }
-  return { systemEnvironmentId }
+  return { systemEnvironmentIds }
 }
 
 async function deleteServerWithSystemSubtree(
   db: Db,
   serverId: string,
-  systemEnvironmentId: string | null,
+  organizationId: string,
+  systemEnvironmentIds: readonly string[],
   forgetResources: boolean
 ): Promise<{
-  status: 'ok' | 'has_children' | 'online'
+  status: 'ok' | 'has_children' | 'online' | 'blockers'
   forgotten: ForgottenServerResources | null
+  blockers: ServerDeleteBlocker[]
+  blockedDatabases: ServerForgetBlockedDatabase[]
+  blockedEnvironments: ServerForgetBlockedEnvironment[]
+  fkViolation?: { referringTable: string; constraintName?: string }
 }> {
   let forgotten: ForgottenServerResources | null = null
   try {
-    const status = await runHierarchyDelete(db, async (tx) => {
+    const deleteResult = await runHierarchyDelete(db, async (tx) => {
       if (forgetResources) {
         await assertServerOfflineForForget(tx, serverId)
-        forgotten = await forgetServerOwnedResources(tx, serverId)
+        forgotten = await forgetServerOwnedResources(tx, serverId, organizationId)
       }
-      if (systemEnvironmentId) {
-        await systemHierarchy.deleteSystemEnvironmentSubtree(tx, systemEnvironmentId)
-      }
+      await Promise.all(
+        systemEnvironmentIds.map((environmentId) =>
+          systemHierarchy.deleteSystemEnvironmentSubtree(tx, environmentId)
+        )
+      )
       await deleteServerFabricMembership(tx, serverId)
+      await purgeServerRestrictForeignKeys(tx, serverId)
       await tx.delete(server).where(eq(server.id, serverId))
     })
-    return { status, forgotten: status === 'ok' ? forgotten : null }
+    return {
+      status: deleteResult === 'ok' ? 'ok' : 'has_children',
+      forgotten: deleteResult === 'ok' ? forgotten : null,
+      blockers: [],
+      blockedDatabases: [],
+      blockedEnvironments: [],
+      ...(deleteResult === 'has_children' ? { fkViolation: peekHierarchyDeleteFkViolation() } : {}),
+    }
   } catch (error) {
     if (isServerOnlineDuringForgetError(error)) {
-      return { status: 'online', forgotten: null }
+      return {
+        status: 'online',
+        forgotten: null,
+        blockers: [],
+        blockedDatabases: [],
+        blockedEnvironments: [],
+      }
+    }
+    if (isServerHasBlockersDuringForgetError(error)) {
+      return {
+        status: 'blockers',
+        forgotten: null,
+        blockers: error.blockers,
+        blockedDatabases: error.blockedDatabases,
+        blockedEnvironments: error.blockedEnvironments,
+      }
     }
     throw error
   }
@@ -1643,14 +1690,23 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const result = await deleteServerWithSystemSubtree(
       db,
       id,
-      idleOrBlocked.systemEnvironmentId,
+      organizationId,
+      idleOrBlocked.systemEnvironmentIds,
       forgetResources
     )
     if (result.status === 'online') {
       return serverOnlineForgetBlockedResponse(c)
     }
+    if (result.status === 'blockers') {
+      return serverDeleteBlockersResponse(
+        c,
+        result.blockers,
+        result.blockedDatabases,
+        result.blockedEnvironments
+      )
+    }
     if (result.status === 'has_children') {
-      return hierarchyDeleteHasChildrenResponse(c)
+      return hierarchyDeleteHasChildrenResponse(c, result.fkViolation)
     }
 
     await reconcileFabricAfterServerDelete(c, db, organizationId, session.userId)

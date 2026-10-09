@@ -16,17 +16,14 @@ import {
   parseJsonBody,
 } from '../shared.ts'
 import {
-  hierarchyDeleteHasChildrenResponse,
+  hierarchyDeleteHasChildrenResponseIfNeeded,
   runHierarchyDelete,
 } from '../hierarchy-delete.ts'
 import {
   isWorkspaceDisplayNameTaken,
   WORKSPACE_NAME_IN_USE_ERROR,
 } from '../display-name-uniqueness.ts'
-import {
-  parseWorkspaceCreateNames,
-  parseWorkspacePatchNames,
-} from './routes-helpers.ts'
+import { parseWorkspaceCreateNames, parseWorkspacePatchNames } from './routes-helpers.ts'
 
 export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
@@ -194,20 +191,12 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
 
     if (
       patchFields.name !== undefined &&
-      (await isWorkspaceDisplayNameTaken(
-        db,
-        organizationId,
-        patchFields.name,
-        id,
-      ))
+      (await isWorkspaceDisplayNameTaken(db, organizationId, patchFields.name, id))
     ) {
       return c.json({ error: WORKSPACE_NAME_IN_USE_ERROR }, 409)
     }
 
-    await db
-      .update(workspace)
-      .set(patchFields)
-      .where(eq(workspace.id, id))
+    await db.update(workspace).set(patchFields).where(eq(workspace.id, id))
 
     return c.json({ ok: true as const })
   })
@@ -245,9 +234,8 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
       await applyStorageRetentionOnParentDelete(tx, { workspaceIds: [id] })
       await tx.delete(workspace).where(eq(workspace.id, id))
     })
-    if (result === 'has_children') {
-      return hierarchyDeleteHasChildrenResponse(c)
-    }
+    const blocked = hierarchyDeleteHasChildrenResponseIfNeeded(c, result)
+    if (blocked) return blocked
 
     return c.json({ ok: true as const })
   })

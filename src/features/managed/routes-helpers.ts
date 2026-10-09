@@ -31,6 +31,7 @@ import { loadManagedExternalAccess } from './external-access.ts'
 import type { ManagedContext } from './managed-context.ts'
 import { type ManagedRowOptions, parseManagedRowOptions } from './options.ts'
 import { evaluateManagedPromoteLagGate } from './promote-lag.ts'
+import { isMysqlFamilyEngine, MAX_REPLAY_DELTA_BYTES, parsePgLsn } from './ha-fresh-standby.ts'
 import { loadManagedStatusError } from './last-error.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import type { ManagedResidualMetadata } from './serialize.ts'
@@ -1037,19 +1038,66 @@ export function evaluatePromoteLagHttpGate(
 }
 
 /**
- * Operator promote gate: lag/streaming freshness plus, for MySQL-family
- * engines, `fullyApplied === true` on the probe reading (always re-probe when
- * stale via the route — see `assertManagedPromoteLagAllowed`).
+ * Oldest replica reading an operator (non-force) promote will act on after a
+ * live `managed-health-request` answer. A stored reading from before the last
+ * few seconds proves nothing (a replication thread that stopped a moment ago
+ * still looks `streaming` in an older one).
+ */
+export const OPERATOR_PROMOTE_MAX_OBSERVATION_AGE_MS = 15_000
+
+/** Operator promote when the replica daemon did not return a live health probe. */
+export const MANAGED_REPLICA_LIVE_CHECK_FAILED = 'managed_replica_live_check_failed'
+
+export const MANAGED_REPLICA_LIVE_CHECK_FAILED_MESSAGE =
+  'The replica did not answer a live check, so it cannot be proven caught up. Try again, or force the promote if you accept possible data loss.'
+
+export function buildManagedReplicaLiveCheckFailedBody(): {
+  error: typeof MANAGED_REPLICA_LIVE_CHECK_FAILED
+  message: string
+} {
+  return {
+    error: MANAGED_REPLICA_LIVE_CHECK_FAILED,
+    message: MANAGED_REPLICA_LIVE_CHECK_FAILED_MESSAGE,
+  }
+}
+
+/**
+ * Gate for the operator promote route: {@link evaluatePromoteLagHttpGate} on
+ * a tight reading age, plus engine-specific proof the replica applied what it
+ * received (MySQL/MariaDB: `fullyApplied === true`; Postgres: received LSN
+ * replayed within {@link MAX_REPLAY_DELTA_BYTES}). `force` bypasses both, as
+ * before. Automatic failover keeps its own probe and thresholds.
  */
 export function evaluateOperatorPromoteGate(
   replication: unknown,
-  engine: string,
   force: boolean,
-  nowMs?: number
-): ReturnType<typeof evaluatePromoteLagHttpGate> {
+  nowMs?: number,
+  engine?: string
+):
+  | null
+  | 'managed_replica_not_streaming'
+  | 'managed_replica_lagging'
+  | 'managed_replica_health_stale'
+  | 'managed_replica_not_fully_applied' {
   if (force) return null
-  const requireFullyApplied = engine === 'mysql' || engine === 'mariadb'
-  return evaluateManagedPromoteLagGate(replication, nowMs, { requireFullyApplied })
+  const gate = evaluateManagedPromoteLagGate(replication, nowMs, {
+    staleMs: OPERATOR_PROMOTE_MAX_OBSERVATION_AGE_MS,
+  })
+  if (gate !== null) return gate
+  if (!isPlainObject(replication)) return null
+  if (engine === 'postgres') {
+    const received = parsePgLsn(replication.receivedLsn)
+    const replayed = parsePgLsn(replication.replayLsn)
+    if (received === null || replayed === null) return 'managed_replica_lagging'
+    if (received - replayed > BigInt(MAX_REPLAY_DELTA_BYTES)) {
+      return 'managed_replica_lagging'
+    }
+    return null
+  }
+  if (isMysqlFamilyEngine(engine) && replication.fullyApplied !== true) {
+    return 'managed_replica_lagging'
+  }
+  return null
 }
 
 export type QueuedCommandFanoutRow = {

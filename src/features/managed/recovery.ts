@@ -129,6 +129,11 @@ export type RecoveryMetadata = {
   ingressPendingServerIds?: string[]
   /** Servers whose ProxySQL did not confirm the new primary (set on the terminal `failed` row). */
   ingressNotRepointed?: string[]
+  /**
+   * Times a promote that the daemon lost to a restart was queued again
+   * (`resumeInterruptedPromote`).
+   */
+  promoteResumes?: number
   haPresent?: boolean
   fenced?: boolean
   drainApplied?: boolean
@@ -257,6 +262,11 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
     optionalStringList(value.ingressPendingServerIds)
   )
   setIfPresent(metadata, 'ingressNotRepointed', optionalStringList(value.ingressNotRepointed))
+  setIfPresent(
+    metadata,
+    'promoteResumes',
+    optionalNullableNumber(value.promoteResumes) ?? undefined
+  )
   setIfPresent(metadata, 'haPresent', optionalBoolean(value.haPresent))
   setIfPresent(metadata, 'fenced', optionalBoolean(value.fenced))
   setIfPresent(metadata, 'drainApplied', optionalBoolean(value.drainApplied))

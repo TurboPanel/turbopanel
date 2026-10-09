@@ -151,6 +151,7 @@ import {
   evaluateManagedDatabaseDelete,
   evaluateManagedUserDropGuard,
   evaluateManagedUserRotateGuard,
+  buildManagedReplicaLiveCheckFailedBody,
   evaluateOperatorPromoteGate,
   evaluatePromoteMemberRole,
   evaluatePromoteReplicaClass,
@@ -199,7 +200,6 @@ import {
   effectiveManagedImage,
   managedImageFailoverSupport,
 } from '../../features/managed/releases.ts'
-import { isManagedReplicaObservationStale } from '../../features/managed/promote-lag.ts'
 import { findLatestRecovery } from '../../features/managed/recovery-records.ts'
 import { serializeRecovery } from '../../features/managed/recovery.ts'
 import {
@@ -306,15 +306,15 @@ async function loadManagedRowScope(c: Context<AppEnv>, stepUpAction?: StepUpActi
  * explicitly forced it. Returns a 409 response when the gate blocks, null
  * when the promote may proceed.
  *
- * When the stored observation is missing, unparseable, or past the gate's
- * staleness window, the target's daemon is asked for a fresh reading first
- * (`managed-health-request`, short timeout) and the **unchanged** gate runs on
- * that reading. Health is otherwise only observed when an apply/lifecycle
- * result comes back, so an idle healthy cluster would refuse every promote.
- * Fail-closed is preserved: on timeout, an offline server, a daemon without
- * `managed-health-v1`, or any error the gate runs on the stored observation
- * exactly as before. `force` never probes. Automatic failover does not come
- * through here; its own event-time probe is `ha-fresh-standby.ts`.
+ * Every non-force promote first asks the target's daemon for a fresh reading
+ * (`managed-health-request`, short timeout) and gates on that reading. A
+ * stored reading under two minutes old still says `streaming` for a replica
+ * whose replication threads stopped seconds ago, so it is never trusted on its
+ * own. Non-force promotes require a fresh `observed` probe; timeout, offline,
+ * unsupported, or any other non-answer refuses with
+ * {@link MANAGED_REPLICA_LIVE_CHECK_FAILED}. `force` never probes. Automatic
+ * failover does not come through here; its own event-time probe is
+ * `ha-fresh-standby.ts`.
  */
 async function assertManagedPromoteLagAllowed(
   c: Context<AppEnv>,
@@ -328,7 +328,7 @@ async function assertManagedPromoteLagAllowed(
 ): Promise<Response | null> {
   const { member, force } = params
   let replication = serializeManagedMember(member, null).replication
-  if (!force && isManagedReplicaObservationStale(replication)) {
+  if (!force) {
     const probe = await probeManagedMemberHealth(db, getDaemonCellRegistry(c), {
       serverId: member.serverId,
       managedId: params.managedId,
@@ -337,9 +337,12 @@ async function assertManagedPromoteLagAllowed(
       engine: params.engine,
       timeoutMs: MANAGED_HEALTH_PROBE_PROMOTE_TIMEOUT_MS,
     })
-    if (probe.status === 'observed') replication = probe.replication
+    if (probe.status !== 'observed') {
+      return c.json(buildManagedReplicaLiveCheckFailedBody(), 409)
+    }
+    replication = probe.replication
   }
-  const gate = evaluateOperatorPromoteGate(replication, params.engine, force)
+  const gate = evaluateOperatorPromoteGate(replication, force, undefined, params.engine)
   return gate !== null ? c.json({ error: gate }, 409) : null
 }
 
