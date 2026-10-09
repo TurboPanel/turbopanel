@@ -2266,6 +2266,13 @@ export const backup = pgTable(
      * artifact that is still on disk.
      */
     retentionId: uuid('retention_id'),
+    /**
+     * Host that holds the on-disk artifact (the primary when the backup ran).
+     * Null on rows written before this column existed, or after that server
+     * is deleted (`set null`). Restore/delete must not assume the current
+     * primary still has the file.
+     */
+    serverId: uuid('server_id'),
   },
   (table) => [
     index('idx_backup_managed_id_created_at').using(
@@ -2274,6 +2281,7 @@ export const backup = pgTable(
       table.createdAt.desc()
     ),
     index('idx_backup_retention_id').using('btree', table.retentionId.asc().nullsLast()),
+    index('idx_backup_server_id').using('btree', table.serverId.asc().nullsLast()),
     foreignKey({
       columns: [table.managedId],
       foreignColumns: [managed.id],
@@ -2283,6 +2291,11 @@ export const backup = pgTable(
       columns: [table.retentionId],
       foreignColumns: [retention.id],
       name: 'backup_retention_id_retention_id_fk',
+    }).onDelete('set null'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'backup_server_id_server_id_fk',
     }).onDelete('set null'),
     uniqueIndex('uniq_backup_managed_backup_id').on(table.managedId, table.backupId),
     check('backup_id_format_check', sql`backup_id ~ '^[A-Za-z0-9_-]+$'`),

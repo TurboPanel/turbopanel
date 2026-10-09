@@ -89,19 +89,46 @@ changes.
   defaults does **not** rewrite sshd or enqueue NTP/timezone commands. Multi-DC
   membership inherits from the first pin after sort by datacenter id (same as
   timezone).
+- **Server services snapshot (client surface):** `GET /servers/:id/services`
+  — read-gated, org-scoped (`404` for another organization's server). Bounded
+  queries per server (never per-item fan-out). One response of what is
+  attached: `removal` (`canRemove`, `online`, `canForget`, plus `reasons` from
+  `planServerForget` and the co-located-host rule, so the tab and
+  DELETE cannot disagree; `canForget` is the same Host is gone path as
+  delete-preview; an app-environment or database reason names up to three of
+  them in its `message` — `"Project / Environment"` — and carries the same
+  `items` the delete blockers do), `apps` (container → service → environment → project,
+  domains from hosting/hostname; system-workspace rows omitted like the
+  blocker scan), `databases` (replica + managed, same exclusion),
+  `databaseUsers` (one entry per app on this host with the database names it
+  is bound to), `backups` of databases that have a member on this server,
+  `networks` / `ipCount`, and `runtimes` only from daemon facts already stored
+  on the server (`server.metadata.runtimes`; otherwise empty). Apps,
+  containers per app, domains per app, database users, networks, and backups
+  are capped at 50 plus `more` (`{ items, more }`).
+  `src/client/servers/server-services.ts`.
 - **Forget an offline server (client surface):** `GET /servers/:id/delete-preview`
-  (manage-gated, same as delete) lists leftover containers, networks, and
-  addresses that would 409 a normal delete (`online` is the live snapshot or
-  stored connected flag; `canForget` only when offline, not co-located, and
-  leftovers are only container / network / address; each list capped at 50 plus
-  `more`; system-workspace rows omitted like the blocker scan).
-  `DELETE /servers/:id?forgetResources=true` (or JSON `{ forgetResources: true }`
-  — never implied) drops those leftover rows in the same transaction as the
-  server row when the host is gone; a connected server answers **409**
-  `server_online` (re-checked under row lock); remaining RESTRICT placements
-  still 409 `server_has_blockers`; co-located stays **403**. Without the flag,
-  **409** `server_has_blockers` is unchanged. Audit context `forgotten` counts
-  when the flag was used. `src/client/servers/AGENTS.md`.
+  (manage-gated, same as delete) lists leftover containers, networks, addresses,
+  app environments that will be removed, database members that will be
+  forgotten, and databases that still block forget (`online` is the live
+  snapshot or stored connected flag; `canForget` only when offline, not
+  co-located, and no database still has its only copy or its primary here; each
+  list capped at 50 plus `more`; system-workspace rows omitted like the blocker
+  scan). Every refusal names its blockers: an `environment` blocker carries
+  `items: { id, name, projectId, projectName, hasDatabase }[]` for **every**
+  placed environment (including the ones carrying a database, which the Services
+  tab app list omits) and a `managed` / `replica` blocker carries
+  `items: { id, name }[]` per database, in `blockers[]` on both the preview and
+  the 409. `DELETE /servers/:id?forgetResources=true` (or JSON
+  `{ forgetResources: true }` — never implied) drops leftover app environments
+  (without the running-container refusal), forgettable members, leftover
+  deployments / slots / copies, then container / network / address rows in the
+  same transaction as the server row when the host is gone; a connected server
+  answers **409** `server_online` (re-checked under row lock); a blocked
+  database answers **409** `server_has_blockers` with `blockedDatabases`;
+  co-located stays **403**. Without the flag, **409** `server_has_blockers` is
+  unchanged. Audit `forgotten` counts include environments, members,
+  deployments, slots, and copies. `src/client/servers/AGENTS.md`.
 - **Server labels (client surface):** `GET`/`PUT /servers/:id/labels` —
   read-gated GET and manage-gated PUT; PUT is replace-all
   (`{ labels: { key: value } }`, no per-key DELETE). `GET /servers/:id` includes

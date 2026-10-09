@@ -195,13 +195,28 @@ export const managedSchemas = {
     required: ['managed', 'connection', 'settings', 'server', 'rootUsername', 'members'],
     properties: {
       managed: {
-        oneOf: [{ $ref: '#/components/schemas/ManagedEnvironmentRow' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ManagedEnvironmentRow' },
+          {
+            type: 'null',
+          },
+        ],
       },
       connection: {
-        oneOf: [{ $ref: '#/components/schemas/ManagedConnectionInfo' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ManagedConnectionInfo' },
+          {
+            type: 'null',
+          },
+        ],
       },
       settings: {
-        oneOf: [{ $ref: '#/components/schemas/ManagedSettings' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ManagedSettings' },
+          {
+            type: 'null',
+          },
+        ],
       },
       server: {
         type: 'object',
@@ -222,7 +237,12 @@ export const managedSchemas = {
         items: { $ref: '#/components/schemas/ManagedMember' },
       },
       recovery: {
-        oneOf: [{ $ref: '#/components/schemas/ManagedRecoveryRecord' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ManagedRecoveryRecord' },
+          {
+            type: 'null',
+          },
+        ],
         description: 'Latest HA recovery journal row for this cluster (`null` when none).',
       },
     },
@@ -751,6 +771,12 @@ export const managedSchemas = {
         format: 'uuid',
         description: 'The backup schedule whose run made this artifact; absent for a manual backup',
       },
+      storedOnServerId: {
+        type: 'string',
+        format: 'uuid',
+        description:
+          'Host that holds the on-disk artifact (the primary when the backup ran). Absent on older records.',
+      },
     },
   },
   ManagedBackupsResponse: {
@@ -814,7 +840,10 @@ export const managedSchemas = {
         required: ['preset', 'day', 'time'],
         properties: {
           preset: { type: 'string', const: 'weekly' },
-          day: { type: 'string', enum: ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] },
+          day: {
+            type: 'string',
+            enum: ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'],
+          },
           time: { type: 'string', description: 'HH:MM, 24-hour' },
         },
       },
@@ -871,7 +900,12 @@ export const managedSchemas = {
       },
       schedule: { type: 'string', description: 'Cron text as stored' },
       preset: {
-        oneOf: [{ $ref: '#/components/schemas/BackupSchedulePreset' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/BackupSchedulePreset' },
+          {
+            type: 'null',
+          },
+        ],
         description: 'The preset this schedule matches; null for custom cron',
       },
       timezone: {
@@ -909,7 +943,12 @@ export const managedSchemas = {
   },
   BackupScheduleInput: {
     description: 'A preset object, or cron text (5 fields or an @alias; @reboot is refused)',
-    oneOf: [{ $ref: '#/components/schemas/BackupSchedulePreset' }, { type: 'string' }],
+    oneOf: [
+      { $ref: '#/components/schemas/BackupSchedulePreset' },
+      {
+        type: 'string',
+      },
+    ],
   },
   CreateBackupPolicyRequest: {
     type: 'object',
@@ -937,7 +976,10 @@ export const managedSchemas = {
     properties: {
       name: { type: 'string', maxLength: 64 },
       schedule: { $ref: '#/components/schemas/BackupScheduleInput' },
-      timezone: { type: ['string', 'null'], description: 'null clears it (host local time)' },
+      timezone: {
+        type: ['string', 'null'],
+        description: 'null clears it (host local time)',
+      },
       retentionKeep: { type: 'integer', minimum: 1 },
       enabled: { type: 'boolean' },
     },
@@ -958,7 +1000,12 @@ export const managedSchemas = {
     properties: {
       policy: { $ref: '#/components/schemas/BackupPolicy' },
       reconcile: {
-        oneOf: [{ $ref: '#/components/schemas/BackupsReconcileOutcome' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/BackupsReconcileOutcome' },
+          {
+            type: 'null',
+          },
+        ],
         description: 'null when the change did not affect what the host runs (a rename)',
       },
     },
@@ -1030,7 +1077,10 @@ export const managedSchemas = {
         type: 'string',
         enum: ['managed_series_immutable', 'managed_variant_swap_unsafe'],
       },
-      message: { type: 'string', description: 'Plain-words explanation of the refusal.' },
+      message: {
+        type: 'string',
+        description: 'Plain-words explanation of the refusal.',
+      },
     },
   },
   ManagedVersionUnsupportedError: errorSchema('managed_version_unsupported'),
@@ -1052,11 +1102,47 @@ export const managedSchemas = {
   DatacenterCidrRequiredError: errorSchema('datacenter_cidr_required'),
   PrivatePathUnavailableError: errorSchema('private_path_unavailable'),
   FailoverRequiresTrustedDatacenterError: errorSchema('failover_requires_trusted_datacenter'),
+  ManagedFailoverUnsupportedError: {
+    type: 'object',
+    required: ['error', 'code'],
+    properties: {
+      error: {
+        type: 'string',
+        description:
+          'Plain-words reason. MariaDB 12.3 can run on one server; automatic failover needs MariaDB 11.8 for now.',
+      },
+      code: { type: 'string', const: 'managed_failover_unsupported' },
+    },
+  },
   ManagedBackupUnsupportedError: errorSchema('managed_backup_unsupported'),
   BackupNotFoundError: errorSchema('backup_not_found'),
+  BackupOnOtherServerError: {
+    type: 'object',
+    required: ['error', 'message'],
+    properties: {
+      error: { type: 'string', const: 'backup_on_other_server' },
+      message: {
+        type: 'string',
+        description:
+          'The artifact is on a former primary. Restore it there, take a new backup, or switch back first.',
+      },
+    },
+  },
   ManagedReplicaNotStreamingError: errorSchema('managed_replica_not_streaming'),
   ManagedReplicaLaggingError: errorSchema('managed_replica_lagging'),
   ManagedReplicaHealthStaleError: errorSchema('managed_replica_health_stale'),
+  ManagedReplicaLiveCheckFailedError: {
+    type: 'object',
+    required: ['error', 'message'],
+    properties: {
+      error: { type: 'string', const: 'managed_replica_live_check_failed' },
+      message: {
+        type: 'string',
+        description:
+          'The replica did not answer a live check, so it cannot be proven caught up. Try again, or force the promote if you accept possible data loss.',
+      },
+    },
+  },
 }
 
 export const managedPaths = {
@@ -1067,10 +1153,18 @@ export const managedPaths = {
       description:
         'Owners and managers only; a server of another organization is 404. One setting for the whole server, because one connection listener serves every managed cluster on it. Default no.',
       parameters: [
-        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
       ],
       responses: {
-        200: { description: 'The setting', ...jsonSchema('ServerManagedExternalAccess') },
+        200: {
+          description: 'The setting',
+          ...jsonSchema('ServerManagedExternalAccess'),
+        },
         403: { description: 'Not an owner or manager of the server' },
         404: { description: 'Server not found in the caller organization' },
       },
@@ -1081,7 +1175,12 @@ export const managedPaths = {
       description:
         "Owners and managers only. No (the default): only services on the server itself can connect (sites run by a site owner's Linux user through 127.0.0.1 on port 13306 for MySQL/MariaDB or 15432 for Postgres, and bound containers over the managed Docker network). Yes: those ports are published on all the server's addresses; the firewall and network rules decide who can then reach them. Saving tells the server at once; a push that cannot be queued answers 502 `ingress_reconcile_failed` (saved, retried automatically).",
       parameters: [
-        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
       ],
       requestBody: {
         required: true,
@@ -1096,16 +1195,25 @@ export const managedPaths = {
         },
       },
       responses: {
-        200: { description: 'Saved', ...jsonSchema('ServerManagedExternalAccessSaved') },
-        400: { description: '`invalid_external_access`: `enabled` is not a boolean' },
+        200: {
+          description: 'Saved',
+          ...jsonSchema('ServerManagedExternalAccessSaved'),
+        },
+        400: {
+          description: '`invalid_external_access`: `enabled` is not a boolean',
+        },
         403: { description: 'Not an owner or manager of the server' },
         404: { description: 'Server not found in the caller organization' },
-        422: { description: '`daemon_key_unavailable`: the server cannot take changes yet' },
+        422: {
+          description: '`daemon_key_unavailable`: the server cannot take changes yet',
+        },
         502: {
           description: 'Saved, but the server could not be told yet; retried automatically',
           ...jsonSchema('ServerManagedExternalAccessPushFailed'),
         },
-        503: { description: 'Command queue or daemon cell registry unavailable' },
+        503: {
+          description: 'Command queue or daemon cell registry unavailable',
+        },
       },
     },
   },
@@ -1598,7 +1706,8 @@ export const managedPaths = {
     delete: {
       tags: ['Managed services'],
       summary: 'Delete a backup artifact: enqueue managed.backup (action=delete)',
-      description: 'The row is removed from the `backup` table by the consumer on success.',
+      description:
+        'The row is removed from the `backup` table by the consumer on success. The delete command is sent to the host that stores the artifact when that host is known.',
       parameters: [ENV_ID_PARAM, BACKUP_ID_PARAM],
       responses: {
         200: {
@@ -1629,7 +1738,8 @@ export const managedPaths = {
     post: {
       tags: ['Managed services'],
       summary: 'Restore a backup: enqueue managed.restore',
-      description: 'Daemon verifies the stored checksum/size before touching the running engine.',
+      description:
+        'Daemon verifies the stored checksum/size before touching the running engine. Artifacts live on the host that made them; a backup from a former primary answers 409 backup_on_other_server and does not enqueue.',
       parameters: [ENV_ID_PARAM, BACKUP_ID_PARAM],
       responses: {
         200: {
@@ -1641,13 +1751,14 @@ export const managedPaths = {
           ...jsonSchema('BackupNotFoundError'),
         },
         409: {
-          description: 'managed_busy / server_offline',
+          description: 'managed_busy / server_offline / backup_on_other_server',
           content: {
             'application/json': {
               schema: {
                 oneOf: [
                   { $ref: '#/components/schemas/ManagedBusyError' },
                   { $ref: '#/components/schemas/ServerOfflineError' },
+                  { $ref: '#/components/schemas/BackupOnOtherServerError' },
                 ],
               },
             },
@@ -1788,7 +1899,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Add a managed replica member',
       description:
-        'Body `{ serverId, replicaClass?, readEligible? }`. `replicaClass` defaults to `failover` (same datacenter as primary, promotable). `read` replicas may use local/datacenter/fabric/public paths to any org server. Requires private reachability to primary; failover additionally requires a ready datacenter CIDR.',
+        'Body `{ serverId, replicaClass?, readEligible? }`. `replicaClass` defaults to `failover` (same datacenter as primary, promotable). `read` replicas may use local/datacenter/fabric/public paths to any org server. Requires private reachability to primary; failover additionally requires a ready datacenter CIDR. Refused with 422 `managed_failover_unsupported` when the cluster image cannot take a replica (MariaDB 12.3: single server until automatic failover supports it).',
       parameters: [ENV_ID_PARAM],
       requestBody: {
         content: {
@@ -1836,11 +1947,12 @@ export const managedPaths = {
         },
         422: {
           description:
-            'failover_replica_requires_datacenter_transport / datacenter_required / datacenter_cidr_required / private_path_unavailable / failover_requires_trusted_datacenter',
+            'managed_failover_unsupported / failover_replica_requires_datacenter_transport / datacenter_required / datacenter_cidr_required / private_path_unavailable / failover_requires_trusted_datacenter',
           content: {
             'application/json': {
               schema: {
                 oneOf: [
+                  { $ref: '#/components/schemas/ManagedFailoverUnsupportedError' },
                   {
                     $ref: '#/components/schemas/FailoverReplicaRequiresDatacenterTransportError',
                   },
@@ -1977,7 +2089,7 @@ export const managedPaths = {
         },
         409: {
           description:
-            'managed_replica_not_streaming / managed_replica_lagging / managed_replica_health_stale / managed_busy / server_offline',
+            'managed_replica_not_streaming / managed_replica_lagging / managed_replica_health_stale / managed_replica_live_check_failed / managed_busy / server_offline',
           content: {
             'application/json': {
               schema: {
@@ -1988,6 +2100,9 @@ export const managedPaths = {
                   { $ref: '#/components/schemas/ManagedReplicaLaggingError' },
                   {
                     $ref: '#/components/schemas/ManagedReplicaHealthStaleError',
+                  },
+                  {
+                    $ref: '#/components/schemas/ManagedReplicaLiveCheckFailedError',
                   },
                   { $ref: '#/components/schemas/ManagedBusyError' },
                   { $ref: '#/components/schemas/ServerOfflineError' },

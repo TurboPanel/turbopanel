@@ -47,7 +47,10 @@ import { postgresEngineSpec } from '../../features/managed/postgres.ts'
 import { POSTGRES_ALLOWED_IMAGES } from '../../features/managed/settings.ts'
 import type { ManagedEngineSpec } from '../../features/managed/types.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
-import { managedSessionPaths } from '../../features/managed/routes-helpers.ts'
+import {
+  buildManagedReplicaLiveCheckFailedBody,
+  managedSessionPaths,
+} from '../../features/managed/routes-helpers.ts'
 import { registerManagedRoutes } from './routes.ts'
 import { SERVER_OFFLINE_BODY } from './context.ts'
 
@@ -1204,9 +1207,11 @@ async function createdImage(
   return options.settings.image
 }
 
-test('POST create persists the requested variant and keeps the default when none is sent', async () => {
-  // Neither field: no image is written, so the engine default applies as before.
-  assertEquals(await createdImage({}), undefined)
+test('POST create persists the requested variant and stores the default when none is sent', async () => {
+  // Neither field: the resolved default image is stored, so a later change of the
+  // catalog default can never change which series this row runs.
+  assertEquals(await createdImage({}), 'docker.io/library/postgres:18-alpine')
+  assertEquals(await createdImage({}, 'mariadb'), 'docker.io/library/mariadb:11.8')
   assertEquals(await createdImage({ engineSeries: '18' }), 'docker.io/library/postgres:18-alpine')
   assertEquals(
     await createdImage({ engineSeries: '18', imageVariant: 'debian' }),
@@ -1225,9 +1230,14 @@ test('POST create resolves MySQL and MariaDB versions through the same helper', 
     await createdImage({ engineSeries: '12.3' }, 'mariadb'),
     'docker.io/library/mariadb:12.3'
   )
+  assertEquals(await createdImage({ engineSeries: '8.4' }, 'mysql'), 'docker.io/library/mysql:8.4')
+  assertEquals(
+    await createdImage({ engineSeries: '11.8', imageVariant: 'ubi' }, 'mariadb'),
+    'docker.io/library/mariadb:11.8-ubi'
+  )
   for (const [code, series] of [
-    ['mysql', '8.4'],
-    ['mariadb', '11.8'],
+    ['mysql', '8.0'],
+    ['mariadb', '11.4'],
   ] as const) {
     const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = []
     const res = await postCreate({ engineSeries: series }, inserted, code)
@@ -2531,7 +2541,7 @@ test('DELETE hard-deletes pending containers for environment services', async ()
   assertEquals(body.deleted, true)
 })
 
-test('POST promote returns 409 when replica lag is unknown', async () => {
+test('POST promote returns 409 when replica lag is unknown and no live probe', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
@@ -2545,11 +2555,11 @@ test('POST promote returns 409 when replica lag is unknown', async () => {
       body: JSON.stringify({}),
     }),
     409,
-    { error: 'managed_replica_not_streaming' }
+    LIVE_CHECK_FAILED
   )
 })
 
-test('POST promote returns 409 when replica health is stale', async () => {
+test('POST promote returns 409 when stored health is stale and no live probe', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
@@ -2574,7 +2584,7 @@ test('POST promote returns 409 when replica health is stale', async () => {
       body: JSON.stringify({}),
     }),
     409,
-    { error: 'managed_replica_health_stale' }
+    LIVE_CHECK_FAILED
   )
 })
 
@@ -2943,6 +2953,99 @@ test('DELETE cluster with no bindings is unchanged and reports no detached list'
   const res = await app.request(envPath(), { method: 'DELETE', headers: authHeaders(cookie) })
   assertEquals(res.status, 200)
   assertEquals('detached' in (await jsonOf(res)), false)
+})
+
+const MARIADB_FAILOVER_UNSUPPORTED_REASON =
+  'MariaDB 12.3 can run on one server; automatic failover needs MariaDB 11.8 for now.'
+
+test('POST members refuses MariaDB 12.3 with 422 managed_failover_unsupported', async () => {
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb({
+      managedRows: [rowFor(mariadbEngineSpec, 'docker.io/library/mariadb:12.3')],
+      projectRows: [{ metadata: { code: 'mariadb' } }],
+    }),
+  })
+  const res = await app.request(envPath('/members'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ serverId: REPLICA_SERVER_ID }),
+  })
+  assertEquals(res.status, 422)
+  assertEquals(await jsonOf(res), {
+    error: MARIADB_FAILOVER_UNSUPPORTED_REASON,
+    code: 'managed_failover_unsupported',
+  })
+})
+
+test('POST members allows MariaDB 11.8 past the failover gate', async () => {
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb({
+      managedRows: [rowFor(mariadbEngineSpec, 'docker.io/library/mariadb:11.8')],
+      projectRows: [{ metadata: { code: 'mariadb' } }],
+    }),
+  })
+  const res = await app.request(envPath('/members'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ serverId: REPLICA_SERVER_ID }),
+  })
+  assertEquals(res.status, 422)
+  const body = await jsonOf(res)
+  // Past the failover gate: the request now fails on placement, not on the series.
+  assertEquals(body, { error: 'private_path_unavailable' })
+})
+
+test('POST members treats an imageless MariaDB row as 12.3 and refuses it', async () => {
+  const legacy = managedRow({
+    engine: 'mariadb',
+    options: {
+      settings: mariadbEngineSpec.parseSettings({ ...mariadbEngineSpec.defaultSettings }),
+      databases: ['defaultdb'],
+    },
+  })
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb({ managedRows: [legacy], projectRows: [{ metadata: { code: 'mariadb' } }] }),
+  })
+  const res = await app.request(envPath('/members'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ serverId: REPLICA_SERVER_ID }),
+  })
+  assertEquals(res.status, 422)
+  assertEquals(await jsonOf(res), {
+    error: MARIADB_FAILOVER_UNSUPPORTED_REASON,
+    code: 'managed_failover_unsupported',
+  })
+})
+
+test('PATCH member to failover is refused on MariaDB 12.3 but not on 11.8', async () => {
+  for (const [image, refused] of [
+    ['docker.io/library/mariadb:12.3', true],
+    ['docker.io/library/mariadb:11.8', false],
+  ] as const) {
+    const { app, cookie } = await buildApp({
+      db: applyReadyDb({
+        managedRows: [rowFor(mariadbEngineSpec, image)],
+        memberRows: [memberRow({ replicaClass: 'read' })],
+        projectRows: [{ metadata: { code: 'mariadb' } }],
+      }),
+    })
+    const res = await app.request(envPath(`/members/${MEMBER_ID}`), {
+      method: 'PATCH',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({ replicaClass: 'failover' }),
+    })
+    const body = await jsonOf(res)
+    if (refused) {
+      assertEquals(res.status, 422)
+      assertEquals(body, {
+        error: MARIADB_FAILOVER_UNSUPPORTED_REASON,
+        code: 'managed_failover_unsupported',
+      })
+    } else {
+      assertEquals(body.code === 'managed_failover_unsupported', false)
+    }
+  }
 })
 
 test('POST members surfaces a private-path error for an unreachable replica host', async () => {
@@ -3410,6 +3513,8 @@ test('PATCH member replica class still requires apply-ready after conversion', a
 
 const HEALTH_FEATURE = 'managed-health-v1'
 
+const LIVE_CHECK_FAILED = buildManagedReplicaLiveCheckFailedBody()
+
 /** An enrolled, online server whose stored hello advertised `features`. */
 function serverAdvertising(features: string[]) {
   return { ...applyReadyServer(true), daemon: { projection: { features } } }
@@ -3429,6 +3534,8 @@ function streamingHealth(over: Record<string, unknown> = {}) {
         lagBytes: 0,
         lagSeconds: 0,
         observedAt: new Date().toISOString(),
+        receivedLsn: '0/3000100',
+        replayLsn: '0/3000100',
         ...over,
       },
     },
@@ -3543,7 +3650,7 @@ test('POST promote fails closed when the probe times out', async () => {
     features: [HEALTH_FEATURE],
     reply: { status: 'expired' },
   })
-  await expectJson(response, 409, { error: 'managed_replica_health_stale' })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
   assertEquals(sent.length, 1)
 })
 
@@ -3552,7 +3659,7 @@ test('POST promote fails closed when the daemon cannot read health', async () =>
     features: [HEALTH_FEATURE],
     reply: { status: 'failed', error: 'engine not running' },
   })
-  await expectJson(response, 409, { error: 'managed_replica_health_stale' })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
 })
 
 test('POST promote sends no probe to a daemon without managed-health-v1', async () => {
@@ -3560,24 +3667,85 @@ test('POST promote sends no probe to a daemon without managed-health-v1', async 
     features: ['update-progress-v1'],
     reply: { status: 'done', result: streamingHealth() },
   })
-  await expectJson(response, 409, { error: 'managed_replica_health_stale' })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
   assertEquals(sent.length, 0)
 })
 
-test('POST promote does not probe a fresh stored observation', async () => {
+test('POST promote probes even when the stored observation is recent', async () => {
   const { response, sent } = await promoteVia({
     features: [HEALTH_FEATURE],
     metadata: {
       replication: {
         state: 'streaming',
-        observedAt: new Date().toISOString(),
+        observedAt: new Date(Date.now() - 60_000).toISOString(),
         lagBytes: 0,
       },
     },
     reply: { status: 'done', result: streamingHealth() },
   })
   await expectQueued(response, { status: 'queued' })
-  assertEquals(sent.length, 0)
+  assertEquals(sent.length, 1)
+})
+
+test('POST promote refuses a replica whose threads stopped after the stored reading', async () => {
+  const { response, sent } = await promoteVia({
+    features: [HEALTH_FEATURE],
+    metadata: {
+      replication: {
+        state: 'streaming',
+        observedAt: new Date(Date.now() - 3_000).toISOString(),
+        lagBytes: 0,
+      },
+    },
+    reply: { status: 'done', result: streamingHealth({ state: 'reconnecting' }) },
+  })
+  await expectJson(response, 409, { error: 'managed_replica_not_streaming' })
+  assertEquals(sent.length, 1)
+})
+
+test('POST promote does not act on a minute-old stored reading when the daemon cannot answer', async () => {
+  const { response } = await promoteVia({
+    features: [HEALTH_FEATURE],
+    metadata: {
+      replication: {
+        state: 'streaming',
+        observedAt: new Date(Date.now() - 60_000).toISOString(),
+        lagBytes: 0,
+      },
+    },
+    reply: { status: 'expired' },
+  })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
+})
+
+test('POST promote does not trust a recent stored reading when the live probe fails', async () => {
+  const { response, sent } = await promoteVia({
+    features: [HEALTH_FEATURE],
+    metadata: {
+      replication: {
+        state: 'streaming',
+        observedAt: new Date(Date.now() - 3_000).toISOString(),
+        lagBytes: 0,
+        receivedLsn: '0/3000100',
+        replayLsn: '0/3000100',
+      },
+    },
+    reply: { status: 'expired' },
+  })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
+  assertEquals(sent.length, 1)
+})
+
+test('POST promote still returns health_stale when the live probe answers with an old reading', async () => {
+  const { response, sent } = await promoteVia({
+    features: [HEALTH_FEATURE],
+    reply: {
+      status: 'done',
+      result: streamingHealth({ observedAt: '2020-01-01T00:00:00.000Z' }),
+    },
+  })
+  await expectJson(response, 409, { error: 'managed_replica_health_stale' })
+  assertEquals(sent.length, 1)
 })
 
 test('POST promote with force never probes', async () => {

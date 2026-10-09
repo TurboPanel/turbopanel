@@ -1430,11 +1430,13 @@ test('parseManagedPromotePayload and result accept valid shapes', () => {
       managedId: '00000000-0000-4000-8000-000000000001',
       memberId: '00000000-0000-4000-8000-0000000000aa',
       demoteMemberId: '00000000-0000-4000-8000-0000000000bb',
+      resume: true,
     }),
     {
       managedId: '00000000-0000-4000-8000-000000000001',
       memberId: '00000000-0000-4000-8000-0000000000aa',
       demoteMemberId: '00000000-0000-4000-8000-0000000000bb',
+      resume: true,
     }
   )
   assertEquals(
@@ -6726,6 +6728,15 @@ test('parseManagedLifecyclePayload rejects leftover field throws', () => {
     Error,
     'Invalid managed.lifecycle payload'
   )
+  assertEquals(parseManagedLifecyclePayload({ managedId: 'm1', action: 'stop', demoted: true }), {
+    managedId: 'm1',
+    action: 'stop',
+    demoted: true,
+  })
+  assertEquals(parseManagedLifecyclePayload({ managedId: 'm1', action: 'stop', demoted: false }), {
+    managedId: 'm1',
+    action: 'stop',
+  })
 })
 
 test('parseManagedDestroyPayload rejects leftover field throws', () => {

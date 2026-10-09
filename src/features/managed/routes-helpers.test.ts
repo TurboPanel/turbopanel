@@ -1,6 +1,7 @@
 import { assertEquals, assertStringIncludes } from '@std/assert'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { mariadbEngineSpec } from './mariadb.ts'
 import { mysqlEngineSpec } from './mysql.ts'
 import { postgresEngineSpec } from './postgres.ts'
 import { isManagedVariantSwapSafe } from './releases.ts'
@@ -124,7 +125,7 @@ test('parseManagedVersionSelection resolves a catalog series and variant', () =>
   })
 })
 
-test('create accepts only the three verified series', () => {
+test('create accepts only the verified series', () => {
   // The only creatable series per engine, both of their base-OS variants.
   assertEquals(parseManagedVersionSelection('mysql', { engineSeries: '9.7' }), {
     ok: true,
@@ -141,14 +142,24 @@ test('create accepts only the three verified series', () => {
     ok: true,
     image: 'docker.io/library/mariadb:12.3',
   })
+  assertEquals(parseManagedVersionSelection('mysql', { engineSeries: '8.4' }), {
+    ok: true,
+    image: 'docker.io/library/mysql:8.4',
+  })
+  assertEquals(
+    parseManagedVersionSelection('mariadb', { engineSeries: '11.8', imageVariant: 'ubi' }),
+    { ok: true, image: 'docker.io/library/mariadb:11.8-ubi' }
+  )
+  assertEquals(parseManagedVersionSelection('mariadb', { imageVariant: 'ubi' }), {
+    ok: true,
+    image: 'docker.io/library/mariadb:11.8-ubi',
+  })
 
   // Every other catalogued series is refused — it is known, not tested.
   for (const [engine, series] of [
     ['postgres', '17'],
     ['postgres', '16'],
     ['postgres', '15'],
-    ['mysql', '8.4'],
-    ['mariadb', '11.8'],
     ['mariadb', '11.4'],
     ['mariadb', '10.11'],
   ] as const) {
@@ -692,4 +703,22 @@ test('PATCH name: absent leaves it, null clears it, a string is validated', () =
   assertEquals(parseManagedPatchName({ name: '  Orders DB ' }), { ok: true, name: 'Orders DB' })
   const bad = parseManagedPatchName({ name: 42 })
   assertEquals(bad.ok, false)
+})
+
+test('assertManagedSeriesUnchanged treats an imageless MariaDB row as 12.3, not the new default', () => {
+  const imageless = mariadbEngineSpec.parseSettings({ ...mariadbEngineSpec.defaultSettings })
+  const onEleven = mariadbEngineSpec.parseSettings({
+    ...mariadbEngineSpec.defaultSettings,
+    image: 'docker.io/library/mariadb:11.8',
+  })
+  const onTwelve = mariadbEngineSpec.parseSettings({
+    ...mariadbEngineSpec.defaultSettings,
+    image: 'docker.io/library/mariadb:12.3',
+  })
+  if (!imageless || !onEleven || !onTwelve) throw new TypeError('settings did not parse')
+  assertEquals(assertManagedSeriesUnchanged(mariadbEngineSpec, imageless, onTwelve), null)
+  assertEquals(
+    assertManagedSeriesUnchanged(mariadbEngineSpec, imageless, onEleven)?.error,
+    'managed_series_immutable'
+  )
 })

@@ -87,7 +87,10 @@ import {
   enqueueManagedRestore,
   isManagedBackupApiError,
   mapManagedBackupApiError,
+  refuseRestoreIfBackupOnOtherServer,
   resolveBackupDatabase,
+  resolveManagedBackupArtifactServerId,
+  toManagedBackupListItem,
 } from './backups.ts'
 import { fetchManagedLogs, parseLogsTailQuery } from './logs.ts'
 import {
@@ -148,7 +151,8 @@ import {
   evaluateManagedDatabaseDelete,
   evaluateManagedUserDropGuard,
   evaluateManagedUserRotateGuard,
-  evaluatePromoteLagHttpGate,
+  buildManagedReplicaLiveCheckFailedBody,
+  evaluateOperatorPromoteGate,
   evaluatePromoteMemberRole,
   evaluatePromoteReplicaClass,
   evaluateReadOnlyLoginTargetsLazy,
@@ -169,6 +173,7 @@ import {
   parseDisasterRecoveryPromoteBody,
   parseManagedCreateName,
   parseManagedLifecycleAction,
+  parseManagedPatchName,
   parseManagedUserCreateFields,
   parseManagedVersionSelection,
   parseMemberPatch,
@@ -184,7 +189,6 @@ import {
   resolveManagedServerId,
   serializeContainerRow,
   serializeManagedUser,
-  parseManagedPatchName,
   validateManagedDatabaseCreateName,
 } from '../../features/managed/routes-helpers.ts'
 import {
@@ -192,7 +196,10 @@ import {
   parseManagedResidual,
   serializeManagedRow,
 } from '../../features/managed/serialize.ts'
-import { isManagedReplicaObservationStale } from '../../features/managed/promote-lag.ts'
+import {
+  effectiveManagedImage,
+  managedImageFailoverSupport,
+} from '../../features/managed/releases.ts'
 import { findLatestRecovery } from '../../features/managed/recovery-records.ts'
 import { serializeRecovery } from '../../features/managed/recovery.ts'
 import {
@@ -299,15 +306,15 @@ async function loadManagedRowScope(c: Context<AppEnv>, stepUpAction?: StepUpActi
  * explicitly forced it. Returns a 409 response when the gate blocks, null
  * when the promote may proceed.
  *
- * When the stored observation is missing, unparseable, or past the gate's
- * staleness window, the target's daemon is asked for a fresh reading first
- * (`managed-health-request`, short timeout) and the **unchanged** gate runs on
- * that reading. Health is otherwise only observed when an apply/lifecycle
- * result comes back, so an idle healthy cluster would refuse every promote.
- * Fail-closed is preserved: on timeout, an offline server, a daemon without
- * `managed-health-v1`, or any error the gate runs on the stored observation
- * exactly as before. `force` never probes. Automatic failover does not come
- * through here; its own event-time probe is `ha-fresh-standby.ts`.
+ * Every non-force promote first asks the target's daemon for a fresh reading
+ * (`managed-health-request`, short timeout) and gates on that reading. A
+ * stored reading under two minutes old still says `streaming` for a replica
+ * whose replication threads stopped seconds ago, so it is never trusted on its
+ * own. Non-force promotes require a fresh `observed` probe; timeout, offline,
+ * unsupported, or any other non-answer refuses with
+ * {@link MANAGED_REPLICA_LIVE_CHECK_FAILED}. `force` never probes. Automatic
+ * failover does not come through here; its own event-time probe is
+ * `ha-fresh-standby.ts`.
  */
 async function assertManagedPromoteLagAllowed(
   c: Context<AppEnv>,
@@ -321,7 +328,7 @@ async function assertManagedPromoteLagAllowed(
 ): Promise<Response | null> {
   const { member, force } = params
   let replication = serializeManagedMember(member, null).replication
-  if (!force && isManagedReplicaObservationStale(replication)) {
+  if (!force) {
     const probe = await probeManagedMemberHealth(db, getDaemonCellRegistry(c), {
       serverId: member.serverId,
       managedId: params.managedId,
@@ -330,9 +337,12 @@ async function assertManagedPromoteLagAllowed(
       engine: params.engine,
       timeoutMs: MANAGED_HEALTH_PROBE_PROMOTE_TIMEOUT_MS,
     })
-    if (probe.status === 'observed') replication = probe.replication
+    if (probe.status !== 'observed') {
+      return c.json(buildManagedReplicaLiveCheckFailedBody(), 409)
+    }
+    replication = probe.replication
   }
-  const gate = evaluatePromoteLagHttpGate(replication, force)
+  const gate = evaluateOperatorPromoteGate(replication, force, undefined, params.engine)
   return gate !== null ? c.json({ error: gate }, 409) : null
 }
 
@@ -537,10 +547,19 @@ async function runManagedDeleteFanout(
     await clearPendingNullIdContainersForEnvironment(db, environmentId)
     await detachManagedBindings(c, db, managedId, detached, userId, organizationId)
     await deleteManagedRuntimeRows(db, environmentId, managedId)
-    await enqueueBackupsReconcile(db, commandQueue, { actorType: 'user', actorId: userId }, [
-      backupHost,
-    ])
-    return c.json({ ...buildManagedDeleteHardResponse(), ...detachedField(detached) })
+    await enqueueBackupsReconcile(
+      db,
+      commandQueue,
+      {
+        actorType: 'user',
+        actorId: userId,
+      },
+      [backupHost]
+    )
+    return c.json({
+      ...buildManagedDeleteHardResponse(),
+      ...detachedField(detached),
+    })
   }
 
   // The bindings are NOT removed here. They go with the `managed` row when the
@@ -644,7 +663,9 @@ async function resolveManagedCreatePlan(
   const version = parseManagedVersionSelection(ctx.spec.engine, body)
   if (!version.ok) return c.json({ error: version.error }, version.status)
 
-  let settings = mergeCreateSettings(ctx.spec, version.image)
+  // Store the resolved image on every new cluster, so a later change of the
+  // catalog default can never change which series an existing row runs.
+  let settings = mergeCreateSettings(ctx.spec, version.image ?? ctx.spec.defaultImage)
   if (!settings) {
     return c.json({ error: 'managed_settings_invalid' }, 400)
   }
@@ -828,7 +849,9 @@ async function assertManagedApplyReady(
   const commandQueue = assertDispatchInfrastructure(c)
   if (commandQueue instanceof Response) return commandQueue
 
-  const infra = await preflightManagedApplyInfrastructure(c, db, { serverId: targetServerId })
+  const infra = await preflightManagedApplyInfrastructure(c, db, {
+    serverId: targetServerId,
+  })
   if (infra) return mapManagedApplyPrepareError(c, infra)
 
   return commandQueue
@@ -1342,7 +1365,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     }
 
     const patchName = parseManagedPatchName(body)
-    if (!patchName.ok) return c.json({ error: patchName.error }, patchName.status)
+    if (!patchName.ok) {
+      return c.json({ error: patchName.error }, patchName.status)
+    }
 
     // Refuse before anything is persisted: another series, or a PostgreSQL
     // swap between libc families (Alpine <-> Debian), would break the data.
@@ -1474,7 +1499,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // (`?detach=true`: the bindings and their variables are removed).
     const attached = await listBindingImpactForManaged(db, row.id)
     if (attached.count > 0 && c.req.query('detach') !== 'true') {
-      return c.json({ error: 'managed_has_bindings', services: attached.services }, 409)
+      return c.json(
+        {
+          error: 'managed_has_bindings',
+          services: attached.services,
+        },
+        409
+      )
     }
 
     const canHardDelete = canHardDeleteManaged(row.serverId)
@@ -1492,7 +1523,10 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         auth.organizationId
       )
       await db.delete(managed).where(eq(managed.id, row.id))
-      return c.json({ ...buildManagedDeleteHardResponse(), ...detachedField(attached.services) })
+      return c.json({
+        ...buildManagedDeleteHardResponse(),
+        ...detachedField(attached.services),
+      })
     }
 
     // `canHardDelete` already covers `!row.serverId`, so `managed.server_id`
@@ -2207,6 +2241,16 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const serverDenied = await assertCanManageOr403(c, 'server', serverId)
     if (serverDenied) return serverDenied
 
+    const options = parseManagedRowOptions(ctx.spec, row.options)
+    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+
+    const failover = managedImageFailoverSupport(
+      effectiveManagedImage(ctx.spec, options.settings.image)
+    )
+    if (!failover.supported) {
+      return c.json({ error: failover.reason, code: 'managed_failover_unsupported' }, 422)
+    }
+
     await ensureManagedPrimaryMember(db, {
       managedId: row.id,
       serverId: primaryServerId,
@@ -2241,9 +2285,6 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       readEligible,
       replicationTransport: placement.toPrimaryTransport,
     })
-
-    const options = parseManagedRowOptions(ctx.spec, row.options)
-    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const prepared = await prepareApplyForManaged(c, db, ctx, row, options, primaryServerId)
     if (prepared instanceof Response) {
@@ -2307,6 +2348,17 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: patchParsed.error }, patchParsed.status)
     }
 
+    const patchOptions = parseManagedRowOptions(ctx.spec, row.options)
+    if (!patchOptions) return c.json({ error: 'Invalid managed options' }, 400)
+    if (patchParsed.replicaClass === 'failover') {
+      const failover = managedImageFailoverSupport(
+        effectiveManagedImage(ctx.spec, patchOptions.settings.image)
+      )
+      if (!failover.supported) {
+        return c.json({ error: failover.reason, code: 'managed_failover_unsupported' }, 422)
+      }
+    }
+
     const classPatched = await applyMemberReplicaClassPatch(c, db, {
       managedServerId: row.serverId,
       member,
@@ -2325,14 +2377,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const options = parseManagedRowOptions(ctx.spec, row.options)
-    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
-
     const applyResp = await runApplyForManaged(c, db, {
       userId: auth.userId,
       ctx,
       managedRow: row,
-      options,
+      options: patchOptions,
       targetServerId,
     })
     return applyResp
@@ -2724,7 +2773,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ backups: [] })
 
-    const backups = await listManagedBackups(db, row.id)
+    const backups = (await listManagedBackups(db, row.id)).map(toManagedBackupListItem)
     return c.json({ backups })
   })
 
@@ -2796,10 +2845,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const record = await findManagedBackupById(db, row.id, backupId)
     if (!record) return c.json({ error: 'backup_not_found' }, 404)
 
-    // Backup artifacts live on the host that actually ran the engine —
-    // `managed.server_id`, not the (possibly drifted) environment placement.
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
-    if (targetServerId instanceof Response) return targetServerId
+    // Delete the file on the host that stores it. Fall back to the current
+    // primary only for older rows that never recorded that host.
+    const placementServerId = resolveManagedTargetServerId(c, row.serverId)
+    if (placementServerId instanceof Response) return placementServerId
+    const targetServerId = resolveManagedBackupArtifactServerId(record, placementServerId)
 
     const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
@@ -2851,6 +2901,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // `managed.server_id`, not the (possibly drifted) environment placement.
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
+
+    const wrongHost = await refuseRestoreIfBackupOnOtherServer(c, db, record, targetServerId)
+    if (wrongHost) return wrongHost
 
     const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy

@@ -5109,7 +5109,7 @@ export type ManagedApplyCommandResult = {
   status?: string
 }
 
-export type ManagedLifecycleCommandPayload = {
+export type ManagedLifecyclePayload = {
   managedId: string
   action: 'start' | 'stop' | 'restart'
   memberId?: string
@@ -5125,6 +5125,13 @@ export type ManagedLifecycleCommandPayload = {
    * releases (defaults to primary on the daemon).
    */
   role?: 'primary' | 'replica'
+  /**
+   * Fence stop of a replaced writer. The daemon writes a durable demoted
+   * marker and keeps the engine stopped if it is started by hand. Absent on
+   * ordinary operator stops and on stops of the new primary. Older daemons
+   * ignore it; older control planes omit it.
+   */
+  demoted?: boolean
 }
 
 export type ManagedLifecycleCommandResult = {
@@ -5177,6 +5184,12 @@ export type ManagedPromoteCommandPayload = {
    * postgres on the daemon).
    */
   engine?: ManagedEngineCode
+  /**
+   * Set when the control plane re-queues a promote after a daemon restart
+   * (`resumeInterruptedPromote`). The daemon may treat an already-writable
+   * target as success; the instance also completes recovery on that outcome.
+   */
+  resume?: boolean
 }
 
 export type ManagedPromoteCommandResult = {
@@ -5386,7 +5399,7 @@ export type ManagedHaReconcileCommandResult = {
   containers?: EnvironmentDeployContainer[]
 }
 
-export type ManagedHaFailoverPhase = 'drain' | 'recover'
+export type ManagedHaFailoverPhase = 'drain' | 'recover' | 'repoint'
 
 /** Must stay in sync with the daemon `managed.ha.failover` shape. */
 export type ManagedHaFailoverCommandPayload = {
@@ -5399,6 +5412,16 @@ export type ManagedHaFailoverCommandPayload = {
   sourcePort?: number
   targetHost?: string
   targetPort?: number
+  /**
+   * Dial IP when `targetHost` is the leaf SAN (Postgres `hostaddr`).
+   * Omitted when `targetHost` is already the address to dial.
+   */
+  targetHostaddr?: string
+  /**
+   * Slot names the new primary must create before replicas stream
+   * (`tp_member_<ordinal>`). Max 32; each `/^[a-z0-9_]{1,63}$/`.
+   */
+  ensureSlots?: string[]
 }
 
 export type ManagedHaFailoverCommandResult = {
@@ -6166,7 +6189,7 @@ export function parseManagedApplyResult(value: unknown): ManagedApplyCommandResu
   return result
 }
 
-export function parseManagedLifecyclePayload(value: unknown): ManagedLifecycleCommandPayload {
+export function parseManagedLifecyclePayload(value: unknown): ManagedLifecyclePayload {
   if (!isRecord(value)) {
     throw new Error('Invalid managed.lifecycle payload')
   }
@@ -6178,9 +6201,9 @@ export function parseManagedLifecyclePayload(value: unknown): ManagedLifecycleCo
   ) {
     throw new Error('Invalid managed.lifecycle payload')
   }
-  const payload: ManagedLifecycleCommandPayload = {
+  const payload: ManagedLifecyclePayload = {
     managedId: value.managedId,
-    action: value.action as ManagedLifecycleCommandPayload['action'],
+    action: value.action as ManagedLifecyclePayload['action'],
   }
   if (value.memberId !== undefined) {
     if (!isString(value.memberId) || !UUID_RE.test(value.memberId)) {
@@ -6199,6 +6222,9 @@ export function parseManagedLifecyclePayload(value: unknown): ManagedLifecycleCo
       throw new Error('Invalid managed.lifecycle payload')
     }
     payload.role = value.role
+  }
+  if (value.demoted === true) {
+    payload.demoted = true
   }
   return payload
 }
@@ -6301,6 +6327,12 @@ export function parseManagedPromotePayload(value: unknown): ManagedPromoteComman
       throw new Error('Invalid managed.promote payload')
     }
     payload.engine = value.engine
+  }
+  if (value.resume !== undefined) {
+    if (value.resume !== true) {
+      throw new Error('Invalid managed.promote payload')
+    }
+    payload.resume = true
   }
   return payload
 }
@@ -7346,7 +7378,9 @@ export function parseManagedIngressReconcileResult(
 }
 
 const HA_PROMOTION_RULES = new Set<string>([HA_PROMOTION_RULE_PREFER, HA_PROMOTION_RULE_MUST_NOT])
-const HA_FAILOVER_PHASES = new Set<string>(['drain', 'recover'])
+const HA_FAILOVER_PHASES = new Set<string>(['drain', 'recover', 'repoint'])
+const HA_FAILOVER_SLOT_RE = /^[a-z0-9_]{1,63}$/
+const MAX_HA_FAILOVER_ENSURE_SLOTS = 32
 const MAX_HA_CLUSTERS = 64
 const MAX_HA_MEMBERS = 32
 const MAX_HA_PEERS = 32
@@ -7574,6 +7608,21 @@ function parseOptionalManagedHaFailoverPort(value: unknown): number | undefined 
   return value
 }
 
+function parseOptionalManagedHaFailoverEnsureSlots(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > MAX_HA_FAILOVER_ENSURE_SLOTS) {
+    throw new TypeError('Invalid managed.ha.failover payload')
+  }
+  const slots: string[] = []
+  for (const slot of value) {
+    if (!isString(slot) || !HA_FAILOVER_SLOT_RE.test(slot)) {
+      throw new TypeError('Invalid managed.ha.failover payload')
+    }
+    slots.push(slot)
+  }
+  return slots.length > 0 ? slots : undefined
+}
+
 /** Must stay in sync with the daemon `managed.ha.failover` validator. */
 export function parseManagedHaFailoverPayload(value: unknown): ManagedHaFailoverCommandPayload {
   if (!isRecord(value)) {
@@ -7601,6 +7650,8 @@ export function parseManagedHaFailoverPayload(value: unknown): ManagedHaFailover
       sourcePort: parseOptionalManagedHaFailoverPort(value.sourcePort),
       targetHost: parseOptionalManagedHaFailoverHost(value.targetHost),
       targetPort: parseOptionalManagedHaFailoverPort(value.targetPort),
+      targetHostaddr: parseOptionalManagedHaFailoverHost(value.targetHostaddr),
+      ensureSlots: parseOptionalManagedHaFailoverEnsureSlots(value.ensureSlots),
     }),
   }
 }
@@ -7638,7 +7689,7 @@ export function parseCommandPayload(
   | EnvironmentLifecycleCommandPayload
   | EnvironmentStopCommandPayload
   | ManagedApplyCommandPayload
-  | ManagedLifecycleCommandPayload
+  | ManagedLifecyclePayload
   | ManagedDestroyCommandPayload
   | ManagedBackupCommandPayload
   | ManagedRestoreCommandPayload

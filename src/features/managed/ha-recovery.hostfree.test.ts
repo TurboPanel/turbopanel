@@ -39,7 +39,10 @@ import {
   onFenceCommandFailed,
   onFenceCommandSucceeded,
   onPromoteSucceeded,
+  isDaemonRestartInterruption,
+  MAX_PROMOTE_RESUMES,
   onRecoveryCommandFailed,
+  resumeInterruptedPromote,
   onRecoveryCommandTimedOut,
   onRecoveryStepFailed,
   recoveryIdFromCommandMetadata,
@@ -1086,6 +1089,30 @@ test('beginOperatorSwitchover fences a reachable primary', async () => {
     (queue.envelopes[queue.envelopes.length - 1] as { type: string }).type,
     'managed.lifecycle'
   )
+})
+
+test('fence stop of the old primary carries demoted; drain and promote do not', async () => {
+  const harness = createHarness({ connected: [true, true] })
+  const result = await beginOperatorSwitchover({
+    db: harness.db,
+    commandQueue: okQueue(),
+    managedId: MANAGED_ID,
+    engine: 'postgres',
+    source: member(),
+    target: failoverReplica(),
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  expectOk(result)
+  const payloads = harness.commandInserts
+    .map((row) => row.payload as Record<string, unknown> | undefined)
+    .filter((payload): payload is Record<string, unknown> => payload !== undefined)
+  const stop = payloads.find((payload) => payload.action === 'stop')
+  const drain = payloads.find((payload) => payload.phase === 'drain')
+  if (!stop || !drain) throw new TypeError('expected fence stop and drain commands')
+  assertEquals(stop.memberId, MEM_PRIMARY)
+  assertEquals(stop.demoted, true)
+  assertEquals(drain.demoted, undefined)
 })
 
 test('beginOperatorSwitchover skips drain on disconnected peers and still stops the writer', async () => {
@@ -2361,4 +2388,145 @@ test('without the host-loss incident an offline primary is still blocked: the en
   assertEquals(row.state, 'blocked')
   assertEquals(row.metadata.fenceBasis, undefined)
   assertEquals(sent.length, 0)
+})
+
+const DAEMON_RESTART_ERROR =
+  'The daemon restarted while this command was running; the host may be partly changed. Run it again.'
+
+test('isDaemonRestartInterruption matches only the daemon restart wording', () => {
+  assertEquals(isDaemonRestartInterruption(DAEMON_RESTART_ERROR), true)
+  assertEquals(isDaemonRestartInterruption('Command timed out'), false)
+  assertEquals(isDaemonRestartInterruption(undefined), false)
+  assertEquals(isDaemonRestartInterruption(null), false)
+})
+
+test('a promote lost to a daemon restart is queued again while the row is promoting', async () => {
+  const queue = okQueue()
+  const harness = createHarness({
+    members: [member({ status: 'needs_resync', role: 'replica' }), failoverReplica()],
+    connected: [true],
+    recovery: recoveryRow({ state: 'promoting', kind: 'switchover' }),
+  })
+  const resumed = await resumeInterruptedPromote(harness.db, queue, {
+    recoveryId: REC_ID,
+    engine: 'mysql',
+    actor: ACTOR,
+    error: DAEMON_RESTART_ERROR,
+  })
+  assertEquals(resumed, true)
+  assertEquals(queue.envelopes.length, 1)
+  assertEquals((queue.envelopes[0] as { type: string }).type, 'managed.promote')
+  const dispatchRow = harness.commandInserts.find(
+    (row) =>
+      typeof row.payload === 'object' &&
+      row.payload !== null &&
+      (row.payload as { resume?: boolean }).resume === true
+  )
+  assertEquals(dispatchRow !== undefined, true)
+  assertEquals(harness.recovery()?.state, 'promoting')
+  assertEquals((harness.recovery()?.metadata as { promoteResumes?: number }).promoteResumes, 1)
+})
+
+test('a lost promote is not queued again for another error, without a queue, or past the limit', async () => {
+  const base = {
+    members: [member({ status: 'needs_resync', role: 'replica' }), failoverReplica()],
+    connected: [true, true, true, true],
+  }
+  const attempt = async (
+    recoveryOverrides: Partial<RecoveryRow>,
+    error: string | undefined,
+    queue: CommandQueue | undefined
+  ) => {
+    const harness = createHarness({
+      ...base,
+      recovery: recoveryRow({ state: 'promoting', kind: 'switchover', ...recoveryOverrides }),
+    })
+    return resumeInterruptedPromote(harness.db, queue, {
+      recoveryId: REC_ID,
+      engine: 'mysql',
+      actor: ACTOR,
+      error,
+    })
+  }
+  assertEquals(await attempt({}, 'Command timed out', okQueue()), false)
+  assertEquals(await attempt({}, DAEMON_RESTART_ERROR, undefined), false)
+  assertEquals(
+    await attempt(
+      { metadata: { promoteResumes: MAX_PROMOTE_RESUMES } },
+      DAEMON_RESTART_ERROR,
+      okQueue()
+    ),
+    false
+  )
+  assertEquals(await attempt({ state: 'repointing' }, DAEMON_RESTART_ERROR, okQueue()), false)
+  assertEquals(await attempt({ state: 'failed' }, DAEMON_RESTART_ERROR, okQueue()), false)
+})
+
+test('a lost promote is not queued again when the target server is offline', async () => {
+  const queue = okQueue()
+  const offline = createHarness({
+    members: [member({ status: 'needs_resync', role: 'replica' }), failoverReplica()],
+    connected: [false],
+    recovery: recoveryRow({ state: 'promoting', kind: 'switchover' }),
+  })
+  assertEquals(
+    await resumeInterruptedPromote(offline.db, queue, {
+      recoveryId: REC_ID,
+      engine: 'mysql',
+      actor: ACTOR,
+      error: DAEMON_RESTART_ERROR,
+    }),
+    false
+  )
+  assertEquals(queue.envelopes.length, 0)
+})
+
+test('a lost promote completes recovery when the target is already primary in the journal', async () => {
+  const queue = okQueue()
+  const promoted = createHarness({
+    members: [
+      member({ role: 'replica', status: 'needs_resync' }),
+      failoverReplica({ role: 'primary' }),
+    ],
+    connected: [true],
+    recovery: recoveryRow({ state: 'promoting', kind: 'switchover' }),
+  })
+  assertEquals(
+    await resumeInterruptedPromote(promoted.db, queue, {
+      recoveryId: REC_ID,
+      engine: 'mysql',
+      actor: ACTOR,
+      error: DAEMON_RESTART_ERROR,
+    }),
+    true
+  )
+  assertEquals(queue.envelopes.length, 0)
+})
+
+test('a lost promote is not queued when another member already became primary', async () => {
+  const queue = okQueue()
+  const harness = createHarness({
+    members: [
+      member({ id: MEM_PRIMARY, role: 'primary' }),
+      failoverReplica({ id: MEM_REPLICA, role: 'replica' }),
+      member({ id: MEM_READ, role: 'primary', serverId: SERVER_B }),
+    ],
+    connected: [true, true, true],
+    recovery: recoveryRow({
+      state: 'promoting',
+      kind: 'switchover',
+      sourcePrimaryMemberId: MEM_PRIMARY,
+      targetMemberId: MEM_REPLICA,
+    }),
+  })
+  assertEquals(
+    await resumeInterruptedPromote(harness.db, queue, {
+      recoveryId: REC_ID,
+      engine: 'mysql',
+      actor: ACTOR,
+      error: DAEMON_RESTART_ERROR,
+    }),
+    false
+  )
+  assertEquals(queue.envelopes.length, 0)
 })

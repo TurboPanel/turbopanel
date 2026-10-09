@@ -77,7 +77,9 @@ type EnvironmentRowSet = {
  * hosting -> tenancy -> binding -> service -> environment. Variables cascade
  * via FK. `tenancy.service_id` and `binding.service_id` are RESTRICT (safety
  * net on a direct service delete), so those edges go before services.
- * Shared by project delete and environment delete; run inside a transaction.
+ * Shared by project delete, environment delete, and gone-host forget; run
+ * inside a transaction. Does not check running state — callers that need
+ * that gate do it before calling.
  */
 async function loadBindingListenerTargets(
   db: Db,
@@ -150,8 +152,11 @@ type EnvironmentChildren = {
 
 async function loadEnvironmentChildren(
   db: Db,
-  environmentIds: string[]
+  environmentIds: readonly string[]
 ): Promise<EnvironmentChildren> {
+  if (environmentIds.length === 0) {
+    return { serviceIds: [], containerRows: [], hostingIds: [] }
+  }
   const serviceRows = await db
     .select({ id: service.id })
     .from(service)
@@ -243,6 +248,31 @@ async function hasInProgressDeployment(db: Db, environmentId: string): Promise<b
     )
     .limit(1)
   return rows.length > 0
+}
+
+/**
+ * Drop the rows under these environments on an explicit transaction, without
+ * the running-container or in-progress-deploy refusal. Used when the host is
+ * already gone so leftover app records cannot be stopped first. Does not
+ * refuse managed rows — the caller must not pass an environment that still
+ * carries a managed database.
+ */
+export async function dropEnvironmentSubtreeInTx(
+  tx: Db,
+  environmentIds: readonly string[]
+): Promise<{ containers: number }> {
+  if (environmentIds.length === 0) {
+    return { containers: 0 }
+  }
+  const ids = [...environmentIds]
+  const children = await loadEnvironmentChildren(tx, ids)
+  await dropEnvironmentRows(tx, {
+    environmentIds: ids,
+    serviceIds: children.serviceIds,
+    containerIds: children.containerRows.map((row) => row.id),
+    hostingIds: children.hostingIds,
+  })
+  return { containers: children.containerRows.length }
 }
 
 /**

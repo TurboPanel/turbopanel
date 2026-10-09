@@ -159,11 +159,12 @@ export type SelfHostSystemHierarchyIds = {
  * should only be used where at most one system environment can exist for the
  * server in question (e.g. non-colocated hosting-ingress delete-blocking).
  */
-export async function findSystemEnvironmentForServer(
+/** Every system-workspace environment pinned to `serverId` (hosting-ingress, managed-ingress, …). */
+export async function listSystemEnvironmentIdsForServer(
   db: Db,
   serverId: string,
   component?: string
-): Promise<string | null> {
+): Promise<string[]> {
   const rows = await (component === undefined
     ? db.execute<{ id: string }>(sql`
         SELECT e.id
@@ -172,7 +173,7 @@ export async function findSystemEnvironmentForServer(
         JOIN workspace w ON w.id = p.workspace_id
         WHERE e.server_id = ${serverId}::uuid
           AND w.kind = ${WORKSPACE_KIND_TURBOPANEL}
-        LIMIT 1
+        ORDER BY e.id ASC
       `)
     : db.execute<{ id: string }>(sql`
         SELECT e.id
@@ -182,9 +183,18 @@ export async function findSystemEnvironmentForServer(
         WHERE e.server_id = ${serverId}::uuid
           AND w.kind = ${WORKSPACE_KIND_TURBOPANEL}
           AND p.component = ${component}
-        LIMIT 1
+        ORDER BY e.id ASC
       `))
-  return rows[0]?.id ?? null
+  return rows.map((row) => row.id)
+}
+
+export async function findSystemEnvironmentForServer(
+  db: Db,
+  serverId: string,
+  component?: string
+): Promise<string | null> {
+  const ids = await listSystemEnvironmentIdsForServer(db, serverId, component)
+  return ids[0] ?? null
 }
 
 /**

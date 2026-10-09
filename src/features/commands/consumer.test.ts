@@ -3459,11 +3459,12 @@ test('processCommandEnvelope appends managed.backup metadata on create success',
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
 
     const rows = await db
-      .select({ id: backup.backupId, managedId: backup.managedId })
+      .select({ id: backup.backupId, managedId: backup.managedId, serverId: backup.serverId })
       .from(backup)
       .where(eq(backup.managedId, managedId))
     assertEquals(rows.length, 1)
     assertEquals(rows[0]?.id, 'bk_1700000000000')
+    assertEquals(rows[0]?.serverId, serverId)
   })
 })
 

@@ -35,6 +35,7 @@ import {
   nextStateAfterPromoteSuccess,
 } from './ha-recovery-pure.ts'
 import { fanOutManagedHaReconcile } from './ha-desired.ts'
+import { enqueueFollowPrimaryOnReplicas } from './follow-primary.ts'
 import {
   failRecoveryIngressNotQueued,
   parkRecoveryAtIngressGate,
@@ -42,6 +43,7 @@ import {
 } from './ha-ingress-gate.ts'
 import type { ManagedIngressFanOutOutcome } from './ingress-desired.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
+import { isTargetAlreadyPrimaryInJournal, promoteResumeRequeueRefusal } from './promote-resume.ts'
 import { findManagedHaHierarchy } from '../system/hierarchy.ts'
 import { loadDatacenterMembershipsForServers } from '../net/datacenter-membership.ts'
 import { isPrivateEndpointError, resolvePrivateEndpoints } from '../net/private-endpoint.ts'
@@ -77,7 +79,7 @@ import {
   type RecoveryMetadata,
   type RecoveryRecord,
 } from './recovery.ts'
-import { compatLogWarn } from '../../lib/log-compat.ts'
+import { compatLogInfo, compatLogWarn } from '../../lib/log-compat.ts'
 import {
   type AutoFailoverSetting,
   AUTOMATIC_FAILOVER_DISABLED_MESSAGE,
@@ -333,6 +335,8 @@ async function enqueuePromoteOrRecover(
     target: ManagedMemberRow
     actor: RecoveryCommandActor
     haPresent: boolean
+    /** Re-drive after a daemon restart (`resumeInterruptedPromote`). */
+    resume?: boolean
   }
 ): Promise<RecoveryEnqueueResult> {
   const authority = OrchestratorManagedHaAuthority
@@ -382,6 +386,7 @@ async function enqueuePromoteOrRecover(
     memberId: params.target.id,
     engine: params.engine,
     demoteMemberId: params.source.id,
+    ...(params.resume ? { resume: true } : {}),
   }
   const queued = await enqueueCommand(db, commandQueue, {
     serverId: params.target.serverId,
@@ -389,7 +394,10 @@ async function enqueuePromoteOrRecover(
     payload,
     expiresAtMs: PROMOTE_TTL_MS,
     actor: params.actor,
-    metadata: { recoveryId: params.recovery.id },
+    metadata: {
+      recoveryId: params.recovery.id,
+      ...(params.resume ? { promoteResume: true } : {}),
+    },
   })
   if (!queued) {
     await blockUnqueuedPromote(db, params.recovery.id, metadata)
@@ -520,6 +528,7 @@ async function enqueueFenceCommands(
       action: 'stop',
       memberId: params.source.id,
       engine: params.engine,
+      demoted: true,
     },
     expiresAtMs: FENCE_TTL_MS,
     actor: params.actor,
@@ -1279,6 +1288,13 @@ export async function onPromoteSucceeded(
     if (record.kind === 'disaster-recovery' && record.targetMemberId) {
       await reclassifyAfterDisasterRecovery(db, record)
     }
+    if (record.targetMemberId) {
+      await enqueueFollowPrimaryOnReplicas(db, commandQueue, {
+        managedId: record.managedId,
+        newPrimaryMemberId: record.targetMemberId,
+        actorId,
+      })
+    }
     const ingress = await fanOutAfterPromote(db, commandQueue, secrets, record, actorId)
     if (ingress) {
       // Not completed until every ingress confirms (ha-ingress-gate.ts).
@@ -1311,6 +1327,90 @@ export async function onPromoteSucceeded(
  */
 export async function onRecoveryStepFailed(db: Db, recoveryId: string): Promise<void> {
   await failRecoveryForOperator(db, recoveryId, RECOVERY_STEP_FAILED_MESSAGE)
+}
+
+/**
+ * The daemon's own wording (`command-outbox.ts`) for a command whose daemon
+ * restarted before it could answer. Matched case-insensitively.
+ */
+export const DAEMON_RESTART_INTERRUPTION_MARKER = 'daemon restarted while this command was running'
+
+/** A lost promote is queued again at most this often per recovery. */
+export const MAX_PROMOTE_RESUMES = 2
+
+export function isDaemonRestartInterruption(error: string | null | undefined): boolean {
+  return (
+    typeof error === 'string' && error.toLowerCase().includes(DAEMON_RESTART_INTERRUPTION_MARKER)
+  )
+}
+
+/**
+ * The promote (or failover `recover`) command of a recovery was lost because
+ * the target's daemon restarted mid-command. The old primary is already
+ * fenced, so ending the row `failed` would leave the cluster with no writer
+ * until an operator repaired it. Promoting is repeatable (stop replication,
+ * clear read-only), so queue it once more, at most `MAX_PROMOTE_RESUMES`
+ * times, while the row is still `promoting` and the target is still a
+ * replica on a connected server. Returns true when it was queued again; false
+ * means the caller fails the row as before. Never throws.
+ */
+export async function resumeInterruptedPromote(
+  db: Db,
+  commandQueue: CommandQueue | undefined,
+  params: {
+    recoveryId: string
+    engine: ManagedEngineCode
+    actor: RecoveryCommandActor
+    error: string | null | undefined
+  }
+): Promise<boolean> {
+  if (!commandQueue || !isDaemonRestartInterruption(params.error)) return false
+  try {
+    const record = await findRecoveryById(db, params.recoveryId)
+    if (record?.state !== 'promoting' || !record.targetMemberId) return false
+    const inflight = await findInFlightRecovery(db, record.managedId)
+    const resumes = record.metadata.promoteResumes ?? 0
+    if (resumes >= MAX_PROMOTE_RESUMES) return false
+    const members = await listManagedMembers(db, record.managedId)
+    const refusal = promoteResumeRequeueRefusal(record, members, inflight)
+    if (refusal) return false
+    const source = members.find((row) => row.id === record.sourcePrimaryMemberId)
+    const target = members.find((row) => row.id === record.targetMemberId)
+    if (!source || !target) return false
+    if (isTargetAlreadyPrimaryInJournal(record, members)) {
+      await onPromoteSucceeded(db, commandQueue, {}, record.id, params.actor.actorId)
+      return true
+    }
+    if (target.role !== 'replica') return false
+    if (!(await isServerConnected(db, target.serverId))) return false
+    const result = await enqueuePromoteOrRecover(db, commandQueue, {
+      recovery: {
+        ...record,
+        metadata: { ...record.metadata, promoteResumes: resumes + 1 },
+      },
+      engine: params.engine,
+      source,
+      target,
+      actor: params.actor,
+      haPresent: record.metadata.haPresent ?? false,
+      resume: true,
+    })
+    if (result.ok) {
+      compatLogInfo(
+        'managed-ha',
+        `recovery ${record.id}: the promote was lost to a daemon restart, queued again (${resumes + 1} of ${MAX_PROMOTE_RESUMES})`
+      )
+    }
+    return result.ok
+  } catch (error) {
+    compatLogWarn(
+      'managed-ha',
+      `recovery ${params.recoveryId}: resuming an interrupted promote failed: ${
+        error instanceof Error ? error.message : 'unknown error'
+      }`
+    )
+    return false
+  }
 }
 
 export async function onRecoveryCommandFailed(db: Db, recoveryId: string): Promise<void> {

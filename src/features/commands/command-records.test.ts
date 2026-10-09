@@ -8,6 +8,7 @@ import {
   createCommandRecord,
   deleteCommandDispatch,
   getCommandDispatchPayload,
+  cancelNonTerminalCommand,
   getCommandRecord,
   listServerCommands,
   retainCommandDispatch,
@@ -364,6 +365,38 @@ test('getCommandRecord returns null for unknown id', async () => {
   await withCommandRecordFixtures(async ({ db }) => {
     const missing = await getCommandRecord(db, '00000000-0000-4000-8000-000000000099')
     assertEquals(missing, null)
+  })
+})
+
+test('cancelNonTerminalCommand cancels a live command and leaves a finished one', async () => {
+  await withCommandRecordFixtures(async ({ db, serverId }) => {
+    const live = await createCommandRecord(db, {
+      serverId,
+      actorType: 'user',
+      actorId: '00000000-0000-4000-8000-000000000001',
+      type: 'daemon.ping',
+      payload: {},
+    })
+    const finished = await createCommandRecord(db, {
+      serverId,
+      actorType: 'user',
+      actorId: '00000000-0000-4000-8000-000000000001',
+      type: 'daemon.ping',
+      payload: {},
+    })
+    await transitionCommand(db, finished.id, { status: 'succeeded' })
+
+    assertEquals(
+      await cancelNonTerminalCommand(db, live.id, { error: 'Superseded by a follow-primary' }),
+      true
+    )
+    assertEquals((await getCommandRecord(db, live.id))?.status, 'cancelled')
+
+    assertEquals(
+      await cancelNonTerminalCommand(db, finished.id, { error: 'Superseded by a follow-primary' }),
+      false
+    )
+    assertEquals((await getCommandRecord(db, finished.id))?.status, 'succeeded')
   })
 })
 

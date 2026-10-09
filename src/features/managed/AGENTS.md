@@ -62,7 +62,7 @@ whenever a host-run binding is placed on the server
 | -------- | ------------------------------------------------ | -------------------- | ---- | ----------- | ------------------------------------ |
 | Postgres | `postgres.ts`                                    | `postgres:18-alpine` | 5432 | 63          | `postgresql.conf`, `pg_hba.conf`     |
 | MySQL    | `mysql.ts` (+ pure helpers in `mysql-family.ts`) | `mysql:9.7`          | 3306 | **32**      | `my.cnf`, `initdb/00-turbopanel.sql` |
-| MariaDB  | `mariadb.ts` (own dialect — never a MySQL alias) | `mariadb:12.3`       | 3306 | **32**      | same as MySQL                        |
+| MariaDB  | `mariadb.ts` (own dialect — never a MySQL alias) | `mariadb:11.8`       | 3306 | **32**      | same as MySQL                        |
 
 ## Release catalog (versions, not image strings)
 
@@ -81,11 +81,11 @@ must still be able to name an image an existing row already holds.
 | Engine   | Creatable (tested) | Catalogued but untested |
 | -------- | ------------------ | ----------------------- |
 | Postgres | **18**             | 17, 16, 15              |
-| MySQL    | **9.7**            | 8.4                     |
-| MariaDB  | **12.3**           | 11.8, 11.4, 10.11       |
+| MySQL    | **9.7**, **8.4**   |                         |
+| MariaDB  | **11.8** (default), **12.3** (single server only) | 11.4, 10.11             |
 
 Each creatable series offers both of its base-OS variants, so the derived
-allowlists hold six images in total. `managedCreatableReleasesForEngine` is the
+allowlists hold ten images in total. `managedCreatableReleasesForEngine` is the
 single filter; `managedReleasesForEngine` still returns everything for naming.
 The one way past it is an explicit `ManagedReleaseGate` (`{ includeUntested:
 true }`) passed by a caller that knows better — today only the catalog's own
@@ -93,6 +93,10 @@ suites. There is deliberately **no** environment-variable form: an untested
 series must not become creatable because of a stray env var on a production
 control plane. Promoting a series means flipping `tested` here **and** in both
 mirrors in the same change.
+
+Each release also carries `failoverCapable`. It is `true` except MariaDB 12.3
+(`false`): that series is still creatable as a single server. Replica add
+uses `managedImageFailoverSupport` (an unknown image counts as supported).
 
 PostgreSQL stops at 15 (not upstream's oldest supported major, 14) to bound the
 replication/promotion test matrix. MySQL 8.0 is **absent** — it reached EOL in
@@ -127,7 +131,10 @@ every spec's `parseSettings`, as does `parseManagedApplyPayload`
 `../../client/managed/routes-helpers.ts`), resolved to an image and merged into
 settings; an unknown **or untested** series/variant is **422**
 `managed_version_unsupported`. Omitting both takes the engine default (always a
-tested series).
+tested series). Create always provisions a single primary; a replica is added
+later via `POST …/members`. MariaDB 12.3 is creatable that way; adding a
+member is **422** `managed_failover_unsupported`. Existing single-member 12.3
+databases are left as they are (no migration).
 
 **Series are immutable after create.** `PATCH …/managed` refuses a settings
 change that moves the cluster to a different series (**409**
@@ -455,6 +462,11 @@ Postgres backs up via `pg_dump -Fc` (custom format), per-database only —
 `supportsInstanceScope: false` documents `pg_dumpall` as an explicit future
 seam.
 
+Artifacts stay on the host that wrote them. `backup.server_id` is that host
+(the primary when the backup ran); restore after a planned switchover answers
+**409** `backup_on_other_server` rather than sending `managed.restore` to a
+host that does not have the file. See `src/features/backups/AGENTS.md`.
+
 **Scheduled backups** are `retention` rows (routes under
 `/environments/:id/managed/backup-policies`, org owners and managers only;
 `src/client/managed/backup-policies.ts`). The control plane never queues a
@@ -546,7 +558,9 @@ own identity; standbys inherit the roles via WAL. Leaf `notAfter` + signing `ca_
 on `leaf` only after `managed.apply` succeeds (mint writes `pendingTlsLeaf`
 command metadata — see `src/lib/tls/AGENTS.md` → Leaf tracking + renewal sweep)
 — not at payload generation. Member CRUD: `GET/POST …/managed/members`
-(`replicaClass` default `failover`), `PATCH/DELETE …/members/:memberId`
+(`replicaClass` default `failover`; **422** `managed_failover_unsupported`
+when the cluster image is not failover-capable — today MariaDB 12.3, which
+stays a single-server database until failover tooling can read it), `PATCH/DELETE …/members/:memberId`
 (`readEligible` / `replicaClass` conversion),
 `POST …/members/:memberId/resync` (operator-forced re-seed: full apply fan-out
 with `forceResync` on the target standby payload — the daemon wipes its data
@@ -578,10 +592,11 @@ age, not on the gate's error code, because the gate answers
 `managed_replica_not_streaming` _before_ it reads `observedAt`), the route asks
 the target's daemon for a fresh reading first (`managed-health-request`, 8s,
 `src/client/managed/health-probe.ts`, feature `managed-health-v1`) and runs the
-**unchanged** gate on it. **Fail-closed is preserved:** timeout, offline host,
-a daemon without the feature, a daemon error, a malformed reply, or a reply for
-another member all fall back to the gate on the stored observation — today's
-409. `force` never probes. `GET …/managed/status?refresh=1` (the panel's
+lag gate only on an `observed` answer. Timeout, offline host, a daemon without
+the feature, a daemon error, a malformed reply, or a reply for another member
+refuses with **409** `managed_replica_live_check_failed` and a plain-words
+message (stored metadata is never enough without a live answer). `force` never
+probes. `GET …/managed/status?refresh=1` (the panel's
 Refresh) probes every **replica** in parallel (and the primary, while replicas
 exist, so its `slotRetention` is current after a Resync; not counted) and returns
 `healthRefresh: { observed, unavailable }`; a plain GET stays DB-only. The probe
@@ -616,7 +631,23 @@ to `managed.promote` when Orchestrator is absent or the recover API fails.
 Detection is an unsolicited `managed-ha-event` over the daemon WebSocket — not a
 Durable Object poll loop. DR rewrite: members no longer in the new primary's
 datacenter cannot stay `failover` → `read` (keep `readEligible`). Same-DC `read`
-peers are never silently upgraded to `failover`.
+peers are never silently upgraded to `failover`. After a successful
+`managed.promote` or `managed.ha.failover` `recover`, remaining healthy replicas
+(`ready` / `streaming`, not provisioning/applying/stopped/`needs_resync`/`failed`,
+not on an offline or lost server) each get `managed.ha.failover` `phase: 'repoint'`
+so they follow the new primary without a full Resync. The control plane first
+queues one `repoint` on the **new primary** with `ensureSlots` (`tp_member_<ordinal>`
+for those replicas) so the physical slots exist, then one replica-side `repoint`
+that verifies streaming. A non-terminal replica `repoint` to a different
+`targetMemberId` is cancelled and replaced so a stale follow cannot win (a
+single UPDATE that leaves an already terminal command untouched). A failed
+slot-ensure (`ensureSlots` non-empty) is re-queued once with `slotRetry` on
+the command context; a second failure is logged (`replicas may fail to stream
+until the slots exist`) and not retried. A follow-mode replica whose error
+contains `did not reach streaming` is flagged `needs_resync` when it is still
+`role=replica` and `status=ready`. Other repoint failures stay log-only. None
+of this fails the promote. The payload always carries `engine` (loaded from the
+managed row when the caller omits it).
 
 ### Completion gate: every ingress must confirm (`ha-ingress-gate.ts`)
 
@@ -705,7 +736,11 @@ all:
    `managed-ha-instance-v1`), and it must equal the primary's address and port
    as the reporter's Orchestrator knows it (`haMemberDialForReporter`, the same
    dial `managed.ha.reconcile` registered: private address + `privatePort`, or
-   the local container name + engine default port). A mismatch, or a missing
+   the local container name + engine default port). A local primary report may
+   instead name the reporter's published private address (or local container
+   name) plus its `privatePort`; the host check is mandatory because private
+   ports are allocated per server and remote members commonly hold the same
+   number. A mismatch, or a missing
    instance from a daemon that advertises the feature, is recorded as a
    terminal `blocked` row with `metadata.stale = true` and a reason, and
    nothing is fenced or promoted (no in-flight resume, no cooldown). A daemon
@@ -761,6 +796,20 @@ stop`; an unreachable old primary blocks) then promote.
    row terminal `blocked` (`FENCE_STOP_UNQUEUED_MESSAGE` /
    `PROMOTE_UNQUEUED_MESSAGE`) instead of leaving `fencing` / `promoting`
    holding the in-flight slot.
+   A promote (or failover `recover`) command the target's daemon lost to a
+   restart (the daemon answers `The daemon restarted while this command was
+   running…`) is **queued again** by `resumeInterruptedPromote`
+   (`ha-recovery.ts`, called from the consumer's failure path) while the row is
+   still `promoting`, the in-flight journal row still matches, no other member
+   has become primary, the target is still a replica on a connected server (or
+   already primary in the journal — then recovery completes without a second
+   promote), and fewer than `MAX_PROMOTE_RESUMES` (2, `metadata.promoteResumes`)
+   resumes happened. Re-queued promotes carry `resume: true` on the payload;
+   a resume promote whose engine is already writable is completed as success on
+   the instance (`promote-resume.ts`). The old primary is already fenced, so
+   failing the row would leave no writer until an operator repaired it.
+   Anything else (other errors, a limit reached, no queue) ends the row `failed`
+   as before.
 9. Safety net: the stale sweep (Deno cleanup lane and the Workers
    offline-sweep cron) runs `expireStaleRecoveries`: a `detecting`/`fencing`
    row older than `STALE_DETECTING_RECOVERY_MS` (10 min) with no command
@@ -848,6 +897,16 @@ the control plane holds, not on how it was replaced:
   stopped/failed. It never resyncs: wiping the old primary's data is the
   operator's choice (`POST .../members/:id/resync`), its un-replicated writes
   exist nowhere else.
+
+**Demoted marker (daemon guard):** fence stops of the _old_ primary — the
+`managed.lifecycle` stop in `enqueueFenceCommands` (`params.source`) and the
+return-fence stop above — set optional `demoted: true` on the payload. Ordinary
+operator stops and stops of the new primary omit it. The daemon writes
+`<stateDir>/managed/<managedId>/demoted.json` after that stop succeeds and a
+periodic guard stops the engine again if someone starts the container by hand
+(a host that stayed connected never hits the reconnect sweep). Older daemons
+ignore the field; older control planes omit it. The control plane still marks
+the member `needs_resync`; the daemon owns keeping it from serving writes.
 
 **Alerts**: the offline alert (`server.offline`) now names the HA databases
 whose primary the server hosts and what happens next; the outcome is the

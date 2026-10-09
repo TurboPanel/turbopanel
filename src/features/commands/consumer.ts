@@ -143,8 +143,17 @@ import {
   onRecoveryCommandFailed,
   onRecoveryStepFailed,
   recoveryIdFromCommandMetadata,
+  resumeInterruptedPromote,
 } from '../managed/ha-recovery.ts'
 import { settleIngressCommandForRecovery } from '../managed/ha-ingress-gate.ts'
+import {
+  buildSyntheticPromoteSuccessResult,
+  isAlreadyWritablePrimaryPromoteError,
+} from '../managed/promote-resume.ts'
+import {
+  enqueueFollowPrimaryOnReplicas,
+  handleFollowPrimaryFailure,
+} from '../managed/follow-primary.ts'
 import { isManagedEngineCode, type ManagedEngineCode } from '../managed/types.ts'
 import { isValidWireguardPublicKey } from '../fabric/wg.ts'
 import { type CommandType, TERMINAL_COMMAND_STATUSES } from './types.ts'
@@ -1696,6 +1705,7 @@ async function applyManagedBackupSideEffect(
         ...(backupResult.database !== undefined ? { database: backupResult.database } : {}),
         path: backupResult.path,
         ...(backupResult.completedAt !== undefined ? { createdAt: backupResult.completedAt } : {}),
+        serverId: record.serverId,
       })
     }
   } catch (err) {
@@ -1998,7 +2008,8 @@ async function applyManagedRecoveryFailedSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
   meta: Record<string, unknown> | null | undefined,
-  deps?: CommandConsumerDeps
+  deps?: CommandConsumerDeps,
+  error?: string
 ): Promise<boolean> {
   const recoveryId = recoveryIdFromCommandMetadata(meta)
   if (!recoveryId) return false
@@ -2022,6 +2033,16 @@ async function applyManagedRecoveryFailedSideEffect(
   }
 
   if (record.type === 'managed.promote' || record.type === 'managed.ha.failover') {
+    if (isManagedHaFailoverRepoint(record)) return false
+    // A promote lost to a daemon restart is queued again (the old primary is
+    // already fenced, so failing the row would leave no writer).
+    const resumed = await resumeInterruptedPromote(db, deps?.commandQueue, {
+      recoveryId,
+      engine: recoveryEngine(payloadEngine(record.payload)),
+      actor: recoveryActor(record),
+      error: error ?? record.errorMessage,
+    })
+    if (resumed) return true
     await onRecoveryCommandFailed(db, recoveryId)
   }
   return false
@@ -2042,6 +2063,15 @@ async function settleIngressRecoveryOfCommand(
     await settleIngressCommandForRecovery(db, recoveryId)
   } catch (err) {
     logRecoveryAdvanceFailure(record.id, errorMessage(err))
+  }
+}
+
+function isManagedHaFailoverRepoint(record: DispatchableCommandRecord): boolean {
+  if (record.type !== 'managed.ha.failover') return false
+  try {
+    return parseManagedHaFailoverPayload(record.payload).phase === 'repoint'
+  } catch {
+    return false
   }
 }
 
@@ -2122,7 +2152,22 @@ async function applyManagedFailedSideEffect(
   // from `needs_resync` to `failed` or mark the whole cluster failed; the
   // sweep retries it a few times.
   if (meta?.returnFence === true) return
-  if (await applyManagedRecoveryFailedSideEffect(db, record, meta, deps)) {
+  if (isManagedHaFailoverRepoint(record)) {
+    await handleFollowPrimaryFailure(
+      db,
+      {
+        id: record.id,
+        serverId: record.serverId,
+        actorId: record.actorEntityId,
+        payload: record.payload,
+        context: record.context,
+      },
+      deps?.commandQueue,
+      error ?? record.errorMessage ?? undefined
+    )
+    return
+  }
+  if (await applyManagedRecoveryFailedSideEffect(db, record, meta, deps, error)) {
     return
   }
   if (!shouldMarkManagedFailedOnCommandType(record.type)) return
@@ -2335,6 +2380,15 @@ async function applyManagedPromoteSideEffect(
       actorId: envelope.serverId,
     })
 
+    if (promotedMemberId) {
+      await enqueueFollowPrimaryOnReplicas(db, deps?.commandQueue, {
+        managedId,
+        newPrimaryMemberId: promotedMemberId,
+        actorId: envelope.serverId,
+        ...(payload.engine ? { engine: payload.engine } : {}),
+      })
+    }
+
     if (!hasManagedFollowUpDeps(deps)) {
       const meta = await getCommandMetadata(db, record.id)
       const recoveryId = recoveryIdFromCommandMetadata(meta)
@@ -2474,6 +2528,7 @@ async function applyManagedHaFailoverSideEffect(
       })
       return
     }
+    if (payload.phase === 'repoint') return
 
     const backupHost = await captureManagedBackupHost(db, deps?.commandQueue, payload.managedId)
     await applyManagedRoleFlip(db, {
@@ -2487,6 +2542,13 @@ async function applyManagedHaFailoverSideEffect(
       managedId: payload.managedId,
       previousServerId: backupHost,
       actorId: envelope.serverId,
+    })
+
+    await enqueueFollowPrimaryOnReplicas(db, deps?.commandQueue, {
+      managedId: payload.managedId,
+      newPrimaryMemberId: payload.targetMemberId,
+      actorId: envelope.serverId,
+      ...(payload.engine ? { engine: payload.engine } : {}),
     })
 
     if (recoveryId) {
@@ -2559,6 +2621,44 @@ export function failureErrorCodeField(
   return {}
 }
 
+async function tryCompleteResumePromoteAsAlreadyWritable(
+  db: Db,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  pending: PendingRequestRecord,
+  deps?: CommandConsumerDeps,
+  error?: string
+): Promise<boolean> {
+  if (record.type !== 'managed.promote') return false
+  let payload: ReturnType<typeof parseManagedPromotePayload>
+  try {
+    payload = parseManagedPromotePayload(record.payload)
+  } catch {
+    return false
+  }
+  if (payload.resume !== true) return false
+  const message = error ?? pending.error ?? record.errorMessage
+  if (!isAlreadyWritablePrimaryPromoteError(message)) return false
+
+  const synthetic = buildSyntheticPromoteSuccessResult(payload)
+  await transitionCommand(db, record.id, {
+    status: 'succeeded',
+    result: resultSummaryForPersist(record.type, synthetic),
+    ackedAt: pending.ackAt ?? pending.finishedAt,
+    startedAt: pending.ackAt ?? pending.finishedAt,
+    finishedAt: pending.finishedAt,
+  })
+  commandConsumerTrace('dispatch-result', {
+    commandId: record.id,
+    commandType: record.type,
+    serverId: envelope.serverId,
+    pendingStatus: pending.status,
+    resultStatus: 'succeeded',
+  })
+  await applySucceededSideEffects(db, record, envelope, synthetic, deps)
+  return true
+}
+
 async function handlePendingFailed(
   db: Db,
   record: DispatchableCommandRecord,
@@ -2567,6 +2667,9 @@ async function handlePendingFailed(
   deps?: CommandConsumerDeps
 ): Promise<void> {
   const error = pending.error ?? 'Command failed'
+  if (await tryCompleteResumePromoteAsAlreadyWritable(db, record, envelope, pending, deps, error)) {
+    return
+  }
   // A sequential deploy that rolled back or needs attention says so in its error
   // text; keep that machine-readable on the row.
   const deployFailure = record.type === 'environment.deploy' ? classifyDeployFailure(error) : null

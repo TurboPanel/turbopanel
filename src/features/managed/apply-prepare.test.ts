@@ -21,6 +21,7 @@ import {
   tls,
   workspace,
 } from '../../db/schema.ts'
+import { mariadbEngineSpec } from './mariadb.ts'
 import { postgresEngineSpec } from './postgres.ts'
 import type { ManagedSettings } from './settings.ts'
 import { createManagedPrincipal } from '../principals/store.ts'
@@ -503,6 +504,38 @@ test('prepareManagedApplyPayloads self-heals primary member and omits ingress', 
       assertEquals(containers[0]!.containerName, `${serviceId}-1`)
     }
   )
+})
+
+test('prepareManagedApplyPayloads keeps an imageless MariaDB row on 12.3 and a stored image as is', async () => {
+  const imageless = mariadbEngineSpec.parseSettings({ ...mariadbEngineSpec.defaultSettings })
+  const stored = mariadbEngineSpec.parseSettings({
+    ...mariadbEngineSpec.defaultSettings,
+    image: 'docker.io/library/mariadb:11.8',
+  })
+  if (!imageless || !stored) throw new TypeError('expected valid managed settings')
+  assertEquals(imageless.image, undefined)
+  for (const [settings, expected] of [
+    [imageless, 'docker.io/library/mariadb:12.3'],
+    [stored, 'docker.io/library/mariadb:11.8'],
+  ] as const) {
+    await withManagedApplyPrepareFixtures(
+      async ({ db, c, serverId, environmentId, managedId, organizationId }) => {
+        const prepared = await prepareManagedApplyPayloads(c, db, {
+          managedRow: { id: managedId, engine: 'mariadb' },
+          spec: mariadbEngineSpec,
+          settings,
+          databases: ['defaultdb'],
+          serverId,
+          environmentId,
+          organizationId,
+        })
+        if (isPrepareError(prepared)) {
+          throw new TypeError(`unexpected prepare error: ${prepared.kind}`)
+        }
+        assertEquals(prepared.members[0]!.payload.image, expected)
+      }
+    )
+  }
 })
 
 test('prepareManagedApplyPayloads ensures org CA and sets orgTlsMaterial with denc leaf key', async () => {
