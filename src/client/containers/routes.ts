@@ -329,8 +329,8 @@ export function registerContainerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(container).where(eq(container.id, id))
     })
-    if (result === 'has_children') {
-      return hierarchyDeleteHasChildrenResponse(c)
+    if (result.status === 'has_children') {
+      return hierarchyDeleteHasChildrenResponse(c, result.violation)
     }
 
     return c.json({ ok: true as const })

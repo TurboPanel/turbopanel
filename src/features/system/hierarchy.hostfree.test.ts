@@ -17,6 +17,7 @@ import {
   ensureSystemHierarchy,
   ensureSystemWorkspace,
   findSystemEnvironmentForServer,
+  listSystemEnvironmentIdsForServer,
   isSystemSelfHostComposeServiceName,
   SYSTEM_HOSTING_INGRESS_COMPONENT,
   SYSTEM_MANAGED_HA_COMPONENT,
@@ -182,6 +183,13 @@ test('isSystemSelfHostComposeServiceName allowlists only stack services', () => 
   assertEquals(isSystemSelfHostComposeServiceName('traefik'), false)
   assertEquals(isSystemSelfHostComposeServiceName('proxysql'), false)
   assertEquals(isSystemSelfHostComposeServiceName(''), false)
+})
+
+test('listSystemEnvironmentIdsForServer returns every system environment on the server', async () => {
+  const db = {
+    execute: () => [{ id: 'env-a' }, { id: 'env-b' }],
+  } as unknown as Db
+  assertEquals(await listSystemEnvironmentIdsForServer(db, 'srv'), ['env-a', 'env-b'])
 })
 
 test('findSystemEnvironmentForServer returns first match or null', async () => {

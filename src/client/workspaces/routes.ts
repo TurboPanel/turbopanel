@@ -245,8 +245,8 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
       await applyStorageRetentionOnParentDelete(tx, { workspaceIds: [id] })
       await tx.delete(workspace).where(eq(workspace.id, id))
     })
-    if (result === 'has_children') {
-      return hierarchyDeleteHasChildrenResponse(c)
+    if (result.status === 'has_children') {
+      return hierarchyDeleteHasChildrenResponse(c, result.violation)
     }
 
     return c.json({ ok: true as const })

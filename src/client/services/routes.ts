@@ -264,8 +264,8 @@ export function registerServiceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       await applyStorageRetentionOnParentDelete(tx, { serviceIds: [id] })
       await tx.delete(service).where(eq(service.id, id))
     })
-    if (result === 'has_children') {
-      return hierarchyDeleteHasChildrenResponse(c)
+    if (result.status === 'has_children') {
+      return hierarchyDeleteHasChildrenResponse(c, result.violation)
     }
 
     return c.json({ ok: true as const })

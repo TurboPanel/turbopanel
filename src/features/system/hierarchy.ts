@@ -187,6 +187,23 @@ export async function findSystemEnvironmentForServer(
   return rows[0]?.id ?? null
 }
 
+/** Every system-workspace environment pinned to `serverId` (hosting-ingress, managed-ingress, …). */
+export async function listSystemEnvironmentIdsForServer(
+  db: Db,
+  serverId: string
+): Promise<string[]> {
+  const rows = await db.execute<{ id: string }>(sql`
+    SELECT e.id
+    FROM environment e
+    JOIN project p ON p.id = e.project_id
+    JOIN workspace w ON w.id = p.workspace_id
+    WHERE e.server_id = ${serverId}::uuid
+      AND w.kind = ${WORKSPACE_KIND_TURBOPANEL}
+    ORDER BY e.id ASC
+  `)
+  return rows.map((row) => row.id)
+}
+
 /**
  * Race-safe upsert of the single system workspace per organization.
  * Shared by install (`completeInstanceInstall`) and hierarchy ensure paths.

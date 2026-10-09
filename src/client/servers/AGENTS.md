@@ -59,7 +59,9 @@ leaves the 409 blockers check unchanged. With the flag:
   primary member is here answers **409** `server_has_blockers` with
   `blockedDatabases` (`only_member` or `primary_here`)
 - the co-located control plane host is still **403**
-- otherwise the same transaction drops non-system app environments (via the
+- otherwise the same transaction drops non-system app environments
+- every system-workspace environment pinned to the server (hosting-ingress,
+  managed-ingress, self-host, …), not only the first match (via the
   environment-cascade helper, without the running-container refusal), then
   forgettable member rows, leftover deployments / slots / copies, then
   container, address, and network rows, then continues the ordinary delete

@@ -1030,8 +1030,8 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(tls).where(eq(tls.id, id));
     });
-    if (result === "has_children") {
-      return hierarchyDeleteHasChildrenResponse(c);
+    if (result.status === "has_children") {
+      return hierarchyDeleteHasChildrenResponse(c, result.violation);
     }
 
     return c.json({ ok: true as const });

@@ -1,6 +1,6 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertExists, assertThrows } from '@std/assert'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -30,8 +30,10 @@ import {
   service,
   slot,
   subnet,
+  stage,
   team,
   teammate,
+  upgrade,
   user,
   workspace,
 } from '../../db/schema.ts'
@@ -3789,6 +3791,70 @@ test('GET /servers/:id still issues exactly one cached select after labels are a
     assertEquals(recordingCache.readModels, ['server-detail'])
     assertEquals(readDb.selectCallCount, 1)
   })
+})
+
+test('DELETE /servers/:id with forgetResources deletes the server when a fleet upgrade stage row references it', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const now = new Date().toISOString()
+      const [upgradeRow] = await db
+        .insert(upgrade)
+        .values({
+          createdAt: now,
+          updatedAt: now,
+          source: 'manual',
+          channel: 'release',
+          status: 'succeeded',
+          finishedAt: now,
+        })
+        .returning({ id: upgrade.id })
+      await db.insert(stage).values({
+        upgradeId: upgradeRow!.id,
+        serverId,
+        unit: 'daemon',
+        status: 'succeeded',
+        statusChangedAt: now,
+      })
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(res.status, 200)
+      assertEquals(registry.purgedIds, [serverId])
+    }
+  )
+})
+
+test('DELETE /servers/:id with forgetResources tears down every system environment on the host', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const hosting = await systemHierarchy.ensureSystemHierarchy(db, { organizationId, serverId })
+      const managedIngress = await systemHierarchy.ensureManagedIngressHierarchy(db, {
+        organizationId,
+        serverId,
+      })
+      const now = new Date().toISOString()
+      await db
+        .update(container)
+        .set({ status: 'exited', updatedAt: now })
+        .where(
+          inArray(container.id, [hosting.containerRowId, managedIngress.containerRowId])
+        )
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(res.status, 200)
+      assertEquals(registry.purgedIds, [serverId])
+
+      const envIds = await systemHierarchy.listSystemEnvironmentIdsForServer(db, serverId)
+      assertEquals(envIds.length, 0)
+    }
+  )
 })
 
 test("DELETE /servers/:id raises server.deleted once, with the server's name, to the managers' bell", async () => {
