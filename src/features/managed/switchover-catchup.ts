@@ -23,9 +23,9 @@ export function parseSwitchoverPromoteFailureCode(
   error: string | undefined
 ): SwitchoverPromoteFailureCode | null {
   if (!error) return null
-  const match = /^switchover_promote:(gtid_wait_timeout|gtid_wait_error|promote_started):/.exec(
-    error
-  )
+  const match = new RegExp(
+    `^${SWITCHOVER_PROMOTE_ERROR_PREFIX}(gtid_wait_timeout|gtid_wait_error|promote_started):`
+  ).exec(error)
   if (!match) return null
   return match[1] as SwitchoverPromoteFailureCode
 }
