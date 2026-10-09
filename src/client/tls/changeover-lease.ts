@@ -7,55 +7,44 @@
  * row is the audit trail — it is never deleted; `endCaRotation` is implicit
  * via `awaiting_retire` / `completed` / `failed`.
  */
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
-import { changeover } from "../../db/schema.ts";
+import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import { changeover } from '../../db/schema.ts'
 
-export const CA_ROTATION_STATES = [
-  "in_progress",
-  "awaiting_retire",
-  "completed",
-  "failed",
-] as const;
+export const CA_ROTATION_STATES = ['in_progress', 'awaiting_retire', 'completed', 'failed'] as const
 
-export type CaRotationState = (typeof CA_ROTATION_STATES)[number];
+export type CaRotationState = (typeof CA_ROTATION_STATES)[number]
 
 /** States that block a new `POST /tls/ca/rotate`. */
-export const CA_ROTATION_BLOCKING_STATES = [
-  "in_progress",
-  "awaiting_retire",
-] as const;
+export const CA_ROTATION_BLOCKING_STATES = ['in_progress', 'awaiting_retire'] as const
 
 /** Stale in-progress journal reclaim window (crashed isolate). */
-export const CA_ROTATION_STALE_MS = 15 * 60 * 1000;
+export const CA_ROTATION_STALE_MS = 15 * 60 * 1000
 
 export type CaRotationJournalRow = {
-  id: string;
-  organizationId: string;
-  fromCaGeneration: number;
-  toCaGeneration: number;
-  state: CaRotationState;
-  startedAt: string;
-  completedAt: string | null;
-  results: unknown;
-  metadata: unknown;
-  createdAt: string;
-  updatedAt: string;
-};
+  id: string
+  organizationId: string
+  fromCaGeneration: number
+  toCaGeneration: number
+  state: CaRotationState
+  startedAt: string
+  completedAt: string | null
+  results: unknown
+  metadata: unknown
+  createdAt: string
+  updatedAt: string
+}
 
 function nowIso(nowMs = Date.now()): string {
-  return new Date(nowMs).toISOString();
+  return new Date(nowMs).toISOString()
 }
 
 function isCaRotationState(value: unknown): value is CaRotationState {
-  return typeof value === "string" &&
-    (CA_ROTATION_STATES as readonly string[]).includes(value);
+  return typeof value === 'string' && (CA_ROTATION_STATES as readonly string[]).includes(value)
 }
 
-function serializeJournalRow(
-  row: typeof changeover.$inferSelect,
-): CaRotationJournalRow | null {
-  if (!isCaRotationState(row.state)) return null;
+function serializeJournalRow(row: typeof changeover.$inferSelect): CaRotationJournalRow | null {
+  if (!isCaRotationState(row.state)) return null
   return {
     id: row.id,
     organizationId: row.organizationId,
@@ -68,16 +57,13 @@ function serializeJournalRow(
     metadata: row.metadata,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-  };
+  }
 }
 
-function journalIsStale(
-  startedAt: string,
-  nowMs = Date.now(),
-): boolean {
-  const started = Date.parse(startedAt);
-  if (!Number.isFinite(started)) return true;
-  return nowMs - started >= CA_ROTATION_STALE_MS;
+function journalIsStale(startedAt: string, nowMs = Date.now()): boolean {
+  const started = Date.parse(startedAt)
+  if (!Number.isFinite(started)) return true
+  return nowMs - started >= CA_ROTATION_STALE_MS
 }
 
 /**
@@ -85,21 +71,21 @@ function journalIsStale(
  */
 export async function loadLatestCaRotation(
   db: Db,
-  organizationId: string,
+  organizationId: string
 ): Promise<CaRotationJournalRow | null> {
   const [row] = await db
     .select()
     .from(changeover)
     .where(eq(changeover.organizationId, organizationId))
     .orderBy(desc(changeover.createdAt))
-    .limit(1);
-  if (!row) return null;
-  return serializeJournalRow(row);
+    .limit(1)
+  if (!row) return null
+  return serializeJournalRow(row)
 }
 
 async function loadBlockingCaRotation(
   db: Db,
-  organizationId: string,
+  organizationId: string
 ): Promise<CaRotationJournalRow | null> {
   const [row] = await db
     .select()
@@ -107,26 +93,26 @@ async function loadBlockingCaRotation(
     .where(
       and(
         eq(changeover.organizationId, organizationId),
-        inArray(changeover.state, [...CA_ROTATION_BLOCKING_STATES]),
-      ),
+        inArray(changeover.state, [...CA_ROTATION_BLOCKING_STATES])
+      )
     )
     .orderBy(desc(changeover.startedAt))
-    .limit(1);
-  if (!row) return null;
-  return serializeJournalRow(row);
+    .limit(1)
+  if (!row) return null
+  return serializeJournalRow(row)
 }
 
 async function insertInProgressRotation(
   db: Db,
   organizationId: string,
-  nowMs: number,
+  nowMs: number
 ): Promise<CaRotationJournalRow | null> {
-  const startedAt = nowIso(nowMs);
+  const startedAt = nowIso(nowMs)
   const inserted = await db
     .insert(changeover)
     .values({
       organizationId,
-      state: "in_progress",
+      state: 'in_progress',
       startedAt,
       results: [],
     })
@@ -134,28 +120,26 @@ async function insertInProgressRotation(
       target: changeover.organizationId,
       where: sql`${changeover.state} = 'in_progress'`,
     })
-    .returning();
-  const row = inserted[0];
-  if (!row) return null;
-  return serializeJournalRow(row);
+    .returning()
+  const row = inserted[0]
+  if (!row) return null
+  return serializeJournalRow(row)
 }
 
 /**
  * True when this journal already minted generation N+1 and fan-out may resume
  * instead of inserting another Organization CA.
  */
-export function caRotationHasMintedGeneration(
-  journal: CaRotationJournalRow,
-): boolean {
-  return journal.toCaGeneration > 0;
+export function caRotationHasMintedGeneration(journal: CaRotationJournalRow): boolean {
+  return journal.toCaGeneration > 0
 }
 
 async function stealStaleInProgressRotation(
   db: Db,
   existing: CaRotationJournalRow,
-  nowMs: number,
+  nowMs: number
 ): Promise<CaRotationJournalRow | null> {
-  const startedAt = nowIso(nowMs);
+  const startedAt = nowIso(nowMs)
   // Preserve results / metadata / generations so crash recovery resumes the
   // in-flight journal instead of minting another Organization CA generation.
   const stolen = await db
@@ -168,14 +152,14 @@ async function stealStaleInProgressRotation(
     .where(
       and(
         eq(changeover.id, existing.id),
-        eq(changeover.state, "in_progress"),
-        eq(changeover.startedAt, existing.startedAt),
-      ),
+        eq(changeover.state, 'in_progress'),
+        eq(changeover.startedAt, existing.startedAt)
+      )
     )
-    .returning();
-  const row = stolen[0];
-  if (!row) return null;
-  return serializeJournalRow(row);
+    .returning()
+  const row = stolen[0]
+  if (!row) return null
+  return serializeJournalRow(row)
 }
 
 /**
@@ -189,50 +173,44 @@ async function stealStaleInProgressRotation(
 export async function tryBeginCaRotation(
   db: Db,
   organizationId: string,
-  nowMs = Date.now(),
+  nowMs = Date.now()
 ): Promise<CaRotationJournalRow | null> {
-  const blocking = await loadBlockingCaRotation(db, organizationId);
+  const blocking = await loadBlockingCaRotation(db, organizationId)
   if (blocking) {
-    if (blocking.state === "awaiting_retire") return blocking;
-    if (caRotationHasMintedGeneration(blocking)) return blocking;
-    if (!journalIsStale(blocking.startedAt, nowMs)) return null;
-    return stealStaleInProgressRotation(db, blocking, nowMs);
+    if (blocking.state === 'awaiting_retire') return blocking
+    if (caRotationHasMintedGeneration(blocking)) return blocking
+    if (!journalIsStale(blocking.startedAt, nowMs)) return null
+    return stealStaleInProgressRotation(db, blocking, nowMs)
   }
-  return insertInProgressRotation(db, organizationId, nowMs);
+  return insertInProgressRotation(db, organizationId, nowMs)
 }
 
 export async function updateCaRotationJournal(
   db: Db,
   rotationId: string,
   patch: {
-    state?: CaRotationState;
-    fromCaGeneration?: number;
-    toCaGeneration?: number;
-    results?: unknown;
-    metadata?: unknown;
-    completedAt?: string | null;
-  },
+    state?: CaRotationState
+    fromCaGeneration?: number
+    toCaGeneration?: number
+    results?: unknown
+    metadata?: unknown
+    completedAt?: string | null
+  }
 ): Promise<CaRotationJournalRow | null> {
-  const updatedAt = nowIso();
+  const updatedAt = nowIso()
   const [row] = await db
     .update(changeover)
     .set({
       updatedAt,
       ...(patch.state === undefined ? {} : { state: patch.state }),
-      ...(patch.fromCaGeneration === undefined
-        ? {}
-        : { fromCaGeneration: patch.fromCaGeneration }),
-      ...(patch.toCaGeneration === undefined
-        ? {}
-        : { toCaGeneration: patch.toCaGeneration }),
+      ...(patch.fromCaGeneration === undefined ? {} : { fromCaGeneration: patch.fromCaGeneration }),
+      ...(patch.toCaGeneration === undefined ? {} : { toCaGeneration: patch.toCaGeneration }),
       ...(patch.results === undefined ? {} : { results: patch.results }),
       ...(patch.metadata === undefined ? {} : { metadata: patch.metadata }),
-      ...(patch.completedAt === undefined
-        ? {}
-        : { completedAt: patch.completedAt }),
+      ...(patch.completedAt === undefined ? {} : { completedAt: patch.completedAt }),
     })
     .where(eq(changeover.id, rotationId))
-    .returning();
-  if (!row) return null;
-  return serializeJournalRow(row);
+    .returning()
+  if (!row) return null
+  return serializeJournalRow(row)
 }
