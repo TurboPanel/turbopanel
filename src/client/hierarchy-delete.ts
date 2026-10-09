@@ -35,6 +35,14 @@ export function isForeignKeyViolation(error: unknown): boolean {
   return code === POSTGRES_FK_VIOLATION || code === POSTGRES_RESTRICT_VIOLATION
 }
 
+function referringTableFromErrorLayer(layer: Record<string, unknown>): string | undefined {
+  if (typeof layer.table_name === 'string') return layer.table_name
+  if (typeof layer.constraint_name === 'string') {
+    return referringTableFromConstraintName(layer.constraint_name)
+  }
+  return undefined
+}
+
 export function parsePostgresForeignKeyViolation(
   error: unknown
 ): HierarchyDeleteFkViolation | null {
@@ -43,12 +51,7 @@ export function parsePostgresForeignKeyViolation(
     const layer = current as Record<string, unknown>
     const code = layer.code
     if (code === POSTGRES_FK_VIOLATION || code === POSTGRES_RESTRICT_VIOLATION) {
-      const tableName =
-        typeof layer.table_name === 'string'
-          ? layer.table_name
-          : typeof layer.constraint_name === 'string'
-            ? referringTableFromConstraintName(layer.constraint_name)
-            : undefined
+      const tableName = referringTableFromErrorLayer(layer)
       const constraintName =
         typeof layer.constraint_name === 'string' ? layer.constraint_name : undefined
       if (tableName) {
@@ -117,4 +120,13 @@ export function hierarchyDeleteHasChildrenResponse(
     },
     409
   )
+}
+
+/** When delete hit a child FK, return the 409 response; otherwise `null`. */
+export function hierarchyDeleteHasChildrenResponseIfNeeded(
+  c: Context,
+  result: HierarchyDeleteResult
+): Response | null {
+  if (result.status !== 'has_children') return null
+  return hierarchyDeleteHasChildrenResponse(c, result.violation)
 }

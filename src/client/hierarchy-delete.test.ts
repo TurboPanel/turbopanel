@@ -6,6 +6,7 @@ import {
   HIERARCHY_DELETE_HAS_CHILDREN_ERROR,
   hierarchyDeleteHasChildrenMessage,
   hierarchyDeleteHasChildrenResponse,
+  hierarchyDeleteHasChildrenResponseIfNeeded,
   isForeignKeyViolation,
   parsePostgresForeignKeyViolation,
   runHierarchyDelete,
@@ -90,6 +91,11 @@ test('runHierarchyDelete rethrows unrelated errors', async () => {
   } as unknown as Db
 
   await assertRejects(() => runHierarchyDelete(db, async () => {}), Error, 'boom')
+})
+
+test('hierarchyDeleteHasChildrenResponseIfNeeded returns null on success', () => {
+  const c = {} as Parameters<typeof hierarchyDeleteHasChildrenResponseIfNeeded>[0]
+  assertEquals(hierarchyDeleteHasChildrenResponseIfNeeded(c, { status: 'ok' }), null)
 })
 
 test('hierarchyDeleteHasChildrenResponse returns 409 JSON', async () => {

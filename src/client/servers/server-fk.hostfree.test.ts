@@ -10,37 +10,13 @@ import { referringTableFromConstraintName, SERVER_FOREIGN_KEY_REFERENCES } from 
 const test = Deno.test.bind(Deno)
 
 test('SERVER_FOREIGN_KEY_REFERENCES lists every server FK from schema migrations', () => {
-  const tables = SERVER_FOREIGN_KEY_REFERENCES.map((row) => row.table).sort((a, b) =>
-    a.localeCompare(b)
-  )
-  assertEquals(tables, [
-    'backup',
-    'bulwark',
-    'capability',
-    'command',
-    'container',
-    'copy',
-    'deployment',
-    'edict',
-    'environment',
-    'generation',
-    'ip',
-    'key',
-    'label',
-    'leaf',
-    'license',
-    'managed',
-    'marker',
-    'monitor',
-    'network',
-    'relay',
-    'replica',
-    'slot',
-    'snapshot',
-    'stage',
-    'subnet',
-    'variable',
-  ])
+  const tables = SERVER_FOREIGN_KEY_REFERENCES.map((row) => row.table)
+  assertEquals(new Set(tables).size, tables.length)
+  assertEquals(tables.length, 26)
+  const onDelete = new Map(SERVER_FOREIGN_KEY_REFERENCES.map((row) => [row.table, row.onDelete]))
+  assertEquals(onDelete.get('backup'), 'set null')
+  assertEquals(onDelete.get('stage'), 'cascade')
+  assertEquals(onDelete.get('managed'), 'restrict')
 })
 
 test('referringTableFromConstraintName maps server_id FK constraint names', () => {

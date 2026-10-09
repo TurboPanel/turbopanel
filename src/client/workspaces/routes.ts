@@ -15,7 +15,10 @@ import {
   getOrgId,
   parseJsonBody,
 } from '../shared.ts'
-import { hierarchyDeleteHasChildrenResponse, runHierarchyDelete } from '../hierarchy-delete.ts'
+import {
+  hierarchyDeleteHasChildrenResponseIfNeeded,
+  runHierarchyDelete,
+} from '../hierarchy-delete.ts'
 import {
   isWorkspaceDisplayNameTaken,
   WORKSPACE_NAME_IN_USE_ERROR,
@@ -231,9 +234,8 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
       await applyStorageRetentionOnParentDelete(tx, { workspaceIds: [id] })
       await tx.delete(workspace).where(eq(workspace.id, id))
     })
-    if (result.status === 'has_children') {
-      return hierarchyDeleteHasChildrenResponse(c, result.violation)
-    }
+    const blocked = hierarchyDeleteHasChildrenResponseIfNeeded(c, result)
+    if (blocked) return blocked
 
     return c.json({ ok: true as const })
   })

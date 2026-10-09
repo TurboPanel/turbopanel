@@ -22,7 +22,10 @@ import {
   parseName,
   stripPromotedMetadataKeys,
 } from '../shared.ts'
-import { hierarchyDeleteHasChildrenResponse, runHierarchyDelete } from '../hierarchy-delete.ts'
+import {
+  hierarchyDeleteHasChildrenResponseIfNeeded,
+  runHierarchyDelete,
+} from '../hierarchy-delete.ts'
 import {
   assertCreateHostingBindScope,
   assertHostingNotComposeOwnedOr409,
@@ -373,9 +376,8 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(hosting).where(eq(hosting.id, id))
     })
-    if (result.status === 'has_children') {
-      return hierarchyDeleteHasChildrenResponse(c, result.violation)
-    }
+    const blocked = hierarchyDeleteHasChildrenResponseIfNeeded(c, result)
+    if (blocked) return blocked
 
     return c.json({ ok: true as const })
   })
