@@ -1705,6 +1705,7 @@ async function applyManagedBackupSideEffect(
         ...(backupResult.database !== undefined ? { database: backupResult.database } : {}),
         path: backupResult.path,
         ...(backupResult.completedAt !== undefined ? { createdAt: backupResult.completedAt } : {}),
+        serverId: record.serverId,
       })
     }
   } catch (err) {

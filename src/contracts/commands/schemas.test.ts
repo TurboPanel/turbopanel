@@ -6728,6 +6728,15 @@ test('parseManagedLifecyclePayload rejects leftover field throws', () => {
     Error,
     'Invalid managed.lifecycle payload'
   )
+  assertEquals(parseManagedLifecyclePayload({ managedId: 'm1', action: 'stop', demoted: true }), {
+    managedId: 'm1',
+    action: 'stop',
+    demoted: true,
+  })
+  assertEquals(parseManagedLifecyclePayload({ managedId: 'm1', action: 'stop', demoted: false }), {
+    managedId: 'm1',
+    action: 'stop',
+  })
 })
 
 test('parseManagedDestroyPayload rejects leftover field throws', () => {

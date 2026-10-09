@@ -528,6 +528,7 @@ async function enqueueFenceCommands(
       action: 'stop',
       memberId: params.source.id,
       engine: params.engine,
+      demoted: true,
     },
     expiresAtMs: FENCE_TTL_MS,
     actor: params.actor,

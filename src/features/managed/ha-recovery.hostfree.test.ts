@@ -1091,6 +1091,30 @@ test('beginOperatorSwitchover fences a reachable primary', async () => {
   )
 })
 
+test('fence stop of the old primary carries demoted; drain and promote do not', async () => {
+  const harness = createHarness({ connected: [true, true] })
+  const result = await beginOperatorSwitchover({
+    db: harness.db,
+    commandQueue: okQueue(),
+    managedId: MANAGED_ID,
+    engine: 'postgres',
+    source: member(),
+    target: failoverReplica(),
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  expectOk(result)
+  const payloads = harness.commandInserts
+    .map((row) => row.payload as Record<string, unknown> | undefined)
+    .filter((payload): payload is Record<string, unknown> => payload !== undefined)
+  const stop = payloads.find((payload) => payload.action === 'stop')
+  const drain = payloads.find((payload) => payload.phase === 'drain')
+  if (!stop || !drain) throw new TypeError('expected fence stop and drain commands')
+  assertEquals(stop.memberId, MEM_PRIMARY)
+  assertEquals(stop.demoted, true)
+  assertEquals(drain.demoted, undefined)
+})
+
 test('beginOperatorSwitchover skips drain on disconnected peers and still stops the writer', async () => {
   const queue = okQueue()
   const harness = createHarness({

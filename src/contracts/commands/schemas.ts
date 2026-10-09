@@ -5109,7 +5109,7 @@ export type ManagedApplyCommandResult = {
   status?: string
 }
 
-export type ManagedLifecycleCommandPayload = {
+export type ManagedLifecyclePayload = {
   managedId: string
   action: 'start' | 'stop' | 'restart'
   memberId?: string
@@ -5125,6 +5125,13 @@ export type ManagedLifecycleCommandPayload = {
    * releases (defaults to primary on the daemon).
    */
   role?: 'primary' | 'replica'
+  /**
+   * Fence stop of a replaced writer. The daemon writes a durable demoted
+   * marker and keeps the engine stopped if it is started by hand. Absent on
+   * ordinary operator stops and on stops of the new primary. Older daemons
+   * ignore it; older control planes omit it.
+   */
+  demoted?: boolean
 }
 
 export type ManagedLifecycleCommandResult = {
@@ -6182,7 +6189,7 @@ export function parseManagedApplyResult(value: unknown): ManagedApplyCommandResu
   return result
 }
 
-export function parseManagedLifecyclePayload(value: unknown): ManagedLifecycleCommandPayload {
+export function parseManagedLifecyclePayload(value: unknown): ManagedLifecyclePayload {
   if (!isRecord(value)) {
     throw new Error('Invalid managed.lifecycle payload')
   }
@@ -6194,9 +6201,9 @@ export function parseManagedLifecyclePayload(value: unknown): ManagedLifecycleCo
   ) {
     throw new Error('Invalid managed.lifecycle payload')
   }
-  const payload: ManagedLifecycleCommandPayload = {
+  const payload: ManagedLifecyclePayload = {
     managedId: value.managedId,
-    action: value.action as ManagedLifecycleCommandPayload['action'],
+    action: value.action as ManagedLifecyclePayload['action'],
   }
   if (value.memberId !== undefined) {
     if (!isString(value.memberId) || !UUID_RE.test(value.memberId)) {
@@ -6215,6 +6222,9 @@ export function parseManagedLifecyclePayload(value: unknown): ManagedLifecycleCo
       throw new Error('Invalid managed.lifecycle payload')
     }
     payload.role = value.role
+  }
+  if (value.demoted === true) {
+    payload.demoted = true
   }
   return payload
 }
@@ -7679,7 +7689,7 @@ export function parseCommandPayload(
   | EnvironmentLifecycleCommandPayload
   | EnvironmentStopCommandPayload
   | ManagedApplyCommandPayload
-  | ManagedLifecycleCommandPayload
+  | ManagedLifecyclePayload
   | ManagedDestroyCommandPayload
   | ManagedBackupCommandPayload
   | ManagedRestoreCommandPayload

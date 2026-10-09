@@ -21,7 +21,9 @@
  *    way of being replaced, manual switchover included. The command carries
  *    `returnFence` so the consumer does not project the stop onto the member
  *    or the cluster (it would overwrite `needs_resync`, which is the only
- *    thing keeping the old data from being started).
+ *    thing keeping the old data from being started). The stop payload also
+ *    carries `demoted: true` so the daemon keeps a durable marker and stops
+ *    the engine again if it is started by hand.
  *
  * Both only ever stop or start; neither promotes, and neither resyncs: wiping
  * the old primary's data is a deliberate operator action (its un-replicated
@@ -77,6 +79,8 @@ async function enqueueLifecycle(
     engine: ManagedEngineCode
     ttlMs: number
     metadata: Record<string, unknown>
+    /** Fence stop of a replaced writer; omitted on boot-hold start. */
+    demoted?: boolean
   }
 ): Promise<string | null> {
   const record = await createCommandRecord(db, {
@@ -90,6 +94,7 @@ async function enqueueLifecycle(
       memberId: params.member.id,
       role: params.member.role,
       engine: params.engine,
+      ...(params.demoted === true ? { demoted: true } : {}),
     },
     expiresAt: new Date(Date.now() + params.ttlMs).toISOString(),
     metadata: params.metadata,
@@ -350,6 +355,7 @@ export async function runReturnFenceSweep(
         engine: engine as ManagedEngineCode,
         ttlMs: RETURN_FENCE_TTL_MS,
         metadata: { returnFence: true },
+        demoted: true,
       })
       if (!commandId) return
       await (deps.noteReturnFence ?? noteReturnFence)(db, member, {

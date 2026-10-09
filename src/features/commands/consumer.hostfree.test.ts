@@ -2121,7 +2121,9 @@ test('processCommandEnvelope managed.backup create inserts a real backup row', a
     true
   )
   assertEquals(
-    created.inserts.some((row) => row.backupId === 'bk_1700000000000'),
+    created.inserts.some(
+      (row) => row.backupId === 'bk_1700000000000' && row.serverId === SERVER_ID
+    ),
     true
   )
 })
