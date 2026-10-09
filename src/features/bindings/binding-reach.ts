@@ -7,7 +7,7 @@
 import type { Db } from '../../db/connection.ts'
 import { isPrivateEndpointError, resolvePrivateEndpoint } from '../net/private-endpoint.ts'
 import { isPrepareError, resolveMemberPrivateBindAddress } from '../managed/apply-prepare.ts'
-import { listManagedMembers } from '../managed/members.ts'
+import { type ManagedMemberRow, listManagedMembers } from '../managed/members.ts'
 import { hasRemoteConsumerServers } from './remote-consumers.ts'
 
 export const BINDING_ENDPOINT_UNAVAILABLE_ERROR = 'binding_endpoint_unavailable'
@@ -39,6 +39,55 @@ async function consumerCanDialPublishedBind(
   return resolved.address === bind.address && resolved.transport === bind.transport
 }
 
+function remoteConsumerPathMissingError(message: string): BindingReachError {
+  return { error: BINDING_ENDPOINT_UNAVAILABLE_ERROR, message }
+}
+
+async function remoteConsumersReachMember(
+  db: Db,
+  member: ManagedMemberRow,
+  members: readonly ManagedMemberRow[],
+  remoteConsumers: readonly string[],
+  consumerServerIds: readonly string[]
+): Promise<BindingReachError | null> {
+  const publishedBind = await resolveMemberPrivateBindAddress(
+    db,
+    member,
+    members,
+    consumerServerIds
+  )
+  if (isPrepareError(publishedBind)) {
+    return remoteConsumerPathMissingError(BINDING_NO_PRIVATE_PATH_MESSAGE)
+  }
+
+  if (publishedBind) {
+    for (const fromServerId of remoteConsumers) {
+      const canDial = await consumerCanDialPublishedBind(
+        db,
+        fromServerId,
+        member.serverId,
+        publishedBind
+      )
+      if (!canDial) {
+        return remoteConsumerPathMissingError(BINDING_PUBLISHED_LISTENER_UNREACHABLE_MESSAGE)
+      }
+    }
+    return null
+  }
+
+  for (const fromServerId of remoteConsumers) {
+    const resolved = await resolvePrivateEndpoint(db, {
+      fromServerId,
+      toServerId: member.serverId,
+      purpose: 'client-backend',
+    })
+    if (isPrivateEndpointError(resolved)) {
+      return remoteConsumerPathMissingError(BINDING_NO_PRIVATE_PATH_MESSAGE)
+    }
+  }
+  return null
+}
+
 /**
  * When the app is on another host than every cluster member, that host must
  * already have a private path to each member. Co-resident apps skip this.
@@ -66,50 +115,14 @@ export async function remoteBindingReachError(
   )
 
   for (const member of members) {
-    const publishedBind = await resolveMemberPrivateBindAddress(
+    const denied = await remoteConsumersReachMember(
       db,
       member,
       members,
+      remoteConsumers,
       params.consumerServerIds
     )
-    if (isPrepareError(publishedBind)) {
-      return {
-        error: BINDING_ENDPOINT_UNAVAILABLE_ERROR,
-        message: BINDING_NO_PRIVATE_PATH_MESSAGE,
-      }
-    }
-
-    if (publishedBind) {
-      for (const fromServerId of remoteConsumers) {
-        const canDial = await consumerCanDialPublishedBind(
-          db,
-          fromServerId,
-          member.serverId,
-          publishedBind
-        )
-        if (!canDial) {
-          return {
-            error: BINDING_ENDPOINT_UNAVAILABLE_ERROR,
-            message: BINDING_PUBLISHED_LISTENER_UNREACHABLE_MESSAGE,
-          }
-        }
-      }
-      continue
-    }
-
-    for (const fromServerId of remoteConsumers) {
-      const resolved = await resolvePrivateEndpoint(db, {
-        fromServerId,
-        toServerId: member.serverId,
-        purpose: 'client-backend',
-      })
-      if (isPrivateEndpointError(resolved)) {
-        return {
-          error: BINDING_ENDPOINT_UNAVAILABLE_ERROR,
-          message: BINDING_NO_PRIVATE_PATH_MESSAGE,
-        }
-      }
-    }
+    if (denied) return denied
   }
   return null
 }
