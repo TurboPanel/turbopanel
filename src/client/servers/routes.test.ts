@@ -2755,9 +2755,11 @@ test('DELETE /servers/:id with forgetResources removes stale running system cont
           .where(eq(container.id, otherHierarchy.containerRowId))
         assertEquals(otherContainers.length, 1)
 
-        await db.delete(server).where(eq(server.id, otherServerId))
-        await db.delete(project).where(eq(project.id, otherHierarchy.projectId))
-        await db.delete(workspace).where(eq(workspace.id, otherHierarchy.workspaceId))
+        const cleanupOther = await app.request(`/servers/${otherServerId}?forgetResources=true`, {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        })
+        assertEquals(cleanupOther.status, 200)
       } finally {
         await cleanupOrgSystemSubtree(db, organizationId)
       }
