@@ -3,8 +3,10 @@ import type { Context } from 'hono'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
 import {
+  container,
   deployment,
   environment,
+  hosting,
   ip,
   managed,
   network,
@@ -12,28 +14,35 @@ import {
   server,
   slot,
   storageCopy,
+  variable,
 } from '../../db/schema.ts'
 import { isServerConnectedStoredOrLive } from '../../daemon/cell/server-status.ts'
 import {
+  assertServerOfflineForForget,
+  blockedEnvironmentForgetMessage,
+  blockersThatPreventForget,
+  canForgetServerResources,
   COLOCATED_SERVER_DELETE_BLOCKED_REASON,
+  colocatedServerDeleteBlockedReason,
+  forgetServerOwnedResources,
+  isServerOnlineDuringForgetError,
+  listServerDeleteBlockers,
+  loadServerDeletePreview,
+  parseForgetResourcesFlag,
+  planServerForget,
   SERVER_DELETE_BLOCKER_LABELS,
   SERVER_HAS_BLOCKERS_CODE,
   SERVER_HAS_BLOCKERS_ERROR,
   SERVER_ONLINE_CODE,
   SERVER_ONLINE_ERROR,
-  assertServerOfflineForForget,
-  blockersThatPreventForget,
-  canForgetServerResources,
-  colocatedServerDeleteBlockedReason,
-  isServerOnlineDuringForgetError,
-  listServerDeleteBlockers,
-  loadServerDeletePreview,
-  parseForgetResourcesFlag,
-  ServerOnlineDuringForgetError,
-  serverDeleteBlockersResponse,
-  serverOnlineForgetBlockedResponse,
+  type ServerBlockerEnvironmentItem,
+  serverBlockerItemName,
   type ServerDeleteBlocker,
   type ServerDeleteBlockerKind,
+  serverDeleteBlockersResponse,
+  ServerHasBlockersDuringForgetError,
+  ServerOnlineDuringForgetError,
+  serverOnlineForgetBlockedResponse,
 } from './delete-guards.ts'
 
 /**
@@ -56,6 +65,8 @@ function thenableRows(rows: unknown[]) {
   const promise = Promise.resolve(rows)
   const chain = {
     innerJoin: () => chain,
+    leftJoin: () => chain,
+    where: () => chain,
     limit: () => promise,
     orderBy: () => chain,
     then: promise.then.bind(promise),
@@ -68,6 +79,7 @@ function thenableRows(rows: unknown[]) {
 function joinedCount(value: number) {
   const chain = {
     innerJoin: () => chain,
+    leftJoin: () => chain,
     where: () => thenableRows([{ value }]),
   }
   return chain
@@ -92,16 +104,147 @@ function deleteBlockersDb(opts: {
     status: string
     serviceName: string | null
   }>
+  placedEnvironmentRows?: Array<{
+    id: string
+    name: string | null
+    projectId: string
+    projectName: string | null
+    managedId: string | null
+  }>
+  managedTouchRows?: Array<{
+    id: string
+    name: string | null
+    engine: string
+    managedServerId: string | null
+    environmentServerId: string | null
+  }>
+  replicaTouchRows?: Array<{
+    id: string
+    managedId: string
+    serverId: string
+    role: string
+    databaseName: string | null
+    engine: string
+  }>
+  otherReplicaRows?: Array<{
+    id: string
+    managedId: string
+    serverId: string
+    role: string
+  }>
+  environmentOtherServerTouches?: Array<{ environmentId: string; serverId: string }>
+  /** Rows returned on the second and later `listEnvironmentOtherServerIds` scans. */
+  environmentOtherServerTouchesAfterPlan?: Array<{ environmentId: string; serverId: string }>
+  serverNameRows?: Array<{ id: string; name: string | null }>
 }): Db {
   let executeCalls = 0
+  let presenceListPass = 0
+  const presenceLatch: {
+    rows?: Array<{ environmentId: string; serverId: string }>
+    remaining?: number
+  } = {}
+  function presenceRowsForListCheck(): Array<{ environmentId: string; serverId: string }> {
+    if (presenceLatch.rows === undefined) {
+      presenceListPass += 1
+      presenceLatch.rows =
+        presenceListPass === 1
+          ? (opts.environmentOtherServerTouches ?? [])
+          : (opts.environmentOtherServerTouchesAfterPlan ??
+            opts.environmentOtherServerTouches ??
+            [])
+      presenceLatch.remaining = 5
+    }
+    presenceLatch.remaining! -= 1
+    const rows = presenceLatch.rows
+    if (presenceLatch.remaining === 0) {
+      presenceLatch.rows = undefined
+      presenceLatch.remaining = undefined
+    }
+    return rows
+  }
   return {
     select: (fields?: Record<string, unknown>) => ({
       from: (table: unknown) => {
-        if (table === environment) return joinedCount(opts.environmentCount ?? 0)
-        if (table === managed) return joinedCount(opts.managedCount ?? 0)
-        if (table === replica) return joinedCount(opts.replicaCount ?? 0)
-        if (table === deployment) return joinedCount(opts.deploymentCount ?? 0)
-        if (table === slot) return joinedCount(opts.slotCount ?? 0)
+        if (table === environment) {
+          if (fields && 'projectName' in fields) {
+            return thenableRows(opts.placedEnvironmentRows ?? [])
+          }
+          if (fields && 'id' in fields) {
+            return {
+              where: () => ({
+                orderBy: () => ({
+                  for: () => Promise.resolve([{ id: 'env-1' }]),
+                }),
+                for: () => ({
+                  limit: () => Promise.resolve([{ id: 'env-1' }]),
+                }),
+                limit: () => Promise.resolve([{ id: 'env-1' }]),
+              }),
+            }
+          }
+          return joinedCount(opts.environmentCount ?? 0)
+        }
+        if (table === managed) {
+          if (fields && 'engine' in fields) {
+            return thenableRows(opts.managedTouchRows ?? [])
+          }
+          return joinedCount(opts.managedCount ?? 0)
+        }
+        if (table === replica) {
+          if (fields && 'databaseName' in fields) {
+            return thenableRows(opts.replicaTouchRows ?? [])
+          }
+          if (fields && 'managedId' in fields) {
+            return thenableRows(opts.otherReplicaRows ?? [])
+          }
+          return joinedCount(opts.replicaCount ?? 0)
+        }
+        if (table === deployment) {
+          if (fields && 'environmentId' in fields) {
+            return {
+              where: () => Promise.resolve(presenceRowsForListCheck()),
+            }
+          }
+          return joinedCount(opts.deploymentCount ?? 0)
+        }
+        if (table === slot) {
+          if (fields && 'environmentId' in fields) {
+            return {
+              where: () => Promise.resolve(presenceRowsForListCheck()),
+            }
+          }
+          return joinedCount(opts.slotCount ?? 0)
+        }
+        if (table === container) {
+          return {
+            innerJoin: () => ({
+              where: () => Promise.resolve(presenceRowsForListCheck()),
+            }),
+          }
+        }
+        if (table === hosting) {
+          return {
+            innerJoin: () => ({
+              innerJoin: () => ({
+                where: () => Promise.resolve(presenceRowsForListCheck()),
+              }),
+            }),
+          }
+        }
+        if (table === variable) {
+          return {
+            innerJoin: () => ({
+              where: () => Promise.resolve(presenceRowsForListCheck()),
+            }),
+          }
+        }
+        if (table === server) {
+          if (fields && 'name' in fields) {
+            return {
+              where: () => Promise.resolve(opts.serverNameRows ?? []),
+            }
+          }
+        }
         return {
           where: () => {
             if (table === server) {
@@ -149,7 +292,11 @@ test('colocatedServerDeleteBlockedReason returns the stable operator copy', () =
 test('serverDeleteBlockersResponse returns 409 with code and blockers', async () => {
   const blockers: ServerDeleteBlocker[] = [
     { kind: 'network', count: 2, label: SERVER_DELETE_BLOCKER_LABELS.network },
-    { kind: 'container', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.container },
+    {
+      kind: 'container',
+      count: 1,
+      label: SERVER_DELETE_BLOCKER_LABELS.container,
+    },
   ]
   const response = serverDeleteBlockersResponse(mockContext(), blockers)
   assertEquals(response.status, 409)
@@ -157,6 +304,22 @@ test('serverDeleteBlockersResponse returns 409 with code and blockers', async ()
     error: SERVER_HAS_BLOCKERS_ERROR,
     code: SERVER_HAS_BLOCKERS_CODE,
     blockers,
+  })
+})
+
+test('serverDeleteBlockersResponse includes capped blocked databases', async () => {
+  const blockers: ServerDeleteBlocker[] = [
+    { kind: 'managed', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.managed },
+  ]
+  const response = serverDeleteBlockersResponse(mockContext(), blockers, [
+    { id: 'db-1', name: 'orders', reason: 'only_member' },
+  ])
+  assertEquals(response.status, 409)
+  assertEquals(await response.json(), {
+    error: SERVER_HAS_BLOCKERS_ERROR,
+    code: SERVER_HAS_BLOCKERS_CODE,
+    blockers,
+    blockedDatabases: [{ id: 'db-1', name: 'orders', reason: 'only_member' }],
   })
 })
 
@@ -194,7 +357,11 @@ test('listServerDeleteBlockers reports each positive dependency count', async ()
   )
   assertEquals(blockers, [
     { kind: 'network', count: 2, label: SERVER_DELETE_BLOCKER_LABELS.network },
-    { kind: 'container', count: 3, label: SERVER_DELETE_BLOCKER_LABELS.container },
+    {
+      kind: 'container',
+      count: 3,
+      label: SERVER_DELETE_BLOCKER_LABELS.container,
+    },
     { kind: 'ip', count: 4, label: SERVER_DELETE_BLOCKER_LABELS.ip },
   ])
 })
@@ -242,11 +409,22 @@ test('loadServerDeletePreview lists leftovers and sets canForget when offline', 
   assertEquals(preview.colocated, false)
   assertEquals(preview.blockers, [
     { kind: 'network', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.network },
-    { kind: 'container', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.container },
+    {
+      kind: 'container',
+      count: 1,
+      label: SERVER_DELETE_BLOCKER_LABELS.container,
+    },
     { kind: 'ip', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.ip },
   ])
   assertEquals(preview.containers, {
-    items: [{ id: 'ctr-1', name: 'web-1', status: 'exited', serviceName: 'web' }],
+    items: [
+      {
+        id: 'ctr-1',
+        name: 'web-1',
+        status: 'exited',
+        serviceName: 'web',
+      },
+    ],
     more: 0,
   })
   assertEquals(preview.networks, {
@@ -257,6 +435,10 @@ test('loadServerDeletePreview lists leftovers and sets canForget when offline', 
     items: [{ id: 'ip-1', address: '203.0.113.10' }],
     more: 0,
   })
+  assertEquals(preview.environments, { items: [], more: 0 })
+  assertEquals(preview.members, { items: [], more: 0 })
+  assertEquals(preview.blockedDatabases, { items: [], more: 0 })
+  assertEquals(preview.blockedEnvironments, { items: [], more: 0 })
 })
 
 test('loadServerDeletePreview caps each list at 50 and reports more', async () => {
@@ -329,44 +511,345 @@ for (const kind of RESTRICT_BLOCKER_KINDS) {
       'server-1',
       'org-1'
     )
-    assertEquals(blockers, [{ kind, count: 2, label: SERVER_DELETE_BLOCKER_LABELS[kind] }])
+    assertEquals(blockers, [
+      {
+        kind,
+        count: 2,
+        label: SERVER_DELETE_BLOCKER_LABELS[kind],
+      },
+    ])
   })
 
-  test(`loadServerDeletePreview sets canForget false when a ${kind} blocker remains`, async () => {
+  test(`loadServerDeletePreview still lists a ${kind} leftover`, async () => {
     const preview = await loadServerDeletePreview(
       deleteBlockersDb({ [RESTRICT_COUNT_KEYS[kind]]: 1 }),
       'server-1',
       'org-1',
       { online: false, colocated: false }
     )
-    assertEquals(preview.canForget, false)
     assertEquals(preview.blockers[0]?.kind, kind)
+    assertEquals(preview.canForget, true)
   })
 }
 
-test('blockersThatPreventForget drops only container, network, and address kinds', () => {
-  const blockers: ServerDeleteBlocker[] = [
-    { kind: 'network', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.network },
-    { kind: 'environment', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.environment },
-  ]
-  assertEquals(blockersThatPreventForget(blockers), [blockers[1]])
+function environmentItems(
+  blocker: ServerDeleteBlocker | undefined
+): ServerBlockerEnvironmentItem[] {
+  return (blocker?.items ?? []).filter(
+    (item): item is ServerBlockerEnvironmentItem => 'hasDatabase' in item
+  )
+}
+
+function placedEnvironmentsDb() {
+  return deleteBlockersDb({
+    environmentCount: 3,
+    placedEnvironmentRows: [
+      {
+        id: 'env-3',
+        name: 'edge',
+        projectId: 'proj-2',
+        projectName: 'Beta',
+        managedId: null,
+      },
+      {
+        id: 'env-2',
+        name: 'staging',
+        projectId: 'proj-1',
+        projectName: 'Acme',
+        managedId: 'db-1',
+      },
+      {
+        id: 'env-1',
+        name: 'production',
+        projectId: 'proj-1',
+        projectName: 'Acme',
+        managedId: null,
+      },
+    ],
+    managedTouchRows: [
+      {
+        id: 'db-1',
+        name: 'orders',
+        engine: 'postgres',
+        managedServerId: null,
+        environmentServerId: 'server-1',
+      },
+    ],
+  })
+}
+
+test('planServerForget names every placed environment behind the environment blocker', async () => {
+  const plan = await planServerForget(placedEnvironmentsDb(), 'server-1', 'org-1')
+  assertEquals(
+    plan.blockers.find((row) => row.kind === 'environment'),
+    {
+      kind: 'environment',
+      count: 3,
+      label: SERVER_DELETE_BLOCKER_LABELS.environment,
+      items: [
+        {
+          id: 'env-1',
+          name: 'production',
+          projectId: 'proj-1',
+          projectName: 'Acme',
+          hasDatabase: false,
+        },
+        {
+          id: 'env-2',
+          name: 'staging',
+          projectId: 'proj-1',
+          projectName: 'Acme',
+          hasDatabase: true,
+        },
+        {
+          id: 'env-3',
+          name: 'edge',
+          projectId: 'proj-2',
+          projectName: 'Beta',
+          hasDatabase: false,
+        },
+      ],
+      more: 0,
+    }
+  )
 })
 
-test('canForgetServerResources is true only for forgettable leftover kinds while offline', () => {
-  const forgettable: ServerDeleteBlocker[] = [
-    { kind: 'ip', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.ip },
-  ]
+test('forget covers every environment the blocker counts except the ones carrying a database', async () => {
+  const plan = await planServerForget(placedEnvironmentsDb(), 'server-1', 'org-1')
+  const blocker = plan.blockers.find((row) => row.kind === 'environment')
+  const items = environmentItems(blocker)
+  assertEquals(items.length, blocker?.count)
+  const forgotten = new Set(plan.environmentIds)
+  for (const item of items) {
+    assertEquals(forgotten.has(item.id), !item.hasDatabase)
+  }
+  assertEquals(plan.environmentIds, ['env-1', 'env-3'])
   assertEquals(
-    canForgetServerResources({ online: false, colocated: false, blockers: forgettable }),
+    items.filter((item) => item.hasDatabase).map((item) => item.id),
+    ['env-2']
+  )
+})
+
+test('planServerForget names the blocked database behind the blocking blocker', async () => {
+  const plan = await planServerForget(placedEnvironmentsDb(), 'server-1', 'org-1')
+  assertEquals(plan.blockedDatabases, [
+    {
+      id: 'db-1',
+      name: 'orders',
+      reason: 'only_member',
+    },
+  ])
+  assertEquals(plan.blockingBlockers, [
+    {
+      kind: 'managed',
+      count: 1,
+      label: SERVER_DELETE_BLOCKER_LABELS.managed,
+      items: [{ id: 'db-1', name: 'orders' }],
+      more: 0,
+    },
+  ])
+})
+
+test('planServerForget names the database behind a forgettable member blocker', async () => {
+  const plan = await planServerForget(
+    deleteBlockersDb({
+      replicaCount: 1,
+      replicaTouchRows: [
+        {
+          id: 'rep-1',
+          managedId: 'db-3',
+          serverId: 'server-1',
+          role: 'replica',
+          databaseName: 'carts',
+          engine: 'mysql',
+        },
+      ],
+      otherReplicaRows: [
+        {
+          id: 'rep-0',
+          managedId: 'db-3',
+          serverId: 'server-2',
+          role: 'primary',
+        },
+      ],
+    }),
+    'server-1',
+    'org-1'
+  )
+  assertEquals(plan.blockedDatabases, [])
+  assertEquals(plan.blockers, [
+    {
+      kind: 'replica',
+      count: 1,
+      label: SERVER_DELETE_BLOCKER_LABELS.replica,
+      items: [{ id: 'db-3', name: 'carts' }],
+      more: 0,
+    },
+  ])
+  assertEquals(plan.members, [{ id: 'rep-1', databaseName: 'carts' }])
+})
+
+test('environment blocker items stop at 50 and report the rest', async () => {
+  const plan = await planServerForget(
+    deleteBlockersDb({
+      environmentCount: 52,
+      placedEnvironmentRows: Array.from({ length: 52 }, (_, i) => ({
+        id: `env-${String(i).padStart(2, '0')}`,
+        name: `e${String(i).padStart(2, '0')}`,
+        projectId: 'proj-1',
+        projectName: 'Acme',
+        managedId: null,
+      })),
+    }),
+    'server-1',
+    'org-1'
+  )
+  const blocker = plan.blockers.find((row) => row.kind === 'environment')
+  assertEquals(blocker?.items?.length, 50)
+  assertEquals(blocker?.more, 2)
+  assertEquals(plan.environmentIds.length, 52)
+})
+
+test('serverBlockerItemName reads as Project / Environment for environments', () => {
+  assertEquals(
+    serverBlockerItemName({
+      id: 'env-1',
+      name: 'production',
+      projectId: 'proj-1',
+      projectName: 'Acme',
+      hasDatabase: false,
+    }),
+    'Acme / production'
+  )
+  assertEquals(serverBlockerItemName({ id: 'db-1', name: 'orders' }), 'orders')
+})
+
+test('blockersThatPreventForget keeps managed leftovers that still block forget', () => {
+  const blockers: ServerDeleteBlocker[] = [
+    { kind: 'network', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.network },
+    {
+      kind: 'environment',
+      count: 1,
+      label: SERVER_DELETE_BLOCKER_LABELS.environment,
+    },
+    { kind: 'managed', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.managed },
+  ]
+  assertEquals(blockersThatPreventForget(blockers), [blockers[2]])
+})
+
+test('canForgetServerResources is true only when offline, not colocated, and no blocked database', () => {
+  assertEquals(
+    canForgetServerResources({
+      online: false,
+      colocated: false,
+      blockedDatabaseCount: 0,
+      blockedEnvironmentCount: 0,
+    }),
     true
   )
   assertEquals(
     canForgetServerResources({
       online: false,
       colocated: false,
-      blockers: [{ kind: 'replica', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.replica }],
+      blockedDatabaseCount: 1,
+      blockedEnvironmentCount: 0,
     }),
     false
+  )
+  assertEquals(
+    canForgetServerResources({
+      online: false,
+      colocated: false,
+      blockedDatabaseCount: 0,
+      blockedEnvironmentCount: 1,
+    }),
+    false
+  )
+})
+
+test('forgetServerOwnedResources re-checks present_elsewhere after planning', async () => {
+  const db = deleteBlockersDb({
+    placedEnvironmentRows: [
+      {
+        id: 'env-1',
+        name: 'production',
+        projectId: 'proj-1',
+        projectName: 'Acme',
+        managedId: null,
+      },
+    ],
+    environmentOtherServerTouches: [],
+    environmentOtherServerTouchesAfterPlan: [
+      {
+        environmentId: 'env-1',
+        serverId: 'server-2',
+      },
+    ],
+    serverNameRows: [{ id: 'server-2', name: 'Worker 2' }],
+  })
+  let threw = false
+  try {
+    await forgetServerOwnedResources(db, 'server-1', 'org-1')
+  } catch (error) {
+    threw = true
+    assertEquals(error instanceof ServerHasBlockersDuringForgetError, true)
+    const blockerError = error as ServerHasBlockersDuringForgetError
+    assertEquals(blockerError.code, SERVER_HAS_BLOCKERS_CODE)
+    assertEquals(blockerError.blockedEnvironments, [
+      {
+        id: 'env-1',
+        name: 'production',
+        projectId: 'proj-1',
+        projectName: 'Acme',
+        reason: 'present_elsewhere',
+        serverNames: ['Worker 2'],
+      },
+    ])
+  }
+  assertEquals(threw, true)
+})
+
+test('planServerForget blocks an environment with a container on another server', async () => {
+  const plan = await planServerForget(
+    deleteBlockersDb({
+      environmentCount: 1,
+      placedEnvironmentRows: [
+        {
+          id: 'env-1',
+          name: 'production',
+          projectId: 'proj-1',
+          projectName: 'Acme',
+          managedId: null,
+        },
+      ],
+      environmentOtherServerTouches: [
+        {
+          environmentId: 'env-1',
+          serverId: 'server-2',
+        },
+      ],
+      serverNameRows: [{ id: 'server-2', name: 'Worker 2' }],
+    }),
+    'server-1',
+    'org-1'
+  )
+  assertEquals(plan.environmentIds, [])
+  assertEquals(plan.blockedEnvironments, [
+    {
+      id: 'env-1',
+      name: 'production',
+      projectId: 'proj-1',
+      projectName: 'Acme',
+      reason: 'present_elsewhere',
+      serverNames: ['Worker 2'],
+    },
+  ])
+})
+
+test('blockedEnvironmentForgetMessage names Project / Environment and the live server', () => {
+  assertEquals(
+    blockedEnvironmentForgetMessage('Acme', 'production', ['Worker 2']),
+    'App "Acme / production" also runs on "Worker 2". Move or delete it first.'
   )
 })
 

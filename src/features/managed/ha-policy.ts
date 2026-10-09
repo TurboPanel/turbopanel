@@ -352,6 +352,18 @@ export type OrchestratorBindingInput = {
    * (`null` = no primary, or no usable address for it).
    */
   expectedPrimary: { host: string; port: number } | null
+  /**
+   * The primary's private-listener port when the primary runs on the
+   * REPORTING server itself. The daemon registers a local member in
+   * Orchestrator by its published private listener (`<ip>:<privatePort>`),
+   * not by the Docker name this side dials it by. The exception applies only
+   * when the report also names one of `localPrimaryHosts`; private ports are
+   * allocated per server and therefore do not identify a cluster member by
+   * themselves.
+   */
+  localPrivatePort?: number | null
+  /** The reporting server's published private addresses and local container name. */
+  localPrimaryHosts?: readonly string[]
 }
 
 /**
@@ -368,8 +380,23 @@ export function orchestratorBindingRejection(input: OrchestratorBindingInput): s
       : null
   }
   if (!input.expectedPrimary) return 'the current primary has no known private address and port'
-  const sameHost = input.instanceHost?.toLowerCase() === input.expectedPrimary.host.toLowerCase()
-  if (sameHost && input.instancePort === input.expectedPrimary.port) return null
+  if (
+    input.instanceHost?.toLowerCase() === input.expectedPrimary.host.toLowerCase() &&
+    input.instancePort === input.expectedPrimary.port
+  ) {
+    return null
+  }
+  const sameLocalHost = input.localPrimaryHosts?.some(
+    (host) => input.instanceHost?.toLowerCase() === host.toLowerCase()
+  )
+  if (
+    input.localPrivatePort !== undefined &&
+    input.localPrivatePort !== null &&
+    input.instancePort === input.localPrivatePort &&
+    sameLocalHost
+  ) {
+    return null
+  }
   return `reported instance ${input.instanceHost}:${input.instancePort} is not the current primary (${input.expectedPrimary.host}:${input.expectedPrimary.port})`
 }
 

@@ -583,9 +583,11 @@ age, not on the gate's error code, because the gate answers
 `managed_replica_not_streaming` _before_ it reads `observedAt`), the route asks
 the target's daemon for a fresh reading first (`managed-health-request`, 8s,
 `src/client/managed/health-probe.ts`, feature `managed-health-v1`) and runs the
-**unchanged** gate on it. **Fail-closed is preserved:** timeout, offline host,
-a daemon without the feature, a daemon error, a malformed reply, or a reply for
-another member all fall back to the gate on the stored observation — today's 409. `force` never probes. `GET …/managed/status?refresh=1` (the panel's
+lag gate only on an `observed` answer. Timeout, offline host, a daemon without
+the feature, a daemon error, a malformed reply, or a reply for another member
+refuses with **409** `managed_replica_live_check_failed` and a plain-words
+message (stored metadata is never enough without a live answer). `force` never
+probes. `GET …/managed/status?refresh=1` (the panel's
 Refresh) probes every **replica** in parallel (and the primary, while replicas
 exist, so its `slotRetention` is current after a Resync; not counted) and returns
 `healthRefresh: { observed, unavailable }`; a plain GET stays DB-only. The probe
@@ -725,7 +727,11 @@ all:
    `managed-ha-instance-v1`), and it must equal the primary's address and port
    as the reporter's Orchestrator knows it (`haMemberDialForReporter`, the same
    dial `managed.ha.reconcile` registered: private address + `privatePort`, or
-   the local container name + engine default port). A mismatch, or a missing
+   the local container name + engine default port). A local primary report may
+   instead name the reporter's published private address (or local container
+   name) plus its `privatePort`; the host check is mandatory because private
+   ports are allocated per server and remote members commonly hold the same
+   number. A mismatch, or a missing
    instance from a daemon that advertises the feature, is recorded as a
    terminal `blocked` row with `metadata.stale = true` and a reason, and
    nothing is fenced or promoted (no in-flight resume, no cooldown). A daemon
@@ -781,6 +787,20 @@ stop`; an unreachable old primary blocks) then promote.
    row terminal `blocked` (`FENCE_STOP_UNQUEUED_MESSAGE` /
    `PROMOTE_UNQUEUED_MESSAGE`) instead of leaving `fencing` / `promoting`
    holding the in-flight slot.
+   A promote (or failover `recover`) command the target's daemon lost to a
+   restart (the daemon answers `The daemon restarted while this command was
+   running…`) is **queued again** by `resumeInterruptedPromote`
+   (`ha-recovery.ts`, called from the consumer's failure path) while the row is
+   still `promoting`, the in-flight journal row still matches, no other member
+   has become primary, the target is still a replica on a connected server (or
+   already primary in the journal — then recovery completes without a second
+   promote), and fewer than `MAX_PROMOTE_RESUMES` (2, `metadata.promoteResumes`)
+   resumes happened. Re-queued promotes carry `resume: true` on the payload;
+   a resume promote whose engine is already writable is completed as success on
+   the instance (`promote-resume.ts`). The old primary is already fenced, so
+   failing the row would leave no writer until an operator repaired it.
+   Anything else (other errors, a limit reached, no queue) ends the row `failed`
+   as before.
 9. Safety net: the stale sweep (Deno cleanup lane and the Workers
    offline-sweep cron) runs `expireStaleRecoveries`: a `detecting`/`fencing`
    row older than `STALE_DETECTING_RECOVERY_MS` (10 min) with no command
