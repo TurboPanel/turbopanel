@@ -364,10 +364,10 @@ test('parseManagedHaReconcilePayload carries the org topology account, sealed on
       username: 'tp_orchapi_111111111111',
       password: 'tpdaemon.v1.server.key.payload',
     },
-    orchestratorRaftToken: 'tpdaemon.v1.server.key.raft',
+    orchestratorRaftToken: 'tpdaemon.v1.server.key.payload',
   })
   assertEquals(withOrchApi.orchestratorApiUser?.username, 'tp_orchapi_111111111111')
-  assertEquals(withOrchApi.orchestratorRaftToken, 'tpdaemon.v1.server.key.raft')
+  assertEquals(withOrchApi.orchestratorRaftToken, 'tpdaemon.v1.server.key.payload')
 })
 
 test('parseManagedHaReconcilePayload accepts raft peers and cluster members', () => {
