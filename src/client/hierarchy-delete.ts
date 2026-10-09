@@ -50,26 +50,37 @@ function referringTableFromErrorLayer(layer: Record<string, unknown>): string | 
   return undefined
 }
 
+function hierarchyDeleteFkViolationFromLayer(
+  layer: Record<string, unknown>
+): HierarchyDeleteFkViolation | null {
+  const code = layer.code
+  if (code !== POSTGRES_FK_VIOLATION && code !== POSTGRES_RESTRICT_VIOLATION) {
+    return null
+  }
+  const tableName = referringTableFromErrorLayer(layer)
+  const constraintName =
+    typeof layer.constraint_name === 'string' ? layer.constraint_name : undefined
+  if (tableName) {
+    return { referringTable: tableName, ...(constraintName ? { constraintName } : {}) }
+  }
+  if (constraintName) {
+    const fromConstraint = referringTableFromConstraintName(constraintName)
+    if (fromConstraint) {
+      return { referringTable: fromConstraint, constraintName }
+    }
+  }
+  return null
+}
+
 export function parsePostgresForeignKeyViolation(
   error: unknown
 ): HierarchyDeleteFkViolation | null {
   let current: unknown = error
   while (current && typeof current === 'object') {
     const layer = current as Record<string, unknown>
-    const code = layer.code
-    if (code === POSTGRES_FK_VIOLATION || code === POSTGRES_RESTRICT_VIOLATION) {
-      const tableName = referringTableFromErrorLayer(layer)
-      const constraintName =
-        typeof layer.constraint_name === 'string' ? layer.constraint_name : undefined
-      if (tableName) {
-        return { referringTable: tableName, ...(constraintName ? { constraintName } : {}) }
-      }
-      if (constraintName) {
-        const fromConstraint = referringTableFromConstraintName(constraintName)
-        if (fromConstraint) {
-          return { referringTable: fromConstraint, constraintName }
-        }
-      }
+    const violation = hierarchyDeleteFkViolationFromLayer(layer)
+    if (violation) return violation
+    if (layer.code === POSTGRES_FK_VIOLATION || layer.code === POSTGRES_RESTRICT_VIOLATION) {
       return null
     }
     if (layer.cause && layer.cause !== current) {

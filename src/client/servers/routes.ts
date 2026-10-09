@@ -709,12 +709,14 @@ async function assertSystemEnvironmentIdleOrBlocked(
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1)
-  for (const environmentId of systemEnvironmentIds) {
-    if (
-      await systemEnvironmentHasActiveContainers(db, environmentId, serverRow?.isConnected ?? false)
-    ) {
-      return hierarchyDeleteHasChildrenResponse(c)
-    }
+  const serverConnected = serverRow?.isConnected ?? false
+  const activeOnSystemEnvs = await Promise.all(
+    systemEnvironmentIds.map((environmentId) =>
+      systemEnvironmentHasActiveContainers(db, environmentId, serverConnected)
+    )
+  )
+  if (activeOnSystemEnvs.some(Boolean)) {
+    return hierarchyDeleteHasChildrenResponse(c)
   }
   return { systemEnvironmentIds }
 }
@@ -740,9 +742,11 @@ async function deleteServerWithSystemSubtree(
         await assertServerOfflineForForget(tx, serverId)
         forgotten = await forgetServerOwnedResources(tx, serverId, organizationId)
       }
-      for (const environmentId of systemEnvironmentIds) {
-        await systemHierarchy.deleteSystemEnvironmentSubtree(tx, environmentId)
-      }
+      await Promise.all(
+        systemEnvironmentIds.map((environmentId) =>
+          systemHierarchy.deleteSystemEnvironmentSubtree(tx, environmentId)
+        )
+      )
       await deleteServerFabricMembership(tx, serverId)
       await purgeServerRestrictForeignKeys(tx, serverId)
       await tx.delete(server).where(eq(server.id, serverId))
