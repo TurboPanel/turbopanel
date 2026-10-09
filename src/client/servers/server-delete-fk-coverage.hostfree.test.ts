@@ -1,10 +1,30 @@
 import { assertEquals } from '@std/assert'
 import { dirname, fromFileUrl, join } from '@std/path'
 import {
+  assertEnvironmentForgetForeignKeyCoverage,
   assertServerRestrictForeignKeyCoverage,
+  ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS,
+  listEnvironmentForeignKeysFromMigrationSql,
+  listServerForeignKeysFromMigrationSql,
   listServerRestrictForeignKeyTablesFromMigrationSql,
   SERVER_RESTRICT_FOREIGN_KEY_HANDLERS,
 } from './server-fk.ts'
+
+const repoRoot = join(dirname(fromFileUrl(import.meta.url)), '../../..')
+
+const SERVER_PURGE_SOURCE = join(repoRoot, 'src/client/servers/server-fk.ts')
+const SERVER_FORGET_SOURCE = join(repoRoot, 'src/client/servers/delete-guards.ts')
+const ENVIRONMENT_DROP_SOURCE = join(repoRoot, 'src/features/projects/project-delete.ts')
+
+function assertSourceMentionsTable(source: string, table: string, context: string): void {
+  const drizzleTable = table === 'copy' ? 'storageCopy' : table
+  const mentioned =
+    source.includes(`.delete(${drizzleTable})`) ||
+    source.includes(`.delete(${table})`) ||
+    source.includes(`from(${drizzleTable})`) ||
+    source.includes(`from(${table})`)
+  assertEquals(mentioned, true, `${context}: expected implementation reference to ${table}`)
+}
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -13,8 +33,6 @@ import {
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
-
-const repoRoot = join(dirname(fromFileUrl(import.meta.url)), '../../..')
 
 async function loadMigrationSqlInJournalOrder(): Promise<string[]> {
   const migrationsDir = join(repoRoot, 'migrations')
@@ -30,31 +48,60 @@ async function loadMigrationSqlInJournalOrder(): Promise<string[]> {
 }
 
 test(
-  'every RESTRICT server_id FK in migrations is covered by the delete path',
+  'shipped migrations match server delete and environment forget FK handler registries',
   { permissions: { read: true } },
   async () => {
     const chunks = await loadMigrationSqlInJournalOrder()
-    const tables = listServerRestrictForeignKeyTablesFromMigrationSql(chunks)
-    assertServerRestrictForeignKeyCoverage(tables)
+
+    const serverRestrictTables = listServerRestrictForeignKeyTablesFromMigrationSql(chunks)
+    assertServerRestrictForeignKeyCoverage(serverRestrictTables)
     assertEquals(
       Object.keys(SERVER_RESTRICT_FOREIGN_KEY_HANDLERS).sort((a, b) => a.localeCompare(b)),
-      tables
+      serverRestrictTables
     )
-  }
-)
 
-test(
-  'migration SQL lists every handler table as a RESTRICT server_id FK',
-  { permissions: { read: true } },
-  async () => {
-    const chunks = await loadMigrationSqlInJournalOrder()
-    const tables = new Set(listServerRestrictForeignKeyTablesFromMigrationSql(chunks))
+    const serverRows = listServerForeignKeysFromMigrationSql(chunks)
+    const serverTables = new Set(serverRows.map((row) => row.table))
     for (const table of Object.keys(SERVER_RESTRICT_FOREIGN_KEY_HANDLERS)) {
-      assertEquals(
-        tables.has(table),
-        true,
-        `expected migrations to declare RESTRICT FK on ${table}`
-      )
+      assertEquals(serverTables.has(table), true, `expected server_id FK on ${table}`)
+    }
+    assertEquals(
+      serverRows.some((row) => row.table === 'backup' && row.onDelete === 'set null'),
+      true
+    )
+    assertEquals(
+      serverRows.some((row) => row.table === 'stage' && row.onDelete === 'cascade'),
+      true
+    )
+
+    const environmentRows = listEnvironmentForeignKeysFromMigrationSql(chunks)
+    const environmentTables = environmentRows
+      .map((row) => row.table)
+      .sort((a, b) => a.localeCompare(b))
+    assertEnvironmentForgetForeignKeyCoverage(environmentTables)
+    assertEquals(
+      Object.keys(ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS).sort((a, b) => a.localeCompare(b)),
+      environmentTables
+    )
+
+    const serverPurgeSource = await Deno.readTextFile(SERVER_PURGE_SOURCE)
+    const serverForgetSource = await Deno.readTextFile(SERVER_FORGET_SOURCE)
+    const environmentDropSource = await Deno.readTextFile(ENVIRONMENT_DROP_SOURCE)
+
+    for (const [table, handler] of Object.entries(SERVER_RESTRICT_FOREIGN_KEY_HANDLERS)) {
+      if (handler === 'purge') {
+        assertSourceMentionsTable(serverPurgeSource, table, 'purgeServerRestrictForeignKeys')
+      } else if (handler === 'fabric') {
+        assertSourceMentionsTable(serverPurgeSource, table, 'purgeServerFabricForeignKeys')
+      } else {
+        assertSourceMentionsTable(serverForgetSource, table, 'forgetServerOwnedResources')
+      }
+    }
+
+    for (const [table, handler] of Object.entries(ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS)) {
+      if (handler === 'drop-subtree') {
+        assertSourceMentionsTable(environmentDropSource, table, 'dropEnvironmentSubtreeInTx')
+      }
     }
   }
 )

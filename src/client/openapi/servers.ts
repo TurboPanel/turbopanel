@@ -923,11 +923,25 @@ export const serverSchemas = {
   },
   HierarchyDeleteConflict: {
     type: 'object',
-    required: ['error'],
+    required: ['error', 'code'],
     properties: {
       error: {
         type: 'string',
         const: 'Cannot delete while child resources exist',
+      },
+      code: { type: 'string', const: 'hierarchy_delete_has_children' },
+      blockers: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['table'],
+          properties: {
+            table: { type: 'string' },
+            constraint: { type: 'string' },
+            column: { type: 'string' },
+          },
+        },
+        description: 'Postgres FK rows that still reference the deleted parent (no tenant ids).',
       },
     },
   },

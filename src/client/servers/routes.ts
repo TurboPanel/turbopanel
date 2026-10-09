@@ -74,8 +74,8 @@ import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-reco
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import {
   hierarchyDeleteHasChildrenResponse,
-  peekHierarchyDeleteFkViolation,
-  runHierarchyDelete,
+  type HierarchyDeleteFkBlocker,
+  runHierarchyDeleteResult,
 } from '../hierarchy-delete.ts'
 import { purgeServerForeignKeysForDelete } from './server-fk.ts'
 import * as systemHierarchy from '../../features/system/hierarchy.ts'
@@ -732,11 +732,11 @@ async function deleteServerWithSystemSubtree(
   blockers: ServerDeleteBlocker[]
   blockedDatabases: ServerForgetBlockedDatabase[]
   blockedEnvironments: ServerForgetBlockedEnvironment[]
-  fkViolation?: { referringTable: string; constraintName?: string }
+  fkBlockers?: HierarchyDeleteFkBlocker[]
 }> {
   let forgotten: ForgottenServerResources | null = null
   try {
-    const deleteResult = await runHierarchyDelete(db, async (tx) => {
+    const deleteResult = await runHierarchyDeleteResult(db, async (tx) => {
       if (forgetResources) {
         await assertServerOfflineForForget(tx, serverId)
         forgotten = await forgetServerOwnedResources(tx, serverId, organizationId)
@@ -750,12 +750,12 @@ async function deleteServerWithSystemSubtree(
       await tx.delete(server).where(eq(server.id, serverId))
     })
     return {
-      status: deleteResult === 'ok' ? 'ok' : 'has_children',
-      forgotten: deleteResult === 'ok' ? forgotten : null,
+      status: deleteResult.status === 'ok' ? 'ok' : 'has_children',
+      forgotten: deleteResult.status === 'ok' ? forgotten : null,
       blockers: [],
       blockedDatabases: [],
       blockedEnvironments: [],
-      ...(deleteResult === 'has_children' ? { fkViolation: peekHierarchyDeleteFkViolation() } : {}),
+      ...(deleteResult.status === 'has_children' ? { fkBlockers: [...deleteResult.blockers] } : {}),
     }
   } catch (error) {
     if (isServerOnlineDuringForgetError(error)) {
@@ -1704,7 +1704,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       )
     }
     if (result.status === 'has_children') {
-      return hierarchyDeleteHasChildrenResponse(c, result.fkViolation)
+      return hierarchyDeleteHasChildrenResponse(c, result.fkBlockers ?? [])
     }
 
     await reconcileFabricAfterServerDelete(c, db, organizationId, session.userId)

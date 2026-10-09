@@ -6,10 +6,14 @@ import {
   deployment,
   environment,
   hosting,
+  leaf,
   managed,
   principal,
   project,
   service,
+  slot,
+  storage,
+  storageCopy,
   tenancy,
 } from '../../db/schema.ts'
 import { applyStorageRetentionOnParentDelete } from '../storage/storage-records.ts'
@@ -131,6 +135,39 @@ async function syncRemovedBindingListeners(
     warning = mergeBindingListenerWarning(warning, outcome)
   })
   return warning
+}
+
+async function purgeEnvironmentServerPlacementArtifacts(
+  tx: Db,
+  environmentIds: readonly string[],
+  serverId: string
+): Promise<void> {
+  if (environmentIds.length === 0) return
+  const ids = [...environmentIds]
+  await tx.delete(deployment).where(inArray(deployment.environmentId, ids))
+  await tx.delete(slot).where(inArray(slot.environmentId, ids))
+
+  const managedRows = await tx
+    .select({ id: managed.id })
+    .from(managed)
+    .where(inArray(managed.environmentId, ids))
+  const managedIds = managedRows.map((row) => row.id)
+  if (managedIds.length > 0) {
+    await tx
+      .delete(leaf)
+      .where(and(eq(leaf.serverId, serverId), inArray(leaf.managedId, managedIds)))
+  }
+
+  const storageRows = await tx
+    .select({ id: storage.id })
+    .from(storage)
+    .where(inArray(storage.environmentId, ids))
+  const storageIds = storageRows.map((row) => row.id)
+  if (storageIds.length > 0) {
+    await tx
+      .delete(storageCopy)
+      .where(and(inArray(storageCopy.storageId, storageIds), eq(storageCopy.serverId, serverId)))
+  }
 }
 
 async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<void> {
@@ -272,12 +309,16 @@ async function hasInProgressDeployment(db: Db, environmentId: string): Promise<b
  */
 export async function dropEnvironmentSubtreeInTx(
   tx: Db,
-  environmentIds: readonly string[]
+  environmentIds: readonly string[],
+  opts?: Readonly<{ serverId?: string }>
 ): Promise<{ containers: number }> {
   if (environmentIds.length === 0) {
     return { containers: 0 }
   }
   const ids = [...environmentIds]
+  if (opts?.serverId) {
+    await purgeEnvironmentServerPlacementArtifacts(tx, ids, opts.serverId)
+  }
   const children = await loadEnvironmentChildren(tx, ids)
   await dropEnvironmentRows(tx, {
     environmentIds: ids,

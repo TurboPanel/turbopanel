@@ -20,7 +20,71 @@ export function referringTableFromConstraintName(constraintName: string): string
   if (constraintName.endsWith('_server_id_server_id_fk')) {
     return constraintName.replace(/_server_id_server_id_fk$/, '')
   }
+  const environmentMatch = /^([a-z_]+)_environment_id_environment_id_fk$/.exec(constraintName)
+  if (environmentMatch) return environmentMatch[1]
+  if (constraintName.endsWith('_environment_id_environment_id_fk')) {
+    return constraintName.replace(/_environment_id_environment_id_fk$/, '')
+  }
   return undefined
+}
+
+const SERVER_FK_MIGRATION_PATTERN =
+  /ALTER TABLE "([^"]+)" ADD CONSTRAINT "[^"]*" FOREIGN KEY \("([^"]+)"\) REFERENCES "public"\."server"\("id"\) ON DELETE ([^;]+)/gi
+
+const ENVIRONMENT_FK_MIGRATION_PATTERN =
+  /ALTER TABLE "([^"]+)" ADD CONSTRAINT "[^"]*" FOREIGN KEY \("([^"]+)"\) REFERENCES "public"\."environment"\("id"\) ON DELETE ([^;]+)/gi
+
+export type ForeignKeyMigrationRow = {
+  table: string
+  column: string
+  onDelete: string
+}
+
+function normalizeOnDelete(rule: string): string {
+  const lower = rule.toLowerCase()
+  const onUpdate = lower.indexOf(' on update ')
+  const base = onUpdate === -1 ? lower : lower.slice(0, onUpdate)
+  return base.trim()
+}
+
+function collectForeignKeysFromMigrationSql(
+  migrationSqlChunks: readonly string[],
+  pattern: RegExp
+): ForeignKeyMigrationRow[] {
+  const byKey = new Map<string, ForeignKeyMigrationRow>()
+  for (const chunk of migrationSqlChunks) {
+    for (const match of chunk.matchAll(pattern)) {
+      const table = match[1]
+      const column = match[2]
+      const onDelete = normalizeOnDelete(match[3])
+      byKey.set(`${table}.${column}`, { table, column, onDelete })
+    }
+  }
+  return [...byKey.values()].sort(
+    (a, b) => a.table.localeCompare(b.table) || a.column.localeCompare(b.column)
+  )
+}
+
+/** Last `ON DELETE` rule per (table, column) from shipped migration SQL (journal order). */
+export function listServerForeignKeysFromMigrationSql(
+  migrationSqlChunks: readonly string[]
+): ForeignKeyMigrationRow[] {
+  return collectForeignKeysFromMigrationSql(migrationSqlChunks, SERVER_FK_MIGRATION_PATTERN)
+}
+
+export function listEnvironmentForeignKeysFromMigrationSql(
+  migrationSqlChunks: readonly string[]
+): ForeignKeyMigrationRow[] {
+  return collectForeignKeysFromMigrationSql(migrationSqlChunks, ENVIRONMENT_FK_MIGRATION_PATTERN)
+}
+
+export function listServerRestrictForeignKeyTablesFromMigrationSql(
+  migrationSqlChunks: readonly string[]
+): string[] {
+  return listServerForeignKeysFromMigrationSql(migrationSqlChunks)
+    .filter((row) => row.onDelete === 'restrict' || row.onDelete === 'no action')
+    .map((row) => row.table)
+    .sort((a, b) => a.localeCompare(b))
 }
 
 /**
@@ -45,36 +109,48 @@ export const SERVER_RESTRICT_FOREIGN_KEY_HANDLERS: Readonly<
   subnet: 'fabric',
 }
 
-const SERVER_RESTRICT_FK_MIGRATION_PATTERN =
-  /ALTER TABLE "([^"]+)" ADD CONSTRAINT "[^"]*server_id_server_id_fk" FOREIGN KEY \("server_id"\) REFERENCES "public"\."server"\("id"\) ON DELETE (restrict|no action)/gi
+/**
+ * Tables referencing `environment.id` that the forget subtree must clear (or
+ * that CASCADE/SET NULL when the environment row is deleted).
+ */
+export const ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS: Readonly<
+  Record<string, 'drop-subtree' | 'cascade-on-environment' | 'set-null-on-environment'>
+> = {
+  deployment: 'drop-subtree',
+  managed: 'cascade-on-environment',
+  marker: 'cascade-on-environment',
+  network: 'set-null-on-environment',
+  service: 'drop-subtree',
+  slot: 'drop-subtree',
+  storage: 'set-null-on-environment',
+  variable: 'cascade-on-environment',
+}
 
-/** Last `ON DELETE` rule per table from shipped migration SQL (journal order). */
-export function listServerRestrictForeignKeyTablesFromMigrationSql(
-  migrationSqlChunks: readonly string[]
-): string[] {
-  const deleteRuleByTable = new Map<string, string>()
-  for (const chunk of migrationSqlChunks) {
-    for (const match of chunk.matchAll(SERVER_RESTRICT_FK_MIGRATION_PATTERN)) {
-      const tableName = match[1]
-      const rule = match[2].toLowerCase()
-      deleteRuleByTable.set(tableName, rule)
-    }
+function assertForeignKeyHandlerCoverage(
+  tables: readonly string[],
+  handlers: Readonly<Record<string, string>>,
+  context: string
+): void {
+  const missing = tables.filter((table) => handlers[table] === undefined)
+  if (missing.length > 0) {
+    throw new Error(`${context}: unhandled FK on table(s): ${missing.join(', ')}`)
   }
-  return [...deleteRuleByTable.entries()]
-    .filter(([, rule]) => rule === 'restrict' || rule === 'no action')
-    .map(([table]) => table)
-    .sort((a, b) => a.localeCompare(b))
 }
 
 export function assertServerRestrictForeignKeyCoverage(tables: readonly string[]): void {
-  const missing = tables.filter(
-    (table) => SERVER_RESTRICT_FOREIGN_KEY_HANDLERS[table] === undefined
+  assertForeignKeyHandlerCoverage(
+    tables,
+    SERVER_RESTRICT_FOREIGN_KEY_HANDLERS,
+    'server delete — extend SERVER_RESTRICT_FOREIGN_KEY_HANDLERS and the purge/forget path'
   )
-  if (missing.length > 0) {
-    throw new Error(
-      `server delete: unhandled RESTRICT server_id FK on table(s): ${missing.join(', ')} — extend SERVER_RESTRICT_FOREIGN_KEY_HANDLERS and the purge/forget path`
-    )
-  }
+}
+
+export function assertEnvironmentForgetForeignKeyCoverage(tables: readonly string[]): void {
+  assertForeignKeyHandlerCoverage(
+    tables,
+    ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS,
+    'server forget — extend ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS and dropEnvironmentSubtree'
+  )
 }
 
 /** TurboFabric rows keyed only by this host (`subnet` before `relay` — independent FKs). */

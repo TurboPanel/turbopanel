@@ -26,6 +26,7 @@ import {
   colocatedServerDeleteBlockedReason,
   forgetServerOwnedResources,
   isServerOnlineDuringForgetError,
+  listEnvironmentOtherServerIds,
   listServerDeleteBlockers,
   loadServerDeletePreview,
   parseForgetResourcesFlag,
@@ -152,7 +153,7 @@ function deleteBlockersDb(opts: {
           : (opts.environmentOtherServerTouchesAfterPlan ??
             opts.environmentOtherServerTouches ??
             [])
-      presenceLatch.remaining = 5
+      presenceLatch.remaining = 6
     }
     presenceLatch.remaining! -= 1
     const rows = presenceLatch.rows
@@ -238,6 +239,16 @@ function deleteBlockersDb(opts: {
             }),
           }
         }
+        if (table === storageCopy) {
+          if (fields && 'environmentId' in fields) {
+            return {
+              innerJoin: () => ({
+                where: () => Promise.resolve(presenceRowsForListCheck()),
+              }),
+            }
+          }
+          return joinedCount(opts.copyCount ?? 0)
+        }
         if (table === server) {
           if (fields && 'name' in fields) {
             return {
@@ -266,9 +277,6 @@ function deleteBlockersDb(opts: {
                 return thenableRows(opts.ipRows ?? [])
               }
               return thenableRows([{ value: opts.ipCount ?? 0 }])
-            }
-            if (table === storageCopy) {
-              return thenableRows([{ value: opts.copyCount ?? 0 }])
             }
             return thenableRows([{ value: 0 }])
           },
@@ -807,6 +815,22 @@ test('forgetServerOwnedResources re-checks present_elsewhere after planning', as
     ])
   }
   assertEquals(threw, true)
+})
+
+test('listEnvironmentOtherServerIds includes a storage copy on another server', async () => {
+  const byEnvironment = await listEnvironmentOtherServerIds(
+    deleteBlockersDb({
+      environmentOtherServerTouches: [
+        {
+          environmentId: 'env-1',
+          serverId: 'server-2',
+        },
+      ],
+    }),
+    ['env-1'],
+    'server-1'
+  )
+  assertEquals(byEnvironment.get('env-1'), new Set(['server-2']))
 })
 
 test('planServerForget blocks an environment with a container on another server', async () => {

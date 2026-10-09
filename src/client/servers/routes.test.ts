@@ -29,6 +29,8 @@ import {
   server,
   service,
   slot,
+  storage,
+  storageCopy,
   subnet,
   stage,
   team,
@@ -1741,6 +1743,125 @@ test('DELETE /servers/:id with forgetResources forgets an app environment and it
   )
 })
 
+test('DELETE /servers/:id with forgetResources clears deployment slot and storage copy on a placed environment', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const leftovers = await insertUserWorkspaceLeftovers(db, { organizationId, serverId })
+      const peerId = await insertPeerServer(db, organizationId, 'Survivor')
+      await db
+        .update(environment)
+        .set({ serverId })
+        .where(eq(environment.id, leftovers.environmentId))
+      const now = new Date().toISOString()
+      const [deploymentRow] = await db
+        .insert(deployment)
+        .values({
+          environmentId: leftovers.environmentId,
+          serverId,
+          status: 'applied',
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning({ id: deployment.id })
+      const [slotRow] = await db
+        .insert(slot)
+        .values({
+          environmentId: leftovers.environmentId,
+          serviceId: leftovers.serviceId,
+          serverId,
+          slot: 0,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning({ id: slot.id })
+      const [storageRow] = await db
+        .insert(storage)
+        .values({
+          organizationId,
+          name: 'forget-test-vol',
+          environmentId: leftovers.environmentId,
+          kind: 'volume',
+          accessMode: 'single_writer',
+          retention: 'delete',
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning({ id: storage.id })
+      const [copyRow] = await db
+        .insert(storageCopy)
+        .values({
+          storageId: storageRow!.id,
+          serverId,
+          provider: 'docker',
+          role: 'primary',
+          state: 'ready',
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning({ id: storageCopy.id })
+      await db.insert(network).values({
+        createdAt: now,
+        updatedAt: now,
+        organizationId,
+        serverId: peerId,
+        kind: 'docker',
+        name: 'peer-net',
+        options: { dockerNetworkName: 'peer-net' },
+      })
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(res.status, 200)
+      assertEquals(registry.purgedIds, [serverId])
+
+      const remainingPeer = await db
+        .select({ id: server.id })
+        .from(server)
+        .where(eq(server.id, peerId))
+      assertEquals(remainingPeer.length, 1)
+
+      const remainingDeployment = await db
+        .select({ id: deployment.id })
+        .from(deployment)
+        .where(eq(deployment.id, deploymentRow!.id))
+      assertEquals(remainingDeployment.length, 0)
+
+      const remainingSlot = await db
+        .select({ id: slot.id })
+        .from(slot)
+        .where(eq(slot.id, slotRow!.id))
+      assertEquals(remainingSlot.length, 0)
+
+      const remainingCopy = await db
+        .select({ id: storageCopy.id })
+        .from(storageCopy)
+        .where(eq(storageCopy.id, copyRow!.id))
+      assertEquals(remainingCopy.length, 0)
+
+      const remainingStorage = await db
+        .select({ id: storage.id })
+        .from(storage)
+        .where(eq(storage.id, storageRow!.id))
+      assertEquals(remainingStorage.length, 0)
+
+      const remainingEnvironment = await db
+        .select({ id: environment.id })
+        .from(environment)
+        .where(eq(environment.id, leftovers.environmentId))
+      assertEquals(remainingEnvironment.length, 0)
+
+      await db.delete(network).where(eq(network.serverId, peerId))
+      await db.delete(server).where(eq(server.id, peerId))
+      await db.delete(project).where(eq(project.id, leftovers.projectId))
+      await db.delete(workspace).where(eq(workspace.id, leftovers.workspaceId))
+      await db.delete(audit).where(eq(audit.organizationId, organizationId))
+    }
+  )
+})
+
 test('DELETE /servers/:id with forgetResources is refused when the environment still has a container on another server', async () => {
   await withServerDeleteFixtures(
     async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
@@ -1823,6 +1944,73 @@ test('DELETE /servers/:id with forgetResources is refused when the environment s
         assertEquals(registry.purgedIds.length, 0)
       } finally {
         await db.delete(slot).where(eq(slot.id, slotRow!.id))
+        await db.delete(container).where(eq(container.id, leftovers.containerId))
+        await db.delete(service).where(eq(service.id, leftovers.serviceId))
+        await db.delete(environment).where(eq(environment.id, leftovers.environmentId))
+        await db.delete(project).where(eq(project.id, leftovers.projectId))
+        await db.delete(workspace).where(eq(workspace.id, leftovers.workspaceId))
+        await db.delete(ip).where(eq(ip.id, leftovers.ipId))
+        await db.delete(network).where(eq(network.id, leftovers.networkId))
+        await db.delete(server).where(eq(server.id, peerId))
+      }
+    }
+  )
+})
+
+test('DELETE /servers/:id with forgetResources is refused when the environment still has a storage copy on another server', async () => {
+  await withServerDeleteFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, registry }) => {
+      const leftovers = await insertUserWorkspaceLeftovers(db, { organizationId, serverId })
+      const peerId = await insertPeerServer(db, organizationId, 'Worker 2')
+      await db
+        .update(environment)
+        .set({ serverId })
+        .where(eq(environment.id, leftovers.environmentId))
+      const now = new Date().toISOString()
+      const [storageRow] = await db
+        .insert(storage)
+        .values({
+          organizationId,
+          name: 'peer-copy-vol',
+          environmentId: leftovers.environmentId,
+          kind: 'volume',
+          accessMode: 'single_writer',
+          retention: 'delete',
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning({ id: storage.id })
+      const [copyRow] = await db
+        .insert(storageCopy)
+        .values({
+          storageId: storageRow!.id,
+          serverId: peerId,
+          provider: 'docker',
+          role: 'primary',
+          state: 'ready',
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning({ id: storageCopy.id })
+      try {
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/servers/${serverId}?forgetResources=true`, {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        })
+        assertEquals(res.status, 409)
+        const body = await readJson<ErrorJson>(res)
+        assertEquals(body.code, SERVER_HAS_BLOCKERS_CODE)
+        assertEquals(body.blockedEnvironments?.[0]?.reason, 'present_elsewhere')
+        assertEquals(registry.purgedIds.length, 0)
+        const remainingCopy = await db
+          .select({ id: storageCopy.id })
+          .from(storageCopy)
+          .where(eq(storageCopy.id, copyRow!.id))
+        assertEquals(remainingCopy.length, 1)
+      } finally {
+        await db.delete(storageCopy).where(eq(storageCopy.id, copyRow!.id))
+        await db.delete(storage).where(eq(storage.id, storageRow!.id))
         await db.delete(container).where(eq(container.id, leftovers.containerId))
         await db.delete(service).where(eq(service.id, leftovers.serviceId))
         await db.delete(environment).where(eq(environment.id, leftovers.environmentId))
