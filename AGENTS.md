@@ -296,7 +296,7 @@ the system.
 Unit tests use non-production secrets from `src/test-fixtures/secrets.ts`
 (`TEST_ONLY_TURBOPANEL_SECRET`). Host-free `managed.ha.reconcile` parser tests
 build daemon sealed-envelope strings via `src/test-fixtures/managed-ha-envelopes.ts`
-so PR secret scans do not flag static `tpdaemon.` literals. Vitest Workers config uses the same naming
+so PR secret scans do not flag static daemon-envelope literals. Vitest Workers config uses the same naming
 convention in `wrangler.vitest.jsonc`. The secret scanner allowlists only exact
 fixture lines in `.secretscan-allowlist` — do not add broad exclusions.
 `scripts/scan-secrets.sh`, `scripts/scan-secrets.patterns` and `scripts/scan-secrets.selftest.sh` are byte-identical in turbopanel, turbopaneld, ui, website and dev: change all five together (each repo keeps a copy because the pre-commit hook runs it locally). The rules in the patterns file cover private key blocks, vendor tokens, JWTs, connection URLs with credentials, secret-looking assignments and forbidden file names (dotenv files, `*.pem`, `*.key`, daemon identity files, …); the scanner reports the rule id and location, never the matching text. `--all` scans the tree; `--range BASE..HEAD` scans every line the PR's commits added, so a secret added and removed inside a PR is still caught (CI runs it on PRs into trunk). Allowlist entries in `.secretscan-allowlist` are `path:full line text` (or `@path exact/file` for a forbidden file name), each needs a `# reason:` comment above it, and wildcards are rejected. The self-test builds its fixtures at run time from fragments; dev's `src/lib/scan-secrets.test.ts` runs it and, with the siblings checked out in dev CI, fails if any copy drifts.
