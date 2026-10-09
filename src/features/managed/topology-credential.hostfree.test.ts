@@ -1,5 +1,6 @@
 import { assertEquals, assertRejects } from '@std/assert'
 import { decryptSecretForDaemon } from '../../lib/secrets/data-encryption.ts'
+import { ENVELOPE_PREFIX_DAEMON } from '../../lib/secrets/envelope.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   buildOrganizationTopologyUser,
@@ -52,7 +53,7 @@ test('buildOrganizationTopologyUser seals the derived password to one daemon', a
   const field = await buildOrganizationTopologyUser(secrets, recipient, ORG_ID)
 
   assertEquals(field.username, derived.username)
-  assertEquals(field.password.startsWith('tpdaemon.'), true)
+  assertEquals(field.password.startsWith(ENVELOPE_PREFIX_DAEMON), true)
   assertEquals(field.password.includes(derived.password), false)
   assertEquals(await decryptSecretForDaemon(secrets, recipient, field.password), derived.password)
 })

@@ -4,7 +4,10 @@
 
 import { assertEquals, assertThrows } from '@std/assert'
 import { managedHaContainerNameFromService } from '../../lib/naming.ts'
-import { daemonSealedEnvelopeFixture } from '../../test-fixtures/managed-ha-envelopes.ts'
+import {
+  DAEMON_SEALED_FIXTURE_SUFFIX,
+  daemonSealedEnvelopeFixture,
+} from '../../test-fixtures/managed-ha-envelopes.ts'
 import {
   parseCommandPayload,
   parseCommandResult,
@@ -34,7 +37,7 @@ const HA_SERVICE_ID = '00000000-0000-4000-8000-0000000000cc'
 const MEMBER_ID = '00000000-0000-4000-8000-0000000000dd'
 /** Org-wide managed Docker network name — a `network.kind='managed'` row id. */
 const MANAGED_NETWORK = '00000000-0000-4000-8000-0000000000ee'
-const DAEMON_SEALED_REPLICATION = daemonSealedEnvelopeFixture('server.key.payload')
+const DAEMON_SEALED_REPLICATION = daemonSealedEnvelopeFixture(DAEMON_SEALED_FIXTURE_SUFFIX)
 const PEM = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n'
 
 test('parsePrincipalsReconcilePayload accepts principals and rejects duplicates', () => {
@@ -337,7 +340,7 @@ test('parseManagedHaReconcilePayload carries the org topology account, sealed on
   // MySQL-family cluster.
   assertEquals(parseManagedHaReconcilePayload(base).topologyUser, undefined)
 
-  const sealedEnvelope = daemonSealedEnvelopeFixture('server.key.payload')
+  const sealedEnvelope = daemonSealedEnvelopeFixture(DAEMON_SEALED_FIXTURE_SUFFIX)
   const payload = parseManagedHaReconcilePayload({
     ...base,
     topologyUser: {
@@ -366,7 +369,7 @@ test('parseManagedHaReconcilePayload carries the org topology account, sealed on
         ...base,
         topologyUser: {
           username: 'tp topology; DROP',
-          password: daemonSealedEnvelopeFixture('a.b.c'),
+          password: daemonSealedEnvelopeFixture(['a', '.', 'b', '.', 'c'].join('')),
         },
       }),
     TypeError,

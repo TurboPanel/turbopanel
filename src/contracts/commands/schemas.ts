@@ -7597,7 +7597,7 @@ export function parseManagedHaReconcilePayload(value: unknown): ManagedHaReconci
   if (value.orchestratorRaftToken !== undefined) {
     if (
       !isString(value.orchestratorRaftToken) ||
-      !value.orchestratorRaftToken.startsWith('tpdaemon.')
+      !value.orchestratorRaftToken.startsWith(DAEMON_ENVELOPE_PREFIX)
     ) {
       throw new TypeError('Invalid managed.ha.reconcile orchestratorRaftToken')
     }

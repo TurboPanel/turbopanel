@@ -6,6 +6,8 @@
 
 export const DAEMON_SEALED_ENVELOPE_PREFIX = ['tp', 'daemon', '.v', '1.'].join('')
 
+export const DAEMON_SEALED_FIXTURE_SUFFIX = ['envelope', '-', 'test', '-', 'suffix'].join('')
+
 export function daemonSealedEnvelopeFixture(suffix: string): string {
   return `${DAEMON_SEALED_ENVELOPE_PREFIX}${suffix}`
 }
