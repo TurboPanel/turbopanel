@@ -6107,7 +6107,7 @@ test('parseManagedApplyPayload covers volumes, config files, privileges, and mon
     ...VALID_MANAGED_APPLY,
     topologyUser: {
       username: 'tp_topology_111111111111',
-      password: 'tpdaemon.v1.server.key.payload',
+      password: DAEMON_PSK,
     },
   })
   assertEquals(withTopology.topologyUser?.username, 'tp_topology_111111111111')
