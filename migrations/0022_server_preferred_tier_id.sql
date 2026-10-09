@@ -1,0 +1,5 @@
+ALTER TABLE "server" ADD COLUMN "preferred_tier_id" uuid;--> statement-breakpoint
+ALTER TABLE "server" ADD CONSTRAINT "server_preferred_tier_id_tier_id_fk" FOREIGN KEY ("preferred_tier_id") REFERENCES "public"."tier"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "idx_server_preferred_tier_id" ON "server" USING btree ("preferred_tier_id" uuid_ops);--> statement-breakpoint
+COMMENT ON COLUMN "server"."assigned_tier_id" IS 'Purchased tier covering this server, recomputed by assignment-records.ts from seats, preferred_tier_id, and hardware; NULL if none.';--> statement-breakpoint
+COMMENT ON COLUMN "server"."preferred_tier_id" IS 'Optional operator pick: assignment uses a spare license at this tier or the smallest tier above before the derived smallest that fits; NULL derives only.';

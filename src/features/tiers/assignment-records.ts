@@ -27,7 +27,7 @@ import {
   listSeatsForOrganization,
   type OrganizationBillingState,
 } from '../billing/billing-records.ts'
-import { license, server } from '../../db/schema.ts'
+import { license, server, tier } from '../../db/schema.ts'
 import { parseServerHostResources, type ServerHostResources } from '../servers/server-metadata.ts'
 import {
   type AssignableServer,
@@ -103,9 +103,13 @@ export async function loadAssignableServers(
       createdAt: server.createdAt,
       metadata: server.metadata,
       assignedTierId: server.assignedTierId,
+      preferredTierId: server.preferredTierId,
+      preferredRank: tier.rank,
+      preferredLabel: tier.label,
     })
     .from(server)
     .innerJoin(license, and(eq(license.serverId, server.id), isNull(license.revokedAt)))
+    .leftJoin(tier, eq(server.preferredTierId, tier.id))
     .where(eq(server.organizationId, organizationId))
   const topology = await getLatestTopologyGenerations(
     db,
@@ -120,6 +124,9 @@ export async function loadAssignableServers(
       parseTopologySnapshot(topology.get(row.serverId)?.snapshot)
     ),
     assignedTierId: row.assignedTierId,
+    preferredTierId: row.preferredTierId,
+    preferredRank: row.preferredRank,
+    preferredLabel: row.preferredLabel,
   }))
 }
 
@@ -141,6 +148,17 @@ export type RecomputeAssignmentsOpts = Readonly<{
  * Recompute the organization's assignment from its committed seats and
  * its licensed servers, and write the rows that moved.
  */
+/** Read-only assignment for UI spare counts and pick notices — does not write. */
+export async function peekOrganizationAssignment(
+  db: Db,
+  organizationId: string,
+  opts: RecomputeAssignmentsOpts = {}
+): Promise<TierAssignment> {
+  const state = opts.state ?? (await listSeatsForOrganization(db, organizationId))
+  const servers = await loadAssignableServers(db, organizationId)
+  return computeAssignment(tierQuantitiesFromState(state), servers)
+}
+
 export async function recomputeOrganizationAssignments(
   db: Db,
   organizationId: string,

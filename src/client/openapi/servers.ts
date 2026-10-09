@@ -273,7 +273,14 @@ export const serverSchemas = {
   },
   ServerTierPlacement: {
     type: 'object',
-    required: ['licenseTier', 'requiredTier', 'recommendedTier', 'unwatched'],
+    required: [
+      'licenseTier',
+      'requiredTier',
+      'recommendedTier',
+      'unwatched',
+      'pickedTier',
+      'tierPickNotice',
+    ],
     properties: {
       licenseTier: {
         type: ['string', 'null'],
@@ -286,6 +293,28 @@ export const serverSchemas = {
       recommendedTier: {
         type: 'string',
         description: 'Harder of required and discovered NIC / drive / GPU counts.',
+      },
+      pickedTier: {
+        type: ['string', 'null'],
+        description: 'Operator-chosen floor tier label, or null when deriving only.',
+      },
+      tierPickNotice: {
+        type: ['string', 'null'],
+        description:
+          'Plain notice when the pick could not be honored (e.g. "S2 wanted, none free"), else null.',
+      },
+      tiersFree: {
+        type: 'array',
+        description: 'Spare purchased licenses per tier (server detail only).',
+        items: {
+          type: 'object',
+          required: ['tierId', 'label', 'free'],
+          properties: {
+            tierId: { type: 'string', format: 'uuid' },
+            label: { type: 'string' },
+            free: { type: 'integer', minimum: 0 },
+          },
+        },
       },
       unwatched: {
         type: 'object',

@@ -43,8 +43,18 @@ const purchased = (s1: number, s3: number, s5: number): TierQuantity[] => [
 const server = (
   serverId: string,
   requiredRank: number | null,
-  boundAt: string
-): AssignableServer => ({ serverId, requiredRank, boundAt })
+  boundAt: string,
+  pick?: { tierId: string; rank: number; label: string }
+): AssignableServer => ({
+  serverId,
+  requiredRank,
+  boundAt,
+  preferredTierId: pick?.tierId,
+  preferredRank: pick?.rank,
+  preferredLabel: pick?.label,
+})
+
+const S2 = 'tier-s2'
 
 test('each server takes the smallest purchased tier whose rank covers its requirement; the rest is spare', () => {
   const result = computeAssignment(purchased(1, 1, 1), [
@@ -348,6 +358,55 @@ test('swap pass never lowers coverage or places a server under its required tier
   assertEquals(swapped.byServer.get('a'), 'S3')
   assertEquals(swapped.byServer.get('c'), 'S1')
   assertEquals(swapped.byServer.get('d'), 'S3')
+})
+
+test('preferred tier takes a spare S2 seat before the derived S1 when both fit', () => {
+  const result = computeAssignment(
+    [
+      { tierId: S1, rank: 1, quantity: 2 },
+      { tierId: S2, rank: 2, quantity: 1 },
+    ],
+    [server('a', 1, '2026-09-01T00:00:00.000Z', { tierId: S2, rank: 2, label: 'S2' })]
+  )
+  assertEquals(result.byServer.get('a'), S2)
+  assertEquals(result.pickUnfulfilled.size, 0)
+})
+
+test('preferred tier falls back to derived when no S2+ seat is free and records the notice', () => {
+  const result = computeAssignment(
+    [{ tierId: S1, rank: 1, quantity: 2 }],
+    [
+      server('older', 1, '2026-09-01T00:00:00.000Z'),
+      server('picker', 1, '2026-09-02T00:00:00.000Z', { tierId: S2, rank: 2, label: 'S2' }),
+    ]
+  )
+  assertEquals(result.byServer.get('picker'), S1)
+  assertEquals(result.pickUnfulfilled.get('picker'), 'S2')
+})
+
+test('clearing a pick is the default smallest-that-fits path', () => {
+  const withPick = computeAssignment(purchased(1, 1, 0), [
+    server('a', 1, '2026-09-01T00:00:00.000Z', { tierId: S3, rank: 3, label: 'S3' }),
+  ])
+  const derived = computeAssignment(purchased(1, 1, 0), [server('a', 1, '2026-09-01T00:00:00.000Z')])
+  assertEquals(withPick.byServer.get('a'), S3)
+  assertEquals(derived.byServer.get('a'), S1)
+})
+
+test('two servers competing for one S2 spare: bind order wins', () => {
+  const result = computeAssignment(
+    [
+      { tierId: S1, rank: 1, quantity: 2 },
+      { tierId: S2, rank: 2, quantity: 1 },
+    ],
+    [
+      server('first', 1, '2026-09-01T00:00:00.000Z', { tierId: S2, rank: 2, label: 'S2' }),
+      server('second', 1, '2026-09-02T00:00:00.000Z', { tierId: S2, rank: 2, label: 'S2' }),
+    ]
+  )
+  assertEquals(result.byServer.get('first'), S2)
+  assertEquals(result.byServer.get('second'), S1)
+  assertEquals(result.pickUnfulfilled.get('second'), 'S2')
 })
 
 test('swap pass: downgrade reshuffle when seats drop', () => {

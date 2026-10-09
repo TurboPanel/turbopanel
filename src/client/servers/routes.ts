@@ -116,6 +116,10 @@ import { registerServerMetricsRoutes } from './metrics-routes.ts'
 import { registerServerTrafficMapRoutes } from './traffic-map-routes.ts'
 import { registerServerLabelRoutes } from './labels-routes.ts'
 import { registerServerServicesRoutes } from './services-routes.ts'
+import {
+  enrichServerDetailTierPlacement,
+  registerServerLicenseTierRoutes,
+} from './license-tier-routes.ts'
 import { resolveOrgRequest } from '../org-request.ts'
 import { cachedServersListReadModel } from '../../query-cache/read-models/servers-list.ts'
 import { applyLocationPatch, resolveLocation } from '../../features/geo/location-override.ts'
@@ -1469,6 +1473,12 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       orgOptions,
       unwatched: 'ids',
     })
+    const tierPlacement = await enrichServerDetailTierPlacement(
+      db,
+      organizationId,
+      id,
+      placementByServer.get(id) ?? null
+    )
 
     return c.json({
       ok: true,
@@ -1491,7 +1501,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         datacenterDefaultTimezone: dcOptions?.defaultServerTimezone ?? null,
         datacenterEnforceServerTimezone: dcOptions?.enforceServerTimezone ?? false,
         licenseId: display.row.licenseId ?? null,
-        tierPlacement: placementByServer.get(id) ?? null,
+        tierPlacement,
         layoutPaths: layoutPathsByServer.get(id) ?? null,
         labels: labelRows.map((row) => ({ key: row.key, value: row.value })),
       },
@@ -1756,4 +1766,5 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   registerServerTrafficMapRoutes(router, opts)
   registerServerLabelRoutes(router, opts)
   registerServerServicesRoutes(router, opts)
+  registerServerLicenseTierRoutes(router, opts)
 }

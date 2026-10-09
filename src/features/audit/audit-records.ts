@@ -34,6 +34,7 @@ import { logWarn } from '../../lib/logger.ts'
  */
 export const AUDIT_ACTIONS = [
   'server.daemon_key.revoke',
+  'server.license_tier.set',
   'server.delete',
   'grant.create',
   'grant.delete',

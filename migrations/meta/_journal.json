@@ -155,6 +155,13 @@
       "when": 1791491856114,
       "tag": "0021_add_backup_server_id",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1791550444346,
+      "tag": "0022_server_preferred_tier_id",
+      "breakpoints": true
     }
   ]
 }

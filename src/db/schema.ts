@@ -595,6 +595,12 @@ export const server = pgTable(
      * the SX grant, so the column is populated there too.
      */
     assignedTierId: uuid('assigned_tier_id'),
+    /**
+     * Operator-chosen floor for assignment: use a spare license at this tier
+     * or the smallest tier above before falling back to the derived smallest
+     * that fits. Null means derive only.
+     */
+    preferredTierId: uuid('preferred_tier_id'),
     isConnected: boolean('is_connected').default(false).notNull(),
     /**
      * Last status transition (`is_connected` flip). Feeds derived `connectedAt`
@@ -650,6 +656,15 @@ export const server = pgTable(
       columns: [table.assignedTierId],
       foreignColumns: [tier.id],
       name: 'server_assigned_tier_id_tier_id_fk',
+    }).onDelete('set null'),
+    index('idx_server_preferred_tier_id').using(
+      'btree',
+      table.preferredTierId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.preferredTierId],
+      foreignColumns: [tier.id],
+      name: 'server_preferred_tier_id_tier_id_fk',
     }).onDelete('set null'),
     check('server_machine_class_check', sql`${table.machineClass} IN ('physical', 'virtual')`),
   ]
