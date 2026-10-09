@@ -447,6 +447,11 @@ Postgres backs up via `pg_dump -Fc` (custom format), per-database only —
 `supportsInstanceScope: false` documents `pg_dumpall` as an explicit future
 seam.
 
+Artifacts stay on the host that wrote them. `backup.server_id` is that host
+(the primary when the backup ran); restore after a planned switchover answers
+**409** `backup_on_other_server` rather than sending `managed.restore` to a
+host that does not have the file. See `src/features/backups/AGENTS.md`.
+
 **Scheduled backups** are `retention` rows (routes under
 `/environments/:id/managed/backup-policies`, org owners and managers only;
 `src/client/managed/backup-policies.ts`). The control plane never queues a
@@ -859,6 +864,16 @@ the control plane holds, not on how it was replaced:
   stopped/failed. It never resyncs: wiping the old primary's data is the
   operator's choice (`POST .../members/:id/resync`), its un-replicated writes
   exist nowhere else.
+
+**Demoted marker (daemon guard):** fence stops of the _old_ primary — the
+`managed.lifecycle` stop in `enqueueFenceCommands` (`params.source`) and the
+return-fence stop above — set optional `demoted: true` on the payload. Ordinary
+operator stops and stops of the new primary omit it. The daemon writes
+`<stateDir>/managed/<managedId>/demoted.json` after that stop succeeds and a
+periodic guard stops the engine again if someone starts the container by hand
+(a host that stayed connected never hits the reconnect sweep). Older daemons
+ignore the field; older control planes omit it. The control plane still marks
+the member `needs_resync`; the daemon owns keeping it from serving writes.
 
 **Alerts**: the offline alert (`server.offline`) now names the HA databases
 whose primary the server hosts and what happens next; the outcome is the

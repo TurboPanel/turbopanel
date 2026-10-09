@@ -256,6 +256,7 @@ async function recordManagedArtifacts(
       path: record.artifact.path,
       createdAt: record.finishedAt,
       retentionId: record.policyId,
+      serverId: record.serverId,
     })
   }
   if (record.pruned.length > 0) {

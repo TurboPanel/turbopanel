@@ -18,8 +18,8 @@ import { attachDaemonStateToServer } from '../../features/servers/server-identit
 import {
   confirmManagedExternalAccessForServer,
   loadManagedExternalAccess,
-  saveManagedExternalAccess,
   runManagedExternalAccessPendingSweep,
+  saveManagedExternalAccess,
 } from '../../features/managed/external-access.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
@@ -30,8 +30,6 @@ import type { ComposeDocument } from '../../features/compose/types.ts'
 import { getManagedEngineSpec } from '../../features/managed/index.ts'
 import {
   backup,
-  retention,
-  snapshot,
   binding,
   command,
   container,
@@ -42,8 +40,10 @@ import {
   organization,
   principal,
   project,
+  retention,
   server,
   service,
+  snapshot,
   user,
   workspace,
 } from '../../db/schema.ts'
@@ -644,7 +644,10 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
       assertEquals(options.settings !== undefined, true)
 
       const principals = await db
-        .select({ password: principal.password, managedId: principal.managedId })
+        .select({
+          password: principal.password,
+          managedId: principal.managedId,
+        })
         .from(principal)
         .where(eq(principal.managedId, managedRow!.id))
       assertEquals(principals.length, 1)
@@ -671,7 +674,9 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
         .innerJoin(command, eq(command.id, dispatch.commandId))
         .where(and(eq(command.serverId, serverId), eq(command.name, 'server.backups.reconcile')))
         .limit(1)
-      const pushed = reconcileDispatch?.payload as { policies?: Array<Record<string, unknown>> }
+      const pushed = reconcileDispatch?.payload as {
+        policies?: Array<Record<string, unknown>>
+      }
       assertEquals(pushed.policies?.length, 1)
       assertEquals(pushed.policies?.[0]?.policyId, policies[0]!.id)
       assertEquals(pushed.policies?.[0]?.engine, 'postgres')
@@ -1240,6 +1245,316 @@ test('DELETE /environments/:id/managed/backups/:backupId 404s for an unknown id'
   )
 })
 
+test('POST restore 409s when the artifact is on a former primary, and does not flip status', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+
+      const now = new Date().toISOString()
+      const [former] = await db
+        .insert(server)
+        .values({
+          organizationId,
+          name: 'Former Primary',
+          createdAt: now,
+          updatedAt: now,
+          isConnected: true,
+          statusChangedAt: now,
+        })
+        .returning({ id: server.id })
+      const formerId = former!.id
+      await attachDaemonStateToServer(db, formerId, {
+        publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'managed-former-test-key' },
+        fingerprint: 'managed-former-test-fingerprint',
+      })
+
+      try {
+        await db.insert(backup).values({
+          backupId: 'bk_pre_switch',
+          managedId: created.managed.id,
+          createdAt: '2024-01-01T00:00:00.000Z',
+          sizeBytes: 100,
+          checksum: 'a'.repeat(64),
+          database: 'postgres',
+          path: '/var/lib/turbopanel/managed/x/backups/bk_pre_switch.dump',
+          serverId: formerId,
+        })
+
+        const beforeCount = commandQueue.envelopes.length
+        const restore = await app.request(
+          `/environments/${environmentId}/managed/backups/bk_pre_switch/restore`,
+          { method: 'POST', headers, body: '{}' }
+        )
+        assertEquals(restore.status, 409)
+        assertEquals(await restore.json(), {
+          error: 'backup_on_other_server',
+          message:
+            'This backup is stored on Former Primary (it was the primary when the backup ran). It can only be restored on that server. Take a new backup on the current primary, or switch back first.',
+        })
+        assertEquals(commandQueue.envelopes.length, beforeCount)
+        const [after] = await db
+          .select({ status: managed.status })
+          .from(managed)
+          .where(eq(managed.id, created.managed.id))
+          .limit(1)
+        assertEquals(after?.status, 'ready')
+        assertEquals(formerId === serverId, false)
+      } finally {
+        await db.delete(backup).where(eq(backup.managedId, created.managed.id))
+        await db.delete(server).where(eq(server.id, formerId))
+      }
+    }
+  )
+})
+
+test('POST restore still enqueues when serverId is null (legacy rows)', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+      await db.insert(backup).values({
+        backupId: 'bk_legacy',
+        managedId: created.managed.id,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        sizeBytes: 100,
+        checksum: 'a'.repeat(64),
+        database: 'postgres',
+        path: '/var/lib/turbopanel/managed/x/backups/bk_legacy.dump',
+      })
+
+      const restore = await app.request(
+        `/environments/${environmentId}/managed/backups/bk_legacy/restore`,
+        { method: 'POST', headers, body: '{}' }
+      )
+      assertEquals(restore.status, 200)
+      assertEquals(commandQueue.envelopes.at(-1)?.type, 'managed.restore')
+      const [after] = await db
+        .select({ status: managed.status })
+        .from(managed)
+        .where(eq(managed.id, created.managed.id))
+        .limit(1)
+      assertEquals(after?.status, 'applying')
+    }
+  )
+})
+
+test('DELETE backup dispatches to the stored host when that host is online', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+
+      const now = new Date().toISOString()
+      const [storedOn] = await db
+        .insert(server)
+        .values({
+          organizationId,
+          name: 'Artifact Host',
+          createdAt: now,
+          updatedAt: now,
+          isConnected: true,
+          statusChangedAt: now,
+        })
+        .returning({ id: server.id })
+      const storedOnId = storedOn!.id
+      await attachDaemonStateToServer(db, storedOnId, {
+        publicJwk: {
+          kty: 'OKP',
+          crv: 'Ed25519',
+          x: 'managed-artifact-host-key',
+        },
+        fingerprint: 'managed-artifact-host-fingerprint',
+      })
+      // Attaching daemon state resets presence; mark the host online again.
+      await db
+        .update(server)
+        .set({ isConnected: true, statusChangedAt: now, updatedAt: now })
+        .where(eq(server.id, storedOnId))
+
+      try {
+        await db.insert(backup).values({
+          backupId: 'bk_elsewhere',
+          managedId: created.managed.id,
+          createdAt: '2024-01-01T00:00:00.000Z',
+          sizeBytes: 100,
+          checksum: 'a'.repeat(64),
+          database: 'postgres',
+          path: '/var/lib/turbopanel/managed/x/backups/bk_elsewhere.dump',
+          serverId: storedOnId,
+        })
+
+        const remove = await app.request(
+          `/environments/${environmentId}/managed/backups/bk_elsewhere`,
+          { method: 'DELETE', headers }
+        )
+        assertEquals(remove.status, 200)
+        const body = (await remove.json()) as { serverId: string }
+        assertEquals(body.serverId, storedOnId)
+        assertEquals(commandQueue.envelopes.at(-1)?.serverId, storedOnId)
+        assertEquals(body.serverId !== serverId, true)
+      } finally {
+        await db.delete(backup).where(eq(backup.managedId, created.managed.id))
+        await db.delete(server).where(eq(server.id, storedOnId))
+      }
+    }
+  )
+})
+
+test('DELETE backup returns server_offline when the stored host is down', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+
+      const now = new Date().toISOString()
+      const [offlineHost] = await db
+        .insert(server)
+        .values({
+          organizationId,
+          name: 'Offline Artifact Host',
+          createdAt: now,
+          updatedAt: now,
+          isConnected: false,
+          statusChangedAt: now,
+        })
+        .returning({ id: server.id })
+      const offlineHostId = offlineHost!.id
+      await attachDaemonStateToServer(db, offlineHostId, {
+        publicJwk: {
+          kty: 'OKP',
+          crv: 'Ed25519',
+          x: 'managed-offline-artifact-key',
+        },
+        fingerprint: 'managed-offline-artifact-fingerprint',
+      })
+
+      try {
+        await db.insert(backup).values({
+          backupId: 'bk_offline_host',
+          managedId: created.managed.id,
+          createdAt: '2024-01-01T00:00:00.000Z',
+          sizeBytes: 100,
+          checksum: 'a'.repeat(64),
+          database: 'postgres',
+          path: '/var/lib/turbopanel/managed/x/backups/bk_offline_host.dump',
+          serverId: offlineHostId,
+        })
+
+        const beforeCount = commandQueue.envelopes.length
+        const remove = await app.request(
+          `/environments/${environmentId}/managed/backups/bk_offline_host`,
+          { method: 'DELETE', headers }
+        )
+        assertEquals(remove.status, 409)
+        assertEquals(((await remove.json()) as { error: string }).error, 'server_offline')
+        assertEquals(commandQueue.envelopes.length, beforeCount)
+      } finally {
+        await db.delete(backup).where(eq(backup.managedId, created.managed.id))
+        await db.delete(server).where(eq(server.id, offlineHostId))
+      }
+    }
+  )
+})
+
+test('GET backups includes storedOnServerId when the host is known', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      await db.insert(backup).values({
+        backupId: 'bk_listed',
+        managedId: created.managed.id,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        sizeBytes: 100,
+        checksum: 'a'.repeat(64),
+        database: 'postgres',
+        path: '/var/lib/turbopanel/managed/x/backups/bk_listed.dump',
+        serverId,
+      })
+
+      const list = await app.request(`/environments/${environmentId}/managed/backups`, {
+        headers,
+      })
+      assertEquals(list.status, 200)
+      const listBody = (await list.json()) as {
+        backups: Array<{ id: string; storedOnServerId?: string }>
+      }
+      assertEquals(listBody.backups[0]?.id, 'bk_listed')
+      assertEquals(listBody.backups[0]?.storedOnServerId, serverId)
+    }
+  )
+})
+
 test('POST restore 404s for an unknown backupId', async () => {
   await withManagedFixtures(
     {},
@@ -1315,7 +1630,9 @@ test('GET backups returns stored metadata newest first, and delete/restore enque
         headers,
       })
       assertEquals(list.status, 200)
-      const listBody = (await list.json()) as { backups: Array<{ id: string }> }
+      const listBody = (await list.json()) as {
+        backups: Array<{ id: string }>
+      }
       assertEquals(
         listBody.backups.map((b) => b.id),
         ['bk_newer', 'bk_older']
@@ -1555,7 +1872,9 @@ test('POST /environments/:id/managed/lifecycle targets managed.server_id when en
           body: JSON.stringify({ action: 'restart' }),
         })
         assertEquals(lifecycle.status, 200)
-        const lifecycleBody = (await lifecycle.json()) as { serverId: string }
+        const lifecycleBody = (await lifecycle.json()) as {
+          serverId: string
+        }
         assertEquals(lifecycleBody.serverId, serverId)
         assertEquals(commandQueue.envelopes.length, beforeCount + 1)
         assertEquals(commandQueue.envelopes.at(-1)?.serverId, serverId)
@@ -2066,7 +2385,10 @@ test('PATCH /environments/:id/managed persists clamped settings', async () => {
         method: 'PATCH',
         headers,
         body: JSON.stringify({
-          settings: { ssl: { mode: 'require' }, exposure: { enabled: true, scope: 'public' } },
+          settings: {
+            ssl: { mode: 'require' },
+            exposure: { enabled: true, scope: 'public' },
+          },
         }),
       })
       assertEquals(patch.status, 200)
@@ -2252,7 +2574,10 @@ test('POST managed user honours name schemes, the org lock, and the root login s
       const created = (await create.json()) as { managed: { id: string } }
       await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
       const [root] = await db
-        .select({ username: principal.username, appliedUsername: principal.appliedUsername })
+        .select({
+          username: principal.username,
+          appliedUsername: principal.appliedUsername,
+        })
         .from(principal)
         .where(and(eq(principal.managedId, created.managed.id), eq(principal.username, 'postgres')))
       assertMatch(root?.appliedUsername ?? '', /^[a-z][a-z0-9]{11}$/)
@@ -2282,7 +2607,10 @@ test('POST managed user honours name schemes, the org lock, and the root login s
       assertEquals(byDefault.user.connectionRole, 'read-write')
       assertMatch(byDefault.user.appliedUsername, /^[a-z][a-z0-9]{11}$/)
 
-      const plainRes = await createUser({ username: 'dbplain', nameScheme: 'plain' })
+      const plainRes = await createUser({
+        username: 'dbplain',
+        nameScheme: 'plain',
+      })
       const plain = (await plainRes.json()) as UserBody
       assertEquals(plain.user.appliedUsername, 'dbplain')
       const partial = (await (
@@ -2291,7 +2619,10 @@ test('POST managed user honours name schemes, the org lock, and the root login s
       assertMatch(partial.user.appliedUsername, /^dbpart_[a-z0-9]{11}$/)
 
       // A read-only login needs a read-eligible replica: a standalone cluster has none.
-      const readOnly = await createUser({ username: 'dbro', connectionRole: 'read-only' })
+      const readOnly = await createUser({
+        username: 'dbro',
+        connectionRole: 'read-only',
+      })
       assertEquals(readOnly.status, 422)
       assertEquals(await readOnly.json(), { error: 'managed_no_read_targets' })
 
@@ -2302,9 +2633,17 @@ test('POST managed user honours name schemes, the org lock, and the root login s
       // Lock: a different scheme is refused (409) and nothing is created.
       await db
         .update(organization)
-        .set({ options: { principalNameScheme: 'random', principalNameSchemeLocked: true } })
+        .set({
+          options: {
+            principalNameScheme: 'random',
+            principalNameSchemeLocked: true,
+          },
+        })
         .where(eq(organization.id, organizationId))
-      const refused = await createUser({ username: 'dblocked', nameScheme: 'plain' })
+      const refused = await createUser({
+        username: 'dblocked',
+        nameScheme: 'plain',
+      })
       assertEquals(refused.status, 409)
       assertEquals(await refused.json(), { error: 'principal_scheme_locked' })
       const none = await db
@@ -2316,7 +2655,10 @@ test('POST managed user honours name schemes, the org lock, and the root login s
 
       // Existing users keep their stored system name and scheme.
       const [existing] = await db
-        .select({ appliedUsername: principal.appliedUsername, options: principal.options })
+        .select({
+          appliedUsername: principal.appliedUsername,
+          options: principal.options,
+        })
         .from(principal)
         .where(and(eq(principal.managedId, created.managed.id), eq(principal.username, 'dbplain')))
       assertEquals(existing?.appliedUsername, 'dbplain')
@@ -2584,7 +2926,9 @@ test('backup policy routes: create, list with last run, update, delete, runs', a
 
       const runs = await app.request(`${base}/${hourlyBody.policy.id}/runs?limit=1`, { headers })
       assertEquals(runs.status, 200)
-      const runsBody = (await runs.json()) as { runs: Array<{ runId: string }> }
+      const runsBody = (await runs.json()) as {
+        runs: Array<{ runId: string }>
+      }
       assertEquals(
         runsBody.runs.map((run) => run.runId),
         ['run_second']
@@ -2597,7 +2941,10 @@ test('backup policy routes: create, list with last run, update, delete, runs', a
         body: JSON.stringify({ name: 'Every hour' }),
       })
       assertEquals(renamed.status, 200)
-      const renamedBody = (await renamed.json()) as { policy: PolicyBody; reconcile: unknown }
+      const renamedBody = (await renamed.json()) as {
+        policy: PolicyBody
+        reconcile: unknown
+      }
       assertEquals(renamedBody.policy.name, 'Every hour')
       assertEquals(renamedBody.reconcile, null)
       assertEquals(commandQueue.envelopes.length, renameBefore)
@@ -2612,9 +2959,14 @@ test('backup policy routes: create, list with last run, update, delete, runs', a
         }),
       })
       assertEquals(rescheduled.status, 200)
-      const rescheduledBody = (await rescheduled.json()) as { policy: PolicyBody }
+      const rescheduledBody = (await rescheduled.json()) as {
+        policy: PolicyBody
+      }
       assertEquals(rescheduledBody.policy.schedule, '30 2 * * *')
-      assertEquals(rescheduledBody.policy.preset, { preset: 'daily', time: '02:30' })
+      assertEquals(rescheduledBody.policy.preset, {
+        preset: 'daily',
+        time: '02:30',
+      })
       assertEquals(rescheduledBody.policy.timezone, 'America/Chicago')
       assertEquals(rescheduledBody.policy.enabled, false)
       const pushed = await latestBackupsReconcilePayload(db, serverId)
@@ -2729,7 +3081,11 @@ test("backup policy list shows the daemon's own report: last status and next run
           id: string
           managedId: string
           nextRunAt: string | null
-          lastRun: { status: string; backupId: string | null; error: string | null } | null
+          lastRun: {
+            status: string
+            backupId: string | null
+            error: string | null
+          } | null
         }>
       }
       const before = (await (await app.request(base, { headers })).json()) as Listed
@@ -2757,9 +3113,14 @@ test("backup policy list shows the daemon's own report: last status and next run
       })
 
       // The daemon reports up; the control plane never asks the host.
-      assertEquals(await handleBackupRunReport(store, report({}), { reporterServerId: serverId }), {
-        ok: true,
-      })
+      assertEquals(
+        await handleBackupRunReport(store, report({}), {
+          reporterServerId: serverId,
+        }),
+        {
+          ok: true,
+        }
+      )
       const afterOk = (await (await app.request(base, { headers })).json()) as Listed
       const shown = afterOk.policies.find((entry) => entry.id === policy.id)!
       assertEquals(shown.lastRun?.status, 'succeeded')
@@ -2779,9 +3140,14 @@ test("backup policy list shows the daemon's own report: last status and next run
         path: undefined,
         nextRunAt: '2026-10-02T03:00:00.000Z',
       })
-      assertEquals(await handleBackupRunReport(store, failed, { reporterServerId: serverId }), {
-        ok: true,
-      })
+      assertEquals(
+        await handleBackupRunReport(store, failed, {
+          reporterServerId: serverId,
+        }),
+        {
+          ok: true,
+        }
+      )
       const afterBad = (await (await app.request(base, { headers })).json()) as Listed
       const latest = afterBad.policies.find((entry) => entry.id === policy.id)!
       assertEquals(latest.lastRun?.status, 'failed')
@@ -2813,7 +3179,11 @@ test('a new cluster inherits the organization defaults; its own override wins', 
       assertEquals(created.status, 200)
       type Detail = {
         connection: { dsn: string } | null
-        ssl: { configured: string | null; effective: string; organizationDefault: string | null }
+        ssl: {
+          configured: string | null
+          effective: string
+          organizationDefault: string | null
+        }
       }
       const read = async (): Promise<Detail> => {
         const res = await app.request(`/environments/${environmentId}/managed`, { headers })
@@ -2840,7 +3210,9 @@ test('a new cluster inherits the organization defaults; its own override wins', 
       // A mode set on the cluster itself wins over the organization default.
       await db
         .update(managed)
-        .set({ options: sql`jsonb_set(options, '{settings,ssl,mode}', '"require"')` })
+        .set({
+          options: sql`jsonb_set(options, '{settings,ssl,mode}', '"require"')`,
+        })
         .where(eq(managed.environmentId, environmentId))
       const own = await read()
       assertEquals(own.ssl.configured, 'require')
@@ -2894,13 +3266,22 @@ test('a new cluster listens on loopback only, and the server external access swi
       const initial = await app.request(`/servers/${serverId}/managed-external-access`, {
         headers,
       })
-      assertEquals(await initial.json(), { enabled: false, pending: false, clusterCount: 1 })
+      assertEquals(await initial.json(), {
+        enabled: false,
+        pending: false,
+        clusterCount: 1,
+      })
 
       // Yes: every address. The new addresses are queued by the PUT itself.
       const before = commandQueue.envelopes.length
       const toYes = await setExternalAccess(true)
       assertEquals(toYes.status, 200)
-      assertEquals(await toYes.json(), { ok: true, enabled: true, pending: true, clusterCount: 1 })
+      assertEquals(await toYes.json(), {
+        ok: true,
+        enabled: true,
+        pending: true,
+        clusterCount: 1,
+      })
       assertEquals(
         commandQueue.envelopes.slice(before).map((envelope) => [envelope.type, envelope.serverId]),
         [['managed.ingress.reconcile', serverId]]
@@ -2920,7 +3301,9 @@ test('a new cluster listens on loopback only, and the server external access swi
       // The cluster detail reports the server's setting, not a per-cluster one.
       const detail = await app.request(`/environments/${environmentId}/managed`, { headers })
       const detailBody = (await detail.json()) as {
-        externalAccess: { servers: Array<{ id: string; enabled: boolean; otherClusters: number }> }
+        externalAccess: {
+          servers: Array<{ id: string; enabled: boolean; otherClusters: number }>
+        }
         endpoints: Array<{ reach: string }>
         settings: { exposure?: unknown }
       }
@@ -2947,7 +3330,11 @@ test('a new cluster listens on loopback only, and the server external access swi
         commandCreatedAt: new Date(Date.now() + 60_000).toISOString(),
       })
       const after = await app.request(`/servers/${serverId}/managed-external-access`, { headers })
-      assertEquals(await after.json(), { enabled: false, pending: false, clusterCount: 1 })
+      assertEquals(await after.json(), {
+        enabled: false,
+        pending: false,
+        clusterCount: 1,
+      })
     }
   )
 })
@@ -3011,7 +3398,9 @@ test('PATCH renames a cluster and rejects a bad name before saving anything', as
         body: JSON.stringify({ name: 'Orders database' }),
       })
       assertEquals(renamed.status, 200)
-      const renamedBody = (await renamed.json()) as { managed: { name: string | null } }
+      const renamedBody = (await renamed.json()) as {
+        managed: { name: string | null }
+      }
       assertEquals(renamedBody.managed.name, 'Orders database')
 
       const bad = await app.request(`/environments/${environmentId}/managed`, {
@@ -3051,20 +3440,32 @@ test('POST managed user without privileges gets the default for its role; an emp
       const noPrivileges = await app.request(`/environments/${environmentId}/managed/users`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ username: 'app_user', databases: ['defaultdb'] }),
+        body: JSON.stringify({
+          username: 'app_user',
+          databases: ['defaultdb'],
+        }),
       })
       assertEquals(noPrivileges.status, 200)
-      const noPrivilegesBody = (await noPrivileges.json()) as { user: { privileges: string[] } }
+      const noPrivilegesBody = (await noPrivileges.json()) as {
+        user: { privileges: string[] }
+      }
       assertEquals(noPrivilegesBody.user.privileges, ['read-write'])
       await ready()
 
       const empty = await app.request(`/environments/${environmentId}/managed/users`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ username: 'empty_user', databases: ['defaultdb'], privileges: [] }),
+        body: JSON.stringify({
+          username: 'empty_user',
+          databases: ['defaultdb'],
+          privileges: [],
+        }),
       })
       assertEquals(empty.status, 400)
-      const emptyBody = (await empty.json()) as { error: string; message: string }
+      const emptyBody = (await empty.json()) as {
+        error: string
+        message: string
+      }
       assertEquals(emptyBody.error, 'managed_user_privileges_invalid')
       assertEquals(emptyBody.message.includes('owner, read-write, read-only'), true)
     }
@@ -3153,7 +3554,10 @@ test('saving the external access switch is audited with the new value only', asy
 test('a confirmation of an older ask never reverts or clears a newer one', async () => {
   await withManagedFixtures({}, async ({ db, serverId }) => {
     const read = async () =>
-      (await loadManagedExternalAccess(db, serverId)) as { enabled: boolean; pendingSince?: string }
+      (await loadManagedExternalAccess(db, serverId)) as {
+        enabled: boolean
+        pendingSince?: string
+      }
     const first = await saveManagedExternalAccess(db, serverId, true)
     await new Promise((resolve) => setTimeout(resolve, 5))
     const second = await saveManagedExternalAccess(db, serverId, false)
@@ -3161,15 +3565,24 @@ test('a confirmation of an older ask never reverts or clears a newer one', async
 
     // The server confirms the command built for the first ask: the newer ask
     // (No) stays, with its own pending mark.
-    await confirmManagedExternalAccessForServer(db, { serverId, commandCreatedAt: first })
+    await confirmManagedExternalAccessForServer(db, {
+      serverId,
+      commandCreatedAt: first,
+    })
     assertEquals(await read(), { enabled: false, pendingSince: second })
 
     // A confirmation made after the newer ask clears the mark and keeps the value.
-    await confirmManagedExternalAccessForServer(db, { serverId, commandCreatedAt: second })
+    await confirmManagedExternalAccessForServer(db, {
+      serverId,
+      commandCreatedAt: second,
+    })
     assertEquals(await read(), { enabled: false })
 
     // Confirming again, or with nothing pending, changes nothing.
-    await confirmManagedExternalAccessForServer(db, { serverId, commandCreatedAt: second })
+    await confirmManagedExternalAccessForServer(db, {
+      serverId,
+      commandCreatedAt: second,
+    })
     assertEquals(await read(), { enabled: false })
   })
 })
@@ -3203,8 +3616,14 @@ test('a failed external access push answers 502, stays marked as pending, shows 
       const pendingOnDetail = async () =>
         (
           (await (
-            await app.request(`/environments/${environmentId}/managed`, { headers })
-          ).json()) as { externalAccess: { servers: Array<{ id: string; pending: boolean }> } }
+            await app.request(`/environments/${environmentId}/managed`, {
+              headers,
+            })
+          ).json()) as {
+            externalAccess: {
+              servers: Array<{ id: string; pending: boolean }>
+            }
+          }
         ).externalAccess.servers
           .filter((entry) => entry.pending)
           .map((entry) => entry.id)
