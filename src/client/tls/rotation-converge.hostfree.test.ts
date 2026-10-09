@@ -115,22 +115,22 @@ type ReconcileFixture = {
 
 function drizzleSelectChain(rows: unknown[]) {
   const promise = Promise.resolve(rows)
-  const afterOrderBy = {
+  const terminal = {
+    limit: () => promise,
+    orderBy: () => terminal,
     then: promise.then.bind(promise),
     catch: promise.catch.bind(promise),
     finally: promise.finally.bind(promise),
-    limit: () => Promise.resolve(rows),
   }
   const chain = {
     innerJoin: () => chain,
     leftJoin: () => chain,
-    where: () => chain,
-    limit: () => Promise.resolve(rows),
-    orderBy: () => afterOrderBy,
-    then: (
-      onFulfilled?: (value: unknown[]) => unknown,
-      onRejected?: (reason: unknown) => unknown
-    ) => promise.then(onFulfilled, onRejected),
+    where: () => terminal,
+    limit: () => promise,
+    orderBy: () => terminal,
+    then: promise.then.bind(promise),
+    catch: promise.catch.bind(promise),
+    finally: promise.finally.bind(promise),
   }
   return chain
 }
