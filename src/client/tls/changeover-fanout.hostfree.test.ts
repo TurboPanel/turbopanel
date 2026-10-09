@@ -40,6 +40,8 @@ type QueryRows = {
   principals?: Record<string, unknown>[];
   bindingIds?: Record<string, unknown>[];
   materializeBindings?: Record<string, unknown>[];
+  /** After the first managed listing query, return no rows (simulates delete before load). */
+  dropManagedRowsAfterFirstSelect?: boolean;
 };
 
 function tableName(value: unknown): string {
@@ -51,20 +53,34 @@ function tableName(value: unknown): string {
 }
 
 function rotationTargetsDb(rows: QueryRows): Db {
+  let managedSelectCount = 0;
   return {
+    update: () => ({
+      set: () => ({
+        where: () => ({
+          returning: () => Promise.resolve([]),
+        }),
+      }),
+    }),
     select: () => ({
       from: (table: unknown) => {
         const joinNames: string[] = [];
         const resolveRows = () => {
           const fromName = tableName(table);
           const joinName = joinNames[0] ?? "";
-          if (fromName === "node" && joinName === "server") {
+          if (fromName === "replica" && joinName === "server") {
             return rows.memberNodes;
           }
-          if (fromName === "node" && joinName === "managed") {
+          if (fromName === "replica" && joinName === "managed") {
             return rows.ownedClusterMembers;
           }
-          if (fromName === "managed") return rows.ownedManaged;
+          if (fromName === "managed") {
+            managedSelectCount += 1;
+            if (rows.dropManagedRowsAfterFirstSelect && managedSelectCount > 1) {
+              return [];
+            }
+            return rows.ownedManaged;
+          }
           if (fromName === "principal") return rows.principals ?? [];
           if (fromName === "binding") {
             if (joinNames.length === 0) return rows.bindingIds ?? [];
@@ -233,6 +249,42 @@ test("enumerateOrganizationRotationTargets never returns another org's node or m
     ),
     true,
   );
+});
+
+test("runOrganizationCaRotationFanout records per-member target_gone when the managed row disappeared", async () => {
+  const db = rotationTargetsDb({
+    memberNodes: [],
+    ownedManaged: [{ id: MANAGED_A, workspaceOrganizationId: ORG_A }],
+    ownedClusterMembers: [
+      {
+        serverId: SERVER_A,
+        managedId: MANAGED_A,
+        workspaceOrganizationId: ORG_A,
+      },
+    ],
+    consumers: [],
+    dropManagedRowsAfterFirstSelect: true,
+  });
+
+  const outcome = await runOrganizationCaRotationFanout(
+    {} as never,
+    db,
+    { enqueue: () => Promise.resolve() } as CommandQueue,
+    {
+      organizationId: ORG_A,
+      secretsConfig: {} as SecretsConfig,
+      dataEncryptionSecrets: {} as DerivedSecretsConfig,
+      actorType: "user",
+      actorId: "user-1",
+      rotationId: "11111111-1111-4111-8111-111111111111",
+    },
+  );
+  const applyRows = outcome.results.filter((row) => row.kind === "apply");
+  assertEquals(applyRows.length, 1);
+  assertEquals(applyRows[0]?.managedId, MANAGED_A);
+  assertEquals(applyRows[0]?.serverId, SERVER_A);
+  assertEquals(applyRows[0]?.status, "skipped");
+  assertEquals(applyRows[0]?.error, "target_gone");
 });
 
 test("runOrganizationCaRotationFanout completes with empty results when the org has no targets", async () => {

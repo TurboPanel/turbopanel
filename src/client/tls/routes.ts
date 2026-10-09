@@ -427,9 +427,10 @@ export function overlayRotationResults(
 
 export function rotationCommandsSucceeded(
   rows: readonly CaRotationResultRow[],
-  records: readonly { id: string; status: string; error?: string | null }[]
+  records: readonly { id: string; status: string; error?: string | null }[],
+  liveMembers?: Parameters<typeof rotationConvergedForRetire>[2]
 ): boolean {
-  return rotationConvergedForRetire(rows, records)
+  return rotationConvergedForRetire(rows, records, liveMembers)
 }
 
 export function rotationNeedsCommands(targets: {
@@ -762,7 +763,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.post('/tls/ca/retire', async (c) => {
     const sessionOrg = await requireDbSessionAndOrg(c)
     if (sessionOrg instanceof Response) return sessionOrg
-    const { db, organizationId } = sessionOrg
+    const { db, session, organizationId } = sessionOrg
 
     const denied = await assertCanOr403(c, 'organization:manage', 'organization', organizationId)
     if (denied) return denied
@@ -772,12 +773,18 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       return conflictJson(c, 'no_pending_rotation')
     }
 
-    const { rows, records } = await loadReconciledRotationWithCommandRecords(
-      db,
+    const synced = await persistSyncedRotationResults(c, db, {
       organizationId,
-      journal
-    )
-    if (!rotationConvergedForRetire(rows, records)) {
+      rotationId: journal.id,
+      actorId: session.userId,
+      startedAt: journal.startedAt,
+      rows: parseCaRotationResults(journal.results),
+      enqueueGaps: true,
+    })
+    const commandIds = synced.flatMap((row) => (row.commandId ? [row.commandId] : []))
+    const records = await listCommandRecordsByIds(db, commandIds)
+    const targets = await enumerateOrganizationRotationTargets(db, organizationId)
+    if (!rotationConvergedForRetire(synced, records, targets.members)) {
       return conflictJson(c, 'ca_rotation_not_converged')
     }
 

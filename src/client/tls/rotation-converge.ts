@@ -6,7 +6,15 @@ import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
-import { command, managed, replica, server } from '../../db/schema.ts'
+import {
+  command,
+  environment,
+  managed,
+  project,
+  replica,
+  server,
+  workspace,
+} from '../../db/schema.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   enqueuePreparedManagedApply,
@@ -69,16 +77,39 @@ export function rotationRowConverged(
   return false
 }
 
+type RotationCommandRecord = {
+  id: string
+  status: string
+  error?: string | null
+  errorCode?: string | null
+}
+
+function rotationRowConvergedForRetire(
+  row: CaRotationResultRow,
+  byId: Map<string, RotationCommandRecord>
+): boolean {
+  const record = row.commandId ? byId.get(row.commandId) : undefined
+  const effectiveStatus = record?.status ?? row.status
+  const effectiveError = record?.error ?? row.error ?? undefined
+  return rotationRowConverged(row, effectiveStatus, effectiveError)
+}
+
 export function rotationConvergedForRetire(
   rows: readonly CaRotationResultRow[],
-  records: readonly { id: string; status: string; error?: string | null }[]
+  records: readonly RotationCommandRecord[],
+  liveMembers?: readonly OrganizationRotationMember[]
 ): boolean {
   const byId = new Map(records.map((record) => [record.id, record]))
+  if (liveMembers) {
+    for (const member of liveMembers) {
+      const row = findApplyRow(rows, member.managedId, member.serverId)
+      if (!row || !rotationRowConvergedForRetire(row, byId)) {
+        return false
+      }
+    }
+  }
   for (const row of rows) {
-    const record = row.commandId ? byId.get(row.commandId) : undefined
-    const effectiveStatus = record?.status ?? row.status
-    const effectiveError = record?.error ?? row.error ?? undefined
-    if (!rotationRowConverged(row, effectiveStatus, effectiveError)) {
+    if (!rotationRowConvergedForRetire(row, byId)) {
       return false
     }
   }
@@ -129,7 +160,13 @@ async function loadRotationTargetExistence(
   const managedRows =
     managedIds.length === 0
       ? []
-      : await db.select({ id: managed.id }).from(managed).where(inArray(managed.id, managedIds))
+      : await db
+          .select({ id: managed.id })
+          .from(managed)
+          .innerJoin(environment, eq(managed.environmentId, environment.id))
+          .innerJoin(project, eq(environment.projectId, project.id))
+          .innerJoin(workspace, eq(project.workspaceId, workspace.id))
+          .where(and(inArray(managed.id, managedIds), eq(workspace.organizationId, organizationId)))
   const serverRows =
     serverIds.length === 0
       ? []
@@ -172,12 +209,13 @@ async function findRotationApplyCommand(
     serverId: string
     rotationStartedAt: string
   }
-): Promise<{ id: string; status: string; error: string | null } | null> {
+): Promise<{ id: string; status: string; error: string | null; errorCode: string | null } | null> {
   const [row] = await db
     .select({
       id: command.id,
       status: command.status,
       error: command.errorMessage,
+      errorCode: command.errorCode,
     })
     .from(command)
     .where(
@@ -294,7 +332,10 @@ async function backfillOneApplyCommandId(
   })
   if (!match) return
   row.commandId = match.id
-  if (match.status === 'failed' && match.error?.includes(CA_ROTATION_TARGET_GONE)) {
+  if (
+    match.status === 'failed' &&
+    (match.errorCode === CA_ROTATION_TARGET_GONE || match.error?.includes(CA_ROTATION_TARGET_GONE))
+  ) {
     Object.assign(row, markRowSkipped(row))
   }
 }

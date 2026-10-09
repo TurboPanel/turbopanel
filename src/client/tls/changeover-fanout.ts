@@ -609,10 +609,13 @@ async function recordMissingManagedCluster(
   ctx: RotationFanoutContext,
   managedId: string
 ): Promise<void> {
-  const { db, params, state, complete } = ctx
-  state.results.push(
-    applyResultRow(managedId, params.organizationId, 'skipped', undefined, 'target_gone')
-  )
+  const { db, params, state, complete, targets } = ctx
+  const members = targets.members.filter((member) => member.managedId === managedId)
+  for (const member of members) {
+    state.results.push(
+      applyResultRow(managedId, member.serverId, 'skipped', undefined, 'target_gone')
+    )
+  }
   state.resumeAfter = managedId
   await persistRotationProgress(db, params.rotationId, state, journalCursor(complete, managedId))
 }

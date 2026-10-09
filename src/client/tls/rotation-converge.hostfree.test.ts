@@ -25,8 +25,10 @@ import {
 const test = Deno.test.bind(Deno)
 
 const SERVER = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+const STANDBY_SERVER = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
 const MANAGED = 'bbbbbbbb-bbbb-4bbb-8bbb-000000000001'
 const COMMAND = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+const PRIMARY_COMMAND = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
 const ORG_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
 
 const noopQueue: CommandQueue = { enqueue: () => Promise.resolve() }
@@ -80,7 +82,39 @@ test('rotationConvergedForRetire blocks while a live apply row is still queued',
   assertEquals(
     rotationConvergedForRetire(
       [applyRow({ commandId: COMMAND })],
-      [{ id: COMMAND, status: 'queued' }]
+      [{ id: COMMAND, status: 'queued' }],
+      [{ managedId: MANAGED, serverId: SERVER }]
+    ),
+    false
+  )
+})
+
+test('rotationConvergedForRetire blocks when a live cluster member has no journal apply row', () => {
+  assertEquals(
+    rotationConvergedForRetire(
+      [applyRow({ commandId: PRIMARY_COMMAND })],
+      [{ id: PRIMARY_COMMAND, status: 'succeeded' }],
+      [
+        { managedId: MANAGED, serverId: SERVER },
+        { managedId: MANAGED, serverId: STANDBY_SERVER },
+      ]
+    ),
+    false
+  )
+})
+
+test('rotationConvergedForRetire blocks standby apply queued without commandId after primary succeeded', () => {
+  assertEquals(
+    rotationConvergedForRetire(
+      [
+        applyRow({ serverId: SERVER, commandId: PRIMARY_COMMAND }),
+        applyRow({ serverId: STANDBY_SERVER, status: 'queued' }),
+      ],
+      [{ id: PRIMARY_COMMAND, status: 'succeeded' }],
+      [
+        { managedId: MANAGED, serverId: SERVER },
+        { managedId: MANAGED, serverId: STANDBY_SERVER },
+      ]
     ),
     false
   )
@@ -110,6 +144,7 @@ type ReconcileFixture = {
     serverId: string
     status: string
     error?: string | null
+    errorCode?: string | null
   }[]
 }
 
@@ -174,6 +209,7 @@ function createReconcileDb(fixture: ReconcileFixture = {}): Db {
             id: row.id,
             status: row.status,
             error: row.error ?? null,
+            errorCode: row.errorCode ?? null,
           }))
           return drizzleSelectChain(rows)
         }
@@ -333,6 +369,65 @@ test('reconcileCaRotationResults marks apply rows skipped when command failed ta
       ],
     }),
     '00000000-0000-4000-8000-000000000099',
+    rows,
+    '2020-01-01T00:00:00.000Z'
+  )
+  assertEquals(reconciled[0]?.status, 'skipped')
+  assertEquals(reconciled[0]?.error, CA_ROTATION_TARGET_GONE)
+})
+
+test('reconcileCaRotationResults marks apply skipped when command errorCode is target_gone', async () => {
+  const rows: CaRotationResultRow[] = [
+    {
+      serverId: SERVER,
+      kind: 'apply',
+      managedId: MANAGED,
+      status: 'queued',
+    },
+  ]
+  const reconciled = await reconcileCaRotationResults(
+    createReconcileDb({
+      servers: [SERVER],
+      managed: [MANAGED],
+      replicas: [{ managedId: MANAGED, serverId: SERVER }],
+      commands: [
+        {
+          id: COMMAND,
+          managedId: MANAGED,
+          serverId: SERVER,
+          status: 'failed',
+          error: 'Managed cluster no longer exists',
+          errorCode: CA_ROTATION_TARGET_GONE,
+        },
+      ],
+    }),
+    ORG_ID,
+    rows,
+    '2020-01-01T00:00:00.000Z'
+  )
+  assertEquals(reconciled[0]?.status, 'skipped')
+  assertEquals(reconciled[0]?.error, CA_ROTATION_TARGET_GONE)
+})
+
+test('reconcileCaRotationResults treats journal managedId from another org as gone', async () => {
+  const foreignManaged = 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+  const rows: CaRotationResultRow[] = [
+    {
+      serverId: SERVER,
+      kind: 'apply',
+      managedId: foreignManaged,
+      status: 'queued',
+      commandId: COMMAND,
+    },
+  ]
+  const reconciled = await reconcileCaRotationResults(
+    createReconcileDb({
+      organizationId: ORG_ID,
+      servers: [SERVER],
+      managed: [MANAGED],
+      replicas: [{ managedId: MANAGED, serverId: SERVER }],
+    }),
+    ORG_ID,
     rows,
     '2020-01-01T00:00:00.000Z'
   )
