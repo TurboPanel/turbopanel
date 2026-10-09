@@ -33,7 +33,10 @@ import {
   parseOrganizationOptions,
   resolveAcmeEnabled,
 } from "../../features/organizations/organization-options.ts";
-import { respondAfterHierarchyDelete } from "../hierarchy-delete.ts";
+import {
+  hierarchyDeleteHasChildrenResponse,
+  runHierarchyDelete,
+} from "../hierarchy-delete.ts";
 import {
   applyTlsOptionsPatch,
   buildCreateTlsMaterial,
@@ -1024,8 +1027,13 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     const denied = await assertCanOr403(c, "organization:manage", "tls", id);
     if (denied) return denied;
 
-    return respondAfterHierarchyDelete(c, db, async (tx) => {
+    const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(tls).where(eq(tls.id, id));
     });
+    if (result === "has_children") {
+      return hierarchyDeleteHasChildrenResponse(c);
+    }
+
+    return c.json({ ok: true as const });
   });
 }

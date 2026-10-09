@@ -9,6 +9,7 @@ import {
   hierarchyDeleteHasChildrenResponseIfNeeded,
   isForeignKeyViolation,
   parsePostgresForeignKeyViolation,
+  peekHierarchyDeleteFkBlockers,
   respondAfterHierarchyDelete,
   runHierarchyDelete,
 } from './hierarchy-delete.ts'
@@ -94,7 +95,7 @@ test('runHierarchyDelete returns ok when the transaction succeeds', async () => 
   } as unknown as Db
 
   const result = await runHierarchyDelete(db, async () => {})
-  assertEquals(result, { status: 'ok' })
+  assertEquals(result, 'ok')
 })
 
 test('runHierarchyDelete maps FK violations to has_children with table detail', async () => {
@@ -109,10 +110,11 @@ test('runHierarchyDelete maps FK violations to has_children with table detail', 
   } as unknown as Db
 
   const result = await runHierarchyDelete(db, async () => {})
-  assertEquals(result, {
-    status: 'has_children',
-    blockers: [{ table: 'relay', constraint: 'relay_server_id_server_id_fk' }],
-  })
+  assertEquals(result, 'has_children')
+  assertEquals(
+    [...peekHierarchyDeleteFkBlockers()],
+    [{ table: 'relay', constraint: 'relay_server_id_server_id_fk' }]
+  )
 })
 
 test('runHierarchyDelete rethrows unrelated errors', async () => {
@@ -127,7 +129,7 @@ test('runHierarchyDelete rethrows unrelated errors', async () => {
 
 test('hierarchyDeleteHasChildrenResponseIfNeeded returns null on success', () => {
   const c = {} as Parameters<typeof hierarchyDeleteHasChildrenResponseIfNeeded>[0]
-  assertEquals(hierarchyDeleteHasChildrenResponseIfNeeded(c, { status: 'ok' }), null)
+  assertEquals(hierarchyDeleteHasChildrenResponseIfNeeded(c, 'ok'), null)
 })
 
 test('respondAfterHierarchyDelete returns ok JSON when delete succeeds', async () => {

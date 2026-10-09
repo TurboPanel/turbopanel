@@ -21,8 +21,15 @@ export type HierarchyDeleteFkBlocker = {
   column?: string
 }
 
-export type HierarchyDeleteRunResult =
-  { status: 'ok' } | { status: 'has_children'; blockers: HierarchyDeleteFkBlocker[] }
+/** Result of {@link runHierarchyDelete} (string form keeps legacy call sites unchanged). */
+export type HierarchyDeleteResult = 'ok' | 'has_children'
+
+let lastHierarchyDeleteFkBlockers: HierarchyDeleteFkBlocker[] = []
+
+/** FK blockers from the most recent `has_children` result; cleared on the next delete run. */
+export function peekHierarchyDeleteFkBlockers(): readonly HierarchyDeleteFkBlocker[] {
+  return lastHierarchyDeleteFkBlockers
+}
 
 function readStringField(layer: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const key of keys) {
@@ -118,14 +125,16 @@ export function hierarchyDeleteFkBlockersFromViolation(
 export async function runHierarchyDelete(
   db: Db,
   deleteOp: (tx: Db) => Promise<void>
-): Promise<HierarchyDeleteRunResult> {
+): Promise<HierarchyDeleteResult> {
+  lastHierarchyDeleteFkBlockers = []
   try {
     await db.transaction(deleteOp)
-    return { status: 'ok' }
+    return 'ok'
   } catch (error) {
     if (!isForeignKeyViolation(error)) throw error
     const blocker = parsePostgresForeignKeyViolation(error)
     const blockers = hierarchyDeleteFkBlockersFromViolation(blocker)
+    lastHierarchyDeleteFkBlockers = blockers
     if (blocker?.constraint) {
       compatLogWarn(
         'hierarchy-delete',
@@ -134,7 +143,7 @@ export async function runHierarchyDelete(
     } else if (blocker?.table) {
       compatLogWarn('hierarchy-delete', `delete blocked by FK on ${blocker.table}`)
     }
-    return { status: 'has_children', blockers }
+    return 'has_children'
   }
 }
 
@@ -155,10 +164,10 @@ export function hierarchyDeleteHasChildrenResponse(
 /** When delete hit a child FK, return the 409 response; otherwise `null`. */
 export function hierarchyDeleteHasChildrenResponseIfNeeded(
   c: Context,
-  result: HierarchyDeleteRunResult
+  result: HierarchyDeleteResult
 ): Response | null {
-  if (result.status !== 'has_children') return null
-  return hierarchyDeleteHasChildrenResponse(c, result.blockers)
+  if (result !== 'has_children') return null
+  return hierarchyDeleteHasChildrenResponse(c, peekHierarchyDeleteFkBlockers())
 }
 
 /** Run a hierarchy delete in a transaction and map FK blocks to the standard 409. */
