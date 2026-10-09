@@ -1,9 +1,12 @@
 import { assertEquals } from '@std/assert'
 import {
   engineNeedsSwitchoverGtidProof,
+  failoverRecoverPayloadWithSwitchoverCatchup,
   fenceStopCapturesSwitchoverGtid,
   promotePayloadWithSwitchoverCatchup,
   recordSwitchoverRequiredGtid,
+  switchoverAbortReactivateLifecyclePayload,
+  switchoverGtidFromFenceStopResult,
   SWITCHOVER_GTID_WAIT_SECONDS,
 } from './switchover-catchup.ts'
 
@@ -48,4 +51,44 @@ test('regression: acknowledged writes are not promoted without the old primary G
     metadata
   )
   assertEquals(payload.requiredExecutedGtidSet, '0-3-85263')
+})
+
+test('switchoverGtidFromFenceStopResult rejects empty or oversized values', () => {
+  const base = { status: 'ok' }
+  assertEquals(switchoverGtidFromFenceStopResult(base), null)
+  assertEquals(
+    switchoverGtidFromFenceStopResult({ ...base, switchoverPrimaryExecutedGtidSet: '' }),
+    null
+  )
+  assertEquals(
+    switchoverGtidFromFenceStopResult({
+      ...base,
+      switchoverPrimaryExecutedGtidSet: 'x'.repeat(4097),
+    }),
+    null
+  )
+  assertEquals(
+    switchoverGtidFromFenceStopResult({ ...base, switchoverPrimaryExecutedGtidSet: '0-1-9' }),
+    '0-1-9'
+  )
+})
+
+test('failover recover payload and abort lifecycle carry switchover GTID fields', () => {
+  const metadata = recordSwitchoverRequiredGtid({}, '0-2-100')
+  const recover = failoverRecoverPayloadWithSwitchoverCatchup(
+    {
+      requiredExecutedGtidSet: undefined,
+      gtidWaitTimeoutSeconds: undefined,
+    },
+    metadata
+  )
+  assertEquals(recover.requiredExecutedGtidSet, '0-2-100')
+  assertEquals(
+    switchoverAbortReactivateLifecyclePayload({
+      managedId: 'm',
+      memberId: 's',
+      engine: 'mariadb',
+    }).reactivateAfterSwitchoverAbort,
+    true
+  )
 })

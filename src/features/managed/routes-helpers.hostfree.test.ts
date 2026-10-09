@@ -21,6 +21,7 @@ import {
   evaluateManagedDatabaseDelete,
   evaluateManagedUserDropGuard,
   evaluateManagedUserRotateGuard,
+  evaluateOperatorPromoteGate,
   evaluatePromoteLagHttpGate,
   evaluatePromoteMemberRole,
   evaluatePromoteReplicaClass,
@@ -404,6 +405,27 @@ test('evaluatePromoteLagHttpGate honors force bypass', () => {
     ),
     null
   )
+})
+
+test('evaluateOperatorPromoteGate requires fullyApplied for mysql-family engines', () => {
+  const fresh = {
+    state: 'streaming',
+    lagBytes: 0,
+    lagSeconds: 0,
+    observedAt: '2026-08-10T12:00:00.000Z',
+    fullyApplied: false,
+  }
+  const now = Date.parse('2026-08-10T12:00:01.000Z')
+  assertEquals(evaluateOperatorPromoteGate(fresh, 'postgres', false, now), null)
+  assertEquals(
+    evaluateOperatorPromoteGate(fresh, 'mariadb', false, now),
+    'managed_replica_not_fully_applied'
+  )
+  assertEquals(
+    evaluateOperatorPromoteGate({ ...fresh, fullyApplied: true }, 'mysql', false, now),
+    null
+  )
+  assertEquals(evaluateOperatorPromoteGate(fresh, 'mariadb', true, now), null)
 })
 
 test('pickPrimaryCommandResult and queued response builders', () => {

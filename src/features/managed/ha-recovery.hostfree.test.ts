@@ -39,6 +39,7 @@ import {
   onFenceCommandFailed,
   onFenceCommandSucceeded,
   onPromoteSucceeded,
+  onSwitchoverPromoteFailed,
   onRecoveryCommandFailed,
   onRecoveryCommandTimedOut,
   onRecoveryStepFailed,
@@ -1110,6 +1111,107 @@ test('fence stop of the old primary carries demoted; drain and promote do not', 
   assertEquals(stop.memberId, MEM_PRIMARY)
   assertEquals(stop.demoted, true)
   assertEquals(drain.demoted, undefined)
+})
+
+test('mariadb switchover fence stop requests GTID capture on the old primary', async () => {
+  const harness = createHarness({ connected: [true, true] })
+  const result = await beginOperatorSwitchover({
+    db: harness.db,
+    commandQueue: okQueue(),
+    managedId: MANAGED_ID,
+    engine: 'mariadb',
+    source: member(),
+    target: failoverReplica(),
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  expectOk(result)
+  const stop = harness.commandInserts
+    .map((row) => row.payload as Record<string, unknown> | undefined)
+    .find((payload) => payload?.action === 'stop')
+  if (!stop) throw new TypeError('expected fence stop command')
+  assertEquals(stop.captureSwitchoverGtid, true)
+})
+
+test('mariadb switchover aborts promote when fence stop did not record a GTID', async () => {
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    connected: [true, true],
+    recovery: recoveryRow({
+      kind: 'switchover',
+      state: 'fencing',
+      metadata: { fenceCommandIds: ['cmd-stop'], drainApplied: true },
+    }),
+  })
+  await onFenceCommandSucceeded(harness.db, okQueue(), {
+    recoveryId: REC_ID,
+    commandId: 'cmd-stop',
+    fencePhase: 'stop',
+    engine: 'mariadb',
+    actor: ACTOR,
+  })
+  const row = harness.recovery()
+  assertEquals(row?.state, 'failed')
+  assertEquals(
+    (row?.metadata as { failedReason?: string }).failedReason,
+    'Planned switchover could not record the old primary GTID position after fence stop'
+  )
+  assertEquals(
+    harness.commandInserts.some((insert) => insert.name === 'managed.promote'),
+    false
+  )
+})
+
+test('mariadb switchover promote carries the fence-captured GTID', async () => {
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    connected: [true, true],
+    recovery: recoveryRow({
+      kind: 'switchover',
+      state: 'fencing',
+      metadata: { fenceCommandIds: ['cmd-stop'], drainApplied: true },
+    }),
+  })
+  await onFenceCommandSucceeded(harness.db, okQueue(), {
+    recoveryId: REC_ID,
+    commandId: 'cmd-stop',
+    fencePhase: 'stop',
+    engine: 'mariadb',
+    actor: ACTOR,
+    switchoverPrimaryExecutedGtidSet: '0-3-85263',
+  })
+  assertEquals(
+    harness.commandInserts.some((row) => row.name === 'managed.promote'),
+    true
+  )
+  const payload = harness.commandInserts
+    .map((row) => row.payload as Record<string, unknown> | undefined)
+    .find((row) => row?.requiredExecutedGtidSet === '0-3-85263')
+  if (!payload) throw new TypeError('expected promote dispatch payload with GTID')
+  assertEquals(typeof payload.gtidWaitTimeoutSeconds, 'number')
+})
+
+test('onSwitchoverPromoteFailed reactivates the old primary when GTID proof was required', async () => {
+  const queue = okQueue()
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    connected: [true, true],
+    recovery: recoveryRow({
+      kind: 'switchover',
+      state: 'promoting',
+      metadata: { switchoverRequiredGtidSet: '0-1-5' },
+    }),
+  })
+  await onSwitchoverPromoteFailed(harness.db, queue, {
+    recoveryId: REC_ID,
+    engine: 'mariadb',
+    actor: ACTOR,
+  })
+  assertEquals(harness.recovery()?.state, 'failed')
+  const payload = harness.commandInserts
+    .map((row) => row.payload as Record<string, unknown> | undefined)
+    .find((row) => row?.reactivateAfterSwitchoverAbort === true)
+  assertEquals(payload?.action, 'start')
 })
 
 test('beginOperatorSwitchover skips drain on disconnected peers and still stops the writer', async () => {
