@@ -13,9 +13,7 @@ import type {
 export const SWITCHOVER_GTID_WAIT_SECONDS = 90
 
 export type SwitchoverPromoteFailureCode =
-  | 'gtid_wait_timeout'
-  | 'gtid_wait_error'
-  | 'promote_started'
+  'gtid_wait_timeout' | 'gtid_wait_error' | 'promote_started'
 
 const SWITCHOVER_PROMOTE_ERROR_PREFIX = 'switchover_promote:'
 

@@ -2060,15 +2060,19 @@ async function applyManagedRecoveryFailedSideEffect(
         commandError,
       })
     } else {
-      const phase = parseManagedHaFailoverPayload(record.payload).phase
-      if (phase === 'recover') {
-        await onSwitchoverPromoteFailed(db, deps?.commandQueue, {
-          recoveryId,
-          engine,
-          actor,
-          commandError,
-        })
-      } else {
+      try {
+        const phase = parseManagedHaFailoverPayload(record.payload).phase
+        if (phase === 'recover') {
+          await onSwitchoverPromoteFailed(db, deps?.commandQueue, {
+            recoveryId,
+            engine,
+            actor,
+            commandError,
+          })
+        } else {
+          await onRecoveryCommandFailed(db, recoveryId)
+        }
+      } catch {
         await onRecoveryCommandFailed(db, recoveryId)
       }
     }

@@ -425,10 +425,7 @@ test('evaluateOperatorPromoteGate requires fullyApplied for mysql-family engines
     ),
     null
   )
-  assertEquals(
-    evaluateOperatorPromoteGate(fresh, false, now, 'mariadb'),
-    'managed_replica_lagging'
-  )
+  assertEquals(evaluateOperatorPromoteGate(fresh, false, now, 'mariadb'), 'managed_replica_lagging')
   assertEquals(
     evaluateOperatorPromoteGate({ ...fresh, fullyApplied: true }, false, now, 'mysql'),
     null
