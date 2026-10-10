@@ -73,19 +73,21 @@ function prepareNativeApp(
   const variables = resolveNativeAppVariables(split.apps, applied)
   const prepared = nativeAppServicesForDeploy(
     split.apps,
-    [{
-      serviceId: '00000000-0000-4000-8000-0000000000a1',
-      composeServiceName: 'web',
-      kind: 'node',
-      clones: ['web'],
-      slots: [],
-      containers: [],
-      hostings: [],
-    }],
+    [
+      {
+        serviceId: '00000000-0000-4000-8000-0000000000a1',
+        composeServiceName: 'web',
+        kind: 'node',
+        clones: ['web'],
+        slots: [],
+        containers: [],
+        hostings: [],
+      },
+    ],
     {},
     {},
     new Map(),
-    variables,
+    variables
   )
   return { applied, split, prepared, variables }
 }

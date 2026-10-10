@@ -802,10 +802,7 @@ test('resolveDeployReleaseServiceId prefers hosting, then ingress, then compose 
     ),
     'worker'
   )
-  assertEquals(
-    resolveDeployReleaseServiceId('app', [], [], 'svc-native'),
-    'svc-native'
-  )
+  assertEquals(resolveDeployReleaseServiceId('app', [], [], 'svc-native'), 'svc-native')
 })
 
 test('buildNativeAppServicesForDeploy returns empty when no apps', () => {

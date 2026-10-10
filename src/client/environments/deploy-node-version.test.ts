@@ -54,6 +54,7 @@ function packageJson(enginesNode: unknown): string {
 function app(nodeVersion?: string): PreparedNativeAppService {
   return {
     composeServiceName: 'web',
+    serviceId: '00000000-0000-4000-8000-0000000000a1',
     listenPort: 18100,
     framework: 'next',
     ...(nodeVersion === undefined ? {} : { nodeVersion }),
@@ -786,6 +787,7 @@ test('a Deno app is never read for a Node series, and keeps its place among the 
   const { read, calls } = reader([file('package.json', packageJson('>=26.7.0'))])
   const deno: PreparedNativeAppService = {
     composeServiceName: 'api',
+    serviceId: '00000000-0000-4000-8000-0000000000a2',
     listenPort: 18101,
     framework: 'auto',
     runtime: 'deno',

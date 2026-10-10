@@ -25,45 +25,37 @@
  * is the case with no redeploy in between: edit the compose, then stop or delete.
  */
 
-import { eq, inArray } from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
-import {
-  deployment,
-  environment,
-  principal,
-  project,
-  service,
-} from "../../db/schema.ts";
-import { readServiceSourceExtension } from "../../features/compose/index.ts";
-import { mergeProjectEnvironmentCompose } from "./deploy-prepare.ts";
+import { eq, inArray } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import { deployment, environment, principal, project, service } from '../../db/schema.ts'
+import { readServiceSourceExtension } from '../../features/compose/index.ts'
+import { mergeProjectEnvironmentCompose } from './deploy-prepare.ts'
 import {
   loadPrincipalIdsByServiceIdForEnvironment,
   pickSolePrincipalId,
-} from "../principals/tenancies.ts";
+} from '../principals/tenancies.ts'
 
 /** One release tree to reclaim: `<principalHomeRoot>/<username>/sites/<serviceId>`. */
 export type EnvironmentSiteRelease = {
-  serviceId: string;
-  username: string;
-};
+  serviceId: string
+  username: string
+}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /** Compose service keys carrying `x-turbopanel.source`. */
-function collectSourceComposeServiceNames(
-  data: Record<string, unknown>,
-): Set<string> {
-  const names = new Set<string>();
-  const services = data.services;
-  if (!isPlainObject(services)) return names;
+function collectSourceComposeServiceNames(data: Record<string, unknown>): Set<string> {
+  const names = new Set<string>()
+  const services = data.services
+  if (!isPlainObject(services)) return names
   for (const [name, raw] of Object.entries(services)) {
-    if (!isPlainObject(raw)) continue;
-    if (!readServiceSourceExtension(raw)) continue;
-    names.add(name);
+    if (!isPlainObject(raw)) continue
+    if (!readServiceSourceExtension(raw)) continue
+    names.add(name)
   }
-  return names;
+  return names
 }
 
 /**
@@ -75,7 +67,7 @@ function collectSourceComposeServiceNames(
  * with no hosting and no native row.
  */
 function releaseServiceIdFor(serviceId: string): string {
-  return serviceId;
+  return serviceId
 }
 
 /**
@@ -95,7 +87,7 @@ function releaseServiceIdFor(serviceId: string): string {
  */
 export async function resolveSourcedEnvironmentSiteReleases(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<EnvironmentSiteRelease[]> {
   const [envRow] = await db
     .select({
@@ -105,92 +97,74 @@ export async function resolveSourcedEnvironmentSiteReleases(
     })
     .from(environment)
     .where(eq(environment.id, environmentId))
-    .limit(1);
-  if (!envRow) return [];
+    .limit(1)
+  if (!envRow) return []
 
   const [projectRow] = await db
     .select({ id: project.id, options: project.options })
     .from(project)
     .where(eq(project.id, envRow.projectId))
-    .limit(1);
-  if (!projectRow) return [];
+    .limit(1)
+  if (!projectRow) return []
 
-  const merged = mergeProjectEnvironmentCompose(
-    projectRow.options,
-    envRow.options,
-  );
-  if (merged instanceof Response) return [];
+  const merged = mergeProjectEnvironmentCompose(projectRow.options, envRow.options)
+  if (merged instanceof Response) return []
 
-  const sourceComposeNames = collectSourceComposeServiceNames(merged.data);
-  if (sourceComposeNames.size === 0) return [];
+  const sourceComposeNames = collectSourceComposeServiceNames(merged.data)
+  if (sourceComposeNames.size === 0) return []
 
   const serviceRows = await db
     .select({ id: service.id, composeServiceName: service.composeServiceName })
     .from(service)
-    .where(eq(service.environmentId, environmentId));
-  const matched = serviceRows.filter((row) =>
-    sourceComposeNames.has(row.composeServiceName)
-  );
-  if (matched.length === 0) return [];
+    .where(eq(service.environmentId, environmentId))
+  const matched = serviceRows.filter((row) => sourceComposeNames.has(row.composeServiceName))
+  if (matched.length === 0) return []
 
-  const principalIdsByServiceId =
-    await loadPrincipalIdsByServiceIdForEnvironment(db, environmentId);
-  const wanted = new Map<string, string>();
+  const principalIdsByServiceId = await loadPrincipalIdsByServiceIdForEnvironment(db, environmentId)
+  const wanted = new Map<string, string>()
   for (const row of matched) {
-    const sole = pickSolePrincipalId(principalIdsByServiceId.get(row.id) ?? []);
-    if (sole.status !== "one") continue;
-    wanted.set(row.id, sole.principalId);
+    const sole = pickSolePrincipalId(principalIdsByServiceId.get(row.id) ?? [])
+    if (sole.status !== 'one') continue
+    wanted.set(row.id, sole.principalId)
   }
-  if (wanted.size === 0) return [];
+  if (wanted.size === 0) return []
 
   const principalRows = await db
     .select({ id: principal.id, username: principal.appliedUsername })
     .from(principal)
-    .where(inArray(principal.id, [...new Set(wanted.values())]));
-  const usernameById = new Map(
-    principalRows.map((row) => [row.id, row.username]),
-  );
+    .where(inArray(principal.id, [...new Set(wanted.values())]))
+  const usernameById = new Map(principalRows.map((row) => [row.id, row.username]))
 
-  const out: EnvironmentSiteRelease[] = [];
+  const out: EnvironmentSiteRelease[] = []
   for (const row of matched) {
-    const principalId = wanted.get(row.id);
-    if (!principalId) continue;
-    const username = usernameById.get(principalId);
-    if (!username) continue;
+    const principalId = wanted.get(row.id)
+    if (!principalId) continue
+    const username = usernameById.get(principalId)
+    if (!username) continue
     out.push({
       serviceId: releaseServiceIdFor(row.id),
       username,
-    });
+    })
   }
-  return sortSiteReleases(out);
+  return sortSiteReleases(out)
 }
 
-function sortSiteReleases(
-  entries: EnvironmentSiteRelease[],
-): EnvironmentSiteRelease[] {
+function sortSiteReleases(entries: EnvironmentSiteRelease[]): EnvironmentSiteRelease[] {
   return entries.sort(
-    (a, b) =>
-      a.serviceId.localeCompare(b.serviceId) ||
-      a.username.localeCompare(b.username),
-  );
+    (a, b) => a.serviceId.localeCompare(b.serviceId) || a.username.localeCompare(b.username)
+  )
 }
 
 /** Same charset the daemon's `environment.stop` parser accepts before any path join. */
-const SITE_RELEASE_SERVICE_ID_RE = /^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$/;
-const SITE_RELEASE_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,27}$/;
+const SITE_RELEASE_SERVICE_ID_RE = /^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$/
+const SITE_RELEASE_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,27}$/
 
-function parseRecordedSiteRelease(
-  value: unknown,
-): EnvironmentSiteRelease | null {
-  if (!isPlainObject(value)) return null;
-  const { serviceId, username } = value;
-  if (
-    typeof serviceId !== "string" || !SITE_RELEASE_SERVICE_ID_RE.test(serviceId)
-  ) return null;
-  if (
-    typeof username !== "string" || !SITE_RELEASE_USERNAME_RE.test(username)
-  ) return null;
-  return { serviceId, username };
+function parseRecordedSiteRelease(value: unknown): EnvironmentSiteRelease | null {
+  if (!isPlainObject(value)) return null
+  const { serviceId, username } = value
+  if (typeof serviceId !== 'string' || !SITE_RELEASE_SERVICE_ID_RE.test(serviceId)) return null
+  if (typeof username !== 'string' || !SITE_RELEASE_USERNAME_RE.test(username)) return null
+  return { serviceId, username }
 }
 
 /**
@@ -203,24 +177,24 @@ function parseRecordedSiteRelease(
  */
 async function readRecordedEnvironmentSiteReleases(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<EnvironmentSiteRelease[]> {
   const rows = await db
     .select({ options: deployment.options })
     .from(deployment)
-    .where(eq(deployment.environmentId, environmentId));
+    .where(eq(deployment.environmentId, environmentId))
 
-  const out: EnvironmentSiteRelease[] = [];
+  const out: EnvironmentSiteRelease[] = []
   for (const row of rows) {
-    if (!isPlainObject(row.options)) continue;
-    const recorded = row.options.siteReleases;
-    if (!Array.isArray(recorded)) continue;
+    if (!isPlainObject(row.options)) continue
+    const recorded = row.options.siteReleases
+    if (!Array.isArray(recorded)) continue
     for (const entry of recorded) {
-      const parsed = parseRecordedSiteRelease(entry);
-      if (parsed) out.push(parsed);
+      const parsed = parseRecordedSiteRelease(entry)
+      if (parsed) out.push(parsed)
     }
   }
-  return out;
+  return out
 }
 
 /**
@@ -233,17 +207,14 @@ async function readRecordedEnvironmentSiteReleases(
  */
 export async function resolveEnvironmentSiteReleases(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<EnvironmentSiteRelease[]> {
-  const sourced = await resolveSourcedEnvironmentSiteReleases(
-    db,
-    environmentId,
-  );
-  const recorded = await readRecordedEnvironmentSiteReleases(db, environmentId);
+  const sourced = await resolveSourcedEnvironmentSiteReleases(db, environmentId)
+  const recorded = await readRecordedEnvironmentSiteReleases(db, environmentId)
 
-  const byKey = new Map<string, EnvironmentSiteRelease>();
+  const byKey = new Map<string, EnvironmentSiteRelease>()
   for (const entry of [...sourced, ...recorded]) {
-    byKey.set(`${entry.username}\u0000${entry.serviceId}`, entry);
+    byKey.set(`${entry.username}\u0000${entry.serviceId}`, entry)
   }
-  return sortSiteReleases([...byKey.values()]);
+  return sortSiteReleases([...byKey.values()])
 }
