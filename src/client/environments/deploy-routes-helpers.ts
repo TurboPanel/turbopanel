@@ -27,6 +27,7 @@ import {
 } from '../../features/deploy/deploy-options.ts'
 import type { FabricGateOutcome } from '../../features/fabric/gate.ts'
 import type { ScheduleErrorCode } from '../../features/schedule/index.ts'
+import { resolveDeployReleaseServiceId } from './release-service-id.ts'
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -483,6 +484,19 @@ function mapHostingPrepareError(
   }
 }
 
+function mapNativeAppUnresolvedPrepareError(
+  prepared: Extract<DeployPrepareError, { kind: 'native_app_unresolved_service' }>
+): PrepareErrorResponse {
+  return {
+    status: 422,
+    body: {
+      error: 'native_app_unresolved_service',
+      composeServiceName: prepared.composeServiceName,
+      message: `Native app "${prepared.composeServiceName}" has no resolved service id for this environment.`,
+    },
+  }
+}
+
 function mapPrincipalPrepareError(
   prepared: Extract<
     DeployPrepareError,
@@ -562,6 +576,13 @@ function tryMapHostingPrepareError(prepared: DeployPrepareError): PrepareErrorRe
     return null
   }
   return mapHostingPrepareError(prepared)
+}
+
+function tryMapNativeAppUnresolvedPrepareError(
+  prepared: DeployPrepareError
+): PrepareErrorResponse | null {
+  if (prepared.kind !== 'native_app_unresolved_service') return null
+  return mapNativeAppUnresolvedPrepareError(prepared)
 }
 
 function tryMapPrincipalPrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
@@ -702,6 +723,7 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
     tryMapBindingHostSiteError(prepared) ??
     tryMapDenoPrepareError(prepared) ??
     tryMapSitePrepareError(prepared) ??
+    tryMapNativeAppUnresolvedPrepareError(prepared) ??
     tryMapPrincipalPrepareError(prepared) ??
     tryMapHostingPrepareError(prepared) ??
     mapCorePrepareError(prepared)
@@ -953,32 +975,7 @@ export function buildSitesForDeploy(
   )
 }
 
-/**
- * Release-tree directory segment for one compose service.
- *
- * **Must** stay identical to the daemon's `resolveReleaseServiceId`
- * (`turbopaneld/src/deploy/release/apply-source-releases.ts`): hostings first,
- * then tcp/udp ingress, then the compose key. The release engine picks the
- * directory with that rule, so a native app unit whose `WorkingDirectory` were
- * derived any other way would point at a tree nothing ever published.
- */
-export function resolveDeployReleaseServiceId(
-  composeServiceName: string,
-  hostings: readonly EnvironmentDeployHosting[],
-  ingressServices: readonly EnvironmentDeployIngressService[]
-): string {
-  for (const hosting of hostings) {
-    if (hosting.composeServiceName === composeServiceName && hosting.serviceId) {
-      return hosting.serviceId
-    }
-  }
-  for (const ingress of ingressServices) {
-    if (ingress.composeServiceName === composeServiceName && ingress.serviceId) {
-      return ingress.serviceId
-    }
-  }
-  return composeServiceName
-}
+export { resolveDeployReleaseServiceId, RELEASE_TREE_SERVICE_ID_RE } from './release-service-id.ts'
 
 /**
  * Finalize native app rows for the wire: allocate loopback ports out of the
@@ -999,8 +996,8 @@ export function resolveDeployReleaseServiceId(
  */
 export function buildNativeAppServicesForDeploy(
   nativeAppServices: readonly PreparedNativeAppService[],
-  hostings: EnvironmentDeployHosting[],
-  ingressServices: readonly EnvironmentDeployIngressService[],
+  _hostings: EnvironmentDeployHosting[],
+  _ingressServices: readonly EnvironmentDeployIngressService[],
   used: Set<number> = new Set<number>(),
   uniqueKey?: string
 ): EnvironmentDeployNativeAppService[] {
@@ -1012,7 +1009,7 @@ export function buildNativeAppServicesForDeploy(
     uniqueKey
   ).map((app) => ({
     ...app,
-    serviceId: resolveDeployReleaseServiceId(app.composeServiceName, hostings, ingressServices),
+    serviceId: resolveDeployReleaseServiceId(app.composeServiceName, app.serviceId),
   }))
 }
 

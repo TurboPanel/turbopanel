@@ -7,7 +7,12 @@ import { assertEquals, assertNotEquals } from '@std/assert'
 import { buildNativeAppServicesForDeploy } from '../../client/environments/deploy-routes-helpers.ts'
 import { assignNativeAppListenPorts } from './native-app.ts'
 
-const APP = { composeServiceName: 'web', framework: 'next', listenPort: 0 } as const
+const APP = {
+  composeServiceName: 'web',
+  serviceId: '00000000-0000-4000-8000-0000000000a1',
+  framework: 'next',
+  listenPort: 0,
+} as const
 
 /** Deploy `web` for one environment the way `deploy-routes` does: other environments' ports are reserved. */
 function deployWeb(environmentId: string, reserved: readonly number[]): number {

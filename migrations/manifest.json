@@ -146,6 +146,12 @@
       "tag": "0023_server_assigned_tier_comment",
       "when": 1791551527301,
       "sha256": "eb3517dd17edf8d79a34bbc41924e53912e4fef05443a1cd0ffcec104180fdd5"
+    },
+    {
+      "idx": 24,
+      "tag": "0024_organization_name_signup_comment",
+      "when": 1791594517203,
+      "sha256": "2ba805a66142673d116e9a62e5e958baadbef4e94fa8c2e4bb9656b6887285d0"
     }
   ]
 }

@@ -19,10 +19,7 @@ import {
   seedMockSession,
   seedMockUser,
 } from '../authn/authn-hostfree-doubles.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from '../authn/crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
@@ -62,7 +59,7 @@ function thenableRows(rows: unknown[]) {
         if (prop === 'catch' || prop === 'finally') return undefined
         return () => chain
       },
-    },
+    }
   )
   return chain
 }
@@ -91,15 +88,11 @@ function mockContext(opts: {
       text: () => Promise.resolve(opts.bodyText ?? ''),
     },
     get: (key: string) => vars.get(key),
-    json: (body: unknown, status?: number) =>
-      Response.json(body, { status: status ?? 200 }),
+    json: (body: unknown, status?: number) => Response.json(body, { status: status ?? 200 }),
   } as unknown as Context<AppEnv>
 }
 
-function buildOrgDb(opts: {
-  organizationId: string | null
-  manageAllowed: boolean
-}): Db {
+function buildOrgDb(opts: { organizationId: string | null; manageAllowed: boolean }): Db {
   const executeResults: unknown[][] = []
   if (opts.organizationId) {
     executeResults.push([{ organization_id: opts.organizationId }])
@@ -186,8 +179,7 @@ function dispatchContext(opts: {
   if (opts.commandQueue) vars.set('commandQueue', opts.commandQueue)
   return {
     get: (key: string) => vars.get(key),
-    json: (body: unknown, status?: number) =>
-      Response.json(body, { status: status ?? 200 }),
+    json: (body: unknown, status?: number) => Response.json(body, { status: status ?? 200 }),
   } as unknown as Context<AppEnv>
 }
 
@@ -209,13 +201,13 @@ test('attachmentServerIds and tcpUdpIngressServiceRefs project ids', () => {
       { serverId: 'srv-a', networkKeys: [] },
       { serverId: 'srv-b', networkKeys: ['default'] },
     ]),
-    ['srv-a', 'srv-b'],
+    ['srv-a', 'srv-b']
   )
   assertEquals(tcpUdpIngressServiceRefs([]), [])
-  assertEquals(
-    tcpUdpIngressServiceRefs([{ serviceId: 'svc-1' }, { serviceId: 'svc-2' }]),
-    [{ serviceId: 'svc-1' }, { serviceId: 'svc-2' }],
-  )
+  assertEquals(tcpUdpIngressServiceRefs([{ serviceId: 'svc-1' }, { serviceId: 'svc-2' }]), [
+    { serviceId: 'svc-1' },
+    { serviceId: 'svc-2' },
+  ])
 })
 
 test('deployParticipation drains previous hosts that left the plan', () => {
@@ -227,7 +219,7 @@ test('deployParticipation drains previous hosts that left the plan', () => {
   assertEquals([...withDrain.attachmentServers], ['srv-attach'])
   assertEquals(
     [...withDrain.participating].sort((a, b) => a.localeCompare(b)),
-    ['srv-a', 'srv-attach'],
+    ['srv-a', 'srv-attach']
   )
   assertEquals(withDrain.drainedIds, ['srv-old'])
 
@@ -263,33 +255,35 @@ test('ingressServerIdsForDeploy unions attachments, leftovers, and managed hosts
   })
   assertEquals(
     [...ids].sort((a, b) => a.localeCompare(b)),
-    ['srv-a', 'srv-attach', 'srv-orphan'],
+    ['srv-a', 'srv-attach', 'srv-orphan']
   )
 })
 
 test('ingressServerIdsForDeploy adds a plan host that only needs reserved ingress', () => {
   const ids = ingressServerIdsForDeploy({
     planServerIds: ['srv-plan'],
-    preparedByServer: [{
-      serverId: 'srv-plan',
-      prepared: stubPrepared([]),
-    }],
+    preparedByServer: [
+      {
+        serverId: 'srv-plan',
+        prepared: stubPrepared([]),
+      },
+    ],
     attachments: [{ serverId: 'srv-listener', networkKeys: ['default'] }],
-    consumers: [{
-      composeServiceName: 'api',
-      networkKeys: ['default'],
-      listenerServerId: 'srv-listener',
-    }],
+    consumers: [
+      {
+        composeServiceName: 'api',
+        networkKeys: ['default'],
+        listenerServerId: 'srv-listener',
+      },
+    ],
     spanning: new Map([['default', 'tpn_default']]),
-    segmentsByServer: new Map([
-      ['srv-listener', [{ name: 'tpn_default', subnet: '10.0.0.0/24' }]],
-    ]),
+    segmentsByServer: new Map([['srv-listener', [{ name: 'tpn_default', subnet: '10.0.0.0/24' }]]]),
     listenerNames: new Map([['srv-listener', 'proxy']]),
     releasedListeners: [],
   })
   assertEquals(
     [...ids].sort((a, b) => a.localeCompare(b)),
-    ['srv-listener', 'srv-plan'],
+    ['srv-listener', 'srv-plan']
   )
 })
 
@@ -303,9 +297,7 @@ test('assertDeployDispatchInfrastructure refuses missing registry and queues', a
     error: 'Daemon cell registry unavailable',
   })
 
-  const noQueue = assertDeployDispatchInfrastructure(
-    dispatchContext({ registry: emptyRegistry() }),
-  )
+  const noQueue = assertDeployDispatchInfrastructure(dispatchContext({ registry: emptyRegistry() }))
   if (!(noQueue instanceof Response)) {
     throw new TypeError('expected missing queue to fail')
   }
@@ -316,7 +308,7 @@ test('assertDeployDispatchInfrastructure refuses missing registry and queues', a
     dispatchContext({
       registry: emptyRegistry(),
       commandQueue: createNoopCommandQueue(),
-    }),
+    })
   )
   if (!(noop instanceof Response)) {
     throw new TypeError('expected noop queue to fail')
@@ -328,7 +320,7 @@ test('assertDeployDispatchInfrastructure refuses missing registry and queues', a
 test('assertDeployDispatchInfrastructure returns a usable queue', () => {
   const queue = recordingQueue()
   const result = assertDeployDispatchInfrastructure(
-    dispatchContext({ registry: emptyRegistry(), commandQueue: queue }),
+    dispatchContext({ registry: emptyRegistry(), commandQueue: queue })
   )
   assertEquals(result, queue)
 })
@@ -355,11 +347,14 @@ test('register* deploy routes require session secrets', () => {
 })
 
 async function buildManageApp(opts: {
-  register: (app: Hono<AppEnv>, routeOpts: {
-    secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
-    runtime: 'deno'
-    signupEnvOverride: undefined
-  }) => void
+  register: (
+    app: Hono<AppEnv>,
+    routeOpts: {
+      secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
+      runtime: 'deno'
+      signupEnvOverride: undefined
+    }
+  ) => void
   withRegistry?: boolean
   withQueue?: boolean
 }): Promise<{ app: Hono<AppEnv>; cookie: string }> {
@@ -435,7 +430,7 @@ test('authorizeEnvironmentManage requires an organization header and a db on con
   const missingOrg = await authorizeEnvironmentManage(
     mockContext({ session: { userId: 'user-1' }, db: {} as Db }),
     {} as Db,
-    environmentId,
+    environmentId
   )
   if (!(missingOrg instanceof Response)) {
     throw new TypeError('expected organizationId required')
@@ -449,7 +444,7 @@ test('authorizeEnvironmentManage requires an organization header and a db on con
       headers: { [ORG_ID_HEADER]: organizationId },
     }),
     {} as Db,
-    environmentId,
+    environmentId
   )
   if (!(missingDb instanceof Response)) {
     throw new TypeError('expected Database unavailable')
@@ -468,7 +463,7 @@ test('authorizeDeployRequest returns 400 for invalid JSON', async () => {
       bodyText: '{',
     }),
     db,
-    environmentId,
+    environmentId
   )
   if (!(result instanceof Response)) {
     throw new TypeError('expected Invalid request')
@@ -574,8 +569,7 @@ test('POST /environments/:id/lifecycle returns 404 when the environment is missi
 
 test('runEnvironmentDeployForActor returns 404 when the environment is missing', async () => {
   const c = {
-    json: (body: unknown, status?: number) =>
-      Response.json(body, { status: status ?? 200 }),
+    json: (body: unknown, status?: number) => Response.json(body, { status: status ?? 200 }),
     get: () => undefined,
   } as unknown as Context<AppEnv>
   const result = await runEnvironmentDeployForActor(
@@ -583,7 +577,7 @@ test('runEnvironmentDeployForActor returns 404 when the environment is missing',
     emptySelectDb(),
     recordingQueue(),
     environmentId,
-    actorAuth(),
+    actorAuth()
   )
   assertEquals(result.status, 404)
   assertEquals(await result.json(), { error: 'Not found' })

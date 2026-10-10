@@ -1,0 +1,1 @@
+COMMENT ON COLUMN "organization"."name" IS 'Display name; sign-up uses `you@example.com''s organization` from email, else `My Organization` if missing, blank, or label invalid; install Root Organization.';

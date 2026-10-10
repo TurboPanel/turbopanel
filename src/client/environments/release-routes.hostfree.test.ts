@@ -15,10 +15,7 @@ import {
   seedMockSession,
   seedMockUser,
 } from '../authn/authn-hostfree-doubles.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from '../authn/crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
@@ -52,14 +49,12 @@ function thenableRows(rows: unknown[]) {
         if (prop === 'catch' || prop === 'finally') return undefined
         return () => chain
       },
-    },
+    }
   )
   return chain
 }
 
-function releaseRecord(
-  overrides: Partial<ServiceReleaseRecord> = {},
-): ServiceReleaseRecord {
+function releaseRecord(overrides: Partial<ServiceReleaseRecord> = {}): ServiceReleaseRecord {
   return {
     commandId: 'cmd-1',
     serverId,
@@ -144,18 +139,12 @@ test('parseRollbackBody requires both wire fields', () => {
   assertEquals(parseRollbackBody({}), null)
   assertEquals(parseRollbackBody({ composeServiceName: 'web' }), null)
   assertEquals(parseRollbackBody({ releaseId: 'rel-1' }), null)
-  assertEquals(
-    parseRollbackBody({ composeServiceName: '-bad', releaseId: 'rel-1' }),
-    null,
-  )
-  assertEquals(
-    parseRollbackBody({ composeServiceName: 'web', releaseId: '' }),
-    null,
-  )
-  assertEquals(
-    parseRollbackBody({ composeServiceName: 'web', releaseId: 'rel-1' }),
-    { composeServiceName: 'web', releaseId: 'rel-1' },
-  )
+  assertEquals(parseRollbackBody({ composeServiceName: '-bad', releaseId: 'rel-1' }), null)
+  assertEquals(parseRollbackBody({ composeServiceName: 'web', releaseId: '' }), null)
+  assertEquals(parseRollbackBody({ composeServiceName: 'web', releaseId: 'rel-1' }), {
+    composeServiceName: 'web',
+    releaseId: 'rel-1',
+  })
 })
 
 test('releasePin carries recorded commit metadata only when present', () => {
@@ -168,14 +157,14 @@ test('releasePin carries recorded commit metadata only when present', () => {
       releaseRecord({
         commitMessage: 'feat: ship',
         commitAuthor: 'Ada',
-      }),
+      })
     ),
     {
       releaseId: 'rel-1',
       commitSha: 'a'.repeat(40),
       commitMessage: 'feat: ship',
       commitAuthor: 'Ada',
-    },
+    }
   )
 })
 
@@ -205,12 +194,12 @@ test('releaseByService pins live materialized releases plus the target', () => {
   const pins = releaseByService(
     [liveOther, notLive, notEverywhere, target],
     target,
-    new Set([serverId]),
+    new Set([serverId])
   )
-  assertEquals(Object.keys(pins).sort((a, b) => a.localeCompare(b)), [
-    'web',
-    'worker',
-  ])
+  assertEquals(
+    Object.keys(pins).sort((a, b) => a.localeCompare(b)),
+    ['web', 'worker']
+  )
   assertEquals(pins.web?.releaseId, 'rel-old')
   assertEquals(pins.web?.commitMessage, 'old')
   assertEquals(pins.worker?.releaseId, 'rel-worker')
@@ -352,10 +341,9 @@ test('GET /environments/:id/releases rejects a bad limit and compose service', a
     gate: 'read',
     manageAllowed: true,
   })
-  const badLimit = await app.request(
-    `/environments/${environmentId}/releases?limit=0`,
-    { headers: authHeaders(cookie) },
-  )
+  const badLimit = await app.request(`/environments/${environmentId}/releases?limit=0`, {
+    headers: authHeaders(cookie),
+  })
   assertEquals(badLimit.status, 400)
   assertEquals(await badLimit.json(), {
     error: `limit must be an integer between 1 and ${SERVICE_RELEASES_MAX_LIMIT}`,
@@ -363,7 +351,7 @@ test('GET /environments/:id/releases rejects a bad limit and compose service', a
 
   const badName = await app.request(
     `/environments/${environmentId}/releases?composeServiceName=-nope`,
-    { headers: authHeaders(cookie) },
+    { headers: authHeaders(cookie) }
   )
   assertEquals(badName.status, 400)
   assertEquals(await badName.json(), { error: 'Invalid composeServiceName' })
@@ -377,10 +365,10 @@ test('GET /environments/:id/releases lists folded releases', async () => {
   })
   const res = await app.request(
     `/environments/${environmentId}/releases?limit=10&composeServiceName=web`,
-    { headers: authHeaders(cookie) },
+    { headers: authHeaders(cookie) }
   )
   assertEquals(res.status, 200)
-  const body = await res.json() as {
+  const body = (await res.json()) as {
     ok: boolean
     releases: Array<{ releaseId: string; isLive: boolean; composeServiceName: string }>
   }
@@ -419,7 +407,7 @@ test('POST /environments/:id/rollback returns 404 when the release is missing', 
     body: JSON.stringify({ composeServiceName: 'web', releaseId: 'rel-1' }),
   })
   assertEquals(res.status, 404)
-  const body = await res.json() as { error: string }
+  const body = (await res.json()) as { error: string }
   assertEquals(body.error, 'release_not_found')
 })
 
@@ -439,7 +427,7 @@ test('POST /environments/:id/rollback returns 409 when a host never published it
     body: JSON.stringify({ composeServiceName: 'web', releaseId: 'rel-1' }),
   })
   assertEquals(res.status, 409)
-  const body = await res.json() as { error: string }
+  const body = (await res.json()) as { error: string }
   assertEquals(body.error, 'release_not_materialized')
 })
 
@@ -456,6 +444,6 @@ test('POST /environments/:id/rollback returns 503 when dispatch infra is missing
     body: JSON.stringify({ composeServiceName: 'web', releaseId: 'rel-1' }),
   })
   assertEquals(res.status, 503)
-  const body = await res.json() as { error: string }
+  const body = (await res.json()) as { error: string }
   assertEquals(body.error, 'Daemon cell registry unavailable')
 })
