@@ -3449,6 +3449,13 @@ function applyOptionalSourceFields(
     isValidSourceReleaseId,
     'Invalid sourceMaterial rollbackToReleaseId'
   )
+  assignOptionalSourceField(
+    entry,
+    source,
+    'releaseServiceId',
+    isValidSourceReleaseId,
+    'Invalid sourceMaterial releaseServiceId'
+  )
 }
 
 function parseDeploySourceEntry(entry: unknown): EnvironmentDeploySource {

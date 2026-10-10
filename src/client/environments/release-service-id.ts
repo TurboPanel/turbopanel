@@ -13,8 +13,11 @@
  * **Backward compatibility:** payloads without `releaseServiceId` (older control
  * planes) fall back to `nativeAppServices[].serviceId` when present, then
  * matching `hostings[]` / `ingressServices[]` `serviceId`, then the compose
- * service key. Older daemons ignore `releaseServiceId` and keep that same
- * fallback shape, so nothing breaks mid-rollout.
+ * service key. A **new** daemon with an **old** control plane keeps that same
+ * fallback. An **old** daemon (trunk before turbopaneld #463) ignores
+ * `releaseServiceId` and `nativeAppServices[].serviceId` and keeps the compose
+ * service key as the release-directory identity — ship the daemon first, let the
+ * fleet roll, then merge this control-plane change.
  *
  * **Legacy directories:** a single-environment site may still live under
  * `sites/<composeServiceName>/`. The daemon's {@link effectiveReleaseServiceId}
