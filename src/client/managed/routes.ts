@@ -143,7 +143,7 @@ import {
   buildManagedDestroyQueuedResponse,
   buildManagedReleaseView,
   buildManagedSslView,
-  buildOrgManagedListEntry,
+  serializeOrgManagedListRow,
   buildPromoteQueuedResponse,
   buildQueuedFanoutResponse,
   buildStatusMemberView,
@@ -3035,24 +3035,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
             .where(inArray(server.id, serverIds))
     const nameByServer = new Map(serverNames.map((s) => [s.id, s.name]))
 
-    return c.json({
-      managed: rows.map((row) => {
-        const spec = row.engine ? getManagedEngineSpec(row.engine) : null
+    const managedList = await Promise.all(
+      rows.map(async (row) => {
         const members = (membersByManaged.get(row.id) ?? []).map((m) =>
           serializeManagedMemberForDisplay(m, nameByServer.get(m.serverId) ?? null)
         )
-        return buildOrgManagedListEntry({
-          serializedRow: serializeManagedRow(row, row.serverId) as Record<string, unknown>,
-          engineDisplayName: spec?.displayName ?? null,
-          environmentDisplayName: row.environmentDisplayName,
-          projectId: row.projectId,
-          projectDisplayName: row.projectDisplayName,
-          workspaceId: row.workspaceId,
-          workspaceDisplayName: row.workspaceDisplayName,
-          serverDisplayName: row.serverDisplayName,
-          members,
-        })
-      }),
-    })
+        return await serializeOrgManagedListRow(db, row, members)
+      })
+    )
+
+    return c.json({ managed: managedList })
   })
 }

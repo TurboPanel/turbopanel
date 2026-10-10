@@ -34,7 +34,7 @@ import { evaluateManagedPromoteLagGate } from './promote-lag.ts'
 import { isMysqlFamilyEngine, MAX_REPLAY_DELTA_BYTES, parsePgLsn } from './ha-fresh-standby.ts'
 import { loadManagedStatusError } from './last-error.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
-import type { ManagedResidualMetadata } from './serialize.ts'
+import { type ManagedResidualMetadata, serializeManagedRow } from './serialize.ts'
 
 export { evaluateManagedPromoteLagGate }
 
@@ -131,6 +131,15 @@ export async function resolveManagedConnectionListener(
   const primary = endpoints[0]!
   if (externalAccess && primary.reach !== 'external') return null
   return { host: primary.host, port: primary.port }
+}
+
+/** Loopback address on the shared ProxySQL frontend (org overview column). */
+export async function resolveManagedLoopbackListener(
+  db: Db,
+  params: ManagedAccessParams
+): Promise<{ host: string; port: number }> {
+  const port = await resolveListenerPortForServer(db, params)
+  return { host: LOOPBACK_BIND, port }
 }
 
 /**
@@ -1354,12 +1363,12 @@ export function buildDisasterRecoveryQueuedResponse(params: {
 
 type OrgManagedListEntryExtras = {
   engineDisplayName: string | null
-  environmentDisplayName: string | null
+  environmentName: string | null
   projectId: string
-  projectDisplayName: string | null
+  projectName: string | null
   workspaceId: string
-  workspaceDisplayName: string | null
-  serverDisplayName: string | null
+  workspaceName: string | null
+  serverName: string | null
   members: unknown[]
 }
 
@@ -1369,12 +1378,65 @@ export function buildOrgManagedListEntry<T extends Record<string, unknown>>(
   return {
     ...params.serializedRow,
     engineDisplayName: params.engineDisplayName,
-    environmentDisplayName: params.environmentDisplayName,
+    environmentName: params.environmentName,
     projectId: params.projectId,
-    projectDisplayName: params.projectDisplayName,
+    projectName: params.projectName,
     workspaceId: params.workspaceId,
-    workspaceDisplayName: params.workspaceDisplayName,
-    serverDisplayName: params.serverDisplayName,
+    workspaceName: params.workspaceName,
+    serverName: params.serverName,
     members: params.members,
   }
+}
+
+type OrgManagedListSourceRow = {
+  id: string
+  environmentId: string | null
+  name: string | null
+  engine: string | null
+  status: string | null
+  metadata: unknown
+  options: unknown
+  serverId: string | null
+  createdAt: string
+  updatedAt: string
+  environmentDisplayName: string | null
+  projectId: string
+  projectDisplayName: string | null
+  workspaceId: string
+  workspaceDisplayName: string | null
+  serverDisplayName: string | null
+}
+
+/** One `GET /organizations/:id/managed` row — shared listener on loopback, no residual backend ports. */
+export async function serializeOrgManagedListRow(
+  db: Db,
+  row: OrgManagedListSourceRow,
+  members: unknown[]
+) {
+  const spec = row.engine ? getManagedEngineSpec(row.engine) : null
+  const listenerParams = managedStatusListenerParams({
+    serverId: row.serverId,
+    engine: row.engine,
+    options: row.options,
+  })
+  const listener = listenerParams
+    ? await resolveManagedLoopbackListener(db, listenerParams)
+    : null
+  return buildOrgManagedListEntry({
+    serializedRow: serializeManagedRow(
+      row,
+      row.serverId,
+      listener
+        ? { host: listener.host, port: listener.port }
+        : { host: null, port: null },
+    ),
+    engineDisplayName: spec?.displayName ?? null,
+    environmentName: row.environmentDisplayName,
+    projectId: row.projectId,
+    projectName: row.projectDisplayName,
+    workspaceId: row.workspaceId,
+    workspaceName: row.workspaceDisplayName,
+    serverName: row.serverDisplayName,
+    members,
+  })
 }

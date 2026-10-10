@@ -805,18 +805,27 @@ test('GET /organizations/:id/managed returns joined rows', async () => {
       const body = (await list.json()) as {
         managed: Array<{
           projectId: string
+          projectName: string | null
           environmentId: string
           serverId: string | null
+          serverName: string | null
           engine: string | null
           engineDisplayName: string | null
+          host: string | null
+          port: number | null
         }>
       }
       assertEquals(body.managed.length, 1)
-      assertEquals(body.managed[0]?.projectId, projectId)
-      assertEquals(body.managed[0]?.environmentId, environmentId)
-      assertEquals(body.managed[0]?.serverId, serverId)
-      assertEquals(body.managed[0]?.engine, 'postgres')
-      assertEquals(body.managed[0]?.engineDisplayName, 'PostgreSQL')
+      const row = body.managed[0]
+      assertEquals(row?.projectId, projectId)
+      assertEquals(row?.environmentId, environmentId)
+      assertEquals(row?.serverId, serverId)
+      assertEquals(row?.engine, 'postgres')
+      assertEquals(row?.engineDisplayName, 'PostgreSQL')
+      assertEquals(typeof row?.projectName, 'string')
+      assertEquals(typeof row?.serverName, 'string')
+      assertEquals(row?.host, '127.0.0.1')
+      assertEquals(row?.port, 15432)
     }
   )
 })
