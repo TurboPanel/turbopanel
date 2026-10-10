@@ -18,10 +18,7 @@ import {
   seedMockSession,
   seedMockUser,
 } from '../authn/authn-hostfree-doubles.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from '../authn/crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
@@ -53,7 +50,7 @@ function thenableRows(rows: unknown[]) {
         if (prop === 'catch' || prop === 'finally') return undefined
         return () => chain
       },
-    },
+    }
   )
   return chain
 }
@@ -172,12 +169,9 @@ async function buildHistoryApp(opts: {
   app.use('*', async (c, next) => {
     c.set('db', db)
     if (opts.logExists !== undefined) {
-      c.set(
-        'executionLogStore',
-        {
-          exists: () => Promise.resolve(opts.logExists === true),
-        } as unknown as ExecutionLogStore,
-      )
+      c.set('executionLogStore', {
+        exists: () => Promise.resolve(opts.logExists === true),
+      } as unknown as ExecutionLogStore)
     }
     await next()
   })
@@ -219,10 +213,9 @@ test('GET /environments/:id/deployments returns 403 when manage is denied', asyn
 
 test('GET /environments/:id/deployments rejects a bad limit', async () => {
   const { app, cookie } = await buildHistoryApp({ manageAllowed: true })
-  const res = await app.request(
-    `/environments/${environmentId}/deployments?limit=0`,
-    { headers: authHeaders(cookie) },
-  )
+  const res = await app.request(`/environments/${environmentId}/deployments?limit=0`, {
+    headers: authHeaders(cookie),
+  })
   assertEquals(res.status, 400)
   assertEquals(await res.json(), {
     error: `limit must be an integer between 1 and ${DEPLOYMENT_HISTORY_MAX_LIMIT}`,
@@ -244,10 +237,10 @@ test('GET /environments/:id/deployments serializes a page and cursor', async () 
   })
   const res = await app.request(
     `/environments/${environmentId}/deployments?limit=1&before=${deploymentId}`,
-    { headers: authHeaders(cookie) },
+    { headers: authHeaders(cookie) }
   )
   assertEquals(res.status, 200)
-  const body = await res.json() as {
+  const body = (await res.json()) as {
     ok: boolean
     deployments: Array<{ id: string; hasLog: boolean; status: string }>
     nextCursor: string | null
@@ -266,10 +259,9 @@ test('GET /environments/:id/deployments/:id returns 404 when missing', async () 
     manageAllowed: true,
     commandPages: [[]],
   })
-  const res = await app.request(
-    `/environments/${environmentId}/deployments/${deploymentId}`,
-    { headers: authHeaders(cookie) },
-  )
+  const res = await app.request(`/environments/${environmentId}/deployments/${deploymentId}`, {
+    headers: authHeaders(cookie),
+  })
   assertEquals(res.status, 404)
   assertEquals(await res.json(), { error: 'Not found' })
 })
@@ -277,10 +269,7 @@ test('GET /environments/:id/deployments/:id returns 404 when missing', async () 
 test('GET /environments/:id/deployments/:id serializes detail plus current targets', async () => {
   const { app, cookie } = await buildHistoryApp({
     manageAllowed: true,
-    commandPages: [
-      [historyCommandRow()],
-      [historyCommandRow()],
-    ],
+    commandPages: [[historyCommandRow()], [historyCommandRow()]],
     deploymentRows: [
       {
         serverId,
@@ -291,12 +280,11 @@ test('GET /environments/:id/deployments/:id serializes detail plus current targe
     ],
     logExists: false,
   })
-  const res = await app.request(
-    `/environments/${environmentId}/deployments/${deploymentId}`,
-    { headers: authHeaders(cookie) },
-  )
+  const res = await app.request(`/environments/${environmentId}/deployments/${deploymentId}`, {
+    headers: authHeaders(cookie),
+  })
   assertEquals(res.status, 200)
-  const body = await res.json() as {
+  const body = (await res.json()) as {
     ok: boolean
     deployment: {
       id: string
@@ -321,17 +309,14 @@ test('GET /environments/:id/deployments/:id serializes detail plus current targe
 test('GET /environments/:id/deployments/:id stands alone without a generation', async () => {
   const { app, cookie } = await buildHistoryApp({
     manageAllowed: true,
-    commandPages: [
-      [historyCommandRow({ context: { environmentId, desiredHash: 'legacy' } })],
-    ],
+    commandPages: [[historyCommandRow({ context: { environmentId, desiredHash: 'legacy' } })]],
     logExists: false,
   })
-  const res = await app.request(
-    `/environments/${environmentId}/deployments/${deploymentId}`,
-    { headers: authHeaders(cookie) },
-  )
+  const res = await app.request(`/environments/${environmentId}/deployments/${deploymentId}`, {
+    headers: authHeaders(cookie),
+  })
   assertEquals(res.status, 200)
-  const body = await res.json() as {
+  const body = (await res.json()) as {
     ok: boolean
     deployment: { generation: number | null; commands: unknown[] }
   }

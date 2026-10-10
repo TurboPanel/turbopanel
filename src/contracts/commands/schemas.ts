@@ -2024,6 +2024,11 @@ export type EnvironmentDeploySource = {
   sourceId: string
   composeServiceName: string
   /**
+   * Release-tree directory segment: this environment's TurboPanel `service.id`.
+   * Echoed on native/hosting/ingress rows for the same compose name.
+   */
+  releaseServiceId?: string
+  /**
    * Which control-plane provider resolved this entry. Carried for tracing and
    * for the host's own logs; the daemon never branches on it — everything it
    * needs to clone is in `cloneUrl`, `credential`, and `credentialKind`.
@@ -3443,6 +3448,13 @@ function applyOptionalSourceFields(
     'rollbackToReleaseId',
     isValidSourceReleaseId,
     'Invalid sourceMaterial rollbackToReleaseId'
+  )
+  assignOptionalSourceField(
+    entry,
+    source,
+    'releaseServiceId',
+    isValidSourceReleaseId,
+    'Invalid sourceMaterial releaseServiceId'
   )
 }
 

@@ -584,9 +584,11 @@ async function resolveBindingMaterial(
   if ('kind' in resolved) return resolved
 
   const rollbackReleaseId = rollbackPin?.releaseId
+  const releaseServiceId = context.serviceIdByComposeName.get(composeServiceName)
   return definedFields({
     sourceId: row.id,
     composeServiceName,
+    ...(releaseServiceId === undefined ? {} : { releaseServiceId }),
     // The row's provider travels verbatim: the wire parser bounds it to the
     // same set the `source_provider_check` constraint does, so narrowing it
     // here would only be able to *lose* information.

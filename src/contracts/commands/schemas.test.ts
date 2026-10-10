@@ -6637,6 +6637,38 @@ test('parseEnvironmentDeployPayload covers sourceMaterial cloneUrl, railpack, an
   )
 })
 
+const RELEASE_SERVICE_ID = '00000000-0000-4000-8000-000000000099'
+
+test('sourceMaterial round-trips releaseServiceId through parse and wire JSON', () => {
+  const raw = {
+    ...NATIVE_APP_BASE,
+    sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY, releaseServiceId: RELEASE_SERVICE_ID }],
+  }
+  const parsed = parseEnvironmentDeployPayload(raw)
+  assertEquals(parsed.sourceMaterial?.[0]?.releaseServiceId, RELEASE_SERVICE_ID)
+
+  const again = parseEnvironmentDeployPayload(JSON.parse(JSON.stringify(parsed)) as typeof raw)
+  assertEquals(again.sourceMaterial?.[0]?.releaseServiceId, RELEASE_SERVICE_ID)
+
+  const without = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY }],
+  })
+  assertEquals(without.sourceMaterial?.[0]?.releaseServiceId, undefined)
+})
+
+test('sourceMaterial rejects an unsafe releaseServiceId segment', () => {
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...NATIVE_APP_BASE,
+        sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY, releaseServiceId: '../svc' }],
+      }),
+    Error,
+    'Invalid sourceMaterial releaseServiceId'
+  )
+})
+
 const MANAGED_MEMBER_ID = '00000000-0000-4000-8000-0000000000aa'
 const MANAGED_ENV_ID = '00000000-0000-4000-8000-0000000000bb'
 const MANAGED_DEMOTE_ID = '00000000-0000-4000-8000-0000000000cc'

@@ -169,6 +169,13 @@
       "when": 1791551527301,
       "tag": "0023_server_assigned_tier_comment",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1791594517203,
+      "tag": "0024_organization_name_signup_comment",
+      "breakpoints": true
     }
   ]
 }
