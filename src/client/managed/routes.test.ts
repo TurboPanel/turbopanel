@@ -807,6 +807,7 @@ test('GET /organizations/:id/managed returns joined rows', async () => {
           projectId: string
           projectName: string | null
           environmentId: string
+          environmentName: string | null
           serverId: string | null
           serverName: string | null
           engine: string | null
