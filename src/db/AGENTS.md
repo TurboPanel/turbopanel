@@ -1224,9 +1224,14 @@ on the org, one `team:own` grant on the default team, and a **Default
 Workspace** (`kind='user'`) for the superadmin user. Workers sign-up
 (`createOrganizationForUser`) still creates only the Default Workspace when
 provisioning an org — the TurboPanel workspace is ensured lazily on first server
-enroll for those orgs. Self-hosted install names the org **Root Organization**;
-Workers / user-created first orgs default to **`you@example.com's organization`** (from the sign-up email), and
-`POST /organizations` defaults to **New Organization**.
+enroll for those orgs. Self-hosted install names the org **Root Organization**.
+Sign-up that provisions a first org (`createOrganizationForUser` /
+`createOrganizationForUserInTx` — password sign-up and OAuth/social on every
+deployment that creates one) defaults via
+`resolveDefaultSignupOrganizationName` to **`you@example.com's organization`**
+from the account email, or **My Organization** when the email is missing, blank,
+or the composed label fails display-name validation. `POST /organizations`
+defaults to **New Organization**.
 
 **Completed:** Resource ancestry is computed directly from real domain tables
 (`organization → workspace → project → environment → service/hosting`,

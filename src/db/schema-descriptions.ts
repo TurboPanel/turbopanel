@@ -303,7 +303,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata: 'Reserved pairing jsonb with no first-party reader or writer today; stays null.',
       options:
         'Org-wide settings merged key-by-key by the organization routes (`defaultServerTimezone`, `maxServers`, `acmeEnabled`, `managedDatabase`, `phpModes` and more).',
-      name: "Display name; sign-up without an explicit name uses `you@example.com's organization` from the owner email, else install wizard or PATCH `/organizations/:id`.",
+      name: "Display name; sign-up uses `you@example.com's organization` from email, else `My Organization` if missing, blank, or label invalid; install Root Organization.",
     },
   },
   team: {
