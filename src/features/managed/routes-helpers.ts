@@ -1426,13 +1426,16 @@ type OrgManagedListSourceRow = {
 export async function serializeOrgManagedListRow(
   db: Db,
   row: OrgManagedListSourceRow,
-  members: unknown[]
+  members: unknown[],
+  serverNamesById: ReadonlyMap<string, string | null> = new Map()
 ) {
   const spec = row.engine ? getManagedEngineSpec(row.engine) : null
   const resolvedServerId = resolveManagedServerId(
     { serverId: row.serverId },
     row.environmentServerId
   )
+  const serverName =
+    resolvedServerId === null ? null : (serverNamesById.get(resolvedServerId) ?? null)
   const listenerParams = managedStatusListenerParams({
     serverId: resolvedServerId,
     engine: row.engine,
@@ -1451,7 +1454,7 @@ export async function serializeOrgManagedListRow(
     projectName: row.projectDisplayName,
     workspaceId: row.workspaceId,
     workspaceName: row.workspaceDisplayName,
-    serverName: row.serverDisplayName,
+    serverName,
     members,
   })
 }

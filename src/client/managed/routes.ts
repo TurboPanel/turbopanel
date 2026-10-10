@@ -3041,14 +3041,22 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       membersByManaged.set(member.managedId, list)
     }
 
-    const serverIds = [...new Set(memberRows.map((m) => m.serverId))]
+    const serverIds = new Set(memberRows.map((m) => m.serverId))
+    for (const row of rows) {
+      const placementId = resolveManagedServerId(
+        { serverId: row.serverId },
+        row.environmentServerId
+      )
+      if (placementId) serverIds.add(placementId)
+    }
+    const serverIdList = [...serverIds]
     const serverNames =
-      serverIds.length === 0
+      serverIdList.length === 0
         ? []
         : await db
             .select({ id: server.id, name: server.name })
             .from(server)
-            .where(inArray(server.id, serverIds))
+            .where(inArray(server.id, serverIdList))
     const nameByServer = new Map(serverNames.map((s) => [s.id, s.name]))
 
     const managedList = await Promise.all(
@@ -3056,7 +3064,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         const members = (membersByManaged.get(row.id) ?? []).map((m) =>
           serializeManagedMemberForDisplay(m, nameByServer.get(m.serverId) ?? null)
         )
-        return await serializeOrgManagedListRow(db, row, members)
+        return await serializeOrgManagedListRow(db, row, members, nameByServer)
       })
     )
 
