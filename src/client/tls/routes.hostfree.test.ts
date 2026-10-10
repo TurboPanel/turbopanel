@@ -25,6 +25,7 @@ import {
   rotationCommandsSucceeded,
   rotationNeedsCommands,
 } from './routes.ts'
+import { orchestratorTrustReconciler } from './changeover-fanout.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -160,6 +161,8 @@ type TlsAppOptions = {
    * `source: "lets_encrypt"` coverage doesn't have to opt in on every call —
    * pass `false` to exercise the gate itself. */
   acmeEnabled?: boolean
+  /** Wire a command queue and daemon cell registry onto the context. */
+  dispatch?: boolean
 }
 
 async function buildTlsApp(opts: TlsAppOptions = {}): Promise<{
@@ -250,6 +253,10 @@ async function buildTlsApp(opts: TlsAppOptions = {}): Promise<{
     c.set('secretsConfig', secretsConfig)
     if (opts.encryption !== false) {
       c.set('dataEncryptionSecrets', dataEncryptionSecrets)
+    }
+    if (opts.dispatch) {
+      c.set('commandQueue', { enqueue: () => Promise.resolve() })
+      c.set('daemonCellRegistry', {} as never)
     }
     return next()
   })
@@ -978,4 +985,44 @@ test('GET /tls/ca/rotation and POST /tls/ca/retire cover missing journals', asyn
     headers: authHeaders(denied.cookie),
   })
   await expectForbidden(forbiddenStatus)
+})
+
+test('POST /tls/ca/retire sends the active-only bundle to every Orchestrator host', async () => {
+  const original = orchestratorTrustReconciler.fanOut
+  const calls: string[] = []
+  orchestratorTrustReconciler.fanOut = (_db, _queue, params) => {
+    calls.push(params.organizationId)
+    return Promise.resolve([])
+  }
+  try {
+    const rows = () => [
+      journalRow({
+        state: 'awaiting_retire',
+        results: [{ serverId: SERVER_ID, kind: 'ingress', status: 'queued' }],
+      }),
+    ]
+    const withQueue = await buildTlsApp({
+      rotationServers: [],
+      rotationRows: rows(),
+      dispatch: true,
+    })
+    const retired = await withQueue.app.request('/tls/ca/retire', {
+      method: 'POST',
+      headers: authHeaders(withQueue.cookie),
+    })
+    await expectJson(retired, 200, { ok: true, rotationId: ROTATION_ID })
+    assertEquals(calls, [ORG_ID])
+
+    // No command queue in this context: the retire still completes, the
+    // reconcile is skipped (and logged).
+    const withoutQueue = await buildTlsApp({ rotationServers: [], rotationRows: rows() })
+    const skipped = await withoutQueue.app.request('/tls/ca/retire', {
+      method: 'POST',
+      headers: authHeaders(withoutQueue.cookie),
+    })
+    await expectJson(skipped, 200, { ok: true, rotationId: ROTATION_ID })
+    assertEquals(calls, [ORG_ID])
+  } finally {
+    orchestratorTrustReconciler.fanOut = original
+  }
 })

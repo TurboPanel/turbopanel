@@ -75,9 +75,11 @@ import {
   parseCaRotationResults,
   parseNeedsRedeploy,
   parseResumeAfterManagedId,
+  reconcileOrganizationOrchestratorTrust,
   runOrganizationCaRotationFanout,
 } from './changeover-fanout.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
 import { listCommandRecordsByIds } from '../../features/commands/command-records.ts'
 import {
   loadReconciledRotationWithCommandRecords,
@@ -511,6 +513,37 @@ async function runRotationFanoutStep(
   }
 }
 
+/**
+ * After retire the trust bundle holds only the active generation: send it to
+ * every Orchestrator host so none keeps trusting the retired CA. Skipped (and
+ * logged) when this context has no command queue or secrets; never fails the
+ * retire, which has already completed.
+ */
+async function reconcileOrchestratorTrustAfterRetire(
+  c: Context<AppEnv>,
+  db: TlsDb,
+  organizationId: string,
+  actorId: string
+): Promise<void> {
+  const commandQueue = assertDispatchInfrastructure(c)
+  const secretsConfig = c.get('secretsConfig')
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  if (commandQueue instanceof Response || !secretsConfig || !dataEncryptionSecrets) {
+    compatLogWarn(
+      'tls-rotation',
+      `orchestrator trust reconcile skipped after retire organizationId=${organizationId}: no command queue or secrets`
+    )
+    return
+  }
+  await reconcileOrganizationOrchestratorTrust(db, commandQueue, {
+    organizationId,
+    actorType: 'user',
+    actorId,
+    secretsConfig,
+    dataEncryptionSecrets,
+  })
+}
+
 async function revokeRetiredOrganizationCas(db: TlsDb, organizationId: string): Promise<void> {
   const now = new Date().toISOString()
   await db
@@ -793,6 +826,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       state: 'completed',
       completedAt: new Date().toISOString(),
     })
+    await reconcileOrchestratorTrustAfterRetire(c, db, organizationId, session.userId)
     return c.json({ ok: true as const, rotationId: journal.id })
   })
 

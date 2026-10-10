@@ -754,6 +754,33 @@ export async function findManagedHaHierarchy(
 }
 
 /**
+ * Every server in these organizations that still has a managed-ha (Orchestrator)
+ * hierarchy row, whether or not it hosts an HA cluster today. A server whose
+ * clusters were all deleted keeps its Orchestrator until a reconcile tears it
+ * down, so fan-outs must reach it too.
+ */
+export async function listManagedHaHierarchyServerIds(
+  db: Db,
+  organizationIds: readonly string[]
+): Promise<string[]> {
+  if (organizationIds.length === 0) return []
+  const rows = await db
+    .select({ serverId: environment.serverId })
+    .from(environment)
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+    .innerJoin(server, eq(server.id, environment.serverId))
+    .where(
+      and(
+        inArray(server.organizationId, [...organizationIds]),
+        eq(workspace.kind, WORKSPACE_KIND_TURBOPANEL),
+        eq(project.component, SYSTEM_MANAGED_HA_COMPONENT)
+      )
+    )
+  return rows.flatMap((row) => (row.serverId ? [row.serverId] : []))
+}
+
+/**
  * Shared self-host (`turbopanel`) project under the system workspace.
  *
  * Race-safe via the same partial unique `uniq_project_workspace_system_component`

@@ -12,7 +12,9 @@ import {
   enumerateOrganizationRotationTargets,
   parseCaRotationResults,
   parseNeedsRedeploy,
+  orchestratorTrustReconciler,
   parseResumeAfterManagedId,
+  reconcileOrganizationOrchestratorTrust,
   runOrganizationCaRotationFanout,
   selectManagedBatchForRotation,
 } from './changeover-fanout.ts'
@@ -359,5 +361,92 @@ test('runOrganizationCaRotationFanout records binding rematerialize failure and 
         row.error === 'binding_principal_invalid'
     ),
     true
+  )
+})
+
+async function withStubbedTrustReconcile(
+  impl: (organizationId: string) => Promise<string[]>,
+  fn: (calls: string[]) => Promise<void>
+): Promise<void> {
+  const original = orchestratorTrustReconciler.fanOut
+  const calls: string[] = []
+  orchestratorTrustReconciler.fanOut = (_db, _queue, params) => {
+    calls.push(params.organizationId)
+    return impl(params.organizationId)
+  }
+  try {
+    await fn(calls)
+  } finally {
+    orchestratorTrustReconciler.fanOut = original
+  }
+}
+
+const TRUST_PARAMS = {
+  secretsConfig: {} as SecretsConfig,
+  dataEncryptionSecrets: {} as DerivedSecretsConfig,
+  actorType: 'user' as const,
+  actorId: 'user-1',
+}
+
+test('runOrganizationCaRotationFanout reconciles every Orchestrator host once the fan-out completes', async () => {
+  const db = rotationTargetsDb({
+    memberNodes: [],
+    ownedManaged: [],
+    ownedClusterMembers: [],
+    consumers: [],
+  })
+  await withStubbedTrustReconcile(
+    () => Promise.resolve(['cmd-1']),
+    async (calls) => {
+      const outcome = await runOrganizationCaRotationFanout(
+        {} as never,
+        db,
+        { enqueue: () => Promise.resolve() } as CommandQueue,
+        { organizationId: ORG_A, ...TRUST_PARAMS }
+      )
+      assertEquals(outcome.complete, true)
+      assertEquals(calls, [ORG_A])
+    }
+  )
+})
+
+test('runOrganizationCaRotationFanout leaves the Orchestrator reconcile to the final batch', async () => {
+  const db = rotationTargetsDb({
+    memberNodes: [],
+    ownedManaged: [
+      { id: MANAGED_A, workspaceOrganizationId: ORG_A },
+      { id: MANAGED_B, workspaceOrganizationId: ORG_A },
+    ],
+    ownedClusterMembers: [],
+    consumers: [],
+    dropManagedRowsAfterFirstSelect: true,
+  })
+  await withStubbedTrustReconcile(
+    () => Promise.resolve([]),
+    async (calls) => {
+      const outcome = await runOrganizationCaRotationFanout(
+        {} as never,
+        db,
+        { enqueue: () => Promise.resolve() } as CommandQueue,
+        { organizationId: ORG_A, ...TRUST_PARAMS, limit: 1 }
+      )
+      assertEquals(outcome.complete, false)
+      assertEquals(calls, [])
+    }
+  )
+})
+
+test('reconcileOrganizationOrchestratorTrust never throws when the fan-out fails', async () => {
+  await withStubbedTrustReconcile(
+    () => Promise.reject(new Error('db down')),
+    async (calls) => {
+      const ids = await reconcileOrganizationOrchestratorTrust(
+        {} as Db,
+        { enqueue: () => Promise.resolve() } as CommandQueue,
+        { organizationId: ORG_B, ...TRUST_PARAMS }
+      )
+      assertEquals(ids, [])
+      assertEquals(calls, [ORG_B])
+    }
   )
 })
