@@ -3210,6 +3210,74 @@ async function resolveLocalNativeAppsAndRuntimes(
   }
 }
 
+async function allocateResolvedDeployPipelineForPrepare(
+  db: Db,
+  input: {
+    params: {
+      environmentId: string
+      serverId: string
+      organizationId: string
+      schedule?: DeployScheduleSlice
+      acknowledgeHealthCheckWarnings?: boolean
+    }
+    mode: DeployPrepareMode
+    warnings: DeployPrepareWarning[]
+    projectOptions: unknown
+    merged: ComposeDocument
+    composeServiceNames: string[]
+    serviceRows: ServiceRow[]
+    orgOptions: unknown
+    serverOptions: unknown
+    application: Application
+    principalResolution: ComposePrincipalResolution
+  }
+): Promise<
+  | {
+      pipeline: Awaited<ReturnType<typeof allocateExpandDeployPipeline>>
+      resolved: ResolvedApplication
+    }
+  | DeployPrepareError
+  | Response
+> {
+  const pipeline = await allocateExpandDeployPipeline(db, {
+    environmentId: input.params.environmentId,
+    serverId: input.params.serverId,
+    organizationId: input.params.organizationId,
+    projectOptions: input.projectOptions,
+    merged: input.merged,
+    composeServiceNames: input.composeServiceNames,
+    serviceRows: input.serviceRows,
+    schedule: input.params.schedule,
+    deployHooks: resolveDeployHooksEnabled(parseOrganizationOptions(input.orgOptions)),
+  })
+
+  const resolved = buildResolvedApplication({
+    serverId: input.params.serverId,
+    application: input.application,
+    serviceRows: input.serviceRows,
+    ...(input.params.schedule ? { slots: input.params.schedule.slots } : {}),
+    containers: pipeline.containers,
+    expansion: pipeline.expansion,
+    principals: input.principalResolution,
+    resourcesByComposeServiceName: resolvedResourcesByComposeName(pipeline.optionsByComposeName),
+  })
+
+  const gateErr = await resolvedPlacementGateError(db, {
+    mode: input.mode,
+    warnings: input.warnings,
+    environmentId: input.params.environmentId,
+    serverId: input.params.serverId,
+    acknowledgeHealthCheckWarnings: input.params.acknowledgeHealthCheckWarnings,
+    resolved,
+    pipeline,
+    orgOptions: input.orgOptions,
+    serverOptions: input.serverOptions,
+  })
+  if (gateErr) return gateErr
+
+  return { pipeline, resolved }
+}
+
 export async function prepareDeployCompose(
   c: Context<AppEnv>,
   db: Db,
@@ -3297,46 +3365,23 @@ export async function prepareDeployCompose(
   if (!declared.ok) return declared.failure
   const { serviceRows, principalResolution } = declared
 
-  const pipeline = await allocateExpandDeployPipeline(db, {
-    environmentId: params.environmentId,
-    serverId: params.serverId,
-    organizationId: params.organizationId,
+  const pipelineResolved = await allocateResolvedDeployPipelineForPrepare(db, {
+    params,
+    mode,
+    warnings,
     projectOptions: projectRow.options,
     merged,
     composeServiceNames,
     serviceRows,
-    schedule: params.schedule,
-    deployHooks: resolveDeployHooksEnabled(parseOrganizationOptions(orgRow?.options)),
-  })
-
-  // Stage 3: the same services after the control plane answered what the
-  // document could not — which `service.id` each compose key became, which
-  // `principal.id` each alias materialized into, where the scheduler put every
-  // replica, which containers were allocated. A projection over values already
-  // computed above, so naming the stage cannot change placement.
-  const resolved: ResolvedApplication = buildResolvedApplication({
-    serverId: params.serverId,
-    application,
-    serviceRows,
-    ...(params.schedule ? { slots: params.schedule.slots } : {}),
-    containers: pipeline.containers,
-    expansion: pipeline.expansion,
-    principals: principalResolution,
-    resourcesByComposeServiceName: resolvedResourcesByComposeName(pipeline.optionsByComposeName),
-  })
-
-  const gateErr = await resolvedPlacementGateError(db, {
-    mode,
-    warnings,
-    environmentId: params.environmentId,
-    serverId: params.serverId,
-    acknowledgeHealthCheckWarnings: params.acknowledgeHealthCheckWarnings,
-    resolved,
-    pipeline,
     orgOptions: orgRow?.options,
     serverOptions: serverRow?.options,
+    application,
+    principalResolution,
   })
-  if (gateErr) return gateErr
+  if ('kind' in pipelineResolved || pipelineResolved instanceof Response) {
+    return pipelineResolved
+  }
+  const { pipeline, resolved } = pipelineResolved
 
   const serviceRowByCloneName = buildServiceRowByCloneName(serviceRows, pipeline.expansion)
   const {
