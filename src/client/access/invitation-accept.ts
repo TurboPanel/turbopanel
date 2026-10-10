@@ -101,7 +101,10 @@ export async function acceptInvitationForUser(
 
       const invite = await loadPendingInvitationForUpdate(tx, invitationId, now)
       if (!invite) {
-        return { error: 'gone' as const }
+        const organizationIdRetry = await alreadyAcceptedBy(tx, invitationId, userId)
+        return organizationIdRetry
+          ? { ok: true as const, organizationId: organizationIdRetry }
+          : { error: 'gone' as const }
       }
 
       const organizationId = await organizationOfTeam(tx, invite.teamId)

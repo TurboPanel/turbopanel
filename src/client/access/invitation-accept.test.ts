@@ -249,3 +249,22 @@ test('double accept by the same user is idempotent', async () => {
     assertEquals(await isTeammate(fx.db, fx.teamId, fx.inviteeId), true)
   })
 })
+
+test('concurrent accept by the same user is idempotent for both callers', async () => {
+  if (!dbUrl) {
+    skipWithoutDatabase('invitation accept atomicity')
+    return
+  }
+  await withFixture(async (fx) => {
+    const invitationId = await insertPendingInvitation(fx)
+
+    const [first, second] = await Promise.all([
+      acceptInvitationForUser(fx.db, invitationId, fx.inviteeId),
+      acceptInvitationForUser(fx.db, invitationId, fx.inviteeId),
+    ])
+    assertEquals(first, { ok: true, organizationId: fx.organizationId })
+    assertEquals(second, { ok: true, organizationId: fx.organizationId })
+    assertEquals(await readInvitationStatus(fx.db, invitationId), 'accepted')
+    assertEquals(await isTeammate(fx.db, fx.teamId, fx.inviteeId), true)
+  })
+})
