@@ -1419,16 +1419,12 @@ export async function serializeOrgManagedListRow(
     engine: row.engine,
     options: row.options,
   })
-  const listener = listenerParams
-    ? await resolveManagedLoopbackListener(db, listenerParams)
-    : null
+  const listener = listenerParams ? await resolveManagedLoopbackListener(db, listenerParams) : null
   return buildOrgManagedListEntry({
     serializedRow: serializeManagedRow(
       row,
       row.serverId,
-      listener
-        ? { host: listener.host, port: listener.port }
-        : { host: null, port: null },
+      listener ? { host: listener.host, port: listener.port } : { host: null, port: null }
     ),
     engineDisplayName: spec?.displayName ?? null,
     environmentName: row.environmentDisplayName,
