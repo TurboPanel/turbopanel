@@ -25,7 +25,7 @@ export type TcpUdpIngressService = {
  */
 export async function resolveTcpUdpIngressServices(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<TcpUdpIngressService[]> {
   const rows = await db
     .select({

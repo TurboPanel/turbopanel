@@ -581,6 +581,10 @@ export type DeployPrepareError =
       composeServiceName: string
       serviceKind: 'site' | 'node'
     }
+  | {
+      kind: 'native_app_unresolved_service'
+      composeServiceName: string
+    }
   /**
    * A `x-turbopanel.hosting` entry named a certificate or a managed address
    * this organization does not have (or names two by the same label).
@@ -756,6 +760,10 @@ type HardDeployPrepareError =
       primaryServerId: string | null
       scheduledServerId: string
       serviceId: string
+    }
+  | {
+      kind: 'native_app_unresolved_service'
+      composeServiceName: string
     }
 
 function warningFromPrepareError(
@@ -1986,7 +1994,9 @@ function nativeAppServicesForDeploy(
   serverOptions: unknown,
   tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]> = new Map(),
   variablesByComposeName: ReadonlyMap<string, NativeAppVariables> = new Map()
-): PreparedNativeAppService[] {
+):
+  | PreparedNativeAppService[]
+  | Extract<DeployPrepareError, { kind: 'native_app_unresolved_service' }> {
   if (apps.length === 0) return []
   const accountLimits = effectiveAccountLimits(orgOptions, serverOptions)
   const resourcesByComposeName = new Map(
@@ -1995,22 +2005,27 @@ function nativeAppServicesForDeploy(
   const serviceIdByComposeName = new Map(
     resolvedServices.map((entry) => [entry.composeServiceName, entry.serviceId] as const)
   )
-  return apps.map((app) => {
+  const out: PreparedNativeAppService[] = []
+  for (const app of apps) {
     const turboServiceId = serviceIdByComposeName.get(app.composeServiceName)
     if (!turboServiceId) {
-      throw new Error(
-        `native app ${app.composeServiceName} has no resolved service id for this environment`
-      )
+      return {
+        kind: 'native_app_unresolved_service',
+        composeServiceName: app.composeServiceName,
+      }
     }
-    return nativeAppServiceForDeploy(
-      app,
-      turboServiceId,
-      resourcesByComposeName.get(app.composeServiceName),
-      accountLimits,
-      renderCronForDeploy(app.cron, tasksByComposeName.get(app.composeServiceName)),
-      variablesByComposeName.get(app.composeServiceName)
+    out.push(
+      nativeAppServiceForDeploy(
+        app,
+        turboServiceId,
+        resourcesByComposeName.get(app.composeServiceName),
+        accountLimits,
+        renderCronForDeploy(app.cron, tasksByComposeName.get(app.composeServiceName)),
+        variablesByComposeName.get(app.composeServiceName)
+      )
     )
-  })
+  }
+  return out
 }
 
 /** The per-app resource ceiling the daemon turns into unit limits, when the app set one. */
@@ -3343,17 +3358,16 @@ export async function prepareDeployCompose(
   warnings.push(...dbBindingWarnings)
 
   const nativeVariables = resolveNativeAppVariables(split.nativeApps, withVariables)
-  const localNativeApps = sitesOnScheduledServer(
-    nativeAppServicesForDeploy(
-      split.nativeApps,
-      resolved.services,
-      orgRow?.options,
-      serverRow?.options,
-      tasksByComposeName,
-      nativeVariables
-    ),
-    pipeline.localServiceNames
+  const nativeAppsForWire = nativeAppServicesForDeploy(
+    split.nativeApps,
+    resolved.services,
+    orgRow?.options,
+    serverRow?.options,
+    tasksByComposeName,
+    nativeVariables
   )
+  if ('kind' in nativeAppsForWire) return nativeAppsForWire
+  const localNativeApps = sitesOnScheduledServer(nativeAppsForWire, pipeline.localServiceNames)
 
   const runtimes = await prepareNativeAppRuntimes(c, db, {
     mode,

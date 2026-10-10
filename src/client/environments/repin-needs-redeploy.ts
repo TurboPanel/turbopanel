@@ -36,9 +36,7 @@ type HostingPinRow = {
 }
 
 /** Pure: does this deploy target predate the pin's last repin? */
-export function deployTargetNeedsRedeployForRepin(
-  row: Readonly<HostingPinRow>,
-): boolean {
+export function deployTargetNeedsRedeployForRepin(row: Readonly<HostingPinRow>): boolean {
   const repin = parseIpPinMetadata(row.pinMetadata).repin
   if (!repin) return false
   if (!row.finishedAt) return false
@@ -68,7 +66,7 @@ function dedupe(rows: readonly HostingPinRow[]): RepinNeedsRedeploy[] {
  */
 export async function loadRepinNeedsRedeployForEnvironment(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<RepinNeedsRedeploy[]> {
   const rows = await db
     .select({
@@ -86,8 +84,8 @@ export async function loadRepinNeedsRedeployForEnvironment(
       and(
         eq(service.environmentId, environmentId),
         isNotNull(hosting.ipId),
-        eq(ip.scope, 'datacenter'),
-      ),
+        eq(ip.scope, 'datacenter')
+      )
     )
   return dedupe(rows)
 }

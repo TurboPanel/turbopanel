@@ -27,6 +27,7 @@ import {
 } from '../../features/deploy/deploy-options.ts'
 import type { FabricGateOutcome } from '../../features/fabric/gate.ts'
 import type { ScheduleErrorCode } from '../../features/schedule/index.ts'
+import { resolveDeployReleaseServiceId } from './release-service-id.ts'
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -491,6 +492,7 @@ function mapPrincipalPrepareError(
         | 'source_principal_ambiguous'
         | 'principal_alias_unknown'
         | 'principal_required_for_service_kind'
+        | 'native_app_unresolved_service'
         | 'source_ref_unresolved'
     }
   >
@@ -525,6 +527,16 @@ function mapPrincipalPrepareError(
         composeServiceName: prepared.composeServiceName,
         serviceKind: prepared.serviceKind,
         message: `${kindLabel} "${prepared.composeServiceName}" has no account to run as. Declare an alias under the top-level x-turbopanel.principals and name it from this service's x-turbopanel.principal.`,
+      },
+    }
+  }
+  if (prepared.kind === 'native_app_unresolved_service') {
+    return {
+      status: 422,
+      body: {
+        error: 'native_app_unresolved_service',
+        composeServiceName: prepared.composeServiceName,
+        message: `Native app "${prepared.composeServiceName}" has no resolved service id for this environment.`,
       },
     }
   }
@@ -569,6 +581,7 @@ function tryMapPrincipalPrepareError(prepared: DeployPrepareError): PrepareError
     prepared.kind !== 'source_principal_ambiguous' &&
     prepared.kind !== 'principal_alias_unknown' &&
     prepared.kind !== 'principal_required_for_service_kind' &&
+    prepared.kind !== 'native_app_unresolved_service' &&
     prepared.kind !== 'source_ref_unresolved'
   ) {
     return null
@@ -953,37 +966,7 @@ export function buildSitesForDeploy(
   )
 }
 
-/**
- * Release-tree directory segment for one compose service.
- *
- * **Must** stay identical to the daemon's `resolveReleaseServiceId`
- * (`turbopaneld/src/deploy/release/apply-source-releases.ts`): hostings first,
- * then tcp/udp ingress, then the native app's TurboPanel service id, then the
- * compose key. The release engine picks the directory with that rule, so a
- * native app unit whose `WorkingDirectory` were derived any other way would
- * point at a tree nothing ever published.
- */
-export function resolveDeployReleaseServiceId(
-  composeServiceName: string,
-  hostings: readonly EnvironmentDeployHosting[],
-  ingressServices: readonly EnvironmentDeployIngressService[],
-  nativeAppServiceId?: string
-): string {
-  for (const hosting of hostings) {
-    if (hosting.composeServiceName === composeServiceName && hosting.serviceId) {
-      return hosting.serviceId
-    }
-  }
-  for (const ingress of ingressServices) {
-    if (ingress.composeServiceName === composeServiceName && ingress.serviceId) {
-      return ingress.serviceId
-    }
-  }
-  if (nativeAppServiceId) {
-    return nativeAppServiceId
-  }
-  return composeServiceName
-}
+export { resolveDeployReleaseServiceId, RELEASE_TREE_SERVICE_ID_RE } from './release-service-id.ts'
 
 /**
  * Finalize native app rows for the wire: allocate loopback ports out of the
@@ -1004,8 +987,8 @@ export function resolveDeployReleaseServiceId(
  */
 export function buildNativeAppServicesForDeploy(
   nativeAppServices: readonly PreparedNativeAppService[],
-  hostings: EnvironmentDeployHosting[],
-  ingressServices: readonly EnvironmentDeployIngressService[],
+  _hostings: EnvironmentDeployHosting[],
+  _ingressServices: readonly EnvironmentDeployIngressService[],
   used: Set<number> = new Set<number>(),
   uniqueKey?: string
 ): EnvironmentDeployNativeAppService[] {
@@ -1017,12 +1000,7 @@ export function buildNativeAppServicesForDeploy(
     uniqueKey
   ).map((app) => ({
     ...app,
-    serviceId: resolveDeployReleaseServiceId(
-      app.composeServiceName,
-      hostings,
-      ingressServices,
-      app.serviceId
-    ),
+    serviceId: resolveDeployReleaseServiceId(app.composeServiceName, app.serviceId),
   }))
 }
 

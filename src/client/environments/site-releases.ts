@@ -34,6 +34,7 @@ import {
   loadPrincipalIdsByServiceIdForEnvironment,
   pickSolePrincipalId,
 } from '../principals/tenancies.ts'
+import { resolveDeployReleaseServiceId } from './release-service-id.ts'
 
 /** One release tree to reclaim: `<principalHomeRoot>/<username>/sites/<serviceId>`. */
 export type EnvironmentSiteRelease = {
@@ -56,18 +57,6 @@ function collectSourceComposeServiceNames(data: Record<string, unknown>): Set<st
     names.add(name)
   }
   return names
-}
-
-/**
- * Release-tree directory segment for one service.
- *
- * Mirrors the daemon's `resolveReleaseServiceId`: the environment's TurboPanel
- * `service.id`, which is what hostings, ingress rows, and `nativeAppServices[]`
- * carry on the wire. The compose key is only a daemon-side fallback for workers
- * with no hosting and no native row.
- */
-function releaseServiceIdFor(serviceId: string): string {
-  return serviceId
 }
 
 /**
@@ -142,7 +131,7 @@ export async function resolveSourcedEnvironmentSiteReleases(
     const username = usernameById.get(principalId)
     if (!username) continue
     out.push({
-      serviceId: releaseServiceIdFor(row.id),
+      serviceId: resolveDeployReleaseServiceId(row.composeServiceName, row.id),
       username,
     })
   }
