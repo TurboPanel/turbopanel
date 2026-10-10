@@ -448,6 +448,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       retentionDays: parseMetricsRetentionDays(
         Deno.env.get('TURBOPANEL_SERVER_METRICS_RETENTION_DAYS')
       ),
+      maxBytes: parsePositiveIntEnv(Deno.env.get('TURBOPANEL_SERVER_METRICS_MAX_BYTES')),
       threads: parsePositiveIntEnv(Deno.env.get('TURBOPANEL_SERVER_METRICS_DUCKDB_THREADS')),
       memoryLimitMb: parsePositiveIntEnv(
         Deno.env.get('TURBOPANEL_SERVER_METRICS_DUCKDB_MEMORY_LIMIT')
