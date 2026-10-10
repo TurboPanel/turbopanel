@@ -3533,7 +3533,7 @@ export async function prepareDeployCompose(
   if ('kind' in nativeLanes || nativeLanes instanceof Response) {
     return nativeLanes
   }
-  const { localNativeApps, nativeVariables, localSourceMaterial, nodeVersions } = nativeLanes
+  const { nativeVariables, localSourceMaterial, nodeVersions } = nativeLanes
 
   const dockerExternalNetworks = collectComposeExternalDockerNetworkNames(split.composeYaml)
   const externalNetworks = await resolveExternalNetworks(
