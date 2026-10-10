@@ -257,7 +257,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   invitation: {
     group: 'organizations',
     summary:
-      'Team-scoped invite emailed to an address; one pending per (team, email) with a 7-day link, turned into a `teammate` row plus grants on accept.',
+      'Team-scoped invite per (team, email) with a 7-day link; accept adds `teammate` and optional `grants` rows when stored.',
     columns: {
       user_id:
         'The inviter (a manager of the team), not the invitee; the invitee is known only by `email` until accept.',
@@ -270,7 +270,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       status:
         '`pending` at creation, then `accepted` by the accept route or `revoked` by the revoke route; expiry is not a status.',
       grants:
-        'Array of `entityType` / `entityId` / `permissionKey` specs an owner attached, or null for the default `organization:manage`; written as `grant` rows on accept.',
+        'Optional grant specs (`entityType`, `entityId`, `permissionKey`) an owner attached; null means none; materialized on accept.',
       token_hash:
         'SHA-256 verifier of the secret emailed only in the accept link, used to look the invitation up; rotated on re-send, null on older invitations.',
     },
