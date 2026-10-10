@@ -5,7 +5,8 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../../app/app.ts'
 import { getDatabaseUrl } from '../../../db/url.ts'
 import { createDenoDb, endDbConnection } from '../../../db/connection.ts'
-import { account, passkey, user } from '../../../db/schema.ts'
+import { account, organization, passkey, team, teammate, user } from '../../../db/schema.ts'
+import { createOrganizationForUser } from '../install-state.ts'
 import { CLIENT_API_PREFIX } from '../../../app/surfaces.ts'
 import { parseTestSecretsConfig } from '../../../test-fixtures/secrets.ts'
 import { createAuthRateLimiter, setSharedAuthRateLimiterForTests } from '../auth-rate-limit.ts'
@@ -337,6 +338,83 @@ test('Postgres OAuth signup, login, link, unlink, and unique conflict', async ()
   } finally {
     for (const id of createdIds) {
       await db.delete(user).where(eq(user.id, id))
+    }
+    await endDbConnection(db)
+  }
+})
+
+test('signUpFromIdentity names the first organization after the provider email', async () => {
+  if (!dbUrl) {
+    skipWithoutDatabase('OAuth signup org name test')
+    return
+  }
+
+  const db = createDenoDb()
+  const email = `oauth-org-name-${crypto.randomUUID()}@example.com`
+  let userId: string | undefined
+
+  try {
+    const created = await signUpFromIdentity(db, 'github', {
+      providerUserId: `gh-${crypto.randomUUID()}`,
+      email,
+      emailVerified: true,
+      name: 'OAuth Org',
+    })
+    if (created === 'conflict') {
+      throw new Error('expected OAuth signup to succeed')
+    }
+    userId = created.userId
+
+    const orgRows = await db
+      .select({ name: organization.name })
+      .from(organization)
+      .innerJoin(team, eq(team.organizationId, organization.id))
+      .innerJoin(teammate, eq(teammate.teamId, team.id))
+      .where(eq(teammate.userId, userId))
+      .limit(1)
+    assertEquals(orgRows[0]?.name, `${email}'s organization`)
+  } finally {
+    if (userId) {
+      await db.delete(user).where(eq(user.id, userId))
+    }
+    await endDbConnection(db)
+  }
+})
+
+test('createOrganizationForUser keeps an explicit organization name', async () => {
+  if (!dbUrl) {
+    skipWithoutDatabase('createOrganizationForUser explicit name test')
+    return
+  }
+
+  const db = createDenoDb()
+  const email = `explicit-org-${crypto.randomUUID()}@example.com`
+  let userId: string | undefined
+  let organizationId: string | undefined
+
+  try {
+    const inserted = await db
+      .insert(user)
+      .values({ email, isEmailVerified: true, role: 'user' })
+      .returning({ id: user.id })
+    userId = inserted[0]?.id
+    if (!userId) throw new Error('user insert failed')
+
+    const created = await createOrganizationForUser(db, userId, 'Acme Explicit')
+    organizationId = created.organizationId
+
+    const orgRows = await db
+      .select({ name: organization.name })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+      .limit(1)
+    assertEquals(orgRows[0]?.name, 'Acme Explicit')
+  } finally {
+    if (organizationId) {
+      await db.delete(organization).where(eq(organization.id, organizationId))
+    }
+    if (userId) {
+      await db.delete(user).where(eq(user.id, userId))
     }
     await endDbConnection(db)
   }
