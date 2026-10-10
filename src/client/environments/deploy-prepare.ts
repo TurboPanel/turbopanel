@@ -1992,15 +1992,25 @@ function nativeAppServicesForDeploy(
   const resourcesByComposeName = new Map(
     resolvedServices.map((entry) => [entry.composeServiceName, entry.resources] as const)
   )
-  return apps.map((app) =>
-    nativeAppServiceForDeploy(
+  const serviceIdByComposeName = new Map(
+    resolvedServices.map((entry) => [entry.composeServiceName, entry.serviceId] as const)
+  )
+  return apps.map((app) => {
+    const turboServiceId = serviceIdByComposeName.get(app.composeServiceName)
+    if (!turboServiceId) {
+      throw new Error(
+        `native app ${app.composeServiceName} has no resolved service id for this environment`
+      )
+    }
+    return nativeAppServiceForDeploy(
       app,
+      turboServiceId,
       resourcesByComposeName.get(app.composeServiceName),
       accountLimits,
       renderCronForDeploy(app.cron, tasksByComposeName.get(app.composeServiceName)),
       variablesByComposeName.get(app.composeServiceName)
     )
-  )
+  })
 }
 
 /** The per-app resource ceiling the daemon turns into unit limits, when the app set one. */
@@ -2035,6 +2045,7 @@ function nativeAppRuntimeFieldsForWire(app: NativeAppServiceSpec) {
 
 function nativeAppServiceForDeploy(
   app: NativeAppServiceSpec,
+  turboServiceId: string,
   resources: ResolvedService['resources'] | undefined,
   accountLimits: ReturnType<typeof effectiveAccountLimits>,
   cron: ReturnType<typeof renderCronForDeploy>,
@@ -2042,6 +2053,7 @@ function nativeAppServiceForDeploy(
 ): PreparedNativeAppService {
   return {
     composeServiceName: app.composeServiceName,
+    serviceId: turboServiceId,
     listenPort: app.listenPort,
     framework: app.framework,
     ...nativeAppRuntimeFieldsForWire(app),

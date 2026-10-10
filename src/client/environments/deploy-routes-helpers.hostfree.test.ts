@@ -802,6 +802,10 @@ test('resolveDeployReleaseServiceId prefers hosting, then ingress, then compose 
     ),
     'worker'
   )
+  assertEquals(
+    resolveDeployReleaseServiceId('app', [], [], 'svc-native'),
+    'svc-native'
+  )
 })
 
 test('buildNativeAppServicesForDeploy returns empty when no apps', () => {
@@ -810,7 +814,7 @@ test('buildNativeAppServicesForDeploy returns empty when no apps', () => {
 
 test('native app rows resolve the release serviceId from hostings', () => {
   const apps = buildNativeAppServicesForDeploy(
-    [{ composeServiceName: 'web', framework: 'next', listenPort: 0 }],
+    [{ composeServiceName: 'web', serviceId: 'svc-web', framework: 'next', listenPort: 0 }],
     [
       {
         hostingId: 'h1',
@@ -826,7 +830,7 @@ test('native app rows resolve the release serviceId from hostings', () => {
 
 test('a hosting targetPort never moves a native app listen port', () => {
   const apps = buildNativeAppServicesForDeploy(
-    [{ composeServiceName: 'web', framework: 'next', listenPort: 0 }],
+    [{ composeServiceName: 'web', serviceId: 'svc-web', framework: 'next', listenPort: 0 }],
     [
       {
         hostingId: 'h1',
@@ -846,7 +850,7 @@ test('a hosting targetPort never moves a native app listen port', () => {
 test('a native app port comes out of the shared ledger, not the route', () => {
   const used = new Set<number>()
   const first = buildNativeAppServicesForDeploy(
-    [{ composeServiceName: 'web', framework: 'next', listenPort: 0 }],
+    [{ composeServiceName: 'web', serviceId: 'svc-web', framework: 'next', listenPort: 0 }],
     [
       {
         hostingId: 'h1',
@@ -860,7 +864,7 @@ test('a native app port comes out of the shared ledger, not the route', () => {
     used
   )
   const second = buildNativeAppServicesForDeploy(
-    [{ composeServiceName: 'api', framework: 'next', listenPort: 0 }],
+    [{ composeServiceName: 'api', serviceId: 'svc-api', framework: 'next', listenPort: 0 }],
     [
       {
         hostingId: 'h2',
@@ -876,15 +880,13 @@ test('a native app port comes out of the shared ledger, not the route', () => {
   assertEquals(first[0]?.listenPort === second[0]?.listenPort, false)
 })
 
-test('a native app with no hosting or ingress falls back to the compose key', () => {
-  // Same precedence the daemon's resolveReleaseServiceId uses — a worker that
-  // publishes nothing still needs a stable release-tree segment.
+test('a native app without hosting uses its TurboPanel service id on the wire', () => {
   const apps = buildNativeAppServicesForDeploy(
-    [{ composeServiceName: 'worker', framework: 'auto', listenPort: 0 }],
+    [{ composeServiceName: 'app', serviceId: 'svc-env-1', framework: 'auto', listenPort: 0 }],
     [],
     []
   )
-  assertEquals(apps[0]?.serviceId, 'worker')
+  assertEquals(apps[0]?.serviceId, 'svc-env-1')
 })
 
 test('a native app never gets the port a site already took', () => {
@@ -911,7 +913,7 @@ test('a native app never gets the port a site already took', () => {
     used
   )
   const apps = buildNativeAppServicesForDeploy(
-    [{ composeServiceName: 'web', framework: 'auto', listenPort: 0 }],
+    [{ composeServiceName: 'web', serviceId: 'svc-web', framework: 'auto', listenPort: 0 }],
     hostings,
     [],
     used

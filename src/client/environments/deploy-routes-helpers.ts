@@ -958,14 +958,16 @@ export function buildSitesForDeploy(
  *
  * **Must** stay identical to the daemon's `resolveReleaseServiceId`
  * (`turbopaneld/src/deploy/release/apply-source-releases.ts`): hostings first,
- * then tcp/udp ingress, then the compose key. The release engine picks the
- * directory with that rule, so a native app unit whose `WorkingDirectory` were
- * derived any other way would point at a tree nothing ever published.
+ * then tcp/udp ingress, then the native app's TurboPanel service id, then the
+ * compose key. The release engine picks the directory with that rule, so a
+ * native app unit whose `WorkingDirectory` were derived any other way would
+ * point at a tree nothing ever published.
  */
 export function resolveDeployReleaseServiceId(
   composeServiceName: string,
   hostings: readonly EnvironmentDeployHosting[],
-  ingressServices: readonly EnvironmentDeployIngressService[]
+  ingressServices: readonly EnvironmentDeployIngressService[],
+  nativeAppServiceId?: string
 ): string {
   for (const hosting of hostings) {
     if (hosting.composeServiceName === composeServiceName && hosting.serviceId) {
@@ -976,6 +978,9 @@ export function resolveDeployReleaseServiceId(
     if (ingress.composeServiceName === composeServiceName && ingress.serviceId) {
       return ingress.serviceId
     }
+  }
+  if (nativeAppServiceId) {
+    return nativeAppServiceId
   }
   return composeServiceName
 }
@@ -1012,7 +1017,12 @@ export function buildNativeAppServicesForDeploy(
     uniqueKey
   ).map((app) => ({
     ...app,
-    serviceId: resolveDeployReleaseServiceId(app.composeServiceName, hostings, ingressServices),
+    serviceId: resolveDeployReleaseServiceId(
+      app.composeServiceName,
+      hostings,
+      ingressServices,
+      app.serviceId
+    ),
   }))
 }
 

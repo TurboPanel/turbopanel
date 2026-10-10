@@ -30,7 +30,6 @@ import type { Db } from "../../db/connection.ts";
 import {
   deployment,
   environment,
-  hosting,
   principal,
   project,
   service,
@@ -70,17 +69,13 @@ function collectSourceComposeServiceNames(
 /**
  * Release-tree directory segment for one service.
  *
- * Mirrors the daemon's `resolveReleaseServiceId`: the service UUID when a row
- * carries it on the wire (`hostings[]` / `ingressServices[]`, both of which are
- * built from `hosting` rows), else the compose service key — unique within the
- * environment and charset-safe, which is all the path segment needs.
+ * Mirrors the daemon's `resolveReleaseServiceId`: the environment's TurboPanel
+ * `service.id`, which is what hostings, ingress rows, and `nativeAppServices[]`
+ * carry on the wire. The compose key is only a daemon-side fallback for workers
+ * with no hosting and no native row.
  */
-function releaseServiceIdFor(
-  serviceId: string,
-  composeServiceName: string,
-  serviceIdsWithHosting: ReadonlySet<string>,
-): string {
-  return serviceIdsWithHosting.has(serviceId) ? serviceId : composeServiceName;
+function releaseServiceIdFor(serviceId: string): string {
+  return serviceId;
 }
 
 /**
@@ -138,15 +133,6 @@ export async function resolveSourcedEnvironmentSiteReleases(
   );
   if (matched.length === 0) return [];
 
-  const hostingRows = await db
-    .select({ serviceId: hosting.serviceId })
-    .from(hosting)
-    .innerJoin(service, eq(hosting.serviceId, service.id))
-    .where(eq(service.environmentId, environmentId));
-  const serviceIdsWithHosting = new Set(
-    hostingRows.map((row) => row.serviceId),
-  );
-
   const principalIdsByServiceId =
     await loadPrincipalIdsByServiceIdForEnvironment(db, environmentId);
   const wanted = new Map<string, string>();
@@ -172,11 +158,7 @@ export async function resolveSourcedEnvironmentSiteReleases(
     const username = usernameById.get(principalId);
     if (!username) continue;
     out.push({
-      serviceId: releaseServiceIdFor(
-        row.id,
-        row.composeServiceName,
-        serviceIdsWithHosting,
-      ),
+      serviceId: releaseServiceIdFor(row.id),
       username,
     });
   }

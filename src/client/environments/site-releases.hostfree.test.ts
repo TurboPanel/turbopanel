@@ -87,7 +87,6 @@ test("resolveEnvironmentSiteReleases uses the service UUID when the service publ
     [{ id: ENV_ID, projectId: PROJECT_ID, options: composeOptions({}) }],
     [{ id: PROJECT_ID, options: composeOptions(SOURCED_SERVICE) }],
     [{ id: SERVICE_ID, composeServiceName: "web" }],
-    [{ serviceId: SERVICE_ID }],
     [{ principalId: PRINCIPAL_ID, serviceId: SERVICE_ID }],
     [{ id: PRINCIPAL_ID, username: "appuser" }],
   ]);
@@ -96,19 +95,16 @@ test("resolveEnvironmentSiteReleases uses the service UUID when the service publ
   ]);
 });
 
-test("resolveEnvironmentSiteReleases falls back to the compose key with no hosting", async () => {
-  // Mirrors the daemon's resolveReleaseServiceId: a worker publishes nothing,
-  // so the compose key is the directory segment.
+test("resolveEnvironmentSiteReleases uses the service UUID without a hosting row", async () => {
   const db = fakeDb([
     [{ id: ENV_ID, projectId: PROJECT_ID, options: composeOptions({}) }],
     [{ id: PROJECT_ID, options: composeOptions(SOURCED_SERVICE) }],
     [{ id: SERVICE_ID, composeServiceName: "web" }],
-    [],
     [{ principalId: PRINCIPAL_ID, serviceId: SERVICE_ID }],
     [{ id: PRINCIPAL_ID, username: "appuser" }],
   ]);
   assertEquals(await resolveEnvironmentSiteReleases(db, ENV_ID), [
-    { serviceId: "web", username: "appuser" },
+    { serviceId: SERVICE_ID, username: "appuser" },
   ]);
 });
 
@@ -119,7 +115,6 @@ test("resolveEnvironmentSiteReleases skips a service with no sole tenancy", asyn
     [{ id: ENV_ID, projectId: PROJECT_ID, options: composeOptions({}) }],
     [{ id: PROJECT_ID, options: composeOptions(SOURCED_SERVICE) }],
     [{ id: SERVICE_ID, composeServiceName: "web" }],
-    [{ serviceId: SERVICE_ID }],
     [
       { principalId: PRINCIPAL_ID, serviceId: SERVICE_ID },
       {
@@ -134,7 +129,6 @@ test("resolveEnvironmentSiteReleases skips a service with no sole tenancy", asyn
     [{ id: ENV_ID, projectId: PROJECT_ID, options: composeOptions({}) }],
     [{ id: PROJECT_ID, options: composeOptions(SOURCED_SERVICE) }],
     [{ id: SERVICE_ID, composeServiceName: "web" }],
-    [{ serviceId: SERVICE_ID }],
     [],
   ]);
   assertEquals(await resolveEnvironmentSiteReleases(unowned, ENV_ID), []);
@@ -174,7 +168,6 @@ test("resolveEnvironmentSiteReleases unions the recorded set with the current on
     [{ id: ENV_ID, projectId: PROJECT_ID, options: composeOptions({}) }],
     [{ id: PROJECT_ID, options: composeOptions(SOURCED_SERVICE) }],
     [{ id: SERVICE_ID, composeServiceName: "web" }],
-    [{ serviceId: SERVICE_ID }],
     [{ principalId: PRINCIPAL_ID, serviceId: SERVICE_ID }],
     [{ id: PRINCIPAL_ID, username: "appuser" }],
     // The still-present service is recorded too; it must not be listed twice.

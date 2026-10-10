@@ -1478,7 +1478,7 @@ describe("nativeAppServicesForDeploy", () => {
         enabled: false,
         startupFile: "app.js",
       }],
-      [],
+      resolvedServicesFixture([{ name: "web" }]),
       {},
       {},
     );
@@ -1486,6 +1486,7 @@ describe("nativeAppServicesForDeploy", () => {
     // unit instead of starting it; dropping the row would strand the release.
     assertEquals(prepared, [{
       composeServiceName: "web",
+      serviceId: "svc-0",
       listenPort: 18100,
       framework: "auto",
       nodeVersion: "24",
@@ -1502,12 +1503,13 @@ describe("nativeAppServicesForDeploy", () => {
         framework: "auto" as const,
         listenPort: 18100,
       }],
-      [],
+      resolvedServicesFixture([{ name: "web" }]),
       {},
       {},
     );
     assertEquals(prepared, [{
       composeServiceName: "web",
+      serviceId: "svc-0",
       listenPort: 18100,
       framework: "auto",
     }]);
@@ -1531,12 +1533,13 @@ describe("nativeAppServicesForDeploy", () => {
         },
         serviceLabels: { "com.example.team": "platform" },
       }],
-      [],
+      resolvedServicesFixture([{ name: "web" }]),
       {},
       {},
     );
     assertEquals(prepared, [{
       composeServiceName: "web",
+      serviceId: "svc-0",
       listenPort: 18100,
       framework: "auto",
       restartPolicy: {
@@ -1568,6 +1571,7 @@ describe("nativeAppServicesForDeploy", () => {
     );
     assertEquals(prepared, [{
       composeServiceName: "web",
+      serviceId: "svc-0",
       listenPort: 18100,
       framework: "auto",
       resources: { cpus: 1.5, memoryBytes: 512_000_000 },

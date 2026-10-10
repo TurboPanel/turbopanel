@@ -522,18 +522,14 @@ export function localComposeServiceNames(
 // ---------------------------------------------------------------------------
 
 /**
- * A native app row before its release-tree `serviceId` is resolved.
+ * A native app row with its TurboPanel `service.id` already resolved.
  *
- * `serviceId` is deliberately absent: the release-tree segment is resolved from
- * `hostings[]` / `ingressServices[]` at payload-assembly time with the same
- * precedence the daemon's `resolveReleaseServiceId` uses — deriving it twice
- * from different inputs would let a unit's `WorkingDirectory` point at a tree
- * the release engine never published.
+ * The release-tree segment and the generated unit name both use this id (after
+ * the same hosting / ingress precedence as `resolveReleaseServiceId` at wire
+ * assembly). Carrying it from {@link ResolvedService} keeps several environments
+ * of one project on a shared principal from colliding on the compose key alone.
  */
-export type PreparedNativeAppService = Omit<
-  EnvironmentDeployNativeAppService,
-  "serviceId"
->;
+export type PreparedNativeAppService = EnvironmentDeployNativeAppService;
 
 /**
  * What one server is told to run — the fourth and last model.
