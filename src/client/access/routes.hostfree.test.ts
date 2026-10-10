@@ -299,6 +299,28 @@ test('POST /invitations returns 400 for an invalid body', async () => {
   assertEquals(await res.json(), { error: 'Invalid request' })
 })
 
+test('POST /invitations returns 400 Invalid invitation grants for an empty grants array', async () => {
+  const teamId = '55555555-5555-4555-8555-555555555555'
+  const { app, cookie } = await buildSessionApp({
+    teamRow: { id: teamId, name: 'Ops', organizationId },
+  })
+  const res = await app.request('/invitations', {
+    method: 'POST',
+    headers: {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      teamId,
+      email: 'teammate@example.com',
+      grants: [],
+    }),
+  })
+  assertEquals(res.status, 400)
+  assertEquals(await res.json(), { error: 'Invalid invitation grants' })
+})
+
 test('POST /invitations returns 404 when the team is in another org', async () => {
   const otherOrgId = '44444444-4444-4444-8444-444444444444'
   const teamId = '55555555-5555-4555-8555-555555555555'

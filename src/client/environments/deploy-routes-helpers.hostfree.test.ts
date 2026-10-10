@@ -154,6 +154,10 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
       serviceKind: 'site',
     },
     {
+      kind: 'native_app_unresolved_service',
+      composeServiceName: 'api',
+    },
+    {
       kind: 'compose_field_unsupported',
       issues: [
         {
@@ -197,6 +201,10 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
   assertEquals(principalRequired.body.error, 'principal_required_for_service_kind')
   assertEquals(principalRequired.body.serviceKind, 'site')
 
+  const nativeUnresolved = mapPrepareErrorResponse(cases[17])
+  assertEquals(nativeUnresolved.status, 422)
+  assertEquals(nativeUnresolved.body.error, 'native_app_unresolved_service')
+
   const variableWithContext = mapPrepareErrorResponse({
     kind: 'variable_unresolved',
     message: 'missing {$project.x}',
@@ -233,7 +241,7 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
   // Distinct from `compose_invalid`: the document parses, TurboPanel just does
   // not implement what it names — and the message has to name the field, since
   // the whole point of the code is that it is no longer dropped in silence.
-  const unsupportedField = mapPrepareErrorResponse(cases[17])
+  const unsupportedField = mapPrepareErrorResponse(cases[18])
   assertEquals(unsupportedField.status, 422)
   assertEquals(unsupportedField.body.error, 'compose_field_unsupported')
   assertEquals(
@@ -751,57 +759,9 @@ test('buildDeployPreviewServers emits per-host blocks when split', () => {
   )
 })
 
-test('resolveDeployReleaseServiceId prefers hosting, then ingress, then compose key', () => {
-  assertEquals(
-    resolveDeployReleaseServiceId(
-      'web',
-      [
-        {
-          hostingId: 'h1',
-          serviceId: 'svc-hosting',
-          composeServiceName: 'web',
-          hostnames: ['app.example.com'],
-        },
-      ],
-      []
-    ),
-    'svc-hosting'
-  )
-  assertEquals(
-    resolveDeployReleaseServiceId(
-      'web',
-      [
-        {
-          hostingId: 'h1',
-          serviceId: '',
-          composeServiceName: 'web',
-          hostnames: ['app.example.com'],
-        },
-      ],
-      [
-        {
-          serviceId: 'svc-ingress',
-          composeServiceName: 'web',
-          containerName: 'web-in',
-        },
-      ]
-    ),
-    'svc-ingress'
-  )
-  assertEquals(
-    resolveDeployReleaseServiceId(
-      'worker',
-      [],
-      [
-        {
-          serviceId: 'svc-other',
-          composeServiceName: 'api',
-          containerName: 'api-in',
-        },
-      ]
-    ),
-    'worker'
-  )
+test('resolveDeployReleaseServiceId uses the turbo service id or compose key', () => {
+  assertEquals(resolveDeployReleaseServiceId('web', 'svc-web'), 'svc-web')
+  assertEquals(resolveDeployReleaseServiceId('worker', undefined), 'worker')
 })
 
 test('buildNativeAppServicesForDeploy returns empty when no apps', () => {
@@ -810,7 +770,7 @@ test('buildNativeAppServicesForDeploy returns empty when no apps', () => {
 
 test('native app rows resolve the release serviceId from hostings', () => {
   const apps = buildNativeAppServicesForDeploy(
-    [{ composeServiceName: 'web', framework: 'next', listenPort: 0 }],
+    [{ composeServiceName: 'web', serviceId: 'svc-web', framework: 'next', listenPort: 0 }],
     [
       {
         hostingId: 'h1',
@@ -826,7 +786,7 @@ test('native app rows resolve the release serviceId from hostings', () => {
 
 test('a hosting targetPort never moves a native app listen port', () => {
   const apps = buildNativeAppServicesForDeploy(
-    [{ composeServiceName: 'web', framework: 'next', listenPort: 0 }],
+    [{ composeServiceName: 'web', serviceId: 'svc-web', framework: 'next', listenPort: 0 }],
     [
       {
         hostingId: 'h1',
@@ -846,7 +806,7 @@ test('a hosting targetPort never moves a native app listen port', () => {
 test('a native app port comes out of the shared ledger, not the route', () => {
   const used = new Set<number>()
   const first = buildNativeAppServicesForDeploy(
-    [{ composeServiceName: 'web', framework: 'next', listenPort: 0 }],
+    [{ composeServiceName: 'web', serviceId: 'svc-web', framework: 'next', listenPort: 0 }],
     [
       {
         hostingId: 'h1',
@@ -860,7 +820,7 @@ test('a native app port comes out of the shared ledger, not the route', () => {
     used
   )
   const second = buildNativeAppServicesForDeploy(
-    [{ composeServiceName: 'api', framework: 'next', listenPort: 0 }],
+    [{ composeServiceName: 'api', serviceId: 'svc-api', framework: 'next', listenPort: 0 }],
     [
       {
         hostingId: 'h2',
@@ -876,15 +836,13 @@ test('a native app port comes out of the shared ledger, not the route', () => {
   assertEquals(first[0]?.listenPort === second[0]?.listenPort, false)
 })
 
-test('a native app with no hosting or ingress falls back to the compose key', () => {
-  // Same precedence the daemon's resolveReleaseServiceId uses — a worker that
-  // publishes nothing still needs a stable release-tree segment.
+test('a native app without hosting uses its TurboPanel service id on the wire', () => {
   const apps = buildNativeAppServicesForDeploy(
-    [{ composeServiceName: 'worker', framework: 'auto', listenPort: 0 }],
+    [{ composeServiceName: 'app', serviceId: 'svc-env-1', framework: 'auto', listenPort: 0 }],
     [],
     []
   )
-  assertEquals(apps[0]?.serviceId, 'worker')
+  assertEquals(apps[0]?.serviceId, 'svc-env-1')
 })
 
 test('a native app never gets the port a site already took', () => {
@@ -911,7 +869,7 @@ test('a native app never gets the port a site already took', () => {
     used
   )
   const apps = buildNativeAppServicesForDeploy(
-    [{ composeServiceName: 'web', framework: 'auto', listenPort: 0 }],
+    [{ composeServiceName: 'web', serviceId: 'svc-web', framework: 'auto', listenPort: 0 }],
     hostings,
     [],
     used
