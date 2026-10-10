@@ -1,7 +1,7 @@
 import type { Context } from 'hono'
 import { and, eq, inArray, or } from 'drizzle-orm'
 import type { AppEnv } from '../../app/app.ts'
-import { type HostingWwwMode, hostingCertificateNames } from '../../contracts/commands/hostname.ts'
+import { hostingCertificateNames, type HostingWwwMode } from '../../contracts/commands/hostname.ts'
 import {
   decryptSecret,
   encryptSecretForDaemon,
@@ -123,9 +123,9 @@ import {
 import { type SiteEngineFeatureError, withSiteEngineFeature } from './deploy-site-engine-gate.ts'
 import { type SiteDbBindingsWarning, withSiteDbBindings } from './deploy-site-db-bindings.ts'
 import {
+  type BindingDelivery,
   deliveryByServiceId,
   hostRunDeliveryByComposeName,
-  type BindingDelivery,
 } from '../../features/bindings/host-run.ts'
 import { PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
 import {
@@ -2376,7 +2376,10 @@ async function resolveBindingMaterializationOutcome(
   if (bindResult.kind === 'binding_host_site_unsupported') {
     return {
       kind: 'error',
-      error: { kind: 'binding_host_site_unsupported', message: bindResult.message },
+      error: {
+        kind: 'binding_host_site_unsupported',
+        message: bindResult.message,
+      },
     }
   }
 
@@ -2502,7 +2505,10 @@ async function prepareLocalSourcesWithNodeVersions(
 ): Promise<
   | {
       sourceMaterial: EnvironmentDeploySource[]
-      nodeVersions: { apps: PreparedNativeAppService[]; views: NativeAppNodeVersionView[] }
+      nodeVersions: {
+        apps: PreparedNativeAppService[]
+        views: NativeAppNodeVersionView[]
+      }
     }
   | DeployPrepareError
   | Response
@@ -3109,7 +3115,10 @@ async function prepareNativeAppRuntimes(
 ): Promise<
   | {
       localSourceMaterial: EnvironmentDeploySource[]
-      nodeVersions: { apps: PreparedNativeAppService[]; views: NativeAppNodeVersionView[] }
+      nodeVersions: {
+        apps: PreparedNativeAppService[]
+        views: NativeAppNodeVersionView[]
+      }
     }
   | DeployPrepareError
   | Response
@@ -3121,11 +3130,84 @@ async function prepareNativeAppRuntimes(
 
   // An app with no `nodeVersion` gets one here from its repository at the
   // commit being deployed.
-  const localSources = await prepareLocalSourcesWithNodeVersions(c, db, { ...args, nativeApps })
+  const localSources = await prepareLocalSourcesWithNodeVersions(c, db, {
+    ...args,
+    nativeApps,
+  })
   if (!('sourceMaterial' in localSources)) return localSources
   const { sourceMaterial: localSourceMaterial, nodeVersions } = localSources
 
   return { localSourceMaterial, nodeVersions }
+}
+
+async function resolveLocalNativeAppsAndRuntimes(
+  c: Context<AppEnv>,
+  db: Db,
+  args: {
+    mode: DeployPrepareMode
+    warnings: DeployPrepareWarning[]
+    params: {
+      environmentId: string
+      serverId: string
+      organizationId: string
+      rollback?: DeployRollbackRequest
+    }
+    merged: Parameters<typeof prepareNativeAppRuntimes>[2]['merged']
+    serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>
+    principalMaterial: EnvironmentDeployPrincipalMaterial[]
+    principalResolution: ComposePrincipalResolution
+    split: ReturnType<typeof splitHostNativeFromDocument>
+    withVariables: ApplyVariablesResult
+    resolvedServices: readonly ResolvedService[]
+    orgOptions: unknown
+    serverOptions: unknown
+    tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]>
+    localServiceNames?: ReadonlySet<string>
+  }
+): Promise<
+  | {
+      localNativeApps: PreparedNativeAppService[]
+      nativeVariables: Map<string, NativeAppVariables>
+      localSourceMaterial: EnvironmentDeploySource[]
+      nodeVersions: {
+        apps: PreparedNativeAppService[]
+        views: NativeAppNodeVersionView[]
+      }
+    }
+  | DeployPrepareError
+  | Response
+> {
+  const localNativeAppsOrError = resolveLocalNativeAppServicesForDeploy(
+    args.split.nativeApps,
+    args.withVariables,
+    args.resolvedServices,
+    args.orgOptions,
+    args.serverOptions,
+    args.tasksByComposeName,
+    args.localServiceNames
+  )
+  if ('kind' in localNativeAppsOrError) return localNativeAppsOrError
+  const { localNativeApps, nativeVariables } = localNativeAppsOrError
+
+  const runtimes = await prepareNativeAppRuntimes(c, db, {
+    mode: args.mode,
+    warnings: args.warnings,
+    params: args.params,
+    merged: args.merged,
+    serviceRows: args.serviceRows,
+    principalMaterial: args.principalMaterial,
+    principalResolution: args.principalResolution,
+    localServiceNames: args.localServiceNames,
+    nativeApps: localNativeApps,
+  })
+  if ('kind' in runtimes || runtimes instanceof Response) return runtimes
+
+  return {
+    localNativeApps,
+    nativeVariables,
+    localSourceMaterial: runtimes.localSourceMaterial,
+    nodeVersions: runtimes.nodeVersions,
+  }
 }
 
 export async function prepareDeployCompose(
@@ -3387,19 +3469,7 @@ export async function prepareDeployCompose(
   })
   warnings.push(...dbBindingWarnings)
 
-  const localNativeAppsOrError = resolveLocalNativeAppServicesForDeploy(
-    split.nativeApps,
-    withVariables,
-    resolved.services,
-    orgRow?.options,
-    serverRow?.options,
-    tasksByComposeName,
-    pipeline.localServiceNames
-  )
-  if ('kind' in localNativeAppsOrError) return localNativeAppsOrError
-  const { localNativeApps, nativeVariables } = localNativeAppsOrError
-
-  const runtimes = await prepareNativeAppRuntimes(c, db, {
+  const nativeLanes = await resolveLocalNativeAppsAndRuntimes(c, db, {
     mode,
     warnings,
     params,
@@ -3407,11 +3477,18 @@ export async function prepareDeployCompose(
     serviceRows,
     principalMaterial,
     principalResolution,
+    split,
+    withVariables,
+    resolvedServices: resolved.services,
+    orgOptions: orgRow?.options,
+    serverOptions: serverRow?.options,
+    tasksByComposeName,
     localServiceNames: pipeline.localServiceNames,
-    nativeApps: localNativeApps,
   })
-  if ('kind' in runtimes || runtimes instanceof Response) return runtimes
-  const { localSourceMaterial, nodeVersions } = runtimes
+  if ('kind' in nativeLanes || nativeLanes instanceof Response) {
+    return nativeLanes
+  }
+  const { localNativeApps, nativeVariables, localSourceMaterial, nodeVersions } = nativeLanes
 
   const dockerExternalNetworks = collectComposeExternalDockerNetworkNames(split.composeYaml)
   const externalNetworks = await resolveExternalNetworks(
@@ -3955,10 +4032,20 @@ function tlsPinErrorResponse(
   )
   const message =
     error === 'pin_mismatch' && typedCovered && missing.length > 0
-      ? `The certificate on this hosting covers ${hosting.hostnames.join(', ')} but not ${missing.join(', ')}, which its www setting adds. Upload one that lists every name, or set www to "Only ${hosting.hostnames.join(', ')}".`
+      ? `The certificate on this hosting covers ${hosting.hostnames.join(
+          ', '
+        )} but not ${missing.join(
+          ', '
+        )}, which its www setting adds. Upload one that lists every name, or set www to "Only ${hosting.hostnames.join(
+          ', '
+        )}".`
       : undefined
   return Response.json(
-    { error: tlsPinErrorCode(error), hostingId, ...(message ? { message } : {}) },
+    {
+      error: tlsPinErrorCode(error),
+      hostingId,
+      ...(message ? { message } : {}),
+    },
     { status: 400 }
   )
 }
@@ -3989,7 +4076,12 @@ async function resolveHttpHostingEntry(
   })
   if (!resolved.ok) {
     const pinned = candidates.find((candidate) => candidate.id === h.tlsId)
-    return { error: tlsPinErrorResponse(resolved.error, h.id, pinned, { hostnames, www }) }
+    return {
+      error: tlsPinErrorResponse(resolved.error, h.id, pinned, {
+        hostnames,
+        www,
+      }),
+    }
   }
 
   const bindScope = resolveHostingBind(parseHostingOptions(h.options))
