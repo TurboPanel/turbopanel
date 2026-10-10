@@ -1225,7 +1225,7 @@ Workspace** (`kind='user'`) for the superadmin user. Workers sign-up
 (`createOrganizationForUser`) still creates only the Default Workspace when
 provisioning an org — the TurboPanel workspace is ensured lazily on first server
 enroll for those orgs. Self-hosted install names the org **Root Organization**;
-Workers / user-created first orgs default to **My Organization**, and
+Workers / user-created first orgs default to **`you@example.com's organization`** (from the sign-up email), and
 `POST /organizations` defaults to **New Organization**.
 
 **Completed:** Resource ancestry is computed directly from real domain tables

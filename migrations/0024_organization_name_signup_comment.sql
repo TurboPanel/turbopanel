@@ -1,0 +1,1 @@
+COMMENT ON COLUMN "organization"."name" IS 'Display name; sign-up without an explicit name uses `you@example.com''s organization` from the owner email, else install wizard or PATCH `/organizations/:id`.';
