@@ -2028,6 +2028,36 @@ function nativeAppServicesForDeploy(
   return out
 }
 
+function resolveLocalNativeAppServicesForDeploy(
+  nativeApps: readonly NativeAppServiceSpec[],
+  withVariables: Pick<ApplyVariablesResult, 'runtimeAssignments' | 'unreferencedSecrets'>,
+  resolvedServices: readonly ResolvedService[],
+  orgOptions: unknown,
+  serverOptions: unknown,
+  tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]>,
+  localServiceNames?: ReadonlySet<string>
+):
+  | {
+      localNativeApps: PreparedNativeAppService[]
+      nativeVariables: Map<string, NativeAppVariables>
+    }
+  | Extract<DeployPrepareError, { kind: 'native_app_unresolved_service' }> {
+  const nativeVariables = resolveNativeAppVariables(nativeApps, withVariables)
+  const nativeAppsForWire = nativeAppServicesForDeploy(
+    nativeApps,
+    resolvedServices,
+    orgOptions,
+    serverOptions,
+    tasksByComposeName,
+    nativeVariables
+  )
+  if ('kind' in nativeAppsForWire) return nativeAppsForWire
+  return {
+    localNativeApps: sitesOnScheduledServer(nativeAppsForWire, localServiceNames),
+    nativeVariables,
+  }
+}
+
 /** The per-app resource ceiling the daemon turns into unit limits, when the app set one. */
 function nativeAppResourcesForWire(resources: ResolvedService['resources'] | undefined): {
   resources?: { cpus?: number; memoryBytes?: number }
@@ -3357,17 +3387,17 @@ export async function prepareDeployCompose(
   })
   warnings.push(...dbBindingWarnings)
 
-  const nativeVariables = resolveNativeAppVariables(split.nativeApps, withVariables)
-  const nativeAppsForWire = nativeAppServicesForDeploy(
+  const localNativeAppsOrError = resolveLocalNativeAppServicesForDeploy(
     split.nativeApps,
+    withVariables,
     resolved.services,
     orgRow?.options,
     serverRow?.options,
     tasksByComposeName,
-    nativeVariables
+    pipeline.localServiceNames
   )
-  if ('kind' in nativeAppsForWire) return nativeAppsForWire
-  const localNativeApps = sitesOnScheduledServer(nativeAppsForWire, pipeline.localServiceNames)
+  if ('kind' in localNativeAppsOrError) return localNativeAppsOrError
+  const { localNativeApps, nativeVariables } = localNativeAppsOrError
 
   const runtimes = await prepareNativeAppRuntimes(c, db, {
     mode,
