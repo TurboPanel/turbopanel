@@ -6647,9 +6647,7 @@ test('sourceMaterial round-trips releaseServiceId through parse and wire JSON', 
   const parsed = parseEnvironmentDeployPayload(raw)
   assertEquals(parsed.sourceMaterial?.[0]?.releaseServiceId, RELEASE_SERVICE_ID)
 
-  const again = parseEnvironmentDeployPayload(
-    JSON.parse(JSON.stringify(parsed)) as typeof raw
-  )
+  const again = parseEnvironmentDeployPayload(JSON.parse(JSON.stringify(parsed)) as typeof raw)
   assertEquals(again.sourceMaterial?.[0]?.releaseServiceId, RELEASE_SERVICE_ID)
 
   const without = parseEnvironmentDeployPayload({
