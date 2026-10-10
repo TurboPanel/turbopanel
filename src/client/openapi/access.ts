@@ -64,7 +64,7 @@ export const accessSchemas = {
         type: 'array',
         items: { $ref: '#/components/schemas/InvitationGrantSpec' },
         description:
-          'Optional intended grants. Requires organization:own. Omitted or null stores no grants (accept adds team membership only). An empty array is refused as Invalid invitation grants.',
+          'Optional intended grants. Requires organization:own. When omitted, no grants are stored (accept adds team membership only). JSON null or any non-array value is refused with 400 Invalid request. An empty array is refused with 400 Invalid invitation grants.',
       },
     },
   },
@@ -226,7 +226,7 @@ export const accessPaths: Record<string, unknown> = {
       tags: ['Authorization'],
       summary: 'Invite a teammate',
       description:
-        'Creates a pending invitation for a team in the session organization and emails the accept link. Requires canInviteToTeam. Optional grants require organization:own (403 grants_require_owner); omitted or null stores no grants. Empty grants is 400 Invalid invitation grants. Returns 409 invitation_pending when a pending, unexpired invite already exists for that team and email, and 503 email_unavailable when the email queue is unavailable.',
+        'Creates a pending invitation for a team in the session organization and emails the accept link. Requires canInviteToTeam. Optional grants require organization:own (403 grants_require_owner). Omit `grants` to store none; send JSON null or a non-array for 400 Invalid request; send an empty array for 400 Invalid invitation grants. Returns 409 invitation_pending when a pending, unexpired invite already exists for that team and email, and 503 email_unavailable when the email queue is unavailable.',
       security: [{ cookieAuth: [] }],
       requestBody: {
         required: true,
