@@ -21,7 +21,6 @@ import {
   service,
   workspace,
 } from '../../db/schema.ts'
-import { getManagedEngineSpec } from '../../features/managed/index.ts'
 import { clampManagedResources, type ManagedSettings } from '../../features/managed/settings.ts'
 import { registerManagedExternalAccessRoutes } from './external-access-routes.ts'
 import { loadManagedExternalAccessView } from '../../features/managed/external-access.ts'
