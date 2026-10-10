@@ -813,6 +813,7 @@ test('GET /organizations/:id/managed returns joined rows', async () => {
           engineDisplayName: string | null
           host: string | null
           port: number | null
+          members: Array<{ serverName: string | null; role: string }>
         }>
       }
       assertEquals(body.managed.length, 1)
@@ -822,10 +823,14 @@ test('GET /organizations/:id/managed returns joined rows', async () => {
       assertEquals(row?.serverId, serverId)
       assertEquals(row?.engine, 'postgres')
       assertEquals(row?.engineDisplayName, 'PostgreSQL')
-      assertEquals(typeof row?.projectName, 'string')
-      assertEquals(typeof row?.serverName, 'string')
+      assertEquals(row?.projectName, 'Managed Postgres Project')
+      assertEquals(row?.environmentName, 'Production')
+      assertEquals(row?.serverName, 'Managed Route Server')
       assertEquals(row?.host, '127.0.0.1')
       assertEquals(row?.port, 15432)
+      assertEquals(row?.members.length, 1)
+      assertEquals(row?.members[0]?.serverName, 'Managed Route Server')
+      assertEquals(row?.members[0]?.role, 'primary')
     }
   )
 })

@@ -23,8 +23,8 @@ import { BadRequestError, parseName, requireStringField } from '../../lib/http/r
 const USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
 import {
   maxTypedNameLength,
-  principalNameSchemeOf,
   type PrincipalNameScheme,
+  principalNameSchemeOf,
 } from '../../lib/principal-name-scheme.ts'
 import { LOOPBACK_BIND, resolveManagedExternalDialHost } from './access-address.ts'
 import { loadManagedExternalAccess } from './external-access.ts'
@@ -286,7 +286,13 @@ export function parseManagedVersionSelection(
   engine: string,
   body: Record<string, unknown>,
   gate?: ManagedReleaseGate
-): { ok: true; image?: string } | { ok: false; error: string; status: 400 | 422 } {
+):
+  | { ok: true; image?: string }
+  | {
+      ok: false
+      error: string
+      status: 400 | 422
+    } {
   const seriesRaw = body.engineSeries
   const variantRaw = body.imageVariant
   if (seriesRaw === undefined && variantRaw === undefined) return { ok: true }
@@ -570,7 +576,9 @@ export function parseManagedUserCreateFields(
     return c.json(
       {
         error: MANAGED_USER_PRIVILEGES_INVALID_ERROR,
-        message: `privileges must list at least one of: ${ctx.spec.userOperations.privileges.join(', ')}. Leave it out to get the default for the login's connection role.`,
+        message: `privileges must list at least one of: ${ctx.spec.userOperations.privileges.join(
+          ', '
+        )}. Leave it out to get the default for the login's connection role.`,
       },
       400
     )
@@ -815,9 +823,13 @@ export function parsePromoteForce(body: Record<string, unknown>): boolean {
   return body.force === true
 }
 
-export function parseDisasterRecoveryPromoteBody(
-  body: Record<string, unknown>
-): { ok: true; memberId: string } | { ok: false; error: 'Invalid request'; status: 400 } {
+export function parseDisasterRecoveryPromoteBody(body: Record<string, unknown>):
+  | { ok: true; memberId: string }
+  | {
+      ok: false
+      error: 'Invalid request'
+      status: 400
+    } {
   if (body.confirm !== true) {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
@@ -1097,7 +1109,9 @@ export function evaluateOperatorPromoteGate(
   if (engine === 'postgres') {
     const received = parsePgLsn(replication.receivedLsn)
     const replayed = parsePgLsn(replication.replayLsn)
-    if (received === null || replayed === null) return 'managed_replica_lagging'
+    if (received === null || replayed === null) {
+      return 'managed_replica_lagging'
+    }
     if (received - replayed > BigInt(MAX_REPLAY_DELTA_BYTES)) {
       return 'managed_replica_lagging'
     }
@@ -1399,6 +1413,7 @@ type OrgManagedListSourceRow = {
   serverId: string | null
   createdAt: string
   updatedAt: string
+  environmentServerId: string | null
   environmentDisplayName: string | null
   projectId: string
   projectDisplayName: string | null
@@ -1414,8 +1429,12 @@ export async function serializeOrgManagedListRow(
   members: unknown[]
 ) {
   const spec = row.engine ? getManagedEngineSpec(row.engine) : null
+  const resolvedServerId = resolveManagedServerId(
+    { serverId: row.serverId },
+    row.environmentServerId
+  )
   const listenerParams = managedStatusListenerParams({
-    serverId: row.serverId,
+    serverId: resolvedServerId,
     engine: row.engine,
     options: row.options,
   })
@@ -1423,7 +1442,7 @@ export async function serializeOrgManagedListRow(
   return buildOrgManagedListEntry({
     serializedRow: serializeManagedRow(
       row,
-      row.serverId,
+      resolvedServerId,
       listener ? { host: listener.host, port: listener.port } : { host: null, port: null }
     ),
     engineDisplayName: spec?.displayName ?? null,

@@ -141,8 +141,8 @@ import {
   buildManagedDeleteQueuedResponse,
   buildManagedDestroyQueuedResponse,
   buildManagedReleaseView,
+  buildManagedReplicaLiveCheckFailedBody,
   buildManagedSslView,
-  serializeOrgManagedListRow,
   buildPromoteQueuedResponse,
   buildQueuedFanoutResponse,
   buildStatusMemberView,
@@ -150,7 +150,6 @@ import {
   evaluateManagedDatabaseDelete,
   evaluateManagedUserDropGuard,
   evaluateManagedUserRotateGuard,
-  buildManagedReplicaLiveCheckFailedBody,
   evaluateOperatorPromoteGate,
   evaluatePromoteMemberRole,
   evaluatePromoteReplicaClass,
@@ -188,6 +187,7 @@ import {
   resolveManagedServerId,
   serializeContainerRow,
   serializeManagedUser,
+  serializeOrgManagedListRow,
   validateManagedDatabaseCreateName,
 } from '../../features/managed/routes-helpers.ts'
 import {
@@ -589,7 +589,11 @@ async function detachManagedBindings(
   organizationId: string
 ): Promise<void> {
   if (detached.length > 0) {
-    await detachBindingsForManaged(db, managedId, { c, actorId, organizationId })
+    await detachBindingsForManaged(db, managedId, {
+      c,
+      actorId,
+      organizationId,
+    })
   }
 }
 
@@ -2247,7 +2251,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       effectiveManagedImage(ctx.spec, options.settings.image)
     )
     if (!failover.supported) {
-      return c.json({ error: failover.reason, code: 'managed_failover_unsupported' }, 422)
+      return c.json(
+        {
+          error: failover.reason,
+          code: 'managed_failover_unsupported',
+        },
+        422
+      )
     }
 
     await ensureManagedPrimaryMember(db, {
@@ -2354,7 +2364,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         effectiveManagedImage(ctx.spec, patchOptions.settings.image)
       )
       if (!failover.supported) {
-        return c.json({ error: failover.reason, code: 'managed_failover_unsupported' }, 422)
+        return c.json(
+          {
+            error: failover.reason,
+            code: 'managed_failover_unsupported',
+          },
+          422
+        )
       }
     }
 
@@ -2998,6 +3014,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         serverId: managed.serverId,
         createdAt: managed.createdAt,
         updatedAt: managed.updatedAt,
+        environmentServerId: environment.serverId,
         environmentDisplayName: environment.name,
         projectId: project.id,
         projectDisplayName: project.name,
