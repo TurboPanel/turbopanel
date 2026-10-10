@@ -173,15 +173,22 @@
     {
       "idx": 24,
       "version": "7",
-      "when": 1791597466193,
-      "tag": "0024_invitation_grants_comment",
+      "when": 1791594517203,
+      "tag": "0024_organization_name_signup_comment",
       "breakpoints": true
     },
     {
       "idx": 25,
       "version": "7",
+      "when": 1791597466193,
+      "tag": "0025_invitation_grants_comment",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
       "when": 1791603582204,
-      "tag": "0025_invitation_table_comment",
+      "tag": "0026_invitation_table_comment",
       "breakpoints": true
     }
   ]
