@@ -11,9 +11,10 @@
  * mix sources for one service.
  *
  * **Backward compatibility:** payloads without `releaseServiceId` (older control
- * planes) fall back to `nativeAppServices[].serviceId` when present, then the
- * compose service key. Older daemons ignore `releaseServiceId` and keep that
- * same fallback shape, so nothing breaks mid-rollout.
+ * planes) fall back to `nativeAppServices[].serviceId` when present, then
+ * matching `hostings[]` / `ingressServices[]` `serviceId`, then the compose
+ * service key. Older daemons ignore `releaseServiceId` and keep that same
+ * fallback shape, so nothing breaks mid-rollout.
  *
  * **Legacy directories:** a single-environment site may still live under
  * `sites/<composeServiceName>/`. The daemon's {@link effectiveReleaseServiceId}

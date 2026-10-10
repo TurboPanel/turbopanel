@@ -126,16 +126,25 @@ export async function resolveSourcedEnvironmentSiteReleases(
 
   const out: EnvironmentSiteRelease[] = []
   for (const row of matched) {
-    const principalId = wanted.get(row.id)
-    if (!principalId) continue
-    const username = usernameById.get(principalId)
-    if (!username) continue
-    out.push({
-      serviceId: resolveDeployReleaseServiceId(row.composeServiceName, row.id),
-      username,
-    })
+    const entry = siteReleaseForSourcedService(row, wanted, usernameById)
+    if (entry) out.push(entry)
   }
   return sortSiteReleases(out)
+}
+
+function siteReleaseForSourcedService(
+  row: { id: string; composeServiceName: string },
+  principalIdByServiceId: Map<string, string>,
+  usernameById: Map<string, string>
+): EnvironmentSiteRelease | null {
+  const principalId = principalIdByServiceId.get(row.id)
+  if (!principalId) return null
+  const username = usernameById.get(principalId)
+  if (!username) return null
+  return {
+    serviceId: resolveDeployReleaseServiceId(row.composeServiceName, row.id),
+    username,
+  }
 }
 
 function sortSiteReleases(entries: EnvironmentSiteRelease[]): EnvironmentSiteRelease[] {
