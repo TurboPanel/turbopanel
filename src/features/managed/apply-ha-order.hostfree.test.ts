@@ -49,3 +49,9 @@ test('managed.apply success fans out HA reconcile only for MySQL-family primarie
   assertEquals(body.includes('orchestratorManagesEngine'), true)
   assertEquals(body.includes('isPrimary'), true)
 })
+
+test('buildHaClustersForServer loads orchestrator clusters from workspace organization', async () => {
+  const source = await Deno.readTextFile(new URL('./ha-desired.ts', import.meta.url))
+  const body = sliceFunction(source, 'buildHaClustersForServer')
+  assertEquals(body.includes('listOrchestratorManagedClusterIds'), true)
+})

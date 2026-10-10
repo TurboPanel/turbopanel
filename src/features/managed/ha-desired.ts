@@ -7,11 +7,7 @@
 
 import { and, eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import {
-  decryptSecret,
-  ENVELOPE_PREFIX_SECRET,
-  resealSecretForDaemon,
-} from '../../lib/secrets/data-encryption.ts'
+import { decryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { getServerDaemonStateByServerId, isDaemonKeyActive } from '../servers/server-identity-db.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
@@ -25,7 +21,7 @@ import type {
 } from '../../contracts/commands/schemas.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import { ensureOrganizationManagedNetwork } from '../fabric/fabric-records.ts'
-import { container, managed, replica, principal, server, service } from '../../db/schema.ts'
+import { container, managed, replica, server, service } from '../../db/schema.ts'
 import { MANAGED_HA_HTTP_PORT, MANAGED_HA_RAFT_PORT } from './ha-ports.ts'
 import {
   orchestratorManagesEngine,
@@ -48,8 +44,15 @@ import {
   type ResolvedPrivateEndpoint,
 } from '../net/private-endpoint.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
-import { isManagedReplicationPrincipal } from './ingress-desired-pure.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
+import {
+  listOrchestratorManagedClusterIds,
+  mergeOrchestratorManagedClusterIds,
+  resolveReplicationCredentialForHa,
+  type HaSecretsParams,
+} from './ha-replication-credential.ts'
+
+export { orchestratorManagedClusterIdsFromRows } from './ha-replication-credential.ts'
 import { buildManagedOrgTlsMaterial, ensureActiveOrganizationCa } from './apply-prepare.ts'
 import {
   ensureManagedHaHierarchy,
@@ -110,37 +113,6 @@ async function loadHaMembersOnServer(db: Db, serverId: string): Promise<HaMember
   }))
 }
 
-async function resealReplicationPassword(
-  db: Db,
-  secretsConfig: SecretsConfig,
-  dataEncryptionSecrets: DerivedSecretsConfig,
-  managedId: string,
-  serverId: string
-): Promise<{ username: string; envelope: string } | null> {
-  const principals = await db
-    .select({
-      id: principal.id,
-      username: principal.appliedUsername,
-      password: principal.password,
-      metadata: principal.metadata,
-    })
-    .from(principal)
-    .where(eq(principal.managedId, managedId))
-  const repl = principals.find((row) => isManagedReplicationPrincipal(row.metadata))
-  if (!repl || typeof repl.password !== 'string') return null
-  if (!repl.password.startsWith(ENVELOPE_PREFIX_SECRET)) return null
-
-  const daemonState = await getServerDaemonStateByServerId(db, serverId)
-  if (!daemonState || !isDaemonKeyActive(daemonState.key)) return null
-  const resealed = await resealSecretForDaemon(
-    secretsConfig,
-    dataEncryptionSecrets,
-    { serverId, keyId: daemonState.key.id },
-    repl.password
-  )
-  return { username: repl.username, envelope: resealed }
-}
-
 async function loadLocalEngineContainerNames(
   db: Db,
   managedId: string,
@@ -174,12 +146,6 @@ export type HaMemberDial = {
   host: string
   port: number
   containerName?: string
-}
-
-type HaSecretsParams = {
-  serverId: string
-  secretsConfig: SecretsConfig
-  dataEncryptionSecrets: DerivedSecretsConfig
 }
 
 export function haClusterMemberRole(role: string): ManagedHaClusterMember['role'] {
@@ -379,13 +345,7 @@ async function buildHaClusterIfReady(
   // 500 `invalid connection`, which used to abort the whole reconcile and
   // leave every MySQL/MariaDB cluster behind it unregistered.
   if (!spec || !orchestratorManagesEngine(spec.engine)) return null
-  const repl = await resealReplicationPassword(
-    db,
-    params.secretsConfig,
-    params.dataEncryptionSecrets,
-    managedId,
-    params.serverId
-  )
+  const repl = await resolveReplicationCredentialForHa(db, params, managedId, spec)
   if (!repl) return null
   const haMembers = await buildHaClusterMembers(db, params.serverId, members, spec.defaultPort)
   if (haMembers.length < 2) return null
@@ -402,10 +362,13 @@ async function buildHaClusterIfReady(
 async function buildHaClustersForServer(
   db: Db,
   params: HaSecretsParams,
+  organizationId: string,
   localMembers: readonly ManagedMemberRow[]
 ): Promise<ManagedHaCluster[]> {
-  const managedIds = [...new Set(localMembers.map((row) => row.managedId))].toSorted((a, b) =>
-    a.localeCompare(b)
+  const orchestratorIds = await listOrchestratorManagedClusterIds(db, organizationId)
+  const managedIds = mergeOrchestratorManagedClusterIds(
+    orchestratorIds,
+    localMembers.map((row) => row.managedId)
   )
   const clusters: ManagedHaCluster[] = []
   await forEachSequential(managedIds, async (managedId) => {
@@ -481,7 +444,7 @@ export async function buildManagedHaReconcilePayload(
     }
   }
 
-  const clusters = await buildHaClustersForServer(db, params, localMembers)
+  const clusters = await buildHaClustersForServer(db, params, organizationId, localMembers)
 
   const daemonState = await getServerDaemonStateByServerId(db, params.serverId)
   if (!daemonState || !isDaemonKeyActive(daemonState.key)) return null

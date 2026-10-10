@@ -25,6 +25,13 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
+function sliceFunction(source: string, name: string): string {
+  const start = source.indexOf(`async function ${name}`)
+  if (start < 0) return ''
+  const next = source.indexOf('\nasync function ', start + 1)
+  return next > start ? source.slice(start, next) : source.slice(start)
+}
+
 const ORG_A = '11111111-1111-4111-8111-111111111111'
 const ORG_B = '22222222-2222-4222-8222-222222222222'
 const SERVER_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -114,6 +121,13 @@ function rotationTargetsDb(rows: QueryRows): Db {
     }),
   } as unknown as Db
 }
+
+test('CA rotation fanout does not enqueue managed.ha.reconcile before primary apply succeeds', async () => {
+  const source = await Deno.readTextFile(new URL('./changeover-fanout.ts', import.meta.url))
+  const body = sliceFunction(source, 'fanOutOneManagedCluster')
+  assertEquals(body.includes('fanOutManagedHaReconcile'), false)
+  assertEquals(body.includes('managed.ha.reconcile'), false)
+})
 
 test('selectManagedBatchForRotation pages by id and reports completion', () => {
   const ids = ['a', 'b', 'c', 'd']

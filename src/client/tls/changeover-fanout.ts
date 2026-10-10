@@ -1,6 +1,8 @@
 /**
  * Organization CA rotation fan-out: enumerate org-scoped managed targets and
  * enqueue `managed.apply` / `managed.ingress.reconcile` plus binding rematerialize.
+ * `managed.ha.reconcile` is left to the command consumer after each primary
+ * `managed.apply` succeeds (same as operator-driven apply).
  *
  * Does **not** enqueue `environment.deploy` — consumer compose pick-up of the
  * new `<PREFIX>_CA_CERT` is surfaced as `needsRedeploy`.
