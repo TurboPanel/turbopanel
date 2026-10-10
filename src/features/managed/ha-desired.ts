@@ -674,9 +674,8 @@ export async function fanOutManagedHaReconcile(
     ...serverIds,
     ...memberIds.map((row) => row.serverId),
   ])
-  for (const serverId of await listOrganizationOrchestratorServerIds(db, organizationIds)) {
-    serverIds.add(serverId)
-  }
+  const orchestratorHosts = await listOrganizationOrchestratorServerIds(db, organizationIds)
+  for (const serverId of orchestratorHosts) serverIds.add(serverId)
   await enqueueHaReconcileForServers(
     db,
     commandQueue,
