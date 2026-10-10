@@ -1,8 +1,8 @@
 /**
- * Metrics v7 slot layout: the static row table the Analytics Engine writer
+ * Metrics v8 slot layout: the static row table the Analytics Engine writer
  * packs and the read path resolves against. It is the code twin of the
- * canonical layout spec (`../../V7-LAYOUT.md`, `../../testing/v7-layout.fixture.json`);
- * `v7-layout.test.ts` pins every row below to that fixture.
+ * canonical layout spec (`../../V8-LAYOUT.md`, `../../testing/v8-layout.fixture.json`);
+ * `v8-layout.test.ts` pins every row below to that fixture.
  *
  * Every slot is named by its catalogue id (`busy`, `oomKills`, `nic1.rx`, ...).
  * This module maps each id to the `MetricsSample` field behind it. It is pure
@@ -26,7 +26,7 @@ import type {
 } from '../../../../contracts/metrics-contract.ts'
 import type { MetricEntityScope } from '../../metric-descriptors.ts'
 
-export const V7_HOST_FAMILIES = [
+export const V8_HOST_FAMILIES = [
   'host.system',
   'host.io',
   'host.network',
@@ -34,27 +34,27 @@ export const V7_HOST_FAMILIES = [
   'managed.database',
 ] as const
 
-export type V7HostFamily = (typeof V7_HOST_FAMILIES)[number]
+export type V8HostFamily = (typeof V8_HOST_FAMILIES)[number]
 
-export type V7EntityFamily = 'block' | 'network' | 'filesystem' | 'gpu' | 'hardware.physical'
+export type V8EntityFamily = 'block' | 'network' | 'filesystem' | 'gpu' | 'hardware.physical'
 
 /** Doubles available to a row's metric values (double1..double19). */
-export const V7_DOUBLE_SLOTS = 19
+export const V8_DOUBLE_SLOTS = 19
 
 /** Content text blobs start after the six envelope blobs (blob7). */
-export const V7_FIRST_CONTENT_BLOB_INDEX = 6
+export const V8_FIRST_CONTENT_BLOB_INDEX = 6
 
 /** Content text blobs a row can carry (blob7..blob20). */
-export const V7_CONTENT_BLOB_CAPACITY = 14
+export const V8_CONTENT_BLOB_CAPACITY = 14
 
 /** The one source id the single-source families (`managed.ingress`, `managed.database_proxy`) report as. */
-export const V7_SOURCE_IDS = {
+export const V8_SOURCE_IDS = {
   'managed.ingress': 'caddy',
   'managed.database_proxy': 'proxysql',
 } as const
 
 /** What a per-sample row builder reads besides the sample itself. */
-export type V7Context = {
+export type V8Context = {
   sample: MetricsSample
   /** Embedded NIC 1 and NIC 2 (`SlotMapping.normalNicSlots[0..1]`). */
   nics: readonly [NetworkDeviceSample | undefined, NetworkDeviceSample | undefined]
@@ -64,9 +64,9 @@ export type V7Context = {
   proxy: DatabaseProxySample | undefined
 }
 
-export type V7FieldRef = { scope: MetricEntityScope; field: string }
+export type V8FieldRef = { scope: MetricEntityScope; field: string }
 
-type DoubleDef = { ref?: V7FieldRef; read: (ctx: V7Context) => number | null }
+type DoubleDef = { ref?: V8FieldRef; read: (ctx: V8Context) => number | null }
 
 // ---------------------------------------------------------------------------
 // Readers
@@ -85,7 +85,7 @@ function hostField(scope: MetricEntityScope, field: string): DoubleDef {
   return { ref: { scope, field }, read: (c) => num(c.sample.host[group], field) }
 }
 
-function extended(section: 'host' | 'docker' | 'ingress', field: string): DoubleDef {
+function extended(section: 'host' | 'docker' | 'ingress' | 'sizes', field: string): DoubleDef {
   return {
     ref: { scope: `extended.${section}`, field },
     read: (c) => num(c.sample.extended?.[section as keyof MetricsExtended], field),
@@ -102,7 +102,7 @@ function diagnostics(half: 'cpu' | 'memory', field: string): DoubleDef {
 function sampleScope(
   scope: 'router' | 'storage' | 'dockerUsage',
   field: string,
-  read: (c: V7Context) => unknown = (c) => c.sample[scope]
+  read: (c: V8Context) => unknown = (c) => c.sample[scope]
 ): DoubleDef {
   return { ref: { scope, field }, read: (c) => num(read(c), field) }
 }
@@ -147,7 +147,7 @@ function embeddedNic(slot: 0 | 1, key: 'rx' | 'tx' | 'problems'): DoubleDef {
 }
 
 /** Docker's reclaimable bytes: the daemon's own sum, else the three df groups added up. */
-function reclaimableTotal(c: V7Context): number | null {
+function reclaimableTotal(c: V8Context): number | null {
   const own = num(c.sample.extended?.docker, 'reclaimableBytes')
   if (own !== null) return own
   const parts = [
@@ -162,6 +162,71 @@ function foldedFilesystemField(field: 'availableBytes' | 'freeInodes'): DoubleDe
   return { read: (c) => c.foldedFilesystem?.[field] ?? null }
 }
 
+/** The size the lone extra filesystem reported this sample (`extended.filesystemSizes`, by id). */
+function foldedFilesystemSize(field: 'totalBytes' | 'totalInodes'): DoubleDef {
+  return {
+    read: (c) =>
+      c.foldedFilesystem === undefined
+        ? null
+        : filesystemSizeOf(c.sample, c.foldedFilesystem.filesystemId, field),
+  }
+}
+
+function filesystemSizeOf(
+  sample: MetricsSample,
+  filesystemId: string,
+  field: 'totalBytes' | 'totalInodes'
+): number | null {
+  return num(
+    sample.extended?.filesystemSizes?.find((entry) => entry.filesystemId === filesystemId),
+    field
+  )
+}
+
+/** A size as plain decimal text (`''` when unknown), for a device row's text slot. */
+function sizeText(value: number | null): string {
+  return value === null ? '' : String(Math.round(value))
+}
+
+/** `<bytes>/<inodes>` for one filesystem (either side empty when unknown; `''` when both are). */
+function filesystemSizeText(sample: MetricsSample, filesystemId: string): string {
+  const bytes = filesystemSizeOf(sample, filesystemId, 'totalBytes')
+  const inodes = filesystemSizeOf(sample, filesystemId, 'totalInodes')
+  return bytes === null && inodes === null ? '' : `${sizeText(bytes)}/${sizeText(inodes)}`
+}
+
+function linkSpeedOf(sample: MetricsSample, deviceId: string): number | null {
+  return num(
+    sample.extended?.networkSizes?.find((entry) => entry.deviceId === deviceId),
+    'linkSpeedMbps'
+  )
+}
+
+/**
+ * The devices a host row's numbers belong to, written to that row's blob6 so a
+ * reader finds them by device id rather than by a stored slot map:
+ * `nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>` on `host.network` (empty parts
+ * left out), `''` on every other host row.
+ */
+export function v8HostRowEntityIds(family: V8HostFamily, ctx: V8Context): string {
+  if (family !== 'host.network') return ''
+  const parts: string[] = []
+  ctx.nics.forEach((nic, slot) => {
+    if (!nic) return
+    const speed = sizeText(linkSpeedOf(ctx.sample, nic.deviceId))
+    parts.push(`nic${slot + 1}=${nic.deviceId}@${speed}`)
+  })
+  if (ctx.foldedFilesystem) parts.push(`fs=${ctx.foldedFilesystem.filesystemId}`)
+  return parts.join(';')
+}
+
+function gpuMemoryTotalOf(sample: MetricsSample, gpuId: string): number | null {
+  return num(
+    sample.extended?.gpuSizes?.find((entry) => entry.gpuId === gpuId),
+    'memoryTotalBytes'
+  )
+}
+
 const DOUBLE_DEFS: Readonly<Record<string, DoubleDef>> = {
   // host.system
   busy: hostField('host.cpu', 'busyPercent'),
@@ -170,19 +235,21 @@ const DOUBLE_DEFS: Readonly<Record<string, DoubleDef>> = {
   iowait: hostField('host.cpu', 'iowaitPercent'),
   steal: hostField('host.cpu', 'stealPercent'),
   softirq: hostField('host.cpu', 'softirqPercent'),
+  irqPsiFull: extended('host', 'irqPressureFullPercent'),
   cpuPsi: hostField('host.cpu', 'pressureSomePercent'),
-  saturated: hostField('host.cpu', 'saturatedCoreCount'),
   used: hostField('host.memory', 'usedBytes'),
   cachedFiles: hostField('host.memory', 'cachedFilesBytes'),
   swapUsed: hostField('host.memory', 'swapUsedBytes'),
   memPsiSome: hostField('host.memory', 'pressureSomePercent'),
   memPsiFull: hostField('host.memory', 'pressureFullPercent'),
-  majorFaults: hostField('host.memory', 'majorPageFaultsPerSecond'),
   oomKills: extended('host', 'oomKills'),
   fileHandles: hostField('host.kernel', 'fileHandlesUsedPercent'),
   conntrack: hostField('host.kernel', 'conntrackUsedPercent'),
   pidLimit: extended('host', 'pidLimitUsedPercent'),
-  dSlabU: diagnostics('memory', 'slabUnreclaimableBytes'),
+  memTotal: extended('sizes', 'memoryTotalBytes'),
+  swapTotal: extended('sizes', 'swapTotalBytes'),
+  commitLimit: extended('sizes', 'commitLimitBytes'),
+  cores: extended('sizes', 'logicalCores'),
   // host.io
   ioPsiSome: hostField('host.storage', 'ioPressureSomePercent'),
   ioPsiFull: hostField('host.storage', 'ioPressureFullPercent'),
@@ -211,6 +278,10 @@ const DOUBLE_DEFS: Readonly<Record<string, DoubleDef>> = {
   rootInodes: hostField('host.storage', 'rootFilesystemFreeInodes'),
   fs_availableBytes: foldedFilesystemField('availableBytes'),
   fs_freeInodes: foldedFilesystemField('freeInodes'),
+  fs_totalBytes: foldedFilesystemSize('totalBytes'),
+  fs_totalInodes: foldedFilesystemSize('totalInodes'),
+  rootTotal: extended('sizes', 'rootFilesystemTotalBytes'),
+  rootInodesTotal: extended('sizes', 'rootFilesystemTotalInodes'),
   tcpRetrans: hostField('host.network', 'tcpRetransmitPercent'),
   'nic1.rx': embeddedNic(0, 'rx'),
   'nic1.tx': embeddedNic(0, 'tx'),
@@ -221,20 +292,14 @@ const DOUBLE_DEFS: Readonly<Record<string, DoubleDef>> = {
   systemdFailed: extended('host', 'systemdUnitsFailed'),
   mdDegraded: extended('host', 'mdArraysDegraded'),
   dCommit: diagnostics('memory', 'committedAsBytes'),
-  tUp: sampleScope('router', 'backendsUp'),
   tTotal: sampleScope('router', 'backendsTotal'),
   t5xx: sampleScope('router', 'backendErrors5xx'),
   tLatency: sampleScope('router', 'backendLatencyMsAvg'),
-  tRequests: sampleScope('router', 'backendRequests'),
   // host.web
   hostingUsed: sampleScope('storage', 'hostingUsedBytes'),
   backupUsed: sampleScope('storage', 'backupUsedBytes'),
-  dockerUsed: sampleScope('storage', 'dockerUsedBytes'),
-  logsUsed: sampleScope('storage', 'logsUsedBytes'),
-  hostingFree: sampleScope('storage', 'hostingFreeBytes'),
   backupFree: sampleScope('storage', 'backupFreeBytes'),
   cReq: ingressField('requests'),
-  c2xx: ingressField('responses2xx'),
   c4xx: ingressField('responses4xx'),
   c5xx: ingressField('responses5xx'),
   cErr: ingressField('requestErrors'),
@@ -310,32 +375,38 @@ function ids(list: string): string[] {
   return list.split(' ')
 }
 
-export const V7_HOST_ROW_SPECS: Readonly<Record<V7HostFamily, HostRowSpec>> = {
+export const V8_HOST_ROW_SPECS: Readonly<Record<V8HostFamily, HostRowSpec>> = {
+  // CPU and its pressure (cpu, then irq), then memory and its pressure, with the sizes they are measured against.
   'host.system': {
     doubles: ids(
-      'busy user system iowait steal softirq cpuPsi saturated used cachedFiles swapUsed memPsiSome memPsiFull majorFaults oomKills fileHandles conntrack pidLimit dSlabU'
+      'busy user system iowait steal softirq cores cpuPsi irqPsiFull memPsiSome memPsiFull used cachedFiles swapUsed memTotal swapTotal oomKills dCommit commitLimit'
     ),
-    blobs: ids('loadavg topCpu cpuModel topMem lastOom'),
+    blobs: ids(
+      'loadavg topCpu cpuModel topMem lastOom kernel os bootId virt cloudProvider agentVersion timeSync pendingUpdates rebootRequired'
+    ),
   },
+  // Disk IO and disk space (root and the lone extra disk, with their sizes), storage usage, RAID.
   'host.io': {
     doubles: ids(
-      'ioPsiSome ioPsiFull diskRead diskWrite diskLatency rootQueue rootOps ctrRunning ctrUnhealthy ctrRestarting ctrOom ctrDie ctrCpu ctrMem layers ctrBytes volumes buildCache reclTotal'
+      'ioPsiSome ioPsiFull diskRead diskWrite diskLatency rootQueue rootOps rootAvail rootTotal rootInodes rootInodesTotal fs_availableBytes fs_totalBytes fs_freeInodes fs_totalInodes hostingUsed backupUsed backupFree mdDegraded'
+    ),
+    blobs: ids('fsReadOnly raidState'),
+  },
+  // Network, then Docker. blob6 names NIC 1, NIC 2 and the lone extra disk (see `v8HostRowEntityIds`).
+  'host.network': {
+    doubles: ids(
+      'tcpRetrans nic1.rx nic1.tx nic1.problems nic2.rx nic2.tx nic2.problems ctrRunning ctrUnhealthy ctrRestarting ctrOom ctrDie ctrCpu ctrMem layers ctrBytes volumes buildCache reclTotal'
     ),
     blobs: ids('unhealthyNames dockerVersion'),
   },
-  'host.network': {
-    doubles: ids(
-      'rootAvail rootInodes fs_availableBytes fs_freeInodes tcpRetrans nic1.rx nic1.tx nic1.problems nic2.rx nic2.tx nic2.problems systemdFailed mdDegraded dCommit tUp tTotal t5xx tLatency tRequests'
-    ),
-    blobs: ids(
-      'failedUnits raidState rebootRequired kernel os bootId virt cloudProvider agentVersion timeSync pendingUpdates fsReadOnly phpVersions webEngines'
-    ),
-  },
+  // Web traffic (hosting Caddy, shared router) and the host limits a busy web host runs out of.
   'host.web': {
     doubles: ids(
-      'hostingUsed backupUsed dockerUsed logsUsed hostingFree backupFree cReq c2xx c4xx c5xx cErr cReqB cRespB cDur cB100 cB500 cB1s cInFlight cTls'
+      'cReq c4xx c5xx cErr cReqB cRespB cDur cB100 cB500 cB1s cInFlight cTls tTotal t5xx tLatency conntrack fileHandles pidLimit systemdFailed'
     ),
-    blobs: ids('fpmBusiest topSites caddyVersion certSoonest traefikVersion unhealthyBackends'),
+    blobs: ids(
+      'fpmBusiest topSites caddyVersion certSoonest traefikVersion unhealthyBackends phpVersions webEngines failedUnits'
+    ),
   },
   'managed.database': {
     doubles: [
@@ -350,21 +421,21 @@ export const V7_HOST_ROW_SPECS: Readonly<Record<V7HostFamily, HostRowSpec>> = {
 
 function defOf(id: string): DoubleDef {
   const def = DOUBLE_DEFS[id]
-  if (!def) throw new TypeError(`v7 layout names an unknown slot id: ${id}`)
+  if (!def) throw new TypeError(`v8 layout names an unknown slot id: ${id}`)
   return def
 }
 
-function textOf(c: V7Context, id: string): string {
+function textOf(c: V8Context, id: string): string {
   const key = TEXT_KEYS[id]
-  if (!key) throw new TypeError(`v7 layout names an unknown text id: ${id}`)
+  if (!key) throw new TypeError(`v8 layout names an unknown text id: ${id}`)
   return c.sample.extended?.text?.[key] ?? ''
 }
 
-export type V7RowValues = { doubles: (number | null)[]; blobs: string[] }
+export type V8RowValues = { doubles: (number | null)[]; blobs: string[] }
 
 /** Values for one host row: 19 nullable doubles and the content text blobs. */
-export function v7HostRowValues(family: V7HostFamily, ctx: V7Context): V7RowValues {
-  const spec = V7_HOST_ROW_SPECS[family]
+export function v8HostRowValues(family: V8HostFamily, ctx: V8Context): V8RowValues {
+  const spec = V8_HOST_ROW_SPECS[family]
   return {
     doubles: spec.doubles.map((id) => (id === null ? null : defOf(id).read(ctx))),
     blobs: spec.blobs.map((id) => textOf(ctx, id)),
@@ -385,12 +456,12 @@ export function hasManagedDatabase(sample: MetricsSample): boolean {
 // Read-side resolution: contract field -> (row family, double index)
 // ---------------------------------------------------------------------------
 
-export type V7Slot = { family: V7HostFamily; doubleIndex: number }
+export type V8Slot = { family: V8HostFamily; doubleIndex: number }
 
-const SLOT_BY_REF: ReadonlyMap<string, V7Slot> = (() => {
-  const map = new Map<string, V7Slot>()
-  for (const family of V7_HOST_FAMILIES) {
-    V7_HOST_ROW_SPECS[family].doubles.forEach((id, doubleIndex) => {
+const SLOT_BY_REF: ReadonlyMap<string, V8Slot> = (() => {
+  const map = new Map<string, V8Slot>()
+  for (const family of V8_HOST_FAMILIES) {
+    V8_HOST_ROW_SPECS[family].doubles.forEach((id, doubleIndex) => {
       const ref = id === null ? undefined : defOf(id).ref
       if (ref) map.set(`${ref.scope}.${ref.field}`, { family, doubleIndex })
     })
@@ -398,8 +469,8 @@ const SLOT_BY_REF: ReadonlyMap<string, V7Slot> = (() => {
   return map
 })()
 
-/** Where a contract field lives on a v7 host row, or `undefined` when v7 does not store it. */
-export function v7HostSlotFor(scope: MetricEntityScope, field: string): V7Slot | undefined {
+/** Where a contract field lives on a v8 host row, or `undefined` when v8 does not store it. */
+export function v8HostSlotFor(scope: MetricEntityScope, field: string): V8Slot | undefined {
   return SLOT_BY_REF.get(`${scope}.${field}`)
 }
 
@@ -407,27 +478,27 @@ export function v7HostSlotFor(scope: MetricEntityScope, field: string): V7Slot |
  * A single-source family's field names laid out by physical double index on the
  * host row that carries it (`null` elsewhere), so `indexOf(field)` is the slot.
  */
-function slotArrayFor(family: V7HostFamily, scope: MetricEntityScope): readonly (string | null)[] {
-  return V7_HOST_ROW_SPECS[family].doubles.map((id) => {
+function slotArrayFor(family: V8HostFamily, scope: MetricEntityScope): readonly (string | null)[] {
+  return V8_HOST_ROW_SPECS[family].doubles.map((id) => {
     const ref = id === null ? undefined : defOf(id).ref
     return ref?.scope === scope ? ref.field : null
   })
 }
 
-export const V7_SINGLE_SOURCE_FAMILIES = {
+export const V8_SINGLE_SOURCE_FAMILIES = {
   'managed.ingress': { hostFamily: 'host.web', scope: 'ingress' },
   'managed.database_proxy': { hostFamily: 'managed.database', scope: 'databaseProxy' },
-} as const satisfies Record<string, { hostFamily: V7HostFamily; scope: MetricEntityScope }>
+} as const satisfies Record<string, { hostFamily: V8HostFamily; scope: MetricEntityScope }>
 
-export const V7_SINGLE_SOURCE_FIELD_ORDER = {
+export const V8_SINGLE_SOURCE_FIELD_ORDER = {
   'managed.ingress': slotArrayFor('host.web', 'ingress'),
   'managed.database_proxy': slotArrayFor('managed.database', 'databaseProxy'),
 } as const
 
 /** Physical double index of NIC `slot`'s receive or transmit rate on `host.network`. */
-export function v7EmbeddedNicDoubleIndex(slot: 0 | 1, key: 'rx' | 'tx'): number {
+export function v8EmbeddedNicDoubleIndex(slot: 0 | 1, key: 'rx' | 'tx'): number {
   const id = `nic${slot + 1}.${key}`
-  return V7_HOST_ROW_SPECS['host.network'].doubles.indexOf(id)
+  return V8_HOST_ROW_SPECS['host.network'].doubles.indexOf(id)
 }
 
 // ---------------------------------------------------------------------------
@@ -436,13 +507,19 @@ export function v7EmbeddedNicDoubleIndex(slot: 0 | 1, key: 'rx' | 'tx'): number 
 
 type EntityRowSpec<E> = {
   /** Per-entity double slots in physical order; `field` is the contract field name (null = no descriptor yet). */
-  doubles: readonly { field: string | null; read: (entity: E) => number | null }[]
+  doubles: readonly {
+    field: string | null
+    read: (entity: E, sample: MetricsSample) => number | null
+  }[]
   /** Per-entity text blobs, appended entity by entity. */
   blobs: readonly { read: (entity: E, sample: MetricsSample) => string }[]
   perPage: number
 }
 
-function entityNum<E>(field: string): { field: string; read: (entity: E) => number | null } {
+function entityNum<E>(field: string): {
+  field: string
+  read: (entity: E, sample: MetricsSample) => number | null
+} {
   return { field, read: (entity) => num(entity, field) }
 }
 
@@ -487,14 +564,15 @@ const NETWORK_SPEC: EntityRowSpec<NetworkDeviceSample> = {
     entityNum('receiveDropsPerSecond'),
     entityNum('transmitDropsPerSecond'),
   ],
-  // Link state has no wire field yet; the slot is reserved and written empty.
-  blobs: [{ read: () => '' }],
+  // The NIC's negotiated link speed (Mb/s) rides as text on its own row.
+  blobs: [{ read: (nic, sample) => sizeText(linkSpeedOf(sample, nic.deviceId)) }],
   perPage: 3,
 }
 
 const FILESYSTEM_SPEC: EntityRowSpec<FilesystemSample> = {
   doubles: [entityNum('availableBytes'), entityNum('freeInodes')],
-  blobs: [],
+  // The filesystem's size rides as text on its own row: `<bytes>/<inodes>`.
+  blobs: [{ read: (fs, sample) => filesystemSizeText(sample, fs.filesystemId) }],
   perPage: 9,
 }
 
@@ -507,18 +585,23 @@ const GPU_SPEC: EntityRowSpec<GpuSample> = {
     entityNum('pcieTransmitBytesPerSecond'),
     entityNum('throttlePercent'),
   ],
-  blobs: [gpuText('driver'), gpuText('model')],
+  // The GPU's memory size rides as text on its own row.
+  blobs: [
+    gpuText('driver'),
+    gpuText('model'),
+    { read: (g: GpuSample, s: MetricsSample) => sizeText(gpuMemoryTotalOf(s, g.gpuId)) },
+  ],
   perPage: 3,
 }
 
 const SIGNAL_SPEC: EntityRowSpec<HardwareSignalSample> = {
   doubles: [{ field: 'value', read: (signal) => signal.value }],
   blobs: [],
-  perPage: V7_DOUBLE_SLOTS,
+  perPage: V8_DOUBLE_SLOTS,
 }
 
 /** Per-entity field order (spare = `null`) the read path resolves slots against. */
-export const V7_ENTITY_FIELD_ORDER: Readonly<Record<V7EntityFamily, readonly (string | null)[]>> = {
+export const V8_ENTITY_FIELD_ORDER: Readonly<Record<V8EntityFamily, readonly (string | null)[]>> = {
   block: BLOCK_SPEC.doubles.map((d) => d.field),
   network: NETWORK_SPEC.doubles.map((d) => d.field),
   filesystem: FILESYSTEM_SPEC.doubles.map((d) => d.field),
@@ -526,7 +609,7 @@ export const V7_ENTITY_FIELD_ORDER: Readonly<Record<V7EntityFamily, readonly (st
   'hardware.physical': SIGNAL_SPEC.doubles.map((d) => d.field),
 }
 
-export const V7_ENTITIES_PER_PAGE: Readonly<Record<V7EntityFamily, number>> = {
+export const V8_ENTITIES_PER_PAGE: Readonly<Record<V8EntityFamily, number>> = {
   block: BLOCK_SPEC.perPage,
   network: NETWORK_SPEC.perPage,
   filesystem: FILESYSTEM_SPEC.perPage,
@@ -534,21 +617,21 @@ export const V7_ENTITIES_PER_PAGE: Readonly<Record<V7EntityFamily, number>> = {
   'hardware.physical': SIGNAL_SPEC.perPage,
 }
 
-export type V7EntityPage = V7RowValues & { page: number; ids: string }
+export type V8EntityPage = V8RowValues & { page: number; ids: string }
 
 function packEntityPages<E>(
   entities: readonly E[],
   spec: EntityRowSpec<E>,
   idOf: (entity: E) => string,
   sample: MetricsSample
-): V7EntityPage[] {
-  const pages: V7EntityPage[] = []
+): V8EntityPage[] {
+  const pages: V8EntityPage[] = []
   for (let start = 0; start < entities.length; start += spec.perPage) {
     const chunk = entities.slice(start, start + spec.perPage)
-    const doubles = new Array<number | null>(V7_DOUBLE_SLOTS).fill(null)
+    const doubles = new Array<number | null>(V8_DOUBLE_SLOTS).fill(null)
     chunk.forEach((entity, entityIndex) => {
       spec.doubles.forEach((slot, fieldIndex) => {
-        doubles[entityIndex * spec.doubles.length + fieldIndex] = slot.read(entity)
+        doubles[entityIndex * spec.doubles.length + fieldIndex] = slot.read(entity, sample)
       })
     })
     const blobs = chunk.flatMap((entity) => spec.blobs.map((blob) => blob.read(entity, sample)))
@@ -558,7 +641,7 @@ function packEntityPages<E>(
 }
 
 /** Pack already-ordered, already-plan-truncated entities of one family into pages. */
-export const v7EntityPages = {
+export const v8EntityPages = {
   block: (e: readonly BlockDeviceSample[], s: MetricsSample) =>
     packEntityPages(e, BLOCK_SPEC, (d) => d.deviceId, s),
   network: (e: readonly NetworkDeviceSample[], s: MetricsSample) =>

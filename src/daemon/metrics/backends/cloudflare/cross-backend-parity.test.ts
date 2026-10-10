@@ -373,11 +373,11 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
     // storage (AE double slot vs. a joined DuckDB table). ---
     const routerQuery = {
       serverId: SERVER_ID,
-      // Both aggregations: two `weighted-average` gauges and one `delta-sum`
-      // counter, since AE resolves those through different SQL expressions
-      // (`weightedAvgExpressionForColumn` vs `deltaSumExpressionForColumn`)
-      // than DuckDB's plain column aggregation.
-      metrics: ['router.backendsUp', 'router.backendLatencyMsAvg', 'router.backendRequests'],
+      // A gauge, a weighted average and a delta-sum, each resolved through a
+      // different SQL expression on AE than DuckDB's plain column aggregation.
+      // (Backends up and the request count are DuckDB-only since the owner's
+      // 2026-10-07 layout: both are derivable from what the hosted row keeps.)
+      metrics: ['router.backendsTotal', 'router.backendLatencyMsAvg', 'router.backendErrors5xx'],
       from,
       to,
       resolutionSeconds: INTERVAL_SECONDS,
@@ -390,9 +390,9 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
       field: string
     ) => result.points.find((point) => point.at === at)?.values[field] ?? null
     for (const field of [
-      'router.backendsUp',
+      'router.backendsTotal',
       'router.backendLatencyMsAvg',
-      'router.backendRequests',
+      'router.backendErrors5xx',
     ]) {
       for (const sample of [tick1Sample, tick2Sample]) {
         assertEquals(
@@ -404,16 +404,14 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
     }
     // Pin the actual value too, not just agreement — two backends resolving
     // the same wrong slot would otherwise pass.
-    assertEquals(routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendsUp'), 3)
-    assertEquals(routerValues(aeRouter, tick2Sample.metadata.sampledAt, 'router.backendsUp'), 1)
+    assertEquals(routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendsTotal'), 4)
     assertEquals(
       routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendLatencyMsAvg'),
       12
     )
-    // delta-sum: one sample of 100 requests per bucket, summed rather than averaged.
     assertEquals(
-      routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendRequests'),
-      100
+      routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendErrors5xx'),
+      0
     )
 
     // --- managed.storage / managed.docker: the other two host-wide

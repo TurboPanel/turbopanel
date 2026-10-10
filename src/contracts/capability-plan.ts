@@ -79,7 +79,7 @@ export type MetricsCapabilityPlan = {
   databaseProxyMetricsEnabled: boolean
   /**
    * Whether `dockerUsage` — Docker's own `GET /system/df` breakdown — may be
-   * reported. Docker metrics are on every plan since v7: tier entitlements
+   * reported. Docker metrics are on every plan since v8: tier entitlements
    * always grant it; only an explicit org/server override can turn it off.
    * `storage` has no flag of its own: host-wide storage accounting is granted
    * at every tier, the same way `diagnostics` needed no flag once v6 merged it.
@@ -244,7 +244,7 @@ export const PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN: MetricsCapabilityPlan = {
   physicalHardwareSignalSlots: 19,
   managedIngressEnabled: true,
   databaseProxyMetricsEnabled: true,
-  // On for every plan, tiered or not (v7).
+  // On for every plan, tiered or not (v8).
   managedDockerEnabled: true,
   hardwareHealthEventsEnabled: true,
 }

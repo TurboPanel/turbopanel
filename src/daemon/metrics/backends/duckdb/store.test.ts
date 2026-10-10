@@ -1058,10 +1058,10 @@ it('v5 queryMetricEvents: truncates at MAX_STATUS_EVENTS and reports truncated: 
       kind: 'oom_kill',
       severity: 'info',
     }))
-    // `buildMetricsSample` caps events per sample at 128 — split across
+    // `buildMetricsSample` caps events per sample at 16 — split across
     // several `writeSample` calls (each call still fans its own events out
     // inside a single transaction; the cap is per-sample, not per-store).
-    const CHUNK = 100
+    const CHUNK = 16
     for (let offset = 0; offset < allEvents.length; offset += CHUNK) {
       const chunk = allEvents.slice(offset, offset + CHUNK)
       await store.writeSample(
@@ -1313,8 +1313,8 @@ const DOCKER_V6: DockerUsageSample = {
   buildCacheReclaimableBytes: null,
 }
 
-it('v7 extended numeric fields land in the ext_* columns; a v6 sample writes real NULLs there', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-v7-' })
+it('v8 extended numeric fields land in the ext_* columns; a v6 sample writes real NULLs there', async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-v8-' })
   try {
     const store = makeStore(metricsDir)
     await store.writeSample(

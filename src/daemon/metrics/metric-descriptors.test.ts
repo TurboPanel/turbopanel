@@ -4,6 +4,7 @@ import type {
   ExtendedDockerMetrics,
   ExtendedHostMetrics,
   ExtendedIngressMetrics,
+  ExtendedSizes,
   DatabaseProxySample,
   DiagnosticsCpuSample,
   DiagnosticsMemorySample,
@@ -249,6 +250,7 @@ const ENTITY_FIELD_SPECS: EntityFieldSpec[] = [
     entityScope: 'extended.host',
     fields: [
       'pidLimitUsedPercent',
+      'irqPressureFullPercent',
       'oomKills',
       'rootDiskQueueDepth',
       'rootDiskOpsPerSecond',
@@ -273,6 +275,17 @@ const ENTITY_FIELD_SPECS: EntityFieldSpec[] = [
   {
     entityScope: 'extended.ingress',
     fields: ['tlsCertSoonestExpiryDays'] satisfies (keyof ExtendedIngressMetrics)[],
+  },
+  {
+    entityScope: 'extended.sizes',
+    fields: [
+      'memoryTotalBytes',
+      'swapTotalBytes',
+      'commitLimitBytes',
+      'logicalCores',
+      'rootFilesystemTotalBytes',
+      'rootFilesystemTotalInodes',
+    ] satisfies (keyof ExtendedSizes)[],
   },
   {
     // Read-time figure, not a wire field: a drive's read plus write ops/s.
@@ -494,7 +507,7 @@ test('sanitizeMetricValue bounds the hardware-signal value descriptor that now c
   assertEquals(sanitizeMetricValue('hardwareSignal.value', -50), null)
 })
 
-test('v7 numbers are described by what they mean over a bucket', () => {
+test('v8 numbers are described by what they mean over a bucket', () => {
   const byName = (name: string) => HOST_METRICS_METRIC_DESCRIPTORS[name]!
   // Events in the interval add up; health counts keep the worst reading.
   assertEquals(byName('extended.host.oomKills').aggregation, 'delta-sum')
@@ -503,7 +516,7 @@ test('v7 numbers are described by what they mean over a bucket', () => {
   assertEquals(byName('extended.docker.containersUnhealthy').aggregation, 'max')
   assertEquals(byName('extended.ingress.tlsCertSoonestExpiryDays').unit, 'days')
   assertEquals(byName('extended.host.pidLimitUsedPercent').max, 100)
-  // A v7 number a host does not report is a gap, never a zero.
+  // A v8 number a host does not report is a gap, never a zero.
   assertEquals(
     byName('extended.host.rootDiskQueueDepth').availabilityBehavior,
     'missing-when-unsupported'

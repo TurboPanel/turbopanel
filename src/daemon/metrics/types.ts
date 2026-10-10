@@ -81,7 +81,7 @@ export type AuthenticatedMetricsSample = MetricsSample & {
  * one of each, never many).
  *
  * `managed.ingress` / `managed.database_proxy` are included for entity-scoped
- * querying even though the Analytics Engine v7 layout no longer writes rows of
+ * querying even though the Analytics Engine v8 layout no longer writes rows of
  * their own: Caddy totals ride `host.web` and ProxySQL rides
  * `managed.database`, one source each (ids `caddy` and `proxysql`). DuckDB
  * still stores one row per source, keyed by `sourceId`; see the
@@ -193,8 +193,8 @@ export type HostSummaryResult = {
  *    `block` -> `deviceId`, `hardware.physical` -> `signalId`: the contract
  *    entity id, matching `entity-metric-id.ts`'s per-entity identity.
  *  - `managed.ingress` / `managed.database_proxy` -> `sourceId`, **not**
- *    `sourceKind`. Cloudflare Analytics Engine v7 has a single fixed source
- *    per family (`v7-layout.ts`'s `V7_SOURCE_IDS`) and writes no source id —
+ *    `sourceKind`. Cloudflare Analytics Engine v8 has a single fixed source
+ *    per family (`v8-layout.ts`'s `V8_SOURCE_IDS`) and writes no source id —
  *    `sourceKind` never reaches AE at all. DuckDB stores both
  *    columns but groups by `source_id` here too so the two backends agree on
  *    what an "entity id" means for these families — two different sources of

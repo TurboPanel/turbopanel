@@ -178,7 +178,8 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-ha-probe-v1',
   'managed-ha-instance-v1',
   'managed-ha-boot-hold-v1',
-  'metrics-v7',
+  'metrics-v8',
+  'metrics-v8-sizes',
   'php-site-modes-v1',
   'site-engine-nginx-apache-v1',
   'deploy-cancel-v1',
@@ -250,11 +251,11 @@ export const MANAGED_HA_INSTANCE_FEATURE: DaemonWireFeature = 'managed-ha-instan
 export const MANAGED_HA_BOOT_HOLD_FEATURE: DaemonWireFeature = 'managed-ha-boot-hold-v1'
 
 /**
- * Metrics schema v7 (`metadata.version` 7: the `extended` section and the
+ * Metrics schema v8 (`metadata.version` 8: the `extended` section and the
  * `durable` flag). The daemon stamps the legacy wire version until the control
  * plane it is attached to lists this feature.
  */
-export const METRICS_V7_FEATURE: DaemonWireFeature = 'metrics-v7'
+export const METRICS_V8_FEATURE: DaemonWireFeature = 'metrics-v8'
 
 /**
  * The daemon runs each PHP site in the mode its deploy asks for (`php.mode`).

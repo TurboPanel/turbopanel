@@ -34,6 +34,7 @@ import {
   EXTENDED_DOCKER_FIELD_NAMES,
   EXTENDED_HOST_FIELD_NAMES,
   EXTENDED_INGRESS_FIELD_NAMES,
+  EXTENDED_SIZE_FIELD_NAMES,
   type DatabaseProxySample,
   type DiagnosticsCpuSample,
   type DiagnosticsMemorySample,
@@ -87,13 +88,15 @@ export const STATUS_EVENTS_TABLE = 'server_status_events'
  * existing file would silently keep its old, narrower columns and reject
  * every insert. Bumped 7 → 8 for the same reason when `managed.storage` and
  * `managed.docker` gained `server_storage_samples` / `server_docker_samples`.
- * Bumped 8 → 9 for metrics v7: the optional `extended` numeric fields became
+ * Bumped 8 → 9 for metrics v8: the optional `extended` numeric fields became
  * `ext_*` columns on `server_host_samples`, `server_docker_samples` and
  * `server_ingress_samples`; like the earlier bumps it is a hard cut (a
- * marker-8 file is discarded). Free-text v7 fields are not stored here (Analytics Engine and the live view
- * only).
+ * marker-8 file is discarded). Free-text v8 fields are not stored here (Analytics Engine and the live view
+ * only). Bumped 9 → 10 when every sample began carrying the sizes its percentages are measured against: the
+ * `ext_*` size columns on `server_host_samples` and `total_bytes` / `total_inodes` / `memory_total_bytes` on the
+ * filesystem and GPU tables; again a hard cut.
  */
-export const DUCKDB_SCHEMA_MARKER_VERSION = 9
+export const DUCKDB_SCHEMA_MARKER_VERSION = 10
 
 // ---------------------------------------------------------------------------
 // Field ordering — hand-declared `Record<keyof T, true>` literals so a
@@ -214,7 +217,15 @@ const FILESYSTEM_FIELDS: Record<keyof Omit<FilesystemSample, 'filesystemId'>, tr
   availableBytes: true,
   freeInodes: true,
 }
-export const FILESYSTEM_METRIC_FIELDS: readonly string[] = Object.keys(FILESYSTEM_FIELDS)
+/**
+ * Sizes the daemon sends in `extended.filesystemSizes`, stored beside each
+ * filesystem's readings so a percentage is taken against the size at that moment.
+ */
+export const FILESYSTEM_SIZE_FIELDS = ['totalBytes', 'totalInodes'] as const
+export const FILESYSTEM_METRIC_FIELDS: readonly string[] = [
+  ...Object.keys(FILESYSTEM_FIELDS),
+  ...FILESYSTEM_SIZE_FIELDS,
+]
 
 const BLOCK_FIELDS: Record<keyof Omit<BlockDeviceSample, 'deviceId'>, true> = {
   readBytesPerSecond: true,
@@ -236,7 +247,9 @@ const GPU_FIELDS: Record<keyof Omit<GpuSample, 'gpuId'>, true> = {
   pcieTransmitBytesPerSecond: true,
   throttlePercent: true,
 }
-export const GPU_METRIC_FIELDS: readonly string[] = Object.keys(GPU_FIELDS)
+/** The GPU's memory size from `extended.gpuSizes`, stored beside its readings. */
+export const GPU_SIZE_FIELDS = ['memoryTotalBytes'] as const
+export const GPU_METRIC_FIELDS: readonly string[] = [...Object.keys(GPU_FIELDS), ...GPU_SIZE_FIELDS]
 
 const INGRESS_FIELDS: Record<keyof Omit<IngressSourceSample, 'sourceId' | 'sourceKind'>, true> = {
   requests: true,
@@ -461,17 +474,19 @@ export function dockerUsageStorageColumnName(field: string): string {
   return `docker_${snakeCase(field)}`
 }
 
-/** DuckDB column name for one of the v7 `extended` numeric fields (`oomKills` -> `ext_oom_kills`). */
+/** DuckDB column name for one of the v8 `extended` numeric fields (`oomKills` -> `ext_oom_kills`). */
 export function extendedColumnName(field: string): string {
   return `ext_${snakeCase(field)}`
 }
 
-/** v7 numeric columns per table, in DDL / insert order (`extended.host`, `.docker`, `.ingress`). */
-export const V7_HOST_COLUMNS: readonly string[] = EXTENDED_HOST_FIELD_NAMES.map(extendedColumnName)
-export const V7_DOCKER_COLUMNS: readonly string[] =
+/** v8 numeric columns per table, in DDL / insert order (`extended.host`, `.docker`, `.ingress`). */
+export const V8_HOST_COLUMNS: readonly string[] = EXTENDED_HOST_FIELD_NAMES.map(extendedColumnName)
+export const V8_DOCKER_COLUMNS: readonly string[] =
   EXTENDED_DOCKER_FIELD_NAMES.map(extendedColumnName)
-export const V7_INGRESS_COLUMNS: readonly string[] =
+export const V8_INGRESS_COLUMNS: readonly string[] =
   EXTENDED_INGRESS_FIELD_NAMES.map(extendedColumnName)
+/** The sizes every sample carries (`extended.sizes`), as `ext_*` columns on `server_host_samples`. */
+export const V8_SIZE_COLUMNS: readonly string[] = EXTENDED_SIZE_FIELD_NAMES.map(extendedColumnName)
 
 /** DuckDB column name for one of the diagnostics CPU half's hand-declared host-global scalar fields. */
 export function cpuDiagnosticsHostColumnName(field: string): string {
@@ -524,7 +539,8 @@ function hostSamplesTableDdl(): string {
       ...COMMON_METADATA_COLUMN_DEFS,
       ...metricColumns,
       ...cpuDiagnosticsColumns,
-      ...V7_HOST_COLUMNS.map((column) => `${column} DOUBLE`),
+      ...V8_HOST_COLUMNS.map((column) => `${column} DOUBLE`),
+      ...V8_SIZE_COLUMNS.map((column) => `${column} DOUBLE`),
     ]),
     `)`,
   ].join('\n')
@@ -617,7 +633,7 @@ function storageSamplesTableDdl(): string {
 function dockerSamplesTableDdl(): string {
   const metricColumns = [
     ...DOCKER_USAGE_METRIC_FIELDS.map((field) => `${entityMetricColumnName(field)} DOUBLE`),
-    ...V7_DOCKER_COLUMNS.map((column) => `${column} DOUBLE`),
+    ...V8_DOCKER_COLUMNS.map((column) => `${column} DOUBLE`),
   ]
   return [
     `CREATE TABLE IF NOT EXISTS ${DOCKER_SAMPLES_TABLE} (`,
@@ -657,7 +673,7 @@ function ingressSamplesTableDdl(): string {
     INGRESS_SAMPLES_TABLE,
     ['source_id VARCHAR NOT NULL', 'source_kind VARCHAR NOT NULL'],
     INGRESS_METRIC_FIELDS,
-    V7_INGRESS_COLUMNS
+    V8_INGRESS_COLUMNS
   )
 }
 
@@ -757,7 +773,8 @@ function hostSamplesDoubleColumnNames(): string[] {
   return [
     ...HOST_METRIC_FIELD_REFS.map((ref) => hostMetricColumnName(ref.group, ref.field)),
     ...HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST.map(cpuDiagnosticsHostColumnName),
-    ...V7_HOST_COLUMNS,
+    ...V8_HOST_COLUMNS,
+    ...V8_SIZE_COLUMNS,
   ]
 }
 
@@ -810,7 +827,7 @@ export function ingressSamplesInsertColumns(): string[] {
     'source_id',
     'source_kind',
     ...INGRESS_METRIC_FIELDS.map(entityMetricColumnName),
-    ...V7_INGRESS_COLUMNS,
+    ...V8_INGRESS_COLUMNS,
   ]
 }
 
@@ -876,7 +893,7 @@ export function dockerSamplesInsertColumns(): string[] {
   return [
     ...COMMON_METADATA_COLUMNS,
     ...DOCKER_USAGE_METRIC_FIELDS.map(entityMetricColumnName),
-    ...V7_DOCKER_COLUMNS,
+    ...V8_DOCKER_COLUMNS,
   ]
 }
 

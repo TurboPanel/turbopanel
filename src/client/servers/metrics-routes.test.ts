@@ -573,6 +573,8 @@ it('GET /servers/:id/metrics/series issues one fan-in queryHostSeries call', asy
             values: {
               'host.cpu.busyPercent': 25,
               'host.memory.usedBytes': 2_000,
+              // The size the route asked for beside the use reading.
+              'extended.sizes.memoryTotalBytes': 8_000,
             },
             sampleCount: 1,
             expectedSampleCount: 5,
@@ -596,18 +598,21 @@ it('GET /servers/:id/metrics/series issues one fan-in queryHostSeries call', asy
       const values = body.host!.points[0]!.values
       assertEquals(values['host.cpu.busyPercent'], 25)
       assertEquals(values['host.memory.usedBytes'], 2_000)
+      // The size is read beside the use metric, then hidden from the response.
+      assertEquals('extended.sizes.memoryTotalBytes' in values, false)
       // Derived presentation values are server-computed. v5's
       // host.cpu.busyPercent is already the "used" semantic (no v3
-      // idle-inversion); memoryUsedPercent needs the topology-reported
-      // memoryTotalBytes, which no generation was recorded here, so it's null.
+      // idle-inversion); memoryUsedPercent is taken against the memory size
+      // that very sample carried (2,000 of 8,000).
       const derived = body.host!.points[0]!.derived!
       assertEquals(derived.cpuUsagePercent, 25)
-      assertEquals(derived.memoryUsedPercent, null)
+      assertEquals(derived.memoryUsedPercent, 25)
       assertEquals(body.host!.points[0]!.sampleCount, 1)
       assertEquals(fakeStore.seriesCalls.length, 1)
       assertEquals(fakeStore.seriesCalls[0]!.metrics, [
         'host.cpu.busyPercent',
         'host.memory.usedBytes',
+        'extended.sizes.memoryTotalBytes',
       ])
       assertEquals(fakeStore.seriesCalls[0]!.resolutionSeconds, 60)
 
