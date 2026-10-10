@@ -25,8 +25,8 @@ do not import a DB/cell module here.
 | `target.ts`         | `upgrade.target` jsonb shape + `isOnTarget` / `differsFromInstalled`                                                               |
 | `target-resolve.ts` | channel manifests → `UpgradeTarget` (pinned via `pinnedChannelManifestUrl`), `channelHasInstancePackage`, latest-build setting row |
 | `planner.ts`        | phases + batch sizing → the run's step list                                                                                        |
-| `transitions.ts`    | per-step next action (dispatch / wait / retry / needs_attention / done)                                                            |
-| `run.ts`            | batch gating, fleet hard-gate, control-plane failure, run outcome, Workers dispatch cap                                            |
+| `transitions.ts`    | per-step next action (dispatch / wait / skip_offline / retry / needs_attention / done)                                             |
+| `run.ts`            | batch gating, fleet hard-gate, control-plane failure, run outcome, settle-on-start predicate, Workers dispatch cap                 |
 | `schedule.ts`       | pure maintenance-window + auto-start decision                                                                                      |
 | `prune.ts`          | bounded history prune on the maintenance tick                                                                                      |
 
@@ -51,7 +51,10 @@ the cache.
 ## Runs
 
 - **Manual** — pre-flight first; 409 when a run is already active
-  (`uniq_upgrade_active`).
+  (`uniq_upgrade_active`), except a run whose only open steps are fleet
+  `waiting`/`pending` rows for servers that are not connected: `start()`
+  settles those as `skipped` (`server_offline`) and opens the new run.
+  Preflight reports `canStart` in that case and does not mutate.
 - **Automatic** — only when `autoUpdate` is on, on every runtime and channel
   (Workers included; it used to ignore the flag, which kept rolling canary
   builds to the testing fleet with `autoUpdate` off, 2026-10-03). Only
@@ -163,10 +166,16 @@ working.
 
 - An offline server's step becomes `waiting` (`wait_offline`) and is dispatched
   when the server reconnects. The orchestrator stamps `lastStageAt` (column
-  `stage.status_changed_at`) when the step enters `waiting`; still waiting after `UPGRADE_OFFLINE_DEADLINE_MS`
-  (60 min) it becomes `needs_attention` with `errorCode` `server_offline`, so
-  one unreachable host cannot hold the single instance-wide run open. The
-  step-retry endpoint reopens it.
+  `stage.status_changed_at`) when the step enters `waiting`; a **fleet** step
+  still waiting after `UPGRADE_OFFLINE_DEADLINE_MS` (15 min) is `skipped`
+  (`skip_offline`) with `errorCode` `server_offline`, so one unreachable host
+  cannot hold the single instance-wide run open. The run then ends `succeeded`
+  when every other step is done/skipped. Co-located daemon and control-plane
+  steps still become `needs_attention` / `server_offline` (the fleet gate
+  depends on them). The skipped host is picked up by the first run after it
+  reconnects (`anyDaemonBehind` counts connected servers only). `start()` and
+  preflight also settle a run that waits only on offline fleet hosts (see
+  **Manual** above) so "Update fleet now" is not blocked for 15 minutes.
 - No progress within `UPGRADE_STEP_TIMEOUT_MS` → retry with backoff, up to
   `UPGRADE_STEP_MAX_ATTEMPTS` (3), then `needs_attention`.
 - `rolled_back` → one automatic retry (`UPGRADE_ROLLBACK_MAX_ATTEMPTS`), then
@@ -206,7 +215,8 @@ working.
   matched a canary label (`0.1.7` vs `0.1.7-canary.56`; fixed in turbopaneld).
 - `start()` reads the active run before anything else, before the target is
   even resolved, so a second press answers 409 `upgrade_run_active` even when
-  the manifest host is unreachable.
+  the manifest host is unreachable. A run that waits only on offline fleet
+  hosts is settled first instead of 409.
 
 ## Saving what daemons report
 

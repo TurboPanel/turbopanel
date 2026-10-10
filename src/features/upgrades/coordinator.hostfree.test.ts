@@ -812,6 +812,100 @@ test('auto-update waits for an offline server to reconnect instead of opening ru
   )
 })
 
+test('a fleet host skipped while offline is picked up on the first tick after it reconnects', async () => {
+  const host = {
+    ...fact(['managed-upgrade-v1'], 'old-daemon'),
+    serverId: FLEET_A,
+    colocated: false,
+    connected: false,
+  }
+  const clock = { now: T0 }
+  const store = createMemoryUpgradeStore({
+    facts: [host],
+    latest: target,
+    settings: { ...DEFAULT_UPGRADE_SETTINGS, autoUpdate: true },
+  })
+  const coordinator = createUpgradeCoordinator({
+    store,
+    enqueue: () => Promise.resolve(),
+    runtime: 'workers',
+    channel: 'release',
+    development: false,
+    now: () => clock.now,
+    colocatedServerId: null,
+    instanceInstalled: { version: '0.1.1', commit: 'new-instance' },
+    resolveTarget: () => Promise.resolve(target),
+  })
+  const first = await coordinator.start({ source: 'auto', startedBy: null })
+  assertEquals(first.ok, true)
+  if (!first.ok) throw new TypeError(first.error)
+  const waiting = (await store.stepsFor(first.runId))[0]
+  if (!waiting) throw new TypeError('expected a fleet step')
+  waiting.status = 'waiting'
+  waiting.lastStageAt = T0
+  await store.saveStep(waiting)
+  clock.now = minutesAfter(T0, 16)
+  await coordinator.tick({ resolveManifests: false })
+  assertEquals(await coordinator.activeRun(), null)
+  assertEquals((await store.stepsFor(first.runId))[0]?.status, 'skipped')
+
+  store.facts[0] = { ...store.facts[0]!, connected: true }
+  clock.now = minutesAfter(T0, 17)
+  await coordinator.tick()
+  const next = await coordinator.activeRun()
+  assertEquals(next?.source, 'auto')
+  assertEquals(next?.id === first.runId, false)
+})
+
+test('the tick starts a run for a newer published build once the previous run has finished', async () => {
+  const host = {
+    ...fact(['managed-upgrade-v1'], 'old-daemon'),
+    serverId: FLEET_A,
+    colocated: false,
+    connected: true,
+  }
+  let published = structuredClone(target)
+  const store = createMemoryUpgradeStore({
+    facts: [host],
+    latest: published,
+    settings: { ...DEFAULT_UPGRADE_SETTINGS, autoUpdate: true },
+  })
+  const coordinator = createUpgradeCoordinator({
+    store,
+    enqueue: () => Promise.resolve(),
+    runtime: 'workers',
+    channel: 'release',
+    development: false,
+    now: () => T0,
+    colocatedServerId: null,
+    instanceInstalled: { version: '0.1.1', commit: 'new-instance' },
+    resolveTarget: () => Promise.resolve(published),
+  })
+  const first = await coordinator.start({ source: 'auto', startedBy: null })
+  assertEquals(first.ok, true)
+  if (!first.ok) throw new TypeError(first.error)
+  const step = (await store.stepsFor(first.runId))[0]
+  if (!step) throw new TypeError('expected a fleet step')
+  step.status = 'done'
+  await store.saveStep(step)
+  await coordinator.tick({ resolveManifests: false })
+  assertEquals(await coordinator.activeRun(), null)
+
+  published = {
+    ...target,
+    daemon: {
+      ...target.daemon,
+      commit: 'newer-daemon',
+      buildId: 'd2',
+      builtAt: minutesAfter(T0, 1),
+    },
+  }
+  await coordinator.tick()
+  const next = await coordinator.activeRun()
+  assertEquals(next?.target.daemon?.commit, 'newer-daemon')
+  assertEquals(next?.id === first.runId, false)
+})
+
 test('a non-development gate fails closed when the target cannot be read', () => {
   assertEquals(
     clientUpdateBlock({

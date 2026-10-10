@@ -9,6 +9,7 @@ import {
   isTerminalStepStatus,
   platformFailureError,
   PLATFORM_PHASES,
+  runWaitsOnlyOnOfflineServers,
   summarizeSteps,
   WORKERS_DISPATCH_BUDGET,
 } from './run.ts'
@@ -75,6 +76,49 @@ test('batchComplete requires every step in the batch terminal', () => {
   assertEquals(batchComplete(steps, 0), true)
   assertEquals(batchComplete(steps, 1), false)
   assertEquals(batchComplete(steps, 9), false)
+})
+
+test('runWaitsOnlyOnOfflineServers: only fleet waiting/pending on disconnected hosts', () => {
+  const offline = { phase: 'fleet' as const, status: 'waiting' as const, serverId: 'down' }
+  const pending = { phase: 'fleet' as const, status: 'pending' as const, serverId: 'also-down' }
+  assertEquals(runWaitsOnlyOnOfflineServers([], []), false)
+  assertEquals(runWaitsOnlyOnOfflineServers([offline], []), true)
+  assertEquals(runWaitsOnlyOnOfflineServers([pending], []), true)
+  assertEquals(runWaitsOnlyOnOfflineServers([offline, pending], ['up']), true)
+  assertEquals(runWaitsOnlyOnOfflineServers([offline], ['down']), false)
+  assertEquals(
+    runWaitsOnlyOnOfflineServers([{ phase: 'fleet', status: 'dispatched', serverId: 'down' }], []),
+    false
+  )
+  assertEquals(
+    runWaitsOnlyOnOfflineServers([{ phase: 'fleet', status: 'installing', serverId: 'down' }], []),
+    false
+  )
+  assertEquals(
+    runWaitsOnlyOnOfflineServers(
+      [{ phase: 'colocated_daemon', status: 'waiting', serverId: 'panel' }],
+      []
+    ),
+    false
+  )
+  assertEquals(
+    runWaitsOnlyOnOfflineServers(
+      [
+        { phase: 'fleet', status: 'waiting', serverId: 'down' },
+        { phase: 'control_plane', status: 'pending', serverId: 'panel' },
+      ],
+      []
+    ),
+    false
+  )
+  assertEquals(
+    runWaitsOnlyOnOfflineServers([{ phase: 'fleet', status: 'done', serverId: 'down' }], []),
+    false
+  )
+  assertEquals(
+    runWaitsOnlyOnOfflineServers([{ phase: 'fleet', status: 'rolled_back', serverId: 'down' }], []),
+    false
+  )
 })
 
 test('summarizeSteps and finalRunStatus classify outcomes', () => {

@@ -43,6 +43,7 @@ import {
   isFleetGateSatisfied,
   type PlatformPhase,
   platformFailureError,
+  runWaitsOnlyOnOfflineServers,
   type StepSummary,
   summarizeSteps,
   UPGRADE_TICK_STEP_BUDGET,
@@ -51,6 +52,7 @@ import {
   computeBackoffMs,
   planStepAction,
   type StepAction,
+  UPGRADE_OFFLINE_DEADLINE_MS,
   UPGRADE_STEP_MAX_ATTEMPTS,
   UPGRADE_VERIFY_TIMEOUT_MS,
 } from './transitions.ts'
@@ -261,6 +263,29 @@ function runActiveRefusal(activeRunId?: string) {
   }
 }
 
+/** Minutes from {@link UPGRADE_OFFLINE_DEADLINE_MS}, used in the skip sentence. */
+function skipOfflineErrorMessage(): string {
+  const minutes = Math.round(UPGRADE_OFFLINE_DEADLINE_MS / 60_000)
+  return `This server was offline for ${minutes} minutes, so it was left out of this update. It updates on the first run after it reconnects.`
+}
+
+function markStepSkippedOffline(step: UpgradeStepRow): void {
+  step.status = 'skipped'
+  step.errorCode = 'server_offline' satisfies UpgradeStepErrorCode
+  step.errorMessage = skipOfflineErrorMessage()
+}
+
+function connectedServerIds(fleet: readonly FleetServerFact[]): string[] {
+  return fleet.filter((fact) => fact.connected).map((fact) => fact.serverId)
+}
+
+function runBlocksStart(
+  steps: readonly UpgradeStepRow[],
+  fleet: readonly FleetServerFact[]
+): boolean {
+  return !runWaitsOnlyOnOfflineServers(steps, connectedServerIds(fleet))
+}
+
 export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeCoordinator {
   const resolveTarget = deps.resolveTarget ?? (() => resolveUpgradeTarget(deps.channel))
 
@@ -279,7 +304,8 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
   async function buildPreflight(
     target: UpgradeTarget,
     fleet: FleetServerFact[],
-    active: UpgradeRunRow | null
+    active: UpgradeRunRow | null,
+    activeSteps: readonly UpgradeStepRow[] = []
   ): Promise<UpgradePreflight> {
     const checks: UpgradePreflight['checks'] = []
     const blockers: string[] = []
@@ -302,12 +328,13 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     if (!targetKnown) {
       blockers.push('The channel target could not be resolved.')
     }
+    const activeBlocks = active !== null && runBlocksStart(activeSteps, fleet)
     checks.push({
       id: 'active',
       label: 'No upgrade is already running',
-      passed: active === null,
+      passed: !activeBlocks,
     })
-    if (active) blockers.push(UPGRADE_RUN_ACTIVE_MESSAGE)
+    if (activeBlocks) blockers.push(UPGRADE_RUN_ACTIVE_MESSAGE)
     const manifestGaps = pinnedManifestBlockers(deps.channel, target, {
       runtime: deps.runtime,
       hasColocated: Boolean(deps.colocatedServerId),
@@ -317,7 +344,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     if (deps.runtime === 'deno' && !deps.development) {
       checkSelfHostedControlPlane(target, colocated, hasInstance, checks, blockers)
     }
-    const runId = active?.id ?? (await ensureReservedRunId(deps.store))
+    const runId = activeBlocks && active ? active.id : await ensureReservedRunId(deps.store)
     return {
       ok: true,
       canStart: blockers.length === 0,
@@ -510,6 +537,10 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       step.status = 'waiting'
       return await saveStepIfChanged(step, before, readStatus)
     }
+    if (action.kind === 'skip_offline') {
+      markStepSkippedOffline(step)
+      return await saveStepIfChanged(step, before, readStatus)
+    }
     if (action.kind === 'needs_attention') {
       step.status = 'needs_attention'
       step.errorCode = action.errorCode
@@ -583,6 +614,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     return planStepAction(
       {
         status: step.status,
+        phase: step.phase,
         unit: step.unit,
         attempts: step.attempts,
         nextAttemptAt: step.nextAttemptAt,
@@ -686,6 +718,20 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     run.phase = null
     await deps.store.saveRun(run)
     await deps.store.writeTickCursor(run.id, null)
+  }
+
+  /** Skip fleet steps that are only waiting on offline hosts, then finish the run. */
+  async function settleRunWaitingOnOfflineServers(
+    run: UpgradeRunRow,
+    steps: UpgradeStepRow[]
+  ): Promise<void> {
+    await forEachSequential(steps, async (step) => {
+      if (isTerminal(step.status)) return
+      const expectedStatus = step.status
+      markStepSkippedOffline(step)
+      await deps.store.saveStep(step, expectedStatus)
+    })
+    await finishRun(run, summarizeSteps(steps))
   }
 
   /** Facts for the window's servers, plus the co-located host the gate reads. */
@@ -800,20 +846,26 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         facts(),
         deps.store.activeRun(),
       ])
-      return await buildPreflight(target, fleet, active)
+      const activeSteps = active ? await deps.store.stepsFor(active.id) : []
+      return await buildPreflight(target, fleet, active, activeSteps)
     },
     start: async (input) => {
-      // One update at a time. Checked before anything else (the target is not
-      // even resolved) so a second press always gets the machine code, never
-      // a preflight sentence or a manifest-fetch error.
+      // One update at a time. Checked before the target is resolved so a
+      // second press always gets the machine code, never a preflight sentence
+      // or a manifest-fetch error — except a run that is only waiting on
+      // offline fleet hosts, which is settled first so a newer build can start.
       const active = await deps.store.activeRun()
-      if (active) return runActiveRefusal(active.id)
+      if (active) {
+        const [steps, fleet] = await Promise.all([deps.store.stepsFor(active.id), facts()])
+        if (runBlocksStart(steps, fleet)) return runActiveRefusal(active.id)
+        await settleRunWaitingOnOfflineServers(active, steps)
+      }
       const [target, fleet, settings] = await Promise.all([
         resolveTarget(),
         facts(),
         deps.store.settings(),
       ])
-      const preflight = await buildPreflight(target, fleet, active)
+      const preflight = await buildPreflight(target, fleet, null)
       if (!preflight.canStart) {
         return {
           ok: false,

@@ -107,7 +107,10 @@ export const INSTANCE_UPDATES_PATHS = {
       security: [...cookieSecurity],
       responses: {
         '202': { description: '`{ ok: true, dispatched: true, runId }`' },
-        '409': { description: 'Pre-flight failed or a run is already active' },
+        '409': {
+          description:
+            'Pre-flight failed, or a run is already active (not only waiting on offline fleet hosts)',
+        },
       },
     },
   },
