@@ -152,6 +152,12 @@
       "tag": "0024_invitation_grants_comment",
       "when": 1791597466193,
       "sha256": "cc6f66e33e7c0afaafa3e524bc5d80efd52e688113e7b3c81bd151c50d79cb64"
+    },
+    {
+      "idx": 25,
+      "tag": "0025_invitation_table_comment",
+      "when": 1791603582204,
+      "sha256": "c53587e5d139528a4c092ba3c894a3bfe046a8ce59b3b83857c421a3c8d0c7ac"
     }
   ]
 }

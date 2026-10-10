@@ -257,7 +257,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   invitation: {
     group: 'organizations',
     summary:
-      'Team-scoped invite emailed to an address; one pending per (team, email) with a 7-day link; accept creates a `teammate` row and materializes optional `grants` when present.',
+      'Team-scoped invite per (team, email) with a 7-day link; accept adds `teammate` and optional `grants` rows when stored.',
     columns: {
       user_id:
         'The inviter (a manager of the team), not the invitee; the invitee is known only by `email` until accept.',
