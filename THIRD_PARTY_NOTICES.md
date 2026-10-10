@@ -243,9 +243,10 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Homepage: https://github.com/cloudflare/workers-sdk/tree/main/packages/vitest-pool-workers#readme
 
-### @cloudflare/workerd-linux-arm64@1.20260815.1
+### @cloudflare/workerd-linux-64@1.20260815.1
 
 - License: Apache-2.0
+- Homepage: https://github.com/cloudflare/workerd#readme
 
 ### @cloudflare/workers-types@5.20260818.1
 
@@ -264,9 +265,10 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Drizzle Team
 - Homepage: https://github.com/drizzle-team/brocli
 
-### @duckdb/node-bindings-linux-arm64@1.5.5-r.4
+### @duckdb/node-bindings-linux-x64@1.5.5-r.4
 
 - License: MIT
+- Homepage: https://github.com/duckdb/duckdb-node-neo#readme
 
 ### @esbuild-kit/core-utils@3.3.2
 
@@ -280,9 +282,10 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Hiroki Osame
 - Homepage: https://github.com/esbuild-kit/esm-loader#readme
 
-### @esbuild/linux-arm64@0.25.12
+### @esbuild/linux-x64@0.25.12
 
 - License: MIT
+- Homepage: https://github.com/evanw/esbuild#readme
 
 ### @hono/hono@4.13.7
 
@@ -294,13 +297,17 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Homepage: https://github.com/lovell/colour#readme
 
-### @img/sharp-libvips-linux-arm64@1.3.4
+### @img/sharp-libvips-linux-x64@1.3.4
 
 - License: LGPL-3.0-or-later
+- Copyright: Lovell Fuller
+- Homepage: https://sharp.pixelplumbing.com
 
-### @img/sharp-linux-arm64@0.35.5
+### @img/sharp-linux-x64@0.35.5
 
 - License: Apache-2.0
+- Copyright: Lovell Fuller
+- Homepage: https://sharp.pixelplumbing.com
 
 ### @istanbuljs/schema@0.1.6
 
@@ -362,9 +369,11 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Harminder Virk
 - Homepage: https://github.com/poppinss/exception#readme
 
-### @rollup/rollup-linux-arm64-gnu@4.62.2
+### @rollup/rollup-linux-x64-gnu@4.62.2
 
 - License: MIT
+- Copyright: Lukas Taegert-Atkinson
+- Homepage: https://rollupjs.org/
 
 ### @sindresorhus/is@7.2.0
 
