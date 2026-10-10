@@ -175,7 +175,14 @@ test('a SHA with no source identity pins nothing', () => {
 test('no selection and no SHA pin nothing', () => {
   assertEquals(requestedCommitShaForSource(undefined, 'src-1'), undefined)
   assertEquals(
-    requestedCommitShaForSource({ ref: 'main', commitSha: null, sourceId: 'src-1' }, 'src-1'),
+    requestedCommitShaForSource(
+      {
+        ref: 'main',
+        commitSha: null,
+        sourceId: 'src-1',
+      },
+      'src-1'
+    ),
     undefined
   )
 })
@@ -213,6 +220,22 @@ test('createReleaseIdAllocator mints once per compose service', () => {
     throw new TypeError('expected a minted release id')
   }
   assertEquals(worker === first, false)
+})
+
+test('resolveDeploySourceMaterial stamps releaseServiceId from the service row', async () => {
+  const releaseIds = createReleaseIdAllocator()
+  const result = await resolveDeploySourceMaterial(
+    mockContext(),
+    fakeDb([[sourceRow()], []]),
+    baseParams({
+      serviceRows: [{ id: SERVICE_ID, composeServiceName: 'web' }],
+      releaseIds,
+    })
+  )
+  if (!Array.isArray(result)) {
+    throw new TypeError('expected source material')
+  }
+  assertEquals(result[0]?.releaseServiceId, SERVICE_ID)
 })
 
 test('resolveDeploySourceMaterial returns [] when nothing is bound', async () => {
@@ -310,6 +333,7 @@ test('preview resolves a generic-git binding from the source default branch', as
   assertEquals(result.length, 1)
   assertEquals(result[0]?.composeServiceName, 'web')
   assertEquals(result[0]?.sourceId, SOURCE_ID)
+  assertEquals(result[0]?.releaseServiceId, SERVICE_ID)
   assertEquals(result[0]?.ref, 'main')
   assertEquals(result[0]?.commitSha, 'main')
   assertEquals(result[0]?.subdirectory, 'apps/web')
@@ -450,7 +474,15 @@ test('a sole tenancy is pinned onto the source entry', async () => {
   }
   const result = await resolveDeploySourceMaterial(
     mockContext(),
-    fakeDb([[sourceRow()], [{ principalId: PRINCIPAL_ID, serviceId: SERVICE_ID }]]),
+    fakeDb([
+      [sourceRow()],
+      [
+        {
+          principalId: PRINCIPAL_ID,
+          serviceId: SERVICE_ID,
+        },
+      ],
+    ]),
     baseParams({ principalMaterial: [material] })
   )
   if (!Array.isArray(result)) {
@@ -776,7 +808,15 @@ test('a legacy host-native service with no alias deploys as its sole steward', a
   for (const serviceKind of ['site', 'node'] as const) {
     const result = await resolveDeploySourceMaterial(
       mockContext(),
-      fakeDb([[sourceRow()], [{ principalId: PRINCIPAL_ID, serviceId: SERVICE_ID }]]),
+      fakeDb([
+        [sourceRow()],
+        [
+          {
+            principalId: PRINCIPAL_ID,
+            serviceId: SERVICE_ID,
+          },
+        ],
+      ]),
       baseParams({
         services: {
           web: {
