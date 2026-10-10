@@ -59,6 +59,10 @@
       {
         "name": "DAEMON_CELL",
         "class_name": "DaemonCellObject"
+      },
+      {
+        "name": "METRICS_GATE",
+        "class_name": "MetricsGateObject"
       }
     ]
   },
@@ -179,6 +183,10 @@
     "DaemonCellObject": {
       "type": "durable-object",
       "storage": "sqlite"
+    },
+    "MetricsGateObject": {
+      "type": "durable-object",
+      "storage": "sqlite"
     }
   },
   "env": {
@@ -203,6 +211,10 @@
           {
             "name": "DAEMON_CELL",
             "class_name": "DaemonCellObject"
+          },
+          {
+            "name": "METRICS_GATE",
+            "class_name": "MetricsGateObject"
           }
         ]
       },
@@ -364,6 +376,10 @@
           {
             "name": "DAEMON_CELL",
             "class_name": "DaemonCellObject"
+          },
+          {
+            "name": "METRICS_GATE",
+            "class_name": "MetricsGateObject"
           }
         ]
       },
@@ -497,6 +513,10 @@
           {
             "name": "DAEMON_CELL",
             "class_name": "DaemonCellObject"
+          },
+          {
+            "name": "METRICS_GATE",
+            "class_name": "MetricsGateObject"
           }
         ]
       },

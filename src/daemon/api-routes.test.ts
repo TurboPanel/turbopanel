@@ -51,6 +51,7 @@ import {
   registerDaemonApiRoutes,
 } from './api-routes.ts'
 import { MAX_METRICS_PAYLOAD_BYTES } from './metrics/validation.ts'
+import { createInMemoryMetricsGate } from './metrics/ingest-gate.ts'
 import { METRICS_SCHEMA_VERSION } from '../contracts/metrics-contract.ts'
 import type { DaemonCell, DaemonCellRegistry, DaemonCellSnapshot } from '../contracts/cell.ts'
 import type { DaemonOutboundEnvelope } from '../contracts/cell-protocol.ts'
@@ -2524,9 +2525,11 @@ async function createMetricsTestAppWithDb(
     },
   }
 
+  const gate = createInMemoryMetricsGate()
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
+    c.set('metricsGate', gate)
     c.set('serverMetricsStore', fakeStore)
     if (options.registry) c.set('daemonCellRegistry', options.registry)
     return next()
@@ -3035,6 +3038,61 @@ test('POST /metrics does not await the store write before responding', async () 
   releaseWrite()
   await waitForCondition(() => Promise.resolve(writes.length === 1))
   assertEquals(writes.length, 1)
+})
+
+test('POST /metrics stores one sample a minute: a duplicate timestamp gets 409 (the daemon does not retry it) and is not written', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const { app, writes } = await createMetricsTestAppWithDb(db)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const body = JSON.stringify(buildValidMetricsFrame())
+    const post = () =>
+      app.request('/api/daemon/v1/metrics', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          'Content-Type': 'application/json',
+        },
+        body,
+      })
+    assertEquals((await post()).status, 202)
+    const replay = await post()
+    assertEquals(replay.status, 409)
+    assertEquals(await replay.json(), { ok: false, error: 'duplicate_sample' })
+    assertEquals(replay.headers.get('Retry-After'), null)
+    assertEquals(writes.length, 1)
+  })
+})
+
+test('POST /metrics: a sample sent too soon after the last gets 429 with Retry-After and is not written', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const { app, writes } = await createMetricsTestAppWithDb(db)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const post = (sampledAt: string) =>
+      app.request('/api/daemon/v1/metrics', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(buildValidMetricsFrame({ metadata: { sampledAt } })),
+      })
+    const base = Date.now()
+    assertEquals((await post(new Date(base).toISOString())).status, 202)
+    // Spend the catch-up allowance with samples a second apart, then one more is refused.
+    let refused: Response | undefined
+    for (let i = 1; i <= 8 && !refused; i++) {
+      const response = await post(new Date(base + i * 1000).toISOString())
+      if (response.status === 429) refused = response
+    }
+    assertEquals(refused?.status, 429)
+    assertEquals((await refused!.json()) as unknown, {
+      ok: false,
+      error: 'rate_limited',
+      reason: 'too_soon',
+    })
+    assert(Number(refused!.headers.get('Retry-After')) >= 1)
+    assertEquals(writes.length, 6)
+  })
 })
 
 test('POST /metrics accepts a known topology generation without requesting a resync', async () => {
