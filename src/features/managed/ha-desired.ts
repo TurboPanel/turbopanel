@@ -5,7 +5,7 @@
  * `failover` replica. Remote `read`/DR-only servers do not join.
  */
 
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { decryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -57,6 +57,7 @@ import { buildManagedOrgTlsMaterial, ensureActiveOrganizationCa } from './apply-
 import {
   ensureManagedHaHierarchy,
   findManagedHaHierarchy,
+  listManagedHaHierarchyServerIds,
   SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
   type SystemHierarchyIds,
 } from '../system/hierarchy.ts'
@@ -548,17 +549,109 @@ export async function enqueueManagedHaReconcile(
   return { ok: true, commandId: record.id, serverId: params.serverId }
 }
 
+type HaFanOutParams = Readonly<{
+  actorType: 'user' | 'system'
+  actorId: string
+  secretsConfig: SecretsConfig
+  dataEncryptionSecrets: DerivedSecretsConfig
+}>
+
+type HaHostMemberRow = {
+  serverId: string
+  role: string
+  replicaClass: string | null
+  engine: string
+}
+
+/**
+ * Servers that run (or must tear down) an Orchestrator: every server hosting a
+ * MySQL/MariaDB primary or `failover` replica (the Raft voters) plus every
+ * server that still has a managed-ha hierarchy. Sorted, no duplicates.
+ */
+export function selectOrchestratorHostServerIds(
+  memberRows: readonly HaHostMemberRow[],
+  hierarchyServerIds: readonly string[]
+): string[] {
+  const byServer = new Map<string, HaHostMemberRow[]>()
+  for (const row of memberRows) {
+    const list = byServer.get(row.serverId) ?? []
+    list.push(row)
+    byServer.set(row.serverId, list)
+  }
+  const ids = new Set(hierarchyServerIds)
+  for (const [serverId, members] of byServer) {
+    if (serverHostsManagedHa(members)) ids.add(serverId)
+  }
+  return [...ids].toSorted((a, b) => a.localeCompare(b))
+}
+
+/**
+ * Every Orchestrator host in these organizations. One Raft group spans the
+ * whole organization and followers forward API calls to the leader, so a
+ * change that reaches only one cluster's own members (a rotated Organization
+ * CA bundle, a new voter) leaves the leader on its old trust and peer list.
+ */
+export async function listOrganizationOrchestratorServerIds(
+  db: Db,
+  organizationIds: readonly string[]
+): Promise<string[]> {
+  if (organizationIds.length === 0) return []
+  const memberRows = await db
+    .select({
+      serverId: replica.serverId,
+      role: replica.role,
+      replicaClass: replica.replicaClass,
+      engine: managed.engine,
+    })
+    .from(replica)
+    .innerJoin(managed, eq(managed.id, replica.managedId))
+    .innerJoin(server, eq(server.id, replica.serverId))
+    .where(inArray(server.organizationId, [...organizationIds]))
+  const hierarchyServerIds = await listManagedHaHierarchyServerIds(db, organizationIds)
+  return selectOrchestratorHostServerIds(memberRows, hierarchyServerIds)
+}
+
+async function loadServerOrganizationIds(db: Db, serverIds: readonly string[]): Promise<string[]> {
+  if (serverIds.length === 0) return []
+  const rows = await db
+    .select({ organizationId: server.organizationId })
+    .from(server)
+    .where(inArray(server.id, [...serverIds]))
+  return [...new Set(rows.flatMap((row) => (row.organizationId ? [row.organizationId] : [])))]
+}
+
+/** Indirection so tests can observe which servers a fan-out reaches. */
+export const haReconcileEnqueuer = {
+  enqueue: enqueueManagedHaReconcile,
+}
+
+async function enqueueHaReconcileForServers(
+  db: Db,
+  commandQueue: CommandQueue,
+  serverIds: Iterable<string>,
+  params: HaFanOutParams,
+  context: string
+): Promise<string[]> {
+  const commandIds: string[] = []
+  await forEachSequential(serverIds, async (serverId) => {
+    const result = await haReconcileEnqueuer.enqueue(db, commandQueue, { ...params, serverId })
+    if (result.ok) {
+      commandIds.push(result.commandId)
+    } else if (result.reason === 'enqueue_failed') {
+      compatLogWarn('managed-ha', `ha reconcile enqueue failed ${context} serverId=${serverId}`)
+    }
+  })
+  return commandIds
+}
+
 export async function fanOutManagedHaReconcile(
   db: Db,
   commandQueue: CommandQueue,
-  params: Readonly<{
-    managedId: string
-    actorType: 'user' | 'system'
-    actorId: string
-    secretsConfig: SecretsConfig
-    dataEncryptionSecrets: DerivedSecretsConfig
-    extraServerIds?: readonly string[]
-  }>
+  params: HaFanOutParams &
+    Readonly<{
+      managedId: string
+      extraServerIds?: readonly string[]
+    }>
 ): Promise<void> {
   const memberIds = await db
     .select({
@@ -574,19 +667,42 @@ export async function fanOutManagedHaReconcile(
   for (const row of memberIds) {
     if (serverHostsManagedHa([row])) serverIds.add(row.serverId)
   }
-  await forEachSequential(serverIds, async (serverId) => {
-    const result = await enqueueManagedHaReconcile(db, commandQueue, {
-      serverId,
-      actorType: params.actorType,
-      actorId: params.actorId,
-      secretsConfig: params.secretsConfig,
-      dataEncryptionSecrets: params.dataEncryptionSecrets,
-    })
-    if (!result.ok && result.reason === 'enqueue_failed') {
-      compatLogWarn(
-        'managed-ha',
-        `ha reconcile enqueue failed managedId=${params.managedId} serverId=${serverId}`
-      )
-    }
-  })
+  // The cluster's own members are not enough: every Orchestrator host of the
+  // members' organizations shares one Raft group, so they all get the same
+  // voter list and trust bundle.
+  const organizationIds = await loadServerOrganizationIds(db, [
+    ...serverIds,
+    ...memberIds.map((row) => row.serverId),
+  ])
+  for (const serverId of await listOrganizationOrchestratorServerIds(db, organizationIds)) {
+    serverIds.add(serverId)
+  }
+  await enqueueHaReconcileForServers(
+    db,
+    commandQueue,
+    serverIds,
+    params,
+    `managedId=${params.managedId}`
+  )
+}
+
+/**
+ * Reconcile every Orchestrator host of one organization. Used after an
+ * Organization CA rotation fans out and again after the old generation is
+ * retired, so each host's trust bundle holds both generations during the
+ * changeover and only the active one afterwards. Returns the queued command ids.
+ */
+export async function fanOutOrganizationHaReconcile(
+  db: Db,
+  commandQueue: CommandQueue,
+  params: HaFanOutParams & Readonly<{ organizationId: string }>
+): Promise<string[]> {
+  const serverIds = await listOrganizationOrchestratorServerIds(db, [params.organizationId])
+  return await enqueueHaReconcileForServers(
+    db,
+    commandQueue,
+    serverIds,
+    params,
+    `organizationId=${params.organizationId}`
+  )
 }

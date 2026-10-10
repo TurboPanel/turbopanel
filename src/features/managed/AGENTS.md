@@ -572,7 +572,16 @@ also organization-wide (`orchestrator-api-credential.ts`, sealed as
 `orchestratorApiUser` + `orchestratorRaftToken` on `managed.ha.reconcile` so
 every Raft peer shares one `HTTPAuthPassword` and followers can proxy to the
 leader). **`managed.ha.reconcile` is enqueued only after a successful primary
-`managed.apply`** (the topology login is created during that apply); apply-prepare
+`managed.apply`** (the topology login is created during that apply), and then to
+**every Orchestrator host of the organization** (`fanOutManagedHaReconcile` →
+`listOrganizationOrchestratorServerIds`: every server hosting a MySQL/MariaDB
+primary or `failover` replica, plus every server that still has a managed-ha
+hierarchy, which gets the teardown), not only the cluster's own members. One
+Raft group spans the organization and followers forward `/api/discover` to the
+leader, so the leader's trust bundle and peer list are the ones that count.
+An Organization CA rotation also reconciles every Orchestrator host once its
+fan-out completes (both generations in the bundle) and again after retire
+(active generation only) — `fanOutOrganizationHaReconcile`, best effort; apply-prepare
 still enqueues `managed.ingress.reconcile` when apply is queued. Postgres HA clusters are omitted from the reconcile cluster list and
 from the Raft voter set (`orchestratorManagesEngine` / `serverHostsManagedHa`). Leaf `notAfter` + signing `ca_generation` are persisted
 on `leaf` only after `managed.apply` succeeds (mint writes `pendingTlsLeaf`

@@ -103,7 +103,15 @@ Read-only reference — no behavior claims beyond today:
   `awaiting_retire`, gone targets `skipped` + `target_gone` do not block).
   `PATCH /tls/:id` with `revoke: true` on an Organization CA row is rejected
   (`409` `organization_ca_retire_required`); Organization CA retirement is
-  exclusively `POST /tls/ca/retire`.
+  exclusively `POST /tls/ca/retire`. Orchestrator hosts hold the bundle too
+  (`managed.ha.reconcile` → `tls/ca.pem`, read once at process start): when the
+  rotate fan-out completes and again after retire, every Orchestrator host of
+  the organization gets `managed.ha.reconcile`
+  (`reconcileOrganizationOrchestratorTrust` in
+  `../../client/tls/changeover-fanout.ts`; best effort, never fails the step),
+  so the bundle is both generations during the changeover and the active one
+  only afterwards. These commands are not rows in `rotation.results` and do not
+  gate retire.
 
 ## Where the Platform CA lives instead
 
