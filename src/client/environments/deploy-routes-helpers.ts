@@ -484,6 +484,19 @@ function mapHostingPrepareError(
   }
 }
 
+function mapNativeAppUnresolvedPrepareError(
+  prepared: Extract<DeployPrepareError, { kind: 'native_app_unresolved_service' }>
+): PrepareErrorResponse {
+  return {
+    status: 422,
+    body: {
+      error: 'native_app_unresolved_service',
+      composeServiceName: prepared.composeServiceName,
+      message: `Native app "${prepared.composeServiceName}" has no resolved service id for this environment.`,
+    },
+  }
+}
+
 function mapPrincipalPrepareError(
   prepared: Extract<
     DeployPrepareError,
@@ -492,7 +505,6 @@ function mapPrincipalPrepareError(
         | 'source_principal_ambiguous'
         | 'principal_alias_unknown'
         | 'principal_required_for_service_kind'
-        | 'native_app_unresolved_service'
         | 'source_ref_unresolved'
     }
   >
@@ -527,16 +539,6 @@ function mapPrincipalPrepareError(
         composeServiceName: prepared.composeServiceName,
         serviceKind: prepared.serviceKind,
         message: `${kindLabel} "${prepared.composeServiceName}" has no account to run as. Declare an alias under the top-level x-turbopanel.principals and name it from this service's x-turbopanel.principal.`,
-      },
-    }
-  }
-  if (prepared.kind === 'native_app_unresolved_service') {
-    return {
-      status: 422,
-      body: {
-        error: 'native_app_unresolved_service',
-        composeServiceName: prepared.composeServiceName,
-        message: `Native app "${prepared.composeServiceName}" has no resolved service id for this environment.`,
       },
     }
   }
@@ -576,12 +578,18 @@ function tryMapHostingPrepareError(prepared: DeployPrepareError): PrepareErrorRe
   return mapHostingPrepareError(prepared)
 }
 
+function tryMapNativeAppUnresolvedPrepareError(
+  prepared: DeployPrepareError
+): PrepareErrorResponse | null {
+  if (prepared.kind !== 'native_app_unresolved_service') return null
+  return mapNativeAppUnresolvedPrepareError(prepared)
+}
+
 function tryMapPrincipalPrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
   if (
     prepared.kind !== 'source_principal_ambiguous' &&
     prepared.kind !== 'principal_alias_unknown' &&
     prepared.kind !== 'principal_required_for_service_kind' &&
-    prepared.kind !== 'native_app_unresolved_service' &&
     prepared.kind !== 'source_ref_unresolved'
   ) {
     return null
@@ -715,6 +723,7 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
     tryMapBindingHostSiteError(prepared) ??
     tryMapDenoPrepareError(prepared) ??
     tryMapSitePrepareError(prepared) ??
+    tryMapNativeAppUnresolvedPrepareError(prepared) ??
     tryMapPrincipalPrepareError(prepared) ??
     tryMapHostingPrepareError(prepared) ??
     mapCorePrepareError(prepared)
