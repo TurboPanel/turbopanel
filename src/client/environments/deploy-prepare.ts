@@ -3210,6 +3210,68 @@ async function resolveLocalNativeAppsAndRuntimes(
   }
 }
 
+async function resolveLocalSitesBoundForDeploy(
+  c: Context<AppEnv>,
+  db: Db,
+  args: {
+    mode: DeployPrepareMode
+    warnings: DeployPrepareWarning[]
+    params: { environmentId: string; serverId: string; organizationId: string }
+    pipeline: { localServiceNames?: ReadonlySet<string> }
+    split: ReturnType<typeof splitHostNativeFromDocument>
+    orgOptions: unknown
+    serverOptions: unknown
+    serviceRows: ServiceRow[]
+    principalMaterial: EnvironmentDeployPrincipalMaterial[]
+    principalResolution: ComposePrincipalResolution
+    tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]>
+  }
+): Promise<EnvironmentDeploySite[] | DeployPrepareError> {
+  const phpDaemonState = await getServerDaemonStateByServerId(db, args.params.serverId)
+  const siteResolved = await withSitePhpModes(
+    db,
+    {
+      daemonRunsModes:
+        phpDaemonState?.projection?.features?.includes(PHP_SITE_MODES_FEATURE) === true,
+      environmentId: args.params.environmentId,
+      serverId: args.params.serverId,
+      localServiceNames: args.pipeline.localServiceNames,
+      specs: args.split.sites,
+      orgOptions: args.orgOptions,
+      serverOptions: args.serverOptions,
+      warnings: args.warnings,
+    },
+    resolveSitesForMode(
+      args.mode,
+      args.warnings,
+      await attachPrincipalsToSites(
+        db,
+        args.params.environmentId,
+        args.serviceRows,
+        args.principalMaterial,
+        args.split.sites,
+        args.principalResolution,
+        args.tasksByComposeName
+      ),
+      args.split.sites
+    )
+  )
+  if ('kind' in siteResolved) return siteResolved
+  const localSite = sitesOnScheduledServer(siteResolved, args.pipeline.localServiceNames)
+  const engineGate = await withSiteEngineFeature(db, args.params.serverId, localSite)
+  if ('kind' in engineGate) return engineGate
+  const dbBindingWarnings: SiteDbBindingsWarning[] = []
+  const localSiteBound = await withSiteDbBindings(db, c.get('dataEncryptionSecrets'), {
+    organizationId: args.params.organizationId,
+    sites: localSite,
+    serviceRows: args.serviceRows,
+    daemonFeatures: phpDaemonState?.projection?.features ?? [],
+    warnings: dbBindingWarnings,
+  })
+  args.warnings.push(...dbBindingWarnings)
+  return localSiteBound
+}
+
 async function allocateResolvedDeployPipelineForPrepare(
   db: Db,
   input: {
@@ -3471,48 +3533,21 @@ export async function prepareDeployCompose(
   // Task rows (`POST /tasks`) join compose-authored cron on the wire for
   // sites and native apps alike — loaded once here, keyed by compose name.
   const tasksByComposeName = await loadTasksByComposeServiceName(db, serviceRows)
-  const phpDaemonState = await getServerDaemonStateByServerId(db, params.serverId)
-  const siteResolved = await withSitePhpModes(
-    db,
-    {
-      daemonRunsModes:
-        phpDaemonState?.projection?.features?.includes(PHP_SITE_MODES_FEATURE) === true,
-      environmentId: params.environmentId,
-      serverId: params.serverId,
-      localServiceNames: pipeline.localServiceNames,
-      specs: split.sites,
-      orgOptions: orgRow?.options,
-      serverOptions: serverRow?.options,
-      warnings,
-    },
-    resolveSitesForMode(
-      mode,
-      warnings,
-      await attachPrincipalsToSites(
-        db,
-        params.environmentId,
-        serviceRows,
-        principalMaterial,
-        split.sites,
-        principalResolution,
-        tasksByComposeName
-      ),
-      split.sites
-    )
-  )
-  if ('kind' in siteResolved) return siteResolved
-  const localSite = sitesOnScheduledServer(siteResolved, pipeline.localServiceNames)
-  const engineGate = await withSiteEngineFeature(db, params.serverId, localSite)
-  if ('kind' in engineGate) return engineGate
-  const dbBindingWarnings: SiteDbBindingsWarning[] = []
-  const localSiteBound = await withSiteDbBindings(db, c.get('dataEncryptionSecrets'), {
-    organizationId: params.organizationId,
-    sites: localSite,
+  const localSiteBoundOrError = await resolveLocalSitesBoundForDeploy(c, db, {
+    mode,
+    warnings,
+    params,
+    pipeline,
+    split,
+    orgOptions: orgRow?.options,
+    serverOptions: serverRow?.options,
     serviceRows,
-    daemonFeatures: phpDaemonState?.projection?.features ?? [],
-    warnings: dbBindingWarnings,
+    principalMaterial,
+    principalResolution,
+    tasksByComposeName,
   })
-  warnings.push(...dbBindingWarnings)
+  if ('kind' in localSiteBoundOrError) return localSiteBoundOrError
+  const localSiteBound = localSiteBoundOrError
 
   const nativeLanes = await resolveLocalNativeAppsAndRuntimes(c, db, {
     mode,
