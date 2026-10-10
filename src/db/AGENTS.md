@@ -706,8 +706,8 @@ to organizations. `user.role` (`superadmin` / `admin` / `user`) is instance
 authority, separate from org access. **`invitation.grants`** (JSONB) stores the
 intended access grants (`InvitationGrantSpec[]` in
 `src/client/authn/invitation-grants.ts`); they are materialized into `grant`
-rows on accept. When `grants` is null, accept applies a default
-`organization:manage` grant on the org. **`organization.options.maxServers`**
+rows on accept. When `grants` is null or omitted, accept adds team membership
+only — no default org grant. **`organization.options.maxServers`**
 caps enrolled servers + unconsumed registration keys (`null`/omitted =
 unlimited). Self-hosted operators set it via
 `GET`/`PUT /organizations/:id/server-capacity`; `POST /licenses` returns **409**

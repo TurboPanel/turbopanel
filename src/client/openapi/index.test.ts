@@ -265,3 +265,32 @@ test("oauth start and callback stay public; unlink requires cookieAuth", () => {
   assertExists(unlink.delete);
   assertEquals(unlink.delete.security, cookieAuth);
 });
+
+test("invitation OpenAPI does not document a default organization:manage grant on accept", () => {
+  const spec = getClientOpenApiSpec("https://localhost:8443") as {
+    paths: Record<string, unknown>;
+    components: {
+      schemas: {
+        CreateInvitationRequest: {
+          properties: { grants: { description: string } };
+        };
+      };
+    };
+  };
+  const createBody =
+    spec.components.schemas.CreateInvitationRequest.properties.grants.description;
+  assertEquals(
+    createBody.includes("default organization:manage"),
+    false,
+  );
+  assertEquals(createBody.includes("team membership only"), true);
+
+  const accept = spec.paths[
+    `${CLIENT_API_PREFIX}/invitations/{id}/accept`
+  ] as { post: { description: string } };
+  assertEquals(
+    accept.post.description.includes("default `organization:manage`"),
+    false,
+  );
+  assertEquals(accept.post.description.includes("no grant rows"), true);
+});

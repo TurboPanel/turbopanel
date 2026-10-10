@@ -270,7 +270,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       status:
         '`pending` at creation, then `accepted` by the accept route or `revoked` by the revoke route; expiry is not a status.',
       grants:
-        'Array of `entityType` / `entityId` / `permissionKey` specs an owner attached, or null for the default `organization:manage`; written as `grant` rows on accept.',
+        'Array of `entityType` / `entityId` / `permissionKey` specs an owner attached, or null when the invitation carries no grants; materialized into `grant` rows on accept.',
       token_hash:
         'SHA-256 verifier of the secret emailed only in the accept link, used to look the invitation up; rotated on re-send, null on older invitations.',
     },

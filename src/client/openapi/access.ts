@@ -64,7 +64,7 @@ export const accessSchemas = {
         type: 'array',
         items: { $ref: '#/components/schemas/InvitationGrantSpec' },
         description:
-          'Optional intended grants. Requires organization:own. Omitted or null stores no grants so accept applies the default organization:manage grant.',
+          'Optional intended grants. Requires organization:own. Omitted or null stores no grants (accept adds team membership only). An empty array is refused as Invalid invitation grants.',
       },
     },
   },
@@ -226,7 +226,7 @@ export const accessPaths: Record<string, unknown> = {
       tags: ['Authorization'],
       summary: 'Invite a teammate',
       description:
-        'Creates a pending invitation for a team in the session organization and emails the accept link. Requires canInviteToTeam. Optional grants require organization:own (403 grants_require_owner). Returns 409 invitation_pending when a pending, unexpired invite already exists for that team and email, and 503 email_unavailable when the email queue is unavailable.',
+        'Creates a pending invitation for a team in the session organization and emails the accept link. Requires canInviteToTeam. Optional grants require organization:own (403 grants_require_owner); omitted or null stores no grants. Empty grants is 400 Invalid invitation grants. Returns 409 invitation_pending when a pending, unexpired invite already exists for that team and email, and 503 email_unavailable when the email queue is unavailable.',
       security: [{ cookieAuth: [] }],
       requestBody: {
         required: true,
@@ -485,7 +485,7 @@ export const accessPaths: Record<string, unknown> = {
       tags: ['Authorization'],
       summary: 'Accept an organization invitation',
       description:
-        "Atomically claims a pending invitation, creates team membership, materializes the invitation's `grants` JSON into user-scoped grant rows, and returns the accepted organization id. Idempotent for the user who accepted it: repeating the call answers 200 again. The invitation landing page calls this only from its Accept button, never on load. When `grants` is null, a default `organization:manage` grant on the organization is applied. Grant targets must be organization or team entities with compatible permission keys.",
+        "Atomically claims a pending invitation, creates team membership, materializes the invitation's `grants` JSON into user-scoped grant rows when present, and returns the accepted organization id. When `grants` is null, no grant rows are added. Idempotent for the user who accepted it: repeating the call answers 200 again. The invitation landing page calls this only from its Accept button, never on load. Grant targets must be organization or team entities with compatible permission keys.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
