@@ -605,23 +605,23 @@ test('buildStatusMemberView and org list entry', () => {
   const entry = buildOrgManagedListEntry({
     serializedRow: { id: 'mg', engine: 'postgres' },
     engineDisplayName: 'PostgreSQL',
-    environmentDisplayName: 'Production',
+    environmentName: 'Production',
     projectId: 'p1',
-    projectDisplayName: 'App',
+    projectName: 'App',
     workspaceId: 'w1',
-    workspaceDisplayName: 'Default',
-    serverDisplayName: 'Host',
+    workspaceName: 'Default',
+    serverName: 'Host',
     members: [{ id: 'mem' }],
   })
   assertEquals(entry.id, 'mg')
   assertEquals(entry.engine, 'postgres')
   assertEquals(entry.engineDisplayName, 'PostgreSQL')
-  assertEquals(entry.environmentDisplayName, 'Production')
+  assertEquals(entry.environmentName, 'Production')
   assertEquals(entry.projectId, 'p1')
-  assertEquals(entry.projectDisplayName, 'App')
+  assertEquals(entry.projectName, 'App')
   assertEquals(entry.workspaceId, 'w1')
-  assertEquals(entry.workspaceDisplayName, 'Default')
-  assertEquals(entry.serverDisplayName, 'Host')
+  assertEquals(entry.workspaceName, 'Default')
+  assertEquals(entry.serverName, 'Host')
   assertEquals(entry.members, [{ id: 'mem' }])
 })
 

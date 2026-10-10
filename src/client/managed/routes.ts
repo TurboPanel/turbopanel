@@ -21,7 +21,6 @@ import {
   service,
   workspace,
 } from '../../db/schema.ts'
-import { getManagedEngineSpec } from '../../features/managed/index.ts'
 import { clampManagedResources, type ManagedSettings } from '../../features/managed/settings.ts'
 import { registerManagedExternalAccessRoutes } from './external-access-routes.ts'
 import { loadManagedExternalAccessView } from '../../features/managed/external-access.ts'
@@ -142,8 +141,8 @@ import {
   buildManagedDeleteQueuedResponse,
   buildManagedDestroyQueuedResponse,
   buildManagedReleaseView,
+  buildManagedReplicaLiveCheckFailedBody,
   buildManagedSslView,
-  buildOrgManagedListEntry,
   buildPromoteQueuedResponse,
   buildQueuedFanoutResponse,
   buildStatusMemberView,
@@ -151,7 +150,6 @@ import {
   evaluateManagedDatabaseDelete,
   evaluateManagedUserDropGuard,
   evaluateManagedUserRotateGuard,
-  buildManagedReplicaLiveCheckFailedBody,
   evaluateOperatorPromoteGate,
   evaluatePromoteMemberRole,
   evaluatePromoteReplicaClass,
@@ -189,6 +187,7 @@ import {
   resolveManagedServerId,
   serializeContainerRow,
   serializeManagedUser,
+  serializeOrgManagedListRow,
   validateManagedDatabaseCreateName,
 } from '../../features/managed/routes-helpers.ts'
 import {
@@ -590,7 +589,11 @@ async function detachManagedBindings(
   organizationId: string
 ): Promise<void> {
   if (detached.length > 0) {
-    await detachBindingsForManaged(db, managedId, { c, actorId, organizationId })
+    await detachBindingsForManaged(db, managedId, {
+      c,
+      actorId,
+      organizationId,
+    })
   }
 }
 
@@ -2248,7 +2251,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       effectiveManagedImage(ctx.spec, options.settings.image)
     )
     if (!failover.supported) {
-      return c.json({ error: failover.reason, code: 'managed_failover_unsupported' }, 422)
+      return c.json(
+        {
+          error: failover.reason,
+          code: 'managed_failover_unsupported',
+        },
+        422
+      )
     }
 
     await ensureManagedPrimaryMember(db, {
@@ -2355,7 +2364,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         effectiveManagedImage(ctx.spec, patchOptions.settings.image)
       )
       if (!failover.supported) {
-        return c.json({ error: failover.reason, code: 'managed_failover_unsupported' }, 422)
+        return c.json(
+          {
+            error: failover.reason,
+            code: 'managed_failover_unsupported',
+          },
+          422
+        )
       }
     }
 
@@ -2999,6 +3014,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         serverId: managed.serverId,
         createdAt: managed.createdAt,
         updatedAt: managed.updatedAt,
+        environmentServerId: environment.serverId,
         environmentDisplayName: environment.name,
         projectId: project.id,
         projectDisplayName: project.name,
@@ -3025,34 +3041,33 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       membersByManaged.set(member.managedId, list)
     }
 
-    const serverIds = [...new Set(memberRows.map((m) => m.serverId))]
+    const serverIds = new Set(memberRows.map((m) => m.serverId))
+    for (const row of rows) {
+      const placementId = resolveManagedServerId(
+        { serverId: row.serverId },
+        row.environmentServerId
+      )
+      if (placementId) serverIds.add(placementId)
+    }
+    const serverIdList = [...serverIds]
     const serverNames =
-      serverIds.length === 0
+      serverIdList.length === 0
         ? []
         : await db
             .select({ id: server.id, name: server.name })
             .from(server)
-            .where(inArray(server.id, serverIds))
+            .where(inArray(server.id, serverIdList))
     const nameByServer = new Map(serverNames.map((s) => [s.id, s.name]))
 
-    return c.json({
-      managed: rows.map((row) => {
-        const spec = row.engine ? getManagedEngineSpec(row.engine) : null
+    const managedList = await Promise.all(
+      rows.map(async (row) => {
         const members = (membersByManaged.get(row.id) ?? []).map((m) =>
           serializeManagedMemberForDisplay(m, nameByServer.get(m.serverId) ?? null)
         )
-        return buildOrgManagedListEntry({
-          serializedRow: serializeManagedRow(row, row.serverId) as Record<string, unknown>,
-          engineDisplayName: spec?.displayName ?? null,
-          environmentDisplayName: row.environmentDisplayName,
-          projectId: row.projectId,
-          projectDisplayName: row.projectDisplayName,
-          workspaceId: row.workspaceId,
-          workspaceDisplayName: row.workspaceDisplayName,
-          serverDisplayName: row.serverDisplayName,
-          members,
-        })
-      }),
-    })
+        return await serializeOrgManagedListRow(db, row, members, nameByServer)
+      })
+    )
+
+    return c.json({ managed: managedList })
   })
 }

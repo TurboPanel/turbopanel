@@ -54,7 +54,7 @@ export type ManagedMemberRow = {
 export type SerializedManagedMember = {
   id: string
   serverId: string
-  serverDisplayName: string | null
+  serverName: string | null
   role: ManagedMemberRole
   replicaClass: ManagedReplicaClass | null
   readEligible: boolean
@@ -108,7 +108,9 @@ function withFreshnessFields(
 ): ManagedReplicationHealth {
   for (const key of ['receivedGtid', 'executedGtid'] as const) {
     const v = r[key]
-    if (typeof v === 'string' && v.length > 0 && v.length <= 4096) health[key] = v
+    if (typeof v === 'string' && v.length > 0 && v.length <= 4096) {
+      health[key] = v
+    }
   }
   if (typeof r.fullyApplied === 'boolean') health.fullyApplied = r.fullyApplied
   return health
@@ -146,7 +148,9 @@ function parseReplicationHealth(metadata: unknown): ManagedReplicationHealth | u
  * (`metadata.replication`); this field is for UI aging only.
  */
 function parseDisplayReplicationHealth(metadata: unknown): ManagedReplicationHealth | undefined {
-  if (!isRecord(metadata) || !isRecord(metadata.replicationDisplay)) return undefined
+  if (!isRecord(metadata) || !isRecord(metadata.replicationDisplay)) {
+    return undefined
+  }
   const r = metadata.replicationDisplay
   if (typeof r.state !== 'string' || typeof r.observedAt !== 'string') {
     return undefined
@@ -272,7 +276,7 @@ export function nextReplicaOrdinal(members: readonly ManagedMemberRow[]): number
 
 export function serializeManagedMember(
   row: ManagedMemberRow,
-  serverDisplayName: string | null
+  serverName: string | null
 ): SerializedManagedMember {
   const role: ManagedMemberRole = row.role === 'replica' ? 'replica' : 'primary'
   const replicaClass =
@@ -289,7 +293,7 @@ export function serializeManagedMember(
   const out: SerializedManagedMember = {
     id: row.id,
     serverId: row.serverId,
-    serverDisplayName,
+    serverName,
     role,
     replicaClass,
     readEligible: row.readEligible,
@@ -312,10 +316,10 @@ export function serializeManagedMember(
  */
 export function serializeManagedMemberForDisplay(
   row: ManagedMemberRow,
-  serverDisplayName: string | null,
+  serverName: string | null,
   nowMs: number = Date.now()
 ): SerializedManagedMember {
-  const out = serializeManagedMember(row, serverDisplayName)
+  const out = serializeManagedMember(row, serverName)
   if (out.role === 'replica' && out.replication !== undefined) {
     // For display, prefer the newer of the two readings
     const measured = parseReplicationHealth(row.metadata)
@@ -338,14 +342,14 @@ export async function listSerializedManagedMembers(
   const rows = await db
     .select({
       ...MEMBER_RETURNING,
-      serverDisplayName: server.name,
+      serverName: server.name,
     })
     .from(replica)
     .leftJoin(server, eq(replica.serverId, server.id))
     .where(eq(replica.managedId, managedId))
     .orderBy(asc(replica.ordinal))
 
-  return rows.map((row) => serializeManagedMemberForDisplay(row, row.serverDisplayName ?? null))
+  return rows.map((row) => serializeManagedMemberForDisplay(row, row.serverName ?? null))
 }
 
 /** A read replica is the only member allowed on the fabric/public ladder. */
@@ -711,7 +715,9 @@ export async function resolvePeerToMember(
   toMember: ManagedMemberRow,
   defaultPort: number
 ): Promise<ManagedMemberPeer | PrivateEndpointError> {
-  if (fromMember.id === toMember.id) return unavailablePeerError(fromMember, toMember)
+  if (fromMember.id === toMember.id) {
+    return unavailablePeerError(fromMember, toMember)
+  }
   const pair = [fromMember, toMember]
   const containerNames = await loadMemberContainerNames(db, pair)
   const remote = toMember.serverId === fromMember.serverId ? [] : [toMember]

@@ -805,18 +805,80 @@ test('GET /organizations/:id/managed returns joined rows', async () => {
       const body = (await list.json()) as {
         managed: Array<{
           projectId: string
+          projectName: string | null
           environmentId: string
+          environmentName: string | null
           serverId: string | null
+          serverName: string | null
           engine: string | null
           engineDisplayName: string | null
+          host: string | null
+          port: number | null
+          members: Array<{ serverName: string | null; role: string }>
         }>
       }
       assertEquals(body.managed.length, 1)
-      assertEquals(body.managed[0]?.projectId, projectId)
-      assertEquals(body.managed[0]?.environmentId, environmentId)
-      assertEquals(body.managed[0]?.serverId, serverId)
-      assertEquals(body.managed[0]?.engine, 'postgres')
-      assertEquals(body.managed[0]?.engineDisplayName, 'PostgreSQL')
+      const row = body.managed[0]
+      assertEquals(row?.projectId, projectId)
+      assertEquals(row?.environmentId, environmentId)
+      assertEquals(row?.serverId, serverId)
+      assertEquals(row?.engine, 'postgres')
+      assertEquals(row?.engineDisplayName, 'PostgreSQL')
+      assertEquals(row?.projectName, 'Managed Postgres Project')
+      assertEquals(row?.environmentName, 'Production')
+      assertEquals(row?.serverName, 'Managed Route Server')
+      assertEquals(row?.host, '127.0.0.1')
+      assertEquals(row?.port, 15432)
+      assertEquals(row?.members.length, 1)
+      assertEquals(row?.members[0]?.serverName, 'Managed Route Server')
+      assertEquals(row?.members[0]?.role, 'primary')
+    }
+  )
+})
+
+test('GET /organizations/:id/managed resolves server from environment when managed.server_id is null', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      await db
+        .update(managed)
+        .set({ serverId: null, status: 'ready' })
+        .where(eq(managed.id, created.managed.id))
+
+      const list = await app.request(`/organizations/${organizationId}/managed`, {
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(list.status, 200)
+      const body = (await list.json()) as {
+        managed: Array<{
+          serverId: string | null
+          serverName: string | null
+          host: string | null
+          port: number | null
+          members: Array<{ serverName: string | null }>
+        }>
+      }
+      assertEquals(body.managed.length, 1)
+      const row = body.managed[0]
+      assertEquals(row?.serverId, serverId)
+      assertEquals(row?.serverName, 'Managed Route Server')
+      assertEquals(row?.host, '127.0.0.1')
+      assertEquals(row?.port, 15432)
+      assertEquals(row?.members[0]?.serverName, 'Managed Route Server')
     }
   )
 })

@@ -23,8 +23,8 @@ import { BadRequestError, parseName, requireStringField } from '../../lib/http/r
 const USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
 import {
   maxTypedNameLength,
-  principalNameSchemeOf,
   type PrincipalNameScheme,
+  principalNameSchemeOf,
 } from '../../lib/principal-name-scheme.ts'
 import { LOOPBACK_BIND, resolveManagedExternalDialHost } from './access-address.ts'
 import { loadManagedExternalAccess } from './external-access.ts'
@@ -34,7 +34,7 @@ import { evaluateManagedPromoteLagGate } from './promote-lag.ts'
 import { isMysqlFamilyEngine, MAX_REPLAY_DELTA_BYTES, parsePgLsn } from './ha-fresh-standby.ts'
 import { loadManagedStatusError } from './last-error.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
-import type { ManagedResidualMetadata } from './serialize.ts'
+import { type ManagedResidualMetadata, serializeManagedRow } from './serialize.ts'
 
 export { evaluateManagedPromoteLagGate }
 
@@ -131,6 +131,15 @@ export async function resolveManagedConnectionListener(
   const primary = endpoints[0]!
   if (externalAccess && primary.reach !== 'external') return null
   return { host: primary.host, port: primary.port }
+}
+
+/** Loopback address on the shared ProxySQL frontend (org overview column). */
+export async function resolveManagedLoopbackListener(
+  db: Db,
+  params: ManagedAccessParams
+): Promise<{ host: string; port: number }> {
+  const port = await resolveListenerPortForServer(db, params)
+  return { host: LOOPBACK_BIND, port }
 }
 
 /**
@@ -277,7 +286,13 @@ export function parseManagedVersionSelection(
   engine: string,
   body: Record<string, unknown>,
   gate?: ManagedReleaseGate
-): { ok: true; image?: string } | { ok: false; error: string; status: 400 | 422 } {
+):
+  | { ok: true; image?: string }
+  | {
+      ok: false
+      error: string
+      status: 400 | 422
+    } {
   const seriesRaw = body.engineSeries
   const variantRaw = body.imageVariant
   if (seriesRaw === undefined && variantRaw === undefined) return { ok: true }
@@ -561,7 +576,9 @@ export function parseManagedUserCreateFields(
     return c.json(
       {
         error: MANAGED_USER_PRIVILEGES_INVALID_ERROR,
-        message: `privileges must list at least one of: ${ctx.spec.userOperations.privileges.join(', ')}. Leave it out to get the default for the login's connection role.`,
+        message: `privileges must list at least one of: ${ctx.spec.userOperations.privileges.join(
+          ', '
+        )}. Leave it out to get the default for the login's connection role.`,
       },
       400
     )
@@ -806,9 +823,13 @@ export function parsePromoteForce(body: Record<string, unknown>): boolean {
   return body.force === true
 }
 
-export function parseDisasterRecoveryPromoteBody(
-  body: Record<string, unknown>
-): { ok: true; memberId: string } | { ok: false; error: 'Invalid request'; status: 400 } {
+export function parseDisasterRecoveryPromoteBody(body: Record<string, unknown>):
+  | { ok: true; memberId: string }
+  | {
+      ok: false
+      error: 'Invalid request'
+      status: 400
+    } {
   if (body.confirm !== true) {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
@@ -1088,7 +1109,9 @@ export function evaluateOperatorPromoteGate(
   if (engine === 'postgres') {
     const received = parsePgLsn(replication.receivedLsn)
     const replayed = parsePgLsn(replication.replayLsn)
-    if (received === null || replayed === null) return 'managed_replica_lagging'
+    if (received === null || replayed === null) {
+      return 'managed_replica_lagging'
+    }
     if (received - replayed > BigInt(MAX_REPLAY_DELTA_BYTES)) {
       return 'managed_replica_lagging'
     }
@@ -1354,12 +1377,12 @@ export function buildDisasterRecoveryQueuedResponse(params: {
 
 type OrgManagedListEntryExtras = {
   engineDisplayName: string | null
-  environmentDisplayName: string | null
+  environmentName: string | null
   projectId: string
-  projectDisplayName: string | null
+  projectName: string | null
   workspaceId: string
-  workspaceDisplayName: string | null
-  serverDisplayName: string | null
+  workspaceName: string | null
+  serverName: string | null
   members: unknown[]
 }
 
@@ -1369,12 +1392,69 @@ export function buildOrgManagedListEntry<T extends Record<string, unknown>>(
   return {
     ...params.serializedRow,
     engineDisplayName: params.engineDisplayName,
-    environmentDisplayName: params.environmentDisplayName,
+    environmentName: params.environmentName,
     projectId: params.projectId,
-    projectDisplayName: params.projectDisplayName,
+    projectName: params.projectName,
     workspaceId: params.workspaceId,
-    workspaceDisplayName: params.workspaceDisplayName,
-    serverDisplayName: params.serverDisplayName,
+    workspaceName: params.workspaceName,
+    serverName: params.serverName,
     members: params.members,
   }
+}
+
+type OrgManagedListSourceRow = {
+  id: string
+  environmentId: string | null
+  name: string | null
+  engine: string | null
+  status: string | null
+  metadata: unknown
+  options: unknown
+  serverId: string | null
+  createdAt: string
+  updatedAt: string
+  environmentServerId: string | null
+  environmentDisplayName: string | null
+  projectId: string
+  projectDisplayName: string | null
+  workspaceId: string
+  workspaceDisplayName: string | null
+  serverDisplayName: string | null
+}
+
+/** One `GET /organizations/:id/managed` row — shared listener on loopback, no residual backend ports. */
+export async function serializeOrgManagedListRow(
+  db: Db,
+  row: OrgManagedListSourceRow,
+  members: unknown[],
+  serverNamesById: ReadonlyMap<string, string | null> = new Map()
+) {
+  const spec = row.engine ? getManagedEngineSpec(row.engine) : null
+  const resolvedServerId = resolveManagedServerId(
+    { serverId: row.serverId },
+    row.environmentServerId
+  )
+  const serverName =
+    resolvedServerId === null ? null : (serverNamesById.get(resolvedServerId) ?? null)
+  const listenerParams = managedStatusListenerParams({
+    serverId: resolvedServerId,
+    engine: row.engine,
+    options: row.options,
+  })
+  const listener = listenerParams ? await resolveManagedLoopbackListener(db, listenerParams) : null
+  return buildOrgManagedListEntry({
+    serializedRow: serializeManagedRow(
+      row,
+      resolvedServerId,
+      listener ? { host: listener.host, port: listener.port } : { host: null, port: null }
+    ),
+    engineDisplayName: spec?.displayName ?? null,
+    environmentName: row.environmentDisplayName,
+    projectId: row.projectId,
+    projectName: row.projectDisplayName,
+    workspaceId: row.workspaceId,
+    workspaceName: row.workspaceDisplayName,
+    serverName,
+    members,
+  })
 }
