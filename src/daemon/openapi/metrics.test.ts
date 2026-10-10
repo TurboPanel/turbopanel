@@ -52,9 +52,9 @@ function fieldNamesForScope(scope: MetricEntityScope): string[] {
 }
 
 test('DaemonMetricsSample documents the accepted wire versions and required top-level fields', () => {
-  assertEquals([...METRICS_WIRE_VERSIONS], [6, 7])
+  assertEquals([...METRICS_WIRE_VERSIONS], [6, 8])
   assertEquals(sample.properties.type.const, 'metrics')
-  assertEquals(sample.properties.metadata.properties.version!.enum, [6, 7])
+  assertEquals(sample.properties.metadata.properties.version!.enum, [6, 8])
   assertEquals('durable' in sample.properties.metadata.properties, true)
   assertEquals('extended' in sample.properties, true)
   assertEquals(sample.required.includes('metadata'), true)

@@ -101,7 +101,7 @@ it('validateMetricsSample rejects a wrong metadata schema version', () => {
   assertEquals(result.ok, false)
 })
 
-it('validateMetricsSample accepts both v6 and v7 samples and keeps the wire version', () => {
+it('validateMetricsSample accepts both v6 and v8 samples and keeps the wire version', () => {
   for (const version of [METRICS_LEGACY_WIRE_VERSION, METRICS_SCHEMA_VERSION]) {
     const result = validateMetricsSample(validRaw({ metadata: { version } }), ctx())
     assertEquals(result.ok, true)
@@ -124,7 +124,7 @@ it('validateMetricsSample carries the durable flag and rejects a non-boolean one
   assertEquals(bad.ok, false)
 })
 
-it('validateMetricsSample accepts the v7 extended section and sanitizes it', () => {
+it('validateMetricsSample accepts the v8 extended section and sanitizes it', () => {
   const result = validateMetricsSample(
     validRaw({
       metadata: { version: METRICS_SCHEMA_VERSION },
@@ -144,6 +144,46 @@ it('validateMetricsSample accepts the v7 extended section and sanitizes it', () 
   assertEquals(result.sample.extended?.host, { oomKills: 2, pidLimitUsedPercent: null })
   assertEquals(result.sample.extended?.text, { kernel: '6.8.0' })
   assertEquals(result.sample.extended?.blockDeviceText, [{ deviceId: 'nvme0n1', model: 'Samsung' }])
+})
+
+it('validateMetricsSample accepts the per-sample sizes and sanitizes them without coercing a gap to 0', () => {
+  const result = validateMetricsSample(
+    validRaw({
+      metadata: { version: METRICS_SCHEMA_VERSION },
+      extended: {
+        sizes: { memoryTotalBytes: 8e9, swapTotalBytes: null, logicalCores: 4 },
+        filesystemSizes: [{ filesystemId: 'fs-a', totalBytes: 1e9, totalInodes: null }],
+        gpuSizes: [{ gpuId: 'gpu0', memoryTotalBytes: 16e9 }],
+        networkSizes: [{ deviceId: 'eth0', linkSpeedMbps: 1000 }],
+      },
+    }),
+    ctx()
+  )
+  assertEquals(result.ok, true)
+  if (!result.ok) return
+  assertEquals(result.sample.extended?.sizes, {
+    memoryTotalBytes: 8e9,
+    swapTotalBytes: null,
+    logicalCores: 4,
+  })
+  assertEquals(result.sample.extended?.filesystemSizes, [
+    { filesystemId: 'fs-a', totalBytes: 1e9, totalInodes: null },
+  ])
+  assertEquals(result.sample.extended?.gpuSizes, [{ gpuId: 'gpu0', memoryTotalBytes: 16e9 }])
+  assertEquals(result.sample.extended?.networkSizes, [{ deviceId: 'eth0', linkSpeedMbps: 1000 }])
+})
+
+it('validateMetricsSample rejects malformed or unbounded sizes', () => {
+  const bad = (extended: unknown) => validateMetricsSample(validRaw({ extended }), ctx())
+  assertEquals(bad({ sizes: { notASize: 1 } }).ok, false)
+  assertEquals(bad({ sizes: { memoryTotalBytes: 'lots' } }).ok, false)
+  assertEquals(bad({ filesystemSizes: [{ totalBytes: 1 }] }).ok, false)
+  assertEquals(bad({ filesystemSizes: [{ filesystemId: 'fs', totalBytes: 'x' }] }).ok, false)
+  assertEquals(bad({ filesystemSizes: [{ filesystemId: 'fs', unknown: 1 }] }).ok, false)
+  assertEquals(bad({ gpuSizes: [{ gpuId: 'g', memoryTotalBytes: {} }] }).ok, false)
+  // The per-entity arrays are bounded like every other entity array: a flood of ids is refused.
+  const flood = Array.from({ length: 65 }, (_, i) => ({ filesystemId: `fs-${i}`, totalBytes: 1 }))
+  assertEquals(bad({ filesystemSizes: flood }).ok, false)
 })
 
 it('validateMetricsSample rejects malformed extended sections', () => {
@@ -639,4 +679,22 @@ it('rateLimitedMetricsLog keeps bounded memory and bounded reason length', () =>
   rateLimitedMetricsLog('srv-1', `0:${'x'.repeat(5000)}`, log, 1_000 + 20_000)
   assertEquals(logged.length, 20_001)
   resetMetricsRateLimitForTests()
+})
+
+it('validateMetricsSample keeps the 16 most severe events of an older daemon that sends more', () => {
+  const at = new Date().toISOString()
+  const events = [
+    ...Array.from({ length: 40 }, (_, i) => ({
+      eventId: `info-${i}`,
+      at,
+      kind: 'oom_kill',
+      severity: 'info',
+    })),
+    { eventId: 'crit', at, kind: 'oom_kill', severity: 'critical' },
+  ]
+  const result = validateMetricsSample(validRaw({ events }), ctx())
+  assertEquals(result.ok, true)
+  if (!result.ok) return
+  assertEquals(result.sample.events.length, 16)
+  assertEquals(result.sample.events[0]?.eventId, 'crit')
 })

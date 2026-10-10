@@ -45,6 +45,7 @@ import {
   metricsRangeTailIsNow,
   readLiveSample,
 } from '../../daemon/metrics/query/live-session.ts'
+import { emptyHostFacts } from '../../daemon/metrics/query/host-facts.ts'
 import {
   canonicalizeMetricsRange,
   parseMaxPoints,
@@ -64,7 +65,6 @@ import {
   type StatusHistoryResult,
 } from '../../daemon/metrics/types.ts'
 import {
-  buildCapacitiesByGeneration,
   buildConnectionHistoryPayload,
   buildCpuLimitsEnvelope,
   buildFleetLatestPayload,
@@ -82,6 +82,8 @@ import {
   hardwareProfileUpdateNeedsTopologyValidation,
   metricEventsHasCacheableData,
   type MetricEventsResponse,
+  HOST_FACTS_LOOKBACK_MS,
+  buildHostFactsPayload,
   metricsBackendUnavailableResponse,
   metricsQueryErrorMessage,
   nicSlotLimitViolation,
@@ -97,7 +99,6 @@ import {
 import {
   getLatestTopologyGeneration,
   getLatestTopologyGenerations,
-  getTopologyGenerations,
 } from '../../features/servers/server-topology-records.ts'
 
 /** Fixed lookback for the org servers overview usage strip/bars (~1 sample/min). */
@@ -521,15 +522,6 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       latestSnapshot: latestGeneration?.snapshot,
       deployment,
     })
-    // Capacity totals are the denominator of every derived percentage, so
-    // they must come from the generation each bucket was sampled under — not
-    // from today's. Only the generations this range actually spans are
-    // fetched, and a range that never crosses a topology change costs one
-    // extra indexed lookup.
-    const capacitiesByGeneration = buildCapacitiesByGeneration(
-      await getTopologyGenerations(db, serverId, hostResult?.topologyGenerations ?? []),
-      hardwareProfile
-    )
     const hostChartResponse = hostResult
       ? toHostSeriesChartResponse({
           serverId,
@@ -537,7 +529,7 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
           to: queryRange.toIso,
           result: hostResult,
           capacities: context.capacities,
-          capacitiesByGeneration,
+          hiddenMetrics: seriesQuery.hiddenHostMetrics,
         })
       : null
 
@@ -845,6 +837,47 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       await cache.set(cacheKey, payload, ttlSeconds)
     }
     return c.json(payload)
+  })
+
+  /**
+   * What the host last told us about itself (kernel, OS, versions, drive model
+   * and SMART verdict, GPU driver and model): text, never numbers. Read from
+   * the newest sample in the last day; empty when the host reports none.
+   */
+  router.get('/servers/:id/metrics/facts', async (c) => {
+    const serverId = c.req.param('id')
+    const denied = await authorizeServerRead(c, serverId)
+    if (denied) return denied
+
+    const store = getServerMetricsStore(c)
+    const backend = resolveStoreBackendKind(store, opts.runtime)
+    if (!store?.queryHostFacts) {
+      return c.json(
+        buildHostFactsPayload({
+          kind: backend,
+          available: false,
+          serverId,
+          sampledAt: null,
+          facts: emptyHostFacts(),
+        })
+      )
+    }
+
+    const nowMs = Date.now()
+    try {
+      const result = await store.queryHostFacts({
+        serverId,
+        from: new Date(nowMs - HOST_FACTS_LOOKBACK_MS).toISOString(),
+        to: new Date(nowMs).toISOString(),
+      })
+      return c.json(buildHostFactsPayload(result))
+    } catch (err) {
+      const message = metricsQueryErrorMessage(err)
+      console.error(
+        `metrics queryHostFacts failed backend=${backend} serverId=${serverId}: ${message}`
+      )
+      return c.json(metricsBackendUnavailableResponse(backend), 503)
+    }
   })
 
   /**

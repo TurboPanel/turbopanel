@@ -61,6 +61,7 @@ test('metricsPaths documents the client query surface under the client API prefi
     [
       '/api/client/v1/servers/{id}/metrics/capabilities',
       '/api/client/v1/servers/{id}/metrics/connection',
+      '/api/client/v1/servers/{id}/metrics/facts',
       '/api/client/v1/servers/{id}/metrics/hardware-profile',
       '/api/client/v1/servers/{id}/metrics/series',
       '/api/client/v1/servers/{id}/metrics/summary',

@@ -11,6 +11,8 @@ import type {
   EntitySeriesResult,
   FleetHostSnapshotQuery,
   FleetHostSnapshotResult,
+  HostFactsQuery,
+  HostFactsResult,
   HostSeriesQuery,
   HostSeriesResult,
   HostSummaryQuery,
@@ -151,6 +153,10 @@ export class UnavailableServerMetricsStore implements ServerMetricsStore {
   }
 
   queryMetricEvents(_input: MetricEventsQuery): Promise<MetricEventsResult> {
+    return Promise.reject(new Error(this.reason))
+  }
+
+  queryHostFacts(_input: HostFactsQuery): Promise<HostFactsResult> {
     return Promise.reject(new Error(this.reason))
   }
 }

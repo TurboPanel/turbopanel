@@ -31,9 +31,7 @@ export {
  * disabled store, since a DuckDB startup failure is a self-hosted backend
  * outage, not an "unconfigured" state.
  */
-function resolveDenoServerMetricsStore(
-  input: ResolveServerMetricsStoreInput
-): ServerMetricsStore {
+function resolveDenoServerMetricsStore(input: ResolveServerMetricsStoreInput): ServerMetricsStore {
   // Deno → DuckDB, always: the metrics directory derives from
   // `resolveMetricsDir()` with a filesystem default, so there is no
   // "incomplete config" case — only a directory that cannot be created.

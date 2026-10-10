@@ -1,6 +1,6 @@
 /**
  * Query-side SQL primitives for the v5 Analytics Engine dataset
- * (`turbopanel_server_metrics_v7` — see `field-map.ts`).
+ * (`turbopanel_server_metrics_v8` — see `field-map.ts`).
  *
  * Host-level aggregates (`host.system` / `host.io`) are simple: every sample
  * writes exactly one `host.system` row and one `host.io` row — unlike v3's
@@ -74,7 +74,7 @@ import {
   defaultExpectedSamplesPerBucket,
   finalizeHostSeriesResult,
 } from '../../query/series-response.ts'
-import { V7_SINGLE_SOURCE_FAMILIES, V7_SOURCE_IDS } from './v7-layout.ts'
+import { V8_SINGLE_SOURCE_FAMILIES, V8_SOURCE_IDS } from './v8-layout.ts'
 import {
   AE_BLOB_EVENT_ENTITY_ID_INDEX,
   AE_BLOB_EVENT_ID_INDEX,
@@ -86,6 +86,7 @@ import {
   AE_BLOB_SOURCE_OR_IDENTITY_INDEX,
   AE_BLOB_TOPOLOGY_GENERATION_INDEX,
   AE_DATASET_NAME,
+  AE_STORAGE_VERSION,
   AE_FAMILY_HOST_NETWORK,
   AE_FAMILY_HOST_SYSTEM,
   AE_EVENT_INDEX_SUFFIX,
@@ -112,7 +113,7 @@ import {
 export { AE_DATASET_NAME }
 
 /** Schema versions this read path understands (positional semantics must match). */
-export const AE_SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [6, 7]
+export const AE_SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [AE_STORAGE_VERSION]
 
 /**
  * Escape a string literal for AE SQL. AE's dialect is ClickHouse-flavoured, where a backslash
@@ -1104,6 +1105,7 @@ const HOST_SERIES_QUERYABLE_SCOPES: ReadonlySet<MetricEntityScope> = new Set([
   'extended.host',
   'extended.docker',
   'extended.ingress',
+  'extended.sizes',
 ])
 
 /** Validate `metrics` are known canonical names scoped to a queryable host-singleton entity, de-duplicated, in request order. */
@@ -1128,7 +1130,7 @@ function assertHostMetrics(metrics: readonly string[]): string[] {
 function hostMetricSelectExpression(canonicalName: string, alias: string): string {
   const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[canonicalName]
   const slot = findHostFieldSlot(descriptor.entityScope, descriptor.fieldName)
-  // v7 does not store every v6 field: one it dropped reads as missing (the
+  // v8 does not store every v6 field: one it dropped reads as missing (the
   // sentinel, which the row parser turns into null), never as an error.
   if (!slot) return `${aeMissingMetricSentinelSql()} AS ${alias}`
   return `${aggregateExpressionForDescriptor(descriptor, slot.family, slot.doubleIndex)} AS ${alias}`
@@ -1138,7 +1140,7 @@ function hostMetricSelectExpression(canonicalName: string, alias: string): strin
  * `blob1 = 'metrics' AND (blob2 = 'host.system' [OR blob2 = ...])` — every
  * host-metric select's internal `if()` guards already scope by family, this
  * is a row-scan optimization, not a correctness requirement. `host.system`
- * is always included (it anchors `sample_count`); the other v7 host rows
+ * is always included (it anchors `sample_count`); the other v8 host rows
  * (`host.io`, `host.network`, `host.web`, `managed.database`) are included
  * only when `metrics` references one of their fields.
  */
@@ -1991,10 +1993,10 @@ function buildSingleRowEntitySeriesSql(
   const { serverId, bucketSeconds, fromUnix, toUnix } = resolveSeriesWindow(input, opts)
   const discriminators = hostMetricsDiscriminatorPredicates()
   const order = fieldOrderForFamily(family)
-  // v7 folded these families into host rows: the row family is the host row's,
+  // v8 folded these families into host rows: the row family is the host row's,
   // and the only source is the fixed id the family reports as.
-  const rowFamily = V7_SINGLE_SOURCE_FAMILIES[family].hostFamily
-  const sourceIdLiteral = quoteSqlString(V7_SOURCE_IDS[family])
+  const rowFamily = V8_SINGLE_SOURCE_FAMILIES[family].hostFamily
+  const sourceIdLiteral = quoteSqlString(V8_SOURCE_IDS[family])
   const aliases = fields.map((_, i) => metricAlias(i))
   const metricSelects = fields.map((field, i) => {
     const descriptor = resolveEntityFieldDescriptor(family, field)
@@ -2748,7 +2750,7 @@ async function queryEntitySeriesChunk(
 // ---------------------------------------------------------------------------
 
 /**
- * The single-source families have no ids of their own in v7: the source is
+ * The single-source families have no ids of their own in v8: the source is
  * "seen" when the host row's first value for the family is not the sentinel.
  */
 function buildSingleSourceSeenSql(
@@ -2758,11 +2760,11 @@ function buildSingleSourceSeenSql(
   dataset: string,
   [fromUnix, toUnix]: readonly [number, number]
 ): string {
-  const rowFamily = V7_SINGLE_SOURCE_FAMILIES[family].hostFamily
+  const rowFamily = V8_SINGLE_SOURCE_FAMILIES[family].hostFamily
   const anchor = SINGLE_ROW_FIELD_ORDER[family].findIndex((field) => field !== null)
   return [
     'SELECT',
-    `  ${quoteSqlString(V7_SOURCE_IDS[family])} AS ids`,
+    `  ${quoteSqlString(V8_SOURCE_IDS[family])} AS ids`,
     `FROM ${dataset}`,
     `WHERE ${serverFamiliesPredicate(serverId, [rowFamily])}`,
     `  AND ${discriminators[0]}`,

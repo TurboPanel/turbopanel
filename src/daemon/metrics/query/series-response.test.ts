@@ -116,59 +116,74 @@ test('computeTopologyGenerationBreaks ignores unknown generations', () => {
   )
 })
 
-test('derived percentages use the capacities of each point’s own topology generation', () => {
-  // A range spanning a RAM upgrade: generation 1 had 8 GB, generation 2 has
-  // 16 GB. The same 6 GB reading is 75% before the upgrade and 37.5% after.
-  // v4 divided every point by the *latest* capacity, so the pre-upgrade
-  // history silently restated itself as 37.5%.
+const NO_CAPACITIES = {
+  memoryTotalBytes: null,
+  swapTotalBytes: null,
+  rootFilesystemTotalBytes: null,
+}
+
+test('derived percentages are taken against the size each point carries, so a resize never restates history', () => {
+  // A range spanning a RAM upgrade (or a balloon): the first sample had 8 GB,
+  // the second 16 GB. The same 6 GB reading is 75% then and 37.5% after. Each
+  // point carries the size it was measured against; no topology change is needed.
   const response = toHostSeriesChartResponse({
     serverId: 'srv-1',
     from: '2026-01-01T00:00:00.000Z',
     to: '2026-01-01T00:02:00.000Z',
     result: availableResult({
-      metrics: ['host.memory.usedBytes'],
+      metrics: ['host.memory.usedBytes', 'extended.sizes.memoryTotalBytes'],
       points: [
         {
           at: '2026-01-01T00:00:00.000Z',
-          values: { 'host.memory.usedBytes': 6_000 },
+          values: {
+            'host.memory.usedBytes': 6_000,
+            'extended.sizes.memoryTotalBytes': 8_000,
+          },
           topologyGeneration: 1,
         },
         {
           at: '2026-01-01T00:01:00.000Z',
-          values: { 'host.memory.usedBytes': 6_000 },
-          topologyGeneration: 2,
+          values: {
+            'host.memory.usedBytes': 6_000,
+            'extended.sizes.memoryTotalBytes': 16_000,
+          },
+          topologyGeneration: 1,
         },
       ],
     }),
-    capacities: {
-      memoryTotalBytes: 16_000,
-      swapTotalBytes: null,
-      rootFilesystemTotalBytes: null,
-    },
-    capacitiesByGeneration: new Map([
-      [
-        1,
-        {
-          memoryTotalBytes: 8_000,
-          swapTotalBytes: null,
-          rootFilesystemTotalBytes: null,
-        },
-      ],
-      [
-        2,
-        {
-          memoryTotalBytes: 16_000,
-          swapTotalBytes: null,
-          rootFilesystemTotalBytes: null,
-        },
-      ],
-    ]),
+    capacities: { ...NO_CAPACITIES, memoryTotalBytes: 32_000 },
   })
   assertEquals(response.points[0]!.derived.memoryUsedPercent, 75)
   assertEquals(response.points[1]!.derived.memoryUsedPercent, 37.5)
 })
 
-test('a point whose generation has no recorded snapshot falls back to the latest capacities', () => {
+test('swap and root disk percentages use their own per-point sizes too', () => {
+  const response = toHostSeriesChartResponse({
+    serverId: 'srv-1',
+    from: '2026-01-01T00:00:00.000Z',
+    to: '2026-01-01T00:01:00.000Z',
+    result: availableResult({
+      metrics: [],
+      points: [
+        {
+          at: '2026-01-01T00:00:00.000Z',
+          values: {
+            'host.memory.swapUsedBytes': 1_000,
+            'extended.sizes.swapTotalBytes': 4_000,
+            'host.storage.rootFilesystemAvailableBytes': 30_000,
+            'extended.sizes.rootFilesystemTotalBytes': 100_000,
+          },
+        },
+      ],
+    }),
+    capacities: NO_CAPACITIES,
+  })
+  assertEquals(response.points[0]!.derived.swapUsedPercent, 25)
+  assertEquals(response.points[0]!.derived.rootFilesystemUsedBytes, 70_000)
+  assertEquals(response.points[0]!.derived.rootFilesystemUsedPercent, 70)
+})
+
+test('a point that carries no size falls back to the latest topology totals', () => {
   const response = toHostSeriesChartResponse({
     serverId: 'srv-1',
     from: '2026-01-01T00:00:00.000Z',
@@ -183,47 +198,53 @@ test('a point whose generation has no recorded snapshot falls back to the latest
         },
       ],
     }),
-    capacities: {
-      memoryTotalBytes: 16_000,
-      swapTotalBytes: null,
-      rootFilesystemTotalBytes: null,
-    },
-    capacitiesByGeneration: new Map([
-      [
-        1,
-        {
-          memoryTotalBytes: 8_000,
-          swapTotalBytes: null,
-          rootFilesystemTotalBytes: null,
-        },
-      ],
-    ]),
+    capacities: { ...NO_CAPACITIES, memoryTotalBytes: 16_000 },
   })
   assertEquals(response.points[0]!.derived.memoryUsedPercent, 25)
 })
 
-test('omitting capacitiesByGeneration keeps the previous single-capacity behaviour', () => {
+test('a zero or missing per-point size is never a divisor', () => {
   const response = toHostSeriesChartResponse({
     serverId: 'srv-1',
     from: '2026-01-01T00:00:00.000Z',
     to: '2026-01-01T00:01:00.000Z',
     result: availableResult({
-      metrics: ['host.memory.usedBytes'],
+      metrics: [],
       points: [
         {
           at: '2026-01-01T00:00:00.000Z',
-          values: { 'host.memory.usedBytes': 4_000 },
-          topologyGeneration: 1,
+          values: { 'host.memory.usedBytes': 4_000, 'extended.sizes.memoryTotalBytes': 0 },
         },
       ],
     }),
-    capacities: {
-      memoryTotalBytes: 8_000,
-      swapTotalBytes: null,
-      rootFilesystemTotalBytes: null,
-    },
+    capacities: NO_CAPACITIES,
+  })
+  assertEquals(response.points[0]!.derived.memoryUsedPercent, null)
+})
+
+test('sizes read only to take a percentage are hidden from the response', () => {
+  const response = toHostSeriesChartResponse({
+    serverId: 'srv-1',
+    from: '2026-01-01T00:00:00.000Z',
+    to: '2026-01-01T00:01:00.000Z',
+    result: availableResult({
+      metrics: ['host.memory.usedBytes', 'extended.sizes.memoryTotalBytes'],
+      points: [
+        {
+          at: '2026-01-01T00:00:00.000Z',
+          values: {
+            'host.memory.usedBytes': 4_000,
+            'extended.sizes.memoryTotalBytes': 8_000,
+          },
+        },
+      ],
+    }),
+    capacities: NO_CAPACITIES,
+    hiddenMetrics: new Set(['extended.sizes.memoryTotalBytes']),
   })
   assertEquals(response.points[0]!.derived.memoryUsedPercent, 50)
+  assertEquals(response.points[0]!.values, { 'host.memory.usedBytes': 4_000 })
+  assertEquals(response.metrics, ['host.memory.usedBytes'])
 })
 
 // --- Coverage (2026-09-27 testing: ~30 of 60 minutely buckets "missing") ---
