@@ -1,18 +1,18 @@
-import { assertEquals } from "@std/assert";
-import type { Db } from "../../db/connection.ts";
-import type { DaemonCellRegistry } from "../../contracts/cell.ts";
+import { assertEquals } from '@std/assert'
+import type { Db } from '../../db/connection.ts'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import {
   type EndpointAddressCaches,
   fabricPairCacheKey,
   planRelayPath,
   type RelayPathKind,
   type RelayRecord,
-} from "./fabric-records.ts";
+} from './fabric-records.ts'
 import {
   FABRIC_PATH_DEMOTE_STRIKES,
   FABRIC_PATH_PROMOTE_STRIKES,
   initialFabricPathState,
-} from "./path-state.ts";
+} from './path-state.ts'
 import {
   buildNatCandidateExchange,
   classifyNatMapping,
@@ -26,8 +26,8 @@ import {
   resetFabricPathStateCacheForTests,
   runFabricRendezvousRound,
   setCollectFabricPathObservationsForTests,
-} from "./rendezvous.ts";
-import { setLoadServerStatusRecords } from "../../platform/ports/load-server-status.ts";
+} from './rendezvous.ts'
+import { setLoadServerStatusRecords } from '../../platform/ports/load-server-status.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -35,145 +35,130 @@ import { setLoadServerStatusRecords } from "../../platform/ports/load-server-sta
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno);
+const test = Deno.test.bind(Deno)
 
-const KEY_A = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-const KEY_B = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
-const KEY_GW = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=";
-const FABRIC_ID = "fab-rendezvous";
+const KEY_A = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+const KEY_B = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB='
+const KEY_GW = 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC='
+const FABRIC_ID = 'fab-rendezvous'
 
 function paths(
   publicKey: string,
   endpoint: string,
-  health: ObservedPeerPath["health"] = "healthy",
+  health: ObservedPeerPath['health'] = 'healthy'
 ): ObservedPeerPath[] {
-  return [{ publicKey, endpoint, health }];
+  return [{ publicKey, endpoint, health }]
 }
 
-test("classifyNatMapping is easy when the mapped port matches at two observers", () => {
+test('classifyNatMapping is easy when the mapped port matches at two observers', () => {
   const observations = new Map([
-    ["gw-1", paths(KEY_A, "203.0.113.50:48172")],
-    ["gw-2", paths(KEY_A, "203.0.113.50:48172")],
-  ]);
-  assertEquals(classifyNatMapping(observations, KEY_A), "easy");
-});
+    ['gw-1', paths(KEY_A, '203.0.113.50:48172')],
+    ['gw-2', paths(KEY_A, '203.0.113.50:48172')],
+  ])
+  assertEquals(classifyNatMapping(observations, KEY_A), 'easy')
+})
 
-test("classifyNatMapping is hard when observers see different ports", () => {
+test('classifyNatMapping is hard when observers see different ports', () => {
   const observations = new Map([
-    ["gw-1", paths(KEY_A, "203.0.113.50:48172")],
-    ["gw-2", paths(KEY_A, "203.0.113.50:51200")],
-  ]);
-  assertEquals(classifyNatMapping(observations, KEY_A), "hard");
-});
+    ['gw-1', paths(KEY_A, '203.0.113.50:48172')],
+    ['gw-2', paths(KEY_A, '203.0.113.50:51200')],
+  ])
+  assertEquals(classifyNatMapping(observations, KEY_A), 'hard')
+})
 
-test("classifyNatMapping is unknown with a single observation point", () => {
-  const observations = new Map([
-    ["gw-1", paths(KEY_A, "203.0.113.50:48172")],
-  ]);
-  assertEquals(classifyNatMapping(observations, KEY_A), "unknown");
-});
+test('classifyNatMapping is unknown with a single observation point', () => {
+  const observations = new Map([['gw-1', paths(KEY_A, '203.0.113.50:48172')]])
+  assertEquals(classifyNatMapping(observations, KEY_A), 'unknown')
+})
 
-test("buildNatCandidateExchange hands each side the peer endpoint observers saw", () => {
+test('buildNatCandidateExchange hands each side the peer endpoint observers saw', () => {
   const observations = new Map([
-    ["gw-1", [
-      ...paths(KEY_A, "203.0.113.50:48172"),
-      ...paths(KEY_B, "198.51.100.20:51820"),
-    ]],
-  ]);
+    ['gw-1', [...paths(KEY_A, '203.0.113.50:48172'), ...paths(KEY_B, '198.51.100.20:51820')]],
+  ])
   const exchange = buildNatCandidateExchange({
     relays: [
-      { serverId: "srv-a", publicKey: KEY_A },
-      { serverId: "srv-b", publicKey: KEY_B },
-      { serverId: "gw-1", publicKey: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=" },
+      { serverId: 'srv-a', publicKey: KEY_A },
+      { serverId: 'srv-b', publicKey: KEY_B },
+      { serverId: 'gw-1', publicKey: 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=' },
     ],
     observations,
     natClass: new Map([
-      ["srv-a", "easy"],
-      ["srv-b", "easy"],
+      ['srv-a', 'easy'],
+      ['srv-b', 'easy'],
     ]),
     pathStates: new Map(),
-  });
-  assertEquals(exchange.get("srv-a"), [
-    { publicKey: KEY_B, endpoints: ["198.51.100.20:51820"] },
-  ]);
-  assertEquals(exchange.get("srv-b"), [
-    { publicKey: KEY_A, endpoints: ["203.0.113.50:48172"] },
-  ]);
-});
+  })
+  assertEquals(exchange.get('srv-a'), [{ publicKey: KEY_B, endpoints: ['198.51.100.20:51820'] }])
+  assertEquals(exchange.get('srv-b'), [{ publicKey: KEY_A, endpoints: ['203.0.113.50:48172'] }])
+})
 
-test("buildNatCandidateExchange skips both-hard pairs", () => {
+test('buildNatCandidateExchange skips both-hard pairs', () => {
   const observations = new Map([
-    ["gw-1", [
-      ...paths(KEY_A, "203.0.113.50:48172"),
-      ...paths(KEY_B, "198.51.100.20:51820"),
-    ]],
-  ]);
+    ['gw-1', [...paths(KEY_A, '203.0.113.50:48172'), ...paths(KEY_B, '198.51.100.20:51820')]],
+  ])
   const exchange = buildNatCandidateExchange({
     relays: [
-      { serverId: "srv-a", publicKey: KEY_A },
-      { serverId: "srv-b", publicKey: KEY_B },
+      { serverId: 'srv-a', publicKey: KEY_A },
+      { serverId: 'srv-b', publicKey: KEY_B },
     ],
     observations,
     natClass: new Map([
-      ["srv-a", "hard"],
-      ["srv-b", "hard"],
+      ['srv-a', 'hard'],
+      ['srv-b', 'hard'],
     ]),
     pathStates: new Map(),
-  });
-  assertEquals(exchange.size, 0);
-});
+  })
+  assertEquals(exchange.size, 0)
+})
 
-test("buildNatCandidateExchange skips pairs already on a healthy direct path", () => {
+test('buildNatCandidateExchange skips pairs already on a healthy direct path', () => {
   const observations = new Map([
-    ["gw-1", [
-      ...paths(KEY_A, "203.0.113.50:48172"),
-      ...paths(KEY_B, "198.51.100.20:51820"),
-    ]],
-  ]);
-  const ab = initialFabricPathState("srv-b");
-  ab.selected = "direct_lan";
-  const ba = initialFabricPathState("srv-a");
-  ba.selected = "direct_public";
+    ['gw-1', [...paths(KEY_A, '203.0.113.50:48172'), ...paths(KEY_B, '198.51.100.20:51820')]],
+  ])
+  const ab = initialFabricPathState('srv-b')
+  ab.selected = 'direct_lan'
+  const ba = initialFabricPathState('srv-a')
+  ba.selected = 'direct_public'
   const exchange = buildNatCandidateExchange({
     relays: [
-      { serverId: "srv-a", publicKey: KEY_A },
-      { serverId: "srv-b", publicKey: KEY_B },
+      { serverId: 'srv-a', publicKey: KEY_A },
+      { serverId: 'srv-b', publicKey: KEY_B },
     ],
     observations,
     natClass: new Map([
-      ["srv-a", "easy"],
-      ["srv-b", "easy"],
+      ['srv-a', 'easy'],
+      ['srv-b', 'easy'],
     ]),
     pathStates: new Map([
-      ["srv-a>srv-b", ab],
-      ["srv-b>srv-a", ba],
+      ['srv-a>srv-b', ab],
+      ['srv-b>srv-a', ba],
     ]),
-  });
-  assertEquals(exchange.size, 0);
-});
+  })
+  assertEquals(exchange.size, 0)
+})
 
-test("fabricNeedsRendezvous is false for a single keyed relay", () => {
+test('fabricNeedsRendezvous is false for a single keyed relay', () => {
   assertEquals(
     fabricNeedsRendezvous([
       {
-        id: "r1",
-        fabricId: "fab",
-        serverId: "srv-a",
-        address: "10.250.0.1",
-        role: "member",
+        id: 'r1',
+        fabricId: 'fab',
+        serverId: 'srv-a',
+        address: '10.250.0.1',
+        role: 'member',
         keepalive: null,
         endpointAddress: null,
         publicKey: KEY_A,
-        prefix: "10.192.0.0/16",
+        prefix: '10.192.0.0/16',
         advertisedCidrs: [],
         metadata: {},
         allowRelay: null,
         preferredGatewayIds: [],
       },
     ]),
-    false,
-  );
-});
+    false
+  )
+})
 
 function stampDb(): Db {
   return {
@@ -184,13 +169,13 @@ function stampDb(): Db {
             where() {
               return {
                 limit: () => Promise.resolve([]),
-              };
+              }
             },
-          };
+          }
         },
-      };
+      }
     },
-  } as unknown as Db;
+  } as unknown as Db
 }
 
 function emptyPathCaches(): EndpointAddressCaches {
@@ -201,84 +186,89 @@ function emptyPathCaches(): EndpointAddressCaches {
     policyByDatacenter: new Map(),
     natEndpointByPair: new Map(),
     failedPathKindsByPair: new Map(),
-  };
+  }
 }
 
 function keyedRelay(params: {
-  serverId: string;
-  publicKey: string;
-  role?: RelayRecord["role"];
-  peer?: { serverId: string; selected: RelayPathKind };
+  serverId: string
+  publicKey: string
+  role?: RelayRecord['role']
+  peer?: { serverId: string; selected: RelayPathKind }
 }): RelayRecord {
   return {
     id: `r-${params.serverId}`,
     fabricId: FABRIC_ID,
     serverId: params.serverId,
-    address: "10.250.0.1",
-    role: params.role ?? "member",
+    address: '10.250.0.1',
+    role: params.role ?? 'member',
     keepalive: null,
     endpointAddress: null,
     publicKey: params.publicKey,
-    prefix: "10.192.0.0/16",
+    prefix: '10.192.0.0/16',
     advertisedCidrs: [],
     metadata: params.peer
       ? {
-        paths: {
-          at: "2026-01-01T00:00:00.000Z",
-          entries: [{
-            peerServerId: params.peer.serverId,
-            selected: params.peer.selected,
-            degraded: false,
-          }],
-        },
-      }
+          paths: {
+            at: '2026-01-01T00:00:00.000Z',
+            entries: [
+              {
+                peerServerId: params.peer.serverId,
+                selected: params.peer.selected,
+                degraded: false,
+              },
+            ],
+          },
+        }
       : {},
     allowRelay: null,
     preferredGatewayIds: [],
-  };
+  }
 }
 
 function applySummaries(
   relays: RelayRecord[],
-  summariesByServerId: Map<string, { peerServerId: string; selected: RelayPathKind; degraded: boolean }[]>,
+  summariesByServerId: Map<
+    string,
+    { peerServerId: string; selected: RelayPathKind; degraded: boolean }[]
+  >
 ): void {
   for (const relay of relays) {
-    const entries = summariesByServerId.get(relay.serverId);
-    if (!entries) continue;
+    const entries = summariesByServerId.get(relay.serverId)
+    if (!entries) continue
     relay.metadata = {
       ...relay.metadata,
-      paths: { at: "2026-08-18T00:00:00.000Z", entries },
-    };
+      paths: { at: '2026-08-18T00:00:00.000Z', entries },
+    }
   }
 }
 
-test("runFabricRendezvousRound does not promote observer-only endpoints to direct_nat", async () => {
+test('runFabricRendezvousRound does not promote observer-only endpoints to direct_nat', async () => {
   const relays = [
-    keyedRelay({ serverId: "srv-a", publicKey: KEY_A }),
-    keyedRelay({ serverId: "srv-b", publicKey: KEY_B }),
-    keyedRelay({ serverId: "gw-1", publicKey: KEY_GW }),
-  ];
+    keyedRelay({ serverId: 'srv-a', publicKey: KEY_A }),
+    keyedRelay({ serverId: 'srv-b', publicKey: KEY_B }),
+    keyedRelay({ serverId: 'gw-1', publicKey: KEY_GW }),
+  ]
   setCollectFabricPathObservationsForTests((params) => {
-    const out = new Map<string, ObservedPeerPath[]>();
-    const isProbe = Boolean(params.candidatesByServerId?.size);
+    const out = new Map<string, ObservedPeerPath[]>()
+    const isProbe = Boolean(params.candidatesByServerId?.size)
     if (!isProbe) {
-      out.set("gw-1", [
-        { publicKey: KEY_A, endpoint: "203.0.113.50:48172", health: "healthy" },
-        { publicKey: KEY_B, endpoint: "198.51.100.20:51820", health: "healthy" },
-      ]);
+      out.set('gw-1', [
+        { publicKey: KEY_A, endpoint: '203.0.113.50:48172', health: 'healthy' },
+        { publicKey: KEY_B, endpoint: '198.51.100.20:51820', health: 'healthy' },
+      ])
     }
     for (const relay of params.relays) {
-      if (out.has(relay.serverId) || !relay.publicKey) continue;
-      const paths: ObservedPeerPath[] = [];
+      if (out.has(relay.serverId) || !relay.publicKey) continue
+      const paths: ObservedPeerPath[] = []
       for (const other of params.relays) {
-        if (other.serverId === relay.serverId || !other.publicKey) continue;
-        paths.push({ publicKey: other.publicKey, health: "never" });
+        if (other.serverId === relay.serverId || !other.publicKey) continue
+        paths.push({ publicKey: other.publicKey, health: 'never' })
       }
-      out.set(relay.serverId, paths);
+      out.set(relay.serverId, paths)
     }
-    return Promise.resolve(out);
-  });
-  resetFabricPathStateCacheForTests();
+    return Promise.resolve(out)
+  })
+  resetFabricPathStateCacheForTests()
   try {
     const round = await runFabricRendezvousRound({
       db: stampDb(),
@@ -286,57 +276,57 @@ test("runFabricRendezvousRound does not promote observer-only endpoints to direc
       fabricId: FABRIC_ID,
       relays,
       orgAllowRelay: false,
-    });
-    if (!round) throw new TypeError("expected a rendezvous round");
-    assertEquals(round.natEndpointByPair.size, 0);
-    const caches = emptyPathCaches();
-    caches.natEndpointByPair = round.natEndpointByPair;
-    caches.failedPathKindsByPair = round.failedPathKindsByPair;
+    })
+    if (!round) throw new TypeError('expected a rendezvous round')
+    assertEquals(round.natEndpointByPair.size, 0)
+    const caches = emptyPathCaches()
+    caches.natEndpointByPair = round.natEndpointByPair
+    caches.failedPathKindsByPair = round.failedPathKindsByPair
     const plan = planRelayPath({
       self: relays[0]!,
       other: relays[1]!,
       caches,
-    });
-    assertEquals(plan.selected.kind, "unreachable");
+    })
+    assertEquals(plan.selected.kind, 'unreachable')
     assertEquals(
-      round.pathStates.get(fabricPairCacheKey("srv-a", "srv-b"))?.selected,
-      "unreachable",
-    );
+      round.pathStates.get(fabricPairCacheKey('srv-a', 'srv-b'))?.selected,
+      'unreachable'
+    )
   } finally {
-    setCollectFabricPathObservationsForTests(null);
-    resetFabricPathStateCacheForTests();
+    setCollectFabricPathObservationsForTests(null)
+    resetFabricPathStateCacheForTests()
   }
-});
+})
 
-test("hydrateFabricPathStates preserves demote strikes across separate rendezvous rounds", async () => {
+test('hydrateFabricPathStates preserves demote strikes across separate rendezvous rounds', async () => {
   const relays = [
     keyedRelay({
-      serverId: "srv-a",
+      serverId: 'srv-a',
       publicKey: KEY_A,
-      peer: { serverId: "srv-b", selected: "direct_public" },
+      peer: { serverId: 'srv-b', selected: 'direct_public' },
     }),
     keyedRelay({
-      serverId: "srv-b",
+      serverId: 'srv-b',
       publicKey: KEY_B,
-      peer: { serverId: "srv-a", selected: "direct_public" },
+      peer: { serverId: 'srv-a', selected: 'direct_public' },
     }),
-  ];
+  ]
   setCollectFabricPathObservationsForTests((params) => {
-    const out = new Map<string, ObservedPeerPath[]>();
+    const out = new Map<string, ObservedPeerPath[]>()
     for (const relay of params.relays) {
-      if (!relay.publicKey) continue;
-      const paths: ObservedPeerPath[] = [];
+      if (!relay.publicKey) continue
+      const paths: ObservedPeerPath[] = []
       for (const other of params.relays) {
-        if (other.serverId === relay.serverId || !other.publicKey) continue;
-        paths.push({ publicKey: other.publicKey, health: "never" });
+        if (other.serverId === relay.serverId || !other.publicKey) continue
+        paths.push({ publicKey: other.publicKey, health: 'never' })
       }
-      out.set(relay.serverId, paths);
+      out.set(relay.serverId, paths)
     }
-    return Promise.resolve(out);
-  });
-  resetFabricPathStateCacheForTests();
+    return Promise.resolve(out)
+  })
+  resetFabricPathStateCacheForTests()
   try {
-    let selected = "direct_public";
+    let selected = 'direct_public'
     for (let roundIndex = 0; roundIndex < FABRIC_PATH_DEMOTE_STRIKES; roundIndex += 1) {
       const round = await runFabricRendezvousRound({
         db: stampDb(),
@@ -345,60 +335,63 @@ test("hydrateFabricPathStates preserves demote strikes across separate rendezvou
         relays,
         pathStates: hydrateFabricPathStates(FABRIC_ID, relays),
         orgAllowRelay: false,
-      });
-      if (!round) throw new TypeError("expected a rendezvous round");
-      applySummaries(relays, round.summariesByServerId);
-      selected = round.pathStates.get(fabricPairCacheKey("srv-a", "srv-b"))
-        ?.selected ?? selected;
+      })
+      if (!round) throw new TypeError('expected a rendezvous round')
+      applySummaries(relays, round.summariesByServerId)
+      selected = round.pathStates.get(fabricPairCacheKey('srv-a', 'srv-b'))?.selected ?? selected
     }
-    assertEquals(selected, "unreachable");
+    assertEquals(selected, 'unreachable')
   } finally {
-    setCollectFabricPathObservationsForTests(null);
-    resetFabricPathStateCacheForTests();
+    setCollectFabricPathObservationsForTests(null)
+    resetFabricPathStateCacheForTests()
   }
-});
+})
 
-test("hydrateFabricPathStates preserves promote strikes across separate rendezvous rounds", async () => {
+test('hydrateFabricPathStates preserves promote strikes across separate rendezvous rounds', async () => {
   const relays = [
     keyedRelay({
-      serverId: "srv-a",
+      serverId: 'srv-a',
       publicKey: KEY_A,
-      peer: { serverId: "srv-b", selected: "gateway" },
+      peer: { serverId: 'srv-b', selected: 'gateway' },
     }),
     keyedRelay({
-      serverId: "srv-b",
+      serverId: 'srv-b',
       publicKey: KEY_B,
-      peer: { serverId: "srv-a", selected: "gateway" },
+      peer: { serverId: 'srv-a', selected: 'gateway' },
     }),
-    keyedRelay({ serverId: "gw-1", publicKey: KEY_GW, role: "gateway" }),
-  ];
+    keyedRelay({ serverId: 'gw-1', publicKey: KEY_GW, role: 'gateway' }),
+  ]
   setCollectFabricPathObservationsForTests((params) => {
-    const out = new Map<string, ObservedPeerPath[]>();
-    const isProbe = Boolean(params.candidatesByServerId?.size);
-    out.set("gw-1", [
-      { publicKey: KEY_A, endpoint: "203.0.113.10:51820", health: "healthy" },
-      { publicKey: KEY_B, endpoint: "203.0.113.50:48172", health: "healthy" },
-    ]);
+    const out = new Map<string, ObservedPeerPath[]>()
+    const isProbe = Boolean(params.candidatesByServerId?.size)
+    out.set('gw-1', [
+      { publicKey: KEY_A, endpoint: '203.0.113.10:51820', health: 'healthy' },
+      { publicKey: KEY_B, endpoint: '203.0.113.50:48172', health: 'healthy' },
+    ])
     if (isProbe) {
-      out.set("srv-a", [{
-        publicKey: KEY_B,
-        endpoint: "203.0.113.50:48172",
-        health: "healthy",
-      }]);
-      out.set("srv-b", [{
-        publicKey: KEY_A,
-        endpoint: "203.0.113.10:51820",
-        health: "healthy",
-      }]);
+      out.set('srv-a', [
+        {
+          publicKey: KEY_B,
+          endpoint: '203.0.113.50:48172',
+          health: 'healthy',
+        },
+      ])
+      out.set('srv-b', [
+        {
+          publicKey: KEY_A,
+          endpoint: '203.0.113.10:51820',
+          health: 'healthy',
+        },
+      ])
     } else {
-      out.set("srv-a", []);
-      out.set("srv-b", []);
+      out.set('srv-a', [])
+      out.set('srv-b', [])
     }
-    return Promise.resolve(out);
-  });
-  resetFabricPathStateCacheForTests();
+    return Promise.resolve(out)
+  })
+  resetFabricPathStateCacheForTests()
   try {
-    let selected: RelayPathKind = "gateway";
+    let selected: RelayPathKind = 'gateway'
     for (let roundIndex = 0; roundIndex < FABRIC_PATH_PROMOTE_STRIKES; roundIndex += 1) {
       const round = await runFabricRendezvousRound({
         db: stampDb(),
@@ -407,81 +400,78 @@ test("hydrateFabricPathStates preserves promote strikes across separate rendezvo
         relays,
         pathStates: hydrateFabricPathStates(FABRIC_ID, relays),
         orgAllowRelay: false,
-      });
-      if (!round) throw new TypeError("expected a rendezvous round");
-      applySummaries(relays, round.summariesByServerId);
-      selected = round.pathStates.get(fabricPairCacheKey("srv-a", "srv-b"))
-        ?.selected ?? selected;
+      })
+      if (!round) throw new TypeError('expected a rendezvous round')
+      applySummaries(relays, round.summariesByServerId)
+      selected = round.pathStates.get(fabricPairCacheKey('srv-a', 'srv-b'))?.selected ?? selected
     }
-    assertEquals(selected, "direct_nat");
+    assertEquals(selected, 'direct_nat')
   } finally {
-    setCollectFabricPathObservationsForTests(null);
-    resetFabricPathStateCacheForTests();
+    setCollectFabricPathObservationsForTests(null)
+    resetFabricPathStateCacheForTests()
   }
-});
+})
 
-test("hydrateFabricPathStates prunes pairs for removed relays", () => {
-  resetFabricPathStateCacheForTests();
+test('hydrateFabricPathStates prunes pairs for removed relays', () => {
+  resetFabricPathStateCacheForTests()
   try {
     rememberFabricPathStates(
       FABRIC_ID,
       new Map([
-        [fabricPairCacheKey("srv-a", "srv-b"), {
-          ...initialFabricPathState("srv-b"),
-          selected: "direct_public",
-          demoteStrikes: 1,
-        }],
-        [fabricPairCacheKey("srv-a", "srv-c"), {
-          ...initialFabricPathState("srv-c"),
-          selected: "direct_public",
-          demoteStrikes: 2,
-        }],
-      ]),
-    );
+        [
+          fabricPairCacheKey('srv-a', 'srv-b'),
+          {
+            ...initialFabricPathState('srv-b'),
+            selected: 'direct_public',
+            demoteStrikes: 1,
+          },
+        ],
+        [
+          fabricPairCacheKey('srv-a', 'srv-c'),
+          {
+            ...initialFabricPathState('srv-c'),
+            selected: 'direct_public',
+            demoteStrikes: 2,
+          },
+        ],
+      ])
+    )
     const hydrated = hydrateFabricPathStates(FABRIC_ID, [
-      keyedRelay({ serverId: "srv-a", publicKey: KEY_A }),
-      keyedRelay({ serverId: "srv-b", publicKey: KEY_B }),
-    ]);
-    assertEquals(hydrated.has(fabricPairCacheKey("srv-a", "srv-c")), false);
-    assertEquals(
-      hydrated.get(fabricPairCacheKey("srv-a", "srv-b"))?.demoteStrikes,
-      1,
-    );
+      keyedRelay({ serverId: 'srv-a', publicKey: KEY_A }),
+      keyedRelay({ serverId: 'srv-b', publicKey: KEY_B }),
+    ])
+    assertEquals(hydrated.has(fabricPairCacheKey('srv-a', 'srv-c')), false)
+    assertEquals(hydrated.get(fabricPairCacheKey('srv-a', 'srv-b'))?.demoteStrikes, 1)
   } finally {
-    resetFabricPathStateCacheForTests();
+    resetFabricPathStateCacheForTests()
   }
-});
+})
 
-function fakeRegistry(
-  recordOrError: unknown,
-): DaemonCellRegistry {
+function fakeRegistry(recordOrError: unknown): DaemonCellRegistry {
   return {
     getCell: () => ({
       createRequestAndWait: () => {
-        if (recordOrError instanceof Error) return Promise.reject(recordOrError);
-        if (typeof recordOrError === "string") {
-          return Promise.reject(recordOrError);
+        if (recordOrError instanceof Error) return Promise.reject(recordOrError)
+        if (typeof recordOrError === 'string') {
+          return Promise.reject(recordOrError)
         }
-        return Promise.resolve(recordOrError);
+        return Promise.resolve(recordOrError)
       },
     }),
-  } as unknown as DaemonCellRegistry;
+  } as unknown as DaemonCellRegistry
 }
 
-type LiveStatusRow = { serverId: string; connected: boolean };
+type LiveStatusRow = { serverId: string; connected: boolean }
 
 function thenableRows<T>(rows: T[]) {
   return {
-    then(
-      onFulfilled?: (value: T[]) => unknown,
-      onRejected?: (reason: unknown) => unknown,
-    ) {
-      return Promise.resolve(rows).then(onFulfilled, onRejected);
+    then(onFulfilled?: (value: T[]) => unknown, onRejected?: (reason: unknown) => unknown) {
+      return Promise.resolve(rows).then(onFulfilled, onRejected)
     },
     limit(n?: number) {
-      return Promise.resolve(n === undefined ? rows : rows.slice(0, n));
+      return Promise.resolve(n === undefined ? rows : rows.slice(0, n))
     },
-  };
+  }
 }
 
 /**
@@ -495,10 +485,10 @@ function loadServerStatusRecordsDb(statuses: readonly LiveStatusRow[]): Db {
     daemon: {
       key: {
         id: `key-${row.serverId}`,
-        algorithm: "Ed25519",
-        publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
+        algorithm: 'Ed25519',
+        publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
         fingerprint: `fp-${row.serverId}`,
-        createdAt: "2020-01-01T00:00:00.000Z",
+        createdAt: '2020-01-01T00:00:00.000Z',
       },
       projection: { hostname: `host-${row.serverId}` },
     },
@@ -516,248 +506,246 @@ function loadServerStatusRecordsDb(statuses: readonly LiveStatusRow[]): Db {
     ntpServers: null,
     ntpLastSyncedAt: null,
     connected: row.connected,
-    statusChangedAt: row.connected ? "2020-01-01T00:00:00.000Z" : null,
-  }));
+    statusChangedAt: row.connected ? '2020-01-01T00:00:00.000Z' : null,
+  }))
   return {
     select() {
       return {
         from() {
           return {
             where() {
-              return thenableRows(rows);
+              return thenableRows(rows)
             },
-          };
+          }
         },
-      };
+      }
     },
-  } as unknown as Db;
+  } as unknown as Db
 }
 
 function withStatusLoader(
   statuses: readonly LiveStatusRow[],
-  run: () => Promise<void>,
+  run: () => Promise<void>
 ): Promise<void> {
-  const byId = new Map(statuses.map((row) => [row.serverId, row.connected]));
+  const byId = new Map(statuses.map((row) => [row.serverId, row.connected]))
   setLoadServerStatusRecords(async (_db, _registry, serverIds) =>
     serverIds.flatMap((serverId) => {
-      const connected = byId.get(serverId);
-      if (connected === undefined) return [];
-      return [{ serverId, connected }];
+      const connected = byId.get(serverId)
+      if (connected === undefined) return []
+      return [{ serverId, connected }]
     })
-  );
-  return run().finally(() => setLoadServerStatusRecords(null));
+  )
+  return run().finally(() => setLoadServerStatusRecords(null))
 }
 
 type LiveCellRecord = {
-  status: string;
-  result?: unknown;
-  error?: string;
-};
+  status: string
+  result?: unknown
+  error?: string
+}
 
 type CapturedCellRequest = {
-  serverId: string;
-  fabricId: unknown;
-  probeMs: unknown;
-  candidates: unknown;
-};
+  serverId: string
+  fabricId: unknown
+  probeMs: unknown
+  candidates: unknown
+}
 
 function liveCollectRegistry(
   byServerId: ReadonlyMap<string, LiveCellRecord | Error | string>,
-  captured: CapturedCellRequest[] = [],
+  captured: CapturedCellRequest[] = []
 ): DaemonCellRegistry {
   return {
     getCell: (serverId: string) => ({
       createRequestAndWait: (envelope: {
-        fabricId?: unknown;
-        probeMs?: unknown;
-        candidates?: unknown;
+        fabricId?: unknown
+        probeMs?: unknown
+        candidates?: unknown
       }) => {
         captured.push({
           serverId,
           fabricId: envelope.fabricId,
           probeMs: envelope.probeMs,
           candidates: envelope.candidates,
-        });
-        const recordOrError = byServerId.get(serverId);
+        })
+        const recordOrError = byServerId.get(serverId)
         if (recordOrError === undefined) {
-          return Promise.reject(
-            new Error(`unexpected cell request for ${serverId}`),
-          );
+          return Promise.reject(new Error(`unexpected cell request for ${serverId}`))
         }
-        if (recordOrError instanceof Error) return Promise.reject(recordOrError);
-        if (typeof recordOrError === "string") {
-          return Promise.reject(recordOrError);
+        if (recordOrError instanceof Error) return Promise.reject(recordOrError)
+        if (typeof recordOrError === 'string') {
+          return Promise.reject(recordOrError)
         }
-        return Promise.resolve(recordOrError);
+        return Promise.resolve(recordOrError)
       },
     }),
-  } as unknown as DaemonCellRegistry;
+  } as unknown as DaemonCellRegistry
 }
 
 function donePaths(peerPaths: ObservedPeerPath[]): LiveCellRecord {
-  return { status: "done", result: { paths: peerPaths } };
+  return { status: 'done', result: { paths: peerPaths } }
 }
 
-test("requestFabricPaths returns parsed paths and skips malformed rows", async () => {
+test('requestFabricPaths returns parsed paths and skips malformed rows', async () => {
   const result = await requestFabricPaths(
     fakeRegistry({
-      status: "done",
+      status: 'done',
       result: {
         paths: [
           {
             publicKey: KEY_A,
-            health: "healthy",
-            endpoint: "203.0.113.10:51820",
-            lastHandshakeAt: "2026-01-01T00:00:00.000Z",
+            health: 'healthy',
+            endpoint: '203.0.113.10:51820',
+            lastHandshakeAt: '2026-01-01T00:00:00.000Z',
             latencyMs: 12,
           },
-          { publicKey: KEY_B, health: "stale" },
-          { publicKey: KEY_GW, health: "never" },
+          { publicKey: KEY_B, health: 'stale' },
+          { publicKey: KEY_GW, health: 'never' },
           { publicKey: 1 },
           null,
-          { publicKey: KEY_B, health: "unknown" },
-          ["not-an-object"],
+          { publicKey: KEY_B, health: 'unknown' },
+          ['not-an-object'],
         ],
       },
     }),
-    "srv-a",
+    'srv-a',
     {
       fabricId: FABRIC_ID,
       probeMs: 100,
-      candidates: [{ publicKey: KEY_B, endpoints: ["203.0.113.20:51820"] }],
-    },
-  );
-  if (!result.ok) throw new TypeError("expected ok");
+      candidates: [{ publicKey: KEY_B, endpoints: ['203.0.113.20:51820'] }],
+    }
+  )
+  if (!result.ok) throw new TypeError('expected ok')
   assertEquals(result.paths, [
     {
       publicKey: KEY_A,
-      health: "healthy",
-      endpoint: "203.0.113.10:51820",
-      lastHandshakeAt: "2026-01-01T00:00:00.000Z",
+      health: 'healthy',
+      endpoint: '203.0.113.10:51820',
+      lastHandshakeAt: '2026-01-01T00:00:00.000Z',
       latencyMs: 12,
     },
-    { publicKey: KEY_B, health: "stale" },
-    { publicKey: KEY_GW, health: "never" },
-  ]);
-});
+    { publicKey: KEY_B, health: 'stale' },
+    { publicKey: KEY_GW, health: 'never' },
+  ])
+})
 
-test("requestFabricPaths maps expired, failed, malformed, and thrown results", async () => {
-  const expired = await requestFabricPaths(
-    fakeRegistry({ status: "expired" }),
-    "srv-a",
-    { fabricId: FABRIC_ID, probeMs: 0, candidates: [] },
-  );
+test('requestFabricPaths maps expired, failed, malformed, and thrown results', async () => {
+  const expired = await requestFabricPaths(fakeRegistry({ status: 'expired' }), 'srv-a', {
+    fabricId: FABRIC_ID,
+    probeMs: 0,
+    candidates: [],
+  })
   assertEquals(expired, {
     ok: false,
-    error: "timeout waiting for fabric paths",
-    status: "expired",
-  });
+    error: 'timeout waiting for fabric paths',
+    status: 'expired',
+  })
 
   const failed = await requestFabricPaths(
-    fakeRegistry({ status: "failed", error: "compose unavailable" }),
-    "srv-a",
-    { fabricId: FABRIC_ID, probeMs: 0, candidates: [] },
-  );
+    fakeRegistry({ status: 'failed', error: 'compose unavailable' }),
+    'srv-a',
+    { fabricId: FABRIC_ID, probeMs: 0, candidates: [] }
+  )
   assertEquals(failed, {
     ok: false,
-    error: "compose unavailable",
-    status: "failed",
-  });
+    error: 'compose unavailable',
+    status: 'failed',
+  })
 
-  const failedDefault = await requestFabricPaths(
-    fakeRegistry({ status: "failed" }),
-    "srv-a",
-    { fabricId: FABRIC_ID, probeMs: 0, candidates: [] },
-  );
+  const failedDefault = await requestFabricPaths(fakeRegistry({ status: 'failed' }), 'srv-a', {
+    fabricId: FABRIC_ID,
+    probeMs: 0,
+    candidates: [],
+  })
   assertEquals(failedDefault, {
     ok: false,
-    error: "failed to collect fabric paths",
-    status: "failed",
-  });
+    error: 'failed to collect fabric paths',
+    status: 'failed',
+  })
 
   const malformed = await requestFabricPaths(
-    fakeRegistry({ status: "done", result: { paths: "nope" } }),
-    "srv-a",
-    { fabricId: FABRIC_ID, probeMs: 0, candidates: [] },
-  );
+    fakeRegistry({ status: 'done', result: { paths: 'nope' } }),
+    'srv-a',
+    { fabricId: FABRIC_ID, probeMs: 0, candidates: [] }
+  )
   assertEquals(malformed, {
     ok: false,
-    error: "invalid fabric paths result",
-    status: "malformed",
-  });
+    error: 'invalid fabric paths result',
+    status: 'malformed',
+  })
 
   const notObject = await requestFabricPaths(
-    fakeRegistry({ status: "done", result: 12 }),
-    "srv-a",
-    { fabricId: FABRIC_ID, probeMs: 0, candidates: [] },
-  );
+    fakeRegistry({ status: 'done', result: 12 }),
+    'srv-a',
+    { fabricId: FABRIC_ID, probeMs: 0, candidates: [] }
+  )
   assertEquals(notObject, {
     ok: false,
-    error: "invalid fabric paths result",
-    status: "malformed",
-  });
+    error: 'invalid fabric paths result',
+    status: 'malformed',
+  })
 
-  const thrown = await requestFabricPaths(
-    fakeRegistry(new Error("cell down")),
-    "srv-a",
-    { fabricId: FABRIC_ID, probeMs: 0, candidates: [] },
-  );
+  const thrown = await requestFabricPaths(fakeRegistry(new Error('cell down')), 'srv-a', {
+    fabricId: FABRIC_ID,
+    probeMs: 0,
+    candidates: [],
+  })
   assertEquals(thrown, {
     ok: false,
-    error: "cell down",
-    status: "failed",
-  });
+    error: 'cell down',
+    status: 'failed',
+  })
 
-  const thrownString = await requestFabricPaths(
-    fakeRegistry("boom"),
-    "srv-a",
-    { fabricId: FABRIC_ID, probeMs: 0, candidates: [] },
-  );
+  const thrownString = await requestFabricPaths(fakeRegistry('boom'), 'srv-a', {
+    fabricId: FABRIC_ID,
+    probeMs: 0,
+    candidates: [],
+  })
   assertEquals(thrownString, {
     ok: false,
-    error: "boom",
-    status: "failed",
-  });
-});
+    error: 'boom',
+    status: 'failed',
+  })
+})
 
-test("collectFabricPathObservations returns empty when no relay is keyed", async () => {
-  setCollectFabricPathObservationsForTests(null);
+test('collectFabricPathObservations returns empty when no relay is keyed', async () => {
+  setCollectFabricPathObservationsForTests(null)
   const map = await collectFabricPathObservations({
     db: stampDb(),
-    registry: fakeRegistry({ status: "done", result: { paths: [] } }),
-    relays: [{ ...keyedRelay({ serverId: "srv-a", publicKey: KEY_A }), publicKey: null }],
+    registry: fakeRegistry({ status: 'done', result: { paths: [] } }),
+    relays: [{ ...keyedRelay({ serverId: 'srv-a', publicKey: KEY_A }), publicKey: null }],
     fabricId: FABRIC_ID,
-  });
-  assertEquals(map.size, 0);
-});
+  })
+  assertEquals(map.size, 0)
+})
 
-test("collectFabricPathObservations skips keyed relays that are offline or missing presence", async () => {
-  setCollectFabricPathObservationsForTests(null);
-  const captured: CapturedCellRequest[] = [];
-  const registry = liveCollectRegistry(new Map(), captured);
+test('collectFabricPathObservations skips keyed relays that are offline or missing presence', async () => {
+  setCollectFabricPathObservationsForTests(null)
+  const captured: CapturedCellRequest[] = []
+  const registry = liveCollectRegistry(new Map(), captured)
   const relays = [
-    keyedRelay({ serverId: "srv-a", publicKey: KEY_A }),
-    keyedRelay({ serverId: "srv-b", publicKey: KEY_B }),
-  ];
+    keyedRelay({ serverId: 'srv-a', publicKey: KEY_A }),
+    keyedRelay({ serverId: 'srv-b', publicKey: KEY_B }),
+  ]
 
   await withStatusLoader(
     [
-      { serverId: "srv-a", connected: false },
-      { serverId: "srv-b", connected: false },
+      { serverId: 'srv-a', connected: false },
+      { serverId: 'srv-b', connected: false },
     ],
     async () => {
       const offline = await collectFabricPathObservations({
         db: loadServerStatusRecordsDb([
-          { serverId: "srv-a", connected: false },
-          { serverId: "srv-b", connected: false },
+          { serverId: 'srv-a', connected: false },
+          { serverId: 'srv-b', connected: false },
         ]),
         registry,
         relays,
         fabricId: FABRIC_ID,
-      });
-      assertEquals(offline.size, 0);
-    },
-  );
+      })
+      assertEquals(offline.size, 0)
+    }
+  )
 
   await withStatusLoader([], async () => {
     const missing = await collectFabricPathObservations({
@@ -765,144 +753,145 @@ test("collectFabricPathObservations skips keyed relays that are offline or missi
       registry,
       relays,
       fabricId: FABRIC_ID,
-    });
-    assertEquals(missing.size, 0);
-    assertEquals(captured, []);
-  });
-});
+    })
+    assertEquals(missing.size, 0)
+    assertEquals(captured, [])
+  })
+})
 
-test("collectFabricPathObservations probes only live relays and records successful paths", async () => {
-  setCollectFabricPathObservationsForTests(null);
-  const captured: CapturedCellRequest[] = [];
-  const aPaths = paths(KEY_B, "203.0.113.20:51820");
+test('collectFabricPathObservations probes only live relays and records successful paths', async () => {
+  setCollectFabricPathObservationsForTests(null)
+  const captured: CapturedCellRequest[] = []
+  const aPaths = paths(KEY_B, '203.0.113.20:51820')
   const registry = liveCollectRegistry(
     new Map<string, LiveCellRecord | Error | string>([
-      ["srv-a", donePaths(aPaths)],
-      ["srv-offline", donePaths(paths(KEY_A, "203.0.113.10:51820"))],
+      ['srv-a', donePaths(aPaths)],
+      ['srv-offline', donePaths(paths(KEY_A, '203.0.113.10:51820'))],
     ]),
-    captured,
-  );
-  const candidates = [{ publicKey: KEY_B, endpoints: ["203.0.113.20:51820"] }];
+    captured
+  )
+  const candidates = [{ publicKey: KEY_B, endpoints: ['203.0.113.20:51820'] }]
   const statuses = [
-    { serverId: "srv-a", connected: true },
-    { serverId: "srv-offline", connected: false },
-  ];
+    { serverId: 'srv-a', connected: true },
+    { serverId: 'srv-offline', connected: false },
+  ]
   await withStatusLoader(statuses, async () => {
     const map = await collectFabricPathObservations({
       db: loadServerStatusRecordsDb(statuses),
       registry,
       relays: [
-        keyedRelay({ serverId: "srv-a", publicKey: KEY_A }),
-        keyedRelay({ serverId: "srv-offline", publicKey: KEY_B }),
+        keyedRelay({ serverId: 'srv-a', publicKey: KEY_A }),
+        keyedRelay({ serverId: 'srv-offline', publicKey: KEY_B }),
       ],
       fabricId: FABRIC_ID,
       probeMs: 250,
-      candidatesByServerId: new Map([["srv-a", candidates]]),
-    });
-    assertEquals([...map.keys()], ["srv-a"]);
-    assertEquals(map.get("srv-a"), aPaths);
-    assertEquals(captured.length, 1);
-    assertEquals(captured[0]?.serverId, "srv-a");
-    assertEquals(captured[0]?.fabricId, FABRIC_ID);
-    assertEquals(captured[0]?.probeMs, 250);
-    assertEquals(captured[0]?.candidates, candidates);
-  });
-});
+      candidatesByServerId: new Map([['srv-a', candidates]]),
+    })
+    assertEquals([...map.keys()], ['srv-a'])
+    assertEquals(map.get('srv-a'), aPaths)
+    assertEquals(captured.length, 1)
+    assertEquals(captured[0]?.serverId, 'srv-a')
+    assertEquals(captured[0]?.fabricId, FABRIC_ID)
+    assertEquals(captured[0]?.probeMs, 250)
+    assertEquals(captured[0]?.candidates, candidates)
+  })
+})
 
-test("collectFabricPathObservations omits live relays whose cell request is not ok", async () => {
-  setCollectFabricPathObservationsForTests(null);
-  const captured: CapturedCellRequest[] = [];
-  const okPaths = paths(KEY_B, "203.0.113.20:51820");
+test('collectFabricPathObservations omits live relays whose cell request is not ok', async () => {
+  setCollectFabricPathObservationsForTests(null)
+  const captured: CapturedCellRequest[] = []
+  const okPaths = paths(KEY_B, '203.0.113.20:51820')
   const statuses = [
-    { serverId: "srv-a", connected: true },
-    { serverId: "srv-expired", connected: true },
-    { serverId: "srv-failed", connected: true },
-    { serverId: "srv-malformed", connected: true },
-  ];
+    { serverId: 'srv-a', connected: true },
+    { serverId: 'srv-expired', connected: true },
+    { serverId: 'srv-failed', connected: true },
+    { serverId: 'srv-malformed', connected: true },
+  ]
   await withStatusLoader(statuses, async () => {
     const map = await collectFabricPathObservations({
       db: loadServerStatusRecordsDb(statuses),
       registry: liveCollectRegistry(
         new Map<string, LiveCellRecord | Error | string>([
-          ["srv-a", donePaths(okPaths)],
-          ["srv-expired", { status: "expired" }],
-          ["srv-failed", { status: "failed", error: "compose unavailable" }],
-          ["srv-malformed", { status: "done", result: { paths: "nope" } }],
+          ['srv-a', donePaths(okPaths)],
+          ['srv-expired', { status: 'expired' }],
+          ['srv-failed', { status: 'failed', error: 'compose unavailable' }],
+          ['srv-malformed', { status: 'done', result: { paths: 'nope' } }],
         ]),
-        captured,
+        captured
       ),
       relays: [
-        keyedRelay({ serverId: "srv-a", publicKey: KEY_A }),
-        keyedRelay({ serverId: "srv-expired", publicKey: KEY_B }),
-        keyedRelay({ serverId: "srv-failed", publicKey: KEY_GW }),
+        keyedRelay({ serverId: 'srv-a', publicKey: KEY_A }),
+        keyedRelay({ serverId: 'srv-expired', publicKey: KEY_B }),
+        keyedRelay({ serverId: 'srv-failed', publicKey: KEY_GW }),
         keyedRelay({
-          serverId: "srv-malformed",
-          publicKey: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=",
+          serverId: 'srv-malformed',
+          publicKey: 'DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=',
         }),
       ],
       fabricId: FABRIC_ID,
-    });
-    assertEquals([...map.keys()], ["srv-a"]);
-    assertEquals(map.get("srv-a"), okPaths);
+    })
+    assertEquals([...map.keys()], ['srv-a'])
+    assertEquals(map.get('srv-a'), okPaths)
     assertEquals(
       captured.map((row) => row.serverId).sort((a, b) => a.localeCompare(b)),
-      ["srv-a", "srv-expired", "srv-failed", "srv-malformed"],
-    );
-    assertEquals(captured.every((row) => row.probeMs === 0), true);
-  });
-});
+      ['srv-a', 'srv-expired', 'srv-failed', 'srv-malformed']
+    )
+    assertEquals(
+      captured.every((row) => row.probeMs === 0),
+      true
+    )
+  })
+})
 
-test("collectFabricPathObservations fans out past the mapPool worker cap", async () => {
-  setCollectFabricPathObservationsForTests(null);
-  const captured: CapturedCellRequest[] = [];
+test('collectFabricPathObservations fans out past the mapPool worker cap', async () => {
+  setCollectFabricPathObservationsForTests(null)
+  const captured: CapturedCellRequest[] = []
   const live = Array.from({ length: 9 }, (_, index) => ({
     serverId: `srv-pool-${index}`,
     publicKey: `pool-${index}`,
     paths: paths(KEY_A, `203.0.113.${10 + index}:51820`),
-  }));
-  const statuses = live.map((row) => ({ serverId: row.serverId, connected: true }));
+  }))
+  const statuses = live.map((row) => ({ serverId: row.serverId, connected: true }))
   await withStatusLoader(statuses, async () => {
     const map = await collectFabricPathObservations({
       db: loadServerStatusRecordsDb(statuses),
       registry: liveCollectRegistry(
         new Map(live.map((row) => [row.serverId, donePaths(row.paths)])),
-        captured,
+        captured
       ),
-      relays: live.map((row) =>
-        keyedRelay({ serverId: row.serverId, publicKey: row.publicKey })
-      ),
+      relays: live.map((row) => keyedRelay({ serverId: row.serverId, publicKey: row.publicKey })),
       fabricId: FABRIC_ID,
-    });
-    assertEquals(map.size, 9);
-    assertEquals(captured.length, 9);
+    })
+    assertEquals(map.size, 9)
+    assertEquals(captured.length, 9)
     for (const row of live) {
-      assertEquals(map.get(row.serverId), row.paths);
+      assertEquals(map.get(row.serverId), row.paths)
     }
-  });
-});
+  })
+})
 
-test("classifyNatMapping ignores endpoints without a port", () => {
+test('classifyNatMapping ignores endpoints without a port', () => {
   const observations = new Map([
-    ["gw-1", paths(KEY_A, "203.0.113.50")],
-    ["gw-2", paths(KEY_A, "203.0.113.50")],
-  ]);
-  assertEquals(classifyNatMapping(observations, KEY_A), "unknown");
-});
+    ['gw-1', paths(KEY_A, '203.0.113.50')],
+    ['gw-2', paths(KEY_A, '203.0.113.50')],
+  ])
+  assertEquals(classifyNatMapping(observations, KEY_A), 'unknown')
+})
 
-test("runFabricRendezvousRound is null without two keyed relays or observations", async () => {
-  setCollectFabricPathObservationsForTests(null);
+test('runFabricRendezvousRound is null without two keyed relays or observations', async () => {
+  setCollectFabricPathObservationsForTests(null)
   assertEquals(
     await runFabricRendezvousRound({
       db: stampDb(),
-      registry: fakeRegistry({ status: "done", result: { paths: [] } }),
+      registry: fakeRegistry({ status: 'done', result: { paths: [] } }),
       fabricId: FABRIC_ID,
-      relays: [keyedRelay({ serverId: "srv-a", publicKey: KEY_A })],
+      relays: [keyedRelay({ serverId: 'srv-a', publicKey: KEY_A })],
       orgAllowRelay: false,
     }),
-    null,
-  );
+    null
+  )
 
-  setCollectFabricPathObservationsForTests(() => Promise.resolve(new Map()));
+  setCollectFabricPathObservationsForTests(() => Promise.resolve(new Map()))
   try {
     assertEquals(
       await runFabricRendezvousRound({
@@ -910,161 +899,249 @@ test("runFabricRendezvousRound is null without two keyed relays or observations"
         registry: {} as DaemonCellRegistry,
         fabricId: FABRIC_ID,
         relays: [
-          keyedRelay({ serverId: "srv-a", publicKey: KEY_A }),
-          keyedRelay({ serverId: "srv-b", publicKey: KEY_B }),
+          keyedRelay({ serverId: 'srv-a', publicKey: KEY_A }),
+          keyedRelay({ serverId: 'srv-b', publicKey: KEY_B }),
         ],
         orgAllowRelay: false,
       }),
-      null,
-    );
+      null
+    )
   } finally {
-    setCollectFabricPathObservationsForTests(null);
+    setCollectFabricPathObservationsForTests(null)
   }
-});
+})
 
-test("fabricNeedsRendezvous is true until every pair is a healthy direct path", () => {
-  const missingPaths = keyedRelay({ serverId: "srv-a", publicKey: KEY_A });
+test('fabricNeedsRendezvous is true until every pair is a healthy direct path', () => {
+  const missingPaths = keyedRelay({ serverId: 'srv-a', publicKey: KEY_A })
   const peer = keyedRelay({
-    serverId: "srv-b",
+    serverId: 'srv-b',
     publicKey: KEY_B,
-    peer: { serverId: "srv-a", selected: "direct_lan" },
-  });
-  assertEquals(fabricNeedsRendezvous([missingPaths, peer]), true);
+    peer: { serverId: 'srv-a', selected: 'direct_lan' },
+  })
+  assertEquals(fabricNeedsRendezvous([missingPaths, peer]), true)
 
   const unreachable = keyedRelay({
-    serverId: "srv-a",
+    serverId: 'srv-a',
     publicKey: KEY_A,
-    peer: { serverId: "srv-b", selected: "unreachable" },
-  });
-  assertEquals(fabricNeedsRendezvous([unreachable, peer]), true);
+    peer: { serverId: 'srv-b', selected: 'unreachable' },
+  })
+  assertEquals(fabricNeedsRendezvous([unreachable, peer]), true)
 
   const gateway = keyedRelay({
-    serverId: "srv-a",
+    serverId: 'srv-a',
     publicKey: KEY_A,
-    peer: { serverId: "srv-b", selected: "gateway" },
-  });
-  assertEquals(fabricNeedsRendezvous([gateway, peer]), true);
+    peer: { serverId: 'srv-b', selected: 'gateway' },
+  })
+  assertEquals(fabricNeedsRendezvous([gateway, peer]), true)
 
   const healthyA = keyedRelay({
-    serverId: "srv-a",
+    serverId: 'srv-a',
     publicKey: KEY_A,
-    peer: { serverId: "srv-b", selected: "direct_lan" },
-  });
+    peer: { serverId: 'srv-b', selected: 'direct_lan' },
+  })
   const healthyB = keyedRelay({
-    serverId: "srv-b",
+    serverId: 'srv-b',
     publicKey: KEY_B,
-    peer: { serverId: "srv-a", selected: "direct_public" },
-  });
-  assertEquals(fabricNeedsRendezvous([healthyA, healthyB]), false);
+    peer: { serverId: 'srv-a', selected: 'direct_public' },
+  })
+  assertEquals(fabricNeedsRendezvous([healthyA, healthyB]), false)
 
   healthyA.metadata = {
     paths: {
-      at: "2026-01-01T00:00:00.000Z",
-      entries: [{
-        peerServerId: "srv-b",
-        selected: "direct_lan",
-        degraded: true,
-      }],
+      at: '2026-01-01T00:00:00.000Z',
+      entries: [
+        {
+          peerServerId: 'srv-b',
+          selected: 'direct_lan',
+          degraded: true,
+        },
+      ],
     },
-  };
-  assertEquals(fabricNeedsRendezvous([healthyA, healthyB]), true);
-});
+  }
+  assertEquals(fabricNeedsRendezvous([healthyA, healthyB]), true)
+})
 
-test("pathStatesFromRelayMetadata copies optional diagnostics fields", () => {
+test('pathStatesFromRelayMetadata copies optional diagnostics fields', () => {
   const states = pathStatesFromRelayMetadata([
     {
-      ...keyedRelay({ serverId: "srv-a", publicKey: KEY_A }),
+      ...keyedRelay({ serverId: 'srv-a', publicKey: KEY_A }),
       metadata: {
         paths: {
-          at: "2026-01-01T00:00:00.000Z",
-          entries: [{
-            peerServerId: "srv-b",
-            selected: "direct_nat",
-            degraded: false,
-            endpoint: "203.0.113.50:48172",
-            viaServerId: "gw-1",
-            lastHandshakeAt: "2026-01-01T00:00:00.000Z",
-            latencyMs: 8,
-          }],
+          at: '2026-01-01T00:00:00.000Z',
+          entries: [
+            {
+              peerServerId: 'srv-b',
+              selected: 'direct_nat',
+              degraded: false,
+              endpoint: '203.0.113.50:48172',
+              viaServerId: 'gw-1',
+              lastHandshakeAt: '2026-01-01T00:00:00.000Z',
+              latencyMs: 8,
+            },
+          ],
         },
       },
     },
-  ]);
-  assertEquals(states.get(fabricPairCacheKey("srv-a", "srv-b")), {
-    peerServerId: "srv-b",
-    selected: "direct_nat",
+  ])
+  assertEquals(states.get(fabricPairCacheKey('srv-a', 'srv-b')), {
+    peerServerId: 'srv-b',
+    selected: 'direct_nat',
     degraded: false,
     demoteStrikes: 0,
     promoteStrikes: 0,
-    endpoint: "203.0.113.50:48172",
-    viaServerId: "gw-1",
-    lastHandshakeAt: "2026-01-01T00:00:00.000Z",
+    endpoint: '203.0.113.50:48172',
+    viaServerId: 'gw-1',
+    lastHandshakeAt: '2026-01-01T00:00:00.000Z',
     latencyMs: 8,
-  });
-});
+  })
+})
 
-test("hydrateFabricPathStates keeps cache-only pairs and overlays metadata", () => {
-  resetFabricPathStateCacheForTests();
+test('hydrateFabricPathStates keeps cache-only pairs and overlays metadata', () => {
+  resetFabricPathStateCacheForTests()
   try {
     rememberFabricPathStates(
       FABRIC_ID,
       new Map([
-        [fabricPairCacheKey("srv-a", "srv-b"), {
-          ...initialFabricPathState("srv-b"),
-          selected: "gateway",
-          demoteStrikes: 3,
-          promoteStrikes: 1,
-          endpoint: "203.0.113.9:51820",
-        }],
-        [fabricPairCacheKey("srv-b", "srv-a"), {
-          ...initialFabricPathState("srv-a"),
-          selected: "gateway",
-          demoteStrikes: 2,
-        }],
-      ]),
-    );
+        [
+          fabricPairCacheKey('srv-a', 'srv-b'),
+          {
+            ...initialFabricPathState('srv-b'),
+            selected: 'gateway',
+            demoteStrikes: 3,
+            promoteStrikes: 1,
+            endpoint: '203.0.113.9:51820',
+          },
+        ],
+        [
+          fabricPairCacheKey('srv-b', 'srv-a'),
+          {
+            ...initialFabricPathState('srv-a'),
+            selected: 'gateway',
+            demoteStrikes: 2,
+          },
+        ],
+      ])
+    )
     const hydrated = hydrateFabricPathStates(FABRIC_ID, [
       keyedRelay({
-        serverId: "srv-a",
+        serverId: 'srv-a',
         publicKey: KEY_A,
-        peer: { serverId: "srv-b", selected: "direct_public" },
+        peer: { serverId: 'srv-b', selected: 'direct_public' },
       }),
-      keyedRelay({ serverId: "srv-b", publicKey: KEY_B }),
-    ]);
-    const state = hydrated.get(fabricPairCacheKey("srv-a", "srv-b"));
-    assertEquals(state?.selected, "direct_public");
-    assertEquals(state?.demoteStrikes, 3);
-    assertEquals(state?.promoteStrikes, 1);
-    assertEquals(state?.endpoint, undefined);
-    assertEquals(
-      hydrated.get(fabricPairCacheKey("srv-b", "srv-a"))?.demoteStrikes,
-      2,
-    );
+      keyedRelay({ serverId: 'srv-b', publicKey: KEY_B }),
+    ])
+    const state = hydrated.get(fabricPairCacheKey('srv-a', 'srv-b'))
+    assertEquals(state?.selected, 'direct_public')
+    assertEquals(state?.demoteStrikes, 3)
+    assertEquals(state?.promoteStrikes, 1)
+    assertEquals(state?.endpoint, undefined)
+    assertEquals(hydrated.get(fabricPairCacheKey('srv-b', 'srv-a'))?.demoteStrikes, 2)
   } finally {
-    resetFabricPathStateCacheForTests();
+    resetFabricPathStateCacheForTests()
   }
-});
+})
 
-test("buildNatCandidateExchange skips relays without a public key", () => {
+test('buildNatCandidateExchange skips relays without a public key', () => {
   const exchange = buildNatCandidateExchange({
     relays: [
-      { serverId: "srv-a", publicKey: KEY_A },
-      { serverId: "srv-blank", publicKey: "" },
-      { serverId: "srv-b", publicKey: KEY_B },
+      { serverId: 'srv-a', publicKey: KEY_A },
+      { serverId: 'srv-blank', publicKey: '' },
+      { serverId: 'srv-b', publicKey: KEY_B },
     ],
     observations: new Map([
-      ["gw-1", [
-        ...paths(KEY_A, "203.0.113.50:48172"),
-        ...paths(KEY_B, "198.51.100.20:51820"),
-      ]],
+      ['gw-1', [...paths(KEY_A, '203.0.113.50:48172'), ...paths(KEY_B, '198.51.100.20:51820')]],
     ]),
     natClass: new Map([
-      ["srv-a", "easy"],
-      ["srv-b", "easy"],
+      ['srv-a', 'easy'],
+      ['srv-b', 'easy'],
     ]),
     pathStates: new Map(),
-  });
-  assertEquals(exchange.get("srv-a"), [
-    { publicKey: KEY_B, endpoints: ["198.51.100.20:51820"] },
-  ]);
-});
+  })
+  assertEquals(exchange.get('srv-a'), [{ publicKey: KEY_B, endpoints: ['198.51.100.20:51820'] }])
+})
+
+function observeAll(health: 'healthy' | 'stale' | 'never') {
+  return (params: { relays: readonly RelayRecord[] }) => {
+    const out = new Map<string, ObservedPeerPath[]>()
+    for (const relay of params.relays) {
+      if (!relay.publicKey) continue
+      const paths: ObservedPeerPath[] = []
+      for (const other of params.relays) {
+        if (other.serverId === relay.serverId || !other.publicKey) continue
+        paths.push({ publicKey: other.publicKey, health })
+      }
+      out.set(relay.serverId, paths)
+    }
+    return Promise.resolve(out)
+  }
+}
+
+async function lanPairRound(relays: RelayRecord[], health: 'healthy' | 'stale' | 'never') {
+  setCollectFabricPathObservationsForTests(observeAll(health))
+  const round = await runFabricRendezvousRound({
+    db: stampDb(),
+    registry: {} as DaemonCellRegistry,
+    fabricId: FABRIC_ID,
+    relays,
+    pathStates: hydrateFabricPathStates(FABRIC_ID, relays),
+    orgAllowRelay: false,
+  })
+  if (!round) throw new TypeError('expected a rendezvous round')
+  applySummaries(relays, round.summariesByServerId)
+  return round
+}
+
+test('one stale reading does not drop the LAN endpoint (strike counter applies)', async () => {
+  const relays = [
+    keyedRelay({
+      serverId: 'srv-a',
+      publicKey: KEY_A,
+      peer: { serverId: 'srv-b', selected: 'direct_lan' },
+    }),
+    keyedRelay({
+      serverId: 'srv-b',
+      publicKey: KEY_B,
+      peer: { serverId: 'srv-a', selected: 'direct_lan' },
+    }),
+  ]
+  resetFabricPathStateCacheForTests()
+  try {
+    const pair = fabricPairCacheKey('srv-a', 'srv-b')
+    const stale = await lanPairRound(relays, 'stale')
+    assertEquals(stale.failedPathKindsByPair.get(pair)?.has('direct_lan'), undefined)
+    const healthy = await lanPairRound(relays, 'healthy')
+    assertEquals(healthy.failedPathKindsByPair.get(pair)?.has('direct_lan'), undefined)
+  } finally {
+    setCollectFabricPathObservationsForTests(null)
+    resetFabricPathStateCacheForTests()
+  }
+})
+
+test('a LAN endpoint dropped after the strike limit stays dropped on later rounds', async () => {
+  const relays = [
+    keyedRelay({
+      serverId: 'srv-a',
+      publicKey: KEY_A,
+      peer: { serverId: 'srv-b', selected: 'direct_lan' },
+    }),
+    keyedRelay({
+      serverId: 'srv-b',
+      publicKey: KEY_B,
+      peer: { serverId: 'srv-a', selected: 'direct_lan' },
+    }),
+  ]
+  resetFabricPathStateCacheForTests()
+  try {
+    const pair = fabricPairCacheKey('srv-a', 'srv-b')
+    let round = await lanPairRound(relays, 'never')
+    for (let i = 1; i < FABRIC_PATH_DEMOTE_STRIKES; i += 1) {
+      round = await lanPairRound(relays, 'never')
+    }
+    assertEquals(round.failedPathKindsByPair.get(pair)?.has('direct_lan'), true)
+    const later = await lanPairRound(relays, 'never')
+    assertEquals(later.failedPathKindsByPair.get(pair)?.has('direct_lan'), true)
+  } finally {
+    setCollectFabricPathObservationsForTests(null)
+    resetFabricPathStateCacheForTests()
+  }
+})

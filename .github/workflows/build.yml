@@ -240,6 +240,8 @@ jobs:
           --health-retries 5
     env:
       TURBOPANEL_DATABASE_URL: postgresql://turbopanel:turbopanel_ci_test@127.0.0.1:5432/turbopanel
+      # A suite that cannot see the database throws instead of skipping.
+      TURBOPANEL_REQUIRE_DB: '1'
       TEST_PHASE: deno
       DENO_SHARD: ${{ matrix.shard }}
     steps:
@@ -260,6 +262,41 @@ jobs:
           path: coverage/deno.lcov
           if-no-files-found: error
           retention-days: 1
+
+  # The daemon-cell suites talk to Redis over a unix socket, so the container
+  # shares a host directory and serves the socket there. They are outside the
+  # coverage shards (no LCOV) and fail, not skip, when the socket is missing.
+  deno-redis:
+    name: deno redis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: instance-deno-redis-${{ github.event_name }}-${{ (github.head_ref == 'trunk' || github.head_ref == 'staging') && github.run_id || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' && github.head_ref != 'trunk' && github.head_ref != 'staging' }}
+    env:
+      TURBOPANEL_REDIS_SOCKET: /tmp/tp-redis/redis.sock
+      TURBOPANEL_REQUIRE_REDIS: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/setup-toolchain
+
+      - name: Start Redis on a unix socket
+        run: |
+          mkdir -p /tmp/tp-redis
+          chmod 777 /tmp/tp-redis
+          docker run -d --name tp-redis -v /tmp/tp-redis:/tmp/tp-redis redis:7-alpine \
+            redis-server --port 0 --unixsocket "$TURBOPANEL_REDIS_SOCKET" --unixsocketperm 777
+          for _ in $(seq 1 30); do
+            [ -S "$TURBOPANEL_REDIS_SOCKET" ] && exit 0
+            sleep 1
+          done
+          docker logs tp-redis
+          echo "::error::Redis socket never appeared"
+          exit 1
+
+      - name: Test the Redis daemon-cell suites
+        run: deno test -A --no-check src/daemon/redis-cell.test.ts src/daemon/ws-handlers.test.ts
 
   # Test shards run with --no-check for speed, so this job is what type-checks
   # the Deno surface (entry points and every Deno test file).
@@ -353,7 +390,7 @@ jobs:
           && github.event_name == 'pull_request'
           && github.base_ref != 'staging'
           && github.base_ref != 'live'
-        uses: SonarSource/sonarqube-scan-action@ba9859eae8dd6bd29e412f25ddbbef3d032000f4 # v8.2.2
+        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -464,7 +501,7 @@ jobs:
   # would still turn ci-ok red.
   ci-ok:
     name: ci-ok
-    needs: [checks, typecheck, vitest, deno-hostfree, deno-db, sonarqube, contract-twin]
+    needs: [checks, typecheck, vitest, deno-hostfree, deno-db, deno-redis, sonarqube, contract-twin]
     if: >-
       ${{ (github.event_name == 'pull_request' && always())
       || (!cancelled() && !contains(needs.*.result, 'cancelled')) }}

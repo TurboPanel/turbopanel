@@ -336,6 +336,7 @@ const SAMPLES: Record<DaemonInboundEnvelope['kind'], DaemonInboundEnvelope> = {
   },
   'capability-plan-update-result': { kind: 'capability-plan-update-result', ...common, ok: true },
   'capability-plan-clear-result': { kind: 'capability-plan-clear-result', ...common, ok: true },
+  'deploy-cancel-result': { kind: 'deploy-cancel-result', ...common, ok: true },
   'update-result': { kind: 'update-result', ...common, ok: true },
   'instance-update-result': { kind: 'instance-update-result', ...common, ok: true },
   'command-ack': { kind: 'command-ack', ...common, daemonReceivedAt: AT },
@@ -353,6 +354,55 @@ test('deriveInboundOutcome has a mapping for every inbound kind except the non-t
   }
 })
 
+test('deriveInboundOutcome redacts the error text of every message kind, in the column and in the result', () => {
+  let checked = 0
+  const raw = 'fetch https://u:pa?ss@h.test/x?token=abc123 failed, password=hunter2'
+  for (const [kind, sample] of Object.entries(SAMPLES)) {
+    // `command-ack` is not a completion; `addresses-result` carries no error text.
+    if (kind === 'command-ack' || kind === 'addresses-result') continue
+    const outcome = deriveInboundOutcome({ ...sample, ok: false, error: raw } as never)
+    checked += 1
+    assertEquals(outcome?.status, 'failed', kind)
+    assertEquals(
+      outcome?.error,
+      'fetch https://h.test/x?[redacted] failed, password=[redacted]',
+      kind
+    )
+    const stored = JSON.stringify(outcome)
+    for (const secret of ['pa?ss', 'abc123', 'hunter2']) {
+      assertEquals(stored.includes(secret), false, `${kind}: ${secret}`)
+    }
+  }
+  assertEquals(checked, Object.keys(SAMPLES).length - 2)
+})
+
+test('deriveInboundOutcome leaves a result without error text as it was', () => {
+  const logs = [{ at: AT, line: 'password=hunter2 stays: logs are not error text' }]
+  const outcome = deriveInboundOutcome({
+    kind: 'managed-logs-result',
+    requestId: REQUEST_ID,
+    at: AT,
+    logs,
+  } as never)
+  assertEquals(outcome, { status: 'done', result: { logs } })
+})
+
 test('deriveInboundOutcome treats an unknown kind as non-terminal', () => {
   assertEquals(deriveInboundOutcome({ kind: 'from-the-future', ...common } as never), null)
+})
+
+test('deriveInboundOutcome maps deploy-cancel-result done and failed', () => {
+  const done: DaemonInboundEnvelope = {
+    kind: 'deploy-cancel-result',
+    requestId: REQUEST_ID,
+    at: AT,
+    ok: true,
+    outcome: 'cancelling',
+  }
+  assertEquals(deriveInboundOutcome(done), {
+    status: 'done',
+    result: { ok: true, outcome: 'cancelling', error: undefined },
+  })
+  const failed = deriveInboundOutcome({ ...done, ok: false, outcome: undefined, error: 'boom' })
+  assertEquals(failed?.status, 'failed')
 })

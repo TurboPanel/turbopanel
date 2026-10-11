@@ -4,6 +4,7 @@ import {
   DATACENTER_PRIORITY_MIN,
   DEFAULT_DATACENTER_PRIORITY,
   DEFAULT_DATACENTER_TRUSTED,
+  hasInvalidPriority,
   parseDatacenterOptions,
   parseDatacenterPriority,
   resolveDatacenterPolicy,
@@ -29,7 +30,7 @@ test('parseDatacenterOptions omits blank timezone and invalid enforce flag', () 
       defaultServerTimezone: '  ',
       enforceServerTimezone: 'yes',
     }),
-    {},
+    {}
   )
 })
 
@@ -46,7 +47,7 @@ test('parseDatacenterOptions keeps trimmed timezone, boolean enforce, and host d
       enforceServerTimezone: true,
       sshPort: 2200,
       ntp: { enabled: false },
-    },
+    }
   )
 })
 
@@ -64,10 +65,9 @@ test('parseDatacenterOptions drops invalid addressPreference', () => {
 })
 
 test('parseDatacenterOptions omits addressPreference when absent', () => {
-  assertEquals(
-    parseDatacenterOptions({ enforceServerTimezone: false }),
-    { enforceServerTimezone: false },
-  )
+  assertEquals(parseDatacenterOptions({ enforceServerTimezone: false }), {
+    enforceServerTimezone: false,
+  })
 })
 
 test('parseDatacenterOptions keeps in-range integer priority (bounds inclusive)', () => {
@@ -128,7 +128,7 @@ test('parseDatacenterOptions keeps policy alongside the other fields', () => {
       trusted: false,
       sshPort: 2200,
     }),
-    { addressPreference: 'ipv4', sshPort: 2200, priority: 10, trusted: false },
+    { addressPreference: 'ipv4', sshPort: 2200, priority: 10, trusted: false }
   )
 })
 
@@ -144,4 +144,17 @@ test('resolveDatacenterPolicy applies defaults for absent or invalid fields', ()
     priority: 0,
     trusted: false,
   })
+})
+
+test('hasInvalidPriority flags only a present, out-of-range or non-whole priority', () => {
+  assertEquals(hasInvalidPriority({ priority: 5000 }), true)
+  assertEquals(hasInvalidPriority({ priority: -1 }), true)
+  assertEquals(hasInvalidPriority({ priority: 1.5 }), true)
+  assertEquals(hasInvalidPriority({ priority: '10' }), true)
+  assertEquals(hasInvalidPriority({ priority: 0 }), false)
+  assertEquals(hasInvalidPriority({ priority: 1000 }), false)
+  assertEquals(hasInvalidPriority({ priority: null }), false)
+  assertEquals(hasInvalidPriority({}), false)
+  assertEquals(hasInvalidPriority(null), false)
+  assertEquals(hasInvalidPriority([]), false)
 })

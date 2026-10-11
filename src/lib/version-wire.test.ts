@@ -4,11 +4,16 @@ import {
   compareSemver,
   DAEMON_FEATURE_MIN_VERSIONS,
   DAEMON_WIRE_FEATURES,
+  DENO_NATIVE_APPS_FEATURE,
+  DEPLOY_CANCEL_FEATURE,
   daemonUnsupportedReason,
   INSTANCE_REVISION_HEADER,
   INSTANCE_VERSION_HEADER,
+  MANAGED_HA_BOOT_HOLD_FEATURE,
   MANAGED_HA_INSTANCE_FEATURE,
+  MANAGED_REPLICA_FRESHNESS_FEATURE,
   MANAGED_HEALTH_FEATURE,
+  MANAGED_HEALTH_REPORT_FEATURE,
   PHP_SITE_MODES_FEATURE,
   MIN_SUPPORTED_DAEMON_VERSION,
   parseSemver,
@@ -132,6 +137,22 @@ test('an old daemon is unsupported while the resolver itself does not disconnect
   assertEquals(resolveDaemonCapabilities(undefined)[CERT_SOURCES], false)
 })
 
+test('managed-health-report-v1 is advertised to daemons, so they push health reports', () => {
+  assertEquals(MANAGED_HEALTH_REPORT_FEATURE, 'managed-health-report-v1')
+  assertEquals(
+    (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_HEALTH_REPORT_FEATURE),
+    true
+  )
+})
+
+test('managed-replica-freshness-v1 is an advertised wire feature', () => {
+  assertEquals(MANAGED_REPLICA_FRESHNESS_FEATURE, 'managed-replica-freshness-v1')
+  assertEquals(
+    (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_REPLICA_FRESHNESS_FEATURE),
+    true
+  )
+})
+
 test('managed-health-v1 is an advertised wire feature and raised no floor', () => {
   assertEquals(MANAGED_HEALTH_FEATURE, 'managed-health-v1')
   assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_HEALTH_FEATURE), true)
@@ -158,5 +179,26 @@ test('managed-ha-instance-v1 is an advertised wire feature and raised no floor',
     (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_HA_INSTANCE_FEATURE),
     true
   )
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('managed-ha-boot-hold-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(MANAGED_HA_BOOT_HOLD_FEATURE, 'managed-ha-boot-hold-v1')
+  assertEquals(
+    (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_HA_BOOT_HOLD_FEATURE),
+    true
+  )
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('deploy-cancel-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(DEPLOY_CANCEL_FEATURE, 'deploy-cancel-v1')
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes(DEPLOY_CANCEL_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('deno-native-apps-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(DENO_NATIVE_APPS_FEATURE, 'deno-native-apps-v1')
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes(DENO_NATIVE_APPS_FEATURE), true)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })

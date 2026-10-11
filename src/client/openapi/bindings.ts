@@ -97,18 +97,14 @@ export const bindingPaths = {
   [bindingsBasePath]: {
     ...(basePaths[bindingsBasePath] as Record<string, unknown>),
     get: {
-      ...((basePaths[bindingsBasePath] as Record<string, unknown>).get as Record<
-        string,
-        unknown
-      >),
+      ...((basePaths[bindingsBasePath] as Record<string, unknown>).get as Record<string, unknown>),
       parameters: [
         {
           name: 'serviceId',
           in: 'query',
           required: false,
           schema: { type: 'string' },
-          description:
-            'List bindings owned by this compose service (exactly one filter)',
+          description: 'List bindings owned by this compose service (exactly one filter)',
         },
         {
           name: 'environmentId',
@@ -129,15 +125,11 @@ export const bindingPaths = {
       ],
     },
     post: {
-      ...((basePaths[bindingsBasePath] as Record<string, unknown>).post as Record<
-        string,
-        unknown
-      >),
+      ...((basePaths[bindingsBasePath] as Record<string, unknown>).post as Record<string, unknown>),
       responses: {
-        ...(((basePaths[bindingsBasePath] as Record<string, unknown>).post as Record<
-          string,
-          unknown
-        >).responses as Record<string, unknown>),
+        ...((
+          (basePaths[bindingsBasePath] as Record<string, unknown>).post as Record<string, unknown>
+        ).responses as Record<string, unknown>),
         ...bindingConflictResponses,
       },
     },
@@ -145,16 +137,24 @@ export const bindingPaths = {
   [bindingIdPath]: {
     ...(basePaths[bindingIdPath] as Record<string, unknown>),
     patch: {
-      ...((basePaths[bindingIdPath] as Record<string, unknown>).patch as Record<
-        string,
-        unknown
-      >),
+      ...((basePaths[bindingIdPath] as Record<string, unknown>).patch as Record<string, unknown>),
       responses: {
-        ...(((basePaths[bindingIdPath] as Record<string, unknown>).patch as Record<
-          string,
-          unknown
-        >).responses as Record<string, unknown>),
+        ...(((basePaths[bindingIdPath] as Record<string, unknown>).patch as Record<string, unknown>)
+          .responses as Record<string, unknown>),
         ...bindingConflictResponses,
+      },
+    },
+    delete: {
+      ...((basePaths[bindingIdPath] as Record<string, unknown>).delete as Record<string, unknown>),
+      responses: {
+        ...((
+          (basePaths[bindingIdPath] as Record<string, unknown>).delete as Record<string, unknown>
+        ).responses as Record<string, unknown>),
+        '403': {
+          description:
+            'Caller cannot manage this service, or `reauth_required` (a recent step-up is needed when the organization requires one)',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
       },
     },
   },

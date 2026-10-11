@@ -7,6 +7,7 @@ import { parseSecretsFromEnv } from '../lib/secrets/secrets.ts'
 import { deriveDaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import type { Db } from '../db/connection.ts'
 import { materializeDaemonJsonbWrite } from '../test-fixtures/daemon-jsonb-simulator.ts'
+import { withTopologyReportRecording } from '../test-fixtures/topology-report-db.ts'
 import { key } from '../db/schema.ts'
 import type { ServerGeo } from '../features/geo/server-geo.ts'
 import { issueDaemonJwt } from './authn/daemon-jwt.ts'
@@ -1728,16 +1729,9 @@ describe.sequential('DaemonCellObject', () => {
   it('topology-report writes the daemon-reported snapshot and its own timestamp verbatim', async () => {
     const serverId = 'test-srv-topology'
     const base = createProjectionRecordingDb()
-    const inserted: Array<Record<string, unknown>> = []
-    const db = {
-      ...base.db,
-      insert: () => ({
-        values: (v: Record<string, unknown>) => {
-          inserted.push(v)
-          return { onConflictDoNothing: () => Promise.resolve(undefined) }
-        },
-      }),
-    } as unknown as Db
+    const { db, inserted } = withTopologyReportRecording(
+      base.db as unknown as Record<string, unknown>
+    )
     setDaemonCellProjectionDbFactoryForTests(() => db)
 
     const stub = env.DAEMON_CELL.getByName(serverId)
@@ -3608,6 +3602,46 @@ describe('DaemonCellObject alarm / outbox / RPC branch coverage', () => {
 
     ws.close(1000, 'test done')
   }, 10_000)
+
+  it.each([
+    ['heartbeat', { type: 'heartbeat', daemonBuild: { commit: 'same', buildId: '1' } }],
+    [
+      'topology-report',
+      { type: 'topology-report', generation: 1, bootGeneration: 1, snapshot: { networks: [] } },
+    ],
+  ])(
+    '%s after a stale sweep restores the Postgres online projection',
+    async (name, frame) => {
+      const serverId = `test-srv-stale-restore-${name}`
+      const { db, getStatus, updateCalls } = createProjectionRecordingDb({
+        connected: true,
+        statusChangedAt: new Date().toISOString(),
+      })
+      setDaemonCellProjectionDbFactoryForTests(() => db)
+
+      const stub = env.DAEMON_CELL.getByName(serverId)
+      const { ws } = await openDaemonWebSocket(stub, serverId)
+
+      setForceAutoResponseAgeMsForTests(DAEMON_OFFLINE_SWEEP_MS + 5_000)
+      await runInDurableObject(stub, async (instance: DaemonCellObject) => {
+        await instance.alarm()
+      })
+      await waitFor(() => {
+        expect(getStatus().connected).toBe(false)
+      })
+      setForceAutoResponseAgeMsForTests(null)
+
+      ws.send(JSON.stringify({ ...frame, at: new Date().toISOString() }))
+
+      await waitFor(() => {
+        expect(getStatus().connected).toBe(true)
+      })
+      expect(updateCalls.length).toBeGreaterThan(0)
+
+      ws.close(1000, 'test done')
+    },
+    10_000
+  )
 
   it('outbox send failure requeues with retry_at before poison threshold', async () => {
     const serverId = 'test-srv-outbox-retry-delay'

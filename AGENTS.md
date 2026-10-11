@@ -97,16 +97,14 @@ the systemd table for ownership, ACLs, and `/run/turbopanel` **`2770 tp:tp`**
 | `tpapache`   | 9991    | Apache (optional)                                              |
 | `tpols`      | 9990    | OpenLiteSpeed (optional)                                       |
 | `tplsws`     | 9989    | LiteSpeed Enterprise (reserved)                                |
-| `tpnodeapp`  | 9988    | group only — read+traverse on the vendored tenant Node tree    |
 
-Tenant principals: **15001+** (host-picked from 15001–60000, or an operator override ≥ 15001).
+Tenant principals: **15001–60000** (host-picked from that band, or an operator override inside it; 61184–65519 above it is systemd's throwaway build users).
 
-`tpnodeapp` is a **group with no user**: tenant principals join it when their
-first native (`serviceKind: node`) app deploys, and it means only "may execute
-`/opt/turbopanel/vendor/node-app/<series>/current/bin/node`". Principals are
-deliberately never added to `tp`, and `/opt/turbopanel` + `vendor/` stay
-`tp:tp 0750` — the group reaches the tree through a traverse-only POSIX ACL on
-those two directories (`node-app-runtime` role), never through world bits.
+There are **no per-version runtime groups**. Every PHP, Node and Deno version
+installed on a server may be run by every site owner's Linux user: the vendored
+trees are root-owned, readable and executable by everyone, never writable, and
+the daemon sends no per-version list. Principals are still never added to
+`tp`.
 
 **Application logins are unchanged** — `postgres_user`/`postgres_db` =
 `turbopanel`, RabbitMQ user = `turbopanel`, Docker network/volumes =
@@ -296,7 +294,9 @@ cell) may keep `@std/*`. Guard: `pnpm check:workers-bundle`.
 the system.
 
 Unit tests use non-production secrets from `src/test-fixtures/secrets.ts`
-(`TEST_ONLY_TURBOPANEL_SECRET`). Vitest Workers config uses the same naming
+(`TEST_ONLY_TURBOPANEL_SECRET`). Host-free `managed.ha.reconcile` parser tests
+build daemon sealed-envelope strings via `src/test-fixtures/managed-ha-envelopes.ts`
+so PR secret scans do not flag static daemon-envelope literals. Vitest Workers config uses the same naming
 convention in `wrangler.vitest.jsonc`. The secret scanner allowlists only exact
 fixture lines in `.secretscan-allowlist` — do not add broad exclusions.
 `scripts/scan-secrets.sh`, `scripts/scan-secrets.patterns` and `scripts/scan-secrets.selftest.sh` are byte-identical in turbopanel, turbopaneld, ui, website and dev: change all five together (each repo keeps a copy because the pre-commit hook runs it locally). The rules in the patterns file cover private key blocks, vendor tokens, JWTs, connection URLs with credentials, secret-looking assignments and forbidden file names (dotenv files, `*.pem`, `*.key`, daemon identity files, …); the scanner reports the rule id and location, never the matching text. `--all` scans the tree; `--range BASE..HEAD` scans every line the PR's commits added, so a secret added and removed inside a PR is still caught (CI runs it on PRs into trunk). Allowlist entries in `.secretscan-allowlist` are `path:full line text` (or `@path exact/file` for a forbidden file name), each needs a `# reason:` comment above it, and wildcards are rejected. The self-test builds its fixtures at run time from fragments; dev's `src/lib/scan-secrets.test.ts` runs it and, with the siblings checked out in dev CI, fails if any copy drifts.
@@ -376,6 +376,26 @@ guard; `pnpm test:do` alone does not.
   else `git rev-parse HEAD`, and a deploy that cannot name a 40-hex commit is
   refused (so `/api/health` never reports `revision: unknown`). A failed
   migrate stops before wrangler runs.
+- **STAGING and LIVE use the same Workers Builds setup**, one Worker per
+  environment: `staging-instance` (branch `staging`, deploy command
+  `pnpm run deploy:staging`) and `instance` (branch `live`, deploy command
+  `pnpm run deploy:live`). Each needs its own build variables
+  (`TURBOPANEL_DATABASE_URL`, `TURBOPANEL_DEPLOY_CHECK_API_TOKEN`) pointing at
+  that environment's own database and Hyperdrive; a database URL that is not
+  the env's Hyperdrive origin is refused before anything migrates (`pnpm run
+  migrate` calls `check-deploy-env.mjs` for every env). By hand,
+  `deploy:staging` / `deploy:live` ask first: type the env name on a terminal,
+  or pass `--yes` without one. Workers Builds (it sets `WORKERS_CI_COMMIT_SHA`
+  and `WORKERS_CI`; either one skips the ask) and `deploy:testing` are never
+  asked. The ask covers deploys only, not a hand-run `pnpm run migrate`. The
+  queue (`staging-daemon-commands` / `daemon-commands`) with its `-dlq`
+  dead-letter queue and the R2 bucket must exist before the first deploy; the
+  Durable Object namespace and rate limiters come from `wrangler.jsonc`.
+  Hosted sign-up is off on both until `TURBOPANEL_IS_SIGNUP_ENABLED` says
+  otherwise, and `TURBOPANEL_AUTO_FAILOVER` is `off`. **Monitor
+  `GET /api/daemon/v1/readiness`, not `/api/health`:** `/api/health` is a
+  static identity page and answers 200 with the database gone; readiness reads
+  the database and answers 503 `database unavailable` when it cannot.
 - **TESTING deploys from `trunk` via Cloudflare Workers Builds** on the
   `testing-instance` worker (branch-based, like staging/live — not an Actions
   API-token deploy). Deploy command `pnpm run deploy:testing` (sets
@@ -1314,8 +1334,9 @@ src/
   Deno-only registration). Install helpers live in `src/features/install/`.
 - `src/features/update/manifest.ts` — Workers-safe channel manifest resolver
   (`fetch`-only, one fetch straight to the channel's built-in location from
-  `src/contracts/update-channel.ts` — trunk on the CDN drop, rc/release on the
-  daemon's GitHub Releases; per-channel cache; returns `null` on any failure).
+  `src/contracts/update-channel.ts` — canary/rc/release on the daemon's GitHub
+  Releases, `trunk` and `edge` have none; per-channel cache; returns `null` on
+  any failure).
   The instance follows `TURBOPANEL_UPDATE_CHANNEL` (default `release`; invalid
   is a Deno startup error) and every queued daemon update carries that channel
 - `src/features/email/` — shared queue types/templates; SMTP (Deno/AMQP) and

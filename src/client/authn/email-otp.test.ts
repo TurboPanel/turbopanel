@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
@@ -28,22 +29,15 @@ function testOtpSecrets(): Promise<DerivedSecretsConfig> {
   return deriveSecretsConfig(config, OTP_VERIFIER_SECRET_PURPOSE)
 }
 
-async function cleanupOtp(
-  db: ReturnType<typeof createDenoDb>,
-  email: string,
-): Promise<void> {
+async function cleanupOtp(db: ReturnType<typeof createDenoDb>, email: string): Promise<void> {
   const hash = await hashEmailForOtp(email)
-  await db
-    .delete(verification)
-    .where(eq(verification.identifier, `otp:sign-in:${hash}`))
-  await db
-    .delete(verification)
-    .where(eq(verification.identifier, `otp-attempts:sign-in:${hash}`))
+  await db.delete(verification).where(eq(verification.identifier, `otp:sign-in:${hash}`))
+  await db.delete(verification).where(eq(verification.identifier, `otp-attempts:sign-in:${hash}`))
 }
 
 it('createEmailOtp enforces a resend cooldown', async () => {
   if (!dbUrl) {
-    console.warn('Skipping OTP cooldown test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('OTP cooldown test')
     return
   }
   const db = createDenoDb()
@@ -62,7 +56,7 @@ it('createEmailOtp enforces a resend cooldown', async () => {
 
 it('createEmailOtp with zero cooldown replaces the OTP', async () => {
   if (!dbUrl) {
-    console.warn('Skipping OTP replace test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('OTP replace test')
     return
   }
   const db = createDenoDb()
@@ -85,7 +79,7 @@ it('createEmailOtp with zero cooldown replaces the OTP', async () => {
 
 it('verifyEmailOtp locks out after MAX_OTP_ATTEMPTS failures', async () => {
   if (!dbUrl) {
-    console.warn('Skipping OTP attempts test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('OTP attempts test')
     return
   }
   const db = createDenoDb()
@@ -110,7 +104,7 @@ it('verifyEmailOtp locks out after MAX_OTP_ATTEMPTS failures', async () => {
 
 it('concurrent wrong OTP attempts are counted atomically (no lost updates)', async () => {
   if (!dbUrl) {
-    console.warn('Skipping OTP concurrency test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('OTP concurrency test')
     return
   }
   const db = createDenoDb()
@@ -125,16 +119,11 @@ it('concurrent wrong OTP attempts are counted atomically (no lost updates)', asy
     // correct OTP through afterward.
     await Promise.all(
       Array.from({ length: MAX_OTP_ATTEMPTS }, () =>
-        verifyEmailOtp(db, email, 'sign-in', '000000', secrets)),
+        verifyEmailOtp(db, email, 'sign-in', '000000', secrets)
+      )
     )
 
-    const afterConcurrent = await verifyEmailOtp(
-      db,
-      email,
-      'sign-in',
-      goodOtp,
-      secrets,
-    )
+    const afterConcurrent = await verifyEmailOtp(db, email, 'sign-in', goodOtp, secrets)
     assertEquals(afterConcurrent, 'too_many_attempts')
   } finally {
     await cleanupOtp(db, email)
@@ -143,9 +132,7 @@ it('concurrent wrong OTP attempts are counted atomically (no lost updates)', asy
 
 it('createEmailOtp stores a keyed HMAC verifier, never the raw OTP', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping OTP digest-at-rest test: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('OTP digest-at-rest test')
     return
   }
   const db = createDenoDb()
@@ -166,10 +153,7 @@ it('createEmailOtp stores a keyed HMAC verifier, never the raw OTP', async () =>
     assertEquals(rows.length, 1)
     // The at-rest value must never be the plaintext OTP.
     assertEquals(rows[0].value === otp, false)
-    assertEquals(
-      rows[0].value.startsWith(`tpotp.v${secrets.current.version}.`),
-      true,
-    )
+    assertEquals(rows[0].value.startsWith(`tpotp.v${secrets.current.version}.`), true)
 
     // The correct OTP still verifies against the stored HMAC.
     const ok = await verifyEmailOtp(db, email, 'sign-in', otp, secrets)
@@ -184,12 +168,9 @@ it('stored OTP verifier cannot be validated with only the database value', async
   const otherConfig = parseSecretsEnv(
     // Distinct fixture secret — offline attacker without TURBOPANEL_SECRETS.
     '1:Zz9Yy8Xx7Ww6Vv5Uu4Tt3Ss2Rr1Qq0Pp9Oo8_Nn7Mm6Ll5Kk4',
-    'deno',
+    'deno'
   )
-  const wrongSecrets = await deriveSecretsConfig(
-    otherConfig,
-    OTP_VERIFIER_SECRET_PURPOSE,
-  )
+  const wrongSecrets = await deriveSecretsConfig(otherConfig, OTP_VERIFIER_SECRET_PURPOSE)
 
   const emailHash = await hashEmailForOtp('offline-attack@example.com')
   const otp = '123456'
@@ -198,71 +179,40 @@ it('stored OTP verifier cannot be validated with only the database value', async
   assertEquals(stored.startsWith('tpotp.'), true)
 
   // Correct secret verifies.
-  assertEquals(
-    await verifyOtpVerifier('sign-in', emailHash, otp, stored, secrets),
-    true,
-  )
+  assertEquals(await verifyOtpVerifier('sign-in', emailHash, otp, stored, secrets), true)
   // Wrong server secret cannot validate the same stored row + OTP.
-  assertEquals(
-    await verifyOtpVerifier('sign-in', emailHash, otp, stored, wrongSecrets),
-    false,
-  )
+  assertEquals(await verifyOtpVerifier('sign-in', emailHash, otp, stored, wrongSecrets), false)
   // Brute-forcing the six-digit space against a wrong key also fails.
-  assertEquals(
-    await verifyOtpVerifier('sign-in', emailHash, '000000', stored, wrongSecrets),
-    false,
-  )
+  assertEquals(await verifyOtpVerifier('sign-in', emailHash, '000000', stored, wrongSecrets), false)
   // Version absent from the keyring cannot be verified by rotation sweep alone
   // when the embedded hex is garbage under that missing version prefix.
   assertEquals(
-    await verifyOtpVerifier(
-      'sign-in',
-      emailHash,
-      otp,
-      'tpotp.v99.deadbeefcafebabe',
-      secrets,
-    ),
-    false,
+    await verifyOtpVerifier('sign-in', emailHash, otp, 'tpotp.v99.deadbeefcafebabe', secrets),
+    false
   )
 })
 
 it('rotated fallback OTP keys still verify existing verifiers', async () => {
-  const oldConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    'deno')
-  const oldSecrets = await deriveSecretsConfig(
-    oldConfig,
-    OTP_VERIFIER_SECRET_PURPOSE,
-  )
+  const oldConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
+  const oldSecrets = await deriveSecretsConfig(oldConfig, OTP_VERIFIER_SECRET_PURPOSE)
 
   const emailHash = await hashEmailForOtp('rotation@example.com')
   const otp = '654321'
-  const storedUnderV1 = await deriveOtpVerifier(
-    'sign-in',
-    emailHash,
-    otp,
-    oldSecrets,
-  )
+  const storedUnderV1 = await deriveOtpVerifier('sign-in', emailHash, otp, oldSecrets)
   assertEquals(storedUnderV1.startsWith('tpotp.v1.'), true)
 
   // Rotate: new current key (v2) with v1 as fallback.
-  const rotatedConfig = parseSecretsEnv(`2:Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2Mm3_Nn4Oo5Pp6Qq7,1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    'deno')
-  const rotatedSecrets = await deriveSecretsConfig(
-    rotatedConfig,
-    OTP_VERIFIER_SECRET_PURPOSE,
+  const rotatedConfig = parseSecretsEnv(
+    `2:Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2Mm3_Nn4Oo5Pp6Qq7,1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    'deno'
   )
+  const rotatedSecrets = await deriveSecretsConfig(rotatedConfig, OTP_VERIFIER_SECRET_PURPOSE)
   assertEquals(rotatedSecrets.current.version, 2)
   assertEquals(rotatedSecrets.fallbacks[0]?.version, 1)
 
   assertEquals(
-    await verifyOtpVerifier(
-      'sign-in',
-      emailHash,
-      otp,
-      storedUnderV1,
-      rotatedSecrets,
-    ),
-    true,
+    await verifyOtpVerifier('sign-in', emailHash, otp, storedUnderV1, rotatedSecrets),
+    true
   )
 })
 
@@ -272,18 +222,13 @@ it('requireOtpVerifierSecrets fails closed when the keyring is missing', () => {
     throw new Error('expected requireOtpVerifierSecrets to throw')
   } catch (err) {
     assertEquals(err instanceof Error, true)
-    assertEquals(
-      (err as Error).message.includes('OTP verifier secrets are required'),
-      true,
-    )
+    assertEquals((err as Error).message.includes('OTP verifier secrets are required'), true)
   }
 })
 
 it('parallel first-time createEmailOtp leaves only one active OTP row', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping OTP create concurrency test: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('OTP create concurrency test')
     return
   }
   const db = createDenoDb()
@@ -292,7 +237,8 @@ it('parallel first-time createEmailOtp leaves only one active OTP row', async ()
   try {
     const results = await Promise.all(
       Array.from({ length: 8 }, () =>
-        createEmailOtp(db, email, 'sign-in', secrets, 300, { cooldownMs: 0 })),
+        createEmailOtp(db, email, 'sign-in', secrets, 300, { cooldownMs: 0 })
+      )
     )
     const created = results.filter((r) => r.status === 'created')
     assertEquals(created.length >= 1, true)

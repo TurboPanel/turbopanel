@@ -4,9 +4,11 @@ import type {
   ServerHardwareProfile,
   ServerHostResources,
   ServerOsMetadata,
+  ServerReleaseLinkScanMetadata,
   ServerTimeSync,
 } from '../features/servers/server-metadata.ts'
 import type { MetricsCapabilityPlan } from './capability-plan.ts'
+import type { ServiceRunState } from './service-run-state.ts'
 import { isValidWireguardEndpoint, isValidWireguardPublicKey } from '../features/fabric/wg.ts'
 
 export type DaemonBuildInfo = {
@@ -282,6 +284,11 @@ export type ManagedHealthObservedMember = {
     receivedLsn?: string
     replayLsn?: string
     receiveLagBytes?: number
+    /** MySQL / MariaDB replica: GTID sets received / applied (opaque, bounded). */
+    receivedGtid?: string
+    executedGtid?: string
+    /** MySQL / MariaDB replica: every received transaction is applied. Absent = unknown. */
+    fullyApplied?: boolean
     lastStreaming?: {
       at: string
       ageMs: number
@@ -289,7 +296,24 @@ export type ManagedHealthObservedMember = {
       lagSeconds?: number
       receiveLagBytes?: number
     }
+    /** Postgres primary only: WAL held back by the replicas' replication slots. */
+    slotRetention?: {
+      state: 'ok' | 'lagging' | 'critical'
+      slot?: string
+      walStatus?: string
+      retainedBytes?: number
+      safeBytes?: number
+      active?: boolean
+    }
   }
+}
+
+/** One replica in a `managed-health-report`: `down`, or its reading. */
+export type ManagedHealthReportMember = {
+  managedId: string
+  memberId: string
+  down?: true
+  replication?: NonNullable<ManagedHealthObservedMember['replication']>
 }
 
 export type DaemonMessage =
@@ -314,10 +338,24 @@ export type DaemonMessage =
        */
       docker?: ServerDockerMetadata
       /**
+       * Per-service run state (running, restart count, last error); persisted to
+       * `server.metadata.services`. Omitted when the daemon is not watching
+       * Docker; `[]` means no services on the host.
+       */
+      services?: ServiceRunState[]
+      /**
        * Advertised wire features (`DAEMON_WIRE_FEATURES`). Omitted by a daemon
        * that predates the field; persistence stores `[]`.
        */
       features?: string[]
+      /**
+       * Bounded summary of the daemon's boot-time check of live releases for
+       * links that leave the release; persisted to
+       * `server.metadata.releaseLinkScan`. Omitted until a scan has run, and by
+       * a daemon that predates the field. Usually arrives on a heartbeat, since
+       * the scan finishes after the first hello.
+       */
+      releaseLinkScan?: ServerReleaseLinkScanMetadata
     }
   | {
       type: 'heartbeat'
@@ -335,6 +373,14 @@ export type DaemonMessage =
        * Omit when Docker is not installed.
        */
       docker?: ServerDockerMetadata
+      /** Change-detected link-check summary; persisted to `server.metadata.releaseLinkScan`. */
+      releaseLinkScan?: ServerReleaseLinkScanMetadata
+      /**
+       * Change-detected per-service run state; persisted to
+       * `server.metadata.services`. Omitted when the daemon is not watching
+       * Docker; `[]` means no services on the host.
+       */
+      services?: ServiceRunState[]
     }
   | { type: 'echo'; payload: unknown; at: string }
   | CellAttachVersionMessage
@@ -375,6 +421,17 @@ export type DaemonMessage =
       ok: boolean
       member?: ManagedHealthObservedMember
       error?: string
+      at: string
+    }
+  | {
+      /**
+       * Daemon-initiated, fire-and-forget: every managed replica the host runs,
+       * read just now (every 30 s; feature `managed-health-report-v1`). A
+       * replica whose engine is down is `down: true` with no `replication`.
+       * Twin of the daemon's `ManagedHealthReportMember`.
+       */
+      type: 'managed-health-report'
+      members: ManagedHealthReportMember[]
       at: string
     }
   | {
@@ -508,6 +565,21 @@ export type DaemonMessage =
       at: string
     }
   | {
+      type: 'deploy-cancel'
+      id: string
+      /** The `environment.deploy` command to stop. */
+      commandId: string
+      at: string
+    }
+  | {
+      type: 'deploy-cancel-result'
+      id: string
+      ok: boolean
+      outcome?: DeployCancelOutcome
+      error?: string
+      at: string
+    }
+  | {
       type: 'managed-ha-event'
       managedId: string
       sourceMemberId?: string
@@ -562,6 +634,12 @@ export type DaemonMessage =
       hostname: string
       ok: boolean
       errorMessage?: string
+      /**
+       * Leaf expiry (ISO 8601) the daemon's probe read. Sent with `ok: true`
+       * on the first good sighting, a recovery, and when a renewal changes it.
+       * Merge-patched onto `tls.metadata.acme.notAfter`.
+       */
+      notAfter?: string
       at: string
     }
   | {
@@ -710,9 +788,11 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'topology-overrides-update-result',
   'capability-plan-update-result',
   'capability-plan-clear-result',
+  'deploy-cancel-result',
   'repo-read-result',
   'repo-default-branch-result',
   'managed-ha-event',
+  'managed-health-report',
   'topology-report',
   'acme-issuance-event',
   'instance-acme-issuance-event',
@@ -751,6 +831,8 @@ export const MAX_DAEMON_WS_LOGS_CHARS = 200 * 1024
 
 /** Max characters for the string fields of `managed-health-result.member`. */
 export const MAX_DAEMON_WS_MANAGED_HEALTH_FIELD_CHARS = 128
+/** Bound for a replica's opaque GTID set text (`receivedGtid`, `executedGtid`). */
+export const MAX_DAEMON_WS_MANAGED_GTID_CHARS = 4096
 
 /** Max UTF-8 bytes of `metrics-capabilities-result.capabilities` JSON. */
 export const MAX_DAEMON_WS_CAPABILITIES_BYTES = 96 * 1024
@@ -1073,10 +1155,17 @@ function isNonNegativeInt(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0
 }
 
+/** Largest generation number the control plane stores (a Postgres `integer`). */
+const MAX_TOPOLOGY_REPORT_GENERATION = 2_147_483_647
+
+function isTopologyGenerationNumber(value: unknown): value is number {
+  return isNonNegativeInt(value) && value <= MAX_TOPOLOGY_REPORT_GENERATION
+}
+
 function validateTopologyReportFields(record: Record<string, unknown>): string | null {
   if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
-  if (!isNonNegativeInt(record.generation)) return 'invalid generation'
-  if (!isNonNegativeInt(record.bootGeneration)) {
+  if (!isTopologyGenerationNumber(record.generation)) return 'invalid generation'
+  if (!isTopologyGenerationNumber(record.bootGeneration)) {
     return 'invalid bootGeneration'
   }
   return validateTopologyReportSnapshot(record.snapshot)
@@ -1163,7 +1252,9 @@ function validateBackupRunReportArtifact(record: Record<string, unknown>): strin
   ) {
     return 'invalid path'
   }
-  if (record.pruned !== undefined && !isBackupPrunedList(record.pruned)) return 'invalid pruned'
+  if (record.pruned !== undefined && !isBackupPrunedList(record.pruned)) {
+    return 'invalid pruned'
+  }
   return null
 }
 
@@ -1240,7 +1331,11 @@ function validateManagedHealthMember(value: unknown): string | null {
   if (!isBoundedHealthString(value.role)) return 'invalid member.role'
   if (!isBoundedHealthString(value.status)) return 'invalid member.status'
   if (value.replication === undefined) return null
-  const replication = value.replication
+  return validateObservedReplication(value.replication)
+}
+
+/** One replication reading, as carried on `managed-health-result` and `managed-health-report`. */
+function validateObservedReplication(replication: unknown): string | null {
   if (!isRecord(replication)) return 'invalid member.replication'
   if (!isBoundedHealthString(replication.state)) {
     return 'invalid member.replication.state'
@@ -1257,8 +1352,48 @@ function validateManagedHealthMember(value: unknown): string | null {
       replication.receiveLagBytes,
       'member.replication.receiveLagBytes'
     ) ??
-    validateLastStreaming(replication.lastStreaming)
+    validateOptionalGtid(replication.receivedGtid, 'member.replication.receivedGtid') ??
+    validateOptionalGtid(replication.executedGtid, 'member.replication.executedGtid') ??
+    validateOptionalBoolean(replication.fullyApplied, 'member.replication.fullyApplied') ??
+    validateLastStreaming(replication.lastStreaming) ??
+    validateSlotRetention(replication.slotRetention)
   )
+}
+
+function validateSlotRetention(value: unknown): string | null {
+  if (value === undefined) return null
+  if (!isRecord(value)) return 'invalid member.replication.slotRetention'
+  if (value.state !== 'ok' && value.state !== 'lagging' && value.state !== 'critical') {
+    return 'invalid member.replication.slotRetention.state'
+  }
+  if (value.active !== undefined && typeof value.active !== 'boolean') {
+    return 'invalid member.replication.slotRetention.active'
+  }
+  return (
+    validateOptionalHealthString(value.slot, 'member.replication.slotRetention.slot') ??
+    validateOptionalHealthString(value.walStatus, 'member.replication.slotRetention.walStatus') ??
+    validateOptionalFiniteNumber(
+      value.retainedBytes,
+      'member.replication.slotRetention.retainedBytes'
+    ) ??
+    validateOptionalFiniteNumber(value.safeBytes, 'member.replication.slotRetention.safeBytes')
+  )
+}
+
+function validateOptionalGtid(value: unknown, field: string): string | null {
+  if (
+    value === undefined ||
+    // An empty string is an empty GTID set: unknown (the parsers drop it), not a rejection.
+    (typeof value === 'string' && value.length <= MAX_DAEMON_WS_MANAGED_GTID_CHARS)
+  ) {
+    return null
+  }
+  return `invalid ${field}`
+}
+
+function validateOptionalBoolean(value: unknown, field: string): string | null {
+  if (value === undefined || typeof value === 'boolean') return null
+  return `invalid ${field}`
 }
 
 function validateOptionalHealthString(value: unknown, field: string): string | null {
@@ -1269,7 +1404,9 @@ function validateOptionalHealthString(value: unknown, field: string): string | n
 function validateLastStreaming(value: unknown): string | null {
   if (value === undefined) return null
   if (!isRecord(value)) return 'invalid member.replication.lastStreaming'
-  if (!isIsoTimestamp(value.at)) return 'invalid member.replication.lastStreaming.at'
+  if (!isIsoTimestamp(value.at)) {
+    return 'invalid member.replication.lastStreaming.at'
+  }
   if (typeof value.ageMs !== 'number' || !Number.isFinite(value.ageMs)) {
     return 'invalid member.replication.lastStreaming.ageMs'
   }
@@ -1283,11 +1420,66 @@ function validateLastStreaming(value: unknown): string | null {
   )
 }
 
+/** Max members on one `managed-health-report` (a host's replicas). */
+export const MAX_DAEMON_WS_MANAGED_HEALTH_REPORT_MEMBERS = 32
+
+function validateManagedHealthReportMember(value: unknown): string | null {
+  if (!isRecord(value)) return 'invalid member'
+  if (!isBoundedHealthString(value.managedId)) {
+    return 'invalid member.managedId'
+  }
+  if (!isBoundedHealthString(value.memberId)) return 'invalid member.memberId'
+  const down = value.down
+  if (down !== undefined && down !== true) return 'invalid member.down'
+  // Exactly one of: a reading, or "the engine is down".
+  if ((down === true) === (value.replication !== undefined)) {
+    return 'member needs exactly one of down or replication'
+  }
+  return value.replication === undefined ? null : validateObservedReplication(value.replication)
+}
+
+function validateManagedHealthReportFields(record: Record<string, unknown>): string | null {
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
+  if (!Array.isArray(record.members)) return 'invalid members'
+  if (
+    record.members.length === 0 ||
+    record.members.length > MAX_DAEMON_WS_MANAGED_HEALTH_REPORT_MEMBERS
+  ) {
+    return 'members count out of range'
+  }
+  for (const entry of record.members) {
+    const issue = validateManagedHealthReportMember(entry)
+    if (issue) return issue
+  }
+  return null
+}
+
 function validateManagedHealthResultFields(record: Record<string, unknown>): string | null {
   const base = validateOkResultFields(record)
   if (base) return base
   if (record.member === undefined) return null
   return validateManagedHealthMember(record.member)
+}
+
+/**
+ * What the host did with a `deploy-cancel`: `cancelling` (it was told to stop;
+ * the deploy command's own outcome says how it ended), `too_late` (the deploy
+ * is already switching over and will finish), `not_running` (the host has no
+ * such deploy in flight).
+ */
+export const DEPLOY_CANCEL_OUTCOMES = ['cancelling', 'too_late', 'not_running'] as const
+export type DeployCancelOutcome = (typeof DEPLOY_CANCEL_OUTCOMES)[number]
+
+function validateDeployCancelResultFields(record: Record<string, unknown>): string | null {
+  const base = validateOkResultFields(record)
+  if (base) return base
+  if (
+    record.outcome !== undefined &&
+    !(DEPLOY_CANCEL_OUTCOMES as readonly unknown[]).includes(record.outcome)
+  ) {
+    return 'invalid outcome'
+  }
+  return null
 }
 
 function validateOkResultFields(record: Record<string, unknown>): string | null {
@@ -1425,6 +1617,8 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateRepoDefaultBranchResultFields(record)
     case 'managed-ha-event':
       return validateManagedHaEventFields(record)
+    case 'managed-health-report':
+      return validateManagedHealthReportFields(record)
     case 'topology-report':
       return validateTopologyReportFields(record)
     case 'acme-issuance-event':
@@ -1443,6 +1637,8 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
     case 'capability-plan-update-result':
     case 'capability-plan-clear-result':
       return validateOkResultFields(record)
+    case 'deploy-cancel-result':
+      return validateDeployCancelResultFields(record)
     case 'update-result':
     case 'instance-update-result':
       return validateUpdateResultFields(record)
@@ -1547,6 +1743,7 @@ function validateInboundEnvelopeKind(inbound: DaemonInboundEnvelope): string | n
     case 'topology-overrides-update-result':
     case 'capability-plan-update-result':
     case 'capability-plan-clear-result':
+    case 'deploy-cancel-result':
       return validateOptionalError(inbound.error)
     case 'metrics-capabilities-result':
       return validateCapabilitiesEnvelope(inbound)
@@ -1683,6 +1880,7 @@ export type DaemonOutboundEnvelope =
       generation: number
     })
   | (OutboundEnvelopeBase & { kind: 'capability-plan-clear' })
+  | (OutboundEnvelopeBase & { kind: 'deploy-cancel'; commandId: string })
   | (OutboundEnvelopeBase & {
       kind: 'update'
       channel?: string
@@ -1835,6 +2033,14 @@ export type DaemonInboundEnvelope =
       error?: string
     }
   | {
+      kind: 'deploy-cancel-result'
+      requestId: string
+      at: string
+      ok: boolean
+      outcome?: DeployCancelOutcome
+      error?: string
+    }
+  | {
       kind: 'update-result'
       requestId: string
       at: string
@@ -1882,6 +2088,7 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
     case 'hello':
     case 'heartbeat':
     case 'managed-ha-event':
+    case 'managed-health-report':
     case 'topology-report':
     case 'acme-issuance-event':
     case 'instance-acme-issuance-event':
@@ -1975,6 +2182,15 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
         ok: msg.ok,
         error: msg.error,
       } as DaemonInboundEnvelope
+    case 'deploy-cancel-result':
+      return {
+        kind: 'deploy-cancel-result',
+        requestId: msg.id,
+        at: msg.at,
+        ok: msg.ok,
+        ...(msg.outcome === undefined ? {} : { outcome: msg.outcome }),
+        error: msg.error,
+      }
     case 'update-result':
       return {
         kind: 'update-result',
@@ -2223,6 +2439,13 @@ export function outboundEnvelopeToWireMessage(env: DaemonOutboundEnvelope): Daem
       return {
         type: 'capability-plan-clear',
         id: env.requestId,
+        at: env.at,
+      }
+    case 'deploy-cancel':
+      return {
+        type: 'deploy-cancel',
+        id: env.requestId,
+        commandId: env.commandId,
         at: env.at,
       }
     case 'update':

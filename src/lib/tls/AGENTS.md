@@ -26,14 +26,13 @@ hatch: deploy-prepare treats that pin as Caddy `tls internal` instead of
 `tlsMode: 'acme'` hostname every 60s and reports a state change as
 `acme-issuance-event` (`src/contracts/cell-protocol.ts`). This control plane's
 `handleAcmeIssuanceEvent` (`../../client/tls/acme-issuance-event.ts`)
-merge-patches the matching `managed` row's `metadata.acme.lastError` — it
-never writes `status`, so a recorded failure cannot itself flip
+merge-patches the matching `managed` row's `metadata.acme` (`lastError`,
+`notAfter` — the expiry the daemon's probe read — and `lastIssuedAt`, stamped on
+the first good sighting, a recovery, or a changed expiry) — it never writes `status`, so a recorded failure cannot itself flip
 `isReadyCandidate()`/`resolveTlsForHosting()` into refusing a deploy (see the
-regression test on that exact claim in `match.test.ts`). **Future:**
-certificate read-back (daemon reading Caddy's cert file under
-`$XDG_DATA_HOME/caddy/certificates/…` for `notAfter`) and surfacing
-`lastError` in the TLS library UI screen — today it is written but not yet
-displayed anywhere.
+regression test on that exact claim in `match.test.ts`). The
+Deno transport (`daemon/deno-ws.ts`) and the Workers cell
+(`daemon/cell/do.ts`) both route the event to that handler.
 
 Root context: `../../../AGENTS.md` (Caddy + TLS). Client TLS / SSL mode:
 `../../features/managed/AGENTS.md`. Command payload comments: `../../features/commands/AGENTS.md`. Org
@@ -61,7 +60,7 @@ All of this package is Web-Crypto-only and Workers-safe.
 
 | File             | Role                                                                                                                                                                                                               |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `self-signed.ts` | `mintOrganizationCa` (subject `O=TurboPanel, OU=Organization CA, CN={organizationId}`), `issueLeafCertificate` (`ORGANIZATION_CA_LEAF_VALID_DAYS` = 90), `mintSelfSignedCertificate`, `verifyCertificateSignature` |
+| `self-signed.ts` | `mintOrganizationCa` (subject `O=TurboPanel, OU=Organization CA, CN={organizationId}`; carries a subjectKeyIdentifier, which strict verifiers such as Python 3.13+ require — CAs minted before it only gain it on rotation), `issueLeafCertificate` (`ORGANIZATION_CA_LEAF_VALID_DAYS` = 90; carries its own SKI and an authorityKeyIdentifier taken from the CA's SKI, or computed from the CA key for a legacy CA), `mintSelfSignedCertificate`, `verifyCertificateSignature` |
 | `parse.ts`       | Certificate PEM parse                                                                                                                                                                                              |
 | `pem.ts`         | PEM encode / decode                                                                                                                                                                                                |
 | `keys.ts`        | Private-key / certificate match                                                                                                                                                                                    |
@@ -98,11 +97,21 @@ Read-only reference — no behavior claims beyond today:
   caGeneration, caNotAfter }` (one
   indexed COUNT on `leaf` for this org plus the active Organization CA
   generation and expiry). `TlsPublicRow` includes `caGeneration`.
-  `POST /tls/ca/retire` advances `retired` → `revoked` only after every tracked
-  command succeeded and binding rematerialize rows are not failed).
+  `POST /tls/ca/retire` advances `retired` → `revoked` only after every live
+  fan-out row converged (`rotation-converge.ts`: backfill deferred
+  `managed.apply` command ids, `POST /tls/ca/rotate` resumes from
+  `awaiting_retire`, gone targets `skipped` + `target_gone` do not block).
   `PATCH /tls/:id` with `revoke: true` on an Organization CA row is rejected
   (`409` `organization_ca_retire_required`); Organization CA retirement is
-  exclusively `POST /tls/ca/retire`.
+  exclusively `POST /tls/ca/retire`. Orchestrator hosts hold the bundle too
+  (`managed.ha.reconcile` → `tls/ca.pem`, read once at process start): when the
+  rotate fan-out completes and again after retire, every Orchestrator host of
+  the organization gets `managed.ha.reconcile`
+  (`reconcileOrganizationOrchestratorTrust` in
+  `../../client/tls/changeover-fanout.ts`; best effort, never fails the step),
+  so the bundle is both generations during the changeover and the active one
+  only afterwards. These commands are not rows in `rotation.results` and do not
+  gate retire.
 
 ## Where the Platform CA lives instead
 

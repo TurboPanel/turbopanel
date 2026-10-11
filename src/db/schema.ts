@@ -595,6 +595,12 @@ export const server = pgTable(
      * the SX grant, so the column is populated there too.
      */
     assignedTierId: uuid('assigned_tier_id'),
+    /**
+     * Operator-chosen floor for assignment: use a spare license at this tier
+     * or the smallest tier above before falling back to the derived smallest
+     * that fits. Null means derive only.
+     */
+    preferredTierId: uuid('preferred_tier_id'),
     isConnected: boolean('is_connected').default(false).notNull(),
     /**
      * Last status transition (`is_connected` flip). Feeds derived `connectedAt`
@@ -650,6 +656,15 @@ export const server = pgTable(
       columns: [table.assignedTierId],
       foreignColumns: [tier.id],
       name: 'server_assigned_tier_id_tier_id_fk',
+    }).onDelete('set null'),
+    index('idx_server_preferred_tier_id').using(
+      'btree',
+      table.preferredTierId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.preferredTierId],
+      foreignColumns: [tier.id],
+      name: 'server_preferred_tier_id_tier_id_fk',
     }).onDelete('set null'),
     check('server_machine_class_check', sql`${table.machineClass} IN ('physical', 'virtual')`),
   ]
@@ -1113,6 +1128,19 @@ export const command = pgTable(
       table.createdAt.desc()
     ),
     index('idx_command_status').using('btree', table.status.asc()),
+    /**
+     * Backs the per-minute reconcile sweeps' "has this server ever (or since
+     * its last connect) been sent a `<x>.reconcile`" EXISTS probes, which
+     * otherwise walk the server's whole command history. Not partial on
+     * purpose: the sweeps bind the command name as a parameter, and a generic
+     * plan cannot use a partial index whose predicate it cannot see.
+     */
+    index('idx_command_server_id_name_created_at').using(
+      'btree',
+      table.serverId.asc(),
+      table.name.asc(),
+      table.createdAt.desc()
+    ),
     /**
      * Backs the environment deploy-history read
      * (`GET /environments/:id/deployments`). Deploy history is sourced from
@@ -2253,6 +2281,13 @@ export const backup = pgTable(
      * artifact that is still on disk.
      */
     retentionId: uuid('retention_id'),
+    /**
+     * Host that holds the on-disk artifact (the primary when the backup ran).
+     * Null on rows written before this column existed, or after that server
+     * is deleted (`set null`). Restore/delete must not assume the current
+     * primary still has the file.
+     */
+    serverId: uuid('server_id'),
   },
   (table) => [
     index('idx_backup_managed_id_created_at').using(
@@ -2261,6 +2296,7 @@ export const backup = pgTable(
       table.createdAt.desc()
     ),
     index('idx_backup_retention_id').using('btree', table.retentionId.asc().nullsLast()),
+    index('idx_backup_server_id').using('btree', table.serverId.asc().nullsLast()),
     foreignKey({
       columns: [table.managedId],
       foreignColumns: [managed.id],
@@ -2270,6 +2306,11 @@ export const backup = pgTable(
       columns: [table.retentionId],
       foreignColumns: [retention.id],
       name: 'backup_retention_id_retention_id_fk',
+    }).onDelete('set null'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'backup_server_id_server_id_fk',
     }).onDelete('set null'),
     uniqueIndex('uniq_backup_managed_backup_id').on(table.managedId, table.backupId),
     check('backup_id_format_check', sql`backup_id ~ '^[A-Za-z0-9_-]+$'`),
@@ -3344,82 +3385,11 @@ export const principal = pgTable(
   ]
 )
 /**
- * Which runtime series a principal may **execute** on the host.
- *
- * A row here becomes a unix group membership (`tpphp84`, `tpnode24`), because
- * that is the only form the kernel enforces at `execve` — anything derived only
- * into a generated systemd unit or an FPM pool is invisible to a shell session
- * or a cron job, both of which run as the principal.
- *
- * A table rather than `principal.options` jsonb for three reasons:
- * `parsePrincipalOptions` is drop-on-invalid, which is the wrong posture for a
- * security grant; "which principals still hold php 8.1?" has to be answerable
- * before a series can be retired; and per-row provenance is the audit trail.
- *
- * `grantedBy` distinguishes an operator's explicit grant from one deploy-prepare
- * inserted because a service declared the runtime. Both are real grants and both
- * are revocable — the distinction exists so the UI can say why a principal has
- * something, not to make one of them implicit.
- *
- * No `organization_id`: derived through `principal`, matching that table.
- */
-export const entitlement = pgTable(
-  'entitlement',
-  {
-    id: uuid()
-      .default(sql`uuidv7()`)
-      .primaryKey()
-      .notNull(),
-    createdAt: timestamp('created_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    })
-      .defaultNow()
-      .notNull(),
-    updatedAt: timestamp('updated_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    })
-      .defaultNow()
-      .$onUpdate(() => sql`now()`)
-      .notNull(),
-    principalId: uuid('principal_id').notNull(),
-    runtime: text().notNull(),
-    /** Exec boundary (`8.4`, `24`), never a patch pin. */
-    series: text().notNull(),
-    grantedBy: text('granted_by').default('operator').notNull(),
-  },
-  (table) => [
-    index('idx_entitlement_principal_id').using(
-      'btree',
-      table.principalId.asc().nullsLast().op('uuid_ops')
-    ),
-    foreignKey({
-      columns: [table.principalId],
-      foreignColumns: [principal.id],
-      name: 'entitlement_principal_id_principal_id_fk',
-    }).onDelete('cascade'),
-    unique('entitlement_unique').on(table.principalId, table.runtime, table.series),
-    check('entitlement_runtime_check', sql`${table.runtime} IN ('php', 'node')`),
-    check(
-      'entitlement_series_check',
-      // `[.]` not `\.`: a template literal eats the backslash, and a bare dot
-      // would match any character. A character class keeps it literal.
-      sql`${table.series} ~ '^[0-9]{1,3}([.][0-9]{1,3})?$'`
-    ),
-    check('entitlement_granted_by_check', sql`${table.grantedBy} IN ('operator', 'deploy')`),
-  ]
-)
-
-/**
  * A public key that may authenticate as this principal over SSH.
  *
- * A table rather than `principal.options` jsonb, for the reasons
- * `entitlement` already lists — `parsePrincipalOptions` is
- * drop-on-invalid, which is the wrong posture for a credential — plus one
- * specific to keys: **"which principals does this fingerprint reach?" has to be
+ * A table rather than `principal.options` jsonb: `parsePrincipalOptions` is
+ * drop-on-invalid, which is the wrong posture for a credential, and one more
+ * reason is specific to keys: **"which principals does this fingerprint reach?" has to be
  * answerable in one query.** When a laptop is lost the operator has a
  * fingerprint and needs every account it opens, across every project and every
  * server. A blob per principal cannot answer that.
@@ -5397,10 +5367,11 @@ export const verification = pgTable(
  * `snapshot` is the full topology snapshot as reported by the daemon, minus
  * daemon-internal-only fields. jsonb, so no migration for its shape.
  *
- * No pruning/retention logic yet — this table has no partner `options`
- * column (that jsonb-pairing convention only applies to columns literally
- * named `metadata`/`options`; ours is `snapshot`). Future concern: add a
- * retention sweep once history size/growth is understood.
+ * Bounded: at most 12 new generations per server per hour and 24 per day,
+ * and only the newest 200 rows kept per server (see `server-topology-records.ts`). This
+ * table has no partner `options` column (that jsonb-pairing convention only
+ * applies to columns literally named `metadata`/`options`; ours is
+ * `snapshot`).
  */
 export const topologyGeneration = pgTable(
   'generation',
@@ -5453,7 +5424,8 @@ export const topologyGeneration = pgTable(
  * audit/debugging; `plan_hash` is the cheap "did it change" comparison key.
  * jsonb, so no migration for the plan shape.
  *
- * No pruning/retention logic yet — same future concern as `topologyGeneration`.
+ * Bounded: only the newest 100 rows are kept per server (see
+ * `capability-plan-records.ts`).
  */
 export const capabilityPlanGeneration = pgTable(
   'capability',

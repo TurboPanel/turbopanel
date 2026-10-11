@@ -7,7 +7,7 @@
  *  - hosting Caddy: HTTP hostings with hostnames on environments pinned here
  *    (the demand test `system/reconcile.ts` uses), with each hosting's bind scope;
  *  - compose `ports:`: the merged compose of every environment deployed here;
- *  - the shared ProxySQL listeners (`managed/host-exposure.ts`);
+ *  - the shared ProxySQL listeners (`managed/external-access.ts`);
  *  - managed clusters' private listener ports, limited to the exact peer servers;
  *  - TurboFabric's WireGuard port (a relay on this server);
  *  - the HA Raft ports (this server hosts a primary or a failover replica);
@@ -26,6 +26,7 @@ import {
   fabric,
   instanceHostname,
   organization,
+  managed,
   relay,
   replica,
   server,
@@ -38,14 +39,14 @@ import { parseFabricOptions } from '../fabric/cidr.ts'
 import { resolveHostingBind } from '../hostings/hosting-options.ts'
 import { MANAGED_HA_HTTP_PORT, MANAGED_HA_RAFT_PORT } from '../managed/ha-ports.ts'
 import { serverHostsManagedHa } from '../managed/ha-policy.ts'
-import { loadHostIngressListeners } from '../managed/host-exposure.ts'
+import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
+import { loadHostIngressListeners } from '../managed/external-access.ts'
 import {
   isPrepareError,
   resolveConsumerSourceAddresses,
   resolveMemberPrivateBindAddress,
 } from '../managed/apply-prepare.ts'
 import { listManagedMembers, resolvePeersForMember } from '../managed/members.ts'
-import type { ManagedSqlAccessScope } from '../managed/access-scope.ts'
 import { parseOrganizationOptions } from '../organizations/organization-options.ts'
 import { resolveEffectiveSshPort } from '../servers/host-defaults.ts'
 import { parseServerOptions } from '../servers/server-metadata.ts'
@@ -216,31 +217,19 @@ async function loadHostingExposures(db: Db, serverId: string): Promise<DerivedEx
   return exposures
 }
 
-const SQL_SCOPE_REACH: Record<ManagedSqlAccessScope, ExposureReach | null> = {
-  local: null,
-  datacenter: 'datacenter',
-  turbofabric: 'fabric',
-  public: 'public',
-}
-
 async function loadManagedExposures(db: Db, serverId: string): Promise<DerivedExposure[]> {
-  const { scopes, ports } = await loadHostIngressListeners(db, serverId)
-  const exposures: DerivedExposure[] = []
-  for (const scope of scopes) {
-    const reach = SQL_SCOPE_REACH[scope]
-    if (reach === null) continue
-    for (const port of ports) {
-      exposures.push({
-        source: 'proxysql',
-        scope: 'published',
-        proto: 'tcp',
-        ports: String(port),
-        reach,
-        comment: 'Managed database listener',
-      })
-    }
-  }
-  return exposures
+  // External access on publishes the ProxySQL listeners on every address of
+  // the server; off publishes loopback only, which needs no rule.
+  const { external, ports } = await loadHostIngressListeners(db, serverId)
+  if (!external) return []
+  return ports.map((port) => ({
+    source: 'proxysql',
+    scope: 'published',
+    proto: 'tcp',
+    ports: String(port),
+    reach: 'public',
+    comment: 'Managed database listener',
+  }))
 }
 
 /** TurboFabric: a relay on this server listens for WireGuard peers (any address: peers sit behind NAT). */
@@ -267,8 +256,13 @@ async function loadFabricExposures(db: Db, serverId: string): Promise<DerivedExp
 /** The org Orchestrator's Raft and HTTP ports; peers are this organization's other servers. */
 async function loadHaExposures(db: Db, serverId: string): Promise<DerivedExposure[]> {
   const members = await db
-    .select({ role: replica.role, replicaClass: replica.replicaClass })
+    .select({
+      role: replica.role,
+      replicaClass: replica.replicaClass,
+      engine: managed.engine,
+    })
     .from(replica)
+    .innerJoin(managed, eq(managed.id, replica.managedId))
     .where(eq(replica.serverId, serverId))
   if (!serverHostsManagedHa(members)) return []
   return [MANAGED_HA_HTTP_PORT, MANAGED_HA_RAFT_PORT].map((port) => ({
@@ -296,7 +290,10 @@ async function loadMemberPeerExposure(
   port: number,
   notes: string[]
 ): Promise<DerivedExposure | null> {
-  const bind = await resolveMemberPrivateBindAddress(db, member, members)
+  const extraFromServerIds = (await consumerServerIdsForManaged(db, member.managedId)).filter(
+    (id) => id !== member.serverId && !members.some((row) => row.serverId === id)
+  )
+  const bind = await resolveMemberPrivateBindAddress(db, member, members, extraFromServerIds)
   if (bind === undefined) return null
   const peers = await resolvePeersForMember(db, members, member, port)
   if (isPrepareError(bind) || 'kind' in peers) {

@@ -27,8 +27,8 @@ scripts=$(
   git ls-files --cached --others --exclude-standard 'scripts/*.ts' 'scripts/**/*.ts' |
     while IFS= read -r file; do
       case "$file" in
-        scripts/fixtures/*) ;;
-        *) [ -f "$file" ] && printf '%s\n' "$file" ;;
+        (scripts/fixtures/*) ;;
+        (*) [ -f "$file" ] && printf '%s\n' "$file" ;;
       esac
     done
 )

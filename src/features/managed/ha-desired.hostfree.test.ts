@@ -1,4 +1,5 @@
 import { assertEquals } from '@std/assert'
+import { getTableName } from 'drizzle-orm'
 import type { PrivateEndpointError } from '../net/private-endpoint.ts'
 import { SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME } from '../system/hierarchy.ts'
 import type { ManagedMemberRow } from './members.ts'
@@ -9,6 +10,10 @@ import type { Db } from '../../db/connection.ts'
 import {
   enqueueManagedHaReconcile,
   fanOutManagedHaReconcile,
+  fanOutOrganizationHaReconcile,
+  haReconcileEnqueuer,
+  listOrganizationOrchestratorServerIds,
+  selectOrchestratorHostServerIds,
   haClusterMemberRole,
   haClusterReplicaClass,
   haIdentity,
@@ -67,11 +72,7 @@ test('haClusterMemberRole and replicaClass stay on the wire vocabulary', () => {
 })
 
 test('resolveLocalHaMemberDial prefers the allocated container name', () => {
-  const named = resolveLocalHaMemberDial(
-    member(),
-    new Map([[1, 'pg-1']]),
-    5432,
-  )
+  const named = resolveLocalHaMemberDial(member(), new Map([[1, 'pg-1']]), 5432)
   assertEquals(named, { host: 'pg-1', port: 5432, containerName: 'pg-1' })
 
   const fallback = resolveLocalHaMemberDial(member(), new Map(), 5433)
@@ -80,9 +81,7 @@ test('resolveLocalHaMemberDial prefers the allocated container name', () => {
 
 test('resolveRemoteHaMemberDial requires a resolved endpoint and private port', () => {
   const remote = member({ id: 'mem-remote', serverId: SERVER_B, privatePort: 15432 })
-  const ok: HaEndpointMap = new Map([
-    [SERVER_B, { address: REMOTE_HOST, transport: 'datacenter' }],
-  ])
+  const ok: HaEndpointMap = new Map([[SERVER_B, { address: REMOTE_HOST, transport: 'datacenter' }]])
   assertEquals(resolveRemoteHaMemberDial(remote, ok), {
     host: REMOTE_HOST,
     port: 15432,
@@ -98,7 +97,7 @@ test('resolveRemoteHaMemberDial requires a resolved endpoint and private port', 
 
   assertEquals(
     resolveRemoteHaMemberDial(member({ serverId: SERVER_B, privatePort: null }), ok),
-    null,
+    null
   )
 })
 
@@ -106,13 +105,7 @@ test('resolveHaMemberDial splits local versus remote members', () => {
   const endpoints: HaEndpointMap = new Map([
     [SERVER_B, { address: REMOTE_HOST, transport: 'fabric' }],
   ])
-  const local = resolveHaMemberDial(
-    member(),
-    SERVER_A,
-    new Map([[1, 'pg-1']]),
-    5432,
-    endpoints,
-  )
+  const local = resolveHaMemberDial(member(), SERVER_A, new Map([[1, 'pg-1']]), 5432, endpoints)
   assertEquals(local?.containerName, 'pg-1')
 
   const remote = resolveHaMemberDial(
@@ -120,16 +113,17 @@ test('resolveHaMemberDial splits local versus remote members', () => {
     SERVER_A,
     new Map(),
     5432,
-    endpoints,
+    endpoints
   )
   assertEquals(remote, { host: REMOTE_HOST, port: 15432 })
 })
 
 test('toHaClusterMember copies dial fields and promotion rule', () => {
-  const mapped = toHaClusterMember(
-    member({ replicaClass: 'failover' }),
-    { host: 'pg-1', port: 5432, containerName: 'pg-1' },
-  )
+  const mapped = toHaClusterMember(member({ replicaClass: 'failover' }), {
+    host: 'pg-1',
+    port: 5432,
+    containerName: 'pg-1',
+  })
   assertEquals(mapped.memberId, 'mem-local')
   assertEquals(mapped.role, 'primary')
   assertEquals(mapped.replicaClass, 'failover')
@@ -146,14 +140,18 @@ test('haIdentity and haTeardownIfPresent describe an absent Orchestrator', () =>
   })
   assertEquals(haTeardownIfPresent(SERVER_A, null, MANAGED_NETWORK), null)
 
-  const payload = haTeardownIfPresent(SERVER_A, {
-    workspaceId: 'ws',
-    projectId: 'proj',
-    environmentId: 'env',
-    serviceId: 'svc-ha',
-    containerRowId: 'row',
-    containerName: 'svc-ha-ha',
-  }, MANAGED_NETWORK)
+  const payload = haTeardownIfPresent(
+    SERVER_A,
+    {
+      workspaceId: 'ws',
+      projectId: 'proj',
+      environmentId: 'env',
+      serviceId: 'svc-ha',
+      containerRowId: 'row',
+      containerName: 'svc-ha-ha',
+    },
+    MANAGED_NETWORK
+  )
   assertEquals(payload?.desired, 'absent')
   assertEquals(payload?.serverId, SERVER_A)
   assertEquals(payload?.managedNetwork, MANAGED_NETWORK)
@@ -161,14 +159,18 @@ test('haIdentity and haTeardownIfPresent describe an absent Orchestrator', () =>
   assertEquals(payload?.clusters, [])
   assertEquals(payload?.raft, null)
 
-  const unnamed = haTeardownIfPresent(SERVER_A, {
-    workspaceId: 'ws',
-    projectId: 'proj',
-    environmentId: 'env',
-    serviceId: 'svc-ha',
-    containerRowId: 'row',
-    containerName: undefined as unknown as string,
-  }, MANAGED_NETWORK)
+  const unnamed = haTeardownIfPresent(
+    SERVER_A,
+    {
+      workspaceId: 'ws',
+      projectId: 'proj',
+      environmentId: 'env',
+      serviceId: 'svc-ha',
+      containerRowId: 'row',
+      containerName: undefined as unknown as string,
+    },
+    MANAGED_NETWORK
+  )
   assertEquals(unnamed?.identity.containerName, 'svc-ha')
 })
 
@@ -193,7 +195,7 @@ test('enqueueManagedHaReconcile is not_needed when the server has no organizatio
       actorId: 'actor-1',
       secretsConfig: secrets,
       dataEncryptionSecrets,
-    },
+    }
   )
   assertEquals(result, { ok: false, reason: 'not_needed' })
 })
@@ -202,6 +204,9 @@ test('fanOutManagedHaReconcile no-ops when no HA hosts are present', async () =>
   const db = {
     select: () => ({
       from: () => ({
+        innerJoin: () => ({
+          where: () => Promise.resolve([]),
+        }),
         where: () => Promise.resolve([]),
       }),
     }),
@@ -214,5 +219,157 @@ test('fanOutManagedHaReconcile no-ops when no HA hosts are present', async () =>
     actorId: 'actor-1',
     secretsConfig: secrets,
     dataEncryptionSecrets,
+  })
+})
+
+const SERVER_C = '7c9e6679-7425-40de-944b-e07fc1f90ae7'
+const SERVER_D = '8d0f7780-8536-41ef-955c-f18ad2a01bf8'
+const ORG = '11111111-1111-4111-8111-111111111111'
+
+function tableNameOf(value: unknown): string {
+  try {
+    return getTableName(value as never)
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Chainable fake: every select resolves to the rows `rowsFor` picks from the
+ * `from` table and the joined tables (comma-separated). `where` is ignored.
+ */
+function routedDb(rowsFor: (from: string, join: string) => Record<string, unknown>[]): Db {
+  return {
+    select: () => ({
+      from: (table: unknown) => {
+        const joins: string[] = []
+        const resolve = () => Promise.resolve(rowsFor(tableNameOf(table), joins.join(',')))
+        const self = {
+          innerJoin: (joinTable: unknown) => {
+            joins.push(tableNameOf(joinTable))
+            return self
+          },
+          where: () => self,
+          limit: () => resolve(),
+          then: (
+            onFulfilled?: (value: Record<string, unknown>[]) => unknown,
+            onRejected?: (reason: unknown) => unknown
+          ) => resolve().then(onFulfilled, onRejected),
+        }
+        return self
+      },
+    }),
+  } as unknown as Db
+}
+
+async function withRecordedEnqueues(fn: (attempted: string[]) => Promise<void>): Promise<void> {
+  const original = haReconcileEnqueuer.enqueue
+  const attempted: string[] = []
+  haReconcileEnqueuer.enqueue = (_db, _queue, params) => {
+    attempted.push(params.serverId)
+    if (params.serverId === SERVER_D)
+      return Promise.resolve({ ok: false, reason: 'enqueue_failed' })
+    return Promise.resolve({
+      ok: true,
+      commandId: `cmd-${params.serverId}`,
+      serverId: params.serverId,
+    })
+  }
+  try {
+    await fn(attempted)
+  } finally {
+    haReconcileEnqueuer.enqueue = original
+  }
+}
+
+async function fanOutParams() {
+  const secrets = parseTestSecretsConfig()
+  return {
+    actorType: 'system' as const,
+    actorId: 'actor-1',
+    secretsConfig: secrets,
+    dataEncryptionSecrets: await deriveEncryptionSecretsConfig(secrets, 'data-encryption'),
+  }
+}
+
+test('selectOrchestratorHostServerIds keeps Raft voters and leftover Orchestrators only', () => {
+  const ids = selectOrchestratorHostServerIds(
+    [
+      { serverId: SERVER_B, role: 'primary', replicaClass: null, engine: 'mysql' },
+      { serverId: SERVER_A, role: 'replica', replicaClass: 'failover', engine: 'mariadb' },
+      // Postgres never runs Orchestrator; a read replica is not a voter.
+      { serverId: SERVER_C, role: 'primary', replicaClass: null, engine: 'postgres' },
+      { serverId: SERVER_D, role: 'replica', replicaClass: 'read', engine: 'mysql' },
+      { serverId: SERVER_B, role: 'replica', replicaClass: 'failover', engine: 'mysql' },
+    ],
+    // A server whose clusters were deleted still has its Orchestrator.
+    [SERVER_D, SERVER_A]
+  )
+  assertEquals(
+    ids,
+    [SERVER_A, SERVER_B, SERVER_D].toSorted((a, b) => a.localeCompare(b))
+  )
+})
+
+test('listOrganizationOrchestratorServerIds is empty without organizations', async () => {
+  const db = routedDb(() => {
+    throw new Error('no query expected')
+  })
+  assertEquals(await listOrganizationOrchestratorServerIds(db, []), [])
+})
+
+test('fanOutManagedHaReconcile reaches Raft peers outside the cluster', async () => {
+  // The cluster's members are SERVER_A (primary) and SERVER_B (read replica).
+  // SERVER_C hosts another MySQL cluster of the same organization: it is the
+  // Raft leader the members' followers forward /api/discover to, so it must
+  // get the same trust bundle and peer list. SERVER_D only has a leftover
+  // Orchestrator (its clusters were deleted).
+  const db = routedDb((from, join) => {
+    const clusterMembers = [
+      { serverId: SERVER_A, role: 'primary', replicaClass: null, engine: 'mysql' },
+      { serverId: SERVER_B, role: 'replica', replicaClass: 'read', engine: 'mysql' },
+    ]
+    // This cluster's own members.
+    if (from === 'replica' && join === 'managed') return clusterMembers
+    // Every member row of the organization.
+    if (from === 'replica' && join === 'managed,server') {
+      return [
+        ...clusterMembers,
+        { serverId: SERVER_C, role: 'primary', replicaClass: null, engine: 'mysql' },
+      ]
+    }
+    if (from === 'server') return [{ organizationId: ORG }, { organizationId: null }]
+    if (from === 'environment') return [{ serverId: SERVER_D }, { serverId: null }]
+    return []
+  })
+  await withRecordedEnqueues(async (attempted) => {
+    await fanOutManagedHaReconcile(db, { enqueue: () => Promise.resolve() } as CommandQueue, {
+      managedId: 'mgd-1',
+      ...(await fanOutParams()),
+    })
+    assertEquals(attempted.toSorted(), [SERVER_A, SERVER_C, SERVER_D].toSorted())
+  })
+})
+
+test('fanOutOrganizationHaReconcile queues every Orchestrator host and reports the queued ids', async () => {
+  const db = routedDb((from, join) => {
+    if (from === 'replica' && join === 'managed,server') {
+      return [
+        { serverId: SERVER_A, role: 'primary', replicaClass: null, engine: 'mariadb' },
+        { serverId: SERVER_B, role: 'primary', replicaClass: null, engine: 'postgres' },
+      ]
+    }
+    if (from === 'environment') return [{ serverId: SERVER_D }]
+    return []
+  })
+  await withRecordedEnqueues(async (attempted) => {
+    const ids = await fanOutOrganizationHaReconcile(
+      db,
+      { enqueue: () => Promise.resolve() } as CommandQueue,
+      { organizationId: ORG, ...(await fanOutParams()) }
+    )
+    assertEquals(attempted.toSorted(), [SERVER_A, SERVER_D].toSorted())
+    // SERVER_D's enqueue failed: it is logged, not reported as queued.
+    assertEquals(ids, [`cmd-${SERVER_A}`])
   })
 })

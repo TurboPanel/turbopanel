@@ -57,7 +57,15 @@ export type OutboundUrlRejection =
  */
 const RESERVED_SUFFIXES = ['.localhost', '.local', '.internal', '.arpa', '.home.arpa'] as const
 
-export function hostIsReserved(hostname: string): boolean {
+/** `localhost.` → `localhost`: a fully qualified name's trailing dot names the same host. */
+export function stripTrailingDots(hostname: string): string {
+  let host = hostname
+  while (host.endsWith('.')) host = host.slice(0, -1)
+  return host
+}
+
+export function hostIsReserved(rawHostname: string): boolean {
+  const hostname = stripTrailingDots(rawHostname)
   if (hostname === 'localhost') return true
   if (!hostname.includes('.')) return true
   return RESERVED_SUFFIXES.some((suffix) => hostname.endsWith(suffix))
@@ -155,7 +163,11 @@ function runtimeResolver(): HostResolver {
       requiresAnswers: false,
     }
   }
-  return { lookup: dohLookup, isNoSuchRecord: () => false, requiresAnswers: true }
+  return {
+    lookup: dohLookup,
+    isNoSuchRecord: () => false,
+    requiresAnswers: true,
+  }
 }
 
 /**
@@ -174,7 +186,9 @@ function answersOf(
     // (SERVFAIL, timeout, resolver unreachable) is unjudged at fetch time.
     else if (failClosed && !resolver.isNoSuchRecord(lookup.reason)) return null
   }
-  if (failClosed && resolver.requiresAnswers && answers.length === 0) return null
+  if (failClosed && resolver.requiresAnswers && answers.length === 0) {
+    return null
+  }
   return answers
 }
 
@@ -208,7 +222,9 @@ export async function resolveOutboundHost(
   // The caller's deadline is not a resolver failure: surface it as the abort it is.
   signal?.throwIfAborted()
   const answers = answersOf(lookups, resolver, opts.failClosed === true)
-  if (answers === null) return { rejection: 'dns_lookup_failed', addresses: [] }
+  if (answers === null) {
+    return { rejection: 'dns_lookup_failed', addresses: [] }
+  }
   if (answers.some((answer) => ipAddressScope(answer) !== 'public')) {
     return { rejection: 'address_not_public', addresses: [] }
   }

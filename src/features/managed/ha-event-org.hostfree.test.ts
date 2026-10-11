@@ -86,7 +86,11 @@ test('the same event from an org-A member server passes the gate (control)', asy
     { managedId: MANAGED_ID },
     {
       reporterServerId: SERVER_A,
-      binding: { reporterBindsInstance: async () => false, primaryDial: async () => null },
+      binding: {
+        reporterBindsInstance: async () => false,
+        primaryDial: async () => null,
+        reporterPrivateHosts: async () => [],
+      },
     }
   )
   // Past the gate the failover path runs: with a lone primary and no queue it

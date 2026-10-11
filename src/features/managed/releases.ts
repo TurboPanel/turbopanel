@@ -12,7 +12,9 @@
  * the daemon payload allowlist
  * (`turbopaneld/src/contracts/commands-contracts.ts`) and the UI picker
  * (`ui/src/lib/managed-releases.ts`). Each mirror has a test pinning it to the
- * same literal set.
+ * same literal set. `failoverCapable` is control-plane policy only (whether a
+ * replica / automatic failover may be added) and is not copied into those
+ * image-list mirrors — MariaDB 12.3 stays creatable there.
  */
 
 import type { ManagedEngineCode } from './types.ts'
@@ -42,6 +44,12 @@ export type ManagedEngineRelease = {
   lifecycle: ManagedEngineLifecycle
   /** Exactly one release per engine is the default for new clusters. */
   isDefault: boolean
+  /**
+   * Whether a second member (replica / automatic failover) may be added.
+   * False only for MariaDB 12.3: that series is still creatable as a single
+   * server, but failover tooling cannot read its `read_only` yet.
+   */
+  failoverCapable: boolean
   /**
    * This series has been validated end-to-end (create, replicate, promote,
    * backup/restore) against the daemon's engine handlers.
@@ -73,23 +81,20 @@ export type ManagedReleaseGate = {
 
 function isReleaseCreatable(
   release: ManagedEngineRelease,
-  gate: ManagedReleaseGate | undefined,
+  gate: ManagedReleaseGate | undefined
 ): boolean {
   return release.tested || gate?.includeUntested === true
 }
 
 const DEBIAN = 'Debian'
 
-function postgresRelease(
-  series: string,
-  isDefault = false,
-  tested = false,
-): ManagedEngineRelease {
+function postgresRelease(series: string, isDefault = false, tested = false): ManagedEngineRelease {
   return {
     engine: 'postgres',
     series,
     lifecycle: 'supported',
     isDefault,
+    failoverCapable: true,
     tested,
     variants: [
       {
@@ -111,16 +116,13 @@ function postgresRelease(
  * Debian tag is the default and Oracle's own Oracle Linux 9 build is the
  * alternative.
  */
-function mysqlRelease(
-  series: string,
-  isDefault = false,
-  tested = false,
-): ManagedEngineRelease {
+function mysqlRelease(series: string, isDefault = false, tested = false): ManagedEngineRelease {
   return {
     engine: 'mysql',
     series,
     lifecycle: 'lts',
     isDefault,
+    failoverCapable: true,
     tested,
     variants: [
       {
@@ -142,12 +144,14 @@ function mariadbRelease(
   series: string,
   isDefault = false,
   tested = false,
+  failoverCapable = true
 ): ManagedEngineRelease {
   return {
     engine: 'mariadb',
     series,
     lifecycle: 'lts',
     isDefault,
+    failoverCapable,
     tested,
     variants: [
       {
@@ -173,12 +177,16 @@ function mariadbRelease(
  * creatable.
  *
  * **Knowing about a series is not offering it.** Only PostgreSQL 18, MySQL 9.7
- * and MariaDB 12.3 carry `tested: true`; every other entry exists so
+ * and 8.4, and MariaDB 12.3 and 11.8 carry `tested: true`; every other entry exists so
  * {@link describeManagedImage} can still name an already-persisted image, and
  * is refused everywhere a new image can be chosen. Promote a series by
  * flipping its `tested` argument here **and** in the two mirrors
  * (`turbopaneld/src/contracts/commands-contracts.ts`,
  * `ui/src/lib/managed-releases.ts`), never in one place alone.
+ *
+ * MariaDB 11.8 is the default for new databases. MariaDB 12.3 stays tested and
+ * creatable as a single server (`failoverCapable: false`) until failover
+ * tooling can read its `read_only` values.
  */
 export const MANAGED_ENGINE_RELEASES: readonly ManagedEngineRelease[] = [
   postgresRelease('18', true, true),
@@ -186,9 +194,9 @@ export const MANAGED_ENGINE_RELEASES: readonly ManagedEngineRelease[] = [
   postgresRelease('16'),
   postgresRelease('15'),
   mysqlRelease('9.7', true, true),
-  mysqlRelease('8.4'),
-  mariadbRelease('12.3', true, true),
-  mariadbRelease('11.8'),
+  mysqlRelease('8.4', false, true),
+  mariadbRelease('12.3', false, true, false),
+  mariadbRelease('11.8', true, true),
   mariadbRelease('11.4'),
   mariadbRelease('10.11'),
 ]
@@ -199,9 +207,7 @@ export const MANAGED_ENGINE_RELEASES: readonly ManagedEngineRelease[] = [
  * use {@link managedCreatableReleasesForEngine} for anything that can produce a
  * new `settings.image`. Empty when the engine has no catalog yet.
  */
-export function managedReleasesForEngine(
-  engine: string,
-): readonly ManagedEngineRelease[] {
+export function managedReleasesForEngine(engine: string): readonly ManagedEngineRelease[] {
   return MANAGED_ENGINE_RELEASES.filter((release) => release.engine === engine)
 }
 
@@ -215,11 +221,9 @@ export function managedReleasesForEngine(
  */
 export function managedCreatableReleasesForEngine(
   engine: string,
-  gate?: ManagedReleaseGate,
+  gate?: ManagedReleaseGate
 ): readonly ManagedEngineRelease[] {
-  return managedReleasesForEngine(engine).filter((release) =>
-    isReleaseCreatable(release, gate)
-  )
+  return managedReleasesForEngine(engine).filter((release) => isReleaseCreatable(release, gate))
 }
 
 /**
@@ -228,17 +232,14 @@ export function managedCreatableReleasesForEngine(
  */
 export function defaultManagedRelease(
   engine: string,
-  gate?: ManagedReleaseGate,
+  gate?: ManagedReleaseGate
 ): ManagedEngineRelease | undefined {
   const releases = managedCreatableReleasesForEngine(engine, gate)
   return releases.find((release) => release.isDefault) ?? releases[0]
 }
 
 /** Default image (default series, default variant) for `engine`. */
-export function defaultManagedImage(
-  engine: string,
-  gate?: ManagedReleaseGate,
-): string | undefined {
+export function defaultManagedImage(engine: string, gate?: ManagedReleaseGate): string | undefined {
   return defaultManagedRelease(engine, gate)?.variants[0]?.image
 }
 
@@ -268,7 +269,7 @@ export function requireDefaultManagedImage(engine: ManagedEngineCode): string {
  */
 export function managedAllowedImagesForEngine(
   engine: string,
-  gate?: ManagedReleaseGate,
+  gate?: ManagedReleaseGate
 ): readonly string[] | undefined {
   if (managedReleasesForEngine(engine).length === 0) return undefined
   return managedCreatableReleasesForEngine(engine, gate).flatMap((release) =>
@@ -285,10 +286,10 @@ export function resolveManagedImage(
   engine: string,
   series: string,
   variantId?: string,
-  gate?: ManagedReleaseGate,
+  gate?: ManagedReleaseGate
 ): string | undefined {
   const release = managedCreatableReleasesForEngine(engine, gate).find(
-    (row) => row.series === series,
+    (row) => row.series === series
   )
   if (!release) return undefined
   if (variantId === undefined) return release.variants[0]?.image
@@ -312,9 +313,7 @@ export type ManagedImageDescriptor = {
  * described here on purpose — an existing row must still render its version
  * even though the series can no longer be chosen (`tested: false`).
  */
-export function describeManagedImage(
-  image: string,
-): ManagedImageDescriptor | undefined {
+export function describeManagedImage(image: string): ManagedImageDescriptor | undefined {
   for (const release of MANAGED_ENGINE_RELEASES) {
     for (const variant of release.variants) {
       if (variant.image === image) {
@@ -332,17 +331,54 @@ export function describeManagedImage(
 }
 
 /**
+ * The image a stored row actually runs: its own `settings.image`, else the
+ * spec's legacy default (the default before it moved), else the current
+ * default. New clusters always store their image at create time, so only rows
+ * written before the default moved reach the legacy branch — they must keep
+ * the series their data directory was initialised with.
+ */
+export function effectiveManagedImage(
+  spec: { defaultImage: string; legacyDefaultImage?: string },
+  image: string | undefined
+): string {
+  return image ?? spec.legacyDefaultImage ?? spec.defaultImage
+}
+
+const MARIADB_FAILOVER_UNSUPPORTED_REASON =
+  'MariaDB 12.3 can run on one server; automatic failover needs MariaDB 11.8 for now.'
+
+/**
+ * Whether `image` may take a replica / automatic failover.
+ *
+ * Catalogued releases follow {@link ManagedEngineRelease.failoverCapable}. An
+ * unknown or uncatalogued image is treated as supported so a row written
+ * before the catalog existed is not locked to a single server.
+ */
+export function managedImageFailoverSupport(
+  image: string | undefined
+): { supported: true } | { supported: false; reason: string } {
+  if (image === undefined) return { supported: true }
+  const described = describeManagedImage(image)
+  if (!described) return { supported: true }
+  const release = MANAGED_ENGINE_RELEASES.find(
+    (row) => row.engine === described.engine && row.series === described.series
+  )
+  if (!release || release.failoverCapable) return { supported: true }
+  return { supported: false, reason: MARIADB_FAILOVER_UNSUPPORTED_REASON }
+}
+
+/**
  * The series two images belong to are the same.
  *
  * Cross-major replication is not a supported topology and an engine will not
  * start on a data directory from another major, so a settings change that moves
  * an existing cluster to a different series must be refused (see
- * `managed_series_immutable`). Variant changes (same series, different base OS)
- * are allowed.
+ * `managed_series_immutable`). Whether a variant change (same series, different
+ * base OS) is allowed is a separate question: see {@link isManagedVariantSwapSafe}.
  */
 export function isSameManagedSeries(
   previousImage: string | undefined,
-  nextImage: string | undefined,
+  nextImage: string | undefined
 ): boolean {
   if (previousImage === undefined || nextImage === undefined) return true
   if (previousImage === nextImage) return true
@@ -352,4 +388,45 @@ export function isSameManagedSeries(
   // change rather than silently allowing it.
   if (!previous || !next) return false
   return previous.engine === next.engine && previous.series === next.series
+}
+
+/**
+ * C library each PostgreSQL variant is built on. PostgreSQL sorts text with the
+ * operating system's collation, and musl (Alpine) and glibc (Debian) order the
+ * same text differently, so an index built on one family is silently corrupt on
+ * the other. Engines absent from this table (MySQL, MariaDB) ship their own
+ * collations, so their variants are interchangeable.
+ */
+const LIBC_FAMILY_BY_ENGINE_VARIANT: Readonly<
+  Record<string, Readonly<Record<string, 'musl' | 'glibc'>>>
+> = {
+  postgres: { alpine: 'musl', debian: 'glibc' },
+}
+
+/**
+ * Whether an existing cluster may move from `previousImage` to `nextImage`
+ * without invalidating its on-disk data.
+ *
+ * This is the single place that decides the variant-swap policy. It is
+ * deliberately conservative: a PostgreSQL swap between libc families is
+ * refused. If the owner later chooses "allow and reindex", relax or remove the
+ * PostgreSQL entry above; the PATCH route and its error code follow from this
+ * one function. Series changes are not judged here
+ * ({@link isSameManagedSeries}), and an image outside the catalog is not
+ * judged either (the series check already refuses it).
+ */
+export function isManagedVariantSwapSafe(
+  previousImage: string | undefined,
+  nextImage: string | undefined
+): boolean {
+  if (previousImage === undefined || nextImage === undefined) return true
+  if (previousImage === nextImage) return true
+  const previous = describeManagedImage(previousImage)
+  const next = describeManagedImage(nextImage)
+  if (!previous || !next || previous.engine !== next.engine) return true
+  if (previous.variantId === next.variantId) return true
+  const families = LIBC_FAMILY_BY_ENGINE_VARIANT[previous.engine]
+  if (families === undefined) return true
+  const previousFamily = families[previous.variantId]
+  return previousFamily !== undefined && previousFamily === families[next.variantId]
 }

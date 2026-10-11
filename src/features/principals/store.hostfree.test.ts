@@ -3,10 +3,12 @@
  */
 
 import { assertEquals, assertMatch, assertRejects } from '@std/assert'
+import { isReservedPrincipalUsername } from '../../lib/naming.ts'
 import type { Db } from '../../db/connection.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
+  composeAliasShortUsername,
   createManagedPrincipal,
   createPrincipal,
   ensureManagedReplicationPrincipal,
@@ -714,4 +716,26 @@ test('resolveManagedAppliedUsername returns a fresh suffix when candidate is tak
   // One probe of the bare name, then three redraws; the last draw is returned
   // unprobed rather than throwing on a live namespace.
   assertEquals(takenCalls, 4)
+})
+
+test('composeAliasShortUsername folds dashes into a shape the host builds for', () => {
+  // The host refuses builds for a name ending in `-` or holding `--`.
+  assertEquals(composeAliasShortUsername('web--app'), 'web-app')
+  assertEquals(composeAliasShortUsername('web-'), 'web')
+  assertEquals(composeAliasShortUsername('-web'), 'web')
+  assertEquals(composeAliasShortUsername('Web.App'), 'webapp')
+  assertEquals(composeAliasShortUsername('---'), 'u')
+  // A cap that lands on a dash drops it.
+  assertEquals(composeAliasShortUsername(`${'a'.repeat(15)}-bbbb`), 'a'.repeat(15))
+  assertEquals(composeAliasShortUsername('containers'), 'ucontainers')
+})
+
+test('composeAliasShortUsername never yields a reserved host login', () => {
+  // Folding an alias that matches a host system user prefixes it rather than
+  // minting that login as a site owner's Linux user.
+  for (const alias of ['ftp', 'git', 'FTP', ' git ', 'ubuntu', 'www', 'root', 'www-data', 'sudo']) {
+    const derived = composeAliasShortUsername(alias)
+    assertEquals(isReservedPrincipalUsername(derived), false, `${alias} -> ${derived}`)
+  }
+  assertEquals(isReservedPrincipalUsername(composeAliasShortUsername('appuser')), false)
 })

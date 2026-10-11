@@ -7,6 +7,7 @@ import {
   MAX_FAILURE_SPAN_MS,
   parsePgLsn,
   pickMostAdvancedStandby,
+  pickMysqlFamilyStandby,
 } from './ha-fresh-standby.ts'
 
 /**
@@ -167,4 +168,85 @@ test('pickMostAdvancedStandby takes the highest received LSN, then the lowest or
 test('failureStartedAtMs refuses a span older than 10 minutes (an old incident)', () => {
   assertEquals(failureStartedAtMs({ spanMs: 10 * 60_000 }, 1_000_000), 400_000)
   assertEquals(failureStartedAtMs({ spanMs: 11 * 60_000 }, 1_000_000), null)
+})
+
+function mysqlReplica(overrides: Partial<ManagedReplicationHealth> = {}): ManagedReplicationHealth {
+  return {
+    state: 'reconnecting',
+    observedAt: new Date(PROBE_MS).toISOString(),
+    receivedGtid: 'uuid:1-9',
+    executedGtid: 'uuid:1-9',
+    fullyApplied: true,
+    lastStreaming: { at: 'x', ageMs: 25_000 },
+    ...overrides,
+  }
+}
+
+for (const engine of ['mysql', 'mariadb']) {
+  test(`${engine}: a reconnecting replica that applied everything it received is accepted`, () => {
+    assertEquals(reason(judge(mysqlReplica(), { engine })), 'accepted')
+  })
+
+  test(`${engine}: unknown or false fullyApplied is never caught up`, () => {
+    assertEquals(
+      reason(judge(mysqlReplica({ fullyApplied: false }), { engine })),
+      'not_fully_applied'
+    )
+    assertEquals(
+      reason(judge(mysqlReplica({ fullyApplied: undefined }), { engine })),
+      'not_fully_applied'
+    )
+  })
+
+  test(`${engine}: last contact before the failure window, or none, refuses`, () => {
+    assertEquals(
+      reason(judge(mysqlReplica({ lastStreaming: { at: 'x', ageMs: 60_000 } }), { engine })),
+      'receipt_stale'
+    )
+    assertEquals(
+      reason(judge(mysqlReplica({ lastStreaming: undefined }), { engine })),
+      'receipt_unknown'
+    )
+  })
+
+  test(`${engine}: no answer and non-replica states refuse`, () => {
+    assertEquals(reason(judge(null, { engine })), 'probe_unavailable')
+    assertEquals(reason(judge(mysqlReplica({ state: 'primary' }), { engine })), 'not_a_standby')
+    assertEquals(reason(judge(mysqlReplica({ state: 'unknown' }), { engine })), 'not_a_standby')
+  })
+}
+
+test('mysql: still streaming needs fullyApplied and the lag gate', () => {
+  const streaming = mysqlReplica({ state: 'streaming', lagSeconds: 0, lagBytes: 0 })
+  assertEquals(reason(judge(streaming, { engine: 'mysql' })), 'accepted')
+  assertEquals(
+    reason(judge({ ...streaming, fullyApplied: false }, { engine: 'mysql' })),
+    'not_fully_applied'
+  )
+  assertEquals(reason(judge({ ...streaming, lagSeconds: 3600 }, { engine: 'mysql' })), 'lagging')
+})
+
+test('postgres reading shape is not accepted without engine mysql (reconnecting is not a pg state)', () => {
+  assertEquals(reason(judge(mysqlReplica(), { engine: 'postgres' })), 'not_a_standby')
+})
+
+test('mysql: a replica that was far behind when it lost its source is refused', () => {
+  const lagging = mysqlReplica({ lastStreaming: { at: 'x', ageMs: 25_000, lagSeconds: 600 } })
+  assertEquals(reason(judge(lagging, { engine: 'mysql' })), 'last_lag_over_limit')
+})
+
+test('mysql family: several accepted replicas are chosen only when their executed sets match', () => {
+  const a = { id: 'a', ordinal: 1, executedGtid: 'u:1-9' }
+  const b = { id: 'b', ordinal: 2, executedGtid: 'u:1-9' }
+  assertEquals(pickMysqlFamilyStandby([b, a])?.id, 'a')
+  assertEquals(pickMysqlFamilyStandby([a, { ...b, executedGtid: 'u:1-10' }]), null)
+  assertEquals(
+    pickMysqlFamilyStandby([
+      { id: 'a', ordinal: 1 },
+      { id: 'b', ordinal: 2 },
+    ]),
+    null
+  )
+  assertEquals(pickMysqlFamilyStandby([{ id: 'a', ordinal: 1 }])?.id, 'a')
+  assertEquals(pickMysqlFamilyStandby([]), null)
 })

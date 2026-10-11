@@ -22,10 +22,7 @@ test('mergeServerMetadataIdentity ignores os (dedicated columns)', () => {
     codename: 'trixie',
   }
   assertEquals(mergeServerMetadataIdentity({}, { os }), null)
-  assertEquals(
-    mergeServerMetadataIdentity({ geo: { country: 'US' } }, { os }),
-    null,
-  )
+  assertEquals(mergeServerMetadataIdentity({ geo: { country: 'US' } }, { os }), null)
 })
 
 test('mergeServerMetadataIdentity merges ips under resources without clobbering geo', () => {
@@ -35,27 +32,21 @@ test('mergeServerMetadataIdentity merges ips under resources without clobbering 
     { address: '10.0.0.1', version: 4, scope: 'private', interface: 'eth0' },
     { address: '203.0.113.10', version: 4, scope: 'public', interface: 'eth0' },
   ]
-  const merged = mergeServerMetadataIdentity(
-    { geo, resources: { cpus } },
-    { resources: { ips } },
-  )
+  const merged = mergeServerMetadataIdentity({ geo, resources: { cpus } }, { resources: { ips } })
   assertEquals(merged?.geo, geo)
   assertEquals(merged?.resources?.cpus, cpus)
   assertEquals(merged?.resources?.ips, ips)
 
   const heartbeatMerged = mergeServerMetadataIdentity(
     { resources: { cpus } },
-    { resources: { ips } },
+    { resources: { ips } }
   )
   assertEquals(heartbeatMerged?.resources?.cpus, cpus)
   assertEquals(heartbeatMerged?.resources?.ips, ips)
 
   assertEquals(
-    mergeServerMetadataIdentity(
-      { resources: { cpus, ips } },
-      { resources: { ips } },
-    ),
-    null,
+    mergeServerMetadataIdentity({ resources: { cpus, ips } }, { resources: { ips } }),
+    null
   )
 })
 
@@ -67,17 +58,14 @@ test('mergeServerMetadataIdentity replaces stale ips with empty daemon report', 
   const emptyReport: ServerReportedIp[] = []
   const merged = mergeServerMetadataIdentity(
     { resources: { ips: prior, cpus: [{ cores: { total: 2 } }] } },
-    { resources: { ips: emptyReport } },
+    { resources: { ips: emptyReport } }
   )
   assertEquals(merged?.resources?.ips, emptyReport)
   assertEquals(merged?.resources?.cpus, [{ cores: { total: 2 } }])
 })
 
 test('mergeServerMetadataIdentity ignores hostname/machineKey on the identity payload', () => {
-  const merged = mergeServerMetadataIdentity(
-    {},
-    { hostname: 'new-host', machineKey: 'mid-1' },
-  )
+  const merged = mergeServerMetadataIdentity({}, { hostname: 'new-host', machineKey: 'mid-1' })
   assertEquals(merged, null)
 })
 
@@ -88,32 +76,21 @@ test('mergeServerMetadataIdentity replaces cpus on hello refresh', () => {
       resources: {
         cpus: [{ cores: { total: 8 }, threads: { total: 16 } }],
       },
-    },
+    }
   )
-  assertEquals(merged?.resources?.cpus, [
-    { cores: { total: 8 }, threads: { total: 16 } },
-  ])
+  assertEquals(merged?.resources?.cpus, [{ cores: { total: 8 }, threads: { total: 16 } }])
 })
 
 test('mergeServerMetadataIdentity treats null/undefined current as empty base', () => {
   const resources = {
     cpus: [{ cores: { total: 4 }, threads: { total: 8 } }],
   }
-  assertEquals(
-    mergeServerMetadataIdentity(null, { resources }),
-    { resources },
-  )
-  assertEquals(
-    mergeServerMetadataIdentity(undefined, { resources }),
-    { resources },
-  )
+  assertEquals(mergeServerMetadataIdentity(null, { resources }), { resources })
+  assertEquals(mergeServerMetadataIdentity(undefined, { resources }), { resources })
 })
 
 test('mergeServerMetadataIdentity ignores empty patches', () => {
-  assertEquals(
-    mergeServerMetadataIdentity({ geo: { country: 'US' } }, {}),
-    null,
-  )
+  assertEquals(mergeServerMetadataIdentity({ geo: { country: 'US' } }, {}), null)
 })
 
 test('mergeServerMetadataIdentity ignores timeSync (dedicated columns)', () => {
@@ -125,9 +102,9 @@ test('mergeServerMetadataIdentity ignores timeSync (dedicated columns)', () => {
           timezone: 'America/Chicago',
           ntpEnabled: false,
         },
-      },
+      }
     ),
-    null,
+    null
   )
 })
 
@@ -135,7 +112,7 @@ test('mergeServerMetadataIdentity merges docker without clobbering geo', () => {
   const geo = { country: 'US', city: 'Chicago' }
   const merged = mergeServerMetadataIdentity(
     { geo },
-    { docker: { version: '28.3.3', composeVersion: '2.39.1' } },
+    { docker: { version: '28.3.3', composeVersion: '2.39.1' } }
   )
   assertEquals(merged?.geo, geo)
   assertEquals(merged?.docker, { version: '28.3.3', composeVersion: '2.39.1' })
@@ -143,16 +120,62 @@ test('mergeServerMetadataIdentity merges docker without clobbering geo', () => {
   assertEquals(
     mergeServerMetadataIdentity(
       { docker: { version: '28.3.3', composeVersion: '2.39.1' } },
-      { docker: { version: '28.3.3', composeVersion: '2.39.1' } },
+      { docker: { version: '28.3.3', composeVersion: '2.39.1' } }
     ),
-    null,
+    null
   )
 })
 
 test('mergeServerMetadataIdentity replaces docker when compose appears later', () => {
   const merged = mergeServerMetadataIdentity(
     { docker: { version: '28.3.3' } },
-    { docker: { version: '28.3.3', composeVersion: '2.39.1' } },
+    { docker: { version: '28.3.3', composeVersion: '2.39.1' } }
   )
   assertEquals(merged?.docker, { version: '28.3.3', composeVersion: '2.39.1' })
+})
+
+const RUN_STATE = {
+  serviceId: 'svc-1',
+  state: 'crashing' as const,
+  restartCount: 4,
+  lastError: '/bin/sh: 1: next: not found',
+  asOf: '2026-10-04T12:00:00.000Z',
+}
+
+test('mergeServerMetadataIdentity stores the services list whole, beside the other facts', () => {
+  const merged = mergeServerMetadataIdentity(
+    { geo: { country: 'US' }, docker: { version: '28.3.3' } },
+    { services: [RUN_STATE] }
+  )
+  assertEquals(merged?.services, [RUN_STATE])
+  assertEquals(merged?.geo, { country: 'US' })
+  assertEquals(merged?.docker, { version: '28.3.3' })
+})
+
+test('mergeServerMetadataIdentity writes nothing when the services list is unchanged', () => {
+  assertEquals(
+    mergeServerMetadataIdentity({ services: [RUN_STATE] }, { services: [RUN_STATE] }),
+    null
+  )
+  assertEquals(mergeServerMetadataIdentity({}, { services: [] }), null)
+  assertEquals(mergeServerMetadataIdentity({}, {}), null)
+})
+
+test('mergeServerMetadataIdentity replaces the list on change and clears it with []', () => {
+  const next = { ...RUN_STATE, restartCount: 5 }
+  assertEquals(
+    mergeServerMetadataIdentity({ services: [RUN_STATE] }, { services: [next] })?.services,
+    [next]
+  )
+  assertEquals(
+    mergeServerMetadataIdentity({ services: [RUN_STATE] }, { services: [] })?.services,
+    []
+  )
+})
+
+test('mergeServerMetadataIdentity ignores a services value that is not a list', () => {
+  assertEquals(
+    mergeServerMetadataIdentity({ services: [RUN_STATE] }, { services: 'nope' as unknown as [] }),
+    null
+  )
 })

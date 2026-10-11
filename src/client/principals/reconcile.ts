@@ -4,7 +4,7 @@
  * Adding a key on the next deploy would be tolerable; **revoking** one that way
  * is not. The whole value of panel-managed keys is that removing one in the UI
  * removes it on the host now, not whenever an unrelated environment next ships.
- * So key, shell, and entitlement changes enqueue `server.principals.reconcile`
+ * So key, shell, and password changes enqueue `server.principals.reconcile`
  * directly.
  *
  * The payload carries the **complete** managed set for each server, because

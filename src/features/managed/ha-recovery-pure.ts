@@ -4,10 +4,7 @@
  */
 
 import type { RecoveryKind, RecoveryMetadata, RecoveryState } from './recovery.ts'
-import {
-  automaticFailoverBlockedReason,
-  shouldBlockUnreachablePrimaryFence,
-} from './ha-policy.ts'
+import { automaticFailoverBlockedReason, shouldBlockUnreachablePrimaryFence } from './ha-policy.ts'
 import { AUTOMATIC_FAILOVER_BLOCKED_MESSAGE } from './recovery.ts'
 
 export type FenceOutcome = {
@@ -64,15 +61,42 @@ export function nextStateAfterFence(input: {
   return { state: 'promoting', metadata: { ...metadata, fenced: false } }
 }
 
-export function nextStateAfterPromoteSuccess(
-  metadata: RecoveryMetadata,
-): RecoveryAdvance {
+/**
+ * Whole-host loss: the old primary's server is silent, so no stop command can
+ * prove it is fenced. The caller has already established, from the silence AND
+ * from every other member, that the host is gone (`ha-host-loss.ts`), and the
+ * old primary is held back when it returns (`ha-return-fence.ts`, the
+ * daemon's boot hold). The row goes on to promote with the fence recorded as
+ * ATTESTED, never as proven: `fenced` stays false and `verifyFenced` is not
+ * consulted, so the engine-dead path still needs its stop.
+ */
+export function hostLossFenceAdvance(metadata: RecoveryMetadata): RecoveryAdvance {
+  return {
+    state: 'promoting',
+    metadata: {
+      ...metadata,
+      fenced: false,
+      fenceBasis: 'host-loss-attested',
+      fencingEpoch: metadata.fencingEpoch ?? new Date().toISOString(),
+    },
+  }
+}
+
+/**
+ * Servers the ingress step must leave out: the old primary's server when the
+ * fence was attested (it is offline by definition, so it can never confirm).
+ */
+export function attestedLostServerIds(metadata: RecoveryMetadata): string[] {
+  return metadata.fenceBasis === 'host-loss-attested' && metadata.sourceServerId
+    ? [metadata.sourceServerId]
+    : []
+}
+
+export function nextStateAfterPromoteSuccess(metadata: RecoveryMetadata): RecoveryAdvance {
   return { state: 'repointing', metadata }
 }
 
-export function nextStateAfterIngressReconcile(
-  metadata: RecoveryMetadata,
-): RecoveryAdvance {
+export function nextStateAfterIngressReconcile(metadata: RecoveryMetadata): RecoveryAdvance {
   return { state: 'verifying', metadata }
 }
 

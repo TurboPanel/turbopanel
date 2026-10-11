@@ -161,3 +161,65 @@ test('sourceBindingAfterPatch overlays patched fields on the stored row', () => 
     connectionId: null,
   })
 })
+
+function forgeDb(baseUrl: string | null): Db {
+  return {
+    select: () => ({
+      from: () => ({
+        innerJoin: () => ({
+          where: () => ({ limit: () => Promise.resolve(baseUrl === null ? [] : [{ baseUrl }]) }),
+        }),
+      }),
+    }),
+  } as unknown as Db
+}
+
+async function hostCheck(db: Db, b: SourceBinding): Promise<number | undefined> {
+  const app = new Hono<AppEnv>()
+  app.get('/', async (c) => {
+    const denied = await assertSourceVisibleToConnection(
+      c,
+      db,
+      b,
+      () => new Response(null, { status: 500 })
+    )
+    return denied ?? c.json({ ok: true })
+  })
+  return (await app.request('/')).status
+}
+
+test('a connection-bound url must be on the forge host, for every provider', async () => {
+  const github = (repositoryUrl: string): SourceBinding => ({
+    provider: 'github',
+    connectionId: CONNECTION,
+    repositoryExternalId: null,
+    repositoryUrl,
+  })
+  const db = forgeDb('https://github.com')
+  assertEquals(await hostCheck(db, github('https://github.com/acme/app.git')), 200)
+  assertEquals(await hostCheck(db, github('https://attacker.example/acme/app.git')), 400)
+  assertEquals(await hostCheck(db, github('https://github.com@attacker.example/acme/app.git')), 400)
+  // An unknown connection or forge is a mismatch, never a pass.
+  assertEquals(await hostCheck(forgeDb(null), github('https://github.com/acme/app.git')), 400)
+  // No connection, or no url to judge, is not this check's business.
+  assertEquals(
+    await hostCheck(db, { ...github('https://attacker.example/x.git'), connectionId: null }),
+    200
+  )
+  assertEquals(await hostCheck(db, { ...github(''), repositoryUrl: undefined }), 200)
+})
+
+test('sourceBindingAfterPatch carries the url, so a connection change re-checks the stored one', () => {
+  const stored: SourceBinding = {
+    ...binding(OWN_PROJECT),
+    repositoryUrl: 'https://gitlab.com/g/a.git',
+  }
+  assertEquals(sourceBindingAfterPatch(stored, { repositoryUrl: 'https://evil.example/g/a.git' }), {
+    ...stored,
+    repositoryUrl: 'https://evil.example/g/a.git',
+  })
+  assertEquals(sourceBindingAfterPatch(stored, { connectionId: null }), {
+    ...stored,
+    connectionId: null,
+  })
+})

@@ -127,6 +127,69 @@
       "when": 1790966133776,
       "tag": "0017_php_mode_policy_comments",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1791097822760,
+      "tag": "0018_command_server_name_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1791304259875,
+      "tag": "0019_entitlement_runtime_deno",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1791389235676,
+      "tag": "0020_drop_runtime_entitlement",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1791491856114,
+      "tag": "0021_add_backup_server_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1791550444346,
+      "tag": "0022_server_preferred_tier_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1791551527301,
+      "tag": "0023_server_assigned_tier_comment",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1791594517203,
+      "tag": "0024_organization_name_signup_comment",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1791597466193,
+      "tag": "0025_invitation_grants_comment",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1791603582204,
+      "tag": "0026_invitation_table_comment",
+      "breakpoints": true
     }
   ]
 }

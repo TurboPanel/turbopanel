@@ -30,6 +30,7 @@ import { hierarchyDeleteHasChildrenResponse, isForeignKeyViolation } from '../hi
 import { planEnvironmentTeardown, reclaimDeletedEnvironmentHosts } from './teardown.ts'
 import {
   composePrincipalAliases,
+  loadProjectOptions,
   loadProjectPrincipalAliases,
   unionAliasSets,
 } from '../../features/principals/principal-alias-records.ts'
@@ -132,17 +133,23 @@ function applyEnvironmentOptionsPatch(
   patchFields: EnvironmentPatchFields,
   knownSourceIds: ReadonlySet<string>,
   projectRepositoryId: string | null,
-  knownPrincipalAliases: ReadonlySet<string>
+  knownPrincipalAliases: ReadonlySet<string>,
+  projectOptions: unknown
 ): Response | undefined {
-  const optionsResult = parseEnvironmentPatchOptions(body, {
-    knownSourceIds,
-    knownPrincipalAliases,
-    projectRepositoryId,
-    // An environment's compose IS the overlay. Linting it as `base` produced
-    // a spurious advisory telling the operator that `!reset` / `!override`
-    // "only take effect in an overlay compose file" — about the overlay.
-    layer: 'overlay',
-  })
+  const optionsResult = parseEnvironmentPatchOptions(
+    body,
+    {
+      knownSourceIds,
+      knownPrincipalAliases,
+      projectRepositoryId,
+      // An environment's compose IS the overlay. Linting it as `base` produced
+      // a spurious advisory telling the operator that `!reset` / `!override`
+      // "only take effect in an overlay compose file" — about the overlay.
+      layer: 'overlay',
+    },
+    // Its changes are then checked as the merge with the Base, not alone.
+    projectOptions
+  )
   if (!optionsResult.ok) {
     if ('issues' in optionsResult) {
       return c.json({ error: optionsResult.error, issues: optionsResult.issues }, 400)
@@ -221,17 +228,21 @@ async function parseCreateEnvironmentInput(
   // An overlay is part of its project's compose, so it answers to the same
   // one-repository rule — and to the project's binding, not to its own.
   const projectRepositoryId = (await loadProjectRepositoryId(db, projectId)) ?? null
-  const jsonb = parseCreateEnvironmentJsonb(body, {
-    knownSourceIds,
-    // Same union as the PATCH lane: the project's persisted root plus this
-    // document's own.
-    knownPrincipalAliases: unionAliasSets(
-      await loadProjectPrincipalAliases(db, projectId),
-      composePrincipalAliases(body.options)
-    ),
-    layer: 'overlay',
-    projectRepositoryId,
-  })
+  const jsonb = parseCreateEnvironmentJsonb(
+    body,
+    {
+      knownSourceIds,
+      // Same union as the PATCH lane: the project's persisted root plus this
+      // document's own.
+      knownPrincipalAliases: unionAliasSets(
+        await loadProjectPrincipalAliases(db, projectId),
+        composePrincipalAliases(body.options)
+      ),
+      layer: 'overlay',
+      projectRepositoryId,
+    },
+    await loadProjectOptions(db, projectId)
+  )
   if (!jsonb.ok) {
     if ('issues' in jsonb) {
       return c.json({ error: jsonb.error, issues: jsonb.issues }, 400)
@@ -256,10 +267,11 @@ async function parseCreateEnvironmentInput(
 /** A row created while the delete ran trips an FK: report it as "has children". */
 async function deleteEnvironmentCascadeGuarded(
   db: Db,
-  id: string
+  id: string,
+  listenerSync?: Parameters<typeof deleteEnvironmentCascade>[2]
 ): Promise<EnvironmentDeleteResult | 'has_children'> {
   try {
-    return await deleteEnvironmentCascade(db, id)
+    return await deleteEnvironmentCascade(db, id, listenerSync)
   } catch (error) {
     if (isForeignKeyViolation(error)) return 'has_children'
     throw error
@@ -441,7 +453,8 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
       unionAliasSets(
         parent ? await loadProjectPrincipalAliases(db, parent.projectId) : new Set(),
         composePrincipalAliases(body.options)
-      )
+      ),
+      parent ? await loadProjectOptions(db, parent.projectId) : null
     )
     if (optionsError) return optionsError
     await keepStoredDeployOptions(db, id, patchFields)
@@ -490,12 +503,19 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
 
     // Refuses (409) while a container is running or a deploy is in progress;
     // otherwise drops the environment and everything under it.
-    const result = await deleteEnvironmentCascadeGuarded(db, id)
+    const result = await deleteEnvironmentCascadeGuarded(db, id, {
+      c,
+      actorId: session.userId,
+      organizationId,
+    })
     if (result === 'has_children') return hierarchyDeleteHasChildrenResponse(c)
     if (!result.ok) return environmentDeleteRefusal(c, result.error)
 
     await reclaimDeletedEnvironmentHosts(c, db, teardownPlan ? [teardownPlan] : [], session.userId)
 
-    return c.json({ ok: true as const })
+    return c.json({
+      ok: true as const,
+      ...(result.warning ? { warning: result.warning } : {}),
+    })
   })
 }

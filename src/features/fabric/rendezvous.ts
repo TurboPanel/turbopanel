@@ -39,6 +39,16 @@ const DIRECT_HEALTHY_KINDS = new Set<RelayPathKind>(['direct_lan', 'direct_publi
 /** Process-local strike counters keyed by fabric id then pair. */
 const pathStateCacheByFabric = new Map<string, Map<string, FabricPathState>>()
 
+/**
+ * How long a direct path kind that lost its strikes stays out of the endpoint
+ * candidates before it is tried again. Without this the LAN endpoint would
+ * return the very next round and the pair would flap LAN, public, LAN.
+ */
+export const FABRIC_FAILED_KIND_COOLDOWN_MS = 600_000
+
+/** Process-local: fabric id, then pair, then the kind that failed and when (ms). */
+const failedKindsCacheByFabric = new Map<string, Map<string, Map<RelayPathKind, number>>>()
+
 export type CollectFabricPathObservationsParams = {
   db: Db
   registry: DaemonCellRegistry
@@ -62,6 +72,13 @@ export function setCollectFabricPathObservationsForTests(
 
 export function resetFabricPathStateCacheForTests(): void {
   pathStateCacheByFabric.clear()
+  failedKindsCacheByFabric.clear()
+}
+
+/** Direct kinds still cooling down for this fabric (empty when none). */
+export function currentFailedPathKinds(fabricId: string): Map<string, Set<RelayPathKind>> {
+  const failedAtByPair = failedKindsCacheByFabric.get(fabricId)
+  return failedAtByPair ? liveFailedKinds(failedAtByPair, Date.now()) : new Map()
 }
 
 export type ObservedPeerPath = {
@@ -526,7 +543,8 @@ type PairPathOutcome = { next: FabricPathState; health: FabricPeerHealth }
 type RendezvousAccumulator = {
   pathStates: Map<string, FabricPathState>
   natEndpointByPair: Map<string, string>
-  failedPathKindsByPair: Map<string, Set<RelayPathKind>>
+  failedAtByPair: Map<string, Map<RelayPathKind, number>>
+  nowMs: number
   summariesByServerId: Map<string, FabricPathSummaryEntry[]>
   natCandidates: number
   degradedPeers: number
@@ -563,14 +581,18 @@ function computePairPathState(
   return { next, health }
 }
 
-/** A direct path counts as failed when it went unhealthy or was replaced. */
+/**
+ * A direct path counts as failed only when the strike counter replaced it
+ * because it was unhealthy. One stale reading changes nothing: the pair
+ * keeps its endpoint until `FABRIC_PATH_DEMOTE_STRIKES` readings in a row.
+ */
 function directPathFailed(
   previous: FabricPathState,
   next: FabricPathState,
   health: FabricPeerHealth
 ): boolean {
   if (!isDirectPathKind(previous.selected)) return false
-  return health !== 'healthy' || previous.selected !== next.selected
+  return health !== 'healthy' && previous.selected !== next.selected
 }
 
 function applyPairOutcome(
@@ -589,7 +611,9 @@ function applyPairOutcome(
     acc.natCandidates += 1
   }
   if (directPathFailed(previous, next, health)) {
-    recordFailedKind(acc.failedPathKindsByPair, pairKey, previous.selected)
+    recordFailedKind(acc.failedAtByPair, pairKey, previous.selected, acc.nowMs)
+  } else if (health === 'healthy' && isDirectPathKind(next.selected)) {
+    acc.failedAtByPair.get(pairKey)?.delete(next.selected)
   }
 }
 
@@ -669,10 +693,13 @@ export async function runFabricRendezvousRound(params: {
     candidatesByServerId,
     orgAllowRelay: params.orgAllowRelay,
   }
+  const failedAtByPair = failedKindsCacheByFabric.get(params.fabricId) ?? new Map()
+  failedKindsCacheByFabric.set(params.fabricId, failedAtByPair)
   const acc: RendezvousAccumulator = {
     pathStates,
     natEndpointByPair: new Map(),
-    failedPathKindsByPair: new Map(),
+    failedAtByPair,
+    nowMs: Date.now(),
     summariesByServerId: new Map(),
     natCandidates: 0,
     degradedPeers: 0,
@@ -697,7 +724,7 @@ export async function runFabricRendezvousRound(params: {
     observations: merged,
     natClassByServerId,
     natEndpointByPair: acc.natEndpointByPair,
-    failedPathKindsByPair: acc.failedPathKindsByPair,
+    failedPathKindsByPair: liveFailedKinds(failedAtByPair, acc.nowMs),
     pathStates,
     summariesByServerId: acc.summariesByServerId,
     natCandidates: acc.natCandidates,
@@ -706,13 +733,30 @@ export async function runFabricRendezvousRound(params: {
 }
 
 function recordFailedKind(
-  failedPathKindsByPair: Map<string, Set<RelayPathKind>>,
+  failedAtByPair: Map<string, Map<RelayPathKind, number>>,
   pairKey: string,
-  kind: RelayPathKind
+  kind: RelayPathKind,
+  nowMs: number
 ): void {
-  const failed = failedPathKindsByPair.get(pairKey) ?? new Set()
-  failed.add(kind)
-  failedPathKindsByPair.set(pairKey, failed)
+  const failed = failedAtByPair.get(pairKey) ?? new Map<RelayPathKind, number>()
+  failed.set(kind, nowMs)
+  failedAtByPair.set(pairKey, failed)
+}
+
+/** Kinds still inside the cool-down, per pair; expired entries are pruned. */
+function liveFailedKinds(
+  failedAtByPair: Map<string, Map<RelayPathKind, number>>,
+  nowMs: number
+): Map<string, Set<RelayPathKind>> {
+  const live = new Map<string, Set<RelayPathKind>>()
+  for (const [pairKey, kinds] of failedAtByPair) {
+    for (const [kind, at] of kinds) {
+      if (nowMs - at >= FABRIC_FAILED_KIND_COOLDOWN_MS) kinds.delete(kind)
+    }
+    if (kinds.size === 0) failedAtByPair.delete(pairKey)
+    else live.set(pairKey, new Set(kinds.keys()))
+  }
+  return live
 }
 
 export function fabricNeedsRendezvous(relays: readonly RelayRecord[]): boolean {

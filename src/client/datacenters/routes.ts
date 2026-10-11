@@ -13,9 +13,16 @@ import { metricsDeploymentKindForRuntime } from '../../contracts/capability-plan
 import { autoMonitorNicsForDatacenterAttach } from '../../features/servers/nic-auto-monitor.ts'
 import {
   type DatacenterPolicy,
+  hasInvalidPriority,
   parseDatacenterOptions,
   resolveDatacenterPolicy,
 } from '../../features/datacenters/datacenter-options.ts'
+import {
+  equalPriorityWarnings,
+  planServerTrafficChoice,
+  type PriorityChange,
+  type ServerTrafficPlan,
+} from '../../features/datacenters/server-traffic.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
 import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
@@ -56,6 +63,7 @@ import {
   attachEffectiveLocation,
   attachEffectivePolicy,
   attachPrivateCidrs,
+  attachServerTraffic,
   type CreateDatacenterInput,
   groupMembersByDerivedCidr,
   type ParsedMemberPin,
@@ -192,6 +200,7 @@ function parseDatacenterPatchFields(
   }
   const optionsResult = parseJsonbObject(c, body, 'options')
   if (optionsResult instanceof Response) return optionsResult
+  if (hasInvalidPriority(optionsResult)) return c.json({ error: 'invalid_priority' }, 400)
   if (optionsResult !== null) {
     patchFields.options = parseDatacenterOptions(optionsResult)
   }
@@ -251,6 +260,50 @@ async function fanOutDatacenterPolicyChange(
   }
 }
 
+type OrganizationDatacenterOptions = ReadonlyMap<string, unknown>
+
+/**
+ * Plan "make this the server-to-server network" over the organization's
+ * datacenters (nothing is written here).
+ */
+async function planServerTrafficForOrganization(
+  db: Db,
+  organizationId: string,
+  datacenterId: string
+): Promise<{ plan: ServerTrafficPlan; optionsById: OrganizationDatacenterOptions }> {
+  const rows = await db
+    .select({ id: datacenter.id, options: datacenter.options })
+    .from(datacenter)
+    .where(eq(datacenter.organizationId, organizationId))
+  const plan = planServerTrafficChoice(
+    rows.map((row) => ({ id: row.id, ...resolveDatacenterPolicy(row.options) })),
+    datacenterId
+  )
+  return { plan, optionsById: new Map(rows.map((row) => [row.id, row.options])) }
+}
+
+/** Write the changed priorities in one transaction, keeping every other option. */
+async function writeServerTrafficChanges(
+  db: Db,
+  changes: readonly PriorityChange[],
+  optionsById: OrganizationDatacenterOptions
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    await forEachSequential(changes, (change) =>
+      tx
+        .update(datacenter)
+        .set({
+          options: {
+            ...parseDatacenterOptions(optionsById.get(change.datacenterId)),
+            priority: change.after,
+          },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(datacenter.id, change.datacenterId))
+    )
+  })
+}
+
 function parseCreateDatacenterInput(
   c: Context<AppEnv>,
   body: Record<string, unknown>
@@ -274,6 +327,7 @@ function parseCreateDatacenterInput(
   if (metadata instanceof Response) return metadata
   const rawOptions = parseJsonbObject(c, body, 'options')
   if (rawOptions instanceof Response) return rawOptions
+  if (hasInvalidPriority(rawOptions)) return c.json({ error: 'invalid_priority' }, 400)
 
   return {
     name,
@@ -529,6 +583,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   router.use('/datacenters/:id', createSessionMiddleware(secrets))
   router.use('/datacenters/:id/members', createSessionMiddleware(secrets))
   router.use('/datacenters/:id/members/:serverId', createSessionMiddleware(secrets))
+  router.use('/datacenters/:id/server-traffic', createSessionMiddleware(secrets))
   router.use('/datacenters/:id/subnets', createSessionMiddleware(secrets))
   router.use('/datacenters/:id/subnets/:networkId', createSessionMiddleware(secrets))
 
@@ -547,7 +602,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     })
 
     if (visibleIds.length === 0) {
-      return c.json({ datacenters: [] })
+      return c.json({ datacenters: [], warnings: [] })
     }
 
     const rows = await db
@@ -570,10 +625,10 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       rows.map((row) => row.id)
     )
 
+    const withPolicy = attachEffectivePolicy(attachPrivateCidrs(rows, cidrsByDc))
     return c.json({
-      datacenters: attachEffectiveLocation(
-        attachEffectivePolicy(attachPrivateCidrs(rows, cidrsByDc))
-      ),
+      datacenters: attachEffectiveLocation(attachServerTraffic(withPolicy)),
+      warnings: equalPriorityWarnings(withPolicy),
     })
   })
 
@@ -1040,6 +1095,30 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     }
 
     return c.json({ ok: true as const })
+  })
+
+  router.post('/datacenters/:id/server-traffic', async (c) => {
+    const scope = await resolveDatacenterRequest(c, 'manage')
+    if (scope instanceof Response) return scope
+    const { db, session, organizationId, id } = scope
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    if (body.preferred !== true) return c.json({ error: 'Invalid request' }, 400)
+
+    const { plan, optionsById } = await planServerTrafficForOrganization(db, organizationId, id)
+    if (!plan.ok) {
+      return c.json({ error: plan.error }, plan.error === 'datacenter_not_found' ? 404 : 409)
+    }
+    if (plan.changes.length > 0) await writeServerTrafficChanges(db, plan.changes, optionsById)
+    await forEachSequential(plan.changes, (change: PriorityChange) =>
+      fanOutDatacenterPolicyChange(c, db, {
+        datacenterId: change.datacenterId,
+        organizationId,
+        actorId: session.userId,
+      })
+    )
+    return c.json({ ok: true as const, changes: plan.changes })
   })
 
   router.delete('/datacenters/:id', async (c) => {

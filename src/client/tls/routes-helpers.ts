@@ -109,6 +109,8 @@ export type CaRotationApiResult = {
   managedId?: string
   commandId?: string
   error?: string
+  /** Plain-language detail when the row is not finished yet. */
+  reason?: string
 }
 
 export type CaRotationStatusBody = {
@@ -134,6 +136,7 @@ export function toCaRotationApiResult(row: {
   managedId?: string
   commandId?: string
   error?: string
+  reason?: string
 }): CaRotationApiResult {
   const result: CaRotationApiResult = {
     serverId: row.serverId,
@@ -143,6 +146,7 @@ export function toCaRotationApiResult(row: {
   if (row.managedId) result.managedId = row.managedId
   if (row.commandId) result.commandId = row.commandId
   if (row.error) result.error = row.error
+  if (row.reason) result.reason = row.reason
   return result
 }
 

@@ -14,7 +14,9 @@
  * and is queried through the ordinary host-series path on both backends.
  * `storage` (`managed.storage`) and `dockerUsage` (`managed.docker`) are
  * host-wide for the same reason: one hosting/backup/log picture and one
- * Docker daemon per host.
+ * Docker daemon per host. The three v7 `extended.*` scopes (`extended.host`,
+ * `extended.docker`, `extended.ingress`) are host-wide singletons too, named
+ * like the wire section (`extended.host.oomKills`).
  *
  * Per-entity scopes (`network`, `filesystem`, `block`, `gpu`,
  * `hardwareSignal`, `ingress`, `databaseProxy`) can have many
@@ -35,10 +37,7 @@
  * identical to any other `network` entity.
  */
 
-import {
-  HOST_METRICS_METRIC_DESCRIPTORS,
-  type MetricEntityScope,
-} from './metric-descriptors.ts'
+import { HOST_METRICS_METRIC_DESCRIPTORS, type MetricEntityScope } from './metric-descriptors.ts'
 
 export type EntityMetricSelector = {
   scope: MetricEntityScope
@@ -56,6 +55,9 @@ const SINGLETON_SCOPES: ReadonlySet<MetricEntityScope> = new Set([
   'router',
   'storage',
   'dockerUsage',
+  'extended.host',
+  'extended.docker',
+  'extended.ingress',
 ])
 
 /** Per-entity scope -> wire alias. Only `hardwareSignal` differs from its scope name. */
@@ -105,6 +107,22 @@ export function formatEntityMetricId(selector: EntityMetricSelector): string {
   return `${alias}:${selector.entityId}.${selector.field}`
 }
 
+/** Longest entity id accepted from a request (matches the ingest-side dimension cap). */
+export const MAX_ENTITY_ID_LENGTH = 256
+
+/**
+ * Characters a requested entity id may contain: letters, digits, space, and `: . _ / @ + - # = ( ) [ ] ~`.
+ * Covers every generated id shape (`mac:`, `pci:`, `wwn:`, `disk:<model>:<serial>`, `signal:`, mount
+ * paths). Quotes, backslashes, commas, semicolons, and control characters are never valid.
+ */
+const ENTITY_ID_PATTERN = /^[A-Za-z0-9 :._/@+\-#=()[\]~]+$/
+
+export function assertSafeEntityId(entityId: string): void {
+  if (entityId.length > MAX_ENTITY_ID_LENGTH || !ENTITY_ID_PATTERN.test(entityId)) {
+    throw new TypeError('invalid entity id')
+  }
+}
+
 /** Parses a wire identity back into a validated selector. Throws on any unknown scope/alias/field. */
 export function parseEntityMetricId(id: string): EntityMetricSelector {
   const colonIndex = id.indexOf(':')
@@ -131,6 +149,7 @@ export function parseEntityMetricId(id: string): EntityMetricSelector {
   const entityId = rest.slice(0, dotIndex)
   const field = rest.slice(dotIndex + 1)
 
+  assertSafeEntityId(entityId)
   descriptorFor(scope, field)
   return { scope, entityId, field }
 }

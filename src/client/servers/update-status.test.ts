@@ -1,408 +1,434 @@
-import { assertEquals } from "@std/assert";
-import { it } from "@std/testing/bdd";
-import type { PendingRequestRecord } from "../../contracts/cell.ts";
-import type { ServerFleetPresence } from "../../daemon/cell/fleet-presence.ts";
-import { UPDATE_REQUEST_TTL_MS } from "../../features/update/constants.ts";
+import { assertEquals } from '@std/assert'
+import { it } from '@std/testing/bdd'
+import type { PendingRequestRecord } from '../../contracts/cell.ts'
+import type { ServerFleetPresence } from '../../daemon/cell/fleet-presence.ts'
+import { UPDATE_REQUEST_TTL_MS } from '../../features/update/constants.ts'
 import {
   buildServerStatusRecord,
   colocatedServerUpdateBlockedReason,
   COLOCATED_SERVER_UPDATE_BLOCKED_REASON,
   isStaleProjectedUpdating,
   resolveServerUpdateStatus,
-} from "./update-status.ts";
+} from './update-status.ts'
 
 function request(
-  partial: Partial<PendingRequestRecord> & Pick<PendingRequestRecord, "status">,
+  partial: Partial<PendingRequestRecord> & Pick<PendingRequestRecord, 'status'>
 ): PendingRequestRecord {
   return {
-    serverId: "srv-1",
-    requestId: "req-1",
-    requestKind: "update",
-    createdAt: "2020-01-01T00:00:00.000Z",
-    expiresAt: "2020-01-01T00:02:00.000Z",
+    serverId: 'srv-1',
+    requestId: 'req-1',
+    requestKind: 'update',
+    createdAt: '2020-01-01T00:00:00.000Z',
+    expiresAt: '2020-01-01T00:02:00.000Z',
     ...partial,
-  };
+  }
 }
 
-it("resolveServerUpdateStatus marks manifest resolution failure as unknown target", async () => {
+it('resolveServerUpdateStatus marks manifest resolution failure as unknown target', async () => {
   const resolved = await resolveServerUpdateStatus({
-    channel: "trunk",
-    serverId: "srv-1",
-    current: { commit: "aaa", buildId: "b1" },
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit: 'aaa', buildId: 'b1' },
     listUpdateRequests: async () => [],
-  });
+  })
 
-  if (resolved.targetStatus === "unknown") {
-    assertEquals(resolved.updateAvailable, false);
-    assertEquals(resolved.target, null);
-    assertEquals(resolved.targetError, "Could not resolve trunk channel manifest");
+  if (resolved.targetStatus === 'unknown') {
+    assertEquals(resolved.updateAvailable, false)
+    assertEquals(resolved.target, null)
+    assertEquals(resolved.targetError, 'Could not resolve trunk channel manifest')
   }
-});
+})
 
-it("resolveServerUpdateStatus returns updating for in-flight update request", async () => {
+it('resolveServerUpdateStatus returns updating for in-flight update request', async () => {
   const resolved = await resolveServerUpdateStatus({
-    channel: "trunk",
-    serverId: "srv-1",
-    current: { commit: "aaa", buildId: "b1" },
-    listUpdateRequests: async () => [request({ status: "sent" })],
-  });
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit: 'aaa', buildId: 'b1' },
+    listUpdateRequests: async () => [request({ status: 'sent' })],
+  })
 
-  assertEquals(resolved.status, "updating");
-});
+  assertEquals(resolved.status, 'updating')
+})
 
-it("resolveServerUpdateStatus returns updating after successful ack until commit matches", async () => {
-  const finishedAt = new Date().toISOString();
-  const current = { commit: "aaa", buildId: "b1" };
+it('resolveServerUpdateStatus returns updating after successful ack until commit matches', async () => {
+  const finishedAt = new Date().toISOString()
+  const current = { commit: 'aaa', buildId: 'b1' }
   const resolved = await resolveServerUpdateStatus({
-    channel: "trunk",
-    serverId: "srv-1",
+    channel: 'trunk',
+    serverId: 'srv-1',
     current,
     targetManifest: {
-      commit: "bbb",
-      buildId: "b2",
-      builtAt: "2020-01-01T00:00:00.000Z",
-      channel: "trunk",
-      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+      commit: 'bbb',
+      buildId: 'b2',
+      builtAt: '2020-01-01T00:00:00.000Z',
+      channel: 'trunk',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
-    listUpdateRequests: async () => [
-      request({ status: "done", finishedAt }),
-    ],
-  });
+    listUpdateRequests: async () => [request({ status: 'done', finishedAt })],
+  })
 
-  assertEquals(resolved.status, "updating");
-});
+  assertEquals(resolved.status, 'updating')
+})
 
-it("resolveServerUpdateStatus uses shared target manifest without refetching", async () => {
+it('resolveServerUpdateStatus uses shared target manifest without refetching', async () => {
   const resolved = await resolveServerUpdateStatus({
-    channel: "trunk",
-    serverId: "srv-1",
-    current: { commit: "aaa", buildId: "b1" },
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit: 'aaa', buildId: 'b1' },
     targetManifest: {
-      commit: "bbb",
-      buildId: "b2",
-      builtAt: "2020-01-01T00:00:00.000Z",
-      channel: "trunk",
-      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+      commit: 'bbb',
+      buildId: 'b2',
+      builtAt: '2020-01-01T00:00:00.000Z',
+      channel: 'trunk',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
     listUpdateRequests: async () => [],
-  });
+  })
 
-  assertEquals(resolved.targetStatus, "ok");
-  assertEquals(resolved.target?.commit, "bbb");
-  assertEquals(resolved.updateAvailable, true);
-});
+  assertEquals(resolved.targetStatus, 'ok')
+  assertEquals(resolved.target?.commit, 'bbb')
+  assertEquals(resolved.updateAvailable, true)
+})
 
-it("resolveServerUpdateStatus returns idle after pending window expires", async () => {
-  const finishedAt = new Date(Date.now() - 121_000).toISOString();
+it('resolveServerUpdateStatus returns idle after pending window expires', async () => {
+  const finishedAt = new Date(Date.now() - 121_000).toISOString()
   const resolved = await resolveServerUpdateStatus({
-    channel: "trunk",
-    serverId: "srv-1",
-    current: { commit: "aaa", buildId: "b1" },
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit: 'aaa', buildId: 'b1' },
     targetManifest: {
-      commit: "bbb",
-      buildId: "b2",
-      builtAt: "2020-01-01T00:00:00.000Z",
-      channel: "trunk",
-      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+      commit: 'bbb',
+      buildId: 'b2',
+      builtAt: '2020-01-01T00:00:00.000Z',
+      channel: 'trunk',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
-    listUpdateRequests: async () => [
-      request({ status: "done", finishedAt }),
-    ],
-  });
+    listUpdateRequests: async () => [request({ status: 'done', finishedAt })],
+  })
 
-  assertEquals(resolved.status, "idle");
-  assertEquals(resolved.updateAvailable, true);
-});
+  assertEquals(resolved.status, 'idle')
+  assertEquals(resolved.updateAvailable, true)
+})
 
-it("resolveServerUpdateStatus surfaces last error but stays idle when update still available", async () => {
+it('resolveServerUpdateStatus surfaces last error but stays idle when update still available', async () => {
   const resolved = await resolveServerUpdateStatus({
-    channel: "trunk",
-    serverId: "srv-1",
-    current: { commit: "51e32ad", buildId: "b1" },
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit: '51e32ad', buildId: 'b1' },
     targetManifest: {
-      commit: "203fcb3",
-      buildId: "b2",
-      builtAt: "2020-01-01T00:00:00.000Z",
-      channel: "trunk",
-      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+      commit: '203fcb3',
+      buildId: 'b2',
+      builtAt: '2020-01-01T00:00:00.000Z',
+      channel: 'trunk',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
-    listUpdateRequests: async () => [
-      request({ status: "failed", error: "reconcile failed" }),
-    ],
-  });
+    listUpdateRequests: async () => [request({ status: 'failed', error: 'reconcile failed' })],
+  })
 
-  assertEquals(resolved.status, "idle");
-  assertEquals(resolved.updateAvailable, true);
-  assertEquals(resolved.lastUpdateError, "reconcile failed");
-});
+  assertEquals(resolved.status, 'idle')
+  assertEquals(resolved.updateAvailable, true)
+  assertEquals(resolved.lastUpdateError, 'reconcile failed')
+})
 
-it("resolveServerUpdateStatus returns error for failed update when already on trunk", async () => {
-  const commit = "51e32ad";
+it('resolveServerUpdateStatus reports idle with no error for a failed update when already on trunk', async () => {
+  const commit = '51e32ad'
   const resolved = await resolveServerUpdateStatus({
-    channel: "trunk",
-    serverId: "srv-1",
-    current: { commit, buildId: "b1" },
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit, buildId: 'b1' },
     targetManifest: {
       commit,
-      buildId: "b2",
-      builtAt: "2020-01-01T00:00:00.000Z",
-      channel: "trunk",
-      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
-    },
-    listUpdateRequests: async () => [
-      request({ status: "failed", error: "checksum mismatch" }),
-    ],
-  });
-
-  assertEquals(resolved.status, "error");
-  assertEquals(resolved.updateAvailable, false);
-  assertEquals(resolved.lastUpdateError, "checksum mismatch");
-});
-
-it("resolveServerUpdateStatus ignores stale failed request when daemon matches trunk", async () => {
-  const commit = "51e32ad";
-  const resolved = await resolveServerUpdateStatus({
-    channel: "trunk",
-    serverId: "srv-1",
-    current: { commit, buildId: "b1" },
-    targetManifest: {
-      commit,
-      buildId: "b2",
-      builtAt: "2020-01-01T00:00:00.000Z",
-      channel: "trunk",
-      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
-    },
-    listUpdateRequests: async () => [
-      request({
-        status: "failed",
-        error: "reconcile failed",
-        createdAt: "2020-01-01T00:00:00.000Z",
-      }),
-      request({
-        status: "done",
-        createdAt: "2020-01-02T00:00:00.000Z",
-        finishedAt: "2020-01-02T00:00:01.000Z",
-      }),
-    ],
-  });
-
-  assertEquals(resolved.status, "idle");
-  assertEquals(resolved.updateAvailable, false);
-});
-
-it("resolveServerUpdateStatus blocks remote updates for co-located daemons", async () => {
-  const resolved = await resolveServerUpdateStatus({
-    channel: "trunk",
-    serverId: "srv-1",
-    current: { commit: "aaa", buildId: "b1" },
-    colocatedWithInstance: true,
-    targetManifest: {
-      commit: "bbb",
-      buildId: "b2",
-      builtAt: "2020-01-01T00:00:00.000Z",
-      channel: "trunk",
-      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
-    },
-    listUpdateRequests: async () => [],
-  });
-
-  assertEquals(resolved.updateAvailable, false);
-  assertEquals(resolved.updateBlocked, true);
-  assertEquals(resolved.updateBlockedCode, "colocated_with_instance");
-  assertEquals(
-    resolved.updateBlockedReason,
-    "The co-located development daemon cannot be updated from the control plane",
-  );
-});
-
-it("resolveServerUpdateStatus does not offer update when running commit is unknown", async () => {
-  const resolved = await resolveServerUpdateStatus({
-    channel: "trunk",
-    serverId: "srv-1",
-    current: null,
-    targetManifest: {
-      commit: "bbb",
-      buildId: "b2",
-      builtAt: "2020-01-01T00:00:00.000Z",
-      channel: "trunk",
-      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
-    },
-    listUpdateRequests: async () => [],
-  });
-
-  assertEquals(resolved.targetStatus, "ok");
-  assertEquals(resolved.updateAvailable, false);
-});
-
-it("resolveServerUpdateStatus computes updateAvailable only with known target", async () => {
-  const current = { commit: "aaa", buildId: "b1" };
-  const resolved = await resolveServerUpdateStatus({
-    channel: "trunk",
-    serverId: "srv-1",
-    current,
-    listUpdateRequests: async () => [],
-  });
-
-  if (resolved.targetStatus === "ok" && resolved.target) {
-    assertEquals(resolved.updateAvailable, current.commit !== resolved.target.commit);
-  } else {
-    assertEquals(resolved.updateAvailable, false);
-  }
-});
-
-it("resolveServerUpdateStatus returns updating from projected update summary", async () => {
-  const resolved = await resolveServerUpdateStatus({
-    channel: "trunk",
-    serverId: "srv-1",
-    current: { commit: "aaa", buildId: "b1" },
-    projectedUpdate: { status: "updating" },
-  });
-
-  assertEquals(resolved.status, "updating");
-});
-
-it("resolveServerUpdateStatus returns updating from projected done with commit drift", async () => {
-  const finishedAt = new Date().toISOString();
-  const resolved = await resolveServerUpdateStatus({
-    channel: "trunk",
-    serverId: "srv-1",
-    current: { commit: "aaa", buildId: "b1" },
-    targetManifest: {
-      commit: "bbb",
-      buildId: "b2",
-      builtAt: "2020-01-01T00:00:00.000Z",
-      channel: "trunk",
-      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
-    },
-    projectedUpdate: { status: "done", finishedAt },
-  });
-
-  assertEquals(resolved.status, "updating");
-});
-
-it("resolveServerUpdateStatus surfaces last error from projected failed update", async () => {
-  const resolved = await resolveServerUpdateStatus({
-    channel: "trunk",
-    serverId: "srv-1",
-    current: { commit: "51e32ad", buildId: "b1" },
-    targetManifest: {
-      commit: "203fcb3",
-      buildId: "b2",
-      builtAt: "2020-01-01T00:00:00.000Z",
-      channel: "trunk",
-      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
-    },
-    projectedUpdate: { status: "failed", error: "reconcile failed" },
-  });
-
-  assertEquals(resolved.status, "idle");
-  assertEquals(resolved.lastUpdateError, "reconcile failed");
-});
-
-it("resolveServerUpdateStatus returns idle from projected idle summary", async () => {
-  const resolved = await resolveServerUpdateStatus({
-    channel: "trunk",
-    serverId: "srv-1",
-    current: { commit: "aaa", buildId: "b1" },
-    projectedUpdate: { status: "idle" },
-  });
-
-  assertEquals(resolved.status, "idle");
-});
-
-it("resolveServerUpdateStatus ignores stale projected updating when daemon matches trunk", async () => {
-  const commit = "51e32ad";
-  const resolved = await resolveServerUpdateStatus({
-    channel: "trunk",
-    serverId: "srv-1",
-    current: { commit, buildId: "b1" },
-    targetManifest: {
-      commit,
-      buildId: "b2",
-      builtAt: "2020-01-01T00:00:00.000Z",
-      channel: "trunk",
-      manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+      buildId: 'b2',
+      builtAt: '2020-01-01T00:00:00.000Z',
+      channel: 'trunk',
+      manifestUrl: 'https://updates.example.test/manifest.json',
     },
     projectedUpdate: {
-      status: "updating",
-      requestId: "req-stale",
-      queuedAt: "2020-01-01T00:00:00.000Z",
+      status: 'failed',
+      error: 'preflight_in_progress: update already in progress',
     },
-  });
+  })
 
-  assertEquals(resolved.status, "idle");
-  assertEquals(resolved.updateAvailable, false);
-  assertEquals(resolved.canResetUpdateStatus, true);
-});
+  assertEquals(resolved.status, 'idle')
+  assertEquals(resolved.updateAvailable, false)
+  assertEquals(resolved.lastUpdateError, undefined)
+  assertEquals(resolved.canResetUpdateStatus, undefined)
+})
 
-it("colocatedServerUpdateBlockedReason returns the stable operator copy", () => {
+it('resolveServerUpdateStatus keeps a failed update idle when the target could not be resolved', async () => {
+  const resolved = await resolveServerUpdateStatus({
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit: '51e32ad', buildId: 'b1' },
+    targetManifest: null,
+    listUpdateRequests: async () => [request({ status: 'failed', error: 'checksum mismatch' })],
+  })
+
+  assertEquals(resolved.targetStatus, 'unknown')
+  assertEquals(resolved.status, 'idle')
+  assertEquals(resolved.lastUpdateError, 'checksum mismatch')
+})
+
+it('resolveServerUpdateStatus still returns error for a failed update on a blocked server', async () => {
+  const resolved = await resolveServerUpdateStatus({
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit: 'aaa', buildId: 'b1' },
+    colocatedWithInstance: true,
+    targetManifest: {
+      commit: 'bbb',
+      buildId: 'b2',
+      builtAt: '2020-01-01T00:00:00.000Z',
+      channel: 'trunk',
+      manifestUrl: 'https://updates.example.test/manifest.json',
+    },
+    listUpdateRequests: async () => [request({ status: 'failed', error: 'checksum mismatch' })],
+  })
+
+  assertEquals(resolved.status, 'error')
+  assertEquals(resolved.lastUpdateError, 'checksum mismatch')
+})
+
+it('resolveServerUpdateStatus ignores stale failed request when daemon matches trunk', async () => {
+  const commit = '51e32ad'
+  const resolved = await resolveServerUpdateStatus({
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit, buildId: 'b1' },
+    targetManifest: {
+      commit,
+      buildId: 'b2',
+      builtAt: '2020-01-01T00:00:00.000Z',
+      channel: 'trunk',
+      manifestUrl: 'https://updates.example.test/manifest.json',
+    },
+    listUpdateRequests: async () => [
+      request({
+        status: 'failed',
+        error: 'reconcile failed',
+        createdAt: '2020-01-01T00:00:00.000Z',
+      }),
+      request({
+        status: 'done',
+        createdAt: '2020-01-02T00:00:00.000Z',
+        finishedAt: '2020-01-02T00:00:01.000Z',
+      }),
+    ],
+  })
+
+  assertEquals(resolved.status, 'idle')
+  assertEquals(resolved.updateAvailable, false)
+})
+
+it('resolveServerUpdateStatus blocks remote updates for co-located daemons', async () => {
+  const resolved = await resolveServerUpdateStatus({
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit: 'aaa', buildId: 'b1' },
+    colocatedWithInstance: true,
+    targetManifest: {
+      commit: 'bbb',
+      buildId: 'b2',
+      builtAt: '2020-01-01T00:00:00.000Z',
+      channel: 'trunk',
+      manifestUrl: 'https://updates.example.test/manifest.json',
+    },
+    listUpdateRequests: async () => [],
+  })
+
+  assertEquals(resolved.updateAvailable, false)
+  assertEquals(resolved.updateBlocked, true)
+  assertEquals(resolved.updateBlockedCode, 'colocated_with_instance')
   assertEquals(
-    colocatedServerUpdateBlockedReason(),
-    COLOCATED_SERVER_UPDATE_BLOCKED_REASON,
-  );
-});
+    resolved.updateBlockedReason,
+    'The co-located development daemon cannot be updated from the control plane'
+  )
+})
 
-it("isStaleProjectedUpdating is false when projection is not updating", () => {
+it('resolveServerUpdateStatus does not offer update when running commit is unknown', async () => {
+  const resolved = await resolveServerUpdateStatus({
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: null,
+    targetManifest: {
+      commit: 'bbb',
+      buildId: 'b2',
+      builtAt: '2020-01-01T00:00:00.000Z',
+      channel: 'trunk',
+      manifestUrl: 'https://updates.example.test/manifest.json',
+    },
+    listUpdateRequests: async () => [],
+  })
+
+  assertEquals(resolved.targetStatus, 'ok')
+  assertEquals(resolved.updateAvailable, false)
+})
+
+it('resolveServerUpdateStatus computes updateAvailable only with known target', async () => {
+  const current = { commit: 'aaa', buildId: 'b1' }
+  const resolved = await resolveServerUpdateStatus({
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current,
+    listUpdateRequests: async () => [],
+  })
+
+  if (resolved.targetStatus === 'ok' && resolved.target) {
+    assertEquals(resolved.updateAvailable, current.commit !== resolved.target.commit)
+  } else {
+    assertEquals(resolved.updateAvailable, false)
+  }
+})
+
+it('resolveServerUpdateStatus returns updating from projected update summary', async () => {
+  const resolved = await resolveServerUpdateStatus({
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit: 'aaa', buildId: 'b1' },
+    projectedUpdate: { status: 'updating' },
+  })
+
+  assertEquals(resolved.status, 'updating')
+})
+
+it('resolveServerUpdateStatus returns updating from projected done with commit drift', async () => {
+  const finishedAt = new Date().toISOString()
+  const resolved = await resolveServerUpdateStatus({
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit: 'aaa', buildId: 'b1' },
+    targetManifest: {
+      commit: 'bbb',
+      buildId: 'b2',
+      builtAt: '2020-01-01T00:00:00.000Z',
+      channel: 'trunk',
+      manifestUrl: 'https://updates.example.test/manifest.json',
+    },
+    projectedUpdate: { status: 'done', finishedAt },
+  })
+
+  assertEquals(resolved.status, 'updating')
+})
+
+it('resolveServerUpdateStatus surfaces last error from projected failed update', async () => {
+  const resolved = await resolveServerUpdateStatus({
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit: '51e32ad', buildId: 'b1' },
+    targetManifest: {
+      commit: '203fcb3',
+      buildId: 'b2',
+      builtAt: '2020-01-01T00:00:00.000Z',
+      channel: 'trunk',
+      manifestUrl: 'https://updates.example.test/manifest.json',
+    },
+    projectedUpdate: { status: 'failed', error: 'reconcile failed' },
+  })
+
+  assertEquals(resolved.status, 'idle')
+  assertEquals(resolved.lastUpdateError, 'reconcile failed')
+})
+
+it('resolveServerUpdateStatus returns idle from projected idle summary', async () => {
+  const resolved = await resolveServerUpdateStatus({
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit: 'aaa', buildId: 'b1' },
+    projectedUpdate: { status: 'idle' },
+  })
+
+  assertEquals(resolved.status, 'idle')
+})
+
+it('resolveServerUpdateStatus ignores stale projected updating when daemon matches trunk', async () => {
+  const commit = '51e32ad'
+  const resolved = await resolveServerUpdateStatus({
+    channel: 'trunk',
+    serverId: 'srv-1',
+    current: { commit, buildId: 'b1' },
+    targetManifest: {
+      commit,
+      buildId: 'b2',
+      builtAt: '2020-01-01T00:00:00.000Z',
+      channel: 'trunk',
+      manifestUrl: 'https://updates.example.test/manifest.json',
+    },
+    projectedUpdate: {
+      status: 'updating',
+      requestId: 'req-stale',
+      queuedAt: '2020-01-01T00:00:00.000Z',
+    },
+  })
+
+  assertEquals(resolved.status, 'idle')
+  assertEquals(resolved.updateAvailable, false)
+  assertEquals(resolved.canResetUpdateStatus, true)
+})
+
+it('colocatedServerUpdateBlockedReason returns the stable operator copy', () => {
+  assertEquals(colocatedServerUpdateBlockedReason(), COLOCATED_SERVER_UPDATE_BLOCKED_REASON)
+})
+
+it('isStaleProjectedUpdating is false when projection is not updating', () => {
   assertEquals(
     isStaleProjectedUpdating({
-      projectedUpdate: { status: "idle" },
-      currentCommit: "aaa",
-      targetCommit: "bbb",
+      projectedUpdate: { status: 'idle' },
+      currentCommit: 'aaa',
+      targetCommit: 'bbb',
     }),
-    false,
-  );
-  assertEquals(isStaleProjectedUpdating({}), false);
-});
+    false
+  )
+  assertEquals(isStaleProjectedUpdating({}), false)
+})
 
-it("isStaleProjectedUpdating is true when current already matches target", () => {
+it('isStaleProjectedUpdating is true when current already matches target', () => {
   assertEquals(
     isStaleProjectedUpdating({
-      projectedUpdate: { status: "updating" },
-      currentCommit: "same",
-      targetCommit: "same",
+      projectedUpdate: { status: 'updating' },
+      currentCommit: 'same',
+      targetCommit: 'same',
     }),
-    true,
-  );
-});
+    true
+  )
+})
 
-it("isStaleProjectedUpdating is true when queuedAt exceeds TTL", () => {
-  const queuedAt = new Date(Date.now() - UPDATE_REQUEST_TTL_MS - 1_000)
-    .toISOString();
+it('isStaleProjectedUpdating is true when queuedAt exceeds TTL', () => {
+  const queuedAt = new Date(Date.now() - UPDATE_REQUEST_TTL_MS - 1_000).toISOString()
   assertEquals(
     isStaleProjectedUpdating({
-      projectedUpdate: { status: "updating", queuedAt },
+      projectedUpdate: { status: 'updating', queuedAt },
       updateTtlMs: UPDATE_REQUEST_TTL_MS,
     }),
-    true,
-  );
-});
+    true
+  )
+})
 
-it("isStaleProjectedUpdating stays false for a fresh in-flight update", () => {
+it('isStaleProjectedUpdating stays false for a fresh in-flight update', () => {
   assertEquals(
     isStaleProjectedUpdating({
       projectedUpdate: {
-        status: "updating",
+        status: 'updating',
         queuedAt: new Date().toISOString(),
       },
-      currentCommit: "aaa",
-      targetCommit: "bbb",
+      currentCommit: 'aaa',
+      targetCommit: 'bbb',
       updateTtlMs: UPDATE_REQUEST_TTL_MS,
     }),
-    false,
-  );
-});
+    false
+  )
+})
 
-it("buildServerStatusRecord uses presence connectedAt while online", () => {
+it('buildServerStatusRecord uses presence connectedAt while online', () => {
   const presence: ServerFleetPresence = {
-    serverId: "srv-1",
+    serverId: 'srv-1',
     connected: true,
-    hostname: "host.example",
+    hostname: 'host.example',
     machineKey: null,
-    remoteAddress: "203.0.113.10",
+    remoteAddress: '203.0.113.10',
     directAttach: false,
     keyId: null,
-    connectedAt: "2026-01-01T00:00:00.000Z",
-    statusChangedAt: "2026-01-01T00:00:00.000Z",
+    connectedAt: '2026-01-01T00:00:00.000Z',
+    statusChangedAt: '2026-01-01T00:00:00.000Z',
     lastInboundAt: null,
     keyLastUsedAt: null,
     geo: null,
@@ -412,26 +438,27 @@ it("buildServerStatusRecord uses presence connectedAt while online", () => {
     ips: null,
     docker: null,
     runtimes: null,
+    releaseLinkScan: null,
     hardwareProfile: null,
-  };
+  }
   const record = buildServerStatusRecord(presence, true, {
     connected: true,
-    daemonStatus: "online",
-    statusChangedAt: "2026-01-01T00:00:00.000Z",
-  });
+    daemonStatus: 'online',
+    statusChangedAt: '2026-01-01T00:00:00.000Z',
+  })
 
-  assertEquals(record.serverId, "srv-1");
-  assertEquals(record.connected, true);
-  assertEquals(record.daemonStatus, "online");
-  assertEquals(record.connectedAt, "2026-01-01T00:00:00.000Z");
-  assertEquals(record.hostname, "host.example");
-  assertEquals(record.remoteAddress, "203.0.113.10");
-  assertEquals(record.colocatedWithInstance, true);
-});
+  assertEquals(record.serverId, 'srv-1')
+  assertEquals(record.connected, true)
+  assertEquals(record.daemonStatus, 'online')
+  assertEquals(record.connectedAt, '2026-01-01T00:00:00.000Z')
+  assertEquals(record.hostname, 'host.example')
+  assertEquals(record.remoteAddress, '203.0.113.10')
+  assertEquals(record.colocatedWithInstance, true)
+})
 
-it("buildServerStatusRecord clears connectedAt when offline and defaults status", () => {
+it('buildServerStatusRecord clears connectedAt when offline and defaults status', () => {
   const presence: ServerFleetPresence = {
-    serverId: "srv-2",
+    serverId: 'srv-2',
     connected: false,
     hostname: null,
     machineKey: null,
@@ -439,7 +466,7 @@ it("buildServerStatusRecord clears connectedAt when offline and defaults status"
     directAttach: false,
     keyId: null,
     connectedAt: null,
-    statusChangedAt: "2026-02-01T00:00:00.000Z",
+    statusChangedAt: '2026-02-01T00:00:00.000Z',
     lastInboundAt: null,
     keyLastUsedAt: null,
     geo: null,
@@ -449,13 +476,14 @@ it("buildServerStatusRecord clears connectedAt when offline and defaults status"
     ips: null,
     docker: null,
     runtimes: null,
+    releaseLinkScan: null,
     hardwareProfile: null,
-  };
-  const record = buildServerStatusRecord(presence, false);
+  }
+  const record = buildServerStatusRecord(presence, false)
 
-  assertEquals(record.connected, false);
-  assertEquals(record.connectedAt, null);
-  assertEquals(record.daemonStatus, "unknown");
-  assertEquals(record.statusChangedAt, null);
-  assertEquals(record.colocatedWithInstance, false);
-});
+  assertEquals(record.connected, false)
+  assertEquals(record.connectedAt, null)
+  assertEquals(record.daemonStatus, 'unknown')
+  assertEquals(record.statusChangedAt, null)
+  assertEquals(record.colocatedWithInstance, false)
+})

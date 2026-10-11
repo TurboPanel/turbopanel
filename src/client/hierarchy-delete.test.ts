@@ -2,10 +2,17 @@ import { assertEquals, assertRejects } from '@std/assert'
 import { Hono } from 'hono'
 import type { Db } from '../db/connection.ts'
 import {
+  HIERARCHY_DELETE_HAS_CHILDREN_CODE,
   HIERARCHY_DELETE_HAS_CHILDREN_ERROR,
+  hierarchyDeleteFkBlockersFromViolation,
+  hierarchyDeleteHasChildrenMessage,
   hierarchyDeleteHasChildrenResponse,
+  hierarchyDeleteHasChildrenResponseIfNeeded,
   isForeignKeyViolation,
+  parsePostgresForeignKeyViolation,
+  respondAfterHierarchyDelete,
   runHierarchyDelete,
+  runHierarchyDeleteResult,
 } from './hierarchy-delete.ts'
 
 /**
@@ -25,6 +32,97 @@ test('isForeignKeyViolation detects Postgres FK and restrict codes', () => {
   assertEquals(isForeignKeyViolation('nope'), false)
 })
 
+test('parsePostgresForeignKeyViolation reads postgres.js, detail, and cause chain', () => {
+  const cases: Array<{
+    input: unknown
+    expected: ReturnType<typeof parsePostgresForeignKeyViolation>
+  }> = [
+    {
+      input: {
+        code: '23503',
+        table: 'stage',
+        constraint: 'stage_server_id_server_id_fk',
+        column: 'server_id',
+      },
+      expected: {
+        table: 'stage',
+        constraint: 'stage_server_id_server_id_fk',
+        column: 'server_id',
+      },
+    },
+    {
+      input: {
+        code: '23503',
+        table_name: 'container',
+        constraint_name: 'container_server_id_server_id_fk',
+      },
+      expected: { table: 'container', constraint: 'container_server_id_server_id_fk' },
+    },
+    {
+      input: {
+        code: '23503',
+        detail:
+          'Key (id)=(2030f113-0000-7000-8000-000000000001) is still referenced from table "environment".',
+        constraint: 'environment_server_id_server_id_fk',
+      },
+      expected: { table: 'environment', constraint: 'environment_server_id_server_id_fk' },
+    },
+    {
+      input: {
+        message: 'Failed query',
+        cause: {
+          code: '23503',
+          table: 'relay',
+          constraint: 'relay_server_id_server_id_fk',
+        },
+      },
+      expected: { table: 'relay', constraint: 'relay_server_id_server_id_fk' },
+    },
+    {
+      input: {
+        code: '23503',
+        message: 'update or delete on table "project" violates foreign key constraint',
+        cause: {
+          code: '23503',
+          table: 'environment',
+          constraint: 'environment_project_id_project_id_fk',
+        },
+      },
+      expected: {
+        table: 'environment',
+        constraint: 'environment_project_id_project_id_fk',
+      },
+    },
+  ]
+  for (const { input, expected } of cases) {
+    assertEquals(parsePostgresForeignKeyViolation(input), expected)
+  }
+})
+
+test('parsePostgresForeignKeyViolation walks cause when outer layer has FK code only', () => {
+  assertEquals(
+    parsePostgresForeignKeyViolation({
+      code: '23503',
+      message: 'Failed query',
+      cause: {
+        code: '23503',
+        constraint_name: 'slot_environment_id_environment_id_fk',
+        table_name: 'slot',
+      },
+    }),
+    { table: 'slot', constraint: 'slot_environment_id_environment_id_fk' }
+  )
+})
+
+test('hierarchyDeleteFkBlockersFromViolation returns a generic blocker when unparsable', () => {
+  assertEquals(hierarchyDeleteFkBlockersFromViolation(null), [{ table: 'child resources' }])
+  assertEquals(hierarchyDeleteFkBlockersFromViolation(undefined), [{ table: 'child resources' }])
+})
+
+test('hierarchyDeleteHasChildrenMessage keeps the generic error string', () => {
+  assertEquals(hierarchyDeleteHasChildrenMessage(), HIERARCHY_DELETE_HAS_CHILDREN_ERROR)
+})
+
 test('runHierarchyDelete returns ok when the transaction succeeds', async () => {
   const db = {
     transaction: async (fn: (tx: Db) => Promise<void>) => {
@@ -36,14 +134,44 @@ test('runHierarchyDelete returns ok when the transaction succeeds', async () => 
   assertEquals(result, 'ok')
 })
 
-test('runHierarchyDelete maps FK violations to has_children', async () => {
+test('runHierarchyDeleteResult maps FK violations to has_children with table detail', async () => {
   const db = {
     transaction: async () => {
-      throw { code: '23503' }
+      throw {
+        code: '23503',
+        table: 'relay',
+        constraint: 'relay_server_id_server_id_fk',
+      }
     },
   } as unknown as Db
 
-  assertEquals(await runHierarchyDelete(db, async () => {}), 'has_children')
+  const result = await runHierarchyDeleteResult(db, async () => {})
+  assertEquals(result, {
+    status: 'has_children',
+    blockers: [{ table: 'relay', constraint: 'relay_server_id_server_id_fk' }],
+  })
+})
+
+test('concurrent runHierarchyDeleteResult values do not share FK blockers', async () => {
+  const dbFor = (table: string, constraint: string) =>
+    ({
+      transaction: async () => {
+        throw { code: '23503', table, constraint }
+      },
+    }) as unknown as Db
+
+  const [first, second] = await Promise.all([
+    runHierarchyDeleteResult(dbFor('relay', 'relay_server_id_server_id_fk'), async () => {}),
+    runHierarchyDeleteResult(dbFor('subnet', 'subnet_server_id_server_id_fk'), async () => {}),
+  ])
+  assertEquals(first, {
+    status: 'has_children',
+    blockers: [{ table: 'relay', constraint: 'relay_server_id_server_id_fk' }],
+  })
+  assertEquals(second, {
+    status: 'has_children',
+    blockers: [{ table: 'subnet', constraint: 'subnet_server_id_server_id_fk' }],
+  })
 })
 
 test('runHierarchyDelete rethrows unrelated errors', async () => {
@@ -53,18 +181,41 @@ test('runHierarchyDelete rethrows unrelated errors', async () => {
     },
   } as unknown as Db
 
-  await assertRejects(
-    () => runHierarchyDelete(db, async () => {}),
-    Error,
-    'boom',
-  )
+  await assertRejects(() => runHierarchyDelete(db, async () => {}), Error, 'boom')
 })
 
-test('hierarchyDeleteHasChildrenResponse returns 409 JSON', async () => {
+test('hierarchyDeleteHasChildrenResponseIfNeeded returns null on success', () => {
+  const c = {} as Parameters<typeof hierarchyDeleteHasChildrenResponseIfNeeded>[0]
+  assertEquals(hierarchyDeleteHasChildrenResponseIfNeeded(c, { status: 'ok' }), null)
+})
+
+test('respondAfterHierarchyDelete returns ok JSON when delete succeeds', async () => {
+  const db = {
+    transaction: async (fn: (tx: Db) => Promise<void>) => {
+      await fn({} as Db)
+    },
+  } as unknown as Db
   const app = new Hono()
-  app.delete('/resource', (c) => hierarchyDeleteHasChildrenResponse(c))
+  app.delete('/resource', async (c) => respondAfterHierarchyDelete(c, db, async () => {}))
+
+  const res = await app.request('http://localhost/resource', { method: 'DELETE' })
+  assertEquals(res.status, 200)
+  assertEquals(await res.json(), { ok: true })
+})
+
+test('hierarchyDeleteHasChildrenResponse returns 409 JSON with structured blockers', async () => {
+  const app = new Hono()
+  app.delete('/resource', (c) =>
+    hierarchyDeleteHasChildrenResponse(c, [
+      { table: 'managed', constraint: 'managed_server_id_server_id_fk' },
+    ])
+  )
 
   const res = await app.request('http://localhost/resource', { method: 'DELETE' })
   assertEquals(res.status, 409)
-  assertEquals(await res.json(), { error: HIERARCHY_DELETE_HAS_CHILDREN_ERROR })
+  assertEquals(await res.json(), {
+    error: HIERARCHY_DELETE_HAS_CHILDREN_ERROR,
+    code: HIERARCHY_DELETE_HAS_CHILDREN_CODE,
+    blockers: [{ table: 'managed', constraint: 'managed_server_id_server_id_fk' }],
+  })
 })

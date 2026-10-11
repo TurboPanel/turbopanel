@@ -1,23 +1,32 @@
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertStringIncludes } from '@std/assert'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { mariadbEngineSpec } from './mariadb.ts'
+import { mysqlEngineSpec } from './mysql.ts'
 import { postgresEngineSpec } from './postgres.ts'
+import { isManagedVariantSwapSafe } from './releases.ts'
 import type { ManagedContext } from '../../client/managed/context.ts'
 import type { ManagedRowOptions } from './options.ts'
 import {
+  assertManagedImageChangeAllowed,
   assertManagedSeriesUnchanged,
+  assertManagedVariantSwapSafe,
   buildManagedReleaseView,
   isManagedRootPrincipal,
   isPlainObject,
   MANAGED_SERIES_IMMUTABLE_ERROR,
+  MANAGED_USER_PRIVILEGES_INVALID_ERROR,
+  MANAGED_VARIANT_SWAP_UNSAFE_ERROR,
   MANAGED_VERSION_UNSUPPORTED_ERROR,
   managedSessionPaths,
   mergeCreateSettings,
+  parseManagedPatchName,
   parseManagedUserCreateFields,
   parseManagedVersionSelection,
   principalMetadata,
   readInitialDatabase,
   resolveManagedServerId,
+  resolveManagedUserPrivileges,
   serializeContainerRow,
   serializeManagedUser,
 } from './routes-helpers.ts'
@@ -76,7 +85,7 @@ test('isPlainObject accepts records only', () => {
 
 test('managedSessionPaths lists every managed session route', () => {
   const paths = managedSessionPaths()
-  assertEquals(paths.length, 23)
+  assertEquals(paths.length, 24)
   assertEquals(paths.includes('/environments/:id/managed/logs'), true)
   assertEquals(paths.includes('/environments/:id/managed/backup-policies'), true)
   assertEquals(paths.includes('/environments/:id/managed/backup-policies/:policyId'), true)
@@ -85,48 +94,13 @@ test('managedSessionPaths lists every managed session route', () => {
   assertEquals(paths.includes('/environments/:id/managed/members/:memberId/resync'), true)
   assertEquals(paths.includes('/environments/:id/managed/disaster-recovery/promote'), true)
   assertEquals(paths.includes('/organizations/:id/managed'), true)
+  assertEquals(paths.includes('/servers/:id/managed-external-access'), true)
 })
 
-test('mergeCreateSettings returns defaults when body has no exposure', () => {
-  const merged = mergeCreateSettings(postgresEngineSpec, {})
+test('mergeCreateSettings returns the engine defaults', () => {
+  const merged = mergeCreateSettings(postgresEngineSpec)
   if (!merged) throw new TypeError('expected merged settings')
-  assertEquals(merged.exposure.enabled, true)
-  assertEquals(merged.exposure.scope, undefined)
-})
-
-test('mergeCreateSettings merges exposure overrides and re-validates', () => {
-  const merged = mergeCreateSettings(postgresEngineSpec, {
-    exposure: {
-      enabled: true,
-      scope: 'public',
-    },
-  })
-  if (!merged) throw new TypeError('expected merged settings')
-  assertEquals(merged.exposure.enabled, true)
-  assertEquals(merged.exposure.scope, 'public')
-
-  const legacyBind = mergeCreateSettings(postgresEngineSpec, {
-    exposure: { enabled: true, bind: 'datacenter' },
-  })
-  assertEquals(legacyBind, null)
-
-  const invalidScope = mergeCreateSettings(postgresEngineSpec, {
-    exposure: { enabled: true, scope: 'internet' },
-  })
-  assertEquals(invalidScope, null)
-})
-
-test('mergeCreateSettings ignores non-object exposure and invalid scope tokens', () => {
-  const fromString = mergeCreateSettings(postgresEngineSpec, {
-    exposure: 'nope',
-  })
-  if (!fromString) throw new TypeError('expected settings')
-  assertEquals(fromString.exposure.enabled, true)
-
-  const badScope = mergeCreateSettings(postgresEngineSpec, {
-    exposure: { scope: 'internet' },
-  })
-  assertEquals(badScope, null)
+  assertEquals(merged, postgresEngineSpec.parseSettings(postgresEngineSpec.defaultSettings))
 })
 
 test('parseManagedVersionSelection resolves a catalog series and variant', () => {
@@ -151,7 +125,7 @@ test('parseManagedVersionSelection resolves a catalog series and variant', () =>
   })
 })
 
-test('create accepts only the three verified series', () => {
+test('create accepts only the verified series', () => {
   // The only creatable series per engine, both of their base-OS variants.
   assertEquals(parseManagedVersionSelection('mysql', { engineSeries: '9.7' }), {
     ok: true,
@@ -168,14 +142,24 @@ test('create accepts only the three verified series', () => {
     ok: true,
     image: 'docker.io/library/mariadb:12.3',
   })
+  assertEquals(parseManagedVersionSelection('mysql', { engineSeries: '8.4' }), {
+    ok: true,
+    image: 'docker.io/library/mysql:8.4',
+  })
+  assertEquals(
+    parseManagedVersionSelection('mariadb', { engineSeries: '11.8', imageVariant: 'ubi' }),
+    { ok: true, image: 'docker.io/library/mariadb:11.8-ubi' }
+  )
+  assertEquals(parseManagedVersionSelection('mariadb', { imageVariant: 'ubi' }), {
+    ok: true,
+    image: 'docker.io/library/mariadb:11.8-ubi',
+  })
 
   // Every other catalogued series is refused — it is known, not tested.
   for (const [engine, series] of [
     ['postgres', '17'],
     ['postgres', '16'],
     ['postgres', '15'],
-    ['mysql', '8.4'],
-    ['mariadb', '11.8'],
     ['mariadb', '11.4'],
     ['mariadb', '10.11'],
   ] as const) {
@@ -242,29 +226,24 @@ test('parseManagedVersionSelection rejects unknown versions and bad types', () =
 })
 
 test('mergeCreateSettings applies a resolved catalog image', () => {
-  const merged = mergeCreateSettings(
-    postgresEngineSpec,
-    { exposure: { enabled: true, scope: 'datacenter' } },
-    'docker.io/library/postgres:18'
-  )
+  const merged = mergeCreateSettings(postgresEngineSpec, 'docker.io/library/postgres:18')
   if (!merged) throw new TypeError('expected merged settings')
   assertEquals(merged.image, 'docker.io/library/postgres:18')
-  assertEquals(merged.exposure.scope, 'datacenter')
 
   // An image outside the engine allowlist is rejected by parseSettings.
-  assertEquals(mergeCreateSettings(postgresEngineSpec, {}, 'docker.io/library/mysql:9.7'), null)
+  assertEquals(mergeCreateSettings(postgresEngineSpec, 'docker.io/library/mysql:9.7'), null)
   // An untested series never reaches settings — the gate is in the parser too.
   assertEquals(
-    mergeCreateSettings(postgresEngineSpec, {}, 'docker.io/library/postgres:17-alpine'),
+    mergeCreateSettings(postgresEngineSpec, 'docker.io/library/postgres:17-alpine'),
     null
   )
 })
 
-test('assertManagedSeriesUnchanged allows variant swaps only', () => {
+test('assertManagedSeriesUnchanged judges the series only', () => {
   const base = postgresEngineSpec.parseSettings({})
   if (!base) throw new TypeError('expected default settings')
 
-  // Same series, different base OS → allowed.
+  // Same series, different base OS: not this guard's concern.
   assertEquals(
     assertManagedSeriesUnchanged(postgresEngineSpec, base, {
       ...base,
@@ -274,14 +253,92 @@ test('assertManagedSeriesUnchanged allows variant swaps only', () => {
   )
   // Unset image compares against the spec default, so this is still series 18.
   assertEquals(assertManagedSeriesUnchanged(postgresEngineSpec, base, base), null)
-  // Different series → 409, even from the implicit default.
+  // Different series -> 409, even from the implicit default.
+  const refused = assertManagedSeriesUnchanged(postgresEngineSpec, base, {
+    ...base,
+    image: 'docker.io/library/postgres:17-alpine',
+  })
+  assertEquals(refused?.error, MANAGED_SERIES_IMMUTABLE_ERROR)
+  assertEquals(refused?.status, 409)
+  assertEquals(typeof refused?.message, 'string')
+})
+
+test('isManagedVariantSwapSafe refuses only PostgreSQL moves between libc families', () => {
+  const alpine = 'docker.io/library/postgres:18-alpine'
+  const debian = 'docker.io/library/postgres:18'
+  // The proven-unsafe swap, both directions, and across series too.
+  assertEquals(isManagedVariantSwapSafe(alpine, debian), false)
+  assertEquals(isManagedVariantSwapSafe(debian, alpine), false)
+  assertEquals(isManagedVariantSwapSafe(alpine, 'docker.io/library/postgres:17'), false)
+  // A no-op or an unset side is never refused.
+  assertEquals(isManagedVariantSwapSafe(alpine, alpine), true)
+  assertEquals(isManagedVariantSwapSafe(debian, debian), true)
+  assertEquals(isManagedVariantSwapSafe(undefined, debian), true)
+  assertEquals(isManagedVariantSwapSafe(alpine, undefined), true)
+  // Engines with their own collations may change variant.
   assertEquals(
-    assertManagedSeriesUnchanged(postgresEngineSpec, base, {
-      ...base,
-      image: 'docker.io/library/postgres:17-alpine',
-    }),
-    { ok: false, error: MANAGED_SERIES_IMMUTABLE_ERROR, status: 409 }
+    isManagedVariantSwapSafe(
+      'docker.io/library/mysql:9.7',
+      'docker.io/library/mysql:9.7-oraclelinux9'
+    ),
+    true
   )
+  assertEquals(
+    isManagedVariantSwapSafe(
+      'docker.io/library/mariadb:12.3-ubi',
+      'docker.io/library/mariadb:12.3'
+    ),
+    true
+  )
+  // Images outside the catalog are the series guard's business, not this one's.
+  assertEquals(isManagedVariantSwapSafe(alpine, 'example.com/other:1'), true)
+  assertEquals(isManagedVariantSwapSafe('example.com/other:1', debian), true)
+})
+
+test('assertManagedVariantSwapSafe returns a 409 with the unsafe-swap code', () => {
+  const base = postgresEngineSpec.parseSettings({})
+  if (!base) throw new TypeError('expected default settings')
+
+  // Default image is the alpine variant of series 18.
+  const refused = assertManagedVariantSwapSafe(postgresEngineSpec, base, {
+    ...base,
+    image: 'docker.io/library/postgres:18',
+  })
+  assertEquals(refused?.ok, false)
+  assertEquals(refused?.error, MANAGED_VARIANT_SWAP_UNSAFE_ERROR)
+  assertEquals(refused?.status, 409)
+  assertEquals(refused?.message.includes('restore a backup'), true)
+  // Unchanged settings, and an unset image, pass.
+  assertEquals(assertManagedVariantSwapSafe(postgresEngineSpec, base, base), null)
+  assertEquals(
+    assertManagedVariantSwapSafe(postgresEngineSpec, base, {
+      ...base,
+      image: 'docker.io/library/postgres:18-alpine',
+    }),
+    null
+  )
+})
+
+test('assertManagedImageChangeAllowed reports the series refusal before the variant one', () => {
+  const base = postgresEngineSpec.parseSettings({})
+  if (!base) throw new TypeError('expected default settings')
+
+  // Series 17 debian is both another series and another variant: series wins.
+  assertEquals(
+    assertManagedImageChangeAllowed(postgresEngineSpec, base, {
+      ...base,
+      image: 'docker.io/library/postgres:17',
+    })?.error,
+    MANAGED_SERIES_IMMUTABLE_ERROR
+  )
+  assertEquals(
+    assertManagedImageChangeAllowed(postgresEngineSpec, base, {
+      ...base,
+      image: 'docker.io/library/postgres:18',
+    })?.error,
+    MANAGED_VARIANT_SWAP_UNSAFE_ERROR
+  )
+  assertEquals(assertManagedImageChangeAllowed(postgresEngineSpec, base, base), null)
 })
 
 test('buildManagedReleaseView derives catalog identity from the image', () => {
@@ -460,6 +517,32 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
   }
 })
 
+test('parseManagedUserCreateFields refuses a system schema listed by an older cluster', async () => {
+  const c = mockContext()
+  const settings = mysqlEngineSpec.parseSettings(mysqlEngineSpec.defaultSettings)
+  if (!settings) throw new TypeError('expected default mysql settings')
+  const options: ManagedRowOptions = { settings, databases: ['defaultdb', 'mysql'] }
+  const ctx = mockManagedContext({ spec: mysqlEngineSpec, catalogCode: 'mysql' })
+
+  const res = parseManagedUserCreateFields(
+    c,
+    ctx,
+    { username: 'app_user', databases: ['mysql'], privileges: ['read-write'] },
+    options
+  )
+  if (!(res instanceof Response)) throw new TypeError('expected Response')
+  assertEquals(res.status, 400)
+  assertEquals(await res.json(), { error: 'reserved_database_name' })
+
+  const ok = parseManagedUserCreateFields(
+    c,
+    ctx,
+    { username: 'app_user', databases: ['defaultdb'], privileges: ['read-write'] },
+    options
+  )
+  if (ok instanceof Response) throw new TypeError('expected parsed fields')
+})
+
 test('parseManagedUserCreateFields reserves suffix room when the scheme is partial', async () => {
   const c = mockContext()
   const options = defaultRowOptions()
@@ -557,4 +640,85 @@ test('parseManagedUserCreateFields rejects empty databases and non-string entrie
   )
   if (!(mixed instanceof Response)) throw new TypeError('expected Response')
   assertEquals(mixed.status, 400)
+})
+
+test('a new login with no privileges named gets the grant that matches its connection role', () => {
+  const c = mockContext()
+  const options = defaultRowOptions()
+  const ctx = mockManagedContext()
+  for (const [connectionRole, expected] of [
+    [undefined, ['read-write']],
+    ['read-write', ['read-write']],
+    ['read-only', ['read-only']],
+  ] as const) {
+    const fields = parseManagedUserCreateFields(
+      c,
+      ctx,
+      { username: 'app_user', databases: ['postgres'], connectionRole },
+      options
+    )
+    if (fields instanceof Response) throw new TypeError('expected parsed fields')
+    assertEquals(fields.privileges, [...expected])
+  }
+})
+
+test('named privileges are kept, de-duplicated, and an empty or unknown list is refused in plain words', async () => {
+  const c = mockContext()
+  const options = defaultRowOptions()
+  const ctx = mockManagedContext()
+  const ok = parseManagedUserCreateFields(
+    c,
+    ctx,
+    { username: 'app_user', databases: ['postgres'], privileges: ['owner', 'owner'] },
+    options
+  )
+  if (ok instanceof Response) throw new TypeError('expected parsed fields')
+  assertEquals(ok.privileges, ['owner'])
+
+  for (const privileges of [[], ['superuser'], 'owner', [1]]) {
+    const res = parseManagedUserCreateFields(
+      c,
+      ctx,
+      { username: 'app_user', databases: ['postgres'], privileges },
+      options
+    )
+    if (!(res instanceof Response)) throw new TypeError('expected Response')
+    assertEquals(res.status, 400)
+    const body = (await res.json()) as { error: string; message: string }
+    assertEquals(body.error, MANAGED_USER_PRIVILEGES_INVALID_ERROR)
+    assertStringIncludes(body.message, 'owner, read-write, read-only')
+  }
+})
+
+test('MySQL and MariaDB logins get the same privilege default as PostgreSQL', () => {
+  const allowed = mysqlEngineSpec.userOperations.privileges
+  assertEquals(resolveManagedUserPrivileges(undefined, allowed, 'read-write'), ['read-write'])
+  assertEquals(resolveManagedUserPrivileges(null, allowed, 'read-only'), ['read-only'])
+  assertEquals(resolveManagedUserPrivileges([], allowed, 'read-write'), null)
+})
+
+test('PATCH name: absent leaves it, null clears it, a string is validated', () => {
+  assertEquals(parseManagedPatchName({}), { ok: true, name: undefined })
+  assertEquals(parseManagedPatchName({ name: null }), { ok: true, name: null })
+  assertEquals(parseManagedPatchName({ name: '  Orders DB ' }), { ok: true, name: 'Orders DB' })
+  const bad = parseManagedPatchName({ name: 42 })
+  assertEquals(bad.ok, false)
+})
+
+test('assertManagedSeriesUnchanged treats an imageless MariaDB row as 12.3, not the new default', () => {
+  const imageless = mariadbEngineSpec.parseSettings({ ...mariadbEngineSpec.defaultSettings })
+  const onEleven = mariadbEngineSpec.parseSettings({
+    ...mariadbEngineSpec.defaultSettings,
+    image: 'docker.io/library/mariadb:11.8',
+  })
+  const onTwelve = mariadbEngineSpec.parseSettings({
+    ...mariadbEngineSpec.defaultSettings,
+    image: 'docker.io/library/mariadb:12.3',
+  })
+  if (!imageless || !onEleven || !onTwelve) throw new TypeError('settings did not parse')
+  assertEquals(assertManagedSeriesUnchanged(mariadbEngineSpec, imageless, onTwelve), null)
+  assertEquals(
+    assertManagedSeriesUnchanged(mariadbEngineSpec, imageless, onEleven)?.error,
+    'managed_series_immutable'
+  )
 })

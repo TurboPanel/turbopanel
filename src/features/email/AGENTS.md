@@ -83,3 +83,7 @@ Client authentication supports one-time passcodes (OTPs) for sign-in, email veri
 
 These endpoints enqueue `EmailJob` payloads of type `email-otp` (with `otpType`: `sign-in` | `email-verification` | `forget-password`). On Deno, the mailer delivers them via the configured provider; on Workers, delivery is direct via Mailgun or `mailpit-api` (or noop for unsupported providers).
 
+
+## Mail dead letters (operator replay)
+
+Jobs that were refused for good or ran out of retries sit in `turbopanel.email.dead` (3 days, 1000 at most). Admins list and replay them over `GET /api/admin/v1/mail/dead-letters`, `POST .../mail/dead-letters/:id/replay` and `POST .../mail/dead-letters/replay-all` (`src/admin/mail-dead-letter-routes.ts`; broker side `src/lib/email/mailer/deno-mail-dead-letters.ts`; pure parts `smtp/dead-letter-replay.ts`). The listing never returns a job's body (sign-in codes, links) and masks the recipient. A replay republishes the original bytes to the send queue with the attempt count reset (at-least-once: a crash between publish and ack can replay a job twice). Self-hosted (RabbitMQ) only: without the injected store, or on Workers (Cloudflare Queues has its own dead-letter queue), the routes answer 501; an unreachable broker answers 503. Dead letters written before this tool have no message id, so they are listed by a hash of their bytes. No UI yet.

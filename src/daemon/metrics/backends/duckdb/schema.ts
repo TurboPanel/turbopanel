@@ -77,7 +77,8 @@ export const STATUS_EVENTS_TABLE = 'server_status_events'
  * Sidecar version written after a successful open. The current DuckDB store
  * is **7** — the only supported on-disk layout. `openDuckDb` discards
  * `metrics.duckdb`, `parquet/`, `tmp/`, and `schema-version` when the marker
- * is missing, corrupt, or not this value, then creates the current store.
+ * holds an older version number, then creates the current store (a missing,
+ * corrupt, or newer marker beside existing data fails the open instead).
  * There is no in-place migration and no supported path for older files.
  *
  * Bumped 6 → 7 when `managed.router` gained its own `server_router_samples`

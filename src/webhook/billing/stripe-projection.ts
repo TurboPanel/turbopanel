@@ -38,10 +38,13 @@ import { StripeApiError } from '../../features/billing/errors.ts'
 import type { StripeClient } from '../../features/billing/client.ts'
 import {
   completeStripeProjection,
+  expireStalePendingStripeProjections,
   listPendingStripeProjections,
+  noteStripeProjectionAttempt,
   STRIPE_PROJECTION_RETRY_LIMIT,
+  WEBHOOK_DELIVERY_RETENTION_MS,
 } from '../../features/webhook-delivery/webhook-delivery-records.ts'
-import { resolvePayerSubject } from '../../features/billing/customer-subject.ts'
+import { type PayerSubject, resolvePayerSubject } from '../../features/billing/customer-subject.ts'
 import { clearPendingCheckout } from '../../features/billing/pending-checkout.ts'
 import type { BillingQuantityLock } from '../../features/billing/quantity-lock.ts'
 import {
@@ -207,6 +210,14 @@ export type StripeProjectionDeps = Readonly<{
   db: Db
   client: StripeClient
   now?: string
+  /**
+   * The clock that orders projections (wall clock by default). Kept apart
+   * from `now`, which a frozen test clock may push far ahead: an ordering
+   * stamp from the future would block every later projection.
+   */
+  readClock?: () => string
+  /** How long the entitlement sync waits for a held quantity lease. */
+  leaseRetry?: Readonly<{ attempts: number; delayMs: number }>
 }>
 
 export type ProjectSubscriptionOpts = Readonly<{
@@ -218,16 +229,98 @@ export type ProjectSubscriptionOpts = Readonly<{
   lock?: BillingQuantityLock
 }>
 
+type ProjectionWrite = Readonly<{
+  providerSubscriptionId: string
+  providerCustomerId: string
+  subject: PayerSubject
+  customer: StripeObject
+  sub: StripeObject
+  status: string
+  items: readonly StripeObject[]
+  now: string
+  readStartedAt: string
+}>
+
+/**
+ * The three rows land atomically. `replaceSubscriptionItems` is
+ * delete-then-insert (the unique-constraint workaround it documents), so
+ * without a transaction a failure between the delete and the last insert
+ * would publish a subscription with fewer seats than the provider counts
+ * — and every entitlement read (license minting, tier placement, the
+ * per-sample metrics truncation) would act on it. Entitlement sync stays
+ * outside: it takes the quantity lease and may call Stripe.
+ *
+ * `replaced` is `null` when a newer projection already holds the row: the
+ * subscription write is refused and the items are left alone.
+ */
+async function writeProjectionRows(db: Db, input: ProjectionWrite) {
+  const { now, readStartedAt } = input
+  return await db.transaction(async (tx) => {
+    const { id: payerId } = await upsertPayer(tx, {
+      provider: 'stripe',
+      providerCustomerId: input.providerCustomerId,
+      subject: input.subject,
+      taxId: firstTaxId(input.customer),
+      now,
+    })
+    const { id: subscriptionId, applied } = await upsertSubscriptionFromProvider(tx, {
+      payerId,
+      providerSubscriptionId: input.providerSubscriptionId,
+      status: input.status,
+      currentPeriodEnd: currentPeriodEnd(input.sub, input.items),
+      scheduleId: idOrObjectId(input.sub.schedule),
+      now,
+      stampedAt: readStartedAt,
+      notBefore: readStartedAt,
+    })
+    if (!applied) return { subscriptionId, replaced: null }
+    const replaced = await replaceSubscriptionItems(
+      tx,
+      subscriptionId,
+      providerItems(input.items),
+      {
+        now,
+        logScope: STRIPE_PROJECTION_LOG_SCOPE,
+        provider: 'stripe',
+      }
+    )
+    return { subscriptionId, replaced }
+  })
+}
+
+/**
+ * How many times one projection re-reads Stripe when a newer projection
+ * already holds the subscription row. Each pass starts a fresh read, so a
+ * second pass is newer than whatever blocked the first.
+ */
+const MAX_PROJECTION_PASSES = 3
+
 /**
  * The seam every handled event ends in: refetch one subscription (with its
  * customer and the customer's tax ids expanded), write the three rows, then
  * sync entitlements for the organization it names.
+ *
+ * Projections run concurrently (deliveries, the retry sweep, mutation
+ * routes), so a read that began earlier can finish writing later. The write
+ * is stamped with the moment its Stripe read began and refused when the row
+ * already carries a later stamp; the projection then reads Stripe again
+ * instead of overwriting newer state.
  */
 export async function projectSubscriptionById(
   deps: StripeProjectionDeps,
   providerSubscriptionId: string,
   opts: ProjectSubscriptionOpts = {}
 ): Promise<StripeProjectionOutcome> {
+  return await projectSubscriptionPass(deps, providerSubscriptionId, opts, MAX_PROJECTION_PASSES)
+}
+
+async function projectSubscriptionPass(
+  deps: StripeProjectionDeps,
+  providerSubscriptionId: string,
+  opts: ProjectSubscriptionOpts,
+  passesLeft: number
+): Promise<StripeProjectionOutcome> {
+  const readStartedAt = (deps.readClock ?? (() => new Date().toISOString()))()
   const sub = await deps.client.get<StripeObject>(
     `/v1/subscriptions/${encodeURIComponent(providerSubscriptionId)}`,
     { expand: ['customer', 'customer.tax_ids'] }
@@ -258,7 +351,7 @@ export async function projectSubscriptionById(
     providerSubscriptionId,
     isObject(sub.items) ? (sub.items as SubscriptionItemsPage) : undefined
   )
-  const now = deps.now ?? new Date().toISOString()
+  const now = deps.now ?? readStartedAt
 
   // The three rows land atomically. `replaceSubscriptionItems` is
   // delete-then-insert (the unique-constraint workaround it documents), so
@@ -267,29 +360,24 @@ export async function projectSubscriptionById(
   // — and every entitlement read (license minting, tier placement, the
   // per-sample metrics truncation) would act on it. Entitlement sync stays
   // outside: it takes the quantity lease and may call Stripe.
-  const { subscriptionId, replaced } = await deps.db.transaction(async (tx) => {
-    const { id: payerId } = await upsertPayer(tx, {
-      provider: 'stripe',
-      providerCustomerId,
-      subject,
-      taxId: firstTaxId(customer),
-      now,
-    })
-    const { id: subscriptionId } = await upsertSubscriptionFromProvider(tx, {
-      payerId,
-      providerSubscriptionId,
-      status,
-      currentPeriodEnd: currentPeriodEnd(sub, items),
-      scheduleId: idOrObjectId(sub.schedule),
-      now,
-    })
-    const replaced = await replaceSubscriptionItems(tx, subscriptionId, providerItems(items), {
-      now,
-      logScope: STRIPE_PROJECTION_LOG_SCOPE,
-      provider: 'stripe',
-    })
-    return { subscriptionId, replaced }
+  const written = await writeProjectionRows(deps.db, {
+    providerSubscriptionId,
+    providerCustomerId,
+    subject,
+    customer,
+    sub,
+    status,
+    items,
+    now,
+    readStartedAt,
   })
+  if (!written.replaced) {
+    if (passesLeft <= 1) {
+      throw new Error(`subscription ${providerSubscriptionId}: newer projection holds the row`)
+    }
+    return await projectSubscriptionPass(deps, providerSubscriptionId, opts, passesLeft - 1)
+  }
+  const { subscriptionId, replaced } = written
 
   // Committed items are in; now the assignment follows them. A
   // `pending_update` is read for its presence only — never its contents.
@@ -301,8 +389,9 @@ export async function projectSubscriptionById(
         db: deps.db,
         client: deps.client,
         logScope: STRIPE_PROJECTION_LOG_SCOPE,
-        nowMs: Date.parse(now),
+        nowMs: deps.now ? Date.parse(deps.now) : Date.now(),
         onRevokeBound: (serverId) => revokeDaemonKey(deps.db, serverId),
+        leaseRetry: deps.leaseRetry,
       },
       {
         organizationId: subject.organizationId,
@@ -419,6 +508,17 @@ export async function projectAndSettleStripeEvent(
 ): Promise<StripeProjectionSettle> {
   try {
     const outcome = await projectStripeEvent(deps, event)
+    if (outcome.action === 'projected' && outcome.entitlements?.action === 'skipped') {
+      // The rows are written but the entitlement sync did not run (the
+      // quantity lease was held). The holder may be a worker that died, so
+      // the event stays pending and the sweep runs the sync again.
+      await noteStripeProjectionAttempt(deps.db, event.id, deps.now ?? new Date().toISOString())
+      logInfo(
+        STRIPE_PROJECTION_LOG_SCOPE,
+        `event ${event.id} (${event.type}): entitlement sync deferred; leaving pending`
+      )
+      return 'pending'
+    }
     await completeStripeProjection(deps.db, event.id, deps.now ?? new Date().toISOString())
     logInfo(
       STRIPE_PROJECTION_LOG_SCOPE,
@@ -435,6 +535,7 @@ export async function projectAndSettleStripeEvent(
       )
       return 'completed'
     }
+    await noteStripeProjectionAttempt(deps.db, event.id, deps.now ?? new Date().toISOString())
     logWarn(
       STRIPE_PROJECTION_LOG_SCOPE,
       `event ${event.id} (${event.type}) projection failed; leaving pending: ${
@@ -458,6 +559,16 @@ export async function runPendingStripeProjections(
   deps: StripeProjectionDeps,
   opts: { limit?: number } = {}
 ): Promise<PendingStripeProjectionReport> {
+  const expired = await expireStalePendingStripeProjections(
+    deps.db,
+    deps.now ?? new Date().toISOString()
+  )
+  if (expired > 0) {
+    logWarn(
+      STRIPE_PROJECTION_LOG_SCOPE,
+      `${expired} Stripe projection(s) still failing after ${WEBHOOK_DELIVERY_RETENTION_MS / 86_400_000} days were given up on`
+    )
+  }
   const pending = await listPendingStripeProjections(deps.db, {
     limit: opts.limit ?? STRIPE_PROJECTION_RETRY_LIMIT,
   })

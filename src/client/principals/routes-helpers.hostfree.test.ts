@@ -8,7 +8,6 @@ import {
   MAX_PRINCIPAL_PASSWORD_LENGTH,
   MIN_PRINCIPAL_PASSWORD_LENGTH,
   parseAccessField,
-  parseEntitlementsField,
   parsePrincipalPasswordField,
   patchTouchesPrincipal,
   mergeTopLevelPrincipalIdsIntoOptions,
@@ -53,6 +52,39 @@ test('parsePrincipalUsernameValue rejects reserved and unsafe names', () => {
     status: 400,
   })
   assertEquals(parsePrincipalUsernameValue('Bad Name!').ok, false)
+  for (const name of [
+    'ftp',
+    'git',
+    'FTP',
+    ' git ',
+    'ubuntu',
+    'www',
+    'root',
+    'www-data',
+    'sudo',
+    'containers',
+    'tpbuild',
+  ]) {
+    assertEquals(
+      parsePrincipalUsernameValue(name),
+      {
+        ok: false,
+        error: 'username_reserved',
+        status: 400,
+      },
+      name
+    )
+  }
+  const notReserved = parsePrincipalUsernameValue('appuser')
+  if (!notReserved.ok) throw new TypeError('expected a normal name not to be reserved')
+  assertEquals(notReserved.username, 'appuser')
+  for (const name of ['a.b', 'web-', 'web--app']) {
+    assertEquals(parsePrincipalUsernameValue(name), {
+      ok: false,
+      error: 'Invalid request',
+      status: 400,
+    })
+  }
   const ok = parsePrincipalUsernameValue('  appuser  ')
   if (!ok.ok) throw new TypeError('expected valid username')
   assertEquals(ok.username, 'appuser')
@@ -65,6 +97,13 @@ test('parseCreatePrincipalOptions accepts and rejects option shapes', () => {
 
   assertEquals(parseCreatePrincipalOptions({ options: 'nope' }).ok, false)
   assertEquals(parseCreatePrincipalOptions({ uid: 2000, gid: 2000 }).ok, false)
+
+  const top = parseCreatePrincipalOptions({ uid: 60000, gid: 60000 })
+  if (!top.ok) throw new TypeError('expected the top of the band to be accepted')
+  assertEquals(top.override, { uid: 60000, gid: 60000 })
+  // Above 60000 is no site owner's: 61184-65519 is the throwaway build users.
+  assertEquals(parseCreatePrincipalOptions({ uid: 60001, gid: 15001 }).ok, false)
+  assertEquals(parseCreatePrincipalOptions({ uid: 15001, gid: 61184 }).ok, false)
 })
 
 test('projectPrincipalCreateResponse includes uid/gid only when set', () => {
@@ -106,60 +145,11 @@ test('resourceLimitsFromOptions parses jsonb options', () => {
   assertEquals(patchRequiresServiceIds({}), false)
 })
 
-const RUNTIMES = { runtimes: ['php', 'node'], series: ['8.3', '8.4', '22', '24'] }
-
-test('parseEntitlementsField distinguishes absent from empty', () => {
-  // Absent means "leave them alone"; [] means "revoke everything". Collapsing
-  // the two would make a steward-only PATCH silently strip every grant.
-  assertEquals(parseEntitlementsField({}, RUNTIMES), undefined)
-  assertEquals(parseEntitlementsField({ entitlements: [] }, RUNTIMES), [])
-})
-
-test('parseEntitlementsField rejects rather than dropping a bad grant', () => {
-  // Silently discarding a malformed list would REVOKE every entitlement the
-  // principal should have held.
-  assertEquals(parseEntitlementsField({ entitlements: 'php' }, RUNTIMES), null)
-  assertEquals(parseEntitlementsField({ entitlements: [{ runtime: 'php' }] }, RUNTIMES), null)
-  assertEquals(
-    parseEntitlementsField({ entitlements: [{ runtime: 'ruby', series: '3.3' }] }, RUNTIMES),
-    null
-  )
-  assertEquals(
-    parseEntitlementsField({ entitlements: [{ runtime: 'php', series: '8.1' }] }, RUNTIMES),
-    null
-  )
-})
-
-test('parseEntitlementsField marks API grants as operator, never deploy', () => {
-  // `deploy` provenance is inserted by deploy-prepare when a service declares a
-  // runtime; a client must not be able to forge that distinction.
-  assertEquals(
-    parseEntitlementsField(
-      { entitlements: [{ runtime: 'php', series: '8.4', grantedBy: 'deploy' }] },
-      RUNTIMES
-    ),
-    [{ runtime: 'php', series: '8.4', grantedBy: 'operator' }]
-  )
-})
-
-test('parseEntitlementsField folds duplicates', () => {
-  assertEquals(
-    parseEntitlementsField(
-      {
-        entitlements: [
-          { runtime: 'php', series: '8.4' },
-          { runtime: 'php', series: '8.4' },
-        ],
-      },
-      RUNTIMES
-    ),
-    [{ runtime: 'php', series: '8.4', grantedBy: 'operator' }]
-  )
-})
-
-test('patchTouchesPrincipal accepts an entitlements-only patch', () => {
-  assertEquals(patchTouchesPrincipal({ entitlements: [] }), true)
+test('patchTouchesPrincipal needs stewards or access', () => {
+  assertEquals(patchTouchesPrincipal({ access: 'sftp' }), true)
   assertEquals(patchTouchesPrincipal({ serviceIds: [] }), true)
+  // A stale client's runtime grant list is no longer a change.
+  assertEquals(patchTouchesPrincipal({ entitlements: [] }), false)
   assertEquals(patchTouchesPrincipal({ username: 'x' }), false)
 })
 

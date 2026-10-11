@@ -1,9 +1,8 @@
 import { assertEquals } from '@std/assert'
 import {
-  nodeEntitlementSeries,
+  DEFAULT_NATIVE_APP_DENO_SERIES,
+  denoRuntimeSeries,
   runtimeSeries,
-  SUPPORTED_RUNTIME_SERIES,
-  SUPPORTED_RUNTIMES,
 } from './runtime-registry.ts'
 
 /**
@@ -14,23 +13,17 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-test('SUPPORTED_RUNTIMES lists principal-executable runtimes', () => {
-  assertEquals(SUPPORTED_RUNTIMES, ['php', 'node'])
-})
-
-test('SUPPORTED_RUNTIME_SERIES is the flat union of known series', () => {
-  assertEquals(SUPPORTED_RUNTIME_SERIES, ['8.3', '8.4', '22', '24', '26'])
-})
-
 test('runtimeSeries returns PHP and Node series only for known runtimes', () => {
-  assertEquals(runtimeSeries('php'), ['8.3', '8.4'])
+  assertEquals(runtimeSeries('php'), ['8.1', '8.2', '8.3', '8.4', '8.5'])
   assertEquals(runtimeSeries('node'), ['22', '24', '26'])
+  assertEquals(runtimeSeries('deno'), ['2'])
   assertEquals(runtimeSeries('ruby'), [])
   assertEquals(runtimeSeries(''), [])
 })
 
-test('nodeEntitlementSeries normalizes Node pins to the major series', () => {
-  assertEquals(nodeEntitlementSeries('24.17.0'), '24')
-  assertEquals(nodeEntitlementSeries('22'), '22')
-  assertEquals(nodeEntitlementSeries(''), '24')
+test('denoRuntimeSeries normalizes Deno pins to the major series', () => {
+  assertEquals(denoRuntimeSeries('2.9.7'), '2')
+  assertEquals(denoRuntimeSeries('2'), '2')
+  assertEquals(denoRuntimeSeries(''), DEFAULT_NATIVE_APP_DENO_SERIES)
+  assertEquals(denoRuntimeSeries('latest'), DEFAULT_NATIVE_APP_DENO_SERIES)
 })

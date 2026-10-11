@@ -8,6 +8,7 @@ import {
 import {
   formatServerOsDisplay,
   mergeServerHardwareProfile,
+  mergeServerHostResources,
   osColumnsFromMetadata,
   osMetadataFromColumns,
   parseNtpServersColumn,
@@ -15,7 +16,9 @@ import {
   parseServerHardwareProfile,
   parseServerHostResources,
   parseServerOptions,
+  MAX_RELEASE_LINK_SCAN_FINDINGS,
   parseServerOsMetadata,
+  parseServerReleaseLinkScan,
   parseServerRuntimeMetadata,
   parseServerTimeSync,
   REDACTED_SERVER_OPTION_KEYS,
@@ -145,7 +148,7 @@ test('parseServerHostResources accepts capacity totals', () => {
           threads: { total: 8 },
         },
       ],
-      memory: { totalBytes: 16_384_000_000 },
+      memory: { totalBytes: 16_384_000_000, pageSizeBytes: 4096 },
       swap: { totalBytes: 0 },
     }),
     {
@@ -156,11 +159,16 @@ test('parseServerHostResources accepts capacity totals', () => {
           threads: { total: 8 },
         },
       ],
-      memory: { totalBytes: 16_384_000_000 },
+      memory: { totalBytes: 16_384_000_000, pageSizeBytes: 4096 },
       swap: { totalBytes: 0 },
     }
   )
+  assertEquals(
+    parseServerHostResources({ memory: { totalBytes: 16_384_000_000, pageSizeBytes: 0 } }),
+    { memory: { totalBytes: 16_384_000_000 } }
+  )
   assertEquals(parseServerHostResources({ memory: { totalBytes: -1 } }), undefined)
+  assertEquals(parseServerHostResources({ memory: { pageSizeBytes: 4096 } }), undefined)
   assertEquals(parseServerHostResources(null), undefined)
 })
 
@@ -201,6 +209,17 @@ test('serverHostResourcesEquals compares field-wise', () => {
   }
   assertEquals(serverHostResourcesEquals(a, { ...a, cpus: [{ ...a.cpus[0] }] }), true)
   assertEquals(
+    serverHostResourcesEquals(a, { ...a, memory: { totalBytes: 100, pageSizeBytes: 4096 } }),
+    false
+  )
+  assertEquals(
+    serverHostResourcesEquals(
+      { ...a, memory: { totalBytes: 100, pageSizeBytes: 4096 } },
+      { ...a, memory: { totalBytes: 100, pageSizeBytes: 4096 } }
+    ),
+    true
+  )
+  assertEquals(
     serverHostResourcesEquals(a, {
       ...a,
       cpus: [{ cores: { total: 8 }, threads: { total: 8 } }],
@@ -215,6 +234,26 @@ test('serverHostResourcesEquals compares field-wise', () => {
     false
   )
   assertEquals(serverHostResourcesEquals(a, null), false)
+})
+
+test('mergeServerHostResources keeps incoming memory pageSizeBytes', () => {
+  assertEquals(
+    mergeServerHostResources(
+      { memory: { totalBytes: 100 }, swap: { totalBytes: 0 } },
+      { memory: { totalBytes: 200, pageSizeBytes: 4096 } }
+    ),
+    { memory: { totalBytes: 200, pageSizeBytes: 4096 }, swap: { totalBytes: 0 } }
+  )
+  assertEquals(
+    mergeServerHostResources(
+      { memory: { totalBytes: 100, pageSizeBytes: 4096 } },
+      { ips: [{ address: '10.0.0.8', version: 4, scope: 'private' }] }
+    ),
+    {
+      memory: { totalBytes: 100, pageSizeBytes: 4096 },
+      ips: [{ address: '10.0.0.8', version: 4, scope: 'private' }],
+    }
+  )
 })
 
 test('serverOsMetadataEquals compares field-wise including variant', () => {
@@ -1012,4 +1051,47 @@ test('resolveEffectiveMetricsCapabilityPlan: absent tier preserves platform-defa
   assertEquals(plan.gpuSlots, 1)
   assertEquals(plan.managedDockerEnabled, true)
   assertEquals(plan.physicalHardwareSignalSlots, 19)
+})
+
+test('parseServerReleaseLinkScan keeps a clean scan and a bounded finding list', () => {
+  const clean = { scannedAt: '2026-10-04T00:00:00.000Z', findingCount: 0, findings: [] }
+  assertEquals(parseServerReleaseLinkScan(clean), clean)
+
+  const parsed = parseServerReleaseLinkScan({
+    scannedAt: '2026-10-04T00:00:00.000Z',
+    findingCount: 41,
+    findings: Array.from({ length: 41 }, (_, i) => ({
+      username: 'appuser',
+      serviceId: `svc-${i}`,
+      releaseId: 'r1',
+      linkCount: 2,
+      links: ['public/x -> ../shared/evil'],
+    })),
+  })
+  assertEquals(parsed?.findingCount, 41)
+  assertEquals(parsed?.findings.length, MAX_RELEASE_LINK_SCAN_FINDINGS)
+  assertEquals(parsed?.findings[0], {
+    username: 'appuser',
+    serviceId: 'svc-0',
+    releaseId: 'r1',
+    linkCount: 2,
+  })
+})
+
+test('parseServerReleaseLinkScan caps text and never trusts the count below what it holds', () => {
+  const parsed = parseServerReleaseLinkScan({
+    scannedAt: '2026-10-04T00:00:00.000Z',
+    findingCount: 0,
+    findings: [{ username: 'u', serviceId: 's', linkCount: -3, error: 'e'.repeat(1000) }],
+  })
+  assertEquals(parsed?.findingCount, 1)
+  assertEquals(parsed?.findings[0]?.error?.length, 120)
+  assertEquals(parsed?.findings[0]?.linkCount, 0)
+})
+
+test('parseServerReleaseLinkScan refuses a block without a scan time or list', () => {
+  assertEquals(parseServerReleaseLinkScan(undefined), undefined)
+  assertEquals(parseServerReleaseLinkScan({ findings: [] }), undefined)
+  assertEquals(parseServerReleaseLinkScan({ scannedAt: 't', findings: 'x' }), undefined)
+  assertEquals(parseServerReleaseLinkScan({ scannedAt: 't' }), undefined)
 })

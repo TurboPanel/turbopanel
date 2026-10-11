@@ -62,6 +62,10 @@ import {
   resolveGitlabCommit,
 } from './gitlab-api.ts'
 import { loadForgeForConnection } from './forge-records.ts'
+import {
+  REPOSITORY_HOST_MISMATCH_FAILURE,
+  repositoryUrlMatchesForgeHost,
+} from './forge-clone-host.ts'
 import { GitlabOauthTokenError, mintGitlabAccessToken } from './gitlab-oauth-token.ts'
 import { GITLAB_TOKEN_HEADER, verifyGitlabWebhookToken } from './gitlab-webhook.ts'
 
@@ -392,6 +396,10 @@ export const gitlabProvider: GitProvider = {
       const app = await loadForgeForConnection(ctx.db, ctx.dataEncryptionSecrets, row.connectionId)
       if (!app) {
         return { failure: 'gitlab oauth application is not configured' }
+      }
+      // The credential only ever goes to the forge it was minted for.
+      if (!repositoryUrlMatchesForgeHost(row.repositoryUrl, app.baseUrl)) {
+        return { failure: REPOSITORY_HOST_MISMATCH_FAILURE }
       }
       // Minted (and, when the pair had rotated, written back) here; sealed
       // straight into the payload by the caller and never persisted onward.

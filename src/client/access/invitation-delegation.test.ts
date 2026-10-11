@@ -6,6 +6,7 @@
  * grant-less invitation and (when it is accepted) checks what the invitee
  * actually ends up holding. Skips without TURBOPANEL_DATABASE_URL.
  */
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { eq, inArray, or } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -233,7 +234,7 @@ async function runCase(entry: Case, fx: Fixture): Promise<void> {
 for (const entry of CASES) {
   test(`invitation delegation: ${entry.name}`, async () => {
     if (!dbUrl) {
-      console.warn('Skipping invitation delegation tests: TURBOPANEL_DATABASE_URL not set')
+      skipWithoutDatabase('invitation delegation tests')
       return
     }
     await withFixture((fx) => runCase(entry, fx))

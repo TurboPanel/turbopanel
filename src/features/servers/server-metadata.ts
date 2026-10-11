@@ -4,10 +4,15 @@ import {
   type ServerReportedIp,
 } from '../../contracts/server-addresses.ts'
 import type { ServerGeo } from '../geo/server-geo.ts'
+import type { ServiceRunState } from '../../contracts/service-run-state.ts'
 import { type LocationFields, parseLocationOverride } from '../geo/location-override.ts'
 import type { DatacenterOptions } from '../datacenters/datacenter-options.ts'
 import { type NtpDefaults, parseNtpDefaults, parseSshPort } from './host-defaults.ts'
 import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
+import {
+  type ManagedExternalAccess,
+  parseManagedExternalAccess,
+} from '../managed/external-access-setting.ts'
 import type { OrganizationOptions } from '../organizations/organization-options.ts'
 import { isExactCpuCatalogMatch, resolveCpuCatalogEntry } from '../hardware/cpu-catalog.ts'
 import {
@@ -102,7 +107,11 @@ export type ServerHostResources = {
   /** One entry per physical socket, ordered 0, 1, … */
   cpus?: ServerCpuSocket[]
   gpus?: ServerGpu[]
-  memory?: { totalBytes?: number }
+  memory?: {
+    totalBytes?: number
+    /** Kernel page size in bytes from `getconf PAGESIZE`. Linux only. */
+    pageSizeBytes?: number
+  }
   swap?: { totalBytes?: number }
   /** Host interface addresses (hello / change-detected heartbeat). */
   ips?: ServerReportedIp[]
@@ -316,6 +325,20 @@ export type ServerMetadata = {
    */
   runtimes?: ServerRuntimeMetadata
   /**
+   * Result of the daemon's boot-time check of live releases for symlinks that
+   * leave the release or reach into `shared/`, from daemon hello /
+   * change-detected heartbeat. Absent until a scan has been reported. jsonb, so
+   * no migration.
+   */
+  releaseLinkScan?: ServerReleaseLinkScanMetadata
+  /**
+   * Run state of every service with a container on this host (running, restart
+   * count, last error), replaced whole by each daemon hello / change-detected
+   * heartbeat that carries it. jsonb, so no migration. Ephemeral by nature:
+   * the last report, not a history.
+   */
+  services?: ServiceRunState[]
+  /**
    * Operator-assigned hardware profile for host metrics (sensor/NIC slots,
    * hosting path, drivetemp opt-in, generation). jsonb, so no migration.
    */
@@ -374,6 +397,12 @@ export type ServerOptions = {
    * list. Omitted offers every mode; set through `/servers/:id/php-modes`.
    */
   phpModes?: PhpMode[]
+  /**
+   * "Allow external access to the databases on this server": whether the
+   * server's shared ProxySQL listens beyond the server itself. Absent means no.
+   * Set through `/servers/:id/managed-external-access`, never a server PATCH.
+   */
+  managedExternalAccess?: ManagedExternalAccess
 }
 
 const OS_FAMILIES = new Set<ServerOsFamily>(['linux', 'windows', 'freebsd', 'darwin'])
@@ -548,11 +577,16 @@ function parseGpus(value: unknown): ServerGpu[] | undefined {
   return gpus.length > 0 ? gpus : undefined
 }
 
-function parseMemoryTotal(value: unknown): { totalBytes: number } | undefined {
+function parseMemoryTotal(
+  value: unknown
+): { totalBytes: number; pageSizeBytes?: number } | undefined {
   if (!isRecord(value)) return undefined
   const totalBytes = optionalPositiveInt(value.totalBytes)
   if (totalBytes === undefined) return undefined
-  return { totalBytes }
+  const memory: { totalBytes: number; pageSizeBytes?: number } = { totalBytes }
+  const pageSizeBytes = optionalPositiveInt(value.pageSizeBytes)
+  if (pageSizeBytes !== undefined) memory.pageSizeBytes = pageSizeBytes
+  return memory
 }
 
 function parseSwapTotal(value: unknown): { totalBytes: number } | undefined {
@@ -681,6 +715,7 @@ export function serverHostResourcesEquals(
     cpuSocketsEquals(a.cpus, b.cpus) &&
     gpusEquals(a.gpus, b.gpus) &&
     a.memory?.totalBytes === b.memory?.totalBytes &&
+    a.memory?.pageSizeBytes === b.memory?.pageSizeBytes &&
     a.swap?.totalBytes === b.swap?.totalBytes &&
     serverIpsEquals(a.ips, b.ips)
   )
@@ -1192,6 +1227,83 @@ export function parseServerRuntimeMetadata(value: unknown): ServerRuntimeMetadat
 export function serverRuntimeMetadataEquals(
   a: ServerRuntimeMetadata | undefined,
   b: ServerRuntimeMetadata | undefined
+): boolean {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+}
+
+/** One site whose live release the daemon's link check flagged. */
+export type ServerReleaseLinkScanFinding = {
+  /** Linux user that owns the site. */
+  username: string
+  serviceId: string
+  releaseId?: string
+  /** Links that leave the release or reach into `shared/`. */
+  linkCount: number
+  /** Set when the daemon could not check the site at all. */
+  error?: string
+}
+
+/**
+ * The daemon's last live-release link check. `findingCount` is the full count;
+ * `findings` carries at most {@link MAX_RELEASE_LINK_SCAN_FINDINGS} sites and
+ * never the link text, which the site owner controls.
+ */
+export type ServerReleaseLinkScanMetadata = {
+  scannedAt: string
+  findingCount: number
+  findings: ServerReleaseLinkScanFinding[]
+}
+
+export const MAX_RELEASE_LINK_SCAN_FINDINGS = 20
+const MAX_RELEASE_LINK_SCAN_TEXT = 120
+
+function boundedScanText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0
+    ? value.slice(0, MAX_RELEASE_LINK_SCAN_TEXT)
+    : undefined
+}
+
+function parseReleaseLinkScanFinding(value: unknown): ServerReleaseLinkScanFinding | null {
+  if (!isRecord(value)) return null
+  const releaseId = boundedScanText(value.releaseId)
+  const error = boundedScanText(value.error)
+  const linkCount =
+    typeof value.linkCount === 'number' && Number.isInteger(value.linkCount) && value.linkCount > 0
+      ? value.linkCount
+      : 0
+  return {
+    username: boundedScanText(value.username) ?? '',
+    serviceId: boundedScanText(value.serviceId) ?? '',
+    ...(releaseId === undefined ? {} : { releaseId }),
+    linkCount,
+    ...(error === undefined ? {} : { error }),
+  }
+}
+
+/**
+ * Parse the daemon's link-scan summary, bounded: this arrives from a host, so
+ * text and list length are capped here whatever the daemon sent.
+ */
+export function parseServerReleaseLinkScan(
+  value: unknown
+): ServerReleaseLinkScanMetadata | undefined {
+  if (!isRecord(value)) return undefined
+  const scannedAt = boundedScanText(value.scannedAt)
+  if (scannedAt === undefined || !Array.isArray(value.findings)) return undefined
+  const findings = value.findings
+    .slice(0, MAX_RELEASE_LINK_SCAN_FINDINGS)
+    .map(parseReleaseLinkScanFinding)
+    .filter((finding): finding is ServerReleaseLinkScanFinding => finding !== null)
+  const reported =
+    typeof value.findingCount === 'number' && Number.isInteger(value.findingCount)
+      ? value.findingCount
+      : 0
+  return { scannedAt, findingCount: Math.max(reported, findings.length), findings }
+}
+
+export function serverReleaseLinkScanEquals(
+  a: ServerReleaseLinkScanMetadata | undefined,
+  b: ServerReleaseLinkScanMetadata | undefined
 ): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
 }
@@ -1762,6 +1874,9 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   const location = parseLocationOverride(value.location)
   if (location) options.location = location
   assignServerPhpModes(options, value.phpModes)
+  if ('managedExternalAccess' in value) {
+    options.managedExternalAccess = parseManagedExternalAccess(value.managedExternalAccess)
+  }
   return Object.keys(options).length > 0 ? options : {}
 }
 

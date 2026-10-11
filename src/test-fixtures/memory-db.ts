@@ -178,7 +178,7 @@ function evaluateComparison(
   text: string,
   left: unknown,
   right: Token | undefined,
-  ctx: RowContext,
+  ctx: RowContext
 ): Atom {
   if (!right) throw new Error('memory-db: comparison without operand')
   const rightValue = operandValue(right, ctx)
@@ -357,7 +357,7 @@ function project(fields: Row | undefined, ctx: RowContext, primary: Table): Row 
 type Thenable<T> = {
   then: <R1, R2>(
     onF?: (v: T) => R1 | PromiseLike<R1>,
-    onR?: (r: unknown) => R2 | PromiseLike<R2>,
+    onR?: (r: unknown) => R2 | PromiseLike<R2>
   ) => Promise<R1 | R2>
 }
 
@@ -372,9 +372,12 @@ function lazyQuery<T>(run: () => Promise<T>): Thenable<T> {
 
 /** A lazy query that also accepts `.returning(fields)`. */
 function returningQuery(run: (returning?: Row) => Promise<Row[]>) {
-  return Object.assign(lazyQuery(() => run()), {
-    returning: (fields?: Row) => run(fields),
-  })
+  return Object.assign(
+    lazyQuery(() => run()),
+    {
+      returning: (fields?: Row) => run(fields),
+    }
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -396,7 +399,12 @@ function rowsOf(store: Store, table: Table): Row[] {
   return rows
 }
 
-type ConflictSpec = Readonly<{ target: Column | Column[] | undefined; set?: Row; nothing: boolean }>
+type ConflictSpec = Readonly<{
+  target: Column | Column[] | undefined
+  set?: Row
+  setWhere?: unknown
+  nothing: boolean
+}>
 
 function conflictKeys(target: Column | Column[] | undefined): string[] {
   if (target === undefined) return []
@@ -424,6 +432,13 @@ function insertInto(store: Store, table: Table) {
             store.ops.push(`insert-conflict:${name}`)
             return []
           }
+          if (
+            spec.setWhere !== undefined &&
+            !evaluateWhere(spec.setWhere, singleRow(table, existing))
+          ) {
+            store.ops.push(`update-skipped:${name}`)
+            return []
+          }
           applySet(existing, spec.set ?? {}, table)
           store.ops.push(`update:${name}`)
           return [project(returning, singleRow(table, existing), table)]
@@ -437,8 +452,8 @@ function insertInto(store: Store, table: Table) {
           conflict = { target: cfg.target, nothing: true }
           return returningQuery(run)
         },
-        onConflictDoUpdate(cfg: { target: Column | Column[]; set: Row }) {
-          conflict = { target: cfg.target, set: cfg.set, nothing: false }
+        onConflictDoUpdate(cfg: { target: Column | Column[]; set: Row; setWhere?: unknown }) {
+          conflict = { target: cfg.target, set: cfg.set, setWhere: cfg.setWhere, nothing: false }
           return returningQuery(run)
         },
       })
@@ -577,32 +592,39 @@ function selectFrom(store: Store, fields: Row | undefined, table: Table) {
     orderBy: [],
     limit: undefined,
   }
-  const builder = Object.assign(lazyQuery(async () => runSelect(store, table, query)), {
-    innerJoin(other: Table, on: unknown) {
-      query.joins.push({ table: other, on, kind: 'inner' })
-      return builder
-    },
-    leftJoin(other: Table, on: unknown) {
-      query.joins.push({ table: other, on, kind: 'left' })
-      return builder
-    },
-    where(cond: unknown) {
-      query.where = cond
-      return builder
-    },
-    groupBy(...columns: Column[]) {
-      query.groupBy = columns
-      return builder
-    },
-    orderBy(...entries: unknown[]) {
-      query.orderBy = entries
-      return builder
-    },
-    limit(n: number) {
-      query.limit = n
-      return builder
-    },
-  })
+  const builder = Object.assign(
+    lazyQuery(async () => runSelect(store, table, query)),
+    {
+      innerJoin(other: Table, on: unknown) {
+        query.joins.push({ table: other, on, kind: 'inner' })
+        return builder
+      },
+      leftJoin(other: Table, on: unknown) {
+        query.joins.push({ table: other, on, kind: 'left' })
+        return builder
+      },
+      where(cond: unknown) {
+        query.where = cond
+        return builder
+      },
+      /** `FOR UPDATE`: the memory store serializes writers, so the lock is a no-op. */
+      for(_strength: string) {
+        return builder
+      },
+      groupBy(...columns: Column[]) {
+        query.groupBy = columns
+        return builder
+      },
+      orderBy(...entries: unknown[]) {
+        query.orderBy = entries
+        return builder
+      },
+      limit(n: number) {
+        query.limit = n
+        return builder
+      },
+    }
+  )
   return builder
 }
 
@@ -620,12 +642,15 @@ function select(store: Store, fields?: Row) {
 /** A `where`-able statement: `run` receives the clause and the optional `returning` fields. */
 function whereQuery(run: (where: unknown, returning?: Row) => Promise<Row[]>) {
   let where: unknown
-  const builder = Object.assign(returningQuery((returning) => run(where, returning)), {
-    where(cond: unknown) {
-      where = cond
-      return builder
-    },
-  })
+  const builder = Object.assign(
+    returningQuery((returning) => run(where, returning)),
+    {
+      where(cond: unknown) {
+        where = cond
+        return builder
+      },
+    }
+  )
   return builder
 }
 
@@ -683,7 +708,11 @@ export type MemoryDbOpts = Readonly<{
 
 export function createMemoryDb(seed: Iterable<[Table, Row[]]>, opts: MemoryDbOpts = {}): MemoryDb {
   const tables = new Map<Table, Row[]>()
-  for (const [table, rows] of seed) tables.set(table, rows.map((row) => ({ ...row })))
+  for (const [table, rows] of seed)
+    tables.set(
+      table,
+      rows.map((row) => ({ ...row }))
+    )
   const store: Store = {
     tables,
     ops: [],
@@ -713,7 +742,11 @@ export function createMemoryDb(seed: Iterable<[Table, Row[]]>, opts: MemoryDbOpt
      */
     transaction: async <T>(fn: (tx: MemoryTx) => Promise<T>): Promise<T> => {
       const snapshot = new Map<Table, Row[]>()
-      for (const [table, rows] of tables) snapshot.set(table, rows.map((row) => ({ ...row })))
+      for (const [table, rows] of tables)
+        snapshot.set(
+          table,
+          rows.map((row) => ({ ...row }))
+        )
       store.ops.push('begin')
       try {
         const result = await fn(db as unknown as MemoryTx)

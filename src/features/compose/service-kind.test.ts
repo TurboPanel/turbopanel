@@ -1170,6 +1170,39 @@ test('php version series and extension membership are enforced', () => {
   )
 })
 
+test('php.version accepts offered series and refuses the rest', () => {
+  const versionIssues = (version?: string) =>
+    collectServiceTurbopanelValidationIssues({
+      blog: {
+        'x-turbopanel': {
+          serviceKind: 'site',
+          php: version === undefined ? { extensions: ['gd'] } : { version },
+        },
+      },
+    }).filter((issue) => issue.path === 'services.blog.x-turbopanel.php.version')
+
+  assertEquals(versionIssues('8.1'), [])
+  assertEquals(versionIssues('8.2'), [])
+  assertEquals(versionIssues('8.3'), [])
+  assertEquals(versionIssues('8.4'), [])
+  assertEquals(versionIssues('8.5'), [])
+  // Omitted version is the host default; save does not invent a pin.
+  assertEquals(versionIssues(), [])
+  assertEquals(
+    parseServiceTurbopanelExtension({
+      serviceKind: 'site',
+      php: { extensions: ['gd'] },
+    })?.php?.version,
+    undefined
+  )
+
+  const unsupported = (version: string) =>
+    `PHP ${version} is not supported; supported: 8.1, 8.2, 8.3, 8.4, 8.5`
+  assertEquals(versionIssues('8.0')[0]?.message, unsupported('8.0'))
+  assertEquals(versionIssues('7.4')[0]?.message, unsupported('7.4'))
+  assertEquals(versionIssues('9.0')[0]?.message, unsupported('9.0'))
+})
+
 test('php settings and pool directives are validated key by key', () => {
   const issues = collectServiceTurbopanelValidationIssues({
     blog: {
@@ -1350,5 +1383,99 @@ test('collectServiceTurbopanelValidationIssues delegates hosting shape to the ho
   assertEquals(
     issues.some((issue) => issue.path === 'services.web.x-turbopanel.hosting[0].hostname'),
     true
+  )
+})
+
+test('runtime: deno parses with denoVersion, and defaults stay node', () => {
+  const parsed = parseServiceTurbopanelExtension({
+    serviceKind: 'node',
+    runtime: 'deno',
+    denoVersion: '2.9.7',
+    source: { sourceId: NODE_SOURCE_ID },
+  })
+  assertEquals(parsed?.runtime, 'deno')
+  assertEquals(parsed?.denoVersion, '2.9.7')
+  const plain = parseServiceTurbopanelExtension({
+    serviceKind: 'node',
+    source: { sourceId: NODE_SOURCE_ID },
+  })
+  assertEquals(plain?.runtime, undefined)
+  assertEquals(plain?.denoVersion, undefined)
+})
+
+test('a Deno service is valid, and the Node hints are refused on it', () => {
+  const deno = {
+    serviceKind: 'node',
+    runtime: 'deno',
+    denoVersion: '2',
+    source: { sourceId: NODE_SOURCE_ID },
+  }
+  assertEquals(collectServiceTurbopanelValidationIssues({ web: { 'x-turbopanel': deno } }), [])
+  // `framework: auto` is the default, so writing it is not a contradiction.
+  assertEquals(
+    collectServiceTurbopanelValidationIssues({
+      web: { 'x-turbopanel': { ...deno, framework: 'auto' } },
+    }),
+    []
+  )
+  const issues = collectServiceTurbopanelValidationIssues({
+    web: {
+      'x-turbopanel': { ...deno, nodeVersion: '24', packageManager: 'pnpm', framework: 'next' },
+    },
+  })
+  assertEquals(issues.map((issue) => issue.path).sort(), [
+    'services.web.x-turbopanel.framework',
+    'services.web.x-turbopanel.nodeVersion',
+    'services.web.x-turbopanel.packageManager',
+  ])
+})
+
+test('denoVersion needs runtime: deno, and runtime only fits a node service', () => {
+  const withoutRuntime = collectServiceTurbopanelValidationIssues({
+    web: {
+      'x-turbopanel': {
+        serviceKind: 'node',
+        denoVersion: '2',
+        source: { sourceId: NODE_SOURCE_ID },
+      },
+    },
+  })
+  assertEquals(
+    withoutRuntime.some((issue) => issue.path === 'services.web.x-turbopanel.denoVersion'),
+    true
+  )
+  const onContainer = collectServiceTurbopanelValidationIssues({
+    api: { image: 'x', 'x-turbopanel': { runtime: 'deno', denoVersion: '2' } },
+  })
+  assertEquals(onContainer.map((issue) => issue.path).sort(), [
+    'services.api.x-turbopanel.denoVersion',
+    'services.api.x-turbopanel.runtime',
+  ])
+  const bad = collectServiceTurbopanelValidationIssues({
+    web: {
+      'x-turbopanel': {
+        serviceKind: 'node',
+        runtime: 'bun',
+        denoVersion: 'latest',
+        source: { sourceId: NODE_SOURCE_ID },
+      },
+    },
+  })
+  assertEquals(
+    bad
+      .filter((issue) => issue.message.includes('must be'))
+      .map((issue) => issue.path)
+      .sort(),
+    ['services.web.x-turbopanel.denoVersion', 'services.web.x-turbopanel.runtime']
+  )
+})
+
+test('a partial layer may set denoVersion or runtime without restating the other', () => {
+  assertEquals(
+    collectServiceTurbopanelValidationIssues(
+      { web: { 'x-turbopanel': { denoVersion: '2' } } },
+      { partialLayer: true }
+    ),
+    []
   )
 })

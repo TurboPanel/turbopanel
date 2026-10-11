@@ -17,7 +17,6 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import {
-  entitlement,
   environment,
   managed,
   organization,
@@ -106,123 +105,6 @@ export async function replaceTenancies(
   }
 }
 
-/** One runtime series a principal may execute, with its provenance. */
-export type PrincipalEntitlementRow = {
-  runtime: string
-  series: string
-  grantedBy: 'operator' | 'deploy'
-}
-
-export async function loadEntitlementsByPrincipalIds(
-  tx: Db,
-  principalIds: readonly string[]
-): Promise<Map<string, PrincipalEntitlementRow[]>> {
-  const byPrincipal = new Map<string, PrincipalEntitlementRow[]>()
-  if (principalIds.length === 0) return byPrincipal
-  const rows = await tx
-    .select({
-      principalId: entitlement.principalId,
-      runtime: entitlement.runtime,
-      series: entitlement.series,
-      grantedBy: entitlement.grantedBy,
-    })
-    .from(entitlement)
-    .where(inArray(entitlement.principalId, [...principalIds]))
-
-  for (const row of rows) {
-    const list = byPrincipal.get(row.principalId) ?? []
-    list.push({
-      runtime: row.runtime,
-      series: row.series,
-      grantedBy: row.grantedBy as 'operator' | 'deploy',
-    })
-    byPrincipal.set(row.principalId, list)
-  }
-  return byPrincipal
-}
-
-/**
- * Reconcile a principal's entitlements to exactly `next`.
- *
- * Deletes are the point: a grant that can only ever be added is not a grant,
- * it is a ratchet. The daemon mirrors this on the host by dropping unix group
- * membership for any registry group no longer present.
- */
-export async function replaceEntitlements(
-  tx: Db,
-  principalId: string,
-  next: readonly PrincipalEntitlementRow[]
-): Promise<void> {
-  const key = (e: { runtime: string; series: string }) => `${e.runtime}@${e.series}`
-  const existing = await tx
-    .select({
-      runtime: entitlement.runtime,
-      series: entitlement.series,
-    })
-    .from(entitlement)
-    .where(eq(entitlement.principalId, principalId))
-
-  const current = new Set(existing.map(key))
-  const desired = new Map(next.map((entry) => [key(entry), entry]))
-
-  const toDelete = [...current].filter((k) => !desired.has(k))
-  if (toDelete.length > 0) {
-    await tx
-      .delete(entitlement)
-      .where(
-        and(
-          eq(entitlement.principalId, principalId),
-          inArray(sql`${entitlement.runtime} || '@' || ${entitlement.series}`, toDelete)
-        )
-      )
-  }
-
-  const toInsert = [...desired.entries()]
-    .filter(([k]) => !current.has(k))
-    .map(([, entry]) => ({
-      principalId,
-      runtime: entry.runtime,
-      series: entry.series,
-      grantedBy: entry.grantedBy,
-    }))
-  if (toInsert.length > 0) {
-    await tx.insert(entitlement).values(toInsert)
-  }
-}
-
-/**
- * Insert deploy-implied runtime grants without revoking existing rows.
- *
- * Used when a native app declares a Node series the principal does not yet
- * hold in Postgres — the wire merge alone is not enough for
- * `server.principals.reconcile`.
- */
-export async function insertDeployEntitlementsIfMissing(
-  db: Db,
-  entries: readonly {
-    principalId: string
-    runtime: string
-    series: string
-  }[]
-): Promise<void> {
-  if (entries.length === 0) return
-  const unique = new Map<string, PrincipalEntitlementRow & { principalId: string }>()
-  for (const entry of entries) {
-    unique.set(`${entry.principalId}@${entry.runtime}@${entry.series}`, {
-      principalId: entry.principalId,
-      runtime: entry.runtime,
-      series: entry.series,
-      grantedBy: 'deploy',
-    })
-  }
-  await db
-    .insert(entitlement)
-    .values([...unique.values()])
-    .onConflictDoNothing({
-      target: [entitlement.principalId, entitlement.runtime, entitlement.series],
-    })
-}
-
 export type CreatePrincipalFields = {
   organizationId: string
   kind: string
@@ -302,16 +184,26 @@ const ACCESS_LEVEL_FOR_COMPOSE: Readonly<Record<'none' | 'sftp' | 'ssh', Princip
  * namespace is not theirs to know about.
  */
 export function composeAliasShortUsername(alias: string): string {
+  // Dash runs fold to one and edge dashes go: the host refuses builds for a
+  // name ending in `-` or holding `--` (see `hasPlainPrincipalDashes`).
   const folded = alias
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9_-]/g, '')
+    .split('-')
+    .filter((part) => part.length > 0)
+    .join('-')
   const seeded = /^[a-z_]/.test(folded) ? folded : `u${folded}`
-  const capped = seeded.slice(0, MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH)
+  const capped = capShortUsername(seeded)
   const safe = capped.length > 0 ? capped : 'user'
-  return isReservedPrincipalUsername(safe)
-    ? `u${safe}`.slice(0, MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH)
-    : safe
+  return isReservedPrincipalUsername(safe) ? capShortUsername(`u${safe}`) : safe
+}
+
+/** Cap to the suffixed short-name length without leaving a trailing `-`. */
+function capShortUsername(value: string): string {
+  let capped = value.slice(0, MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH)
+  while (capped.endsWith('-')) capped = capped.slice(0, -1)
+  return capped
 }
 
 export type EnsureComposePrincipalInput = {

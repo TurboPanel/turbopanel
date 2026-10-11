@@ -42,20 +42,47 @@ export const MAX_INTERVAL_SECONDS = 3600
 export const MAX_DIMENSION_LEN = 256
 export const METRICS_LOG_COOLDOWN_MS = 5 * 60_000
 
+/** Diagnostic reasons echo caller-supplied text; keep them (and the log map) bounded. */
+export const MAX_METRICS_REASON_LEN = 200
+export const MAX_METRICS_LOG_KEYS = 1000
+/** Generations are stored in 32-bit signed integer columns (DuckDB) and read back as UInt32 (AE). */
+export const MAX_GENERATION = 2_147_483_647
+/** Buffered events may predate the sample (an OOM kill found on the next tick), but not by weeks. */
+export const MAX_EVENT_AGE_MS = 7 * 24 * 3_600_000
+
 const rateLimitedLogAt = new Map<string, number>()
+
+function truncateReason(reason: string): string {
+  return reason.length > MAX_METRICS_REASON_LEN
+    ? `${reason.slice(0, MAX_METRICS_REASON_LEN)}...`
+    : reason
+}
+
+function evictLogKeys(nowMs: number): void {
+  for (const [key, at] of rateLimitedLogAt) {
+    if (nowMs - at >= METRICS_LOG_COOLDOWN_MS) rateLimitedLogAt.delete(key)
+  }
+  while (rateLimitedLogAt.size >= MAX_METRICS_LOG_KEYS) {
+    const oldest = rateLimitedLogAt.keys().next()
+    if (oldest.done) break
+    rateLimitedLogAt.delete(oldest.value)
+  }
+}
 
 /** Rate-limited diagnostic log — at most once per cooldown per serverId+reason. */
 export function rateLimitedMetricsLog(
   serverId: string,
-  reason: string,
+  rawReason: string,
   log: (message: string) => void,
   nowMs = Date.now()
 ): void {
+  const reason = truncateReason(rawReason)
   const key = `${serverId}\0${reason}`
   const last = rateLimitedLogAt.get(key)
   if (last !== undefined && nowMs - last < METRICS_LOG_COOLDOWN_MS) {
     return
   }
+  if (last === undefined) evictLogKeys(nowMs)
   rateLimitedLogAt.set(key, nowMs)
   log(reason)
 }
@@ -108,7 +135,7 @@ type ValidateOk<T> = { ok: true; value: T }
 type ValidateResult<T> = ValidateOk<T> | ValidateFail
 
 function fail(reason: string): ValidateFail {
-  return { ok: false, reason: `metrics ${reason}` }
+  return { ok: false, reason: truncateReason(`metrics ${reason}`) }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -165,10 +192,18 @@ function parseSafeNonNegativeInteger(value: unknown, field: string): ValidateRes
   return { ok: true, value }
 }
 
+function parseGeneration(value: unknown, field: string): ValidateResult<number> {
+  const parsed = parseSafeNonNegativeInteger(value, field)
+  if (parsed.ok && parsed.value > MAX_GENERATION) {
+    return fail(`${field} must be at most ${MAX_GENERATION}`)
+  }
+  return parsed
+}
+
 function parseTimestamp(
   value: unknown,
   field: string,
-  skew: { checkSkew: true; nowMs: number } | { checkSkew: false }
+  skew: { checkSkew: true | 'event'; nowMs: number }
 ): ValidateResult<string> {
   if (typeof value !== 'string' || value.length === 0) {
     return fail(`${field} must be a non-empty string`)
@@ -177,8 +212,14 @@ function parseTimestamp(
   if (Number.isNaN(ms)) {
     return fail(`${field} must be a valid ISO timestamp`)
   }
-  if (skew.checkSkew && Math.abs(skew.nowMs - ms) > MAX_METRICS_SKEW_MS) {
+  if (skew.checkSkew === true && Math.abs(skew.nowMs - ms) > MAX_METRICS_SKEW_MS) {
     return fail(`${field} outside allowed skew window`)
+  }
+  if (
+    skew.checkSkew === 'event' &&
+    (ms < skew.nowMs - MAX_EVENT_AGE_MS || ms > skew.nowMs + MAX_METRICS_SKEW_MS)
+  ) {
+    return fail(`${field} outside allowed event window`)
   }
   return { ok: true, value }
 }
@@ -286,13 +327,10 @@ function parseMetadata(raw: unknown, nowMs: number): ValidateResult<MetricsSampl
   const sequence = parseSafeNonNegativeInteger(raw.sequence, 'metadata.sequence')
   if (!sequence.ok) return sequence
 
-  const topologyGeneration = parseSafeNonNegativeInteger(
-    raw.topologyGeneration,
-    'metadata.topologyGeneration'
-  )
+  const topologyGeneration = parseGeneration(raw.topologyGeneration, 'metadata.topologyGeneration')
   if (!topologyGeneration.ok) return topologyGeneration
 
-  const bootGeneration = parseSafeNonNegativeInteger(raw.bootGeneration, 'metadata.bootGeneration')
+  const bootGeneration = parseGeneration(raw.bootGeneration, 'metadata.bootGeneration')
   if (!bootGeneration.ok) return bootGeneration
 
   return {
@@ -726,7 +764,7 @@ function assignOptionalEventString(
   return null
 }
 
-function parseEvent(raw: unknown, index: number): ValidateResult<MetricEvent> {
+function parseEvent(raw: unknown, index: number, nowMs: number): ValidateResult<MetricEvent> {
   const label = `events[${index}]`
   if (!isRecord(raw)) return fail(`${label} must be an object`)
   const unknown = rejectUnknownKeys(raw, ALLOWED_EVENT_FIELDS, label)
@@ -737,8 +775,9 @@ function parseEvent(raw: unknown, index: number): ValidateResult<MetricEvent> {
 
   // Buffered events legitimately predate `metadata.sampledAt` by more than
   // the skew window (e.g. an OOM kill discovered on the next tick) — only
-  // ISO validity is enforced, never `MAX_METRICS_SKEW_MS`.
-  const at = parseTimestamp(raw.at, `${label}.at`, { checkSkew: false })
+  // ISO validity plus a generous window ([now - 7 d, now + skew]) is enforced,
+  // never the tight `MAX_METRICS_SKEW_MS` window.
+  const at = parseTimestamp(raw.at, `${label}.at`, { checkSkew: 'event', nowMs })
   if (!at.ok) return at
 
   const kind = readClosedString<MetricEventKind>(
@@ -774,13 +813,13 @@ function parseEvent(raw: unknown, index: number): ValidateResult<MetricEvent> {
   return { ok: true, value: event }
 }
 
-function parseEvents(raw: unknown): ValidateResult<MetricEvent[]> {
+function parseEvents(raw: unknown, nowMs: number): ValidateResult<MetricEvent[]> {
   const arr = parseArray(raw, 'events', MAX_METRIC_EVENTS_PER_SAMPLE)
   if (!arr.ok) return arr
 
   const events: MetricEvent[] = []
   for (let i = 0; i < arr.value.length; i++) {
-    const event = parseEvent(arr.value[i], i)
+    const event = parseEvent(arr.value[i], i, nowMs)
     if (!event.ok) return event
     events.push(event.value)
   }
@@ -1171,7 +1210,7 @@ export function validateMetricsSample(
   const entities = parseRequiredEntityArrays(envelope.value)
   if (!entities.ok) return entities
 
-  const events = parseEvents(envelope.value.events)
+  const events = parseEvents(envelope.value.events, nowMs)
   if (!events.ok) return events
 
   const optionals = parseOptionalSampleParts(envelope.value)

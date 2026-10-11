@@ -11,6 +11,7 @@ import { type Db, getDb } from '../../db/connection.ts'
 import { organization } from '../../db/schema.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { assertOrgOwnerOr403 } from '../authz/index.ts'
 import { assertCanManageOr403, parseJsonBody } from '../shared.ts'
@@ -71,6 +72,9 @@ async function handlePut(c: Context<AppEnv>) {
   const id = c.req.param('id') ?? ''
   const denied = await assertOrgOwnerOr403(c, 'organization', id)
   if (denied) return denied
+  // With the gate on, switching it off needs the same proof as the actions it protects.
+  const stepUp = await requireStepUpIfConfigured(c, id, 'organization.reauth_settings.update')
+  if (stepUp) return stepUp
   const body = await parseJsonBody(c)
   if (body instanceof Response) return body
   const parsed = parsePatch(body)

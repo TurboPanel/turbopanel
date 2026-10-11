@@ -257,7 +257,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   invitation: {
     group: 'organizations',
     summary:
-      'Team-scoped invite emailed to an address; one pending per (team, email) with a 7-day link, turned into a `teammate` row plus grants on accept.',
+      'Team-scoped invite per (team, email) with a 7-day link; accept adds `teammate` and optional `grants` rows when stored.',
     columns: {
       user_id:
         'The inviter (a manager of the team), not the invitee; the invitee is known only by `email` until accept.',
@@ -270,7 +270,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       status:
         '`pending` at creation, then `accepted` by the accept route or `revoked` by the revoke route; expiry is not a status.',
       grants:
-        'Array of `entityType` / `entityId` / `permissionKey` specs an owner attached, or null for the default `organization:manage`; written as `grant` rows on accept.',
+        'Optional grant specs (`entityType`, `entityId`, `permissionKey`) an owner attached; null means none; materialized on accept.',
       token_hash:
         'SHA-256 verifier of the secret emailed only in the accept link, used to look the invitation up; rotated on re-send, null on older invitations.',
     },
@@ -303,7 +303,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata: 'Reserved pairing jsonb with no first-party reader or writer today; stays null.',
       options:
         'Org-wide settings merged key-by-key by the organization routes (`defaultServerTimezone`, `maxServers`, `acmeEnabled`, `managedDatabase`, `phpModes` and more).',
-      name: 'Display name; `My Organization` when sign-up gives none, otherwise set by the install wizard or PATCH `/organizations/:id`.',
+      name: "Display name; sign-up uses `you@example.com's organization` from email, else `My Organization` if missing, blank, or label invalid; install Root Organization.",
     },
   },
   team: {
@@ -365,19 +365,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Always the `SX` custom-rung tier row (`ensureCustomTierRow`), stored rather than looked up by label so entitlement reads on the ingest path add no query.',
       quantity:
         'Free `SX` units the self-hosted runtime grants to match its active licenses; always at least 1 because writing zero deletes the row instead.',
-    },
-  },
-  entitlement: {
-    group: 'billing',
-    summary:
-      'Which runtime series a principal may execute on its host: one row per principal, runtime and series, realised by the daemon as a unix group membership.',
-    columns: {
-      runtime:
-        'Runtime family the grant covers, `php` or `node` (CHECK `entitlement_runtime_check`).',
-      series:
-        'Exec boundary series such as `8.4` or `24` (digits with an optional dotted minor, CHECKed), never a patch pin; realised as group `tpphp84` or `tpnode24`.',
-      granted_by:
-        '`operator` for an explicit grant via the principal routes, `deploy` for a row deploy-prepare inserted because a service declared the runtime; both revocable.',
     },
   },
   license: {
@@ -943,9 +930,11 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       checksum:
         'Lowercase SHA-256 hex digest of the artifact computed by the daemon; a restore refuses on mismatch.',
       database: 'Database name for a single-database backup; null for an instance-scope backup.',
-      path: "Absolute artifact path on the primary server's filesystem as reported by the daemon.",
+      path: 'Absolute artifact path on the filesystem of the host that made it, as reported by the daemon.',
       retention_id:
         'The `retention` whose scheduled run made this artifact; null for a manual backup or once that retention is deleted.',
+      server_id:
+        'Host that holds the on-disk artifact (the primary when the backup ran); null on older rows or after that server is deleted.',
     },
   },
   retention: {
@@ -1390,7 +1379,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       ntp_last_synced_at:
         'Last successful NTP sync: set from the daemon stamp or first synced observation, cleared when the host reports unsynced, never bumped to now() per heartbeat.',
       assigned_tier_id:
-        'Derived, never chosen: the purchased tier covering this server, recomputed by assignment-records.ts on seat, grant, enroll or hardware change; NULL if none.',
+        'Purchased tier covering this server, recomputed by assignment-records.ts from seats, `preferred_tier_id`, and hardware; NULL if none.',
+      preferred_tier_id:
+        'Optional operator pick: assignment uses a spare license at this tier or the smallest tier above before the derived smallest that fits; NULL derives only.',
       is_connected:
         'Daemon liveness flag written by the cell projection on connect and disconnect; `online`, `offline` or `unknown` is derived from it and `status_changed_at`.',
       status_changed_at:

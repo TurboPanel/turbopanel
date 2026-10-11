@@ -31,6 +31,9 @@ export type SiteEngine = 'caddy' | 'apache' | 'nginx' | 'openlitespeed' | 'nginx
  */
 export type NativeRuntimeFramework = 'auto' | 'node' | 'next'
 
+/** What a native app runs on: the vendored Node (default) or the vendored Deno. */
+export type NativeRuntime = 'node' | 'deno'
+
 /**
  * Package manager used to install dependencies for a `serviceKind: node`
  * build. Omitted means auto-detect from the lockfile at build time
@@ -97,6 +100,14 @@ export const SUPPORTED_NODE_SERIES: readonly string[] = ['22', '24', '26']
 export const DEFAULT_NODE_SERIES = '24'
 
 /**
+ * Deno series offered in pickers: Deno ships one major, so a series is the
+ * major and `2.9` / `2.9.7` name the same one. Same advisory contract as
+ * {@link SUPPORTED_NODE_SERIES}.
+ */
+export const SUPPORTED_DENO_SERIES: readonly string[] = ['2']
+export const DEFAULT_DENO_SERIES = '2'
+
+/**
  * Per-service Git source binding (`x-turbopanel.source`).
  *
  * `sourceId` points at a `source` row in the caller's organization. The pure
@@ -154,6 +165,12 @@ export type SourceIdResolver = (sourceId: string) => boolean
  */
 type ComposeServiceExtensionFields = {
   serviceKind?: ComposeServiceKind
+  /**
+   * Validation context, not a wire field: the block belongs to a partial layer
+   * (an environment's "Changes for {env}"), so what it leaves out is inherited
+   * from the Base rather than absent. See {@link collectServiceTurbopanelValidationIssues}.
+   */
+  partialLayer?: boolean
   engine?: SiteEngine
   /**
    * Native runtime family for `serviceKind: node`. Omitted means `auto`.
@@ -164,9 +181,24 @@ type ComposeServiceExtensionFields = {
   /**
    * Pinned Node series for `serviceKind: node` (`24`, `24.17`, `24.17.0`).
    * Advisory today: the daemon vendors one tenant Node release
-   * (`vendor/node-app/<version>/current`) and records the request.
+   * (`vendor/node-app/<version>/current`) and records the request. Omitted
+   * means deploy-prepare reads the repository's `engines.node` / `.nvmrc` /
+   * `.node-version`, else the default series.
    */
   nodeVersion?: string
+  /**
+   * Runtime a `serviceKind: node` service runs on: `node` (the default) or
+   * `deno`. A Deno service is a native app like a Node one (built from Git,
+   * run by a generated systemd unit as the site owner's Linux user), started
+   * with `deno task start` or `deno run --allow-all <entry>`.
+   */
+  runtime?: NativeRuntime
+  /**
+   * Pinned Deno series for a `runtime: deno` service (`2`, `2.9`, `2.9.7`).
+   * Deno ships one major, so every spelling selects the host's newest 2.x
+   * release. Omitted means the default series.
+   */
+  denoVersion?: string
   /**
    * Package manager for a `serviceKind: node` build. Omitted means
    * auto-detect from the lockfile at build time.
@@ -192,8 +224,10 @@ type ComposeServiceExtensionFields = {
   documentRoot?: string
   /**
    * Script the vendored Node binary runs for a `serviceKind: node` service
-   * when `source.startCommand` is absent. Omitted means `server.js`. An
-   * explicit `startCommand` always wins.
+   * when `source.startCommand` is absent. Omitted means the daemon picks from
+   * the built tree: Next.js standalone `server.js`, the `package.json` `start`
+   * script, `next start`, the `package.json` `main` file, `index.js`, then
+   * `server.js`. An explicit `startCommand` always wins.
    */
   startupFile?: string
   /**
@@ -244,11 +278,9 @@ type ComposeServiceExtensionFields = {
    * Scheduled jobs for a `site` or `node` service.
    *
    * Rendered by the daemon as a systemd timer per entry, with `User=` set to
-   * the service's principal. That is what makes this the cleanest proof
-   * entitlement had to be an OS grant: `ExecStart` reaches `execve` **after**
-   * systemd has dropped privileges, so `/usr/bin/php8.4` succeeds or fails
-   * purely on the account's group membership. Nothing in the generated unit
-   * grants anything.
+   * the service's principal: `ExecStart` runs **after** systemd has dropped
+   * privileges, as the site owner's Linux user, which may run every PHP,
+   * Node or Deno version installed on the server.
    */
   cron?: ComposeServiceCronJob[]
   /**
@@ -306,6 +338,8 @@ type SiteOnlyExtensionField = 'engine' | 'root' | 'sourceKind' | 'php'
 type NodeOnlyExtensionField =
   | 'framework'
   | 'nodeVersion'
+  | 'runtime'
+  | 'denoVersion'
   | 'packageManager'
   | 'appMode'
   | 'enabled'
@@ -421,8 +455,13 @@ export type ComposeServicePhpExtension = {
  * repos, so this exists for save-time linting; the authoritative answer for a
  * specific host is its reported inventory. Divergence degrades to "offered a
  * series the server has not reported" — visible, never exploitable.
+ *
+ * The daemon offers the series LiteSpeed publishes for the server's OS suite
+ * (`suiteSeries` in that registry); this is the list for Debian 13, the only
+ * supported OS today. A series the host's OS does not offer is refused by the
+ * daemon before it installs anything.
  */
-export const SUPPORTED_PHP_SERIES: readonly string[] = ['8.3', '8.4']
+export const SUPPORTED_PHP_SERIES: readonly string[] = ['8.1', '8.2', '8.3', '8.4', '8.5']
 export const ALLOWED_PHP_EXTENSIONS: readonly string[] = [
   'apcu',
   'bcmath',
@@ -458,6 +497,7 @@ const PHP_EXTENSION_RE = /^[a-z][a-z0-9_-]{0,31}$/
 
 const SERVICE_KINDS = new Set<ComposeServiceKind>(['container', 'site', 'node'])
 const NATIVE_RUNTIME_FRAMEWORKS = new Set<NativeRuntimeFramework>(['auto', 'node', 'next'])
+const NATIVE_RUNTIMES = new Set<NativeRuntime>(['node', 'deno'])
 const SITE_ENGINES = new Set<SiteEngine>([
   'caddy',
   'apache',
@@ -547,6 +587,17 @@ function readNodeVersion(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
   return NODE_VERSION_RE.test(trimmed) ? trimmed : undefined
+}
+
+function readNativeRuntime(value: unknown): NativeRuntime | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return NATIVE_RUNTIMES.has(trimmed as NativeRuntime) ? (trimmed as NativeRuntime) : undefined
+}
+
+/** `2`, `2.9`, `2.9.7` — the same shape as a Node pin. */
+function readDenoVersion(value: unknown): string | undefined {
+  return readNodeVersion(value)
 }
 
 function readNodePackageManager(value: unknown): NodePackageManager | undefined {
@@ -657,6 +708,10 @@ function applyRuntimeExtensionFields(
   if (framework) extension.framework = framework
   const nodeVersion = readNodeVersion(value.nodeVersion)
   if (nodeVersion) extension.nodeVersion = nodeVersion
+  const runtime = readNativeRuntime(value.runtime)
+  if (runtime) extension.runtime = runtime
+  const denoVersion = readDenoVersion(value.denoVersion)
+  if (denoVersion) extension.denoVersion = denoVersion
   const packageManager = readNodePackageManager(value.packageManager)
   if (packageManager) extension.packageManager = packageManager
   const appMode = readNodeAppMode(value.appMode)
@@ -872,6 +927,16 @@ const SERVICE_EXTENSION_FIELDS: Readonly<Record<string, ServiceExtensionFieldRul
     isValid: (value) => Boolean(readNodeVersion(value)),
     typeMessage: 'nodeVersion must be a pinned version like "24" or "24.17.0"',
   },
+  runtime: {
+    kinds: NODE_KIND_ONLY,
+    isValid: (value) => Boolean(readNativeRuntime(value)),
+    typeMessage: 'runtime must be "node" or "deno"',
+  },
+  denoVersion: {
+    kinds: NODE_KIND_ONLY,
+    isValid: (value) => Boolean(readDenoVersion(value)),
+    typeMessage: 'denoVersion must be a pinned version like "2" or "2.9.7"',
+  },
   packageManager: {
     kinds: NODE_KIND_ONLY,
     isValid: (value) => Boolean(readNodePackageManager(value)),
@@ -963,6 +1028,8 @@ const RAW_FIELD_TYPE_ORDER: readonly string[] = [
   'serviceKind',
   'framework',
   'nodeVersion',
+  'runtime',
+  'denoVersion',
   'packageManager',
   'appMode',
   'enabled',
@@ -984,12 +1051,16 @@ function describeKinds(kinds: readonly ComposeServiceKind[]): string {
 function kindFieldIssue(
   basePath: string,
   field: string,
-  kind: ComposeServiceKind | undefined
+  fields: ComposeServiceExtensionFields
 ): ServiceTurbopanelValidationIssue | null {
   const rule = SERVICE_EXTENSION_FIELDS[field]
+  // A partial layer that does not restate `serviceKind` is not saying the
+  // service is a container: its kind is the Base's. Which fields fit it is
+  // answered over the merged document, where the kind is known.
+  if (fields.partialLayer && fields.serviceKind === undefined) return null
   // An omitted `serviceKind` means `container`, the same default the parser and
   // the daemon read it as.
-  if (rule.kinds.includes(kind ?? 'container')) return null
+  if (rule.kinds.includes(fields.serviceKind ?? 'container')) return null
   return {
     path: `${basePath}.${field}`,
     message: `${field} is only valid when serviceKind is ${describeKinds(rule.kinds)}`,
@@ -1006,7 +1077,7 @@ function kindMembershipIssues(
   const present = fields as Record<string, unknown>
   for (const field of checked) {
     if (present[field] === undefined) continue
-    const issue = kindFieldIssue(basePath, field, fields.serviceKind)
+    const issue = kindFieldIssue(basePath, field, fields)
     if (issue) issues.push(issue)
   }
   return issues
@@ -1016,6 +1087,8 @@ function kindMembershipIssues(
 const NODE_ONLY_FIELD_ORDER: readonly string[] = [
   'framework',
   'nodeVersion',
+  'runtime',
+  'denoVersion',
   'packageManager',
   'appMode',
   'enabled',
@@ -1028,7 +1101,10 @@ function requiredFieldIssues(
   fields: ComposeServiceExtensionFields
 ): ServiceTurbopanelValidationIssue[] {
   const kind = fields.serviceKind
-  if (kind === undefined) return []
+  // A partial layer may restate a kind and leave the rest to the Base (a node
+  // app's repository, say); the merged document is where "it has a source" is
+  // asked, with the Base's keys in it.
+  if (kind === undefined || fields.partialLayer) return []
 
   const issues: ServiceTurbopanelValidationIssue[] = []
   const present = fields as Record<string, unknown>
@@ -1044,7 +1120,8 @@ function requiredFieldIssues(
 
 function validateRawExtensionFieldTypes(
   basePath: string,
-  rawExtension: unknown
+  rawExtension: unknown,
+  partialLayer: boolean
 ): ServiceTurbopanelValidationIssue[] {
   if (!isPlainMapping(rawExtension)) return []
   const issues: ServiceTurbopanelValidationIssue[] = []
@@ -1075,7 +1152,7 @@ function validateRawExtensionFieldTypes(
   }
 
   if ('source' in rawExtension) {
-    issues.push(...validateRawSourceFieldTypes(basePath, rawExtension.source))
+    issues.push(...validateRawSourceFieldTypes(basePath, rawExtension.source, partialLayer))
   }
 
   return issues
@@ -1083,7 +1160,8 @@ function validateRawExtensionFieldTypes(
 
 function validateRawSourceFieldTypes(
   basePath: string,
-  rawSource: unknown
+  rawSource: unknown,
+  partialLayer: boolean
 ): ServiceTurbopanelValidationIssue[] {
   const sourcePath = `${basePath}.source`
   if (!isPlainMapping(rawSource)) {
@@ -1091,7 +1169,10 @@ function validateRawSourceFieldTypes(
   }
 
   const issues: ServiceTurbopanelValidationIssue[] = []
-  if (!readSourceId(rawSource.sourceId)) {
+  // A partial layer may change the branch or a command and leave the repository
+  // to the Base; a repository it does name still has to be a real id.
+  const sourceIdOptional = partialLayer && rawSource.sourceId === undefined
+  if (!sourceIdOptional && !readSourceId(rawSource.sourceId)) {
     issues.push({
       path: `${sourcePath}.sourceId`,
       message: 'source.sourceId must be the UUID of a source in this organization',
@@ -1179,7 +1260,12 @@ function validatePhpMode(
   if (rawMode === undefined) return []
   const path = `${basePath}.php.mode`
   if (!isPhpMode(rawMode)) {
-    return [{ path, message: `php.mode must be one of: ${PHP_MODES.join(', ')}` }]
+    return [
+      {
+        path,
+        message: `php.mode must be one of: ${PHP_MODES.join(', ')}`,
+      },
+    ]
   }
   const siteEngine = engine ?? 'caddy'
   const supported = ENGINE_PHP_MODES[siteEngine]
@@ -1187,7 +1273,9 @@ function validatePhpMode(
   const message =
     supported.length === 0
       ? `Caddy sites have no PHP mode; use nginx, apache, nginx+apache or openlitespeed for "${rawMode}"`
-      : `The ${siteEngine} engine cannot run php.mode "${rawMode}"; it supports: ${supported.join(', ')}`
+      : `The ${siteEngine} engine cannot run php.mode "${rawMode}"; it supports: ${supported.join(
+          ', '
+        )}`
   return [{ path, message }]
 }
 
@@ -1259,7 +1347,7 @@ function validatePhpConsistency(
 
   // Asked of the raw key, not the parsed block: `php: {}` on a container parses
   // to nothing but is still an authored php block, and saying so beats silence.
-  const membership = kindFieldIssue(basePath, 'php', fields.serviceKind)
+  const membership = kindFieldIssue(basePath, 'php', fields)
   if (membership) return [membership]
 
   if (!isPlainMapping(rawPhp)) {
@@ -1306,7 +1394,7 @@ function validateCronConsistency(
 
   // A container has no principal to run as and no tree to run in; both
   // host-native kinds have exactly one of each — which is what the table says.
-  const membership = kindFieldIssue(basePath, 'cron', fields.serviceKind)
+  const membership = kindFieldIssue(basePath, 'cron', fields)
   if (membership) return [membership]
 
   const issues: ServiceTurbopanelValidationIssue[] = []
@@ -1367,7 +1455,7 @@ function validatePrincipalConsistency(
   fields: ComposeServiceExtensionFields
 ): ServiceTurbopanelValidationIssue[] {
   if (raw.principal === undefined) return []
-  const membership = kindFieldIssue(basePath, 'principal', fields.serviceKind)
+  const membership = kindFieldIssue(basePath, 'principal', fields)
   return membership ? [membership] : []
 }
 
@@ -1414,6 +1502,8 @@ function validateNodeConsistency(
 
   if (fields.serviceKind !== 'node') return issues
 
+  issues.push(...validateDenoRuntimeConsistency(basePath, fields))
+
   // Both land in daemon-side paths (and startupFile in an ExecStart line), so
   // they share the same relative-path rule as `root`.
   for (const field of ['documentRoot', 'startupFile'] as const) {
@@ -1425,6 +1515,43 @@ function validateNodeConsistency(
     })
   }
 
+  return issues
+}
+
+/**
+ * The two runtimes keep their own hints apart. `denoVersion` means nothing on a
+ * Node service, and the Node hints (`nodeVersion`, `packageManager`, a
+ * `framework` other than `auto`) mean nothing on a Deno one; saying so beats a
+ * key that is read by nobody.
+ */
+function validateDenoRuntimeConsistency(
+  basePath: string,
+  fields: ComposeServiceExtensionFields
+): ServiceTurbopanelValidationIssue[] {
+  // A partial layer that does not restate `runtime` leaves it to the Base.
+  if (fields.partialLayer && fields.runtime === undefined) return []
+  const issues: ServiceTurbopanelValidationIssue[] = []
+  if (fields.runtime === 'deno') {
+    const node = [
+      ['nodeVersion', fields.nodeVersion !== undefined],
+      ['packageManager', fields.packageManager !== undefined],
+      ['framework', fields.framework !== undefined && fields.framework !== 'auto'],
+    ] as const
+    for (const [field, present] of node) {
+      if (!present) continue
+      issues.push({
+        path: `${basePath}.${field}`,
+        message: `${field} is only valid when runtime is node (this service runs on Deno)`,
+      })
+    }
+    return issues
+  }
+  if (fields.denoVersion !== undefined) {
+    issues.push({
+      path: `${basePath}.denoVersion`,
+      message: 'denoVersion is only valid when runtime is "deno"',
+    })
+  }
   return issues
 }
 
@@ -1457,7 +1584,7 @@ function validateRootConsistency(
 ): ServiceTurbopanelValidationIssue[] {
   if (fields.root === undefined) return []
 
-  const membership = kindFieldIssue(basePath, 'root', fields.serviceKind)
+  const membership = kindFieldIssue(basePath, 'root', fields)
   if (membership) return [membership]
 
   if (isSafeRoot(fields.root)) return []
@@ -1528,14 +1655,15 @@ function validateHostingConsistency(
   fields: ComposeServiceExtensionFields
 ): ServiceTurbopanelValidationIssue[] {
   if (!('hosting' in raw)) return []
-  const membership = kindFieldIssue(basePath, 'hosting', fields.serviceKind)
+  const membership = kindFieldIssue(basePath, 'hosting', fields)
   if (membership) return [membership]
   return collectHostingExtensionValidationIssues(basePath, raw.hosting, fields.serviceKind)
 }
 
 function collectServiceExtensionValidationIssues(
   basePath: string,
-  rawService: Record<string, unknown>
+  rawService: Record<string, unknown>,
+  partialLayer: boolean
 ): ServiceTurbopanelValidationIssue[] {
   if (!(TURBOPANEL_SERVICE_EXTENSION_KEY in rawService)) return []
 
@@ -1548,10 +1676,10 @@ function collectServiceExtensionValidationIssues(
   // Validators reason over the flat view: their job is deciding whether this
   // document earns one of the union's narrow shapes, so they cannot presume it
   // already has one. Every member widens to it, so this is an assignment.
-  const fields: ComposeServiceExtensionFields = parsed
+  const fields: ComposeServiceExtensionFields = { ...parsed, partialLayer }
 
   return [
-    ...validateRawExtensionFieldTypes(basePath, rawExtension),
+    ...validateRawExtensionFieldTypes(basePath, rawExtension, partialLayer),
     ...validateEngineConsistency(basePath, fields),
     ...(isPlainMapping(rawExtension)
       ? [
@@ -1568,15 +1696,28 @@ function collectServiceExtensionValidationIssues(
   ]
 }
 
+/**
+ * Every service's `x-turbopanel` issues.
+ *
+ * `partialLayer` is for a stored layer that is a partial change by design, an
+ * environment's "Changes for {env}": it may set one setting of an app the Base
+ * defines (a node version, a branch) without restating the app's `serviceKind`
+ * or repository. The rules that need the whole picture (a kind fits its
+ * fields, a node app has a source) are then not asked of the layer alone; they
+ * are asked of the merge with the Base, which is checked on save and at deploy
+ * with `partialLayer` off. What a layer does state is still checked as given.
+ */
 export function collectServiceTurbopanelValidationIssues(
-  services: Record<string, unknown>
+  services: Record<string, unknown>,
+  options?: { partialLayer?: boolean }
 ): ServiceTurbopanelValidationIssue[] {
+  const partialLayer = options?.partialLayer === true
   const issues: ServiceTurbopanelValidationIssue[] = []
 
   for (const [name, rawService] of Object.entries(services)) {
     if (!isPlainMapping(rawService)) continue
     const basePath = `services.${name}.x-turbopanel`
-    issues.push(...collectServiceExtensionValidationIssues(basePath, rawService))
+    issues.push(...collectServiceExtensionValidationIssues(basePath, rawService, partialLayer))
   }
 
   return issues

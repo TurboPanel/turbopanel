@@ -1,6 +1,118 @@
 import { buildResourceCrudPaths, clientErrorJson } from './shared.ts'
 
+const nullableString = { type: ['string', 'null'] }
+
 export const hostingSchemas = {
+  HostingDnsReport: {
+    type: 'object',
+    required: ['ready', 'checkedAt', 'hostnames', 'expectedAddresses'],
+    description:
+      'Live DNS check of the names the certificate must cover. `ready` is true when every name resolves to the server (or to anything, when the server address is unknown).',
+    properties: {
+      ready: { type: 'boolean' },
+      checkedAt: { type: 'string', format: 'date-time' },
+      hostnames: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['hostname', 'resolves', 'addresses'],
+          properties: {
+            hostname: { type: 'string' },
+            resolves: { type: 'boolean' },
+            addresses: { type: 'array', items: { type: 'string' } },
+          },
+        },
+      },
+      expectedAddresses: { type: 'array', items: { type: 'string' } },
+    },
+  },
+  HostingCertificate: {
+    type: 'object',
+    description:
+      "What the hosting shows about its certificate, decided by the server. Derived from the pinned certificate, its Let's Encrypt issuance details and any request waiting for DNS; `tls.status` is never changed to say any of this.",
+    required: [
+      'state',
+      'source',
+      'expiresAt',
+      'expiresInDays',
+      'renewsAutomatically',
+      'lastError',
+      'lastIssuedAt',
+      'uploadedExpiryWarning',
+      'dns',
+      'letsEncryptAvailable',
+      'www',
+      'needsDeploy',
+    ],
+    properties: {
+      state: {
+        type: 'string',
+        enum: [
+          'test_certificate',
+          'uploaded',
+          'secure',
+          'waiting_for_dns',
+          'issuing',
+          'renewal_failed',
+        ],
+      },
+      source: { type: 'string', enum: ['test', 'uploaded', 'lets_encrypt'] },
+      expiresAt: { ...nullableString, format: 'date-time' },
+      expiresInDays: { type: ['integer', 'null'] },
+      renewsAutomatically: { type: 'boolean' },
+      lastError: {
+        ...nullableString,
+        description: "Why the last issuance or renewal failed, as Let's Encrypt reported it.",
+      },
+      lastIssuedAt: { ...nullableString, format: 'date-time' },
+      uploadedExpiryWarning: { type: 'string', enum: ['none', '14d', '3d', '1d', 'expired'] },
+      dns: {
+        oneOf: [{ $ref: '#/components/schemas/HostingDnsReport' }, { type: 'null' }],
+        description: 'The last DNS check, while a request is waiting for DNS.',
+      },
+      letsEncryptAvailable: {
+        type: 'boolean',
+        description:
+          "True when the one-click action can run: the organization allows Let's Encrypt, the hosting is an HTTP route on a public bind with public hostnames, and compose does not own it.",
+      },
+      www: {
+        type: 'string',
+        enum: ['off', 'both', 'www-to-root', 'root-to-www'],
+        description:
+          "The hosting's www setting (`options.www`, `off` when unset). When not `off`, Let's Encrypt covers both spellings of each name.",
+      },
+      needsDeploy: {
+        type: 'boolean',
+        description: 'The certificate is pinned but the environment has not been deployed since.',
+      },
+    },
+  },
+  UseLetsEncryptRequest: {
+    type: 'object',
+    description:
+      "No fields. The names the certificate covers follow the hosting's own www setting (`options.www`); change that with PATCH /hostings/{id}.",
+    properties: {},
+  },
+  UseLetsEncryptResponse: {
+    type: 'object',
+    required: ['hosting', 'certificate', 'needsDeploy'],
+    properties: {
+      hosting: { $ref: '#/components/schemas/HostingRow' },
+      certificate: {
+        oneOf: [{ $ref: '#/components/schemas/HostingCertificate' }, { type: 'null' }],
+      },
+      needsDeploy: {
+        type: 'boolean',
+        description:
+          'True when a certificate was pinned: deploy the environment to start issuance.',
+      },
+    },
+  },
+  HostingDnsCheckResponse: {
+    type: 'object',
+    required: ['dns'],
+    properties: { dns: { $ref: '#/components/schemas/HostingDnsReport' } },
+  },
   HostingPortMapping: {
     type: 'object',
     required: ['published', 'target'],
@@ -51,8 +163,7 @@ export const hostingSchemas = {
       },
       php: {
         $ref: '#/components/schemas/HostingPhpOptions',
-        description:
-          'PHP hints for a host-served site. Applied on every engine.',
+        description: 'PHP hints for a host-served site. Applied on every engine.',
       },
     },
   },
@@ -93,10 +204,15 @@ export const hostingSchemas = {
         description:
           'Required non-empty when protocol is tcp or udp. Invalid or duplicate published ports are dropped on parse; deploy rejects an empty list for tcp/udp.',
       },
+      www: {
+        type: 'string',
+        enum: ['off', 'both', 'www-to-root', 'root-to-www'],
+        description:
+          "What happens to the other spelling of each hostname (`www.` added, or removed when the name starts with `www.`). `off` (default): only the hostname as written. `both`: the site answers on both names, no redirect. `www-to-root`: the site answers on the bare name and `www.<name>` redirects there permanently (path and query kept; plain HTTP goes straight to HTTPS in one hop). `root-to-www`: the site answers on `www.<name>` and the bare name redirects there. The direction is about the names, not which one was typed. Every extra name needs DNS pointing at the server and a certificate: Let's Encrypt covers it automatically; an uploaded certificate must list it or the deploy is refused with `tls_pin_mismatch`. http hostings only; IP addresses and one-word names (`localhost`) have no www spelling. Every name the choice adds counts as one of the organization's hostnames, so it may not be a name another hosting uses (`409 hostname_in_use`), and every path of one name must make the same choice. Turning it on for a hosting pinned to Let's Encrypt queues the same DNS check the button runs.",
+      },
       web: {
         $ref: '#/components/schemas/HostingWebOptions',
-        description:
-          'Site / host-native stack options (env + optional Apache PHP hints)',
+        description: 'Site / host-native stack options (env + optional Apache PHP hints)',
       },
       proxy: {
         type: 'object',
@@ -153,16 +269,16 @@ export const hostingSchemas = {
           },
           composeAdopted: {
             type: 'boolean',
-            description:
-              'True when compose took over a panel-authored row serving the same route',
+            description: 'True when compose took over a panel-authored row serving the same route',
           },
         },
       },
       options: {
-        oneOf: [
-          { $ref: '#/components/schemas/HostingOptions' },
-          { type: 'null' },
-        ],
+        oneOf: [{ $ref: '#/components/schemas/HostingOptions' }, { type: 'null' }],
+      },
+      certificate: {
+        oneOf: [{ $ref: '#/components/schemas/HostingCertificate' }, { type: 'null' }],
+        description: 'Derived certificate state; present on GET responses.',
       },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
@@ -232,29 +348,88 @@ const composeOwnedConflictResponse = {
   },
 }
 
+const hostingJson = (schema: string) => ({
+  'application/json': { schema: { $ref: `#/components/schemas/${schema}` } },
+})
+
+const letsEncryptRefusals =
+  "`lets_encrypt_not_enabled` (403): the organization has not allowed Let's Encrypt. 400: `hosting_not_http`, `hosting_has_no_hostnames`, `acme_requires_public_bind`, `letsencrypt_hostname_unsupported` (wildcard, IP address or private name) or `www_redirect_conflict` (the hosting's www setting is not `off`, but the other spelling of a domain is already a domain in the environment; the body carries a plain-words `message`). A name the www setting adds is checked for DNS like the typed names: when it does not point at the server yet, the request waits and `dns` names it."
+
+const letsEncryptPaths = {
+  [`${hostingIdPath}/use-letsencrypt`]: {
+    put: {
+      tags: ['Hostings'],
+      summary: "Use Let's Encrypt for this hosting",
+      description:
+        "Checks that every name points at the server, then pins an automatically renewed Let's Encrypt certificate (`certificate.state` `issuing`, `needsDeploy` true: deploy the environment to start issuance). While DNS is not ready nothing is pinned and the request waits (`waiting_for_dns`); a periodic job retries it for a week. Calling it again repeats the check and changes nothing twice. " +
+        letsEncryptRefusals,
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      requestBody: { required: false, content: hostingJson('UseLetsEncryptRequest') },
+      responses: {
+        '200': { description: 'Request recorded', content: hostingJson('UseLetsEncryptResponse') },
+        '400': {
+          description: letsEncryptRefusals,
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '403': {
+          description: 'lets_encrypt_not_enabled',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '404': {
+          description: 'Hosting not found',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        ...composeOwnedConflictResponse,
+      },
+    },
+  },
+  [`${hostingIdPath}/dns-check`]: {
+    get: {
+      tags: ['Hostings'],
+      summary: "Check DNS for this hosting's Let's Encrypt names",
+      description:
+        'Read-only. Looks up every name the certificate would cover (including the www spelling when the redirect is on) and reports whether it points at the server.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        '200': { description: 'DNS report', content: hostingJson('HostingDnsCheckResponse') },
+        '400': {
+          description: letsEncryptRefusals,
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '404': {
+          description: 'Hosting not found',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+      },
+    },
+  },
+}
+
 export const hostingPaths = {
   ...basePaths,
+  ...letsEncryptPaths,
   [hostingIdPath]: {
     ...(basePaths[hostingIdPath] as Record<string, unknown>),
     patch: {
-      ...((basePaths[hostingIdPath] as Record<string, unknown>).patch as Record<
-        string,
-        unknown
-      >),
+      ...((basePaths[hostingIdPath] as Record<string, unknown>).patch as Record<string, unknown>),
       responses: {
-        ...(((basePaths[hostingIdPath] as Record<string, unknown>)
-          .patch as Record<string, unknown>).responses as Record<string, unknown>),
+        ...(((basePaths[hostingIdPath] as Record<string, unknown>).patch as Record<string, unknown>)
+          .responses as Record<string, unknown>),
         ...composeOwnedConflictResponse,
       },
     },
     delete: {
-      ...((basePaths[hostingIdPath] as Record<string, unknown>).delete as Record<
-        string,
-        unknown
-      >),
+      ...((basePaths[hostingIdPath] as Record<string, unknown>).delete as Record<string, unknown>),
       responses: {
-        ...(((basePaths[hostingIdPath] as Record<string, unknown>)
-          .delete as Record<string, unknown>).responses as Record<string, unknown>),
+        ...((
+          (basePaths[hostingIdPath] as Record<string, unknown>).delete as Record<string, unknown>
+        ).responses as Record<string, unknown>),
         ...composeOwnedConflictResponse,
       },
     },

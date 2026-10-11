@@ -448,7 +448,7 @@ test('a duplicate event id answers 204 and schedules nothing', async () => {
     )
   )
   assertEquals(res.status, 204)
-  assertEquals(h.trace.at(-1), 'insert:delivery')
+  assertEquals(h.trace.at(-1), 'update:delivery')
   assertEquals(h.scheduled.length, 0)
   // The claim carried the Stripe event id under the widened `stripe` kind.
   assertEquals(h.db.inserts[0]?.values.provider, 'stripe')

@@ -1,8 +1,10 @@
 import { assertEquals } from '@std/assert'
 import {
   classifyDeployFailure,
+  DEPLOY_CANCELLED_ERROR_CODE,
   deployOutcomeErrorCode,
   deployOutcomeReason,
+  isCancelledDeployError,
   outcomeFromErrorCode,
 } from './deploy-outcome.ts'
 
@@ -45,4 +47,16 @@ test('the reason drops the prefix and is null without an outcome', () => {
   assertEquals(deployOutcomeReason('rolled_back', 'rolled_back: because'), 'because')
   assertEquals(deployOutcomeReason(null, 'rolled_back: because'), null)
   assertEquals(deployOutcomeReason('needs_attention', null), null)
+})
+
+test('a cancelled deploy is told apart by the daemon error prefix and is not a rollback', () => {
+  const message = 'cancelled: stopped while building; the previous version is still running'
+  assertEquals(isCancelledDeployError(message), true)
+  assertEquals(isCancelledDeployError('Docker Compose build was cancelled'), false)
+  assertEquals(isCancelledDeployError(null), false)
+  assertEquals(isCancelledDeployError(undefined), false)
+  assertEquals(DEPLOY_CANCELLED_ERROR_CODE, 'deploy_cancelled')
+  // Neither a strategy outcome nor a rollback: history reads it from `status`.
+  assertEquals(classifyDeployFailure(message), null)
+  assertEquals(outcomeFromErrorCode(DEPLOY_CANCELLED_ERROR_CODE), null)
 })

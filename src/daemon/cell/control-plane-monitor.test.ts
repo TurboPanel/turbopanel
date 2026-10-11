@@ -588,7 +588,7 @@ test('onDaemonInbound repairs stale updating on steady-state hello when daemonBu
     buildId: 'b2',
     builtAt: '2020-01-01T00:00:00.000Z',
     channel: 'trunk',
-    manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
+    manifestUrl: 'https://updates.example.test/manifest.json',
   })
 
   const daemonBuild = {
@@ -742,6 +742,24 @@ test('onDaemonInbound restores online projection after stale sweep', async () =>
   assertEquals(typeof onlinePatch?.statusChangedAt, 'string')
 })
 
+test('onDaemonInbound with runtimeWasOffline restores online when daemonBuild is unchanged', async () => {
+  const stale = new Date(Date.now() - DAEMON_OFFLINE_SWEEP_MS - 1000).toISOString()
+  const build = { commit: 'same', buildId: '1', channel: 'trunk' }
+  const { db, updateCalls } = createTrackingDb(
+    { key: baseKey, projection: { hostname: 'host-1', daemonBuild: build } },
+    { connected: false, statusChangedAt: stale }
+  )
+  const at = new Date().toISOString()
+  // recordInbound already ran: the cell reads connected with the same build.
+  const cell = createMockCell({ connected: true, lastSeenAt: at, daemonBuild: build }) as never
+
+  await onDaemonInbound(db, serverId, cell, { at, daemonBuild: build })
+  assertEquals(updateCalls.length, 0)
+
+  await onDaemonInbound(db, serverId, cell, { at, daemonBuild: build, runtimeWasOffline: true })
+  assert(updateCalls.some((patch) => patch.isConnected === true))
+})
+
 test('onDaemonUpdateQueued writes projection.update as updating', async () => {
   const { db, getDaemon } = createTrackingDb({ key: baseKey })
 
@@ -861,6 +879,63 @@ test('repairStaleProjectedUpdate marks done when daemon commit matches trunk', a
   assertEquals(repaired, true)
   const update = parseServerDaemonState(getDaemon())?.projection?.update
   assertEquals(update?.status, 'done')
+})
+
+test('onDaemonUpdateResult leaves the projection alone when the daemon refused as already in progress', async () => {
+  const { db, getDaemon } = createTrackingDb({
+    key: baseKey,
+    projection: {
+      update: {
+        status: 'updating',
+        requestId: 'req-2',
+        channel: 'trunk',
+        queuedAt: '2020-01-01T00:00:00.000Z',
+      },
+    },
+  })
+
+  await onDaemonUpdateResult(
+    db,
+    serverId,
+    'req-2',
+    false,
+    '2020-01-01T00:01:00.000Z',
+    'preflight_in_progress: update already in progress',
+    'preflight_in_progress'
+  )
+
+  const update = parseServerDaemonState(getDaemon())?.projection?.update
+  assertEquals(update?.status, 'updating')
+  assertEquals(update?.error, undefined)
+})
+
+test('repairStaleProjectedUpdate clears a failed update once the daemon runs the target build', async () => {
+  const failed = {
+    status: 'failed' as const,
+    requestId: 'req-failed',
+    channel: 'trunk',
+    finishedAt: '2020-01-01T00:01:00.000Z',
+    error: 'preflight_in_progress: update already in progress',
+  }
+  const { db, getDaemon } = createTrackingDb({ key: baseKey, projection: { update: failed } })
+
+  const { repairStaleProjectedUpdate } = await import('./control-plane-monitor.ts')
+  const repaired = await repairStaleProjectedUpdate(db, serverId, failed, {
+    currentCommit: 'target-commit',
+    targetCommit: 'target-commit',
+  })
+
+  assertEquals(repaired, true)
+  const update = parseServerDaemonState(getDaemon())?.projection?.update
+  assertEquals(update?.status, 'done')
+  assertEquals(update?.error, undefined)
+
+  // Still behind the target: the failure stays, nothing is rewritten.
+  const behind = await repairStaleProjectedUpdate(db, serverId, failed, {
+    currentCommit: 'old-commit',
+    targetCommit: 'target-commit',
+  })
+  assertEquals(behind, false)
 })
 
 test('maybeRepairUpdateFromDaemonBuildHello clears updating when daemonBuild matches trunk', async () => {
@@ -1072,7 +1147,7 @@ test('maybeRepairUpdateFromDaemonBuildHello uses the trunk manifest when targetC
     buildId: 'b-manifest',
     builtAt: '2020-01-01T00:00:00.000Z',
     channel: 'trunk',
-    manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
+    manifestUrl: 'https://updates.example.test/manifest.json',
   })
   const { db, getDaemon } = createTrackingDb({
     key: baseKey,

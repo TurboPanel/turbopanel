@@ -5,13 +5,9 @@
  * `failover` replica. Remote `read`/DR-only servers do not join.
  */
 
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import {
-  decryptSecret,
-  ENVELOPE_PREFIX_SECRET,
-  resealSecretForDaemon,
-} from '../../lib/secrets/data-encryption.ts'
+import { decryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { getServerDaemonStateByServerId, isDaemonKeyActive } from '../servers/server-identity-db.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
@@ -25,15 +21,22 @@ import type {
 } from '../../contracts/commands/schemas.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import { ensureOrganizationManagedNetwork } from '../fabric/fabric-records.ts'
-import { container, managed, replica, principal, server, service } from '../../db/schema.ts'
+import { container, managed, replica, server, service } from '../../db/schema.ts'
 import { MANAGED_HA_HTTP_PORT, MANAGED_HA_RAFT_PORT } from './ha-ports.ts'
 import {
+  orchestratorManagesEngine,
   orchestratorPromotionRule,
   selectHaRaftMembers,
   serverHostsManagedHa,
 } from './ha-policy.ts'
+import {
+  buildOrganizationOrchestratorApiUser,
+  buildOrganizationOrchestratorRaftToken,
+} from './orchestrator-api-credential.ts'
+import { buildOrganizationTopologyUser } from './topology-credential.ts'
 import { getManagedEngineSpec, type ManagedEngineSpec } from './index.ts'
 import { loadDatacenterMembershipsForServers } from '../net/datacenter-membership.ts'
+import { loadDatacenterPolicies } from '../net/datacenter-networks.ts'
 import {
   isPrivateEndpointError,
   resolvePrivateEndpoints,
@@ -41,12 +44,20 @@ import {
   type ResolvedPrivateEndpoint,
 } from '../net/private-endpoint.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
-import { isManagedReplicationPrincipal } from './ingress-desired-pure.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
+import {
+  listOrchestratorManagedClusterIds,
+  mergeOrchestratorManagedClusterIds,
+  resolveReplicationCredentialForHa,
+  type HaSecretsParams,
+} from './ha-replication-credential.ts'
+
+export { orchestratorManagedClusterIdsFromRows } from './ha-replication-credential.ts'
 import { buildManagedOrgTlsMaterial, ensureActiveOrganizationCa } from './apply-prepare.ts'
 import {
   ensureManagedHaHierarchy,
   findManagedHaHierarchy,
+  listManagedHaHierarchyServerIds,
   SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
   type SystemHierarchyIds,
 } from '../system/hierarchy.ts'
@@ -73,9 +84,18 @@ function haTeardownPayload(
   }
 }
 
-async function loadHaMembersOnServer(db: Db, serverId: string): Promise<ManagedMemberRow[]> {
-  const rows = await db.select().from(replica).where(eq(replica.serverId, serverId))
-  return rows.map((row) => ({
+type HaMemberOnServer = ManagedMemberRow & { engine: string }
+
+async function loadHaMembersOnServer(db: Db, serverId: string): Promise<HaMemberOnServer[]> {
+  const rows = await db
+    .select({
+      replica,
+      engine: managed.engine,
+    })
+    .from(replica)
+    .innerJoin(managed, eq(managed.id, replica.managedId))
+    .where(eq(replica.serverId, serverId))
+  return rows.map(({ replica: row, engine }) => ({
     id: row.id,
     managedId: row.managedId,
     serverId: row.serverId,
@@ -90,38 +110,8 @@ async function loadHaMembersOnServer(db: Db, serverId: string): Promise<ManagedM
     options: row.options,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    engine,
   }))
-}
-
-async function resealReplicationPassword(
-  db: Db,
-  secretsConfig: SecretsConfig,
-  dataEncryptionSecrets: DerivedSecretsConfig,
-  managedId: string,
-  serverId: string
-): Promise<{ username: string; envelope: string } | null> {
-  const principals = await db
-    .select({
-      id: principal.id,
-      username: principal.appliedUsername,
-      password: principal.password,
-      metadata: principal.metadata,
-    })
-    .from(principal)
-    .where(eq(principal.managedId, managedId))
-  const repl = principals.find((row) => isManagedReplicationPrincipal(row.metadata))
-  if (!repl || typeof repl.password !== 'string') return null
-  if (!repl.password.startsWith(ENVELOPE_PREFIX_SECRET)) return null
-
-  const daemonState = await getServerDaemonStateByServerId(db, serverId)
-  if (!daemonState || !isDaemonKeyActive(daemonState.key)) return null
-  const resealed = await resealSecretForDaemon(
-    secretsConfig,
-    dataEncryptionSecrets,
-    { serverId, keyId: daemonState.key.id },
-    repl.password
-  )
-  return { username: repl.username, envelope: resealed }
 }
 
 async function loadLocalEngineContainerNames(
@@ -157,12 +147,6 @@ export type HaMemberDial = {
   host: string
   port: number
   containerName?: string
-}
-
-type HaSecretsParams = {
-  serverId: string
-  secretsConfig: SecretsConfig
-  dataEncryptionSecrets: DerivedSecretsConfig
 }
 
 export function haClusterMemberRole(role: string): ManagedHaClusterMember['role'] {
@@ -289,16 +273,20 @@ async function buildRaftConfig(
       serverId: replica.serverId,
       role: replica.role,
       replicaClass: replica.replicaClass,
+      engine: managed.engine,
     })
     .from(replica)
     .innerJoin(managed, eq(managed.id, replica.managedId))
     .innerJoin(server, eq(server.id, replica.serverId))
     .where(eq(server.organizationId, organizationId))
 
-  const byServer = new Map<string, Array<{ role: string; replicaClass: string | null }>>()
+  const byServer = new Map<
+    string,
+    Array<{ role: string; replicaClass: string | null; engine: string }>
+  >()
   for (const row of orgMembers) {
     const list = byServer.get(row.serverId) ?? []
-    list.push({ role: row.role, replicaClass: row.replicaClass })
+    list.push({ role: row.role, replicaClass: row.replicaClass, engine: row.engine })
     byServer.set(row.serverId, list)
   }
 
@@ -309,7 +297,11 @@ async function buildRaftConfig(
   if (!raftServerIds.includes(thisServerId)) return null
 
   const pins = await loadDatacenterMembershipsForServers(db, raftServerIds)
-  const members = selectHaRaftMembers(thisServerId, raftServerIds, pins)
+  const datacenterIds = [
+    ...new Set([...pins.values()].flatMap((rows) => rows.map((row) => row.datacenterId))),
+  ]
+  const policies = await loadDatacenterPolicies(db, datacenterIds)
+  const members = selectHaRaftMembers(thisServerId, raftServerIds, pins, policies)
   if (!members) return null
   const { advertiseAddress } = members
 
@@ -350,14 +342,11 @@ async function buildHaClusterIfReady(
   const members = await listManagedMembers(db, managedId)
   if (members.length < 2) return null
   const spec = await loadManagedEngineSpecById(db, managedId)
-  if (!spec) return null
-  const repl = await resealReplicationPassword(
-    db,
-    params.secretsConfig,
-    params.dataEncryptionSecrets,
-    managedId,
-    params.serverId
-  )
+  // Postgres never reaches Orchestrator: it answers `/api/discover` with HTTP
+  // 500 `invalid connection`, which used to abort the whole reconcile and
+  // leave every MySQL/MariaDB cluster behind it unregistered.
+  if (!spec || !orchestratorManagesEngine(spec.engine)) return null
+  const repl = await resolveReplicationCredentialForHa(db, params, managedId, spec)
   if (!repl) return null
   const haMembers = await buildHaClusterMembers(db, params.serverId, members, spec.defaultPort)
   if (haMembers.length < 2) return null
@@ -374,10 +363,13 @@ async function buildHaClusterIfReady(
 async function buildHaClustersForServer(
   db: Db,
   params: HaSecretsParams,
+  organizationId: string,
   localMembers: readonly ManagedMemberRow[]
 ): Promise<ManagedHaCluster[]> {
-  const managedIds = [...new Set(localMembers.map((row) => row.managedId))].toSorted((a, b) =>
-    a.localeCompare(b)
+  const orchestratorIds = await listOrchestratorManagedClusterIds(db, organizationId)
+  const managedIds = mergeOrchestratorManagedClusterIds(
+    orchestratorIds,
+    localMembers.map((row) => row.managedId)
   )
   const clusters: ManagedHaCluster[] = []
   await forEachSequential(managedIds, async (managedId) => {
@@ -453,7 +445,7 @@ export async function buildManagedHaReconcilePayload(
     }
   }
 
-  const clusters = await buildHaClustersForServer(db, params, localMembers)
+  const clusters = await buildHaClustersForServer(db, params, organizationId, localMembers)
 
   const daemonState = await getServerDaemonStateByServerId(db, params.serverId)
   if (!daemonState || !isDaemonKeyActive(daemonState.key)) return null
@@ -477,6 +469,26 @@ export async function buildManagedHaReconcilePayload(
     [raft.advertiseAddress]
   )
 
+  // One account for the whole organization: Orchestrator has a single
+  // `MySQLTopologyUser` and the same login has to work on every MySQL and
+  // MariaDB member of every cluster it registers. Derived, so this value is
+  // identical to the one `managed.apply` puts on the members.
+  const topologyUser = await buildOrganizationTopologyUser(
+    params.secretsConfig,
+    { serverId: params.serverId, keyId: daemonState.key.id },
+    organizationId
+  )
+  const orchestratorApiUser = await buildOrganizationOrchestratorApiUser(
+    params.secretsConfig,
+    { serverId: params.serverId, keyId: daemonState.key.id },
+    organizationId
+  )
+  const orchestratorRaftToken = await buildOrganizationOrchestratorRaftToken(
+    params.secretsConfig,
+    { serverId: params.serverId, keyId: daemonState.key.id },
+    organizationId
+  )
+
   return {
     serverId: params.serverId,
     managedNetwork: await resolveManagedNetworkName(),
@@ -484,6 +496,9 @@ export async function buildManagedHaReconcilePayload(
     raft,
     clusters,
     identity,
+    topologyUser,
+    orchestratorApiUser,
+    orchestratorRaftToken,
     orgTlsMaterial,
   }
 }
@@ -534,43 +549,159 @@ export async function enqueueManagedHaReconcile(
   return { ok: true, commandId: record.id, serverId: params.serverId }
 }
 
+type HaFanOutParams = Readonly<{
+  actorType: 'user' | 'system'
+  actorId: string
+  secretsConfig: SecretsConfig
+  dataEncryptionSecrets: DerivedSecretsConfig
+}>
+
+type HaHostMemberRow = {
+  serverId: string
+  role: string
+  replicaClass: string | null
+  engine: string
+}
+
+/**
+ * Servers that run (or must tear down) an Orchestrator: every server hosting a
+ * MySQL/MariaDB primary or `failover` replica (the Raft voters) plus every
+ * server that still has a managed-ha hierarchy. Sorted, no duplicates.
+ */
+export function selectOrchestratorHostServerIds(
+  memberRows: readonly HaHostMemberRow[],
+  hierarchyServerIds: readonly string[]
+): string[] {
+  const byServer = new Map<string, HaHostMemberRow[]>()
+  for (const row of memberRows) {
+    const list = byServer.get(row.serverId) ?? []
+    list.push(row)
+    byServer.set(row.serverId, list)
+  }
+  const ids = new Set(hierarchyServerIds)
+  for (const [serverId, members] of byServer) {
+    if (serverHostsManagedHa(members)) ids.add(serverId)
+  }
+  return [...ids].toSorted((a, b) => a.localeCompare(b))
+}
+
+/**
+ * Every Orchestrator host in these organizations. One Raft group spans the
+ * whole organization and followers forward API calls to the leader, so a
+ * change that reaches only one cluster's own members (a rotated Organization
+ * CA bundle, a new voter) leaves the leader on its old trust and peer list.
+ */
+export async function listOrganizationOrchestratorServerIds(
+  db: Db,
+  organizationIds: readonly string[]
+): Promise<string[]> {
+  if (organizationIds.length === 0) return []
+  const memberRows = await db
+    .select({
+      serverId: replica.serverId,
+      role: replica.role,
+      replicaClass: replica.replicaClass,
+      engine: managed.engine,
+    })
+    .from(replica)
+    .innerJoin(managed, eq(managed.id, replica.managedId))
+    .innerJoin(server, eq(server.id, replica.serverId))
+    .where(inArray(server.organizationId, [...organizationIds]))
+  const hierarchyServerIds = await listManagedHaHierarchyServerIds(db, organizationIds)
+  return selectOrchestratorHostServerIds(memberRows, hierarchyServerIds)
+}
+
+async function loadServerOrganizationIds(db: Db, serverIds: readonly string[]): Promise<string[]> {
+  if (serverIds.length === 0) return []
+  const rows = await db
+    .select({ organizationId: server.organizationId })
+    .from(server)
+    .where(inArray(server.id, [...serverIds]))
+  return [...new Set(rows.flatMap((row) => (row.organizationId ? [row.organizationId] : [])))]
+}
+
+/** Indirection so tests can observe which servers a fan-out reaches. */
+export const haReconcileEnqueuer = {
+  enqueue: enqueueManagedHaReconcile,
+}
+
+async function enqueueHaReconcileForServers(
+  db: Db,
+  commandQueue: CommandQueue,
+  serverIds: Iterable<string>,
+  params: HaFanOutParams,
+  context: string
+): Promise<string[]> {
+  const commandIds: string[] = []
+  await forEachSequential(serverIds, async (serverId) => {
+    const result = await haReconcileEnqueuer.enqueue(db, commandQueue, { ...params, serverId })
+    if (result.ok) {
+      commandIds.push(result.commandId)
+    } else if (result.reason === 'enqueue_failed') {
+      compatLogWarn('managed-ha', `ha reconcile enqueue failed ${context} serverId=${serverId}`)
+    }
+  })
+  return commandIds
+}
+
 export async function fanOutManagedHaReconcile(
   db: Db,
   commandQueue: CommandQueue,
-  params: Readonly<{
-    managedId: string
-    actorType: 'user' | 'system'
-    actorId: string
-    secretsConfig: SecretsConfig
-    dataEncryptionSecrets: DerivedSecretsConfig
-    extraServerIds?: readonly string[]
-  }>
+  params: HaFanOutParams &
+    Readonly<{
+      managedId: string
+      extraServerIds?: readonly string[]
+    }>
 ): Promise<void> {
   const memberIds = await db
     .select({
       serverId: replica.serverId,
       role: replica.role,
       replicaClass: replica.replicaClass,
+      engine: managed.engine,
     })
     .from(replica)
+    .innerJoin(managed, eq(managed.id, replica.managedId))
     .where(eq(replica.managedId, params.managedId))
   const serverIds = new Set<string>(params.extraServerIds ?? [])
   for (const row of memberIds) {
     if (serverHostsManagedHa([row])) serverIds.add(row.serverId)
   }
-  await forEachSequential(serverIds, async (serverId) => {
-    const result = await enqueueManagedHaReconcile(db, commandQueue, {
-      serverId,
-      actorType: params.actorType,
-      actorId: params.actorId,
-      secretsConfig: params.secretsConfig,
-      dataEncryptionSecrets: params.dataEncryptionSecrets,
-    })
-    if (!result.ok && result.reason === 'enqueue_failed') {
-      compatLogWarn(
-        'managed-ha',
-        `ha reconcile enqueue failed managedId=${params.managedId} serverId=${serverId}`
-      )
-    }
-  })
+  // The cluster's own members are not enough: every Orchestrator host of the
+  // members' organizations shares one Raft group, so they all get the same
+  // voter list and trust bundle.
+  const organizationIds = await loadServerOrganizationIds(db, [
+    ...serverIds,
+    ...memberIds.map((row) => row.serverId),
+  ])
+  const orchestratorHosts = await listOrganizationOrchestratorServerIds(db, organizationIds)
+  for (const serverId of orchestratorHosts) serverIds.add(serverId)
+  await enqueueHaReconcileForServers(
+    db,
+    commandQueue,
+    serverIds,
+    params,
+    `managedId=${params.managedId}`
+  )
+}
+
+/**
+ * Reconcile every Orchestrator host of one organization. Used after an
+ * Organization CA rotation fans out and again after the old generation is
+ * retired, so each host's trust bundle holds both generations during the
+ * changeover and only the active one afterwards. Returns the queued command ids.
+ */
+export async function fanOutOrganizationHaReconcile(
+  db: Db,
+  commandQueue: CommandQueue,
+  params: HaFanOutParams & Readonly<{ organizationId: string }>
+): Promise<string[]> {
+  const serverIds = await listOrganizationOrchestratorServerIds(db, [params.organizationId])
+  return await enqueueHaReconcileForServers(
+    db,
+    commandQueue,
+    serverIds,
+    params,
+    `organizationId=${params.organizationId}`
+  )
 }

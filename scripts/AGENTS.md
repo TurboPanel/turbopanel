@@ -27,7 +27,9 @@ filenames containing `hostfree` or `pure` on the host-free shard (run with
 `deno test --parallel`), everything else packed into `db-1` / `db-2`. There
 is no shard list to edit when a suite is added. Node and Deno versions are
 not copied into the workflow: `scripts/ci-runtime-pins.sh` reads
-`node_version` / `deno_version` from the daemon role defaults on trunk.
+`node_version` / `deno_version` from the daemon role defaults at the turbopaneld
+commit SHA pinned in `.github/actions/setup-toolchain/action.yml` (bump it in a PR
+to move Node or Deno).
 
 **Reorg helpers** (do not glob tests; they rewrite inventories and layer
 imports):

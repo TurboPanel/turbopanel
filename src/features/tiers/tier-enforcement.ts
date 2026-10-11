@@ -7,6 +7,7 @@
  * nothing here chooses it.
  */
 import { and, eq, inArray, isNull } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
 import type { Db } from '../../db/connection.ts'
 import { license, organization, server, tier } from '../../db/schema.ts'
 import { listSeatsForOrganization } from '../billing/billing-records.ts'
@@ -34,6 +35,7 @@ import {
 } from './topology-recommendation.ts'
 import { computeAssignment } from './assignment.ts'
 import { loadAssignableServers, tierQuantitiesFromState } from './assignment-records.ts'
+import { resolveTierPickNotice } from './server-preferred-tier.ts'
 import {
   resolveRecommendedTier,
   resolveRequiredTier,
@@ -61,6 +63,8 @@ export type ServerLicenseTierJoinRow = {
   assignedTierId: string | null
   tierRank: number | null
   tierLabel: string | null
+  preferredTierId: string | null
+  preferredTierLabel: string | null
 }
 
 export type TierFloorEvaluation = {
@@ -92,13 +96,25 @@ export type TierPlacementEvaluation = {
   satisfied: boolean
 }
 
+export type TierFreeCount = Readonly<{
+  tierId: string
+  label: string
+  free: number
+}>
+
 export type TierPlacementDto<U extends TierUnwatchedIds | TierUnwatchedCounts = TierUnwatchedIds> =
   {
     licenseTier: string | null
     requiredTier: string
     recommendedTier: string
     unwatched: U
+    pickedTier: string | null
+    tierPickNotice: string | null
+    tiersFree?: readonly TierFreeCount[]
   }
+
+const assignedTier = tier
+const preferredTier = alias(tier, 'preferred_tier')
 
 const JOIN_COLUMNS = {
   serverId: server.id,
@@ -111,8 +127,10 @@ const JOIN_COLUMNS = {
   machineClass: server.machineClass,
   licenseId: license.id,
   assignedTierId: server.assignedTierId,
-  tierRank: tier.rank,
-  tierLabel: tier.label,
+  tierRank: assignedTier.rank,
+  tierLabel: assignedTier.label,
+  preferredTierId: server.preferredTierId,
+  preferredTierLabel: preferredTier.label,
 } as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -172,7 +190,8 @@ export async function loadServerLicenseTierJoins(
     .from(server)
     .leftJoin(organization, eq(organization.id, server.organizationId))
     .leftJoin(license, and(eq(license.serverId, server.id), isNull(license.revokedAt)))
-    .leftJoin(tier, eq(tier.id, server.assignedTierId))
+    .leftJoin(assignedTier, eq(assignedTier.id, server.assignedTierId))
+    .leftJoin(preferredTier, eq(preferredTier.id, server.preferredTierId))
     .where(inArray(server.id, [...serverIds]))
 
   for (const row of rows) {
@@ -320,6 +339,24 @@ export function toTierPlacementDto(
             gpus: ids.gpus.length,
           }
         : ids,
+    pickedTier: null,
+    tierPickNotice: null,
+  }
+}
+
+export function withTierPlacementExtras<U extends TierUnwatchedIds | TierUnwatchedCounts>(
+  dto: TierPlacementDto<U>,
+  extras: Readonly<{
+    pickedTier: string | null
+    tierPickNotice: string | null
+    tiersFree?: readonly TierFreeCount[]
+  }>
+): TierPlacementDto<U> {
+  return {
+    ...dto,
+    pickedTier: extras.pickedTier,
+    tierPickNotice: extras.tierPickNotice,
+    tiersFree: extras.tiersFree,
   }
 }
 
@@ -372,6 +409,7 @@ export async function loadTierPlacementsForServers(
     deployment: MetricsDeploymentKind
     orgOptions?: ReturnType<typeof parseOrganizationOptions>
     unwatched: 'ids'
+    pickUnfulfilled?: ReadonlyMap<string, string>
   }
 ): Promise<Map<string, TierPlacementDto<TierUnwatchedIds>>>
 export async function loadTierPlacementsForServers(
@@ -381,6 +419,7 @@ export async function loadTierPlacementsForServers(
     deployment: MetricsDeploymentKind
     orgOptions?: ReturnType<typeof parseOrganizationOptions>
     unwatched: 'counts'
+    pickUnfulfilled?: ReadonlyMap<string, string>
   }
 ): Promise<Map<string, TierPlacementDto<TierUnwatchedCounts>>>
 export async function loadTierPlacementsForServers(
@@ -390,6 +429,7 @@ export async function loadTierPlacementsForServers(
     deployment: MetricsDeploymentKind
     orgOptions?: ReturnType<typeof parseOrganizationOptions>
     unwatched: 'ids' | 'counts'
+    pickUnfulfilled?: ReadonlyMap<string, string>
   }
 ): Promise<Map<string, TierPlacementDto<TierUnwatchedIds | TierUnwatchedCounts>>> {
   const result = new Map<string, TierPlacementDto<TierUnwatchedIds | TierUnwatchedCounts>>()
@@ -405,11 +445,17 @@ export async function loadTierPlacementsForServers(
     if (!row) continue
     const snapshot = parseTopologySnapshot(topologyByServer.get(serverId)?.snapshot)
     const placement = placementFromJoinRow(row, snapshot, opts.deployment, opts.orgOptions)
-    if (opts.unwatched === 'ids') {
-      result.set(serverId, toTierPlacementDto(placement, 'ids'))
-    } else {
-      result.set(serverId, toTierPlacementDto(placement, 'counts'))
-    }
+    const base =
+      opts.unwatched === 'ids'
+        ? toTierPlacementDto(placement, 'ids')
+        : toTierPlacementDto(placement, 'counts')
+    result.set(serverId, {
+      ...base,
+      pickedTier: row.preferredTierLabel ?? null,
+      tierPickNotice: opts.pickUnfulfilled
+        ? resolveTierPickNotice(serverId, opts.pickUnfulfilled)
+        : null,
+    })
   }
   return result
 }

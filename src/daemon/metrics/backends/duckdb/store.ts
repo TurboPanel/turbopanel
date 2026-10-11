@@ -98,6 +98,7 @@ import {
   DATABASE_PROXY_SAMPLES_TABLE,
   databaseProxySamplesInsertColumns,
   entityMetricColumnName,
+  extendedColumnName,
   FILESYSTEM_METRIC_FIELDS,
   FILESYSTEM_SAMPLES_TABLE,
   filesystemSamplesInsertColumns,
@@ -215,7 +216,20 @@ type PendingRowTable =
   | 'event'
   | 'status'
 
-type PendingRow = { table: PendingRowTable; values: DuckDbBindValue[] }
+type PendingRow = {
+  table: PendingRowTable
+  values: DuckDbBindValue[]
+  /** Rows from one `writeSample` share a group so a failed insert is isolated per sample. */
+  group?: number
+  /** Failed flush attempts so far; the group is dropped at {@link DUCKDB_WRITE_MAX_ATTEMPTS}. */
+  attempts?: number
+}
+
+/** A sample whose insert keeps failing is dropped (and logged) after this many attempts. */
+export const DUCKDB_WRITE_MAX_ATTEMPTS = 5
+/** Hard cap on queued rows while flushes fail; the oldest rows are dropped first. */
+export const DUCKDB_WRITE_MAX_PENDING_ROWS = 50_000
+const MAX_RECORDED_GROUP_FAILURES = 64
 
 export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
   readonly #paths: DuckDbPaths
@@ -236,6 +250,8 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
   readonly #pendingRows: PendingRow[] = []
   #flushTimer: ReturnType<typeof setTimeout> | null = null
   #flushPromise: Promise<void> | null = null
+  #nextGroup = 1
+  readonly #groupFailures = new Map<number, unknown>()
   #archiveTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(config: DuckDbStoreConfig = {}, options?: DuckDbStoreOptions) {
@@ -508,7 +524,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
 
   /** Force-flush pending writes (queries / shutdown / archive tick). */
   flushWrites(): Promise<void> {
-    return this.#flushPending({ rethrow: true })
+    return this.#flushPending()
   }
 
   async queryStatusHistory(input: StatusHistoryQuery): Promise<StatusHistoryResult> {
@@ -625,6 +641,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     const requiresRouter = metrics.some(isRouterMetric)
     const requiresStorage = metrics.some(isStorageMetric)
     const requiresDockerUsage = metrics.some(isDockerUsageMetric)
+    const requiresIngress = metrics.some(isIngressExtendedMetric)
 
     const joins: string[] = []
     if (requiresMemoryDiagnostics) {
@@ -653,6 +670,18 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       const dockerSource = await this.#familySamplesSource(parquetFamily('docker'), fromMs, toMs)
       joins.push(
         `LEFT JOIN ${dockerSource} AS dk ON dk.server_id = h.server_id AND dk.sampled_at = h.sampled_at`
+      )
+    }
+
+    if (requiresIngress) {
+      const ingressSource = await this.#familySamplesSource(parquetFamily('ingress'), fromMs, toMs)
+      // One row per sample whatever the number of ingress sources: the v7
+      // value is host-wide and rides every source row, so any one will do.
+      const summary = EXTENDED_INGRESS_FIELD_NAMES.map(
+        (field) => `max(${extendedColumnName(field)}) AS ${extendedColumnName(field)}`
+      ).join(', ')
+      joins.push(
+        `LEFT JOIN (SELECT server_id, sampled_at, ${summary} FROM ${ingressSource} GROUP BY server_id, sampled_at) AS ig ON ig.server_id = h.server_id AND ig.sampled_at = h.sampled_at`
       )
     }
 
@@ -887,7 +916,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     this.stopDailyArchiveTimer()
     this.#clearFlushTimer()
     try {
-      await this.#flushPending({ rethrow: false })
+      await this.#flushPending()
     } finally {
       if (this.#openPromise !== null) {
         try {
@@ -1176,9 +1205,18 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     // Enqueue before any await so concurrent chart queries that
     // `flushWrites()` cannot race ahead of an in-flight open and observe an
     // empty pending buffer for a sample already accepted with 202.
+    const group = this.#nextGroup++
+    for (const row of rows) row.group = group
     this.#pendingRows.push(...rows)
+    this.#capPendingRows()
     if (this.#pendingRows.length >= this.#batchMaxRows) {
-      await this.#flushPending({ rethrow: true })
+      await this.#flushPending()
+      // A failure in another sample's group never surfaces here; only ours.
+      if (this.#groupFailures.has(group)) {
+        const error = this.#groupFailures.get(group)
+        this.#groupFailures.delete(group)
+        throw error
+      }
       return
     }
     this.#armFlushTimer()
@@ -1188,7 +1226,9 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     if (this.#flushTimer !== null) return
     this.#flushTimer = this.#setTimeout(() => {
       this.#flushTimer = null
-      void this.#flushPending({ rethrow: false })
+      // An open failure (e.g. a refused marker) rejects here; nothing awaits a
+      // timer flush, so log it rather than raise an unhandled rejection.
+      this.#flushPending().catch((error) => this.#onFlushError(error))
     }, this.#batchMaxAgeMs)
   }
 
@@ -1198,7 +1238,14 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     this.#flushTimer = null
   }
 
-  async #flushPending(opts: { rethrow: boolean }): Promise<void> {
+  #capPendingRows(): void {
+    const excess = this.#pendingRows.length - DUCKDB_WRITE_MAX_PENDING_ROWS
+    if (excess <= 0) return
+    this.#pendingRows.splice(0, excess)
+    this.#onFlushError(new Error(`duckdb metrics write queue full; dropped ${excess} oldest rows`))
+  }
+
+  async #flushPending(): Promise<void> {
     if (this.#flushPromise) {
       await this.#flushPromise
       if (this.#pendingRows.length === 0) return
@@ -1209,26 +1256,32 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     // Publish the in-flight promise *before* `#ensureOpen` so a concurrent
     // query `flushWrites()` waits for this insert instead of observing an
     // empty pending buffer and reading the DB mid-open.
-    const run = this.#flushPendingBody(opts)
+    const run = this.#flushPendingBody()
     this.#flushPromise = run.finally(() => {
       this.#flushPromise = null
     })
     await this.#flushPromise
   }
 
-  async #flushPendingBody(opts: { rethrow: boolean }): Promise<void> {
+  async #flushPendingBody(): Promise<void> {
     const handle = await this.#ensureOpen()
     if (this.#pendingRows.length === 0) return
     const batch = this.#pendingRows.splice(0)
-    await this.#insertBatch(handle.connection, batch, opts.rethrow)
+    await this.#insertBatch(handle.connection, batch)
   }
 
   /** One transaction per flushed batch — every row a single `writeSample` produced lands (or rolls back) together. */
-  async #insertBatch(
-    connection: DuckDbConnectionLike,
-    batch: PendingRow[],
-    rethrow: boolean
-  ): Promise<void> {
+  async #insertBatch(connection: DuckDbConnectionLike, batch: PendingRow[]): Promise<void> {
+    try {
+      await this.#insertRows(connection, batch)
+    } catch (error) {
+      this.#onFlushError(error)
+      await this.#isolateFailedBatch(connection, batch, error)
+      if (this.#pendingRows.length > 0) this.#armFlushTimer()
+    }
+  }
+
+  async #insertRows(connection: DuckDbConnectionLike, batch: PendingRow[]): Promise<void> {
     const byTable = new Map<PendingRowTable, DuckDbBindValue[][]>()
     for (const row of batch) {
       const rows = byTable.get(row.table)
@@ -1238,26 +1291,69 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
         byTable.set(row.table, [row.values])
       }
     }
+    await connection.run('BEGIN TRANSACTION')
     try {
-      await connection.run('BEGIN TRANSACTION')
-      try {
-        await forEachSequential(byTable, ([table, rows]) => {
-          const { sql, values } = buildInsertForTable(table, rows)
-          return connection.run(sql, values)
-        })
-        await connection.run('COMMIT')
-      } catch (error) {
-        await connection.run('ROLLBACK').catch(() => {})
-        throw error
-      }
+      await forEachSequential(byTable, ([table, rows]) => {
+        const { sql, values } = buildInsertForTable(table, rows)
+        return connection.run(sql, values)
+      })
+      await connection.run('COMMIT')
     } catch (error) {
-      // Re-queue so a later query flush / timer can retry; dropping the batch
-      // permanently would leave charts empty after a transient hiccup.
-      this.#pendingRows.unshift(...batch)
-      this.#onFlushError(error)
-      if (rethrow) throw error
-      this.#armFlushTimer()
+      await connection.run('ROLLBACK').catch(() => {})
+      throw error
     }
+  }
+
+  /**
+   * A failed batch is retried one sample at a time, so a single row the column
+   * types reject can never hold back other samples. A sample that keeps failing
+   * is re-queued up to {@link DUCKDB_WRITE_MAX_ATTEMPTS} times (a transient
+   * hiccup still heals), then dropped and logged.
+   */
+  async #isolateFailedBatch(
+    connection: DuckDbConnectionLike,
+    batch: PendingRow[],
+    batchError: unknown
+  ): Promise<void> {
+    const groups = new Map<number, PendingRow[]>()
+    for (const row of batch) {
+      const key = row.group ?? 0
+      const rows = groups.get(key)
+      if (rows) {
+        rows.push(row)
+      } else {
+        groups.set(key, [row])
+      }
+    }
+    const requeue: PendingRow[] = []
+    await forEachSequential(groups, async ([group, rows]) => {
+      let error: unknown = batchError
+      if (groups.size > 1) {
+        try {
+          await this.#insertRows(connection, rows)
+          return
+        } catch (rowError) {
+          error = rowError
+        }
+      }
+      this.#groupFailures.set(group, error)
+      if (this.#groupFailures.size > MAX_RECORDED_GROUP_FAILURES) {
+        this.#groupFailures.delete(this.#groupFailures.keys().next().value as number)
+      }
+      const attempts = (rows[0]?.attempts ?? 0) + 1
+      if (attempts >= DUCKDB_WRITE_MAX_ATTEMPTS) {
+        this.#onFlushError(
+          new Error(`duckdb metrics write dropped after ${attempts} failed attempts`, {
+            cause: error,
+          })
+        )
+        return
+      }
+      for (const row of rows) row.attempts = attempts
+      requeue.push(...rows)
+    })
+    this.#pendingRows.unshift(...requeue)
+    this.#capPendingRows()
   }
 }
 
@@ -1631,10 +1727,31 @@ function isStorageMetric(metric: string): boolean {
   return HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope === 'storage'
 }
 
-/** `true` when `metric` is a `managed.docker` field, stored in the singleton docker table. */
+/** `true` when `metric` is a `managed.docker` field or a v7 container-health field, both stored in the singleton docker table. */
 function isDockerUsageMetric(metric: string): boolean {
-  return HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope === 'dockerUsage'
+  const scope = HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope
+  return scope === 'dockerUsage' || scope === 'extended.docker'
 }
+
+/** `true` when `metric` is a v7 hosting-Caddy number, stored on the ingress rows. */
+function isIngressExtendedMetric(metric: string): boolean {
+  return HOST_METRICS_METRIC_DESCRIPTORS[metric]?.entityScope === 'extended.ingress'
+}
+
+/**
+ * Docker's reclaimable bytes: the daemon's own total, else the three reclaimable
+ * groups of the disk breakdown added up (`NULL` only when none was reported).
+ * The hosted writer applies the same fallback when it stores the sample.
+ */
+const DOCKER_RECLAIMABLE_SQL = [
+  '(coalesce(dk.ext_reclaimable_bytes,',
+  '  CASE WHEN dk.images_reclaimable_bytes IS NULL',
+  '    AND dk.volumes_reclaimable_bytes IS NULL',
+  '    AND dk.build_cache_reclaimable_bytes IS NULL THEN NULL',
+  '  ELSE coalesce(dk.images_reclaimable_bytes, 0)',
+  '    + coalesce(dk.volumes_reclaimable_bytes, 0)',
+  '    + coalesce(dk.build_cache_reclaimable_bytes, 0) END))',
+].join(' ')
 
 /**
  * DuckDB column reference for a `queryHostSeries` descriptor, scoped to
@@ -1659,6 +1776,20 @@ function hostSeriesColumnForDescriptor(descriptor: HostMetricsMetricDescriptor):
   if (descriptor.entityScope === 'dockerUsage') {
     return `dk.${entityMetricColumnName(descriptor.fieldName)}`
   }
+  // v7 numbers: host-wide health counters sit on the host row, container health
+  // on the docker row, and the certificate days on the (one-per-sample) ingress
+  // summary `ig` that `queryHostSeries` joins in.
+  if (descriptor.entityScope === 'extended.host') {
+    return `h.${extendedColumnName(descriptor.fieldName)}`
+  }
+  if (descriptor.entityScope === 'extended.docker') {
+    return descriptor.fieldName === 'reclaimableBytes'
+      ? DOCKER_RECLAIMABLE_SQL
+      : `dk.${extendedColumnName(descriptor.fieldName)}`
+  }
+  if (descriptor.entityScope === 'extended.ingress') {
+    return `ig.${extendedColumnName(descriptor.fieldName)}`
+  }
   if (descriptor.entityScope === 'diagnostics') {
     return CPU_DIAGNOSTICS_FIELD_SET.has(descriptor.fieldName)
       ? `h.${cpuDiagnosticsHostColumnName(descriptor.fieldName)}`
@@ -1673,6 +1804,9 @@ const HOST_SERIES_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set([
   'router',
   'storage',
   'dockerUsage',
+  'extended.host',
+  'extended.docker',
+  'extended.ingress',
 ])
 
 const NO_EXTRA_SCOPES: ReadonlySet<MetricEntityScope> = new Set()
@@ -1840,7 +1974,12 @@ function resolveEntityFieldDescriptor(
 
 /** `hardware.physical` is long-form (one `value` column, not one column per field); every other family uses `entityMetricColumnName`. */
 function entityMetricColumnForFamily(family: PerEntityHostedFamily, field: string): string {
-  return family === 'hardware.physical' ? 'value' : entityMetricColumnName(field)
+  if (family === 'hardware.physical') return 'value'
+  // A drive's combined ops/s is not a stored column: read plus write, `NULL` when either half is.
+  if (family === 'block' && field === 'opsPerSecond') {
+    return `(${entityMetricColumnName('readOpsPerSecond')} + ${entityMetricColumnName('writeOpsPerSecond')})`
+  }
+  return entityMetricColumnName(field)
 }
 
 function assertNonEmptyFields(metrics: readonly string[]): string[] {

@@ -401,8 +401,8 @@ entity), unlike v3's fixed-width part tables.
 
 **Schema on open** (`database.ts`): `CREATE TABLE IF NOT EXISTS` /
 `CREATE INDEX IF NOT EXISTS` for the current layout (schema marker **9**). A
-marker-8 database is discarded like any other mismatch (hard cut, no migration); a missing, corrupt, or any other sidecar marker discards `metrics.duckdb`, `parquet/`,
-`tmp/`, and `schema-version` before the current store is created — there is no
+marker-8 database is discarded like any older version (hard cut, no migration); a sidecar marker holding an older version number discards `metrics.duckdb`, `parquet/`,
+`tmp/`, and `schema-version` before the current store is created. A missing marker beside existing data, or an empty, unparseable, or newer marker, fails the open without deleting anything — there is no
 in-place migration and no supported path for older DuckDB files. The marker is a
 discard-on-mismatch counter, not a monotonic migration version. **The three
 version counters move together, always**: `METRICS_SCHEMA_VERSION` (the wire
@@ -410,7 +410,7 @@ contract), `DUCKDB_SCHEMA_MARKER_VERSION` (this on-disk layout), and the
 chart-cache `schemaVersion` token. Configured retention still prunes expired
 points (`TURBOPANEL_SERVER_METRICS_RETENTION_DAYS`, default 90). Analytics
 Engine has no SQL `DELETE`; hosted points age out after Cloudflare's ~3-month
-retention. The sidecar marker is written after a successful open.
+retention. The sidecar marker is written before the database file is first created, so a crash between the two leaves a current marker and no data (the next open continues) instead of a database file nothing vouches for.
 
 **Daily Parquet archive**, partitioned per family
 (`parquet/<family-table>/year=YYYY/month=MM/day=DD/*.parquet`; timer armed by
@@ -441,8 +441,8 @@ tokens (`doubleN`/`blobN` literals, the `-1e308` sentinel) stay confined to
 `backends/cloudflare/`; (2) backend-private page-identifier symbols
 (`AE_BLOB_PAGE_INDEX`, `AE_BLOB_SOURCE_OR_IDENTITY_INDEX`,
 `entityIdInPageIdentityPredicate`) never leak outside `backends/cloudflare/`.
-Ingest rejects `metadata.version !== 6` outright — there is no dual-accept of
-older wire versions.
+Ingest accepts wire versions 6 and 7 (v7 adds the optional `extended`
+section); any other version is rejected outright.
 
 #### Server metrics — query API & caching
 
@@ -525,9 +525,9 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
 5. The page-identifier symbols (`AE_BLOB_PAGE_INDEX`,
    `AE_BLOB_SOURCE_OR_IDENTITY_INDEX`, `entityIdInPageIdentityPredicate`) never
    appear outside `backends/cloudflare/`.
-6. Ingest rejects any sample whose `metadata.version !== 6` outright. There is
-   no dual-accept of older wire versions and no migration of existing metrics
-   data — enforced by `validateMetricsSample`.
+6. Ingest accepts wire versions 6 and 7 only and rejects any other version
+   outright. There is no migration of existing metrics data — enforced by
+   `validateMetricsSample`.
 7. `DuckDbParquetServerMetricsStore` is the single Deno store instance — never
    two independently constructed instances opening two DuckDB handles on one
    database file.

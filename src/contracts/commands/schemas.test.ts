@@ -1430,11 +1430,13 @@ test('parseManagedPromotePayload and result accept valid shapes', () => {
       managedId: '00000000-0000-4000-8000-000000000001',
       memberId: '00000000-0000-4000-8000-0000000000aa',
       demoteMemberId: '00000000-0000-4000-8000-0000000000bb',
+      resume: true,
     }),
     {
       managedId: '00000000-0000-4000-8000-000000000001',
       memberId: '00000000-0000-4000-8000-0000000000aa',
       demoteMemberId: '00000000-0000-4000-8000-0000000000bb',
+      resume: true,
     }
   )
   assertEquals(
@@ -1692,6 +1694,24 @@ test('parseManagedBackupPayload accepts delete action and optional retentionKeep
       retentionKeep: 7,
     }),
     { ...VALID_MANAGED_BACKUP_CREATE, action: 'delete', retentionKeep: 7 }
+  )
+})
+
+test('parseManagedBackupPayload carries a canonical policyId and rejects a malformed one', () => {
+  const policyId = '11111111-1111-4111-8111-111111111111'
+  assertEquals(
+    parseManagedBackupPayload({ ...VALID_MANAGED_BACKUP_CREATE, action: 'delete', policyId }),
+    { ...VALID_MANAGED_BACKUP_CREATE, action: 'delete', policyId }
+  )
+  assertThrows(
+    () =>
+      parseManagedBackupPayload({
+        ...VALID_MANAGED_BACKUP_CREATE,
+        action: 'delete',
+        policyId: '../policy',
+      }),
+    Error,
+    'Invalid managed.backup payload policyId'
   )
 })
 
@@ -2108,33 +2128,27 @@ function deployPayloadWithPrincipal(runtimes: unknown) {
   }
 }
 
-test('parseCommandPayload round-trips principal runtime entitlements', () => {
-  const parsed = parseCommandPayload(
-    'environment.deploy' as CommandType,
-    deployPayloadWithPrincipal([
-      { runtime: 'php', series: '8.4' },
-      { runtime: 'node', series: '24' },
-    ])
-  ) as { principalMaterial: { runtimes?: unknown }[] }
-  assertEquals(parsed.principalMaterial[0]?.runtimes, [
-    { runtime: 'php', series: '8.4' },
-    { runtime: 'node', series: '24' },
-  ])
+test('parseCommandPayload drops a stale principal runtimes list', () => {
+  // Every installed runtime runs for every site owner's Linux user, so the
+  // payload no longer carries a per-version list. A deploy prepared before
+  // that change must still parse, and the list must not reach the daemon.
+  for (const runtimes of [[{ runtime: 'php', series: '8.4' }], 'php']) {
+    const parsed = parseCommandPayload(
+      'environment.deploy' as CommandType,
+      deployPayloadWithPrincipal(runtimes)
+    ) as { principalMaterial: Record<string, unknown>[] }
+    assertEquals('runtimes' in (parsed.principalMaterial[0] ?? {}), false)
+  }
 })
 
-test('parseCommandPayload rejects a malformed runtime entitlement', () => {
-  // Rejected rather than dropped: the daemon reconciles group membership from
-  // exactly this list, so silently discarding it would REVOKE every
-  // entitlement the principal should have held.
-  for (const bad of [
-    [{ runtime: 'php' }],
-    [{ runtime: 'php', series: '8.4.1' }],
-    [{ runtime: 'php', series: 'latest' }],
-    'php',
-  ]) {
+test('parseCommandPayload rejects a principalMaterial username with a dot', () => {
+  // The daemon writes each `-` of the name as `.` in slice names; that stays
+  // collision-free only while no username on the wire can hold a `.`.
+  for (const username of ['a.b', 'web-app.x', '.hidden']) {
+    const payload = deployPayloadWithPrincipal([])
+    payload.principalMaterial[0].username = username
     assertThrows(
-      () =>
-        parseCommandPayload('environment.deploy' as CommandType, deployPayloadWithPrincipal(bad)),
+      () => parseCommandPayload('environment.deploy' as CommandType, payload),
       Error,
       'Invalid environment.deploy payload'
     )
@@ -2805,6 +2819,21 @@ test('parseFabricReconcileResult accepts skipped, reconciled, and teardown shape
   })
 })
 
+test('parseFabricReconcileResult carries the peer interface and refuses a bad name', () => {
+  const peer = (iface: unknown) => ({
+    summary: 'TurboFabric reconciled',
+    peers: [{ publicKey: WG_PUBKEY, interface: iface }],
+  })
+  assertEquals(parseFabricReconcileResult(peer('eno2')).peers?.[0]?.interface, 'eno2')
+  for (const bad of ['', 'has space', 'x'.repeat(16), '../etc', 7]) {
+    assertThrows(
+      () => parseFabricReconcileResult(peer(bad)),
+      TypeError,
+      'Invalid fabric reconcile result peer interface'
+    )
+  }
+})
+
 test('encodeCommandEnvelope round-trips through parseCommandEnvelope', () => {
   const envelope = {
     commandId: 'cmd-1',
@@ -3384,6 +3413,32 @@ test('parseEnvironmentDeployPayload accepts optional tlsMode acme and rejects un
   )
 })
 
+test('parseEnvironmentDeployPayload keeps a www mode, drops off, and rejects unknown values', () => {
+  const hostingIngressNetwork = '00000000-0000-4000-8000-0000000000bb'
+  const withHosting = (extra: Record<string, unknown>) =>
+    parseEnvironmentDeployPayload({
+      ...BASE_ENVIRONMENT_DEPLOY,
+      hostingIngressNetwork,
+      hostings: [
+        {
+          hostingId: 'h1',
+          serviceId: 's1',
+          composeServiceName: 'web',
+          hostnames: ['example.com'],
+          ...extra,
+        },
+      ],
+    })
+  for (const www of ['both', 'www-to-root', 'root-to-www']) {
+    assertEquals(withHosting({ www }).hostings[0]?.www, www)
+  }
+  assertEquals(withHosting({ www: 'off' }).hostings[0]?.www, undefined)
+  assertEquals(withHosting({}).hostings[0]?.www, undefined)
+  for (const www of ['yes', true]) {
+    assertThrows(() => withHosting({ www }), Error, 'Invalid environment.deploy payload')
+  }
+})
+
 test('parseEnvironmentDeployPayload parses hostingIngress for shared HTTP Traefik', () => {
   const result = parseEnvironmentDeployPayload({
     ...BASE_ENVIRONMENT_DEPLOY,
@@ -3919,6 +3974,97 @@ test('parseEnvironmentDeployPayload round-trips nativeAppServices', () => {
       accountLimits: { cpus: 4, memoryBytes: 2147483648, tasksMax: 512 },
     },
   ])
+})
+
+test('parseEnvironmentDeployPayload carries runtime deno and denoVersion, and rejects bad ones', () => {
+  const app = {
+    composeServiceName: 'api',
+    serviceId: 'svc-api',
+    listenPort: 18101,
+    framework: 'auto',
+  }
+  const parsed = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    nativeAppServices: [{ ...app, runtime: 'deno', denoVersion: '2.9' }, app],
+  })
+  assertEquals(parsed.nativeAppServices?.[0]?.runtime, 'deno')
+  assertEquals(parsed.nativeAppServices?.[0]?.denoVersion, '2.9')
+  assertEquals('runtime' in (parsed.nativeAppServices?.[1] ?? {}), false)
+  for (const bad of [{ runtime: 'bun' }, { denoVersion: 'latest' }]) {
+    assertThrows(
+      () =>
+        parseEnvironmentDeployPayload({
+          ...NATIVE_APP_BASE,
+          nativeAppServices: [{ ...app, ...bad }],
+        }),
+      Error
+    )
+  }
+})
+
+const NATIVE_VARIABLES_APP = {
+  composeServiceName: 'web',
+  serviceId: 'svc-web',
+  listenPort: 18100,
+  framework: 'node',
+}
+
+test('parseEnvironmentDeployPayload keeps nativeAppServices variables', () => {
+  const parsed = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    nativeAppServices: [
+      {
+        ...NATIVE_VARIABLES_APP,
+        variables: [
+          { name: 'API_URL', value: 'https://example.test' },
+          { name: 'DB_PASSWORD', secretKey: 'DB_PASSWORD' },
+        ],
+      },
+    ],
+  })
+  assertEquals(parsed.nativeAppServices?.[0]?.variables, [
+    { name: 'API_URL', value: 'https://example.test' },
+    { name: 'DB_PASSWORD', secretKey: 'DB_PASSWORD' },
+  ])
+  const empty = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    nativeAppServices: [{ ...NATIVE_VARIABLES_APP, variables: [] }],
+  })
+  assertEquals(empty.nativeAppServices?.[0]?.variables, undefined)
+})
+
+test('parseEnvironmentDeployPayload rejects unsafe nativeAppServices variables', () => {
+  const reject = (variables: unknown, message: string) =>
+    assertThrows(
+      () =>
+        parseEnvironmentDeployPayload({
+          ...NATIVE_APP_BASE,
+          nativeAppServices: [{ ...NATIVE_VARIABLES_APP, variables }],
+        }),
+      Error,
+      message
+    )
+  reject('API_URL=1', 'Invalid nativeAppServices variables')
+  reject([null], 'Invalid nativeAppServices variables entry')
+  for (const name of ['1ABC', 'A-B', 'A B', '', 'A=B', 'A\nB', 'x'.repeat(129)]) {
+    reject([{ name, value: 'v' }], 'Invalid nativeAppServices variables name')
+  }
+  reject([{ name: 'A' }], 'needs exactly one of value or secretKey')
+  reject([{ name: 'A', value: 'v', secretKey: 'A' }], 'needs exactly one of value or secretKey')
+  reject([{ name: 'A', value: 7 }], 'Invalid nativeAppServices variable value for A')
+  reject([{ name: 'A', value: 'a\0b' }], 'Invalid nativeAppServices variable value for A')
+  reject([{ name: 'A', secretKey: '' }], 'Invalid nativeAppServices variable secretKey for A')
+  reject(
+    [
+      { name: 'A', value: '1' },
+      { name: 'A', value: '2' },
+    ],
+    'Duplicate nativeAppServices variable A'
+  )
+  reject(
+    Array.from({ length: 257 }, (_, i) => ({ name: `V${i}`, value: '1' })),
+    'Invalid nativeAppServices variables'
+  )
 })
 
 test('parseEnvironmentDeployPayload rejects an unsafe nativeAppServices serviceId', () => {
@@ -5513,6 +5659,7 @@ test('parseEnvironmentDeployPayload sites accept engines, php, and principal ids
       engine: 'nginx',
       principal: { ...SITE_PRINCIPAL, uid: 15001, gid: 15001 },
       webEnv: { APP_ENV: 'prod', drop: 1 },
+      webSecretEnv: { SITE_VAR: 'tpdaemon.abc', drop: 1 },
       php: { version: '8.3', extensions: ['gd'] },
     })
   )
@@ -5521,6 +5668,8 @@ test('parseEnvironmentDeployPayload sites accept engines, php, and principal ids
   assertEquals(sites[0]?.engine, 'nginx')
   assertEquals(sites[0]?.principal?.uid, 15001)
   assertEquals(sites[0]?.webEnv, { APP_ENV: 'prod' })
+  // Sealed secret variables ride apart from the plain ones; non-strings drop.
+  assertEquals(sites[0]?.webSecretEnv, { SITE_VAR: 'tpdaemon.abc' })
   assertEquals(sites[0]?.php?.extensions, ['gd'])
 
   for (const engine of ['apache', 'openlitespeed']) {
@@ -5955,6 +6104,25 @@ test('parseManagedApplyPayload covers volumes, config files, privileges, and mon
   assertEquals(payload.ingressSourceAddresses, undefined)
   assertEquals(payload.monitorUsers?.[0]?.username, 'tp_monitor')
   assertEquals(payload.credentials[0]?.privileges, ['CONNECT', 'CREATE'])
+
+  const withTopology = parseManagedApplyPayload({
+    ...VALID_MANAGED_APPLY,
+    topologyUser: {
+      username: 'tp_topology_111111111111',
+      password: DAEMON_PSK,
+    },
+  })
+  assertEquals(withTopology.topologyUser?.username, 'tp_topology_111111111111')
+  assertEquals(parseManagedApplyPayload(VALID_MANAGED_APPLY).topologyUser, undefined)
+  assertThrows(
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        topologyUser: { username: 'tp_topology_111111111111', password: 'topo-pass' },
+      }),
+    TypeError,
+    'Invalid managed.apply topologyUser'
+  )
 
   const withSources = parseManagedApplyPayload({
     ...VALID_MANAGED_APPLY,
@@ -6469,6 +6637,38 @@ test('parseEnvironmentDeployPayload covers sourceMaterial cloneUrl, railpack, an
   )
 })
 
+const RELEASE_SERVICE_ID = '00000000-0000-4000-8000-000000000099'
+
+test('sourceMaterial round-trips releaseServiceId through parse and wire JSON', () => {
+  const raw = {
+    ...NATIVE_APP_BASE,
+    sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY, releaseServiceId: RELEASE_SERVICE_ID }],
+  }
+  const parsed = parseEnvironmentDeployPayload(raw)
+  assertEquals(parsed.sourceMaterial?.[0]?.releaseServiceId, RELEASE_SERVICE_ID)
+
+  const again = parseEnvironmentDeployPayload(JSON.parse(JSON.stringify(parsed)) as typeof raw)
+  assertEquals(again.sourceMaterial?.[0]?.releaseServiceId, RELEASE_SERVICE_ID)
+
+  const without = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY }],
+  })
+  assertEquals(without.sourceMaterial?.[0]?.releaseServiceId, undefined)
+})
+
+test('sourceMaterial rejects an unsafe releaseServiceId segment', () => {
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...NATIVE_APP_BASE,
+        sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY, releaseServiceId: '../svc' }],
+      }),
+    Error,
+    'Invalid sourceMaterial releaseServiceId'
+  )
+})
+
 const MANAGED_MEMBER_ID = '00000000-0000-4000-8000-0000000000aa'
 const MANAGED_ENV_ID = '00000000-0000-4000-8000-0000000000bb'
 const MANAGED_DEMOTE_ID = '00000000-0000-4000-8000-0000000000cc'
@@ -6579,6 +6779,15 @@ test('parseManagedLifecyclePayload rejects leftover field throws', () => {
     Error,
     'Invalid managed.lifecycle payload'
   )
+  assertEquals(parseManagedLifecyclePayload({ managedId: 'm1', action: 'stop', demoted: true }), {
+    managedId: 'm1',
+    action: 'stop',
+    demoted: true,
+  })
+  assertEquals(parseManagedLifecyclePayload({ managedId: 'm1', action: 'stop', demoted: false }), {
+    managedId: 'm1',
+    action: 'stop',
+  })
 })
 
 test('parseManagedDestroyPayload rejects leftover field throws', () => {
@@ -6989,4 +7198,59 @@ test('parseEnvironmentDeployResult keeps per-site app facts and drops unknown ki
   ])
   assertEquals('sites' in parseEnvironmentDeployResult({ projectName: 'demo' }), false)
   assertEquals('sites' in parseEnvironmentDeployResult({ projectName: 'demo', sites: 'x' }), false)
+})
+
+const DB_SITE_BASE = {
+  environmentId: 'env-1',
+  projectId: 'proj-1',
+  organizationId: 'org-1',
+  projectName: 'tp-demo',
+  composeFiles: [
+    {
+      filename: 'compose.yaml',
+      role: 'runtime' as const,
+      content: 'services:\\n  a:\\n    image: x\\n',
+    },
+  ],
+  hostings: [],
+}
+const DB_SITE = { composeServiceName: 'wp', engine: 'apache', root: 'public', listenPort: 18081 }
+const CERT = '-----BEGIN CERTIFICATE-----\nAA\n-----END CERTIFICATE-----\n'
+
+test('a site carries dbCa and requiredEnv; a key, a bad name or an empty list is refused', () => {
+  const parse = (extra: Record<string, unknown>) =>
+    parseEnvironmentDeployPayload({ ...DB_SITE_BASE, sites: [{ ...DB_SITE, ...extra }] })
+  const ok = parse({
+    dbCa: { variables: ['DATABASE_CA_FILE'], pem: CERT },
+    requiredEnv: ['DATABASE_HOST'],
+  })
+  assertEquals(ok.sites?.[0]?.dbCa?.variables, ['DATABASE_CA_FILE'])
+  assertEquals(ok.sites?.[0]?.requiredEnv, ['DATABASE_HOST'])
+  assertEquals(parse({}).sites?.[0]?.dbCa, undefined)
+  const key = '-----BEGIN PRIVATE KEY-----\nAA\n-----END PRIVATE KEY-----\n'
+  for (const bad of [
+    { dbCa: { variables: ['X'], pem: key } },
+    { dbCa: { variables: ['X'], pem: `${CERT}${key}` } },
+    { dbCa: { variables: ['a b'], pem: CERT } },
+    { dbCa: { variables: [], pem: CERT } },
+    { requiredEnv: ['a b'] },
+    { requiredEnv: [] },
+  ]) {
+    assertThrows(() => parse(bad))
+  }
+})
+
+test('the deploy result keeps daemon warnings, bounded, and ignores anything else', () => {
+  assertEquals(
+    parseEnvironmentDeployResult({ projectName: 'p', warnings: ['a', 3, 'b'] }).warnings,
+    ['a', 'b']
+  )
+  assertEquals(parseEnvironmentDeployResult({ projectName: 'p' }).warnings, undefined)
+  assertEquals(parseEnvironmentDeployResult({ projectName: 'p', warnings: [] }).warnings, undefined)
+  assertEquals(
+    parseEnvironmentDeployResult({ projectName: 'p', warnings: 'x' }).warnings,
+    undefined
+  )
+  const long = parseEnvironmentDeployResult({ projectName: 'p', warnings: ['x'.repeat(5000)] })
+  assertEquals(long.warnings?.[0]?.length, 1000)
 })

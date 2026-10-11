@@ -38,7 +38,7 @@ test('serializeEnvironment maps row fields', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     }).name,
-    'Production',
+    'Production'
   )
 })
 
@@ -51,10 +51,9 @@ test('parseCreateEnvironmentNames validates names', () => {
 })
 
 test('stripEnvironmentPromotedMetadata removes serverId and component', () => {
-  assertEquals(
-    stripEnvironmentPromotedMetadata({ serverId: validUuid, component: 'x', note: 1 }),
-    { note: 1 },
-  )
+  assertEquals(stripEnvironmentPromotedMetadata({ serverId: validUuid, component: 'x', note: 1 }), {
+    note: 1,
+  })
 })
 
 test('parseCreateEnvironmentJsonb lints compose and strips promoted metadata', () => {
@@ -129,10 +128,7 @@ test('parseEnvironmentPatchOptions rejects invalid compose', () => {
 })
 
 test('parseCreateEnvironmentNames rejects bad description and reads name', () => {
-  assertEquals(
-    parseCreateEnvironmentNames({ name: 'Ok', description: 12 }).ok,
-    false,
-  )
+  assertEquals(parseCreateEnvironmentNames({ name: 'Ok', description: 12 }).ok, false)
   const named = parseCreateEnvironmentNames({ name: 'Prod', description: 'live' })
   if (!named.ok) throw new TypeError('expected valid name create')
   assertEquals(named.name, 'Prod')

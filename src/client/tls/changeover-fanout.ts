@@ -1,6 +1,12 @@
 /**
  * Organization CA rotation fan-out: enumerate org-scoped managed targets and
  * enqueue `managed.apply` / `managed.ingress.reconcile` plus binding rematerialize.
+ * Once every cluster has been sent, `managed.ha.reconcile` goes to every
+ * Orchestrator host of the organization (`fanOutOrganizationHaReconcile`), not
+ * only the hosts of the clusters that were applied: one Raft group spans the
+ * organization and followers forward `/api/discover` to the leader, so a leader
+ * left on the old trust bundle refuses every member signed by the new CA. The
+ * command consumer still reconciles after each primary `managed.apply` too.
  *
  * Does **not** enqueue `environment.deploy` — consumer compose pick-up of the
  * new `<PREFIX>_CA_CERT` is surfaced as `needsRedeploy`.
@@ -16,6 +22,8 @@ import {
   prepareManagedApplyPayloads,
 } from '../../features/managed/apply-prepare.ts'
 import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
+import { fanOutOrganizationHaReconcile } from '../../features/managed/ha-desired.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
 import { parseManagedRowOptions } from '../../features/managed/options.ts'
 import { parseManagedResidual } from '../../features/managed/serialize.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -458,6 +466,7 @@ export async function fanOutApplyForCluster(
     userId: params.actorId,
     managedId: params.row.id,
     members: prepared.members,
+    fanOutMembersConcurrently: true,
   })
   if (enqueued instanceof Response) {
     return [
@@ -609,10 +618,13 @@ async function recordMissingManagedCluster(
   ctx: RotationFanoutContext,
   managedId: string
 ): Promise<void> {
-  const { db, params, state, complete } = ctx
-  state.results.push(
-    applyResultRow(managedId, params.organizationId, 'failed', undefined, 'managed_not_found')
-  )
+  const { db, params, state, complete, targets } = ctx
+  const members = targets.members.filter((member) => member.managedId === managedId)
+  for (const member of members) {
+    state.results.push(
+      applyResultRow(managedId, member.serverId, 'skipped', undefined, 'target_gone')
+    )
+  }
   state.resumeAfter = managedId
   await persistRotationProgress(db, params.rotationId, state, journalCursor(complete, managedId))
 }
@@ -694,6 +706,41 @@ async function fanOutLeftoverIngress(ctx: RotationFanoutContext): Promise<void> 
   await persistRotationProgress(db, params.rotationId, state, null)
 }
 
+export type OrganizationTrustReconcileParams = Readonly<{
+  organizationId: string
+  actorType: 'user' | 'system'
+  actorId: string
+  secretsConfig: SecretsConfig
+  dataEncryptionSecrets: DerivedSecretsConfig
+}>
+
+/** Indirection so tests can observe the org-wide HA reconcile. */
+export const orchestratorTrustReconciler = {
+  fanOut: fanOutOrganizationHaReconcile,
+}
+
+/**
+ * Send the current Organization CA trust bundle to every Orchestrator host of
+ * the organization. Best effort: a failure is logged and never fails the
+ * rotation step that called it (the next primary apply reconciles again).
+ */
+export async function reconcileOrganizationOrchestratorTrust(
+  db: Db,
+  commandQueue: CommandQueue,
+  params: OrganizationTrustReconcileParams
+): Promise<string[]> {
+  try {
+    return await orchestratorTrustReconciler.fanOut(db, commandQueue, params)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    compatLogWarn(
+      'tls-rotation',
+      `orchestrator trust reconcile failed organizationId=${params.organizationId}: ${message}`
+    )
+    return []
+  }
+}
+
 /**
  * Bounded/resumable fan-out across managed clusters in id order.
  * Persist each batch onto `rotation.results` when `rotationId` is set.
@@ -743,6 +790,13 @@ export async function runOrganizationCaRotationFanout(
 
   if (complete) {
     await fanOutLeftoverIngress(ctx)
+    await reconcileOrganizationOrchestratorTrust(db, commandQueue, {
+      organizationId: params.organizationId,
+      actorType: params.actorType,
+      actorId: params.actorId,
+      secretsConfig: params.secretsConfig,
+      dataEncryptionSecrets: params.dataEncryptionSecrets,
+    })
   }
 
   return {

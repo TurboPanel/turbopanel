@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
 import { assertEquals } from '@std/assert'
 import { projectServerDaemon } from '../../daemon/cell/postgres-projection.ts'
@@ -229,7 +230,7 @@ async function withConsumerFixtures(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping command consumer tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('command consumer tests')
     return
   }
 
@@ -898,6 +899,35 @@ async function withManagedDestroyFixtures(
     }
   })
 }
+
+test('processCommandEnvelope releases an applying managed row when the daemon is offline', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId }) => {
+    await db.update(managed).set({ status: 'applying' }).where(eq(managed.id, managedId))
+    // The fixture attaches a connected daemon; take it offline before dispatch.
+    await db.update(server).set({ isConnected: false }).where(eq(server.id, serverId))
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'managed.restore',
+      payload: {
+        managedId,
+        engine: 'postgres',
+        backupId: 'bk_1700000000000',
+        artifactExtension: 'dump',
+        checksum: 'c'.repeat(64),
+      },
+    })
+    const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+    const [row] = await db.select().from(managed).where(eq(managed.id, managedId))
+    assertEquals(row?.status, 'failed')
+    assertEquals(registry.enqueueCalled, false)
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.error, 'Daemon not connected')
+  })
+})
 
 test('processCommandEnvelope deletes the managed row and cascades principals when deleteAfterDestroy succeeds', async () => {
   await withManagedDestroyFixtures(async ({ db, serverId, managedId, rootPrincipalId }) => {
@@ -2674,6 +2704,72 @@ test('processCommandEnvelope records a rolled back and a needs attention sequent
   })
 })
 
+test('processCommandEnvelope records a deploy the host stopped on request as cancelled, keeping the old generation', async () => {
+  await withDeployFixtures(async ({ db, organizationId, serverId, environmentId, projectId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    await db.delete(deployment).where(eq(deployment.serverId, serverId))
+    await db.insert(deployment).values({
+      environmentId,
+      serverId,
+      desiredGeneration: 2,
+      appliedGeneration: 1,
+      status: 'applying',
+    })
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'environment.deploy',
+      payload: {
+        environmentId,
+        projectId,
+        organizationId,
+        projectName: 'tp-deploy-test',
+        composeFiles: [
+          {
+            filename: 'compose.yaml',
+            role: 'runtime',
+            source: 'inline',
+            content: 'services:\n  web:\n    image: nginx\n',
+          },
+        ],
+        hostings: [],
+        generation: 2,
+      },
+    })
+    const daemonError = 'cancelled: stopped while building; the previous version is still running'
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'failed',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        error: daemonError,
+      },
+    })
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'cancelled')
+    assertEquals(updated?.error, daemonError)
+    assertEquals(updated?.errorCode, 'deploy_cancelled')
+    const [row] = await db
+      .select({
+        status: deployment.status,
+        outcome: deployment.outcome,
+        metadata: deployment.metadata,
+        applied: deployment.appliedGeneration,
+      })
+      .from(deployment)
+      .where(eq(deployment.serverId, serverId))
+    assertEquals(row?.status, 'failed')
+    assertEquals(row?.outcome, 'failed')
+    assertEquals((row?.metadata as { cancelled: unknown }).cancelled, true)
+    // The previous generation is still the applied one.
+    assertEquals(row?.applied, 1)
+  })
+})
+
 /** Two servers of one deploy, generation 5: `serverId` is batch 0 (applying), a second is batch 1 (held). */
 async function holdSecondServerOfRollout(
   db: Parameters<Parameters<typeof withDeployFixtures>[0]>[0]['db'],
@@ -3363,11 +3459,12 @@ test('processCommandEnvelope appends managed.backup metadata on create success',
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
 
     const rows = await db
-      .select({ id: backup.backupId, managedId: backup.managedId })
+      .select({ id: backup.backupId, managedId: backup.managedId, serverId: backup.serverId })
       .from(backup)
       .where(eq(backup.managedId, managedId))
     assertEquals(rows.length, 1)
     assertEquals(rows[0]?.id, 'bk_1700000000000')
+    assertEquals(rows[0]?.serverId, serverId)
   })
 })
 

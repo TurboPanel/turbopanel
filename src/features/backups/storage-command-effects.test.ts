@@ -5,6 +5,7 @@
  * TURBOPANEL_DATABASE_URL.
  */
 
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
@@ -21,12 +22,13 @@ import { applyStorageBackupSideEffect } from './storage-command-effects.ts'
 const test = Deno.test.bind(Deno)
 
 const dbUrl = getDatabaseUrl()
+const STORE_ID = '0192d6a0-0000-7000-8000-0000000000d1'
 
 type Db = ReturnType<typeof createDenoDb>
 
 async function withCopy(fn: (db: Db, copyId: string) => Promise<void>): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping storage.backup side effect tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('storage.backup side effect tests')
     return
   }
   const db = createDenoDb()
@@ -62,7 +64,14 @@ function record(copyId: string, action: 'create' | 'delete', backupId = 'bk_one'
   return {
     id: 'cmd-1',
     type: 'storage.backup',
-    payload: { copyId, copyProvider: 'docker', volumeName: 'uploads', action, backupId },
+    payload: {
+      copyId,
+      copyProvider: 'docker',
+      volumeName: 'uploads',
+      storageId: STORE_ID,
+      action,
+      backupId,
+    },
   }
 }
 

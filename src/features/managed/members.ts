@@ -13,9 +13,16 @@ import {
   resolvePrivateEndpoints,
 } from '../net/private-endpoint.ts'
 import { container, replica, server } from '../../db/schema.ts'
-import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
+import {
+  type ManagedReplicationHealth,
+  parseManagedSlotRetention,
+} from '../../contracts/commands/schemas.ts'
+import { ageReplicationHealth, type ReplicationHealthView } from './replica-freshness.ts'
 import { MANAGED_PRIVATE_PORT_MAX, MANAGED_PRIVATE_PORT_MIN } from './ingress-ports.ts'
 import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
+import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
+import { hasRemoteConsumerServers } from '../bindings/remote-consumers.ts'
 
 /**
  * High contiguous host-port range for multi-member private listeners
@@ -47,7 +54,7 @@ export type ManagedMemberRow = {
 export type SerializedManagedMember = {
   id: string
   serverId: string
-  serverDisplayName: string | null
+  serverName: string | null
   role: ManagedMemberRole
   replicaClass: ManagedReplicaClass | null
   readEligible: boolean
@@ -55,7 +62,7 @@ export type SerializedManagedMember = {
   status: string | null
   replicationTransport: PrivateEndpointTransport | null
   privatePort: number | null
-  replication?: ManagedReplicationHealth
+  replication?: ManagedReplicationHealth | ReplicationHealthView
 }
 
 export type ManagedPrivatePortExhaustedError = {
@@ -94,6 +101,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** MySQL / MariaDB freshness fields, when well-formed; anything else is dropped (unknown). */
+function withFreshnessFields(
+  health: ManagedReplicationHealth,
+  r: Record<string, unknown>
+): ManagedReplicationHealth {
+  for (const key of ['receivedGtid', 'executedGtid'] as const) {
+    const v = r[key]
+    if (typeof v === 'string' && v.length > 0 && v.length <= 4096) {
+      health[key] = v
+    }
+  }
+  if (typeof r.fullyApplied === 'boolean') health.fullyApplied = r.fullyApplied
+  return health
+}
+
 function parseReplicationHealth(metadata: unknown): ManagedReplicationHealth | undefined {
   if (!isRecord(metadata) || !isRecord(metadata.replication)) return undefined
   const r = metadata.replication
@@ -115,7 +137,56 @@ function parseReplicationHealth(metadata: unknown): ManagedReplicationHealth | u
   if (typeof r.receiveLagBytes === 'number' && Number.isFinite(r.receiveLagBytes)) {
     health.receiveLagBytes = r.receiveLagBytes
   }
-  return health
+  const slotRetention = parseManagedSlotRetention(r.slotRetention)
+  if (slotRetention !== undefined) health.slotRetention = slotRetention
+  return withFreshnessFields(health, r)
+}
+
+/**
+ * Parse the display-only health report replication reading from metadata.
+ * The promote gate and automatic failover use the probe-measured reading
+ * (`metadata.replication`); this field is for UI aging only.
+ */
+function parseDisplayReplicationHealth(metadata: unknown): ManagedReplicationHealth | undefined {
+  if (!isRecord(metadata) || !isRecord(metadata.replicationDisplay)) {
+    return undefined
+  }
+  const r = metadata.replicationDisplay
+  if (typeof r.state !== 'string' || typeof r.observedAt !== 'string') {
+    return undefined
+  }
+  const health: ManagedReplicationHealth = {
+    state: r.state,
+    observedAt: r.observedAt,
+  }
+  if (typeof r.lagBytes === 'number' && Number.isFinite(r.lagBytes)) {
+    health.lagBytes = r.lagBytes
+  }
+  if (typeof r.lagSeconds === 'number' && Number.isFinite(r.lagSeconds)) {
+    health.lagSeconds = r.lagSeconds
+  }
+  if (typeof r.receivedLsn === 'string') health.receivedLsn = r.receivedLsn
+  if (typeof r.replayLsn === 'string') health.replayLsn = r.replayLsn
+  if (typeof r.receiveLagBytes === 'number' && Number.isFinite(r.receiveLagBytes)) {
+    health.receiveLagBytes = r.receiveLagBytes
+  }
+  return withFreshnessFields(health, r)
+}
+
+/**
+ * Pick the newer of the probe-measured and display-only readings for display.
+ * Returns the reading with the most recent observedAt timestamp.
+ */
+function selectReplicationForDisplay(
+  measured: ManagedReplicationHealth | undefined,
+  display: ManagedReplicationHealth | undefined
+): ManagedReplicationHealth | undefined {
+  if (!measured && !display) return undefined
+  if (!measured) return display
+  if (!display) return measured
+  const measuredTime = Date.parse(measured.observedAt)
+  const displayTime = Date.parse(display.observedAt)
+  return measuredTime >= displayTime ? measured : display
 }
 
 /**
@@ -205,7 +276,7 @@ export function nextReplicaOrdinal(members: readonly ManagedMemberRow[]): number
 
 export function serializeManagedMember(
   row: ManagedMemberRow,
-  serverDisplayName: string | null
+  serverName: string | null
 ): SerializedManagedMember {
   const role: ManagedMemberRole = row.role === 'replica' ? 'replica' : 'primary'
   const replicaClass =
@@ -222,7 +293,7 @@ export function serializeManagedMember(
   const out: SerializedManagedMember = {
     id: row.id,
     serverId: row.serverId,
-    serverDisplayName,
+    serverName,
     role,
     replicaClass,
     readEligible: row.readEligible,
@@ -237,6 +308,31 @@ export function serializeManagedMember(
 }
 
 /**
+ * {@link serializeManagedMember} for the panel and the API: pick the newer of
+ * the probe-measured and display-only health report readings, then a replica
+ * reading older than the freshness window is shown as `unknown` instead of its
+ * stale `streaming` (see `replica-freshness.ts`). Promote and failover
+ * decisions keep using the plain serializer and the stored observation.
+ */
+export function serializeManagedMemberForDisplay(
+  row: ManagedMemberRow,
+  serverName: string | null,
+  nowMs: number = Date.now()
+): SerializedManagedMember {
+  const out = serializeManagedMember(row, serverName)
+  if (out.role === 'replica' && out.replication !== undefined) {
+    // For display, prefer the newer of the two readings
+    const measured = parseReplicationHealth(row.metadata)
+    const display = parseDisplayReplicationHealth(row.metadata)
+    const forDisplay = selectReplicationForDisplay(measured, display)
+    if (forDisplay !== undefined) {
+      out.replication = ageReplicationHealth(forDisplay, nowMs)
+    }
+  }
+  return out
+}
+
+/**
  * List members with server display names in a single join (no N+1).
  */
 export async function listSerializedManagedMembers(
@@ -246,14 +342,14 @@ export async function listSerializedManagedMembers(
   const rows = await db
     .select({
       ...MEMBER_RETURNING,
-      serverDisplayName: server.name,
+      serverName: server.name,
     })
     .from(replica)
     .leftJoin(server, eq(replica.serverId, server.id))
     .where(eq(replica.managedId, managedId))
     .orderBy(asc(replica.ordinal))
 
-  return rows.map((row) => serializeManagedMember(row, row.serverDisplayName ?? null))
+  return rows.map((row) => serializeManagedMemberForDisplay(row, row.serverName ?? null))
 }
 
 /** A read replica is the only member allowed on the fabric/public ladder. */
@@ -365,13 +461,20 @@ function findFreePrivatePort(used: ReadonlySet<number>): number | null {
 }
 
 /**
- * Allocate or clear private listener ports for a multi-member cluster.
- * Single-member clusters clear any leftover `private_port`.
- * Under a `fabric` transport the port is published on the relay `tp0` address.
+ * Allocate private listener ports, or return in-memory null ports when unused.
+ *
+ * Multi-member clusters always allocate. A single-member cluster allocates
+ * when a bound consumer lives on another host (that host's ProxySQL dials this
+ * engine's private listener). Clearing leftover `private_port` rows is deferred
+ * until `commitClearedPrivatePortsIfUnused` after apply is queued, so a failed
+ * enqueue cannot leave the database saying there is no listener while the host
+ * still publishes one. Under a `fabric` transport the port is published on the
+ * relay `tp0` address.
  */
 export async function ensureMemberPrivatePorts(
   db: Db,
-  members: readonly ManagedMemberRow[]
+  members: readonly ManagedMemberRow[],
+  options?: { hasRemoteConsumers?: boolean }
 ): Promise<ManagedMemberRow[] | ManagedPrivatePortExhaustedError> {
   if (members.length === 0) return []
 
@@ -381,17 +484,12 @@ export async function ensureMemberPrivatePorts(
   // payload for it against the just-cleared primary listener and failed with
   // `private_path_unavailable`.
   const inputIds = new Set(members.map((m) => m.id))
+  const keepPrivatePorts = members.length > 1 || options?.hasRemoteConsumers === true
 
-  if (members.length <= 1) {
-    await forEachSequential(members, async (member) => {
-      if (member.privatePort !== null) {
-        await db
-          .update(replica)
-          .set({ privatePort: null, updatedAt: new Date().toISOString() })
-          .where(eq(replica.id, member.id))
-      }
-    })
-    return (await listManagedMembers(db, members[0]!.managedId)).filter((m) => inputIds.has(m.id))
+  if (!keepPrivatePorts) {
+    return members
+      .filter((member) => inputIds.has(member.id))
+      .map((member) => (member.privatePort === null ? member : { ...member, privatePort: null }))
   }
 
   const managedId = members[0]!.managedId
@@ -447,6 +545,32 @@ export async function ensureMemberPrivatePorts(
         .where(eq(replica.managedId, managedId))
         .orderBy(asc(replica.ordinal))
     ).filter((m) => inputIds.has(m.id))
+  })
+}
+
+/**
+ * Persist a deferred private-port teardown after `managed.apply` is queued.
+ * No-op while the cluster still has replicas or a remote consumer, or when
+ * enqueue failed (callers skip this). The next successful apply retries it.
+ */
+export async function commitClearedPrivatePortsIfUnused(db: Db, managedId: string): Promise<void> {
+  const members = await listManagedMembers(db, managedId)
+  if (members.length !== 1) return
+  const consumers = await consumerServerIdsForManaged(db, managedId)
+  if (
+    hasRemoteConsumerServers(
+      members.map((member) => member.serverId),
+      consumers
+    )
+  ) {
+    return
+  }
+  await forEachSequential(members, async (member) => {
+    if (member.privatePort === null) return
+    await db
+      .update(replica)
+      .set({ privatePort: null, updatedAt: new Date().toISOString() })
+      .where(eq(replica.id, member.id))
   })
 }
 
@@ -513,6 +637,18 @@ function resolveCoResidentPeer(
   }
 }
 
+function resolveMemberPeer(
+  fromMember: ManagedMemberRow,
+  other: ManagedMemberRow,
+  defaultPort: number,
+  containerNames: ReadonlyMap<string, string>,
+  endpoints: ReadonlyMap<string, ResolvedPrivateEndpoint | PrivateEndpointError>
+): ManagedMemberPeer | PrivateEndpointError {
+  return other.serverId === fromMember.serverId
+    ? resolveCoResidentPeer(fromMember, other, containerNames, defaultPort)
+    : resolveRemotePeer(fromMember, other, endpoints)
+}
+
 function resolveRemotePeer(
   fromMember: ManagedMemberRow,
   other: ManagedMemberRow,
@@ -569,6 +705,27 @@ async function resolvePeerEndpointsByPurpose(
 }
 
 /**
+ * Path from one member to a single peer — co-resident container DNS or the
+ * remote private listener. Unlike {@link resolvePeersForMember}, an
+ * unreachable sibling does not fail this lookup.
+ */
+export async function resolvePeerToMember(
+  db: Db,
+  fromMember: ManagedMemberRow,
+  toMember: ManagedMemberRow,
+  defaultPort: number
+): Promise<ManagedMemberPeer | PrivateEndpointError> {
+  if (fromMember.id === toMember.id) {
+    return unavailablePeerError(fromMember, toMember)
+  }
+  const pair = [fromMember, toMember]
+  const containerNames = await loadMemberContainerNames(db, pair)
+  const remote = toMember.serverId === fromMember.serverId ? [] : [toMember]
+  const endpoints = await resolvePeerEndpointsByPurpose(db, fromMember, remote)
+  return resolveMemberPeer(fromMember, toMember, defaultPort, containerNames, endpoints)
+}
+
+/**
  * Resolve peer endpoints for one member (reachability of every other member
  * from this member's server). Used when building apply payloads.
  *
@@ -596,10 +753,7 @@ export async function resolvePeersForMember(
 
   const peers: ManagedMemberPeer[] = []
   for (const other of others) {
-    const peer =
-      other.serverId === fromMember.serverId
-        ? resolveCoResidentPeer(fromMember, other, containerNames, defaultPort)
-        : resolveRemotePeer(fromMember, other, endpoints)
+    const peer = resolveMemberPeer(fromMember, other, defaultPort, containerNames, endpoints)
     if ('kind' in peer) return peer
     peers.push(peer)
   }
@@ -747,6 +901,44 @@ export async function updateManagedMemberObservedReplication(
       updatedAt: new Date().toISOString(),
     })
     .where(eq(replica.id, memberId))
+}
+
+/**
+ * Store a health report's replication reading in a display-only field
+ * (`metadata.replicationDisplay`), separate from the probe-measured field
+ * (`metadata.replication`) so the promote gate and automatic failover continue
+ * reading stable probe data and the 30s health report cannot change promotion
+ * decisions.
+ *
+ * Uses `jsonb_set` for atomic single-key updates — a full read-modify-write
+ * could stomp a concurrent probe write to `metadata.replication`.
+ */
+export async function updateManagedMemberDisplayReplication(
+  db: Db,
+  memberId: string,
+  displayReplication: ManagedReplicationHealth
+): Promise<void> {
+  try {
+    await db.execute(
+      sql`
+        UPDATE ${replica}
+        SET metadata = jsonb_set(
+          COALESCE(metadata, '{}'::jsonb),
+          '{replicationDisplay}',
+          ${JSON.stringify(displayReplication)}::jsonb
+        ),
+        updated_at = NOW()
+        WHERE id = ${memberId}::uuid
+      `
+    )
+  } catch (error) {
+    compatLogWarn(
+      'managed-members',
+      `failed to update display replication for member ${memberId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    )
+  }
 }
 
 export function isManagedPrivatePortExhaustedError(

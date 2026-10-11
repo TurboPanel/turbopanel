@@ -1,6 +1,8 @@
 import { assertEquals } from '@std/assert'
 import {
   blockedCopy,
+  attestedLostServerIds,
+  hostLossFenceAdvance,
   nextStateAfterFence,
   nextStateAfterIngressReconcile,
   nextStateAfterPromoteSuccess,
@@ -18,9 +20,18 @@ import { AUTOMATIC_FAILOVER_BLOCKED_MESSAGE } from './recovery.ts'
 const test = Deno.test.bind(Deno)
 
 test('verifyFenced requires drain plus stop', () => {
-  assertEquals(verifyFenced({ oldPrimaryReachable: true, drainApplied: true, stopApplied: true }), true)
-  assertEquals(verifyFenced({ oldPrimaryReachable: true, drainApplied: true, stopApplied: false }), false)
-  assertEquals(verifyFenced({ oldPrimaryReachable: false, drainApplied: false, stopApplied: false }), false)
+  assertEquals(
+    verifyFenced({ oldPrimaryReachable: true, drainApplied: true, stopApplied: true }),
+    true
+  )
+  assertEquals(
+    verifyFenced({ oldPrimaryReachable: true, drainApplied: true, stopApplied: false }),
+    false
+  )
+  assertEquals(
+    verifyFenced({ oldPrimaryReachable: false, drainApplied: false, stopApplied: false }),
+    false
+  )
 })
 
 test('fence success advances automatic failover to promoting', () => {
@@ -78,3 +89,35 @@ test('promote then ingress then exactly-one-writer completes', () => {
 test('blockedCopy is the automatic-failover operator sentence', () => {
   assertEquals(blockedCopy(), AUTOMATIC_FAILOVER_BLOCKED_MESSAGE)
 })
+
+test('host loss records the fence as attested and still never counts as proven', () => {
+  const advance = hostLossFenceAdvance({ hostLossIncident: 'srv@t' })
+  assertEquals(advance.state, 'promoting')
+  assertEquals(advance.metadata.fenced, false)
+  assertEquals(advance.metadata.fenceBasis, 'host-loss-attested')
+  assertEquals(advance.metadata.hostLossIncident, 'srv@t')
+  assertEquals(typeof advance.metadata.fencingEpoch, 'string')
+  // Nothing about it makes the ordinary proof pass: the engine-dead path still needs its stop.
+  assertEquals(
+    verifyFenced({ oldPrimaryReachable: false, drainApplied: false, stopApplied: false }),
+    false
+  )
+  const ordinary = nextStateAfterFence({
+    kind: 'automatic-failover',
+    outcome: { oldPrimaryReachable: false, drainApplied: false, stopApplied: false },
+    metadata: { fenceBasis: 'host-loss-attested' },
+  })
+  assertEquals(ordinary.state, 'blocked')
+})
+
+Deno.test(
+  'an attested-lost server is left out of the ingress step, any other failover leaves nobody out',
+  () => {
+    assertEquals(
+      attestedLostServerIds({ fenceBasis: 'host-loss-attested', sourceServerId: 'srv-old' }),
+      ['srv-old']
+    )
+    assertEquals(attestedLostServerIds({ sourceServerId: 'srv-old' }), [])
+    assertEquals(attestedLostServerIds({ fenceBasis: 'host-loss-attested' }), [])
+  }
+)

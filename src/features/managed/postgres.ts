@@ -169,6 +169,9 @@ function formatStopGracePeriod(seconds: number): string {
   return `${seconds}s`
 }
 
+/** Default cap on WAL retained for a replication slot (see the conf block). */
+export const SLOT_WAL_KEEP_SIZE = '4GB'
+
 /** Headroom above live members for backup / inspection replication slots. */
 const REPLICATION_SLOT_HEADROOM = 2
 
@@ -191,6 +194,13 @@ function buildPlatformPostgresqlConf(
     'max_wal_senders = 10',
     // Member count + headroom for backup / inspection connections.
     `max_replication_slots = ${replicationSlotCount(input.memberCount)}`,
+    // Cap the WAL one replication slot may hold back. Unbounded (-1, the
+    // Postgres default), a stopped or removed replica's slot keeps every WAL
+    // file until the primary's disk is full. A replica that falls further
+    // behind than this is cut off and needs a Resync; a replica that is merely
+    // slow stays well inside it. Reload-only, so existing clusters pick it up
+    // on their next apply. The operator block below can override it.
+    `max_slot_wal_keep_size = '${SLOT_WAL_KEEP_SIZE}'`,
     'hot_standby = on',
     'wal_log_hints = on',
   ]
@@ -455,8 +465,8 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
   volumes.push(`./tls:${TLS_DIR_CONTAINER}:ro`)
 
   // Private listener: the one deliberate exception to "no published engine ports".
-  // Multi-member only — binds solely on the member's private address at the
-  // instance-allocated `private_port` (cross-host replication + ProxySQL backends).
+  // Binds solely on the member's private address at the instance-allocated
+  // `private_port` (cross-host replication and remote consumer ProxySQL).
   if (input.member?.privateListener) {
     const { address, port } = input.member.privateListener
     service.ports = [`${address}:${port}:5432`]
@@ -494,10 +504,9 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
     env: { ...env },
     healthcheck,
     exposure: {
-      enabled: settings.exposure.enabled,
+      enabled: true,
       protocol: 'tcp',
       containerPort: DEFAULT_PORT,
-      ...(settings.exposure.scope !== undefined ? { scope: settings.exposure.scope } : {}),
     },
   }
 
@@ -550,10 +559,7 @@ export const postgresEngineSpec: ManagedEngineSpec = {
   principalProvider: 'postgres',
   rootUsername: ROOT_USERNAME,
   exposeProtocol: 'tcp',
-  defaultSettings: {
-    ...DEFAULT_MANAGED_SETTINGS,
-    exposure: { enabled: true },
-  },
+  defaultSettings: { ...DEFAULT_MANAGED_SETTINGS },
   parseSettings: parsePostgresSettings,
   buildRuntimeSpec,
   buildConnectionInfo,

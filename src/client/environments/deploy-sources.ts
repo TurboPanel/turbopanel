@@ -147,6 +147,14 @@ export type DeployRollbackReleasePin = {
   commitSha?: string
   commitMessage?: string
   commitAuthor?: string
+  /**
+   * Node series a native app's release was built and run with. Recorded at
+   * deploy time; absent on releases recorded before it existed and on every
+   * other kind of service. See `deploy-node-version.ts`.
+   */
+  nodeVersion?: string
+  /** `deno` when the pinned release ran on Deno; absent means Node. */
+  runtime?: 'deno'
 }
 
 /**
@@ -576,9 +584,11 @@ async function resolveBindingMaterial(
   if ('kind' in resolved) return resolved
 
   const rollbackReleaseId = rollbackPin?.releaseId
+  const releaseServiceId = context.serviceIdByComposeName.get(composeServiceName)
   return definedFields({
     sourceId: row.id,
     composeServiceName,
+    ...(releaseServiceId === undefined ? {} : { releaseServiceId }),
     // The row's provider travels verbatim: the wire parser bounds it to the
     // same set the `source_provider_check` constraint does, so narrowing it
     // here would only be able to *lose* information.
