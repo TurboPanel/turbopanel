@@ -19,10 +19,13 @@ import {
   ORGANIZATION_CA_ORG_NAME,
   ORGANIZATION_CA_ORG_UNIT,
   parseCertificatePem,
+  readAuthorityKeyIdentifier,
   readBasicConstraintsCa,
   readKeyUsageBits,
+  readSubjectKeyIdentifier,
   verifyCertificateSignature,
 } from './index.ts'
+import { children, content, readNode } from './asn1.ts'
 import { extractSpkiDer } from './self-signed.ts'
 
 /**
@@ -227,4 +230,47 @@ test('randomSerial is always a positive, minimal DER integer (no leading zero, t
     assertEquals(serial[0]! !== 0, true)
     assertEquals((serial[0]! & 0x80) === 0, true)
   }
+})
+
+/** Leftmost 160 bits of the SHA-256 of the subjectPublicKey BIT STRING contents (RFC 7093 key identifier). */
+async function expectedKeyIdentifier(certificatePem: string): Promise<Uint8Array> {
+  const spki = readNode(extractSpkiDer(certificatePem), 0)
+  const bits = content(children(spki)[1]!).subarray(1)
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', bits.slice())).subarray(0, 20)
+}
+
+test('mintOrganizationCa carries the RFC 5280 subject key identifier', async () => {
+  const ca = await mintOrganizationCa({ organizationId: 'Ski Org CA' })
+  assertEquals(
+    readSubjectKeyIdentifier(ca.certificatePem),
+    await expectedKeyIdentifier(ca.certificatePem)
+  )
+  assertEquals(readAuthorityKeyIdentifier(ca.certificatePem), null)
+})
+
+test('issueLeafCertificate carries its own SKI and an AKI equal to the CA SKI', async () => {
+  const ca = await mintOrganizationCa({ organizationId: 'Aki Org CA' })
+  const leaf = await issueLeafCertificate(ca.certificatePem, ca.privateKeyPem, ['db.example.com'])
+  assertEquals(
+    readAuthorityKeyIdentifier(leaf.certificatePem),
+    readSubjectKeyIdentifier(ca.certificatePem)
+  )
+  assertEquals(
+    readSubjectKeyIdentifier(leaf.certificatePem),
+    await expectedKeyIdentifier(leaf.certificatePem)
+  )
+  assertEquals(await verifyCertificateSignature(leaf.certificatePem, ca.certificatePem), true)
+})
+
+test('a leaf issued from a legacy CA without a key identifier still gets an AKI from the CA key', async () => {
+  // A self-signed cert from the plain minter has no SKI, like Organization CAs minted before this change.
+  const legacy = await mintSelfSignedCertificate(['legacy-ca.example.com'])
+  assertEquals(readSubjectKeyIdentifier(legacy.certificatePem), null)
+  const leaf = await issueLeafCertificate(legacy.certificatePem, legacy.privateKeyPem, [
+    'db.example.com',
+  ])
+  assertEquals(
+    readAuthorityKeyIdentifier(leaf.certificatePem),
+    await expectedKeyIdentifier(legacy.certificatePem)
+  )
 })

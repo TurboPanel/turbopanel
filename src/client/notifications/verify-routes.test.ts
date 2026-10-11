@@ -5,6 +5,7 @@
  * owner-gated. Skipped without TURBOPANEL_DATABASE_URL like every Postgres
  * suite.
  */
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertNotEquals, assertStringIncludes } from '@std/assert'
 import { eq, like } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -100,7 +101,7 @@ async function withFixture(
   opts: { queue?: boolean } = {}
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping verification route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('verification route tests')
     return
   }
   const db = createDenoDb()
@@ -423,5 +424,115 @@ test('resend refuses a channel that is not an email channel, or that does not ex
     assertEquals(missing.status, 404)
     const anonymous = await call(f, 'POST', `/notification-channels/${hook!.id}/verify`)
     assertEquals(anonymous.status, 401)
+  })
+})
+
+function createBody(label: string, address: string) {
+  return { label, address, rules: [{ event: '*' }] }
+}
+
+async function createFor(f: Fixture, cookie: string, label: string, address: string) {
+  return await call(f, 'POST', '/notification-channels/email', {
+    cookie,
+    body: createBody(label, address),
+  })
+}
+
+test('a user can hold only a few unverified email channels at once', async () => {
+  await withFixture(async (f) => {
+    for (let i = 0; i < 5; i++) {
+      assertEquals((await createFor(f, f.outsiderCookie, `Pager ${i}`, STRANGER())).status, 201)
+    }
+    const sixth = await createFor(f, f.outsiderCookie, 'Pager 6', STRANGER())
+    assertEquals(sixth.status, 429)
+    assertEquals(((await sixth.json()) as { error: string }).error, 'too_many_unverified_channels')
+    assertEquals(f.sent.length, 5)
+
+    // Another user is not affected by this one's budget.
+    assertEquals((await createFor(f, f.memberCookie, 'Pager', STRANGER())).status, 201)
+  })
+})
+
+test('one stranger address is mailed a verification link only a few times a day', async () => {
+  await withFixture(async (f) => {
+    const address = STRANGER()
+    const cookies = [f.managerCookie, f.memberCookie, f.outsiderCookie]
+    for (const cookie of cookies) {
+      assertEquals((await createFor(f, cookie, 'Pager', address)).status, 201)
+    }
+    // A fourth request, from anyone, finds the address already used up.
+    const again = await createFor(f, f.managerCookie, 'Pager two', address)
+    assertEquals(again.status, 429)
+    assertEquals(((await again.json()) as { error: string }).error, 'address_verification_limit')
+    assertEquals(f.sent.length, 3)
+    // The refused channel is not left behind.
+    const rows = await f.db
+      .select({ id: notificationChannel.id })
+      .from(notificationChannel)
+      .where(eq(notificationChannel.address, address))
+    assertEquals(rows.length, 3)
+  })
+})
+
+test('resending counts against the same per-address allowance', async () => {
+  await withFixture(async (f) => {
+    const address = STRANGER()
+    const created = await createFor(f, f.managerCookie, 'Pager', address)
+    const id = ((await created.json()) as { channel: { id: string } }).channel.id
+    let statuses: number[] = []
+    for (let i = 0; i < 3; i++) {
+      await f.db
+        .update(verification)
+        .set({ updatedAt: new Date(Date.now() - 120_000).toISOString() })
+        .where(eq(verification.identifier, `notification-channel:${id}`))
+      const res = await call(f, 'POST', `/notification-channels/${id}/verify`, {
+        cookie: f.managerCookie,
+      })
+      statuses = [...statuses, res.status]
+    }
+    assertEquals(statuses, [200, 200, 429])
+    assertEquals(f.sent.length, 3)
+  })
+})
+
+test('the daily verification mail budget is per user', async () => {
+  await withFixture(async (f) => {
+    // Ten distinct addresses are fine for a day; the eleventh is not, even
+    // though each earlier channel was removed again.
+    for (let i = 0; i < 10; i++) {
+      const res = await createFor(f, f.outsiderCookie, `Pager ${i}`, STRANGER())
+      assertEquals(res.status, 201)
+      const id = ((await res.json()) as { channel: { id: string } }).channel.id
+      await f.db.delete(notificationChannel).where(eq(notificationChannel.id, id))
+    }
+    const over = await createFor(f, f.outsiderCookie, 'Pager x', STRANGER())
+    assertEquals(over.status, 429)
+    assertEquals(((await over.json()) as { error: string }).error, 'verification_mail_budget')
+  })
+})
+
+test('organization-scope channels count against the creator too', async () => {
+  await withFixture(async (f) => {
+    let made = 0
+    for (let i = 0; i < 8; i++) {
+      const res = await call(f, 'POST', '/notification-channels/email', {
+        cookie: f.managerCookie,
+        org: true,
+        body: { scope: 'organization', ...createBody(`Pager ${i}`, STRANGER()) },
+      })
+      if (res.status === 201) made += 1
+      else assertEquals(res.status, 429)
+    }
+    assertEquals(made, 5)
+  })
+})
+
+test('a verification request refuses a recipient list and a link in the label', async () => {
+  await withFixture(async (f) => {
+    const list = await createFor(f, f.managerCookie, 'Pager', `${STRANGER()}, ${STRANGER()}`)
+    assertEquals(list.status, 400)
+    const link = await createFor(f, f.managerCookie, 'Verify at https://evil.example', STRANGER())
+    assertEquals(link.status, 400)
+    assertEquals(f.sent.length, 0)
   })
 })

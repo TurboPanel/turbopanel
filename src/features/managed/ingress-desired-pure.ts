@@ -6,11 +6,7 @@
  */
 
 import type { ManagedIngressReconcileBackend } from '../../contracts/commands/schemas.ts'
-import {
-  collapseManagedSqlAccessScopes,
-  type ManagedSqlAccessScope,
-  unionManagedSqlAccessScopes,
-} from './access-scope.ts'
+import { ALL_INTERFACES_BIND, LOOPBACK_BIND } from './access-address.ts'
 import {
   DEFAULT_MANAGED_INGRESS_PORTS,
   type ManagedIngressFamily,
@@ -45,21 +41,6 @@ export function hostgroupsForClusterIndex(index: number): {
     writerHostgroup: index * 2,
     readerHostgroup: index * 2 + 1,
   }
-}
-
-/**
- * Every distinct scope the clusters on one host ask for, widest first, with
- * `public` collapsing the rest (it already listens on all interfaces).
- *
- * This is a **union, not a maximum**: one ProxySQL frontend can publish the
- * same port on several host addresses, and `datacenter` + `turbofabric` are two
- * different addresses. Keeping only the widest would silently unpublish the
- * other scope's clients. Empty means no cluster wants a host publish.
- */
-export function unionExposureScopes(
-  scopes: readonly (ManagedSqlAccessScope | undefined)[]
-): ManagedSqlAccessScope[] {
-  return collapseManagedSqlAccessScopes(unionManagedSqlAccessScopes(scopes))
 }
 
 export function isIngressRecord(value: unknown): value is Record<string, unknown> {
@@ -176,49 +157,34 @@ export function collectProxySqlListenerSans(params: {
 }
 
 /**
- * Pure bind decision for shared ProxySQL publish — never let an ambiguous
- * `undefined` mean two different things.
+ * Host addresses the server's shared ProxySQL publishes its client listeners on.
  *
- * - No enabled exposure → omit every published port (daemon publishes nothing)
- * - `public` → explicit all-interfaces (`0.0.0.0`), no per-scope lookup
- * - anything else → caller resolves one host address per scope
+ * - external access **off** (the default): loopback only. Sites run by a site
+ *   owner's Linux user dial `127.0.0.1`; loopback is not exposure, nothing off
+ *   the machine can reach it. Bound containers need no publish at all (they
+ *   dial ProxySQL by name over the managed Docker network).
+ * - external access **on**: every address of the server (`0.0.0.0`).
  *
- * **The publish is the enforcement.** Docker's published port is the only
- * layer that stands between a disabled cluster and the network today: the host
- * firewall only previews these listeners so far (it enforces nothing until the
- * default-drop stage), and ProxySQL has no per-user source ACL. So an empty
- * decision must stay empty — returning an all-interfaces bind because "the
- * exposure toggle is only recorded intent" hands every credential on the host
- * to the internet. The daemon already honours this contract (an absent/empty
- * `bindAddresses` means "publish nothing"; see `managed-ingress-reconcile.ts`),
- * which is why the toggle can be enforced from here.
- *
- * Flapping the compose publish on a toggle costs a ProxySQL restart. That is
- * the intended price of turning host access off, not a reason to leave it on.
+ * Never empty here: a server with no cluster to front never reaches this
+ * decision (the reconcile is `not_needed` or a teardown). **The publish is the
+ * enforcement**: the host firewall only previews these listeners so far, and
+ * ProxySQL has no per-user source ACL, so "off" must stay loopback and must
+ * never widen to a wildcard.
  */
-export type IngressBindScopeDecision =
-  | { kind: 'omit' }
-  | { kind: 'public_all_interfaces'; addresses: readonly ['0.0.0.0'] }
-  | {
-      kind: 'resolve'
-      scopes: ReadonlyArray<Exclude<ManagedSqlAccessScope, 'public'>>
-    }
+export function decideIngressBindAddresses(externalAccess: boolean): string[] {
+  return [externalAccess ? ALL_INTERFACES_BIND : LOOPBACK_BIND]
+}
 
-export function decideIngressBindScopes(
-  enabledScopes: readonly (ManagedSqlAccessScope | undefined)[]
-): IngressBindScopeDecision {
-  const scopes = unionExposureScopes(enabledScopes)
-  if (scopes.length === 0) return { kind: 'omit' }
-  if (scopes[0] === 'public') {
-    return {
-      kind: 'public_all_interfaces',
-      addresses: ['0.0.0.0'], // NOSONAR typescript:S1313 — explicit all-interfaces publish
-    }
-  }
-  return {
-    kind: 'resolve',
-    scopes: scopes as ReadonlyArray<Exclude<ManagedSqlAccessScope, 'public'>>,
-  }
+/**
+ * Addresses the proxy's certificate must name for its published listeners. A
+ * site run by a site owner's Linux user verifies the certificate against
+ * `127.0.0.1`, and under an all-interfaces publish the bind is a wildcard that
+ * carries no SAN of its own, so loopback is always named explicitly.
+ */
+export function sanBindAddresses(bindAddresses: readonly string[]): string[] {
+  return bindAddresses.includes(LOOPBACK_BIND)
+    ? [...bindAddresses]
+    : [...bindAddresses, LOOPBACK_BIND]
 }
 
 export type LocalBackendMember = {

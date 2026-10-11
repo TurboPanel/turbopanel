@@ -44,7 +44,7 @@ import {
   insertNotifications,
   insertPendingDeliveries,
   instanceAdminIds,
-  listDueDeliveries,
+  claimDueDeliveries,
   type NotificationChannelRecord,
   type NotificationDeliveryRecord,
   organizationManagerIds,
@@ -399,7 +399,7 @@ export async function retryDueDeliveries(
 ): Promise<{ attempted: number; sent: number; failed: number }> {
   try {
     const due = await runWithDbTimeout(db, (tx) =>
-      listDueDeliveries(tx, limit, { includeEmail: deps.email !== undefined })
+      claimDueDeliveries(tx, limit, { includeEmail: deps.email !== undefined })
     )
     const items = await mapSequential(due, async (delivery) => {
       const channel = await runWithDbTimeout(db, (tx) => getChannel(tx, delivery.channelId))

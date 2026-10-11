@@ -13,50 +13,58 @@
  * recorded hash for the server — an unchanged plan is a no-op, a changed (or
  * first-ever) plan inserts a new row with `generation = previous + 1` (or `0`).
  */
-import { desc, eq, sql } from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
-import { capabilityPlanGeneration } from "../../db/schema.ts";
+import { desc, eq, sql } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import { capabilityPlanGeneration } from '../../db/schema.ts'
 import {
   computeMetricsCapabilityPlanHash,
   type MetricsCapabilityPlan,
-} from "../../contracts/capability-plan.ts";
+} from '../../contracts/capability-plan.ts'
+
+/**
+ * Plan generations kept per server. A plan can be changed by an organization
+ * admin as often as they like, so the history is bounded: older rows are
+ * deleted as new ones arrive. Generation numbers are assigned here, in order,
+ * so "newest" is simply the highest numbers.
+ */
+export const MAX_RETAINED_CAPABILITY_PLAN_GENERATIONS = 100
 
 export type CapabilityPlanGenerationRecord = {
-  generation: number;
-  planHash: string;
-  plan: unknown;
-  appliedAt: string;
-};
+  generation: number
+  planHash: string
+  plan: unknown
+  appliedAt: string
+}
 
 export type CapabilityPlanGenerationWrite = {
-  generation: number;
-  changed: boolean;
-};
+  generation: number
+  changed: boolean
+}
 
 function serializeRow(
-  row: typeof capabilityPlanGeneration.$inferSelect,
+  row: typeof capabilityPlanGeneration.$inferSelect
 ): CapabilityPlanGenerationRecord {
   return {
     generation: row.generation,
     planHash: row.planHash,
     plan: row.plan,
     appliedAt: row.appliedAt,
-  };
+  }
 }
 
 /** Highest-`generation` row recorded for a server, or `undefined` if none has been recorded yet. */
 export async function getLatestCapabilityPlanGeneration(
   db: Db,
-  serverId: string,
+  serverId: string
 ): Promise<CapabilityPlanGenerationRecord | undefined> {
   const rows = await db
     .select()
     .from(capabilityPlanGeneration)
     .where(eq(capabilityPlanGeneration.serverId, serverId))
     .orderBy(desc(capabilityPlanGeneration.generation))
-    .limit(1);
-  const row = rows[0];
-  return row ? serializeRow(row) : undefined;
+    .limit(1)
+  const row = rows[0]
+  return row ? serializeRow(row) : undefined
 }
 
 /**
@@ -65,7 +73,8 @@ export async function getLatestCapabilityPlanGeneration(
  * ever been recorded). Returns the (possibly unchanged) current generation
  * and whether a new row was written.
  *
- * Runs inside a transaction that locks the server's row `FOR UPDATE` first,
+ * An unchanged plan (the common case) is answered by one unlocked read. Only
+ * a differing plan opens a transaction that locks the server's row `FOR UPDATE` first,
  * serializing concurrent resolutions for the same server (mirrors the
  * project-lock pattern in `system/hierarchy.ts`'s `ensureServerEnvironment`).
  * Without this, two callers racing with different resolved plans could both
@@ -82,22 +91,30 @@ export async function getLatestCapabilityPlanGeneration(
 export async function recordCapabilityPlanGenerationIfChanged(
   db: Db,
   serverId: string,
-  resolvedPlan: MetricsCapabilityPlan,
+  resolvedPlan: MetricsCapabilityPlan
 ): Promise<CapabilityPlanGenerationWrite> {
-  const planHash = await computeMetricsCapabilityPlanHash(resolvedPlan);
+  const planHash = await computeMetricsCapabilityPlanHash(resolvedPlan)
+
+  // Common case (every metrics sample): the plan is unchanged. Read it without
+  // the row lock and only open the locking transaction when it actually
+  // differs. The locked path below re-reads, so a racing writer is still safe.
+  const unlocked = await getLatestCapabilityPlanGeneration(db, serverId)
+  if (unlocked?.planHash === planHash) {
+    return { generation: unlocked.generation, changed: false }
+  }
 
   return await db.transaction(async (tx) => {
     await tx.execute(sql`
       SELECT id FROM server WHERE id = ${serverId}::uuid FOR UPDATE
-    `);
+    `)
 
-    const latest = await getLatestCapabilityPlanGeneration(tx, serverId);
+    const latest = await getLatestCapabilityPlanGeneration(tx, serverId)
     if (latest?.planHash === planHash) {
-      return { generation: latest.generation, changed: false };
+      return { generation: latest.generation, changed: false }
     }
 
-    const generation = latest ? latest.generation + 1 : 0;
-    const appliedAt = new Date().toISOString();
+    const generation = latest ? latest.generation + 1 : 0
+    const appliedAt = new Date().toISOString()
     await tx
       .insert(capabilityPlanGeneration)
       .values({
@@ -108,24 +125,23 @@ export async function recordCapabilityPlanGenerationIfChanged(
         appliedAt,
       })
       .onConflictDoNothing({
-        target: [
-          capabilityPlanGeneration.serverId,
-          capabilityPlanGeneration.generation,
-        ],
-      });
+        target: [capabilityPlanGeneration.serverId, capabilityPlanGeneration.generation],
+      })
 
-    const persisted = await getLatestCapabilityPlanGeneration(tx, serverId);
-    if (
-      persisted?.generation !== generation || persisted.planHash !== planHash
-    ) {
+    const persisted = await getLatestCapabilityPlanGeneration(tx, serverId)
+    if (persisted?.generation !== generation || persisted.planHash !== planHash) {
       throw new Error(
-        `capability plan generation ${
-          String(generation)
-        } for server ${serverId} ` +
-          "was not persisted with the expected plan hash; conflicting writer under lock",
-      );
+        `capability plan generation ${String(generation)} for server ${serverId} ` +
+          'was not persisted with the expected plan hash; conflicting writer under lock'
+      )
     }
 
-    return { generation, changed: true };
-  });
+    await tx.execute(sql`
+      DELETE FROM capability
+      WHERE server_id = ${serverId}::uuid
+        AND generation <= ${generation - MAX_RETAINED_CAPABILITY_PLAN_GENERATIONS}
+    `)
+
+    return { generation, changed: true }
+  })
 }

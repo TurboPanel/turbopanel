@@ -16,6 +16,7 @@ import { createCommandRecord, transitionCommand } from '../commands/command-reco
 import {
   buildFabricReconcilePayloadFromSnapshot,
   ensureFabricRelays,
+  type UnallocatedFabricServer,
   FabricAllocationError,
   type FabricReconcileSnapshot,
   type FabricRecord,
@@ -32,6 +33,7 @@ import {
   type FabricGateOutcome,
 } from './gate.ts'
 import {
+  currentFailedPathKinds,
   fabricNeedsRendezvous,
   hydrateFabricPathStates,
   runFabricRendezvousRound,
@@ -62,6 +64,17 @@ const TYPED_ENQUEUE_ERRORS = new Set<FabricEnqueueTypedError>([
   'fabric_segment_pool_exhausted',
   'relay_missing',
 ])
+
+/** Plain-words result for a server that could not get a fabric address range. */
+function poolFullResult(row: UnallocatedFabricServer): FabricEnqueueResult {
+  return {
+    serverId: row.serverId,
+    status: 'failed',
+    error:
+      'The fabric address pool is full, so this server has no fabric range. ' +
+      'Widen the fabric container pool in the fabric settings to add more servers.',
+  }
+}
 
 export function fabricEnqueueTypedError(
   results: readonly FabricEnqueueResult[]
@@ -646,9 +659,11 @@ export async function reconcileFabricMembership(params: {
   const fabric = await getOrganizationFabric(params.db, params.organizationId)
   if (!fabric) return []
 
+  const unallocated: UnallocatedFabricServer[] = []
   await ensureFabricRelays(params.db, {
     fabric,
     organizationId: params.organizationId,
+    unallocated,
   })
   const snapshot = await loadFabricReconcileSnapshot(params.db, fabric)
   let rendezvousRound: FabricRendezvousRoundResult | null = null
@@ -666,9 +681,12 @@ export async function reconcileFabricMembership(params: {
       snapshot.caches.failedPathKindsByPair = rendezvousRound.failedPathKindsByPair
     }
   }
+  if (!rendezvousRound) {
+    snapshot.caches.failedPathKindsByPair = currentFailedPathKinds(fabric.id)
+  }
   const expiresAt = new Date(Date.now() + 300_000).toISOString()
   const secrets = fabricSecretEnqueueFields(params)
-  const results: FabricEnqueueResult[] = []
+  const results: FabricEnqueueResult[] = unallocated.map(poolFullResult)
   const force = params.force === true
 
   await forEachSequential(snapshot.relays, async (row) => {

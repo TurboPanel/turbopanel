@@ -54,8 +54,18 @@ import {
   type DatacenterMembershipRow,
   loadDatacenterMembershipsForServers,
 } from '../net/datacenter-membership.ts'
-import { partitionSharedDatacenters, pinAddressForDatacenter } from '../net/private-endpoint.ts'
+import {
+  partitionSharedDatacenters,
+  pinAddressForDatacenter,
+  splitTrustedByLink,
+} from '../net/private-endpoint.ts'
 import { loadCidrAllocationExclusions } from '../net/cidr-collisions.ts'
+import { checkAdvertisedRangeShape } from './advertised-ranges.ts'
+import {
+  advertisedRangeContext,
+  loadResolvedGatewayRanges,
+  withoutUnsafeRanges,
+} from './gateway-ranges.ts'
 import { WIREGUARD_PERSISTENT_KEEPALIVE } from './wg.ts'
 import {
   type FabricPolicy,
@@ -554,11 +564,48 @@ async function insertRelayWithRetry(
   }
 }
 
+/** A server the fabric could not give a relay to because its address pool is full. */
+export type UnallocatedFabricServer = {
+  serverId: string
+  kind: FabricAllocationErrorKind
+}
+
+function isPoolFullError(err: unknown): err is FabricAllocationError {
+  return (
+    err instanceof FabricAllocationError &&
+    (err.kind === 'fabric_prefix_pool_exhausted' || err.kind === 'fabric_address_pool_exhausted')
+  )
+}
+
+/**
+ * Ranges a new relay prefix must stay out of: the org's own ranges plus every
+ * range a gateway advertises, so a new server's container range is never one
+ * the daemon would refuse next to a gateway's route.
+ */
+async function loadRelayAllocationExclusions(
+  db: Db,
+  organizationId: string,
+  relays: readonly RelayRecord[]
+): Promise<string[]> {
+  const [orgRanges, gatewayRanges] = await Promise.all([
+    loadCidrAllocationExclusions(db, organizationId),
+    loadResolvedGatewayRanges(db, relays),
+  ])
+  return [...new Set([...orgRanges, ...[...gatewayRanges.values()].flat()])]
+}
+
+/**
+ * Give every org server a relay. By default a full pool throws (enable rolls
+ * back). When `unallocated` is passed, a pool-full server is reported there
+ * instead and the others carry on, so one extra server never blocks the rest
+ * of the fabric from reconciling.
+ */
 export async function ensureFabricRelays(
   db: Db,
   params: {
     fabric: FabricRecord
     organizationId: string
+    unallocated?: UnallocatedFabricServer[]
   }
 ): Promise<RelayRecord[]> {
   const options = parseFabricOptions(params.fabric.options)
@@ -574,13 +621,18 @@ export async function ensureFabricRelays(
   await forEachSequential(orgServers, async (row) => {
     if (have.has(row.id)) return
     // Loaded lazily: most calls find every server already has a relay.
-    exclusions ??= await loadCidrAllocationExclusions(db, params.organizationId)
-    await insertRelayWithRetry(db, {
-      fabric: params.fabric,
-      serverId: row.id,
-      containerPool: options.containerPool,
-      exclusions,
-    })
+    exclusions ??= await loadRelayAllocationExclusions(db, params.organizationId, existing)
+    try {
+      await insertRelayWithRetry(db, {
+        fabric: params.fabric,
+        serverId: row.id,
+        containerPool: options.containerPool,
+        exclusions,
+      })
+    } catch (err) {
+      if (!params.unallocated || !isPoolFullError(err)) throw err
+      params.unallocated.push({ serverId: row.id, kind: err.kind })
+    }
   })
 
   return listFabricRelays(db, params.fabric.id)
@@ -766,6 +818,25 @@ export async function clearRelayAppliedPayloadHash(
     if (current.appliedPayloadHash === undefined) return
     const { appliedPayloadHash: _removed, ...rest } = current
     await db.update(relay).set({ metadata: rest, updatedAt: nowIso() }).where(eq(relay.id, row.id))
+  })
+}
+
+/**
+ * Servers whose teardown was queued while the fabric stays on (a disable that
+ * could not reach every server): they drop their tunnel and key, so forget
+ * what was applied there and the key they had. The next reconcile then sends
+ * them a full config again, and the key they generate reaches their peers.
+ */
+export async function resetRelaysAfterQueuedTeardown(
+  db: Db,
+  params: { fabricId: string; serverIds: readonly string[] }
+): Promise<void> {
+  await forEachSequential(params.serverIds, async (serverId) => {
+    await clearRelayAppliedPayloadHash(db, { serverId, fabricId: params.fabricId })
+    await db
+      .update(relay)
+      .set({ publicKey: null, updatedAt: nowIso() })
+      .where(and(eq(relay.fabricId, params.fabricId), eq(relay.serverId, serverId)))
   })
 }
 
@@ -1118,12 +1189,14 @@ export function resolveRelayGlobalEndpointAddress(
 function lanPathCandidate(
   selfServerId: string,
   otherServerId: string,
-  caches: EndpointAddressCaches
+  caches: EndpointAddressCaches,
+  linkState: 'up' | 'down' = 'up'
 ): RelayPathCandidate | null {
   const fromPins = caches.datacenterMembershipsByServer.get(selfServerId) ?? []
   const toPins = caches.datacenterMembershipsByServer.get(otherServerId) ?? []
   const { trusted } = partitionSharedDatacenters(fromPins, toPins, caches.policyByDatacenter)
-  for (const datacenterId of trusted) {
+  const byLink = splitTrustedByLink(trusted, fromPins, toPins)
+  for (const datacenterId of linkState === 'up' ? byLink.available : byLink.down) {
     const policy = caches.policyByDatacenter.get(datacenterId) ?? defaultDatacenterPolicyRow()
     const address = pinAddressForDatacenter(
       fromPins,
@@ -1172,7 +1245,11 @@ function failedKindsForPair(
   return caches.failedPathKindsByPair.get(fabricPairCacheKey(selfServerId, otherServerId))
 }
 
-/** Direct LAN then public then NAT candidates for an arbitrary `(from → to)` pair. */
+/**
+ * Direct LAN then public then NAT candidates for an arbitrary `(from → to)`
+ * pair. A LAN whose NIC link is reported down is not tried first: it is
+ * appended last, so the tunnel only uses it when no other direct path exists.
+ */
 export function directCandidates(
   selfServerId: string,
   other: Pick<RelayRecord, 'serverId' | 'endpointAddress'>,
@@ -1186,6 +1263,8 @@ export function directCandidates(
   if (pub && !failed?.has('direct_public')) candidates.push(pub)
   const nat = natPathCandidate(selfServerId, other, caches)
   if (nat && !failed?.has('direct_nat')) candidates.push(nat)
+  const deadLan = lanPathCandidate(selfServerId, other.serverId, caches, 'down')
+  if (deadLan && !failed?.has('direct_lan')) candidates.push(deadLan)
   return candidates
 }
 
@@ -1499,6 +1578,12 @@ export async function loadEndpointCaches(
   return { caches, serversById }
 }
 
+/** `host:port`, with brackets around an IPv6 literal (`[fd00::5]:51821`). */
+export function joinHostPort(host: string, port: number): string {
+  const bare = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+  return bare.includes(':') ? `[${bare}]:${String(port)}` : `${bare}:${String(port)}`
+}
+
 function appendUniqueCidrs(target: string[], values: readonly string[]): void {
   for (const value of values) {
     if (value.length === 0 || target.includes(value)) continue
@@ -1527,7 +1612,12 @@ export async function buildPeerMaterial(params: {
   )
   if (params.other.role === 'gateway') {
     const advertised = params.advertisedCidrs ?? params.other.advertisedCidrs
-    appendUniqueCidrs(allowedIPs, advertised)
+    // Never emit a range the policy refuses (default route, public range):
+    // a stored or derived row must not become a route on every peer.
+    appendUniqueCidrs(
+      allowedIPs,
+      advertised.filter((cidr) => checkAdvertisedRangeShape(cidr) === null)
+    )
   }
   const extra = [...(params.extraAllowedIPs ?? [])].sort((a, b) => a.localeCompare(b))
   appendUniqueCidrs(allowedIPs, extra)
@@ -1538,13 +1628,13 @@ export async function buildPeerMaterial(params: {
   }
 
   const carriesTransit = extra.length > 0
-  const keepalive =
-    params.other.keepalive ??
-    (params.plan.selected.kind === 'direct_nat' ? WIREGUARD_PERSISTENT_KEEPALIVE : null)
+  // Every direct pair keeps the tunnel (and its NAT mapping) alive; WireGuard
+  // only re-handshakes while data flows, so an idle LAN pair needs it too.
+  const keepalive = params.other.keepalive ?? WIREGUARD_PERSISTENT_KEEPALIVE
   const endpoint =
     params.plan.selected.kind === 'direct_nat'
       ? params.plan.selected.endpoint
-      : `${params.plan.selected.endpoint}:${String(params.listenPort)}`
+      : joinHostPort(params.plan.selected.endpoint, params.listenPort)
   const material: RelayPeerMaterial = {
     publicKey: params.other.publicKey ?? '',
     allowedIPs,
@@ -1704,6 +1794,7 @@ export async function loadFabricReconcileSnapshot(
     loadDatacenterSubnetsForServers(db, serverIds),
     loadDatacenterMembershipsForServers(db, serverIds),
   ])
+  const publicKeyed = publicKeyedRelays(relays)
   const datacenterIds = new Set<string>()
   for (const pins of datacenterMembershipsByServer.values()) {
     for (const pin of pins) datacenterIds.add(pin.datacenterId)
@@ -1724,9 +1815,12 @@ export async function loadFabricReconcileSnapshot(
     caches,
     sealedPresharedKeyByRelayId,
     segmentsByServer,
-    derivedAdvertisedCidrsByRelayId: resolveDerivedAdvertisedCidrsByRelay(
-      publicKeyedRelays(relays),
-      subnetsByServer
+    // One answer for the whole fabric: a range the daemon would refuse (it
+    // refuses the host's WHOLE payload, which leaves tp0 down) is left out here.
+    derivedAdvertisedCidrsByRelayId: withoutUnsafeRanges(
+      publicKeyed,
+      resolveDerivedAdvertisedCidrsByRelay(publicKeyed, subnetsByServer),
+      advertisedRangeContext(fabric, relays)
     ),
     policy: parseFabricPolicy(fabric.options),
   }

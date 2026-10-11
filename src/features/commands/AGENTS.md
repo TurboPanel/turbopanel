@@ -77,6 +77,24 @@ streaming output in Postgres — `result` and `error` are bounded summaries only
 result parser), so only that type's listed fields are stored; a report that does
 not fit its type is stored as `null`.
 
+### A failed command names its cause: `errorLine`
+
+The daemon sends the **tail** of a failed handler's message (at most 4000
+characters, led by `[...truncated]` when the start was cut), because tools print
+the cause last. `error-line.ts` `lastErrorLine` derives the one line that says
+what went wrong from that stored text, at read time: no column, no wire field,
+and every old row gets one. It skips blank lines, the truncation marker, a bare
+"exit N", stack frames and log-file pointers, redacts signed URLs, and keeps the
+end of a very long line. `CommandRecord`, the lean status projection
+(`CommandStatusRecord`) and deploy history rows all carry `errorLine`. A new
+failure path must keep the cause as the **last** line of its message.
+`transitionCommand` stores `error` through `redactUrlSecrets` (a daemon error can
+quote a signed download link), as does `deployment.metadata.error`.
+`redactUrlSecrets` also drops bare tokens (known token shapes, `Bearer` values,
+`NAME=value` for secret-looking names); the cell's `request` rows get the same
+treatment for every inbound message kind (`deriveInboundOutcome` redacts the
+`error` column and the stored result's `error`).
+
 ### Dispatch payload (`dispatch` table)
 
 The daemon execution payload is **not** a `command` column. It lives in the
@@ -274,6 +292,39 @@ A replica that fails, expires, or never enqueues simply never opens the gate:
 the primary gets no command row and the `managed` row survives for a retry — or
 for `?force=true`, which skips the gate deliberately because a member host may
 be unreachable.
+
+### Cancelling a deploy
+
+`POST /environments/:id/deployments/:deploymentId/cancel` stops a deploy that is
+queued or running (`src/features/deploy/deploy-cancel.ts`). It cancels the whole
+deploy: every `environment.deploy` command of that environment and generation,
+and `haltRollout` for batches still waiting.
+
+- **No new command status, no migration.** `queued` goes straight to `cancelled`
+  (one conditional update; the consumer skips terminal rows, and
+  `transitionCommand` never moves a finished command back to a live status). A
+  running command (`dispatching` / `sent`) stays live and gets
+  `command.metadata.cancelRequestedAt` — that stamp _is_ the "cancelling" state,
+  so every "deploy in progress" check keeps working. A new status would silently
+  fall out of those lists.
+- **Not a queued command.** The cancel rides a cell message (`deploy-cancel` →
+  `deploy-cancel-result`, feature `deploy-cancel-v1`): the consumer takes one
+  command at a time, so a cancel queued behind the deploy it is meant to stop
+  would wait the whole deploy out. The route waits up to 8 s for the answer:
+  `cancelling`, `not_running` (the host has no such deploy yet or any more; it
+  remembers the id and refuses a late dispatch) or `too_late` (past the point
+  where it switches anything over: the deploy finishes, the route answers
+  **409** `deploy_too_late` and stamps nothing).
+- **How it ends.** The daemon fails the command with an error starting
+  `cancelled: ` (`CANCELLED_ERROR_PREFIX`). `handlePendingFailed` records that
+  as command status `cancelled`, `error_code = deploy_cancelled`, and marks the
+  `deployment` row `failed` with `metadata.cancelled` (its `outcome` check allows
+  no new value). `applied_generation` is untouched: the previous release is the
+  live one, so `needsRedeploy` stays true.
+- **Older daemons** cannot be asked: a running deploy on a daemon without
+  `deploy-cancel-v1` answers **409** `cancel_unsupported` before anything changes.
+- **No step-up**: `step-up-actions.ts` leaves out actions a re-deploy fully
+  reverses. The cancel is audited (`deployment.cancel`).
 
 ### Webhook-triggered deploys
 

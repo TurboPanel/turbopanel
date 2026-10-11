@@ -332,7 +332,11 @@ export const billingSchemas = {
         description:
           'Positive: buys that many now, invoiced — refused `licenses_ending` while licenses at this tier are ending (restore those first with `POST /billing/restore`; other tiers never block). Negative: those licenses end at the period boundary.',
       },
-      prorationDate: { type: 'integer', description: 'From the preview; increases only.' },
+      prorationDate: {
+        type: 'integer',
+        description:
+          'From the preview; increases only. Must be at most 15 minutes old and never in the future, else 409 `proration_date_expired` (request a new quote).',
+      },
     },
   },
   BillingTierMoveRequest: {
@@ -343,7 +347,11 @@ export const billingSchemas = {
     properties: {
       fromTierId: { type: 'string', format: 'uuid' },
       toTierId: { type: 'string', format: 'uuid' },
-      prorationDate: { type: 'integer', description: 'From the preview; upgrades only.' },
+      prorationDate: {
+        type: 'integer',
+        description:
+          'From the preview; upgrades only. Must be at most 15 minutes old and never in the future, else 409 `proration_date_expired` (request a new quote).',
+      },
     },
   },
   BillingMutationResponse: {

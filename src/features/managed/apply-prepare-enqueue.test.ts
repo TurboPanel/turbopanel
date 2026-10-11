@@ -10,6 +10,7 @@ import {
   enqueueManagedDestroy,
   enqueueManagedLifecycle,
   enqueueManagedLifecycleFanout,
+  enqueuePreparedManagedApply,
   enqueueTypedCommand,
 } from './apply-prepare.ts'
 
@@ -26,6 +27,7 @@ function mockContext(): Context<AppEnv> {
     json(body: unknown, status?: number) {
       return Response.json(body, { status })
     },
+    get: () => undefined,
   } as unknown as Context<AppEnv>
 }
 
@@ -55,8 +57,16 @@ function createEnqueueDb(): {
   const commandRows: CommandRow[] = []
   const commandUpdates: Array<{ id: string; patch: Record<string, unknown> }> = []
   const dispatchPayloads: unknown[] = []
+  let nextCommandSeq = 0
 
   const db = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => Promise.resolve([]),
+        }),
+      }),
+    }),
     update: (table: unknown) => ({
       set: (patch: Record<string, unknown>) => ({
         where: () => {
@@ -93,8 +103,9 @@ function createEnqueueDb(): {
         if ('commandId' in row) dispatchPayloads.push(row.payload)
         return {
           returning: () => {
+            nextCommandSeq += 1
             const created: CommandRow = {
-              id: 'cmd-00000000-0000-4000-8000-000000000099',
+              id: `cmd-00000000-0000-4000-8000-0000000000${String(nextCommandSeq).padStart(2, '0')}`,
               serverId: row.serverId as string,
               actorType: row.actorType as string,
               actorId: row.actorId as string,
@@ -135,7 +146,7 @@ function recordingQueue(fail = false): CommandQueue {
 
 test('enqueueTypedCommand queues a command and returns ids', async () => {
   const c = mockContext()
-  const { db, managedUpdates } = createEnqueueDb()
+  const { db, managedUpdates, commandRows } = createEnqueueDb()
   const queue = recordingQueue()
 
   const result = await enqueueTypedCommand(c, db, queue, {
@@ -152,7 +163,7 @@ test('enqueueTypedCommand queues a command and returns ids', async () => {
   assertEquals(result.ok, true)
   assertEquals(result.status, 'queued')
   assertEquals(result.serverId, 'server-1')
-  assertEquals(result.commandId, 'cmd-00000000-0000-4000-8000-000000000099')
+  assertEquals(result.commandId, commandRows[0]?.id)
   assertEquals(managedUpdates.length, 0)
   assertEquals((queue as CommandQueue & { enqueueCount: number }).enqueueCount, 1)
 })
@@ -205,9 +216,121 @@ test('enqueueTypedCommand returns 503 and marks failed when the queue is unavail
   )
 })
 
-test('enqueueManagedApply delegates to managed.apply with setApplying', async () => {
+test('enqueuePreparedManagedApply fanOutMembersConcurrently queues standbys without pendingStandbyApplies', async () => {
+  const c = mockContext()
+  const { db, commandRows } = createEnqueueDb()
+  const queue = recordingQueue()
+
+  const result = await enqueuePreparedManagedApply(c, db, queue, {
+    userId: 'user-1',
+    managedId: 'managed-1',
+    fanOutMembersConcurrently: true,
+    members: [
+      {
+        memberId: '00000000-0000-4000-8000-0000000000a1',
+        serverId: 'server-primary',
+        payload: {
+          managedId: 'managed-1',
+          engine: 'postgres',
+          memberRole: 'primary',
+          replication: { role: 'primary', username: 'tp_repl' },
+        } as never,
+      },
+      {
+        memberId: '00000000-0000-4000-8000-0000000000a2',
+        serverId: 'server-standby',
+        payload: {
+          managedId: 'managed-1',
+          engine: 'postgres',
+          memberRole: 'replica',
+          replication: { role: 'standby', username: 'tp_repl' },
+        } as never,
+      },
+    ],
+  })
+
+  if (result instanceof Response) {
+    throw new TypeError('expected enqueue results')
+  }
+  assertEquals(result.length, 2)
+  assertEquals(
+    result.every((row) => row.status === 'queued' && row.commandId),
+    true
+  )
+  assertEquals(commandRows.length, 2)
+  assertEquals(commandRows[0]?.metadata?.pendingStandbyApplies, undefined)
+  assertEquals((queue as CommandQueue & { enqueueCount: number }).enqueueCount, 2)
+})
+
+test('enqueuePreparedManagedApply defers standbys via pendingStandbyApplies by default', async () => {
+  const c = mockContext()
+  const { db, commandRows } = createEnqueueDb()
+  const queue = recordingQueue()
+
+  const result = await enqueuePreparedManagedApply(c, db, queue, {
+    userId: 'user-1',
+    managedId: 'managed-1',
+    members: [
+      {
+        memberId: '00000000-0000-4000-8000-0000000000a1',
+        serverId: 'server-primary',
+        payload: {
+          managedId: 'managed-1',
+          engine: 'postgres',
+          memberRole: 'primary',
+          replication: { role: 'primary', username: 'tp_repl' },
+        } as never,
+      },
+      {
+        memberId: '00000000-0000-4000-8000-0000000000a2',
+        serverId: 'server-standby',
+        payload: {
+          managedId: 'managed-1',
+          engine: 'postgres',
+          memberRole: 'replica',
+          replication: { role: 'standby', username: 'tp_repl' },
+        } as never,
+      },
+    ],
+  })
+
+  if (result instanceof Response) {
+    throw new TypeError('expected enqueue results')
+  }
+  assertEquals(commandRows.length, 1)
+  assertEquals(Array.isArray(commandRows[0]?.metadata.pendingStandbyApplies), true)
+  assertEquals((queue as CommandQueue & { enqueueCount: number }).enqueueCount, 1)
+  assertEquals(result.find((row) => row.serverId === 'server-standby')?.commandId, undefined)
+})
+
+test('enqueuePreparedManagedApply skips managed.status when updateManagedStatus is false', async () => {
   const c = mockContext()
   const { db, managedUpdates } = createEnqueueDb()
+  const queue = recordingQueue(true)
+
+  const result = await enqueuePreparedManagedApply(c, db, queue, {
+    userId: 'user-1',
+    managedId: 'managed-1',
+    updateManagedStatus: false,
+    members: [
+      {
+        memberId: '00000000-0000-4000-8000-0000000000a1',
+        serverId: 'server-1',
+        payload: { managedId: 'managed-1', engine: 'postgres' } as never,
+      },
+    ],
+  })
+
+  if (!(result instanceof Response)) {
+    throw new TypeError('expected Response when every enqueue fails')
+  }
+  assertEquals(result.status, 503)
+  assertEquals(managedUpdates.length, 0)
+})
+
+test('enqueueManagedApply delegates to managed.apply with setApplying', async () => {
+  const c = mockContext()
+  const { db, managedUpdates, commandRows } = createEnqueueDb()
   const queue = recordingQueue()
 
   const result = await enqueueManagedApply(c, db, queue, {
@@ -220,7 +343,7 @@ test('enqueueManagedApply delegates to managed.apply with setApplying', async ()
   if (result instanceof Response) {
     throw new TypeError('expected queued response')
   }
-  assertEquals(result.commandId, 'cmd-00000000-0000-4000-8000-000000000099')
+  assertEquals(result.commandId, commandRows[0]?.id)
   assertEquals(managedUpdates[0]?.status, 'applying')
 })
 
@@ -294,4 +417,63 @@ test('enqueueManagedLifecycleFanout sends each member its own id and HA role', a
       engine: 'postgres',
     },
   ])
+})
+
+test('enqueueManagedLifecycleFanout never starts a demoted member that needs a resync', async () => {
+  const c = mockContext()
+  const { db, dispatchPayloads } = createEnqueueDb()
+  const queue = recordingQueue()
+  const members = [
+    {
+      id: '00000000-0000-4000-8000-0000000000a1',
+      serverId: 'server-1',
+      role: 'primary',
+      status: 'ready',
+    },
+    {
+      id: '00000000-0000-4000-8000-0000000000a2',
+      serverId: 'server-2',
+      role: 'replica',
+      status: 'needs_resync',
+    },
+  ] as ManagedMemberRow[]
+
+  for (const action of ['start', 'restart'] as const) {
+    dispatchPayloads.length = 0
+    const results = await enqueueManagedLifecycleFanout(c, db, queue, {
+      userId: 'user-1',
+      managedId: 'managed-1',
+      action,
+      members,
+      engine: 'postgres',
+    })
+    if (results instanceof Response) throw new TypeError('expected fan-out results')
+    assertEquals(
+      results.map((result) => result.status),
+      ['queued', 'failed']
+    )
+    assertEquals(results[1]?.error, 'managed_member_needs_resync')
+    assertEquals(dispatchPayloads.length, 1)
+  }
+
+  // Stopping it is always safe.
+  dispatchPayloads.length = 0
+  const stop = await enqueueManagedLifecycleFanout(c, db, queue, {
+    userId: 'user-1',
+    managedId: 'managed-1',
+    action: 'stop',
+    members,
+    engine: 'postgres',
+  })
+  if (stop instanceof Response) throw new TypeError('expected fan-out results')
+  assertEquals(
+    stop.map((result) => result.status),
+    ['queued', 'queued']
+  )
+  assertEquals(
+    dispatchPayloads.every(
+      (payload) => typeof payload === 'object' && payload !== null && !('demoted' in payload)
+    ),
+    true
+  )
 })

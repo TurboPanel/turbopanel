@@ -42,9 +42,7 @@ import {
 import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 import { isPrivateEndpointError } from '../net/private-endpoint.ts'
 
-export type BindingEndpointError =
-  | PrivateEndpointError
-  | { kind: 'binding_endpoint_unavailable' }
+export type BindingEndpointError = PrivateEndpointError | { kind: 'binding_endpoint_unavailable' }
 
 export type ResolvedBindingEndpoint = {
   /** Docker container name of the target server's ProxySQL frontend. */
@@ -55,9 +53,7 @@ export type ResolvedBindingEndpoint = {
   listenerServerId: string
 }
 
-export function isBindingEndpointError(
-  value: unknown,
-): value is BindingEndpointError {
+export function isBindingEndpointError(value: unknown): value is BindingEndpointError {
   return (
     isPrivateEndpointError(value) ||
     (typeof value === 'object' &&
@@ -73,7 +69,7 @@ export function isBindingEndpointError(
  */
 export async function loadServicePlacementServerId(
   db: Db,
-  serviceId: string,
+  serviceId: string
 ): Promise<string | null> {
   const [row] = await db
     .select({
@@ -88,18 +84,14 @@ export async function loadServicePlacementServerId(
   if (!row) return null
   return resolveEffectivePlacementServerId(
     row.environmentServerId,
-    parseProjectOptions(row.projectOptions),
+    parseProjectOptions(row.projectOptions)
   )
 }
 
 async function loadClusterMembers(
   db: Db,
-  managedId: string,
-): Promise<
-  Array<
-    { serverId: string; role: string; ordinal: number; readEligible: boolean }
-  >
-> {
+  managedId: string
+): Promise<Array<{ serverId: string; role: string; ordinal: number; readEligible: boolean }>> {
   return await db
     .select({
       serverId: replica.serverId,
@@ -112,7 +104,7 @@ async function loadClusterMembers(
     .orderBy(
       // Primary first, then lowest ordinal.
       sql`CASE WHEN ${replica.role} = 'primary' THEN 0 ELSE 1 END`,
-      asc(replica.ordinal),
+      asc(replica.ordinal)
     )
 }
 
@@ -136,7 +128,7 @@ async function listenerForServer(
     serverId: string
     engineCode: string
     engineDefaultPort: number
-  }>,
+  }>
 ): Promise<{ host: string; port: number } | null> {
   const [row] = await db
     .select({
@@ -154,15 +146,11 @@ async function listenerForServer(
     serverId: params.serverId,
   })
   const ports = resolveManagedIngressPorts(
-    parseOrganizationOptions(row.organizationOptions).managedDatabase?.ports,
+    parseOrganizationOptions(row.organizationOptions).managedDatabase?.ports
   )
   return {
     host: hierarchy.containerName,
-    port: managedIngressPortForEngine(
-      params.engineCode,
-      params.engineDefaultPort,
-      ports,
-    ),
+    port: managedIngressPortForEngine(params.engineCode, params.engineDefaultPort, ports),
   }
 }
 
@@ -182,7 +170,7 @@ export async function resolveBindingEndpoint(
     managedId: string
     engineCode: string
     engineDefaultPort: number
-  }>,
+  }>
 ): Promise<ResolvedBindingEndpoint | BindingEndpointError> {
   const members = await loadClusterMembers(db, params.managedId)
   if (members.length === 0) {
@@ -190,10 +178,7 @@ export async function resolveBindingEndpoint(
   }
 
   const readSplit = members.some((m) => m.readEligible)
-  const serviceServerId = await loadServicePlacementServerId(
-    db,
-    params.serviceId,
-  )
+  const serviceServerId = await loadServicePlacementServerId(db, params.serviceId)
   // No service placement yet (deploy prerequisite unmet) — fall back to a
   // cluster member's server (primary first) as a best-effort display target.
   const targetServerId = serviceServerId ?? members[0]!.serverId
@@ -215,10 +200,7 @@ export async function resolveBindingEndpoint(
 }
 
 /** Whether a managed cluster `replica` row exists for this (managed, server) pair. */
-export async function memberServerIdsForManaged(
-  db: Db,
-  managedId: string,
-): Promise<string[]> {
+export async function memberServerIdsForManaged(db: Db, managedId: string): Promise<string[]> {
   const rows = await db
     .select({ serverId: replica.serverId })
     .from(replica)
@@ -232,20 +214,12 @@ export async function memberServerIdsForManaged(
  * Used by `PATCH /datacenters/:id` to re-converge member transports when the
  * datacenter's routing policy changes.
  */
-export async function listManagedIdsForDatacenter(
-  db: Db,
-  datacenterId: string,
-): Promise<string[]> {
+export async function listManagedIdsForDatacenter(db: Db, datacenterId: string): Promise<string[]> {
   const rows = await db
     .selectDistinct({ managedId: replica.managedId })
     .from(replica)
     .innerJoin(ip, eq(ip.serverId, replica.serverId))
-    .where(
-      and(
-        eq(ip.scope, 'datacenter'),
-        eq(ip.datacenterId, datacenterId),
-      ),
-    )
+    .where(and(eq(ip.scope, 'datacenter'), eq(ip.datacenterId, datacenterId)))
   return rows.map((row) => row.managedId)
 }
 
@@ -256,10 +230,7 @@ export async function listManagedIdsForDatacenter(
  * moved, the server set covers the repinned host's own engine listeners and
  * ProxySQL backends.
  */
-export async function listManagedIdsForServer(
-  db: Db,
-  serverId: string,
-): Promise<string[]> {
+export async function listManagedIdsForServer(db: Db, serverId: string): Promise<string[]> {
   const rows = await db
     .selectDistinct({ managedId: replica.managedId })
     .from(replica)
@@ -272,10 +243,7 @@ export async function listManagedIdsForServer(
  * Inverse of `loadBoundManagedIdsForServer`: env pin, project default, and
  * any `slot.serverId`. One query — no per-service round trips.
  */
-export async function consumerServerIdsForManaged(
-  db: Db,
-  managedId: string,
-): Promise<string[]> {
+export async function consumerServerIdsForManaged(db: Db, managedId: string): Promise<string[]> {
   const rows = await db
     .select({
       environmentServerId: environment.serverId,
@@ -294,7 +262,7 @@ export async function consumerServerIdsForManaged(
   for (const row of rows) {
     const placement = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions),
+      parseProjectOptions(row.projectOptions)
     )
     if (placement) ids.add(placement)
     if (row.taskServerId) ids.add(row.taskServerId)

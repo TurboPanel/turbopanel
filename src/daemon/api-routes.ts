@@ -1,3 +1,4 @@
+import { resolveClientIp } from '../client/authn/http.ts'
 import { mapSequential } from '../lib/sequential.ts'
 import { Hono } from 'hono'
 import type { Context, Env, Next } from 'hono'
@@ -84,6 +85,7 @@ import {
   getLatestTopologyGeneration,
   getTopologyGeneration,
   markTopologyResyncRequested,
+  topologyChurnLimitedRecently,
 } from '../features/servers/server-topology-records.ts'
 import { recordCapabilityPlanGenerationIfChanged } from '../client/servers/capability-plan-records.ts'
 import { enqueueCapabilityPlanUpdate } from '../client/servers/capability-plan-push.ts'
@@ -141,6 +143,7 @@ import type { RateLimiter } from './rate-limit/contracts.ts'
 import { createNoopRateLimiter } from './rate-limit/contracts.ts'
 import {
   daemonEnrollChallengeRateLimitKey,
+  daemonPreProofRateLimitKey,
   daemonMetricsRateLimitKey,
   daemonRestRateLimitKey,
   type DaemonRestRateLimitRoute,
@@ -621,6 +624,20 @@ function resolveSlotMappingForIngest(
   }
 }
 
+/** A fresh resync marker is not re-stamped: an unknown generation on every sample must not become a write per sample. */
+const TOPOLOGY_RESYNC_MARK_COOLDOWN_MS = 5 * 60 * 1000
+
+export function topologyResyncRecentlyRequested(
+  serverMetadata: unknown,
+  nowMs = Date.now()
+): boolean {
+  if (!isPlainObject(serverMetadata)) return false
+  const at = serverMetadata.topologyResyncRequestedAt
+  if (typeof at !== 'string') return false
+  const requestedMs = Date.parse(at)
+  return Number.isFinite(requestedMs) && nowMs - requestedMs < TOPOLOGY_RESYNC_MARK_COOLDOWN_MS
+}
+
 type IngestPlanAndTopology = {
   plan: MetricsCapabilityPlan
   slotMapping: SlotMapping | undefined
@@ -701,6 +718,11 @@ async function resolveIngestPlanAndReconcileTopology(
   sample: AuthenticatedMetricsSample,
   deployment: MetricsDeploymentKind
 ): Promise<IngestPlanAndTopology> {
+  // A non-durable 10 s live sample is only buffered for the chart overlay and
+  // never stored: it still needs the plan to truncate against, but must not
+  // cause writes (resync marker, machine-class guess) or the plan-generation
+  // record. The durable 60 s baseline owns all of those.
+  const durable = isDurableSample(sample)
   try {
     const [topologyMatch, latestTopology, planRow] = await Promise.all([
       getTopologyGeneration(db, serverId, sample.metadata.topologyGeneration),
@@ -709,7 +731,12 @@ async function resolveIngestPlanAndReconcileTopology(
     ])
 
     const topologyKnown = topologyMatch !== undefined
-    if (!topologyKnown) {
+    if (
+      !topologyKnown &&
+      durable &&
+      !topologyResyncRecentlyRequested(planRow?.serverMetadata) &&
+      !topologyChurnLimitedRecently(planRow?.serverMetadata)
+    ) {
       markTopologyResyncRequested(db, serverId).catch((err) => {
         rateLimitedMetricsLog(serverId, 'topology_resync_mark_failed', () => {
           console.warn(
@@ -726,6 +753,7 @@ async function resolveIngestPlanAndReconcileTopology(
       countHostLevelSignals(sample.hardwareSignals)
     )
     if (
+      durable &&
       planRow !== undefined &&
       !isServerMachineClass(planRow.machineClass) &&
       machineClass === 'physical'
@@ -769,7 +797,7 @@ async function resolveIngestPlanAndReconcileTopology(
     let planChanged = false
     // Self-hosted ingest writes the operator's own disk uncapped — never
     // persist or push a finite plan the daemon would then truncate against.
-    if (deployment !== 'self-hosted') {
+    if (deployment !== 'self-hosted' && durable) {
       try {
         const recorded = await recordCapabilityPlanGenerationIfChanged(db, serverId, plan)
         generation = recorded.generation
@@ -846,6 +874,9 @@ type DaemonApiEnv = {
   }
 }
 
+/** `Retry-After` (seconds) sent with a daemon REST 429. */
+const DAEMON_REST_RETRY_AFTER_SECONDS = '5'
+
 export function registerDaemonApiRoutes<E extends Env>(
   app: Hono<E>,
   options: {
@@ -904,9 +935,18 @@ export function registerDaemonApiRoutes<E extends Env>(
   async function enforceDaemonRestLimit(c: Context, key: string): Promise<Response | null> {
     const { success } = await restLimiter.limit({ key })
     if (!success) {
-      return c.json({ ok: false, error: 'rate_limited' }, 429)
+      // A hint, not the window's reset time (the limiter does not report it):
+      // a daemon waits at least this long before it tries the call again.
+      return c.json({ ok: false, error: 'rate_limited' }, 429, {
+        'Retry-After': DAEMON_REST_RETRY_AFTER_SECONDS,
+      })
     }
     return null
+  }
+
+  /** Source address for limits charged before the caller has proved anything. */
+  function preProofPeer(c: Context): string {
+    return resolveClientIp(c, runtime) ?? 'unknown'
   }
 
   async function enforceDaemonMetricsLimit(c: Context, serverId: string): Promise<Response | null> {
@@ -931,9 +971,11 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ ok: false, error: 'Missing serverId or keyId' }, 400)
     }
 
+    // Anyone can name a server id and key id, so this is charged to the caller's
+    // address; the server's own buckets are spent only after a signature checks.
     const limited = await enforceDaemonRestLimit(
       c,
-      daemonRestRateLimitKey(serverId, 'auth-challenge')
+      daemonPreProofRateLimitKey('auth-challenge', preProofPeer(c))
     )
     if (limited) return limited
 
@@ -1138,7 +1180,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     if (looksAnonymous) {
       const enrollChallengeLimited = await enforceDaemonRestLimit(
         c,
-        daemonEnrollChallengeRateLimitKey()
+        daemonEnrollChallengeRateLimitKey(preProofPeer(c))
       )
       if (enrollChallengeLimited) return enrollChallengeLimited
     }
@@ -1165,7 +1207,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     if (!looksAnonymous) {
       const enrollChallengeLimited = await enforceDaemonRestLimit(
         c,
-        daemonEnrollChallengeRateLimitKey()
+        daemonEnrollChallengeRateLimitKey(preProofPeer(c))
       )
       if (enrollChallengeLimited) return enrollChallengeLimited
     }
@@ -1217,7 +1259,7 @@ export function registerDaemonApiRoutes<E extends Env>(
 
     const enrollLimited = await enforceDaemonRestLimit(
       c,
-      daemonRestRateLimitKey(licenseId, 'enroll')
+      daemonPreProofRateLimitKey('enroll', preProofPeer(c))
     )
     if (enrollLimited) return enrollLimited
 
@@ -1233,6 +1275,11 @@ export function registerDaemonApiRoutes<E extends Env>(
     if (!verifiedLicense) {
       return c.json({ ok: false, error: 'Invalid license' }, 401)
     }
+    const licenseLimited = await enforceDaemonRestLimit(
+      c,
+      daemonRestRateLimitKey(licenseId, 'enroll')
+    )
+    if (licenseLimited) return licenseLimited
 
     const fingerprint = await computePublicKeyFingerprint(publicJwk)
     const payload = buildEnrollmentPayload({
@@ -1315,7 +1362,7 @@ export function registerDaemonApiRoutes<E extends Env>(
 
     const sessionLimited = await enforceDaemonRestLimit(
       c,
-      daemonRestRateLimitKey(serverId, 'auth-session')
+      daemonPreProofRateLimitKey('auth-session', preProofPeer(c))
     )
     if (sessionLimited) return sessionLimited
 
@@ -1357,6 +1404,12 @@ export function registerDaemonApiRoutes<E extends Env>(
     if (!verified) {
       return c.json({ ok: false, error: 'Invalid signature' }, 403)
     }
+
+    const serverSessionLimited = await enforceDaemonRestLimit(
+      c,
+      daemonRestRateLimitKey(serverId, 'auth-session')
+    )
+    if (serverSessionLimited) return serverSessionLimited
 
     await touchDaemonKeyLastUsed(db, serverId)
     await touchServerMetadata(db, serverId, { machineKey, hostname })

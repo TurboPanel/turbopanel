@@ -10,6 +10,7 @@ import {
   type UpdateProgressStage,
 } from '../../contracts/cell-protocol.ts'
 import type { UpdateChannel } from '../../contracts/update-channel.ts'
+import { UPDATE_IN_PROGRESS_ERROR_CODE } from '../update/constants.ts'
 import { redactUrlSecrets } from './redact-url-secrets.ts'
 import {
   channelHasInstancePackage,
@@ -632,6 +633,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       steps.map((step) => ({
         batchIndex: step.batchIndex,
         status: step.status,
+        connected: step.phase === 'fleet' ? factOf(fleet, step)?.connected === true : true,
       }))
     )
     const currentPhase = earliestOpenPhase(steps)
@@ -830,6 +832,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
             fleetServerIds:
               input.fleetServerIds ??
               fleet.filter((fact) => !fact.colocated).map((fact) => fact.serverId),
+            connectedServerIds: fleet.filter((fact) => fact.connected).map((fact) => fact.serverId),
             batch: settings.batch,
           })
       const now = deps.now()
@@ -1204,7 +1207,7 @@ function sameSummary(left: StepSummary | null, right: StepSummary): boolean {
  * The daemon's answer when an `update` / `instance-update` arrives while an
  * install of that unit is already running (turbopaneld `client.ts`).
  */
-const DISPATCH_IN_PROGRESS = 'preflight_in_progress'
+const DISPATCH_IN_PROGRESS = UPDATE_IN_PROGRESS_ERROR_CODE
 
 /**
  * Which dispatch of this step a progress or result frame belongs to: the

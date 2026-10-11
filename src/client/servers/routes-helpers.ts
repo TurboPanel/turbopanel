@@ -15,6 +15,7 @@ import {
   type ServerTimeSync,
   type ServerHostResources,
   type ServerDockerMetadata,
+  type ServerReleaseLinkScanMetadata,
   type ServerRuntimeMetadata,
 } from '../../features/servers/server-metadata.ts'
 import type { OrganizationOptions } from '../../features/organizations/organization-options.ts'
@@ -175,6 +176,9 @@ function parseServerPatchOptions(
   // `options` is merged into the stored blob, so leaving `location` out of it
   // keeps the stored override.
   delete options.location
+  // Likewise the external-access setting: it only changes through its own route,
+  // which also tells the server.
+  delete options.managedExternalAccess
   if ('sshPort' in raw) {
     const sshPort = parseSshPortInput(raw.sshPort)
     if (!sshPort.ok) {
@@ -478,6 +482,8 @@ export type PresenceLike = {
   docker?: ServerDockerMetadata | null
   /** Runtimes the daemon reports installed; `null` when it has not reported. */
   runtimes?: ServerRuntimeMetadata | null
+  /** Daemon's last live-release link check; `null` until reported. */
+  releaseLinkScan?: ServerReleaseLinkScanMetadata | null
   /** Operator hardware profile (sensor/NIC slots, hosting path); `null` when none are set. */
   hardwareProfile?: ServerHardwareProfile | null
 }
@@ -595,6 +601,7 @@ export function shapeServerPresenceFields(
     timeSync: live?.timeSync ?? null,
     docker: live?.docker ?? null,
     runtimes: live?.runtimes ?? null,
+    releaseLinkScan: live?.releaseLinkScan ?? null,
     hardwareProfile: live?.hardwareProfile ?? null,
   }
 }
@@ -602,7 +609,8 @@ export function shapeServerPresenceFields(
 export function shouldSkipProjectedUpdateRepair(
   projectedUpdate: { status?: string } | null | undefined
 ): boolean {
-  return projectedUpdate?.status !== 'updating'
+  const status = projectedUpdate?.status
+  return status !== 'updating' && status !== 'failed' && status !== 'expired'
 }
 
 export function repairedUpdateDoneProjection(

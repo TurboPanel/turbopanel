@@ -54,6 +54,7 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'deployment',
   'dispatch',
   'edict',
+  // Created by 0000_init and dropped by 0020; still named in the history.
   'entitlement',
   'environment',
   'fabric',
@@ -287,9 +288,6 @@ test('migrations/ CREATE TABLE names are single lower-case words', async () => {
   }
   if (!unique.includes('task')) {
     throw new TypeError('expected cron table "task"')
-  }
-  if (!unique.includes('entitlement')) {
-    throw new TypeError('expected principal-runtime-grant table "entitlement"')
   }
   if (!unique.includes('ssh')) {
     throw new TypeError('expected principal-ssh-key table "ssh"')

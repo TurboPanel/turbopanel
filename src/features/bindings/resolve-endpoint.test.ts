@@ -4,9 +4,10 @@
  * consumer must always resolve a dial-able ProxySQL container endpoint on
  * its *own* server — same-host or cross-host from the cluster's members —
  * and never a `127.0.0.1` address that a container cannot reach across its
- * own network namespace, regardless of the cluster's public exposure setting.
+ * own network namespace, regardless of the server's external access setting.
  */
 
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -22,12 +23,8 @@ import {
   service,
   workspace,
 } from '../../db/schema.ts'
-import {
-  MANAGED_INGRESS_MYSQL_PORT,
-  MANAGED_INGRESS_PGSQL_PORT,
-} from '../managed/ingress-ports.ts'
+import { MANAGED_INGRESS_MYSQL_PORT, MANAGED_INGRESS_PGSQL_PORT } from '../managed/ingress-ports.ts'
 import { postgresEngineSpec } from '../managed/postgres.ts'
-import type { ManagedSettings } from '../managed/settings.ts'
 import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 import {
   type BindingEndpointError,
@@ -97,20 +94,12 @@ test('typed failure surface never throws strings', () => {
 
 const dbUrl = getDatabaseUrl()
 
-function exposureSettings(
-  exposure: ManagedSettings['exposure'],
-): ManagedSettings {
-  const parsed = postgresEngineSpec.parseSettings({ exposure })
-  if (!parsed) throw new TypeError('expected valid managed settings')
-  return parsed
-}
-
 /** Mirrors `cleanupOrgHierarchy` in `../system/hierarchy.test.ts` — handles
  * both the consumer workspace and the system (managed-ingress) workspace
  * `ensureManagedIngressHierarchy` provisions for this organization. */
 async function cleanupBindingEndpointOrg(
   db: ReturnType<typeof createDenoDb>,
-  organizationId: string,
+  organizationId: string
 ): Promise<void> {
   const workspaceRows = await db
     .select({ id: workspace.id })
@@ -140,15 +129,11 @@ async function cleanupBindingEndpointOrg(
         const serviceIds = serviceRows.map((row) => row.id)
 
         if (serviceIds.length > 0) {
-          await db.delete(container).where(
-            inArray(container.serviceId, serviceIds),
-          )
+          await db.delete(container).where(inArray(container.serviceId, serviceIds))
           await db.delete(service).where(inArray(service.id, serviceIds))
         }
         // `managed` + `replica` cascade-delete via the environment FK.
-        await db.delete(environment).where(
-          inArray(environment.id, environmentIds),
-        )
+        await db.delete(environment).where(inArray(environment.id, environmentIds))
       }
       await db.delete(project).where(inArray(project.id, projectIds))
     }
@@ -166,7 +151,6 @@ async function cleanupBindingEndpointOrg(
  * coverage. Isolated per test (own organization) so cleanup is exhaustive.
  */
 async function withBindingReachabilityFixture(
-  exposure: ManagedSettings['exposure'],
   fn: (ctx: {
     db: ReturnType<typeof createDenoDb>
     organizationId: string
@@ -174,12 +158,10 @@ async function withBindingReachabilityFixture(
     managedId: string
     createServer: (name: string) => Promise<string>
     createConsumerService: (serverId: string) => Promise<string>
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn(
-      'Skipping binding-endpoint reachability tests: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('binding-endpoint reachability tests')
     return
   }
 
@@ -237,7 +219,8 @@ async function withBindingReachabilityFixture(
     .returning({ id: environment.id })
   const managedEnvironmentId = insertedManagedEnv!.id
 
-  const settings = exposureSettings(exposure)
+  const settings = postgresEngineSpec.parseSettings(postgresEngineSpec.defaultSettings)
+  if (!settings) throw new TypeError('expected valid managed settings')
   const [insertedManaged] = await db
     .insert(managed)
     .values({
@@ -308,10 +291,7 @@ async function withBindingReachabilityFixture(
 
 test("same-host container reachability — consumer on the cluster server dials that server's ProxySQL container, never loopback", async () => {
   await withBindingReachabilityFixture(
-    { enabled: true, scope: 'local' },
-    async (
-      { db, organizationId, clusterServerId, managedId, createConsumerService },
-    ) => {
+    async ({ db, organizationId, clusterServerId, managedId, createConsumerService }) => {
       const serviceId = await createConsumerService(clusterServerId)
 
       const resolved = await resolveBindingEndpoint(db, {
@@ -321,9 +301,7 @@ test("same-host container reachability — consumer on the cluster server dials 
         engineDefaultPort: 5432,
       })
       if (isBindingEndpointError(resolved)) {
-        throw new TypeError(
-          `expected a resolved endpoint, got ${JSON.stringify(resolved)}`,
-        )
+        throw new TypeError(`expected a resolved endpoint, got ${JSON.stringify(resolved)}`)
       }
 
       const hierarchy = await ensureManagedIngressHierarchy(db, {
@@ -335,26 +313,21 @@ test("same-host container reachability — consumer on the cluster server dials 
       // The shared client listener, not the engine-native backend port.
       assertEquals(resolved.port, MANAGED_INGRESS_PGSQL_PORT)
       assertEquals(resolved.listenerServerId, clusterServerId)
-    },
+    }
   )
 })
 
 test("cross-host binding reachability — consumer on a different server dials its OWN ProxySQL, never the cluster member's host", async () => {
   await withBindingReachabilityFixture(
-    { enabled: false },
-    async (
-      {
-        db,
-        organizationId,
-        clusterServerId,
-        managedId,
-        createServer,
-        createConsumerService,
-      },
-    ) => {
-      const consumerServerId = await createServer(
-        'Binding Endpoint Consumer Server',
-      )
+    async ({
+      db,
+      organizationId,
+      clusterServerId,
+      managedId,
+      createServer,
+      createConsumerService,
+    }) => {
+      const consumerServerId = await createServer('Binding Endpoint Consumer Server')
       const serviceId = await createConsumerService(consumerServerId)
 
       const resolved = await resolveBindingEndpoint(db, {
@@ -364,9 +337,7 @@ test("cross-host binding reachability — consumer on a different server dials i
         engineDefaultPort: 3306,
       })
       if (isBindingEndpointError(resolved)) {
-        throw new TypeError(
-          `expected a resolved endpoint, got ${JSON.stringify(resolved)}`,
-        )
+        throw new TypeError(`expected a resolved endpoint, got ${JSON.stringify(resolved)}`)
       }
 
       const consumerHierarchy = await ensureManagedIngressHierarchy(db, {
@@ -384,16 +355,13 @@ test("cross-host binding reachability — consumer on a different server dials i
       assertEquals(resolved.host === '127.0.0.1', false)
       // MariaDB and MySQL share this listener; neither uses 3306.
       assertEquals(resolved.port, MANAGED_INGRESS_MYSQL_PORT)
-    },
+    }
   )
 })
 
 test('listener port follows the server-owner organization override, not the engine-native port', async () => {
   await withBindingReachabilityFixture(
-    { enabled: false },
-    async (
-      { db, organizationId, clusterServerId, managedId, createConsumerService },
-    ) => {
+    async ({ db, organizationId, clusterServerId, managedId, createConsumerService }) => {
       const serviceId = await createConsumerService(clusterServerId)
 
       // `managed.ingress.reconcile` is a whole-server command, so the port the
@@ -411,9 +379,7 @@ test('listener port follows the server-owner organization override, not the engi
         engineDefaultPort: 5432,
       })
       if (isBindingEndpointError(resolved)) {
-        throw new TypeError(
-          `expected a resolved endpoint, got ${JSON.stringify(resolved)}`,
-        )
+        throw new TypeError(`expected a resolved endpoint, got ${JSON.stringify(resolved)}`)
       }
       assertEquals(resolved.port, 18432)
 
@@ -425,18 +391,15 @@ test('listener port follows the server-owner organization override, not the engi
         engineDefaultPort: 3306,
       })
       if (isBindingEndpointError(mysqlResolved)) {
-        throw new TypeError(
-          `expected a resolved endpoint, got ${JSON.stringify(mysqlResolved)}`,
-        )
+        throw new TypeError(`expected a resolved endpoint, got ${JSON.stringify(mysqlResolved)}`)
       }
       assertEquals(mysqlResolved.port, MANAGED_INGRESS_MYSQL_PORT)
-    },
+    }
   )
 })
 
-test('exposure disabled cluster still resolves a reachable internal endpoint for a placed service binding', async () => {
+test('a server without external access still resolves a reachable internal endpoint for a placed service binding', async () => {
   await withBindingReachabilityFixture(
-    { enabled: false },
     async ({ db, clusterServerId, managedId, createConsumerService }) => {
       const serviceId = await createConsumerService(clusterServerId)
 
@@ -448,18 +411,18 @@ test('exposure disabled cluster still resolves a reachable internal endpoint for
       })
       if (isBindingEndpointError(resolved)) {
         throw new TypeError(
-          `disabled exposure must not break internal binding reachability, got ${
-            JSON.stringify(resolved)
-          }`,
+          `external access off must not break internal binding reachability, got ${JSON.stringify(
+            resolved
+          )}`
         )
       }
-      // Internal reachability is independent of the public exposure toggle —
-      // the consumer still dials the same-host ProxySQL container, and
-      // exposure being disabled must never widen (or narrow) that to a
+      // Internal reachability is independent of the server's external access
+      // setting — the consumer still dials the same-host ProxySQL container,
+      // and the setting being off must never widen (or narrow) that to a
       // host-published or loopback-only address.
       assertEquals(typeof resolved.host, 'string')
       assertEquals(resolved.host.length > 0, true)
       assertEquals(resolved.host === '127.0.0.1', false)
-    },
+    }
   )
 })

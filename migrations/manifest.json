@@ -110,6 +110,60 @@
       "tag": "0017_php_mode_policy_comments",
       "when": 1790966133776,
       "sha256": "76ed00dec1f12cdcf30e121f9273cd1081325884032909d3c9565a43c431f4b9"
+    },
+    {
+      "idx": 18,
+      "tag": "0018_command_server_name_index",
+      "when": 1791097822760,
+      "sha256": "3e6ea84f8dc168f5e4bcdf80b267560fb8026a1f2d02d202cdc0125221b48b25"
+    },
+    {
+      "idx": 19,
+      "tag": "0019_entitlement_runtime_deno",
+      "when": 1791304259875,
+      "sha256": "abd74582a6a57cd9037c3ae6e3b3df34bc3e77f42e21abd97f08d29b888079d3"
+    },
+    {
+      "idx": 20,
+      "tag": "0020_drop_runtime_entitlement",
+      "when": 1791389235676,
+      "sha256": "a2efdf9b8e10ef63c62d095041606a52c1361dc65831f11dda5cd715ef7f1e93"
+    },
+    {
+      "idx": 21,
+      "tag": "0021_add_backup_server_id",
+      "when": 1791491856114,
+      "sha256": "5391611c1f2d16f747b1305735cbd8120ea6fbcf5496a4dc8f454d78b97b9585"
+    },
+    {
+      "idx": 22,
+      "tag": "0022_server_preferred_tier_id",
+      "when": 1791550444346,
+      "sha256": "1b3375f359129f96975ce40d3faaacc5693dc6004aeb36f6fd51eca401ea4fd6"
+    },
+    {
+      "idx": 23,
+      "tag": "0023_server_assigned_tier_comment",
+      "when": 1791551527301,
+      "sha256": "eb3517dd17edf8d79a34bbc41924e53912e4fef05443a1cd0ffcec104180fdd5"
+    },
+    {
+      "idx": 24,
+      "tag": "0024_organization_name_signup_comment",
+      "when": 1791594517203,
+      "sha256": "2ba805a66142673d116e9a62e5e958baadbef4e94fa8c2e4bb9656b6887285d0"
+    },
+    {
+      "idx": 25,
+      "tag": "0025_invitation_grants_comment",
+      "when": 1791597466193,
+      "sha256": "cc6f66e33e7c0afaafa3e524bc5d80efd52e688113e7b3c81bd151c50d79cb64"
+    },
+    {
+      "idx": 26,
+      "tag": "0026_invitation_table_comment",
+      "when": 1791603582204,
+      "sha256": "c53587e5d139528a4c092ba3c894a3bfe046a8ce59b3b83857c421a3c8d0c7ac"
     }
   ]
 }

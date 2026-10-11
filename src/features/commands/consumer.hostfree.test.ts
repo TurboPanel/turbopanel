@@ -6,10 +6,16 @@
 import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
+import { managed, recovery, replica } from '../../db/schema.ts'
+import type { ManagedMemberRow } from '../managed/members.ts'
+import { ALREADY_WRITABLE_PRIMARY_PROMOTE_ERROR_SAMPLE } from '../managed/promote-resume.ts'
+import { DAEMON_RESTART_INTERRUPTION_MARKER, MAX_PROMOTE_RESUMES } from '../managed/ha-recovery.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
 import { COMMAND_DISPATCH_FAILURE_RETENTION_MS } from './command-records.ts'
 import type { CommandEnvelope } from './envelope.ts'
+import type { DeployFailureNotice } from '../deploy/deploy-failure-notice.ts'
 import {
+  announceDeployFailure,
   commandTimeoutMs,
   enrichPingResult,
   errorMessage,
@@ -23,6 +29,7 @@ import {
   resolveManagedIdFromPayload,
   resolveManagedMemberIdFromFailedPayload,
 } from './consumer.ts'
+import { RECOVERY_STEP_FAILED_MESSAGE } from '../managed/recovery.ts'
 import { createNoopCommandQueue } from './noop-command-queue.ts'
 import { resolveFleetPresence } from '../../daemon/cell/server-status.ts'
 import { setResolveFleetPresence } from '../../platform/ports/fleet-presence.ts'
@@ -370,6 +377,13 @@ type ConsumerFakeDbOptions = Readonly<{
   throwOnManagedReadyUpdate?: boolean
   throwOnManagedFailedUpdate?: boolean
   throwOnBackupInsert?: boolean
+  /** The HA recovery journal row the command belongs to (`recovery` table reads and writes). */
+  recoveryRow?: Record<string, unknown>
+  /** The journal read throws (database down), so the failure hook itself fails. */
+  throwOnRecoveryRead?: boolean
+  managedMembers?: ManagedMemberRow[]
+  /** When false, `managed` existence lookups return no row (cluster deleted). */
+  managedClusterExists?: boolean
 }>
 
 function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
@@ -377,6 +391,7 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
   transitions: Array<{ status: string; error?: string }>
   inserts: Array<Record<string, unknown>>
   managedUpdates: Array<Record<string, unknown>>
+  recoveryUpdates: Array<Record<string, unknown>>
   relayUpdates: Array<Record<string, unknown>>
   leafUpserts: number
   dispatchDeletes: number
@@ -385,6 +400,7 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
   const transitions: Array<{ status: string; error?: string }> = []
   const inserts: Array<Record<string, unknown>> = []
   const managedUpdates: Array<Record<string, unknown>> = []
+  const recoveryUpdates: Array<Record<string, unknown>> = []
   const relayUpdates: Array<Record<string, unknown>> = []
   const leafState = { upserts: 0 }
   const dispatchState = { deletes: 0, retentions: [] as string[] }
@@ -395,10 +411,21 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
 
   const db = {
     select: (fields?: Record<string, unknown>) => ({
-      from: () => {
+      from: (table?: unknown) => {
         const source = {
           innerJoin: () => source,
           where: () => {
+            if (table === managed) {
+              const clusterExists = options.managedClusterExists ?? true
+              return queryResult(clusterExists ? [{ id: MANAGED_ID }] : [])
+            }
+            if (table === recovery) {
+              if (options.throwOnRecoveryRead) throw new Error('recovery read failed')
+              return queryResult(options.recoveryRow ? [options.recoveryRow] : [])
+            }
+            if (table === replica) {
+              return queryResult(options.managedMembers ?? [])
+            }
             // getCommandRecord / listServerCommands: explicit command columns
             if (fields && 'name' in fields && 'attempts' in fields) {
               return queryResult(commandRow ? [commandRow] : [])
@@ -528,8 +555,16 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
         })
       },
     }),
-    update: () => ({
+    update: (table?: unknown) => ({
       set: (patch: Record<string, unknown>) => {
+        if (table === recovery) {
+          recoveryUpdates.push(patch)
+          return {
+            where: () => ({
+              returning: () => Promise.resolve([{ ...options.recoveryRow, ...patch }]),
+            }),
+          }
+        }
         if (
           options.throwOnReplicaObservedUpdate &&
           typeof patch.status === 'string' &&
@@ -618,6 +653,7 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
     transitions,
     inserts,
     managedUpdates,
+    recoveryUpdates,
     relayUpdates,
     get leafUpserts() {
       return leafState.upserts
@@ -683,6 +719,34 @@ test('processCommandEnvelope marks expired commands timed_out', async () => {
   assertEquals(
     transitions.some((t) => t.status === 'timed_out'),
     true
+  )
+})
+
+test('processCommandEnvelope fails expired managed.apply when the cluster is gone', async () => {
+  const { db, transitions } = createConsumerFakeDb({
+    commandRow: baseCommandRow({
+      name: 'managed.apply',
+      expiresAt: '2020-01-01T00:00:01.000Z',
+      context: { managedId: MANAGED_ID },
+    }),
+    managedClusterExists: false,
+  })
+  await processCommandEnvelope(db, emptyRegistry(), {
+    commandId: COMMAND_ID,
+    serverId: SERVER_ID,
+    type: 'managed.apply',
+    attempt: 1,
+    queuedAt: '2020-01-01T00:00:00.000Z',
+  })
+  assertEquals(
+    transitions.some(
+      (t) => t.status === 'failed' && t.error === 'Managed cluster no longer exists'
+    ),
+    true
+  )
+  assertEquals(
+    transitions.some((t) => t.status === 'timed_out'),
+    false
   )
 })
 
@@ -1291,6 +1355,118 @@ test('processCommandEnvelope deploy failure runs the failed-deploy side effect',
   )
 })
 
+function failedDeployNotices() {
+  const notices: DeployFailureNotice[] = []
+  const deps = {
+    firewallApplyGate: DENY_FIREWALL_APPLY,
+    onDeployFailed: (notice: DeployFailureNotice) => Promise.resolve(void notices.push(notice)),
+  }
+  return { notices, deps }
+}
+
+const FAILED_PENDING = {
+  ...donePending(),
+  status: 'failed' as const,
+  result: undefined,
+}
+
+test('a failed deploy reaches the failure hook once, with the credentials removed', async () => {
+  const { notices, deps } = failedDeployNotices()
+  await runOnline(
+    'environment.deploy',
+    VALID_DEPLOY_PAYLOAD,
+    { ...FAILED_PENDING, error: 'clone https://user:hunter2@example.com/repo.git failed' },
+    { deps }
+  )
+  assertEquals(notices.length, 1)
+  assertEquals(notices[0]?.environmentId, ENV_ID)
+  assertEquals(notices[0]?.outcome, 'failed')
+  assertEquals(notices[0]?.error.includes('hunter2'), false)
+})
+
+test('a deploy that rolled back reports how it ended', async () => {
+  const { notices, deps } = failedDeployNotices()
+  await runOnline(
+    'environment.deploy',
+    VALID_DEPLOY_PAYLOAD,
+    { ...FAILED_PENDING, error: 'rolled_back: the new version never answered' },
+    { deps }
+  )
+  assertEquals(notices[0]?.strategyOutcome, 'rolled_back')
+})
+
+test('a deploy whose wait expired reaches the hook as timed out', async () => {
+  const { notices, deps } = failedDeployNotices()
+  await runOnline('environment.deploy', VALID_DEPLOY_PAYLOAD, null, { deps })
+  assertEquals(
+    notices.map((notice) => notice.outcome),
+    ['timed_out']
+  )
+})
+
+test('a cancelled deploy is not announced', async () => {
+  const { notices, deps } = failedDeployNotices()
+  await runOnline(
+    'environment.deploy',
+    VALID_DEPLOY_PAYLOAD,
+    { ...FAILED_PENDING, error: 'cancelled: stopped on request' },
+    { deps }
+  )
+  assertEquals(notices.length, 0)
+})
+
+test('a failing hook never changes the command outcome', async () => {
+  const fake = await runOnline(
+    'environment.deploy',
+    VALID_DEPLOY_PAYLOAD,
+    { ...FAILED_PENDING, error: 'compose up failed' },
+    {
+      deps: {
+        firewallApplyGate: DENY_FIREWALL_APPLY,
+        onDeployFailed: () => Promise.reject(new Error('sender down')),
+      },
+    }
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'failed' && t.error === 'compose up failed'),
+    true
+  )
+})
+
+test('only the first failed server of a generation announces a failed rollout', async () => {
+  const notice: DeployFailureNotice = {
+    environmentId: ENV_ID,
+    serverId: 'server-b',
+    commandId: 'cmd-b',
+    outcome: 'failed',
+    error: 'boom',
+  }
+  const dbWithFirstFailed = (firstServerId: string | undefined) =>
+    ({
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: () => Promise.resolve(firstServerId ? [{ serverId: firstServerId }] : []),
+            }),
+          }),
+        }),
+      }),
+    }) as unknown as Db
+  const seen: DeployFailureNotice[] = []
+  const deps = { onDeployFailed: (n: DeployFailureNotice) => Promise.resolve(void seen.push(n)) }
+
+  await announceDeployFailure(dbWithFirstFailed('server-a'), deps, notice, 4)
+  assertEquals(seen.length, 0)
+  await announceDeployFailure(dbWithFirstFailed('server-b'), deps, notice, 4)
+  assertEquals(seen.length, 1)
+  // Nothing visible yet (a concurrent failure): speak rather than stay silent.
+  await announceDeployFailure(dbWithFirstFailed(undefined), deps, notice, 4)
+  assertEquals(seen.length, 2)
+  await announceDeployFailure(dbWithFirstFailed('server-a'), {}, notice, 4)
+  assertEquals(seen.length, 2)
+})
+
 test('processCommandEnvelope deploy wait timeout runs timed_out deploy side effect', async () => {
   const fake = await runOnline('environment.deploy', VALID_DEPLOY_PAYLOAD, null)
   assertEquals(
@@ -1512,6 +1688,47 @@ test('processCommandEnvelope managed.lifecycle stop without recoveryId skips fen
   )
 })
 
+test('a return-fence stop (a demoted member that came back) projects nothing: needs_resync and the cluster status stay', async () => {
+  const stop = { managedId: MANAGED_ID, action: 'stop', engine: 'postgres' }
+  const plain = await runOnline('managed.lifecycle', stop, doneWith({ status: 'stopped' }))
+  // Baseline: an ordinary stop is projected onto the cluster.
+  assertEquals(
+    plain.managedUpdates.some((patch) => patch.status === 'stopped'),
+    true
+  )
+  const fenced = await runOnline('managed.lifecycle', stop, doneWith({ status: 'stopped' }), {
+    commandMetadata: { returnFence: true },
+  })
+  assertEquals(
+    fenced.transitions.some((t) => t.status === 'succeeded'),
+    true
+  )
+  assertEquals(fenced.managedUpdates, [])
+})
+
+test('a failed return-fence stop never marks the cluster or the member failed', async () => {
+  const stop = { managedId: MANAGED_ID, action: 'stop', engine: 'postgres' }
+  const failed = {
+    ...donePending(),
+    status: 'failed' as const,
+    error: 'docker unavailable',
+    result: undefined,
+  }
+  const plain = await runOnline('managed.lifecycle', stop, failed)
+  assertEquals(
+    plain.managedUpdates.some((patch) => patch.status === 'failed'),
+    true
+  )
+  const fenced = await runOnline('managed.lifecycle', stop, failed, {
+    commandMetadata: { returnFence: true },
+  })
+  assertEquals(
+    fenced.transitions.some((t) => t.status === 'failed'),
+    true
+  )
+  assertEquals(fenced.managedUpdates, [])
+})
+
 test('processCommandEnvelope managed.lifecycle invalid payload is swallowed', async () => {
   const fake = await runOnline('managed.lifecycle', {}, doneWith({ status: 'ready' }))
   assertEquals(
@@ -1576,6 +1793,54 @@ test('processCommandEnvelope managed.promote success flips roles in the fake tra
   assertEquals(
     fake.transitions.some((t) => t.status === 'succeeded'),
     true
+  )
+})
+
+test('processCommandEnvelope managed.ha.failover repoint success does not flip roles', async () => {
+  const fake = await runOnline(
+    'managed.ha.failover',
+    {
+      ...VALID_HA_FAILOVER_PAYLOAD,
+      phase: 'repoint',
+      targetHost: '203.0.113.11',
+      targetPort: 5432,
+    },
+    doneWith({ summary: 'followed', phase: 'repoint' }),
+    { replicaServerId: SERVER_ID }
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'succeeded'),
+    true
+  )
+  assertEquals(
+    fake.managedUpdates.some((patch) => patch.serverId !== undefined),
+    false
+  )
+})
+
+test('processCommandEnvelope managed.ha.failover repoint failure does not mark the cluster failed', async () => {
+  const fake = await runOnline(
+    'managed.ha.failover',
+    {
+      ...VALID_HA_FAILOVER_PAYLOAD,
+      phase: 'repoint',
+      targetHost: '203.0.113.11',
+      targetPort: 5432,
+    },
+    {
+      ...donePending(),
+      status: 'failed',
+      error: 'follow-primary failed',
+      result: undefined,
+    }
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'failed'),
+    true
+  )
+  assertEquals(
+    fake.managedUpdates.some((patch) => patch.status === 'failed'),
+    false
   )
 })
 
@@ -1890,7 +2155,9 @@ test('processCommandEnvelope managed.backup create inserts a real backup row', a
     true
   )
   assertEquals(
-    created.inserts.some((row) => row.backupId === 'bk_1700000000000'),
+    created.inserts.some(
+      (row) => row.backupId === 'bk_1700000000000' && row.serverId === SERVER_ID
+    ),
     true
   )
 })
@@ -2387,6 +2654,354 @@ test('processCommandEnvelope managed.ha.failover recover with recoveryId is best
       commandMetadata: { recoveryId: 'rec-2' },
     }
   )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'succeeded'),
+    true
+  )
+})
+
+test('failureErrorCodeField names a cancelled deploy and nothing else', () => {
+  const cancelled = 'cancelled: stopped while building; the previous version is still running'
+  assertEquals(failureErrorCodeField('environment.deploy', null, cancelled), {
+    errorCode: 'deploy_cancelled',
+  })
+  assertEquals(failureErrorCodeField('environment.stop', null, cancelled), {})
+  assertEquals(
+    failureErrorCodeField('environment.deploy', null, 'build was cancelled by a script'),
+    {}
+  )
+})
+
+const RECOVERY_ID = '00000000-0000-4000-8000-0000000000f1'
+
+function promotingRecoveryRow(): Record<string, unknown> {
+  return {
+    id: RECOVERY_ID,
+    managedId: MANAGED_ID,
+    kind: 'switchover',
+    sourcePrimaryMemberId: DEMOTE_ID,
+    targetMemberId: MEMBER_ID,
+    state: 'promoting',
+    startedAt: '2020-01-01T00:00:00.000Z',
+    completedAt: null,
+    metadata: { promoteCommandId: COMMAND_ID },
+    createdAt: '2020-01-01T00:00:00.000Z',
+    updatedAt: '2020-01-01T00:00:00.000Z',
+  }
+}
+
+const PROMOTE_PAYLOAD = { managedId: MANAGED_ID, memberId: MEMBER_ID, demoteMemberId: DEMOTE_ID }
+const DAEMON_RESTART_PROMOTE_ERROR = `The ${DAEMON_RESTART_INTERRUPTION_MARKER}; the host may be partly changed. Run it again.`
+
+function promoteResumeMembers(): ManagedMemberRow[] {
+  const now = '2020-01-01T00:00:00.000Z'
+  return [
+    {
+      id: DEMOTE_ID,
+      managedId: MANAGED_ID,
+      serverId: SERVER_ID,
+      role: 'primary',
+      replicaClass: null,
+      readEligible: true,
+      ordinal: 1,
+      replicationTransport: 'local',
+      privatePort: null,
+      status: 'needs_resync',
+      metadata: {},
+      options: {},
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: MEMBER_ID,
+      managedId: MANAGED_ID,
+      serverId: SERVER_ID,
+      role: 'replica',
+      replicaClass: 'failover',
+      readEligible: true,
+      ordinal: 2,
+      replicationTransport: 'local',
+      privatePort: 45001,
+      status: 'ready',
+      metadata: {},
+      options: {},
+      createdAt: now,
+      updatedAt: now,
+    },
+  ]
+}
+
+const PROMOTE_RESULT = {
+  status: 'ready',
+  role: 'primary',
+  promotedMemberId: MEMBER_ID,
+  demotedMemberId: DEMOTE_ID,
+  demoted: true,
+}
+
+test('processCommandEnvelope switchover promote failure with GTID proof does not mark managed failed', async () => {
+  const { queue } = liveQueue()
+  const fake = await runOnline(
+    'managed.promote',
+    { ...PROMOTE_PAYLOAD, engine: 'mariadb' },
+    {
+      ...donePending(),
+      status: 'failed',
+      error:
+        'switchover_promote:gtid_wait_timeout: the promotion target did not apply the old primary GTID position within 90s',
+      result: undefined,
+    },
+    {
+      commandMetadata: { recoveryId: RECOVERY_ID },
+      recoveryRow: {
+        ...promotingRecoveryRow(),
+        metadata: { promoteCommandId: COMMAND_ID, switchoverRequiredGtidSet: '0-1-5' },
+      },
+      managedMembers: promoteResumeMembers(),
+      deps: { commandQueue: queue, firewallApplyGate: DENY_FIREWALL_APPLY },
+    }
+  )
+  assertEquals(fake.managedUpdates.at(-1)?.status, 'ready')
+  assertEquals(
+    fake.recoveryUpdates.some((patch) => patch.state === 'failed'),
+    true
+  )
+})
+
+test('processCommandEnvelope managed.ha.failover repoint failure with recoveryId does not fail the recovery', async () => {
+  const fake = await runOnline(
+    'managed.ha.failover',
+    {
+      ...VALID_HA_FAILOVER_PAYLOAD,
+      phase: 'repoint',
+      targetHost: '203.0.113.11',
+      targetPort: 5432,
+    },
+    {
+      ...donePending(),
+      status: 'failed',
+      error: 'follow-primary failed',
+      result: undefined,
+    },
+    {
+      commandMetadata: { recoveryId: RECOVERY_ID },
+      recoveryRow: promotingRecoveryRow(),
+    }
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'failed'),
+    true
+  )
+  assertEquals(
+    fake.managedUpdates.some((patch) => patch.status === 'failed'),
+    false
+  )
+  assertEquals(fake.recoveryUpdates.length, 0)
+})
+
+test('processCommandEnvelope managed.ha.failover failure with an unparseable payload still fails the recovery', async () => {
+  const fake = await runOnline(
+    'managed.ha.failover',
+    { not: 'a failover payload' },
+    {
+      ...donePending(),
+      status: 'failed',
+      error: 'bad payload',
+      result: undefined,
+    },
+    {
+      commandMetadata: { recoveryId: RECOVERY_ID },
+      recoveryRow: promotingRecoveryRow(),
+    }
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'failed'),
+    true
+  )
+  assertEquals(fake.recoveryUpdates.length, 1)
+  assertEquals(fake.recoveryUpdates[0]?.state, 'failed')
+})
+
+test('a promote lost to a daemon restart still fails its recovery when nothing can be queued again', async () => {
+  // The consumer has no command queue here, so the resume declines and the
+  // row ends failed for the operator exactly as before.
+  const fake = await runOnline(
+    'managed.promote',
+    PROMOTE_PAYLOAD,
+    {
+      ...donePending(),
+      status: 'failed',
+      error: DAEMON_RESTART_PROMOTE_ERROR,
+      result: undefined,
+    },
+    {
+      commandMetadata: { recoveryId: RECOVERY_ID },
+      recoveryRow: promotingRecoveryRow(),
+    }
+  )
+  assertEquals(fake.recoveryUpdates.length, 1)
+  assertEquals(fake.recoveryUpdates[0]?.state, 'failed')
+})
+
+test('a promote lost to a daemon restart re-queues with resume when a queue is available', async () => {
+  const { queue, envelopes } = liveQueue()
+  const fake = await runOnline(
+    'managed.promote',
+    PROMOTE_PAYLOAD,
+    {
+      ...donePending(),
+      status: 'failed',
+      error: DAEMON_RESTART_PROMOTE_ERROR,
+      result: undefined,
+    },
+    {
+      commandMetadata: { recoveryId: RECOVERY_ID },
+      recoveryRow: promotingRecoveryRow(),
+      serverConnected: true,
+      managedMembers: promoteResumeMembers(),
+      deps: { commandQueue: queue, firewallApplyGate: DENY_FIREWALL_APPLY },
+    }
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'failed'),
+    true
+  )
+  assertEquals(
+    fake.recoveryUpdates.some((patch) => patch.state === 'failed'),
+    false
+  )
+  assertEquals(
+    fake.managedUpdates.some((patch) => patch.status === 'failed'),
+    false
+  )
+  assertEquals(envelopes.length, 1)
+  assertEquals(envelopes[0]?.type, 'managed.promote')
+  const dispatchRow = fake.inserts.find(
+    (row) =>
+      typeof row.payload === 'object' &&
+      row.payload !== null &&
+      (row.payload as { resume?: boolean }).resume === true
+  )
+  assertEquals(dispatchRow !== undefined, true)
+})
+
+test('a promote lost to a daemon restart marks failed when the resume cap is reached', async () => {
+  const { queue, envelopes } = liveQueue()
+  const fake = await runOnline(
+    'managed.promote',
+    PROMOTE_PAYLOAD,
+    {
+      ...donePending(),
+      status: 'failed',
+      error: DAEMON_RESTART_PROMOTE_ERROR,
+      result: undefined,
+    },
+    {
+      commandMetadata: { recoveryId: RECOVERY_ID },
+      recoveryRow: {
+        ...promotingRecoveryRow(),
+        metadata: { promoteResumes: MAX_PROMOTE_RESUMES, promoteCommandId: COMMAND_ID },
+      },
+      serverConnected: true,
+      managedMembers: promoteResumeMembers(),
+      deps: { commandQueue: queue, firewallApplyGate: DENY_FIREWALL_APPLY },
+    }
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'failed'),
+    true
+  )
+  assertEquals(fake.recoveryUpdates.length, 1)
+  assertEquals(fake.recoveryUpdates[0]?.state, 'failed')
+  assertEquals(
+    fake.managedUpdates.some((patch) => patch.status === 'failed'),
+    true
+  )
+  assertEquals(envelopes.length, 0)
+})
+
+test('a resume promote that hits an already-writable primary completes as success', async () => {
+  const fake = await runOnline(
+    'managed.promote',
+    { ...PROMOTE_PAYLOAD, resume: true },
+    {
+      ...donePending(),
+      status: 'failed',
+      error: ALREADY_WRITABLE_PRIMARY_PROMOTE_ERROR_SAMPLE,
+      result: undefined,
+    },
+    {
+      commandMetadata: { recoveryId: RECOVERY_ID },
+      recoveryRow: promotingRecoveryRow(),
+      replicaServerId: SERVER_ID,
+    }
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'succeeded'),
+    true
+  )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'failed'),
+    false
+  )
+})
+
+test('a promote side effect that throws ends its recovery failed for the operator', async () => {
+  const fake = await runOnline('managed.promote', PROMOTE_PAYLOAD, doneWith(PROMOTE_RESULT), {
+    replicaServerId: SERVER_ID,
+    throwOnManagedReadyUpdate: true,
+    commandMetadata: { recoveryId: RECOVERY_ID },
+    recoveryRow: promotingRecoveryRow(),
+  })
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'succeeded'),
+    true
+  )
+  assertEquals(fake.recoveryUpdates.length, 1)
+  const [patch] = fake.recoveryUpdates
+  assertEquals(patch?.state, 'failed')
+  const metadata = patch?.metadata as Record<string, unknown>
+  assertEquals(metadata.needsOperator, true)
+  assertEquals(metadata.failedReason, RECOVERY_STEP_FAILED_MESSAGE)
+  assertEquals(metadata.promoteCommandId, COMMAND_ID)
+})
+
+test('a failover side effect that throws ends its recovery failed for the operator', async () => {
+  const fake = await runOnline(
+    'managed.ha.failover',
+    { ...VALID_HA_FAILOVER_PAYLOAD, phase: 'recover' },
+    doneWith({ summary: 'recovered', phase: 'recover' }),
+    {
+      replicaServerId: SERVER_ID,
+      throwOnManagedReadyUpdate: true,
+      commandMetadata: { recoveryId: RECOVERY_ID },
+      recoveryRow: promotingRecoveryRow(),
+    }
+  )
+  assertEquals(fake.recoveryUpdates.length, 1)
+  assertEquals(fake.recoveryUpdates[0]?.state, 'failed')
+})
+
+test('a throwing side effect on a command with no recovery writes no journal row', async () => {
+  const fake = await runOnline('managed.promote', PROMOTE_PAYLOAD, doneWith(PROMOTE_RESULT), {
+    replicaServerId: SERVER_ID,
+    throwOnManagedReadyUpdate: true,
+    recoveryRow: promotingRecoveryRow(),
+  })
+  assertEquals(fake.recoveryUpdates, [])
+})
+
+test('a failed recovery write never throws out of the consumer', async () => {
+  // The journal read throws, so the failure hook itself fails: it is logged and
+  // swallowed (the recovery sweep expires the row later), and the command ends.
+  const fake = await runOnline('managed.promote', PROMOTE_PAYLOAD, doneWith(PROMOTE_RESULT), {
+    replicaServerId: SERVER_ID,
+    throwOnManagedReadyUpdate: true,
+    throwOnRecoveryRead: true,
+    commandMetadata: { recoveryId: RECOVERY_ID },
+    recoveryRow: promotingRecoveryRow(),
+  })
+  assertEquals(fake.recoveryUpdates, [])
   assertEquals(
     fake.transitions.some((t) => t.status === 'succeeded'),
     true

@@ -51,11 +51,8 @@ test("isUpdateChannel accepts exactly the daemon's vocabulary", () => {
   assertEquals(isUpdateChannel(undefined), false)
 })
 
-test('builtinChannelManifestUrl: trunk on the CDN, canary/rc/release on GitHub Releases, edge none', () => {
-  assertEquals(
-    builtinChannelManifestUrl('trunk'),
-    'https://dl.trbp.nl/channels/trunk/manifest.json'
-  )
+test('builtinChannelManifestUrl: canary/rc/release on GitHub Releases, trunk and edge none', () => {
+  assertEquals(builtinChannelManifestUrl('trunk'), null)
   assertEquals(
     builtinChannelManifestUrl('rc'),
     'https://github.com/TurboPanel/turbopaneld/releases/download/rc/manifest.json'

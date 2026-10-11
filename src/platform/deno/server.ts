@@ -1,5 +1,5 @@
 import type { Hono } from 'hono'
-import { expireStaleDetectingRecoveries } from '../../features/managed/recovery-records.ts'
+import { expireStaleRecoveries } from '../../features/managed/recovery-records.ts'
 import { AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE } from '../../features/managed/recovery.ts'
 import { deriveDaemonJwtKeyring } from '../../daemon/authn/daemon-jwt-keyring.ts'
 import {
@@ -25,6 +25,7 @@ import { sweepStalePresence } from '../../daemon/cell/control-plane-monitor.ts'
 import { createDenoMaintenanceScheduler } from '../../daemon/cell/deno-maintenance.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { ALERT_WEBHOOK_POLICY } from '../../features/alerts/alert-webhook-settings.ts'
+import { pruneCommandHistory } from '../../features/commands/prune.ts'
 import { retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from '../../contracts/cell-protocol.ts'
@@ -46,9 +47,11 @@ import {
 } from '../../features/upgrades/prune.ts'
 import { runUpgradeMaintenance } from '../../features/upgrades/maintenance.ts'
 import { registerWebhookRoutes } from '../../webhook/routes.ts'
+import { runManagedExternalAccessPendingSweep } from '../../features/managed/external-access.ts'
 import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-desired.ts'
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
+import { runHostLossTick } from '../../daemon/cell/host-loss-tick.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { firewallApplyGateFromEnv } from '../../features/firewall/enforcement.ts'
@@ -56,6 +59,7 @@ import {
   LEAF_RENEWAL_SWEEP_INTERVAL_MS,
   runLeafRenewalSweepTick,
 } from '../../client/tls/leaf-renewal-sweep.ts'
+import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
 import {
   assertPasswordHasherAvailable,
   configureArgon2idWorkFactor,
@@ -122,6 +126,7 @@ import {
 } from './commands/deno-amqp-queue.ts'
 import { startCommandConsumer } from '../../features/commands/deno-consumer.ts'
 import { startMailerConsumer } from '../../lib/email/mailer/deno-mailer-consumer.ts'
+import { createAmqpMailDeadLetterStore } from '../../lib/email/mailer/deno-mail-dead-letters.ts'
 import {
   createNoopCommandQueue,
   isNoopCommandQueue,
@@ -300,6 +305,15 @@ async function closeMetricsStoreIfSupported(store: ServerMetricsStore): Promise<
   }
 }
 
+/** The dead-letter admin store, only where mail really goes through the broker. */
+function resolveMailDeadLetters(
+  emailQueue: EmailQueue
+): { mailDeadLetters: ReturnType<typeof createAmqpMailDeadLetterStore> } | Record<string, never> {
+  if (isNoopEmailQueue(emailQueue)) return {}
+  const amqpUrl = resolveCommandAmqpUrl()
+  return amqpUrl ? { mailDeadLetters: createAmqpMailDeadLetterStore({ amqpUrl }) } : {}
+}
+
 function resolveCommandAmqpUrl(): string | null {
   const envUrl = Deno.env.get('TURBOPANEL_AMQP_URL')
   if (envUrl?.trim() === '') {
@@ -312,6 +326,9 @@ function resolveCommandAmqpUrl(): string | null {
 }
 
 /** Isolate one cleanup phase so a failure cannot abort the rest of the tick. */
+const COMMAND_PRUNE_INTERVAL_MS = 15 * 60_000
+let lastCommandPruneMs = 0
+
 async function runCleanupPhase(label: string, fn: () => Promise<unknown>): Promise<void> {
   try {
     await fn()
@@ -320,16 +337,20 @@ async function runCleanupPhase(label: string, fn: () => Promise<unknown>): Promi
   }
 }
 
-async function sweepStaleCommandsPhase(db: Db): Promise<void> {
-  const swept = await sweepStaleCommands(db)
+async function sweepStaleCommandsPhase(db: Db, commandQueue?: CommandQueue): Promise<void> {
+  const swept = await sweepStaleCommands(db, { commandQueue })
+  // Recoveries first: a row that is still in flight keeps its managed row at
+  // `applying`, and an expired one releases it itself.
+  const expired = (
+    await expireStaleRecoveries(db, {
+      reason: AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE,
+    })
+  ).map((row) => row.id)
   const released = await releaseStuckManagedApplying(db)
-  const expired = await expireStaleDetectingRecoveries(db, {
-    reason: AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE,
-  })
   if (swept > 0 || released.length > 0 || expired.length > 0) {
     logWarn(
       'daemon-cell',
-      `stale command sweep: timed out ${swept}, released managed ${released.join(',') || 'none'}, expired detecting recoveries ${expired.join(',') || 'none'}`
+      `stale command sweep: timed out ${swept}, released managed ${released.join(',') || 'none'}, expired recoveries ${expired.join(',') || 'none'}`
     )
   }
 }
@@ -605,6 +626,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     db,
     secrets: daemonJwtKeyring,
     sessionSecrets,
+    dataEncryptionSecrets,
     daemonCellRegistry,
     connectLimiter: daemonConnectLimiter,
     inboundMessageLimit: inboundLimits.limit,
@@ -618,12 +640,19 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     getEnv: () => Deno.env.toObject(),
     readPlatformCaBundle: () => Deno.readTextFile(resolveInstanceTlsCaServePath()),
     collectInstanceIps: () => collectServerIps(readDefaultRouteInterfaces()),
+    ...resolveMailDeadLetters(emailQueue),
   })
   const socketPath = resolveInstanceSocket()
 
   const abort = new AbortController()
   const runSystemReconcileSweepTick = (): void => {
     if (isNoopCommandQueue(commandQueue)) return
+    // A lost database host (`daemon/cell/host-loss-tick.ts`): never throws.
+    void runHostLossTick(db, {
+      commandQueue,
+      registry: daemonCellRegistry,
+      env: Deno.env.toObject(),
+    })
     void runSystemReconcileSweep(db, commandQueue).catch((err) => {
       logWarn('daemon-cell', `system reconcile sweep error: ${String(err)}`)
     })
@@ -635,6 +664,15 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       dataEncryptionSecrets,
     }).catch((err) => {
       logWarn('daemon-cell', `managed ingress orphan sweep error: ${String(err)}`)
+    })
+    // An external-access change that never reached its server (a payload that
+    // could not be built, or a server offline past the command's validity) is
+    // pushed again here until the server confirms it.
+    void runManagedExternalAccessPendingSweep(db, commandQueue, {
+      secretsConfig,
+      dataEncryptionSecrets,
+    }).catch((err) => {
+      logWarn('daemon-cell', `managed external access pending sweep error: ${String(err)}`)
     })
     // Automatic membership repins stamp `ip.repin_pending_fanout_at`
     // from the presence path (which must not enqueue); this drains them with
@@ -698,7 +736,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       // Recover commands stranded non-terminal by a mid-run restart (the
       // consumer's timeout lives only in memory), then unwedge managed rows
       // stuck at 'applying' with no live command left.
-      await runCleanupPhase('stale command sweep', () => sweepStaleCommandsPhase(db))
+      await runCleanupPhase('stale command sweep', () =>
+        sweepStaleCommandsPhase(db, isNoopCommandQueue(commandQueue) ? undefined : commandQueue)
+      )
       // Workers parity (offline-sweep cron): drop webhook delivery ids past the
       // replay-protection retention window.
       await runCleanupPhase('webhook delivery sweep', () =>
@@ -746,6 +786,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
           ),
         })
       )
+      // Workers parity: that cron prunes on its 15-minute window, not every tick.
+      if (Date.now() - lastCommandPruneMs >= COMMAND_PRUNE_INTERVAL_MS) {
+        lastCommandPruneMs = Date.now()
+        await runCleanupPhase('command history prune', () => pruneCommandHistory(db))
+      }
       await runCleanupPhase('upgrade tick', async () => {
         const env = Deno.env.toObject()
         const revision = resolveInstanceRevision(env)
@@ -787,6 +832,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
           secretsConfig,
           dataEncryptionSecrets,
         })
+        // Waiting Let's Encrypt requests (DNS not ready yet): same cadence,
+        // no secrets needed.
+        await runHostingLetsEncryptSweepTick(tickDb)
       } catch (err) {
         logWarn('tls-leaf-renewal', `sweep error: ${String(err)}`)
       } finally {

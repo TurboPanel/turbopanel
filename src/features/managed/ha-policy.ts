@@ -78,6 +78,17 @@ export function orchestratorPromotionRule(replicaClass: string | null): HaPromot
 }
 
 /**
+ * Engines the bundled Orchestrator can run. It speaks the MySQL protocol
+ * only: a Postgres member answers `/api/discover` with HTTP 500 `invalid
+ * connection`, and Postgres HA is not Orchestrator's to manage at all. A
+ * Postgres cluster is therefore left out of `managed.ha.reconcile` entirely
+ * rather than registered and skipped daemon-side.
+ */
+export function orchestratorManagesEngine(engine: string): boolean {
+  return engine === 'mysql' || engine === 'mariadb'
+}
+
+/**
  * Automatic failover must not continue when the old primary cannot be fenced.
  * Operator switchover and disaster recovery may continue (`needs_resync`).
  */
@@ -113,23 +124,86 @@ export function replicaClassAfterDisasterRecovery(input: {
   return 'read'
 }
 
-/** Primary and same-DC failover replicas join the org Orchestrator Raft group. */
+/**
+ * Primary and same-DC `failover` replicas on **MySQL/MariaDB** HA clusters join
+ * the org Orchestrator Raft group. Postgres-only hosts never run Orchestrator.
+ */
 export function serverHostsManagedHa(
-  membersOnServer: ReadonlyArray<{ role: string; replicaClass: string | null }>
+  membersOnServer: ReadonlyArray<{ role: string; replicaClass: string | null; engine: string }>
 ): boolean {
   return membersOnServer.some(
-    (member) => member.role === 'primary' || member.replicaClass === 'failover'
+    (member) =>
+      orchestratorManagesEngine(member.engine) &&
+      (member.role === 'primary' || member.replicaClass === 'failover')
   )
 }
 
+/**
+ * One address out of a server's pins in one datacenter: IPv4 first, then a
+ * fixed textual order within a family, so the answer never depends on the
+ * order the database returned the rows in.
+ */
 export function pickHaAdvertiseAddress(
   pins: ReadonlyArray<{ address: string; family: 4 | 6 }>
 ): string | null {
-  const v4 = pins.find((pin) => pin.family === 4)
-  return v4?.address ?? pins[0]?.address ?? null
+  const ordered = pins.toSorted((a, b) => a.family - b.family || a.address.localeCompare(b.address))
+  return ordered[0]?.address ?? null
 }
 
 export type HaRaftPin = { datacenterId: string; address: string; family: 4 | 6 }
+
+/** The routing policy fields Raft placement reads (see `DatacenterPolicyRow`). */
+export type HaDatacenterPolicy = { priority: number; trusted: boolean }
+
+/**
+ * A datacenter with no policy entry: the documented defaults
+ * (`DEFAULT_DATACENTER_PRIORITY` / `DEFAULT_DATACENTER_TRUSTED` in
+ * datacenter-options.ts; not imported here, this module is loaded by the
+ * command contracts). `loadDatacenterPolicies` seeds every id anyway.
+ */
+export const HA_DEFAULT_DATACENTER_POLICY: Readonly<HaDatacenterPolicy> = {
+  priority: 100,
+  trusted: true,
+}
+
+/**
+ * Which datacenter each Raft server's traffic uses. Every server computes this
+ * from the same inputs (all Raft servers' pins and the datacenter policies),
+ * so all of them agree on who is in which group: a server never lists a voter
+ * that does not list it back.
+ *
+ * Only trusted datacenters count, in `(priority asc, id asc)` order like the
+ * private-endpoint ladder. A server joins the first of its datacenters that
+ * at least one other Raft server is also pinned in; with none, its own best
+ * trusted datacenter (a group of one, as for a server alone in its
+ * datacenter). A server with only untrusted datacenters gets none.
+ */
+export function assignHaRaftDatacenters(
+  raftServerIds: readonly string[],
+  pins: ReadonlyMap<string, readonly HaRaftPin[]>,
+  policies: ReadonlyMap<string, HaDatacenterPolicy>
+): Map<string, string> {
+  const policyOf = (id: string): HaDatacenterPolicy =>
+    policies.get(id) ?? HA_DEFAULT_DATACENTER_POLICY
+  const serversIn = new Map<string, Set<string>>()
+  for (const serverId of raftServerIds) {
+    for (const pin of pins.get(serverId) ?? []) {
+      const members = serversIn.get(pin.datacenterId) ?? new Set<string>()
+      members.add(serverId)
+      serversIn.set(pin.datacenterId, members)
+    }
+  }
+  const assignment = new Map<string, string>()
+  for (const serverId of raftServerIds) {
+    const ranked = [...new Set((pins.get(serverId) ?? []).map((pin) => pin.datacenterId))]
+      .filter((id) => policyOf(id).trusted)
+      .toSorted((a, b) => policyOf(a).priority - policyOf(b).priority || a.localeCompare(b))
+    const shared = ranked.find((id) => (serversIn.get(id)?.size ?? 0) > 1)
+    const chosen = shared ?? ranked[0]
+    if (chosen) assignment.set(serverId, chosen)
+  }
+  return assignment
+}
 
 export type HaRaftMembers = {
   advertiseAddress: string
@@ -137,28 +211,35 @@ export type HaRaftMembers = {
 }
 
 /**
- * Raft voters for `thisServerId`: the HA servers pinned in the datacenter it
- * advertises from. An org-wide group spanning datacenters whose private
- * networks cannot see each other never reaches quorum (no leader, so no
- * DeadPrimary and no automatic failover anywhere in the org), and automatic
- * failover is same-datacenter only, so a cross-datacenter voter adds nothing
- * but quorum risk.
+ * Raft voters for `thisServerId`: the HA servers assigned to the same
+ * datacenter ({@link assignHaRaftDatacenters}). An org-wide group spanning
+ * datacenters whose private networks cannot see each other never reaches
+ * quorum (no leader, so no DeadPrimary and no automatic failover anywhere in
+ * the org), and automatic failover is same-datacenter only, so a
+ * cross-datacenter voter adds nothing but quorum risk.
  */
 export function selectHaRaftMembers(
   thisServerId: string,
   raftServerIds: readonly string[],
-  pins: ReadonlyMap<string, readonly HaRaftPin[]>
+  pins: ReadonlyMap<string, readonly HaRaftPin[]>,
+  policies: ReadonlyMap<string, HaDatacenterPolicy> = new Map()
 ): HaRaftMembers | null {
-  const thisPins = pins.get(thisServerId) ?? []
-  const advertiseAddress = pickHaAdvertiseAddress(thisPins)
+  const ids = raftServerIds.includes(thisServerId)
+    ? raftServerIds
+    : [...raftServerIds, thisServerId]
+  const assignment = assignHaRaftDatacenters(ids, pins, policies)
+  const datacenterId = assignment.get(thisServerId)
+  if (!datacenterId) return null
+  const pinIn = (serverId: string): string | null =>
+    pickHaAdvertiseAddress(
+      (pins.get(serverId) ?? []).filter((pin) => pin.datacenterId === datacenterId)
+    )
+  const advertiseAddress = pinIn(thisServerId)
   if (!advertiseAddress) return null
-  const datacenterId = thisPins.find((pin) => pin.address === advertiseAddress)?.datacenterId
   const peers: HaRaftMembers['peers'] = []
   for (const serverId of raftServerIds) {
-    const sameDatacenter = (pins.get(serverId) ?? []).filter(
-      (pin) => pin.datacenterId === datacenterId
-    )
-    const address = pickHaAdvertiseAddress(sameDatacenter)
+    if (assignment.get(serverId) !== datacenterId) continue
+    const address = pinIn(serverId)
     if (address) peers.push({ serverId, address })
   }
   return { advertiseAddress, peers }
@@ -271,6 +352,18 @@ export type OrchestratorBindingInput = {
    * (`null` = no primary, or no usable address for it).
    */
   expectedPrimary: { host: string; port: number } | null
+  /**
+   * The primary's private-listener port when the primary runs on the
+   * REPORTING server itself. The daemon registers a local member in
+   * Orchestrator by its published private listener (`<ip>:<privatePort>`),
+   * not by the Docker name this side dials it by. The exception applies only
+   * when the report also names one of `localPrimaryHosts`; private ports are
+   * allocated per server and therefore do not identify a cluster member by
+   * themselves.
+   */
+  localPrivatePort?: number | null
+  /** The reporting server's published private addresses and local container name. */
+  localPrimaryHosts?: readonly string[]
 }
 
 /**
@@ -287,8 +380,23 @@ export function orchestratorBindingRejection(input: OrchestratorBindingInput): s
       : null
   }
   if (!input.expectedPrimary) return 'the current primary has no known private address and port'
-  const sameHost = input.instanceHost?.toLowerCase() === input.expectedPrimary.host.toLowerCase()
-  if (sameHost && input.instancePort === input.expectedPrimary.port) return null
+  if (
+    input.instanceHost?.toLowerCase() === input.expectedPrimary.host.toLowerCase() &&
+    input.instancePort === input.expectedPrimary.port
+  ) {
+    return null
+  }
+  const sameLocalHost = input.localPrimaryHosts?.some(
+    (host) => input.instanceHost?.toLowerCase() === host.toLowerCase()
+  )
+  if (
+    input.localPrivatePort !== undefined &&
+    input.localPrivatePort !== null &&
+    input.instancePort === input.localPrivatePort &&
+    sameLocalHost
+  ) {
+    return null
+  }
   return `reported instance ${input.instanceHost}:${input.instancePort} is not the current primary (${input.expectedPrimary.host}:${input.expectedPrimary.port})`
 }
 

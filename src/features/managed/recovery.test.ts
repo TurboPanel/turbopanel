@@ -112,3 +112,19 @@ test('serializeRecovery surfaces blocked copy for the UI', () => {
 test('parseRecoveryMetadata drops non-number lagBytes that are not null', () => {
   assertEquals(parseRecoveryMetadata({ lagBytes: '12', blockedReason: 9 }), {})
 })
+
+test('parseRecoveryMetadata keeps the host-loss fence fields and drops anything else', () => {
+  assertEquals(
+    parseRecoveryMetadata({
+      fenceBasis: 'host-loss-attested',
+      hostLossIncident: 'srv@2026-10-06T12:00:00.000Z',
+      returnFence: 'confirmed',
+    }),
+    {
+      fenceBasis: 'host-loss-attested',
+      hostLossIncident: 'srv@2026-10-06T12:00:00.000Z',
+      returnFence: 'confirmed',
+    }
+  )
+  assertEquals(parseRecoveryMetadata({ fenceBasis: 'proven', returnFence: 'pending' }), {})
+})

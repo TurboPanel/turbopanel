@@ -153,12 +153,12 @@ export const principalPaths = {
                 uid: {
                   type: 'integer',
                   description:
-                    'Optional operator uid override, integer ≥ 15001 (both uid and gid required together; omit for host allocation)',
+                    'Optional operator uid override, integer 15001–60000 (both uid and gid required together; omit for host allocation)',
                 },
                 gid: {
                   type: 'integer',
                   description:
-                    'Optional operator gid override, integer ≥ 15001 (both uid and gid required together; omit for host allocation)',
+                    'Optional operator gid override, integer 15001–60000 (both uid and gid required together; omit for host allocation)',
                 },
               },
             },
@@ -172,7 +172,7 @@ export const principalPaths = {
         },
         400: {
           description:
-            'invalid_service_ids | username_reserved | username_too_long | invalid_name_scheme | Invalid request',
+            "invalid_service_ids | username_too_long | invalid_name_scheme | Invalid request. username_reserved: the typed name is already a host system user or group (examples: ftp, git), so it cannot be a site owner's Linux user.",
         },
         409: { description: 'username_in_use | principal_scheme_locked' },
       },

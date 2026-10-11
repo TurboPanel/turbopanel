@@ -115,8 +115,7 @@ function derLength(length: number): number[] {
 
 /** `SEQUENCE { INTEGER 0, SEQUENCE { rsaEncryption, NULL }, OCTET STRING … }`. */
 const RSA_ALGORITHM_IDENTIFIER = [
-  0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01,
-  0x05, 0x00,
+  0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00,
 ]
 
 /**
@@ -129,8 +128,7 @@ const RSA_ALGORITHM_IDENTIFIER = [
  */
 function wrapPkcs1AsPkcs8(pkcs1: Uint8Array): Uint8Array {
   const octetString = [0x04, ...derLength(pkcs1.length)]
-  const bodyLength =
-    3 + RSA_ALGORITHM_IDENTIFIER.length + octetString.length + pkcs1.length
+  const bodyLength = 3 + RSA_ALGORITHM_IDENTIFIER.length + octetString.length + pkcs1.length
   const header = [
     0x30,
     ...derLength(bodyLength),
@@ -169,9 +167,7 @@ export function privateKeyPemToPkcs8Der(pem: string): Uint8Array {
 
   if (label === 'PRIVATE KEY') return der
   if (label === 'RSA PRIVATE KEY') return wrapPkcs1AsPkcs8(der)
-  throw new GithubAppTokenError(
-    `unsupported github app private key PEM label "${label}"`,
-  )
+  throw new GithubAppTokenError(`unsupported github app private key PEM label "${label}"`)
 }
 
 async function importAppSigningKey(privateKeyPem: string): Promise<CryptoKey> {
@@ -182,7 +178,7 @@ async function importAppSigningKey(privateKeyPem: string): Promise<CryptoKey> {
       der as BufferSource,
       { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
       false,
-      ['sign'],
+      ['sign']
     )
   } catch {
     throw new GithubAppTokenError('github app private key could not be imported')
@@ -196,7 +192,7 @@ async function importAppSigningKey(privateKeyPem: string): Promise<CryptoKey> {
 export async function signGithubAppJwt(
   forgeId: string,
   privateKeyPem: string,
-  nowMs: number = Date.now(),
+  nowMs: number = Date.now()
 ): Promise<string> {
   const trimmedAppId = forgeId.trim()
   if (trimmedAppId.length === 0) {
@@ -216,7 +212,7 @@ export async function signGithubAppJwt(
   const signature = await crypto.subtle.sign(
     { name: 'RSASSA-PKCS1-v1_5' },
     key,
-    textEncoder.encode(signingInput),
+    textEncoder.encode(signingInput)
   )
 
   return `${signingInput}.${base64urlEncode(new Uint8Array(signature))}`
@@ -259,7 +255,7 @@ async function readGithubError(response: Response): Promise<string> {
 export async function exchangeInstallationTokenAt(
   apiBase: string,
   appJwt: string,
-  externalInstallationId: string,
+  externalInstallationId: string
 ): Promise<GithubInstallationToken> {
   const id = encodeURIComponent(externalInstallationId)
   let response: Response
@@ -270,7 +266,7 @@ export async function exchangeInstallationTokenAt(
     })
   } catch (error) {
     throw new GithubAppTokenError(
-      `github token exchange failed: ${error instanceof Error ? error.message : 'network error'}`,
+      `github token exchange failed: ${error instanceof Error ? error.message : 'network error'}`
     )
   }
 
@@ -278,9 +274,10 @@ export async function exchangeInstallationTokenAt(
     throw new GithubAppTokenError(await readGithubError(response), response.status)
   }
 
-  const payload = (await response.json().catch(() => null)) as
-    | { token?: unknown; expires_at?: unknown }
-    | null
+  const payload = (await response.json().catch(() => null)) as {
+    token?: unknown
+    expires_at?: unknown
+  } | null
   if (!payload || typeof payload.token !== 'string' || payload.token.length === 0) {
     throw new GithubAppTokenError('github token exchange returned no token')
   }
@@ -305,11 +302,54 @@ export async function exchangeInstallationTokenAt(
  * private keys, on different origins.
  *
  * The token is returned to the caller only — this function never writes it.
+ *
+ * A minted token is kept in memory (never persisted) and handed out again
+ * until it is within {@link INSTALLATION_TOKEN_REUSE_MARGIN_MS} of its expiry.
+ * Without that every call signs an RSA JWT and makes an upstream request, and a
+ * page that inspects a repository makes many calls. The installation row is
+ * still read on every call, so a suspended installation stops at once.
  */
+/**
+ * A cached token is reused only while this much of its hour is left: a deploy
+ * seals the token for the host and clones seconds later, so a token about to
+ * lapse must not be handed out.
+ */
+export const INSTALLATION_TOKEN_REUSE_MARGIN_MS = 10 * 60 * 1000
+const INSTALLATION_TOKEN_CACHE_MAX = 256
+
+const installationTokens = new Map<string, GithubInstallationToken>()
+/** Mints in progress, so callers that arrive together share one upstream request. */
+const installationTokenMints = new Map<string, Promise<GithubInstallationToken>>()
+
+function reusableInstallationToken(key: string): GithubInstallationToken | undefined {
+  const cached = installationTokens.get(key)
+  if (!cached) return undefined
+  const expires = Date.parse(cached.expiresAt)
+  if (Number.isFinite(expires) && expires - INSTALLATION_TOKEN_REUSE_MARGIN_MS > Date.now()) {
+    return cached
+  }
+  installationTokens.delete(key)
+  return undefined
+}
+
+function rememberInstallationToken(key: string, token: GithubInstallationToken): void {
+  if (installationTokens.size >= INSTALLATION_TOKEN_CACHE_MAX) {
+    const oldest = installationTokens.keys().next().value
+    if (oldest !== undefined) installationTokens.delete(oldest)
+  }
+  installationTokens.set(key, token)
+}
+
+/** Forget every cached installation token (tests; a rotated key or App). */
+export function clearGithubInstallationTokenCache(): void {
+  installationTokens.clear()
+  installationTokenMints.clear()
+}
+
 export async function mintGithubInstallationToken(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  connectionId: string,
+  connectionId: string
 ): Promise<GithubInstallationToken> {
   const [row] = await db
     .select({
@@ -331,6 +371,35 @@ export async function mintGithubInstallationToken(
     throw new GithubAppTokenError('installation is suspended', 409)
   }
 
+  const cacheKey = `${connectionId}:${row.externalInstallationId}`
+  const reusable = reusableInstallationToken(cacheKey)
+  if (reusable) return reusable
+  const inFlight = installationTokenMints.get(cacheKey)
+  if (inFlight) return await inFlight
+
+  const minting = mintFreshInstallationToken(
+    db,
+    dataEncryptionSecrets,
+    connectionId,
+    row.externalInstallationId
+  )
+    .then((minted) => {
+      rememberInstallationToken(cacheKey, minted)
+      return minted
+    })
+    .finally(() => {
+      installationTokenMints.delete(cacheKey)
+    })
+  installationTokenMints.set(cacheKey, minting)
+  return await minting
+}
+
+async function mintFreshInstallationToken(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  connectionId: string,
+  externalInstallationId: string
+): Promise<GithubInstallationToken> {
   const app = await loadForgeForConnection(db, dataEncryptionSecrets, connectionId)
   if (app?.provider !== 'github') {
     throw new GithubAppTokenError('github app is not configured')
@@ -340,11 +409,7 @@ export async function mintGithubInstallationToken(
   }
 
   const appJwt = await signGithubAppJwt(app.externalAppId, app.privateKeyPem)
-  return await exchangeInstallationTokenAt(
-    githubApiBaseFor(app),
-    appJwt,
-    row.externalInstallationId,
-  )
+  return await exchangeInstallationTokenAt(githubApiBaseFor(app), appJwt, externalInstallationId)
 }
 
 /**
@@ -365,7 +430,7 @@ export async function mintGithubInstallationToken(
  */
 export async function verifyInstallationAuthorizedByUser(
   app: Pick<Forge, 'baseUrl' | 'apiUrl' | 'clientId' | 'clientSecret'>,
-  params: { code: string; externalInstallationId: string; redirectUri?: string },
+  params: { code: string; externalInstallationId: string; redirectUri?: string }
 ): Promise<'authorized' | 'not_authorized'> {
   if (!app.clientId || !app.clientSecret) {
     throw new GithubAppTokenError('github app has no OAuth client credentials configured')
@@ -390,12 +455,13 @@ export async function verifyInstallationAuthorizedByUser(
     throw new GithubAppTokenError(
       `github user authorization exchange failed: ${
         error instanceof Error ? error.message : 'network error'
-      }`,
+      }`
     )
   }
-  const tokenPayload = (await tokenResponse.json().catch(() => null)) as
-    | { access_token?: unknown; error?: unknown }
-    | null
+  const tokenPayload = (await tokenResponse.json().catch(() => null)) as {
+    access_token?: unknown
+    error?: unknown
+  } | null
   const userToken = typeof tokenPayload?.access_token === 'string' ? tokenPayload.access_token : ''
   if (!tokenResponse.ok || userToken.length === 0) {
     // A spent or foreign `code` is a refusal, not an outage: GitHub answers
@@ -412,20 +478,20 @@ export async function verifyInstallationAuthorizedByUser(
     throw new GithubAppTokenError(
       `github user installations lookup failed: ${
         error instanceof Error ? error.message : 'network error'
-      }`,
+      }`
     )
   }
   if (!response.ok) {
     throw new GithubAppTokenError(
       `github user installations lookup failed (${response.status})`,
-      response.status,
+      response.status
     )
   }
-  const payload = (await response.json().catch(() => null)) as
-    | { installations?: Array<{ id?: unknown }> }
-    | null
+  const payload = (await response.json().catch(() => null)) as {
+    installations?: Array<{ id?: unknown }>
+  } | null
   const visible = (payload?.installations ?? []).some(
-    (entry) => entry && String(entry.id) === params.externalInstallationId,
+    (entry) => entry && String(entry.id) === params.externalInstallationId
   )
   return visible ? 'authorized' : 'not_authorized'
 }

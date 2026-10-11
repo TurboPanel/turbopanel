@@ -8,6 +8,7 @@ import {
   parseServerDockerMetadata,
   parseServerHostResources,
   parseServerOsMetadata,
+  parseServerReleaseLinkScan,
   parseServerRuntimeMetadata,
   parseServerTimeSync,
   type ServerDockerMetadata,
@@ -17,7 +18,9 @@ import {
   type ServerMetadata,
   type ServerOsColumns,
   type ServerOsMetadata,
+  type ServerReleaseLinkScanMetadata,
   type ServerRuntimeMetadata,
+  serverReleaseLinkScanEquals,
   serverRuntimeMetadataEquals,
   type ServerTimeSync,
   type ServerTimeSyncColumns,
@@ -27,6 +30,15 @@ import { license, server } from '../../db/schema.ts'
 import { recomputeAssignmentsForServer } from '../tiers/assignment-records.ts'
 import { applyReportedAddressRepin } from '../net/repin-apply.ts'
 import { serverIpsEquals } from '../../contracts/server-addresses.ts'
+import {
+  parseServiceRunStates,
+  type ServiceRunState,
+  serviceRunStatesEqual,
+} from '../../contracts/service-run-state.ts'
+import {
+  type ServiceStoppedAfterCrashes,
+  servicesNewlyStoppedAfterCrashes,
+} from '../environments/service-run-state.ts'
 import { normalizeMachineKey } from '../../lib/machine-key.ts'
 import { daemonFeaturesColumnPatch } from './daemon-jsonb-write.ts'
 import { featuresMatch, parseServerDaemonState } from './daemon-state.ts'
@@ -86,6 +98,9 @@ export type ServerHelloIdentity = {
   timeSync?: ServerTimeSync
   docker?: ServerDockerMetadata
   runtimes?: ServerRuntimeMetadata
+  releaseLinkScan?: ServerReleaseLinkScanMetadata
+  /** Per-service run state; `[]` clears, `undefined` leaves what is stored. */
+  services?: ServiceRunState[]
   /** Hello only. `[]` when the daemon omitted `features`. Heartbeat leaves this unset. */
   features?: string[]
 }
@@ -100,6 +115,10 @@ function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
   if (docker) patch.docker = docker
   const runtimes = parseServerRuntimeMetadata(identity.runtimes)
   if (runtimes) patch.runtimes = runtimes
+  const releaseLinkScan = parseServerReleaseLinkScan(identity.releaseLinkScan)
+  if (releaseLinkScan) patch.releaseLinkScan = releaseLinkScan
+  const services = parseServiceRunStates(identity.services)
+  if (services !== undefined) patch.services = services
   return patch
 }
 
@@ -164,7 +183,14 @@ export function mergeServerMetadataIdentity(
   current: ServerMetadata | null | undefined,
   identity: Pick<
     ServerHelloIdentity,
-    'hostname' | 'machineKey' | 'os' | 'resources' | 'timeSync' | 'docker'
+    | 'hostname'
+    | 'machineKey'
+    | 'os'
+    | 'resources'
+    | 'timeSync'
+    | 'docker'
+    | 'releaseLinkScan'
+    | 'services'
   >
 ): ServerMetadata | null {
   const patch = metadataPatch(identity)
@@ -187,6 +213,17 @@ export function mergeServerMetadataIdentity(
   }
   if (patch.runtimes !== undefined && !serverRuntimeMetadataEquals(patch.runtimes, base.runtimes)) {
     next.runtimes = patch.runtimes
+    changed = true
+  }
+  if (
+    patch.releaseLinkScan !== undefined &&
+    !serverReleaseLinkScanEquals(patch.releaseLinkScan, base.releaseLinkScan)
+  ) {
+    next.releaseLinkScan = patch.releaseLinkScan
+    changed = true
+  }
+  if (patch.services !== undefined && !serviceRunStatesEqual(patch.services, base.services)) {
+    next.services = patch.services
     changed = true
   }
 
@@ -227,13 +264,52 @@ function buildMetadataDelta(
   ) {
     delta.runtimes = patch.runtimes
   }
+  if (
+    patch.releaseLinkScan !== undefined &&
+    !serverReleaseLinkScanEquals(patch.releaseLinkScan, base?.releaseLinkScan)
+  ) {
+    delta.releaseLinkScan = patch.releaseLinkScan
+  }
+  if (patch.services !== undefined && !serviceRunStatesEqual(patch.services, base?.services)) {
+    delta.services = patch.services
+  }
   return delta
+}
+
+/** Follow-ups a metadata write can raise; each is best-effort and never fails the write. */
+export type TouchServerMetadataDeps = {
+  /**
+   * Called once, after the write, with the services this report newly shows as
+   * stopped after crashes (see `servicesNewlyStoppedAfterCrashes`).
+   */
+  onServicesStoppedAfterCrashes?: (
+    serverId: string,
+    stopped: readonly ServiceStoppedAfterCrashes[]
+  ) => Promise<void>
+}
+
+async function announceStoppedServices(
+  deps: TouchServerMetadataDeps,
+  serverId: string,
+  stopped: readonly ServiceStoppedAfterCrashes[]
+): Promise<void> {
+  if (stopped.length === 0 || !deps.onServicesStoppedAfterCrashes) return
+  try {
+    await deps.onServicesStoppedAfterCrashes(serverId, stopped)
+  } catch (err) {
+    // The report is already stored; a failed alert must not fail the hello.
+    compatLogWarn(
+      'server-registry',
+      `service stop alert failed for ${serverId}: ${describeError(err)}`
+    )
+  }
 }
 
 export async function touchServerMetadata(
   db: Db,
   serverId: string,
-  identity: ServerHelloIdentity
+  identity: ServerHelloIdentity,
+  deps: TouchServerMetadataDeps = {}
 ): Promise<void> {
   const rows = await db
     .select({
@@ -317,6 +393,11 @@ export async function touchServerMetadata(
   await db.update(server).set(update).where(eq(server.id, serverId))
 
   await reconcileAfterHardwareReport(db, serverId, base, delta)
+  await announceStoppedServices(
+    deps,
+    serverId,
+    servicesNewlyStoppedAfterCrashes(base?.services, delta.services)
+  )
 }
 
 /**

@@ -6,18 +6,11 @@
  * substitutes plaintext from the decrypted `credentials[]` envelope.
  */
 
-import type { ManagedSqlAccessScope } from './access-scope.ts'
 import type { ManagedSettings } from './settings.ts'
 import type { ManagedSslMode } from './ssl.ts'
 
 /** Managed engine codes — environment-scoped services. */
-export const MANAGED_ENGINE_CODES = [
-  'postgres',
-  'mysql',
-  'mariadb',
-  'redis',
-  'clickhouse',
-] as const
+export const MANAGED_ENGINE_CODES = ['postgres', 'mysql', 'mariadb', 'redis', 'clickhouse'] as const
 
 export type ManagedEngineCode = (typeof MANAGED_ENGINE_CODES)[number]
 
@@ -28,13 +21,7 @@ export function isManagedEngineCode(value: string): value is ManagedEngineCode {
 export type ManagedEngineStatus = 'available' | 'coming-soon'
 
 /** Lifecycle statuses persisted on `managed.status` (DB CHECK mirrors this set). */
-export const MANAGED_STATUSES = [
-  'provisioning',
-  'applying',
-  'ready',
-  'stopped',
-  'failed',
-] as const
+export const MANAGED_STATUSES = ['provisioning', 'applying', 'ready', 'stopped', 'failed'] as const
 
 export type ManagedStatus = (typeof MANAGED_STATUSES)[number]
 
@@ -83,15 +70,15 @@ export type ManagedRuntimeHealthcheck = {
 
 /**
  * Echoed onto the runtime spec for diagnostics. The engine container never
- * publishes a client listener regardless of `scope` — the daemon resolves
- * managed apply to loopback and clients enter through shared ProxySQL, which is
- * the only component that acts on the scope (see `access-scope.ts`).
+ * publishes a client listener — the daemon resolves managed apply to loopback
+ * and clients enter through the server's shared ProxySQL, which the server's
+ * external-access setting alone decides how far to publish
+ * (see `external-access.ts`).
  */
 export type ManagedExposure = {
   enabled: boolean
   protocol: 'tcp' | 'udp' | 'http'
   containerPort: number
-  scope?: ManagedSqlAccessScope
 }
 
 /**
@@ -220,11 +207,9 @@ export const MANAGED_BACKUP_ARTIFACT_EXTENSIONS = ['dump', 'sql'] as const
 export type ManagedBackupArtifactExtension = (typeof MANAGED_BACKUP_ARTIFACT_EXTENSIONS)[number]
 
 export function isManagedBackupArtifactExtension(
-  value: string,
+  value: string
 ): value is ManagedBackupArtifactExtension {
-  return (MANAGED_BACKUP_ARTIFACT_EXTENSIONS as readonly string[]).includes(
-    value,
-  )
+  return (MANAGED_BACKUP_ARTIFACT_EXTENSIONS as readonly string[]).includes(value)
 }
 
 /**
@@ -272,15 +257,19 @@ export type ManagedBindingDescriptor = {
    * Build a plaintext DSN with the real password (secrets materialization).
    * TLS behavior follows the resolved `sslMode` on the input.
    */
-  buildBindingDsn(
-    input: BuildConnectionInfoInput & { password: string },
-  ): string
+  buildBindingDsn(input: BuildConnectionInfoInput & { password: string }): string
 }
 
 export type ManagedEngineSpec = {
   engine: ManagedEngineCode
   displayName: string
   defaultImage: string
+  /**
+   * Image meant by a stored row that has no `settings.image`, when the default
+   * moved after that row was written (MariaDB: 12.3 before 11.8 became the
+   * default). Unset means `defaultImage` has never moved.
+   */
+  legacyDefaultImage?: string
   defaultPort: number
   principalProvider: string
   rootUsername: string

@@ -1,7 +1,12 @@
 /// <reference types="@cloudflare/workers-types" />
 import type { DaemonJwtKeyring } from '../authn/daemon-jwt-keyring.ts'
 import { deriveDaemonJwtKeyring } from '../authn/daemon-jwt-keyring.ts'
-import { parseSecretsFromEnv } from '../../lib/secrets/secrets.ts'
+import {
+  deriveEncryptionSecretsConfig,
+  parseSecretsFromEnv,
+  type DerivedSecretsConfig,
+} from '../../lib/secrets/secrets.ts'
+import { emitCertificateRenewalFailed } from '../../features/notifications/certificate-alerts.ts'
 import {
   createWorkersDb,
   type Db,
@@ -19,6 +24,7 @@ import {
   type ServerDockerMetadata,
   type ServerHostResources,
   type ServerOsMetadata,
+  type ServerReleaseLinkScanMetadata,
   type ServerTimeSync,
 } from '../../features/servers/server-metadata.ts'
 import {
@@ -30,6 +36,7 @@ import {
 import { createDurableObjectDaemonCellRegistry } from './do-registry.ts'
 import { createFreshStandbyProbe } from '../../client/managed/health-probe.ts'
 import { handleAcmeIssuanceEvent } from '../../client/tls/acme-issuance-event.ts'
+import { handleManagedHealthReport } from '../../features/managed/health-report.ts'
 import {
   backupRunReportResultMessage,
   createBackupRunReportStore,
@@ -44,6 +51,7 @@ import {
 import { enqueueLatestRecordedCapabilityPlan } from '../../client/servers/capability-plan-push.ts'
 import { recordTopologyGeneration } from '../../features/servers/server-topology-records.ts'
 import { touchServerMetadata } from '../../features/servers/server-registry.ts'
+import { parseServiceRunStates, type ServiceRunState } from '../../contracts/service-run-state.ts'
 import { instanceAttachVersionFrame } from '../attach-version.ts'
 import { verifyDaemonJwt } from '../authn/daemon-jwt.ts'
 import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
@@ -84,8 +92,8 @@ import {
   DAEMON_CELL_PONG,
   DAEMON_OFFLINE_SWEEP_MS,
   DAEMON_WS_POLICY_VIOLATION_CLOSE,
-  TERMINAL_REQUEST_RETENTION_MS,
   outboundEnvelopeToWireMessage,
+  TERMINAL_REQUEST_RETENTION_MS,
   validateDaemonInboundEnvelope,
   validateDaemonInboundFrame,
   wireMessageToInboundEnvelope,
@@ -760,6 +768,21 @@ export class DaemonCellObject {
     await this.#ctx.storage.deleteAll()
   }
 
+  /** Seals notification channel addresses for alerts raised from a daemon event. */
+  async #dataEncryptionSecrets(): Promise<DerivedSecretsConfig> {
+    return await deriveEncryptionSecretsConfig(this.#parseWorkersSecrets(), 'data-encryption')
+  }
+
+  #parseWorkersSecrets(): ReturnType<typeof parseSecretsFromEnv> {
+    return parseSecretsFromEnv(
+      {
+        TURBOPANEL_SECRET: this.#env.TURBOPANEL_SECRET,
+        TURBOPANEL_SECRETS: this.#env.TURBOPANEL_SECRETS,
+      },
+      'workers'
+    )
+  }
+
   async #getDaemonJwtKeyring(): Promise<DaemonJwtKeyring> {
     if (daemonJwtKeyringFactoryForTests) {
       return await daemonJwtKeyringFactoryForTests()
@@ -767,14 +790,7 @@ export class DaemonCellObject {
     if (this.#daemonJwtKeyring) return this.#daemonJwtKeyring
     if (!this.#daemonJwtKeyringPromise) {
       this.#daemonJwtKeyringPromise = (async () => {
-        const secretsConfig = parseSecretsFromEnv(
-          {
-            TURBOPANEL_SECRET: this.#env.TURBOPANEL_SECRET,
-            TURBOPANEL_SECRETS: this.#env.TURBOPANEL_SECRETS,
-          },
-          'workers'
-        )
-        const keyring = await deriveDaemonJwtKeyring(secretsConfig)
+        const keyring = await deriveDaemonJwtKeyring(this.#parseWorkersSecrets())
         this.#daemonJwtKeyring = keyring
         return keyring
       })()
@@ -1111,10 +1127,11 @@ export class DaemonCellObject {
     requestId: string,
     ok: boolean,
     finishedAt: string,
-    error?: string
+    error?: string,
+    errorCode?: string
   ): Promise<void> {
     await this.#withProjectionDb('update-result', serverId, async (db) => {
-      await onDaemonUpdateResult(db, serverId, requestId, ok, finishedAt, error)
+      await onDaemonUpdateResult(db, serverId, requestId, ok, finishedAt, error, errorCode)
       if (this.#isDaemonDebug()) {
         console.debug(`daemon cell projection: update-result (${serverId})`)
       }
@@ -1153,9 +1170,12 @@ export class DaemonCellObject {
       resources?: ServerHostResources
       timeSync?: ServerTimeSync
       docker?: ServerDockerMetadata
+      releaseLinkScan?: ServerReleaseLinkScanMetadata
+      services?: ServiceRunState[]
       features?: string[]
     },
-    geo?: ServerGeo
+    geo?: ServerGeo,
+    runtimeWasOffline?: boolean
   ): Promise<void> {
     await this.#withProjectionDb('inbound', serverId, async (db) => {
       if (
@@ -1165,6 +1185,8 @@ export class DaemonCellObject {
         hostIdentity?.resources ||
         hostIdentity?.timeSync ||
         hostIdentity?.docker ||
+        hostIdentity?.releaseLinkScan ||
+        hostIdentity?.services ||
         hostIdentity?.features
       ) {
         await touchServerMetadata(db, serverId, {
@@ -1174,6 +1196,8 @@ export class DaemonCellObject {
           resources: hostIdentity.resources,
           timeSync: hostIdentity.timeSync,
           docker: hostIdentity.docker,
+          releaseLinkScan: hostIdentity.releaseLinkScan,
+          services: hostIdentity.services,
           ...(hostIdentity.features !== undefined ? { features: hostIdentity.features } : {}),
         })
       }
@@ -1181,6 +1205,7 @@ export class DaemonCellObject {
         at,
         daemonBuild,
         geo,
+        runtimeWasOffline,
       })
       if (daemonBuild?.commit) {
         await persistDaemonReachedTarget(
@@ -1669,6 +1694,34 @@ export class DaemonCellObject {
     }
   }
 
+  /** Offline evidence a stale sweep or wake leaves, read before #recordInbound clears it. */
+  #needsOfflineRepair(serverId: string): boolean {
+    return !this.#runtimeConnected || this.#sweptOffline.has(serverId)
+  }
+
+  /**
+   * Record liveness for a non-presence frame. A stale sweep leaves Postgres
+   * offline and #recordInbound alone only clears the runtime flag, so repair
+   * the projection when the cell was offline before this frame.
+   */
+  async #recordInboundRepairingPresence(
+    attachment: { connectionId: string; serverId: string },
+    at: string
+  ): Promise<void> {
+    const needsOfflineRepair = this.#needsOfflineRepair(attachment.serverId)
+    this.#recordInbound(attachment.serverId, at, undefined, attachment.connectionId)
+    if (needsOfflineRepair) {
+      await this.#projectInbound(
+        attachment.serverId,
+        at,
+        undefined,
+        undefined,
+        undefined,
+        needsOfflineRepair
+      )
+    }
+  }
+
   async #handlePresenceMessage(
     attachment: {
       connectionId: string
@@ -1685,14 +1738,15 @@ export class DaemonCellObject {
       resources?: ServerHostResources
       timeSync?: ServerTimeSync
       docker?: ServerDockerMetadata
+      releaseLinkScan?: ServerReleaseLinkScanMetadata
+      services?: unknown
       features?: string[]
     }
   ): Promise<void> {
     this.#bumpDiag('heartbeatCount')
     const at = parsed.at ?? nowIso()
     // Capture offline/runtime repair evidence before #recordInbound clears it.
-    const needsOfflineRepair =
-      !this.#runtimeConnected || this.#sweptOffline.has(attachment.serverId)
+    const needsOfflineRepair = this.#needsOfflineRepair(attachment.serverId)
     const daemonBuildOrOfflineDue =
       this.#shouldProjectInbound(at, parsed.daemonBuild) || needsOfflineRepair
     this.#recordInbound(attachment.serverId, at, parsed.daemonBuild, attachment.connectionId)
@@ -1700,9 +1754,15 @@ export class DaemonCellObject {
       timeSync: parsed.timeSync,
       resources: resourcesFromDaemonPresence(parsed),
       docker: parsed.docker,
+      releaseLinkScan: parsed.releaseLinkScan,
+      services: parseServiceRunStates(parsed.services),
     }
     const hasPresenceFacts = Boolean(
-      presenceFacts.timeSync || presenceFacts.resources || presenceFacts.docker
+      presenceFacts.timeSync ||
+      presenceFacts.resources ||
+      presenceFacts.docker ||
+      presenceFacts.releaseLinkScan ||
+      presenceFacts.services
     )
     // hostname/os stay hello-only; timeSync / resources / docker project
     // on both hello and change-detected heartbeats.
@@ -1714,6 +1774,8 @@ export class DaemonCellObject {
           resources?: ServerHostResources
           timeSync?: ServerTimeSync
           docker?: ServerDockerMetadata
+          releaseLinkScan?: ServerReleaseLinkScanMetadata
+          services?: ServiceRunState[]
           features?: string[]
         }
       | undefined
@@ -1735,6 +1797,8 @@ export class DaemonCellObject {
       hostIdentity?.resources ||
       hostIdentity?.timeSync ||
       hostIdentity?.docker ||
+      hostIdentity?.releaseLinkScan ||
+      hostIdentity?.services ||
       hostIdentity?.features
     )
     const attachGeo = parseServerGeo(attachment.geo) ?? undefined
@@ -1754,7 +1818,8 @@ export class DaemonCellObject {
         at,
         parsed.daemonBuild,
         hostIdentity,
-        attachGeo
+        attachGeo,
+        needsOfflineRepair
       )
     }
   }
@@ -1783,7 +1848,7 @@ export class DaemonCellObject {
       errorCode?: string
     }
   ): Promise<void> {
-    this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
+    await this.#recordInboundRepairingPresence(attachment, parsed.at)
     await this.#withProjectionDb('update-progress', attachment.serverId, (db) =>
       persistUpgradeProgress(db, {
         serverId: attachment.serverId,
@@ -1796,6 +1861,39 @@ export class DaemonCellObject {
         requestId: parsed.id,
       })
     )
+  }
+
+  /**
+   * Fire-and-forget daemon reports that only write a projection
+   * (`managed-health-report`, `topology-report`). Returns true when handled.
+   */
+  async #handleReportInbound(
+    attachment: { connectionId: string; serverId: string },
+    parsed: DaemonMessage
+  ): Promise<boolean> {
+    if (parsed.type === 'managed-health-report') {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      await this.#withProjectionDb('managed-health-report', attachment.serverId, async (db) => {
+        await handleManagedHealthReport(db, {
+          reporterServerId: attachment.serverId,
+          members: parsed.members,
+        })
+      })
+      return true
+    }
+    if (parsed.type === 'topology-report') {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      await this.#withProjectionDb('topology-report', attachment.serverId, async (db) => {
+        await recordTopologyGeneration(db, attachment.serverId, {
+          generation: parsed.generation,
+          bootGeneration: parsed.bootGeneration,
+          snapshot: parsed.snapshot,
+          appliedAt: parsed.at,
+        })
+      })
+      return true
+    }
+    return false
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -1847,7 +1945,7 @@ export class DaemonCellObject {
       }
 
       if (parsed.type === 'managed-ha-event') {
-        this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
+        await this.#recordInboundRepairingPresence(attachment, parsed.at)
         await this.#withProjectionDb('managed-ha-event', attachment.serverId, async (db) => {
           await handleCellManagedHaEvent(db, parsed, {
             reporterServerId: attachment.serverId,
@@ -1865,34 +1963,32 @@ export class DaemonCellObject {
         return
       }
 
-      if (parsed.type === 'topology-report') {
-        this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
-        await this.#withProjectionDb('topology-report', attachment.serverId, async (db) => {
-          await recordTopologyGeneration(db, attachment.serverId, {
-            generation: parsed.generation,
-            bootGeneration: parsed.bootGeneration,
-            snapshot: parsed.snapshot,
-            appliedAt: parsed.at,
-          })
-        })
-        return
-      }
+      if (await this.#handleReportInbound(attachment, parsed)) return
 
       if (parsed.type === 'acme-issuance-event') {
-        this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
+        await this.#recordInboundRepairingPresence(attachment, parsed.at)
         await this.#withProjectionDb('acme-issuance-event', attachment.serverId, async (db) => {
-          await handleAcmeIssuanceEvent(db, {
-            serverId: attachment.serverId,
-            hostname: parsed.hostname,
-            ok: parsed.ok,
-            ...(parsed.errorMessage ? { errorMessage: parsed.errorMessage } : {}),
-          })
+          await handleAcmeIssuanceEvent(
+            db,
+            {
+              serverId: attachment.serverId,
+              hostname: parsed.hostname,
+              ok: parsed.ok,
+              at: parsed.at,
+              ...(parsed.errorMessage ? { errorMessage: parsed.errorMessage } : {}),
+              ...(parsed.notAfter ? { notAfter: parsed.notAfter } : {}),
+            },
+            {
+              onNewFailure: async (failure) =>
+                emitCertificateRenewalFailed(db, await this.#dataEncryptionSecrets(), failure),
+            }
+          )
         })
         return
       }
 
       if (parsed.type === 'instance-acme-issuance-event') {
-        this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
+        await this.#recordInboundRepairingPresence(attachment, parsed.at)
         await this.#withProjectionDb(
           'instance-acme-issuance-event',
           attachment.serverId,
@@ -1914,7 +2010,7 @@ export class DaemonCellObject {
         return
       }
 
-      this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
       await this.#handleInboundMessage(attachment.serverId, parsed, ws)
       await this.#scheduleNearestAlarm()
     } catch (err) {
@@ -2302,14 +2398,17 @@ export class DaemonCellObject {
         )
         return jsonResponse({ ok: true })
 
-      case '/rpc/record-inbound':
+      case '/rpc/record-inbound': {
+        const recordServerId = this.#requireServerId(request, body)
+        const wasOffline = this.#needsOfflineRepair(recordServerId)
         this.#recordInbound(
-          this.#requireServerId(request, body),
+          recordServerId,
           String((body?.params as { at?: string })?.at ?? nowIso()),
           (body?.params as { daemonBuild?: DaemonBuildInfo })?.daemonBuild,
           (body?.params as { connectionId?: string })?.connectionId
         )
-        return jsonResponse({ ok: true })
+        return jsonResponse({ ok: true, wasOffline })
+      }
 
       case '/rpc/lease/claim':
         return jsonResponse({
@@ -2621,7 +2720,9 @@ export class DaemonCellObject {
     ws: WebSocket | undefined
   ): Promise<void> {
     const outcome = await this.#withProjectionDbResult('backup-run-report', serverId, (db) =>
-      handleBackupRunReport(createBackupRunReportStore(db), msg, { reporterServerId: serverId })
+      handleBackupRunReport(createBackupRunReportStore(db), msg, {
+        reporterServerId: serverId,
+      })
     )
     if (!outcome || !ws) return
     ws.send(JSON.stringify(backupRunReportResultMessage(msg.id, outcome, nowIso())))
@@ -2791,7 +2892,8 @@ export class DaemonCellObject {
         inbound.requestId,
         inbound.ok,
         inbound.at,
-        inbound.error
+        inbound.error,
+        inbound.errorCode
       )
       await this.#withProjectionDb('update-result-step', serverId, (db) =>
         persistUpgradeOutcome(db, {

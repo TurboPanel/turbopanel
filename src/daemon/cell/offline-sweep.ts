@@ -49,7 +49,7 @@
  * phases race remaining time, and `OFFLINE_SWEEP_LOCK.expiresAt` covers the
  * enforced live runtime so a still-running holder cannot be stolen.
  */
-import { expireStaleDetectingRecoveries } from '../../features/managed/recovery-records.ts'
+import { expireStaleRecoveries } from '../../features/managed/recovery-records.ts'
 import { AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE } from '../../features/managed/recovery.ts'
 import {
   type Db,
@@ -60,13 +60,16 @@ import {
 } from '../../db/connection.ts'
 import { resolveWorkersDb } from '../../platform/workers/workers-bindings.ts'
 import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-desired.ts'
+import { runHostLossTick } from './host-loss-tick.ts'
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import type { FirewallApplyGate } from '../../features/firewall/enforcement.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
+import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
 import { type AlertSender, NOOP_ALERT_SENDER } from '../../features/alerts/alert-sender.ts'
+import { cachedForEnv } from './notification-email-cache.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { type EmitEmail, retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
@@ -77,6 +80,7 @@ import {
 import { isMassDisconnect } from './mass-disconnect.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { createWorkersCommandQueue } from '../../features/commands/workers-queue.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   COMMAND_DISPATCH_SWEEP_LIMIT,
   sweepExpiredCommandDispatch,
@@ -93,6 +97,7 @@ import {
   parseUpgradeStepRetentionDays,
   pruneUpgradeHistory,
 } from '../../features/upgrades/prune.ts'
+import { pruneCommandHistory } from '../../features/commands/prune.ts'
 import { resolveInstanceRevision } from '../../app/build-info.ts'
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveColocatedServerId } from '../../client/authn/install-state.ts'
@@ -886,7 +891,10 @@ async function runLeafRenewalSweepTickSafely(
  * Reuses this cron's already-open db; isolated so a failure here never aborts
  * the other sweeps.
  */
-export async function sweepExpiredCommandDispatchSafely(db: Db): Promise<void> {
+export async function sweepExpiredCommandDispatchSafely(
+  db: Db,
+  opts?: { commandQueue?: CommandQueue }
+): Promise<void> {
   try {
     const deleted = await sweepExpiredCommandDispatch(db, {
       limit: COMMAND_DISPATCH_SWEEP_LIMIT,
@@ -904,11 +912,13 @@ export async function sweepExpiredCommandDispatchSafely(db: Db): Promise<void> {
   // stuck at 'applying' with no live command left. Same isolation: a
   // failure here never aborts the other sweeps.
   try {
-    const timedOut = await sweepStaleCommands(db)
-    const released = await releaseStuckManagedApplying(db)
-    const expiredDetecting = await expireStaleDetectingRecoveries(db, {
+    const timedOut = await sweepStaleCommands(db, { commandQueue: opts?.commandQueue })
+    // Recoveries first: a row still in flight keeps its managed row at
+    // `applying`, and an expired one releases it itself.
+    const expiredDetecting = await expireStaleRecoveries(db, {
       reason: AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE,
     })
+    const released = await releaseStuckManagedApplying(db)
     if (timedOut > 0 || released.length > 0 || expiredDetecting.length > 0) {
       sweepTrace('stale-command-swept', {
         timedOut,
@@ -956,6 +966,24 @@ export async function sweepUpgradeHistorySafely(db: Db, doneRetentionDays?: numb
     }
   } catch (err) {
     sweepTrace('upgrade-history-sweep-failed', {
+      error: sweepErrorMessage(err),
+    })
+  }
+}
+
+/**
+ * Retention prune of aged terminal `command` rows (see features/commands/prune.ts).
+ * Rides the same 15-minute window and is isolated so a failure never aborts the
+ * other sweeps.
+ */
+export async function sweepCommandHistorySafely(db: Db): Promise<void> {
+  try {
+    const deleted = await pruneCommandHistory(db)
+    if (deleted > 0) {
+      sweepTrace('command-history-swept', { deleted })
+    }
+  } catch (err) {
+    sweepTrace('command-history-sweep-failed', {
       error: sweepErrorMessage(err),
     })
   }
@@ -1017,6 +1045,30 @@ export async function sweepExpiredExecutionLogsSafely(
   }
 }
 
+/**
+ * P1-5: Run host-loss and return-fence early, with their own budget and retry guards.
+ * Moved before optional phases to ensure they run even if earlier phases exhaust the budget.
+ * Inside the tick the host-loss sweep runs first, then the return fence.
+ */
+async function runHostLossAndReturnFenceFirst(
+  db: Db,
+  queue: NonNullable<CloudflareBindings['TURBOPANEL_COMMAND_QUEUE']> | undefined,
+  env: CloudflareBindings
+): Promise<void> {
+  if (!queue) return
+  const commandQueue = createWorkersCommandQueue(queue)
+  try {
+    // Host-loss runs first, then the return fence (see runHostLossTick).
+    await runHostLossTick(db, {
+      commandQueue,
+      registry: createDurableObjectDaemonCellRegistry(env, db),
+      env: env as unknown as Record<string, string | undefined>,
+    })
+  } catch (err) {
+    sweepTrace('host-loss-tick-failed', { error: sweepErrorMessage(err) })
+  }
+}
+
 async function runQueuedCronSweeps(
   db: Db,
   queue: NonNullable<CloudflareBindings['TURBOPANEL_COMMAND_QUEUE']>,
@@ -1025,6 +1077,8 @@ async function runQueuedCronSweeps(
 ): Promise<void> {
   try {
     const commandQueue = createWorkersCommandQueue(queue)
+    // Note: host-loss tick now runs first in runOfflineSweep (P1-5) before optional phases,
+    // so it is not called here anymore.
     await runSystemReconcileSweep(db, commandQueue)
     // Backup policy sets after a reconnect; isolated so a failure never
     // aborts the other sweeps.
@@ -1042,6 +1096,14 @@ async function runQueuedCronSweeps(
       await runFirewallPreviewSweep(db, commandQueue, { applyGate: firewallApplyGate })
     } catch (err) {
       sweepTrace('firewall-preview-sweep-failed', {
+        error: sweepErrorMessage(err),
+      })
+    }
+    // Let's Encrypt requests waiting for DNS; needs no secrets bundle.
+    try {
+      await runHostingLetsEncryptSweepTick(db)
+    } catch (err) {
+      sweepTrace('hosting-letsencrypt-sweep-failed', {
         error: sweepErrorMessage(err),
       })
     }
@@ -1222,6 +1284,7 @@ async function upgradePhaseWork(
         ),
       capDbTimeout(deadlineMs)
     )
+    await runWithDbTimeout(db, sweepCommandHistorySafely, capDbTimeout(deadlineMs))
   }
   if (shouldRunUpgradeTick(scheduledTime, upgradeTickMinutes)) {
     await runUpgradeMaintenanceSafely(db, env)
@@ -1243,7 +1306,15 @@ async function sweepExecutionLogsPhase(
 }
 
 /** The mail queue and from address a Workers tick hands the notifications pipeline. */
-async function workersNotificationEmail(
+function workersNotificationEmail(
+  env: CloudflareBindings,
+  db: Db,
+  tlsRenewal: CronTlsRenewal | null | undefined
+): Promise<EmitEmail | undefined> {
+  return cachedForEnv(env, () => resolveWorkersNotificationEmail(env, db, tlsRenewal))
+}
+
+async function resolveWorkersNotificationEmail(
   env: CloudflareBindings,
   db: Db,
   tlsRenewal: CronTlsRenewal | null | undefined
@@ -1343,7 +1414,17 @@ async function runOptionalCronPhases(
       'command-dispatch',
       opts.scheduledTime,
       phasesSkipped,
-      () => runWithDbTimeout(db, sweepExpiredCommandDispatchSafely, capDbTimeout(deadlineMs))
+      () =>
+        runWithDbTimeout(
+          db,
+          () =>
+            sweepExpiredCommandDispatchSafely(db, {
+              commandQueue: env.TURBOPANEL_COMMAND_QUEUE
+                ? createWorkersCommandQueue(env.TURBOPANEL_COMMAND_QUEUE)
+                : undefined,
+            }),
+          capDbTimeout(deadlineMs)
+        )
     ))
   ) {
     return
@@ -1532,7 +1613,14 @@ export async function runOfflineSweep(
               tlsRenewal?.dataEncryptionSecrets,
               sweepTrace,
               undefined,
-              await workersNotificationEmail(env, db, tlsRenewal)
+              // Resolved only if an alert is actually sent this tick.
+              () => workersNotificationEmail(env, db, tlsRenewal),
+              // The legacy-webhook adoption is a one-time migration touch: the
+              // 15-minute window is plenty, not every minute.
+              {
+                adoptLegacy:
+                  opts.scheduledTime === undefined || shouldSweepExecutionLogs(opts.scheduledTime),
+              }
             )),
           nowMs: opts.sweepOnceDeps?.nowMs ?? startedAtMs,
           deadlineMs: opts.sweepOnceDeps?.deadlineMs ?? deadlineMs,
@@ -1541,6 +1629,8 @@ export async function runOfflineSweep(
       if (!ranLiveness) {
         markSkippedFrom(phasesSkipped, 'command-dispatch', opts.scheduledTime)
       } else {
+        // P1-5: Run host-loss tick first, before optional phases, with own budget and try block
+        await runHostLossAndReturnFenceFirst(db, env.TURBOPANEL_COMMAND_QUEUE, env)
         await runOptionalCronPhases(env, db, tlsRenewal, opts, deadlineMs, phasesSkipped)
       }
     } finally {

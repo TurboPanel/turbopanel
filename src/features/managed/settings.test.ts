@@ -30,18 +30,9 @@ test('parseManagedSettingsBase returns defaults for undefined/null', () => {
   // An absent `ssl.mode` inherits (org default → platform `require`); the
   // parser must not stamp a concrete mode, or an org-level change would stop
   // reaching services that never overrode it.
-  assertEquals(parseManagedSettingsBase(undefined), {
-    ssl: {},
-    exposure: { enabled: true },
-  })
-  assertEquals(parseManagedSettingsBase(null), {
-    ssl: {},
-    exposure: { enabled: true },
-  })
-  assertEquals(
-    parseManagedSettingsBase(undefined)?.ssl,
-    DEFAULT_MANAGED_SETTINGS.ssl,
-  )
+  assertEquals(parseManagedSettingsBase(undefined), { ssl: {} })
+  assertEquals(parseManagedSettingsBase(null), { ssl: {} })
+  assertEquals(parseManagedSettingsBase(undefined)?.ssl, DEFAULT_MANAGED_SETTINGS.ssl)
 })
 
 test('ssl.mode round-trips every supported mode and rejects unknown ones', () => {
@@ -62,10 +53,7 @@ test('image ref accept/reject', () => {
   })
   assertEquals(ok?.image, 'docker.io/library/postgres:18-alpine')
 
-  assertEquals(
-    parseManagedSettingsBase({ image: 'postgres:18' })?.image,
-    'postgres:18',
-  )
+  assertEquals(parseManagedSettingsBase({ image: 'postgres:18' })?.image, 'postgres:18')
   assertEquals(parseManagedSettingsBase({ image: 'bad image' }), null)
   assertEquals(parseManagedSettingsBase({ image: 'postgres;rm' }), null)
   assertEquals(parseManagedSettingsBase({ image: '' }), null)
@@ -80,124 +68,68 @@ test('getManagedAllowedImages / isManagedImageAllowed expose the curated allowli
   assertEquals(getManagedAllowedImages('redis'), undefined)
   assertEquals(getManagedAllowedImages('unknown'), undefined)
 
-  assertEquals(
-    isManagedImageAllowed('postgres', 'docker.io/library/postgres:18-alpine'),
-    true,
-  )
+  assertEquals(isManagedImageAllowed('postgres', 'docker.io/library/postgres:18-alpine'), true)
   // The catalog's default variant of a tested series is allowed.
-  assertEquals(
-    isManagedImageAllowed('postgres', 'docker.io/library/postgres:18'),
-    true,
-  )
+  assertEquals(isManagedImageAllowed('postgres', 'docker.io/library/postgres:18'), true)
   // Catalogued but untested (`tested: false`) is refused, same as never-catalogued.
-  assertEquals(
-    isManagedImageAllowed('postgres', 'docker.io/library/postgres:17'),
-    false,
-  )
-  assertEquals(
-    isManagedImageAllowed('postgres', 'docker.io/library/postgres:14'),
-    false,
-  )
-  assertEquals(
-    isManagedImageAllowed('mysql', 'docker.io/library/mysql:9.7'),
-    true,
-  )
-  // Catalogued but untested — refused, same as EOL.
-  assertEquals(
-    isManagedImageAllowed('mysql', 'docker.io/library/mysql:8.4'),
-    false,
-  )
+  assertEquals(isManagedImageAllowed('postgres', 'docker.io/library/postgres:17'), false)
+  assertEquals(isManagedImageAllowed('postgres', 'docker.io/library/postgres:14'), false)
+  assertEquals(isManagedImageAllowed('mysql', 'docker.io/library/mysql:9.7'), true)
+  assertEquals(isManagedImageAllowed('mysql', 'docker.io/library/mysql:8.4'), true)
   // EOL since April 2026 — must never be creatable.
-  assertEquals(
-    isManagedImageAllowed('mysql', 'docker.io/library/mysql:8.0'),
-    false,
-  )
-  assertEquals(
-    isManagedImageAllowed('mysql', 'docker.io/library/mysql:8'),
-    false,
-  )
-  assertEquals(
-    isManagedImageAllowed('mariadb', 'docker.io/library/mariadb:12.3'),
-    true,
-  )
-  assertEquals(
-    isManagedImageAllowed('mariadb', 'docker.io/library/mariadb:10.11'),
-    false,
-  )
-  assertEquals(
-    isManagedImageAllowed('mariadb', 'docker.io/library/mariadb:11'),
-    false,
-  )
+  assertEquals(isManagedImageAllowed('mysql', 'docker.io/library/mysql:8.0'), false)
+  assertEquals(isManagedImageAllowed('mysql', 'docker.io/library/mysql:8'), false)
+  assertEquals(isManagedImageAllowed('mariadb', 'docker.io/library/mariadb:12.3'), true)
+  assertEquals(isManagedImageAllowed('mariadb', 'docker.io/library/mariadb:11.8'), true)
+  // Catalogued but untested — refused, same as EOL.
+  assertEquals(isManagedImageAllowed('mariadb', 'docker.io/library/mariadb:11.4'), false)
+  assertEquals(isManagedImageAllowed('mariadb', 'docker.io/library/mariadb:10.11'), false)
+  assertEquals(isManagedImageAllowed('mariadb', 'docker.io/library/mariadb:11'), false)
   // Unrestricted engines accept anything syntactically valid.
-  assertEquals(
-    isManagedImageAllowed('redis', 'docker.io/library/redis:7'),
-    true,
-  )
+  assertEquals(isManagedImageAllowed('redis', 'docker.io/library/redis:7'), true)
 })
 
 test('parseManagedSettingsBase enforces the engine allowlist when engine is passed', () => {
   assertEquals(
-    parseManagedSettingsBase(
-      { image: 'docker.io/library/mysql:9.7' },
-      undefined,
-      'mysql',
-    )?.image,
-    'docker.io/library/mysql:9.7',
+    parseManagedSettingsBase({ image: 'docker.io/library/mysql:9.7' }, undefined, 'mysql')?.image,
+    'docker.io/library/mysql:9.7'
   )
   // Outside the allowlist -> rejected, even though the OCI syntax is valid.
   assertEquals(
-    parseManagedSettingsBase(
-      { image: 'docker.io/library/mysql:8' },
-      undefined,
-      'mysql',
-    ),
-    null,
+    parseManagedSettingsBase({ image: 'docker.io/library/mysql:8' }, undefined, 'mysql'),
+    null
   )
   assertEquals(
-    parseManagedSettingsBase(
-      { image: 'docker.io/library/mariadb:11' },
-      undefined,
-      'mariadb',
-    ),
-    null,
+    parseManagedSettingsBase({ image: 'docker.io/library/mariadb:11' }, undefined, 'mariadb'),
+    null
   )
   // The tested series' non-default variant is accepted (create-time choice).
   assertEquals(
-    parseManagedSettingsBase(
-      { image: 'docker.io/library/postgres:18' },
-      undefined,
-      'postgres',
-    )?.image,
-    'docker.io/library/postgres:18',
+    parseManagedSettingsBase({ image: 'docker.io/library/postgres:18' }, undefined, 'postgres')
+      ?.image,
+    'docker.io/library/postgres:18'
   )
   // A catalogued-but-untested series is refused just like an unknown one.
   assertEquals(
     parseManagedSettingsBase(
       { image: 'docker.io/library/postgres:17-alpine' },
       undefined,
-      'postgres',
+      'postgres'
     ),
-    null,
+    null
   )
   assertEquals(
-    parseManagedSettingsBase(
-      { image: 'docker.io/library/postgres:14' },
-      undefined,
-      'postgres',
-    ),
-    null,
+    parseManagedSettingsBase({ image: 'docker.io/library/postgres:14' }, undefined, 'postgres'),
+    null
   )
   // Without an engine argument, the base parser stays syntax-only (callers that
   // already enforce the allowlist, e.g. via the command-payload check, may omit it).
   assertEquals(
     parseManagedSettingsBase({ image: 'docker.io/library/mysql:8' })?.image,
-    'docker.io/library/mysql:8',
+    'docker.io/library/mysql:8'
   )
   // No image at all is always fine (engine default applies later).
-  assertEquals(
-    parseManagedSettingsBase({}, undefined, 'mysql')?.image,
-    undefined,
-  )
+  assertEquals(parseManagedSettingsBase({}, undefined, 'mysql')?.image, undefined)
 })
 
 test('engineConfig size cap and control-char reject', () => {
@@ -206,16 +138,10 @@ test('engineConfig size cap and control-char reject', () => {
   })
   assertEquals(ok?.engineConfig, 'shared_buffers = 128MB\n')
 
-  assertEquals(
-    parseManagedSettingsBase({ engineConfig: 'a\r\nb' })?.engineConfig,
-    'a\nb',
-  )
+  assertEquals(parseManagedSettingsBase({ engineConfig: 'a\r\nb' })?.engineConfig, 'a\nb')
   assertEquals(parseManagedSettingsBase({ engineConfig: 'x\0y' }), null)
   assertEquals(parseManagedSettingsBase({ engineConfig: 'x\u0007y' }), null)
-  assertEquals(
-    parseManagedSettingsBase({ engineConfig: 'a'.repeat(16 * 1024 + 1) }),
-    null,
-  )
+  assertEquals(parseManagedSettingsBase({ engineConfig: 'a'.repeat(16 * 1024 + 1) }), null)
 })
 
 test('dockerOptions allowlist accept', () => {
@@ -245,97 +171,26 @@ test('dockerOptions returns null on each denied key', () => {
     assertEquals(
       parseManagedSettingsBase({ dockerOptions: { [key]: true } }),
       null,
-      `expected null for denied key ${key}`,
+      `expected null for denied key ${key}`
     )
   }
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: { privileged: true } }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: { volumes: ['/tmp:/tmp'] } }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: { ports: ['5432:5432'] } }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: { network_mode: 'host' } }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: { pid: 'host' } }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: { user: '0:0' } }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: { cap_add: ['NET_ADMIN'] } }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: { devices: ['/dev/null'] } }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: { unknownKey: 1 } }),
-    null,
-  )
+  assertEquals(parseManagedSettingsBase({ dockerOptions: { privileged: true } }), null)
+  assertEquals(parseManagedSettingsBase({ dockerOptions: { volumes: ['/tmp:/tmp'] } }), null)
+  assertEquals(parseManagedSettingsBase({ dockerOptions: { ports: ['5432:5432'] } }), null)
+  assertEquals(parseManagedSettingsBase({ dockerOptions: { network_mode: 'host' } }), null)
+  assertEquals(parseManagedSettingsBase({ dockerOptions: { pid: 'host' } }), null)
+  assertEquals(parseManagedSettingsBase({ dockerOptions: { user: '0:0' } }), null)
+  assertEquals(parseManagedSettingsBase({ dockerOptions: { cap_add: ['NET_ADMIN'] } }), null)
+  assertEquals(parseManagedSettingsBase({ dockerOptions: { devices: ['/dev/null'] } }), null)
+  assertEquals(parseManagedSettingsBase({ dockerOptions: { unknownKey: 1 } }), null)
 })
 
-test('exposure accept/reject scope only', () => {
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: true, scope: 'public' },
-    })?.exposure,
-    { enabled: true, scope: 'public' },
-  )
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: true, scope: 'turbofabric' },
-    })?.exposure,
-    { enabled: true, scope: 'turbofabric' },
-  )
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: true },
-    })?.exposure,
-    { enabled: true },
-  )
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: true, scope: 'internet' },
-    }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: true, bind: 'public' },
-    }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: true, bind: 'internet' },
-    }),
-    null,
-  )
-  // Unknown exposure keys (e.g. retired publishedPort) reject the document.
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: true, publishedPort: 22, scope: 'local' },
-    }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: false, scope: 'local' },
-    })?.exposure,
-    { enabled: false, scope: 'local' },
-  )
+test('a leftover per-cluster exposure key from an old row is ignored', () => {
+  // Who can connect from outside is a per-server setting now; old rows may
+  // still carry the retired per-cluster key and must keep parsing.
+  const parsed = parseManagedSettingsBase({ exposure: { enabled: true, scope: 'public' } })
+  assertEquals(parsed, { ssl: {} })
+  assertEquals(parseManagedSettingsBase({ exposure: 'public' }), { ssl: {} })
 })
 
 test('clampManagedResources clamps against org and server limits', () => {
@@ -346,7 +201,7 @@ test('clampManagedResources clamps against org and server limits', () => {
   const clamped = clampManagedResources(
     settings,
     { maxCpus: 4, maxMemoryBytes: 4 * 1024 * 1024 * 1024 },
-    { maxCpus: 2, maxMemoryBytes: 8 * 1024 * 1024 * 1024 },
+    { maxCpus: 2, maxMemoryBytes: 8 * 1024 * 1024 * 1024 }
   )
   assertEquals(clamped.resources?.cpus, 2)
   assertEquals(clamped.resources?.memoryBytes, 4 * 1024 * 1024 * 1024)
@@ -380,22 +235,17 @@ test('parseBackupSettings: rejects malformed / out-of-range retentionKeep', () =
 test('parseManagedSettingsBase wires backups through', () => {
   const parsed = parseManagedSettingsBase({ backups: { retentionKeep: 14 } })
   assertEquals(parsed?.backups, { retentionKeep: 14 })
-  assertEquals(
-    parseManagedSettingsBase({ backups: { retentionKeep: 0 } }),
-    null,
-  )
+  assertEquals(parseManagedSettingsBase({ backups: { retentionKeep: 0 } }), null)
   assertEquals(parseManagedSettingsBase(undefined)?.backups, undefined)
 })
 
 test('parseManagedSettingsBase wires routing.autoReadSplit through', () => {
-  assertEquals(
-    parseManagedSettingsBase({ routing: { autoReadSplit: true } })?.routing,
-    { autoReadSplit: true },
-  )
-  assertEquals(
-    parseManagedSettingsBase({ routing: { autoReadSplit: false } })?.routing,
-    { autoReadSplit: false },
-  )
+  assertEquals(parseManagedSettingsBase({ routing: { autoReadSplit: true } })?.routing, {
+    autoReadSplit: true,
+  })
+  assertEquals(parseManagedSettingsBase({ routing: { autoReadSplit: false } })?.routing, {
+    autoReadSplit: false,
+  })
   assertEquals(parseManagedSettingsBase({ routing: {} })?.routing, undefined)
   assertEquals(parseManagedSettingsBase(undefined)?.routing, undefined)
 })
@@ -403,21 +253,12 @@ test('parseManagedSettingsBase wires routing.autoReadSplit through', () => {
 test('parseManagedSettingsBase rejects malformed routing', () => {
   assertEquals(parseManagedSettingsBase({ routing: 'yes' }), null)
   assertEquals(parseManagedSettingsBase({ routing: [] }), null)
-  assertEquals(
-    parseManagedSettingsBase({ routing: { autoReadSplit: 'yes' } }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({ routing: { readSplit: true } }),
-    null,
-  )
+  assertEquals(parseManagedSettingsBase({ routing: { autoReadSplit: 'yes' } }), null)
+  assertEquals(parseManagedSettingsBase({ routing: { readSplit: true } }), null)
 })
 
 test('getManagedReservedEnvKeys returns the engine set or empty for unknown engines', () => {
-  assertEquals(
-    getManagedReservedEnvKeys('postgres'),
-    POSTGRES_RESERVED_ENV_KEYS,
-  )
+  assertEquals(getManagedReservedEnvKeys('postgres'), POSTGRES_RESERVED_ENV_KEYS)
   assertEquals(getManagedReservedEnvKeys('mysql'), MYSQL_RESERVED_ENV_KEYS)
   assertEquals(getManagedReservedEnvKeys('mariadb'), MARIADB_RESERVED_ENV_KEYS)
   assertEquals(getManagedReservedEnvKeys('unknown').size, 0)
@@ -428,41 +269,21 @@ test('image digest and tag edge cases', () => {
     parseManagedSettingsBase({
       image: 'postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     })?.image,
-    'postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    'postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
   )
-  assertEquals(
-    parseManagedSettingsBase({ image: 'postgres@sha256:deadbeef' }),
-    null,
-  )
+  assertEquals(parseManagedSettingsBase({ image: 'postgres@sha256:deadbeef' }), null)
   assertEquals(parseManagedSettingsBase({ image: 'postgres:bad tag!' }), null)
-  assertEquals(
-    parseManagedSettingsBase({ image: 'a'.repeat(257) }),
-    null,
-  )
+  assertEquals(parseManagedSettingsBase({ image: 'a'.repeat(257) }), null)
 })
 
-test('ssl / resources / engineConfig / exposure reject malformed input', () => {
+test('ssl / resources / engineConfig reject malformed input', () => {
   assertEquals(parseManagedSettingsBase({ ssl: 'on' }), null)
   assertEquals(parseManagedSettingsBase({ ssl: { mode: 'yes' } }), null)
   assertEquals(parseManagedSettingsBase({ resources: [] }), null)
   assertEquals(parseManagedSettingsBase({ resources: { cpus: -1 } }), null)
-  assertEquals(
-    parseManagedSettingsBase({ resources: { memoryBytes: 0 } }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({ resources: { memoryReservationBytes: -5 } }),
-    null,
-  )
+  assertEquals(parseManagedSettingsBase({ resources: { memoryBytes: 0 } }), null)
+  assertEquals(parseManagedSettingsBase({ resources: { memoryReservationBytes: -5 } }), null)
   assertEquals(parseManagedSettingsBase({ engineConfig: 12 }), null)
-  assertEquals(parseManagedSettingsBase({ exposure: 'public' }), null)
-  assertEquals(parseManagedSettingsBase({ exposure: { enabled: 1 } }), null)
-  assertEquals(
-    parseManagedSettingsBase({
-      exposure: { enabled: false, bind: 'local' },
-    }),
-    null,
-  )
   assertEquals(parseManagedSettingsBase([]), null)
   assertEquals(parseManagedSettingsBase('nope'), null)
 })
@@ -480,10 +301,7 @@ test('resources accept valid optional fields', () => {
     memoryBytes: 128 * 1024 * 1024,
     memoryReservationBytes: 64 * 1024 * 1024,
   })
-  assertEquals(
-    parseManagedSettingsBase({ resources: {} })?.resources,
-    undefined,
-  )
+  assertEquals(parseManagedSettingsBase({ resources: {} })?.resources, undefined)
 })
 
 test('dockerOptions labels and extraEnv reject malformed / reserved', () => {
@@ -491,159 +309,123 @@ test('dockerOptions labels and extraEnv reject malformed / reserved', () => {
     parseManagedSettingsBase({
       dockerOptions: { labels: { 'traefik.http': '1' } },
     }),
-    null,
+    null
   )
   assertEquals(
     parseManagedSettingsBase({
       dockerOptions: { labels: { 'com.docker.compose.project': 'x' } },
     }),
-    null,
+    null
   )
   assertEquals(
     parseManagedSettingsBase({
       dockerOptions: { labels: { '': 'x' } },
     }),
-    null,
+    null
   )
   assertEquals(
     parseManagedSettingsBase({
       dockerOptions: { labels: { ok: 'x'.repeat(257) } },
     }),
-    null,
+    null
   )
   assertEquals(
     parseManagedSettingsBase({
       dockerOptions: {
-        labels: Object.fromEntries(
-          Array.from({ length: 33 }, (_, i) => [`k${i}`, 'v']),
-        ),
+        labels: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`k${i}`, 'v'])),
       },
     }),
-    null,
+    null
   )
   assertEquals(
     parseManagedSettingsBase(
       { dockerOptions: { extraEnv: { POSTGRES_PASSWORD: 'x' } } },
-      POSTGRES_RESERVED_ENV_KEYS,
+      POSTGRES_RESERVED_ENV_KEYS
     ),
-    null,
+    null
   )
   assertEquals(
     parseManagedSettingsBase({
       dockerOptions: { extraEnv: { '1BAD': 'x' } },
     }),
-    null,
+    null
   )
   assertEquals(
     parseManagedSettingsBase({
       dockerOptions: { extraEnv: { OK: 'x\u0000y' } },
     }),
-    null,
+    null
   )
   assertEquals(
     parseManagedSettingsBase({
       dockerOptions: { extraEnv: { OK: 'x'.repeat(4097) } },
     }),
-    null,
+    null
   )
   assertEquals(
     parseManagedSettingsBase({
       dockerOptions: {
-        extraEnv: Object.fromEntries(
-          Array.from({ length: 33 }, (_, i) => [`K${i}`, 'v']),
-        ),
+        extraEnv: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`K${i}`, 'v'])),
       },
     }),
-    null,
+    null
   )
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: { labels: [] } }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: { extraEnv: [] } }),
-    null,
-  )
+  assertEquals(parseManagedSettingsBase({ dockerOptions: { labels: [] } }), null)
+  assertEquals(parseManagedSettingsBase({ dockerOptions: { extraEnv: [] } }), null)
 })
 
 test('dockerOptions field value rejects and empty object collapses', () => {
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: { restart: 'sometimes' } }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: { stopGracePeriodSeconds: 0 } }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: { shmSizeBytes: -1 } }),
-    null,
-  )
+  assertEquals(parseManagedSettingsBase({ dockerOptions: { restart: 'sometimes' } }), null)
+  assertEquals(parseManagedSettingsBase({ dockerOptions: { stopGracePeriodSeconds: 0 } }), null)
+  assertEquals(parseManagedSettingsBase({ dockerOptions: { shmSizeBytes: -1 } }), null)
   assertEquals(
     parseManagedSettingsBase({
       dockerOptions: { ulimits: { nofile: { soft: 2048, hard: 1024 } } },
     }),
-    null,
+    null
   )
   assertEquals(
     parseManagedSettingsBase({
       dockerOptions: { ulimits: { nofile: { soft: 1 } } },
     }),
-    null,
+    null
   )
   assertEquals(
     parseManagedSettingsBase({
       dockerOptions: { ulimits: { nofile: 'x' } },
     }),
-    null,
+    null
   )
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: { ulimits: { memlock: {} } } }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: { ulimits: [] } }),
-    null,
-  )
-  assertEquals(
-    parseManagedDockerOptions(undefined),
-    undefined,
-  )
+  assertEquals(parseManagedSettingsBase({ dockerOptions: { ulimits: { memlock: {} } } }), null)
+  assertEquals(parseManagedSettingsBase({ dockerOptions: { ulimits: [] } }), null)
+  assertEquals(parseManagedDockerOptions(undefined), undefined)
   assertEquals(parseManagedDockerOptions([]), null)
   assertEquals(parseManagedDockerOptions({}), undefined)
-  assertEquals(
-    parseManagedDockerOptions({ ulimits: {} })?.ulimits,
-    {},
-  )
+  assertEquals(parseManagedDockerOptions({ ulimits: {} })?.ulimits, {})
   assertEquals(parseManagedDockerOptions(null), null)
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: null }),
-    null,
-  )
+  assertEquals(parseManagedSettingsBase({ dockerOptions: null }), null)
   assertEquals(
     parseManagedSettingsBase({
       dockerOptions: { extraEnv: { OK: 1 } },
     }),
-    null,
+    null
   )
   assertEquals(
     parseManagedSettingsBase({
       dockerOptions: { labels: { ok: 1 } },
     }),
-    null,
+    null
   )
   assertEquals(
     parseManagedSettingsBase(
       { dockerOptions: { extraEnv: { MYSQL_DATABASE: 'x' } } },
-      MYSQL_RESERVED_ENV_KEYS,
+      MYSQL_RESERVED_ENV_KEYS
     ),
-    null,
+    null
   )
-  assertEquals(
-    parseManagedSettingsBase({ dockerOptions: { extraEnv: {} } })
-      ?.dockerOptions,
-    { extraEnv: {} },
-  )
+  assertEquals(parseManagedSettingsBase({ dockerOptions: { extraEnv: {} } })?.dockerOptions, {
+    extraEnv: {},
+  })
 })
 
 test('clampManagedResources yields an empty resources object when none were set', () => {
@@ -653,9 +435,9 @@ test('clampManagedResources yields an empty resources object when none were set'
     clampManagedResources(
       settings,
       { maxCpus: 1, maxMemoryBytes: 1024 },
-      { maxCpus: 1, maxMemoryBytes: 1024 },
+      { maxCpus: 1, maxMemoryBytes: 1024 }
     ).resources,
-    {},
+    {}
   )
 })
 
@@ -666,12 +448,6 @@ test('ssl.mode omitted on an explicit ssl object still inherits', () => {
 test('image tag-only rejects and non-finite resource numbers', () => {
   assertEquals(parseManagedSettingsBase({ image: 'postgres:' }), null)
   assertEquals(parseManagedSettingsBase({ image: 'postgres:!bad' }), null)
-  assertEquals(
-    parseManagedSettingsBase({ resources: { cpus: Number.NEGATIVE_INFINITY } }),
-    null,
-  )
-  assertEquals(
-    parseManagedSettingsBase({ resources: { cpus: -2.5 } }),
-    null,
-  )
+  assertEquals(parseManagedSettingsBase({ resources: { cpus: Number.NEGATIVE_INFINITY } }), null)
+  assertEquals(parseManagedSettingsBase({ resources: { cpus: -2.5 } }), null)
 })

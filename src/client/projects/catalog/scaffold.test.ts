@@ -1,23 +1,14 @@
+import { skipWithoutDatabase } from '../../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertNotEquals, assertThrows } from '@std/assert'
 import { eq } from 'drizzle-orm'
-import {
-  decryptSecret,
-  parseSecretEnvelope,
-} from '../../../lib/secrets/data-encryption.ts'
+import { decryptSecret, parseSecretEnvelope } from '../../../lib/secrets/data-encryption.ts'
 import { deriveEncryptionSecretsConfig } from '../../../lib/secrets/secrets.ts'
 import { getDatabaseUrl } from '../../../db/url.ts'
 import { createDenoDb } from '../../../db/connection.ts'
-import {
-  environment,
-  organization,
-  project,
-  variable,
-  workspace,
-} from '../../../db/schema.ts'
+import { environment, organization, project, variable, workspace } from '../../../db/schema.ts'
 import { parseTestSecretsConfig } from '../../../test-fixtures/secrets.ts'
 import { scaffoldCatalogEnvironments } from '../routes.ts'
 import {
-  getCatalogEntry,
   listManagedCatalogEntries,
   resolveCatalogVariablePlaintext,
   type CatalogEntry,
@@ -41,11 +32,7 @@ test('managed catalog secret variables omit static plaintext defaults', () => {
     for (const env of entry.environments) {
       for (const v of env.variables ?? []) {
         if (!v.isSecret) continue
-        assertEquals(
-          v.value,
-          undefined,
-          `${entry.code}.${v.key} must not embed a secret default`,
-        )
+        assertEquals(v.value, undefined, `${entry.code}.${v.key} must not embed a secret default`)
         for (const placeholder of PLACEHOLDER_SECRETS) {
           assertNotEquals(v.value, placeholder)
         }
@@ -80,32 +67,45 @@ test('resolveCatalogVariablePlaintext reuses sharedCredentialId within a pass', 
 test('resolveCatalogVariablePlaintext rejects non-secret variables without value', () => {
   assertThrows(
     () => {
-      resolveCatalogVariablePlaintext(
-        { key: 'PLAIN', isSecret: false },
-        new Map(),
-      )
+      resolveCatalogVariablePlaintext({ key: 'PLAIN', isSecret: false }, new Map())
     },
     TypeError,
-    'missing value',
+    'missing value'
   )
 })
 
 test('scaffoldCatalogEnvironments seals managed secrets as enc without placeholders', async () => {
   if (!dbUrl) {
-    console.warn('Skipping catalog scaffold tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('catalog scaffold tests')
     return
   }
 
-  const entry = getCatalogEntry('wordpress-mysql')
-  if (!entry || entry.kind !== 'template') {
-    throw new TypeError('expected wordpress-mysql template catalog entry')
+  const entry: CatalogEntry = {
+    code: 'two-secret-fixture',
+    kind: 'template',
+    displayName: 'Two Secret Fixture',
+    description: 'Test-only entry with two independent secrets',
+    compose: {
+      version: 1,
+      data: { services: {} },
+      presentation: { keyOrder: ['services'], comments: {} },
+    },
+    environments: [
+      {
+        displayName: 'production',
+        variables: [
+          { key: 'SECRET_A', isSecret: true },
+          { key: 'SECRET_B', isSecret: true },
+        ],
+      },
+    ],
   }
 
   const db = createDenoDb()
   const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption',
+    'data-encryption'
   )
 
   const [org] = await db
@@ -136,12 +136,7 @@ test('scaffoldCatalogEnvironments seals managed secrets as enc without placehold
   let envId: string | undefined
   try {
     await db.transaction(async (tx) => {
-      await scaffoldCatalogEnvironments(
-        tx,
-        proj!.id,
-        entry,
-        dataEncryptionSecrets,
-      )
+      await scaffoldCatalogEnvironments(tx, proj!.id, entry, dataEncryptionSecrets)
     })
 
     const envs = await db
@@ -175,7 +170,7 @@ test('scaffoldCatalogEnvironments seals managed secrets as enc without placehold
         assertNotEquals(
           plaintext,
           placeholder,
-          `${row.key} must not decrypt to static placeholder ${placeholder}`,
+          `${row.key} must not decrypt to static placeholder ${placeholder}`
         )
       }
       assertEquals(plaintext.length >= 24, true)
@@ -198,7 +193,7 @@ test('scaffoldCatalogEnvironments seals managed secrets as enc without placehold
 
 test('scaffoldCatalogEnvironments reuses sharedCredentialId when sealing', async () => {
   if (!dbUrl) {
-    console.warn('Skipping catalog scaffold tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('catalog scaffold tests')
     return
   }
 
@@ -235,7 +230,7 @@ test('scaffoldCatalogEnvironments reuses sharedCredentialId when sealing', async
   const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption',
+    'data-encryption'
   )
 
   const [org] = await db
@@ -262,12 +257,7 @@ test('scaffoldCatalogEnvironments reuses sharedCredentialId when sealing', async
   let envId: string | undefined
   try {
     await db.transaction(async (tx) => {
-      await scaffoldCatalogEnvironments(
-        tx,
-        proj!.id,
-        sharedEntry,
-        dataEncryptionSecrets,
-      )
+      await scaffoldCatalogEnvironments(tx, proj!.id, sharedEntry, dataEncryptionSecrets)
     })
 
     const [env] = await db
@@ -292,7 +282,7 @@ test('scaffoldCatalogEnvironments reuses sharedCredentialId when sealing', async
     assertEquals(appPassword.startsWith('tpsecret.'), true)
     assertEquals(
       await decryptSecret(dataEncryptionSecrets, dbPassword),
-      await decryptSecret(dataEncryptionSecrets, appPassword),
+      await decryptSecret(dataEncryptionSecrets, appPassword)
     )
   } finally {
     if (envId) {

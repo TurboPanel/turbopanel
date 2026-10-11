@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -504,7 +505,7 @@ async function withDeployFixtures(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping environment deploy route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('environment deploy route tests')
     return
   }
 
@@ -3480,6 +3481,93 @@ test('revoking an uploaded certificate stops deploys of the hostnames pinned to 
       systemHierarchyProvision.ensure = originalEnsure
       if (hostingId) await ctx.db.delete(hosting).where(eq(hosting.id, hostingId))
       if (tlsId) await ctx.db.delete(tls).where(eq(tls.id, tlsId))
+    }
+  })
+})
+
+test('an uploaded certificate pinned to a hosting with a www setting must list the www names too', async () => {
+  const traefikServiceId = '00000000-0000-4000-8000-0000000000af'
+  await withDeployFixtures(async (ctx) => {
+    const originalEnsure = systemHierarchyProvision.ensure
+    systemHierarchyProvision.ensure = () =>
+      Promise.resolve({
+        workspaceId: '00000000-0000-4000-8000-0000000000bf',
+        projectId: '00000000-0000-4000-8000-0000000000cf',
+        environmentId: '00000000-0000-4000-8000-0000000000df',
+        serviceId: traefikServiceId,
+        containerRowId: '00000000-0000-4000-8000-0000000000ef',
+        containerName: `${traefikServiceId}-in`,
+      })
+    const tlsIds: string[] = []
+    let hostingId: string | undefined
+    try {
+      const serviceId = await pinWebEnvironment(ctx)
+      const headers = await verifyHeaders(ctx)
+      const upload = async (names: string[]) => {
+        const minted = await mintSelfSignedCertificate(names)
+        const created = await ctx.app.request('/tls', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            source: 'upload',
+            name: `Upload ${names.length} ${names[0]}`,
+            certificatePem: minted.certificatePem,
+            privateKeyPem: minted.privateKeyPem,
+          }),
+        })
+        assertEquals(created.status, 200)
+        const id = ((await created.json()) as { id: string }).id
+        tlsIds.push(id)
+        return id
+      }
+      const bareOnly = await upload(['pinned.example.com'])
+      const [hostingRow] = await ctx.db
+        .insert(hosting)
+        .values({
+          serviceId,
+          tlsId: bareOnly,
+          options: { hostnames: ['pinned.example.com'], www: 'www-to-root' },
+        })
+        .returning({ id: hosting.id })
+      hostingId = hostingRow!.id
+      const deploy = () =>
+        ctx.app.request(`/environments/${ctx.environmentId}/deploy`, {
+          method: 'POST',
+          headers,
+          body: '{}',
+        })
+
+      const refused = await deploy()
+      assertEquals(refused.status, 400)
+      assertEquals(await refused.json(), {
+        error: 'tls_pin_mismatch',
+        hostingId,
+        message:
+          'The certificate on this hosting covers pinned.example.com but not www.pinned.example.com, which its www setting adds. Upload one that lists every name, or set www to "Only pinned.example.com".',
+      })
+
+      // A certificate for another name entirely misses the typed name too: the
+      // www sentence would be wrong, so the refusal carries no message.
+      const unrelated = await upload(['other.example.com'])
+      await ctx.db.update(hosting).set({ tlsId: unrelated }).where(eq(hosting.id, hostingId))
+      const mismatched = await deploy()
+      assertEquals(mismatched.status, 400)
+      assertEquals(await mismatched.json(), { error: 'tls_pin_mismatch', hostingId })
+
+      // A certificate listing both spellings passes the pin check; this fixture
+      // server has no daemon key, so the deploy only stops later.
+      const both = await upload(['pinned.example.com', 'www.pinned.example.com'])
+      await ctx.db.update(hosting).set({ tlsId: both }).where(eq(hosting.id, hostingId))
+      const accepted = await deploy()
+      assertEquals(accepted.status, 422)
+      assertEquals(
+        ((await accepted.json()) as { error: string }).error,
+        'No encryption-capable daemon key on target server'
+      )
+    } finally {
+      systemHierarchyProvision.ensure = originalEnsure
+      if (hostingId) await ctx.db.delete(hosting).where(eq(hosting.id, hostingId))
+      if (tlsIds.length > 0) await ctx.db.delete(tls).where(inArray(tls.id, tlsIds))
     }
   })
 })

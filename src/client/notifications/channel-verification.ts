@@ -11,7 +11,7 @@
  * while the address was unverified are abandoned at that moment, so a freshly
  * confirmed address never receives a burst of stale events.
  */
-import { and, eq, gt, inArray, isNull, like, lte } from 'drizzle-orm'
+import { and, count, eq, gt, inArray, isNull, like, lte, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { notificationChannel, notificationDelivery, verification } from '../../db/schema.ts'
 import { deriveLinkTokenVerifier, generateLinkToken } from '../authn/link-token.ts'
@@ -140,4 +140,94 @@ export async function confirmChannelVerification(
   if (stamped.length === 0) return null
   await abandonUnverifiedDeliveries(db, channelId, now)
   return channelId
+}
+
+/**
+ * Brakes on verification mail. A verification mail goes to an address whose
+ * owner never asked for it, so who may trigger one, and how often one address
+ * may be mailed, is bounded here rather than left to the generic write limiter.
+ */
+export const CHANNEL_VERIFICATION_LIMITS = {
+  /** Unverified email channels one user may have created at any time. */
+  unverifiedPerUser: 5,
+  /** Unverified email channels one organization may hold at any time. */
+  unverifiedPerOrganization: 10,
+  /** Verification mails one user may trigger per day, kept even if channels are deleted. */
+  mailsPerUserPerDay: 10,
+  /** Verification mails any one address receives per day, whoever asked. */
+  mailsPerAddressPerDay: 3,
+} as const
+
+const MAIL_COUNTER_PREFIX = 'channel-verify-mail:'
+const MAIL_COUNTER_WINDOW_MS = 24 * 60 * 60 * 1000
+
+/** How many unverified email channels a user (or an organization) holds right now. */
+export async function countUnverifiedEmailChannels(
+  db: Db,
+  owner: { userId: string } | { organizationId: string }
+): Promise<number> {
+  const ownerFilter =
+    'userId' in owner
+      ? eq(notificationChannel.createdByUserId, owner.userId)
+      : eq(notificationChannel.organizationId, owner.organizationId)
+  const [row] = await db
+    .select({ n: count() })
+    .from(notificationChannel)
+    .where(
+      and(
+        eq(notificationChannel.kind, 'email'),
+        isNull(notificationChannel.verifiedAt),
+        ownerFilter
+      )
+    )
+  return row?.n ?? 0
+}
+
+async function mailCounterIdentifier(kind: 'user' | 'address', key: string): Promise<string> {
+  const bytes = new TextEncoder().encode(key.trim().toLowerCase())
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
+  const hex = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('')
+  return `${MAIL_COUNTER_PREFIX}${kind}:${hex}`
+}
+
+/**
+ * Count one verification mail against a per-day allowance, atomically.
+ *
+ * The counter is one row in the `verification` table (identifier only; the
+ * address is hashed, never stored) whose `expires_at` is the end of the
+ * current day-long window. The upsert either starts a new window or adds one
+ * in a single statement, so concurrent requests cannot both slip under the
+ * limit. A request over the limit is refused and still counted, which keeps a
+ * hammering caller refused for the rest of the window.
+ */
+export async function reserveVerificationMail(
+  db: Db,
+  kind: 'user' | 'address',
+  key: string,
+  limit: number,
+  now: number = Date.now()
+): Promise<{ ok: true } | { ok: false; retryAfterSeconds: number }> {
+  const identifier = await mailCounterIdentifier(kind, key)
+  const nowText = nowIso(now)
+  const windowEnd = nowIso(now + MAIL_COUNTER_WINDOW_MS)
+  const expired = sql`${verification.expiresAt} <= ${nowText}::timestamptz`
+  const [row] = await db
+    .insert(verification)
+    .values({ identifier, value: '1', expiresAt: windowEnd, updatedAt: nowText })
+    .onConflictDoUpdate({
+      target: verification.identifier,
+      set: {
+        value: sql`CASE WHEN ${expired} THEN '1' ELSE (${verification.value}::int + 1)::text END`,
+        expiresAt: sql`CASE WHEN ${expired} THEN ${windowEnd}::timestamptz ELSE ${verification.expiresAt} END`,
+        updatedAt: nowText,
+      },
+    })
+    .returning({ value: verification.value, expiresAt: verification.expiresAt })
+  const used = Number(row?.value ?? '1')
+  if (used <= limit) return { ok: true }
+  const retryAfterSeconds = Math.max(
+    1,
+    Math.ceil((Date.parse(row?.expiresAt ?? windowEnd) - now) / 1000)
+  )
+  return { ok: false, retryAfterSeconds }
 }

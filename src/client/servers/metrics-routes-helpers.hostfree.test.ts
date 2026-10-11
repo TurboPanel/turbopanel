@@ -396,6 +396,13 @@ test('defaultHostCanonicalNames covers only queryable host.* scopes, never diagn
   )
 })
 
+test('parseSeriesMetricSelectors rejects entity ids with backslashes or quotes', () => {
+  for (const entityId of ['x\\', "x'", "\\' OR 1=1 OR '"]) {
+    const result = parseSeriesMetricSelectors(`network:${entityId}.receiveBytesPerSecond`)
+    assertEquals(result.ok, false, JSON.stringify(entityId))
+  }
+})
+
 test('parseSeriesMetricSelectors defaults to every queryable host.* canonical name when absent or blank', () => {
   const absent = parseSeriesMetricSelectors(undefined)
   if (!absent.ok) throw new TypeError('expected ok')
@@ -405,6 +412,24 @@ test('parseSeriesMetricSelectors defaults to every queryable host.* canonical na
   const blank = parseSeriesMetricSelectors('   ')
   if (!blank.ok) throw new TypeError('expected ok')
   assertEquals(blank.value.hostCanonicalNames, defaultHostCanonicalNames())
+})
+
+test('parseSeriesMetricSelectors accepts the v7 extended numbers by name but never defaults to them', () => {
+  const named = parseSeriesMetricSelectors(
+    'extended.host.oomKills,extended.docker.containersUnhealthy,extended.ingress.tlsCertSoonestExpiryDays'
+  )
+  if (!named.ok) throw new TypeError('expected ok')
+  assertEquals(named.value.hostCanonicalNames, [
+    'extended.host.oomKills',
+    'extended.docker.containersUnhealthy',
+    'extended.ingress.tlsCertSoonestExpiryDays',
+  ])
+  assertEquals(
+    defaultHostCanonicalNames().some((name) => name.startsWith('extended.')),
+    false
+  )
+  const unknown = parseSeriesMetricSelectors('extended.host.nope')
+  assertEquals(unknown.ok, false)
 })
 
 test('parseSeriesMetricSelectors groups per-entity selectors by family, unioning ids and fields', () => {

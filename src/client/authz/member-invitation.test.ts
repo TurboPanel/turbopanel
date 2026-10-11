@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -36,7 +37,7 @@ async function withTestFixtures(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping authz tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('authz tests')
     return
   }
 
@@ -258,7 +259,7 @@ async function withInvitationHttpFixtures(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping authz tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('authz tests')
     return
   }
 

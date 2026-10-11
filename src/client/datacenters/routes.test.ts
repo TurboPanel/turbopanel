@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -96,7 +97,7 @@ async function withDatacenterFixtures(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping datacenter route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('datacenter route tests')
     return
   }
 
@@ -142,7 +143,7 @@ async function withDatacenterFixtures(
 
 test('GET /datacenters/name-suggestions uses unassigned server geo and ASN', async () => {
   if (!dbUrl) {
-    console.warn('Skipping datacenter route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('datacenter route tests')
     return
   }
 
@@ -257,7 +258,7 @@ test('GET /datacenters/name-suggestions uses unassigned server geo and ASN', asy
 
 test('GET /datacenters/:id returns 404 for datacenter in another org', async () => {
   if (!dbUrl) {
-    console.warn('Skipping datacenter route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('datacenter route tests')
     return
   }
 
@@ -327,7 +328,7 @@ test('GET /datacenters/:id returns 404 for datacenter in another org', async () 
 
 test('GET /datacenters returns 403 for org member without organization:manage', async () => {
   if (!dbUrl) {
-    console.warn('Skipping datacenter route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('datacenter route tests')
     return
   }
 
@@ -372,7 +373,7 @@ test('GET /datacenters returns 403 for org member without organization:manage', 
 
 test('DELETE /datacenters/:id succeeds when no scoped networks exist', async () => {
   if (!dbUrl) {
-    console.warn('Skipping datacenter route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('datacenter route tests')
     return
   }
 
@@ -447,7 +448,7 @@ test('DELETE /datacenters/:id succeeds when no scoped networks exist', async () 
 
 test('DELETE /datacenters/:id returns 409 when members remain', async () => {
   if (!dbUrl) {
-    console.warn('Skipping datacenter route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('datacenter route tests')
     return
   }
 
@@ -640,7 +641,7 @@ test('GET /datacenters returns empty list when org has no datacenters', async ()
       headers: { cookie, [ORG_ID_HEADER]: organizationId },
     })
     assertEquals(res.status, 200)
-    assertEquals(await res.json(), { datacenters: [] })
+    assertEquals(await res.json(), { datacenters: [], warnings: [] })
   })
 })
 
@@ -1550,7 +1551,7 @@ test('PATCH /datacenters/:id updates name and description', async () => {
   })
 })
 
-test('PATCH /datacenters/:id persists valid priority and trusted and drops invalid values', async () => {
+test('PATCH /datacenters/:id persists valid priority and trusted, refuses a bad priority and drops a bad trusted', async () => {
   await withDatacenterFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const now = new Date().toISOString()
     const [dc] = await db
@@ -1597,12 +1598,24 @@ test('PATCH /datacenters/:id persists valid priority and trusted and drops inval
     assertEquals(detailBody.datacenter.priority, 7)
     assertEquals(detailBody.datacenter.trusted, false)
 
+    const outOfRange = await app.request(`/datacenters/${dc!.id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ options: { addressPreference: 'ipv6', priority: -1 } }),
+    })
+    assertEquals(outOfRange.status, 400)
+    assertEquals(await outOfRange.json(), { error: 'invalid_priority' })
+    const [afterRefused] = await db
+      .select({ options: datacenter.options })
+      .from(datacenter)
+      .where(eq(datacenter.id, dc!.id))
+      .limit(1)
+    assertEquals(afterRefused?.options, { priority: 7, trusted: false })
+
     const invalid = await app.request(`/datacenters/${dc!.id}`, {
       method: 'PATCH',
       headers,
-      body: JSON.stringify({
-        options: { addressPreference: 'ipv6', priority: -1, trusted: 'no' },
-      }),
+      body: JSON.stringify({ options: { addressPreference: 'ipv6', trusted: 'no' } }),
     })
     assertEquals(invalid.status, 200)
 
@@ -1969,7 +1982,7 @@ async function withManagedPolicyFixtures(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping datacenter route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('datacenter route tests')
     return
   }
 

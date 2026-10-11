@@ -1,11 +1,13 @@
 /**
- * Derived tier assignment — which purchased tier each server sits on.
+ * Tier assignment — which purchased tier each server sits on.
  *
  * An organization owns a quantity per tier (the `seat` rows). Each server
  * with an active license needs a tier from its hardware (`tier-placement`:
- * required = max(core band, RAM band)). Nobody chooses which server gets
- * which; this module computes it, and the result is cached on
- * `server.assigned_tier_id` by `assignment-records.ts`.
+ * required = max(core band, RAM band)). By default nobody chooses which server
+ * gets which; this module computes it, and the result is cached on
+ * `server.assigned_tier_id` by `assignment-records.ts`. An optional
+ * `server.preferred_tier_id` asks for at least that tier when a spare license
+ * exists there or on the smallest tier above.
  *
  * The rule, spelled once:
  *
@@ -15,10 +17,12 @@
  *      out. That is what makes "refuse the connect" honest: the server the
  *      gate names is the one that would go uncovered.
  *   2. Each server takes the **smallest** available tier whose rank is at
- *      least its requirement. Spare capacity above a server's need is fine
- *      (an upgrade looks like that between the immediate purchase and the
- *      boundary reduction), but a server is never parked on a bigger tier
- *      while a smaller one it fits would do.
+ *      least its requirement, unless it has a **preferred tier**: then it
+ *      takes a spare seat at that tier, or at the smallest tier above it
+ *      with a spare seat, before falling back to rule 2. Spare capacity
+ *      above a server's need is fine, but a server is never parked on a
+ *      bigger tier while a smaller one it fits would do — except when a
+ *      preferred tier or the swap pass (rule 4) lifts it.
  *   3. Unknown hardware (no resources reported yet) requires the entry
  *      rank: the server needs *a* tier, and the smallest will do until it
  *      says otherwise.
@@ -64,7 +68,14 @@ export type AssignableServer = Readonly<{
   recommendedRank?: number | null
   /** Bind order key: the server row's `created_at`. Ties break on id. */
   boundAt: string
+  /** Operator pick (`server.preferred_tier_id`); honored when a spare seat exists at or above it. */
+  preferredTierId?: string | null
+  preferredRank?: number | null
+  /** Label for pick-unfulfilled notices (e.g. `S2`). */
+  preferredLabel?: string | null
 }>
+
+type PoolEntry = TierQuantity & { left: number }
 
 export type TierAssignment = Readonly<{
   /** `tierId` the server sits on, or `null` when nothing purchased covers it. */
@@ -73,6 +84,8 @@ export type TierAssignment = Readonly<{
   spare: ReadonlyMap<string, number>
   /** Servers in bind order that ended with no tier. */
   uncovered: readonly string[]
+  /** Wanted tier label when a pick could not be honored (fell back below it). */
+  pickUnfulfilled: ReadonlyMap<string, string>
 }>
 
 export function effectiveRequiredRank(server: Pick<AssignableServer, 'requiredRank'>): number {
@@ -94,11 +107,79 @@ export function sortByBindOrder<T extends AssignableServer>(servers: readonly T[
   })
 }
 
+function decrementPoolSeat(entry: PoolEntry): void {
+  entry.left -= 1
+}
+
+function smallestDerivedSeat(pool: readonly PoolEntry[], need: number): PoolEntry | undefined {
+  return pool.find((entry) => entry.left > 0 && entry.rank >= need)
+}
+
+/** Spare at the picked tier, else the smallest tier above the pick with spare. */
+function takePreferredSeat(
+  pool: PoolEntry[],
+  preferredTierId: string,
+  preferredRank: number,
+  minRank: number
+): PoolEntry | undefined {
+  const exact = pool.find(
+    (entry) => entry.tierId === preferredTierId && entry.left > 0 && entry.rank >= minRank
+  )
+  if (exact) {
+    decrementPoolSeat(exact)
+    return exact
+  }
+  const above = pool.find(
+    (entry) => entry.left > 0 && entry.rank > preferredRank && entry.rank >= minRank
+  )
+  if (above) {
+    decrementPoolSeat(above)
+    return above
+  }
+  return undefined
+}
+
+function recordPickUnfulfilled(
+  pickUnfulfilled: Map<string, string>,
+  server: AssignableServer,
+  placedRank: number | null
+): void {
+  const want = server.preferredRank
+  if (want == null) return
+  const label = server.preferredLabel ?? 'that tier'
+  if (placedRank == null || placedRank < want) {
+    pickUnfulfilled.set(server.serverId, label)
+  }
+}
+
+function takeSeatForServer(
+  pool: PoolEntry[],
+  server: AssignableServer,
+  pickUnfulfilled: Map<string, string>,
+  honoredPreferredPick: Set<string>
+): PoolEntry | undefined {
+  const need = effectiveRequiredRank(server)
+  const wantRank = server.preferredRank ?? null
+  if (wantRank != null && server.preferredTierId) {
+    const preferred = takePreferredSeat(pool, server.preferredTierId, wantRank, need)
+    if (preferred) {
+      honoredPreferredPick.add(server.serverId)
+      return preferred
+    }
+    const derived = smallestDerivedSeat(pool, need)
+    if (derived) decrementPoolSeat(derived)
+    recordPickUnfulfilled(pickUnfulfilled, server, derived?.rank ?? null)
+    return derived
+  }
+  const derived = smallestDerivedSeat(pool, need)
+  if (derived) decrementPoolSeat(derived)
+  return derived
+}
+
 export function computeAssignment(
   quantities: readonly TierQuantity[],
   servers: readonly AssignableServer[]
 ): TierAssignment {
-  // Ascending rank so "smallest tier that fits" is the first hit.
   const pool = quantities
     .filter((entry) => entry.quantity > 0)
     .map((entry) => ({ ...entry, left: entry.quantity }))
@@ -106,25 +187,28 @@ export function computeAssignment(
 
   const byServer = new Map<string, string | null>()
   const placed = new Map<string, { tierId: string; rank: number }>()
+  const pickUnfulfilled = new Map<string, string>()
+  const honoredPreferredPick = new Set<string>()
   const uncovered: string[] = []
   const ordered = sortByBindOrder(servers)
   for (const server of ordered) {
-    const need = effectiveRequiredRank(server)
-    const slot = pool.find((entry) => entry.left > 0 && entry.rank >= need)
+    const wantRank = server.preferredRank ?? null
+    const slot = takeSeatForServer(pool, server, pickUnfulfilled, honoredPreferredPick)
     if (slot) {
-      slot.left -= 1
       byServer.set(server.serverId, slot.tierId)
       placed.set(server.serverId, { tierId: slot.tierId, rank: slot.rank })
     } else {
+      if (wantRank != null) recordPickUnfulfilled(pickUnfulfilled, server, null)
       byServer.set(server.serverId, null)
       uncovered.push(server.serverId)
     }
   }
-  swapTowardRecommended(ordered, placed)
+  swapTowardRecommended(ordered, placed, honoredPreferredPick)
+  reconcilePickUnfulfilled(ordered, placed, pickUnfulfilled)
   for (const [serverId, seat] of placed) byServer.set(serverId, seat.tierId)
   const spare = new Map<string, number>()
   for (const entry of pool) spare.set(entry.tierId, entry.left)
-  return { byServer, spare, uncovered }
+  return { byServer, spare, uncovered, pickUnfulfilled }
 }
 
 type Seat = { tierId: string; rank: number }
@@ -134,11 +218,32 @@ function fitsBetter(candidate: number, incumbent: number, want: number): boolean
   return incumbent < want && candidate > incumbent
 }
 
+/** Align pick-unfulfilled notices with final seats after the swap pass. */
+function reconcilePickUnfulfilled(
+  ordered: readonly AssignableServer[],
+  placed: ReadonlyMap<string, Seat>,
+  pickUnfulfilled: Map<string, string>
+): void {
+  for (const server of ordered) {
+    if (server.preferredRank == null) continue
+    const seat = placed.get(server.serverId)
+    const placedRank = seat?.rank ?? null
+    const want = server.preferredRank
+    const label = server.preferredLabel ?? 'that tier'
+    if (placedRank == null || placedRank < want) {
+      pickUnfulfilled.set(server.serverId, label)
+    } else {
+      pickUnfulfilled.delete(server.serverId)
+    }
+  }
+}
+
 /** The donor for `server`'s upgrade: holds a higher seat and needs none of it. */
 function pickDonor(
   server: AssignableServer,
   ordered: readonly AssignableServer[],
-  placed: ReadonlyMap<string, Seat>
+  placed: ReadonlyMap<string, Seat>,
+  honoredPreferredPick: ReadonlySet<string>
 ): AssignableServer | undefined {
   const mine = placed.get(server.serverId)!.rank
   const want = effectiveRecommendedRank(server)
@@ -147,8 +252,8 @@ function pickDonor(
   for (const other of ordered) {
     const seat = placed.get(other.serverId)
     if (!seat || seat.rank <= mine) continue
+    if (honoredPreferredPick.has(other.serverId)) continue
     if (effectiveRecommendedRank(other) > mine) continue
-    // Prefer the smallest seat that reaches `want`, else the largest below it.
     if (!best || fitsBetter(seat.rank, bestRank, want)) {
       best = other
       bestRank = seat.rank
@@ -160,7 +265,8 @@ function pickDonor(
 /** Rule 4: trade seats until no server recommends more than it holds while a donor exists. */
 function swapTowardRecommended(
   ordered: readonly AssignableServer[],
-  placed: Map<string, Seat>
+  placed: Map<string, Seat>,
+  honoredPreferredPick: ReadonlySet<string>
 ): void {
   let swapped = true
   while (swapped) {
@@ -168,7 +274,7 @@ function swapTowardRecommended(
     for (const server of ordered) {
       const mine = placed.get(server.serverId)
       if (!mine || mine.rank >= effectiveRecommendedRank(server)) continue
-      const donor = pickDonor(server, ordered, placed)
+      const donor = pickDonor(server, ordered, placed, honoredPreferredPick)
       if (!donor) continue
       const theirs = placed.get(donor.serverId)!
       placed.set(server.serverId, theirs)

@@ -174,7 +174,7 @@ export const managedSchemas = {
     type: 'object',
     additionalProperties: true,
     description:
-      'Engine settings (`image`, `ssl`, `resources`, `dockerOptions`, `engineConfig`, `exposure`, plus engine extras such as `initialDatabase`).',
+      'Engine settings (`image`, `ssl`, `resources`, `dockerOptions`, `engineConfig`, plus engine extras such as `initialDatabase`).',
   },
   ManagedConnectionInfo: {
     type: 'object',
@@ -195,13 +195,28 @@ export const managedSchemas = {
     required: ['managed', 'connection', 'settings', 'server', 'rootUsername', 'members'],
     properties: {
       managed: {
-        oneOf: [{ $ref: '#/components/schemas/ManagedEnvironmentRow' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ManagedEnvironmentRow' },
+          {
+            type: 'null',
+          },
+        ],
       },
       connection: {
-        oneOf: [{ $ref: '#/components/schemas/ManagedConnectionInfo' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ManagedConnectionInfo' },
+          {
+            type: 'null',
+          },
+        ],
       },
       settings: {
-        oneOf: [{ $ref: '#/components/schemas/ManagedSettings' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ManagedSettings' },
+          {
+            type: 'null',
+          },
+        ],
       },
       server: {
         type: 'object',
@@ -212,13 +227,107 @@ export const managedSchemas = {
         },
       },
       rootUsername: { type: 'string', nullable: true },
+      externalAccess: {
+        $ref: '#/components/schemas/ManagedExternalAccess',
+        description:
+          'The "allow external access to the databases on this server" setting of every server that fronts this cluster. The setting belongs to the server and covers every cluster on it.',
+      },
       members: {
         type: 'array',
         items: { $ref: '#/components/schemas/ManagedMember' },
       },
       recovery: {
-        oneOf: [{ $ref: '#/components/schemas/ManagedRecoveryRecord' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/ManagedRecoveryRecord' },
+          {
+            type: 'null',
+          },
+        ],
         description: 'Latest HA recovery journal row for this cluster (`null` when none).',
+      },
+    },
+  },
+  ManagedExternalAccess: {
+    type: 'object',
+    required: ['servers'],
+    properties: {
+      servers: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['id', 'name', 'enabled', 'pending', 'otherClusters'],
+          properties: {
+            id: { type: 'string' },
+            name: { type: 'string' },
+            enabled: {
+              type: 'boolean',
+              description:
+                'Yes: the databases on this server can be reached from outside it. No (the default): only services on the server itself can connect.',
+            },
+            pending: {
+              type: 'boolean',
+              description:
+                'The server was told the new setting and has not confirmed it yet (still applying, offline, or the push failed). Retried automatically.',
+            },
+            otherClusters: {
+              type: 'integer',
+              description: 'Other clusters on this server that the setting also covers.',
+            },
+          },
+        },
+      },
+    },
+  },
+  ManagedPatchResponse: {
+    type: 'object',
+    required: ['ok', 'managed', 'settings'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      managed: { $ref: '#/components/schemas/ManagedEnvironmentRow' },
+      settings: { $ref: '#/components/schemas/ManagedSettings' },
+    },
+  },
+  ServerManagedExternalAccessSaved: {
+    type: 'object',
+    required: ['ok', 'enabled', 'pending', 'clusterCount'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      enabled: { type: 'boolean' },
+      pending: {
+        type: 'boolean',
+        description: 'The server was told and has not confirmed yet. Retried automatically.',
+      },
+      clusterCount: { type: 'integer' },
+    },
+  },
+  ServerManagedExternalAccessPushFailed: {
+    type: 'object',
+    required: ['error', 'message', 'enabled', 'pending', 'clusterCount'],
+    description: 'The setting is saved; the server has not been told yet.',
+    properties: {
+      error: { type: 'string', const: 'ingress_reconcile_failed' },
+      message: { type: 'string' },
+      enabled: { type: 'boolean' },
+      pending: { type: 'boolean', const: true },
+      clusterCount: { type: 'integer' },
+    },
+  },
+  ServerManagedExternalAccess: {
+    type: 'object',
+    required: ['enabled', 'pending', 'clusterCount'],
+    properties: {
+      enabled: {
+        type: 'boolean',
+        description:
+          "Yes: the databases on this server are published beyond the server (every address; the firewall and network rules decide who can reach them). No (the default): only services on the server itself can connect, either sites run by a site owner's Linux user through 127.0.0.1 or containers bound to the cluster over the managed Docker network.",
+      },
+      pending: {
+        type: 'boolean',
+        description: 'The server was told and has not confirmed yet. Retried automatically.',
+      },
+      clusterCount: {
+        type: 'integer',
+        description: 'Managed clusters on this server that the setting covers.',
       },
     },
   },
@@ -233,6 +342,8 @@ export const managedSchemas = {
       'startedAt',
       'completedAt',
       'blockedReason',
+      'needsOperator',
+      'failedReason',
       'lagBytes',
       'sourceDatacenterId',
       'targetDatacenterId',
@@ -265,6 +376,16 @@ export const managedSchemas = {
       startedAt: { type: 'string', format: 'date-time' },
       completedAt: { type: 'string', format: 'date-time', nullable: true },
       blockedReason: { type: 'string', nullable: true },
+      needsOperator: {
+        type: 'boolean',
+        description:
+          'True on a terminal `failed` row that nothing will advance (a command was lost or a step after the role change failed): the cluster may be half way through a role change, so an operator has to check which member is the writer before the next one.',
+      },
+      failedReason: {
+        type: 'string',
+        nullable: true,
+        description: 'Why a `needsOperator` recovery stopped; `null` otherwise.',
+      },
       lagBytes: { type: 'number', nullable: true },
       sourceDatacenterId: { type: 'string', format: 'uuid', nullable: true },
       targetDatacenterId: { type: 'string', format: 'uuid', nullable: true },
@@ -285,17 +406,15 @@ export const managedSchemas = {
         type: 'string',
         description: 'Optional name; defaults to the environment name',
       },
-      exposure: {
-        type: 'object',
-        properties: {
-          enabled: { type: 'boolean' },
-          scope: {
-            type: 'string',
-            enum: ['public', 'datacenter', 'local', 'turbofabric'],
-            description:
-              'SQL client access scope when enabled. Legacy `bind` is read-only migration input.',
-          },
-        },
+      engineSeries: {
+        type: 'string',
+        description:
+          'Optional engine series (major version, for example `18`). Only tested series are accepted; omitted = the engine default. A non-string answers 400; an unknown or untested series answers 422 `managed_version_unsupported`.',
+      },
+      imageVariant: {
+        type: 'string',
+        description:
+          'Optional base-OS image variant of the series (for example `alpine` or `debian`). Alone, it selects that variant of the default series; omitted = the first variant of the series. A non-string answers 400; an unknown variant answers 422 `managed_version_unsupported`.',
       },
     },
   },
@@ -327,6 +446,27 @@ export const managedSchemas = {
       ok: { type: 'boolean', const: true },
       commandId: { type: 'string' },
       serverId: { type: 'string' },
+      status: { type: 'string', const: 'queued' },
+      results: {
+        type: 'array',
+        description: 'One entry per member the command was fanned out to.',
+        items: { $ref: '#/components/schemas/ManagedMemberEnqueueResult' },
+      },
+    },
+  },
+  ManagedMemberEnqueueResult: {
+    type: 'object',
+    required: ['memberId', 'serverId', 'status'],
+    properties: {
+      memberId: { type: 'string', format: 'uuid' },
+      serverId: { type: 'string', format: 'uuid' },
+      commandId: { type: 'string' },
+      status: { type: 'string', enum: ['queued', 'failed'] },
+      error: {
+        type: 'string',
+        description:
+          'Set when `status` is `failed`. `managed_member_needs_resync`: a start or restart skipped a demoted old primary that still holds a writable data directory; resync it first (stop is always allowed).',
+      },
     },
   },
   ManagedLifecycleRequest: {
@@ -348,6 +488,12 @@ export const managedSchemas = {
       },
       commandId: { type: 'string' },
       serverId: { type: 'string' },
+      detached: {
+        type: 'array',
+        items: { type: 'object' },
+        description:
+          'Present when `detach=true` and services were bound: the services (`serviceId`, `name`, `environmentId`, `projectId`, `keyPrefix`) whose bindings and database variables go with the cluster. Removed at once on a forced or unplaced delete; otherwise removed only when the queued destroy succeeds (a destroy that fails leaves the cluster and its bindings in place)',
+      },
     },
   },
   ManagedRootPasswordResponse: {
@@ -444,7 +590,12 @@ export const managedSchemas = {
     properties: {
       username: { type: 'string' },
       databases: { type: 'array', items: { type: 'string' } },
-      privileges: { type: 'array', items: { type: 'string' } },
+      privileges: {
+        type: 'array',
+        items: { type: 'string', enum: ['owner', 'read-write', 'read-only'] },
+        description:
+          'What the login may do in each listed database. Omitted = `read-only` for a `read-only` connectionRole, otherwise `read-write`. An empty list or an unknown name answers 400 `managed_user_privileges_invalid`, because a login with no grants can connect but is refused everywhere.',
+      },
       nameScheme: {
         type: 'string',
         enum: ['plain', 'partial', 'random'],
@@ -620,6 +771,12 @@ export const managedSchemas = {
         format: 'uuid',
         description: 'The backup schedule whose run made this artifact; absent for a manual backup',
       },
+      storedOnServerId: {
+        type: 'string',
+        format: 'uuid',
+        description:
+          'Host that holds the on-disk artifact (the primary when the backup ran). Absent on older records.',
+      },
     },
   },
   ManagedBackupsResponse: {
@@ -683,7 +840,10 @@ export const managedSchemas = {
         required: ['preset', 'day', 'time'],
         properties: {
           preset: { type: 'string', const: 'weekly' },
-          day: { type: 'string', enum: ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] },
+          day: {
+            type: 'string',
+            enum: ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'],
+          },
           time: { type: 'string', description: 'HH:MM, 24-hour' },
         },
       },
@@ -740,7 +900,12 @@ export const managedSchemas = {
       },
       schedule: { type: 'string', description: 'Cron text as stored' },
       preset: {
-        oneOf: [{ $ref: '#/components/schemas/BackupSchedulePreset' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/BackupSchedulePreset' },
+          {
+            type: 'null',
+          },
+        ],
         description: 'The preset this schedule matches; null for custom cron',
       },
       timezone: {
@@ -778,7 +943,12 @@ export const managedSchemas = {
   },
   BackupScheduleInput: {
     description: 'A preset object, or cron text (5 fields or an @alias; @reboot is refused)',
-    oneOf: [{ $ref: '#/components/schemas/BackupSchedulePreset' }, { type: 'string' }],
+    oneOf: [
+      { $ref: '#/components/schemas/BackupSchedulePreset' },
+      {
+        type: 'string',
+      },
+    ],
   },
   CreateBackupPolicyRequest: {
     type: 'object',
@@ -806,7 +976,10 @@ export const managedSchemas = {
     properties: {
       name: { type: 'string', maxLength: 64 },
       schedule: { $ref: '#/components/schemas/BackupScheduleInput' },
-      timezone: { type: ['string', 'null'], description: 'null clears it (host local time)' },
+      timezone: {
+        type: ['string', 'null'],
+        description: 'null clears it (host local time)',
+      },
       retentionKeep: { type: 'integer', minimum: 1 },
       enabled: { type: 'boolean' },
     },
@@ -827,7 +1000,12 @@ export const managedSchemas = {
     properties: {
       policy: { $ref: '#/components/schemas/BackupPolicy' },
       reconcile: {
-        oneOf: [{ $ref: '#/components/schemas/BackupsReconcileOutcome' }, { type: 'null' }],
+        oneOf: [
+          { $ref: '#/components/schemas/BackupsReconcileOutcome' },
+          {
+            type: 'null',
+          },
+        ],
         description: 'null when the change did not affect what the host runs (a rename)',
       },
     },
@@ -878,7 +1056,34 @@ export const managedSchemas = {
       limit: { type: 'integer' },
     },
   },
-  ManagedBusyError: errorSchema('managed_busy'),
+  ManagedBusyError: {
+    type: 'object',
+    required: ['error'],
+    properties: {
+      error: { type: 'string', const: 'managed_busy' },
+      reason: {
+        type: 'string',
+        enum: ['recovery_in_flight'],
+        description:
+          'Present when the cluster is not `applying` but an HA recovery (failover, switchover or disaster recovery) is still fencing or promoting in the journal. Every mutating managed route answers it until the recovery reaches a terminal state.',
+      },
+    },
+  },
+  ManagedImageRefusalError: {
+    type: 'object',
+    required: ['error', 'message'],
+    properties: {
+      error: {
+        type: 'string',
+        enum: ['managed_series_immutable', 'managed_variant_swap_unsafe'],
+      },
+      message: {
+        type: 'string',
+        description: 'Plain-words explanation of the refusal.',
+      },
+    },
+  },
+  ManagedVersionUnsupportedError: errorSchema('managed_version_unsupported'),
   ServerPlacementRequiredError: errorSchema('server_placement_required'),
   ServerOfflineError: errorSchema('server_offline'),
   ManagedSettingsInvalidError: errorSchema('managed_settings_invalid'),
@@ -897,14 +1102,121 @@ export const managedSchemas = {
   DatacenterCidrRequiredError: errorSchema('datacenter_cidr_required'),
   PrivatePathUnavailableError: errorSchema('private_path_unavailable'),
   FailoverRequiresTrustedDatacenterError: errorSchema('failover_requires_trusted_datacenter'),
+  ManagedFailoverUnsupportedError: {
+    type: 'object',
+    required: ['error', 'code'],
+    properties: {
+      error: {
+        type: 'string',
+        description:
+          'Plain-words reason. MariaDB 12.3 can run on one server; automatic failover needs MariaDB 11.8 for now.',
+      },
+      code: { type: 'string', const: 'managed_failover_unsupported' },
+    },
+  },
   ManagedBackupUnsupportedError: errorSchema('managed_backup_unsupported'),
   BackupNotFoundError: errorSchema('backup_not_found'),
+  BackupOnOtherServerError: {
+    type: 'object',
+    required: ['error', 'message'],
+    properties: {
+      error: { type: 'string', const: 'backup_on_other_server' },
+      message: {
+        type: 'string',
+        description:
+          'The artifact is on a former primary. Restore it there, take a new backup, or switch back first.',
+      },
+    },
+  },
   ManagedReplicaNotStreamingError: errorSchema('managed_replica_not_streaming'),
   ManagedReplicaLaggingError: errorSchema('managed_replica_lagging'),
   ManagedReplicaHealthStaleError: errorSchema('managed_replica_health_stale'),
+  ManagedReplicaLiveCheckFailedError: {
+    type: 'object',
+    required: ['error', 'message'],
+    properties: {
+      error: { type: 'string', const: 'managed_replica_live_check_failed' },
+      message: {
+        type: 'string',
+        description:
+          'The replica did not answer a live check, so it cannot be proven caught up. Try again, or force the promote if you accept possible data loss.',
+      },
+    },
+  },
 }
 
 export const managedPaths = {
+  '/api/client/v1/servers/{id}/managed-external-access': {
+    get: {
+      tags: ['Managed services'],
+      summary: 'Get "allow external access to the databases on this server"',
+      description:
+        'Owners and managers only; a server of another organization is 404. One setting for the whole server, because one connection listener serves every managed cluster on it. Default no.',
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        200: {
+          description: 'The setting',
+          ...jsonSchema('ServerManagedExternalAccess'),
+        },
+        403: { description: 'Not an owner or manager of the server' },
+        404: { description: 'Server not found in the caller organization' },
+      },
+    },
+    put: {
+      tags: ['Managed services'],
+      summary: 'Set "allow external access to the databases on this server"',
+      description:
+        "Owners and managers only. No (the default): only services on the server itself can connect (sites run by a site owner's Linux user through 127.0.0.1 on port 13306 for MySQL/MariaDB or 15432 for Postgres, and bound containers over the managed Docker network). Yes: those ports are published on all the server's addresses; the firewall and network rules decide who can then reach them. Saving tells the server at once; a push that cannot be queued answers 502 `ingress_reconcile_failed` (saved, retried automatically).",
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['enabled'],
+              properties: { enabled: { type: 'boolean' } },
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Saved',
+          ...jsonSchema('ServerManagedExternalAccessSaved'),
+        },
+        400: {
+          description: '`invalid_external_access`: `enabled` is not a boolean',
+        },
+        403: { description: 'Not an owner or manager of the server' },
+        404: { description: 'Server not found in the caller organization' },
+        422: {
+          description: '`daemon_key_unavailable`: the server cannot take changes yet',
+        },
+        502: {
+          description: 'Saved, but the server could not be told yet; retried automatically',
+          ...jsonSchema('ServerManagedExternalAccessPushFailed'),
+        },
+        503: {
+          description: 'Command queue or daemon cell registry unavailable',
+        },
+      },
+    },
+  },
   '/api/client/v1/environments/{id}/managed': {
     get: {
       tags: ['Managed services'],
@@ -937,7 +1249,7 @@ export const managedPaths = {
         },
         400: {
           description:
-            'not_managed_environment / managed_engine_unavailable / managed_settings_invalid',
+            'not_managed_environment / managed_engine_unavailable / managed_settings_invalid; also `Invalid engineSeries` / `Invalid imageVariant` when either is not a string',
           content: {
             'application/json': {
               schema: {
@@ -951,6 +1263,11 @@ export const managedPaths = {
               },
             },
           },
+        },
+        422: {
+          description:
+            'managed_version_unsupported (the requested engineSeries / imageVariant is unknown or not a tested version; nothing is created)',
+          ...jsonSchema('ManagedVersionUnsupportedError'),
         },
         409: {
           description: 'server_placement_required / server_offline / managed_busy',
@@ -971,41 +1288,87 @@ export const managedPaths = {
     patch: {
       tags: ['Managed services'],
       summary: 'Update managed settings (does not apply)',
+      description:
+        'Saves settings and, optionally, the cluster `name` (a label only; `null` clears it). Settings reach the engine on the next apply. Who can reach the database from outside the server is not a cluster setting: it is the server\'s "allow external access" setting (`/servers/{id}/managed-external-access`).',
       parameters: [ENV_ID_PARAM],
       requestBody: {
         content: {
           'application/json': {
-            schema: { $ref: '#/components/schemas/ManagedSettings' },
+            schema: {
+              type: 'object',
+              properties: {
+                settings: { $ref: '#/components/schemas/ManagedSettings' },
+                name: { type: ['string', 'null'] },
+              },
+            },
           },
         },
       },
       responses: {
         200: {
           description: 'Settings persisted',
-          ...jsonSchema('ManagedDetailResponse'),
+          ...jsonSchema('ManagedPatchResponse'),
         },
         400: {
-          description: 'managed_settings_invalid',
+          description: 'managed_settings_invalid, or a name that is not valid (Invalid request)',
           ...jsonSchema('ManagedSettingsInvalidError'),
         },
         409: {
-          description: 'managed_busy',
-          ...jsonSchema('ManagedBusyError'),
+          description:
+            'managed_busy, or an image change that is refused before anything is written: managed_series_immutable (the engine series cannot change on an existing cluster; create a new cluster and restore a backup into it) / managed_variant_swap_unsafe (PostgreSQL alpine <-> debian would corrupt text indexes); both carry a `message`',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/ManagedBusyError' },
+                  { $ref: '#/components/schemas/ManagedImageRefusalError' },
+                ],
+              },
+            },
+          },
         },
       },
     },
     delete: {
       tags: ['Managed services'],
       summary: 'Destroy managed service (two-step when running)',
-      parameters: [ENV_ID_PARAM],
+      description:
+        "Refused with 409 `managed_has_bindings` (and the bound `services`) while any service is bound to one of the cluster's logins. Pass `detach=true` to remove those bindings and their variables with the cluster (when the destroy succeeds; at once on a forced or unplaced delete); the response then lists them in `detached`. New bindings are refused with 409 `managed_busy` (`destroy_in_flight`) while a destroy is queued. Needs the same rights as the destroy itself. The services keep running with the values they already have until their next deploy.",
+      parameters: [
+        ENV_ID_PARAM,
+        {
+          name: 'detach',
+          in: 'query',
+          required: false,
+          schema: { type: 'boolean' },
+          description:
+            "Remove the cluster's service bindings (and their variables) with the cluster, once the destroy succeeds",
+        },
+      ],
       responses: {
         200: {
           description: 'Hard-deleted or destroy command enqueued',
           ...jsonSchema('ManagedDeleteResponse'),
         },
         409: {
-          description: 'managed_busy',
-          ...jsonSchema('ManagedBusyError'),
+          description: 'managed_busy, or managed_has_bindings (lists `services`)',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/ManagedBusyError' },
+                  {
+                    type: 'object',
+                    required: ['error', 'services'],
+                    properties: {
+                      error: { type: 'string', const: 'managed_has_bindings' },
+                      services: { type: 'array', items: { type: 'object' } },
+                    },
+                  },
+                ],
+              },
+            },
+          },
         },
       },
     },
@@ -1216,6 +1579,29 @@ export const managedPaths = {
           description: 'Database removed',
           ...jsonSchema('ManagedDatabaseMutationResponse'),
         },
+        409: {
+          description:
+            'cannot_drop_initial_database, managed_database_has_bindings (a service binding references the database; lists `services`), or managed_database_has_users (SQL users still list the database; lists their typed usernames in `users`; delete those users first)',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  error: {
+                    type: 'string',
+                    enum: [
+                      'cannot_drop_initial_database',
+                      'managed_database_has_bindings',
+                      'managed_database_has_users',
+                    ],
+                  },
+                  services: { type: 'array', items: { type: 'object' } },
+                  users: { type: 'array', items: { type: 'string' } },
+                },
+              },
+            },
+          },
+        },
       },
     },
   },
@@ -1224,7 +1610,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Postgres-only managed status + containers',
       description:
-        "Database-only by default. With `?refresh=1` (the panel's Refresh button) each replica's daemon is first asked for a fresh replication reading (`managed-health-request`, parallel, best effort, 10s each) and the result is stored before the snapshot is read. A daemon that is offline, lacks `managed-health-v1`, or times out keeps its stored observation.",
+        "Database-only by default. With `?refresh=1` (the panel's Refresh button) each replica's daemon is first asked for a fresh replication reading (`managed-health-request`, parallel, best effort, 10s each) and the result is stored before the snapshot is read. The primary is asked too while the cluster has replicas (its answer carries the replication-slot report, so a replica does not keep reading as cut off after a Resync); it is not counted in `healthRefresh`. A daemon that is offline, lacks `managed-health-v1`, or times out keeps its stored observation.",
       parameters: [
         ENV_ID_PARAM,
         {
@@ -1320,7 +1706,8 @@ export const managedPaths = {
     delete: {
       tags: ['Managed services'],
       summary: 'Delete a backup artifact: enqueue managed.backup (action=delete)',
-      description: 'The row is removed from the `backup` table by the consumer on success.',
+      description:
+        'The row is removed from the `backup` table by the consumer on success. The delete command is sent to the host that stores the artifact when that host is known.',
       parameters: [ENV_ID_PARAM, BACKUP_ID_PARAM],
       responses: {
         200: {
@@ -1351,7 +1738,8 @@ export const managedPaths = {
     post: {
       tags: ['Managed services'],
       summary: 'Restore a backup: enqueue managed.restore',
-      description: 'Daemon verifies the stored checksum/size before touching the running engine.',
+      description:
+        'Daemon verifies the stored checksum/size before touching the running engine. Artifacts live on the host that made them; a backup from a former primary answers 409 backup_on_other_server and does not enqueue.',
       parameters: [ENV_ID_PARAM, BACKUP_ID_PARAM],
       responses: {
         200: {
@@ -1363,13 +1751,14 @@ export const managedPaths = {
           ...jsonSchema('BackupNotFoundError'),
         },
         409: {
-          description: 'managed_busy / server_offline',
+          description: 'managed_busy / server_offline / backup_on_other_server',
           content: {
             'application/json': {
               schema: {
                 oneOf: [
                   { $ref: '#/components/schemas/ManagedBusyError' },
                   { $ref: '#/components/schemas/ServerOfflineError' },
+                  { $ref: '#/components/schemas/BackupOnOtherServerError' },
                 ],
               },
             },
@@ -1510,7 +1899,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Add a managed replica member',
       description:
-        'Body `{ serverId, replicaClass?, readEligible? }`. `replicaClass` defaults to `failover` (same datacenter as primary, promotable). `read` replicas may use local/datacenter/fabric/public paths to any org server. Requires private reachability to primary; failover additionally requires a ready datacenter CIDR.',
+        'Body `{ serverId, replicaClass?, readEligible? }`. `replicaClass` defaults to `failover` (same datacenter as primary, promotable). `read` replicas may use local/datacenter/fabric/public paths to any org server. Requires private reachability to primary; failover additionally requires a ready datacenter CIDR. Refused with 422 `managed_failover_unsupported` when the cluster image cannot take a replica (MariaDB 12.3: single server until automatic failover supports it).',
       parameters: [ENV_ID_PARAM],
       requestBody: {
         content: {
@@ -1558,11 +1947,12 @@ export const managedPaths = {
         },
         422: {
           description:
-            'failover_replica_requires_datacenter_transport / datacenter_required / datacenter_cidr_required / private_path_unavailable / failover_requires_trusted_datacenter',
+            'managed_failover_unsupported / failover_replica_requires_datacenter_transport / datacenter_required / datacenter_cidr_required / private_path_unavailable / failover_requires_trusted_datacenter',
           content: {
             'application/json': {
               schema: {
                 oneOf: [
+                  { $ref: '#/components/schemas/ManagedFailoverUnsupportedError' },
                   {
                     $ref: '#/components/schemas/FailoverReplicaRequiresDatacenterTransportError',
                   },
@@ -1699,7 +2089,7 @@ export const managedPaths = {
         },
         409: {
           description:
-            'managed_replica_not_streaming / managed_replica_lagging / managed_replica_health_stale / managed_busy / server_offline',
+            'managed_replica_not_streaming / managed_replica_lagging / managed_replica_health_stale / managed_replica_live_check_failed / managed_busy / server_offline',
           content: {
             'application/json': {
               schema: {
@@ -1710,6 +2100,9 @@ export const managedPaths = {
                   { $ref: '#/components/schemas/ManagedReplicaLaggingError' },
                   {
                     $ref: '#/components/schemas/ManagedReplicaHealthStaleError',
+                  },
+                  {
+                    $ref: '#/components/schemas/ManagedReplicaLiveCheckFailedError',
                   },
                   { $ref: '#/components/schemas/ManagedBusyError' },
                   { $ref: '#/components/schemas/ServerOfflineError' },

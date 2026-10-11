@@ -5,8 +5,8 @@ This file is generated from the resolved dependency graph. Do not edit it by han
 Third-party components remain under their own copyright and license terms and are not relicensed by TurboPanel Control Plane's repository license (AGPL-3.0-only).
 
 <!-- lockfiles
-deno.lock sha256:84f36313e2c987ea686111014fe2c0e871d53e19288719e9c8db31b0ec0aa1c9
-pnpm-lock.yaml sha256:1a09a9e6c4aa8d1eaab49c64acf8febb90a4605282082782d006962d15a6f9ac
+deno.lock sha256:567525770a55f3f24757fde7276f50f0c92d968d4b82e29b309c9cb68aadfb5d
+pnpm-lock.yaml sha256:1ed04c21aca44d4fdb173ddd6d1d387431b446a569578062bce17b684596e856
 -->
 
 ## Production dependencies
@@ -74,7 +74,7 @@ pnpm-lock.yaml sha256:1a09a9e6c4aa8d1eaab49c64acf8febb90a4605282082782d006962d15
 - Copyright: Drizzle Team
 - Homepage: https://orm.drizzle.team
 
-### hono@4.13.5
+### hono@4.13.7
 
 - License: MIT
 - Copyright: Yusuke Wada
@@ -297,13 +297,13 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Homepage: https://github.com/lovell/colour#readme
 
-### @img/sharp-libvips-linux-x64@1.3.3
+### @img/sharp-libvips-linux-x64@1.3.4
 
 - License: LGPL-3.0-or-later
 - Copyright: Lovell Fuller
 - Homepage: https://sharp.pixelplumbing.com
 
-### @img/sharp-linux-x64@0.35.4
+### @img/sharp-linux-x64@0.35.5
 
 - License: Apache-2.0
 - Copyright: Lovell Fuller
@@ -759,7 +759,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: GitHub Inc.
 - Homepage: https://github.com/npm/node-semver#readme
 
-### sharp@0.35.4
+### sharp@0.35.5
 
 - License: Apache-2.0
 - Copyright: Lovell Fuller
@@ -777,7 +777,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Nick Fitzgerald
 - Homepage: https://github.com/mozilla/source-map
 
-### source-map-js@1.2.1
+### source-map-js@1.2.2
 
 - License: BSD-3-Clause
 - Copyright: Valentin 7rulnik Semirulnik

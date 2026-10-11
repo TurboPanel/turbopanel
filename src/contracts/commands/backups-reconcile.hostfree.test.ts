@@ -38,6 +38,7 @@ const copyEntry: BackupPolicyWireEntry = {
   copyId: COPY_ID,
   copyProvider: 'docker',
   volumeName: 'uploads_data',
+  storageId: '0192d6a0-0000-7000-8000-0000000000d1',
   onCalendar: 'hourly',
   retentionKeep: 24,
   enabled: false,
@@ -50,6 +51,25 @@ test('server.backups.reconcile accepts managed and copy entries as the complete 
   assertEquals(parseCommandPayload('server.backups.reconcile', { policies: [] }), {
     policies: [],
   })
+})
+
+test("server.backups.reconcile carries a managed entry's database and refuses an unsafe or copy-side one", () => {
+  const withDatabase = { ...managedEntry, database: 'defaultdb' }
+  assertEquals(parseBackupsReconcilePayload({ policies: [withDatabase] }), {
+    policies: [withDatabase],
+  })
+  for (const database of ['', 'a b', 'x;rm -rf /', 7]) {
+    assertThrows(
+      () => parseBackupsReconcilePayload({ policies: [{ ...managedEntry, database }] }),
+      Error,
+      'managed database'
+    )
+  }
+  assertThrows(
+    () => parseBackupsReconcilePayload({ policies: [{ ...copyEntry, database: 'defaultdb' }] }),
+    Error,
+    'copy target'
+  )
 })
 
 test('server.backups.reconcile refuses a set that names one policy twice', () => {
@@ -70,7 +90,10 @@ test('server.backups.reconcile refuses ids a unit name could not carry', () => {
     'Invalid backup policy entry'
   )
   assertThrows(
-    () => parseBackupsReconcilePayload({ policies: [{ ...managedEntry, policyId: 'not-a-uuid' }] }),
+    () =>
+      parseBackupsReconcilePayload({
+        policies: [{ ...managedEntry, policyId: 'not-a-uuid' }],
+      }),
     Error,
     'Invalid backup policy entry'
   )
@@ -79,7 +102,10 @@ test('server.backups.reconcile refuses ids a unit name could not carry', () => {
 test('server.backups.reconcile refuses anything structural in onCalendar', () => {
   for (const onCalendar of ['daily\nExecStart=/bin/sh', 'daily"', '', 'x'.repeat(201)]) {
     assertThrows(
-      () => parseBackupsReconcilePayload({ policies: [{ ...managedEntry, onCalendar }] }),
+      () =>
+        parseBackupsReconcilePayload({
+          policies: [{ ...managedEntry, onCalendar }],
+        }),
       Error,
       'Invalid backup policy entry'
     )
@@ -89,13 +115,19 @@ test('server.backups.reconcile refuses anything structural in onCalendar', () =>
 test('server.backups.reconcile bounds retentionKeep to 1..100 and needs a boolean enabled', () => {
   for (const retentionKeep of [0, 101, 1.5, '7']) {
     assertThrows(
-      () => parseBackupsReconcilePayload({ policies: [{ ...managedEntry, retentionKeep }] }),
+      () =>
+        parseBackupsReconcilePayload({
+          policies: [{ ...managedEntry, retentionKeep }],
+        }),
       Error,
       'Invalid backup policy entry'
     )
   }
   assertThrows(
-    () => parseBackupsReconcilePayload({ policies: [{ ...managedEntry, enabled: 'yes' }] }),
+    () =>
+      parseBackupsReconcilePayload({
+        policies: [{ ...managedEntry, enabled: 'yes' }],
+      }),
     Error,
     'Invalid backup policy entry'
   )
@@ -103,7 +135,10 @@ test('server.backups.reconcile bounds retentionKeep to 1..100 and needs a boolea
 
 test('server.backups.reconcile needs exactly the target its kind names', () => {
   assertThrows(
-    () => parseBackupsReconcilePayload({ policies: [{ ...managedEntry, copyId: COPY_ID }] }),
+    () =>
+      parseBackupsReconcilePayload({
+        policies: [{ ...managedEntry, copyId: COPY_ID }],
+      }),
     Error,
     'managed target'
   )
@@ -114,17 +149,26 @@ test('server.backups.reconcile needs exactly the target its kind names', () => {
     'managed target'
   )
   assertThrows(
-    () => parseBackupsReconcilePayload({ policies: [{ ...copyEntry, managedId: MANAGED_ID }] }),
+    () =>
+      parseBackupsReconcilePayload({
+        policies: [{ ...copyEntry, managedId: MANAGED_ID }],
+      }),
     Error,
     'copy target'
   )
   assertThrows(
-    () => parseBackupsReconcilePayload({ policies: [{ ...copyEntry, engine: 'postgres' }] }),
+    () =>
+      parseBackupsReconcilePayload({
+        policies: [{ ...copyEntry, engine: 'postgres' }],
+      }),
     Error,
     'copy target'
   )
   assertThrows(
-    () => parseBackupsReconcilePayload({ policies: [{ ...copyEntry, targetKind: 'volume' }] }),
+    () =>
+      parseBackupsReconcilePayload({
+        policies: [{ ...copyEntry, targetKind: 'volume' }],
+      }),
     Error,
     'Invalid backup policy entry'
   )
@@ -218,10 +262,13 @@ function pathEntry(fields: Record<string, unknown>): Record<string, unknown> {
 
 test('a copy entry names where its bytes live: a volume, a host path, or the default directory', () => {
   const hostPath = `/srv/users/acme/volumes/${STORAGE_ID}`
-  const principalDir = pathEntry({ hostPath })
+  const principalDir = pathEntry({ hostPath, ownerUsername: 'acme' })
   const parsed: unknown = parseBackupsReconcilePayload({ policies: [principalDir] }).policies[0]
   assertEquals(parsed, principalDir)
-  const defaultDir = pathEntry({ organizationId: ORG_ID, storageId: STORAGE_ID })
+  const defaultDir = pathEntry({
+    organizationId: ORG_ID,
+    storageId: STORAGE_ID,
+  })
   const parsedDefault: unknown = parseBackupsReconcilePayload({ policies: [defaultDir] })
     .policies[0]
   assertEquals(parsedDefault, defaultDir)
@@ -230,6 +277,24 @@ test('a copy entry names where its bytes live: a volume, a host path, or the def
 test('a copy entry refuses an ambiguous or unsafe source', () => {
   const cases: Record<string, unknown>[] = [
     { ...copyEntry, volumeName: undefined },
+    { ...copyEntry, storageId: undefined },
+    { ...copyEntry, composeProject: 'Bad Project' },
+    { ...copyEntry, ownerUsername: 'acme' },
+    pathEntry({ hostPath: '/srv/users/acme/volumes/a' }),
+    pathEntry({
+      hostPath: '/srv/users/acme/volumes/a',
+      ownerUsername: 'bad name',
+    }),
+    pathEntry({
+      organizationId: ORG_ID,
+      storageId: STORAGE_ID,
+      ownerUsername: 'acme',
+    }),
+    pathEntry({
+      hostPath: '/srv/users/acme/volumes/a',
+      ownerUsername: 'acme',
+      composeProject: 'p',
+    }),
     { ...copyEntry, volumeName: '-x' },
     { ...copyEntry, volumeName: 'a/b' },
     { ...copyEntry, hostPath: '/srv/users/a' },
@@ -238,7 +303,11 @@ test('a copy entry refuses an ambiguous or unsafe source', () => {
     pathEntry({}),
     pathEntry({ organizationId: ORG_ID }),
     pathEntry({ hostPath: '/srv/users/a', volumeName: 'x' }),
-    pathEntry({ hostPath: '/srv/users/a', organizationId: ORG_ID, storageId: STORAGE_ID }),
+    pathEntry({
+      hostPath: '/srv/users/a',
+      organizationId: ORG_ID,
+      storageId: STORAGE_ID,
+    }),
     pathEntry({ hostPath: 'srv/users/a' }),
     pathEntry({ hostPath: '/srv/users/../etc' }),
     pathEntry({ hostPath: '/srv/users/./a' }),
@@ -256,9 +325,20 @@ test('a copy entry refuses an ambiguous or unsafe source', () => {
 })
 
 test('a managed entry cannot carry copy source fields', () => {
-  for (const field of ['copyProvider', 'volumeName', 'hostPath', 'organizationId', 'storageId']) {
+  for (const field of [
+    'copyProvider',
+    'volumeName',
+    'hostPath',
+    'organizationId',
+    'storageId',
+    'ownerUsername',
+    'composeProject',
+  ]) {
     assertThrows(
-      () => parseBackupsReconcilePayload({ policies: [{ ...managedEntry, [field]: 'x' }] }),
+      () =>
+        parseBackupsReconcilePayload({
+          policies: [{ ...managedEntry, [field]: 'x' }],
+        }),
       Error,
       'managed target'
     )

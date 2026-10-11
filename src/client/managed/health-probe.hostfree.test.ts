@@ -6,9 +6,9 @@ import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.
 import { MANAGED_HEALTH_FEATURE } from '../../lib/version-wire.ts'
 import {
   createFreshStandbyProbe,
+  MANAGED_HEALTH_PROBE_PROMOTE_TIMEOUT_MS,
   type ManagedHealthProbeDeps,
   type ManagedHealthProbeParams,
-  MANAGED_HEALTH_PROBE_PROMOTE_TIMEOUT_MS,
   probeManagedMemberHealth,
 } from './health-probe.ts'
 
@@ -58,7 +58,10 @@ function fakeRegistry(reply: Reply | (() => Promise<Reply>)) {
 }
 
 function deps(overrides: Partial<ManagedHealthProbeDeps> = {}) {
-  const persisted: { memberId: string; replication: ManagedReplicationHealth }[] = []
+  const persisted: {
+    memberId: string
+    replication: ManagedReplicationHealth
+  }[] = []
   const merged: ManagedHealthProbeDeps = {
     daemonFeatures: () => Promise.resolve([MANAGED_HEALTH_FEATURE]),
     isServerConnected: () => Promise.resolve(true),
@@ -146,14 +149,42 @@ test('a timeout keeps the stored observation: nothing is persisted', async () =>
   assertEquals(persisted.length, 0)
 })
 
-test('a daemon error (ok:false) is unavailable and persists nothing', async () => {
-  const { registry } = fakeRegistry({ status: 'failed', error: 'engine not running' })
+test('a daemon error that is not an engine-down answer is unavailable and persists nothing', async () => {
+  const { registry } = fakeRegistry({
+    status: 'failed',
+    error: 'memberId is not a valid id',
+  })
   const { merged, persisted } = deps()
   assertEquals(await probeManagedMemberHealth(DB, registry, PARAMS, merged), {
     status: 'unavailable',
     reason: 'daemon_error',
-    error: 'engine not running',
+    error: 'memberId is not a valid id',
   })
+  assertEquals(persisted.length, 0)
+})
+
+test('a replica whose engine is not running is recorded as not streaming, with a fresh timestamp', async () => {
+  const { registry } = fakeRegistry({
+    status: 'failed',
+    error: 'replication health unavailable (engine not running or not answering)',
+  })
+  const { merged, persisted } = deps()
+  const before = Date.now()
+  const outcome = await probeManagedMemberHealth(DB, registry, PARAMS, merged)
+  assertEquals(outcome.status, 'unavailable')
+  assertEquals(persisted.length, 1)
+  assertEquals(persisted[0]!.memberId, MEMBER_ID)
+  assertEquals(persisted[0]!.replication.state, 'not_streaming')
+  assertEquals(Date.parse(persisted[0]!.replication.observedAt) >= before, true)
+})
+
+test('an engine-down answer for a primary is never written as a replica reading', async () => {
+  const { registry } = fakeRegistry({
+    status: 'failed',
+    error: 'engine not running or not answering',
+  })
+  const { merged, persisted } = deps()
+  await probeManagedMemberHealth(DB, registry, { ...PARAMS, role: 'primary' }, merged)
   assertEquals(persisted.length, 0)
 })
 
@@ -179,7 +210,10 @@ test('a malformed result is unavailable', async () => {
     null,
     { ok: true },
     { ok: true, member: { memberId: MEMBER_ID } },
-    { ok: true, member: { memberId: MEMBER_ID, replication: { state: 'streaming' } } },
+    {
+      ok: true,
+      member: { memberId: MEMBER_ID, replication: { state: 'streaming' } },
+    },
     {
       ok: true,
       member: {
@@ -216,11 +250,45 @@ test('a throwing transport or persist is contained as unavailable', async () => 
       replication: FRESH,
     })
   )
-  const failing = deps({ persist: () => Promise.reject(new TypeError('db down')) })
+  const failing = deps({
+    persist: () => Promise.reject(new TypeError('db down')),
+  })
   assertEquals(await probeManagedMemberHealth(DB, good.registry, PARAMS, failing.merged), {
     status: 'unavailable',
     reason: 'error',
     error: 'db down',
+  })
+})
+
+test('keeps GTID freshness fields and drops malformed ones', async () => {
+  const run = async (extra: Record<string, unknown>) => {
+    const { registry } = fakeRegistry(
+      ok({
+        memberId: MEMBER_ID,
+        role: 'replica',
+        status: 'ready',
+        replication: { state: 'streaming', observedAt: NOW, ...extra },
+      })
+    )
+    return await probeManagedMemberHealth(DB, registry, PARAMS, deps().merged)
+  }
+  assertEquals(await run({ receivedGtid: 'u:1-5', executedGtid: 'u:1-4', fullyApplied: false }), {
+    status: 'observed',
+    replication: {
+      state: 'streaming',
+      observedAt: NOW,
+      receivedGtid: 'u:1-5',
+      executedGtid: 'u:1-4',
+      fullyApplied: false,
+    },
+  })
+  assertEquals(await run({ receivedGtid: '', executedGtid: '' }), {
+    status: 'observed',
+    replication: { state: 'streaming', observedAt: NOW },
+  })
+  assertEquals(await run({ receivedGtid: 'x'.repeat(4097), executedGtid: 1, fullyApplied: 'y' }), {
+    status: 'observed',
+    replication: { state: 'streaming', observedAt: NOW },
   })
 })
 
@@ -230,12 +298,23 @@ const COLD: ManagedReplicationHealth = {
   receivedLsn: '0/3000148',
   replayLsn: '0/3000148',
   receiveLagBytes: 0,
-  lastStreaming: { at: NOW, ageMs: 4000, lagBytes: 0, lagSeconds: 0.5, receiveLagBytes: 128 },
+  lastStreaming: {
+    at: NOW,
+    ageMs: 4000,
+    lagBytes: 0,
+    lagSeconds: 0.5,
+    receiveLagBytes: 128,
+  },
 }
 
 test('keeps the standby WAL positions and last streaming read, dropping a malformed one', async () => {
   const { registry } = fakeRegistry(
-    ok({ memberId: MEMBER_ID, role: 'replica', status: 'ready', replication: COLD })
+    ok({
+      memberId: MEMBER_ID,
+      role: 'replica',
+      status: 'ready',
+      replication: COLD,
+    })
   )
   const { merged, persisted } = deps()
   const outcome = await probeManagedMemberHealth(DB, registry, PARAMS, merged)
@@ -249,16 +328,52 @@ test('keeps the standby WAL positions and last streaming read, dropping a malfor
       memberId: MEMBER_ID,
       role: 'replica',
       status: 'ready',
-      replication: { state: 'stopped', observedAt: NOW, lastStreaming: { at: NOW } },
+      replication: {
+        state: 'stopped',
+        observedAt: NOW,
+        lastStreaming: { at: NOW },
+      },
     })
   )
   const dropped = await probeManagedMemberHealth(DB, bad, PARAMS, deps().merged)
-  assertEquals(dropped, { status: 'observed', replication: { state: 'stopped', observedAt: NOW } })
+  assertEquals(dropped, {
+    status: 'observed',
+    replication: { state: 'stopped', observedAt: NOW },
+  })
+})
+
+test('a primary probe keeps its slot retention and drops a malformed one', async () => {
+  const slotRetention = {
+    state: 'critical' as const,
+    slot: 'tp_member_2',
+    walStatus: 'lost',
+    active: false,
+  }
+  const { registry } = fakeRegistry(
+    ok({
+      memberId: MEMBER_ID,
+      role: 'primary',
+      status: 'ready',
+      replication: { state: 'unknown', observedAt: NOW, slotRetention },
+    })
+  )
+  const { merged, persisted } = deps()
+  const outcome = await probeManagedMemberHealth(DB, registry, PARAMS, merged)
+  assertEquals(outcome, {
+    status: 'observed',
+    replication: { state: 'unknown', observedAt: NOW, slotRetention },
+  })
+  assertEquals(persisted[0]?.replication.slotRetention, slotRetention)
 })
 
 test('the fresh-standby probe asks for a replica with the promote timeout', async () => {
   const { registry, sent } = fakeRegistry(
-    ok({ memberId: MEMBER_ID, role: 'replica', status: 'ready', replication: COLD })
+    ok({
+      memberId: MEMBER_ID,
+      role: 'replica',
+      status: 'ready',
+      replication: COLD,
+    })
   )
   const probe = createFreshStandbyProbe(DB, registry, { deps: deps().merged })
   const target = {
@@ -270,7 +385,9 @@ test('the fresh-standby probe asks for a replica with the promote timeout', asyn
   assertEquals(await probe(target), COLD)
   assertEquals(sent[0]!.timeoutMs, MANAGED_HEALTH_PROBE_PROMOTE_TIMEOUT_MS)
   const envelope = sent[0]!.envelope
-  if (envelope.kind !== 'managed-health-request') throw new TypeError('wrong envelope')
+  if (envelope.kind !== 'managed-health-request') {
+    throw new TypeError('wrong envelope')
+  }
   assertEquals(envelope.role, 'replica')
 })
 

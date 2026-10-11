@@ -1,5 +1,6 @@
 import type { PendingRequestStatus } from '../../contracts/cell.ts'
 import type { DaemonInboundEnvelope } from '../../contracts/cell-protocol.ts'
+import { redactUrlSecrets } from '../../features/upgrades/redact-url-secrets.ts'
 
 /** Correlation status + payload derived from a terminal inbound envelope. */
 export type InboundOutcome = {
@@ -43,8 +44,33 @@ function repoReadResultPayload(
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** The result with its own `error` text redacted; the same object when it has none. */
+function redactResultError(result: unknown): unknown {
+  if (!isRecord(result) || typeof result.error !== 'string') return result
+  return { ...result, error: redactUrlSecrets(result.error) }
+}
+
 /**
- * Map a daemon inbound envelope to a pending-request completion.
+ * The outcome as it may be stored: the `error` column and the `error` field of
+ * the stored result both pass through {@link redactUrlSecrets}. Every message
+ * kind goes through here, so none of them keeps the daemon's raw error text.
+ */
+function redactOutcome(outcome: InboundOutcome): InboundOutcome {
+  const result = redactResultError(outcome.result)
+  return {
+    ...outcome,
+    ...(outcome.result === undefined ? {} : { result }),
+    ...(outcome.error === undefined ? {} : { error: redactUrlSecrets(outcome.error) }),
+  }
+}
+
+/**
+ * Map a daemon inbound envelope to a pending-request completion, with the
+ * error text redacted (see {@link redactOutcome}).
  * Returns `null` for non-terminal kinds (`command-ack` and similar).
  *
  * `instance-acme-issuance-event` and `acme-issuance-event` are
@@ -57,6 +83,11 @@ function repoReadResultPayload(
  * `instance-update`.
  */
 export function deriveInboundOutcome(inbound: DaemonInboundEnvelope): InboundOutcome | null {
+  const outcome = deriveRawInboundOutcome(inbound)
+  return outcome === null ? null : redactOutcome(outcome)
+}
+
+function deriveRawInboundOutcome(inbound: DaemonInboundEnvelope): InboundOutcome | null {
   switch (inbound.kind) {
     case 'addresses-result':
       return { status: 'done', result: { ips: inbound.ips } }
@@ -100,6 +131,12 @@ export function deriveInboundOutcome(inbound: DaemonInboundEnvelope): InboundOut
         error: inbound.error,
         ...(inbound.errorCode ? { errorCode: inbound.errorCode } : {}),
         ...(inbound.upgradeId ? { upgradeId: inbound.upgradeId } : {}),
+      })
+    case 'deploy-cancel-result':
+      return inboundOutcomeFromOk(inbound.ok, inbound.error, {
+        ok: inbound.ok,
+        outcome: inbound.outcome,
+        error: inbound.error,
       })
     case 'metrics-capabilities-result':
       return inboundOutcomeFromOk(inbound.ok, inbound.error, {

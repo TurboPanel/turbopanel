@@ -8,6 +8,7 @@ import type { ManagedContext } from './context.ts'
 import type { ManagedRowOptions } from '../../features/managed/options.ts'
 import type { ManagedBackupRecord } from '../../features/backups/backup-records.ts'
 import {
+  backupOnOtherServerMessage,
   buildManagedBackupCreatePayload,
   buildManagedBackupDeletePayload,
   buildManagedRestorePayload,
@@ -15,7 +16,10 @@ import {
   enqueueManagedRestore,
   isManagedBackupApiError,
   mapManagedBackupApiError,
+  refuseRestoreIfBackupOnOtherServer,
   resolveBackupDatabase,
+  resolveManagedBackupArtifactServerId,
+  toManagedBackupListItem,
 } from './backups.ts'
 
 /**
@@ -189,6 +193,29 @@ test('buildManagedBackupDeletePayload builds a delete payload from a stored reco
   assertEquals(built.payload.database, 'app')
 })
 
+test("buildManagedBackupDeletePayload carries a scheduled backup's policy id so the host finds the file", () => {
+  const ctx = buildContext(postgresEngineSpec)
+  const record = {
+    ...buildRecord(),
+    retentionId: '11111111-1111-4111-8111-111111111111',
+  }
+
+  const built = buildManagedBackupDeletePayload(ctx, 'managed-1', record)
+  if (isManagedBackupApiError(built)) {
+    throw new Error(`expected success, got error kind=${built.kind}`)
+  }
+  assertEquals(built.payload.policyId, '11111111-1111-4111-8111-111111111111')
+})
+
+test('buildManagedBackupDeletePayload omits the policy id for a manual backup', () => {
+  const ctx = buildContext(postgresEngineSpec)
+  const built = buildManagedBackupDeletePayload(ctx, 'managed-1', buildRecord())
+  if (isManagedBackupApiError(built)) {
+    throw new Error(`expected success, got error kind=${built.kind}`)
+  }
+  assertEquals('policyId' in built.payload, false)
+})
+
 test('buildManagedBackupDeletePayload rejects engines without backup support', () => {
   const unsupportedSpec: ManagedEngineSpec = {
     ...postgresEngineSpec,
@@ -299,6 +326,81 @@ test('buildManagedRestorePayload takes the policy id only from the stored record
     throw new Error(`expected success, got error kind=${built.kind}`)
   }
   assertEquals('policyId' in built.payload, false)
+})
+
+const FORMER_PRIMARY_ID = '00000000-0000-4000-8000-0000000000aa'
+const CURRENT_PRIMARY_ID = '00000000-0000-4000-8000-0000000000bb'
+
+test('toManagedBackupListItem exposes storedOnServerId when the host is known', () => {
+  const item = toManagedBackupListItem(buildRecord({ serverId: FORMER_PRIMARY_ID }))
+  assertEquals(item.storedOnServerId, FORMER_PRIMARY_ID)
+  assertEquals('serverId' in item, false)
+})
+
+test('toManagedBackupListItem omits storedOnServerId for a legacy row', () => {
+  const item = toManagedBackupListItem(buildRecord())
+  assertEquals('storedOnServerId' in item, false)
+  assertEquals('serverId' in item, false)
+})
+
+test('resolveManagedBackupArtifactServerId prefers the stored host', () => {
+  assertEquals(
+    resolveManagedBackupArtifactServerId({ serverId: FORMER_PRIMARY_ID }, CURRENT_PRIMARY_ID),
+    FORMER_PRIMARY_ID
+  )
+})
+
+test('resolveManagedBackupArtifactServerId falls back when serverId is absent', () => {
+  assertEquals(resolveManagedBackupArtifactServerId({}, CURRENT_PRIMARY_ID), CURRENT_PRIMARY_ID)
+})
+
+function nameLookupDb(name: string | undefined): Db {
+  return {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve(name === undefined ? [] : [{ name }]),
+        }),
+      }),
+    }),
+  } as unknown as Db
+}
+
+test('refuseRestoreIfBackupOnOtherServer allows a legacy row with no stored host', async () => {
+  const refused = await refuseRestoreIfBackupOnOtherServer(
+    mockBackupContext(),
+    nameLookupDb('Former Primary'),
+    buildRecord(),
+    CURRENT_PRIMARY_ID
+  )
+  assertEquals(refused, null)
+})
+
+test('refuseRestoreIfBackupOnOtherServer allows a restore on the host that stores it', async () => {
+  const refused = await refuseRestoreIfBackupOnOtherServer(
+    mockBackupContext(),
+    nameLookupDb('Former Primary'),
+    buildRecord({ serverId: CURRENT_PRIMARY_ID }),
+    CURRENT_PRIMARY_ID
+  )
+  assertEquals(refused, null)
+})
+
+test('refuseRestoreIfBackupOnOtherServer returns 409 backup_on_other_server', async () => {
+  const refused = await refuseRestoreIfBackupOnOtherServer(
+    mockBackupContext(),
+    nameLookupDb('Former Primary'),
+    buildRecord({ serverId: FORMER_PRIMARY_ID }),
+    CURRENT_PRIMARY_ID
+  )
+  if (!(refused instanceof Response)) {
+    throw new TypeError('expected a 409 response')
+  }
+  assertEquals(refused.status, 409)
+  assertEquals(await refused.json(), {
+    error: 'backup_on_other_server',
+    message: backupOnOtherServerMessage('Former Primary'),
+  })
 })
 
 function mockBackupContext(): Context<AppEnv> {

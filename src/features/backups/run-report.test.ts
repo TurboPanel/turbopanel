@@ -6,6 +6,7 @@
  * TURBOPANEL_DATABASE_URL.
  */
 
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
@@ -100,7 +101,7 @@ async function removeFixture(db: Db, organizationId: string, managedIds: string[
 
 async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping backup run report tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('backup run report tests')
     return
   }
   const db = createDenoDb()
@@ -199,10 +200,16 @@ test('a believed report records the run, the artifact and the next run, once', a
     assertEquals(runs, [{ status: 'succeeded', backupRef: 'bk_new' }])
 
     const artifacts = await fixture.db
-      .select({ backupId: backup.backupId, policyId: backup.retentionId })
+      .select({
+        backupId: backup.backupId,
+        policyId: backup.retentionId,
+        serverId: backup.serverId,
+      })
       .from(backup)
       .where(eq(backup.managedId, fixture.managedId))
-    assertEquals(artifacts, [{ backupId: 'bk_new', policyId: fixture.policyId }])
+    assertEquals(artifacts, [
+      { backupId: 'bk_new', policyId: fixture.policyId, serverId: fixture.serverA },
+    ])
 
     const [policy] = await fixture.db
       .select({ nextRunAt: retention.nextRunAt, updatedAt: retention.updatedAt })

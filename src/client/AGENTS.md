@@ -13,7 +13,7 @@ contract — keep them current when adding or changing routes.
 | `POST`   | `/api/client/v1/invitations`                                    | Create a pending invitation (`canInviteToTeam`); optional `grants` require `organization:own`; emails the accept link (`/accept-invitation?token=<secret>`; the secret is stored only as `token_hash` and never returned); **409** `invitation_pending`, **503** `email_unavailable` |
 | `GET`    | `/api/client/v1/invitations`                                    | List pending, unexpired invitations across the org's teams (`organization:manage`); `{ invitations: [{ id, email, teamId, teamName, expiresAt, createdAt, invitedBy }] }`                                                                                                            |
 | `DELETE` | `/api/client/v1/invitations/{id}`                               | Revoke a pending invitation (`canInviteToTeam`); atomic `pending` → `revoked`; **404** if missing or not pending                                                                                                                                                                     |
-| `POST`   | `/api/client/v1/invitations/{id}/accept`                        | Accept a pending invitation; creates a `teammate` row, materializes `invitation.grants` into `grant` rows, updates session `organizationId`                                                                                                                                          |
+| `POST`   | `/api/client/v1/invitations/{id}/accept`                        | Accept a pending invitation; atomically claims the row, adds team membership, materializes `invitation.grants` into `grant` rows when present (null/omitted grants confer none), updates session `organizationId`                                                                    |
 | `GET`    | `/api/client/v1/permissions`                                    | Permission catalog — static, no DB query (any authenticated user)                                                                                                                                                                                                                    |
 | `GET`    | `/api/client/v1/access?resourceId=<uuid>`                       | List access grants for a resource; returns `{ access: AccessRecord[] }` with `subjectKind`, `subjectId`, `resourceId`, `effect`, and `permissionKey`                                                                                                                                 |
 | `GET`    | `/api/client/v1/access/check?resourceId=<uuid>&permissionKey=…` | Check a single permission for the signed-in user; returns `{ allowed: boolean }`                                                                                                                                                                                                     |
@@ -37,6 +37,18 @@ Per-feature behavior contracts for the client surface (moved from the root
 `AGENTS.md` **API / WS surfaces** section). Keep current when endpoint behavior
 changes.
 
+- **Org activity feed (client surface):** `GET /organizations/:id/activity` —
+  running and recently failed (7 days) deploy / restart / stop commands across
+  the org, polled by the console (nothing is pushed). `?filter=all|deploying|failed`
+  (`crashing` / `crashed` are **not served**: no restart count is recorded; an
+  unknown filter is **400**), `limit` 1–100 (default 50, larger clamps),
+  `offset`. Returns `{ ok, items, total, hasMore }`; `step` / `totalSteps` /
+  `crashCount` are always `null` until those are recorded. Gate as the members
+  list: unreachable org or bad uuid **404**, no owner/manager rights **403**;
+  rows are limited to `listVisible(server)` and to servers of the **path** org
+  (never the active-org header). Reads `command` only (never `dispatch`); the
+  organization comes from `command.server_id → server.organization_id`.
+  `features/commands/activity-query.ts`.
 - **Server timezone / NTP (client surface):** daemon hello + change-detected
   heartbeats persist `timeSync` onto `server.timezone` / `is_time_sync_enabled`
   / `ntp_servers` / `ntp_last_synced_at`, and nest addresses on
@@ -77,6 +89,46 @@ changes.
   defaults does **not** rewrite sshd or enqueue NTP/timezone commands. Multi-DC
   membership inherits from the first pin after sort by datacenter id (same as
   timezone).
+- **Server services snapshot (client surface):** `GET /servers/:id/services`
+  — read-gated, org-scoped (`404` for another organization's server). Bounded
+  queries per server (never per-item fan-out). One response of what is
+  attached: `removal` (`canRemove`, `online`, `canForget`, plus `reasons` from
+  `planServerForget` and the co-located-host rule, so the tab and
+  DELETE cannot disagree; `canForget` is the same Host is gone path as
+  delete-preview; an app-environment or database reason names up to three of
+  them in its `message` — `"Project / Environment"` — and carries the same
+  `items` the delete blockers do), `apps` (container → service → environment → project,
+  domains from hosting/hostname; system-workspace rows omitted like the
+  blocker scan), `databases` (replica + managed, same exclusion),
+  `databaseUsers` (one entry per app on this host with the database names it
+  is bound to), `backups` of databases that have a member on this server,
+  `networks` / `ipCount`, and `runtimes` only from daemon facts already stored
+  on the server (`server.metadata.runtimes`; otherwise empty). Apps,
+  containers per app, domains per app, database users, networks, and backups
+  are capped at 50 plus `more` (`{ items, more }`).
+  `src/client/servers/server-services.ts`.
+- **Forget an offline server (client surface):** `GET /servers/:id/delete-preview`
+  (manage-gated, same as delete) lists leftover containers, networks, addresses,
+  app environments that will be removed, database members that will be
+  forgotten, and databases that still block forget (`online` is the live
+  snapshot or stored connected flag; `canForget` only when offline, not
+  co-located, and no database still has its only copy or its primary here; each
+  list capped at 50 plus `more`; system-workspace rows omitted like the blocker
+  scan). Every refusal names its blockers: an `environment` blocker carries
+  `items: { id, name, projectId, projectName, hasDatabase }[]` for **every**
+  placed environment (including the ones carrying a database, which the Services
+  tab app list omits) and a `managed` / `replica` blocker carries
+  `items: { id, name }[]` per database, in `blockers[]` on both the preview and
+  the 409. `DELETE /servers/:id?forgetResources=true` (or JSON
+  `{ forgetResources: true }` — never implied) drops leftover app environments
+  (without the running-container refusal), forgettable members, leftover
+  deployments / slots / copies, then container / network / address rows in the
+  same transaction as the server row when the host is gone; a connected server
+  answers **409** `server_online` (re-checked under row lock); a blocked
+  database answers **409** `server_has_blockers` with `blockedDatabases`;
+  co-located stays **403**. Without the flag, **409** `server_has_blockers` is
+  unchanged. Audit `forgotten` counts include environments, members,
+  deployments, slots, and copies. `src/client/servers/AGENTS.md`.
 - **Server labels (client surface):** `GET`/`PUT /servers/:id/labels` —
   read-gated GET and manage-gated PUT; PUT is replace-all
   (`{ labels: { key: value } }`, no per-key DELETE). `GET /servers/:id` includes
@@ -186,6 +238,18 @@ changes.
   Environments without their own `server_id` inherit it at deploy / lifecycle /
   stop (`resolveEffectivePlacementServerId`). Overview Base shows an inline
   picker; env-level pins still override.
+- **Environment config view (`GET /environments/:id/config-view`,
+  `environments/config-view-routes.ts` + `features/compose/config-view.ts`):** a
+  derived, read-only answer for the editor: the effective config (project Base
+  merged with the environment compose by `mergeComposeLayers`, the same merge a
+  deploy uses), the changes from the Base per service/field with their sources
+  (`base` / `project` / `environment`), and `followsBase`. `followsBase` is
+  **derived, never stored**: the environment compose (or an extra environment
+  layer) setting `services: !override` / `!reset` means it stands alone. It runs
+  no deploy preparation (nothing is allocated). Secret variables carry no value
+  (the stored ciphertext is not even selected) and credential-looking compose
+  values are masked; the raw `x-turbopanel` block is never returned. A client
+  API only: not a daemon contract, so there is no twin in turbopaneld.
 - **Deploy strategy settings (stage 1, nothing acts on them yet):**
   `environment.options` carries `deployStrategy` (`inplace` | `sequential` |
   `bluegreen`), `migrations` (`none` | `compatible` | `breaking` | `unknown`),
@@ -194,7 +258,7 @@ changes.
   may carry only the three tuning keys as defaults. Absent strategy = `inplace`
   (existing environments); every user-facing create path stamps `sequential` on a new
   environment (system-owned environments are not stamped) (`stampNewEnvironmentDeployOptions`). Writes are validated (`400
-  deploy_options_invalid` on environments; the reason string on projects) and a
+deploy_options_invalid` on environments; the reason string on projects) and a
   PATCH that omits these keys keeps the stored ones (`settleDeployOptions`) because
   `options` is replaced wholesale and the compose editor sends only `compose`.
   `null` clears a key. The deploy request accepts `strategy` / `migration`
@@ -402,8 +466,9 @@ sourceServerId? }`
   `src/features/datacenters/datacenter-options.ts`, no migration) describe how the ladder should
   treat each membership:
   - `priority` — integer `0`–`1000`, **lower wins**; absent = **`100`**
-    (`DEFAULT_DATACENTER_PRIORITY`). Out-of-range or non-integer values are
-    dropped by the parser, never clamped.
+    (`DEFAULT_DATACENTER_PRIORITY`). A stored out-of-range or non-integer value is
+    dropped by the parser, never clamped; a **request** (`POST` / `PATCH`)
+    carrying one is **400** `invalid_priority` (`hasInvalidPriority`).
   - `trusted` — boolean; absent = **`true`** (`DEFAULT_DATACENTER_TRUSTED`).
     `false` marks a datacenter whose L2 is **not** under the operator's control
     (shared or provider-owned segments).
@@ -447,6 +512,55 @@ sourceServerId? }`
   dual-family authority `cidrsOverlap` / `cidrContains` in
   `src/lib/ip-address.ts`; `src/features/fabric/cidr.ts` keeps only IPv4 pool
   arithmetic and delegates its overlap helpers there.
+
+- **Server-to-server network choice (`POST /datacenters/:id/server-traffic`
+  `{ preferred: true }`):** the point-and-click form of the priority rule, so
+  nobody has to type a number. `planServerTrafficChoice`
+  (`src/features/datacenters/server-traffic.ts`, pure) gives the chosen trusted
+  datacenter the lowest number among the organization's trusted datacenters
+  (10, or 0 when a rival is at 10 or lower; a rival at 0 moves every trusted
+  rival up by 10, capped at 1000) and writes only the numbers that change, in
+  one transaction, then runs the same routing fan-out a priority PATCH does.
+  An untrusted datacenter is **409** `datacenter_not_trusted`. `GET
+/datacenters` adds `serverTraffic: { wins, tied }` per row and a top-level
+  `warnings` list (`equal_priority`, one per shared number among trusted
+  datacenters); the raw number stays editable through PATCH under Advanced.
+
+- **Best network that is up (link state) and the traffic map:** the daemon
+  stamps each `resources.ips[]` entry with `link: 'up' | 'down'` (kernel
+  `operstate`, then `carrier`; absent from an older daemon and read as up). The
+  change-detected `touchServerMetadata` write runs `applyReportedAddressRepin`,
+  which now also records `metadata.linkDown { since }` on the datacenter pins
+  whose address sits on a down NIC (and removes it when the link returns) and
+  stamps `repin_pending_fanout_at`, so the existing repin fan-out sweep
+  re-plans (nothing is enqueued on the hello path; a flapping link is bounded
+  by the sweep tick and cap, there is no hold-down timer). `splitTrustedByLink`
+  (`private-endpoint.ts`) splits the trusted shared datacenters into the ones
+  that are up on both servers and the ones that are not, both in `(priority,
+id)` order. `resolveOneFromCaches` walks the up list first; a down network is
+  only a last resort (after fabric and public for `read-replication` /
+  `client-backend`, straight away for `failover-replication`, which never
+  leaves the datacenter), and the result then carries `linkDown: true`. When
+  the up networks have no address family both servers share, a compatible
+  network that is down is still used, ahead of fabric and public in that one
+  corner (never an error where a path worked before). A datacenter counts as down when any pin of either server in it is
+  flagged, whatever the pin's family. The
+  TurboFabric LAN rung (`directCandidates`) orders LAN-up, public, NAT, then
+  LAN-down. `GET /servers/:id/traffic-map`
+  (`src/features/net/server-traffic-map.ts`, loaded by
+  `server-traffic-map-load.ts`, shape in `openapi/server-traffic-map.ts`) is the
+  read-only data behind the map: per peer the shared networks with state
+  (`chosen` / `standby` / `no_common_address` / `link_down` / `untrusted`), the
+  planned address per
+  purpose, and for the TurboFabric tunnel only the observed NIC and byte counts
+  the daemon reported. Planned and observed stay separate: replication and
+  client traffic are planned (the OS picks the NIC), only the tunnel is
+  observed. Per-NIC byte counters are not duplicated: each NIC lists a
+  `metrics.deviceId` and `monitored` flag that point at the existing metrics
+  series route. Peers are filtered to those sharing a network or the fabric,
+  then cut at 100 in name order (`truncated` says so). A server that is offline
+  keeps its last reported link state until it reconnects. Nothing here probes
+  the network.
 
 - **Compose hosting projection (client surface):** `x-turbopanel.hosting[]` is
   the _declaration_; `hosting` rows are the _record_. `reconcile-hostings.ts`

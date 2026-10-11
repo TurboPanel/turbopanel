@@ -111,7 +111,19 @@ test('sanitizeHostingWebEnv drops invalid keys and empty values', () => {
       EMPTY: '   ',
       TOO_LONG: 'x'.repeat(5000),
     }),
-    { APP_ENV: 'prod' },
+    { APP_ENV: 'prod' }
+  )
+})
+
+test('sanitizeHostingWebEnv drops the PHP ini override names in any case', () => {
+  assertEquals(
+    sanitizeHostingWebEnv({
+      PHP_VALUE: 'memory_limit=-1',
+      PHP_ADMIN_VALUE: 'open_basedir=',
+      php_value: 'x',
+      PHP_VALUES: 'kept',
+    }),
+    { PHP_VALUES: 'kept' }
   )
 })
 
@@ -122,7 +134,7 @@ test('sanitizeHostingWebEnv returns undefined when every entry is dropped', () =
       EMPTY: '   ',
       TOO_LONG: 'x'.repeat(5000),
     }),
-    undefined,
+    undefined
   )
 })
 
@@ -153,10 +165,7 @@ test('formatHostingEnvFile escapes quotes backslashes and newlines', () => {
 })
 
 test('parseHostingEnvFile ignores comments blanks and bad lines', () => {
-  assertEquals(
-    parseHostingEnvFile('# comment\n\nBAD\nAPP=ok\nbad-key=nope\n'),
-    { APP: 'ok' },
-  )
+  assertEquals(parseHostingEnvFile('# comment\n\nBAD\nAPP=ok\nbad-key=nope\n'), { APP: 'ok' })
 })
 
 test('attachWebMetadataToSites merges by compose service name', () => {
@@ -192,6 +201,48 @@ test('attachWebMetadataToSites merges by compose service name', () => {
   // a per-hosting PHP setting was unrepresentable and silently last-wins merged.
   // It now comes from the service's own x-turbopanel.php.
   assertEquals(out[0]?.php, undefined)
+})
+
+test('attachWebMetadataToSites carries sealed secrets next to plain env, one kind per name', () => {
+  const sites = [
+    {
+      composeServiceName: 'web',
+      engine: 'nginx' as const,
+      root: 'public',
+      listenPort: 18080,
+    },
+    {
+      composeServiceName: 'other',
+      engine: 'nginx' as const,
+      root: 'public',
+      listenPort: 18081,
+    },
+  ]
+  const out = attachWebMetadataToSites(sites, [
+    {
+      composeServiceName: 'web',
+      web: {
+        env: { APP_ENV: 'staging', FLIP: 'plain' },
+        secretEnv: { SITE_VAR: 'tpdaemon.one' },
+      },
+    },
+    {
+      composeServiceName: 'web',
+      web: { secretEnv: { FLIP: 'tpdaemon.two' } },
+    },
+    {
+      composeServiceName: 'other',
+      web: { secretEnv: { OTHER: 'tpdaemon.three' } },
+    },
+  ])
+  assertEquals(out[0]?.webEnv, { APP_ENV: 'staging' })
+  assertEquals(out[0]?.webSecretEnv, {
+    SITE_VAR: 'tpdaemon.one',
+    FLIP: 'tpdaemon.two',
+  })
+  // One site's secrets never land on another site.
+  assertEquals(out[1]?.webEnv, undefined)
+  assertEquals(out[1]?.webSecretEnv, { OTHER: 'tpdaemon.three' })
 })
 
 test('formatHostingEnvFile sorts keys and escapes special characters', () => {
@@ -292,41 +343,29 @@ test('attachWebMetadataToSites skips hostings without web and unmatched sites', 
 })
 
 test('resolveHostingDeployWeb returns undefined for non-object options', async () => {
-  const secrets = await dataSecrets()
-  assertEquals(
-    await resolveHostingDeployWeb(emptyHostingVarsDb(), secrets, 'h1', 'nope'),
-    undefined,
-  )
+  assertEquals(await resolveHostingDeployWeb(emptyHostingVarsDb(), 'h1', 'nope'), undefined)
 })
 
 test('resolveHostingDeployWeb returns undefined when options have no web payload', async () => {
-  const secrets = await dataSecrets()
-  assertEquals(
-    await resolveHostingDeployWeb(emptyHostingVarsDb(), secrets, 'h1', {}),
-    undefined,
-  )
-  assertEquals(
-    await resolveHostingDeployWeb(emptyHostingVarsDb(), secrets, 'h1', null),
-    undefined,
-  )
+  assertEquals(await resolveHostingDeployWeb(emptyHostingVarsDb(), 'h1', {}), undefined)
+  assertEquals(await resolveHostingDeployWeb(emptyHostingVarsDb(), 'h1', null), undefined)
 })
 
 test('resolveHostingDeployWeb ignores hosting php entirely', async () => {
-  const secrets = await dataSecrets()
   // `hosting.options.web.php` is dead: PHP config moved to the compose
   // service's x-turbopanel.php, which is the entity an FPM pool belongs to.
   // A stale value left on an old hosting row must not reach the wire.
   assertEquals(
-    await resolveHostingDeployWeb(emptyHostingVarsDb(), secrets, 'h1', {
+    await resolveHostingDeployWeb(emptyHostingVarsDb(), 'h1', {
       web: { php: { version: '8.3', memoryLimit: '256M' } },
     }),
-    undefined,
+    undefined
   )
   assertEquals(
-    await resolveHostingDeployWeb(emptyHostingVarsDb(), secrets, 'h1', {
+    await resolveHostingDeployWeb(emptyHostingVarsDb(), 'h1', {
       web: { env: { APP_ENV: 'prod' }, php: { version: '8.4' } },
     }),
-    { env: { APP_ENV: 'prod' } },
+    { env: { APP_ENV: 'prod' } }
   )
 })
 
@@ -375,6 +414,22 @@ test('resolveHostingDeployWeb merges runtime variables; static env wins collisio
       forRuntime: true,
     },
     {
+      key: 'PHP_VALUE',
+      value: 'memory_limit=-1',
+      isSecret: false,
+      isLiteral: false,
+      forBuild: false,
+      forRuntime: true,
+    },
+    {
+      key: 'PHP_ADMIN_VALUE',
+      value: sealed,
+      isSecret: true,
+      isLiteral: false,
+      forBuild: false,
+      forRuntime: true,
+    },
+    {
       key: 'COLLIDE',
       value: 'from-var',
       isSecret: false,
@@ -383,17 +438,64 @@ test('resolveHostingDeployWeb merges runtime variables; static env wins collisio
       forRuntime: true,
     },
   ])
-  const web = await resolveHostingDeployWeb(db, secrets, 'h1', {
+  const web = await resolveHostingDeployWeb(db, 'h1', {
     web: {
       env: { COLLIDE: 'from-static', STATIC_ONLY: 'yes' },
     },
   })
+  // The secret is never decrypted here: its stored envelope rides along, to be
+  // resealed for the daemon.
   assertEquals(web, {
     env: {
       RUNTIME_PLAIN: 'runtime',
-      SECRET_KEY: 'from-secret',
       COLLIDE: 'from-static',
       STATIC_ONLY: 'yes',
     },
+    secretEnv: { SECRET_KEY: sealed },
   })
+  assertEquals(JSON.stringify(web).includes('from-secret'), false)
+})
+
+test('resolveHostingDeployWeb lets a static value take a name over a secret variable', async () => {
+  const secrets = await dataSecrets()
+  const sealed = await encryptSecret(secrets, 'from-secret')
+  const db = hostingVarsDb([
+    {
+      key: 'TOKEN',
+      value: sealed,
+      isSecret: true,
+      isLiteral: false,
+      forBuild: false,
+      forRuntime: true,
+    },
+  ])
+  const web = await resolveHostingDeployWeb(db, 'h1', {
+    web: { env: { TOKEN: 'from-static' } },
+  })
+  assertEquals(web, { env: { TOKEN: 'from-static' } })
+})
+
+test('resolveHostingDeployWeb returns a secret-only hosting as secretEnv alone', async () => {
+  const secrets = await dataSecrets()
+  const sealed = await encryptSecret(secrets, 'from-secret')
+  const db = hostingVarsDb([
+    {
+      key: 'ONLY_SECRET',
+      value: sealed,
+      isSecret: true,
+      isLiteral: false,
+      forBuild: false,
+      forRuntime: true,
+    },
+    {
+      key: 'BUILD_SECRET',
+      value: sealed,
+      isSecret: true,
+      isLiteral: false,
+      forBuild: true,
+      forRuntime: false,
+    },
+  ])
+  const web = await resolveHostingDeployWeb(db, 'h1', { web: {} })
+  assertEquals(web, { secretEnv: { ONLY_SECRET: sealed } })
 })

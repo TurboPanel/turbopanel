@@ -14,7 +14,11 @@ import {
   type GitProviderSourceRow,
 } from './git-provider.ts'
 import { ForgeError } from './forge-records.ts'
-import { GITHUB_API_BASE, GithubAppTokenError } from './github-app-token.ts'
+import {
+  clearGithubInstallationTokenCache,
+  GITHUB_API_BASE,
+  GithubAppTokenError,
+} from './github-app-token.ts'
 import { GITHUB_SIGNATURE_HEADER } from './github-webhook.ts'
 import {
   githubInstallationExternalId,
@@ -129,6 +133,7 @@ function gitDb(opts: {
 }
 
 async function mintedCtx(): Promise<GitProviderContext> {
+  clearGithubInstallationTokenCache()
   const pem = await generatePkcs8Pem()
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
@@ -982,4 +987,33 @@ test('githubProvider.verifyWebhook delegates to the GitHub MAC', async () => {
   const body = encoder.encode('{"ok":true}')
   assertEquals(await githubProvider.verifyWebhook(null, body, { get: () => 'sha256=ab' }), false)
   assertEquals(GITHUB_SIGNATURE_HEADER, 'x-hub-signature-256')
+})
+
+test('githubProvider.prepareClone mints nothing for a url on another host', async () => {
+  const ctx = await mintedCtx()
+  let requests = 0
+  await withFetch(
+    () => {
+      requests += 1
+      return new Response('{}', { status: 200 })
+    },
+    async () => {
+      for (const repositoryUrl of [
+        'https://attacker.example/acme/app.git',
+        'https://github.com.attacker.example/acme/app.git',
+        'https://github.com@attacker.example/acme/app.git',
+        'http://github.com/acme/app.git',
+      ]) {
+        assertEquals(
+          await githubProvider.prepareClone(ctx, {
+            row: { ...sourceRow, repositoryUrl },
+            ref: 'main',
+            needsCredential: true,
+          }),
+          { failure: 'repository url is not hosted by the connected forge' }
+        )
+      }
+    }
+  )
+  assertEquals(requests, 0)
 })

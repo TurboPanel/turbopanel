@@ -1,4 +1,9 @@
-import { HOSTNAME_MAX_LENGTH, isValidHostname } from './hostname.ts'
+import {
+  type HostingWwwMode,
+  HOSTNAME_MAX_LENGTH,
+  isHostingWwwMode,
+  isValidHostname,
+} from './hostname.ts'
 import {
   addressInCidr,
   cidrContains,
@@ -1020,8 +1025,12 @@ function parseFirewallRenderedDocument(value: unknown, field: string): string {
 
 function parseFirewallRendered(value: unknown): FirewallRendered {
   if (!isRecord(value)) throw new Error('rendered must be an object')
-  const rendered: FirewallRendered = { v4: parseFirewallRenderedDocument(value.v4, 'v4') }
-  if (value.v6 !== undefined) rendered.v6 = parseFirewallRenderedDocument(value.v6, 'v6')
+  const rendered: FirewallRendered = {
+    v4: parseFirewallRenderedDocument(value.v4, 'v4'),
+  }
+  if (value.v6 !== undefined) {
+    rendered.v6 = parseFirewallRenderedDocument(value.v6, 'v6')
+  }
   return rendered
 }
 
@@ -1249,6 +1258,12 @@ export type FabricReconcileObservedPeer = {
   transferTx?: number
   endpoint?: string
   health?: FabricPeerHealth
+  /**
+   * Local NIC whose connected subnet holds the peer's live endpoint (the
+   * network the tunnel really runs on). Absent when the endpoint is not on a
+   * connected subnet (reached by the default route).
+   */
+  interface?: string
 }
 
 /**
@@ -1260,6 +1275,11 @@ export type FabricReconcileCommandResult = {
   publicKey?: string
   skipped?: boolean
   peers?: FabricReconcileObservedPeer[]
+}
+
+/** Linux interface name: at most 15 bytes, no slash or whitespace (daemon twin). */
+function isValidInterfaceName(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,14}$/.test(value)
 }
 
 const FABRIC_DOCKER_NETWORK_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
@@ -1509,15 +1529,26 @@ function parseFabricObservedPeer(value: unknown): FabricReconcileObservedPeer {
     peer.endpoint = value.endpoint
   }
   if (value.health !== undefined) {
-    if (
-      typeof value.health !== 'string' ||
-      !FABRIC_PEER_HEALTH.has(value.health as FabricPeerHealth)
-    ) {
-      throw new TypeError('Invalid fabric reconcile result peer health')
-    }
-    peer.health = value.health as FabricPeerHealth
+    peer.health = parseObservedPeerHealth(value.health)
+  }
+  if (value.interface !== undefined) {
+    peer.interface = parseObservedPeerInterface(value.interface)
   }
   return peer
+}
+
+function parseObservedPeerHealth(value: unknown): FabricPeerHealth {
+  if (typeof value !== 'string' || !FABRIC_PEER_HEALTH.has(value as FabricPeerHealth)) {
+    throw new TypeError('Invalid fabric reconcile result peer health')
+  }
+  return value as FabricPeerHealth
+}
+
+function parseObservedPeerInterface(value: unknown): string {
+  if (!isValidInterfaceName(value)) {
+    throw new TypeError('Invalid fabric reconcile result peer interface')
+  }
+  return value
 }
 
 export type EnvironmentDeployTlsMaterial = {
@@ -1585,15 +1616,9 @@ export type EnvironmentDeployPrincipalMaterial = {
    */
   shell?: string
   /**
-   * Runtime series this principal may execute, as the daemon's
-   * `ensurePrincipalManagedGroups` reconciles them into unix groups. The
-   * **effective** set, resolved here — the daemon adds *and revokes* from
-   * exactly this list rather than deriving anything itself.
-   */
-  runtimes?: { runtime: string; series: string }[]
-  /**
-   * SSH access groups (`tpsftp` / `tpshell`), reconciled by the same daemon
-   * pass as `runtimes` and with the same add-and-revoke semantics.
+   * SSH access groups (`tpsftp` / `tpshell`), reconciled by the daemon's
+   * `ensurePrincipalManagedGroups`, which adds *and revokes* from exactly this
+   * list rather than deriving anything itself.
    *
    * Derived here from the account's shell **and** whether it holds any key, so
    * one place decides: see `resolvePrincipalAccessGroups`. `[]` is the normal
@@ -1671,6 +1696,17 @@ export type EnvironmentDeployHostingPhp = {
  * Daemon `ensureSystemPrincipals` creates the Linux user before apply;
  * document roots are `chown`ed to this user with the engine group for read.
  */
+/**
+ * A public CA bundle for a site's managed database connection. The daemon keeps
+ * it as a file only the site owner's Linux user can read and sets every name in
+ * `variables` to that file's path, so a multi-line certificate never has to ride
+ * in the web server's environment. Certificate blocks only.
+ */
+export type EnvironmentDeploySiteDbCa = {
+  variables: string[]
+  pem: string
+}
+
 export type EnvironmentDeploySitePrincipal = {
   principalId: string
   username: string
@@ -1748,8 +1784,28 @@ export type EnvironmentDeploySite = {
    * Requires `principal`: a timer with no `User=` would run as root.
    */
   cron?: EnvironmentDeployCronJob[]
-  /** Merged hosting web env (variables + options.web.env). */
+  /** Merged hosting web env (non-secret variables + options.web.env). */
   webEnv?: Record<string, string>
+  /**
+   * Secret runtime variables, name to `tpdaemon` envelope (the sealed twin of
+   * `webEnv`, disjoint from it). The daemon decrypts them before the site is
+   * applied; the plaintext only ever reaches the engine's own config files.
+   */
+  webSecretEnv?: Record<string, string>
+  /**
+   * The CA a bound managed database's TLS certificate chains to, delivered as
+   * a file (see {@link EnvironmentDeploySiteDbCa}). Sent only to a daemon that
+   * lists `site-db-bindings-v1`.
+   */
+  dbCa?: EnvironmentDeploySiteDbCa
+  /**
+   * Variable names the site cannot run without (a database binding's host,
+   * port, user, password and name). The daemon stops the deploy, naming the
+   * variable, if its web server cannot carry one; any other variable it cannot
+   * carry is left out with a warning. Sent only to a daemon that lists
+   * `site-db-bindings-v1`.
+   */
+  requiredEnv?: string[]
   php?: EnvironmentDeployHostingPhp
   /**
    * When set (from a project principal ↔ service tenancy), the site tree
@@ -1791,8 +1847,10 @@ export type EnvironmentDeploySourceBuild = {
    * Process the generated systemd unit runs for a `serviceKind: node` service
    * (`nativeAppServices[]`). Non-secret and validated exactly like
    * `installCommand` / `buildCommand`; ignored for every other kind, where
-   * nothing supervises a process. Omitted means "use the framework default"
-   * (`.next/standalone/server.js`, else `server.js`).
+   * nothing supervises a process. Omitted (with no `startupFile`) means the
+   * daemon picks from the built tree, in this order: Next.js standalone
+   * `server.js`, the `package.json` `start` script, `next start` for a Next.js
+   * app, the `package.json` `main` file, `index.js`, then `server.js`.
    */
   startCommand?: string
   /** Relative build-output directory (same rule as `x-turbopanel.root`). */
@@ -1847,7 +1905,20 @@ export type EnvironmentDeployNativeAppService = {
   /** Loopback port the app process must bind (`PORT` in the unit). */
   listenPort: number
   framework: EnvironmentDeployNativeFramework
-  /** Operator-pinned Node series, when the compose author declared one. */
+  /**
+   * `deno` runs the app on the vendored Deno (`denoVersion`) instead of Node.
+   * Omitted means `node`, and a Node app's wire shape is unchanged. Sent only
+   * to a daemon that advertises `deno-native-apps-v1`.
+   */
+  runtime?: 'node' | 'deno'
+  /** Deno series ("2", "2.9", "2.9.7"); only read when `runtime` is `deno`. */
+  denoVersion?: string
+  /**
+   * Node series for the app: the compose author's pin, else the series the
+   * control plane read from the repository at the deployed commit
+   * (`package.json` `engines.node`, `.nvmrc`, `.node-version`). Omitted means
+   * the daemon default.
+   */
   nodeVersion?: string
   /** `NODE_ENV` for the generated unit. Omitted means `production`. */
   appMode?: 'production' | 'development'
@@ -1859,7 +1930,10 @@ export type EnvironmentDeployNativeAppService = {
   /**
    * Script the vendored Node binary runs when `build.startCommand` is absent.
    * Relative path, validated on both sides — it lands in an `ExecStart` line.
-   * Omitted means the framework default (`server.js`).
+   * Omitted means the daemon's default start order (see
+   * `EnvironmentDeploySourceBuild.startCommand`): Next.js standalone
+   * `server.js`, the `start` script, `next start`, `main`, `index.js`, then
+   * `server.js`.
    */
   startupFile?: string
   /**
@@ -1907,6 +1981,28 @@ export type EnvironmentDeployNativeAppService = {
    * repeat here.
    */
   cron?: EnvironmentDeployCronJob[]
+  /**
+   * Environment variables for the app's process, resolved from every variable
+   * scope (see {@link EnvironmentDeployNativeAppVariable}). A `node` service is
+   * removed from the compose document the host runs, so Compose's
+   * `environment:` never reaches it — this is the only lane that does. The
+   * daemon writes them to a private `0600` file the app's unit loads; omitted or
+   * empty means the process gets only the platform's own variables.
+   */
+  variables?: EnvironmentDeployNativeAppVariable[]
+}
+
+/**
+ * One environment variable for a native app. Exactly one of `value` (a plain,
+ * non-secret value) or `secretKey` (the `key` of the sealed `variableMaterial[]`
+ * entry for the same compose service) is set, so a secret never rides this lane
+ * in the clear.
+ */
+export type EnvironmentDeployNativeAppVariable = {
+  /** Name the process sees (`[A-Za-z_][A-Za-z0-9_]*`, at most 128). */
+  name: string
+  value?: string
+  secretKey?: string
 }
 
 /**
@@ -1927,6 +2023,11 @@ export type EnvironmentDeploySourceCredentialKind = 'token' | 'ssh_key'
 export type EnvironmentDeploySource = {
   sourceId: string
   composeServiceName: string
+  /**
+   * Release-tree directory segment: this environment's TurboPanel `service.id`.
+   * Echoed on native/hosting/ingress rows for the same compose name.
+   */
+  releaseServiceId?: string
   /**
    * Which control-plane provider resolved this entry. Carried for tracing and
    * for the host's own logs; the daemon never branches on it — everything it
@@ -2253,6 +2354,12 @@ export type EnvironmentDeployHostingPort = {
 
 export type EnvironmentDeployHostingWeb = {
   env?: Record<string, string>
+  /**
+   * Secret runtime variables, name to `tpdaemon` envelope. Never plaintext: the
+   * daemon decrypts them through `POST /api/daemon/v1/secrets/decrypt` and folds
+   * them into the site's `webEnv`. Disjoint from `env`.
+   */
+  secretEnv?: Record<string, string>
   php?: EnvironmentDeployHostingPhp
 }
 
@@ -2289,6 +2396,15 @@ export type EnvironmentDeployHosting = {
   ports?: EnvironmentDeployHostingPort[]
   /** Merged hosting web env + PHP hints for site materialization. */
   web?: EnvironmentDeployHostingWeb
+  /**
+   * What happens to the other spelling of each hostname (`www.` added, or
+   * removed when the name starts with `www.`); see `HostingWwwMode` in
+   * `./hostname.ts`. `http` only; omitted when `off`. The redirect is permanent
+   * and keeps the path and query. Every extra name is served under the
+   * hosting's own TLS mode (`acme` gives it its own certificate; a pinned pair
+   * must cover it). A daemon without the field serves only the typed names.
+   */
+  www?: Exclude<HostingWwwMode, 'off'>
 }
 
 export type EnvironmentDeployContainer = {
@@ -2349,6 +2465,12 @@ export type EnvironmentDeployCommandResult = {
   releases?: EnvironmentDeployResultRelease[]
   /** Per-site facts for the sites this deploy applied; absent from older daemons. */
   sites?: EnvironmentDeployResultSite[]
+  /**
+   * What the deploy worked around without failing, in plain words (a variable
+   * a site's web server cannot carry was left out). Names only, never values.
+   * Absent from older daemons and when there were none.
+   */
+  warnings?: string[]
 }
 
 const MAX_ENVIRONMENT_DEPLOY_CONTAINERS = 100
@@ -2467,9 +2589,28 @@ function parseDeployHostingWeb(value: unknown): EnvironmentDeployHostingWeb | un
   const web: EnvironmentDeployHostingWeb = {}
   const env = parseEnvRecord(value.env)
   if (env) web.env = env
+  const secretEnv = parseEnvRecord(value.secretEnv)
+  if (secretEnv) web.secretEnv = secretEnv
   const php = parseDeployHostingPhp(value.php)
   if (php) web.php = php
   return Object.keys(web).length > 0 ? web : undefined
+}
+
+function parseDeployHostingBindAddress(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (!isString(value) || value.length === 0 || !isValidIpAddress(value)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  return value
+}
+
+/** A www mode; `undefined` when absent or `off`; anything else is refused. */
+function parseDeployHostingWww(value: unknown): EnvironmentDeployHosting['www'] {
+  if (value === undefined) return undefined
+  if (!isHostingWwwMode(value)) {
+    throw new TypeError('Invalid environment.deploy payload')
+  }
+  return value === 'off' ? undefined : value
 }
 
 function applyOptionalDeployHostingFields(
@@ -2489,21 +2630,16 @@ function applyOptionalDeployHostingFields(
   if (tlsMode) hosting.tlsMode = tlsMode
   const proxy = parseDeployHostingProxy(entry.proxy)
   if (proxy) hosting.proxy = proxy
-  if (entry.bindAddress !== undefined) {
-    if (!isString(entry.bindAddress) || entry.bindAddress.length === 0) {
-      throw new Error('Invalid environment.deploy payload')
-    }
-    if (!isValidIpAddress(entry.bindAddress)) {
-      throw new Error('Invalid environment.deploy payload')
-    }
-    hosting.bindAddress = entry.bindAddress
-  }
+  const bindAddress = parseDeployHostingBindAddress(entry.bindAddress)
+  if (bindAddress) hosting.bindAddress = bindAddress
   const protocol = parseDeployHostingProtocol(entry.protocol)
   if (protocol) hosting.protocol = protocol
   const ports = parseDeployHostingPorts(entry.ports)
   if (ports) hosting.ports = ports
   const web = parseDeployHostingWeb(entry.web)
   if (web) hosting.web = web
+  const www = parseDeployHostingWww(entry.www)
+  if (www) hosting.www = www
 }
 
 function parseDeployHostingEntry(entry: unknown): EnvironmentDeployHosting {
@@ -2729,7 +2865,7 @@ function isValidPrincipalShellPath(value: string): boolean {
 
 /** Must stay in sync with the daemon `PRINCIPAL_USERNAME_RE` / max length. */
 const PRINCIPAL_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
-/** Cap so `<username>-grp` fits the Linux 32-char group-name limit. */
+/** Longest site owner's Linux user name; its group carries the same name. */
 const MAX_PRINCIPAL_USERNAME_LENGTH = 28
 
 function isValidPrincipalUsername(value: unknown): value is string {
@@ -2763,30 +2899,9 @@ function requirePrincipalPath(value: unknown, isValid: (path: string) => boolean
 }
 
 /**
- * Rejected, not dropped: this is a grant. Silently discarding a malformed
- * list would revoke every entitlement the principal should have held.
- */
-function parseDeployPrincipalRuntimes(value: unknown): { runtime: string; series: string }[] {
-  if (!Array.isArray(value)) {
-    throw new TypeError('Invalid environment.deploy payload')
-  }
-  return value.map((raw) => {
-    if (
-      !isRecord(raw) ||
-      !isString(raw.runtime) ||
-      !isString(raw.series) ||
-      !RUNTIME_SERIES_RE.test(raw.series)
-    ) {
-      throw new Error('Invalid environment.deploy payload')
-    }
-    return { runtime: raw.runtime, series: raw.series }
-  })
-}
-
-/**
- * A granted list where every entry must be valid — same reject-don't-drop rule
- * as `runtimes`: dropping a malformed grant silently revokes the login or the
- * access it describes.
+ * A granted list where every entry must be valid — rejected, not dropped:
+ * dropping a malformed grant silently revokes the login or the access it
+ * describes.
  */
 function requireGrantedTokens(value: unknown, isValid: (token: string) => boolean): string[] {
   if (!Array.isArray(value)) {
@@ -2825,9 +2940,6 @@ function parseDeployPrincipalMaterialEntry(entry: unknown): EnvironmentDeployPri
   if (entry.shell !== undefined) {
     material.shell = requirePrincipalPath(entry.shell, isValidPrincipalShellPath)
   }
-  if (entry.runtimes !== undefined) {
-    material.runtimes = parseDeployPrincipalRuntimes(entry.runtimes)
-  }
   if (entry.accessGroups !== undefined) {
     material.accessGroups = requireGrantedTokens(entry.accessGroups, (raw) =>
       ACCESS_GROUP_RE.test(raw)
@@ -2853,9 +2965,6 @@ const ACCESS_GROUP_RE = /^[a-z][a-z0-9-]{0,31}$/
  * `../sha512-crypt.ts` and the daemon's own gates.
  */
 const PASSWORD_HASH_RE = /^\$6\$(?:rounds=\d{4,9}\$)?[./0-9A-Za-z]{8,16}\$[./0-9A-Za-z]{86}$/
-
-/** `8.4` or `24` — the exec boundary a group protects, never a patch pin. */
-const RUNTIME_SERIES_RE = /^\d{1,3}(\.\d{1,3})?$/
 
 function parseDeployPrincipalMaterial(
   value: unknown
@@ -2999,6 +3108,9 @@ function parseDeploySiteEntry(entry: unknown): EnvironmentDeploySite {
   if (cron) site.cron = cron
   const webEnv = parseEnvRecord(entry.webEnv)
   if (webEnv) site.webEnv = webEnv
+  const webSecretEnv = parseEnvRecord(entry.webSecretEnv)
+  if (webSecretEnv) site.webSecretEnv = webSecretEnv
+  Object.assign(site, parseDeploySiteDbFields(entry))
   const php = parseDeployHostingPhp(entry.php)
   if (php) site.php = php
   const principal = parseDeploySitePrincipal(entry.principal)
@@ -3019,6 +3131,62 @@ function parseDeploySiteEntry(entry: unknown): EnvironmentDeploySite {
     )
   }
   return site
+}
+
+const MAX_SITE_DB_CA_BYTES = 65_536
+const MAX_SITE_DB_CA_VARIABLES = 8
+const MAX_SITE_REQUIRED_ENV = 64
+const ENV_VARIABLE_NAME_RE = /^[A-Za-z_]\w*$/
+
+/** True when every PEM block in `pem` is a certificate and there is at least one. */
+function isCertificateOnlyPem(pem: string): boolean {
+  let blocks = 0
+  for (const line of pem.split('\n')) {
+    if (!line.startsWith('-----BEGIN ')) continue
+    if (line.trim() !== '-----BEGIN CERTIFICATE-----') return false
+    blocks += 1
+  }
+  return blocks > 0
+}
+
+function parseDeploySiteEnvNames(value: unknown, max: number): string[] | undefined {
+  if (value === undefined) return undefined
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > max ||
+    !value.every((name) => isString(name) && ENV_VARIABLE_NAME_RE.test(name))
+  ) {
+    throw new Error('Invalid sites entry')
+  }
+  return value as string[]
+}
+
+/** `dbCa` and `requiredEnv` of one site entry; only the fields that are present. */
+function parseDeploySiteDbFields(
+  entry: Record<string, unknown>
+): Pick<EnvironmentDeploySite, 'dbCa' | 'requiredEnv'> {
+  const dbCa = parseDeploySiteDbCa(entry.dbCa)
+  const requiredEnv = parseDeploySiteEnvNames(entry.requiredEnv, MAX_SITE_REQUIRED_ENV)
+  return {
+    ...(dbCa ? { dbCa } : {}),
+    ...(requiredEnv ? { requiredEnv } : {}),
+  }
+}
+
+function parseDeploySiteDbCa(value: unknown): EnvironmentDeploySiteDbCa | undefined {
+  if (value === undefined) return undefined
+  if (
+    !isRecord(value) ||
+    !isString(value.pem) ||
+    value.pem.length > MAX_SITE_DB_CA_BYTES ||
+    !isCertificateOnlyPem(value.pem)
+  ) {
+    throw new Error('Invalid sites entry')
+  }
+  const variables = parseDeploySiteEnvNames(value.variables, MAX_SITE_DB_CA_VARIABLES)
+  if (!variables) throw new Error('Invalid sites entry')
+  return { variables, pem: value.pem }
 }
 
 /** Apache's port behind nginx: a loopback high port other than `listenPort`. */
@@ -3281,6 +3449,13 @@ function applyOptionalSourceFields(
     isValidSourceReleaseId,
     'Invalid sourceMaterial rollbackToReleaseId'
   )
+  assignOptionalSourceField(
+    entry,
+    source,
+    'releaseServiceId',
+    isValidSourceReleaseId,
+    'Invalid sourceMaterial releaseServiceId'
+  )
 }
 
 function parseDeploySourceEntry(entry: unknown): EnvironmentDeploySource {
@@ -3379,6 +3554,22 @@ function parseNativeAppAccountLimits(
   }
 }
 
+function parseNativeAppRuntime(value: unknown): 'node' | 'deno' | undefined {
+  if (value === undefined) return undefined
+  if (value !== 'node' && value !== 'deno') {
+    throw new Error('Invalid nativeAppServices runtime')
+  }
+  return value
+}
+
+function parseNativeAppDenoVersion(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (!isString(value) || !NATIVE_APP_NODE_VERSION_RE.test(value)) {
+    throw new Error('Invalid nativeAppServices denoVersion')
+  }
+  return value
+}
+
 function parseNativeAppNodeVersion(value: unknown): string | undefined {
   if (value === undefined) return undefined
   if (!isString(value) || !NATIVE_APP_NODE_VERSION_RE.test(value)) {
@@ -3418,6 +3609,66 @@ function parseNativeAppStartupFile(value: unknown): string | undefined {
   return value
 }
 
+const NATIVE_APP_VARIABLE_NAME_RE = /^[A-Za-z_]\w{0,127}$/
+const NATIVE_APP_MAX_VARIABLES = 256
+const NATIVE_APP_MAX_VARIABLE_VALUE = 65_536
+
+function parseNativeAppVariable(value: unknown): EnvironmentDeployNativeAppVariable {
+  if (!isRecord(value)) {
+    throw new Error('Invalid nativeAppServices variables entry')
+  }
+  if (typeof value.name !== 'string' || !NATIVE_APP_VARIABLE_NAME_RE.test(value.name)) {
+    throw new Error('Invalid nativeAppServices variables name')
+  }
+  const hasValue = value.value !== undefined
+  const hasSecret = value.secretKey !== undefined
+  if (hasValue === hasSecret) {
+    throw new Error(
+      `nativeAppServices variable ${value.name} needs exactly one of value or secretKey`
+    )
+  }
+  if (hasValue) {
+    if (
+      typeof value.value !== 'string' ||
+      value.value.length > NATIVE_APP_MAX_VARIABLE_VALUE ||
+      value.value.includes('\0')
+    ) {
+      throw new Error(`Invalid nativeAppServices variable value for ${value.name}`)
+    }
+    return { name: value.name, value: value.value }
+  }
+  if (
+    typeof value.secretKey !== 'string' ||
+    value.secretKey.length === 0 ||
+    value.secretKey.length > 256
+  ) {
+    throw new Error(`Invalid nativeAppServices variable secretKey for ${value.name}`)
+  }
+  return { name: value.name, secretKey: value.secretKey }
+}
+
+/**
+ * Parse `variables`. Names are unique (a repeat would make which value wins a
+ * matter of file order) and the list is bounded, because every entry becomes a
+ * line of a file systemd reads as root.
+ */
+function parseNativeAppVariables(value: unknown): EnvironmentDeployNativeAppVariable[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > NATIVE_APP_MAX_VARIABLES) {
+    throw new Error('Invalid nativeAppServices variables')
+  }
+  const seen = new Set<string>()
+  const variables = value.map((entry) => {
+    const variable = parseNativeAppVariable(entry)
+    if (seen.has(variable.name)) {
+      throw new Error(`Duplicate nativeAppServices variable ${variable.name}`)
+    }
+    seen.add(variable.name)
+    return variable
+  })
+  return variables.length > 0 ? variables : undefined
+}
+
 function parseDeployNativeAppServiceEntry(entry: unknown): EnvironmentDeployNativeAppService {
   if (!isRecord(entry)) throw new Error('Invalid nativeAppServices entry')
   if (
@@ -3440,8 +3691,12 @@ function parseDeployNativeAppServiceEntry(entry: unknown): EnvironmentDeployNati
     listenPort: entry.listenPort,
     framework: entry.framework as EnvironmentDeployNativeFramework,
   }
+  const runtime = parseNativeAppRuntime(entry.runtime)
+  if (runtime !== undefined) app.runtime = runtime
   const nodeVersion = parseNativeAppNodeVersion(entry.nodeVersion)
   if (nodeVersion !== undefined) app.nodeVersion = nodeVersion
+  const denoVersion = parseNativeAppDenoVersion(entry.denoVersion)
+  if (denoVersion !== undefined) app.denoVersion = denoVersion
   const appMode = parseNativeAppMode(entry.appMode)
   if (appMode !== undefined) app.appMode = appMode
   const enabled = parseNativeAppEnabled(entry.enabled)
@@ -3454,6 +3709,8 @@ function parseDeployNativeAppServiceEntry(entry: unknown): EnvironmentDeployNati
   if (accountLimits) app.accountLimits = accountLimits
   const cron = parseDeployCronJobs(entry.cron)
   if (cron?.length) app.cron = cron
+  const variables = parseNativeAppVariables(entry.variables)
+  if (variables) app.variables = variables
   return app
 }
 
@@ -4003,7 +4260,22 @@ export function parseEnvironmentDeployResult(value: unknown): EnvironmentDeployC
   if (releases !== undefined) result.releases = releases
   const sites = parseDeployResultSites(value.sites)
   if (sites !== undefined) result.sites = sites
+  const warnings = parseDeployResultWarnings(value.warnings)
+  if (warnings !== undefined) result.warnings = warnings
   return result
+}
+
+const MAX_ENVIRONMENT_DEPLOY_RESULT_WARNINGS = 100
+const MAX_ENVIRONMENT_DEPLOY_RESULT_WARNING_LENGTH = 1000
+
+/** Lenient like the rest of the result parser: strings only, bounded. */
+function parseDeployResultWarnings(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const out = value
+    .filter(isString)
+    .slice(0, MAX_ENVIRONMENT_DEPLOY_RESULT_WARNINGS)
+    .map((entry) => entry.slice(0, MAX_ENVIRONMENT_DEPLOY_RESULT_WARNING_LENGTH))
+  return out.length > 0 ? out : undefined
 }
 
 const MAX_ENVIRONMENT_DEPLOY_RESULT_SITES = 100
@@ -4105,7 +4377,7 @@ export type EnvironmentStopCommandPayload = {
    * Principals (applied Linux logins) that no project, site or app on this
    * server uses once the delete commits. The daemon retires each after the
    * rest of the stop through `tp-host principal-remove` (slice, processes, key
-   * file, group memberships, home tree, account and `<name>-grp`), which
+   * file, group memberships, home tree, account and its own group), which
    * re-checks on the host that nothing there still references the account.
    * Only a delete teardown sets it, on the last stop it sends to a server.
    */
@@ -4728,6 +5000,11 @@ export type ManagedReplicationHealth = {
   replayLsn?: string
   /** Standby only, while streaming: received-vs-primary byte lag. */
   receiveLagBytes?: number
+  /** MySQL / MariaDB replica: GTID sets received / applied (bounded text). */
+  receivedGtid?: string
+  executedGtid?: string
+  /** MySQL / MariaDB replica: all received transactions are applied. */
+  fullyApplied?: boolean
   /**
    * Standby only, on `managed-health-result`: the daemon's last `streaming`
    * read of this member. `ageMs` is measured on the daemon's monotonic clock
@@ -4740,6 +5017,23 @@ export type ManagedReplicationHealth = {
     lagSeconds?: number
     receiveLagBytes?: number
   }
+  /**
+   * Postgres primary only: how much WAL the replicas' replication slots hold
+   * back. `lagging` = a slot holds more than `max_wal_size`; `critical` = a
+   * slot is about to be (or was) invalidated by the `max_slot_wal_keep_size`
+   * cap, or its replacement slot is still waiting for the replica to be
+   * re-seeded (`walStatus: 'awaiting_resync'`), so that replica needs a Resync.
+   */
+  slotRetention?: ManagedSlotRetention
+}
+
+export type ManagedSlotRetention = {
+  state: 'ok' | 'lagging' | 'critical'
+  slot?: string
+  walStatus?: string
+  retainedBytes?: number
+  safeBytes?: number
+  active?: boolean
 }
 
 export type ManagedMemberObservedResult = {
@@ -4789,6 +5083,13 @@ export type ManagedApplyCommandPayload = {
    */
   monitorUsers?: Array<{ username: string; password: string }>
   /**
+   * The organization's single Orchestrator topology account (username +
+   * `tpdaemon` envelope). MySQL/MariaDB primary payloads only: the engine
+   * creates it once and standbys inherit it through the binlog, and
+   * Orchestrator never dials a Postgres member.
+   */
+  topologyUser?: { username: string; password: string }
+  /**
    * Operator-forced standby re-seed: the daemon skips bootstrap probes,
    * clears the data directory, and seeds fresh from the primary. Standby
    * payloads only — the sanctioned way past `needs_resync`.
@@ -4829,7 +5130,7 @@ export type ManagedApplyCommandResult = {
   status?: string
 }
 
-export type ManagedLifecycleCommandPayload = {
+export type ManagedLifecyclePayload = {
   managedId: string
   action: 'start' | 'stop' | 'restart'
   memberId?: string
@@ -4845,12 +5146,22 @@ export type ManagedLifecycleCommandPayload = {
    * releases (defaults to primary on the daemon).
    */
   role?: 'primary' | 'replica'
+  /**
+   * Fence stop of a replaced writer. The daemon writes a durable demoted
+   * marker and keeps the engine stopped if it is started by hand. Absent on
+   * ordinary operator stops and on stops of the new primary. Older daemons
+   * ignore it; older control planes omit it.
+   */
+  demoted?: boolean
+  captureSwitchoverGtid?: boolean
+  reactivateAfterSwitchoverAbort?: boolean
 }
 
 export type ManagedLifecycleCommandResult = {
   status: string
   summary?: string
   member?: ManagedMemberObservedResult
+  switchoverPrimaryExecutedGtidSet?: string
 }
 
 export type ManagedDestroyCommandPayload = {
@@ -4897,6 +5208,14 @@ export type ManagedPromoteCommandPayload = {
    * postgres on the daemon).
    */
   engine?: ManagedEngineCode
+  requiredExecutedGtidSet?: string
+  gtidWaitTimeoutSeconds?: number
+  /**
+   * Set when the control plane re-queues a promote after a daemon restart
+   * (`resumeInterruptedPromote`). The daemon may treat an already-writable
+   * target as success; the instance also completes recovery on that outcome.
+   */
+  resume?: boolean
 }
 
 export type ManagedPromoteCommandResult = {
@@ -4988,9 +5307,10 @@ export type ManagedIngressReconcileCommandPayload = {
    */
   managedNetwork: string
   /**
-   * Every host address the client listeners publish on. More than one entry
-   * when an access scope resolves to distinct interfaces (datacenter private IP
-   * plus TurboFabric `tp0`); empty/absent means no host publish at all.
+   * Every host address the client listeners publish on. The control plane sends
+   * exactly one entry, from the server's single "allow external access to the
+   * databases on this server" setting: `127.0.0.1` for no, `0.0.0.0` for yes.
+   * Empty/absent still means no host publish at all.
    */
   bindAddresses?: string[]
   /**
@@ -5083,12 +5403,34 @@ export type ManagedHaReconcileCommandPayload = {
   managedNetwork: string
   desired: ManagedHaReconcileDesired
   raft: ManagedHaRaftConfig | null
+  /**
+   * MySQL and MariaDB clusters only. A Postgres cluster is left out entirely:
+   * Orchestrator speaks the MySQL protocol and does not manage Postgres HA.
+   */
   clusters: ManagedHaCluster[]
   identity: {
     serviceId: string
     composeServiceName: string
     containerName: string
   }
+  /**
+   * The organization's single Orchestrator topology account (username +
+   * `tpdaemon` envelope) — the same account `managed.apply` creates on every
+   * MySQL/MariaDB member of every HA cluster in the organization. Absent on
+   * teardown payloads.
+   */
+  topologyUser?: { username: string; password: string }
+  /**
+   * Organization-wide Orchestrator HTTP basic auth (`HTTPAuthUser` /
+   * `HTTPAuthPassword`). Same derived value on every Raft peer so followers can
+   * proxy to the leader. Sealed to the target daemon; absent on teardown.
+   */
+  orchestratorApiUser?: { username: string; password: string }
+  /**
+   * Organization-wide Orchestrator `RaftAuthToken`, sealed to the target
+   * daemon. Absent on teardown.
+   */
+  orchestratorRaftToken?: string
   /**
    * Organization CA leaf + Organization CA trust bundle. `caCertPem` is the
    * concatenated active+retired Organization CA PEMs of the server-owner
@@ -5105,7 +5447,7 @@ export type ManagedHaReconcileCommandResult = {
   containers?: EnvironmentDeployContainer[]
 }
 
-export type ManagedHaFailoverPhase = 'drain' | 'recover'
+export type ManagedHaFailoverPhase = 'drain' | 'undrain' | 'recover' | 'repoint'
 
 /** Must stay in sync with the daemon `managed.ha.failover` shape. */
 export type ManagedHaFailoverCommandPayload = {
@@ -5118,6 +5460,18 @@ export type ManagedHaFailoverCommandPayload = {
   sourcePort?: number
   targetHost?: string
   targetPort?: number
+  /**
+   * Dial IP when `targetHost` is the leaf SAN (Postgres `hostaddr`).
+   * Omitted when `targetHost` is already the address to dial.
+   */
+  targetHostaddr?: string
+  /**
+   * Slot names the new primary must create before replicas stream
+   * (`tp_member_<ordinal>`). Max 32; each `/^[a-z0-9_]{1,63}$/`.
+   */
+  ensureSlots?: string[]
+  requiredExecutedGtidSet?: string
+  gtidWaitTimeoutSeconds?: number
 }
 
 export type ManagedHaFailoverCommandResult = {
@@ -5488,7 +5842,37 @@ export function parseManagedReplicationHealth(
   ) {
     health.lagSeconds = value.lagSeconds
   }
+  const slotRetention = parseManagedSlotRetention(value.slotRetention)
+  if (slotRetention !== undefined) health.slotRetention = slotRetention
   return withStandbyPositions(health, value)
+}
+
+const MANAGED_SLOT_RETENTION_STATES = new Set(['ok', 'lagging', 'critical'])
+
+function nonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+export function parseManagedSlotRetention(value: unknown): ManagedSlotRetention | undefined {
+  if (!isRecord(value)) return undefined
+  if (!isString(value.state) || !MANAGED_SLOT_RETENTION_STATES.has(value.state)) {
+    return undefined
+  }
+  const retention: ManagedSlotRetention = {
+    state: value.state as ManagedSlotRetention['state'],
+  }
+  if (isString(value.slot) && value.slot.length <= 64) {
+    retention.slot = value.slot
+  }
+  if (isString(value.walStatus) && value.walStatus.length <= 32) {
+    retention.walStatus = value.walStatus
+  }
+  const retainedBytes = nonNegativeNumber(value.retainedBytes)
+  if (retainedBytes !== undefined) retention.retainedBytes = retainedBytes
+  const safeBytes = nonNegativeNumber(value.safeBytes)
+  if (safeBytes !== undefined) retention.safeBytes = safeBytes
+  if (typeof value.active === 'boolean') retention.active = value.active
+  return retention
 }
 
 /** Standby WAL positions and receive lag, when present and well-formed. */
@@ -5509,7 +5893,17 @@ function withStandbyPositions(
   ) {
     health.receiveLagBytes = value.receiveLagBytes
   }
+  if (isGtidText(value.receivedGtid)) health.receivedGtid = value.receivedGtid
+  if (isGtidText(value.executedGtid)) health.executedGtid = value.executedGtid
+  if (typeof value.fullyApplied === 'boolean') {
+    health.fullyApplied = value.fullyApplied
+  }
   return health
+}
+
+/** Opaque GTID set text: non-empty, at most 4096 characters. */
+function isGtidText(value: unknown): value is string {
+  return isString(value) && value.length > 0 && value.length <= 4096
 }
 
 function parseManagedMemberObservedResult(value: unknown): ManagedMemberObservedResult | undefined {
@@ -5697,13 +6091,19 @@ function parseManagedApplyOrgTlsMaterial(value: unknown): ManagedApplyOrgTlsMate
 /** Optional wire fields added after the base payload shape (skew-tolerant). */
 function parseManagedApplyOptionalWireFields(
   value: Record<string, unknown>
-): Pick<ManagedApplyCommandPayload, 'monitorUsers' | 'forceResync' | 'ingressSourceAddresses'> {
+): Pick<
+  ManagedApplyCommandPayload,
+  'monitorUsers' | 'topologyUser' | 'forceResync' | 'ingressSourceAddresses'
+> {
   const out: Pick<
     ManagedApplyCommandPayload,
-    'monitorUsers' | 'forceResync' | 'ingressSourceAddresses'
+    'monitorUsers' | 'topologyUser' | 'forceResync' | 'ingressSourceAddresses'
   > = {}
   if (value.monitorUsers !== undefined) {
     out.monitorUsers = parseManagedMonitorUsers(value.monitorUsers)
+  }
+  if (value.topologyUser !== undefined) {
+    out.topologyUser = parseManagedTopologyUser(value.topologyUser, 'managed.apply')
   }
   if (value.forceResync === true) {
     out.forceResync = true
@@ -5849,7 +6249,13 @@ export function parseManagedApplyResult(value: unknown): ManagedApplyCommandResu
   return result
 }
 
-export function parseManagedLifecyclePayload(value: unknown): ManagedLifecycleCommandPayload {
+function parseOptionalLifecycleTrueOnly(value: unknown): true | undefined {
+  if (value === undefined) return undefined
+  if (value === true) return true
+  throw new Error('Invalid managed.lifecycle payload')
+}
+
+export function parseManagedLifecyclePayload(value: unknown): ManagedLifecyclePayload {
   if (!isRecord(value)) {
     throw new Error('Invalid managed.lifecycle payload')
   }
@@ -5861,9 +6267,9 @@ export function parseManagedLifecyclePayload(value: unknown): ManagedLifecycleCo
   ) {
     throw new Error('Invalid managed.lifecycle payload')
   }
-  const payload: ManagedLifecycleCommandPayload = {
+  const payload: ManagedLifecyclePayload = {
     managedId: value.managedId,
-    action: value.action as ManagedLifecycleCommandPayload['action'],
+    action: value.action as ManagedLifecyclePayload['action'],
   }
   if (value.memberId !== undefined) {
     if (!isString(value.memberId) || !UUID_RE.test(value.memberId)) {
@@ -5883,6 +6289,13 @@ export function parseManagedLifecyclePayload(value: unknown): ManagedLifecycleCo
     }
     payload.role = value.role
   }
+  if (value.demoted === true) payload.demoted = true
+  if (parseOptionalLifecycleTrueOnly(value.captureSwitchoverGtid)) {
+    payload.captureSwitchoverGtid = true
+  }
+  if (parseOptionalLifecycleTrueOnly(value.reactivateAfterSwitchoverAbort)) {
+    payload.reactivateAfterSwitchoverAbort = true
+  }
   return payload
 }
 
@@ -5896,6 +6309,14 @@ export function parseManagedLifecycleResult(value: unknown): ManagedLifecycleCom
   if (isString(value.summary)) result.summary = value.summary
   const member = parseManagedMemberObservedResult(value.member)
   if (member !== undefined) result.member = member
+  if (isString(value.switchoverPrimaryExecutedGtidSet)) {
+    if (
+      value.switchoverPrimaryExecutedGtidSet.length > 0 &&
+      value.switchoverPrimaryExecutedGtidSet.length <= 4096
+    ) {
+      result.switchoverPrimaryExecutedGtidSet = value.switchoverPrimaryExecutedGtidSet
+    }
+  }
   return result
 }
 
@@ -5957,6 +6378,44 @@ export function parseManagedDestroyResult(value: unknown): ManagedDestroyCommand
   return result
 }
 
+function parseManagedPromoteSwitchoverCatchupFields(
+  value: Record<string, unknown>,
+  payload: ManagedPromoteCommandPayload
+): void {
+  if (value.requiredExecutedGtidSet !== undefined) {
+    if (
+      !isString(value.requiredExecutedGtidSet) ||
+      value.requiredExecutedGtidSet.length === 0 ||
+      value.requiredExecutedGtidSet.length > 4096
+    ) {
+      throw new Error('Invalid managed.promote payload')
+    }
+    payload.requiredExecutedGtidSet = value.requiredExecutedGtidSet
+  }
+  if (value.gtidWaitTimeoutSeconds !== undefined) {
+    if (
+      typeof value.gtidWaitTimeoutSeconds !== 'number' ||
+      !Number.isInteger(value.gtidWaitTimeoutSeconds) ||
+      value.gtidWaitTimeoutSeconds < 1 ||
+      value.gtidWaitTimeoutSeconds > 600
+    ) {
+      throw new Error('Invalid managed.promote payload')
+    }
+    payload.gtidWaitTimeoutSeconds = value.gtidWaitTimeoutSeconds
+  }
+}
+
+function parseManagedPromoteResumeField(
+  value: Record<string, unknown>,
+  payload: ManagedPromoteCommandPayload
+): void {
+  if (value.resume === undefined) return
+  if (value.resume !== true) {
+    throw new Error('Invalid managed.promote payload')
+  }
+  payload.resume = true
+}
+
 export function parseManagedPromotePayload(value: unknown): ManagedPromoteCommandPayload {
   if (!isRecord(value)) {
     throw new Error('Invalid managed.promote payload')
@@ -5985,6 +6444,8 @@ export function parseManagedPromotePayload(value: unknown): ManagedPromoteComman
     }
     payload.engine = value.engine
   }
+  parseManagedPromoteSwitchoverCatchupFields(value, payload)
+  parseManagedPromoteResumeField(value, payload)
   return payload
 }
 
@@ -6038,6 +6499,12 @@ export type ManagedBackupCommandPayload = {
   scope: 'database' | 'instance'
   database?: string
   retentionKeep?: number
+  /**
+   * The `backuppolicy` that made the artifact, set on `delete` of a scheduled
+   * backup: each policy keeps its artifacts in its own directory, so this is
+   * how the file is found. Omitted for a manual backup.
+   */
+  policyId?: string
 }
 
 export type ManagedBackupCommandResult = {
@@ -6123,6 +6590,12 @@ export function parseManagedBackupPayload(value: unknown): ManagedBackupCommandP
       throw new Error('Invalid managed.backup payload retentionKeep')
     }
     payload.retentionKeep = value.retentionKeep
+  }
+  if (value.policyId !== undefined) {
+    if (!isCanonicalUuid(value.policyId)) {
+      throw new Error('Invalid managed.backup payload policyId')
+    }
+    payload.policyId = value.policyId
   }
   return payload
 }
@@ -6274,13 +6747,31 @@ export type CopyBackupSource = {
   hostPath?: string
   organizationId?: string
   storageId?: string
+  /** A `hostPath` source: the site owner's Linux user whose own tree the path must stay inside. */
+  ownerUsername?: string
+  /** A docker source: the compose project a non-storage-named volume must be labelled with. */
+  composeProject?: string
 }
 
-const COPY_SOURCE_FIELDS = ['volumeName', 'hostPath', 'organizationId', 'storageId'] as const
+const COPY_SOURCE_FIELDS = [
+  'volumeName',
+  'hostPath',
+  'organizationId',
+  'storageId',
+  'ownerUsername',
+  'composeProject',
+] as const
+
+/** Linux user names the daemon accepts (`PRINCIPAL_USERNAME_RE` parity). */
+const COPY_OWNER_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
+const MAX_COPY_OWNER_USERNAME_LENGTH = 64
 
 function parsePathCopySource(raw: Record<string, unknown>, source: CopyBackupSource): void {
   if (raw.volumeName !== undefined) {
     throw new Error('A path copy source cannot name a volume')
+  }
+  if (raw.composeProject !== undefined) {
+    throw new Error('A path copy source cannot name a compose project')
   }
   if (raw.hostPath !== undefined) {
     if (
@@ -6290,8 +6781,19 @@ function parsePathCopySource(raw: Record<string, unknown>, source: CopyBackupSou
     ) {
       throw new Error('Invalid path copy source hostPath')
     }
+    if (
+      !isString(raw.ownerUsername) ||
+      raw.ownerUsername.length > MAX_COPY_OWNER_USERNAME_LENGTH ||
+      !COPY_OWNER_USERNAME_RE.test(raw.ownerUsername)
+    ) {
+      throw new Error('A path copy source with hostPath needs a valid ownerUsername')
+    }
     source.hostPath = raw.hostPath
+    source.ownerUsername = raw.ownerUsername
     return
+  }
+  if (raw.ownerUsername !== undefined) {
+    throw new Error('Only a hostPath copy source can name an ownerUsername')
   }
   if (!isCanonicalUuid(raw.organizationId) || !isCanonicalUuid(raw.storageId)) {
     throw new Error('A path copy source needs hostPath, or organizationId and storageId')
@@ -6323,11 +6825,21 @@ export function parseCopyBackupSource(raw: Record<string, unknown>): CopyBackupS
   if (
     raw.hostPath !== undefined ||
     raw.organizationId !== undefined ||
-    raw.storageId !== undefined
+    raw.ownerUsername !== undefined
   ) {
     throw new Error('A docker copy source cannot name a host path')
   }
+  if (!isCanonicalUuid(raw.storageId)) {
+    throw new Error('A docker copy source needs the storageId it belongs to')
+  }
+  if (raw.composeProject !== undefined) {
+    if (!isString(raw.composeProject) || !COMPOSE_PROJECT_RE.test(raw.composeProject)) {
+      throw new Error('Invalid docker copy source composeProject')
+    }
+    source.composeProject = raw.composeProject
+  }
   source.volumeName = raw.volumeName
+  source.storageId = raw.storageId
   return source
 }
 
@@ -6356,12 +6868,19 @@ export type BackupPolicyWireEntry = {
   managedId?: string
   engine?: ManagedEngineCode
   artifactExtension?: ManagedBackupArtifactExtension
+  /**
+   * The database a `managed` run dumps (the cluster's first non-system
+   * database). Optional: when absent the daemon dumps its engine default.
+   */
+  database?: string
   copyId?: string
   copyProvider?: CopyBackupProvider
   volumeName?: string
   hostPath?: string
   organizationId?: string
   storageId?: string
+  ownerUsername?: string
+  composeProject?: string
   onCalendar: string
   retentionKeep: number
   enabled: boolean
@@ -6411,12 +6930,19 @@ function parseBackupPolicyTarget(raw: Record<string, unknown>, entry: BackupPoli
     entry.managedId = raw.managedId
     entry.engine = raw.engine
     entry.artifactExtension = raw.artifactExtension
+    if (raw.database !== undefined) {
+      if (!isString(raw.database) || !isSafeIdentifier(raw.database)) {
+        throw new Error('Invalid backup policy managed database')
+      }
+      entry.database = raw.database
+    }
     return
   }
   if (
     raw.managedId !== undefined ||
     raw.engine !== undefined ||
-    raw.artifactExtension !== undefined
+    raw.artifactExtension !== undefined ||
+    raw.database !== undefined
   ) {
     throw new Error('Invalid backup policy copy target')
   }
@@ -6683,9 +7209,10 @@ function parseManagedIngressReconcileBackend(value: unknown): ManagedIngressReco
 }
 
 /** One `{ username, password-envelope }` monitor credential. */
-function parseManagedMonitorCredential(
+/** Username plus a daemon-bound (`tpdaemon`) sealed password. */
+function parseManagedSealedCredential(
   value: unknown,
-  label: string
+  message: string
 ): { username: string; password: string } {
   if (
     !isRecord(value) ||
@@ -6694,9 +7221,23 @@ function parseManagedMonitorCredential(
     !isString(value.password) ||
     !value.password.startsWith(DAEMON_ENVELOPE_PREFIX)
   ) {
-    throw new TypeError(`Invalid ${label} monitor credential`)
+    throw new TypeError(message)
   }
   return { username: value.username, password: value.password }
+}
+
+function parseManagedMonitorCredential(
+  value: unknown,
+  label: string
+): { username: string; password: string } {
+  return parseManagedSealedCredential(value, `Invalid ${label} monitor credential`)
+}
+
+function parseManagedTopologyUser(
+  value: unknown,
+  label: string
+): { username: string; password: string } {
+  return parseManagedSealedCredential(value, `Invalid ${label} topologyUser`)
 }
 
 function parseManagedMonitorUsers(value: unknown): Array<{ username: string; password: string }> {
@@ -6964,7 +7505,9 @@ export function parseManagedIngressReconcileResult(
 }
 
 const HA_PROMOTION_RULES = new Set<string>([HA_PROMOTION_RULE_PREFER, HA_PROMOTION_RULE_MUST_NOT])
-const HA_FAILOVER_PHASES = new Set<string>(['drain', 'recover'])
+const HA_FAILOVER_PHASES = new Set<string>(['drain', 'undrain', 'recover', 'repoint'])
+const HA_FAILOVER_SLOT_RE = /^[a-z0-9_]{1,63}$/
+const MAX_HA_FAILOVER_ENSURE_SLOTS = 32
 const MAX_HA_CLUSTERS = 64
 const MAX_HA_MEMBERS = 32
 const MAX_HA_PEERS = 32
@@ -7131,6 +7674,24 @@ export function parseManagedHaReconcilePayload(value: unknown): ManagedHaReconci
     clusters: value.clusters.map(parseManagedHaCluster),
     identity: parseManagedHaIdentity(value.identity),
   }
+  if (value.topologyUser !== undefined) {
+    payload.topologyUser = parseManagedTopologyUser(value.topologyUser, 'managed.ha.reconcile')
+  }
+  if (value.orchestratorApiUser !== undefined) {
+    payload.orchestratorApiUser = parseManagedTopologyUser(
+      value.orchestratorApiUser,
+      'managed.ha.reconcile orchestratorApiUser'
+    )
+  }
+  if (value.orchestratorRaftToken !== undefined) {
+    if (
+      !isString(value.orchestratorRaftToken) ||
+      !value.orchestratorRaftToken.startsWith(DAEMON_ENVELOPE_PREFIX)
+    ) {
+      throw new TypeError('Invalid managed.ha.reconcile orchestratorRaftToken')
+    }
+    payload.orchestratorRaftToken = value.orchestratorRaftToken
+  }
   if (orgTlsMaterial !== undefined) {
     payload.orgTlsMaterial = orgTlsMaterial
   }
@@ -7192,6 +7753,21 @@ function parseOptionalManagedHaFailoverPort(value: unknown): number | undefined 
   return value
 }
 
+function parseOptionalManagedHaFailoverEnsureSlots(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > MAX_HA_FAILOVER_ENSURE_SLOTS) {
+    throw new TypeError('Invalid managed.ha.failover payload')
+  }
+  const slots: string[] = []
+  for (const slot of value) {
+    if (!isString(slot) || !HA_FAILOVER_SLOT_RE.test(slot)) {
+      throw new TypeError('Invalid managed.ha.failover payload')
+    }
+    slots.push(slot)
+  }
+  return slots.length > 0 ? slots : undefined
+}
+
 /** Must stay in sync with the daemon `managed.ha.failover` validator. */
 export function parseManagedHaFailoverPayload(value: unknown): ManagedHaFailoverCommandPayload {
   if (!isRecord(value)) {
@@ -7219,8 +7795,30 @@ export function parseManagedHaFailoverPayload(value: unknown): ManagedHaFailover
       sourcePort: parseOptionalManagedHaFailoverPort(value.sourcePort),
       targetHost: parseOptionalManagedHaFailoverHost(value.targetHost),
       targetPort: parseOptionalManagedHaFailoverPort(value.targetPort),
+      targetHostaddr: parseOptionalManagedHaFailoverHost(value.targetHostaddr),
+      ensureSlots: parseOptionalManagedHaFailoverEnsureSlots(value.ensureSlots),
+      requiredExecutedGtidSet: parseOptionalManagedHaFailoverGtidSet(value.requiredExecutedGtidSet),
+      gtidWaitTimeoutSeconds: parseOptionalManagedHaFailoverGtidWaitSeconds(
+        value.gtidWaitTimeoutSeconds
+      ),
     }),
   }
+}
+
+function parseOptionalManagedHaFailoverGtidSet(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (!isString(value) || value.length === 0 || value.length > 4096) {
+    throw new TypeError('Invalid managed.ha.failover payload')
+  }
+  return value
+}
+
+function parseOptionalManagedHaFailoverGtidWaitSeconds(value: unknown): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 600) {
+    throw new TypeError('Invalid managed.ha.failover payload')
+  }
+  return value
 }
 
 /** Must stay in sync with the daemon `managed.ha.failover` result parser. */
@@ -7256,7 +7854,7 @@ export function parseCommandPayload(
   | EnvironmentLifecycleCommandPayload
   | EnvironmentStopCommandPayload
   | ManagedApplyCommandPayload
-  | ManagedLifecycleCommandPayload
+  | ManagedLifecyclePayload
   | ManagedDestroyCommandPayload
   | ManagedBackupCommandPayload
   | ManagedRestoreCommandPayload

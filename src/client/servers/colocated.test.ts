@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import { and, eq } from 'drizzle-orm'
@@ -25,17 +26,14 @@ it('isColocatedWithInstance is false for an empty colocated set', () => {
 })
 
 it('uncolocatedCandidates filters already-marked ids', () => {
-  assertEquals(
-    uncolocatedCandidates(['a', 'b', 'c'], new Set(['b'])),
-    ['a', 'c'],
-  )
+  assertEquals(uncolocatedCandidates(['a', 'b', 'c'], new Set(['b'])), ['a', 'c'])
   assertEquals(uncolocatedCandidates(['a'], new Set(['a'])), [])
   assertEquals(uncolocatedCandidates([], new Set(['a'])), [])
 })
 
 it('hasActiveColocatedLicenseBinding detects the reserved install license', async () => {
   if (!dbUrl) {
-    console.warn('Skipping colocated license binding test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('colocated license binding test')
     return
   }
 
@@ -58,34 +56,19 @@ it('hasActiveColocatedLicenseBinding detects the reserved install license', asyn
     .returning({ id: server.id })
   const serverId = insertedServer!.id
 
-  assertEquals(
-    await hasActiveColocatedLicenseBinding(db, organizationId, serverId),
-    false,
-  )
+  assertEquals(await hasActiveColocatedLicenseBinding(db, organizationId, serverId), false)
 
   const { licenseId } = await createLicense(db, {
     organizationId,
     name: COLOCATED_SERVER_DISPLAY_NAME,
   })
-  await db
-    .update(license)
-    .set({ serverId, updatedAt: now })
-    .where(eq(license.id, licenseId))
+  await db.update(license).set({ serverId, updatedAt: now }).where(eq(license.id, licenseId))
 
-  assertEquals(
-    await hasActiveColocatedLicenseBinding(db, organizationId, serverId),
-    true,
-  )
+  assertEquals(await hasActiveColocatedLicenseBinding(db, organizationId, serverId), true)
 
-  await db
-    .update(license)
-    .set({ revokedAt: now, updatedAt: now })
-    .where(eq(license.id, licenseId))
+  await db.update(license).set({ revokedAt: now, updatedAt: now }).where(eq(license.id, licenseId))
 
-  assertEquals(
-    await hasActiveColocatedLicenseBinding(db, organizationId, serverId),
-    false,
-  )
+  assertEquals(await hasActiveColocatedLicenseBinding(db, organizationId, serverId), false)
 
   await db.delete(license).where(eq(license.id, licenseId))
   await db.delete(server).where(eq(server.id, serverId))
@@ -123,10 +106,7 @@ it('hasActiveColocatedLicenseBinding ignores non-colocated license display names
     .set({ serverId, updatedAt: now })
     .where(and(eq(license.id, licenseId)))
 
-  assertEquals(
-    await hasActiveColocatedLicenseBinding(db, organizationId, serverId),
-    false,
-  )
+  assertEquals(await hasActiveColocatedLicenseBinding(db, organizationId, serverId), false)
 
   await db.delete(license).where(eq(license.id, licenseId))
   await db.delete(server).where(eq(server.id, serverId))

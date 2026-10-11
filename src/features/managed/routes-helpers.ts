@@ -6,6 +6,8 @@ import type { ManagedSettings } from './settings.ts'
 import {
   defaultManagedRelease,
   describeManagedImage,
+  effectiveManagedImage,
+  isManagedVariantSwapSafe,
   isSameManagedSeries,
   type ManagedReleaseGate,
   resolveManagedImage,
@@ -13,7 +15,6 @@ import {
 import type { ManagedConnectionRole } from '../../contracts/commands/schemas.ts'
 import { managedIngressPortForEngine, resolveManagedIngressPorts } from './ingress-ports.ts'
 import { type ManagedSslMode, resolveManagedSslMode } from './ssl.ts'
-import { isManagedSqlAccessScope, type ManagedSqlAccessScope } from './access-scope.ts'
 import { organization, server } from '../../db/schema.ts'
 import { parseOrganizationOptions } from '../organizations/organization-options.ts'
 import { BadRequestError, parseName, requireStringField } from '../../lib/http/request-fields.ts'
@@ -22,49 +23,27 @@ import { BadRequestError, parseName, requireStringField } from '../../lib/http/r
 const USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
 import {
   maxTypedNameLength,
-  principalNameSchemeOf,
   type PrincipalNameScheme,
+  principalNameSchemeOf,
 } from '../../lib/principal-name-scheme.ts'
-import { LOOPBACK_BIND, resolveManagedDialHost } from './access-address.ts'
-import { resolveManagedEffectiveExposure } from './host-exposure.ts'
+import { LOOPBACK_BIND, resolveManagedExternalDialHost } from './access-address.ts'
+import { loadManagedExternalAccess } from './external-access.ts'
 import type { ManagedContext } from './managed-context.ts'
 import { type ManagedRowOptions, parseManagedRowOptions } from './options.ts'
 import { evaluateManagedPromoteLagGate } from './promote-lag.ts'
+import { isMysqlFamilyEngine, MAX_REPLAY_DELTA_BYTES, parsePgLsn } from './ha-fresh-standby.ts'
 import { loadManagedStatusError } from './last-error.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
-import type { ManagedResidualMetadata } from './serialize.ts'
+import { type ManagedResidualMetadata, serializeManagedRow } from './serialize.ts'
 
 export { evaluateManagedPromoteLagGate }
-export { type ManagedEffectiveExposure, resolveManagedEffectiveExposure } from './host-exposure.ts'
-import { forEachSequential } from '../../lib/sequential.ts'
 
 /** One reachable client endpoint on the shared ProxySQL frontend. */
 export type ManagedAccessEndpoint = {
-  scope: ManagedSqlAccessScope
+  /** `local`: from this server only (127.0.0.1). `external`: from outside the server. */
+  reach: 'local' | 'external'
   host: string
   port: number
-}
-
-/**
- * Scopes a client can actually dial, given what the frontend publishes.
- *
- * `public` publishes on all interfaces, so every narrower address is reachable
- * too and is worth showing an operator; a narrower scope publishes exactly one
- * address and must not imply the others exist.
- *
- * Input is the **host's** published scopes, not one cluster's request: the
- * shared ProxySQL publishes once for every cluster it fronts, so a cluster with
- * its own toggle off is genuinely dialable when a co-resident cluster is
- * exposed (see `./host-exposure.ts`). Reporting the cluster's own intent here
- * would tell an operator a reachable database is unreachable.
- */
-function dialScopesForPublishedScopes(
-  publishedScopes: readonly ManagedSqlAccessScope[]
-): ManagedSqlAccessScope[] {
-  const widest = publishedScopes[0]
-  if (widest === undefined) return []
-  if (widest !== 'public') return [...publishedScopes]
-  return ['public', 'turbofabric', 'datacenter', 'local']
 }
 
 /**
@@ -97,79 +76,70 @@ async function resolveListenerPortForServer(
   )
 }
 
-/**
- * Every endpoint this cluster is reachable at, widest scope first.
- *
- * Empty when **no** cluster on the host is exposed: nothing is published to the
- * host at all, and co-located consumers dial the ProxySQL container over the
- * organization's managed network (see `resolveBindingEndpoint`) rather than any
- * host address.
- *
- * Non-empty for an unexposed cluster that shares a host with an exposed one —
- * that listener really does front it. Callers that need to distinguish "this
- * cluster asked for it" from "a neighbour did" read
- * {@link resolveManagedEffectiveExposure}.
- */
-export async function resolveManagedAccessEndpoints(
-  db: Db,
-  params: Readonly<{
-    serverId: string
-    engineCode: string
-    engineDefaultPort: number
-    exposure: ManagedSettings['exposure']
-  }>
-): Promise<ManagedAccessEndpoint[]> {
-  const effective = await resolveManagedEffectiveExposure(db, {
-    serverId: params.serverId,
-    exposure: params.exposure,
-  })
-  const scopes = dialScopesForPublishedScopes(effective.scopes)
-  if (scopes.length === 0) return []
+type ManagedAccessParams = Readonly<{
+  serverId: string
+  engineCode: string
+  engineDefaultPort: number
+}>
 
+/**
+ * Every endpoint the server's shared ProxySQL listens on for this cluster,
+ * outside-the-server first.
+ *
+ * The loopback endpoint is always there: sites run by a site owner's Linux user
+ * dial it, and bound containers dial ProxySQL by name over the organization's
+ * managed network (see `resolveBindingEndpoint`). The external endpoint is there
+ * only while the server's "allow external access" setting is on
+ * (`./external-access.ts`) and the server has an address to give out. The
+ * setting belongs to the server, so every cluster on it reports the same thing.
+ */
+async function resolveManagedAccess(
+  db: Db,
+  params: ManagedAccessParams
+): Promise<{ externalAccess: boolean; endpoints: ManagedAccessEndpoint[] }> {
+  const { enabled: externalAccess } = await loadManagedExternalAccess(db, params.serverId)
   const port = await resolveListenerPortForServer(db, params)
   const endpoints: ManagedAccessEndpoint[] = []
-  const seenHosts = new Set<string>()
-  await forEachSequential(scopes, async (scope) => {
-    const host = await resolveManagedDialHost(db, {
-      serverId: params.serverId,
-      scope,
-    })
-    if (host === null || seenHosts.has(host)) return
-    seenHosts.add(host)
-    endpoints.push({ scope, host, port })
-  })
-  return endpoints
+  if (externalAccess) {
+    const host = await resolveManagedExternalDialHost(db, params.serverId)
+    if (host !== null) endpoints.push({ reach: 'external', host, port })
+  }
+  endpoints.push({ reach: 'local', host: LOOPBACK_BIND, port })
+  return { externalAccess, endpoints }
+}
+
+export async function resolveManagedAccessEndpoints(
+  db: Db,
+  params: ManagedAccessParams
+): Promise<ManagedAccessEndpoint[]> {
+  return (await resolveManagedAccess(db, params)).endpoints
 }
 
 /**
- * The single endpoint used for the primary DSN and the listener TLS SANs.
+ * The single endpoint used for the primary DSN and the listener TLS SANs: the
+ * outside-the-server one when allowed, else loopback.
  *
- * Widest scope wins so the advertised host is the one an operator outside the
- * host can actually reach. Clusters on a host that publishes nothing keep
- * reporting loopback: the DSN shape stays useful, and the connection surface
- * separately reports that no host endpoint is published.
- *
- * `null` means "asked to be exposed, but no address resolved" — a real
- * misconfiguration worth surfacing rather than papering over with loopback.
+ * `null` means "external access is on, but the server has no address to give
+ * out" — a real misconfiguration worth surfacing rather than papering over with
+ * loopback.
  */
 export async function resolveManagedConnectionListener(
   db: Db,
-  params: Readonly<{
-    serverId: string
-    engineCode: string
-    engineDefaultPort: number
-    exposure: ManagedSettings['exposure']
-  }>
+  params: ManagedAccessParams
 ): Promise<{ host: string; port: number } | null> {
-  const endpoints = await resolveManagedAccessEndpoints(db, params)
-  const primary = endpoints[0]
-  if (primary) return { host: primary.host, port: primary.port }
-  if (params.exposure.enabled) return null
+  const { externalAccess, endpoints } = await resolveManagedAccess(db, params)
+  const primary = endpoints[0]!
+  if (externalAccess && primary.reach !== 'external') return null
+  return { host: primary.host, port: primary.port }
+}
 
-  return {
-    host: LOOPBACK_BIND,
-    port: await resolveListenerPortForServer(db, params),
-  }
+/** Loopback address on the shared ProxySQL frontend (org overview column). */
+export async function resolveManagedLoopbackListener(
+  db: Db,
+  params: ManagedAccessParams
+): Promise<{ host: string; port: number }> {
+  const port = await resolveListenerPortForServer(db, params)
+  return { host: LOOPBACK_BIND, port }
 }
 
 /**
@@ -188,7 +158,6 @@ export function managedStatusListenerParams(
   serverId: string
   engineCode: string
   engineDefaultPort: number
-  exposure: ManagedSettings['exposure']
 } | null {
   if (!row?.serverId) return null
   if (!row.engine || !isManagedEngineCode(row.engine)) return null
@@ -200,7 +169,6 @@ export function managedStatusListenerParams(
     serverId: row.serverId,
     engineCode: spec.engine,
     engineDefaultPort: spec.defaultPort,
-    exposure: parsed.settings.exposure,
   }
 }
 
@@ -269,34 +237,8 @@ export function managedSessionPaths(): string[] {
     '/environments/:id/managed/members/:memberId/resync',
     '/environments/:id/managed/disaster-recovery/promote',
     '/organizations/:id/managed',
+    '/servers/:id/managed-external-access',
   ]
-}
-
-/**
- * Accept only `scope`. Retired `bind` and other keys reject the create.
- */
-function parseCreateExposureScope(
-  exposureRaw: Record<string, unknown>
-): ManagedSqlAccessScope | undefined | null {
-  if (exposureRaw.bind !== undefined) return null
-  if (exposureRaw.scope === undefined) return undefined
-  if (!isManagedSqlAccessScope(exposureRaw.scope)) return null
-  return exposureRaw.scope
-}
-
-function mergeCreateExposure(
-  base: ManagedSettings['exposure'],
-  exposureRaw: unknown
-): ManagedSettings['exposure'] | null | undefined {
-  if (!isPlainObject(exposureRaw)) return undefined
-  const scope = parseCreateExposureScope(exposureRaw)
-  if (scope === null) return null
-  const next = { ...base }
-  if (typeof exposureRaw.enabled === 'boolean') {
-    next.enabled = exposureRaw.enabled
-  }
-  if (scope !== undefined) next.scope = scope
-  return next
 }
 
 export function mergeCreateSettings(
@@ -304,7 +246,6 @@ export function mergeCreateSettings(
     defaultSettings: ManagedSettings
     parseSettings: (v: unknown) => ManagedSettings | null
   },
-  body: Record<string, unknown>,
   /** Resolved catalog image from {@link parseManagedVersionSelection}. */
   image?: string
 ): ManagedSettings | null {
@@ -313,10 +254,6 @@ export function mergeCreateSettings(
 
   const overrides: Record<string, unknown> = {}
   if (image !== undefined) overrides.image = image
-
-  const exposure = mergeCreateExposure(base.exposure, body.exposure)
-  if (exposure === null) return null
-  if (exposure !== undefined) overrides.exposure = exposure
 
   if (Object.keys(overrides).length === 0) return base
   return spec.parseSettings({ ...base, ...overrides })
@@ -327,6 +264,9 @@ export const MANAGED_VERSION_UNSUPPORTED_ERROR = 'managed_version_unsupported'
 
 /** A cluster's engine series cannot change after create. */
 export const MANAGED_SERIES_IMMUTABLE_ERROR = 'managed_series_immutable'
+
+/** A PostgreSQL image swap between libc families would corrupt text indexes. */
+export const MANAGED_VARIANT_SWAP_UNSAFE_ERROR = 'managed_variant_swap_unsafe'
 
 /**
  * Resolve create-time `engineSeries` / `imageVariant` to a catalog image.
@@ -346,7 +286,13 @@ export function parseManagedVersionSelection(
   engine: string,
   body: Record<string, unknown>,
   gate?: ManagedReleaseGate
-): { ok: true; image?: string } | { ok: false; error: string; status: 400 | 422 } {
+):
+  | { ok: true; image?: string }
+  | {
+      ok: false
+      error: string
+      status: 400 | 422
+    } {
   const seriesRaw = body.engineSeries
   const variantRaw = body.imageVariant
   if (seriesRaw === undefined && variantRaw === undefined) return { ok: true }
@@ -370,26 +316,84 @@ export function parseManagedVersionSelection(
   return { ok: true, image }
 }
 
+/** A settings patch is refused with HTTP 409, an error code and plain words. */
+export type ManagedImageRefusal = {
+  ok: false
+  error: string
+  message: string
+  status: 409
+}
+
 /**
  * Refuse a settings patch that moves an existing cluster to another engine
  * series.
  *
  * An engine refuses to start on a data directory written by a different major,
  * and cross-major replication is not a supported topology, so an in-place
- * series change would break the cluster rather than upgrade it. Changing the
- * base-OS variant within one series (`alpine` ↔ `debian`) is allowed. Series
+ * series change would break the cluster rather than upgrade it. Series
  * migration is a separate managed service plus a data move, not a settings
- * edit.
+ * edit. Whether a base-OS variant may change is decided by
+ * {@link assertManagedVariantSwapSafe}.
  */
 export function assertManagedSeriesUnchanged(
-  spec: { defaultImage: string },
+  spec: { defaultImage: string; legacyDefaultImage?: string },
   currentSettings: ManagedSettings,
   nextSettings: ManagedSettings
-): { ok: false; error: string; status: 409 } | null {
-  const current = currentSettings.image ?? spec.defaultImage
-  const next = nextSettings.image ?? spec.defaultImage
+): ManagedImageRefusal | null {
+  const current = effectiveManagedImage(spec, currentSettings.image)
+  const next = effectiveManagedImage(spec, nextSettings.image)
   if (isSameManagedSeries(current, next)) return null
-  return { ok: false, error: MANAGED_SERIES_IMMUTABLE_ERROR, status: 409 }
+  return {
+    ok: false,
+    error: MANAGED_SERIES_IMMUTABLE_ERROR,
+    message:
+      'The database version cannot be changed on an existing cluster, because the data ' +
+      'on disk only works with the version that wrote it. Create a new cluster on the ' +
+      'version you want and restore a backup into it.',
+    status: 409,
+  }
+}
+
+/**
+ * Refuse a settings patch that swaps a PostgreSQL cluster between the Alpine
+ * and Debian images.
+ *
+ * The two images use different C libraries, which sort text differently, so
+ * every text index would silently become wrong (proven on a test host:
+ * `bt_index_check` fails and index-ordered queries return a different order).
+ * Same-variant changes, no-op patches, and engines with their own collations
+ * (MySQL, MariaDB) pass. The policy lives in {@link isManagedVariantSwapSafe}.
+ */
+export function assertManagedVariantSwapSafe(
+  spec: { defaultImage: string; legacyDefaultImage?: string },
+  currentSettings: ManagedSettings,
+  nextSettings: ManagedSettings
+): ManagedImageRefusal | null {
+  const current = effectiveManagedImage(spec, currentSettings.image)
+  const next = effectiveManagedImage(spec, nextSettings.image)
+  if (isManagedVariantSwapSafe(current, next)) return null
+  return {
+    ok: false,
+    error: MANAGED_VARIANT_SWAP_UNSAFE_ERROR,
+    message:
+      'Switching this PostgreSQL cluster between the Alpine and Debian images would ' +
+      'silently break its text indexes, because the two sort text differently and the ' +
+      'data would need re-indexing. Create a new cluster on the image you want and ' +
+      'restore a backup into it.',
+    status: 409,
+  }
+}
+
+/** Run the series guard, then the variant guard; first refusal wins. */
+export function assertManagedImageChangeAllowed(
+  spec: { defaultImage: string; legacyDefaultImage?: string },
+  currentSettings: ManagedSettings,
+  nextSettings: ManagedSettings
+): ManagedImageRefusal | null {
+  return (
+    assertManagedSeriesUnchanged(spec, currentSettings, nextSettings) ??
+    assertManagedVariantSwapSafe(spec, currentSettings, nextSettings)
+  )
 }
 
 export function readInitialDatabase(spec: {
@@ -433,6 +437,13 @@ export function isManagedReplicationPrincipal(metadata: unknown): boolean {
   return principalMetadata(metadata).managedReplication === true
 }
 
+function principalDatabaseNames(metadata: unknown): string[] {
+  const { databases } = principalMetadata(metadata)
+  return Array.isArray(databases)
+    ? databases.filter((entry): entry is string => typeof entry === 'string')
+    : []
+}
+
 export function serializeManagedUser(row: {
   id: string
   username: string
@@ -442,9 +453,7 @@ export function serializeManagedUser(row: {
   createdAt: string
 }) {
   const meta = principalMetadata(row.metadata)
-  const databases = Array.isArray(meta.databases)
-    ? meta.databases.filter((entry): entry is string => typeof entry === 'string')
-    : []
+  const databases = principalDatabaseNames(row.metadata)
   const privileges = Array.isArray(meta.privileges)
     ? meta.privileges.filter((entry): entry is string => typeof entry === 'string')
     : []
@@ -548,16 +557,9 @@ export function parseManagedUserCreateFields(
   ) {
     return c.json({ error: 'Invalid request' }, 400)
   }
-
-  const privileges = Array.isArray(body.privileges)
-    ? body.privileges.filter((entry): entry is string => typeof entry === 'string')
-    : []
-  if (Array.isArray(body.privileges) && privileges.length !== body.privileges.length) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  const allowedPrivileges = new Set<string>(ctx.spec.userOperations.privileges)
-  if (!privileges.every((entry) => allowedPrivileges.has(entry))) {
-    return c.json({ error: 'Invalid request' }, 400)
+  // A cluster that predates the reserved-name check may still list a system schema.
+  if (databases.some((name) => isReservedDatabaseName(ctx.spec.engine, name))) {
+    return c.json({ error: 'reserved_database_name' }, 400)
   }
 
   const connectionRole = parseManagedConnectionRole(body.connectionRole)
@@ -565,7 +567,48 @@ export function parseManagedUserCreateFields(
     return c.json({ error: 'Invalid request' }, 400)
   }
 
+  const privileges = resolveManagedUserPrivileges(
+    body.privileges,
+    ctx.spec.userOperations.privileges,
+    connectionRole
+  )
+  if (privileges === null) {
+    return c.json(
+      {
+        error: MANAGED_USER_PRIVILEGES_INVALID_ERROR,
+        message: `privileges must list at least one of: ${ctx.spec.userOperations.privileges.join(
+          ', '
+        )}. Leave it out to get the default for the login's connection role.`,
+      },
+      400
+    )
+  }
+
   return { username, databases, privileges, connectionRole }
+}
+
+/** `privileges` was present but empty, unknown, or not a list of names. */
+export const MANAGED_USER_PRIVILEGES_INVALID_ERROR = 'managed_user_privileges_invalid'
+
+/**
+ * Privileges for a new login: what was asked for, or - when the request leaves
+ * `privileges` out - the grant that matches the login's connection role
+ * (`read-only` for a read-only login, `read-write` otherwise). A login created
+ * with no grants can connect but is refused everywhere, so "none" is never a
+ * valid answer: an explicit empty list, an unknown name or a non-list is `null`.
+ */
+export function resolveManagedUserPrivileges(
+  requested: unknown,
+  allowed: readonly string[],
+  connectionRole: ManagedConnectionRole
+): string[] | null {
+  if (requested === undefined || requested === null) {
+    return [connectionRole === 'read-only' ? 'read-only' : 'read-write']
+  }
+  if (!Array.isArray(requested) || requested.length === 0) return null
+  const names = requested.filter((entry): entry is string => typeof entry === 'string')
+  if (names.length !== requested.length) return null
+  return names.every((name) => allowed.includes(name)) ? [...new Set(names)] : null
 }
 
 /** A `read-only` login was requested for a cluster with no read-eligible replica. */
@@ -618,6 +661,8 @@ export function parseManagedConnectionRole(value: unknown): ManagedConnectionRol
 export type ManagedRouteValidationError = {
   ok: false
   error: string
+  /** Plain-words explanation shown next to the error code, when one helps. */
+  message?: string
   status: 400 | 409 | 422
 }
 
@@ -651,6 +696,19 @@ export function parseManagedCreateName(
 }
 
 /**
+ * Name parse for managed PATCH. Absent leaves the name alone (`name: undefined`),
+ * `null` clears it, a string is validated like the create name. The name is only
+ * a label: nothing on a host is derived from it.
+ */
+export function parseManagedPatchName(
+  body: Record<string, unknown>
+): { ok: true; name: string | null | undefined } | ManagedRouteValidationError {
+  if (body.name === undefined) return { ok: true, name: undefined }
+  if (body.name === null) return { ok: true, name: null }
+  return parseManagedCreateName(body)
+}
+
+/**
  * Merge PATCH `settings` onto current managed settings and re-validate via
  * the engine spec. Returns `null` when the merged shape is invalid.
  */
@@ -667,13 +725,44 @@ export function mergeManagedPatchSettings(
   })
 }
 
+/**
+ * Engine system schemas that must never be created or granted as an application
+ * database. A user granted `mysql.*` (or `sys.*`) can read and write the
+ * engine's own account and configuration tables, so the name is refused the same
+ * way the initial database is. Matched case-insensitively, as the engines
+ * themselves treat these names.
+ */
+const MYSQL_FAMILY_RESERVED_DATABASES: readonly string[] = [
+  'mysql',
+  'information_schema',
+  'performance_schema',
+  'sys',
+]
+
+export function reservedDatabaseNames(engine: string): readonly string[] {
+  return engine === 'mysql' || engine === 'mariadb' ? MYSQL_FAMILY_RESERVED_DATABASES : []
+}
+
+export function isReservedDatabaseName(engine: string, name: string): boolean {
+  return reservedDatabaseNames(engine).includes(name.toLowerCase())
+}
+
 export function validateManagedDatabaseCreateName(
   name: string,
   databases: readonly string[],
-  identifier: { pattern: RegExp; maxLength: number }
+  identifier: { pattern: RegExp; maxLength: number },
+  engine = ''
 ): ManagedRouteValidationError | null {
   if (!identifier.pattern.test(name) || name.length > identifier.maxLength) {
-    return { ok: false, error: 'Invalid database name', status: 400 }
+    return {
+      ok: false,
+      error: 'Invalid database name',
+      message: `A database name may use letters, digits and underscores only, must start with a letter or underscore, and can be at most ${identifier.maxLength} characters. Hyphens are not allowed on purpose: use an underscore instead (my_app, not my-app).`,
+      status: 400,
+    }
+  }
+  if (isReservedDatabaseName(engine, name)) {
+    return { ok: false, error: 'reserved_database_name', status: 400 }
   }
   if (databases.includes(name)) {
     return { ok: false, error: 'database_exists', status: 409 }
@@ -700,6 +789,25 @@ export function evaluateManagedDatabaseDelete(
   return null
 }
 
+/**
+ * Typed usernames of the SQL users (never the root or replication principal)
+ * whose `databases` list still names `databaseName`. Dropping the database
+ * while any remain would leave the next apply granting on a missing database.
+ */
+export function listUsersReferencingDatabase(
+  principals: ReadonlyArray<{ username: string; metadata: unknown }>,
+  databaseName: string
+): string[] {
+  return principals
+    .filter(
+      (entry) =>
+        !isManagedRootPrincipal(entry.metadata) &&
+        !isManagedReplicationPrincipal(entry.metadata) &&
+        principalDatabaseNames(entry.metadata).includes(databaseName)
+    )
+    .map((entry) => entry.username)
+}
+
 export function nextDatabasesAfterCreate(databases: readonly string[], name: string): string[] {
   return [...databases, name].sort((a, b) => a.localeCompare(b))
 }
@@ -715,9 +823,13 @@ export function parsePromoteForce(body: Record<string, unknown>): boolean {
   return body.force === true
 }
 
-export function parseDisasterRecoveryPromoteBody(
-  body: Record<string, unknown>
-): { ok: true; memberId: string } | { ok: false; error: 'Invalid request'; status: 400 } {
+export function parseDisasterRecoveryPromoteBody(body: Record<string, unknown>):
+  | { ok: true; memberId: string }
+  | {
+      ok: false
+      error: 'Invalid request'
+      status: 400
+    } {
   if (body.confirm !== true) {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
@@ -940,9 +1052,75 @@ export function evaluatePromoteLagHttpGate(
   | null
   | 'managed_replica_not_streaming'
   | 'managed_replica_lagging'
-  | 'managed_replica_health_stale' {
+  | 'managed_replica_health_stale'
+  | 'managed_replica_not_fully_applied' {
   if (force) return null
   return evaluateManagedPromoteLagGate(replication, nowMs)
+}
+
+/**
+ * Oldest replica reading an operator (non-force) promote will act on after a
+ * live `managed-health-request` answer. A stored reading from before the last
+ * few seconds proves nothing (a replication thread that stopped a moment ago
+ * still looks `streaming` in an older one).
+ */
+export const OPERATOR_PROMOTE_MAX_OBSERVATION_AGE_MS = 15_000
+
+/** Operator promote when the replica daemon did not return a live health probe. */
+export const MANAGED_REPLICA_LIVE_CHECK_FAILED = 'managed_replica_live_check_failed'
+
+export const MANAGED_REPLICA_LIVE_CHECK_FAILED_MESSAGE =
+  'The replica did not answer a live check, so it cannot be proven caught up. Try again, or force the promote if you accept possible data loss.'
+
+export function buildManagedReplicaLiveCheckFailedBody(): {
+  error: typeof MANAGED_REPLICA_LIVE_CHECK_FAILED
+  message: string
+} {
+  return {
+    error: MANAGED_REPLICA_LIVE_CHECK_FAILED,
+    message: MANAGED_REPLICA_LIVE_CHECK_FAILED_MESSAGE,
+  }
+}
+
+/**
+ * Gate for the operator promote route: {@link evaluatePromoteLagHttpGate} on
+ * a tight reading age, plus engine-specific proof the replica applied what it
+ * received (MySQL/MariaDB: `fullyApplied === true`; Postgres: received LSN
+ * replayed within {@link MAX_REPLAY_DELTA_BYTES}). `force` bypasses both, as
+ * before. Automatic failover keeps its own probe and thresholds.
+ */
+export function evaluateOperatorPromoteGate(
+  replication: unknown,
+  force: boolean,
+  nowMs?: number,
+  engine?: string
+):
+  | null
+  | 'managed_replica_not_streaming'
+  | 'managed_replica_lagging'
+  | 'managed_replica_health_stale'
+  | 'managed_replica_not_fully_applied' {
+  if (force) return null
+  const gate = evaluateManagedPromoteLagGate(replication, nowMs, {
+    staleMs: OPERATOR_PROMOTE_MAX_OBSERVATION_AGE_MS,
+  })
+  if (gate !== null) return gate
+  if (!isPlainObject(replication)) return null
+  if (engine === 'postgres') {
+    const received = parsePgLsn(replication.receivedLsn)
+    const replayed = parsePgLsn(replication.replayLsn)
+    if (received === null || replayed === null) {
+      return 'managed_replica_lagging'
+    }
+    if (received - replayed > BigInt(MAX_REPLAY_DELTA_BYTES)) {
+      return 'managed_replica_lagging'
+    }
+    return null
+  }
+  if (isMysqlFamilyEngine(engine) && replication.fullyApplied !== true) {
+    return 'managed_replica_not_fully_applied'
+  }
+  return null
 }
 
 export type QueuedCommandFanoutRow = {
@@ -1040,10 +1218,10 @@ export type ManagedReleaseView = {
  * the raw image.
  */
 export function buildManagedReleaseView(
-  spec: { defaultImage: string },
+  spec: { defaultImage: string; legacyDefaultImage?: string },
   settings: ManagedSettings
 ): ManagedReleaseView | null {
-  const image = settings.image ?? spec.defaultImage
+  const image = effectiveManagedImage(spec, settings.image)
   const descriptor = describeManagedImage(image)
   if (!descriptor) return null
   return {
@@ -1199,12 +1377,12 @@ export function buildDisasterRecoveryQueuedResponse(params: {
 
 type OrgManagedListEntryExtras = {
   engineDisplayName: string | null
-  environmentDisplayName: string | null
+  environmentName: string | null
   projectId: string
-  projectDisplayName: string | null
+  projectName: string | null
   workspaceId: string
-  workspaceDisplayName: string | null
-  serverDisplayName: string | null
+  workspaceName: string | null
+  serverName: string | null
   members: unknown[]
 }
 
@@ -1214,12 +1392,69 @@ export function buildOrgManagedListEntry<T extends Record<string, unknown>>(
   return {
     ...params.serializedRow,
     engineDisplayName: params.engineDisplayName,
-    environmentDisplayName: params.environmentDisplayName,
+    environmentName: params.environmentName,
     projectId: params.projectId,
-    projectDisplayName: params.projectDisplayName,
+    projectName: params.projectName,
     workspaceId: params.workspaceId,
-    workspaceDisplayName: params.workspaceDisplayName,
-    serverDisplayName: params.serverDisplayName,
+    workspaceName: params.workspaceName,
+    serverName: params.serverName,
     members: params.members,
   }
+}
+
+type OrgManagedListSourceRow = {
+  id: string
+  environmentId: string | null
+  name: string | null
+  engine: string | null
+  status: string | null
+  metadata: unknown
+  options: unknown
+  serverId: string | null
+  createdAt: string
+  updatedAt: string
+  environmentServerId: string | null
+  environmentDisplayName: string | null
+  projectId: string
+  projectDisplayName: string | null
+  workspaceId: string
+  workspaceDisplayName: string | null
+  serverDisplayName: string | null
+}
+
+/** One `GET /organizations/:id/managed` row — shared listener on loopback, no residual backend ports. */
+export async function serializeOrgManagedListRow(
+  db: Db,
+  row: OrgManagedListSourceRow,
+  members: unknown[],
+  serverNamesById: ReadonlyMap<string, string | null> = new Map()
+) {
+  const spec = row.engine ? getManagedEngineSpec(row.engine) : null
+  const resolvedServerId = resolveManagedServerId(
+    { serverId: row.serverId },
+    row.environmentServerId
+  )
+  const serverName =
+    resolvedServerId === null ? null : (serverNamesById.get(resolvedServerId) ?? null)
+  const listenerParams = managedStatusListenerParams({
+    serverId: resolvedServerId,
+    engine: row.engine,
+    options: row.options,
+  })
+  const listener = listenerParams ? await resolveManagedLoopbackListener(db, listenerParams) : null
+  return buildOrgManagedListEntry({
+    serializedRow: serializeManagedRow(
+      row,
+      resolvedServerId,
+      listener ? { host: listener.host, port: listener.port } : { host: null, port: null }
+    ),
+    engineDisplayName: spec?.displayName ?? null,
+    environmentName: row.environmentDisplayName,
+    projectId: row.projectId,
+    projectName: row.projectDisplayName,
+    workspaceId: row.workspaceId,
+    workspaceName: row.workspaceDisplayName,
+    serverName,
+    members,
+  })
 }

@@ -13,45 +13,30 @@
  * reported" — visible, never exploitable.
  */
 
-/** Runtimes a principal can be entitled to execute. */
-export const SUPPORTED_RUNTIMES: readonly string[] = ['php', 'node']
-
-/**
- * Series across every runtime, as one flat list.
- *
- * Flat because an entitlement is validated as a `(runtime, series)` pair
- * against the registry on the host anyway; this is a shape gate, not the
- * authority. `runtimeSeries` is what the UI should offer per runtime.
- */
-export const SUPPORTED_RUNTIME_SERIES: readonly string[] = ['8.3', '8.4', '22', '24', '26']
-
 /** Series offered for one runtime, or `[]` for one this list does not know. */
 export function runtimeSeries(runtime: string): readonly string[] {
-  if (runtime === 'php') return ['8.3', '8.4']
+  if (runtime === 'php') return ['8.1', '8.2', '8.3', '8.4', '8.5']
   if (runtime === 'node') return ['22', '24', '26']
+  if (runtime === 'deno') return ['2']
   return []
 }
-
-/**
- * Default PHP series when a site declares no `php.version`.
- *
- * Mirrors the daemon's `DEFAULT_PHP_FPM_SERIES`, which `resolveSitePhpSeries`
- * falls back to, so the grant a per-site runtime implies names the series the
- * host actually runs.
- */
-export const DEFAULT_SITE_PHP_SERIES = '8.4'
 
 /** Default Node series when a native app declares no `nodeVersion`. */
 export const DEFAULT_NATIVE_APP_NODE_SERIES = '24'
 
 /**
- * Normalize a Node pin to the **exec boundary** (`24.17.0` → `24`).
- *
- * Mirrors `entitlementSeries('node', …)` in the daemon registry so deploy
- * grants and vendored paths agree on the series directory.
+ * Default Deno series when a Deno app declares no `denoVersion`. Deno ships one
+ * major (2) and many minors, so a series is the major: the host runs the newest
+ * 2.x release.
  */
-export function nodeEntitlementSeries(version: string = DEFAULT_NATIVE_APP_NODE_SERIES): string {
+export const DEFAULT_NATIVE_APP_DENO_SERIES = '2'
+
+/**
+ * Normalize a Deno pin to its series (`2.9.7` → `2`), the directory the host
+ * vendors it under. Mirrors the daemon registry's series normalization.
+ */
+export function denoRuntimeSeries(version: string = DEFAULT_NATIVE_APP_DENO_SERIES): string {
   const major = version.trim().split('.')[0]
-  if (!major || !/^\d+$/.test(major)) return DEFAULT_NATIVE_APP_NODE_SERIES
+  if (!major || !/^\d+$/.test(major)) return DEFAULT_NATIVE_APP_DENO_SERIES
   return major
 }

@@ -1,6 +1,7 @@
 import type { Context } from 'hono'
 import { and, eq, inArray, or } from 'drizzle-orm'
 import type { AppEnv } from '../../app/app.ts'
+import { hostingCertificateNames, type HostingWwwMode } from '../../contracts/commands/hostname.ts'
 import {
   decryptSecret,
   encryptSecretForDaemon,
@@ -35,6 +36,7 @@ import {
 } from '../../features/organizations/organization-options.ts'
 import {
   type ApplyVariablesError,
+  type ApplyVariablesResult,
   applyVariablesToComposeDocument,
   type DeployVariableEntry,
   type DeployVariableMaterial,
@@ -73,6 +75,11 @@ import {
   environmentComposeFilename,
   renderRuntimeComposeFiles,
 } from '../../features/deploy/deploy-layers.ts'
+import {
+  buildNativeAppVariables,
+  type NativeAppVariables,
+  type NativeAppVariableView,
+} from '../../features/compose/native-app-variables.ts'
 import { stripReservedDeployVariableKeys } from '../../features/compose/platform-variables.ts'
 import { renameComposeVolumes } from '../../features/compose/rename-volumes.ts'
 import {
@@ -96,13 +103,30 @@ import {
   resolvePrincipalIdOverride,
   resolvePrincipalShell,
 } from '../../features/principals/principal-options.ts'
-import {
-  insertDeployEntitlementsIfMissing,
-  loadEntitlementsByPrincipalIds,
-} from '../../features/principals/store.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
+import {
+  type NativeAppNodeVersionView,
+  type NodeVersionPrepareError,
+  repositoryNodeVersionReader,
+  resolveSourceNodeVersions,
+} from './deploy-node-version.ts'
+import {
+  DEFAULT_NATIVE_APP_DENO_SERIES,
+  denoRuntimeSeries,
+} from '../../contracts/runtime-registry.ts'
+import {
+  type DenoAppFeatureError,
+  withDenoNativeApps,
+  withRecordedRuntimes,
+} from './deploy-deno-gate.ts'
 import { type SiteEngineFeatureError, withSiteEngineFeature } from './deploy-site-engine-gate.ts'
+import { type SiteDbBindingsWarning, withSiteDbBindings } from './deploy-site-db-bindings.ts'
+import {
+  type BindingDelivery,
+  deliveryByServiceId,
+  hostRunDeliveryByComposeName,
+} from '../../features/bindings/host-run.ts'
 import { PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
 import {
   isComposeChainError,
@@ -202,6 +226,7 @@ import {
   resolveInheritedVariableBundleForService,
   resolveInheritedVariablesForEnvironment,
   resolveServerScopedVariables,
+  resolveVariableSource,
 } from '../../features/variables/resolve-inherited.ts'
 import {
   type ComposePrincipalResolution,
@@ -214,10 +239,11 @@ import {
   materializeBindingsForServices,
   reapplyBindingOwnedVariables,
 } from '../../features/bindings/materialize.ts'
-import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
+import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { resolveHostingDeployWeb } from '../../features/hostings/hosting-web-env.ts'
 import {
   assembleTlsMetadata,
+  coversAllHostnames,
   parseTlsOptions,
   resolveTlsForHosting,
   TLS_SOURCES,
@@ -234,12 +260,9 @@ import {
   readHostnames,
   readPathPrefix,
   readTargetPort,
+  readWwwMode,
   tlsPinErrorCode,
 } from './deploy-routes-helpers.ts'
-import {
-  type DeployRuntimeEntitlement,
-  mergeDeployPrincipalRuntimes,
-} from './merge-deploy-principal-runtimes.ts'
 import {
   ensureSystemHierarchy,
   SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
@@ -283,8 +306,11 @@ export type DeployPrepareWarningCode =
   | 'principal_alias_unknown'
   | 'principal_required_for_service_kind'
   | 'binding_endpoint_unavailable'
+  | 'site_db_ca_unavailable'
   | 'php_series_not_installed'
+  | 'compose_variable_unresolved'
   | 'php_mode_not_allowed'
+  | 'node_version_unresolved'
 
 /**
  * Gate a deploy's PHP series against what the target host actually reports.
@@ -292,7 +318,7 @@ export type DeployPrepareWarningCode =
  * Two outcomes, and the distinction is the whole point:
  *
  * - **Not supported at all** → a hard error before anything is queued. The
- *   operator gets "PHP 8.1 is not supported; supported: 8.3, 8.4" instead of a
+ *   operator gets "PHP 7.4 is not supported; supported: 8.1, 8.2, 8.3, 8.4, 8.5" instead of a
  *   daemon throw halfway through an apply.
  * - **Supported but not yet on this host** → proceed with a warning. The
  *   Ansible run installs it. Refusing here would reject a deploy the host can
@@ -457,6 +483,57 @@ export type PreparedDeployCompose = ServerDeployment & {
   envFile?: string
   /** File-only secret mounts (no plaintext). */
   secretPlan?: DeploySecretPlanEntry[]
+  /**
+   * What each native app's process gets as environment variables, for people:
+   * every name, where it came from, and whether it reaches the process. Secret
+   * values are left out. Never sent to a daemon — the wire list is
+   * `nativeAppServices[].variables`.
+   */
+  nativeAppVariables?: NativeAppVariablesView[]
+  /**
+   * The Node series each native app runs and where it came from (the compose
+   * service, the repository's `package.json` / `.nvmrc` / `.node-version`, or
+   * the default), for people. Never sent to a daemon — the wire value is
+   * `nativeAppServices[].nodeVersion`.
+   */
+  nativeAppNodeVersions?: NativeAppNodeVersionView[]
+  /**
+   * The Deno series each Deno app (`x-turbopanel.runtime: deno`) runs and
+   * whether it was pinned or defaulted, for people. Never sent to a daemon —
+   * the wire value is `nativeAppServices[].denoVersion`.
+   */
+  nativeAppDenoVersions?: NativeAppDenoVersionView[]
+}
+
+/** One Deno app's series for the deploy preview. */
+export type NativeAppDenoVersionView = {
+  composeServiceName: string
+  /** The Deno series the host runs it on, such as `2`. */
+  denoVersion: string
+  /** `compose` when `x-turbopanel.denoVersion` pinned it, else `default`. */
+  source: 'compose' | 'default'
+}
+
+/** The preview's view of every Deno app: its series, pinned or defaulted. */
+export function nativeAppDenoVersionViews(
+  apps: readonly Pick<PreparedNativeAppService, 'composeServiceName' | 'runtime' | 'denoVersion'>[]
+): NativeAppDenoVersionView[] {
+  return apps
+    .filter((app) => app.runtime === 'deno')
+    .map((app) => {
+      const pinned = app.denoVersion?.trim()
+      return {
+        composeServiceName: app.composeServiceName,
+        denoVersion: denoRuntimeSeries(pinned || DEFAULT_NATIVE_APP_DENO_SERIES),
+        source: pinned ? ('compose' as const) : ('default' as const),
+      }
+    })
+}
+
+/** One native app's {@link NativeAppVariableView} list. */
+export type NativeAppVariablesView = {
+  composeServiceName: string
+  variables: NativeAppVariableView[]
 }
 
 export type DeployPrepareError =
@@ -504,6 +581,10 @@ export type DeployPrepareError =
       composeServiceName: string
       serviceKind: 'site' | 'node'
     }
+  | {
+      kind: 'native_app_unresolved_service'
+      composeServiceName: string
+    }
   /**
    * A `x-turbopanel.hosting` entry named a certificate or a managed address
    * this organization does not have (or names two by the same label).
@@ -528,6 +609,13 @@ export type DeployPrepareError =
   /** A PHP site asks for a mode its engine, organization or server does not offer. */
   | PhpModePrepareError
   | SiteEngineFeatureError
+  /** A Deno app goes to a daemon that cannot run it, or asks for a series nothing offers. */
+  | DenoAppFeatureError
+  /**
+   * The repository asks for a Node version no offered series satisfies, names
+   * one that is not a version range, or (a deploy only) could not be read.
+   */
+  | NodeVersionPrepareError
   | { kind: 'source_principal_ambiguous'; composeServiceName: string }
   | {
       kind: 'source_ref_unresolved'
@@ -537,6 +625,7 @@ export type DeployPrepareError =
       message: string
     }
   | { kind: 'binding_endpoint_unavailable' }
+  | { kind: 'binding_host_site_unsupported'; message: string }
   | {
       kind: 'variable_unresolved'
       message: string
@@ -615,14 +704,23 @@ async function emptyPreparedCompose(
     composeServiceExpansion: {},
     volumes: [],
     warnings,
+    nativeAppVariables: [],
+    nativeAppNodeVersions: [],
+    nativeAppDenoVersions: [],
   }
 }
 
 type HardDeployPrepareError =
   | { kind: 'datacenter_ip_required'; serverId: string }
+  // Hard in preview too: a PHP site cannot reach this database, however it is previewed.
+  | { kind: 'binding_host_site_unsupported'; message: string }
   // Hard in preview too: the site would not come up in the mode it asks for.
   | PhpModePrepareError
   | SiteEngineFeatureError
+  // Hard in preview too: a Deno app sent to a daemon that cannot run it would start on Node.
+  | DenoAppFeatureError
+  // Hard in preview too: the build would get a Node the app says it cannot run on.
+  | NodeVersionPrepareError
   // Hard in preview too: previewing a deploy that would silently ignore a field
   // — or that would be refused the moment it was run for real — is exactly the
   // reassurance an operator must not be given.
@@ -662,6 +760,10 @@ type HardDeployPrepareError =
       primaryServerId: string | null
       scheduledServerId: string
       serviceId: string
+    }
+  | {
+      kind: 'native_app_unresolved_service'
+      composeServiceName: string
     }
 
 function warningFromPrepareError(
@@ -747,14 +849,21 @@ function warningFromPrepareError(
   }
 }
 
-async function sealVariableMaterialForDaemon(
+type DaemonSealContext = {
+  secretsConfig: SecretsConfig
+  dataEncryptionSecrets: DerivedSecretsConfig
+  recipient: { serverId: string; keyId: string }
+}
+
+/**
+ * What sealing a stored secret for one server's daemon needs, or the refusal
+ * the deploy answers with (`503` no encryption key, `422` no active daemon key).
+ */
+async function resolveDaemonSealContext(
   c: Context<AppEnv>,
   db: Db,
-  serverId: string,
-  material: DeployVariableMaterial[]
-): Promise<EnvironmentDeployVariableMaterial[] | Response> {
-  if (material.length === 0) return []
-
+  serverId: string
+): Promise<DaemonSealContext | Response> {
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   const secretsConfig = c.get('secretsConfig')
   if (!dataEncryptionSecrets || !secretsConfig) {
@@ -775,9 +884,24 @@ async function sealVariableMaterialForDaemon(
       { status: 422 }
     )
   }
-  const keyId = daemonState.key.id
+  return {
+    secretsConfig,
+    dataEncryptionSecrets,
+    recipient: { serverId, keyId: daemonState.key.id },
+  }
+}
 
-  const recipient = { serverId, keyId }
+async function sealVariableMaterialForDaemon(
+  c: Context<AppEnv>,
+  db: Db,
+  serverId: string,
+  material: DeployVariableMaterial[]
+): Promise<EnvironmentDeployVariableMaterial[] | Response> {
+  if (material.length === 0) return []
+
+  const sealing = await resolveDaemonSealContext(c, db, serverId)
+  if (sealing instanceof Response) return sealing
+  const { secretsConfig, dataEncryptionSecrets, recipient } = sealing
   // Pure crypto per entry (no DB, no shared state): seal them concurrently.
   return await Promise.all(
     material.map(async (entry) => {
@@ -801,6 +925,48 @@ async function sealVariableMaterialForDaemon(
         forRuntime: entry.forRuntime,
         isLiteral: entry.isLiteral,
         valueEnvelope: envelope,
+      }
+    })
+  )
+}
+
+/**
+ * Secret runtime variables of a site's hostings, resealed for the daemon.
+ *
+ * `hosting-web-env` hands them over still sealed under the control plane's own
+ * key (`tpsecret`), so a plaintext never exists on this path; here each is
+ * resealed for the target daemon, which decrypts it on the host. A deploy with
+ * no secret site variable needs no daemon key and is returned as is.
+ */
+export async function sealHostingWebSecretsForDaemon(
+  c: Context<AppEnv>,
+  db: Db,
+  serverId: string,
+  hostings: DeployHostingPayload[]
+): Promise<DeployHostingPayload[] | Response> {
+  if (!hostings.some((entry) => entry.web?.secretEnv !== undefined)) {
+    return hostings
+  }
+
+  const sealing = await resolveDaemonSealContext(c, db, serverId)
+  if (sealing instanceof Response) return sealing
+  const { secretsConfig, dataEncryptionSecrets, recipient } = sealing
+  return await Promise.all(
+    hostings.map(async (entry) => {
+      const secretEnv = entry.web?.secretEnv
+      if (!entry.web || secretEnv === undefined) return entry
+      const names = Object.keys(secretEnv)
+      const envelopes = await Promise.all(
+        names.map((name) =>
+          resealSecretForDaemon(secretsConfig, dataEncryptionSecrets, recipient, secretEnv[name]!)
+        )
+      )
+      return {
+        ...entry,
+        web: {
+          ...entry.web,
+          secretEnv: Object.fromEntries(names.map((n, i) => [n, envelopes[i]!])),
+        },
       }
     })
   )
@@ -1198,10 +1364,6 @@ export async function loadPrincipalMaterial(
     .from(principal)
     .where(inArray(principal.id, uniqueIds))
 
-  // Explicit grants. The daemon reconciles unix group membership from exactly
-  // this set — it never derives entitlements itself, because a derived grant
-  // could only ever be added and would therefore never be revocable.
-  const entitlements = await loadEntitlementsByPrincipalIds(db, uniqueIds)
   // Always present for every id asked about, so `[]` genuinely means "this
   // account holds no keys" rather than "we did not look".
   const sshKeys = await loadSshKeysByPrincipalIds(db, uniqueIds)
@@ -1210,10 +1372,6 @@ export async function loadPrincipalMaterial(
   for (const row of rows) {
     const options = parsePrincipalOptions(row.options)
     const override = resolvePrincipalIdOverride(options)
-    const runtimes = (entitlements.get(row.id) ?? []).map((entry) => ({
-      runtime: entry.runtime,
-      series: entry.series,
-    }))
     const shell = resolvePrincipalShell(options)
     const keys = sshKeys.get(row.id) ?? []
     // Password sign-in is on exactly when the row holds a crypt hash. The
@@ -1238,7 +1396,6 @@ export async function loadPrincipalMaterial(
       sshKeys: keys,
       ...(passwordHash === undefined ? {} : { passwordHash }),
       ...(override ? { uid: override.uid, gid: override.gid } : {}),
-      ...(runtimes.length > 0 ? { runtimes } : {}),
     })
   }
   return material
@@ -1335,6 +1492,17 @@ async function mapResolvedVariablesToDeployEntries(
   )
 }
 
+/** Label each effective entry with the scope that set it (see {@link resolveVariableSource}). */
+function tagVariableSources(
+  entries: readonly DeployVariableEntry[],
+  scopes: ResolvedVariableScopes
+): DeployVariableEntry[] {
+  return entries.map((entry) => {
+    const source = resolveVariableSource(entry.key, entry.bindingId, scopes)
+    return source === undefined ? entry : { ...entry, source }
+  })
+}
+
 type ServiceRow = {
   id: string
   composeServiceName: string
@@ -1367,7 +1535,9 @@ async function resolveDeployVariableBuckets(
     serverVars,
     params.dataEncryptionSecrets
   )
-  const serverScopeMap = new Map(serverScopeEntries.map((entry) => [entry.key, entry]))
+  const serverScopeMap = new Map(
+    serverScopeEntries.map((entry) => [entry.key, { ...entry, source: 'server' }])
+  )
 
   const composeServices = params.composeServiceNames
   const globalEntries: DeployVariableEntry[] = composeServices.length === 0 ? fallbackEntries : []
@@ -1397,15 +1567,15 @@ async function resolveDeployVariableBuckets(
         const hostingMap = await mergeHostingVariablesForService(db, row.id, bundle.inherited)
         await reapplyBindingOwnedVariables(db, row.id, bundle.inherited)
         const mergedServer = new Map([...bundle.inherited, ...serverVars])
-        cached = await mapResolvedVariablesToDeployEntries(
-          mergedServer,
-          params.dataEncryptionSecrets
-        )
         const scopeMaps: ResolvedVariableScopes = {
           ...bundle.scopes,
           hosting: hostingMap,
           server: serverVars,
         }
+        cached = tagVariableSources(
+          await mapResolvedVariablesToDeployEntries(mergedServer, params.dataEncryptionSecrets),
+          scopeMaps
+        )
         cachedScopes = await mapResolvedScopesToDeployEntries(
           scopeMaps,
           params.dataEncryptionSecrets
@@ -1443,9 +1613,63 @@ async function mapResolvedScopesToDeployEntries(
   for (const item of decrypted) {
     if (!item) continue
     const [scope, entries] = item
-    out[scope as keyof VariableScopeEntryMap] = new Map(entries.map((entry) => [entry.key, entry]))
+    // A `{$project.KEY}` reference reads from here, so the entry carries the
+    // scope it was found in (the list people read says where a value came from).
+    out[scope as keyof VariableScopeEntryMap] = new Map(
+      entries.map((entry) => [entry.key, { ...entry, source: scope }])
+    )
   }
   return out
+}
+
+/** `{ variables }` for the wire, or nothing when the app has none (its payload stays as it was). */
+function nativeAppVariablesField(resolved: NativeAppVariables | undefined): {
+  variables?: NativeAppVariables['variables']
+} {
+  return resolved && resolved.variables.length > 0 ? { variables: resolved.variables } : {}
+}
+
+/**
+ * What each native app's process gets, from what the variables module recorded
+ * for it (see {@link buildNativeAppVariables}).
+ */
+function resolveNativeAppVariables(
+  apps: readonly NativeAppServiceSpec[],
+  applied: Pick<ApplyVariablesResult, 'runtimeAssignments' | 'unreferencedSecrets'>
+): Map<string, NativeAppVariables> {
+  return new Map(
+    apps.map((app) => [
+      app.composeServiceName,
+      buildNativeAppVariables(
+        applied.runtimeAssignments.get(app.composeServiceName) ?? [],
+        app,
+        applied.unreferencedSecrets.get(app.composeServiceName) ?? []
+      ),
+    ])
+  )
+}
+
+/** The lists people read, for the native apps that run on this server. */
+function nativeAppVariableViews(
+  apps: readonly { composeServiceName: string }[],
+  variables: ReadonlyMap<string, NativeAppVariables>
+): NativeAppVariablesView[] {
+  return apps.map((app) => ({
+    composeServiceName: app.composeServiceName,
+    variables: variables.get(app.composeServiceName)?.view ?? [],
+  }))
+}
+
+/** Compose keys of the services that run as native (`serviceKind: node`) apps. */
+function nativeComposeServiceNames(document: ComposeDocument): Set<string> {
+  const services = isPlainObject(document.data.services)
+    ? (document.data.services as Record<string, unknown>)
+    : {}
+  return new Set(
+    Object.entries(services)
+      .filter(([, raw]) => isPlainObject(raw) && isNodeComposeService(raw))
+      .map(([name]) => name)
+  )
 }
 
 function listContainerComposeNames(document: ComposeDocument): Set<string> {
@@ -1768,49 +1992,135 @@ function nativeAppServicesForDeploy(
   resolvedServices: readonly ResolvedService[],
   orgOptions: unknown,
   serverOptions: unknown,
-  tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]> = new Map()
-): PreparedNativeAppService[] {
+  tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]> = new Map(),
+  variablesByComposeName: ReadonlyMap<string, NativeAppVariables> = new Map()
+):
+  | PreparedNativeAppService[]
+  | Extract<DeployPrepareError, { kind: 'native_app_unresolved_service' }> {
   if (apps.length === 0) return []
   const accountLimits = effectiveAccountLimits(orgOptions, serverOptions)
   const resourcesByComposeName = new Map(
     resolvedServices.map((entry) => [entry.composeServiceName, entry.resources] as const)
   )
-  return apps.map((app) => {
-    const cron = renderCronForDeploy(app.cron, tasksByComposeName.get(app.composeServiceName))
-    const resources = resourcesByComposeName.get(app.composeServiceName)
-    const cpus = resources?.cpus
-    const memoryBytes = resources?.memoryBytes
-    const perApp =
-      cpus === undefined && memoryBytes === undefined
-        ? undefined
-        : {
-            ...(cpus === undefined ? {} : { cpus }),
-            ...(memoryBytes === undefined ? {} : { memoryBytes }),
-          }
-    return {
-      composeServiceName: app.composeServiceName,
-      listenPort: app.listenPort,
-      framework: app.framework,
-      ...(app.nodeVersion === undefined ? {} : { nodeVersion: app.nodeVersion }),
-      ...(app.appMode === undefined ? {} : { appMode: app.appMode }),
-      ...(app.enabled === undefined ? {} : { enabled: app.enabled }),
-      ...(app.startupFile === undefined ? {} : { startupFile: app.startupFile }),
-      // Plain Compose keys, read off the service body by the native split
-      // before the service left the compose document. They ride the payload
-      // rather than stopping here: the `node` service is removed from runtime
-      // compose entirely, so the generated unit is the only thing left that
-      // can honour a restart policy or record service labels.
-      ...(app.restartPolicy === undefined ? {} : { restartPolicy: app.restartPolicy }),
-      ...(app.serviceLabels === undefined ? {} : { serviceLabels: app.serviceLabels }),
-      ...(perApp === undefined ? {} : { resources: perApp }),
-      ...(accountLimits === undefined ? {} : { accountLimits }),
-      // A node app always runs as the principal that owns its release tree, so
-      // unlike a site there is no unowned case to refuse here — the daemon
-      // resolves the account from the same binding it builds for the app's own
-      // unit. Translation still happens exactly once, in `renderCronForDeploy`.
-      ...(cron.length === 0 ? {} : { cron }),
+  const serviceIdByComposeName = new Map(
+    resolvedServices.map((entry) => [entry.composeServiceName, entry.serviceId] as const)
+  )
+  const out: PreparedNativeAppService[] = []
+  for (const app of apps) {
+    const turboServiceId = serviceIdByComposeName.get(app.composeServiceName)
+    if (!turboServiceId) {
+      return {
+        kind: 'native_app_unresolved_service',
+        composeServiceName: app.composeServiceName,
+      }
     }
-  })
+    out.push(
+      nativeAppServiceForDeploy(
+        app,
+        turboServiceId,
+        resourcesByComposeName.get(app.composeServiceName),
+        accountLimits,
+        renderCronForDeploy(app.cron, tasksByComposeName.get(app.composeServiceName)),
+        variablesByComposeName.get(app.composeServiceName)
+      )
+    )
+  }
+  return out
+}
+
+function resolveLocalNativeAppServicesForDeploy(
+  nativeApps: readonly NativeAppServiceSpec[],
+  withVariables: Pick<ApplyVariablesResult, 'runtimeAssignments' | 'unreferencedSecrets'>,
+  resolvedServices: readonly ResolvedService[],
+  orgOptions: unknown,
+  serverOptions: unknown,
+  tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]>,
+  localServiceNames?: ReadonlySet<string>
+):
+  | {
+      localNativeApps: PreparedNativeAppService[]
+      nativeVariables: Map<string, NativeAppVariables>
+    }
+  | Extract<DeployPrepareError, { kind: 'native_app_unresolved_service' }> {
+  const nativeVariables = resolveNativeAppVariables(nativeApps, withVariables)
+  const nativeAppsForWire = nativeAppServicesForDeploy(
+    nativeApps,
+    resolvedServices,
+    orgOptions,
+    serverOptions,
+    tasksByComposeName,
+    nativeVariables
+  )
+  if ('kind' in nativeAppsForWire) return nativeAppsForWire
+  return {
+    localNativeApps: sitesOnScheduledServer(nativeAppsForWire, localServiceNames),
+    nativeVariables,
+  }
+}
+
+/** The per-app resource ceiling the daemon turns into unit limits, when the app set one. */
+function nativeAppResourcesForWire(resources: ResolvedService['resources'] | undefined): {
+  resources?: { cpus?: number; memoryBytes?: number }
+} {
+  const cpus = resources?.cpus
+  const memoryBytes = resources?.memoryBytes
+  if (cpus === undefined && memoryBytes === undefined) return {}
+  return {
+    resources: {
+      ...(cpus === undefined ? {} : { cpus }),
+      ...(memoryBytes === undefined ? {} : { memoryBytes }),
+    },
+  }
+}
+
+/**
+ * The runtime and start fields of one app, each only when the app set it, so a
+ * Node app's payload carries neither `runtime` nor `denoVersion`.
+ */
+function nativeAppRuntimeFieldsForWire(app: NativeAppServiceSpec) {
+  return {
+    ...(app.nodeVersion === undefined ? {} : { nodeVersion: app.nodeVersion }),
+    ...(app.runtime === 'deno' ? { runtime: 'deno' as const } : {}),
+    ...(app.denoVersion === undefined ? {} : { denoVersion: app.denoVersion }),
+    ...(app.appMode === undefined ? {} : { appMode: app.appMode }),
+    ...(app.enabled === undefined ? {} : { enabled: app.enabled }),
+    ...(app.startupFile === undefined ? {} : { startupFile: app.startupFile }),
+  }
+}
+
+function nativeAppServiceForDeploy(
+  app: NativeAppServiceSpec,
+  turboServiceId: string,
+  resources: ResolvedService['resources'] | undefined,
+  accountLimits: ReturnType<typeof effectiveAccountLimits>,
+  cron: ReturnType<typeof renderCronForDeploy>,
+  variables: NativeAppVariables | undefined
+): PreparedNativeAppService {
+  return {
+    composeServiceName: app.composeServiceName,
+    serviceId: turboServiceId,
+    listenPort: app.listenPort,
+    framework: app.framework,
+    ...nativeAppRuntimeFieldsForWire(app),
+    // Plain Compose keys, read off the service body by the native split
+    // before the service left the compose document. They ride the payload
+    // rather than stopping here: the `node` service is removed from runtime
+    // compose entirely, so the generated unit is the only thing left that
+    // can honour a restart policy or record service labels.
+    ...(app.restartPolicy === undefined ? {} : { restartPolicy: app.restartPolicy }),
+    ...(app.serviceLabels === undefined ? {} : { serviceLabels: app.serviceLabels }),
+    ...nativeAppResourcesForWire(resources),
+    ...(accountLimits === undefined ? {} : { accountLimits }),
+    // A node app always runs as the principal that owns its release tree, so
+    // unlike a site there is no unowned case to refuse here — the daemon
+    // resolves the account from the same binding it builds for the app's own
+    // unit. Translation still happens exactly once, in `renderCronForDeploy`.
+    ...(cron.length === 0 ? {} : { cron }),
+    // The `node` service left the compose document, and with it the
+    // `environment:` the variables module built — this list is the only way
+    // its variables reach the process.
+    ...nativeAppVariablesField(variables),
+  }
 }
 
 /**
@@ -2051,12 +2361,27 @@ async function resolveBindingMaterializationOutcome(
   db: Db,
   dataEncryptionSecrets: Parameters<typeof decryptSecret>[0] | undefined,
   serviceIds: string[],
-  mode: DeployPrepareMode
+  mode: DeployPrepareMode,
+  deliveries?: ReadonlyMap<string, BindingDelivery>
 ): Promise<BindingMaterializationOutcome> {
   if (!dataEncryptionSecrets) return { kind: 'ok' }
 
-  const bindResult = await materializeBindingsForServices(db, dataEncryptionSecrets, serviceIds)
+  const bindResult = await materializeBindingsForServices(
+    db,
+    dataEncryptionSecrets,
+    serviceIds,
+    deliveries
+  )
   if ('ok' in bindResult) return { kind: 'ok' }
+  if (bindResult.kind === 'binding_host_site_unsupported') {
+    return {
+      kind: 'error',
+      error: {
+        kind: 'binding_host_site_unsupported',
+        message: bindResult.message,
+      },
+    }
+  }
 
   const isSoftBindingError =
     bindResult.kind === 'binding_endpoint_unavailable' ||
@@ -2164,6 +2489,43 @@ async function prepareLocalSourceMaterial(
   const forMode = resolveSourceMaterialForMode(args.mode, args.warnings, resolved)
   if (!Array.isArray(forMode)) return forMode
   return sitesOnScheduledServer(forMode, args.localServiceNames)
+}
+
+/**
+ * {@link prepareLocalSourceMaterial}, then the Node series of every native app
+ * that names none, read from its repository at the commit just resolved (see
+ * `deploy-node-version.ts`).
+ */
+async function prepareLocalSourcesWithNodeVersions(
+  c: Context<AppEnv>,
+  db: Db,
+  args: Parameters<typeof prepareLocalSourceMaterial>[2] & {
+    nativeApps: readonly PreparedNativeAppService[]
+  }
+): Promise<
+  | {
+      sourceMaterial: EnvironmentDeploySource[]
+      nodeVersions: {
+        apps: PreparedNativeAppService[]
+        views: NativeAppNodeVersionView[]
+      }
+    }
+  | DeployPrepareError
+  | Response
+> {
+  const sourceMaterial = await prepareLocalSourceMaterial(c, db, args)
+  if (!Array.isArray(sourceMaterial)) return sourceMaterial
+  return await resolveSourceNodeVersions(args.nativeApps, sourceMaterial, {
+    mode: args.mode,
+    warnings: args.warnings,
+    read: repositoryNodeVersionReader(c, db, {
+      organizationId: args.params.organizationId,
+      serverId: args.params.serverId,
+    }),
+    ...(args.params.rollback === undefined
+      ? {}
+      : { rollbackPins: args.params.rollback.releaseByService }),
+  })
 }
 
 /**
@@ -2342,6 +2704,9 @@ async function toPreparedDeployResult(
     principalMaterial: EnvironmentDeployPrincipalMaterial[]
     sites: EnvironmentDeploySite[]
     nativeAppServices: PreparedNativeAppService[]
+    nativeAppVariables?: NativeAppVariablesView[]
+    nativeAppNodeVersions?: NativeAppNodeVersionView[]
+    nativeAppDenoVersions?: NativeAppDenoVersionView[]
     sourceMaterial: EnvironmentDeploySource[]
     dockerExternalNetworks: string[]
     dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
@@ -2383,6 +2748,9 @@ async function toPreparedDeployResult(
     principalMaterial: parts.principalMaterial,
     sites: parts.sites,
     nativeAppServices: parts.nativeAppServices,
+    nativeAppVariables: parts.nativeAppVariables ?? [],
+    nativeAppNodeVersions: parts.nativeAppNodeVersions ?? [],
+    nativeAppDenoVersions: parts.nativeAppDenoVersions ?? [],
     sourceMaterial: parts.sourceMaterial,
     dockerExternalNetworks: parts.dockerExternalNetworks,
     dockerNetworkAddressing: parts.dockerNetworkAddressing
@@ -2646,7 +3014,10 @@ async function reconcileComposeDeclaredRows(
     db,
     c.get('dataEncryptionSecrets'),
     serviceRows.map((r) => r.id),
-    args.mode
+    args.mode,
+    // What the document says each service is: a site or native app dials the
+    // proxy on loopback, a container service by container name.
+    deliveryByServiceId(hostRunDeliveryByComposeName(args.merged.data), serviceRows)
   )
   const bindingErr = absorbBindingOutcome(args.warnings, bindingOutcome)
   if (bindingErr) return { ok: false, failure: bindingErr }
@@ -2731,18 +3102,242 @@ async function resolveManagedNetworkHostName(
 }
 
 /**
- * Persist the runtime entitlements this deploy implies (Node for native apps,
- * PHP for per-site FastCGI / php-fpm runtimes).
- *
- * Preview must not write. Empty lists are a no-op inside the store helper.
+ * Everything that depends on which runtime each local native app runs: the
+ * Deno feature gate and the repository's Node version. The first refusal wins;
+ * a Deno app is refused before anything reads it as Node.
  */
-async function persistDeployRuntimeEntitlements(
+async function prepareNativeAppRuntimes(
+  c: Context<AppEnv>,
   db: Db,
-  mode: DeployPrepareMode,
-  entitlements: readonly DeployRuntimeEntitlement[]
-): Promise<void> {
-  if (mode === 'preview') return
-  await insertDeployEntitlementsIfMissing(db, entitlements)
+  args: Omit<Parameters<typeof prepareLocalSourcesWithNodeVersions>[2], 'nativeApps'> & {
+    nativeApps: readonly PreparedNativeAppService[]
+  }
+): Promise<
+  | {
+      localSourceMaterial: EnvironmentDeploySource[]
+      nodeVersions: {
+        apps: PreparedNativeAppService[]
+        views: NativeAppNodeVersionView[]
+      }
+    }
+  | DeployPrepareError
+  | Response
+> {
+  // A rollback runs each app on the runtime its release ran on.
+  const nativeApps = withRecordedRuntimes(args.nativeApps, args.params.rollback?.releaseByService)
+  const denoGate = await withDenoNativeApps(db, args.params.serverId, nativeApps)
+  if ('kind' in denoGate) return denoGate
+
+  // An app with no `nodeVersion` gets one here from its repository at the
+  // commit being deployed.
+  const localSources = await prepareLocalSourcesWithNodeVersions(c, db, {
+    ...args,
+    nativeApps,
+  })
+  if (!('sourceMaterial' in localSources)) return localSources
+  const { sourceMaterial: localSourceMaterial, nodeVersions } = localSources
+
+  return { localSourceMaterial, nodeVersions }
+}
+
+async function resolveLocalNativeAppsAndRuntimes(
+  c: Context<AppEnv>,
+  db: Db,
+  args: {
+    mode: DeployPrepareMode
+    warnings: DeployPrepareWarning[]
+    params: {
+      environmentId: string
+      serverId: string
+      organizationId: string
+      rollback?: DeployRollbackRequest
+    }
+    merged: Parameters<typeof prepareNativeAppRuntimes>[2]['merged']
+    serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>
+    principalMaterial: EnvironmentDeployPrincipalMaterial[]
+    principalResolution: ComposePrincipalResolution
+    split: ReturnType<typeof splitHostNativeFromDocument>
+    withVariables: ApplyVariablesResult
+    resolvedServices: readonly ResolvedService[]
+    orgOptions: unknown
+    serverOptions: unknown
+    tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]>
+    localServiceNames?: ReadonlySet<string>
+  }
+): Promise<
+  | {
+      localNativeApps: PreparedNativeAppService[]
+      nativeVariables: Map<string, NativeAppVariables>
+      localSourceMaterial: EnvironmentDeploySource[]
+      nodeVersions: {
+        apps: PreparedNativeAppService[]
+        views: NativeAppNodeVersionView[]
+      }
+    }
+  | DeployPrepareError
+  | Response
+> {
+  const localNativeAppsOrError = resolveLocalNativeAppServicesForDeploy(
+    args.split.nativeApps,
+    args.withVariables,
+    args.resolvedServices,
+    args.orgOptions,
+    args.serverOptions,
+    args.tasksByComposeName,
+    args.localServiceNames
+  )
+  if ('kind' in localNativeAppsOrError) return localNativeAppsOrError
+  const { localNativeApps, nativeVariables } = localNativeAppsOrError
+
+  const runtimes = await prepareNativeAppRuntimes(c, db, {
+    mode: args.mode,
+    warnings: args.warnings,
+    params: args.params,
+    merged: args.merged,
+    serviceRows: args.serviceRows,
+    principalMaterial: args.principalMaterial,
+    principalResolution: args.principalResolution,
+    localServiceNames: args.localServiceNames,
+    nativeApps: localNativeApps,
+  })
+  if ('kind' in runtimes || runtimes instanceof Response) return runtimes
+
+  return {
+    localNativeApps,
+    nativeVariables,
+    localSourceMaterial: runtimes.localSourceMaterial,
+    nodeVersions: runtimes.nodeVersions,
+  }
+}
+
+async function resolveLocalSitesBoundForDeploy(
+  c: Context<AppEnv>,
+  db: Db,
+  args: {
+    mode: DeployPrepareMode
+    warnings: DeployPrepareWarning[]
+    params: { environmentId: string; serverId: string; organizationId: string }
+    pipeline: { localServiceNames?: ReadonlySet<string> }
+    split: ReturnType<typeof splitHostNativeFromDocument>
+    orgOptions: unknown
+    serverOptions: unknown
+    serviceRows: ServiceRow[]
+    principalMaterial: EnvironmentDeployPrincipalMaterial[]
+    principalResolution: ComposePrincipalResolution
+    tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]>
+  }
+): Promise<EnvironmentDeploySite[] | DeployPrepareError> {
+  const phpDaemonState = await getServerDaemonStateByServerId(db, args.params.serverId)
+  const siteResolved = await withSitePhpModes(
+    db,
+    {
+      daemonRunsModes:
+        phpDaemonState?.projection?.features?.includes(PHP_SITE_MODES_FEATURE) === true,
+      environmentId: args.params.environmentId,
+      serverId: args.params.serverId,
+      localServiceNames: args.pipeline.localServiceNames,
+      specs: args.split.sites,
+      orgOptions: args.orgOptions,
+      serverOptions: args.serverOptions,
+      warnings: args.warnings,
+    },
+    resolveSitesForMode(
+      args.mode,
+      args.warnings,
+      await attachPrincipalsToSites(
+        db,
+        args.params.environmentId,
+        args.serviceRows,
+        args.principalMaterial,
+        args.split.sites,
+        args.principalResolution,
+        args.tasksByComposeName
+      ),
+      args.split.sites
+    )
+  )
+  if ('kind' in siteResolved) return siteResolved
+  const localSite = sitesOnScheduledServer(siteResolved, args.pipeline.localServiceNames)
+  const engineGate = await withSiteEngineFeature(db, args.params.serverId, localSite)
+  if ('kind' in engineGate) return engineGate
+  const dbBindingWarnings: SiteDbBindingsWarning[] = []
+  const localSiteBound = await withSiteDbBindings(db, c.get('dataEncryptionSecrets'), {
+    organizationId: args.params.organizationId,
+    sites: localSite,
+    serviceRows: args.serviceRows,
+    daemonFeatures: phpDaemonState?.projection?.features ?? [],
+    warnings: dbBindingWarnings,
+  })
+  args.warnings.push(...dbBindingWarnings)
+  return localSiteBound
+}
+
+async function allocateResolvedDeployPipelineForPrepare(
+  db: Db,
+  input: {
+    params: {
+      environmentId: string
+      serverId: string
+      organizationId: string
+      schedule?: DeployScheduleSlice
+      acknowledgeHealthCheckWarnings?: boolean
+    }
+    mode: DeployPrepareMode
+    warnings: DeployPrepareWarning[]
+    projectOptions: unknown
+    merged: ComposeDocument
+    composeServiceNames: string[]
+    serviceRows: ServiceRow[]
+    orgOptions: unknown
+    serverOptions: unknown
+    application: Application
+    principalResolution: ComposePrincipalResolution
+  }
+): Promise<
+  | {
+      pipeline: Awaited<ReturnType<typeof allocateExpandDeployPipeline>>
+      resolved: ResolvedApplication
+    }
+  | DeployPrepareError
+  | Response
+> {
+  const pipeline = await allocateExpandDeployPipeline(db, {
+    environmentId: input.params.environmentId,
+    serverId: input.params.serverId,
+    organizationId: input.params.organizationId,
+    projectOptions: input.projectOptions,
+    merged: input.merged,
+    composeServiceNames: input.composeServiceNames,
+    serviceRows: input.serviceRows,
+    schedule: input.params.schedule,
+    deployHooks: resolveDeployHooksEnabled(parseOrganizationOptions(input.orgOptions)),
+  })
+
+  const resolved = buildResolvedApplication({
+    serverId: input.params.serverId,
+    application: input.application,
+    serviceRows: input.serviceRows,
+    ...(input.params.schedule ? { slots: input.params.schedule.slots } : {}),
+    containers: pipeline.containers,
+    expansion: pipeline.expansion,
+    principals: input.principalResolution,
+    resourcesByComposeServiceName: resolvedResourcesByComposeName(pipeline.optionsByComposeName),
+  })
+
+  const gateErr = await resolvedPlacementGateError(db, {
+    mode: input.mode,
+    warnings: input.warnings,
+    environmentId: input.params.environmentId,
+    serverId: input.params.serverId,
+    acknowledgeHealthCheckWarnings: input.params.acknowledgeHealthCheckWarnings,
+    resolved,
+    pipeline,
+    orgOptions: input.orgOptions,
+    serverOptions: input.serverOptions,
+  })
+  if (gateErr) return gateErr
+
+  return { pipeline, resolved }
 }
 
 export async function prepareDeployCompose(
@@ -2832,46 +3427,23 @@ export async function prepareDeployCompose(
   if (!declared.ok) return declared.failure
   const { serviceRows, principalResolution } = declared
 
-  const pipeline = await allocateExpandDeployPipeline(db, {
-    environmentId: params.environmentId,
-    serverId: params.serverId,
-    organizationId: params.organizationId,
+  const pipelineResolved = await allocateResolvedDeployPipelineForPrepare(db, {
+    params,
+    mode,
+    warnings,
     projectOptions: projectRow.options,
     merged,
     composeServiceNames,
     serviceRows,
-    schedule: params.schedule,
-    deployHooks: resolveDeployHooksEnabled(parseOrganizationOptions(orgRow?.options)),
-  })
-
-  // Stage 3: the same services after the control plane answered what the
-  // document could not — which `service.id` each compose key became, which
-  // `principal.id` each alias materialized into, where the scheduler put every
-  // replica, which containers were allocated. A projection over values already
-  // computed above, so naming the stage cannot change placement.
-  const resolved: ResolvedApplication = buildResolvedApplication({
-    serverId: params.serverId,
-    application,
-    serviceRows,
-    ...(params.schedule ? { slots: params.schedule.slots } : {}),
-    containers: pipeline.containers,
-    expansion: pipeline.expansion,
-    principals: principalResolution,
-    resourcesByComposeServiceName: resolvedResourcesByComposeName(pipeline.optionsByComposeName),
-  })
-
-  const gateErr = await resolvedPlacementGateError(db, {
-    mode,
-    warnings,
-    environmentId: params.environmentId,
-    serverId: params.serverId,
-    acknowledgeHealthCheckWarnings: params.acknowledgeHealthCheckWarnings,
-    resolved,
-    pipeline,
     orgOptions: orgRow?.options,
     serverOptions: serverRow?.options,
+    application,
+    principalResolution,
   })
-  if (gateErr) return gateErr
+  if ('kind' in pipelineResolved || pipelineResolved instanceof Response) {
+    return pipelineResolved
+  }
+  const { pipeline, resolved } = pipelineResolved
 
   const serviceRowByCloneName = buildServiceRowByCloneName(serviceRows, pipeline.expansion)
   const {
@@ -2892,6 +3464,7 @@ export async function prepareDeployCompose(
     globalEntries,
     perServiceEntries,
     perServiceScopes,
+    nativeServiceNames: nativeComposeServiceNames(pipeline.expandedDocument),
     projectId: envRow.projectId,
     environmentId: params.environmentId,
   })
@@ -2960,52 +3533,23 @@ export async function prepareDeployCompose(
   // Task rows (`POST /tasks`) join compose-authored cron on the wire for
   // sites and native apps alike — loaded once here, keyed by compose name.
   const tasksByComposeName = await loadTasksByComposeServiceName(db, serviceRows)
-  const phpDaemonState = await getServerDaemonStateByServerId(db, params.serverId)
-  const siteResolved = await withSitePhpModes(
-    db,
-    {
-      daemonRunsModes:
-        phpDaemonState?.projection?.features?.includes(PHP_SITE_MODES_FEATURE) === true,
-      environmentId: params.environmentId,
-      serverId: params.serverId,
-      localServiceNames: pipeline.localServiceNames,
-      specs: split.sites,
-      orgOptions: orgRow?.options,
-      serverOptions: serverRow?.options,
-      warnings,
-    },
-    resolveSitesForMode(
-      mode,
-      warnings,
-      await attachPrincipalsToSites(
-        db,
-        params.environmentId,
-        serviceRows,
-        principalMaterial,
-        split.sites,
-        principalResolution,
-        tasksByComposeName
-      ),
-      split.sites
-    )
-  )
-  if ('kind' in siteResolved) return siteResolved
-  const localSite = sitesOnScheduledServer(siteResolved, pipeline.localServiceNames)
-  const engineGate = await withSiteEngineFeature(db, params.serverId, localSite)
-  if ('kind' in engineGate) return engineGate
+  const localSiteBoundOrError = await resolveLocalSitesBoundForDeploy(c, db, {
+    mode,
+    warnings,
+    params,
+    pipeline,
+    split,
+    orgOptions: orgRow?.options,
+    serverOptions: serverRow?.options,
+    serviceRows,
+    principalMaterial,
+    principalResolution,
+    tasksByComposeName,
+  })
+  if ('kind' in localSiteBoundOrError) return localSiteBoundOrError
+  const localSiteBound = localSiteBoundOrError
 
-  const localNativeApps = sitesOnScheduledServer(
-    nativeAppServicesForDeploy(
-      split.nativeApps,
-      resolved.services,
-      orgRow?.options,
-      serverRow?.options,
-      tasksByComposeName
-    ),
-    pipeline.localServiceNames
-  )
-
-  const localSourceMaterial = await prepareLocalSourceMaterial(c, db, {
+  const nativeLanes = await resolveLocalNativeAppsAndRuntimes(c, db, {
     mode,
     warnings,
     params,
@@ -3013,18 +3557,18 @@ export async function prepareDeployCompose(
     serviceRows,
     principalMaterial,
     principalResolution,
+    split,
+    withVariables,
+    resolvedServices: resolved.services,
+    orgOptions: orgRow?.options,
+    serverOptions: serverRow?.options,
+    tasksByComposeName,
     localServiceNames: pipeline.localServiceNames,
   })
-  if (!Array.isArray(localSourceMaterial)) return localSourceMaterial
-
-  const { principalMaterial: principalMaterialWithRuntimes, deployEntitlements } =
-    mergeDeployPrincipalRuntimes({
-      principalMaterial,
-      nativeAppServices: localNativeApps,
-      sourceMaterial: localSourceMaterial,
-      sites: localSite,
-    })
-  await persistDeployRuntimeEntitlements(db, mode, deployEntitlements)
+  if ('kind' in nativeLanes || nativeLanes instanceof Response) {
+    return nativeLanes
+  }
+  const { nativeVariables, localSourceMaterial, nodeVersions } = nativeLanes
 
   const dockerExternalNetworks = collectComposeExternalDockerNetworkNames(split.composeYaml)
   const externalNetworks = await resolveExternalNetworks(
@@ -3092,9 +3636,12 @@ export async function prepareDeployCompose(
     hooks,
     variableMaterial,
     storageMaterial,
-    principalMaterial: principalMaterialWithRuntimes,
-    sites: localSite,
-    nativeAppServices: localNativeApps,
+    principalMaterial,
+    sites: localSiteBound,
+    nativeAppServices: nodeVersions.apps,
+    nativeAppVariables: nativeAppVariableViews(nodeVersions.apps, nativeVariables),
+    nativeAppNodeVersions: nodeVersions.views,
+    nativeAppDenoVersions: nativeAppDenoVersionViews(nodeVersions.apps),
     sourceMaterial: localSourceMaterial,
     dockerExternalNetworks,
     dockerNetworkAddressing: externalNetworks.addressing,
@@ -3532,9 +4079,59 @@ type HostingRow = {
   ipId: string | null
 }
 
+/**
+ * Names a pinned certificate must cover. An uploaded pair is served as-is on
+ * every name the www mode adds, so it must list them all. A Let's Encrypt pin
+ * is issued by Caddy name by name in `acme` mode, so only the typed names are
+ * checked against the row (the www names get their own certificate).
+ */
+function pinCoverageNames(
+  pinId: string | null,
+  candidates: OrgTlsCandidate[],
+  hosting: Readonly<{ hostnames: string[]; www: HostingWwwMode }>
+): string[] {
+  const pinned = pinId ? candidates.find((candidate) => candidate.id === pinId) : undefined
+  return pinned?.source === 'lets_encrypt' ? hosting.hostnames : hostingCertificateNames(hosting)
+}
+
+/**
+ * The refusal for a pin that cannot serve the hosting. When the certificate
+ * covers the typed names and only misses names the www choice adds, say so in
+ * plain words, naming exactly the missing ones.
+ */
+function tlsPinErrorResponse(
+  error: Parameters<typeof tlsPinErrorCode>[0],
+  hostingId: string,
+  pinned: OrgTlsCandidate | undefined,
+  hosting: Readonly<{ hostnames: string[]; www: HostingWwwMode }>
+): Response {
+  const dnsNames = pinned?.metadata.dnsNames ?? []
+  const typedCovered = coversAllHostnames(dnsNames, hosting.hostnames)
+  const missing = hostingCertificateNames(hosting).filter(
+    (name) => !coversAllHostnames(dnsNames, [name])
+  )
+  const message =
+    error === 'pin_mismatch' && typedCovered && missing.length > 0
+      ? `The certificate on this hosting covers ${hosting.hostnames.join(
+          ', '
+        )} but not ${missing.join(
+          ', '
+        )}, which its www setting adds. Upload one that lists every name, or set www to "Only ${hosting.hostnames.join(
+          ', '
+        )}".`
+      : undefined
+  return Response.json(
+    {
+      error: tlsPinErrorCode(error),
+      hostingId,
+      ...(message ? { message } : {}),
+    },
+    { status: 400 }
+  )
+}
+
 async function resolveHttpHostingEntry(
   db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig,
   h: HostingRow,
   svc: Readonly<{ id: string; composeServiceName: string }>,
   candidates: OrgTlsCandidate[],
@@ -3548,20 +4145,22 @@ async function resolveHttpHostingEntry(
 > {
   const hostnames = readHostnames(h.options)
   if (hostnames.length === 0) return { skip: true }
+  const www = readWwwMode(h.options)
 
   // A revoked Let's Encrypt pin resolves as internal (`tlsId: null`) here —
   // do not treat it as `tls_pin_not_ready`. Deleted / mismatched pins still fail.
   const resolved = resolveTlsForHosting({
     pinId: h.tlsId,
-    hostnames,
+    hostnames: pinCoverageNames(h.tlsId, candidates, { hostnames, www }),
     candidates,
   })
   if (!resolved.ok) {
+    const pinned = candidates.find((candidate) => candidate.id === h.tlsId)
     return {
-      error: Response.json(
-        { error: tlsPinErrorCode(resolved.error), hostingId: h.id },
-        { status: 400 }
-      ),
+      error: tlsPinErrorResponse(resolved.error, h.id, pinned, {
+        hostnames,
+        www,
+      }),
     }
   }
 
@@ -3577,7 +4176,12 @@ async function resolveHttpHostingEntry(
   })
   if (!tlsWire.ok) {
     return {
-      error: Response.json({ error: tlsWire.error, hostingId: h.id }, { status: 400 }),
+      error: Response.json(
+        { error: tlsWire.error, hostingId: h.id },
+        {
+          status: 400,
+        }
+      ),
     }
   }
 
@@ -3590,7 +4194,7 @@ async function resolveHttpHostingEntry(
     return { prepareError: bindResolved }
   }
 
-  const web = await resolveHostingDeployWeb(db, dataEncryptionSecrets, h.id, h.options)
+  const web = await resolveHostingDeployWeb(db, h.id, h.options)
 
   return {
     entry: {
@@ -3603,6 +4207,7 @@ async function resolveHttpHostingEntry(
       tlsId: tlsWire.tlsId,
       ...(tlsWire.tlsMode === undefined ? {} : { tlsMode: tlsWire.tlsMode }),
       proxy: readHostingProxyFromOptions(h.options),
+      ...(www === 'off' ? {} : { www }),
       ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),
       ...(web === undefined ? {} : { web }),
     },
@@ -3620,7 +4225,11 @@ async function resolveTcpUdpHostingEntry(
   protocol: 'tcp' | 'udp',
   serverId: string
 ): Promise<
-  { entry: DeployHostingPayload } | { skip: true } | { prepareError: DeployPrepareError }
+  | { entry: DeployHostingPayload }
+  | { skip: true }
+  | {
+      prepareError: DeployPrepareError
+    }
 > {
   const ports = readHostingPorts(h.options)
   if (ports.length === 0) return { skip: true }
@@ -3649,7 +4258,6 @@ async function resolveTcpUdpHostingEntry(
 
 function resolveHostingEntry(
   db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig,
   h: HostingRow,
   svc: Readonly<{ id: string; composeServiceName: string }>,
   candidates: OrgTlsCandidate[],
@@ -3663,15 +4271,7 @@ function resolveHostingEntry(
 > {
   const protocol = readHostingProtocol(h.options)
   if (protocol === 'http') {
-    return resolveHttpHostingEntry(
-      db,
-      dataEncryptionSecrets,
-      h,
-      svc,
-      candidates,
-      serverId,
-      acmeEnabled
-    )
+    return resolveHttpHostingEntry(db, h, svc, candidates, serverId, acmeEnabled)
   }
   return resolveTcpUdpHostingEntry(db, h, svc, protocol, serverId)
 }
@@ -3717,7 +4317,6 @@ async function loadOrgTlsCandidates(db: Db, organizationId: string): Promise<Org
 
 async function buildHostingsForService(
   db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig,
   svc: HostingServiceRow,
   candidates: OrgTlsCandidate[],
   serverId: string,
@@ -3743,7 +4342,6 @@ async function buildHostingsForService(
   for (const h of hostingRows) {
     const result = await resolveHostingEntry(
       db,
-      dataEncryptionSecrets,
       h,
       { id: svc.id, composeServiceName },
       candidates,
@@ -3765,8 +4363,7 @@ async function buildHostingPayload(
   db: Db,
   environmentId: string,
   organizationId: string,
-  serverId: string,
-  dataEncryptionSecrets: DerivedSecretsConfig
+  serverId: string
 ): Promise<BuildHostingResult> {
   const serviceRows = await db
     .select({
@@ -3787,14 +4384,7 @@ async function buildHostingPayload(
   const resolvedTlsIds = new Set<string>()
 
   for (const svc of serviceRows) {
-    const built = await buildHostingsForService(
-      db,
-      dataEncryptionSecrets,
-      svc,
-      candidates,
-      serverId,
-      acmeEnabled
-    )
+    const built = await buildHostingsForService(db, svc, candidates, serverId, acmeEnabled)
     if ('error' in built) return built
     if ('prepareError' in built) return built
     hostingPayload.push(...built.hostings)
@@ -3970,27 +4560,23 @@ async function compileServerEdgeDeployment(
     return { hostings: [], tlsMaterial: [], listenerPorts }
   }
 
-  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
-  if (!dataEncryptionSecrets) {
-    return c.json(
-      {
-        error: 'Encryption unavailable — no encryption key configured',
-      },
-      503
-    )
-  }
-
   const built = await buildHostingPayload(
     db,
     params.environmentId,
     params.organizationId,
-    params.serverId,
-    dataEncryptionSecrets
+    params.serverId
   )
   if ('prepareError' in built) return built.prepareError
   if ('error' in built) return built.error
 
-  const hostings = expandHostingsForComposeInstances(built.hostings, params.expansion)
+  const sealedHostings = await sealHostingWebSecretsForDaemon(
+    c,
+    db,
+    params.serverId,
+    built.hostings
+  )
+  if (sealedHostings instanceof Response) return sealedHostings
+  const hostings = expandHostingsForComposeInstances(sealedHostings, params.expansion)
   const tlsMaterial = await sealTlsMaterialForDaemon(
     c,
     db,
@@ -4100,12 +4686,17 @@ export {
   listComposeServiceKeys,
   listContainerComposeNames,
   localManagedNetworkServiceNames,
+  mapResolvedScopesToDeployEntries,
   nativeAppServicesForDeploy,
+  nativeAppVariableViews,
+  nativeComposeServiceNames,
+  resolveNativeAppVariables,
   resolveSitesForMode,
   resourceLimitPrepareError,
   sitesOnScheduledServer,
   splitHostNativeFromDocument,
   stripReservedKeysFromEntries,
+  tagVariableSources,
   toApplyVariablesPrepareError,
   toPreparedDeployResult,
   warningFromPrepareError,

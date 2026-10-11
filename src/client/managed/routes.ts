@@ -5,8 +5,9 @@ import { resolveManagedSslMode } from '../../features/managed/ssl.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
+import type { StepUpAction } from '../authn/step-up-actions.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
-import { getDaemonCellRegistry, getDb } from '../../db/connection.ts'
+import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   container,
@@ -20,8 +21,9 @@ import {
   service,
   workspace,
 } from '../../db/schema.ts'
-import { getManagedEngineSpec } from '../../features/managed/index.ts'
 import { clampManagedResources, type ManagedSettings } from '../../features/managed/settings.ts'
+import { registerManagedExternalAccessRoutes } from './external-access-routes.ts'
+import { loadManagedExternalAccessView } from '../../features/managed/external-access.ts'
 import { parseResourceLimits } from '../../features/organizations/resource-limits.ts'
 import {
   createManagedPrincipal,
@@ -44,8 +46,9 @@ import {
   resolvePrivateEndpoint,
 } from '../../features/net/private-endpoint.ts'
 import {
-  assertManagedNotBusy,
+  assertManagedIdle,
   assertTargetServerOnline,
+  authorizeManagedBackupMutation,
   authorizeManagedRequest,
   loadManagedContext,
   type ManagedContext,
@@ -53,12 +56,16 @@ import {
   resolveManagedTargetServerId,
 } from './context.ts'
 import {
+  type BindingImpactService,
+  detachBindingsForManaged,
   hasBindingsForDatabase,
   hasBindingsForPrincipal,
   listBindingImpactForDatabase,
+  listBindingImpactForManaged,
   listBindingImpactForPrincipal,
 } from '../../features/bindings/impact.ts'
 import { materializeBindingsForPrincipal } from '../../features/bindings/materialize.ts'
+import { rollBackPrincipalRotation } from '../../features/managed/principal-rotation.ts'
 import {
   enqueueManagedDestroyFanout,
   enqueueManagedLifecycleFanout,
@@ -79,7 +86,10 @@ import {
   enqueueManagedRestore,
   isManagedBackupApiError,
   mapManagedBackupApiError,
+  refuseRestoreIfBackupOnOtherServer,
   resolveBackupDatabase,
+  resolveManagedBackupArtifactServerId,
+  toManagedBackupListItem,
 } from './backups.ts'
 import { fetchManagedLogs, parseLogsTailQuery } from './logs.ts'
 import {
@@ -99,6 +109,7 @@ import {
   type ManagedReplicaClass,
   nextReplicaOrdinal,
   serializeManagedMember,
+  serializeManagedMemberForDisplay,
   updateManagedMemberReadEligible,
   updateManagedMemberReplicaClass,
 } from '../../features/managed/members.ts'
@@ -123,14 +134,15 @@ import { insertManagedBackupPolicy } from '../../features/backups/policy-records
 import { defaultBackupSchedule } from '../../features/backups/schedules.ts'
 import {
   assertFailoverReplicaTransportAllowed,
+  assertManagedImageChangeAllowed,
   buildDisasterRecoveryQueuedResponse,
   buildEmptyManagedDetailResponse,
   buildManagedDeleteHardResponse,
   buildManagedDeleteQueuedResponse,
   buildManagedDestroyQueuedResponse,
   buildManagedReleaseView,
+  buildManagedReplicaLiveCheckFailedBody,
   buildManagedSslView,
-  buildOrgManagedListEntry,
   buildPromoteQueuedResponse,
   buildQueuedFanoutResponse,
   buildStatusMemberView,
@@ -138,14 +150,16 @@ import {
   evaluateManagedDatabaseDelete,
   evaluateManagedUserDropGuard,
   evaluateManagedUserRotateGuard,
-  evaluatePromoteLagHttpGate,
+  evaluateOperatorPromoteGate,
   evaluatePromoteMemberRole,
   evaluatePromoteReplicaClass,
+  evaluateReadOnlyLoginTargetsLazy,
   evaluateReplicaClassConversion,
   evaluateReplicaPlacementPrechecks,
   isManagedReplicationPrincipal,
   isManagedRootPrincipal,
   isPlainObject,
+  listUsersReferencingDatabase,
   loadManagedStatusSnapshot,
   managedSessionPaths,
   type MemberPatchFields,
@@ -157,7 +171,9 @@ import {
   parseDisasterRecoveryPromoteBody,
   parseManagedCreateName,
   parseManagedLifecycleAction,
+  parseManagedPatchName,
   parseManagedUserCreateFields,
+  parseManagedVersionSelection,
   parseMemberPatch,
   parseMemberReadEligibleCreate,
   parsePromoteForce,
@@ -168,10 +184,10 @@ import {
   replicaPlacementNeedsDatacenter,
   resolveManagedAccessEndpoints,
   resolveManagedConnectionListener,
-  resolveManagedEffectiveExposure,
   resolveManagedServerId,
   serializeContainerRow,
   serializeManagedUser,
+  serializeOrgManagedListRow,
   validateManagedDatabaseCreateName,
 } from '../../features/managed/routes-helpers.ts'
 import {
@@ -179,7 +195,10 @@ import {
   parseManagedResidual,
   serializeManagedRow,
 } from '../../features/managed/serialize.ts'
-import { isManagedReplicaObservationStale } from '../../features/managed/promote-lag.ts'
+import {
+  effectiveManagedImage,
+  managedImageFailoverSupport,
+} from '../../features/managed/releases.ts'
 import { findLatestRecovery } from '../../features/managed/recovery-records.ts'
 import { serializeRecovery } from '../../features/managed/recovery.ts'
 import {
@@ -236,23 +255,6 @@ async function loadResourceLimits(
   return { orgLimits, serverLimits }
 }
 
-/**
- * Restore a principal's previous password hash after a failed apply so a
- * rotate-password request that could not be enqueued/materialized does not
- * leave the stored credential out of sync with the (unrotated) live engine.
- */
-async function restorePreviousPrincipalPassword(
-  db: NonNullable<ReturnType<typeof getDb>>,
-  principalId: string,
-  previousPassword: string | null | undefined
-): Promise<void> {
-  if (typeof previousPassword !== 'string') return
-  await db
-    .update(principal)
-    .set({ password: previousPassword, updatedAt: new Date().toISOString() })
-    .where(eq(principal.id, principalId))
-}
-
 type ManagedDb = NonNullable<ReturnType<typeof getDb>>
 
 /** Shared route prologue: database, environment id, and `manage` authorization. */
@@ -272,18 +274,26 @@ async function loadManagedAuthScope(c: Context<AppEnv>): Promise<
   return { db, environmentId, auth }
 }
 
-/** {@link loadManagedAuthScope} plus the managed context for the environment. */
-async function loadManagedContextScope(c: Context<AppEnv>) {
+/**
+ * {@link loadManagedAuthScope} plus the managed context for the environment.
+ * With `stepUpAction`, the organization's step-up gate for it runs right after
+ * the permission check, before anything else is looked up.
+ */
+async function loadManagedContextScope(c: Context<AppEnv>, stepUpAction?: StepUpAction) {
   const scope = await loadManagedAuthScope(c)
   if (scope instanceof Response) return scope
+  if (stepUpAction) {
+    const stepUp = await requireStepUpIfConfigured(c, scope.auth.organizationId, stepUpAction)
+    if (stepUp) return stepUp
+  }
   const ctx = await loadManagedContext(c, scope.db, scope.environmentId, scope.auth.organizationId)
   if (ctx instanceof Response) return ctx
   return { ...scope, ctx }
 }
 
 /** {@link loadManagedContextScope} plus the environment's managed row (404 when absent). */
-async function loadManagedRowScope(c: Context<AppEnv>) {
-  const scope = await loadManagedContextScope(c)
+async function loadManagedRowScope(c: Context<AppEnv>, stepUpAction?: StepUpAction) {
+  const scope = await loadManagedContextScope(c, stepUpAction)
   if (scope instanceof Response) return scope
   const row = await findManagedForEnvironment(scope.db, scope.environmentId)
   if (!row) return c.json({ error: 'Not found' }, 404)
@@ -295,15 +305,15 @@ async function loadManagedRowScope(c: Context<AppEnv>) {
  * explicitly forced it. Returns a 409 response when the gate blocks, null
  * when the promote may proceed.
  *
- * When the stored observation is missing, unparseable, or past the gate's
- * staleness window, the target's daemon is asked for a fresh reading first
- * (`managed-health-request`, short timeout) and the **unchanged** gate runs on
- * that reading. Health is otherwise only observed when an apply/lifecycle
- * result comes back, so an idle healthy cluster would refuse every promote.
- * Fail-closed is preserved: on timeout, an offline server, a daemon without
- * `managed-health-v1`, or any error the gate runs on the stored observation
- * exactly as before. `force` never probes. Automatic failover does not come
- * through here; its own event-time probe is `ha-fresh-standby.ts`.
+ * Every non-force promote first asks the target's daemon for a fresh reading
+ * (`managed-health-request`, short timeout) and gates on that reading. A
+ * stored reading under two minutes old still says `streaming` for a replica
+ * whose replication threads stopped seconds ago, so it is never trusted on its
+ * own. Non-force promotes require a fresh `observed` probe; timeout, offline,
+ * unsupported, or any other non-answer refuses with
+ * {@link MANAGED_REPLICA_LIVE_CHECK_FAILED}. `force` never probes. Automatic
+ * failover does not come through here; its own event-time probe is
+ * `ha-fresh-standby.ts`.
  */
 async function assertManagedPromoteLagAllowed(
   c: Context<AppEnv>,
@@ -317,7 +327,7 @@ async function assertManagedPromoteLagAllowed(
 ): Promise<Response | null> {
   const { member, force } = params
   let replication = serializeManagedMember(member, null).replication
-  if (!force && isManagedReplicaObservationStale(replication)) {
+  if (!force) {
     const probe = await probeManagedMemberHealth(db, getDaemonCellRegistry(c), {
       serverId: member.serverId,
       managedId: params.managedId,
@@ -326,17 +336,23 @@ async function assertManagedPromoteLagAllowed(
       engine: params.engine,
       timeoutMs: MANAGED_HEALTH_PROBE_PROMOTE_TIMEOUT_MS,
     })
-    if (probe.status === 'observed') replication = probe.replication
+    if (probe.status !== 'observed') {
+      return c.json(buildManagedReplicaLiveCheckFailedBody(), 409)
+    }
+    replication = probe.replication
   }
-  const gate = evaluatePromoteLagHttpGate(replication, force)
+  const gate = evaluateOperatorPromoteGate(replication, force, undefined, params.engine)
   return gate !== null ? c.json({ error: gate }, 409) : null
 }
 
 /**
  * `?refresh=1` on GET …/managed/status: ask every replica's daemon for a
  * fresh reading (in parallel, best effort) so the snapshot that follows reads
- * current health. Primaries are not probed — their health rides apply and
- * lifecycle results, and the promote gate only judges replicas.
+ * current health. The primary is asked too while the cluster has replicas: its
+ * answer carries the replication-slot report, which would otherwise stay as it
+ * was at the last apply and keep showing a replica as cut off after a Resync.
+ * Its outcome is not counted in the replica totals the notice reports, and the
+ * promote gate still judges replicas only.
  */
 async function refreshManagedReplicaHealth(
   c: Context<AppEnv>,
@@ -346,18 +362,20 @@ async function refreshManagedReplicaHealth(
   const members = await listManagedMembers(db, row.id)
   const replicas = members.filter((m) => m.role === 'replica')
   const registry = getDaemonCellRegistry(c)
-  const outcomes = await Promise.all(
-    replicas.map((m) =>
-      probeManagedMemberHealth(db, registry, {
-        serverId: m.serverId,
-        managedId: row.id,
-        memberId: m.id,
-        role: 'replica',
-        engine: row.engine,
-        timeoutMs: MANAGED_HEALTH_PROBE_REFRESH_TIMEOUT_MS,
-      })
-    )
-  )
+  const probe = (m: ManagedMemberRow, role: 'primary' | 'replica') =>
+    probeManagedMemberHealth(db, registry, {
+      serverId: m.serverId,
+      managedId: row.id,
+      memberId: m.id,
+      role,
+      engine: row.engine,
+      timeoutMs: MANAGED_HEALTH_PROBE_REFRESH_TIMEOUT_MS,
+    })
+  const primary = replicas.length > 0 ? members.find((m) => m.role !== 'replica') : undefined
+  const [outcomes] = await Promise.all([
+    Promise.all(replicas.map((m) => probe(m, 'replica'))),
+    primary ? probe(primary, 'primary') : Promise.resolve(undefined),
+  ])
   const observed = outcomes.filter((o) => o.status === 'observed').length
   return { observed, unavailable: outcomes.length - observed }
 }
@@ -472,12 +490,15 @@ async function runManagedDeleteFanout(
   commandQueue: CommandQueue,
   params: {
     userId: string
+    organizationId: string
     environmentId: string
     managedId: string
     targetServerId: string
+    /** Services whose bindings go with the cluster (`detach=true`): removed when the destroy succeeds, or at once on a forced delete. */
+    detached: readonly BindingImpactService[]
   }
 ): Promise<Response> {
-  const { userId, environmentId, managedId, targetServerId } = params
+  const { userId, organizationId, environmentId, managedId, targetServerId, detached } = params
   const force = c.req.query('force') === 'true'
   const members = await listManagedMembers(db, managedId)
   if (!force) {
@@ -523,14 +544,57 @@ async function runManagedDeleteFanout(
     // policies cascade with the row, so its host gets the smaller set.
     const backupHost = await captureManagedBackupHost(db, commandQueue, managedId)
     await clearPendingNullIdContainersForEnvironment(db, environmentId)
+    await detachManagedBindings(c, db, managedId, detached, userId, organizationId)
     await deleteManagedRuntimeRows(db, environmentId, managedId)
-    await enqueueBackupsReconcile(db, commandQueue, { actorType: 'user', actorId: userId }, [
-      backupHost,
-    ])
-    return c.json(buildManagedDeleteHardResponse())
+    await enqueueBackupsReconcile(
+      db,
+      commandQueue,
+      {
+        actorType: 'user',
+        actorId: userId,
+      },
+      [backupHost]
+    )
+    return c.json({
+      ...buildManagedDeleteHardResponse(),
+      ...detachedField(detached),
+    })
   }
 
-  return c.json(buildManagedDeleteQueuedResponse(enqueued, targetServerId))
+  // The bindings are NOT removed here. They go with the `managed` row when the
+  // destroy succeeds (principal then binding then variable cascade), so a
+  // destroy that fails later leaves the cluster running with its apps still
+  // bound. `detached` lists the services that lose their binding once it does.
+  return c.json({
+    ...buildManagedDeleteQueuedResponse(enqueued, targetServerId),
+    ...detachedField(detached),
+  })
+}
+
+/**
+ * `detached` appears on the delete response when bindings go with the cluster:
+ * already removed (hard or forced delete) or removed when the queued destroy
+ * succeeds.
+ */
+function detachedField(detached: readonly BindingImpactService[]) {
+  return detached.length > 0 ? { detached } : {}
+}
+
+async function detachManagedBindings(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  managedId: string,
+  detached: readonly BindingImpactService[],
+  actorId: string,
+  organizationId: string
+): Promise<void> {
+  if (detached.length > 0) {
+    await detachBindingsForManaged(db, managedId, {
+      c,
+      actorId,
+      organizationId,
+    })
+  }
 }
 
 async function deleteManagedCompensation(
@@ -597,7 +661,14 @@ async function resolveManagedCreatePlan(
   }
   const displayName = displayNameResult.name
 
-  let settings = mergeCreateSettings(ctx.spec, body)
+  // Resolve the requested series / variant before anything is created or any
+  // server preflight runs, so a refused version never reaches the host.
+  const version = parseManagedVersionSelection(ctx.spec.engine, body)
+  if (!version.ok) return c.json({ error: version.error }, version.status)
+
+  // Store the resolved image on every new cluster, so a later change of the
+  // catalog default can never change which series an existing row runs.
+  let settings = mergeCreateSettings(ctx.spec, version.image ?? ctx.spec.defaultImage)
   if (!settings) {
     return c.json({ error: 'managed_settings_invalid' }, 400)
   }
@@ -605,10 +676,7 @@ async function resolveManagedCreatePlan(
   const { orgLimits, serverLimits } = await loadResourceLimits(db, organizationId, serverId)
   settings = clampManagedResources(settings, orgLimits, serverLimits)
 
-  const infra = await preflightManagedApplyInfrastructure(c, db, {
-    serverId,
-    scope: settings.exposure.scope,
-  })
+  const infra = await preflightManagedApplyInfrastructure(c, db, { serverId })
   if (infra) return mapManagedApplyPrepareError(c, infra)
 
   const initialDatabase = readInitialDatabase(ctx.spec)
@@ -772,12 +840,10 @@ type PreparedManagedApply = {
 async function assertManagedApplyReady(
   c: Context<AppEnv>,
   db: NonNullable<ReturnType<typeof getDb>>,
-  _ctx: ManagedContext,
   managedRow: NonNullable<Awaited<ReturnType<typeof findManagedForEnvironment>>>,
-  options: ManagedRowOptions,
   targetServerId: string
 ): Promise<CommandQueue | Response> {
-  const busy = assertManagedNotBusy(c, managedRow.status)
+  const busy = await assertManagedIdle(c, db, managedRow)
   if (busy) return busy
 
   const offline = await assertTargetServerOnline(c, db, targetServerId)
@@ -788,7 +854,6 @@ async function assertManagedApplyReady(
 
   const infra = await preflightManagedApplyInfrastructure(c, db, {
     serverId: targetServerId,
-    scope: options.settings.exposure.scope,
   })
   if (infra) return mapManagedApplyPrepareError(c, infra)
 
@@ -810,14 +875,7 @@ async function prepareApplyForManaged(
     forceResyncMemberIds?: string[]
   }
 ): Promise<PreparedManagedApply | Response> {
-  const commandQueue = await assertManagedApplyReady(
-    c,
-    db,
-    ctx,
-    managedRow,
-    options,
-    targetServerId
-  )
+  const commandQueue = await assertManagedApplyReady(c, db, managedRow, targetServerId)
   if (commandQueue instanceof Response) return commandQueue
 
   const residual = parseManagedResidual(managedRow.metadata)
@@ -929,9 +987,15 @@ async function createManagedAndEnqueueApply(
   // Only after the create stuck: a compensated create cascades its policy away
   // and must never have reached the host.
   if (created.hasDefaultBackupPolicy) {
-    await enqueueBackupsReconcile(db, commandQueue, { actorType: 'user', actorId: userId }, [
-      createServerId,
-    ])
+    await enqueueBackupsReconcile(
+      db,
+      commandQueue,
+      {
+        actorType: 'user',
+        actorId: userId,
+      },
+      [createServerId]
+    )
   }
 
   const primary = pickPrimaryCommandResult(enqueued)
@@ -1102,6 +1166,36 @@ async function hasManagedUsernameNamespaceConflict(
   })
 }
 
+/** 409 when a service binding or a SQL user's database list still names the database. */
+async function refuseDatabaseDropWhenInUse(
+  c: Context<AppEnv>,
+  db: Db,
+  managedId: string,
+  databaseName: string
+): Promise<Response | null> {
+  if (await hasBindingsForDatabase(db, { managedId, databaseName })) {
+    const redeployRequired = await listBindingImpactForDatabase(db, {
+      managedId,
+      databaseName,
+    })
+    return c.json(
+      {
+        error: 'managed_database_has_bindings',
+        services: redeployRequired.services,
+      },
+      409
+    )
+  }
+  const users = listUsersReferencingDatabase(
+    await listManagedPrincipals(db, managedId),
+    databaseName
+  )
+  if (users.length > 0) {
+    return c.json({ error: 'managed_database_has_users', users }, 409)
+  }
+  return null
+}
+
 export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for managed routes')
@@ -1110,6 +1204,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   for (const path of managedSessionPaths()) {
     router.use(path, createSessionMiddleware(opts.secrets))
   }
+  registerManagedExternalAccessRoutes(router)
 
   router.post('/environments/:id/managed', async (c) => {
     const scope = await loadManagedContextScope(c)
@@ -1192,7 +1287,6 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           serverId,
           engineCode: ctx.spec.engine,
           engineDefaultPort: ctx.spec.defaultPort,
-          exposure: parsed.settings.exposure,
         })
       : null
     const connection = listener
@@ -1209,19 +1303,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           serverId,
           engineCode: ctx.spec.engine,
           engineDefaultPort: ctx.spec.defaultPort,
-          exposure: parsed.settings.exposure,
         })
       : []
-    // What the shared ProxySQL actually publishes, which is not always what
-    // this cluster asked for: an exposed co-resident cluster publishes the
-    // listener for every cluster on the host. The UI labels the toggle from
-    // this, not from `settings.exposure` alone.
-    const exposure = serverId
-      ? await resolveManagedEffectiveExposure(db, {
-          serverId,
-          exposure: parsed.settings.exposure,
-        })
-      : null
+    // The "allow external access" setting of every server that fronts this
+    // cluster, with how many other clusters share each server.
+    const externalAccessServers = await loadManagedExternalAccessView(db, row.id)
 
     const serverRows = serverId
       ? await db
@@ -1245,7 +1331,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       }),
       connection,
       endpoints,
-      exposure,
+      externalAccess: { servers: externalAccessServers },
       settings: parsed.settings,
       ssl: buildManagedSslView(parsed.settings.ssl.mode, ctx.orgDefaults.sslMode),
       release: buildManagedReleaseView(ctx.spec, parsed.settings),
@@ -1261,7 +1347,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     // Resource limits are server-specific — clamp against the host that
@@ -1281,6 +1367,21 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'managed_settings_invalid' }, 400)
     }
 
+    const patchName = parseManagedPatchName(body)
+    if (!patchName.ok) {
+      return c.json({ error: patchName.error }, patchName.status)
+    }
+
+    // Refuse before anything is persisted: another series, or a PostgreSQL
+    // swap between libc families (Alpine <-> Debian), would break the data.
+    const imageRefusal = assertManagedImageChangeAllowed(ctx.spec, current.settings, mergedSettings)
+    if (imageRefusal) {
+      return c.json(
+        { error: imageRefusal.error, message: imageRefusal.message },
+        imageRefusal.status
+      )
+    }
+
     const { orgLimits, serverLimits } = await loadResourceLimits(
       db,
       auth.organizationId,
@@ -1295,7 +1396,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const [updated] = await db
       .update(managed)
-      .set({ options: nextOptions, updatedAt: new Date().toISOString() })
+      .set({
+        options: nextOptions,
+        ...(patchName.name === undefined ? {} : { name: patchName.name }),
+        updatedAt: new Date().toISOString(),
+      })
       .where(eq(managed.id, row.id))
       .returning({
         id: managed.id,
@@ -1342,7 +1447,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
@@ -1389,8 +1494,22 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const stepUp = await requireStepUpIfConfigured(c, auth.organizationId, 'managed.delete')
     if (stepUp) return stepUp
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
+
+    // Apps bound to this cluster would lose their connection variables with
+    // no warning: refuse and list them, unless the caller asks to detach
+    // (`?detach=true`: the bindings and their variables are removed).
+    const attached = await listBindingImpactForManaged(db, row.id)
+    if (attached.count > 0 && c.req.query('detach') !== 'true') {
+      return c.json(
+        {
+          error: 'managed_has_bindings',
+          services: attached.services,
+        },
+        409
+      )
+    }
 
     const canHardDelete = canHardDeleteManaged(row.serverId)
 
@@ -1398,8 +1517,19 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       // Clear never-applied pending container rows so deleteProjectCascade does
       // not treat them as active (`isActiveContainerStatus('pending')` is true).
       await clearPendingNullIdContainersForEnvironment(db, environmentId)
+      await detachManagedBindings(
+        c,
+        db,
+        row.id,
+        attached.services,
+        auth.userId,
+        auth.organizationId
+      )
       await db.delete(managed).where(eq(managed.id, row.id))
-      return c.json(buildManagedDeleteHardResponse())
+      return c.json({
+        ...buildManagedDeleteHardResponse(),
+        ...detachedField(attached.services),
+      })
     }
 
     // `canHardDelete` already covers `!row.serverId`, so `managed.server_id`
@@ -1417,9 +1547,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     })
     return await runManagedDeleteFanout(c, db, commandQueue, {
       userId: auth.userId,
+      organizationId: auth.organizationId,
       environmentId,
       managedId: row.id,
       targetServerId,
+      detached: attached.services,
     })
   })
 
@@ -1445,7 +1577,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const commandQueue = await assertManagedApplyReady(c, db, ctx, row, options, targetServerId)
+    const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
 
     const [previous] = await db
@@ -1547,7 +1679,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // any name is validated: the scheme decides how long the typed name may be.
     const policy = await loadPrincipalNamePolicy(db, ctx.organizationId)
     const schemeChoice = resolveRequestedNameScheme(policy, body.nameScheme)
-    if (!schemeChoice.ok) return c.json({ error: schemeChoice.error }, schemeChoice.status)
+    if (!schemeChoice.ok) {
+      return c.json({ error: schemeChoice.error }, schemeChoice.status)
+    }
     const nameScheme = schemeChoice.scheme
     const fields = parseManagedUserCreateFields(
       c,
@@ -1558,7 +1692,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       nameScheme
     )
     if (fields instanceof Response) return fields
-    const { username, databases, privileges } = fields
+    const { username, databases, privileges, connectionRole } = fields
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
@@ -1568,8 +1702,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const commandQueue = await assertManagedApplyReady(c, db, ctx, row, options, targetServerId)
+    const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
+
+    // A read-only login needs a read-eligible replica to land on; refuse it
+    // before anything is inserted or queued (a standalone cluster has none).
+    const readGuard = await evaluateReadOnlyLoginTargetsLazy(connectionRole, () =>
+      listManagedMembers(db, row.id)
+    )
+    if (readGuard) return c.json({ error: readGuard.error }, readGuard.status)
 
     // Same-cluster collision, owning-org namespace probe, and principal insert
     // share one txn so the organization FOR UPDATE lock covers the insert —
@@ -1611,6 +1752,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           engine: ctx.spec.engine,
           databases,
           privileges,
+          // Stored only for read-only: an absent key is the read-write default.
+          ...(connectionRole === 'read-only' ? { connectionRole } : {}),
         },
       })
       return { ok: true as const, appliedUsername, ...created }
@@ -1661,6 +1804,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         nameScheme,
         databases,
         privileges,
+        connectionRole,
         createdAt: createdUser?.createdAt ?? new Date().toISOString(),
       },
       password,
@@ -1711,7 +1855,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const commandQueue = await assertManagedApplyReady(c, db, ctx, row, options, targetServerId)
+    const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
 
     const [previous] = await db
@@ -1728,8 +1872,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       dataEncryptionSecrets,
       principalId
     )
+    // Every failure from here on must undo BOTH the stored password and the
+    // project variables that were just rewritten with the new one.
+    const rollBack = () =>
+      rollBackPrincipalRotation(db, dataEncryptionSecrets, {
+        principalId,
+        previousPassword,
+      })
     if (!('ok' in materializeResult)) {
-      await restorePreviousPrincipalPassword(db, principalId, previousPassword)
+      await rollBack()
       return c.json({ error: materializeResult.kind }, 422)
     }
 
@@ -1745,7 +1896,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       rootUsername: residual.rootUsername ?? ctx.spec.rootUsername,
     })
     if (isPrepareError(preparedApply)) {
-      await restorePreviousPrincipalPassword(db, principalId, previousPassword)
+      await rollBack()
       return mapManagedApplyPrepareError(c, preparedApply)
     }
 
@@ -1755,7 +1906,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       members: preparedApply.members,
     })
     if (enqueued instanceof Response) {
-      await restorePreviousPrincipalPassword(db, principalId, previousPassword)
+      await rollBack()
       return enqueued
     }
 
@@ -1895,12 +2046,20 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const { pattern, maxLength } = ctx.spec.userOperations.identifier
-    const nameError = validateManagedDatabaseCreateName(name, options.databases, {
-      pattern,
-      maxLength,
-    })
+    const nameError = validateManagedDatabaseCreateName(
+      name,
+      options.databases,
+      { pattern, maxLength },
+      ctx.spec.engine
+    )
     if (nameError) {
-      return c.json({ error: nameError.error }, nameError.status)
+      return c.json(
+        {
+          error: nameError.error,
+          ...(nameError.message ? { message: nameError.message } : {}),
+        },
+        nameError.status
+      )
     }
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
@@ -1992,19 +2151,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: deleteError.error }, deleteError.status)
     }
 
-    if (await hasBindingsForDatabase(db, { managedId: row.id, databaseName })) {
-      const redeployRequired = await listBindingImpactForDatabase(db, {
-        managedId: row.id,
-        databaseName,
-      })
-      return c.json(
-        {
-          error: 'managed_database_has_bindings',
-          services: redeployRequired.services,
-        },
-        409
-      )
-    }
+    const inUse = await refuseDatabaseDropWhenInUse(c, db, row.id, databaseName)
+    if (inUse) return inUse
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
@@ -2078,7 +2226,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const primaryServerId = resolveManagedTargetServerId(c, row.serverId)
@@ -2095,6 +2243,22 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // equality with the environment's org.
     const serverDenied = await assertCanManageOr403(c, 'server', serverId)
     if (serverDenied) return serverDenied
+
+    const options = parseManagedRowOptions(ctx.spec, row.options)
+    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+
+    const failover = managedImageFailoverSupport(
+      effectiveManagedImage(ctx.spec, options.settings.image)
+    )
+    if (!failover.supported) {
+      return c.json(
+        {
+          error: failover.reason,
+          code: 'managed_failover_unsupported',
+        },
+        422
+      )
+    }
 
     await ensureManagedPrimaryMember(db, {
       managedId: row.id,
@@ -2130,9 +2294,6 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       readEligible,
       replicationTransport: placement.toPrimaryTransport,
     })
-
-    const options = parseManagedRowOptions(ctx.spec, row.options)
-    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const prepared = await prepareApplyForManaged(c, db, ctx, row, options, primaryServerId)
     if (prepared instanceof Response) {
@@ -2181,7 +2342,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const member = await findManagedMember(db, memberId)
@@ -2194,6 +2355,23 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const patchParsed = parseMemberPatch(body)
     if (!patchParsed.ok) {
       return c.json({ error: patchParsed.error }, patchParsed.status)
+    }
+
+    const patchOptions = parseManagedRowOptions(ctx.spec, row.options)
+    if (!patchOptions) return c.json({ error: 'Invalid managed options' }, 400)
+    if (patchParsed.replicaClass === 'failover') {
+      const failover = managedImageFailoverSupport(
+        effectiveManagedImage(ctx.spec, patchOptions.settings.image)
+      )
+      if (!failover.supported) {
+        return c.json(
+          {
+            error: failover.reason,
+            code: 'managed_failover_unsupported',
+          },
+          422
+        )
+      }
     }
 
     const classPatched = await applyMemberReplicaClassPatch(c, db, {
@@ -2214,14 +2392,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const options = parseManagedRowOptions(ctx.spec, row.options)
-    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
-
     const applyResp = await runApplyForManaged(c, db, {
       userId: auth.userId,
       ctx,
       managedRow: row,
-      options,
+      options: patchOptions,
       targetServerId,
     })
     return applyResp
@@ -2242,7 +2417,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const member = await findManagedMember(db, memberId)
@@ -2341,6 +2516,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
+    // A resync wipes the member's data directory: never while a failover is
+    // fencing or promoting (it may be the candidate being promoted).
+    const busy = await assertManagedIdle(c, db, row)
+    if (busy) return busy
+
     const member = await findManagedMember(db, memberId)
     if (member?.managedId !== row.id) {
       return c.json({ error: 'Not found' }, 404)
@@ -2395,7 +2575,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const member = await findManagedMember(db, memberId)
@@ -2456,11 +2636,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.post('/environments/:id/managed/disaster-recovery/promote', async (c) => {
-    const scope = await loadManagedRowScope(c)
+    const scope = await loadManagedRowScope(c, 'managed.disaster_recovery.promote')
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const body = await parseJsonBody(c)
@@ -2572,7 +2752,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       port: listener?.port ?? residual.port ?? null,
       error: lastError,
       containers: rows.map(serializeContainerRow),
-      members: memberRows.map((m) => buildStatusMemberView(serializeManagedMember(m, null))),
+      members: memberRows.map((m) =>
+        buildStatusMemberView(serializeManagedMemberForDisplay(m, null))
+      ),
       ...(healthRefresh ? { healthRefresh } : {}),
     })
   })
@@ -2606,7 +2788,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ backups: [] })
 
-    const backups = await listManagedBackups(db, row.id)
+    const backups = (await listManagedBackups(db, row.id)).map(toManagedBackupListItem)
     return c.json({ backups })
   })
 
@@ -2623,7 +2805,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const offline = await assertTargetServerOnline(c, db, targetServerId)
@@ -2666,7 +2848,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const environmentId = c.req.param('id')
     const backupId = decodeURIComponent(c.req.param('backupId'))
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+    const auth = await authorizeManagedBackupMutation(c, db, environmentId, 'managed.backup.delete')
     if (auth instanceof Response) return auth
 
     const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
@@ -2678,12 +2860,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const record = await findManagedBackupById(db, row.id, backupId)
     if (!record) return c.json({ error: 'backup_not_found' }, 404)
 
-    // Backup artifacts live on the host that actually ran the engine —
-    // `managed.server_id`, not the (possibly drifted) environment placement.
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
-    if (targetServerId instanceof Response) return targetServerId
+    // Delete the file on the host that stores it. Fall back to the current
+    // primary only for older rows that never recorded that host.
+    const placementServerId = resolveManagedTargetServerId(c, row.serverId)
+    if (placementServerId instanceof Response) return placementServerId
+    const targetServerId = resolveManagedBackupArtifactServerId(record, placementServerId)
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const offline = await assertTargetServerOnline(c, db, targetServerId)
@@ -2717,7 +2900,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const environmentId = c.req.param('id')
     const backupId = decodeURIComponent(c.req.param('backupId'))
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+    const auth = await authorizeManagedBackupMutation(c, db, environmentId, 'managed.restore')
     if (auth instanceof Response) return auth
 
     const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
@@ -2734,7 +2917,10 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const wrongHost = await refuseRestoreIfBackupOnOtherServer(c, db, record, targetServerId)
+    if (wrongHost) return wrongHost
+
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const offline = await assertTargetServerOnline(c, db, targetServerId)
@@ -2828,6 +3014,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         serverId: managed.serverId,
         createdAt: managed.createdAt,
         updatedAt: managed.updatedAt,
+        environmentServerId: environment.serverId,
         environmentDisplayName: environment.name,
         projectId: project.id,
         projectDisplayName: project.name,
@@ -2854,34 +3041,33 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       membersByManaged.set(member.managedId, list)
     }
 
-    const serverIds = [...new Set(memberRows.map((m) => m.serverId))]
+    const serverIds = new Set(memberRows.map((m) => m.serverId))
+    for (const row of rows) {
+      const placementId = resolveManagedServerId(
+        { serverId: row.serverId },
+        row.environmentServerId
+      )
+      if (placementId) serverIds.add(placementId)
+    }
+    const serverIdList = [...serverIds]
     const serverNames =
-      serverIds.length === 0
+      serverIdList.length === 0
         ? []
         : await db
             .select({ id: server.id, name: server.name })
             .from(server)
-            .where(inArray(server.id, serverIds))
+            .where(inArray(server.id, serverIdList))
     const nameByServer = new Map(serverNames.map((s) => [s.id, s.name]))
 
-    return c.json({
-      managed: rows.map((row) => {
-        const spec = row.engine ? getManagedEngineSpec(row.engine) : null
+    const managedList = await Promise.all(
+      rows.map(async (row) => {
         const members = (membersByManaged.get(row.id) ?? []).map((m) =>
-          serializeManagedMember(m, nameByServer.get(m.serverId) ?? null)
+          serializeManagedMemberForDisplay(m, nameByServer.get(m.serverId) ?? null)
         )
-        return buildOrgManagedListEntry({
-          serializedRow: serializeManagedRow(row, row.serverId) as Record<string, unknown>,
-          engineDisplayName: spec?.displayName ?? null,
-          environmentDisplayName: row.environmentDisplayName,
-          projectId: row.projectId,
-          projectDisplayName: row.projectDisplayName,
-          workspaceId: row.workspaceId,
-          workspaceDisplayName: row.workspaceDisplayName,
-          serverDisplayName: row.serverDisplayName,
-          members,
-        })
-      }),
-    })
+        return await serializeOrgManagedListRow(db, row, members, nameByServer)
+      })
+    )
+
+    return c.json({ managed: managedList })
   })
 }

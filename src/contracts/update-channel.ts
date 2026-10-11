@@ -20,10 +20,10 @@ export const DEFAULT_UPDATE_CHANNEL: UpdateChannel = 'release'
 /** The repository whose GitHub Releases carry the daemon's canary/rc/release packages. */
 export const DAEMON_GITHUB_RELEASES_REPO = 'TurboPanel/turbopaneld'
 
-/** Control-plane packages (compiled instance). GitHub Releases only — no CDN drop. */
+/** Control-plane packages (compiled instance). GitHub Releases only. */
 export const INSTANCE_GITHUB_RELEASES_REPO = 'TurboPanel/turbopanel'
 
-/** Web export packages. GitHub Releases only — no CDN drop. */
+/** Web export packages. GitHub Releases only. */
 export const UI_GITHUB_RELEASES_REPO = 'TurboPanel/ui'
 
 export const RELEASE_ARTIFACT_KINDS = ['daemon', 'instance', 'ui'] as const
@@ -40,9 +40,6 @@ export function githubReleasesRepo(kind: ReleaseArtifactKind = 'daemon'): string
       return DAEMON_GITHUB_RELEASES_REPO
   }
 }
-
-/** The per-merge CDN drop — kept as the trunk rail and as the manual override catalog. */
-export const DL_BASE_URL = 'https://dl.trbp.nl'
 
 export function isUpdateChannel(value: unknown): value is UpdateChannel {
   return typeof value === 'string' && (UPDATE_CHANNELS as readonly string[]).includes(value)
@@ -78,17 +75,18 @@ export function assertValidUpdateChannelEnv(
  * for byte the daemon's `builtinChannelManifestUrl` (turbopaneld
  * src/update/urls.ts) and run.sh's `tp_builtin_channel_manifest_url`.
  *
- * `trunk` is the per-merge CDN drop. `canary`, `rc` and `release` are GitHub
- * Releases: `release` follows the platform's own `releases/latest` pointer
+ * `canary`, `rc` and `release` are GitHub Releases: `release` follows the platform's own `releases/latest` pointer
  * (skips pre-releases, so promotion is `gh release edit --prerelease=false`),
  * `rc` a rolling pre-release tagged `rc` that points at a versioned
  * pre-release, `canary` a rolling pre-release tagged `canary` carrying the
  * newest green trunk build's own bytes, replaced on every merge. `edge` is
  * reserved and unadvertised: no built-in location, so the target is unknown.
+ * `trunk` is the same since the per-merge CDN drop was retired: it is only the
+ * channel name a development overlay uses, so a control plane on it reports
+ * the target as unknown.
  *
- * `kind` selects the package. Daemon `trunk` stays the CDN drop. Instance
- * and UI have no CDN drop, so their `trunk` is `null`. The default kind is
- * `daemon` so existing call sites stay on the daemon rail.
+ * `kind` selects the package; every kind's `trunk` and `edge` is `null`. The
+ * default kind is `daemon` so existing call sites stay on the daemon rail.
  */
 export function builtinChannelManifestUrl(
   channel: UpdateChannel,
@@ -96,8 +94,6 @@ export function builtinChannelManifestUrl(
 ): string | null {
   const repo = githubReleasesRepo(kind)
   switch (channel) {
-    case 'trunk':
-      return trunkManifestUrl(kind)
     case 'canary':
       return `https://github.com/${repo}/releases/download/canary/manifest.json`
     case 'rc':
@@ -107,11 +103,6 @@ export function builtinChannelManifestUrl(
     default:
       return null
   }
-}
-
-function trunkManifestUrl(kind: ReleaseArtifactKind): string | null {
-  if (kind !== 'daemon') return null
-  return `${DL_BASE_URL}/channels/trunk/manifest.json`
 }
 
 /**

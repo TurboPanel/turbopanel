@@ -1,6 +1,6 @@
 /**
- * Accepting an invitation: one transaction that claims the pending row, adds
- * the user to the invited team and materializes the invitation's grants.
+ * Accepting an invitation: one transaction that adds the user to the invited
+ * team, materializes the invitation's grants, and marks the row accepted last.
  *
  * Shared by the signed-in **Accept invitation** button
  * (`POST /invitations/:id/accept`) and the new-account path that creates the
@@ -16,7 +16,8 @@ import { invitation, team, teammate } from '../../db/schema.ts'
 import {
   InvitationGrantValidationError,
   materializeInvitationGrants,
-  resolveInvitationGrants,
+  parseInvitationGrants,
+  validateInvitationGrantSpecs,
 } from '../authn/invitation-grants.ts'
 import { inviterHoldsTeamGrants } from './invitation-delegation.ts'
 import type { InvitationAcceptError } from './routes-helpers.ts'
@@ -57,6 +58,30 @@ async function alreadyAcceptedBy(
   return await organizationOfTeam(tx, row.teamId)
 }
 
+async function loadPendingInvitationForUpdate(
+  tx: Tx,
+  invitationId: string,
+  now: string
+): Promise<typeof invitation.$inferSelect | undefined> {
+  const rows = await tx
+    .select()
+    .from(invitation)
+    .where(
+      and(
+        eq(invitation.id, invitationId),
+        eq(invitation.status, 'pending'),
+        gt(invitation.expiresAt, now)
+      )
+    )
+    .for('update')
+    .limit(1)
+  return rows[0]
+}
+
+function invalidGrantFromValidation(err: unknown): InvitationAcceptError | undefined {
+  return err instanceof InvitationGrantValidationError ? 'invalid_grant' : undefined
+}
+
 /**
  * Claim `invitationId` for `userId`. The caller has already checked that the
  * user's email matches the invitation's.
@@ -67,50 +92,77 @@ export async function acceptInvitationForUser(
   userId: string
 ): Promise<AcceptInvitationResult> {
   const now = new Date().toISOString()
-  return await db.transaction(async (tx) => {
-    const claimed = await tx
-      .update(invitation)
-      .set({ status: 'accepted' })
-      .where(
-        and(
-          eq(invitation.id, invitationId),
-          eq(invitation.status, 'pending'),
-          gt(invitation.expiresAt, now)
-        )
-      )
-      .returning()
+  try {
+    return await db.transaction(async (tx) => {
+      const organizationIdFromPrior = await alreadyAcceptedBy(tx, invitationId, userId)
+      if (organizationIdFromPrior) {
+        return { ok: true as const, organizationId: organizationIdFromPrior }
+      }
 
-    const invite = claimed[0]
-    if (!invite) {
-      const organizationId = await alreadyAcceptedBy(tx, invitationId, userId)
-      return organizationId ? { ok: true as const, organizationId } : { error: 'gone' as const }
-    }
+      const invite = await loadPendingInvitationForUpdate(tx, invitationId, now)
+      if (!invite) {
+        const organizationIdRetry = await alreadyAcceptedBy(tx, invitationId, userId)
+        return organizationIdRetry
+          ? { ok: true as const, organizationId: organizationIdRetry }
+          : { error: 'gone' as const }
+      }
 
-    const organizationId = await organizationOfTeam(tx, invite.teamId)
-    if (!organizationId) {
-      return { error: 'gone' as const }
-    }
-    // Re-checked at accept time: covers invitations sent before the rule
-    // existed, and grants given to the team after the invitation went out.
-    if (!(await inviterHoldsTeamGrants(tx, invite.userId, invite.teamId))) {
-      return { error: 'invalid_grant' as const }
-    }
+      const organizationId = await organizationOfTeam(tx, invite.teamId)
+      if (!organizationId) {
+        return { error: 'gone' as const }
+      }
 
-    await tx
-      .insert(teammate)
-      .values({ teamId: invite.teamId, userId })
-      .onConflictDoNothing({ target: [teammate.teamId, teammate.userId] })
-
-    const grants = resolveInvitationGrants(invite.grants)
-    try {
-      await materializeInvitationGrants(tx, userId, grants, organizationId)
-    } catch (err) {
-      if (err instanceof InvitationGrantValidationError) {
+      // Re-checked at accept time: covers invitations sent before the rule
+      // existed, and grants given to the team after the invitation went out.
+      if (!(await inviterHoldsTeamGrants(tx, invite.userId, invite.teamId))) {
         return { error: 'invalid_grant' as const }
       }
-      throw err
-    }
 
-    return { ok: true as const, organizationId }
-  })
+      const grantsParsed = parseInvitationGrants(invite.grants)
+      if (invite.grants != null && grantsParsed === null) {
+        return { error: 'invalid_grant' as const }
+      }
+      const grants = grantsParsed ?? []
+
+      try {
+        await validateInvitationGrantSpecs(tx, grants, organizationId)
+      } catch (err) {
+        const code = invalidGrantFromValidation(err)
+        if (code) return { error: code }
+        throw err
+      }
+
+      await tx
+        .insert(teammate)
+        .values({ teamId: invite.teamId, userId })
+        .onConflictDoNothing({ target: [teammate.teamId, teammate.userId] })
+
+      await materializeInvitationGrants(tx, userId, grants, organizationId)
+
+      const claimed = await tx
+        .update(invitation)
+        .set({ status: 'accepted' })
+        .where(
+          and(
+            eq(invitation.id, invitationId),
+            eq(invitation.status, 'pending'),
+            gt(invitation.expiresAt, now)
+          )
+        )
+        .returning()
+
+      if (!claimed[0]) {
+        const organizationIdRetry = await alreadyAcceptedBy(tx, invitationId, userId)
+        return organizationIdRetry
+          ? { ok: true as const, organizationId: organizationIdRetry }
+          : { error: 'gone' as const }
+      }
+
+      return { ok: true as const, organizationId }
+    })
+  } catch (err) {
+    const code = invalidGrantFromValidation(err)
+    if (code) return { error: code }
+    throw err
+  }
 }

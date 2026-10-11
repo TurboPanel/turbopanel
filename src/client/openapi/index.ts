@@ -17,6 +17,7 @@ import { organizationPaths, organizationSchemas } from './organizations.ts'
 import { phpModePaths, phpModeSchemas } from './php-modes.ts'
 import { projectPaths, projectSchemas } from './projects.ts'
 import { serverPaths, serverSchemas } from './servers.ts'
+import { serverTrafficMapPaths, serverTrafficMapSchemas } from './server-traffic-map.ts'
 import { servicePaths, serviceSchemas } from './services.ts'
 import { variablePaths, variableSchemas } from './variables.ts'
 import { tagPaths, tagSchemas } from './tags.ts'
@@ -26,6 +27,7 @@ import { workspacePaths, workspaceSchemas } from './workspaces.ts'
 import { storagePaths, storageSchemas } from './storage.ts'
 import { storageBackupPaths, storageBackupSchemas } from './storage-backups.ts'
 import { firewallPaths, firewallSchemas } from './firewall.ts'
+import { activityPaths, activitySchemas } from './activity.ts'
 import { organizationMemberPaths, organizationMemberSchemas } from './organization-members.ts'
 import { repositoryPaths, repositorySchemas } from './repositories.ts'
 import { principalPaths, principalSchemas } from './principals.ts'
@@ -153,6 +155,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
         ...sharedSchemas,
         ...buildAuthSchemas(options?.runtime),
         ...serverSchemas,
+        ...serverTrafficMapSchemas,
         ...metricsSchemas,
         ...networkSchemas,
         ...datacenterSchemas,
@@ -172,6 +175,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
         ...storageBackupSchemas,
         ...firewallSchemas,
         ...organizationMemberSchemas,
+        ...activitySchemas,
         ...repositorySchemas,
         ...principalSchemas,
         ...deploySchemas,
@@ -189,6 +193,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
     paths: {
       ...authPaths,
       ...serverPaths,
+      ...serverTrafficMapPaths,
       ...metricsPaths,
       ...networkPaths,
       ...datacenterPaths,
@@ -208,6 +213,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
       ...storageBackupPaths,
       ...firewallPaths,
       ...organizationMemberPaths,
+      ...activityPaths,
       ...repositoryPaths,
       ...principalPaths,
       ...deployPaths,

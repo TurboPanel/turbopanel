@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -7,6 +8,7 @@ import {
   createCommandRecord,
   deleteCommandDispatch,
   getCommandDispatchPayload,
+  cancelNonTerminalCommand,
   getCommandRecord,
   listServerCommands,
   retainCommandDispatch,
@@ -136,13 +138,10 @@ test('serializeCommandRecord defaults missing lifecycle columns to nulls', () =>
 })
 
 async function withCommandRecordFixtures(
-  fn: (ctx: {
-    db: ReturnType<typeof createDenoDb>
-    serverId: string
-  }) => Promise<void>,
+  fn: (ctx: { db: ReturnType<typeof createDenoDb>; serverId: string }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping command-records DB tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('command-records DB tests')
     return
   }
 
@@ -305,10 +304,7 @@ test('transitionCommand writes lifecycle columns and auto-stamps status timestam
       finishedAt: '2020-01-01T00:00:00.250Z',
     })
     assertEquals(succeeded?.status, 'succeeded')
-    assertEquals(
-      (succeeded?.result as { daemonHostname?: string }).daemonHostname,
-      'web-01',
-    )
+    assertEquals((succeeded?.result as { daemonHostname?: string }).daemonHostname, 'web-01')
     assertEquals(succeeded?.ackedAt, '2020-01-01T00:00:00.150Z')
     assertEquals(succeeded?.finishedAt, '2020-01-01T00:00:00.250Z')
   })
@@ -367,21 +363,49 @@ test('listServerCommands returns newest-first rows with clamped limit', async ()
 
 test('getCommandRecord returns null for unknown id', async () => {
   await withCommandRecordFixtures(async ({ db }) => {
-    const missing = await getCommandRecord(
-      db,
-      '00000000-0000-4000-8000-000000000099',
-    )
+    const missing = await getCommandRecord(db, '00000000-0000-4000-8000-000000000099')
     assertEquals(missing, null)
+  })
+})
+
+test('cancelNonTerminalCommand cancels a live command and leaves a finished one', async () => {
+  await withCommandRecordFixtures(async ({ db, serverId }) => {
+    const live = await createCommandRecord(db, {
+      serverId,
+      actorType: 'user',
+      actorId: '00000000-0000-4000-8000-000000000001',
+      type: 'daemon.ping',
+      payload: {},
+    })
+    const finished = await createCommandRecord(db, {
+      serverId,
+      actorType: 'user',
+      actorId: '00000000-0000-4000-8000-000000000001',
+      type: 'daemon.ping',
+      payload: {},
+    })
+    await transitionCommand(db, finished.id, { status: 'succeeded' })
+
+    assertEquals(
+      await cancelNonTerminalCommand(db, live.id, { error: 'Superseded by a follow-primary' }),
+      true
+    )
+    assertEquals((await getCommandRecord(db, live.id))?.status, 'cancelled')
+
+    assertEquals(
+      await cancelNonTerminalCommand(db, finished.id, { error: 'Superseded by a follow-primary' }),
+      false
+    )
+    assertEquals((await getCommandRecord(db, finished.id))?.status, 'succeeded')
   })
 })
 
 test('transitionCommand returns null for unknown id', async () => {
   await withCommandRecordFixtures(async ({ db }) => {
-    const updated = await transitionCommand(
-      db,
-      '00000000-0000-4000-8000-000000000099',
-      { status: 'failed', error: 'missing' },
-    )
+    const updated = await transitionCommand(db, '00000000-0000-4000-8000-000000000099', {
+      status: 'failed',
+      error: 'missing',
+    })
     assertEquals(updated, null)
   })
 })

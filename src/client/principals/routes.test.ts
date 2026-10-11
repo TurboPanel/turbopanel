@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertMatch } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -102,7 +103,7 @@ async function withPrincipalFixtures(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping principal route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('principal route tests')
     return
   }
 
@@ -261,19 +262,31 @@ test('POST /projects/:projectId/principals persists default shell when options o
 test('POST /projects/:projectId/principals rejects reserved usernames', async () => {
   await withPrincipalFixtures(async ({ db, app, secrets, userId, organizationId, projectId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
-    const res = await app.request(`/projects/${projectId}/principals`, {
-      method: 'POST',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ username: 'www-data' }),
-    })
-
-    assertEquals(res.status, 400)
-    const body = (await res.json()) as { error: string }
-    assertEquals(body.error, 'username_reserved')
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+    for (const username of [
+      'ftp',
+      'git',
+      'FTP',
+      ' git ',
+      'ubuntu',
+      'www',
+      'root',
+      'www-data',
+      'sudo',
+    ]) {
+      const res = await app.request(`/projects/${projectId}/principals`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ username }),
+      })
+      assertEquals(res.status, 400, username)
+      const body = (await res.json()) as { error: string }
+      assertEquals(body.error, 'username_reserved', username)
+    }
   })
 })
 
@@ -384,7 +397,7 @@ test('POST /projects/:projectId/principals accepts max-length username and rejec
       })
       .where(eq(organization.id, organizationId))
 
-    // 28 chars — longest that still fits `<username>-grp` in 32.
+    // 28 chars — the longest site owner's Linux user name.
     const longest = `u${'a'.repeat(27)}`
     assertEquals(longest.length, 28)
     const okBare = await app.request(`/projects/${projectId}/principals`, {
@@ -493,6 +506,24 @@ test('POST /projects/:projectId/principals accepts uid and gid override', async 
     const body = (await res.json()) as { ok: boolean; uid: number; gid: number }
     assertEquals(body.uid, 15001)
     assertEquals(body.gid, 15001)
+  })
+})
+
+test('POST /projects/:projectId/principals refuses a uid or gid above 60000', async () => {
+  await withPrincipalFixtures(async ({ app, db, secrets, userId, organizationId, projectId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/projects/${projectId}/principals`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      // 61184-65519 is the host's throwaway build users, never a site owner's.
+      body: JSON.stringify({ username: 'highuid', uid: 61184, gid: 15001 }),
+    })
+
+    assertEquals(res.status, 400)
   })
 })
 

@@ -53,6 +53,12 @@ it('quoteSqlString doubles single quotes', () => {
   assertEquals(quoteSqlString('plain'), "'plain'")
 })
 
+it('quoteSqlString escapes backslashes so a literal can never be closed early', () => {
+  assertEquals(quoteSqlString('x\\'), "'x\\\\'")
+  assertEquals(quoteSqlString("\\' OR 1=1 OR '"), "'\\\\'' OR 1=1 OR '''")
+  assertEquals(quoteSqlString('a\nb'), "'a\\nb'")
+})
+
 it('kindDiscriminatorPredicates: blob1 = kind, blob3 = schema version', () => {
   const predicates = kindDiscriminatorPredicates('metrics')
   assertEquals(predicates, [`blob1 = 'metrics'`, `blob3 IN ('6', '7')`])

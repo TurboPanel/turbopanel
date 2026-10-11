@@ -11,6 +11,9 @@ import {
   claimWebhookDelivery,
   completeStripeProjection,
   enqueueStripeProjection,
+  expireStalePendingStripeProjections,
+  noteStripeProjectionAttempt,
+  STRIPE_CLAIM_ABANDONED_AFTER_MS,
   listPendingStripeProjections,
   releaseWebhookDelivery,
   sweepExpiredWebhookDeliveries,
@@ -42,7 +45,10 @@ type DeliveryDb = Db & {
   released: boolean
 }
 
-function createDeliveryDb(opts?: { claimed?: { id: string }[]; swept?: { id: string }[] }): DeliveryDb {
+function createDeliveryDb(opts?: {
+  claimed?: { id: string }[]
+  swept?: { id: string }[]
+}): DeliveryDb {
   const claimed = opts?.claimed ?? [{ id: 'new-claim' }]
   const swept = opts?.swept ?? []
   const db = {
@@ -79,7 +85,7 @@ test('claimWebhookDelivery is first-writer-wins', async () => {
       externalDeliveryId: 'abc',
       event: 'push',
     }),
-    true,
+    true
   )
   assertEquals(first.claimedValues, {
     provider: 'github',
@@ -93,7 +99,7 @@ test('claimWebhookDelivery is first-writer-wins', async () => {
       provider: 'gitlab',
       externalDeliveryId: 'abc',
     }),
-    false,
+    false
   )
   assertEquals(replay.claimedValues, {
     provider: 'gitlab',
@@ -134,7 +140,7 @@ test('Stripe projection handoff stores the object ref and lists pending work', a
       externalDeliveryId: 'evt_1',
       event: 'customer.subscription.updated',
     }),
-    true,
+    true
   )
   await enqueueStripeProjection(db, {
     id: 'evt_1',
@@ -143,12 +149,14 @@ test('Stripe projection handoff stores the object ref and lists pending work', a
     objectType: 'subscription',
   })
   const pending = await listPendingStripeProjections(db, { limit: 10 })
-  assertEquals(pending, [{
-    id: 'evt_1',
-    type: 'customer.subscription.updated',
-    objectId: 'sub_1',
-    objectType: 'subscription',
-  }])
+  assertEquals(pending, [
+    {
+      id: 'evt_1',
+      type: 'customer.subscription.updated',
+      objectId: 'sub_1',
+      objectType: 'subscription',
+    },
+  ])
   await completeStripeProjection(db, 'evt_1', '2026-09-10T00:00:00.000Z')
   assertEquals(await listPendingStripeProjections(db, { limit: 10 }), [])
   assertEquals(db.rows(webhookDelivery)[0]?.projectedAt, '2026-09-10T00:00:00.000Z')
@@ -162,7 +170,7 @@ test('Stripe projection sweep skips claimed rows until the object-ref handoff', 
       externalDeliveryId: 'evt_pre_handoff',
       event: 'customer.subscription.updated',
     }),
-    true,
+    true
   )
   assertEquals(await listPendingStripeProjections(db, { limit: 10 }), [])
   assertEquals(db.rows(webhookDelivery)[0]?.objectId, null)
@@ -176,7 +184,7 @@ test('enqueueStripeProjection reopens a settled row for retry', async () => {
       externalDeliveryId: 'evt_1',
       event: 'customer.subscription.updated',
     }),
-    true,
+    true
   )
   await enqueueStripeProjection(db, {
     id: 'evt_1',
@@ -193,10 +201,88 @@ test('enqueueStripeProjection reopens a settled row for retry', async () => {
     objectType: 'subscription',
   })
   assertEquals(db.rows(webhookDelivery)[0]?.projectedAt, null)
-  assertEquals(await listPendingStripeProjections(db, { limit: 10 }), [{
-    id: 'evt_1',
-    type: 'customer.subscription.updated',
-    objectId: 'sub_1',
-    objectType: 'subscription',
-  }])
+  assertEquals(await listPendingStripeProjections(db, { limit: 10 }), [
+    {
+      id: 'evt_1',
+      type: 'customer.subscription.updated',
+      objectId: 'sub_1',
+      objectType: 'subscription',
+    },
+  ])
+})
+
+const deliveryRow = (id: string, over: Record<string, unknown> = {}) => ({
+  id: `row-${id}`,
+  provider: 'stripe',
+  externalDeliveryId: id,
+  event: 'customer.subscription.updated',
+  objectId: 'sub_1',
+  objectType: 'subscription',
+  projectedAt: null,
+  createdAt: '2026-09-01T00:00:00.000Z',
+  updatedAt: '2026-09-01T00:00:00.000Z',
+  ...over,
+})
+
+test('a Stripe claim abandoned before the object-ref handoff is taken over by the redelivery; a fresh one is not', async () => {
+  const old = new Date(Date.now() - STRIPE_CLAIM_ABANDONED_AFTER_MS - 60_000).toISOString()
+  const fresh = new Date().toISOString()
+  const db = createMemoryDb([
+    [
+      webhookDelivery,
+      [
+        deliveryRow('evt_dead', { objectId: null, objectType: null, updatedAt: old }),
+        deliveryRow('evt_live', { objectId: null, objectType: null, updatedAt: fresh }),
+        deliveryRow('evt_handed', { updatedAt: old }),
+      ],
+    ],
+  ])
+  const claim = (id: string) =>
+    claimWebhookDelivery(db, { provider: 'stripe', externalDeliveryId: id, event: 'x' })
+  assertEquals(await claim('evt_dead'), true)
+  // The takeover stamps the row, so a second redelivery cannot also take it.
+  assertEquals(await claim('evt_dead'), false)
+  assertEquals(await claim('evt_live'), false)
+  assertEquals(await claim('evt_handed'), false)
+  // Git providers never reclaim.
+  assertEquals(
+    await claimWebhookDelivery(db, { provider: 'github', externalDeliveryId: 'evt_dead' }),
+    true
+  )
+})
+
+test('a task that keeps failing moves behind newer ones instead of starving the retry sweep', async () => {
+  const rows = ['evt_a', 'evt_b', 'evt_c'].map((id, i) =>
+    deliveryRow(id, { updatedAt: `2026-09-01T00:00:0${i}.000Z` })
+  )
+  const db = createMemoryDb([[webhookDelivery, rows]])
+  const first = await listPendingStripeProjections(db, { limit: 1 })
+  assertEquals(
+    first.map((t) => t.id),
+    ['evt_a']
+  )
+  await noteStripeProjectionAttempt(db, 'evt_a', '2026-09-02T00:00:00.000Z')
+  const second = await listPendingStripeProjections(db, { limit: 2 })
+  assertEquals(
+    second.map((t) => t.id),
+    ['evt_b', 'evt_c']
+  )
+})
+
+test('a Stripe projection still failing after the retention window is given up on', async () => {
+  const db = createMemoryDb([
+    [
+      webhookDelivery,
+      [
+        deliveryRow('evt_old', { createdAt: '2026-08-01T00:00:00.000Z' }),
+        deliveryRow('evt_new', { createdAt: '2026-09-09T00:00:00.000Z' }),
+      ],
+    ],
+  ])
+  const now = '2026-09-10T00:00:00.000Z'
+  assertEquals(await expireStalePendingStripeProjections(db, now), 1)
+  assertEquals(
+    (await listPendingStripeProjections(db, { limit: 10 })).map((t) => t.id),
+    ['evt_new']
+  )
 })

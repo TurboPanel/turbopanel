@@ -1,3 +1,4 @@
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -44,6 +45,7 @@ import {
   type StorageParentEntityKind,
   type StorageParentRef,
 } from './routes-helpers.ts'
+import { copyOptionsError, copyPathWriteError } from '../../features/backups/copy-targets.ts'
 
 async function sealStorageContent(c: Context<AppEnv>, content: string): Promise<string | Response> {
   if (isStorageContentTooLarge(content)) {
@@ -311,6 +313,34 @@ async function validateCopyRefsInOrg(
   return null
 }
 
+/**
+ * A copy may only point at the storage's own site owner's directories and the
+ * storage's own Docker volume: its path must sit inside that owner's volumes
+ * directory, and it cannot name an external volume (deploy records those from
+ * the project's compose file, and the host re-checks them). Anything else is 400.
+ */
+async function validateCopyOwnership(
+  c: Context<AppEnv>,
+  db: StorageDb,
+  principalId: string | null,
+  copy: { path?: unknown; options?: unknown }
+): Promise<Response | null> {
+  const optionsError = copyOptionsError(copy.options)
+  if (optionsError) return c.json({ error: optionsError }, 400)
+  if (typeof copy.path !== 'string' || copy.path.length === 0) return null
+  let username: string | null = null
+  if (principalId) {
+    const [row] = await db
+      .select({ username: principal.appliedUsername })
+      .from(principal)
+      .where(eq(principal.id, principalId))
+      .limit(1)
+    username = row?.username ?? null
+  }
+  const pathError = copyPathWriteError(username, copy.path)
+  return pathError ? c.json({ error: pathError }, 400) : null
+}
+
 async function validateServiceInOrg(
   c: Context<AppEnv>,
   db: StorageDb,
@@ -405,6 +435,8 @@ async function createStorageRecord(
   if (fields.copy) {
     const copyRefError = await validateCopyRefsInOrg(c, db, orgId, fields.copy)
     if (copyRefError) return copyRefError
+    const ownershipError = await validateCopyOwnership(c, db, fields.principalId, fields.copy)
+    if (ownershipError) return ownershipError
   }
   if (fields.mount) {
     const serviceError = await validateServiceInOrg(c, db, orgId, fields.mount.serviceId)
@@ -470,6 +502,10 @@ async function patchStorageRecord(
 
   const updateFields = buildStorageUpdateFields(c, body)
   if (updateFields instanceof Response) return updateFields
+  const pinned = (updateFields.metadata as Record<string, unknown> | undefined)?.dockerVolumeName
+  if (pinned !== undefined && pinned !== id) {
+    return c.json({ error: 'A storage can only name its own Docker volume' }, 400)
+  }
 
   const sealedContent = await resolveSealedStorageContent(c, body.content)
   if (sealedContent instanceof Response) return sealedContent
@@ -669,6 +705,9 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const authorized = await authorizeStorageMutation(c, existing, ctx.orgId)
     if (authorized instanceof Response) return authorized
 
+    const stepUp = await requireStepUpIfConfigured(c, ctx.orgId, 'storage.delete')
+    if (stepUp) return stepUp
+
     const backupHosts = await captureCopyBackupHosts(ctx.db, c.get('commandQueue'), {
       storageId: id,
     })
@@ -716,6 +755,8 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const copyRefError = await validateCopyRefsInOrg(c, ctx.db, ctx.orgId, fields)
     if (copyRefError) return copyRefError
+    const ownershipError = await validateCopyOwnership(c, ctx.db, row.principalId, fields)
+    if (ownershipError) return ownershipError
 
     try {
       const id = await insertCopyRow(ctx.db, storageId, fields)
@@ -747,6 +788,13 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const copyRefError = await validateCopyRefsInOrg(c, ctx.db, ctx.orgId, updateFields)
     if (copyRefError) return copyRefError
+    const ownershipError = await validateCopyOwnership(c, ctx.db, row.principalId, {
+      // Only a path being written is checked; an unrelated edit of a copy that
+      // predates the rule is left alone (the host refuses its path on deploy).
+      path: 'path' in updateFields ? updateFields.path : undefined,
+      options: updateFields.options,
+    })
+    if (ownershipError) return ownershipError
 
     // A move, a new path or provider changes which host runs the copy's
     // backup timers, and what they read.
@@ -769,6 +817,9 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const copyId = c.req.param('copyId')
     const row = await requireStorageForNested(c, ctx.db, ctx.orgId, storageId, 'manage')
     if (row instanceof Response) return row
+
+    const stepUp = await requireStepUpIfConfigured(c, ctx.orgId, 'storage.copy.delete')
+    if (stepUp) return stepUp
 
     const backupHosts = await captureCopyBackupHosts(ctx.db, c.get('commandQueue'), {
       copyIds: [copyId],

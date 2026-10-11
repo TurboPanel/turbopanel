@@ -12,7 +12,7 @@
  * CI coverage uses `scripts/test-coverage.sh` (`deno test -A …`).
  */
 
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertStringIncludes } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
@@ -41,9 +41,16 @@ import {
   user,
   workspace,
 } from '../../db/schema.ts'
+import { mariadbEngineSpec } from '../../features/managed/mariadb.ts'
+import { mysqlEngineSpec } from '../../features/managed/mysql.ts'
 import { postgresEngineSpec } from '../../features/managed/postgres.ts'
+import { POSTGRES_ALLOWED_IMAGES } from '../../features/managed/settings.ts'
+import type { ManagedEngineSpec } from '../../features/managed/types.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
-import { managedSessionPaths } from '../../features/managed/routes-helpers.ts'
+import {
+  buildManagedReplicaLiveCheckFailedBody,
+  managedSessionPaths,
+} from '../../features/managed/routes-helpers.ts'
 import { registerManagedRoutes } from './routes.ts'
 import { SERVER_OFFLINE_BODY } from './context.ts'
 
@@ -259,6 +266,16 @@ function recordingQueue(): CommandQueue {
   }
 }
 
+/** A queue that keeps what was enqueued, so a test can see nothing was. */
+function countingQueue(sink: CommandEnvelope[]): CommandQueue {
+  return {
+    enqueue: (envelope: CommandEnvelope) => {
+      sink.push(envelope)
+      return Promise.resolve()
+    },
+  }
+}
+
 function principalRow(overrides: Record<string, unknown> = {}) {
   return {
     id: PRINCIPAL_ID,
@@ -334,6 +351,8 @@ type FakeDbConfig = {
   commandRows?: unknown[]
   executeRows?: unknown[]
   userRole?: string
+  /** Called for every `insert().values()`, so a test can see what was written. */
+  onInsert?: (table: unknown, values: Record<string, unknown>) => void
 }
 
 /**
@@ -413,6 +432,7 @@ function fakeDb(config: FakeDbConfig = {}): Db {
     execute: () => Promise.resolve(executeRows),
     insert: (table: unknown) => ({
       values: (values: Record<string, unknown>) => {
+        config.onInsert?.(table, values)
         const rows = [
           {
             ...principalRow(),
@@ -1121,6 +1141,111 @@ test('POST create rejects an invalid display name', async () => {
   assertEquals(res.status === 409 || res.status === 400, true)
 })
 
+/** A POST create against a placed, online server with a working command queue. */
+async function postCreate(
+  body: Record<string, unknown>,
+  inserted: Array<{ table: unknown; values: Record<string, unknown> }> = [],
+  code = 'postgres'
+): Promise<Response> {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({
+      envRows: [envRow({ serverId: SERVER_ID })],
+      projectRows: [{ metadata: { code } }],
+      serverRows: [applyReadyServer(true)],
+      onInsert: (table, values) => inserted.push({ table, values }),
+    }),
+    registry: stubRegistry(),
+    commandQueue: recordingQueue(),
+  })
+  return await app.request(envPath(), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+test('POST create refuses an untested or unknown version with 422 and writes nothing', async () => {
+  for (const body of [
+    { engineSeries: '17' },
+    { engineSeries: '99' },
+    { engineSeries: '18', imageVariant: 'nope' },
+    { imageVariant: 'nope' },
+  ]) {
+    const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = []
+    const res = await postCreate(body, inserted)
+    await expectJson(res, 422, { error: 'managed_version_unsupported' })
+    assertEquals(inserted.length, 0, `${JSON.stringify(body)} must not create anything`)
+  }
+})
+
+test('POST create refuses a malformed series or variant with 400 and writes nothing', async () => {
+  for (const [body, error] of [
+    [{ engineSeries: 18 }, 'Invalid engineSeries'],
+    [{ engineSeries: ['18'] }, 'Invalid engineSeries'],
+    [{ imageVariant: false }, 'Invalid imageVariant'],
+  ] as const) {
+    const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = []
+    await expectJson(await postCreate(body, inserted), 400, { error })
+    assertEquals(inserted.length, 0)
+  }
+})
+
+/**
+ * The settings image the create wrote onto the new `managed` row. The fake
+ * database cannot finish the apply preparation (no member rows come back), so
+ * the status is not asserted here; the DB-backed suite covers the full create.
+ */
+async function createdImage(
+  body: Record<string, unknown>,
+  code = 'postgres'
+): Promise<string | undefined> {
+  const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = []
+  await postCreate(body, inserted, code)
+  const row = inserted.find((entry) => entry.table === managed)
+  const options = row?.values.options as { settings?: { image?: string } } | undefined
+  if (!options?.settings) throw new TypeError('create did not persist settings')
+  return options.settings.image
+}
+
+test('POST create persists the requested variant and stores the default when none is sent', async () => {
+  // Neither field: the resolved default image is stored, so a later change of the
+  // catalog default can never change which series this row runs.
+  assertEquals(await createdImage({}), 'docker.io/library/postgres:18-alpine')
+  assertEquals(await createdImage({}, 'mariadb'), 'docker.io/library/mariadb:11.8')
+  assertEquals(await createdImage({ engineSeries: '18' }), 'docker.io/library/postgres:18-alpine')
+  assertEquals(
+    await createdImage({ engineSeries: '18', imageVariant: 'debian' }),
+    'docker.io/library/postgres:18'
+  )
+  assertEquals(await createdImage({ imageVariant: 'debian' }), 'docker.io/library/postgres:18')
+})
+
+test('POST create resolves MySQL and MariaDB versions through the same helper', async () => {
+  assertEquals(
+    await createdImage({ engineSeries: '9.7', imageVariant: 'oraclelinux9' }, 'mysql'),
+    'docker.io/library/mysql:9.7-oraclelinux9'
+  )
+  assertEquals(await createdImage({ engineSeries: '9.7' }, 'mysql'), 'docker.io/library/mysql:9.7')
+  assertEquals(
+    await createdImage({ engineSeries: '12.3' }, 'mariadb'),
+    'docker.io/library/mariadb:12.3'
+  )
+  assertEquals(await createdImage({ engineSeries: '8.4' }, 'mysql'), 'docker.io/library/mysql:8.4')
+  assertEquals(
+    await createdImage({ engineSeries: '11.8', imageVariant: 'ubi' }, 'mariadb'),
+    'docker.io/library/mariadb:11.8-ubi'
+  )
+  for (const [code, series] of [
+    ['mysql', '8.0'],
+    ['mariadb', '11.4'],
+  ] as const) {
+    const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = []
+    const res = await postCreate({ engineSeries: series }, inserted, code)
+    await expectJson(res, 422, { error: 'managed_version_unsupported' })
+    assertEquals(inserted.length, 0)
+  }
+})
+
 test('PATCH rejects applying clusters as busy', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({ managedRows: [managedRow({ status: 'applying' })] }),
@@ -1210,6 +1335,136 @@ test('PATCH rejects invalid settings', async () => {
     400,
     { error: 'managed_settings_invalid' }
   )
+})
+
+const PG_ALPINE = 'docker.io/library/postgres:18-alpine'
+const PG_DEBIAN = 'docker.io/library/postgres:18'
+const PG_SERIES_17_ALPINE = 'docker.io/library/postgres:17-alpine'
+const PG_SERIES_17_DEBIAN = 'docker.io/library/postgres:17'
+
+/** A fake db that counts every write, so a refusal can prove nothing persisted. */
+function writeCountingDb(config: FakeDbConfig): { db: Db; writes: () => number } {
+  const base = fakeDb(config)
+  let count = 0
+  const counted = <T extends (...args: never[]) => unknown>(fn: T) =>
+    ((...args: Parameters<T>) => {
+      count += 1
+      return fn(...args)
+    }) as T
+  const db = {
+    ...base,
+    update: counted(base.update.bind(base)),
+    insert: counted(base.insert.bind(base)),
+    delete: counted(base.delete.bind(base)),
+    transaction: counted(base.transaction.bind(base)),
+  } as unknown as Db
+  return { db, writes: () => count }
+}
+
+function patchManaged(
+  app: Hono<AppEnv>,
+  cookie: string,
+  settings: Record<string, unknown>
+): Promise<Response> {
+  return Promise.resolve(
+    app.request(envPath(), {
+      method: 'PATCH',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({ settings }),
+    })
+  )
+}
+
+function rowFor(spec: ManagedEngineSpec, image: string) {
+  const settings = spec.parseSettings({ ...spec.defaultSettings, image })
+  if (!settings) throw new TypeError(`failed to parse ${spec.engine} settings`)
+  return managedRow({
+    engine: spec.engine,
+    options: { settings, databases: ['defaultdb'] },
+  })
+}
+
+test('PATCH refuses a series change with 409 managed_series_immutable and persists nothing', async () => {
+  // Only series 18 is creatable today, so the settings parser would answer 400
+  // before the series guard runs. Widen the allowlist for this test only, the
+  // way it will look once a second series is promoted to tested.
+  const allowed = POSTGRES_ALLOWED_IMAGES as string[]
+  const added = [PG_SERIES_17_ALPINE, PG_SERIES_17_DEBIAN].filter(
+    (image) => !allowed.includes(image)
+  )
+  allowed.push(...added)
+  try {
+    const { db, writes } = writeCountingDb({
+      managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)],
+    })
+    const { app, cookie } = await buildApp({ db })
+    for (const image of [PG_SERIES_17_ALPINE, PG_SERIES_17_DEBIAN]) {
+      const res = await patchManaged(app, cookie, { image })
+      assertEquals(res.status, 409)
+      const body = await jsonOf(res)
+      assertEquals(body.error, 'managed_series_immutable')
+      assertEquals(typeof body.message, 'string')
+    }
+    assertEquals(writes(), 0)
+  } finally {
+    for (const image of added) allowed.splice(allowed.indexOf(image), 1)
+  }
+})
+
+test('PATCH to an untested series is refused by the settings parser and persists nothing', async () => {
+  const { db, writes } = writeCountingDb({ managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)] })
+  const { app, cookie } = await buildApp({ db })
+  const res = await patchManaged(app, cookie, { image: PG_SERIES_17_ALPINE })
+  assertEquals(res.status, 400)
+  assertEquals((await jsonOf(res)).error, 'managed_settings_invalid')
+  assertEquals(writes(), 0)
+})
+
+test('PATCH refuses Alpine to Debian on PostgreSQL with 409 managed_variant_swap_unsafe and persists nothing', async () => {
+  const { db, writes } = writeCountingDb({ managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)] })
+  const { app, cookie } = await buildApp({ db })
+  const res = await patchManaged(app, cookie, { image: PG_DEBIAN })
+  assertEquals(res.status, 409)
+  const body = await jsonOf(res)
+  assertEquals(body.error, 'managed_variant_swap_unsafe')
+  assertEquals(String(body.message).includes('restore a backup'), true)
+  assertEquals(writes(), 0)
+
+  // The other direction is just as unsafe.
+  const reverse = writeCountingDb({ managedRows: [rowFor(postgresEngineSpec, PG_DEBIAN)] })
+  const reverseApp = await buildApp({ db: reverse.db })
+  const back = await patchManaged(reverseApp.app, reverseApp.cookie, { image: PG_ALPINE })
+  assertEquals(back.status, 409)
+  assertEquals((await jsonOf(back)).error, 'managed_variant_swap_unsafe')
+  assertEquals(reverse.writes(), 0)
+})
+
+test('PATCH accepts a PostgreSQL patch that keeps the same image', async () => {
+  const { db, writes } = writeCountingDb({ managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)] })
+  const { app, cookie } = await buildApp({ db })
+  const res = await patchManaged(app, cookie, { image: PG_ALPINE })
+  assertEquals(res.status, 200)
+  assertEquals((await jsonOf(res)).ok, true)
+  assertEquals(writes(), 1)
+})
+
+test('PATCH still allows a MySQL and a MariaDB variant change', async () => {
+  const cases: Array<[ManagedEngineSpec, string, string]> = [
+    [mysqlEngineSpec, 'docker.io/library/mysql:9.7', 'docker.io/library/mysql:9.7-oraclelinux9'],
+    [mariadbEngineSpec, 'docker.io/library/mariadb:12.3', 'docker.io/library/mariadb:12.3-ubi'],
+  ]
+  for (const [spec, from, to] of cases) {
+    const { db, writes } = writeCountingDb({
+      managedRows: [rowFor(spec, from)],
+      projectRows: [{ metadata: { code: spec.engine } }],
+    })
+    const { app, cookie } = await buildApp({ db })
+    const res = await patchManaged(app, cookie, { image: to })
+    assertEquals(res.status, 200)
+    const body = await jsonOf(res)
+    assertEquals((body.settings as { image: string }).image, to)
+    assertEquals(writes(), 1)
+  }
 })
 
 test('POST apply / lifecycle / backups require a placement pin', async () => {
@@ -1514,15 +1769,17 @@ test('POST databases rejects a missing name and an invalid identifier', async ()
     400,
     { error: 'Invalid request' }
   )
-  await expectJson(
-    await app.request(envPath('/databases'), {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ name: 'bad-name' }),
-    }),
-    400,
-    { error: 'Invalid database name' }
-  )
+  // Hyphens are refused on purpose, and the answer says so in plain words.
+  const hyphen = await app.request(envPath('/databases'), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ name: 'bad-name' }),
+  })
+  assertEquals(hyphen.status, 400)
+  const hyphenBody = (await hyphen.json()) as { error: string; message: string }
+  assertEquals(hyphenBody.error, 'Invalid database name')
+  assertStringIncludes(hyphenBody.message, 'Hyphens are not allowed on purpose')
+  assertStringIncludes(hyphenBody.message, 'my_app')
 })
 
 test('POST databases returns 400 for invalid stored options', async () => {
@@ -1560,6 +1817,67 @@ test('DELETE database refuses the initial database and unknown names', async () 
     404,
     { error: 'Not found' }
   )
+})
+
+test('DELETE database returns 409 listing the SQL users that still have access', async () => {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({
+      managedRows: [managedRow()],
+      principalRows: [
+        principalRow({ metadata: { managedRoot: true, databases: ['appdb'] } }),
+        principalRow({
+          id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          username: 'repl',
+          metadata: { managedReplication: true, databases: ['appdb'] },
+        }),
+        principalRow({
+          id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          username: 'appuser',
+          metadata: { engine: 'postgres', databases: ['defaultdb', 'appdb'] },
+        }),
+        principalRow({
+          id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccd',
+          username: 'other',
+          metadata: { engine: 'postgres', databases: ['defaultdb'] },
+        }),
+      ],
+    }),
+  })
+  const res = await app.request(envPath('/databases/appdb'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(res.status, 409)
+  const raw = await res.text()
+  assertEquals(JSON.parse(raw), { error: 'managed_database_has_users', users: ['appuser'] })
+  assertEquals(raw.includes('sealed'), false)
+})
+
+test('DELETE database reports bindings before users', async () => {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({
+      managedRows: [managedRow()],
+      principalRows: [
+        principalRow({ metadata: { engine: 'postgres', databases: ['defaultdb', 'appdb'] } }),
+      ],
+      bindingRows: [
+        {
+          id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          serviceId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+          name: 'web',
+          environmentId: ENV_ID,
+          projectId: PROJECT_ID,
+          keyPrefix: 'DATABASE',
+        },
+      ],
+    }),
+  })
+  const res = await app.request(envPath('/databases/appdb'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(res.status, 409)
+  assertEquals((await jsonOf(res)).error, 'managed_database_has_bindings')
 })
 
 test('POST members rejects a missing serverId and an invalid replica class', async () => {
@@ -1880,10 +2198,7 @@ test('disaster-recovery promote cannot verify a session when the database is uns
 })
 
 test('GET managed serializes a placed cluster with a loopback listener', async () => {
-  // Exposure is on by default now, so opt this cluster out to keep the
-  // loopback fallback covered.
   const options = validOptions()
-  options.settings.exposure = { enabled: false }
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow({ options })],
@@ -2144,26 +2459,6 @@ test('POST create rejects an invalid name after the host is online', async () =>
   )
 })
 
-test('POST create rejects invalid settings after the host is online', async () => {
-  const { app, cookie } = await buildApp({
-    db: fakeDb({
-      envRows: [envRow({ serverId: SERVER_ID })],
-      serverRows: [presenceServer(true)],
-    }),
-    registry: stubRegistry(),
-    commandQueue: recordingQueue(),
-  })
-  await expectJson(
-    await app.request(envPath(), {
-      method: 'POST',
-      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
-      body: JSON.stringify({ exposure: { bind: 'public' } }),
-    }),
-    400,
-    { error: 'managed_settings_invalid' }
-  )
-})
-
 test('POST lifecycle / backups / restore require an online host', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
@@ -2246,7 +2541,7 @@ test('DELETE hard-deletes pending containers for environment services', async ()
   assertEquals(body.deleted, true)
 })
 
-test('POST promote returns 409 when replica lag is unknown', async () => {
+test('POST promote returns 409 when replica lag is unknown and no live probe', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
@@ -2260,11 +2555,11 @@ test('POST promote returns 409 when replica lag is unknown', async () => {
       body: JSON.stringify({}),
     }),
     409,
-    { error: 'managed_replica_not_streaming' }
+    LIVE_CHECK_FAILED
   )
 })
 
-test('POST promote returns 409 when replica health is stale', async () => {
+test('POST promote returns 409 when stored health is stale and no live probe', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
@@ -2289,7 +2584,7 @@ test('POST promote returns 409 when replica health is stale', async () => {
       body: JSON.stringify({}),
     }),
     409,
-    { error: 'managed_replica_health_stale' }
+    LIVE_CHECK_FAILED
   )
 })
 
@@ -2489,6 +2784,270 @@ test('POST lifecycle / DELETE placed / backups enqueue when the host is online',
   )
 })
 
+const BOUND_SERVICE = {
+  id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+  serviceId: SERVICE_ID,
+  name: 'web',
+  environmentId: ENV_ID,
+  projectId: PROJECT_ID,
+  keyPrefix: 'DATABASE',
+}
+
+test('DELETE cluster refuses with the bound services listed, and queues nothing', async () => {
+  const enqueued: CommandEnvelope[] = []
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb({ bindingRows: [BOUND_SERVICE] }),
+    registry: stubRegistry(),
+    commandQueue: countingQueue(enqueued),
+  })
+  const res = await app.request(envPath(), { method: 'DELETE', headers: authHeaders(cookie) })
+  assertEquals(res.status, 409)
+  const body = await jsonOf(res)
+  assertEquals(body.error, 'managed_has_bindings')
+  assertEquals(
+    (body.services as Array<Record<string, unknown>>).map((entry) => entry.name),
+    ['web']
+  )
+  assertEquals(enqueued.length, 0)
+})
+
+test('DELETE cluster with ?detach=true queues the destroy and leaves the bindings until it succeeds', async () => {
+  const deletedTables: unknown[] = []
+  const base = applyReadyDb({ bindingRows: [BOUND_SERVICE] })
+  const db = {
+    ...base,
+    delete: (table: unknown) => {
+      deletedTables.push(table)
+      return base.delete(table as never)
+    },
+  } as unknown as Db
+  const enqueued: CommandEnvelope[] = []
+  const { app, cookie } = await buildApp({
+    db,
+    registry: stubRegistry(),
+    commandQueue: countingQueue(enqueued),
+  })
+  const res = await app.request(envPath('?detach=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(res.status, 200)
+  const body = await jsonOf(res)
+  assertEquals(body.deleted, false)
+  assertEquals(
+    (body.detached as Array<Record<string, unknown>>).map((entry) => entry.name),
+    ['web']
+  )
+  assertEquals(enqueued.length > 0, true)
+  // The bindings go with the managed row when the destroy succeeds; removing
+  // them now would leave a cluster that is still running with apps unbound if
+  // the destroy failed on the host.
+  assertEquals(deletedTables.includes(binding), false)
+  assertEquals(deletedTables.includes(managed), false)
+})
+
+test('DELETE cluster with ?detach=true whose destroy cannot be queued answers 502 and leaves the bindings', async () => {
+  const deletedTables: unknown[] = []
+  const base = applyReadyDb({ bindingRows: [BOUND_SERVICE] })
+  const db = {
+    ...base,
+    delete: (table: unknown) => {
+      deletedTables.push(table)
+      return base.delete(table as never)
+    },
+  } as unknown as Db
+  const { app, cookie } = await buildApp({
+    db,
+    registry: stubRegistry(),
+    commandQueue: failingQueue(),
+  })
+  const res = await app.request(envPath('?detach=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(res.status >= 500, true)
+  assertEquals(deletedTables.includes(binding), false)
+})
+
+test('DELETE cluster with ?detach=true needs the same rights as the destroy: manage denied is 403 and nothing is queued or removed', async () => {
+  const deletedTables: unknown[] = []
+  const base = applyReadyDb({ bindingRows: [BOUND_SERVICE] })
+  let executeCalls = 0
+  const db = {
+    ...base,
+    execute: () => {
+      executeCalls += 1
+      if (executeCalls === 1) {
+        return Promise.resolve([{ organization_id: ORG_ID, kind: 'user' }])
+      }
+      return Promise.resolve([{ allowed: false, organization_id: ORG_ID, kind: 'user' }])
+    },
+    delete: (table: unknown) => {
+      deletedTables.push(table)
+      return base.delete(table as never)
+    },
+  } as unknown as Db
+  const enqueued: CommandEnvelope[] = []
+  const { app, cookie } = await buildApp({
+    db,
+    registry: stubRegistry(),
+    commandQueue: countingQueue(enqueued),
+  })
+  executeCalls = 0
+  const detach = await app.request(envPath('?detach=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(detach.status, 403)
+  executeCalls = 0
+  const forced = await app.request(envPath('?force=true&detach=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(forced.status, 403)
+  assertEquals(enqueued.length, 0)
+  assertEquals(deletedTables.length, 0)
+})
+
+test('DELETE cluster with ?force=true&detach=true removes the bindings before the rows and still refuses without detach', async () => {
+  const deletedTables: unknown[] = []
+  const base = applyReadyDb({ bindingRows: [BOUND_SERVICE] })
+  const db = {
+    ...base,
+    delete: (table: unknown) => {
+      deletedTables.push(table)
+      return base.delete(table as never)
+    },
+  } as unknown as Db
+  const { app, cookie } = await buildApp({
+    db,
+    registry: stubRegistry(),
+    commandQueue: countingQueue([]),
+  })
+  const refused = await app.request(envPath('?force=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(refused.status, 409)
+  assertEquals(deletedTables.length, 0)
+  const res = await app.request(envPath('?force=true&detach=true'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(res.status, 200)
+  const body = await jsonOf(res)
+  assertEquals(body.deleted, true)
+  assertEquals(
+    (body.detached as Array<Record<string, unknown>>).map((entry) => entry.name),
+    ['web']
+  )
+  assertEquals(deletedTables.indexOf(binding) < deletedTables.indexOf(managed), true)
+})
+
+test('DELETE cluster with no bindings is unchanged and reports no detached list', async () => {
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb(),
+    registry: stubRegistry(),
+    commandQueue: recordingQueue(),
+  })
+  const res = await app.request(envPath(), { method: 'DELETE', headers: authHeaders(cookie) })
+  assertEquals(res.status, 200)
+  assertEquals('detached' in (await jsonOf(res)), false)
+})
+
+const MARIADB_FAILOVER_UNSUPPORTED_REASON =
+  'MariaDB 12.3 can run on one server; automatic failover needs MariaDB 11.8 for now.'
+
+test('POST members refuses MariaDB 12.3 with 422 managed_failover_unsupported', async () => {
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb({
+      managedRows: [rowFor(mariadbEngineSpec, 'docker.io/library/mariadb:12.3')],
+      projectRows: [{ metadata: { code: 'mariadb' } }],
+    }),
+  })
+  const res = await app.request(envPath('/members'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ serverId: REPLICA_SERVER_ID }),
+  })
+  assertEquals(res.status, 422)
+  assertEquals(await jsonOf(res), {
+    error: MARIADB_FAILOVER_UNSUPPORTED_REASON,
+    code: 'managed_failover_unsupported',
+  })
+})
+
+test('POST members allows MariaDB 11.8 past the failover gate', async () => {
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb({
+      managedRows: [rowFor(mariadbEngineSpec, 'docker.io/library/mariadb:11.8')],
+      projectRows: [{ metadata: { code: 'mariadb' } }],
+    }),
+  })
+  const res = await app.request(envPath('/members'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ serverId: REPLICA_SERVER_ID }),
+  })
+  assertEquals(res.status, 422)
+  const body = await jsonOf(res)
+  // Past the failover gate: the request now fails on placement, not on the series.
+  assertEquals(body, { error: 'private_path_unavailable' })
+})
+
+test('POST members treats an imageless MariaDB row as 12.3 and refuses it', async () => {
+  const legacy = managedRow({
+    engine: 'mariadb',
+    options: {
+      settings: mariadbEngineSpec.parseSettings({ ...mariadbEngineSpec.defaultSettings }),
+      databases: ['defaultdb'],
+    },
+  })
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb({ managedRows: [legacy], projectRows: [{ metadata: { code: 'mariadb' } }] }),
+  })
+  const res = await app.request(envPath('/members'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ serverId: REPLICA_SERVER_ID }),
+  })
+  assertEquals(res.status, 422)
+  assertEquals(await jsonOf(res), {
+    error: MARIADB_FAILOVER_UNSUPPORTED_REASON,
+    code: 'managed_failover_unsupported',
+  })
+})
+
+test('PATCH member to failover is refused on MariaDB 12.3 but not on 11.8', async () => {
+  for (const [image, refused] of [
+    ['docker.io/library/mariadb:12.3', true],
+    ['docker.io/library/mariadb:11.8', false],
+  ] as const) {
+    const { app, cookie } = await buildApp({
+      db: applyReadyDb({
+        managedRows: [rowFor(mariadbEngineSpec, image)],
+        memberRows: [memberRow({ replicaClass: 'read' })],
+        projectRows: [{ metadata: { code: 'mariadb' } }],
+      }),
+    })
+    const res = await app.request(envPath(`/members/${MEMBER_ID}`), {
+      method: 'PATCH',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({ replicaClass: 'failover' }),
+    })
+    const body = await jsonOf(res)
+    if (refused) {
+      assertEquals(res.status, 422)
+      assertEquals(body, {
+        error: MARIADB_FAILOVER_UNSUPPORTED_REASON,
+        code: 'managed_failover_unsupported',
+      })
+    } else {
+      assertEquals(body.code === 'managed_failover_unsupported', false)
+    }
+  }
+})
+
 test('POST members surfaces a private-path error for an unreachable replica host', async () => {
   const { app, cookie } = await buildApp({
     db: applyReadyDb(),
@@ -2596,6 +3155,130 @@ test('POST users past apply-ready hits namespace and insert short-circuits', asy
     const body = await jsonOf(created)
     assertEquals(typeof body.error, 'string')
   }
+})
+
+/**
+ * Wraps a fake db so the test can see which principal rows were inserted
+ * (the new login) and which commands were queued.
+ */
+function recordingUserCreate(memberRows: unknown[]) {
+  const base = applyReadyDb({ principalRows: [], memberRows })
+  const inserted: Array<Record<string, unknown>> = []
+  const db = {
+    ...base,
+    insert: (table: unknown) => {
+      const builder = base.insert(table as never) as unknown as {
+        values: (values: Record<string, unknown>) => unknown
+      }
+      return {
+        values: (values: Record<string, unknown>) => {
+          if (table === principal) inserted.push(values)
+          return builder.values(values)
+        },
+      }
+    },
+    transaction: (fn: (tx: Db) => Promise<unknown>) => fn(db),
+  } as unknown as Db
+  const commandQueue = capturingQueue()
+  return { db, inserted, envelopes: commandQueue.envelopes, commandQueue }
+}
+
+async function postUser(
+  body: Record<string, unknown>,
+  memberRows: unknown[]
+): Promise<{
+  res: Response
+  inserted: Array<Record<string, unknown>>
+  envelopes: CommandEnvelope[]
+}> {
+  const { db, inserted, envelopes, commandQueue } = recordingUserCreate(memberRows)
+  const { app, cookie } = await buildApp({
+    db,
+    registry: stubRegistry(),
+    commandQueue,
+  })
+  const res = await app.request(envPath('/users'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({
+      username: 'reporter',
+      databases: ['defaultdb'],
+      ...body,
+    }),
+  })
+  return { res, inserted, envelopes }
+}
+
+// Other principals (such as the replication login) may be inserted too.
+function loginMetadata(inserted: Array<Record<string, unknown>>): Record<string, unknown> {
+  const login = inserted.find((row) => row.username === 'reporter')
+  assertEquals(login !== undefined, true)
+  return login?.metadata as Record<string, unknown>
+}
+
+const PRIMARY_ONLY = [memberRow({ role: 'primary', replicaClass: null, ordinal: 1 })]
+const WITH_READ_REPLICA = [
+  ...PRIMARY_ONLY,
+  memberRow({ id: 'aaaaaaa2-aaaa-4aaa-8aaa-aaaaaaaaaaa2', readEligible: true }),
+]
+const WITH_HIDDEN_REPLICA = [
+  ...PRIMARY_ONLY,
+  memberRow({
+    id: 'aaaaaaa2-aaaa-4aaa-8aaa-aaaaaaaaaaa2',
+    readEligible: false,
+  }),
+]
+
+test('POST users refuses a read-only login on a standalone cluster', async () => {
+  const { res, inserted, envelopes } = await postUser({ connectionRole: 'read-only' }, PRIMARY_ONLY)
+  await expectJson(res, 422, { error: 'managed_no_read_targets' })
+  assertEquals(inserted, [])
+  assertEquals(envelopes, [])
+})
+
+test('POST users refuses a read-only login when no replica is read-eligible', async () => {
+  const { res, inserted, envelopes } = await postUser(
+    { connectionRole: 'read-only' },
+    WITH_HIDDEN_REPLICA
+  )
+  await expectJson(res, 422, { error: 'managed_no_read_targets' })
+  assertEquals(inserted, [])
+  assertEquals(envelopes, [])
+})
+
+// The principal is inserted before the apply payloads are prepared, and the
+// fake db has no organization CA, so a later step may still answer an error:
+// these tests judge only the row that was written.
+test('POST users stores the read-only role on the new login', async () => {
+  const { inserted } = await postUser({ connectionRole: 'read-only' }, WITH_READ_REPLICA)
+  const metadata = loginMetadata(inserted)
+  assertEquals(metadata.connectionRole, 'read-only')
+  assertEquals(metadata.databases, ['defaultdb'])
+})
+
+test('POST users leaves the metadata untouched for read-write and omitted roles', async () => {
+  for (const body of [{ connectionRole: 'read-write' }, {}]) {
+    const { inserted } = await postUser(body, PRIMARY_ONLY)
+    const metadata = loginMetadata(inserted)
+    assertEquals('connectionRole' in metadata, false)
+    assertEquals(Object.keys(metadata).sort(), ['databases', 'engine', 'privileges'])
+  }
+})
+
+test('GET users reports a stored read-only login as read-only', async () => {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({
+      managedRows: [managedRow()],
+      principalRows: [
+        principalRow({
+          metadata: { engine: 'postgres', connectionRole: 'read-only' },
+        }),
+      ],
+    }),
+  })
+  const body = await jsonOf(await app.request(envPath('/users'), { headers: authHeaders(cookie) }))
+  const users = body.users as Array<{ connectionRole: string }>
+  assertEquals(users[0]?.connectionRole, 'read-only')
 })
 
 test('DELETE database past apply-ready maps a later prepare error', async () => {
@@ -2830,6 +3513,8 @@ test('PATCH member replica class still requires apply-ready after conversion', a
 
 const HEALTH_FEATURE = 'managed-health-v1'
 
+const LIVE_CHECK_FAILED = buildManagedReplicaLiveCheckFailedBody()
+
 /** An enrolled, online server whose stored hello advertised `features`. */
 function serverAdvertising(features: string[]) {
   return { ...applyReadyServer(true), daemon: { projection: { features } } }
@@ -2849,6 +3534,8 @@ function streamingHealth(over: Record<string, unknown> = {}) {
         lagBytes: 0,
         lagSeconds: 0,
         observedAt: new Date().toISOString(),
+        receivedLsn: '0/3000100',
+        replayLsn: '0/3000100',
         ...over,
       },
     },
@@ -2963,7 +3650,7 @@ test('POST promote fails closed when the probe times out', async () => {
     features: [HEALTH_FEATURE],
     reply: { status: 'expired' },
   })
-  await expectJson(response, 409, { error: 'managed_replica_health_stale' })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
   assertEquals(sent.length, 1)
 })
 
@@ -2972,7 +3659,7 @@ test('POST promote fails closed when the daemon cannot read health', async () =>
     features: [HEALTH_FEATURE],
     reply: { status: 'failed', error: 'engine not running' },
   })
-  await expectJson(response, 409, { error: 'managed_replica_health_stale' })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
 })
 
 test('POST promote sends no probe to a daemon without managed-health-v1', async () => {
@@ -2980,24 +3667,85 @@ test('POST promote sends no probe to a daemon without managed-health-v1', async 
     features: ['update-progress-v1'],
     reply: { status: 'done', result: streamingHealth() },
   })
-  await expectJson(response, 409, { error: 'managed_replica_health_stale' })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
   assertEquals(sent.length, 0)
 })
 
-test('POST promote does not probe a fresh stored observation', async () => {
+test('POST promote probes even when the stored observation is recent', async () => {
   const { response, sent } = await promoteVia({
     features: [HEALTH_FEATURE],
     metadata: {
       replication: {
         state: 'streaming',
-        observedAt: new Date().toISOString(),
+        observedAt: new Date(Date.now() - 60_000).toISOString(),
         lagBytes: 0,
       },
     },
     reply: { status: 'done', result: streamingHealth() },
   })
   await expectQueued(response, { status: 'queued' })
-  assertEquals(sent.length, 0)
+  assertEquals(sent.length, 1)
+})
+
+test('POST promote refuses a replica whose threads stopped after the stored reading', async () => {
+  const { response, sent } = await promoteVia({
+    features: [HEALTH_FEATURE],
+    metadata: {
+      replication: {
+        state: 'streaming',
+        observedAt: new Date(Date.now() - 3_000).toISOString(),
+        lagBytes: 0,
+      },
+    },
+    reply: { status: 'done', result: streamingHealth({ state: 'reconnecting' }) },
+  })
+  await expectJson(response, 409, { error: 'managed_replica_not_streaming' })
+  assertEquals(sent.length, 1)
+})
+
+test('POST promote does not act on a minute-old stored reading when the daemon cannot answer', async () => {
+  const { response } = await promoteVia({
+    features: [HEALTH_FEATURE],
+    metadata: {
+      replication: {
+        state: 'streaming',
+        observedAt: new Date(Date.now() - 60_000).toISOString(),
+        lagBytes: 0,
+      },
+    },
+    reply: { status: 'expired' },
+  })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
+})
+
+test('POST promote does not trust a recent stored reading when the live probe fails', async () => {
+  const { response, sent } = await promoteVia({
+    features: [HEALTH_FEATURE],
+    metadata: {
+      replication: {
+        state: 'streaming',
+        observedAt: new Date(Date.now() - 3_000).toISOString(),
+        lagBytes: 0,
+        receivedLsn: '0/3000100',
+        replayLsn: '0/3000100',
+      },
+    },
+    reply: { status: 'expired' },
+  })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
+  assertEquals(sent.length, 1)
+})
+
+test('POST promote still returns health_stale when the live probe answers with an old reading', async () => {
+  const { response, sent } = await promoteVia({
+    features: [HEALTH_FEATURE],
+    reply: {
+      status: 'done',
+      result: streamingHealth({ observedAt: '2020-01-01T00:00:00.000Z' }),
+    },
+  })
+  await expectJson(response, 409, { error: 'managed_replica_health_stale' })
+  assertEquals(sent.length, 1)
 })
 
 test('POST promote with force never probes', async () => {
@@ -3028,7 +3776,7 @@ test('GET status stays database-only without ?refresh=1', async () => {
   assertEquals('healthRefresh' in body, false)
 })
 
-test('GET status?refresh=1 probes replicas only and reports the outcome', async () => {
+test('GET status?refresh=1 probes the replicas, asks the primary for its slot report, and counts replicas only', async () => {
   const { registry, sent } = healthRegistry({
     status: 'done',
     result: streamingHealth(),
@@ -3052,13 +3800,29 @@ test('GET status?refresh=1 probes replicas only and reports the outcome', async 
       headers: authHeaders(cookie),
     })
   )
-  assertEquals(sent.length, 1)
-  const envelope = sent[0]!
-  assertEquals(envelope.kind, 'managed-health-request')
-  if (envelope.kind !== 'managed-health-request') return
-  assertEquals(envelope.memberId, MEMBER_ID)
-  assertEquals(envelope.role, 'replica')
+  const asked = sent.flatMap((envelope) =>
+    envelope.kind === 'managed-health-request' ? [`${envelope.role}:${envelope.memberId}`] : []
+  )
+  assertEquals(asked.toSorted(), [
+    `primary:99999999-9999-4999-8999-999999999990`,
+    `replica:${MEMBER_ID}`,
+  ])
   assertEquals(body.healthRefresh, { observed: 1, unavailable: 0 })
+})
+
+test('GET status?refresh=1 does not probe a primary that has no replicas', async () => {
+  const { registry, sent } = healthRegistry({ status: 'done', result: streamingHealth() })
+  const primary = memberRow({ role: 'primary', replicaClass: null, ordinal: 1 })
+  const { app, cookie } = await buildApp({
+    db: fakeDb({
+      managedRows: [managedRow()],
+      serverRows: [serverAdvertising([HEALTH_FEATURE])],
+      memberRows: [primary],
+    }),
+    registry,
+  })
+  await app.request(envPath('/status?refresh=1'), { headers: authHeaders(cookie) })
+  assertEquals(sent.length, 0)
 })
 
 test('GET status?refresh=1 falls back quietly when the daemon lacks the feature or times out', async () => {

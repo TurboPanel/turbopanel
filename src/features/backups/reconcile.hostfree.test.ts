@@ -18,6 +18,7 @@ import {
   reconcileBackupsAfterCopyChange,
   reconcileBackupsAfterManagedMove,
 } from './reconcile.ts'
+import { getManagedEngineSpec } from '../managed/index.ts'
 import type { CopyTargetRow } from './copy-targets.ts'
 
 /**
@@ -41,6 +42,7 @@ type PolicyRow = {
   retentionKeep: number
   isEnabled: boolean
   engine: string
+  options?: unknown
 }
 
 function policyRow(overrides: Partial<PolicyRow> = {}): PolicyRow {
@@ -245,6 +247,50 @@ test('the set holds every policy on the server, disabled ones as enabled:false',
   assertEquals(set[2]?.artifactExtension, 'sql')
 })
 
+function managedOptions(engine: 'mysql' | 'mariadb' | 'postgres', databases: string[]): unknown {
+  const spec = getManagedEngineSpec(engine)
+  return { settings: spec?.defaultSettings, databases }
+}
+
+test('a managed entry carries the first non-system database, as a manual backup picks it', async () => {
+  const { db } = fakeDb({
+    policyRows: [
+      policyRow({
+        engine: 'mariadb',
+        options: managedOptions('mariadb', ['mysql', 'sys', 'defaultdb', 'second']),
+      }),
+      policyRow({
+        id: '0192d6a0-0000-7000-8000-0000000000a2',
+        engine: 'mysql',
+        options: managedOptions('mysql', ['defaultdb']),
+      }),
+      policyRow({
+        id: '0192d6a0-0000-7000-8000-0000000000a3',
+        engine: 'postgres',
+        options: managedOptions('postgres', ['postgres', 'app']),
+      }),
+    ],
+  })
+  const set = await buildBackupPolicySetForServer(db, SERVER_A)
+  assertEquals(
+    set.map((entry) => entry.database),
+    ['defaultdb', 'defaultdb', 'postgres']
+  )
+})
+
+test('a managed entry names no database when the cluster has none to dump or its options are unreadable', async () => {
+  const { db } = fakeDb({
+    policyRows: [
+      policyRow({ engine: 'mariadb', options: managedOptions('mariadb', ['mysql']) }),
+      policyRow({ id: '0192d6a0-0000-7000-8000-0000000000a2', engine: 'mariadb', options: null }),
+      policyRow({ id: '0192d6a0-0000-7000-8000-0000000000a3', engine: 'mariadb' }),
+    ],
+  })
+  const set = await buildBackupPolicySetForServer(db, SERVER_A)
+  assertEquals(set.length, 3)
+  for (const entry of set) assertEquals('database' in entry, false)
+})
+
 test('engines without backup support and untranslatable schedules are left out', async () => {
   const { db } = fakeDb({
     policyRows: [
@@ -375,6 +421,7 @@ test('copy policies join the set with where their bytes live', async () => {
       copyId: COPY_ID,
       copyProvider: 'docker',
       volumeName: STORAGE_ID,
+      storageId: STORAGE_ID,
     },
     {
       policyId: '0192d6a0-0000-7000-8000-0000000000b2',
@@ -385,6 +432,7 @@ test('copy policies join the set with where their bytes live', async () => {
       copyId: COPY_ID,
       copyProvider: 'path',
       hostPath: `/srv/users/acme/volumes/${STORAGE_ID}`,
+      ownerUsername: 'acme',
     },
     {
       policyId: '0192d6a0-0000-7000-8000-0000000000b3',

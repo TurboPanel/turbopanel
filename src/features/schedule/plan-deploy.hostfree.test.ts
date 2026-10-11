@@ -6,14 +6,7 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import { COMPOSE_TAG_KEY } from '../compose/tags.ts'
 import { emptyComposeDocument } from '../compose/types.ts'
-import {
-  environment,
-  fabric,
-  mount,
-  project,
-  server,
-  service,
-} from '../../db/schema.ts'
+import { environment, fabric, mount, project, server, service } from '../../db/schema.ts'
 import {
   computeStoragePinsFromMountRows,
   extractComposeFromOptions,
@@ -171,23 +164,20 @@ test('resolveMergedCompose merges blank layers and rejects invalid compose', () 
   const mergedServices = resolveMergedCompose(
     { compose: withServices },
     {},
-    'docker-compose.staging.yml',
+    'docker-compose.staging.yml'
   )
   assertEquals('kind' in mergedServices, false)
   if ('kind' in mergedServices) return
-  assertEquals(
-    (mergedServices.data.services as Record<string, unknown>).web,
-    { image: 'nginx:alpine' },
-  )
+  assertEquals((mergedServices.data.services as Record<string, unknown>).web, {
+    image: 'nginx:alpine',
+  })
 
-  assertEquals(
-    resolveMergedCompose({ compose: { version: 2 } }, {}, 'env.yml'),
-    { kind: 'invalid_compose' },
-  )
-  assertEquals(
-    resolveMergedCompose({ compose: 'not-a-document' }, {}, 'env.yml'),
-    { kind: 'invalid_compose' },
-  )
+  assertEquals(resolveMergedCompose({ compose: { version: 2 } }, {}, 'env.yml'), {
+    kind: 'invalid_compose',
+  })
+  assertEquals(resolveMergedCompose({ compose: 'not-a-document' }, {}, 'env.yml'), {
+    kind: 'invalid_compose',
+  })
 })
 
 test('resolveMergedCompose maps a merge throw to invalid_compose', () => {
@@ -197,10 +187,9 @@ test('resolveMergedCompose maps a merge throw to invalid_compose', () => {
   base.data.services = { web: { image: 'nginx', expose: [] } }
   const overlay = emptyComposeDocument()
   overlay.data.services = { web: { expose: [circular] } }
-  assertEquals(
-    resolveMergedCompose({ compose: base }, { compose: overlay }, 'env.yml'),
-    { kind: 'invalid_compose' },
-  )
+  assertEquals(resolveMergedCompose({ compose: base }, { compose: overlay }, 'env.yml'), {
+    kind: 'invalid_compose',
+  })
 })
 
 test('servicesMapping returns the services map or empty object', () => {
@@ -276,7 +265,7 @@ test('planEnvironmentDeploy returns not_found when environment is missing', asyn
   const result = await planEnvironmentDeploy(
     createPlanDeployDb({ env: null }),
     { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess: AUTOMATED },
-    noopDeps(),
+    noopDeps()
   )
   assertEquals(result, { kind: 'not_found' })
 })
@@ -294,7 +283,7 @@ test('planEnvironmentDeploy returns not_found when project is missing', async ()
       project: null,
     }),
     { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess: AUTOMATED },
-    noopDeps(),
+    noopDeps()
   )
   assertEquals(result, { kind: 'not_found' })
 })
@@ -312,7 +301,7 @@ test('planEnvironmentDeploy returns invalid_compose for bad project compose', as
       project: { id: PROJECT_ID, options: { compose: { version: 2 } } },
     }),
     { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess: AUTOMATED },
-    noopDeps(),
+    noopDeps()
   )
   assertEquals(result, { kind: 'invalid_compose' })
 })
@@ -348,7 +337,7 @@ test('planEnvironmentDeploy skips register when no pin or default server', async
       registerComposeMounts: async () => {
         registerMountsCalls += 1
       },
-    }),
+    })
   )
 
   assertEquals('kind' in result, false)
@@ -385,9 +374,7 @@ test('planEnvironmentDeploy registers volumes/mounts and plans with pin + fabric
           defaultServerId: SERVER_B,
         },
       },
-      services: [
-        { id: SERVICE_WEB, composeServiceName: 'web', options: null },
-      ],
+      services: [{ id: SERVICE_WEB, composeServiceName: 'web', options: null }],
       fabric: { id: FABRIC_ID },
       servers: [
         { id: SERVER_A, connected: true },
@@ -416,14 +403,16 @@ test('planEnvironmentDeploy registers volumes/mounts and plans with pin + fabric
         return new Map([
           [
             SERVER_A,
-            [{
-              id: 'label-1',
-              createdAt: '2020-01-01T00:00:00.000Z',
-              updatedAt: '2020-01-01T00:00:00.000Z',
-              serverId: SERVER_A,
-              key: 'role',
-              value: 'web',
-            }],
+            [
+              {
+                id: 'label-1',
+                createdAt: '2020-01-01T00:00:00.000Z',
+                updatedAt: '2020-01-01T00:00:00.000Z',
+                serverId: SERVER_A,
+                key: 'role',
+                value: 'web',
+              },
+            ],
           ],
         ])
       },
@@ -443,16 +432,13 @@ test('planEnvironmentDeploy registers volumes/mounts and plans with pin + fabric
           address: null,
         },
       ],
-    }),
+    })
   )
 
   assertEquals('kind' in result, false)
   if ('kind' in result) return
 
-  assertEquals(registerCalls, [
-    { kind: 'volumes', serverId: SERVER_A },
-    { kind: 'mounts' },
-  ])
+  assertEquals(registerCalls, [{ kind: 'volumes', serverId: SERVER_A }, { kind: 'mounts' }])
   assertEquals(labelCalls, [[SERVER_A, SERVER_B]])
   assertEquals(result.pinServerId, SERVER_A)
   assertEquals(result.defaultServerId, SERVER_B)
@@ -496,7 +482,7 @@ test('planEnvironmentDeploy uses project defaultServerId for register when env h
         registerServerIds.push(params.serverId)
         return []
       },
-    }),
+    })
   )
 
   assertEquals('kind' in result, false)
@@ -548,7 +534,7 @@ test('planEnvironmentDeploy refuses a rejected merge before it writes a row', as
       registerComposeMounts: async () => {
         registerMountsCalls += 1
       },
-    }),
+    })
   )
 
   assertEquals('kind' in result, true)
@@ -559,6 +545,68 @@ test('planEnvironmentDeploy refuses a rejected merge before it writes a row', as
   assertEquals(reconcileCalls, 0)
   assertEquals(registerVolumesCalls, 0)
   assertEquals(registerMountsCalls, 0)
+})
+
+/** Plan a deploy of an environment whose own compose is `changes`, over the web Base. */
+async function planWithChanges(changes: Record<string, unknown>, hostAccess = AUTOMATED) {
+  const overlay = emptyComposeDocument()
+  overlay.data.services = changes
+  let reconcileCalls = 0
+  const result = await planEnvironmentDeploy(
+    createPlanDeployDb({
+      env: {
+        id: ENV_ID,
+        projectId: PROJECT_ID,
+        serverId: SERVER_A,
+        options: { compose: overlay },
+        name: 'production',
+      },
+      project: { id: PROJECT_ID, options: { compose: composeWithWeb() } },
+      services: [],
+      servers: [],
+    }),
+    { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess },
+    noopDeps({
+      reconcileServicesFromCompose: async () => {
+        reconcileCalls += 1
+        return { created: [], orphans: [] }
+      },
+    })
+  )
+  return { result, reconcileCalls }
+}
+
+test('planEnvironmentDeploy deploys changes that only set a field on a Base service', async () => {
+  // The environment's own compose has no image: it only sets a command on the
+  // `web` the Base defines. The chain used to refuse this layer on its own.
+  const { result, reconcileCalls } = await planWithChanges({ web: { command: ['npm', 'start'] } })
+  assertEquals('kind' in result, false)
+  assertEquals(reconcileCalls, 1)
+})
+
+test('planEnvironmentDeploy refuses a new service with no image and names it', async () => {
+  const { result, reconcileCalls } = await planWithChanges({ worker: { command: ['node'] } })
+  if (!('kind' in result) || result.kind !== 'compose_rejected') {
+    throw new TypeError('expected compose_rejected')
+  }
+  assertEquals(result.error.kind, 'compose_merged_invalid')
+  const messages = result.error.issues.map((issue) => issue.message).join('\n')
+  assertEquals(messages.includes('Service "worker" must define "image" or "build"'), true)
+  assertEquals(reconcileCalls, 0)
+})
+
+test('planEnvironmentDeploy still refuses host-reaching settings added by the changes', async () => {
+  for (const changes of [
+    { web: { privileged: true } },
+    { web: { volumes: ['/etc:/host-etc'] } },
+    { web: { build: { context: '.', network: 'host' } } },
+  ]) {
+    const { result, reconcileCalls } = await planWithChanges(changes)
+    if (!('kind' in result) || result.kind !== 'compose_rejected') {
+      throw new TypeError(`expected compose_rejected for ${JSON.stringify(changes)}`)
+    }
+    assertEquals(reconcileCalls, 0)
+  }
 })
 
 test('planEnvironmentDeploy stamps the plan with the validation it already ran', async () => {
@@ -578,7 +626,7 @@ test('planEnvironmentDeploy stamps the plan with the validation it already ran',
       servers: [],
     }),
     { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess: AUTOMATED },
-    noopDeps(),
+    noopDeps()
   )
   assertEquals('kind' in planned, false)
   if ('kind' in planned) return
@@ -610,7 +658,7 @@ test('planEnvironmentDeploy treats a single-server install as a full deploy targ
       servers: [{ id: SERVER_A, connected: true }],
     }),
     { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess: AUTOMATED },
-    noopDeps(),
+    noopDeps()
   )
   assertEquals('kind' in unpinned, false)
   if ('kind' in unpinned) return
@@ -629,7 +677,7 @@ test('planEnvironmentDeploy treats a single-server install as a full deploy targ
       ],
     }),
     { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess: AUTOMATED },
-    noopDeps(),
+    noopDeps()
   )
   assertEquals('kind' in pinned, false)
   if ('kind' in pinned) return
