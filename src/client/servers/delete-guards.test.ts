@@ -139,6 +139,8 @@ function deleteBlockersDb(opts: {
   /** Rows returned on the second and later `listEnvironmentOtherServerIds` scans. */
   environmentOtherServerTouchesAfterPlan?: Array<{ environmentId: string; serverId: string }>
   serverNameRows?: Array<{ id: string; name: string | null }>
+  /** Servers whose stored `is_connected` is true (the lost-host hint). */
+  connectedServerIds?: string[]
   systemContainerCount?: number
   systemContainerRows?: Array<{
     id: string
@@ -269,12 +271,13 @@ function deleteBlockersDb(opts: {
         return {
           where: () => {
             if (table === server) {
-              return {
+              const connected = (opts.connectedServerIds ?? []).map((id) => ({ id }))
+              return Object.assign(Promise.resolve(connected), {
                 limit: () => Promise.resolve(opts.serverMissing ? [] : [{ id: 'server-1' }]),
                 for: () => ({
                   limit: () => Promise.resolve([{ isConnected: true }]),
                 }),
-              }
+              })
             }
             if (table === network) {
               if (fields && 'name' in fields) {
@@ -386,14 +389,16 @@ test('serverDeleteBlockersResponse includes capped blocked databases', async () 
     { kind: 'managed', count: 1, label: SERVER_DELETE_BLOCKER_LABELS.managed },
   ]
   const response = serverDeleteBlockersResponse(mockContext(), blockers, [
-    { id: 'db-1', name: 'orders', reason: 'only_member' },
+    { id: 'db-1', name: 'orders', reason: 'only_member', lostHostForgettable: false },
   ])
   assertEquals(response.status, 409)
   assertEquals(await response.json(), {
     error: SERVER_HAS_BLOCKERS_ERROR,
     code: SERVER_HAS_BLOCKERS_CODE,
     blockers,
-    blockedDatabases: [{ id: 'db-1', name: 'orders', reason: 'only_member' }],
+    blockedDatabases: [
+      { id: 'db-1', name: 'orders', reason: 'only_member', lostHostForgettable: false },
+    ],
   })
 })
 
@@ -705,6 +710,50 @@ test('forget covers every environment the blocker counts except the ones carryin
   )
 })
 
+test('planServerForget offers forget-lost only when every host of the database is offline', async () => {
+  const base = {
+    placedEnvironmentRows: [],
+    managedTouchRows: [
+      {
+        id: 'db-1',
+        name: 'orders',
+        engine: 'mariadb',
+        managedServerId: 'server-1',
+        environmentServerId: 'server-1',
+      },
+    ],
+    replicaTouchRows: [
+      {
+        id: 'member-1',
+        managedId: 'db-1',
+        serverId: 'server-1',
+        role: 'primary',
+        databaseName: 'orders',
+        engine: 'mariadb',
+      },
+    ],
+    otherReplicaRows: [{ id: 'member-2', managedId: 'db-1', serverId: 'server-2', role: 'replica' }],
+  }
+  const allOffline = await planServerForget(deleteBlockersDb(base), 'server-1', 'org-1')
+  assertEquals(allOffline.blockedDatabases, [
+    { id: 'db-1', name: 'orders', reason: 'primary_here', lostHostForgettable: true },
+  ])
+  const otherOnline = await planServerForget(
+    deleteBlockersDb({ ...base, connectedServerIds: ['server-2'] }),
+    'server-1',
+    'org-1'
+  )
+  assertEquals(otherOnline.blockedDatabases, [
+    { id: 'db-1', name: 'orders', reason: 'primary_here', lostHostForgettable: false },
+  ])
+  const thisOnline = await planServerForget(
+    deleteBlockersDb({ ...base, connectedServerIds: ['server-1'] }),
+    'server-1',
+    'org-1'
+  )
+  assertEquals(thisOnline.blockedDatabases[0]?.lostHostForgettable, false)
+})
+
 test('planServerForget names the blocked database behind the blocking blocker', async () => {
   const plan = await planServerForget(placedEnvironmentsDb(), 'server-1', 'org-1')
   assertEquals(plan.blockedDatabases, [
@@ -712,6 +761,7 @@ test('planServerForget names the blocked database behind the blocking blocker', 
       id: 'db-1',
       name: 'orders',
       reason: 'only_member',
+      lostHostForgettable: true,
     },
   ])
   assertEquals(plan.blockingBlockers, [

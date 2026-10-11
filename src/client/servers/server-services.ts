@@ -368,7 +368,11 @@ export function serverServicesRemovalReasons(
     reasons.push({
       kind: database.reason === 'primary_here' ? 'replica' : 'managed',
       count: 1,
-      message: blockedDatabaseForgetMessage(database.name, database.reason),
+      message: blockedDatabaseForgetMessage(
+        database.name,
+        database.reason,
+        database.lostHostForgettable
+      ),
       items: [{ id: database.id, name: database.name }],
       more: 0,
     })

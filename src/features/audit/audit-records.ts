@@ -56,6 +56,7 @@ export const AUDIT_ACTIONS = [
   'binding.create',
   'binding.update',
   'binding.delete',
+  'managed.forget_lost',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

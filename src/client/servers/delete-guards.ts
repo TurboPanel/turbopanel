@@ -170,6 +170,12 @@ export type ServerForgetBlockedDatabase = {
   id: string
   name: string
   reason: BlockedDatabaseReason
+  /**
+   * Every host this database runs on is offline (stored `is_connected`), so
+   * `POST /environments/:id/managed/forget-lost` can remove it. A hint only:
+   * that route re-checks each host's live connection before it does anything.
+   */
+  lostHostForgettable: boolean
 }
 
 export type ServerForgetBlockedEnvironment = {
@@ -429,7 +435,14 @@ export function canForgetServerResources(
   )
 }
 
-export function blockedDatabaseForgetMessage(name: string, reason: BlockedDatabaseReason): string {
+export function blockedDatabaseForgetMessage(
+  name: string,
+  reason: BlockedDatabaseReason,
+  lostHostForgettable = false
+): string {
+  if (lostHostForgettable) {
+    return `Database "${name}" only has copies on hosts that are offline. If those hosts are gone for good, forget the database first (its data on them is lost), then remove this server.`
+  }
   if (reason === 'only_member') {
     return `Database "${name}" has its only copy on this server. Delete the database first.`
   }
@@ -721,10 +734,27 @@ async function loadReplicasByManagedForForget(
   return replicasByManaged
 }
 
+/** Servers a database runs on: its members plus its placement pin. */
+function clusterServerIds(cluster: ManagedTouch, replicas: readonly ReplicaTouch[]): string[] {
+  const ids = new Set(replicas.map((row) => row.serverId))
+  if (cluster.managedServerId) ids.add(cluster.managedServerId)
+  return [...ids]
+}
+
+async function loadConnectedServerIds(db: Db, serverIds: readonly string[]): Promise<Set<string>> {
+  if (serverIds.length === 0) return new Set()
+  const rows = await db
+    .select({ id: server.id })
+    .from(server)
+    .where(and(inArray(server.id, [...serverIds]), eq(server.isConnected, true)))
+  return new Set(rows.map((row) => row.id))
+}
+
 function computeForgetBlockedDatabases(
   clusters: ReadonlyMap<string, ManagedTouch>,
   replicasByManaged: ReadonlyMap<string, ReplicaTouch[]>,
-  serverId: string
+  serverId: string,
+  connectedServerIds: ReadonlySet<string>
 ): {
   blockedDatabases: ServerForgetBlockedDatabase[]
   blockedIds: Set<string>
@@ -740,6 +770,9 @@ function computeForgetBlockedDatabases(
       id: cluster.id,
       name: cluster.name,
       reason: blockedDatabaseReason(hasMemberOnAnotherServer),
+      lostHostForgettable: [serverId, ...clusterServerIds(cluster, replicas)].every(
+        (id) => !connectedServerIds.has(id)
+      ),
     })
   }
   blockedDatabases.sort((a, b) => comparePreviewName(a.name, b.name) || a.id.localeCompare(b.id))
@@ -938,10 +971,17 @@ export async function planServerForget(
     replicaTouches,
     clusters
   )
+  const connectedServerIds = await loadConnectedServerIds(db, [
+    serverId,
+    ...[...clusters.values()].flatMap((cluster) =>
+      clusterServerIds(cluster, replicasByManaged.get(cluster.id) ?? [])
+    ),
+  ])
   const { blockedDatabases, blockedIds } = computeForgetBlockedDatabases(
     clusters,
     replicasByManaged,
-    serverId
+    serverId,
+    connectedServerIds
   )
 
   const environmentItems = buildPlacedEnvironmentBlockerItems(placedEnvironments)

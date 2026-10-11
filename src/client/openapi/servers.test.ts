@@ -1,5 +1,6 @@
 import { assertEquals } from '@std/assert'
 import {
+  BLOCKED_DATABASE_REASON_VALUES,
   SERVER_DELETE_BLOCKER_KIND_VALUES,
   SERVER_SERVICES_REMOVAL_KIND_VALUES,
 } from '../servers/delete-guards.ts'
@@ -65,6 +66,26 @@ test('ServerDeletePreview requires the Host-is-gone lists', () => {
     'blockedDatabases',
     'blockedEnvironments',
   ])
+})
+
+test('ServerForgetBlockedDatabase carries the reason and the lost-host flag', () => {
+  const schema = serverSchemas.ServerForgetBlockedDatabase as {
+    required: string[]
+    properties: {
+      reason: { enum: string[] }
+      lostHostForgettable: { type: string }
+    }
+  }
+  assertEquals(schema.required, ['id', 'name', 'reason', 'lostHostForgettable'])
+  assertEquals(schema.properties.reason.enum, [...BLOCKED_DATABASE_REASON_VALUES])
+  assertEquals(schema.properties.lostHostForgettable.type, 'boolean')
+  const preview = serverSchemas.ServerDeletePreview as {
+    properties: { blockedDatabases: { properties: { items: { items: { $ref?: string } } } } }
+  }
+  assertEquals(
+    preview.properties.blockedDatabases.properties.items.items.$ref,
+    '#/components/schemas/ServerForgetBlockedDatabase'
+  )
 })
 
 test('ServerDeleteBlocker can name the rows behind the count', () => {

@@ -87,7 +87,7 @@ test('serverServicesRemovalReasons names blocked databases and skips generic man
       ],
       false,
       false,
-      [{ id: 'db-1', name: 'orders', reason: 'only_member' }]
+      [{ id: 'db-1', name: 'orders', reason: 'only_member', lostHostForgettable: false }]
     ),
     [
       {

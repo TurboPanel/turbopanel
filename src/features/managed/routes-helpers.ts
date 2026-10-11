@@ -218,6 +218,7 @@ export function managedSessionPaths(): string[] {
     '/environments/:id/managed/apply',
     '/environments/:id/managed/lifecycle',
     '/environments/:id/managed/root-password',
+    '/environments/:id/managed/forget-lost',
     '/environments/:id/managed/users',
     '/environments/:id/managed/users/:principalId',
     '/environments/:id/managed/users/:principalId/password',

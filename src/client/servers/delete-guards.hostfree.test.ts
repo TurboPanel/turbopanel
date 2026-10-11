@@ -29,6 +29,10 @@ test('blockedDatabaseForgetMessage names the database in plain words', () => {
     blockedDatabaseForgetMessage('orders', 'primary_here'),
     'Database "orders" has its primary copy on this server. Promote another member or delete the database first.'
   )
+  assertEquals(
+    blockedDatabaseForgetMessage('orders', 'primary_here', true),
+    'Database "orders" only has copies on hosts that are offline. If those hosts are gone for good, forget the database first (its data on them is lost), then remove this server.'
+  )
 })
 
 test('canForgetServerResources is false when online, colocated, or a database is blocked', () => {

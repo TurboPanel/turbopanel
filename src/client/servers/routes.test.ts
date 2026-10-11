@@ -2102,7 +2102,7 @@ test('DELETE /servers/:id with forgetResources is refused when the only database
         const body = await readJson<ErrorJson>(res)
         assertEquals(body.code, SERVER_HAS_BLOCKERS_CODE)
         assertEquals(body.blockedDatabases, [
-          { id: cluster!.id, name: 'orders', reason: 'only_member' },
+          { id: cluster!.id, name: 'orders', reason: 'only_member', lostHostForgettable: true },
         ])
         assertEquals(body.blockers?.find((row) => row.kind === 'managed')?.items, [
           { id: cluster!.id, name: 'orders' },
@@ -2257,7 +2257,7 @@ test('DELETE /servers/:id with forgetResources is refused when the primary is he
         const body = await readJson<ErrorJson>(res)
         assertEquals(body.code, SERVER_HAS_BLOCKERS_CODE)
         assertEquals(body.blockedDatabases, [
-          { id: cluster!.id, name: 'orders', reason: 'primary_here' },
+          { id: cluster!.id, name: 'orders', reason: 'primary_here', lostHostForgettable: true },
         ])
         assertEquals(registry.purgedIds.length, 0)
       } finally {

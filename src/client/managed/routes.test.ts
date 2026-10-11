@@ -29,6 +29,7 @@ import { emptyComposeDocument } from '../../features/compose/index.ts'
 import type { ComposeDocument } from '../../features/compose/types.ts'
 import { getManagedEngineSpec } from '../../features/managed/index.ts'
 import {
+  audit,
   backup,
   binding,
   command,
@@ -40,6 +41,7 @@ import {
   organization,
   principal,
   project,
+  replica,
   retention,
   server,
   service,
@@ -51,6 +53,7 @@ import { createCommandRecord, transitionCommand } from '../../features/commands/
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { getCatalogEntry, readManagedEngineOptions } from '../projects/catalog/index.ts'
 import { registerManagedRoutes } from './routes.ts'
+import { planServerForget } from '../servers/delete-guards.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import {
   createBackupRunReportStore,
@@ -84,6 +87,7 @@ function createRecordingCommandQueue(): CommandQueue & {
 
 function createStubRegistry(): DaemonCellRegistry {
   return {
+    getSnapshots: () => Promise.resolve(new Map()),
     getCell: () => ({
       createRequestAndWait: (outbound: DaemonOutboundEnvelope) =>
         Promise.resolve({
@@ -3764,6 +3768,408 @@ test('the pending sweep re-pushes a server that never confirmed, once the earlie
       assertEquals(
         commandQueue.envelopes.slice(before).map((envelope) => [envelope.type, envelope.serverId]),
         [['managed.ingress.reconcile', serverId]]
+      )
+    }
+  )
+})
+
+// ---------------------------------------------------------------------------
+// POST …/managed/forget-lost: forget a database whose hosts are all lost.
+// ---------------------------------------------------------------------------
+
+const FORGET_PROJECT_NAME = 'Managed Postgres Project'
+
+async function insertMemberServer(
+  db: ReturnType<typeof createDenoDb>,
+  organizationId: string,
+  name: string,
+  isConnected: boolean
+): Promise<string> {
+  const now = new Date().toISOString()
+  const [row] = await db
+    .insert(server)
+    .values({
+      organizationId,
+      name,
+      createdAt: now,
+      updatedAt: now,
+      isConnected,
+      statusChangedAt: now,
+    })
+    .returning({ id: server.id })
+  return row!.id
+}
+
+async function setServerConnected(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string,
+  isConnected: boolean
+): Promise<void> {
+  await db.update(server).set({ isConnected }).where(eq(server.id, serverId))
+}
+
+async function createReadyManaged(
+  app: Hono<AppEnv>,
+  db: ReturnType<typeof createDenoDb>,
+  headers: Record<string, string>,
+  environmentId: string
+): Promise<string> {
+  const create = await app.request(`/environments/${environmentId}/managed`, {
+    method: 'POST',
+    headers,
+    body: '{}',
+  })
+  assertEquals(create.status, 200)
+  const created = (await create.json()) as { managed: { id: string } }
+  await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+  return created.managed.id
+}
+
+function forgetLost(
+  app: Hono<AppEnv>,
+  headers: Record<string, string>,
+  environmentId: string,
+  body: Record<string, unknown>,
+  query = ''
+) {
+  return app.request(`/environments/${environmentId}/managed/forget-lost${query}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  })
+}
+
+test('forget-lost refuses while a host of the database is online and changes nothing', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId }) => {
+      const headers = {
+        Cookie: await sessionCookie(db, secrets, userId),
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const managedId = await createReadyManaged(app, db, headers, environmentId)
+
+      const res = await forgetLost(app, headers, environmentId, {
+        confirmName: FORGET_PROJECT_NAME,
+      })
+      assertEquals(res.status, 409)
+      const body = (await res.json()) as {
+        error: string
+        message: string
+        servers: Array<{ id: string }>
+      }
+      assertEquals(body.error, 'managed_host_online')
+      assertEquals(
+        body.servers.map((row) => row.id),
+        [serverId]
+      )
+      assertMatch(body.message, /Delete the database instead, or promote a copy/)
+      assertEquals(
+        (await db.select({ id: managed.id }).from(managed).where(eq(managed.id, managedId)))
+          .length,
+        1
+      )
+    }
+  )
+})
+
+test('forget-lost forgets a single-member database on a lost host: typed name, detach, backups, commands, audit, server forget', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId, serverId }) => {
+      const headers = {
+        Cookie: await sessionCookie(db, secrets, userId),
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const managedId = await createReadyManaged(app, db, headers, environmentId)
+      const [consumer] = await db
+        .insert(service)
+        .values({ environmentId, name: 'app', composeServiceName: 'app' })
+        .returning({ id: service.id })
+      const [rootRow] = await db
+        .select({ id: principal.id })
+        .from(principal)
+        .where(eq(principal.managedId, managedId))
+        .limit(1)
+      await db.insert(binding).values({
+        principalId: rootRow!.id,
+        serviceId: consumer!.id,
+        databaseName: 'postgres',
+        keyPrefix: 'DATABASE',
+        isEmitEngineDefaults: true,
+      })
+      await db.insert(backup).values({
+        managedId,
+        backupId: 'bk_forgetlost01',
+        sizeBytes: 10,
+        checksum: 'a'.repeat(64),
+        path: '/var/lib/turbopanel/backups/bk_forgetlost01.dump',
+        serverId,
+      })
+      const waiting = await createCommandRecord(db, {
+        serverId,
+        actorType: 'user',
+        actorId: userId,
+        type: 'managed.destroy',
+        payload: { managedId, environmentId },
+        context: { managedId },
+      })
+      // The host dies.
+      await setServerConnected(db, serverId, false)
+
+      // Bound apps must be acknowledged.
+      const unacknowledged = await forgetLost(app, headers, environmentId, {
+        confirmName: FORGET_PROJECT_NAME,
+      })
+      assertEquals(unacknowledged.status, 409)
+      assertEquals(((await unacknowledged.json()) as { error: string }).error, 'managed_has_bindings')
+
+      // The project name must be typed.
+      for (const body of [{}, { confirmName: 'production' }]) {
+        const res = await forgetLost(app, headers, environmentId, body, '?detach=true')
+        assertEquals(res.status, 400)
+        assertEquals(
+          ((await res.json()) as { error: string }).error,
+          'managed_forget_confirm_mismatch'
+        )
+      }
+      assertEquals(
+        (await db.select({ id: managed.id }).from(managed).where(eq(managed.id, managedId)))
+          .length,
+        1
+      )
+
+      const before = commandQueue.envelopes.length
+      const res = await forgetLost(
+        app,
+        headers,
+        environmentId,
+        { confirmName: ` ${FORGET_PROJECT_NAME} ` },
+        '?detach=true'
+      )
+      assertEquals(res.status, 200)
+      const body = (await res.json()) as {
+        forgotten: boolean
+        managedId: string
+        lostServers: Array<{ id: string }>
+        backupsForgotten: number
+        cancelledCommands: number
+        detached: Array<{ serviceId: string }>
+      }
+      assertEquals(body.forgotten, true)
+      assertEquals(body.managedId, managedId)
+      assertEquals(
+        body.lostServers.map((row) => row.id),
+        [serverId]
+      )
+      assertEquals(body.backupsForgotten, 1)
+      assertEquals(body.cancelledCommands >= 1, true)
+      assertEquals(
+        body.detached.map((row) => row.serviceId),
+        [consumer!.id]
+      )
+
+      // Rows gone; the lost host got nothing new.
+      assertEquals(
+        (await db.select({ id: managed.id }).from(managed).where(eq(managed.id, managedId)))
+          .length,
+        0
+      )
+      assertEquals(
+        (await db.select({ id: replica.id }).from(replica).where(eq(replica.managedId, managedId)))
+          .length,
+        0
+      )
+      assertEquals(
+        (await db.select({ id: binding.id }).from(binding).where(eq(binding.serviceId, consumer!.id)))
+          .length,
+        0
+      )
+      assertEquals(
+        (await db.select({ id: backup.id }).from(backup).where(eq(backup.managedId, managedId)))
+          .length,
+        0
+      )
+      assertEquals(
+        (
+          await db
+            .select({ id: container.id })
+            .from(container)
+            .innerJoin(service, eq(service.id, container.serviceId))
+            .where(and(eq(service.environmentId, environmentId), eq(container.role, 'service')))
+        ).length,
+        0
+      )
+      assertEquals(
+        commandQueue.envelopes.slice(before).filter((envelope) => envelope.serverId === serverId),
+        []
+      )
+      const [cancelled] = await db
+        .select({ status: command.status, errorCode: command.errorCode })
+        .from(command)
+        .where(eq(command.id, waiting.id))
+      assertEquals(cancelled, { status: 'cancelled', errorCode: 'target_gone' })
+
+      const [auditRow] = await db
+        .select({ action: audit.action, targetId: audit.targetId, context: audit.context })
+        .from(audit)
+        .where(and(eq(audit.organizationId, organizationId), eq(audit.action, 'managed.forget_lost')))
+      assertEquals(auditRow?.targetId, managedId)
+      const context = auditRow?.context as {
+        backupCount: number
+        backups: Array<{ backupId: string }>
+        lostServers: Array<{ id: string }>
+      }
+      assertEquals(context.backupCount, 1)
+      assertEquals(context.backups[0]?.backupId, 'bk_forgetlost01')
+      assertEquals(context.lostServers[0]?.id, serverId)
+
+      // The server forget plan no longer names the database.
+      const plan = await planServerForget(db, serverId, organizationId)
+      assertEquals(plan.blockedDatabases, [])
+
+      // A second call finds nothing and changes nothing.
+      const again = await forgetLost(
+        app,
+        headers,
+        environmentId,
+        { confirmName: FORGET_PROJECT_NAME },
+        '?detach=true'
+      )
+      assertEquals(again.status, 404)
+      assertEquals(
+        (
+          await db
+            .select({ id: audit.id })
+            .from(audit)
+            .where(
+              and(eq(audit.organizationId, organizationId), eq(audit.action, 'managed.forget_lost'))
+            )
+        ).length,
+        1
+      )
+      await db.delete(audit).where(eq(audit.organizationId, organizationId))
+    }
+  )
+})
+
+test('forget-lost on a pair: refused while the other host is online, forgets once both hosts are lost', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId }) => {
+      const headers = {
+        Cookie: await sessionCookie(db, secrets, userId),
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const managedId = await createReadyManaged(app, db, headers, environmentId)
+      const standbyId = await insertMemberServer(db, organizationId, 'Standby Host', true)
+      try {
+        await db.insert(replica).values({
+          managedId,
+          serverId: standbyId,
+          role: 'replica',
+          replicaClass: 'failover',
+          ordinal: 2,
+        })
+        await setServerConnected(db, serverId, false)
+
+        const mixed = await forgetLost(app, headers, environmentId, {
+          confirmName: FORGET_PROJECT_NAME,
+        })
+        assertEquals(mixed.status, 409)
+        const mixedBody = (await mixed.json()) as {
+          error: string
+          servers: Array<{ id: string; name: string }>
+        }
+        assertEquals(mixedBody.error, 'managed_host_online')
+        assertEquals(mixedBody.servers, [{ id: standbyId, name: 'Standby Host' }])
+        assertEquals(
+          (await db.select({ id: replica.id }).from(replica).where(eq(replica.managedId, managedId)))
+            .length,
+          2
+        )
+
+        await setServerConnected(db, standbyId, false)
+        const res = await forgetLost(app, headers, environmentId, {
+          confirmName: FORGET_PROJECT_NAME,
+        })
+        assertEquals(res.status, 200)
+        const body = (await res.json()) as { lostServers: Array<{ id: string }> }
+        assertEquals(
+          body.lostServers.map((row) => row.id).toSorted(),
+          [serverId, standbyId].toSorted()
+        )
+        assertEquals(
+          (await db.select({ id: replica.id }).from(replica).where(eq(replica.managedId, managedId)))
+            .length,
+          0
+        )
+        assertEquals((await planServerForget(db, standbyId, organizationId)).blockedDatabases, [])
+      } finally {
+        await db.delete(replica).where(eq(replica.serverId, standbyId))
+        await db.delete(command).where(eq(command.serverId, standbyId))
+        await db.delete(server).where(eq(server.id, standbyId))
+        await db.delete(audit).where(eq(audit.organizationId, organizationId))
+      }
+    }
+  )
+})
+
+test('forget-lost from another organization answers 404 and changes nothing', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId }) => {
+      const headers = {
+        Cookie: await sessionCookie(db, secrets, userId),
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const managedId = await createReadyManaged(app, db, headers, environmentId)
+      await setServerConnected(db, serverId, false)
+
+      const [otherOrg] = await db
+        .insert(organization)
+        .values({ name: 'Forget Lost Other Org' })
+        .returning({ id: organization.id })
+      const [otherUser] = await db
+        .insert(user)
+        .values({
+          email: `forget-lost-other-${crypto.randomUUID()}@example.com`,
+          isEmailVerified: true,
+          role: 'user',
+        })
+        .returning({ id: user.id })
+      await db.insert(grant).values({
+        entityType: 'organization',
+        entityId: otherOrg!.id,
+        actorType: 'user',
+        actorId: otherUser!.id,
+        permission: 'organization:manage',
+      })
+      const otherHeaders = {
+        Cookie: await sessionCookie(db, secrets, otherUser!.id),
+        [ORG_ID_HEADER]: otherOrg!.id,
+        'Content-Type': 'application/json',
+      }
+      const res = await forgetLost(app, otherHeaders, environmentId, {
+        confirmName: FORGET_PROJECT_NAME,
+      })
+      assertEquals(res.status, 404)
+      // Naming the victim's organization does not help either.
+      const crossHeader = await forgetLost(
+        app,
+        { ...otherHeaders, [ORG_ID_HEADER]: organizationId },
+        environmentId,
+        { confirmName: FORGET_PROJECT_NAME }
+      )
+      assertEquals(crossHeader.status === 403 || crossHeader.status === 404, true)
+      assertEquals(
+        (await db.select({ id: managed.id }).from(managed).where(eq(managed.id, managedId)))
+          .length,
+        1
       )
     }
   )

@@ -1373,6 +1373,100 @@ export const managedPaths = {
       },
     },
   },
+  '/api/client/v1/environments/{id}/managed/forget-lost': {
+    post: {
+      tags: ['Managed services'],
+      summary: 'Forget a managed database whose hosts are lost',
+      description:
+        "For a database whose every host is gone for good (for example a failed motherboard), where Delete cannot reach the host. Removes only the panel's records: members, container rows, the managed row, its backup records (the files were on the lost hosts; the audit entry keeps them), and commands still waiting for those hosts (cancelled, `target_gone`). Nothing is sent to the lost hosts; servers that stay up get `managed.ingress.reconcile` and `managed.ha.reconcile` so they stop routing to or watching the database. Refused with 409 `managed_host_online` while any host of the database is online (stored flag or live connection, re-checked under row lock): delete the database instead, or promote a copy on a working host. Apps bound to it are refused with 409 `managed_has_bindings` unless `detach=true`. The body's `confirmName` must equal the project name. Step-up action `managed.forget_lost`; audited as `managed.forget_lost`. Once forgotten, `DELETE /servers/{id}?forgetResources=true` no longer lists the database in `blockedDatabases`. A second call answers 404.",
+      parameters: [
+        ENV_ID_PARAM,
+        {
+          name: 'detach',
+          in: 'query',
+          required: false,
+          schema: { type: 'boolean' },
+          description: "Remove the database's app bindings (and their variables) with it",
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['confirmName'],
+              properties: {
+                confirmName: {
+                  type: 'string',
+                  description: 'The project name, typed by the owner to confirm',
+                },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Forgotten',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: [
+                  'forgotten',
+                  'managedId',
+                  'lostServers',
+                  'backupsForgotten',
+                  'cancelledCommands',
+                ],
+                properties: {
+                  forgotten: { type: 'boolean', const: true },
+                  managedId: { type: 'string', format: 'uuid' },
+                  lostServers: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      required: ['id', 'name'],
+                      properties: {
+                        id: { type: 'string', format: 'uuid' },
+                        name: { type: 'string' },
+                      },
+                    },
+                  },
+                  backupsForgotten: { type: 'integer', minimum: 0 },
+                  backupsLeftOnHosts: {
+                    type: 'array',
+                    description:
+                      'Backup files recorded on a host that is not lost; the file stays on that host and is no longer listed.',
+                    items: {
+                      type: 'object',
+                      required: ['backupId', 'serverId', 'path'],
+                      properties: {
+                        backupId: { type: 'string' },
+                        serverId: { type: 'string', format: 'uuid' },
+                        path: { type: 'string' },
+                      },
+                    },
+                  },
+                  cancelledCommands: { type: 'integer', minimum: 0 },
+                  detached: { type: 'array', items: { type: 'object' } },
+                },
+              },
+            },
+          },
+        },
+        400: {
+          description: 'managed_forget_confirm_mismatch: `confirmName` is missing or is not the project name',
+        },
+        404: { description: 'No managed database in this environment (also a second call)' },
+        409: {
+          description:
+            'managed_host_online (lists the online `servers`), or managed_has_bindings (lists `services`)',
+        },
+      },
+    },
+  },
   '/api/client/v1/environments/{id}/managed/apply': {
     post: {
       tags: ['Managed services'],

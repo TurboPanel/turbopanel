@@ -1025,11 +1025,16 @@ export const serverSchemas = {
   },
   ServerForgetBlockedDatabase: {
     type: 'object',
-    required: ['id', 'name', 'reason'],
+    required: ['id', 'name', 'reason', 'lostHostForgettable'],
     properties: {
       id: { type: 'string', format: 'uuid' },
       name: { type: 'string' },
       reason: { type: 'string', enum: ['only_member', 'primary_here'] },
+      lostHostForgettable: {
+        type: 'boolean',
+        description:
+          'Every host this database runs on is offline (stored connection flag). When true, `POST /environments/{id}/managed/forget-lost` can remove the database; that route re-checks each host live and refuses if one is online.',
+      },
     },
   },
   ServerBlockerEnvironmentItem: {
@@ -1230,13 +1235,7 @@ export const serverSchemas = {
         },
       }),
       blockedDatabases: cappedListSchema({
-        type: 'object',
-        required: ['id', 'name', 'reason'],
-        properties: {
-          id: { type: 'string', format: 'uuid' },
-          name: { type: 'string' },
-          reason: { type: 'string', enum: ['only_member', 'primary_here'] },
-        },
+        $ref: '#/components/schemas/ServerForgetBlockedDatabase',
       }),
       blockedEnvironments: cappedListSchema({
         type: 'object',
@@ -2098,7 +2097,7 @@ export const serverPaths: Record<string, unknown> = {
       tags: ['Servers'],
       summary: 'Delete a server and purge its daemon cell',
       description:
-        'Without `forgetResources=true`, leftover containers, networks, addresses, or other RESTRICT placements still answer 409 `server_has_blockers`. Pass the flag explicitly (query or JSON body; never implied) to drop leftover app environments, database members whose primary is elsewhere, deployments, slots, storage copies, containers, networks, and addresses on an offline server that is not the co-located control plane host. A connected server (live snapshot or stored flag, re-checked under row lock) answers 409 `server_online`. A database whose only copy or primary is on this server still answers 409 `server_has_blockers` with `blockedDatabases`. System-workspace rows still follow the ordinary hosting-ingress teardown.',
+        'Without `forgetResources=true`, leftover containers, networks, addresses, or other RESTRICT placements still answer 409 `server_has_blockers`. Pass the flag explicitly (query or JSON body; never implied) to drop leftover app environments, database members whose primary is elsewhere, deployments, slots, storage copies, containers, networks, and addresses on an offline server that is not the co-located control plane host. A connected server (live snapshot or stored flag, re-checked under row lock) answers 409 `server_online`. A database whose only copy or primary is on this server still answers 409 `server_has_blockers` with `blockedDatabases`; an entry with `lostHostForgettable: true` has every host offline and can be removed with `POST /environments/{id}/managed/forget-lost`, after which this delete goes ahead. System-workspace rows still follow the ordinary hosting-ingress teardown.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {

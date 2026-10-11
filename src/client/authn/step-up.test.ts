@@ -596,13 +596,14 @@ test('delete hosting is wired to the gate', async () => {
   })
 })
 
-test('stopping an environment, promoting a disaster-recovery replica and rotating or retiring the CA are wired to the gate', async () => {
+test('stopping an environment, promoting a disaster-recovery replica, forgetting a lost database and rotating or retiring the CA are wired to the gate', async () => {
   await withScene(async ({ db, fx, orgA, cookie }) => {
     const scene = await makeStoppedEnvironment(db, orgA, 'gated')
     const envPath = `/environments/${scene.environmentId}`
     const cases: Array<[string, string]> = [
       [`${envPath}/stop`, 'environment.stop'],
       [`${envPath}/managed/disaster-recovery/promote`, 'managed.disaster_recovery.promote'],
+      [`${envPath}/managed/forget-lost`, 'managed.forget_lost'],
       ['/tls/ca/rotate', 'tls.ca.rotate'],
       ['/tls/ca/retire', 'tls.ca.retire'],
     ]

@@ -26,6 +26,7 @@ export const STEP_UP_ACTIONS = {
   'server.daemon_key.revoke': "Revoke a server's key",
   'license.revoke': 'Revoke a license key',
   'managed.delete': 'Delete a managed database',
+  'managed.forget_lost': 'Forget a managed database whose hosts are lost',
   'managed.database.delete': 'Delete a database inside a managed database',
   'binding.delete': 'Remove the link between an app and a managed database',
   'member.remove': 'Remove a member from the organization',
