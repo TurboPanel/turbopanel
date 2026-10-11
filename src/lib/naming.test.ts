@@ -193,6 +193,14 @@ test('isReservedPrincipalUsername covers denylist and systemd- prefix', () => {
   assertEquals(isReservedPrincipalUsername('appuser'), false)
 })
 
+test('isReservedPrincipalUsername reserves common host logins', () => {
+  // A site owner's Linux user must not collide with a host system user or group.
+  for (const name of ['ftp', 'git', 'FTP', ' git ', 'ubuntu', 'www', 'root', 'www-data', 'sudo']) {
+    assertEquals(isReservedPrincipalUsername(name), true, name)
+  }
+  assertEquals(isReservedPrincipalUsername('appuser'), false)
+})
+
 test('isReservedPrincipalUsername reserves the platform slice names', () => {
   // The host gives each site owner's Linux user turbopanel-<name>.slice;
   // turbopanel-containers.slice and turbopanel-tpbuild.slice are the platform's.
