@@ -5,7 +5,7 @@
  * build stamps the tag-derived base into deno.json before compiling (minors
  * and majors are started by turbopaneld's "Start Next Version" workflow).
  */
-import { assert, assertEquals, assertMatch } from '@std/assert'
+import { assert, assertEquals, assertMatch, assertStringIncludes } from '@std/assert'
 import { dirname, fromFileUrl, join } from '@std/path'
 
 /**
@@ -103,6 +103,21 @@ test('the canary build works out its version from the tags and stamps the base b
     !text.includes('Require the tag to match deno.json'),
     'a tag no longer has to match deno.json'
   )
+})
+
+test('the canary refuses a committed version that disagrees with the tags, before it builds', () => {
+  const text = read('release.yml')
+  const canary = text.indexOf('- name: Work out the canary version from the tags')
+  const check = text.indexOf('- name: Require the committed version to match the tags')
+  const resolve = text.indexOf('- name: Resolve version, channel and commit')
+  assert(
+    canary > 0 && canary < check && check < resolve,
+    'the check runs right after the canary step'
+  )
+  const step = text.slice(check, resolve)
+  assertStringIncludes(step, "if: steps.canary.outcome == 'success'")
+  assertStringIncludes(step, 'CANARY_BASE: ${{ steps.canary.outputs.base }}')
+  assertStringIncludes(step, 'run: node scripts/set-version.mjs --check "$CANARY_BASE"')
 })
 
 test('publish-rc hands gh-promote the canary found by commit, not a run number', () => {

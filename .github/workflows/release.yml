@@ -110,6 +110,17 @@ jobs:
         with:
           mode: canary
 
+      - name: Require the committed version to match the tags
+        # The committed deno.json / package.json / sonar version must already
+        # be the base the tags give. Right after each release the TurboPanel
+        # Release App opens a "chore: start X.Y.Z" PR that sets it; until the
+        # owner merges it, canaries are refused here, before anything builds.
+        # Canary only: rc and release reuse the canary's bytes.
+        if: steps.canary.outcome == 'success'
+        env:
+          CANARY_BASE: ${{ steps.canary.outputs.base }}
+        run: node scripts/set-version.mjs --check "$CANARY_BASE"
+
       - name: Resolve version, channel and commit
         id: resolve
         env:
@@ -143,7 +154,7 @@ jobs:
             echo "channel=${INPUT_CHANNEL}" >> "$GITHUB_OUTPUT"
           else
             # A tag pushed by hand: its number is the version (stamped below,
-            # not checked against deno.json — versions come from tags).
+            # not checked against deno.json; only a canary is checked).
             _ref="$REF_NAME"
             echo "version=${_ref#v}" >> "$GITHUB_OUTPUT"
             echo "base=${_ref#v}" >> "$GITHUB_OUTPUT"
