@@ -372,6 +372,7 @@ export function registerBillingRoutes(
           cancelUrl: urls.cancelUrl,
           organizationId: auth.organizationId,
           idempotencyKey,
+          allowPromotionCodes: auth.config.couponsAllowed,
         })
         await writePendingCheckout(
           auth.db,
