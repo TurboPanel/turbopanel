@@ -549,6 +549,22 @@ repository has no webhook surface and is given none, and a deploy-key repository
 app, so it falls back to the bare path. The intended alternative for those
 instances is the `ref` field on `POST /environments/:id/deploy`.
 
+**Published origins** (`src/features/git/published-origins.ts`) are the one
+answer to "which address does a provider deliver to": webhook URLs on forge
+and repository reads, the GitHub App manifest's hook / callback / setup URLs,
+the `webhookOrigin` allow-list on `POST /forges/github/manifest`, and the
+GitLab OAuth redirect all read it. Self-hosted, it is the operator's public URL
+list only — never the request origin (behind Caddy → Unix socket that is not
+an address a provider can dial) and never `TURBOPANEL_BASE_URL` from the
+process env. Hosted (`runtime === 'workers'`), it is `TURBOPANEL_BASE_URL`
+(https only, own port kept via `publicHttpsOrigin`, a blank or `http:` value
+ignored) ahead of the stored list, which nothing fills there. Without it the
+hosted wizard answered `503 public_url_not_configured`. The console reads the
+same set from `GET /forges/webhook-origins` (client: `organization:manage`;
+admin: admin role) as `{ origins, platformManaged }`, so it never offers an
+endpoint the server would refuse and only tells self-hosted operators to fix
+an empty list under Networking.
+
 That field is **accepted and validated but still not honored.** It is threaded
 through `runEnvironmentDeploy` → `prepareOneServerDeploy` → `prepareDeployCompose`
 as `sourceSelection`, and prepare echoes it back on the prepared result. Prepare

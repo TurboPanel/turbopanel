@@ -51,6 +51,7 @@ import {
   createForgeHandler,
   deleteForgeHandler,
   getForgeHandler,
+  getWebhookOriginsHandler,
   listForgesHandler,
   patchForgeHandler,
   startGithubManifestHandler,
@@ -340,6 +341,13 @@ export function registerAdminRoutes(
     const db = getDb(c)
     if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
     return await createForgeHandler(c, db, instanceScope)
+  })
+
+  // Before `/forges/:id`: same segment count, and the literal must win.
+  admin.get('/forges/webhook-origins', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    return await getWebhookOriginsHandler(c, db)
   })
 
   admin.post('/forges/github/manifest', async (c) => {

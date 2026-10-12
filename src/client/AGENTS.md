@@ -585,6 +585,12 @@ id)` order. `resolveOneFromCaches` walks the up list first; a down network is
   Nothing is emitted under `x-turbopanel`: the importer speaks plain Compose,
   per rule 1 of the frozen contract in `../lib/compose/AGENTS.md`. Parser and
   option registry: `../lib/docker-run/AGENTS.md`.
+- **Webhook origins (client surface):** `GET /forges/webhook-origins`
+  (`organization:manage`, like the rest of `/forges`) answers
+  `{ origins, platformManaged }` — the set the manifest flow accepts as
+  `webhookOrigin`. Hosted, the platform's `TURBOPANEL_BASE_URL` leads it;
+  self-hosted, it is the operator list. Detail: `../webhook/AGENTS.md` →
+  Reachability.
 - **Forge addresses and the GitHub install callback (client surface):** a
   forge's `baseUrl` / `apiUrl` / `webhookOrigin` is validated on every write
   (`POST`/`PATCH /forges`, the manifest wizard) by `../lib/git/forge-url.ts` —
