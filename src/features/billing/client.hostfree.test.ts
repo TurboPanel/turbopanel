@@ -5,11 +5,7 @@
 
 import { assertEquals, assertRejects } from '@std/assert'
 import type { BillingConfig } from './config.ts'
-import {
-  createStripeClient,
-  STRIPE_LIST_PAGE_SIZE,
-  type StripeFetch,
-} from './client.ts'
+import { createStripeClient, STRIPE_LIST_PAGE_SIZE, type StripeFetch } from './client.ts'
 import { StripeApiError } from './errors.ts'
 
 /**
@@ -28,23 +24,31 @@ const CONFIG: BillingConfig = {
 
 type Call = { url: string; method: string; headers: Record<string, string>; body: string | null }
 
-function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
+function jsonResponse(
+  status: number,
+  body: unknown,
+  headers: Record<string, string> = {}
+): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { 'content-type': 'application/json', ...headers },
   })
 }
 
-function fetchDouble(
-  respond: (call: Call, index: number) => Response | Promise<Response>,
-): { fetch: StripeFetch; calls: Call[] } {
+function fetchDouble(respond: (call: Call, index: number) => Response | Promise<Response>): {
+  fetch: StripeFetch
+  calls: Call[]
+} {
   const calls: Call[] = []
   const fetch: StripeFetch = (input, init) => {
     const call: Call = {
       url: input,
       method: init.method ?? 'GET',
       headers: Object.fromEntries(
-        Object.entries((init.headers ?? {}) as Record<string, string>).map(([k, v]) => [k.toLowerCase(), v]),
+        Object.entries((init.headers ?? {}) as Record<string, string>).map(([k, v]) => [
+          k.toLowerCase(),
+          v,
+        ])
       ),
       body: typeof init.body === 'string' ? init.body : null,
     }
@@ -65,7 +69,10 @@ test('every call carries Authorization, Stripe-Version and the form content type
     assertEquals(call.headers['stripe-version'], '2026-09-30.endive')
     assertEquals(call.headers['content-type'], 'application/x-www-form-urlencoded')
   }
-  assertEquals(double.calls[0]?.url, 'https://api.stripe.com/v1/customers/cus_1?expand%5B0%5D=tax_ids')
+  assertEquals(
+    double.calls[0]?.url,
+    'https://api.stripe.com/v1/customers/cus_1?expand%5B0%5D=tax_ids'
+  )
   assertEquals(double.calls[0]?.body, null)
   assertEquals(double.calls[1]?.body, 'email=a%40b.c')
 })
@@ -95,8 +102,13 @@ test('listAll follows has_more with starting_after and stops when it clears', as
   ]
   const double = fetchDouble((_call, index) => jsonResponse(200, pages[index]))
   const client = createStripeClient(CONFIG, { fetch: double.fetch })
-  const all = await client.listAll<{ id: string }>('/v1/subscription_items', { subscription: 'sub_1' })
-  assertEquals(all.map((item) => item.id), ['si_1', 'si_2', 'si_3'])
+  const all = await client.listAll<{ id: string }>('/v1/subscription_items', {
+    subscription: 'sub_1',
+  })
+  assertEquals(
+    all.map((item) => item.id),
+    ['si_1', 'si_2', 'si_3']
+  )
   assertEquals(double.calls.length, 2)
   const first = new URL(double.calls[0]!.url)
   assertEquals(first.searchParams.get('limit'), String(STRIPE_LIST_PAGE_SIZE))
@@ -105,26 +117,65 @@ test('listAll follows has_more with starting_after and stops when it clears', as
 })
 
 test('listAll refuses to walk past the page cap instead of looping', async () => {
-  const double = fetchDouble(
-    (_call, index) => jsonResponse(200, { object: 'list', data: [{ id: `x_${index}` }], has_more: true }),
+  const double = fetchDouble((_call, index) =>
+    jsonResponse(200, { object: 'list', data: [{ id: `x_${index}` }], has_more: true })
   )
   const client = createStripeClient(CONFIG, { fetch: double.fetch })
   await assertRejects(
     () => client.listAll('/v1/subscription_items', {}, { maxPages: 3 }),
     StripeApiError,
-    'exceeded 3 pages',
+    'exceeded 3 pages'
   )
   assertEquals(double.calls.length, 3)
 })
 
 test('non-2xx responses map to StripeApiError with classification', async () => {
   const responses: Array<[number, unknown]> = [
-    [402, { error: { type: 'card_error', code: 'card_declined', message: 'Your card was declined.', param: 'source' } }],
-    [400, { error: { type: 'invalid_request_error', code: 'resource_missing', message: 'No such customer', param: 'customer', doc_url: 'https://stripe.com/docs' } }],
+    [
+      402,
+      {
+        error: {
+          type: 'card_error',
+          code: 'card_declined',
+          message: 'Your card was declined.',
+          param: 'source',
+        },
+      },
+    ],
+    [
+      400,
+      {
+        error: {
+          type: 'invalid_request_error',
+          code: 'resource_missing',
+          message: 'No such customer',
+          param: 'customer',
+          doc_url: 'https://stripe.com/docs',
+        },
+      },
+    ],
     // Stripe now sends rate limits as `invalid_request_error` with a
     // distinguishing `code`, not a dedicated `rate_limit_error` type.
-    [429, { error: { type: 'invalid_request_error', code: 'rate_limit', message: 'Too many requests hit the API too quickly.' } }],
-    [409, { error: { type: 'invalid_request_error', code: 'lock_timeout', message: 'could not acquire lock' } }],
+    [
+      429,
+      {
+        error: {
+          type: 'invalid_request_error',
+          code: 'rate_limit',
+          message: 'Too many requests hit the API too quickly.',
+        },
+      },
+    ],
+    [
+      409,
+      {
+        error: {
+          type: 'invalid_request_error',
+          code: 'lock_timeout',
+          message: 'could not acquire lock',
+        },
+      },
+    ],
     [500, { error: { type: 'api_error', message: 'boom' } }],
     [502, 'not json at all'],
   ]
@@ -138,17 +189,29 @@ test('non-2xx responses map to StripeApiError with classification', async () => 
   const client = createStripeClient(CONFIG, { fetch: double.fetch })
 
   const card = await assertRejects(() => client.post('/v1/charges'), StripeApiError)
-  assertEquals([card.status, card.type, card.code, card.param, card.isTransient], [402, 'card_error', 'card_declined', 'source', false])
+  assertEquals(
+    [card.status, card.type, card.code, card.param, card.isTransient],
+    [402, 'card_error', 'card_declined', 'source', false]
+  )
   assertEquals(card.requestId, 'req_402')
 
   const invalid = await assertRejects(() => client.get('/v1/customers/nope'), StripeApiError)
-  assertEquals([invalid.type, invalid.classification, invalid.docUrl], ['invalid_request_error', 'permanent', 'https://stripe.com/docs'])
+  assertEquals(
+    [invalid.type, invalid.classification, invalid.docUrl],
+    ['invalid_request_error', 'permanent', 'https://stripe.com/docs']
+  )
 
   const limited = await assertRejects(() => client.get('/v1/x'), StripeApiError)
-  assertEquals([limited.status, limited.type, limited.code, limited.isTransient], [429, 'invalid_request_error', 'rate_limit', true])
+  assertEquals(
+    [limited.status, limited.type, limited.code, limited.isTransient],
+    [429, 'invalid_request_error', 'rate_limit', true]
+  )
 
   const lockTimeout = await assertRejects(() => client.get('/v1/x'), StripeApiError)
-  assertEquals([lockTimeout.status, lockTimeout.code, lockTimeout.isTransient], [409, 'lock_timeout', true])
+  assertEquals(
+    [lockTimeout.status, lockTimeout.code, lockTimeout.isTransient],
+    [409, 'lock_timeout', true]
+  )
 
   const api = await assertRejects(() => client.get('/v1/x'), StripeApiError)
   assertEquals([api.type, api.isTransient], ['api_error', true])
