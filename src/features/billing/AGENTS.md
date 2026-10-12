@@ -295,8 +295,8 @@ subscription.
 **Anchor and mode.** `SUBSCRIPTION_ANCHOR_PARAMS` spells the invariant once:
 flexible billing mode, `billing_cycle_anchor_config` at day 1 / 00:00:00 UTC,
 and no `proration_behavior` on create so the default prorates the first month.
-Checkout passes the same block under `subscription_data` (verified accepted on
-the pinned `2025-08-27.basil` version).
+Checkout passes the same block under `subscription_data` (verified on `2025-08-27.basil`, not yet re-verified on the
+pinned `2026-09-30.endive`).
 
 ## The pending-change ledger
 

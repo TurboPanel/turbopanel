@@ -637,7 +637,7 @@ test("GET /status reports billingEnabled only when both Stripe secrets are set",
   const keyOnly = await build({
     secretKey: "sk_test_x",
     webhookSigningSecret: null,
-    apiVersion: "2025-08-27.basil",
+    apiVersion: "2026-09-30.endive",
   }).request(`${CLIENT_API_PREFIX}/status`);
   assertEquals(keyOnly.status, 200);
   assertEquals(
@@ -648,7 +648,7 @@ test("GET /status reports billingEnabled only when both Stripe secrets are set",
   const both = await build({
     secretKey: "sk_test_x",
     webhookSigningSecret: "whsec_x",
-    apiVersion: "2025-08-27.basil",
+    apiVersion: "2026-09-30.endive",
   }).request(`${CLIENT_API_PREFIX}/status`);
   assertEquals(both.status, 200);
   assertEquals(

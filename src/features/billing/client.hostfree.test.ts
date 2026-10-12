@@ -23,7 +23,7 @@ const test = Deno.test.bind(Deno)
 const CONFIG: BillingConfig = {
   secretKey: 'sk_test_abc',
   webhookSigningSecret: 'whsec_abc',
-  apiVersion: '2025-08-27.basil',
+  apiVersion: '2026-09-30.endive',
 }
 
 type Call = { url: string; method: string; headers: Record<string, string>; body: string | null }
@@ -62,7 +62,7 @@ test('every call carries Authorization, Stripe-Version and the form content type
   await client.del('/v1/customers/cus_1')
   for (const call of double.calls) {
     assertEquals(call.headers['authorization'], 'Bearer sk_test_abc')
-    assertEquals(call.headers['stripe-version'], '2025-08-27.basil')
+    assertEquals(call.headers['stripe-version'], '2026-09-30.endive')
     assertEquals(call.headers['content-type'], 'application/x-www-form-urlencoded')
   }
   assertEquals(double.calls[0]?.url, 'https://api.stripe.com/v1/customers/cus_1?expand%5B0%5D=tax_ids')

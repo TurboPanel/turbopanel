@@ -25,7 +25,7 @@ const test = Deno.test.bind(Deno)
 const CONFIG: BillingConfig = {
   secretKey: 'sk_test_abc',
   webhookSigningSecret: null,
-  apiVersion: '2025-08-27.basil',
+  apiVersion: '2026-09-30.endive',
 }
 
 type Call = { url: string; method: string; body: string | null }
