@@ -19,11 +19,15 @@
  */
 
 /** Env keys. Both secrets are `wrangler secret put` values, never `vars`. */
-export const STRIPE_SECRET_KEY_ENV = "TURBOPANEL_STRIPE_SECRET_KEY";
-export const STRIPE_WEBHOOK_SIGNING_SECRET_ENV =
-  "TURBOPANEL_STRIPE_WEBHOOK_SIGNING_SECRET";
+export const STRIPE_SECRET_KEY_ENV = 'TURBOPANEL_STRIPE_SECRET_KEY'
+export const STRIPE_WEBHOOK_SIGNING_SECRET_ENV = 'TURBOPANEL_STRIPE_WEBHOOK_SIGNING_SECRET'
 /** Optional override of {@link DEFAULT_STRIPE_API_VERSION}. */
-export const STRIPE_API_VERSION_ENV = "TURBOPANEL_STRIPE_API_VERSION";
+export const STRIPE_API_VERSION_ENV = 'TURBOPANEL_STRIPE_API_VERSION'
+/**
+ * `1` shows Stripe's promotion-code field on Checkout; anything else (unset,
+ * `0`) hides it. A plain `vars` entry so an operator can flip it per env.
+ */
+export const STRIPE_COUPON_ALLOWED_ENV = 'TURBOPANEL_STRIPE_IS_COUPON_ALLOWED'
 
 /**
  * The `Stripe-Version` every request pins.
@@ -34,23 +38,25 @@ export const STRIPE_API_VERSION_ENV = "TURBOPANEL_STRIPE_API_VERSION";
  * the subscription to its items in the `basil` line). Bumping this constant
  * is a code change that runs the tests.
  */
-export const DEFAULT_STRIPE_API_VERSION = "2025-08-27.basil";
+export const DEFAULT_STRIPE_API_VERSION = '2025-08-27.basil'
 
 export type BillingConfig = Readonly<{
   /** `sk_live_…` / `sk_test_…`. Presence is what builds a config at all. */
-  secretKey: string;
+  secretKey: string
   /**
    * `whsec_…`. May be absent while the key is present — customer billing then
    * stays off, and the webhook gate answers `503 stripe_webhook_not_configured`,
    * never an unverified accept.
    */
-  webhookSigningSecret: string | null;
-  apiVersion: string;
-}>;
+  webhookSigningSecret: string | null
+  apiVersion: string
+  /** Checkout offers the promotion-code field ({@link STRIPE_COUPON_ALLOWED_ENV}). */
+  couponsAllowed?: boolean
+}>
 
 function nonBlank(value: string | undefined): string | null {
-  const trimmed = value?.trim() ?? "";
-  return trimmed.length > 0 ? trimmed : null;
+  const trimmed = value?.trim() ?? ''
+  return trimmed.length > 0 ? trimmed : null
 }
 
 /**
@@ -59,16 +65,16 @@ function nonBlank(value: string | undefined): string | null {
  * {@link isCustomerBillingOperational}.
  */
 export function resolveBillingConfig(
-  env: Record<string, string | undefined> | undefined,
+  env: Record<string, string | undefined> | undefined
 ): BillingConfig | null {
-  const secretKey = nonBlank(env?.[STRIPE_SECRET_KEY_ENV]);
-  if (!secretKey) return null;
+  const secretKey = nonBlank(env?.[STRIPE_SECRET_KEY_ENV])
+  if (!secretKey) return null
   return {
     secretKey,
     webhookSigningSecret: nonBlank(env?.[STRIPE_WEBHOOK_SIGNING_SECRET_ENV]),
-    apiVersion: nonBlank(env?.[STRIPE_API_VERSION_ENV]) ??
-      DEFAULT_STRIPE_API_VERSION,
-  };
+    apiVersion: nonBlank(env?.[STRIPE_API_VERSION_ENV]) ?? DEFAULT_STRIPE_API_VERSION,
+    couponsAllowed: env?.[STRIPE_COUPON_ALLOWED_ENV]?.trim() === '1',
+  }
 }
 
 /**
@@ -78,8 +84,7 @@ export function resolveBillingConfig(
  * a completed Checkout would never project.
  */
 export function isCustomerBillingOperational(
-  config: BillingConfig | null | undefined,
+  config: BillingConfig | null | undefined
 ): config is BillingConfig & { webhookSigningSecret: string } {
-  return typeof config?.webhookSigningSecret === "string" &&
-    config.webhookSigningSecret.length > 0;
+  return typeof config?.webhookSigningSecret === 'string' && config.webhookSigningSecret.length > 0
 }
