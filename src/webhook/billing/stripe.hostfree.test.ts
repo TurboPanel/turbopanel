@@ -71,7 +71,7 @@ const TIER_ID = '11111111-1111-4111-8111-111111111111'
 const CONFIG: BillingConfig = {
   secretKey: 'sk_test_x',
   webhookSigningSecret: SIGNING_SECRET,
-  apiVersion: '2025-08-27.basil',
+  apiVersion: '2026-09-30.endive',
 }
 
 type Trace = string[]

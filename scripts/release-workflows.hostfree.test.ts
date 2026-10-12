@@ -1,11 +1,14 @@
 /**
- * Shape rules for the release workflows since versions come from git tags
- * (Road to 0.2.x, versioning Phase 3): no workflow opens a "Start x.y.z" PR or
- * gates on a minor, no release step takes its version from deno.json, and the
- * build stamps the tag-derived base into deno.json before compiling (minors
- * and majors are started by turbopaneld's "Start Next Version" workflow).
+ * Shape rules for the release workflows (Road to 0.2.x, versioning Phase 3).
+ * The tags work out what the version should be; the committed files carry it.
+ * The canary refuses a committed number that disagrees with the tags, the only
+ * PR that moves it is the "chore: start x.y.z" PR publish-release.yml opens
+ * after each release (the old "Start x.y.z" PR and minor gate stay gone), no
+ * release step takes its version from deno.json, and the build stamps the
+ * tag-derived base into deno.json before compiling (minors and majors are
+ * started by turbopaneld's "Start Next Version" workflow).
  */
-import { assert, assertEquals, assertMatch } from '@std/assert'
+import { assert, assertEquals, assertMatch, assertStringIncludes } from '@std/assert'
 import { dirname, fromFileUrl, join } from '@std/path'
 
 /**
@@ -20,6 +23,21 @@ const WORKFLOWS = join(dirname(dirname(fromFileUrl(import.meta.url))), '.github'
 
 function read(name: string): string {
   return Deno.readTextFileSync(join(WORKFLOWS, name))
+}
+
+/** One top-level job's text (`  <name>:` up to the next job), or ''. */
+function jobText(source: string, name: string): string {
+  const start = source.indexOf(`\n  ${name}:\n`)
+  if (start < 0) return ''
+  const rest = source.slice(start + 1)
+  const end = rest.slice(1).search(/\n {2}[\w-]+:\n/)
+  return end < 0 ? rest : rest.slice(0, end + 2)
+}
+
+/** The source with one top-level job removed. */
+function withoutJob(source: string, name: string): string {
+  const job = jobText(source, name)
+  return job ? source.replace(job, '') : source
 }
 
 /**
@@ -67,7 +85,7 @@ const GONE = [
   /--title "Start /,
 ]
 
-test('no workflow opens a Start PR or gates on a minor', () => {
+test('no workflow opens the old Start PR or gates on a minor', () => {
   const files = workflowFiles()
   assert(files.length > 0)
   for (const file of files) {
@@ -105,6 +123,21 @@ test('the canary build works out its version from the tags and stamps the base b
   )
 })
 
+test('the canary refuses a committed version that disagrees with the tags, before it builds', () => {
+  const text = read('release.yml')
+  const canary = text.indexOf('- name: Work out the canary version from the tags')
+  const check = text.indexOf('- name: Require the committed version to match the tags')
+  const resolve = text.indexOf('- name: Resolve version, channel and commit')
+  assert(
+    canary > 0 && canary < check && check < resolve,
+    'the check runs right after the canary step'
+  )
+  const step = text.slice(check, resolve)
+  assertStringIncludes(step, "if: steps.canary.outcome == 'success'")
+  assertStringIncludes(step, 'CANARY_BASE: ${{ steps.canary.outputs.base }}')
+  assertStringIncludes(step, 'run: node scripts/set-version.mjs --check "$CANARY_BASE"')
+})
+
 test('publish-rc hands gh-promote the canary found by commit, not a run number', () => {
   const text = read('publish-rc.yml')
   assertMatch(text, /^ {6}source: \$\{\{ needs\.resolve\.outputs\.canary \}\}$/m)
@@ -120,7 +153,8 @@ test('the promotion workflows pin one TurboPanel/dev commit', () => {
     'promote-ok.yml',
     'promote-ok-recheck.yml',
   ]) {
-    const text = read(file)
+    // publish-release's start-next job pins its own dev commit (below).
+    const text = withoutJob(read(file), 'start-next')
     for (const m of text.matchAll(
       /TurboPanel\/dev\/\.github\/(?:workflows\/[\w.-]+|actions\/version)@([0-9a-f]{40})/g
     )) {
@@ -131,6 +165,45 @@ test('the promotion workflows pin one TurboPanel/dev commit', () => {
     }
   }
   assertEquals(pins.size, 1, `pins: ${[...pins].join(', ')}`)
+})
+
+test('publish-release opens the start PR for the next patch after finalize', () => {
+  const text = read('publish-release.yml')
+  const job = jobText(text, 'start-next')
+  assert(
+    text.indexOf('\n  finalize:\n') < text.indexOf('\n  start-next:\n'),
+    'start-next is the last job'
+  )
+  assertStringIncludes(job, 'needs: [prepare, finalize]')
+  assertMatch(job, /^ {4}permissions:\n {6}contents: read\n/m)
+  assert(!/pull-requests: write|contents: write/.test(job), 'the App token does the writes')
+  const mint = job.indexOf('- name: Mint a Release App token')
+  const next = job.indexOf('- name: Work out the next version from the tags')
+  const guard = job.indexOf('- name: Require the tags to name the release just made')
+  const open = job.indexOf('- name: Open the start PR for the next version')
+  assert(mint > 0 && mint < next && next < guard && guard < open, 'step order')
+  assertMatch(
+    job,
+    /uses: actions\/create-github-app-token@[0-9a-f]{40} # v[\d.]+\n {8}with:\n {10}client-id: \$\{\{ secrets\.RELEASE_APP_ID \}\}\n {10}private-key: \$\{\{ secrets\.RELEASE_APP_PRIVATE_KEY \}\}\n {10}repositories: \$\{\{ github\.event\.repository\.name \}\}\n/
+  )
+  const pins = new Set(
+    [...job.matchAll(/TurboPanel\/dev\/\.github\/actions\/[\w-]+@([0-9a-f]{40}) # dev#\d+/g)].map(
+      (m) => m[1]
+    )
+  )
+  assertEquals(pins.size, 1, `start-next pins: ${[...pins].join(', ')}`)
+  assertMatch(job, /actions\/version@[0-9a-f]{40} # dev#\d+\n {8}with:\n {10}mode: base\n/)
+  assertStringIncludes(job, 'RELEASED: ${{ needs.prepare.outputs.version }}')
+  assertStringIncludes(job, 'NEWEST: ${{ steps.next.outputs.release }}')
+  assertStringIncludes(job, 'if [ "$NEWEST" != "$RELEASED" ]; then')
+  assertMatch(job, /actions\/start-version-pr@[0-9a-f]{40} # dev#\d+\n/)
+  assertStringIncludes(job, 'version: ${{ steps.next.outputs.base }}')
+  assertStringIncludes(job, 'github-token: ${{ steps.app.outputs.token }}')
+  assertStringIncludes(
+    job,
+    'reason: It was opened after v${{ needs.prepare.outputs.version }} was released.'
+  )
+  assertStringIncludes(job, 'auto-merge: "true"')
 })
 
 test('no run: step splices an input, the ref name or a job output into the shell', () => {

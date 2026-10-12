@@ -5,7 +5,7 @@
  *
  * T6 — every "log and skip" branch skips *before* a row is written, and a
  * refetch that rejects writes nothing. T7 — the response shapes the pinned
- * API version (`2025-08-27.basil`) sends and the older shapes still in the
+ * API version (`2026-09-30.endive`) sends and the older shapes still in the
  * wild both project the same rows: period end on the subscription or per
  * item, the invoice's subscription pre- and post-basil, a Checkout session
  * naming its subscription as an id or an object, the second page of items,

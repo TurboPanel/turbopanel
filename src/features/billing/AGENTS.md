@@ -73,7 +73,11 @@ Both `TURBOPANEL_STRIPE_SECRET_KEY` and
 `TURBOPANEL_STRIPE_WEBHOOK_SIGNING_SECRET` are **secrets**
 (`wrangler secret put`), never `vars` in `wrangler.jsonc`; `keep_vars: true`
 protects dashboard-set values across deploys. `TURBOPANEL_STRIPE_API_VERSION` is
-an optional override of the pin below.
+an optional override of the pin below. `TURBOPANEL_STRIPE_IS_COUPON_ALLOWED`
+(`1` on, anything else off) is a plain var: when on, Checkout sends
+`allow_promotion_codes=true` so the customer can type a promotion code. Live
+commits `"0"`; an unfinished Checkout session already handed out keeps the
+setting it was created with.
 
 A Workers deployment with no key: the three tables exist and are empty,
 `/webhook/stripe` answers `503 stripe_webhook_not_configured`, no Stripe call is
@@ -296,7 +300,7 @@ subscription.
 flexible billing mode, `billing_cycle_anchor_config` at day 1 / 00:00:00 UTC,
 and no `proration_behavior` on create so the default prorates the first month.
 Checkout passes the same block under `subscription_data` (verified accepted on
-the pinned `2025-08-27.basil` version).
+`2025-08-27.basil`, not yet re-verified on the pinned `2026-09-30.endive`).
 
 ## The pending-change ledger
 
