@@ -313,6 +313,30 @@ test('GET /forges lists visible apps after the manage gate', async () => {
   assertEquals((apps[0] as Record<string, unknown>).id, APP_ID)
 })
 
+test('GET /forges/webhook-origins answers the published origins, not /forges/:id', async () => {
+  const { app, cookie } = await buildApp(
+    createRouteDb({
+      publicUrls: ['https://panel.example.com'],
+    })
+  )
+  const res = await app.request('/forges/webhook-origins', {
+    headers: authHeaders(cookie),
+  })
+  assertEquals(res.status, 200)
+  assertEquals(await res.json(), {
+    origins: ['https://panel.example.com:8443'],
+    platformManaged: false,
+  })
+})
+
+test('GET /forges/webhook-origins keeps the manage gate', async () => {
+  const { app, cookie } = await buildApp(createRouteDb({ allowed: false }))
+  const res = await app.request('/forges/webhook-origins', {
+    headers: authHeaders(cookie),
+  })
+  assertEquals(res.status, 403)
+})
+
 test('POST /forges reaches create after resolve and requires encryption', async () => {
   const { app, cookie } = await buildApp(createRouteDb())
   const res = await app.request('/forges', {

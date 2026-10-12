@@ -48,7 +48,12 @@ import {
   validateForgeUrl,
 } from '../../features/git/forge-url.ts'
 import { fetchGithubAppMetadata } from '../../features/git/github-app-metadata.ts'
-import { getPublicUrls, publicUrlEntryToInstallOrigin } from '../../features/install/public-urls.ts'
+import {
+  matchPublishedOrigin,
+  preferredPublishedOrigin,
+  type PublishedOrigins,
+  resolvePublishedOrigins,
+} from '../../features/git/published-origins.ts'
 import { webhookPathFor } from '../../features/git/webhook-reachability.ts'
 import {
   signGithubManifestState,
@@ -69,27 +74,24 @@ export type ForgeScope = {
   organizationId: string | null
 }
 
-/** Every origin this instance publishes, normalized for comparison. */
-async function listPublicOrigins(db: Db): Promise<string[]> {
-  return (await getPublicUrls(db))
-    .map((entry) => publicUrlEntryToInstallOrigin(entry))
-    .filter((origin): origin is string => origin !== null)
-    .map((origin) => origin.replace(/\/$/, ''))
+/**
+ * Every origin this instance publishes for Git traffic, preferred first.
+ *
+ * Self-hosted: the operator-managed public URL list, never the request
+ * origin — behind the local Caddy → Unix socket the request origin is not an
+ * address any provider can dial. Hosted: the platform's own address ahead of
+ * that list. See `features/git/published-origins.ts`.
+ */
+async function resolveOrigins(c: Context<AppEnv>, db: Db): Promise<PublishedOrigins> {
+  return await resolvePublishedOrigins(db, {
+    runtime: c.get('runtime'),
+    platformEnv: c.get('platformEnv'),
+  })
 }
 
-/**
- * The origin to build webhook URLs from.
- *
- * The operator-managed public URL list, not the request origin: behind the
- * local Caddy → Unix socket the request origin is not an address any provider
- * can dial, so echoing it back would produce a URL that looks right and never
- * receives anything.
- */
-async function resolvePublicOrigin(db: Db): Promise<string | null> {
-  const origins = (await getPublicUrls(db))
-    .map((entry) => publicUrlEntryToInstallOrigin(entry))
-    .filter((origin): origin is string => origin !== null)
-  return origins.find((origin) => origin.startsWith('https://')) ?? origins[0] ?? null
+/** The origin to build webhook URLs from, or `null` when nothing is published. */
+async function resolvePublicOrigin(c: Context<AppEnv>, db: Db): Promise<string | null> {
+  return preferredPublishedOrigin((await resolveOrigins(c, db)).origins)
 }
 
 /**
@@ -136,7 +138,7 @@ export async function listForgesHandler(
   scope: ForgeScope
 ): Promise<Response> {
   const apps = await listForges(db, { organizationId: scope.organizationId })
-  const publicOrigin = await resolvePublicOrigin(db)
+  const publicOrigin = await resolvePublicOrigin(c, db)
   return c.json({
     apps: apps.map((app) =>
       serializeForge(app, {
@@ -145,6 +147,16 @@ export async function listForgesHandler(
       })
     ),
   })
+}
+
+/**
+ * The addresses a new app may deliver webhooks to — exactly the set the
+ * manifest start accepts as `webhookOrigin`, so the wizard never offers an
+ * endpoint the server would refuse. `platformManaged` tells the console
+ * whether an empty list is the operator's to fix (Networking) or not.
+ */
+export async function getWebhookOriginsHandler(c: Context<AppEnv>, db: Db): Promise<Response> {
+  return c.json(await resolveOrigins(c, db))
 }
 
 export async function getForgeHandler(
@@ -159,7 +171,7 @@ export async function getForgeHandler(
 
   const app = await getForgeSummary(db, id)
   if (!app) return c.json({ error: 'Not found' }, 404)
-  const publicOrigin = await resolvePublicOrigin(db)
+  const publicOrigin = await resolvePublicOrigin(c, db)
   return c.json({
     app: serializeForge(app, {
       publicOrigin,
@@ -241,7 +253,7 @@ export async function createForgeHandler(
     await recordForgeAudit(c, db, scope, 'forge.create', app.id, {
       provider: app.provider,
     })
-    const publicOrigin = await resolvePublicOrigin(db)
+    const publicOrigin = await resolvePublicOrigin(c, db)
     return c.json(
       {
         app: serializeForge(app, {
@@ -294,7 +306,7 @@ export async function patchForgeHandler(
     await recordForgeAudit(c, db, scope, 'forge.update', app.id, {
       fields: Object.keys(updates).sort((a, b) => a.localeCompare(b)),
     })
-    const publicOrigin = await resolvePublicOrigin(db)
+    const publicOrigin = await resolvePublicOrigin(c, db)
     return c.json({
       app: serializeForge(app, {
         publicOrigin,
@@ -399,7 +411,7 @@ export async function syncForgeHandler(
   })
   if (!updated) return c.json({ error: 'Not found' }, 404)
 
-  const publicOrigin = await resolvePublicOrigin(db)
+  const publicOrigin = await resolvePublicOrigin(c, db)
   return c.json({
     app: serializeForge(updated, {
       publicOrigin,
@@ -433,7 +445,8 @@ export async function startGithubManifestHandler(
     return c.json({ error: 'Signing unavailable — no root secret configured' }, 503)
   }
 
-  const publicOrigin = await resolvePublicOrigin(db)
+  const published = await resolveOrigins(c, db)
+  const publicOrigin = preferredPublishedOrigin(published.origins)
   if (!publicOrigin) return c.json({ error: 'public_url_not_configured' }, 503)
 
   const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
@@ -451,9 +464,8 @@ export async function startGithubManifestHandler(
   // default keeps the old single-URL behaviour working.
   let webhookOrigin = publicOrigin.replace(/\/$/, '')
   if (wizard.webhookOrigin) {
-    const chosen = publicUrlEntryToInstallOrigin(wizard.webhookOrigin)
-    const known = await listPublicOrigins(db)
-    if (!chosen || !known.includes(chosen)) {
+    const chosen = matchPublishedOrigin(published.origins, wizard.webhookOrigin)
+    if (!chosen) {
       return c.json({ error: 'webhook_origin_not_published' }, 400)
     }
     webhookOrigin = chosen

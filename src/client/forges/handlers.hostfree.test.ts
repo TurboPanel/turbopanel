@@ -23,6 +23,7 @@ import {
   deleteForgeHandler,
   type ForgeScope,
   getForgeHandler,
+  getWebhookOriginsHandler,
   listForgesHandler,
   patchForgeHandler,
   startGithubManifestHandler,
@@ -201,6 +202,8 @@ type InvokeOpts = {
   rawBody?: string
   secrets?: boolean
   encrypt?: boolean
+  runtime?: 'deno' | 'workers'
+  platformEnv?: Record<string, string | undefined>
 }
 
 async function invoke(
@@ -211,6 +214,8 @@ async function invoke(
   const dataEncryptionSecrets = opts.encrypt === false ? undefined : await encryption()
   app.use('*', async (c, next) => {
     if (opts.secrets !== false) c.set('secretsConfig', secretsConfig)
+    if (opts.runtime) c.set('runtime', opts.runtime)
+    if (opts.platformEnv) c.set('platformEnv', opts.platformEnv)
     if (dataEncryptionSecrets) {
       c.set('dataEncryptionSecrets', dataEncryptionSecrets)
     }
@@ -1105,4 +1110,117 @@ test('complete manifest on the admin surface returns to /admin/git', async () =>
       assertEquals(created.headers.get('location'), `/admin/git/${APP_ID}?created=${APP_ID}`)
     }
   )
+})
+
+const HOSTED = {
+  runtime: 'workers' as const,
+  platformEnv: { TURBOPANEL_BASE_URL: 'https://turbopanel.example.com' },
+}
+
+function hookUrlOf(body: Record<string, unknown>): unknown {
+  const manifest = body.manifest as Record<string, unknown>
+  return (manifest.hook_attributes as Record<string, unknown>).url
+}
+
+test('start manifest on the hosted runtime delivers to the base URL with no stored list', async () => {
+  const response = await invoke((c) => startGithubManifestHandler(c, fakeDb(), ORG), {
+    ...HOSTED,
+    method: 'POST',
+    body: { name: 'Acme Panel' },
+  })
+  assertEquals(response.status, 200)
+  const body = await jsonOf(response)
+  // The hosted origin keeps its own port: no `:8443` self-hosted dial.
+  assertEquals(hookUrlOf(body), 'https://turbopanel.example.com/webhook/github')
+  const manifest = body.manifest as Record<string, unknown>
+  assertEquals(
+    manifest.redirect_url,
+    `https://turbopanel.example.com/api/client/v1/forges/github/manifest/callback?organizationId=${ORG_ID}`
+  )
+})
+
+test('start manifest on the hosted runtime accepts the base URL as the chosen endpoint', async () => {
+  const response = await invoke((c) => startGithubManifestHandler(c, fakeDb(), ORG), {
+    ...HOSTED,
+    method: 'POST',
+    body: { name: 'Acme Panel', webhookOrigin: 'https://turbopanel.example.com' },
+  })
+  assertEquals(response.status, 200)
+  assertEquals(hookUrlOf(await jsonOf(response)), 'https://turbopanel.example.com/webhook/github')
+
+  const elsewhere = await invoke((c) => startGithubManifestHandler(c, fakeDb(), ORG), {
+    ...HOSTED,
+    method: 'POST',
+    body: { name: 'Acme Panel', webhookOrigin: 'https://hooks.example.com' },
+  })
+  assertEquals(elsewhere.status, 400)
+  assertEquals((await jsonOf(elsewhere)).error, 'webhook_origin_not_published')
+})
+
+test('start manifest ignores a plaintext or blank base URL on the hosted runtime', async () => {
+  for (const value of ['http://turbopanel.example.com', '', '   ']) {
+    const response = await invoke((c) => startGithubManifestHandler(c, fakeDb(), ORG), {
+      runtime: 'workers',
+      platformEnv: { TURBOPANEL_BASE_URL: value },
+      method: 'POST',
+      body: { name: 'Acme Panel' },
+    })
+    assertEquals(response.status, 503, value)
+    assertEquals((await jsonOf(response)).error, 'public_url_not_configured')
+  }
+})
+
+test('start manifest on self-hosted never publishes the base URL from the env', async () => {
+  const response = await invoke((c) => startGithubManifestHandler(c, fakeDb(), ORG), {
+    runtime: 'deno',
+    platformEnv: HOSTED.platformEnv,
+    method: 'POST',
+    body: { name: 'Acme Panel' },
+  })
+  assertEquals(response.status, 503)
+  assertEquals((await jsonOf(response)).error, 'public_url_not_configured')
+
+  const listed = await invoke(
+    (c) =>
+      startGithubManifestHandler(c, fakeDb({ publicUrls: ['https://panel.example.com'] }), ORG),
+    {
+      runtime: 'deno',
+      platformEnv: HOSTED.platformEnv,
+      method: 'POST',
+      body: { name: 'Acme Panel', webhookOrigin: 'https://turbopanel.example.com' },
+    }
+  )
+  assertEquals(listed.status, 400)
+  assertEquals((await jsonOf(listed)).error, 'webhook_origin_not_published')
+})
+
+test('list on the hosted runtime builds webhook URLs from the base URL', async () => {
+  const response = await invoke(
+    (c) =>
+      listForgesHandler(c, fakeDb({ appRows: [appRow({ baseUrl: 'https://github.com' })] }), ORG),
+    HOSTED
+  )
+  const apps = (await jsonOf(response)).apps as Array<Record<string, unknown>>
+  assertEquals(apps[0]?.webhookUrl, 'https://turbopanel.example.com/webhook/github')
+})
+
+test('webhook origins report the hosted address and whether the platform manages it', async () => {
+  const hosted = await invoke((c) => getWebhookOriginsHandler(c, fakeDb()), HOSTED)
+  assertEquals(hosted.status, 200)
+  assertEquals(await jsonOf(hosted), {
+    origins: ['https://turbopanel.example.com'],
+    platformManaged: true,
+  })
+
+  const selfHosted = await invoke(
+    (c) => getWebhookOriginsHandler(c, fakeDb({ publicUrls: ['panel.lan'] })),
+    { runtime: 'deno', platformEnv: HOSTED.platformEnv }
+  )
+  assertEquals(await jsonOf(selfHosted), {
+    origins: ['https://panel.lan:8443'],
+    platformManaged: false,
+  })
+
+  const empty = await invoke((c) => getWebhookOriginsHandler(c, fakeDb()), { runtime: 'deno' })
+  assertEquals(await jsonOf(empty), { origins: [], platformManaged: false })
 })

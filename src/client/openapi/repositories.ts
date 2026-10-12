@@ -558,6 +558,36 @@ export const repositoryPaths = {
       },
     },
   },
+  [`${gitAppsBasePath}/webhook-origins`]: {
+    get: {
+      tags: ['Repositories'],
+      summary: 'List the addresses a new Git application may deliver webhooks to',
+      description:
+        'Exactly the set the manifest flow accepts as `webhookOrigin`, preferred first. ' +
+        'Self-hosted: the public URLs the operator set under Networking. Hosted: the ' +
+        "platform's own address ahead of that list. `platformManaged` is true on the hosted " +
+        'runtime, where an empty list is not something an operator can fix under Networking.',
+      security,
+      responses: {
+        '200': {
+          description: 'Published origins',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['origins', 'platformManaged'],
+                properties: {
+                  origins: { type: 'array', items: { type: 'string', format: 'uri' } },
+                  platformManaged: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        },
+        ...resourceErrorResponses({}),
+      },
+    },
+  },
   [`${gitAppsBasePath}/github/manifest`]: {
     post: {
       tags: ['Repositories'],
@@ -574,7 +604,9 @@ export const repositoryPaths = {
           content: { 'application/json': { schema: { type: 'object' } } },
         },
         '503': {
-          description: 'public_url_not_configured, or no root secret to sign the state',
+          description:
+            'public_url_not_configured (nothing in GET /forges/webhook-origins), or no root ' +
+            'secret to sign the state',
           content: { 'application/json': { schema: clientErrorJson } },
         },
         ...resourceErrorResponses({}),

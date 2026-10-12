@@ -27,6 +27,7 @@ import {
   createForgeHandler,
   deleteForgeHandler,
   getForgeHandler,
+  getWebhookOriginsHandler,
   listForgesHandler,
   patchForgeHandler,
   startGithubManifestHandler,
@@ -37,6 +38,7 @@ const FORGE_PATHS = [
   '/forges',
   '/forges/:id',
   '/forges/:id/sync',
+  '/forges/webhook-origins',
   '/forges/github/manifest',
   '/forges/github/manifest/callback',
 ] as const
@@ -80,6 +82,13 @@ export function registerForgeRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts): 
     const ctx = await resolve(c)
     if (ctx instanceof Response) return ctx
     return await createForgeHandler(c, ctx.db, { organizationId: ctx.organizationId })
+  })
+
+  // Before `/forges/:id`: same segment count, and the literal must win.
+  router.get('/forges/webhook-origins', async (c) => {
+    const ctx = await resolve(c)
+    if (ctx instanceof Response) return ctx
+    return await getWebhookOriginsHandler(c, ctx.db)
   })
 
   router.post('/forges/github/manifest', async (c) => {
