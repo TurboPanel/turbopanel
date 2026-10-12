@@ -427,6 +427,13 @@ guard; `pnpm test:do` alone does not.
   `BUILD_INFO.commit` in the throwaway build checkout — so the owner's own
   deploy command (`pnpm migrate && pnpm wrangler deploy`) reports the commit
   without `deploy:testing`. `TURBOPANEL_REVISION` still wins when set.
+  The same script stamps the plain X.Y.Z into `deno.json` / `package.json`
+  there, so hosted `/api/health` (and the version by the logo) is the release,
+  not the frozen committed number: on `staging` / `live`
+  (`WORKERS_CI_BRANCH`) from the promotion merge's title ("Release Candidate
+  0.1.9-rc.2", "Release 0.1.9"), otherwise from the nearest version tag (an
+  rc gives its base, a release past HEAD the next patch). No version found
+  leaves the committed number.
 - **Versions on the wires** (`src/app/version.ts`, `src/lib/version-wire.ts`) —
   `INSTANCE_VERSION` is a JSON import of `deno.json`'s `version`, the one place
   the number is typed (`package.json` and `sonar.projectVersion` mirror it;
