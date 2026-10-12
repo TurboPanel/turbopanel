@@ -10,9 +10,10 @@
  * `sonar-project.properties` (`sonar.projectVersion`). Only the one value is
  * replaced in place, so the rest of each file keeps its formatting.
  *
- * Who runs it: right after each release the TurboPanel Release App opens a
- * "chore: start X.Y.Z" pull request made with this script, and the owner
- * merges it (Start Next Version does the same for a new minor or major). The
+ * Who runs it: right after each release the release bot opens the
+ * "chore: start X.Y.Z" pull request made with this script, and it merges
+ * itself once its checks pass (Start Next Version does the same for a new
+ * minor or major). The
  * canary build in `.github/workflows/release.yml` runs `--check` against the
  * version worked out from the tags and refuses to build when they disagree.
  *

@@ -203,6 +203,7 @@ test('publish-release opens the start PR for the next patch after finalize', () 
     job,
     'reason: It was opened after v${{ needs.prepare.outputs.version }} was released.'
   )
+  assertStringIncludes(job, 'auto-merge: "true"')
 })
 
 test('no run: step splices an input, the ref name or a job output into the shell', () => {

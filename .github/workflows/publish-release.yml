@@ -9,12 +9,13 @@
 #               (TurboPanel/dev). prepare still waits on the `release`
 #               environment approval: keep it until this path has run once end
 #               to end, then drop it (`approval-environment: ""`).
-#   3. start-next   opens the "chore: start <next patch>" PR with the
-#               Release App token (TurboPanel/dev Start Version PR). The tags
-#               already say the next version is <version>'s next patch; the
-#               PR moves the committed numbers to match, and canaries are
-#               refused until the owner merges it. Minors and majors are
-#               started with turbopaneld's Start Next Version instead.
+#   3. start-next   the release bot (Release App token, TurboPanel/dev
+#               Start Version PR) opens the "chore: start <next patch>" PR,
+#               and it merges itself once its checks pass. The tags already
+#               say the next version is <version>'s next patch; the PR moves
+#               the committed numbers to match, and canaries are refused until
+#               it has merged. Minors and majors are started with turbopaneld's
+#               Start Next Version instead.
 #
 # A push to live that is not a merged staging PR (a break-glass promotion, the
 # finalize fast-forward) does nothing. workflow_dispatch re-runs the release
@@ -144,8 +145,9 @@ jobs:
       contents: write # releases/latest, the rolling rc pointer, the live fast-forward
     secrets: inherit
 
-  # Opens the "chore: start <next>" PR that moves the committed version
-  # numbers to the next patch. Canaries are refused until it merges
+  # The release bot opens the "chore: start <next>" PR that moves the
+  # committed version numbers to the next patch, and it merges itself once its
+  # checks pass (auto-merge). Canaries are refused until it merges
   # (release.yml runs `node scripts/set-version.mjs --check <base>`). The PR
   # and its commit are made with the Release App token: GitHub makes and signs
   # the commit, and a PR opened with GITHUB_TOKEN never starts ci-ok. This
@@ -192,6 +194,7 @@ jobs:
           version: ${{ steps.next.outputs.base }}
           github-token: ${{ steps.app.outputs.token }}
           reason: It was opened after v${{ needs.prepare.outputs.version }} was released.
+          auto-merge: "true"
 
       - name: Report the start PR
         env:

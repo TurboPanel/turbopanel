@@ -112,9 +112,10 @@ jobs:
 
       - name: Require the committed version to match the tags
         # The committed deno.json / package.json / sonar version must already
-        # be the base the tags give. Right after each release the TurboPanel
-        # Release App opens a "chore: start X.Y.Z" PR that sets it; until the
-        # owner merges it, canaries are refused here, before anything builds.
+        # be the base the tags give. Right after each release the release bot
+        # opens the "chore: start X.Y.Z" PR that sets it, and it merges itself
+        # once its checks pass; until then canaries are refused here, before
+        # anything builds.
         # Canary only: rc and release reuse the canary's bytes.
         if: steps.canary.outcome == 'success'
         env:
