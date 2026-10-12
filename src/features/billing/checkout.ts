@@ -98,6 +98,8 @@ export type CreateCheckoutSessionInput = Readonly<{
   cancelUrl: string
   idempotencyKey: string
   organizationId: string
+  /** Show Stripe's promotion-code field (`TURBOPANEL_STRIPE_IS_COUPON_ALLOWED`). */
+  allowPromotionCodes?: boolean
 }>
 
 /**
@@ -134,6 +136,7 @@ export async function createCheckoutSession(
       automatic_tax: { enabled: true },
       tax_id_collection: { enabled: true },
       customer_update: { address: 'auto', name: 'auto' },
+      ...(input.allowPromotionCodes ? { allow_promotion_codes: true } : {}),
       metadata: orgMetadata,
       subscription_data: {
         ...SUBSCRIPTION_ANCHOR_PARAMS,

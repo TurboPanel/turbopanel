@@ -23,6 +23,11 @@ export const STRIPE_SECRET_KEY_ENV = 'TURBOPANEL_STRIPE_SECRET_KEY'
 export const STRIPE_WEBHOOK_SIGNING_SECRET_ENV = 'TURBOPANEL_STRIPE_WEBHOOK_SIGNING_SECRET'
 /** Optional override of {@link DEFAULT_STRIPE_API_VERSION}. */
 export const STRIPE_API_VERSION_ENV = 'TURBOPANEL_STRIPE_API_VERSION'
+/**
+ * `1` shows Stripe's promotion-code field on Checkout; anything else (unset,
+ * `0`) hides it. A plain `vars` entry so an operator can flip it per env.
+ */
+export const STRIPE_COUPON_ALLOWED_ENV = 'TURBOPANEL_STRIPE_IS_COUPON_ALLOWED'
 
 /**
  * The `Stripe-Version` every request pins.
@@ -45,6 +50,8 @@ export type BillingConfig = Readonly<{
    */
   webhookSigningSecret: string | null
   apiVersion: string
+  /** Checkout offers the promotion-code field ({@link STRIPE_COUPON_ALLOWED_ENV}). */
+  couponsAllowed?: boolean
 }>
 
 function nonBlank(value: string | undefined): string | null {
@@ -66,6 +73,7 @@ export function resolveBillingConfig(
     secretKey,
     webhookSigningSecret: nonBlank(env?.[STRIPE_WEBHOOK_SIGNING_SECRET_ENV]),
     apiVersion: nonBlank(env?.[STRIPE_API_VERSION_ENV]) ?? DEFAULT_STRIPE_API_VERSION,
+    couponsAllowed: env?.[STRIPE_COUPON_ALLOWED_ENV]?.trim() === '1',
   }
 }
 

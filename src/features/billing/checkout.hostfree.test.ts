@@ -85,6 +85,28 @@ test('T4 · the Checkout session form, key by key: subscription mode, the custom
   ])
 })
 
+test('T4 · the promotion-code field is sent only when coupons are allowed', async () => {
+  const client = createStripeClientDouble(() => ({
+    id: 'cs_1',
+    object: 'checkout.session',
+    url: 'https://checkout.stripe.com/c/pay/cs_1',
+  }))
+  const base = {
+    providerCustomerId: 'cus_1',
+    providerPriceId: 'price_S3',
+    quantity: 1,
+    successUrl: 'https://panel.example.com/ok',
+    cancelUrl: 'https://panel.example.com/cancel',
+    idempotencyKey: 'checkout-key-1',
+    organizationId: ORG,
+  }
+  await createCheckoutSession(client, { ...base, allowPromotionCodes: true })
+  await createCheckoutSession(client, { ...base, allowPromotionCodes: false })
+  const promo = (i: number) => client.calls[i]!.form.filter(([k]) => k === 'allow_promotion_codes')
+  assertEquals(promo(0), [['allow_promotion_codes', 'true']])
+  assertEquals(promo(1), [])
+})
+
 test('T4 · the Checkout idempotency key is deterministic per organization, tier, quantity and idempotency window', () => {
   const at = Date.parse(NOW)
   assertEquals(
