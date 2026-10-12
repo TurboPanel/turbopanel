@@ -575,6 +575,25 @@ test('resolveGitlabRedirectUri prefers the configured URI then a public origin',
   )
 })
 
+test('resolveGitlabRedirectUri and resolveSourceWebhookInfo use the hosted address first', async () => {
+  assertEquals(
+    await resolveGitlabRedirectUri(
+      selectLimitDb([{ value: [] }]),
+      null,
+      'https://panel.example.com'
+    ),
+    `https://panel.example.com${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`
+  )
+  const hosted = await resolveSourceWebhookInfo(
+    selectLimitDb([{ value: [] }]),
+    'github',
+    null,
+    'https://panel.example.com'
+  )
+  assertEquals(hosted?.webhookUrl, 'https://panel.example.com/webhook/github')
+  assertEquals(hosted?.webhookReachable, true)
+})
+
 test('finishGitlabOauthCallback rejects the wrong provider and maps invalid credentials', async () => {
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),

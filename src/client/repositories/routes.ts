@@ -44,7 +44,10 @@ import {
   webhookReachability,
   type WebhookProvider,
 } from '../../features/git/webhook-reachability.ts'
-import { getPublicUrls, publicUrlEntryToInstallOrigin } from '../../features/install/public-urls.ts'
+import {
+  listPublishedOrigins,
+  platformManagedOrigin,
+} from '../../features/git/published-origins.ts'
 import {
   GITHUB_API_BASE,
   githubApiBaseFor,
@@ -702,7 +705,7 @@ export async function finishGitlabOauthCallback(
     return providerCallbackFail(c, organizationId, 'not_configured', forgeId)
   }
 
-  const redirectUri = await resolveGitlabRedirectUri(db, app.redirectUri)
+  const redirectUri = await resolveGitlabRedirectUri(db, app.redirectUri, requestPlatformOrigin(c))
   if (!redirectUri) {
     return providerCallbackFail(c, organizationId, 'not_configured', app.id)
   }
@@ -900,12 +903,11 @@ export async function fetchInstallationAccount(
 export async function resolveSourceWebhookInfo(
   db: Db,
   provider: string,
-  connectionId: string | null
+  connectionId: string | null,
+  platformOrigin: string | null = null
 ): Promise<SourceWebhookInfo | undefined> {
   if (provider !== 'github' && provider !== 'gitlab') return undefined
-  const origins = (await getPublicUrls(db))
-    .map((entry) => publicUrlEntryToInstallOrigin(entry))
-    .filter((origin): origin is string => origin !== null)
+  const origins = await listPublishedOrigins(db, platformOrigin)
 
   // The app behind this repository decides both halves of the URL: whether the ref
   // belongs in the path (self-hosted only), and which origin the provider was
@@ -954,14 +956,18 @@ export async function resolveSourceWebhookInfo(
  */
 export async function resolveGitlabRedirectUri(
   db: Db,
-  configured: string | null
+  configured: string | null,
+  platformOrigin: string | null = null
 ): Promise<string | null> {
   if (configured) return configured
-  const origin = (await getPublicUrls(db))
-    .map((entry) => publicUrlEntryToInstallOrigin(entry))
-    .find((entry): entry is string => entry !== null)
+  const [origin] = await listPublishedOrigins(db, platformOrigin)
   if (!origin) return null
-  return `${origin.replace(/\/$/, '')}${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`
+  return `${origin}${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`
+}
+
+/** The hosted runtime's own address for this request, `null` when self-hosted. */
+function requestPlatformOrigin(c: Context<AppEnv>): string | null {
+  return platformManagedOrigin({ runtime: c.get('runtime'), platformEnv: c.get('platformEnv') })
 }
 
 export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -1196,7 +1202,11 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     if (app instanceof Response) return app
     if (!app.clientId) return c.json({ error: 'gitlab_oauth_not_configured' }, 503)
 
-    const redirectUri = await resolveGitlabRedirectUri(db, app.redirectUri)
+    const redirectUri = await resolveGitlabRedirectUri(
+      db,
+      app.redirectUri,
+      requestPlatformOrigin(c)
+    )
     if (!redirectUri) return c.json({ error: 'gitlab_redirect_uri_unknown' }, 503)
 
     const state = await signGitlabConnectState(secretsConfig, {
@@ -1370,7 +1380,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     return c.json({
       repository: serializeSourceRow(
         row,
-        await resolveSourceWebhookInfo(db, row.provider, row.connectionId)
+        await resolveSourceWebhookInfo(db, row.provider, row.connectionId, requestPlatformOrigin(c))
       ),
     })
   })

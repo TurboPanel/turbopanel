@@ -854,6 +854,10 @@ test('instance-wide forge collection routes are reachable for an admin session',
   const list = await app.request(`${ADMIN_API_PREFIX}/forges`, { headers })
   assertEquals(typeof list.status, 'number')
 
+  // A literal route, so it must not fall through to `/forges/:id` (a 404).
+  const origins = await app.request(`${ADMIN_API_PREFIX}/forges/webhook-origins`, { headers })
+  assertNotEquals(origins.status, 404)
+
   const create = await app.request(`${ADMIN_API_PREFIX}/forges`, {
     method: 'POST',
     headers,
