@@ -144,6 +144,15 @@ test('publish-rc hands gh-promote the canary found by commit, not a run number',
   assert(!text.includes('outputs.build'))
 })
 
+/**
+ * The jobs that call gh-promote-ok.yml. The Promote OK check pins its own dev
+ * commit, so its fixes can ship without moving the rest of the promotion chain.
+ */
+const PROMOTE_OK_JOBS: Record<string, string> = {
+  'promote-ok.yml': 'evaluate',
+  'promote-ok-recheck.yml': 'dry-run',
+}
+
 test('the promotion workflows pin one TurboPanel/dev commit', () => {
   const pins = new Set<string>()
   for (const file of [
@@ -153,8 +162,11 @@ test('the promotion workflows pin one TurboPanel/dev commit', () => {
     'promote-ok.yml',
     'promote-ok-recheck.yml',
   ]) {
-    // publish-release's start-next job pins its own dev commit (below).
-    const text = withoutJob(read(file), 'start-next')
+    // publish-release's start-next job and the Promote OK jobs pin their own
+    // dev commits (below).
+    let text = withoutJob(read(file), 'start-next')
+    if (PROMOTE_OK_JOBS[file]) text = withoutJob(text, PROMOTE_OK_JOBS[file])
+    assert(!text.includes('gh-promote-ok.yml@'), `${file} calls gh-promote-ok.yml outside its job`)
     for (const m of text.matchAll(
       /TurboPanel\/dev\/\.github\/(?:workflows\/[\w.-]+|actions\/version)@([0-9a-f]{40})/g
     )) {
@@ -165,6 +177,20 @@ test('the promotion workflows pin one TurboPanel/dev commit', () => {
     }
   }
   assertEquals(pins.size, 1, `pins: ${[...pins].join(', ')}`)
+})
+
+test('the Promote OK jobs pin one TurboPanel/dev commit, and hand it on as dev-ref', () => {
+  const pins = new Set<string>()
+  for (const [file, name] of Object.entries(PROMOTE_OK_JOBS)) {
+    const job = jobText(read(file), name)
+    const uses = [...job.matchAll(/gh-promote-ok\.yml@([0-9a-f]{40}) # dev#\d+$/gm)]
+    const refs = [...job.matchAll(/^ +dev-ref: ([0-9a-f]{40})(?: #.*)?$/gm)]
+    assertEquals(uses.length, 1, `${file} ${name}: one gh-promote-ok.yml call`)
+    assertEquals(refs.length, 1, `${file} ${name}: one dev-ref`)
+    pins.add(uses[0][1])
+    pins.add(refs[0][1])
+  }
+  assertEquals(pins.size, 1, `Promote OK pins: ${[...pins].join(', ')}`)
 })
 
 test('publish-release opens the start PR for the next patch after finalize', () => {
