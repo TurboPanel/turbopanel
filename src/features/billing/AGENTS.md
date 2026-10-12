@@ -76,7 +76,7 @@ protects dashboard-set values across deploys. `TURBOPANEL_STRIPE_API_VERSION` is
 an optional override of the pin below. `TURBOPANEL_STRIPE_IS_COUPON_ALLOWED`
 (`1` on, anything else off) is a plain var: when on, Checkout sends
 `allow_promotion_codes=true` so the customer can type a promotion code. Live
-commits `"0"`; an unfinished Checkout session already handed out keeps the
+commits `"1"`; an unfinished Checkout session already handed out keeps the
 setting it was created with.
 
 A Workers deployment with no key: the three tables exist and are empty,

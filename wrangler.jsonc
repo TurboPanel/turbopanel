@@ -605,7 +605,7 @@
         // Automatic failover off (see testing): blocked auto_failover_disabled.
         "TURBOPANEL_AUTO_FAILOVER": "off",
         // "1" shows the promotion-code field on Stripe Checkout; "0" hides it.
-        "TURBOPANEL_STRIPE_IS_COUPON_ALLOWED": "0"
+        "TURBOPANEL_STRIPE_IS_COUPON_ALLOWED": "1"
       }
     }
   }
