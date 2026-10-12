@@ -27,7 +27,10 @@ const DENO_JSON = `{
 const PACKAGE_JSON = `{
   "name": "instance",
   "version": "0.1.5",
-  "dependencies": { "y": "^4.5.6", "version": "0.0.1" }
+  "dependencies": { "y": "^4.5.6", "version": "0.0.1" },
+  "pnpm": {
+    "version": "0.0.2"
+  }
 }
 `
 const SONAR = `sonar.projectKey=TurboPanel_turbopanel
@@ -79,6 +82,7 @@ test('sets every file and changes only the version value', () => {
   )
   // A nested "version" key is not the package version.
   assertEquals(JSON.parse(read(root, 'package.json')).dependencies.version, '0.0.1')
+  assertEquals(JSON.parse(read(root, 'package.json')).pnpm.version, '0.0.2')
 })
 
 test('setting the version it already has writes nothing', () => {

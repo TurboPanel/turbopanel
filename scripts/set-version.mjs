@@ -27,7 +27,8 @@ import { fileURLToPath } from 'node:url'
 
 const PLAIN_VERSION = /^\d+\.\d+\.\d+$/
 
-const JSON_VERSION = /^(\s*"version"\s*:\s*")([^"]*)(")/m
+// Two-space indent: the top-level key only, never a nested "version".
+const JSON_VERSION = /^( {2}"version"\s*:\s*")([^"]*)(")/m
 const SONAR_VERSION = /^(sonar\.projectVersion=)(.*)()$/m
 
 /** Each committed file that holds the version, and how to find it. */
