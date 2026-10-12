@@ -9,10 +9,12 @@
 #               (TurboPanel/dev). prepare still waits on the `release`
 #               environment approval: keep it until this path has run once end
 #               to end, then drop it (`approval-environment: ""`).
-#
-# Nothing opens a "Start <next>" PR afterwards: once v<version> exists, the
-# next canary is <version>'s next patch by itself (versions come from tags;
-# minors and majors are started with turbopaneld's Start Next Version).
+#   3. start-next   opens the "chore: start <next patch>" PR with the
+#               Release App token (TurboPanel/dev Start Version PR). The tags
+#               already say the next version is <version>'s next patch; the
+#               PR moves the committed numbers to match, and canaries are
+#               refused until the owner merges it. Minors and majors are
+#               started with turbopaneld's Start Next Version instead.
 #
 # A push to live that is not a merged staging PR (a break-glass promotion, the
 # finalize fast-forward) does nothing. workflow_dispatch re-runs the release
@@ -32,7 +34,8 @@ on:
 
 # Read-only by default. Writes (contents: write) only in the three promote
 # jobs: the v<x.y.z> tag, the GitHub release + rolling rc pointer, and the
-# live fast-forward. No job needs pull-requests: write.
+# live fast-forward. No job needs pull-requests: write: start-next opens its
+# PR with the Release App token, not GITHUB_TOKEN.
 permissions:
   contents: read
 
@@ -140,3 +143,58 @@ jobs:
     permissions:
       contents: write # releases/latest, the rolling rc pointer, the live fast-forward
     secrets: inherit
+
+  # Opens the "chore: start <next>" PR that moves the committed version
+  # numbers to the next patch. Canaries are refused until it merges
+  # (release.yml runs `node scripts/set-version.mjs --check <base>`). The PR
+  # and its commit are made with the Release App token: GitHub makes and signs
+  # the commit, and a PR opened with GITHUB_TOKEN never starts ci-ok. This
+  # job's two dev actions are pinned on their own, apart from the promote chain
+  # above.
+  start-next:
+    needs: [prepare, finalize]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Mint a Release App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+
+      # v<version> exists by now, so `base` is its next patch.
+      - name: Work out the next version from the tags
+        id: next
+        uses: TurboPanel/dev/.github/actions/version@66284778b3db591fab29c96aee4f1b4bd0147282 # dev#67
+        with:
+          mode: base
+
+      - name: Require the tags to name the release just made
+        env:
+          RELEASED: ${{ needs.prepare.outputs.version }}
+          NEWEST: ${{ steps.next.outputs.release }}
+          BASE: ${{ steps.next.outputs.base }}
+        run: |
+          set -eu
+          if [ "$NEWEST" != "$RELEASED" ]; then
+            echo "::error::the newest release tag is v${NEWEST}, not v${RELEASED} (just released): not opening a start PR"
+            exit 1
+          fi
+          echo "released ${RELEASED}; the next version is ${BASE}"
+
+      - name: Open the start PR for the next version
+        id: pr
+        uses: TurboPanel/dev/.github/actions/start-version-pr@66284778b3db591fab29c96aee4f1b4bd0147282 # dev#67
+        with:
+          version: ${{ steps.next.outputs.base }}
+          github-token: ${{ steps.app.outputs.token }}
+          reason: It was opened after v${{ needs.prepare.outputs.version }} was released.
+
+      - name: Report the start PR
+        env:
+          PR_URL: ${{ steps.pr.outputs.pr-url }}
+        run: |
+          echo "start PR: ${PR_URL:-none (already at the next version)}"

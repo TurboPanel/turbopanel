@@ -27,10 +27,17 @@ Deno.test('the automatic release workflows exist and AGENTS.md calls the form br
   assertStringIncludes(read('AGENTS.md').toLowerCase(), 'break-glass')
 })
 
-/** Every TurboPanel/dev reusable workflow and the signer in the three promotion workflows. */
+/**
+ * Every TurboPanel/dev reusable workflow and the signer in the three promotion
+ * workflows. publish-release.yml's last job (start-next, which opens the
+ * "chore: start" PR after the release) pins its own dev commit and is left out;
+ * release-workflows.hostfree.test.ts pins it.
+ */
 function promotionPins(): { dev: string[]; signer: string[] } {
   const files = ['promote.yml', 'publish-rc.yml', 'publish-release.yml']
-  const text = files.map((file) => read(`.github/workflows/${file}`)).join('\n')
+  const text = files
+    .map((file) => read(`.github/workflows/${file}`).split('\n  start-next:\n')[0])
+    .join('\n')
   const dev = [
     ...text.matchAll(
       /TurboPanel\/dev\/\.github\/(?:workflows|actions)\/[\w-]+(?:\.yml)?@([0-9a-f]{40})/g
