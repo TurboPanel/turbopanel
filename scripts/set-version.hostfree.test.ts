@@ -147,3 +147,27 @@ test('the repo files are the ones the script knows and agree with each other', (
   const version = JSON.parse(read(repoRoot, 'deno.json')).version
   assertEquals(runIn(repoRoot, ['--check', version]).code, 0)
 })
+
+test('through a symlink it checks the real repo, under node and deno', () => {
+  const dir = Deno.makeTempDirSync({ prefix: 'set-version-link-' })
+  try {
+    const link = join(dir, 'set-version.mjs')
+    Deno.symlinkSync(join(repoRoot, 'scripts', 'set-version.mjs'), link)
+    const version = JSON.parse(read(repoRoot, 'deno.json')).version
+    const runtimes = [['node'], [Deno.execPath(), 'run', '--no-config', '--allow-read']]
+    for (const [cmd, ...pre] of runtimes) {
+      const run = (v: string) =>
+        new Deno.Command(cmd, {
+          args: [...pre, link, '--check', v],
+          stdout: 'piped',
+          stderr: 'piped',
+        }).outputSync()
+      assertEquals(run(version).code, 0, cmd)
+      const bad = run('0.0.0')
+      assertEquals(bad.code, 1, cmd)
+      assertStringIncludes(new TextDecoder().decode(bad.stderr), 'chore: start 0.0.0')
+    }
+  } finally {
+    Deno.removeSync(dir, { recursive: true })
+  }
+})

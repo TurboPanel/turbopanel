@@ -21,8 +21,8 @@
  * version field is missing), 2 bad arguments.
  */
 
-import { readFileSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const PLAIN_VERSION = /^\d+\.\d+\.\d+$/
@@ -114,7 +114,19 @@ export function run(argv, { root, log = console.log, error = console.error }) {
   return 0
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+/** A path with symlinks resolved (Node resolves import.meta.url, Deno does not); a missing path stays as given. */
+function realScriptPath(p) {
+  try {
+    return realpathSync(resolve(p))
+  } catch {
+    return resolve(p)
+  }
+}
+
+if (
+  process.argv[1] &&
+  realScriptPath(fileURLToPath(import.meta.url)) === realScriptPath(process.argv[1])
+) {
+  const root = join(dirname(realScriptPath(fileURLToPath(import.meta.url))), '..')
   process.exitCode = run(process.argv.slice(2), { root })
 }
