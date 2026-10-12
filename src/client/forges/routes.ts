@@ -41,10 +41,7 @@ const FORGE_PATHS = [
   '/forges/github/manifest/callback',
 ] as const
 
-export function registerForgeRoutes(
-  router: Hono<AppEnv>,
-  opts: AuthRouteOpts,
-): void {
+export function registerForgeRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts): void {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for git app routes')
   }
@@ -110,7 +107,7 @@ export function registerForgeRoutes(
       c,
       ctx.db,
       { organizationId: ctx.organizationId },
-      c.req.param('id'),
+      c.req.param('id')
     )
   })
 
@@ -121,7 +118,7 @@ export function registerForgeRoutes(
       c,
       ctx.db,
       { organizationId: ctx.organizationId },
-      c.req.param('id'),
+      c.req.param('id')
     )
   })
 
@@ -132,7 +129,7 @@ export function registerForgeRoutes(
       c,
       ctx.db,
       { organizationId: ctx.organizationId },
-      c.req.param('id'),
+      c.req.param('id')
     )
   })
 
@@ -143,7 +140,7 @@ export function registerForgeRoutes(
       c,
       ctx.db,
       { organizationId: ctx.organizationId },
-      c.req.param('id'),
+      c.req.param('id')
     )
   })
 }
