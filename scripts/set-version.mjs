@@ -115,11 +115,11 @@ export function run(argv, { root, log = console.log, error = console.error }) {
 }
 
 /** A path with symlinks resolved (Node resolves import.meta.url, Deno does not); a missing path stays as given. */
-function realScriptPath(argv1) {
+function realScriptPath(p) {
   try {
-    return realpathSync(resolve(argv1))
+    return realpathSync(resolve(p))
   } catch {
-    return resolve(argv1)
+    return resolve(p)
   }
 }
 
@@ -127,6 +127,6 @@ if (
   process.argv[1] &&
   realScriptPath(fileURLToPath(import.meta.url)) === realScriptPath(process.argv[1])
 ) {
-  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const root = join(dirname(realScriptPath(fileURLToPath(import.meta.url))), '..')
   process.exitCode = run(process.argv.slice(2), { root })
 }
