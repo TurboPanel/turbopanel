@@ -805,7 +805,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       organization_id:
         "Home organization set on every insert, not derived; for a managed user it is the cluster's home org via its environment, not the hosting servers' orgs.",
       project_id:
-        'Optional project scope for compose-declared hosting principals; cascade-deleted with the project.',
+        'Optional project scope for compose-declared hosting principals; set to NULL when the project is deleted, the principal stays.',
       managed_id:
         'Optional managed-engine scope for database users (root and per-user rows); cascade-deleted with the cluster.',
     },

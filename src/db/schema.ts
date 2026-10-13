@@ -3353,7 +3353,11 @@ export const principal = pgTable(
      * multi-valued concept used for username-collision checks only).
      */
     organizationId: uuid('organization_id').notNull(),
-    /** Optional project scope for hosting principals. */
+    /**
+     * Optional project scope for hosting principals. SET NULL on project
+     * delete: the principal (and the Linux user and home it names) outlives
+     * the project and is removed only by its own explicit delete.
+     */
     projectId: uuid('project_id'),
     /** Optional managed-engine scope (cascade-deletes with the managed row). */
     managedId: uuid('managed_id'),
@@ -3380,7 +3384,7 @@ export const principal = pgTable(
       columns: [table.projectId],
       foreignColumns: [project.id],
       name: 'principal_project_id_project_id_fk',
-    }).onDelete('cascade'),
+    }).onDelete('set null'),
     foreignKey({
       columns: [table.managedId],
       foreignColumns: [managed.id],

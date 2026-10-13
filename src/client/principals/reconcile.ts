@@ -17,7 +17,7 @@
 import { forEachSequential } from '../../lib/sequential.ts'
 import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { environment, principal, project } from '../../db/schema.ts'
+import { environment, principal, principalPlacement, project } from '../../db/schema.ts'
 import { createCommandRecord, transitionCommand } from '../../features/commands/command-records.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
@@ -29,32 +29,65 @@ export type PrincipalsReconcileActor = {
   actorId: string
 }
 
+/** Placement states that mean the account is, or is about to be, on the host. */
+const LIVE_PLACEMENT_STATES = ['pending', 'present']
+
 /**
- * Servers where this principal's project has at least one environment.
+ * Servers where this principal exists or will.
  *
- * That is the same reach a deploy has, so it is exactly the set of hosts where
- * the account can have been materialized. An environment with no server
- * assigned yet has nothing to reconcile.
+ * Two sources, unioned. The project reach: every server a project environment
+ * is pinned to is where a deploy materializes the account. The placements:
+ * the only record for a principal whose project was deleted (its `project_id`
+ * is NULL, the account and home stay on the host). An environment with no
+ * server assigned yet has nothing to reconcile.
  */
 export async function serversForPrincipal(db: Db, principalId: string): Promise<string[]> {
-  const rows = await db
+  const reach = await db
     .select({ serverId: environment.serverId })
     .from(principal)
     .innerJoin(project, eq(principal.projectId, project.id))
     .innerJoin(environment, eq(environment.projectId, project.id))
     .where(and(eq(principal.id, principalId), isNotNull(environment.serverId)))
-  return [...new Set(rows.map((row) => row.serverId as string))]
+  const placed = await db
+    .select({ serverId: principalPlacement.serverId })
+    .from(principalPlacement)
+    .where(
+      and(
+        eq(principalPlacement.principalId, principalId),
+        inArray(principalPlacement.state, LIVE_PLACEMENT_STATES)
+      )
+    )
+  return [
+    ...new Set([...reach.map((row) => row.serverId as string), ...placed.map((r) => r.serverId)]),
+  ]
 }
 
-/** Every principal TurboPanel manages on one server — the completeness rule. */
+/**
+ * Every principal TurboPanel manages on one server — the completeness rule.
+ * Includes principals that outlived their project: leaving one out would make
+ * the daemon treat it as no longer managed and drop its key files.
+ */
 export async function principalIdsOnServer(db: Db, serverId: string): Promise<string[]> {
-  const rows = await db
+  const reach = await db
     .select({ principalId: principal.id })
     .from(principal)
     .innerJoin(project, eq(principal.projectId, project.id))
     .innerJoin(environment, eq(environment.projectId, project.id))
     .where(eq(environment.serverId, serverId))
-  return [...new Set(rows.map((row) => row.principalId))]
+  const placed = await db
+    .select({ principalId: principalPlacement.principalId })
+    .from(principalPlacement)
+    .innerJoin(principal, eq(principalPlacement.principalId, principal.id))
+    .where(
+      and(
+        eq(principalPlacement.serverId, serverId),
+        inArray(principalPlacement.state, LIVE_PLACEMENT_STATES),
+        eq(principal.kind, 'system')
+      )
+    )
+  return [
+    ...new Set([...reach.map((row) => row.principalId), ...placed.map((row) => row.principalId)]),
+  ]
 }
 
 export type PrincipalsReconcileOutcome = {
@@ -169,7 +202,18 @@ export async function reconcilePrincipalsAccess(
     .innerJoin(project, eq(principal.projectId, project.id))
     .innerJoin(environment, eq(environment.projectId, project.id))
     .where(and(inArray(principal.id, [...principalIds]), isNotNull(environment.serverId)))
-  const serverIds = [...new Set(rows.map((row) => row.serverId as string))]
+  const placed = await db
+    .select({ serverId: principalPlacement.serverId })
+    .from(principalPlacement)
+    .where(
+      and(
+        inArray(principalPlacement.principalId, [...principalIds]),
+        inArray(principalPlacement.state, LIVE_PLACEMENT_STATES)
+      )
+    )
+  const serverIds = [
+    ...new Set([...rows.map((row) => row.serverId as string), ...placed.map((r) => r.serverId)]),
+  ]
   return await enqueuePrincipalsReconcile(db, queue, actor, serverIds)
 }
 

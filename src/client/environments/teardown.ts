@@ -17,11 +17,13 @@
  * rows recorded — so a Git-backed service that was removed from the compose
  * before the delete is still named here, rather than orphaned on the host.
  *
- * The project's server principals are captured too: once the delete commits,
- * any of them that no surviving environment still places on a server is named
- * in `retirePrincipals` on the last stop sent there, and the daemon removes the
- * account, its group, home and slice (`tp-host principal-remove`, which
- * re-checks on the host that nothing still references it).
+ * An environment delete captures the project's server principals too: once the
+ * delete commits, any of them that no surviving environment still places on a
+ * server is named in `retirePrincipals` on the last stop sent there, and the
+ * daemon removes the account, its group, home and slice (`tp-host
+ * principal-remove`, which re-checks on the host that nothing still references
+ * it). A project delete does not (`keepPrincipals`): principals outlive their
+ * project and are removed only by their own explicit delete.
  */
 import { mapSequential, forEachSequential } from '../../lib/sequential.ts'
 import { and, eq, inArray, or } from 'drizzle-orm'
@@ -72,6 +74,15 @@ export type EnvironmentTeardownPlan = {
   principalUsernames: string[]
 }
 
+export type TeardownPlanOptions = {
+  /**
+   * Leave the project's Linux users alone: plan no `retirePrincipals`. Project
+   * delete sets this — the site trees go, the user and its home stay, and the
+   * principal outlives the project (`principal.project_id` becomes NULL).
+   */
+  keepPrincipals?: boolean
+}
+
 /** Applied logins of the project's server (Linux) principals. */
 async function loadProjectPrincipalUsernames(db: Db, projectId: string): Promise<string[]> {
   const rows = await db
@@ -114,7 +125,8 @@ async function resolveTeardownServerIds(
  */
 export async function planEnvironmentTeardown(
   db: Db,
-  environmentId: string
+  environmentId: string,
+  options: TeardownPlanOptions = {}
 ): Promise<EnvironmentTeardownPlan | null> {
   const [envRow] = await db
     .select({
@@ -145,7 +157,9 @@ export async function planEnvironmentTeardown(
   const tcpUdpServices = await resolveTcpUdpIngressServices(db, environmentId)
   const composeNetworks = await listEnvironmentComposeNetworks(db, environmentId)
   const siteReleases = await resolveEnvironmentSiteReleases(db, environmentId)
-  const principalUsernames = await loadProjectPrincipalUsernames(db, projectRow.id)
+  const principalUsernames = options.keepPrincipals
+    ? []
+    : await loadProjectPrincipalUsernames(db, projectRow.id)
 
   return {
     environmentId,
@@ -162,10 +176,11 @@ export async function planEnvironmentTeardown(
 /** Plan teardown for several environments, dropping the ones with no target. */
 export async function planEnvironmentsTeardown(
   db: Db,
-  environmentIds: readonly string[]
+  environmentIds: readonly string[],
+  options: TeardownPlanOptions = {}
 ): Promise<EnvironmentTeardownPlan[]> {
   const planned = await mapSequential(environmentIds, (environmentId) =>
-    planEnvironmentTeardown(db, environmentId)
+    planEnvironmentTeardown(db, environmentId, options)
   )
   return planned.filter((plan): plan is EnvironmentTeardownPlan => !!plan)
 }

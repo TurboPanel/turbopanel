@@ -643,8 +643,9 @@ after all tenant `role='service'` containers under the project are non-active
 `applyStorageRetentionOnParentDelete` (clear `mount`s first — `service_id` is
 RESTRICT — then drop `retention='delete'` storage; `retain` rows stay org-owned
 via SET NULL), then deletes in order `container` → `hosting` → `tenancy` →
-`binding` → `service` → `environment` → `project` (variables/`managed` /
-`principal` cascade via FK). `tenancy.service_id` and `binding.service_id` are
+`binding` → `service` → `environment` → `project` (variables and `managed`
+cascade via FK; `principal.project_id` is SET NULL — project delete never
+deletes principals, and its teardown sends no `retirePrincipals`). `tenancy.service_id` and `binding.service_id` are
 RESTRICT (a direct service delete must not leave a dangling run-as or inject
 edge), so the project cascade drops those rows first. Active **service**
 containers return **409** `project_has_running_services` — stop stacks first via

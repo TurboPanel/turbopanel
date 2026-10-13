@@ -447,6 +447,18 @@ test('deleteProjectCascade removes tenancy edges before services', async () => {
       .from(tenancy)
       .where(eq(tenancy.serviceId, serviceId))
     assertEquals(remainingTenancy.length, 0)
+
+    // The principal outlives the project: same row, no project, same name.
+    const [kept] = await db
+      .select({
+        id: principal.id,
+        projectId: principal.projectId,
+        appliedUsername: principal.appliedUsername,
+      })
+      .from(principal)
+      .where(eq(principal.id, principalId))
+      .limit(1)
+    assertEquals(kept, { id: principalId, projectId: null, appliedUsername: 'app' })
   } finally {
     await db.delete(tenancy).where(eq(tenancy.serviceId, serviceId))
     await db.delete(principal).where(eq(principal.id, principalId))
