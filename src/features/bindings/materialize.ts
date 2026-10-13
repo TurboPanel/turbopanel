@@ -1,5 +1,5 @@
 /**
- * Materialize binding-owned `variable` rows from a principal + managed cluster.
+ * Materialize binding-owned `variable` rows from a login + managed cluster.
  *
  * System-owned rows are ordinary service-scoped variables with `binding_id`
  * set; deploy reuses the existing secret seal / inject rail unchanged.
@@ -15,7 +15,7 @@ import {
   environment,
   managed,
   organization,
-  principal,
+  login,
   project,
   service,
   variable,
@@ -28,6 +28,7 @@ import { bindingPrefixedKeys } from '../../lib/naming.ts'
 import type { ResolvedVariableEntry, ResolvedVariableMap } from '../variables/resolve-inherited.ts'
 import { ensureActiveOrganizationCa } from '../managed/apply-prepare.ts'
 import { parseManagedRowOptions } from '../managed/options.ts'
+import { bindingLoginJoin } from '../managed/logins.ts'
 import {
   type BindingDelivery,
   HOST_RUN_LOOPBACK_HOST,
@@ -278,11 +279,11 @@ export async function materializeBinding(
       databaseName: binding.databaseName,
       keyPrefix: binding.keyPrefix,
       emitEngineDefaults: binding.isEmitEngineDefaults,
-      principalKind: principal.kind,
+      loginId: login.id,
       // Applied login — bindings hand services the real engine credential.
-      principalUsername: principal.appliedUsername,
-      principalPassword: principal.password,
-      principalManagedId: principal.managedId,
+      principalUsername: login.appliedUsername,
+      principalPassword: login.password,
+      principalManagedId: login.managedId,
       managedId: managed.id,
       managedEngine: managed.engine,
       managedOptions: managed.options,
@@ -290,8 +291,8 @@ export async function materializeBinding(
       organizationOptions: organization.options,
     })
     .from(binding)
-    .innerJoin(principal, eq(binding.principalId, principal.id))
-    .innerJoin(managed, eq(principal.managedId, managed.id))
+    .innerJoin(login, bindingLoginJoin())
+    .innerJoin(managed, eq(login.managedId, managed.id))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
@@ -302,7 +303,7 @@ export async function materializeBinding(
 
   if (!row) return { kind: 'binding_not_found' }
 
-  if (row.principalKind !== 'database' || !row.principalManagedId || !row.principalUsername) {
+  if (!row.principalManagedId || !row.principalUsername) {
     return { kind: 'binding_principal_invalid' }
   }
 
@@ -413,6 +414,42 @@ export async function materializeBindingsForPrincipal(
     .select({ id: binding.id })
     .from(binding)
     .where(eq(binding.principalId, principalId))
+  return materializeEach(db, dataEncryptionSecrets, rows)
+}
+
+/** Every binding of one login (a legacy binding without `login_id` counts by its principal). */
+export async function materializeBindingsForLogin(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  loginId: string
+): Promise<{ ok: true } | MaterializeBindingError> {
+  const rows = await db
+    .select({ id: binding.id })
+    .from(binding)
+    .innerJoin(login, bindingLoginJoin())
+    .where(eq(login.id, loginId))
+  return materializeEach(db, dataEncryptionSecrets, rows)
+}
+
+/** Every binding of every login of one cluster. */
+export async function materializeBindingsForManaged(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  managedId: string
+): Promise<{ ok: true } | MaterializeBindingError> {
+  const rows = await db
+    .select({ id: binding.id })
+    .from(binding)
+    .innerJoin(login, bindingLoginJoin())
+    .where(eq(login.managedId, managedId))
+  return materializeEach(db, dataEncryptionSecrets, rows)
+}
+
+async function materializeEach(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  rows: ReadonlyArray<{ id: string }>
+): Promise<{ ok: true } | MaterializeBindingError> {
   for (const row of rows) {
     const result = await materializeBinding(db, dataEncryptionSecrets, row.id)
     if (!('ok' in result)) return result

@@ -36,6 +36,7 @@ import {
   dispatch,
   environment,
   grant,
+  login,
   managed,
   organization,
   principal,
@@ -2708,6 +2709,142 @@ test('POST managed user honours name schemes, the org lock, and the root login s
         .where(and(eq(principal.managedId, created.managed.id), eq(principal.username, 'dbplain')))
       assertEquals(existing?.appliedUsername, 'dbplain')
       assertEquals(existing?.options, { nameScheme: 'plain' })
+    }
+  )
+})
+
+test('POST managed user for an existing principal reuses its name, lists it with the login, and removal keeps the identity', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      const ready = () =>
+        db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+      await ready()
+
+      // The site owner's Linux user, created outside any cluster.
+      const [owner] = await db
+        .insert(principal)
+        .values({
+          organizationId,
+          kind: 'system',
+          provider: 'server',
+          username: 'siteowner',
+          appliedUsername: 'siteowner',
+          options: { nameScheme: 'plain' },
+        })
+        .returning({ id: principal.id })
+      const ownerId = owner!.id
+
+      const forOwner = await app.request(`/environments/${environmentId}/managed/users`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ principalId: ownerId, databases: ['defaultdb'] }),
+      })
+      assertEquals(forOwner.status, 200)
+      const forOwnerBody = (await forOwner.json()) as {
+        user: {
+          id: string
+          principalId: string
+          loginId: string
+          username: string
+          appliedUsername: string
+          nameScheme: string
+        }
+        password: string
+      }
+      assertEquals(forOwnerBody.user.id, ownerId)
+      assertEquals(forOwnerBody.user.principalId, ownerId)
+      assertEquals(forOwnerBody.user.username, 'siteowner')
+      assertEquals(forOwnerBody.user.appliedUsername, 'siteowner')
+      assertEquals(forOwnerBody.user.nameScheme, 'plain')
+      assertEquals(typeof forOwnerBody.password, 'string')
+      const loginId = forOwnerBody.user.loginId
+      const [loginRow] = await db
+        .select({ principalId: login.principalId, role: login.role })
+        .from(login)
+        .where(eq(login.id, loginId))
+      assertEquals(loginRow, { principalId: ownerId, role: 'user' })
+      // No second principal row was created for the login.
+      const ownerRows = await db
+        .select({ id: principal.id })
+        .from(principal)
+        .where(
+          and(eq(principal.organizationId, organizationId), eq(principal.username, 'siteowner'))
+        )
+      assertEquals(ownerRows.length, 1)
+
+      // A second login for the same principal on the same cluster is refused.
+      await ready()
+      const again = await app.request(`/environments/${environmentId}/managed/users`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ principalId: ownerId, databases: ['defaultdb'] }),
+      })
+      assertEquals(again.status, 409)
+      assertEquals(await again.json(), { error: 'managed_login_exists' })
+
+      // A principal of another organization is not found.
+      const [otherOrg] = await db
+        .insert(organization)
+        .values({ name: 'Other Login Org' })
+        .returning({ id: organization.id })
+      const [foreign] = await db
+        .insert(principal)
+        .values({
+          organizationId: otherOrg!.id,
+          kind: 'system',
+          provider: 'server',
+          username: 'stranger',
+          appliedUsername: 'stranger',
+        })
+        .returning({ id: principal.id })
+      await ready()
+      const notMine = await app.request(`/environments/${environmentId}/managed/users`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ principalId: foreign!.id, databases: ['defaultdb'] }),
+      })
+      assertEquals(notMine.status, 404)
+      await db.delete(principal).where(eq(principal.id, foreign!.id))
+      await db.delete(organization).where(eq(organization.id, otherOrg!.id))
+
+      const list = await app.request(`/environments/${environmentId}/managed/users`, { headers })
+      const listBody = (await list.json()) as {
+        users: Array<{ id: string; principalId: string | null; loginId: string; username: string }>
+      }
+      assertEquals(
+        listBody.users.map((entry) => [entry.username, entry.id, entry.principalId, entry.loginId]),
+        [['siteowner', ownerId, ownerId, loginId]]
+      )
+
+      // Removing the login drops the engine role, keeps the Linux user's identity.
+      await ready()
+      const removed = await app.request(`/environments/${environmentId}/managed/users/${ownerId}`, {
+        method: 'DELETE',
+        headers,
+      })
+      assertEquals(removed.status, 200)
+      const loginsLeft = await db.select({ id: login.id }).from(login).where(eq(login.id, loginId))
+      assertEquals(loginsLeft.length, 0)
+      const [ownerStays] = await db
+        .select({ id: principal.id })
+        .from(principal)
+        .where(eq(principal.id, ownerId))
+      assertEquals(ownerStays?.id, ownerId)
+      await db.delete(principal).where(eq(principal.id, ownerId))
     }
   )
 })

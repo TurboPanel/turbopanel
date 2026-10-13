@@ -10,6 +10,11 @@ import {
   shellForAccessLevel,
 } from '../../features/principals/principal-access.ts'
 import { loadPrincipalNamePolicy } from '../../features/managed/load-org-defaults.ts'
+import {
+  insertLogin,
+  isManagedLoginNameTaken,
+  loginRoleFromMetadata,
+} from '../../features/managed/logins.ts'
 import type { PrincipalNameScheme } from '../../lib/principal-name-scheme.ts'
 import { deriveFreeSystemName } from './system-name.ts'
 import { encryptSecret, generateSealedSecret } from '../../lib/secrets/data-encryption.ts'
@@ -488,15 +493,18 @@ async function resolveManagedHomeOrganizationId(db: Db, managedId: string): Prom
 }
 
 /**
- * Insert a managed-engine principal with a freshly generated sealed password
- * in a single statement. Returns the show-once plaintext; no subsequent code
- * path returns a stored password.
+ * Insert a managed-engine principal with a freshly generated sealed password,
+ * plus its `login` row (expand step of the login split: the principal row is
+ * the identity, the login row is the engine role; a root or replication login
+ * has no principal and names the legacy row in `metadata.legacyPrincipalId`).
+ * Returns the show-once plaintext; no subsequent code path returns a stored
+ * password.
  */
 export async function createManagedPrincipal(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   input: CreateManagedPrincipalInput
-): Promise<{ principalId: string; password: string }> {
+): Promise<{ principalId: string; loginId: string; password: string }> {
   if (!USERNAME_RE.test(input.username)) {
     throw new TypeError('invalid username')
   }
@@ -528,7 +536,21 @@ export async function createManagedPrincipal(
     })
     .returning({ id: principal.id })
 
-  return { principalId: inserted.id, password: plaintext }
+  const role = loginRoleFromMetadata(input.metadata)
+  const loginId = await insertLogin(db, {
+    managedId: input.managedId,
+    principalId: role === 'user' ? inserted.id : null,
+    role,
+    appliedUsername,
+    password: sealed,
+    metadata:
+      role === 'user'
+        ? (input.metadata ?? null)
+        : { ...(input.metadata ?? {}), legacyPrincipalId: inserted.id },
+    nameScheme: input.nameScheme,
+  })
+
+  return { principalId: inserted.id, loginId, password: plaintext }
 }
 
 /**
@@ -686,8 +708,11 @@ export async function resolveManagedAppliedUsername(
     throw new TypeError(`invalid managed short username: ${shortUsername}`)
   }
 
-  const isTaken = (candidate: string) =>
-    isManagedUsernameTaken(db, owningOrganizationIds, candidate)
+  // Both forms of the name pool: legacy principal rows and login rows that
+  // belong to a principal of another form.
+  const isTaken = async (candidate: string) =>
+    (await isManagedUsernameTaken(db, owningOrganizationIds, candidate)) ||
+    (await isManagedLoginNameTaken(db, owningOrganizationIds, candidate))
   if (opts.scheme === 'plain' && !(await isTaken(shortUsername))) {
     return shortUsername
   }

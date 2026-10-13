@@ -671,6 +671,24 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     },
   },
   // ── resources ─────────────────────────────────────────────────────────
+  login: {
+    group: 'resources',
+    summary:
+      'One engine role on one managed cluster, the database form of a principal; written by the managed users API in step with the legacy `principal` rows.',
+    columns: {
+      metadata:
+        'Jsonb: `engine`, `databases`, `privileges`, optional `connectionRole`; cluster logins add `managedRoot` or `managedReplication` and `legacyPrincipalId`.',
+      options:
+        'Jsonb: `nameScheme` the applied name was derived with (`plain`, `partial`, `random`).',
+      principal_id:
+        'Identity the login belongs to, cascade-deleted with it; NULL only for the cluster root and replication logins, which are outside the organization name pool.',
+      role: '`root` for the cluster admin login, `replication` for the member-to-member login, `user` for an operator-created login.',
+      applied_username:
+        'Engine role name created on the cluster, copied from the principal for a `user` login; unique per cluster after trim and case-fold.',
+      password:
+        'Write-only credential sealed as a `tpsecret` envelope, never returned on GET and resealed to `tpdaemon` for delivery.',
+    },
+  },
   binding: {
     group: 'resources',
     summary:
@@ -680,6 +698,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       options: 'Reserved jsonb; no current code path writes it.',
       principal_id:
         'Managed database user whose credentials are injected; cascade-deleted with the principal (user gone, binding gone).',
+      login_id:
+        'The `login` row whose credentials are injected; set beside `principal_id` on every insert and backfilled from it, nullable until the contract migration.',
       service_id:
         'Consuming compose service; ON DELETE RESTRICT so a service with bindings cannot be deleted.',
       database_name:

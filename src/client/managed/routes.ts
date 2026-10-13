@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { resolveManagedSslMode } from '../../features/managed/ssl.ts'
@@ -28,15 +28,30 @@ import { parseResourceLimits } from '../../features/organizations/resource-limit
 import {
   createManagedPrincipal,
   isManagedUsernameTaken,
-  listManagedPrincipals,
   lockOrganizationsForUpdate,
   resolveManagedAppliedUsername,
   resolveManagedOwningOrganizationIds,
-  rotatePrincipalPassword,
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
+import {
+  createLoginForPrincipal,
+  findManagedLogin,
+  findManagedLoginByRole,
+  isManagedLoginNameTaken,
+  legacyPrincipalIdOf,
+  listManagedLogins,
+  type ManagedLoginRow,
+  removeManagedLogin,
+  restoreManagedLogin,
+  rotateLoginPassword,
+  setLoginPassword,
+} from '../../features/managed/logins.ts'
 import { loadPrincipalNamePolicy } from '../../features/managed/load-org-defaults.ts'
-import { resolveRequestedNameScheme } from '../../lib/principal-name-scheme.ts'
+import {
+  type PrincipalNameScheme,
+  principalNameSchemeOf,
+  resolveRequestedNameScheme,
+} from '../../lib/principal-name-scheme.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import { assertCanManageOr403, getOrgId, parseJsonBody, requireStringField } from '../shared.ts'
 import { assertServerDatacenterReady } from '../../features/net/datacenter-networks.ts'
@@ -59,13 +74,13 @@ import {
   type BindingImpactService,
   detachBindingsForManaged,
   hasBindingsForDatabase,
-  hasBindingsForPrincipal,
+  hasBindingsForLogin,
   listBindingImpactForDatabase,
+  listBindingImpactForLogin,
   listBindingImpactForManaged,
-  listBindingImpactForPrincipal,
 } from '../../features/bindings/impact.ts'
-import { materializeBindingsForPrincipal } from '../../features/bindings/materialize.ts'
-import { rollBackPrincipalRotation } from '../../features/managed/principal-rotation.ts'
+import { materializeBindingsForLogin } from '../../features/bindings/materialize.ts'
+import { rollBackLoginRotation } from '../../features/managed/principal-rotation.ts'
 import {
   enqueueManagedDestroyFanout,
   enqueueManagedLifecycleFanout,
@@ -147,9 +162,10 @@ import {
   buildQueuedFanoutResponse,
   buildStatusMemberView,
   canHardDeleteManaged,
+  evaluateExistingPrincipalLoginName,
   evaluateManagedDatabaseDelete,
-  evaluateManagedUserDropGuard,
-  evaluateManagedUserRotateGuard,
+  evaluateManagedLoginDropGuard,
+  evaluateManagedLoginRotateGuard,
   evaluateOperatorPromoteGate,
   evaluatePromoteMemberRole,
   evaluatePromoteReplicaClass,
@@ -160,6 +176,8 @@ import {
   isManagedRootPrincipal,
   isPlainObject,
   listUsersReferencingDatabase,
+  parseManagedLoginGrantFields,
+  serializeManagedLogin,
   loadManagedStatusSnapshot,
   managedSessionPaths,
   type MemberPatchFields,
@@ -186,7 +204,6 @@ import {
   resolveManagedConnectionListener,
   resolveManagedServerId,
   serializeContainerRow,
-  serializeManagedUser,
   serializeOrgManagedListRow,
   validateManagedDatabaseCreateName,
 } from '../../features/managed/routes-helpers.ts'
@@ -870,7 +887,7 @@ async function prepareApplyForManaged(
   extra?: {
     dropUsers?: string[]
     dropDatabases?: string[]
-    omitPrincipalIds?: string[]
+    omitLoginIds?: string[]
     excludeMemberIds?: string[]
     forceResyncMemberIds?: string[]
   }
@@ -890,7 +907,7 @@ async function prepareApplyForManaged(
     rootUsername: residual.rootUsername ?? ctx.spec.rootUsername,
     dropUsers: extra?.dropUsers,
     dropDatabases: extra?.dropDatabases,
-    omitPrincipalIds: extra?.omitPrincipalIds,
+    omitLoginIds: extra?.omitLoginIds,
     excludeMemberIds: extra?.excludeMemberIds,
     forceResyncMemberIds: extra?.forceResyncMemberIds,
   })
@@ -1144,21 +1161,25 @@ async function applyMemberReadEligiblePatch(
 }
 
 // Expanding the cluster onto a new server owner inherits that org's
-// managed-login namespace — recheck every existing principal (incl. root)
+// managed-login namespace — recheck every existing login (incl. root)
 // under a FOR UPDATE org lock before insert.
 async function hasManagedUsernameNamespaceConflict(
   db: NonNullable<ReturnType<typeof getDb>>,
   managedId: string,
   serverId: string
 ): Promise<boolean> {
-  const clusterPrincipals = await listManagedPrincipals(db, managedId)
+  const clusterLogins = await listManagedLogins(db, managedId)
   return db.transaction(async (tx) => {
     const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, managedId, [serverId])
     await lockOrganizationsForUpdate(tx, owningOrgIds)
-    for (const entry of clusterPrincipals) {
+    for (const entry of clusterLogins) {
       // The applied login is what lands on the shared ProxySQL frontend —
       // that's the name that must be free in the new owner's namespace.
-      if (await isManagedUsernameTaken(tx, owningOrgIds, entry.appliedUsername, entry.id)) {
+      const ownPrincipalId = entry.principalId ?? legacyPrincipalIdOf(entry.metadata) ?? undefined
+      if (
+        (await isManagedUsernameTaken(tx, owningOrgIds, entry.appliedUsername, ownPrincipalId)) ||
+        (await isManagedLoginNameTaken(tx, owningOrgIds, entry.appliedUsername, managedId))
+      ) {
         return true
       }
     }
@@ -1186,14 +1207,209 @@ async function refuseDatabaseDropWhenInUse(
       409
     )
   }
-  const users = listUsersReferencingDatabase(
-    await listManagedPrincipals(db, managedId),
-    databaseName
-  )
+  const users = listUsersReferencingDatabase(await listManagedLogins(db, managedId), databaseName)
   if (users.length > 0) {
     return c.json({ error: 'managed_database_has_users', users }, 409)
   }
   return null
+}
+
+type ManagedLoginGrants = Exclude<ReturnType<typeof parseManagedLoginGrantFields>, Response>
+
+type ManagedLoginCreateRequest =
+  | {
+      kind: 'new-principal'
+      username: string
+      nameScheme: PrincipalNameScheme
+      grants: ManagedLoginGrants
+    }
+  | {
+      kind: 'existing-principal'
+      principal: ExistingPrincipalForLogin
+      grants: ManagedLoginGrants
+    }
+
+type ExistingPrincipalForLogin = {
+  id: string
+  username: string
+  appliedUsername: string
+  options: unknown
+}
+
+/**
+ * `POST /environments/:id/managed/users` takes either a new name (`username`
+ * plus an optional `nameScheme`, a new principal is created for it) or
+ * `principalId`, an existing principal of the organization whose applied
+ * name becomes the login's engine role name.
+ */
+async function parseManagedLoginCreateRequest(
+  c: Context<AppEnv>,
+  db: Db,
+  ctx: ManagedContext,
+  body: Record<string, unknown>,
+  options: ManagedRowOptions,
+  residual: { rootUsername?: string }
+): Promise<ManagedLoginCreateRequest | Response> {
+  if (typeof body.principalId === 'string' && body.principalId.length > 0) {
+    const [found] = await db
+      .select({
+        id: principal.id,
+        username: principal.username,
+        appliedUsername: principal.appliedUsername,
+        options: principal.options,
+        metadata: principal.metadata,
+      })
+      .from(principal)
+      .where(
+        and(
+          sql`${principal.id}::text = ${body.principalId}`,
+          eq(principal.organizationId, ctx.organizationId)
+        )
+      )
+      .limit(1)
+    if (
+      !found ||
+      isManagedRootPrincipal(found.metadata) ||
+      isManagedReplicationPrincipal(found.metadata)
+    ) {
+      return c.json({ error: 'principal_not_found' }, 404)
+    }
+    const nameError = evaluateExistingPrincipalLoginName(
+      ctx.spec,
+      found.appliedUsername,
+      residual.rootUsername
+    )
+    if (nameError) return c.json(nameError, 422)
+    const grants = parseManagedLoginGrantFields(c, ctx, body, options)
+    if (grants instanceof Response) return grants
+    return { kind: 'existing-principal', principal: found, grants }
+  }
+
+  // The org policy picks the scheme (and refuses a locked-out choice) before
+  // any name is validated: the scheme decides how long the typed name may be.
+  const policy = await loadPrincipalNamePolicy(db, ctx.organizationId)
+  const schemeChoice = resolveRequestedNameScheme(policy, body.nameScheme)
+  if (!schemeChoice.ok) {
+    return c.json({ error: schemeChoice.error }, schemeChoice.status)
+  }
+  const nameScheme = schemeChoice.scheme
+  const fields = parseManagedUserCreateFields(
+    c,
+    ctx,
+    body,
+    options,
+    residual.rootUsername,
+    nameScheme
+  )
+  if (fields instanceof Response) return fields
+  const { username, ...grants } = fields
+  return { kind: 'new-principal', username, nameScheme, grants }
+}
+
+type LoginCreateOutcome =
+  | {
+      ok: true
+      principalId: string
+      loginId: string
+      password: string
+      username: string
+      appliedUsername: string
+      nameScheme: PrincipalNameScheme
+    }
+  | { ok: false; error: string; status: 409 }
+
+type LoginCreateShared = {
+  ctx: ManagedContext
+  managedId: string
+  existingLogins: ManagedLoginRow[]
+  owningOrgIds: string[]
+  metadata: Record<string, unknown>
+}
+
+/** A login with a new name: a new principal (the identity) plus its login row. */
+async function createLoginWithNewPrincipal(
+  tx: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  params: LoginCreateShared & { username: string; nameScheme: PrincipalNameScheme }
+): Promise<LoginCreateOutcome> {
+  const { ctx, managedId, existingLogins, owningOrgIds, metadata, username, nameScheme } = params
+  if (existingLogins.some((entry) => entry.username === username)) {
+    return { ok: false, error: 'managed_user_exists', status: 409 }
+  }
+  // `plain`: the operator-typed name is the login and must be free
+  // org-wide. `partial` / `random`: the server derives a collision-free
+  // system name; the typed name stays the display name.
+  if (
+    nameScheme === 'plain' &&
+    ((await isManagedUsernameTaken(tx, owningOrgIds, username)) ||
+      (await isManagedLoginNameTaken(tx, owningOrgIds, username)))
+  ) {
+    return { ok: false, error: USERNAME_IN_USE_ERROR, status: 409 }
+  }
+  const appliedUsername = await resolveManagedAppliedUsername(
+    tx,
+    owningOrgIds,
+    username,
+    ctx.spec.userOperations.identifier,
+    { scheme: nameScheme }
+  )
+  const created = await createManagedPrincipal(tx, dataEncryptionSecrets, {
+    managedId,
+    provider: ctx.spec.principalProvider,
+    username,
+    appliedUsername,
+    nameScheme,
+    metadata,
+  })
+  return { ok: true, ...created, username, appliedUsername, nameScheme }
+}
+
+/**
+ * A login for an existing principal: the engine role takes the principal's
+ * applied name (the one allowed overlap in the organization's name pool), so
+ * only the cluster itself and the shared frontend of other organizations'
+ * clusters are checked for that name. No principal row is created.
+ */
+async function createLoginForExistingPrincipal(
+  tx: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  params: LoginCreateShared & { principal: ExistingPrincipalForLogin }
+): Promise<LoginCreateOutcome> {
+  const { managedId, existingLogins, owningOrgIds, metadata, principal: target } = params
+  if (existingLogins.some((entry) => entry.principalId === target.id)) {
+    return { ok: false, error: 'managed_login_exists', status: 409 }
+  }
+  const key = target.appliedUsername.toLowerCase()
+  if (
+    existingLogins.some(
+      (entry) => entry.username === target.username || entry.appliedUsername.toLowerCase() === key
+    )
+  ) {
+    return { ok: false, error: 'managed_user_exists', status: 409 }
+  }
+  if (
+    (await isManagedUsernameTaken(tx, owningOrgIds, target.appliedUsername, target.id)) ||
+    (await isManagedLoginNameTaken(tx, owningOrgIds, target.appliedUsername, undefined, target.id))
+  ) {
+    return { ok: false, error: USERNAME_IN_USE_ERROR, status: 409 }
+  }
+  const nameScheme = principalNameSchemeOf(target)
+  const created = await createLoginForPrincipal(tx, dataEncryptionSecrets, {
+    managedId,
+    principalId: target.id,
+    appliedUsername: target.appliedUsername,
+    metadata,
+    nameScheme,
+  })
+  return {
+    ok: true,
+    principalId: target.id,
+    loginId: created.loginId,
+    password: created.password,
+    username: target.username,
+    appliedUsername: target.appliedUsername,
+    nameScheme,
+  }
 }
 
 export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -1560,12 +1776,6 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
-    const residual = parseManagedResidual(row.metadata)
-    const rootPrincipalId = residual.rootPrincipalId
-    if (!rootPrincipalId) {
-      return c.json({ error: 'root_principal_missing' }, 500)
-    }
-
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
       return c.json({ error: 'Encryption unavailable' }, 503)
@@ -1574,20 +1784,25 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const options = parseManagedRowOptions(ctx.spec, row.options)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
+    const rootLogin = await findManagedLoginByRole(db, row.id, 'root')
+    if (!rootLogin) {
+      return c.json({ error: 'root_principal_missing' }, 500)
+    }
+
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
     const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
 
-    const [previous] = await db
-      .select({ password: principal.password })
-      .from(principal)
-      .where(eq(principal.id, rootPrincipalId))
-      .limit(1)
-    const previousPassword = previous?.password
+    const previousPassword = rootLogin.password
+    const restorePassword = async () => {
+      if (typeof previousPassword === 'string') {
+        await setLoginPassword(db, rootLogin.id, previousPassword)
+      }
+    }
 
-    const { plaintext } = await rotatePrincipalPassword(db, dataEncryptionSecrets, rootPrincipalId)
+    const { plaintext } = await rotateLoginPassword(db, dataEncryptionSecrets, rootLogin.id)
 
     const residualForApply = parseManagedResidual(row.metadata)
     const preparedApply = await prepareManagedApplyPayloads(c, db, {
@@ -1601,15 +1816,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       rootUsername: residualForApply.rootUsername ?? ctx.spec.rootUsername,
     })
     if (isPrepareError(preparedApply)) {
-      if (typeof previousPassword === 'string') {
-        await db
-          .update(principal)
-          .set({
-            password: previousPassword,
-            updatedAt: new Date().toISOString(),
-          })
-          .where(eq(principal.id, rootPrincipalId))
-      }
+      await restorePassword()
       return mapManagedApplyPrepareError(c, preparedApply)
     }
 
@@ -1619,20 +1826,12 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       members: preparedApply.members,
     })
     if (enqueued instanceof Response) {
-      if (typeof previousPassword === 'string') {
-        await db
-          .update(principal)
-          .set({
-            password: previousPassword,
-            updatedAt: new Date().toISOString(),
-          })
-          .where(eq(principal.id, rootPrincipalId))
-      }
+      await restorePassword()
       return enqueued
     }
 
     const primaryResult = pickPrimaryCommandResult(enqueued)
-    const redeployRequired = await listBindingImpactForPrincipal(db, rootPrincipalId)
+    const redeployRequired = await listBindingImpactForLogin(db, rootLogin.id)
     return c.json({
       ok: true,
       rootPassword: plaintext,
@@ -1651,15 +1850,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ users: [] })
 
-    const users = await listManagedPrincipals(db, row.id)
+    const logins = await listManagedLogins(db, row.id)
     return c.json({
-      users: users
-        .filter(
-          (entry) =>
-            !isManagedRootPrincipal(entry.metadata) &&
-            !isManagedReplicationPrincipal(entry.metadata)
-        )
-        .map((entry) => serializeManagedUser(entry)),
+      users: logins.filter((entry) => entry.role === 'user').map(serializeManagedLogin),
     })
   })
 
@@ -1675,24 +1868,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const residual = parseManagedResidual(row.metadata)
-    // The org policy picks the scheme (and refuses a locked-out choice) before
-    // any name is validated: the scheme decides how long the typed name may be.
-    const policy = await loadPrincipalNamePolicy(db, ctx.organizationId)
-    const schemeChoice = resolveRequestedNameScheme(policy, body.nameScheme)
-    if (!schemeChoice.ok) {
-      return c.json({ error: schemeChoice.error }, schemeChoice.status)
-    }
-    const nameScheme = schemeChoice.scheme
-    const fields = parseManagedUserCreateFields(
-      c,
-      ctx,
-      body,
-      options,
-      residual.rootUsername,
-      nameScheme
-    )
-    if (fields instanceof Response) return fields
-    const { username, databases, privileges, connectionRole } = fields
+    const request = await parseManagedLoginCreateRequest(c, db, ctx, body, options, residual)
+    if (request instanceof Response) return request
+    const { databases, privileges, connectionRole } = request.grants
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
@@ -1712,56 +1890,41 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     if (readGuard) return c.json({ error: readGuard.error }, readGuard.status)
 
-    // Same-cluster collision, owning-org namespace probe, and principal insert
+    // Same-cluster collision, owning-org namespace probe, and the inserts
     // share one txn so the organization FOR UPDATE lock covers the insert —
     // otherwise concurrent creates can pass the check before either inserts.
     // `targetServerId` goes in so the primary member exists before the insert.
+    const metadata = {
+      engine: ctx.spec.engine,
+      databases,
+      privileges,
+      // Stored only for read-only: an absent key is the read-write default.
+      ...(connectionRole === 'read-only' ? { connectionRole } : {}),
+    }
     const userCreate = await db.transaction(async (tx) => {
-      const existingUsers = await listManagedPrincipals(tx, row.id)
-      if (existingUsers.some((entry) => entry.username === username)) {
-        return { ok: false as const, error: 'managed_user_exists' as const }
-      }
-
+      const existingLogins = await listManagedLogins(tx, row.id)
       await ensureManagedPrimaryMember(tx, {
         managedId: row.id,
         serverId: targetServerId,
       })
       const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, row.id, [targetServerId])
       await lockOrganizationsForUpdate(tx, owningOrgIds)
-      // `plain`: the operator-typed name is the login and must be free
-      // org-wide. `partial` / `random`: the server derives a collision-free
-      // system name; the typed name stays the display name.
-      if (nameScheme === 'plain' && (await isManagedUsernameTaken(tx, owningOrgIds, username))) {
-        return { ok: false as const, error: USERNAME_IN_USE_ERROR }
-      }
-      const appliedUsername = await resolveManagedAppliedUsername(
-        tx,
-        owningOrgIds,
-        username,
-        ctx.spec.userOperations.identifier,
-        { scheme: nameScheme }
-      )
-
-      const created = await createManagedPrincipal(tx, dataEncryptionSecrets, {
-        managedId: row.id,
-        provider: ctx.spec.principalProvider,
-        username,
-        appliedUsername,
-        nameScheme,
-        metadata: {
-          engine: ctx.spec.engine,
-          databases,
-          privileges,
-          // Stored only for read-only: an absent key is the read-write default.
-          ...(connectionRole === 'read-only' ? { connectionRole } : {}),
-        },
-      })
-      return { ok: true as const, appliedUsername, ...created }
+      const shared = { ctx, managedId: row.id, existingLogins, owningOrgIds, metadata }
+      return request.kind === 'existing-principal'
+        ? createLoginForExistingPrincipal(tx, dataEncryptionSecrets, {
+            ...shared,
+            principal: request.principal,
+          })
+        : createLoginWithNewPrincipal(tx, dataEncryptionSecrets, {
+            ...shared,
+            username: request.username,
+            nameScheme: request.nameScheme,
+          })
     })
     if (!userCreate.ok) {
-      return c.json({ error: userCreate.error }, 409)
+      return c.json({ error: userCreate.error }, userCreate.status)
     }
-    const { principalId, password } = userCreate
+    const { principalId, loginId, password } = userCreate
 
     const preparedApply = await prepareManagedApplyPayloads(c, db, {
       managedRow: row,
@@ -1774,7 +1937,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       rootUsername: residual.rootUsername ?? ctx.spec.rootUsername,
     })
     if (isPrepareError(preparedApply)) {
-      await db.delete(principal).where(eq(principal.id, principalId))
+      await removeManagedLogin(db, loginId)
       return mapManagedApplyPrepareError(c, preparedApply)
     }
 
@@ -1784,28 +1947,26 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       members: preparedApply.members,
     })
     if (enqueued instanceof Response) {
-      await db.delete(principal).where(eq(principal.id, principalId))
+      await removeManagedLogin(db, loginId)
       return enqueued
     }
 
-    const [createdUser] = await db
-      .select({ createdAt: principal.createdAt })
-      .from(principal)
-      .where(eq(principal.id, principalId))
-      .limit(1)
+    const createdLogin = await findManagedLogin(db, row.id, loginId)
 
     const primaryResult = pickPrimaryCommandResult(enqueued)
     return c.json({
       ok: true,
       user: {
         id: principalId,
-        username,
+        principalId,
+        loginId,
+        username: userCreate.username,
         appliedUsername: userCreate.appliedUsername,
-        nameScheme,
+        nameScheme: userCreate.nameScheme,
         databases,
         privileges,
         connectionRole,
-        createdAt: createdUser?.createdAt ?? new Date().toISOString(),
+        createdAt: createdLogin?.createdAt ?? new Date().toISOString(),
       },
       password,
       commandId: primaryResult?.commandId,
@@ -1829,17 +1990,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const [target] = await db
-      .select({
-        id: principal.id,
-        metadata: principal.metadata,
-        managedId: principal.managedId,
-      })
-      .from(principal)
-      .where(and(eq(principal.id, principalId), eq(principal.managedId, row.id)))
-      .limit(1)
+    const target = await findManagedLogin(db, row.id, principalId)
     if (!target) return c.json({ error: 'Not found' }, 404)
-    const rotateGuard = evaluateManagedUserRotateGuard(target.metadata)
+    const rotateGuard = evaluateManagedLoginRotateGuard(target.role)
     if (rotateGuard) {
       return c.json({ error: rotateGuard.error }, rotateGuard.status)
     }
@@ -1858,25 +2011,20 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
 
-    const [previous] = await db
-      .select({ password: principal.password })
-      .from(principal)
-      .where(eq(principal.id, principalId))
-      .limit(1)
-    const previousPassword = previous?.password
+    const previousPassword = target.password
 
-    const { plaintext } = await rotatePrincipalPassword(db, dataEncryptionSecrets, principalId)
+    const { plaintext } = await rotateLoginPassword(db, dataEncryptionSecrets, target.id)
 
-    const materializeResult = await materializeBindingsForPrincipal(
+    const materializeResult = await materializeBindingsForLogin(
       db,
       dataEncryptionSecrets,
-      principalId
+      target.id
     )
     // Every failure from here on must undo BOTH the stored password and the
     // project variables that were just rewritten with the new one.
     const rollBack = () =>
-      rollBackPrincipalRotation(db, dataEncryptionSecrets, {
-        principalId,
+      rollBackLoginRotation(db, dataEncryptionSecrets, {
+        loginId: target.id,
         previousPassword,
       })
     if (!('ok' in materializeResult)) {
@@ -1911,7 +2059,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     }
 
     const primaryResult = pickPrimaryCommandResult(enqueued)
-    const redeployRequired = await listBindingImpactForPrincipal(db, principalId)
+    const redeployRequired = await listBindingImpactForLogin(db, target.id)
     return c.json({
       ok: true,
       password: plaintext,
@@ -1937,33 +2085,16 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const [target] = await db
-      .select({
-        id: principal.id,
-        organizationId: principal.organizationId,
-        username: principal.username,
-        appliedUsername: principal.appliedUsername,
-        metadata: principal.metadata,
-        kind: principal.kind,
-        provider: principal.provider,
-        managedId: principal.managedId,
-        options: principal.options,
-        password: principal.password,
-        createdAt: principal.createdAt,
-        updatedAt: principal.updatedAt,
-      })
-      .from(principal)
-      .where(and(eq(principal.id, principalId), eq(principal.managedId, row.id)))
-      .limit(1)
+    const target = await findManagedLogin(db, row.id, principalId)
     if (!target) return c.json({ error: 'Not found' }, 404)
 
-    const dropGuard = evaluateManagedUserDropGuard(target.metadata)
+    const dropGuard = evaluateManagedLoginDropGuard(target.role)
     if (dropGuard) {
       return c.json({ error: dropGuard.error }, dropGuard.status)
     }
 
-    if (await hasBindingsForPrincipal(db, principalId)) {
-      const redeployRequired = await listBindingImpactForPrincipal(db, principalId)
+    if (await hasBindingsForLogin(db, target.id)) {
+      const redeployRequired = await listBindingImpactForLogin(db, target.id)
       return c.json(
         {
           error: 'managed_user_has_bindings',
@@ -1981,11 +2112,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const prepared = await prepareApplyForManaged(c, db, ctx, row, options, targetServerId, {
       dropUsers: [target.appliedUsername],
-      omitPrincipalIds: [principalId],
+      omitLoginIds: [target.id],
     })
     if (prepared instanceof Response) return prepared
 
-    await db.delete(principal).where(eq(principal.id, principalId))
+    // The login row goes now; the principal row goes with it only when it
+    // existed for this login alone (see `removeManagedLogin`).
+    const removed = await removeManagedLogin(db, target.id)
 
     const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
       userId: auth.userId,
@@ -1993,20 +2126,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       members: prepared.members,
     })
     if (enqueued instanceof Response) {
-      await db.insert(principal).values({
-        id: target.id,
-        organizationId: target.organizationId,
-        kind: target.kind,
-        provider: target.provider,
-        username: target.username,
-        appliedUsername: target.appliedUsername,
-        managedId: target.managedId,
-        metadata: target.metadata,
-        options: target.options,
-        password: target.password,
-        createdAt: target.createdAt,
-        updatedAt: target.updatedAt,
-      })
+      if (removed) await restoreManagedLogin(db, removed)
       return enqueued
     }
 

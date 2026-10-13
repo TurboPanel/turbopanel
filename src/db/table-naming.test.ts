@@ -70,6 +70,7 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'leaf',
   'lease',
   'license',
+  'login',
   'managed',
   'marker',
   'monitor',
