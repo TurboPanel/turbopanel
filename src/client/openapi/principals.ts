@@ -186,6 +186,7 @@ export const principalSchemas = {
       usedBy: {
         type: 'object',
         description: 'What else uses the principal; otherPlacements leaves this server out.',
+        required: ['tenancies', 'bindings', 'storages', 'secrets', 'logins', 'otherPlacements'],
         properties: {
           tenancies: { type: 'integer' },
           bindings: { type: 'integer' },
@@ -390,7 +391,7 @@ export const principalPaths = {
         404: { description: 'Organization or principal not found' },
         409: {
           description:
-            'principal_in_use (with `usedBy`) | principal_has_project | principal_not_system_user',
+            '`code`: principal_in_use (with `usedBy`: services, bindings, storage, secrets, logins) | principal_has_project | principal_not_system_user',
         },
       },
     },

@@ -213,7 +213,7 @@ export async function listOrganizationPrincipals(
   })
 }
 
-export type ServerPrincipalRow = ServerPlacementRow & {
+export type ServerPrincipalRow = Omit<ServerPlacementRow, 'id'> & {
   placementId: string
   /** What else still uses the principal, counted per kind (this server excluded). */
   usedBy: PrincipalUsage
@@ -230,9 +230,9 @@ export async function listServerPrincipals(
     rows.map((row) => row.principalId),
     serverId
   )
-  return rows.map((row) => ({
+  return rows.map(({ id, ...row }) => ({
     ...row,
-    placementId: row.id,
+    placementId: id,
     usedBy: usage.get(row.principalId) ?? emptyPrincipalUsage(),
   }))
 }

@@ -394,6 +394,21 @@ test('DELETE /organizations/:id/principals/:principalId refuses a principal that
   )
 })
 
+test('the active-organization header does not widen access to another organization', async () => {
+  await withFixtures(async ({ db, app, outsiderCookie, organizationId, tag }) => {
+    const orphan = await addPrincipal(db, organizationId, `hdr_${tag}`, null)
+    const headers = { Cookie: outsiderCookie, 'x-organization-id': organizationId }
+    const list = await app.request(`/organizations/${organizationId}/principals`, { headers })
+    assertEquals(list.status, 404)
+    const del = await app.request(`/organizations/${organizationId}/principals/${orphan}`, {
+      method: 'DELETE',
+      headers,
+    })
+    assertEquals(del.status, 404)
+    assertEquals((await db.select().from(principal).where(eq(principal.id, orphan))).length, 1)
+  })
+})
+
 test('DELETE /organizations/:id/principals/:principalId is org-scoped', async () => {
   await withFixtures(async ({ db, app, cookie, outsiderCookie, organizationId, tag }) => {
     const orphan = await addPrincipal(db, organizationId, `scoped_${tag}`, null)

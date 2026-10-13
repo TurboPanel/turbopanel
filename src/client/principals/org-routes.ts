@@ -91,37 +91,51 @@ export function registerOrganizationPrincipalRoutes(router: Hono<AppEnv>, opts: 
     const principalId = c.req.param('principalId')
     if (!isUuid(principalId)) return c.json({ error: 'Not found' }, 404)
 
-    const [row] = await db
-      .select()
-      .from(principal)
-      .where(and(eq(principal.id, principalId), eq(principal.organizationId, organizationId)))
-      .limit(1)
-    if (!row) return c.json({ error: 'Not found' }, 404)
+    // One transaction with the row locked: a service or login attached while
+    // we check would otherwise be cascaded away with the principal, and two
+    // parallel deletes would both queue the retire.
+    const outcome = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(principal)
+        .where(and(eq(principal.id, principalId), eq(principal.organizationId, organizationId)))
+        .limit(1)
+        .for('update')
+      if (!row) return { status: 404 as const }
+      if (row.projectId !== null) return { status: 'has_project' as const }
+      if (row.provider !== SERVER_PRINCIPAL_PROVIDER) return { status: 'not_system' as const }
 
-    if (row.projectId !== null) {
+      const usedBy = await countPrincipalReferences(tx, principalId)
+      if (isPrincipalReferenced(usedBy)) return { status: 'in_use' as const, usedBy }
+
+      // Resolved before the delete: the reach is found through the placements.
+      const serverIds = await serversForPrincipal(tx, principalId)
+      await tx.delete(principal).where(eq(principal.id, principalId))
+      return { status: 'deleted' as const, serverIds, appliedUsername: row.appliedUsername }
+    })
+
+    if (outcome.status === 404) return c.json({ error: 'Not found' }, 404)
+    if (outcome.status === 'has_project') {
       return c.json({ error: PRINCIPAL_HAS_PROJECT_ERROR, code: PRINCIPAL_HAS_PROJECT_CODE }, 409)
     }
-    if (row.provider !== SERVER_PRINCIPAL_PROVIDER) {
+    if (outcome.status === 'not_system') {
       return c.json(
         { error: PRINCIPAL_NOT_SYSTEM_USER_ERROR, code: PRINCIPAL_NOT_SYSTEM_USER_CODE },
         409
       )
     }
-
-    const usedBy = await countPrincipalReferences(db, principalId)
-    if (isPrincipalReferenced(usedBy)) {
-      return c.json({ error: PRINCIPAL_IN_USE_ERROR, usedBy }, 409)
+    if (outcome.status === 'in_use') {
+      return c.json(
+        { error: PRINCIPAL_IN_USE_ERROR, code: PRINCIPAL_IN_USE_ERROR, usedBy: outcome.usedBy },
+        409
+      )
     }
-
-    // Resolved before the delete: the reach is found through the placements.
-    const serverIds = await serversForPrincipal(db, principalId)
-    await db.delete(principal).where(eq(principal.id, principalId))
 
     const reconciled = await retireDeletedPrincipal(
       db,
       getCommandQueue(c),
       { actorType: 'user', actorId: session.userId },
-      { serverIds, appliedUsername: row.appliedUsername }
+      { serverIds: outcome.serverIds, appliedUsername: outcome.appliedUsername }
     )
     return c.json({ ok: true as const, reconciled })
   })
