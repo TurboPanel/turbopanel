@@ -25,7 +25,7 @@ test('every level writes a shell the allowlist accepts', () => {
   for (const level of PRINCIPAL_ACCESS_LEVELS) {
     assert(
       ALLOWED_PRINCIPAL_SHELLS.includes(shellForAccessLevel(level)),
-      `${level} writes ${shellForAccessLevel(level)}, which is not allowed`
+      `${level} writes ${shellForAccessLevel(level)}, which is not allowed`,
     )
   }
 })
@@ -45,7 +45,9 @@ test('adopted-account shell aliases are read but never written', () => {
   assertEquals(accessLevelForShell('/sbin/nologin'), 'sftp')
   assertEquals(accessLevelForShell('/bin/sh'), 'shell')
   assert(!PRINCIPAL_ACCESS_LEVELS.map(shellForAccessLevel).includes('/bin/sh'))
-  assert(!PRINCIPAL_ACCESS_LEVELS.map(shellForAccessLevel).includes('/sbin/nologin'))
+  assert(
+    !PRINCIPAL_ACCESS_LEVELS.map(shellForAccessLevel).includes('/sbin/nologin'),
+  )
 })
 
 test('an unrecognized or missing shell fails closed', () => {
@@ -102,8 +104,14 @@ test('an enabled password counts as a credential', () => {
 })
 
 test('password sign-in adds the password group alongside the level group', () => {
-  assertEquals(accessGroupsFor('/bin/bash', 0, true), ['tpshell', PRINCIPAL_PASSWORD_GROUP])
-  assertEquals(accessGroupsFor('/usr/sbin/nologin', 2, true), ['tpsftp', PRINCIPAL_PASSWORD_GROUP])
+  assertEquals(accessGroupsFor('/bin/bash', 0, true), [
+    'tpshell',
+    PRINCIPAL_PASSWORD_GROUP,
+  ])
+  assertEquals(accessGroupsFor('/usr/sbin/nologin', 2, true), [
+    'tpsftp',
+    PRINCIPAL_PASSWORD_GROUP,
+  ])
   // Never alone: a password with no level to sign in as grants nothing, and
   // suspending strips both credentials at once.
   assertEquals(accessGroupsFor('/bin/false', 0, true), [])

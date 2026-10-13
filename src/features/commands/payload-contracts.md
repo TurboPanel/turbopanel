@@ -395,7 +395,7 @@ ids only to create a brand-new account: if the account or its group is already
 on the host it drops them, adopts the account as it is and reports its real ids,
 so an existing account's uid/gid never changes. The control plane records the
 report first, correcting a placement that is not yet `present` (its ids were only
-a pick), then marks the account present. Known limit: an id reported by one host
+a pick), then marks the account present. Known limits: if a host refuses a pick for a principal whose account already exists on another server, the pick cannot change (that account is never renumbered) and the deploy there keeps failing with `principal_id_taken` until the id is freed on that host or an operator sets an override. A pre-#492 daemon treats `idSource` as binding, so deploy the daemon before relying on allocation. An id reported by one host
 for an older account can equal the pick held on another principal's pending
 placement; that principal's daemon then refuses with `principal_id_taken`
 (or adopts, if its account exists) and the pick is released and re-taken, so the

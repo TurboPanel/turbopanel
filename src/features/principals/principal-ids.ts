@@ -289,6 +289,20 @@ export async function recordReportedPrincipalIds(
         // was the control plane's pick and the host already had the account
         // under another one). The host's answer is the truth. The WHERE
         // repeats the conditions so a concurrent write is not overwritten.
+        // Another principal's unconfirmed pick of the same uid on this server
+        // would trip the unique index; that pick is let go (its deploy would
+        // be refused by the host anyway) and is taken again next time.
+        await db
+          .update(principalPlacement)
+          .set({ uid: null, gid: null })
+          .where(
+            and(
+              eq(principalPlacement.serverId, serverId),
+              eq(principalPlacement.uid, report.uid),
+              ne(principalPlacement.principalId, report.principalId),
+              ne(principalPlacement.state, 'present')
+            )
+          )
         await db
           .update(principalPlacement)
           .set({ uid: report.uid, gid: report.gid })
@@ -334,34 +348,34 @@ export function parsePrincipalIdTaken(
 
 /**
  * A host refused an id the control plane allocated. If that id is not on any
- * account yet (no placement is `present`), forget it on the refusing server only, so the next attempt takes
+ * account yet (no placement is `present`), forget it, so the next attempt takes
  * the next free number from the sequence. If the principal already exists
  * somewhere with this id, nothing changes: the account is never renumbered, the
  * failed command stays failed and says why.
  *
  * Returns true when the recorded ids were cleared.
  */
-export async function releaseRefusedPrincipalIds(
-  db: Db,
-  serverId: string,
-  error: string
-): Promise<boolean> {
+export async function releaseRefusedPrincipalIds(db: Db, error: string): Promise<boolean> {
   const taken = parsePrincipalIdTaken(error)
   if (!taken) return false
   const rows = await db
     .select({ state: principalPlacement.state })
     .from(principalPlacement)
     .where(eq(principalPlacement.principalId, taken.principalId))
+  // An account that exists keeps its id; there is nothing to pick again.
   if (rows.some((row) => row.state === 'present')) return false
+  // Every row that only holds the pick goes, not just the refusing server's:
+  // the pick is shared, and a server where the account already exists adopts
+  // it as it is and reports (the daemon never renumbers), so the new pick is
+  // safe everywhere.
   await db
     .update(principalPlacement)
     .set({ uid: null, gid: null })
     .where(
       and(
         eq(principalPlacement.principalId, taken.principalId),
-        eq(principalPlacement.serverId, serverId),
         ne(principalPlacement.state, 'present'),
-        eq(principalPlacement.uid, taken.id)
+        or(eq(principalPlacement.uid, taken.id), eq(principalPlacement.gid, taken.id))
       )
     )
   return true

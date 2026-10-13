@@ -299,7 +299,7 @@ test('a refused id is released only while no account has it', async () => {
     ).get(p1)!
     const refusal = (id: string) =>
       `principal_id_taken kind=uid id=${ids.uid} principalId=${id}: the uid is used`
-    assertEquals(await releaseRefusedPrincipalIds(db, a, refusal(p1)), true)
+    assertEquals(await releaseRefusedPrincipalIds(db, refusal(p1)), true)
     const fresh = (
       await resolvePrincipalIds(
         db,
@@ -328,7 +328,6 @@ test('a refused id is released only while no account has it', async () => {
     assertEquals(
       await releaseRefusedPrincipalIds(
         db,
-        b,
         `principal_id_taken kind=uid id=15010 principalId=${p2}: x`
       ),
       false
@@ -368,7 +367,7 @@ test('principal material carries the central id, keeps an operator override, and
   })
 })
 
-test('a refusal on one server leaves the principal ids recorded on other servers', async () => {
+test('after a refusal the principal takes a new pick on every server, never the refused one', async () => {
   await withFixtures(async ({ db, serverIds: [a, b], principalIds: [p1] }) => {
     const request = [{ principalId: p1, home: homeOf(p1) }]
     const ids = (await resolvePrincipalIds(db, a, request, { allocate: true })).get(p1)!
@@ -381,14 +380,34 @@ test('a refusal on one server leaves the principal ids recorded on other servers
       home: homeOf(p1),
       source: 'manual',
     })
-    const refusal = `principal_id_taken kind=uid id=${ids.uid} principalId=${p1}: x`
-    assertEquals(await releaseRefusedPrincipalIds(db, b, refusal), true)
+    const refusal = `principal_id_taken kind=gid id=${ids.gid} principalId=${p1}: x`
+    assertEquals(await releaseRefusedPrincipalIds(db, refusal), true)
+    const again = (await resolvePrincipalIds(db, b, request, { allocate: true })).get(p1)!
+    assertNotEquals(again.uid, ids.uid)
+    const onA = (await resolvePrincipalIds(db, a, request, { allocate: true })).get(p1)!
+    assertEquals(onA, again)
+  })
+})
+
+test('a report whose uid another principal only picked frees that pick instead of failing', async () => {
+  await withFixtures(async ({ db, serverIds: [a], principalIds: [p1, p2] }) => {
+    const picked = (
+      await resolvePrincipalIds(db, a, [{ principalId: p1, home: homeOf(p1) }], { allocate: true })
+    ).get(p1)!
+    await db.insert(principalPlacement).values({
+      principalId: p2,
+      serverId: a,
+      state: 'pending',
+      home: homeOf(p2),
+      source: 'manual',
+    })
+    await recordReportedPrincipalIds(db, a, [{ principalId: p2, uid: picked.uid, gid: picked.gid }])
     const rows = await db
-      .select({ serverId: principalPlacement.serverId, uid: principalPlacement.uid })
+      .select({ principalId: principalPlacement.principalId, uid: principalPlacement.uid })
       .from(principalPlacement)
-      .where(eq(principalPlacement.principalId, p1))
-    assertEquals(rows.find((row) => row.serverId === a)?.uid, ids.uid)
-    assertEquals(rows.find((row) => row.serverId === b)?.uid, null)
+      .where(eq(principalPlacement.serverId, a))
+    assertEquals(rows.find((r) => r.principalId === p2)?.uid, picked.uid)
+    assertEquals(rows.find((r) => r.principalId === p1)?.uid, null)
   })
 })
 
