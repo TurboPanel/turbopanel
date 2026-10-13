@@ -27,7 +27,7 @@ import {
 } from '../../db/schema.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
-import { createManagedPrincipal } from '../principals/store.ts'
+import { countPrincipalReferences, createManagedPrincipal } from '../principals/store.ts'
 import { postgresEngineSpec } from './postgres.ts'
 import {
   createLoginForPrincipal,
@@ -507,5 +507,73 @@ test('a new managed principal gets a login twin, rotation writes both, and remov
       .from(principal)
       .where(eq(principal.id, created.principalId))
     assertEquals(back?.id, created.principalId)
+  })
+})
+
+test('removing a shared login in either order never revives it and keeps countable references', async () => {
+  await withManagedFixture(async ({ db, dataEncryptionSecrets, organizationId, managedId }) => {
+    // A cluster is one per environment: add a second environment with its own cluster.
+    const [first] = await db
+      .select({ environmentId: managed.environmentId, serverId: managed.serverId })
+      .from(managed)
+      .where(eq(managed.id, managedId))
+    const [firstEnv] = await db
+      .select({ projectId: environment.projectId })
+      .from(environment)
+      .where(eq(environment.id, first!.environmentId))
+    const [otherEnv] = await db
+      .insert(environment)
+      .values({ name: 'Staging', projectId: firstEnv!.projectId, serverId: first!.serverId })
+      .returning({ id: environment.id })
+    const [second] = await db
+      .insert(managed)
+      .values({
+        environmentId: otherEnv!.id,
+        serverId: first!.serverId,
+        name: 'Postgres B',
+        engine: 'postgres',
+        status: 'ready',
+        options: { settings: postgresEngineSpec.defaultSettings, databases: ['postgres'] },
+      })
+      .returning({ id: managed.id })
+    const otherManagedId = second!.id
+    try {
+      const created = await createManagedPrincipal(db, dataEncryptionSecrets, {
+        managedId,
+        provider: 'postgres',
+        username: 'shared',
+        appliedUsername: 'shared',
+        nameScheme: 'plain',
+        metadata: { engine: 'postgres', databases: ['postgres'] },
+      })
+      const onOther = await createLoginForPrincipal(db, dataEncryptionSecrets, {
+        managedId: otherManagedId,
+        principalId: created.principalId,
+        appliedUsername: 'shared',
+        metadata: { engine: 'postgres', databases: ['postgres'] },
+      })
+      assertEquals((await countPrincipalReferences(db, created.principalId)).logins, 2)
+
+      // Remove the login on the cluster the principal row points at: the row is kept
+      // (the other login still uses it) and follows the remaining login's cluster.
+      const removedFirst = await removeManagedLogin(db, created.loginId)
+      assertEquals(removedFirst?.principal, null)
+      assertEquals(removedFirst?.repointedPrincipal?.managedId, managedId)
+      assertEquals((await listManagedLogins(db, managedId)).length, 0)
+
+      // Removing the last login now finds the row and removes it; nothing is revived.
+      const removedLast = await removeManagedLogin(db, onOther.loginId)
+      assertEquals(removedLast?.principal?.id, created.principalId)
+      assertEquals((await listManagedLogins(db, managedId)).length, 0)
+      assertEquals((await listManagedLogins(db, otherManagedId)).length, 0)
+      const left = await db
+        .select({ id: principal.id })
+        .from(principal)
+        .where(eq(principal.id, created.principalId))
+      assertEquals(left.length, 0)
+    } finally {
+      await db.delete(managed).where(eq(managed.id, otherManagedId))
+      await db.delete(environment).where(eq(environment.id, otherEnv!.id))
+    }
   })
 })

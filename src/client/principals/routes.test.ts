@@ -792,7 +792,7 @@ test('DELETE /projects/:projectId/principals/:id refuses while a service still r
       assertEquals(del.status, 409)
       assertEquals(await del.json(), {
         error: 'principal_in_use',
-        usedBy: { services: 1, bindings: 0, storage: 0, secrets: 0 },
+        usedBy: { services: 1, bindings: 0, storage: 0, secrets: 0, logins: 0 },
       })
 
       const rows = await db

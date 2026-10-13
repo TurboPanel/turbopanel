@@ -1192,7 +1192,13 @@ async function hasManagedUsernameNamespaceConflict(
       const ownPrincipalId = entry.principalId ?? legacyPrincipalIdOf(entry.metadata) ?? undefined
       if (
         (await isManagedUsernameTaken(tx, owningOrgIds, entry.appliedUsername, ownPrincipalId)) ||
-        (await isManagedLoginNameTaken(tx, owningOrgIds, entry.appliedUsername, managedId))
+        (await isManagedLoginNameTaken(
+          tx,
+          owningOrgIds,
+          entry.appliedUsername,
+          managedId,
+          ownPrincipalId
+        ))
       ) {
         return true
       }

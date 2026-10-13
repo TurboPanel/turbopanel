@@ -326,6 +326,8 @@ type PrincipalRecord = typeof principal.$inferSelect
 
 export type RemovedLogin = {
   login: LoginRecord
+  /** The kept principal row pointed at this cluster before it moved to another login's cluster. */
+  repointedPrincipal?: { id: string; managedId: string }
   /** The principal row deleted with the login, when it existed only for it. */
   principal: PrincipalRecord | null
 }
@@ -333,9 +335,11 @@ export type RemovedLogin = {
 /**
  * Delete a login row. The principal goes too only when it was created for
  * this login (a `kind = 'database'` row on the same cluster) and nothing else
- * uses it: no other login, no tenancy, no binding. (Placements do not exist
- * yet; a database principal never has one.) An identity shared with a system
- * user or another cluster is kept.
+ * uses it: no other login and no binding. (Placements do not exist yet, and
+ * a database principal has no tenancy.) An identity shared with another login
+ * is kept and its legacy row follows the remaining login's cluster, so that
+ * removing the last login finds the row and `syncLegacyLogins` never revives
+ * the login that was just removed.
  */
 export async function removeManagedLogin(db: Db, loginId: string): Promise<RemovedLogin | null> {
   const [row] = await db.select().from(login).where(eq(login.id, loginId)).limit(1)
@@ -350,7 +354,23 @@ export async function removeManagedLogin(db: Db, loginId: string): Promise<Remov
     .from(login)
     .where(and(eq(login.principalId, twinId), ne(login.id, loginId)))
     .limit(1)
-  if (otherLogin) return { login: row, principal: null }
+  if (otherLogin) {
+    const [remaining] = await db
+      .select({ managedId: login.managedId })
+      .from(login)
+      .where(eq(login.id, otherLogin.id))
+      .limit(1)
+    if (!remaining) return { login: row, principal: null }
+    await db
+      .update(principal)
+      .set({ managedId: remaining.managedId })
+      .where(eq(principal.id, twinId))
+    return {
+      login: row,
+      principal: null,
+      repointedPrincipal: { id: twinId, managedId: row.managedId },
+    }
+  }
   const [bound] = await db
     .select({ id: binding.id })
     .from(binding)
@@ -364,10 +384,18 @@ export async function removeManagedLogin(db: Db, loginId: string): Promise<Remov
 
 /** Put back what {@link removeManagedLogin} deleted, same ids, after a failed enqueue. */
 export async function restoreManagedLogin(db: Db, removed: RemovedLogin): Promise<void> {
-  if (removed.principal) {
-    await db.insert(principal).values(removed.principal)
-  }
-  await db.insert(login).values(removed.login)
+  await db.transaction(async (tx) => {
+    if (removed.principal) {
+      await tx.insert(principal).values(removed.principal)
+    }
+    if (removed.repointedPrincipal) {
+      await tx
+        .update(principal)
+        .set({ managedId: removed.repointedPrincipal.managedId })
+        .where(eq(principal.id, removed.repointedPrincipal.id))
+    }
+    await tx.insert(login).values(removed.login)
+  })
 }
 
 /**
