@@ -444,7 +444,8 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     if (immutable) return immutable
 
     // Removal is an explicit action and never silent: refused while a
-    // service, binding, storage entry or secret still names the principal.
+    // service, binding, storage entry, secret or database login still names
+    // the principal.
     const usedBy = await countPrincipalReferences(db, id)
     if (isPrincipalReferenced(usedBy)) {
       return c.json({ error: PRINCIPAL_IN_USE_ERROR, usedBy }, 409)

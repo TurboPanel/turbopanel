@@ -266,6 +266,11 @@ export type PrincipalsReconcileCommandResult = {
    */
   principalsRetired?: string[]
   /**
+   * The uid and primary gid each applied account has on the host, recorded on
+   * its placement. Optional: an older daemon does not send it.
+   */
+  principals?: PrincipalIdReport[]
+  /**
    * Host conditions that will stop a valid key from working and that TurboPanel
    * refuses to edit its way around (`AllowUsers`, `DenyGroups`, …). Reported so
    * an operator is not left debugging a silent `Permission denied`.
@@ -629,6 +634,29 @@ function parseStringArrayField(value: unknown, field: string): string[] {
   return [...value]
 }
 
+/** The ids one account has on a host, as the daemon reads them back. */
+export type PrincipalIdReport = {
+  principalId: string
+  uid: number
+  gid: number
+}
+
+const MAX_PRINCIPAL_ID_REPORTS = 1000
+
+/** Lenient like the rest of the result parsers: well-formed rows only, bounded. */
+export function parsePrincipalIdReports(value: unknown): PrincipalIdReport[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const out: PrincipalIdReport[] = []
+  for (const entry of value.slice(0, MAX_PRINCIPAL_ID_REPORTS)) {
+    if (!isRecord(entry) || !isString(entry.principalId)) continue
+    const { uid, gid } = entry
+    if (typeof uid !== 'number' || !Number.isInteger(uid) || uid <= 0) continue
+    if (typeof gid !== 'number' || !Number.isInteger(gid) || gid <= 0) continue
+    out.push({ principalId: entry.principalId, uid, gid })
+  }
+  return out.length > 0 ? out : undefined
+}
+
 export function parsePrincipalsReconcileResult(value: unknown): PrincipalsReconcileCommandResult {
   if (!isRecord(value)) {
     throw new Error('Invalid principals reconcile result')
@@ -639,6 +667,7 @@ export function parsePrincipalsReconcileResult(value: unknown): PrincipalsReconc
   if (typeof value.sshdReloaded !== 'boolean') {
     throw new TypeError('sshdReloaded must be a boolean')
   }
+  const principals = parsePrincipalIdReports(value.principals)
   return {
     principalsApplied: value.principalsApplied,
     keysChanged: parseStringArrayField(value.keysChanged, 'keysChanged'),
@@ -647,6 +676,7 @@ export function parsePrincipalsReconcileResult(value: unknown): PrincipalsReconc
     ...(value.principalsRetired === undefined
       ? {}
       : { principalsRetired: parseStringArrayField(value.principalsRetired, 'principalsRetired') }),
+    ...(principals === undefined ? {} : { principals }),
     warnings: parseStringArrayField(value.warnings, 'warnings'),
   }
 }
@@ -1644,6 +1674,13 @@ export type EnvironmentDeployPrincipalMaterial = {
   uid?: number
   /** Optional operator override — omitted when the host allocates. */
   gid?: number
+  /**
+   * `central` when `uid`/`gid` are the control plane's installation-wide pick
+   * rather than an operator override. The daemon uses such ids to create a new
+   * account but adopts one that already exists as it is (and reports its ids);
+   * absent means an operator override, which is binding.
+   */
+  idSource?: 'central'
   home?: string
   /**
    * Absolute shell path (default `/usr/sbin/nologin`), applied by the daemon
@@ -1749,6 +1786,13 @@ export type EnvironmentDeploySitePrincipal = {
   uid?: number
   /** Optional operator override — omitted when the host allocates. */
   gid?: number
+  /**
+   * `central` when `uid`/`gid` are the control plane's installation-wide pick
+   * rather than an operator override. The daemon uses such ids to create a new
+   * account but adopts one that already exists as it is (and reports its ids);
+   * absent means an operator override, which is binding.
+   */
+  idSource?: 'central'
 }
 
 /**
@@ -2506,6 +2550,8 @@ export type EnvironmentDeployCommandResult = {
    * Absent from older daemons and when there were none.
    */
   warnings?: string[]
+  /** The uid/gid each account this deploy ensured has on the host; absent from older daemons. */
+  principals?: PrincipalIdReport[]
 }
 
 const MAX_ENVIRONMENT_DEPLOY_CONTAINERS = 100
@@ -2968,6 +3014,7 @@ function parseDeployPrincipalMaterialEntry(entry: unknown): EnvironmentDeployPri
     username: entry.username,
     ...(uid !== undefined ? { uid } : {}),
     ...(gid !== undefined ? { gid } : {}),
+    ...(entry.idSource === 'central' ? { idSource: 'central' as const } : {}),
   }
   if (entry.home !== undefined) {
     material.home = requirePrincipalPath(entry.home, isValidAbsolutePrincipalPath)
@@ -3263,6 +3310,7 @@ function parseDeploySitePrincipal(value: unknown): EnvironmentDeploySitePrincipa
     username: value.username,
     ...(uid !== undefined ? { uid } : {}),
     ...(gid !== undefined ? { gid } : {}),
+    ...(value.idSource === 'central' ? { idSource: 'central' as const } : {}),
   }
 }
 
@@ -4297,6 +4345,8 @@ export function parseEnvironmentDeployResult(value: unknown): EnvironmentDeployC
   if (sites !== undefined) result.sites = sites
   const warnings = parseDeployResultWarnings(value.warnings)
   if (warnings !== undefined) result.warnings = warnings
+  const principals = parsePrincipalIdReports(value.principals)
+  if (principals !== undefined) result.principals = principals
   return result
 }
 

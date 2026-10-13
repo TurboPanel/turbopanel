@@ -51,6 +51,153 @@ export const principalSchemas = {
       },
     },
   },
+  OrganizationPrincipalRow: {
+    type: 'object',
+    required: [
+      'id',
+      'name',
+      'appliedUsername',
+      'kind',
+      'provider',
+      'forms',
+      'projectId',
+      'projectName',
+      'servers',
+      'logins',
+      'usedBy',
+      'state',
+      'orphaned',
+      'canDelete',
+      'createdAt',
+    ],
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string', description: 'The typed name.' },
+      appliedUsername: {
+        type: 'string',
+        description: 'The login on the host or engine (the system name).',
+      },
+      kind: { type: 'string' },
+      provider: { type: 'string' },
+      forms: {
+        type: 'array',
+        items: { type: 'string', enum: ['system', 'database'] },
+        description:
+          'The forms the principal has: a system user on servers, a database login on clusters, or both.',
+      },
+      projectId: {
+        type: ['string', 'null'],
+        description: 'The project that created it; null once that project was deleted.',
+      },
+      projectName: { type: ['string', 'null'] },
+      servers: {
+        type: 'array',
+        description: 'Servers the principal is placed on.',
+        items: {
+          type: 'object',
+          required: ['serverId', 'serverName', 'state', 'uid', 'gid'],
+          properties: {
+            serverId: { type: 'string', format: 'uuid' },
+            serverName: { type: ['string', 'null'] },
+            state: { type: 'string', enum: ['pending', 'present', 'retiring', 'absent'] },
+            uid: { type: ['integer', 'null'] },
+            gid: { type: ['integer', 'null'] },
+          },
+        },
+      },
+      logins: {
+        type: 'array',
+        description: 'Database logins linked to the principal.',
+        items: {
+          type: 'object',
+          required: ['id', 'managedId', 'role', 'appliedUsername'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+            managedId: { type: 'string', format: 'uuid' },
+            role: { type: 'string', enum: ['root', 'replication', 'user'] },
+            appliedUsername: { type: 'string' },
+          },
+        },
+      },
+      usedBy: {
+        type: 'object',
+        description: 'What still uses the principal, counted per kind.',
+        required: ['tenancies', 'bindings', 'storages', 'secrets', 'logins'],
+        properties: {
+          tenancies: { type: 'integer' },
+          bindings: { type: 'integer' },
+          storages: { type: 'integer' },
+          secrets: { type: 'integer' },
+          logins: { type: 'integer' },
+        },
+      },
+      state: {
+        type: 'string',
+        enum: ['none', 'pending', 'present', 'retiring', 'absent'],
+        description: 'The most pressing placement state; none when placed on no server.',
+      },
+      orphaned: {
+        type: 'boolean',
+        description: 'No project and nothing uses it: left behind by a deleted project.',
+      },
+      canDelete: {
+        type: 'boolean',
+        description: 'DELETE /organizations/{id}/principals/{principalId} would be accepted.',
+      },
+      createdAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  OrganizationPrincipalsResponse: {
+    type: 'object',
+    required: ['principals'],
+    properties: {
+      principals: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/OrganizationPrincipalRow' },
+      },
+    },
+  },
+  ServerPrincipalRow: {
+    type: 'object',
+    required: [
+      'placementId',
+      'principalId',
+      'username',
+      'appliedUsername',
+      'projectId',
+      'state',
+      'uid',
+      'gid',
+      'home',
+      'source',
+      'usedBy',
+    ],
+    properties: {
+      placementId: { type: 'string', format: 'uuid' },
+      principalId: { type: 'string', format: 'uuid' },
+      username: { type: 'string' },
+      appliedUsername: { type: 'string' },
+      projectId: { type: ['string', 'null'] },
+      state: { type: 'string', enum: ['pending', 'present', 'retiring', 'absent'] },
+      uid: { type: ['integer', 'null'] },
+      gid: { type: ['integer', 'null'] },
+      home: { type: 'string' },
+      source: { type: 'string', enum: ['compose', 'manual', 'storage'] },
+      usedBy: {
+        type: 'object',
+        description: 'What else uses the principal; otherPlacements leaves this server out.',
+        required: ['tenancies', 'bindings', 'storages', 'secrets', 'logins', 'otherPlacements'],
+        properties: {
+          tenancies: { type: 'integer' },
+          bindings: { type: 'integer' },
+          storages: { type: 'integer' },
+          secrets: { type: 'integer' },
+          logins: { type: 'integer' },
+          otherPlacements: { type: 'integer' },
+        },
+      },
+    },
+  },
   ResourceLimits: {
     type: 'object',
     properties: {
@@ -204,6 +351,79 @@ export const principalPaths = {
       responses: {
         200: { description: 'Updated assignments' },
         400: { description: 'invalid_service_ids' },
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/principals': {
+    get: {
+      tags: ['Principals'],
+      summary: 'List every principal in the organization',
+      description:
+        'Org owner or manager. A principal is an account responsible for the contents within it: a system user on servers and a database login on clusters. Each row says which forms it has, the servers it is placed on, the project and logins that use it and its state.',
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: {
+        200: {
+          description: 'Principals of the organization',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/OrganizationPrincipalsResponse' },
+            },
+          },
+        },
+        403: { description: 'Not an owner or manager of the organization' },
+        404: { description: 'Organization not reachable' },
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/principals/{principalId}': {
+    delete: {
+      tags: ['Principals'],
+      summary: 'Delete a principal its project left behind',
+      description:
+        'Org owner or manager. Only a system user with no project. Refused while a service, binding, storage entry, secret or database login still uses it; otherwise the Linux account is retired on every server it reached.',
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        { name: 'principalId', in: 'path', required: true, schema: { type: 'string' } },
+      ],
+      responses: {
+        200: { description: 'Deleted; `reconciled` lists the servers reached and not reached' },
+        403: { description: 'Not an owner or manager of the organization' },
+        404: { description: 'Organization or principal not found' },
+        409: {
+          description:
+            '`code`: principal_in_use (with `usedBy`: services, bindings, storage, secrets, logins) | principal_has_project | principal_not_system_user',
+        },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/principals': {
+    get: {
+      tags: ['Principals'],
+      summary: 'List the principals placed on a server',
+      description:
+        'Org owner or manager of the server organization. One row per placement with its state, ids, home and what else uses the principal.',
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: {
+        200: {
+          description: 'Placements on the server',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['serverId', 'principals'],
+                properties: {
+                  serverId: { type: 'string', format: 'uuid' },
+                  principals: {
+                    type: 'array',
+                    items: { $ref: '#/components/schemas/ServerPrincipalRow' },
+                  },
+                },
+              },
+            },
+          },
+        },
+        403: { description: 'Not an owner or manager of the organization' },
+        404: { description: 'Server not found' },
       },
     },
   },

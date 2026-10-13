@@ -6,6 +6,10 @@ export const bindingSchemas = {
     properties: {
       id: { type: 'string' },
       principalId: { type: 'string' },
+      loginId: {
+        type: ['string', 'null'],
+        description: 'The database login whose credentials are injected.',
+      },
       serviceId: { type: 'string' },
       databaseName: { type: 'string' },
       keyPrefix: { type: 'string' },
@@ -42,9 +46,17 @@ export const bindingSchemas = {
   },
   CreateBindingRequest: {
     type: 'object',
-    required: ['principalId', 'serviceId', 'databaseName'],
+    required: ['serviceId', 'databaseName'],
     properties: {
-      principalId: { type: 'string' },
+      principalId: {
+        type: 'string',
+        description:
+          'The principal whose database login is bound. Required unless `loginId` is given; 409 `binding_login_ambiguous` when the principal has several logins.',
+      },
+      loginId: {
+        type: 'string',
+        description: 'The database login to bind. Takes precedence over `principalId`.',
+      },
       serviceId: { type: 'string' },
       databaseName: { type: 'string' },
       keyPrefix: {

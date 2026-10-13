@@ -1,6 +1,6 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -30,11 +30,14 @@ import {
   hosting,
   network,
   organization,
+  principal,
+  principalPlacement,
   project,
   server,
   service,
   slot,
   subnet,
+  tenancy,
   tls,
   user,
   variable,
@@ -834,6 +837,96 @@ test('POST /environments/:id/deploy payload carries runtime composeFiles', async
       assertEquals(payload.composeFiles[0]!.role, 'runtime')
       assertEquals(payload.composeFiles[0]!.filename, 'compose.yaml')
       assertEquals(payload.composeFiles[0]!.content.includes('web:'), true)
+    }
+  )
+})
+
+test('POST /environments/:id/deploy records a pending placement for each compose principal on the target server', async () => {
+  await withDeployFixtures(
+    async ({
+      db,
+      app,
+      secrets,
+      userId,
+      organizationId,
+      projectId,
+      environmentId,
+      serverId,
+      commandQueue,
+    }) => {
+      await db
+        .update(environment)
+        .set({
+          serverId,
+          name: 'Production',
+          options: { compose: emptyComposeDocument() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
+      await db
+        .update(project)
+        .set({
+          options: {
+            compose: {
+              version: 1,
+              data: {
+                services: {
+                  site: {
+                    'x-turbopanel': { serviceKind: 'site', engine: 'nginx', principal: 'app' },
+                  },
+                },
+                'x-turbopanel': { principals: { app: {} } },
+              },
+              presentation: { keyOrder: ['services'], comments: {} },
+            },
+          },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(project.id, projectId))
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/environments/${environmentId}/deploy`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      })
+      assertEquals(res.status, 200, await res.clone().text())
+      assertEquals(commandQueue.envelopes.length, 1)
+
+      const placed = await db
+        .select({
+          state: principalPlacement.state,
+          source: principalPlacement.source,
+          home: principalPlacement.home,
+          appliedUsername: principal.appliedUsername,
+          composeAlias: sql<string | null>`${principal.metadata} ->> 'composeAlias'`,
+        })
+        .from(principalPlacement)
+        .innerJoin(principal, eq(principalPlacement.principalId, principal.id))
+        .where(eq(principalPlacement.serverId, serverId))
+      assertEquals(placed.length, 1)
+      assertEquals(placed[0]!.state, 'pending')
+      assertEquals(placed[0]!.source, 'compose')
+      assertEquals(placed[0]!.composeAlias, 'app')
+      assertEquals(placed[0]!.home, `/srv/users/${placed[0]!.appliedUsername}`)
+
+      // The deploy created the principal and its tenancy; the fixture only
+      // knows the rows it made itself, and `tenancy.service_id` is RESTRICT.
+      const serviceIds = await db
+        .select({ id: service.id })
+        .from(service)
+        .where(eq(service.environmentId, environmentId))
+      await db.delete(tenancy).where(
+        inArray(
+          tenancy.serviceId,
+          serviceIds.map((row) => row.id)
+        )
+      )
+      await db.delete(principal).where(eq(principal.projectId, projectId))
     }
   )
 })

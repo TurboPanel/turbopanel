@@ -25,6 +25,7 @@ import {
   index,
   integer,
   jsonb,
+  pgSequence,
   pgTable,
   smallint,
   text,
@@ -3353,7 +3354,11 @@ export const principal = pgTable(
      * multi-valued concept used for username-collision checks only).
      */
     organizationId: uuid('organization_id').notNull(),
-    /** Optional project scope for hosting principals. */
+    /**
+     * Optional project scope for hosting principals. SET NULL on project
+     * delete: the principal (and the Linux user and home it names) outlives
+     * the project and is removed only by its own explicit delete.
+     */
     projectId: uuid('project_id'),
     /** Optional managed-engine scope (cascade-deletes with the managed row). */
     managedId: uuid('managed_id'),
@@ -3380,7 +3385,7 @@ export const principal = pgTable(
       columns: [table.projectId],
       foreignColumns: [project.id],
       name: 'principal_project_id_project_id_fk',
-    }).onDelete('cascade'),
+    }).onDelete('set null'),
     foreignKey({
       columns: [table.managedId],
       foreignColumns: [managed.id],
@@ -3517,6 +3522,97 @@ export const sshKey = pgTable(
 )
 
 /**
+ * Installation-wide source of numeric ids for new site owner Linux users.
+ * One `nextval` gives a principal its uid and gid; the same number is then
+ * sent to every server the principal is placed on. Starts well above the
+ * floor of the band (15001) because hosts that predate it picked their own
+ * ids from the bottom of the band, one at a time; the daemon still refuses an
+ * id that is taken. Gaps are fine. It does not cycle: at 60000 it errors
+ * rather than hand out an id outside the band.
+ */
+export const principalIdSeq = pgSequence('principal_id_seq', {
+  startWith: 30001,
+  minValue: 15001,
+  maxValue: 60000,
+  increment: 1,
+  cache: 1,
+  cycle: false,
+})
+
+/**
+ * One principal on one server: where a `system` principal exists (or is about
+ * to exist) as a Linux account. `principal` stays the single org-scoped
+ * identity row; this is its per-server form. `state` follows the host:
+ * `pending` once a deploy that materializes the account is queued, `present`
+ * when that deploy succeeded, `retiring` once a stop carrying
+ * `retirePrincipals` is queued, `absent` when it succeeded. `uid` / `gid`
+ * are what the host actually assigned and stay NULL until the daemon reports
+ * them; the partial unique on `(server_id, uid)` is what makes a reported id
+ * trustworthy. `source` says why the account is there: a compose
+ * `x-turbopanel.principals` alias, a manually created project principal, or a
+ * storage entry owned by the principal. Rows are bookkeeping beside the
+ * implicit reach (project → environment.server_id) until that reach is
+ * retired; deploy, teardown and server removal write them.
+ */
+export const principalPlacement = pgTable(
+  'placement',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    principalId: uuid('principal_id').notNull(),
+    serverId: uuid('server_id').notNull(),
+    /** `pending` | `present` | `retiring` | `absent` */
+    state: text().notNull(),
+    /** Host-assigned ids, reported by the daemon; NULL until then. */
+    uid: integer(),
+    gid: integer(),
+    /** Account home on the host (`/srv/users/<applied_username>`). */
+    home: text().notNull(),
+    /** `compose` | `manual` | `storage` */
+    source: text().notNull(),
+  },
+  (table) => [
+    index('idx_placement_server_id').using(
+      'btree',
+      table.serverId.asc().nullsLast().op('uuid_ops')
+    ),
+    unique('uniq_placement_principal_server').on(table.principalId, table.serverId),
+    uniqueIndex('uniq_placement_server_uid')
+      .on(table.serverId, table.uid)
+      .where(sql`${table.uid} IS NOT NULL`),
+    foreignKey({
+      columns: [table.principalId],
+      foreignColumns: [principal.id],
+      name: 'placement_principal_id_principal_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'placement_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    check('placement_state_check', sql`state IN ('pending', 'present', 'retiring', 'absent')`),
+    check('placement_source_check', sql`source IN ('compose', 'manual', 'storage')`),
+  ]
+)
+
+/**
  * Join edge: the Linux/system principal that runs as / owns a service (the
  * site tree). Deleting a principal removes its edges (cascade); a service
  * still referenced by principals cannot be deleted (restrict), mirroring
@@ -3571,6 +3667,93 @@ export const tenancy = pgTable(
   ]
 )
 /**
+ * A database login: one engine role on one managed cluster. The second form
+ * a principal can take (the first is a system user on a server).
+ *
+ * `principal_id` names the identity the login belongs to and is NULL only for
+ * the cluster's own `root` and `replication` logins, which are not in the
+ * organization's name pool. A `user` login copies its `applied_username` from
+ * the principal, so the same name reaches every cluster the principal has a
+ * login on. Added 2026-10-13 (expand step): the legacy `principal` rows with
+ * `kind = 'database'` stay and are written in step with these rows until the
+ * contract migration retires them.
+ */
+export const login = pgTable(
+  'login',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    /**
+     * `engine`, `databases`, `privileges`, optional `connectionRole`
+     * (`read-only`), `managedRoot` / `managedReplication` on the cluster's own
+     * logins, and `legacyPrincipalId` for a root or replication login whose
+     * old `principal` row is still kept in step.
+     */
+    metadata: jsonb(),
+    /** `nameScheme` the applied name was derived with. */
+    options: jsonb(),
+    /** Cluster the role exists on; cascade-deletes with it. */
+    managedId: uuid('managed_id').notNull(),
+    /** Identity this login belongs to; NULL for root and replication logins. */
+    principalId: uuid('principal_id'),
+    /** `root` | `replication` | `user` */
+    role: text().notNull(),
+    /** Engine role name actually created on the cluster. */
+    appliedUsername: varchar('applied_username', { length: 255 }).notNull(),
+    /** Write-only credential, a `tpsecret` envelope; never returned on GET. */
+    password: text(),
+  },
+  (table) => [
+    index('idx_login_managed_id').using('btree', table.managedId.asc().nullsLast().op('uuid_ops')),
+    index('idx_login_principal_id').using(
+      'btree',
+      table.principalId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.managedId],
+      foreignColumns: [managed.id],
+      name: 'login_managed_id_managed_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.principalId],
+      foreignColumns: [principal.id],
+      name: 'login_principal_id_principal_id_fk',
+    }).onDelete('cascade'),
+    // One login per principal per cluster; a second login on the same cluster
+    // is a second principal.
+    uniqueIndex('uniq_login_managed_principal')
+      .on(table.managedId, table.principalId)
+      .where(sql`${table.principalId} IS NOT NULL`),
+    // Engine role names are one namespace per cluster, case-insensitively.
+    uniqueIndex('uniq_login_managed_applied_username').on(
+      table.managedId,
+      sql`lower(btrim((${table.appliedUsername})::text))`
+    ),
+    check('login_role_check', sql`role IN ('root', 'replication', 'user')`),
+    check(
+      'login_applied_username_format_check',
+      sql`(char_length((applied_username)::text) >= 1) AND (char_length((applied_username)::text) <= 255) AND ((applied_username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)`
+    ),
+  ]
+)
+/**
  * Join edge: managed-database principal ↔ consuming compose service.
  * Materializes system-owned `variable` rows (marked via `variable.binding_id`)
  * so DB credentials ride the existing deploy injection rail.
@@ -3603,6 +3786,12 @@ export const binding = pgTable(
     metadata: jsonb(),
     options: jsonb(),
     principalId: uuid('principal_id').notNull(),
+    /**
+     * The login whose credentials are injected (expand step of the login
+     * split; nullable until the contract migration). Filled beside
+     * `principalId` on every insert; backfilled from it.
+     */
+    loginId: uuid('login_id'),
     serviceId: uuid('service_id').notNull(),
     databaseName: varchar('database_name', { length: 255 }).notNull(),
     keyPrefix: varchar('key_prefix', { length: 64 }).default('DATABASE').notNull(),
@@ -3618,10 +3807,16 @@ export const binding = pgTable(
       'btree',
       table.serviceId.asc().nullsLast().op('uuid_ops')
     ),
+    index('idx_binding_login_id').using('btree', table.loginId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
       columns: [table.principalId],
       foreignColumns: [principal.id],
       name: 'binding_principal_id_principal_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.loginId],
+      foreignColumns: [login.id],
+      name: 'binding_login_id_login_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.serviceId],

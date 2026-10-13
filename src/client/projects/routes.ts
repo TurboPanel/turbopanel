@@ -928,7 +928,9 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .where(eq(environment.projectId, id))
     const teardownPlans = await planEnvironmentsTeardown(
       db,
-      environmentIds.map((row) => row.id)
+      environmentIds.map((row) => row.id),
+      // The site trees go with the project; the Linux users and their homes stay.
+      { keepPrincipals: true }
     )
 
     const result = await deleteProjectCascade(db, id, {

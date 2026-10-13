@@ -84,21 +84,15 @@ test('loadServicePlacementServerId prefers environment server over project defau
 })
 
 function consumerServerQuery(rows: unknown[]) {
+  // leftJoin(login).leftJoin(principal).innerJoin×3.leftJoin(slot).where
+  const joins = {
+    innerJoin: () => joins,
+    leftJoin: () => joins,
+    where: () => Promise.resolve(rows),
+  }
   return {
     select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            innerJoin: () => ({
-              innerJoin: () => ({
-                leftJoin: () => ({
-                  where: () => Promise.resolve(rows),
-                }),
-              }),
-            }),
-          }),
-        }),
-      }),
+      from: () => joins,
     }),
   } as unknown as Db
 }

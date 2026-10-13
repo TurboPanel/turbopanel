@@ -10,6 +10,11 @@ import {
   shellForAccessLevel,
 } from '../../features/principals/principal-access.ts'
 import { loadPrincipalNamePolicy } from '../../features/managed/load-org-defaults.ts'
+import {
+  insertLogin,
+  isManagedLoginNameTaken,
+  loginRoleFromMetadata,
+} from '../../features/managed/logins.ts'
 import type { PrincipalNameScheme } from '../../lib/principal-name-scheme.ts'
 import { deriveFreeSystemName } from './system-name.ts'
 import { encryptSecret, generateSealedSecret } from '../../lib/secrets/data-encryption.ts'
@@ -19,6 +24,7 @@ import { forEachSequential } from '../../lib/sequential.ts'
 import {
   binding,
   environment,
+  login,
   managed,
   organization,
   principal,
@@ -112,11 +118,19 @@ export type PrincipalReferences = {
   storage: number
   /** Secrets owned by the principal. */
   secrets: number
+  /** Database logins that belong to the principal (`login`). */
+  logins: number
 }
 
 /** True when any count in `refs` is above zero. */
 export function isPrincipalReferenced(refs: PrincipalReferences): boolean {
-  return refs.services > 0 || refs.bindings > 0 || refs.storage > 0 || refs.secrets > 0
+  return (
+    refs.services > 0 ||
+    refs.bindings > 0 ||
+    refs.storage > 0 ||
+    refs.secrets > 0 ||
+    refs.logins > 0
+  )
 }
 
 /**
@@ -129,7 +143,9 @@ export async function countPrincipalReferences(
   db: Db,
   principalId: string
 ): Promise<PrincipalReferences> {
-  const count = async (table: typeof tenancy | typeof binding | typeof storage | typeof secret) => {
+  const count = async (
+    table: typeof tenancy | typeof binding | typeof storage | typeof secret | typeof login
+  ) => {
     const [row] = await db
       .select({ total: sql<number>`count(*)::int` })
       .from(table)
@@ -141,6 +157,7 @@ export async function countPrincipalReferences(
     bindings: await count(binding),
     storage: await count(storage),
     secrets: await count(secret),
+    logins: await count(login),
   }
 }
 
@@ -568,15 +585,18 @@ export async function resolveManagedHomeOrganizationId(db: Db, managedId: string
 }
 
 /**
- * Insert a managed-engine principal with a freshly generated sealed password
- * in a single statement. Returns the show-once plaintext; no subsequent code
- * path returns a stored password.
+ * Insert a managed-engine principal with a freshly generated sealed password,
+ * plus its `login` row (expand step of the login split: the principal row is
+ * the identity, the login row is the engine role; a root or replication login
+ * has no principal and names the legacy row in `metadata.legacyPrincipalId`).
+ * Returns the show-once plaintext; no subsequent code path returns a stored
+ * password.
  */
 export async function createManagedPrincipal(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   input: CreateManagedPrincipalInput
-): Promise<{ principalId: string; password: string }> {
+): Promise<{ principalId: string; loginId: string; password: string }> {
   if (!USERNAME_RE.test(input.username)) {
     throw new TypeError('invalid username')
   }
@@ -608,7 +628,21 @@ export async function createManagedPrincipal(
     })
     .returning({ id: principal.id })
 
-  return { principalId: inserted.id, password: plaintext }
+  const role = loginRoleFromMetadata(input.metadata)
+  const loginId = await insertLogin(db, {
+    managedId: input.managedId,
+    principalId: role === 'user' ? inserted.id : null,
+    role,
+    appliedUsername,
+    password: sealed,
+    metadata:
+      role === 'user'
+        ? (input.metadata ?? null)
+        : { ...input.metadata, legacyPrincipalId: inserted.id },
+    nameScheme: input.nameScheme,
+  })
+
+  return { principalId: inserted.id, loginId, password: plaintext }
 }
 
 /**
@@ -756,8 +790,11 @@ export async function resolveManagedAppliedUsername(
     throw new TypeError(`invalid managed short username: ${shortUsername}`)
   }
 
-  const isTaken = (candidate: string) =>
-    isManagedUsernameTaken(db, owningOrganizationIds, candidate)
+  // Both forms of the name pool: legacy principal rows and login rows that
+  // belong to a principal of another form.
+  const isTaken = async (candidate: string) =>
+    (await isManagedUsernameTaken(db, owningOrganizationIds, candidate)) ||
+    (await isManagedLoginNameTaken(db, owningOrganizationIds, candidate))
   if (opts.scheme === 'plain' && !(await isTaken(shortUsername))) {
     return shortUsername
   }

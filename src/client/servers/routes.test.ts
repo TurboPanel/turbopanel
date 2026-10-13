@@ -22,12 +22,16 @@ import {
   managed,
   network,
   organization,
+  login,
+  principal,
+  principalPlacement,
   project,
   relay,
   replica,
   deployment,
   server,
   service,
+  tenancy,
   slot,
   storage,
   storageCopy,
@@ -39,6 +43,8 @@ import {
   user,
   workspace,
 } from '../../db/schema.ts'
+import { recordPendingPlacements } from '../../features/principals/placement-records.ts'
+import { PRINCIPAL_DELETE_REFUSED_CODE, PRINCIPAL_NOT_ON_SERVER_CODE } from './principal-removal.ts'
 import * as hierarchyDelete from '../hierarchy-delete.ts'
 import * as systemHierarchy from '../../features/system/hierarchy.ts'
 import {
@@ -4350,5 +4356,283 @@ test("POST /servers/:id/daemon-key/revoke raises server.daemon_key_revoked with 
     assertEquals(revoked.length, 1)
     assertEquals(revoked[0]!.title, 'Daemon key revoked on Delete Me')
     assertEquals(revoked[0]!.severity, 'warning')
+  })
+})
+
+/**
+ * Two placed principals: one free, one still stewarding a service. The
+ * environment is deliberately not placed on the server, so nothing but the
+ * placements ties the principals to it and the delete is not blocked.
+ */
+async function withPlacedPrincipals(
+  db: ReturnType<typeof createDenoDb>,
+  organizationId: string,
+  serverId: string,
+  fn: (ctx: { freeId: string; busyId: string }) => Promise<void>
+): Promise<void> {
+  const [ws] = await db
+    .insert(workspace)
+    .values({ name: 'Placement Workspace', organizationId })
+    .returning({ id: workspace.id })
+  const [proj] = await db
+    .insert(project)
+    .values({
+      name: `Placement Project ${crypto.randomUUID().slice(0, 8)}`,
+      workspaceId: ws!.id,
+      organizationId,
+    })
+    .returning({ id: project.id })
+  const [env] = await db
+    .insert(environment)
+    .values({ name: 'Placement Env', projectId: proj!.id })
+    .returning({ id: environment.id })
+  const [svc] = await db
+    .insert(service)
+    .values({ environmentId: env!.id, name: 'web', composeServiceName: 'web' })
+    .returning({ id: service.id })
+  const rows = await db
+    .insert(principal)
+    .values([
+      {
+        organizationId,
+        projectId: proj!.id,
+        kind: 'system',
+        provider: 'server',
+        username: 'pl_free',
+        appliedUsername: 'pl_free',
+      },
+      {
+        organizationId,
+        projectId: proj!.id,
+        kind: 'system',
+        provider: 'server',
+        username: 'pl_busy',
+        appliedUsername: 'pl_busy',
+      },
+    ])
+    .returning({ id: principal.id })
+  const freeId = rows[0]!.id
+  const busyId = rows[1]!.id
+  await db.insert(tenancy).values({ principalId: busyId, serviceId: svc!.id })
+  await recordPendingPlacements(db, serverId, [
+    { principalId: freeId, home: '/srv/users/pl_free', source: 'manual' },
+    { principalId: busyId, home: '/srv/users/pl_busy', source: 'compose' },
+  ])
+  try {
+    await fn({ freeId, busyId })
+  } finally {
+    await db.delete(tenancy).where(eq(tenancy.serviceId, svc!.id))
+    await db.delete(principal).where(inArray(principal.id, [freeId, busyId]))
+    await db.delete(service).where(eq(service.id, svc!.id))
+    await db.delete(environment).where(eq(environment.id, env!.id))
+    await db.delete(project).where(eq(project.id, proj!.id))
+    await db.delete(workspace).where(eq(workspace.id, ws!.id))
+  }
+}
+
+test('GET /servers/:id/principal-removal-plan lists placements with keep as the default', async () => {
+  await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    await withPlacedPrincipals(db, organizationId, serverId, async ({ freeId, busyId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}/principal-removal-plan`, {
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(res.status, 200)
+      const body = (await res.json()) as {
+        serverId: string
+        principals: Array<{
+          principalId: string
+          appliedUsername: string
+          state: string
+          source: string
+          defaultAction: string
+          canDeleteOutright: boolean
+          usedBy: { tenancies: number; otherPlacements: number }
+        }>
+      }
+      assertEquals(body.serverId, serverId)
+      assertEquals(
+        body.principals.map((entry) => [
+          entry.principalId,
+          entry.appliedUsername,
+          entry.state,
+          entry.source,
+          entry.defaultAction,
+          entry.canDeleteOutright,
+          entry.usedBy.tenancies,
+        ]),
+        [
+          [busyId, 'pl_busy', 'pending', 'compose', 'keep', false, 1],
+          [freeId, 'pl_free', 'pending', 'manual', 'keep', true, 0],
+        ]
+      )
+    })
+  })
+})
+
+test('DELETE /servers/:id refuses an outright principal delete while a service still uses it', async () => {
+  await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    await withPlacedPrincipals(db, organizationId, serverId, async ({ busyId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}`, {
+        method: 'DELETE',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ principals: [{ principalId: busyId, action: 'delete' }] }),
+      })
+      assertEquals(res.status, 409)
+      const body = (await res.json()) as {
+        code: string
+        principals: Array<{ principalId: string; reason: string; usedBy?: unknown }>
+      }
+      assertEquals(body.code, PRINCIPAL_DELETE_REFUSED_CODE)
+      assertEquals(body.principals, [
+        {
+          principalId: busyId,
+          reason: 'in_use',
+          usedBy: {
+            tenancies: 1,
+            bindings: 0,
+            storages: 0,
+            secrets: 0,
+            logins: 0,
+            otherPlacements: 0,
+          },
+        },
+      ])
+      const remaining = await db
+        .select({ id: server.id })
+        .from(server)
+        .where(eq(server.id, serverId))
+      assertEquals(remaining.length, 1)
+    })
+  })
+})
+
+test('DELETE /servers/:id keeps principals by default and deletes a free one on request', async () => {
+  await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    await withPlacedPrincipals(db, organizationId, serverId, async ({ freeId, busyId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}`, {
+        method: 'DELETE',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ principals: [{ principalId: freeId, action: 'delete' }] }),
+      })
+      assertEquals(res.status, 200)
+      const principals = await db
+        .select({ id: principal.id })
+        .from(principal)
+        .where(inArray(principal.id, [freeId, busyId]))
+      assertEquals(
+        principals.map((row) => row.id),
+        [busyId]
+      )
+      const placements = await db
+        .select({ id: principalPlacement.id })
+        .from(principalPlacement)
+        .where(eq(principalPlacement.serverId, serverId))
+      assertEquals(placements.length, 0)
+    })
+  })
+})
+
+test('DELETE /servers/:id answers 400 for a malformed principals list or a principal not on the server', async () => {
+  await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    await withPlacedPrincipals(db, organizationId, serverId, async () => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const send = (body: unknown) =>
+        app.request(`/servers/${serverId}`, {
+          method: 'DELETE',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        })
+
+      const malformed = await send({ principals: [{ principalId: 'x', action: 'purge' }] })
+      assertEquals(malformed.status, 400)
+
+      const ghost = crypto.randomUUID()
+      const notOnServer = await send({ principals: [{ principalId: ghost, action: 'keep' }] })
+      assertEquals(notOnServer.status, 400)
+      const body = (await notOnServer.json()) as {
+        code: string
+        principals: Array<{ principalId: string; reason: string }>
+      }
+      assertEquals(body.code, PRINCIPAL_NOT_ON_SERVER_CODE)
+      assertEquals(body.principals, [{ principalId: ghost, reason: 'not_on_server' }])
+
+      const remaining = await db
+        .select({ id: server.id })
+        .from(server)
+        .where(eq(server.id, serverId))
+      assertEquals(remaining.length, 1)
+    })
+  })
+})
+
+test('DELETE /servers/:id refuses an outright delete while the principal has a database login', async () => {
+  await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    await withPlacedPrincipals(db, organizationId, serverId, async ({ freeId }) => {
+      const [envRow] = await db
+        .select({ id: environment.id })
+        .from(environment)
+        .innerJoin(project, eq(environment.projectId, project.id))
+        .where(eq(project.organizationId, organizationId))
+        .limit(1)
+      const [cluster] = await db
+        .insert(managed)
+        .values({
+          environmentId: envRow!.id,
+          name: 'Login Use DB',
+          engine: 'postgres',
+          status: 'ready',
+        })
+        .returning({ id: managed.id })
+      try {
+        await db.insert(login).values({
+          managedId: cluster!.id,
+          principalId: freeId,
+          role: 'user',
+          appliedUsername: 'pl_free',
+        })
+        const cookie = await sessionCookie(db, secrets, userId)
+        const plan = await app.request(`/servers/${serverId}/principal-removal-plan`, {
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        })
+        const planBody = (await plan.json()) as {
+          principals: Array<{
+            principalId: string
+            canDeleteOutright: boolean
+            usedBy: { logins: number }
+          }>
+        }
+        const entry = planBody.principals.find((row) => row.principalId === freeId)
+        assertEquals([entry?.canDeleteOutright, entry?.usedBy.logins], [false, 1])
+
+        const res = await app.request(`/servers/${serverId}`, {
+          method: 'DELETE',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ principals: [{ principalId: freeId, action: 'delete' }] }),
+        })
+        assertEquals(res.status, 409)
+        assertEquals(((await res.json()) as { code: string }).code, PRINCIPAL_DELETE_REFUSED_CODE)
+      } finally {
+        await db.delete(managed).where(eq(managed.id, cluster!.id))
+      }
+    })
   })
 })

@@ -80,6 +80,9 @@ function reconcileDb(options: {
   materialRows?: Array<typeof MATERIAL_ROW>
   stillPlaced?: string[]
   insertEmpty?: boolean
+  /** Servers / accounts the placements table adds beyond the project reach. */
+  placedServerIds?: string[]
+  placedPrincipalIds?: string[]
 }): Db {
   const joinRows = options.joinRows ?? []
   const created = commandRow()
@@ -103,14 +106,28 @@ function reconcileDb(options: {
   }
 
   return {
-    select: () => ({
+    select: (fields?: Record<string, unknown>) => ({
       from: () => ({
         innerJoin: () => ({
+          // Placement account lookup: one join to `principal`.
+          where: () =>
+            Promise.resolve(
+              (options.placedPrincipalIds ?? []).map((principalId) => ({ principalId }))
+            ),
           innerJoin: () => ({
             where: () => Promise.resolve(joinRows),
           }),
         }),
-        where: () => Promise.resolve(nextPlainSelect()),
+        where: () =>
+          Promise.resolve(
+            // Placement server lookup selects only `serverId`; material lookups never do.
+            fields && Object.keys(fields).join() === 'serverId'
+              ? (options.placedServerIds ?? []).map((serverId) => ({ serverId }))
+              : fields && 'uid' in fields
+                ? // `resolvePrincipalIds` reading placement ids: none recorded.
+                  []
+                : nextPlainSelect()
+          ),
       }),
     }),
     selectDistinct: () => ({
@@ -153,6 +170,24 @@ test('serversForPrincipal dedupes hosts that have an assigned environment', asyn
     ],
   })
   assertEquals(await serversForPrincipal(db, PRINCIPAL), [SERVER_A, SERVER_B])
+})
+
+test('serversForPrincipal adds hosts only a placement knows (a principal whose project was deleted)', async () => {
+  const db = reconcileDb({ placedServerIds: [SERVER_B, SERVER_A] })
+  assertEquals(await serversForPrincipal(db, PRINCIPAL), [SERVER_B, SERVER_A])
+  const both = reconcileDb({
+    joinRows: [{ serverId: SERVER_A, principalId: PRINCIPAL }],
+    placedServerIds: [SERVER_A, SERVER_B],
+  })
+  assertEquals(await serversForPrincipal(both, PRINCIPAL), [SERVER_A, SERVER_B])
+})
+
+test('principalIdsOnServer keeps an orphaned principal in the complete set via its placement', async () => {
+  const db = reconcileDb({
+    joinRows: [{ serverId: SERVER_A, principalId: PRINCIPAL }],
+    placedPrincipalIds: ['prin-orphan', PRINCIPAL],
+  })
+  assertEquals(await principalIdsOnServer(db, SERVER_A), [PRINCIPAL, 'prin-orphan'])
 })
 
 test('principalIdsOnServer dedupes accounts materialized on one host', async () => {

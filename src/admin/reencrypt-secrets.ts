@@ -50,6 +50,7 @@ import {
   gitConnection,
   instanceUploadedCertificate,
   lease,
+  login,
   monitor,
   principal,
   relay,
@@ -88,6 +89,7 @@ export const REENCRYPT_STAGES = [
   'tls',
   'certificates',
   'principals',
+  'logins',
   'storage',
   'secrets',
   'forge',
@@ -111,6 +113,7 @@ export const REENCRYPT_COVERED_PLACES = [
   'tls.private_key_pem',
   'certificate.key_pem',
   'principal.password',
+  'login.password',
   'storage.content_envelope',
   'secret.secret_envelope',
   'forge.envelopes',
@@ -490,15 +493,38 @@ async function sweepPrincipalPasswordsBatch(
   afterId: string | undefined,
   limit: number
 ): Promise<StageBatchResult> {
+  return sweepPasswordColumnBatch(db, secrets, summary, afterId, limit, principal)
+}
+
+/** `login.password`: the same sealed credential as its principal twin, kept in step. */
+async function sweepLoginPasswordsBatch(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary,
+  afterId: string | undefined,
+  limit: number
+): Promise<StageBatchResult> {
+  return sweepPasswordColumnBatch(db, secrets, summary, afterId, limit, login)
+}
+
+/** One page of a table whose `password` column holds a sealed envelope (principal, login). */
+async function sweepPasswordColumnBatch(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary,
+  afterId: string | undefined,
+  limit: number,
+  table: typeof principal | typeof login
+): Promise<StageBatchResult> {
   const rows = await db
-    .select({ id: principal.id, password: principal.password })
-    .from(principal)
+    .select({ id: table.id, password: table.password })
+    .from(table)
     .where(
       afterId === undefined
-        ? isNotNull(principal.password)
-        : and(isNotNull(principal.password), gt(principal.id, afterId))
+        ? isNotNull(table.password)
+        : and(isNotNull(table.password), gt(table.id, afterId))
     )
-    .orderBy(asc(principal.id))
+    .orderBy(asc(table.id))
     .limit(limit)
 
   await forEachSequential(rows, async (row) => {
@@ -512,10 +538,10 @@ async function sweepPrincipalPasswordsBatch(
       originalPassword,
       async (resealed) => {
         const updated = await db
-          .update(principal)
+          .update(table)
           .set({ password: resealed, updatedAt: nowIso() })
-          .where(and(eq(principal.id, row.id), eq(principal.password, originalPassword)))
-          .returning({ id: principal.id })
+          .where(and(eq(table.id, row.id), eq(table.password, originalPassword)))
+          .returning({ id: table.id })
         return updated.length > 0
       },
       { allowDaemonBound: true }
@@ -1167,6 +1193,8 @@ async function runTableStageBatch(
       )
     case 'principals':
       return sweepPrincipalPasswordsBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
+    case 'logins':
+      return sweepLoginPasswordsBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
     case 'storage':
       return sweepStorageContentBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
     case 'secrets':

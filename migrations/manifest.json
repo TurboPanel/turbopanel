@@ -182,6 +182,30 @@
       "tag": "0029_principal_name_pool_unique",
       "when": 1791901242009,
       "sha256": "03f32ddb09338e03ea948fb3efa3d45e92e3880e9dc5d92cda7e39e196995b8c"
+    },
+    {
+      "idx": 30,
+      "tag": "0030_login_table",
+      "when": 1791904250847,
+      "sha256": "0c9fe32cd6ffe220c78b39e10d791743b2100e11c00e7e594d154fd843840057"
+    },
+    {
+      "idx": 31,
+      "tag": "0031_add_placement",
+      "when": 1791911939418,
+      "sha256": "c358966ce0842adbc8c0d03422442e3f4f0bebe8726b8ed92f3fc8b918782590"
+    },
+    {
+      "idx": 32,
+      "tag": "0032_principal_project_set_null",
+      "when": 1791911940093,
+      "sha256": "20fcc10884752414e64467a39b82f7b0f4c7b33189d9655b1bbd1cc72cde0cd8"
+    },
+    {
+      "idx": 33,
+      "tag": "0033_principal_id_seq",
+      "when": 1791914088124,
+      "sha256": "abff72a7d22ec0d7282e366773609ce1edea5a1afaa8d7fff41e86858d561993"
     }
   ]
 }

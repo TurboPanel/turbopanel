@@ -329,6 +329,24 @@ test('dispatchEnvironmentTeardown is a no-op without plans', async () => {
   assertEquals(captured.payloads.length, 0)
 })
 
+test('planEnvironmentTeardown plans no principal retirement for a project delete (keepPrincipals)', async () => {
+  const db = fakeDb([
+    [{ id: ENV_ID, projectId: PROJECT_ID, serverId: null }],
+    [{ id: PROJECT_ID, options: { defaultServerId: DEFAULT_SERVER_ID } }],
+    [],
+    [],
+    [],
+    [{ id: ENV_ID, projectId: PROJECT_ID, options: {} }],
+    [{ id: PROJECT_ID, options: {} }],
+    [],
+    // Never read: the Linux users stay when the project goes.
+    [{ username: 'web_b' }],
+  ])
+  const result = await planEnvironmentTeardown(db, ENV_ID, { keepPrincipals: true })
+  assertEquals(result?.principalUsernames, [])
+  assertEquals(result?.siteReleases !== undefined, true)
+})
+
 test('dispatchEnvironmentTeardown names retired principals on the last stop per server only', async () => {
   const captured = { payloads: [] as unknown[], transitions: [] as string[] }
   const queue = { enqueue: () => Promise.resolve() } as unknown as CommandQueue
