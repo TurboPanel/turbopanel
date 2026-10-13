@@ -994,6 +994,80 @@ test('complete manifest rejects a state minted for another organization', async 
   assertEquals(response.headers.get('location'), `/${ORG_ID}/projects/git-sources?error=forbidden`)
 })
 
+async function withConsoleErrors<T>(fn: () => Promise<T>): Promise<{ result: T; lines: string[] }> {
+  const lines: string[] = []
+  const original = console.error
+  console.error = (...args: unknown[]) => {
+    lines.push(args.map(String).join(' '))
+  }
+  try {
+    return { result: await fn(), lines }
+  } finally {
+    console.error = original
+  }
+}
+
+test('a failed conversion logs what GitHub said and never the code', async () => {
+  const state = await signedState({
+    organizationId: ORG_ID,
+    webhookRef: 'ref-pending',
+    baseUrl: 'https://github.com',
+    name: 'Acme Panel',
+  })
+  const code = 'one-shot-secret-code'
+  const path = `http://tp.test/callback?state=${encodeURIComponent(state)}&code=${code}`
+
+  await withFetch(
+    () =>
+      new Response(JSON.stringify({ message: `API rate limit exceeded (${code})` }), {
+        status: 403,
+        headers: {
+          'x-ratelimit-remaining': '0',
+          'x-ratelimit-reset': '1760000000',
+          'x-github-request-id': 'ABCD:1234',
+        },
+      }),
+    async () => {
+      const { result, lines } = await withConsoleErrors(() =>
+        invoke((c) => completeGithubManifestHandler(c, fakeDb(), ORG), { path })
+      )
+      assertEquals(
+        result.headers.get('location'),
+        `/${ORG_ID}/projects/git-sources?error=conversion_failed&status=403`
+      )
+      assertEquals(lines.length, 1)
+      const line = lines[0]
+      assertEquals(line.startsWith('github-manifest: conversion failed '), true)
+      assertEquals(line.includes(code), false)
+      assertEquals(JSON.parse(line.slice('github-manifest: conversion failed '.length)), {
+        kind: 'http',
+        status: 403,
+        githubMessage: 'API rate limit exceeded ([code])',
+        rateLimitRemaining: '0',
+        rateLimitReset: '1760000000',
+        requestId: 'ABCD:1234',
+      })
+    }
+  )
+
+  const original = globalThis.fetch
+  globalThis.fetch = (() => Promise.reject(new TypeError('connection reset'))) as typeof fetch
+  try {
+    const { result, lines } = await withConsoleErrors(() =>
+      invoke((c) => completeGithubManifestHandler(c, fakeDb(), ORG), { path })
+    )
+    assertEquals(
+      result.headers.get('location'),
+      `/${ORG_ID}/projects/git-sources?error=conversion_failed&status=network`
+    )
+    assertEquals(lines.length, 1)
+    assertEquals(lines[0].includes('"cause":"TypeError: connection reset"'), true)
+    assertEquals(lines[0].includes(code), false)
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
 test('complete manifest maps conversion failure, conflict, create failure, and success', async () => {
   const state = await signedState({
     organizationId: ORG_ID,
@@ -1011,10 +1085,12 @@ test('complete manifest maps conversion failure, conflict, create failure, and s
   await withFetch(
     () => new Response('nope', { status: 422 }),
     async () => {
-      const failed = await invoke((c) => completeGithubManifestHandler(c, fakeDb(), ORG), { path })
+      const failed = await withConsoleErrors(() =>
+        invoke((c) => completeGithubManifestHandler(c, fakeDb(), ORG), { path })
+      )
       assertEquals(
-        failed.headers.get('location'),
-        `/${ORG_ID}/projects/git-sources?error=conversion_failed`
+        failed.result.headers.get('location'),
+        `/${ORG_ID}/projects/git-sources?error=conversion_failed&status=422`
       )
     }
   )
