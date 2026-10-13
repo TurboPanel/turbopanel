@@ -1141,9 +1141,20 @@ export function validateCommandProgress(value: unknown): string | null {
   if (value.current !== null && !isBoundedId(value.current)) return 'invalid progress current'
   if (!Array.isArray(value.steps)) return 'invalid progress steps'
   if (value.steps.length > MAX_DAEMON_WS_PROGRESS_STEPS) return 'progress steps exceed max entries'
+  return (
+    validateCommandProgressSteps(value.steps, value.current) ??
+    validateBoundedJson(value, MAX_DAEMON_WS_PROGRESS_JSON_BYTES, 'progress')
+  )
+}
+
+/**
+ * The plan as a whole: every step well formed, ids unique, at most one step
+ * running, and `current` naming exactly that step (or null when none runs).
+ */
+function validateCommandProgressSteps(steps: unknown[], current: unknown): string | null {
   const ids = new Set<string>()
   let running: string | null = null
-  for (const [index, step] of value.steps.entries()) {
+  for (const [index, step] of steps.entries()) {
     const issue = validateCommandProgressStep(step, index)
     if (issue) return issue
     const { id, state } = step as CommandProgressStep
@@ -1153,9 +1164,7 @@ export function validateCommandProgress(value: unknown): string | null {
     if (running !== null) return 'more than one running step'
     running = id
   }
-  // `current` is derived from the steps: the one running step, or nothing.
-  if (value.current !== running) return 'progress current does not match the running step'
-  return validateBoundedJson(value, MAX_DAEMON_WS_PROGRESS_JSON_BYTES, 'progress')
+  return current === running ? null : 'progress current does not match the running step'
 }
 
 /** {@link validateCommandProgress} as a type guard. */

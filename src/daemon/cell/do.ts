@@ -1826,6 +1826,26 @@ export class DaemonCellObject {
   }
 
   /**
+   * Fire-and-forget progress frames (`update-progress`, `command-progress`):
+   * liveness, then a projection write; neither completes a pending request.
+   * Returns true when handled.
+   */
+  async #handleProgressInbound(
+    attachment: { connectionId: string; serverId: string },
+    parsed: DaemonMessage
+  ): Promise<boolean> {
+    if (parsed.type === 'update-progress') {
+      await this.#handleUpdateProgressInbound(attachment, parsed)
+      return true
+    }
+    if (parsed.type === 'command-progress') {
+      await this.#handleCommandProgressInbound(attachment, parsed)
+      return true
+    }
+    return false
+  }
+
+  /**
    * Fire-and-forget upgrade progress. Records liveness, then writes the
    * matching step. Never enqueues.
    */
@@ -2031,15 +2051,7 @@ export class DaemonCellObject {
         return
       }
 
-      if (parsed.type === 'update-progress') {
-        await this.#handleUpdateProgressInbound(attachment, parsed)
-        return
-      }
-
-      if (parsed.type === 'command-progress') {
-        await this.#handleCommandProgressInbound(attachment, parsed)
-        return
-      }
+      if (await this.#handleProgressInbound(attachment, parsed)) return
 
       await this.#recordInboundRepairingPresence(attachment, parsed.at)
       await this.#handleInboundMessage(attachment.serverId, parsed, ws)
