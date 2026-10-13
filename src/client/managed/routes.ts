@@ -30,6 +30,7 @@ import {
   isManagedUsernameTaken,
   lockOrganizationsForUpdate,
   resolveManagedAppliedUsername,
+  resolveManagedHomeOrganizationId,
   resolveManagedOwningOrganizationIds,
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
@@ -749,7 +750,12 @@ async function insertManagedCreateTransaction(
 
   await ensureManagedPrimaryMember(tx, { managedId, serverId })
 
-  const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, managedId, [serverId])
+  const owningOrgIds = await resolveManagedOwningOrganizationIds(
+    tx,
+    managedId,
+    [serverId],
+    ctx.organizationId
+  )
   await lockOrganizationsForUpdate(tx, owningOrgIds)
 
   // Never plain, whatever the org scheme: the exposed root login is
@@ -1170,9 +1176,17 @@ async function hasManagedUsernameNamespaceConflict(
 ): Promise<boolean> {
   const clusterLogins = await listManagedLogins(db, managedId)
   return db.transaction(async (tx) => {
-    const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, managedId, [serverId])
+    const owningOrgIds = await resolveManagedOwningOrganizationIds(
+      tx,
+      managedId,
+      [serverId],
+      await resolveManagedHomeOrganizationId(tx, managedId)
+    )
     await lockOrganizationsForUpdate(tx, owningOrgIds)
     for (const entry of clusterLogins) {
+      // Root and replication logins never reach the shared ProxySQL frontend
+      // and every cluster carries one of each, so they are not probed.
+      if (entry.role !== 'user') continue
       // The applied login is what lands on the shared ProxySQL frontend —
       // that's the name that must be free in the new owner's namespace.
       const ownPrincipalId = entry.principalId ?? legacyPrincipalIdOf(entry.metadata) ?? undefined
@@ -1336,13 +1350,13 @@ async function createLoginWithNewPrincipal(
   if (existingLogins.some((entry) => entry.username === username)) {
     return { ok: false, error: 'managed_user_exists', status: 409 }
   }
-  // `plain`: the operator-typed name is the login and must be free
-  // org-wide. `partial` / `random`: the server derives a collision-free
-  // system name; the typed name stays the display name.
+  // The typed name must be free in the organization pool under every scheme:
+  // it is stored as `username`, which `uniq_principal_organization_username`
+  // keeps unique per org next to the applied login. Under `partial` / `random`
+  // the server then derives a collision-free login from it.
   if (
-    nameScheme === 'plain' &&
-    ((await isManagedUsernameTaken(tx, owningOrgIds, username)) ||
-      (await isManagedLoginNameTaken(tx, owningOrgIds, username)))
+    (await isManagedUsernameTaken(tx, owningOrgIds, username)) ||
+    (await isManagedLoginNameTaken(tx, owningOrgIds, username))
   ) {
     return { ok: false, error: USERNAME_IN_USE_ERROR, status: 409 }
   }
@@ -1907,7 +1921,12 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         managedId: row.id,
         serverId: targetServerId,
       })
-      const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, row.id, [targetServerId])
+      const owningOrgIds = await resolveManagedOwningOrganizationIds(
+        tx,
+        row.id,
+        [targetServerId],
+        ctx.organizationId
+      )
       await lockOrganizationsForUpdate(tx, owningOrgIds)
       const shared = { ctx, managedId: row.id, existingLogins, owningOrgIds, metadata }
       return request.kind === 'existing-principal'

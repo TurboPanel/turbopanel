@@ -1,7 +1,7 @@
 /**
  * Database logins: the `login` table, one engine role on one managed cluster.
  *
- * Expand step of the login split (migration `0029_login_table`). Every
+ * Expand step of the login split (migration `0030_login_table`). Every
  * cluster login lives here; the legacy `principal` rows with
  * `kind = 'database'` stay and are written in step (same password, same
  * applied name) until a later contract migration retires them. Readers use

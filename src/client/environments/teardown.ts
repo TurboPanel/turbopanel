@@ -179,7 +179,7 @@ function planServerIds(plan: EnvironmentTeardownPlan): Set<string> {
  * a principal of a project with an environment pinned there or deployed there.
  * Run after the delete commits, so the deleted rows are no longer counted.
  */
-async function principalsStillOnServer(
+export async function principalsStillOnServer(
   db: Db,
   serverId: string,
   usernames: readonly string[]

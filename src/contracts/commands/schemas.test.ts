@@ -3872,7 +3872,7 @@ test('parseEnvironmentStopPayload round-trips retirePrincipals and rejects unsaf
     assertThrows(
       () => parseEnvironmentStopPayload({ ...base, retirePrincipals: [{ username }] }),
       Error,
-      'Invalid environment.stop retirePrincipals entry'
+      'Invalid retirePrincipals entry'
     )
   }
   assertThrows(

@@ -99,36 +99,31 @@ test('isUuid accepts v5-shaped ids and rejects garbage', () => {
 test('isServerPrincipalUsernameTaken short-circuits blank and hits/misses', async () => {
   assertEquals(await isServerPrincipalUsernameTaken({} as Db, 'org', '   '), false)
 
-  const hit = {
-    select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([{ id: 'p1' }]),
-            }),
-          }),
-        }),
-      }),
-    }),
-  } as unknown as Db
-  assertEquals(await isServerPrincipalUsernameTaken(hit, 'org', 'AppUser'), true)
-
-  const miss = {
-    select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([]),
-            }),
-          }),
-        }),
-      }),
-    }),
-  } as unknown as Db
-  assertEquals(await isServerPrincipalUsernameTaken(miss, 'org', 'free', 'exclude-me'), false)
+  assertEquals(
+    await isServerPrincipalUsernameTaken(poolProbeDb([{ id: 'p1' }]), 'org', 'AppUser'),
+    true
+  )
+  assertEquals(
+    await isServerPrincipalUsernameTaken(poolProbeDb([]), 'org', 'free', 'exclude-me'),
+    false
+  )
 })
+
+/**
+ * The organization name pool is one single-table probe (no joins): a row with
+ * no project, or a database login, counts the same as a system user.
+ */
+function poolProbeDb(rows: Array<{ id: string }>): Db {
+  return {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve(rows),
+        }),
+      }),
+    }),
+  } as unknown as Db
+}
 
 test('replaceTenancies deletes inserts and no-ops when unchanged', async () => {
   let deleted: string[] | null = null
@@ -282,32 +277,19 @@ test('isManagedUsernameTaken handles empty orgs and hits', async () => {
   assertEquals(await isManagedUsernameTaken({} as Db, [], 'app'), false)
   assertEquals(await isManagedUsernameTaken({} as Db, ['org'], '  '), false)
 
-  const hit = {
-    select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([{ id: 'p' }]),
-            }),
-          }),
-        }),
-      }),
-    }),
-  } as unknown as Db
-  assertEquals(await isManagedUsernameTaken(hit, ['org'], 'Root', 'exclude'), true)
+  assertEquals(
+    await isManagedUsernameTaken(poolProbeDb([{ id: 'p' }]), ['org'], 'Root', 'exclude'),
+    true
+  )
+  assertEquals(await isManagedUsernameTaken(poolProbeDb([]), ['org'], 'Root'), false)
 })
 
 test('resolveManagedAppliedUsername prefers free short name without suffix', async () => {
   const free = {
     select: () => ({
       from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([]),
-            }),
-          }),
+        where: () => ({
+          limit: () => Promise.resolve([]),
         }),
       }),
     }),
@@ -326,16 +308,12 @@ test('resolveManagedAppliedUsername prefers free short name without suffix', asy
   const takenThenFree = {
     select: () => ({
       from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => {
-                takenCalls += 1
-                // preferred taken, suffixed free
-                return Promise.resolve(takenCalls === 1 ? [{ id: 'x' }] : [])
-              },
-            }),
-          }),
+        where: () => ({
+          limit: () => {
+            takenCalls += 1
+            // preferred taken, suffixed free
+            return Promise.resolve(takenCalls === 1 ? [{ id: 'x' }] : [])
+          },
         }),
       }),
     }),
@@ -354,12 +332,8 @@ test('resolveManagedAppliedUsername suffix mode never returns the bare name', as
   const free = {
     select: () => ({
       from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([]),
-            }),
-          }),
+        where: () => ({
+          limit: () => Promise.resolve([]),
         }),
       }),
     }),
@@ -379,12 +353,8 @@ test('resolveManagedAppliedUsername throws when pattern cannot fit', async () =>
   const free = {
     select: () => ({
       from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([{ id: 'x' }]),
-            }),
-          }),
+        where: () => ({
+          limit: () => Promise.resolve([{ id: 'x' }]),
         }),
       }),
     }),
@@ -701,15 +671,11 @@ test('resolveManagedAppliedUsername returns a fresh suffix when candidate is tak
   const db = {
     select: () => ({
       from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => {
-                takenCalls += 1
-                return Promise.resolve([{ id: 'x' }])
-              },
-            }),
-          }),
+        where: () => ({
+          limit: () => {
+            takenCalls += 1
+            return Promise.resolve([{ id: 'x' }])
+          },
         }),
       }),
     }),

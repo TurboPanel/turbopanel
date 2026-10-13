@@ -307,14 +307,15 @@ test('copies that cannot be backed up are refused; a principal-style path is acc
         kind: 'directory',
         provider: 'path',
         path: (id: string) => `/srv/users/victim/volumes/${id}`,
-        principalUsername: 'acme',
+        principalUsername: 'intruder',
       },
-      // The same owner's tree, but not this storage's own directory.
+      // The same owner's tree, but not this storage's own directory. (A
+      // second principal name: one name per organization.)
       {
         kind: 'directory',
         provider: 'path',
-        path: '/srv/users/acme/volumes/another-storage',
-        principalUsername: 'acme',
+        path: '/srv/users/acmetwo/volumes/another-storage',
+        principalUsername: 'acmetwo',
       },
       {
         kind: 'directory',

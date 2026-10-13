@@ -208,8 +208,15 @@
     {
       "idx": 29,
       "version": "7",
-      "when": 1791900282864,
-      "tag": "0029_login_table",
+      "when": 1791901242009,
+      "tag": "0029_principal_name_pool_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1791904250847,
+      "tag": "0030_login_table",
       "breakpoints": true
     }
   ]

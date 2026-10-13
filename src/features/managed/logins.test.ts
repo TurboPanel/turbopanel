@@ -4,7 +4,7 @@
  *
  * The migration's backfill is replayed verbatim against temporary tables that
  * shadow `principal`, `binding` and `login` for one transaction, so the
- * statements that ship in `migrations/0029_login_table.sql` are the ones
+ * statements that ship in `migrations/0030_login_table.sql` are the ones
  * proven here on rows shaped the way the previous release wrote them.
  */
 
@@ -53,14 +53,14 @@ const test = Deno.test.bind(Deno)
 /** A stand-in for a sealed envelope; never a real credential. */
 const sealedFor = (tag: string) => `tpsecret.v1.${tag}`
 
-const MIGRATION = new URL('../../../migrations/0029_login_table.sql', import.meta.url)
+const MIGRATION = new URL('../../../migrations/0030_login_table.sql', import.meta.url)
 
 /** The migration's statements from its backfill on: INSERT, UPDATE, the duplicate guard, the unique index, comments. */
 async function backfillStatements(): Promise<string[]> {
   const text = await Deno.readTextFile(MIGRATION)
   const statements = text.split('--> statement-breakpoint').map((entry) => entry.trim())
   const start = statements.findIndex((entry) => entry.startsWith('-- backfill'))
-  if (start < 0) throw new TypeError('0029_login_table.sql has no backfill marker')
+  if (start < 0) throw new TypeError('0030_login_table.sql has no backfill marker')
   return statements.slice(start).filter((entry) => entry.length > 0)
 }
 
