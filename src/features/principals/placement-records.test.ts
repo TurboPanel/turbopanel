@@ -7,7 +7,6 @@ import {
   environment,
   organization,
   principal,
-  principalPlacement,
   project,
   server,
   service,
@@ -194,8 +193,11 @@ test('placements move pending -> present -> retiring -> absent and a present row
     await markPlacementsAbsent(db, serverId, [username])
     assertEquals((await states())[composePrincipalId], 'absent')
 
-    // A later deploy that brings the account back starts it over at pending.
+    // A later deploy that brings the account back starts it over at pending,
+    // and a late stop result cannot pull it back to absent.
     await recordPendingPlacements(db, serverId, inputs)
+    assertEquals((await states())[composePrincipalId], 'pending')
+    await markPlacementsAbsent(db, serverId, [username])
     assertEquals((await states())[composePrincipalId], 'pending')
 
     const listed = await listServerPlacements(db, serverId)
@@ -214,7 +216,6 @@ test('loadPrincipalUsage counts tenancies and placements on other servers only',
     await recordPendingPlacements(db, serverB, [
       { principalId: manualPrincipalId, home: '/srv/users/m', source: 'manual' },
     ])
-    await markPlacementsAbsent(db, serverB, [])
 
     const usage = await loadPrincipalUsage(db, [composePrincipalId, manualPrincipalId], serverA)
     assertEquals(usage.get(composePrincipalId), {
@@ -233,10 +234,12 @@ test('loadPrincipalUsage counts tenancies and placements on other servers only',
     })
 
     // An absent placement elsewhere no longer counts as a user.
-    await db
-      .update(principalPlacement)
-      .set({ state: 'absent' })
-      .where(eq(principalPlacement.serverId, serverB))
+    const [manualRow] = await db
+      .select({ appliedUsername: principal.appliedUsername })
+      .from(principal)
+      .where(eq(principal.id, manualPrincipalId))
+    await markPlacementsRetiring(db, serverB, [manualRow!.appliedUsername])
+    await markPlacementsAbsent(db, serverB, [manualRow!.appliedUsername])
     const after = await loadPrincipalUsage(db, [manualPrincipalId], serverA)
     assertEquals(after.get(manualPrincipalId)?.otherPlacements, 0)
   })

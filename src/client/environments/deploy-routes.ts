@@ -132,6 +132,7 @@ import {
 import { environment, project, server } from '../../db/schema.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import { principalHomeDir } from '../../lib/naming.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
 import {
   recordPendingPlacements,
   resolvePlacementInputs,
@@ -985,6 +986,27 @@ async function recordDeployPlacements(
   await recordPendingPlacements(tx, row.serverId, inputs)
 }
 
+/**
+ * Placements are bookkeeping: a deploy must never fail because of them. The
+ * write runs in a savepoint so a refused statement (an FK race on a principal
+ * deleted mid-flight) rolls back on its own and leaves the fan-out intact.
+ */
+async function recordDeployPlacementsBestEffort(
+  tx: Db,
+  environmentId: string,
+  row: PreparedServerDeploy
+): Promise<void> {
+  try {
+    await tx.transaction((inner) => recordDeployPlacements(inner, environmentId, row))
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    compatLogWarn(
+      'environments',
+      `placement record skipped for environment ${environmentId} on server ${row.serverId}: ${message}`
+    )
+  }
+}
+
 async function persistDeployFanOut(
   db: Db,
   params: DeployActor & {
@@ -1043,7 +1065,7 @@ async function persistDeployFanOut(
           reservedListenPorts: reservedPorts.get(row.serverId),
         })
         listenPortsByServer.set(row.serverId, deployListenPorts(createParams))
-        await recordDeployPlacements(tx, params.environmentId, row)
+        await recordDeployPlacementsBestEffort(tx, params.environmentId, row)
         return await createDeployCommand(tx, createParams)
       }
     )

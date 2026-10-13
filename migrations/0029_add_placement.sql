@@ -27,7 +27,7 @@ SELECT DISTINCT
 	reach."server_id",
 	'present',
 	'/srv/users/' || p."applied_username",
-	CASE WHEN p."metadata" ->> 'composeAlias' IS NOT NULL THEN 'compose' ELSE 'manual' END
+	CASE WHEN COALESCE(p."metadata" ->> 'composeAlias', '') <> '' THEN 'compose' ELSE 'manual' END
 FROM "principal" p
 JOIN (
 	SELECT e."project_id", e."server_id" FROM "environment" e WHERE e."server_id" IS NOT NULL

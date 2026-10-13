@@ -81,6 +81,10 @@ import {
 } from '../hierarchy-delete.ts'
 import { purgeServerForeignKeysForDelete } from './server-fk.ts'
 import {
+  isPrincipalUnused,
+  loadPrincipalUsage,
+} from '../../features/principals/placement-records.ts'
+import {
   loadPrincipalRemovalPlan,
   parsePrincipalRemovalChoices,
   PRINCIPAL_DELETE_REFUSED_CODE,
@@ -715,6 +719,27 @@ async function assertSystemEnvironmentIdleOrBlocked(
   return { systemEnvironmentIds }
 }
 
+async function stillUnusedPrincipalIds(
+  db: Db,
+  serverId: string,
+  principalIds: readonly string[]
+): Promise<string[]> {
+  if (principalIds.length === 0) return []
+  const usage = await loadPrincipalUsage(db, principalIds, serverId)
+  const unused = principalIds.filter((id) => {
+    const counts = usage.get(id)
+    return counts !== undefined && isPrincipalUnused(counts)
+  })
+  const kept = principalIds.filter((id) => !unused.includes(id))
+  if (kept.length > 0) {
+    compatLogWarn(
+      'servers',
+      `principal delete on server ${serverId} kept ${kept.join(', ')}: used again since the check`
+    )
+  }
+  return unused
+}
+
 async function deleteServerWithSystemSubtree(
   db: Db,
   serverId: string,
@@ -745,15 +770,16 @@ async function deleteServerWithSystemSubtree(
       )
       await purgeServerForeignKeysForDelete(tx, serverId)
       // Placements on this server go with it (cascade); a principal chosen
-      // for outright deletion goes too, and nothing else references it by now.
-      if (deletePrincipalIds.length > 0) {
+      // for outright deletion goes too. The usage check ran before the
+      // transaction, so it is repeated here: a tenancy or binding created in
+      // between keeps the identity (the default answer) rather than being
+      // cascaded away.
+      const stillUnused = await stillUnusedPrincipalIds(tx, serverId, deletePrincipalIds)
+      if (stillUnused.length > 0) {
         await tx
           .delete(principal)
           .where(
-            and(
-              inArray(principal.id, [...deletePrincipalIds]),
-              eq(principal.organizationId, organizationId)
-            )
+            and(inArray(principal.id, stillUnused), eq(principal.organizationId, organizationId))
           )
       }
       await tx.delete(server).where(eq(server.id, serverId))

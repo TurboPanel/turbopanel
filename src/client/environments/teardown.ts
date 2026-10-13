@@ -261,7 +261,6 @@ async function enqueueTeardownStop(
 ): Promise<void> {
   const { plan, serverId, retirePrincipals } = params
   const fabricNetworks = plan.fabricNetworksByServer.get(serverId) ?? []
-  await markPlacementsRetiringBestEffort(db, serverId, retirePrincipals)
   const record = await createCommandRecord(db, {
     serverId,
     actorType: 'user',
@@ -298,6 +297,9 @@ async function enqueueTeardownStop(
     })
     throw new Error('Command queue unavailable')
   }
+  // Only once the stop is on its way: a row marked before a failed enqueue
+  // would say `retiring` about an account nothing is retiring.
+  await markPlacementsRetiringBestEffort(db, serverId, retirePrincipals)
 }
 
 /**

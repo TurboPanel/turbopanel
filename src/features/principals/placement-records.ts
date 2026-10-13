@@ -182,7 +182,9 @@ async function setPlacementStateByUsername(
   db: Db,
   serverId: string,
   usernames: ReadonlyArray<string>,
-  state: PlacementState
+  state: PlacementState,
+  /** Only rows in this state move; others are left alone. */
+  fromState?: PlacementState
 ): Promise<void> {
   if (usernames.length === 0) return
   const ids = await placementIdsByUsername(db, serverId, usernames)
@@ -190,7 +192,14 @@ async function setPlacementStateByUsername(
   await db
     .update(principalPlacement)
     .set({ state })
-    .where(and(inArray(principalPlacement.id, ids), ne(principalPlacement.state, state)))
+    .where(
+      and(
+        inArray(principalPlacement.id, ids),
+        fromState === undefined
+          ? ne(principalPlacement.state, state)
+          : eq(principalPlacement.state, fromState)
+      )
+    )
 }
 
 /** A stop naming these accounts in `retirePrincipals` is queued for `serverId`. */
@@ -203,7 +212,9 @@ export function markPlacementsRetiring(
 }
 
 /**
- * That stop succeeded. Best effort by construction: the daemon logs a refused
+ * That stop succeeded. Only a `retiring` row moves: a stop result that lands
+ * after a newer deploy already re-recorded the account `pending` must not
+ * undo it. Best effort by construction: the daemon logs a refused
  * `principal-remove` and keeps the account while the stop itself succeeds,
  * and the stop result does not say which accounts went.
  */
@@ -212,7 +223,7 @@ export function markPlacementsAbsent(
   serverId: string,
   usernames: ReadonlyArray<string>
 ): Promise<void> {
-  return setPlacementStateByUsername(db, serverId, usernames, 'absent')
+  return setPlacementStateByUsername(db, serverId, usernames, 'absent', 'retiring')
 }
 
 export type ServerPlacementRow = {

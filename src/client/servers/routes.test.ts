@@ -43,7 +43,7 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import { recordPendingPlacements } from '../../features/principals/placement-records.ts'
-import { PRINCIPAL_DELETE_REFUSED_CODE } from './principal-removal.ts'
+import { PRINCIPAL_DELETE_REFUSED_CODE, PRINCIPAL_NOT_ON_SERVER_CODE } from './principal-removal.ts'
 import * as hierarchyDelete from '../hierarchy-delete.ts'
 import * as systemHierarchy from '../../features/system/hierarchy.ts'
 import {
@@ -4531,6 +4531,43 @@ test('DELETE /servers/:id keeps principals by default and deletes a free one on 
         .from(principalPlacement)
         .where(eq(principalPlacement.serverId, serverId))
       assertEquals(placements.length, 0)
+    })
+  })
+})
+
+test('DELETE /servers/:id answers 400 for a malformed principals list or a principal not on the server', async () => {
+  await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    await withPlacedPrincipals(db, organizationId, serverId, async () => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const send = (body: unknown) =>
+        app.request(`/servers/${serverId}`, {
+          method: 'DELETE',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        })
+
+      const malformed = await send({ principals: [{ principalId: 'x', action: 'purge' }] })
+      assertEquals(malformed.status, 400)
+
+      const ghost = crypto.randomUUID()
+      const notOnServer = await send({ principals: [{ principalId: ghost, action: 'keep' }] })
+      assertEquals(notOnServer.status, 400)
+      const body = (await notOnServer.json()) as {
+        code: string
+        principals: Array<{ principalId: string; reason: string }>
+      }
+      assertEquals(body.code, PRINCIPAL_NOT_ON_SERVER_CODE)
+      assertEquals(body.principals, [{ principalId: ghost, reason: 'not_on_server' }])
+
+      const remaining = await db
+        .select({ id: server.id })
+        .from(server)
+        .where(eq(server.id, serverId))
+      assertEquals(remaining.length, 1)
     })
   })
 })

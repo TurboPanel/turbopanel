@@ -103,7 +103,6 @@ test('resolvePrincipalRemovalRefusals names principals that are not on the serve
 
 test('another placement elsewhere blocks outright delete', () => {
   const plan = [entry('shared', { usedBy: { ...emptyPrincipalUsage(), otherPlacements: 1 } })]
-  assertEquals(plan[0]!.canDeleteOutright, false)
   assertEquals(
     resolvePrincipalRemovalRefusals(plan, [{ principalId: 'shared', action: 'delete' }]).map(
       (refusal) => refusal.reason
