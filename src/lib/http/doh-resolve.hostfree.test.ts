@@ -42,9 +42,9 @@ const json = (body: unknown, status = 200) =>
 
 test('asks the resolver with a redirect mode the Workers runtime accepts', async () => {
   await withFetch(
-    () => json({ Status: 0, Answer: [{ type: 1, data: '140.82.113.5' }] }),
+    () => json({ Status: 0, Answer: [{ type: 1, data: '203.0.113.5' }] }),
     async (seen) => {
-      assertEquals(await dohLookup('api.github.com', 'A'), ['140.82.113.5'])
+      assertEquals(await dohLookup('api.github.com', 'A'), ['203.0.113.5'])
       assertEquals(seen.length, 1)
       assertEquals(seen[0]!.url, `${DOH_ENDPOINT}?name=api.github.com&type=A`)
       // Workers only accept 'follow' or 'manual'; 'error' throws before sending.
