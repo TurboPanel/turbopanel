@@ -1,6 +1,54 @@
 import { buildResourceCrudPaths, clientErrorJson, resourceErrorResponses } from './shared.ts'
 
 export const repositorySchemas = {
+  RepositoryInspection: {
+    type: 'object',
+    required: ['commitSha', 'via', 'files', 'entries'],
+    properties: {
+      commitSha: { type: 'string' },
+      via: { type: 'string', enum: ['provider', 'daemon'] },
+      files: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['path', 'found'],
+          properties: {
+            path: { type: 'string' },
+            found: { type: 'boolean' },
+            content: { type: 'string' },
+            bytes: { type: 'integer' },
+            reason: { type: 'string', enum: ['not_found', 'too_large', 'not_a_file', 'binary'] },
+          },
+        },
+      },
+      entries: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['path', 'kind'],
+          properties: {
+            path: { type: 'string' },
+            kind: { type: 'string', enum: ['file', 'dir'] },
+            bytes: { type: 'integer' },
+          },
+        },
+      },
+    },
+  },
+  RepositoryRefError: {
+    type: 'object',
+    required: ['ok', 'error', 'code', 'message', 'ref'],
+    description:
+      '`error` and `code` carry the same code (`error` is the code everywhere on this ' +
+      'surface); `message` is a sentence fit to show; `ref` is the name that was asked for.',
+    properties: {
+      ok: { type: 'boolean', const: false },
+      error: { type: 'string', enum: ['ref_not_found', 'invalid_ref'] },
+      code: { type: 'string', enum: ['ref_not_found', 'invalid_ref'] },
+      message: { type: 'string' },
+      ref: { type: 'string' },
+    },
+  },
   OrgForge: {
     type: 'object',
     description:
@@ -706,6 +754,72 @@ export const repositoryPaths = {
           description: 'source_referenced_by_compose',
           content: { 'application/json': { schema: clientErrorJson } },
         },
+      },
+    },
+  },
+  [`${repositoryIdPath}/inspect`]: {
+    get: {
+      tags: ['Repositories'],
+      summary: 'Read what is in a connected repository',
+      description:
+        'Reads a fixed set of filenames and one directory listing at a ref, through the ' +
+        'provider API first and a connected server second. A ref the repository does not ' +
+        'have is a 404 `ref_not_found`; a name git would refuse is a 400 `invalid_ref`, ' +
+        'answered without contacting the provider or a server. Leaving `ref` out reads the ' +
+        "repository's default branch.",
+      security,
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        {
+          name: 'ref',
+          in: 'query',
+          required: false,
+          schema: { type: 'string', maxLength: 250 },
+          description: 'Branch, tag or commit. Omit for the default branch.',
+        },
+        {
+          name: 'listPath',
+          in: 'query',
+          required: false,
+          schema: { type: 'string' },
+          description: 'Directory the `entries` listing reads; default the repository root.',
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'What the read found',
+          content: {
+            'application/json': { schema: { $ref: '#/components/schemas/RepositoryInspection' } },
+          },
+        },
+        '400': {
+          description:
+            '`invalid_ref` (body: RepositoryRefError), `ref_required`, or `invalid_list_path`',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [{ $ref: '#/components/schemas/RepositoryRefError' }, clientErrorJson],
+              },
+            },
+          },
+        },
+        '404': {
+          description: '`ref_not_found` (body: RepositoryRefError), or no such repository',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [{ $ref: '#/components/schemas/RepositoryRefError' }, clientErrorJson],
+              },
+            },
+          },
+        },
+        '502': {
+          description:
+            'The provider or the connected server failed (`source_read_failed`, `failed`, ' +
+            '`timeout`). `message` is a plain sentence; raw git output is logged, not returned.',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        ...resourceErrorResponses({}),
       },
     },
   },

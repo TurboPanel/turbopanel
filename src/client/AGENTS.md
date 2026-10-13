@@ -623,3 +623,15 @@ id)` order. `resolveOneFromCaches` walks the up list first; a down network is
   authorization (OAuth) during installation_ and set the _Callback URL_ to
   `<origin>/api/client/v1/repositories/github/callback` — or every install ends
   in `install_authorization_required`.
+- **Repository inspect refs (client surface):** `GET /repositories/:id/inspect?ref=`
+  answers a ref the repository does not have with **404**
+  `{ ok: false, error: 'ref_not_found', code: 'ref_not_found', message, ref }`
+  — not the 502 an upstream failure gets. The signal is GitHub's **422** on the
+  commit lookup, GitLab's 404 "Commit Not Found" (its "Project Not Found" is a
+  different 404), or git's "couldn't find remote ref" from a connected server.
+  A named ref git would refuse (`isValidGitRefName`, the `check-ref-format`
+  rules; a blank `?ref=` included) is **400** `invalid_ref`, same body, before
+  any provider or server is contacted; leaving `ref` out still means the default
+  branch. Daemon-lane failures return a fixed sentence in `message`; git's
+  stderr goes to the log (`repository-inspect`), never the response. The UI
+  debounces the branch field, so a half-typed name is not looked up at all.
