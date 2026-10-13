@@ -15,8 +15,19 @@ export type HyperdriveBinding = {
   connectionString: string;
 };
 
-/** Hyperdrive — `max: 1` connection per client (one client is created **per request**, not per isolate — see below). `prepare: true` enables protocol-level prepared statements, which Hyperdrive requires to cache parameterized `SELECT` queries on the `HYPERDRIVE_CACHED` binding. Hyperdrive manages prepared-statement lifecycle across its connection pool, so session-scoped state is not a concern here. */
-const PG_OPTS_WORKERS = { prepare: true as const, max: 1 };
+/**
+ * Hyperdrive — `max: 1` connection per client (one client is created **per request**, not per isolate — see below).
+ *
+ * `fetch_types: false` skips postgres.js's `pg_catalog.pg_type` lookup, which otherwise runs as
+ * an extra statement on every new connection (that is one per request here). Drizzle already
+ * (de)serializes the array columns (`cidr[]`, `inet[]`) itself, so nothing relies on it.
+ *
+ * `prepare: true` only affects queries sent through the postgres.js tagged template. Drizzle
+ * runs every query through `client.unsafe()`, which defaults to `prepare: false`, so on its own
+ * this flag does **not** make drizzle statements cacheable. The cached binding opts in per
+ * query via {@link withPreparedUnsafe} (see `createWorkersDb`'s `preparedStatements`).
+ */
+const PG_OPTS_WORKERS = { prepare: true as const, fetch_types: false as const, max: 1 };
 
 /**
  * Default connect/statement bounds for the Workers/Hyperdrive path. A stalled
@@ -35,6 +46,13 @@ export type WorkersDbOptions = {
   statementTimeoutMs?: number;
   /** Release idle pooled connections (postgres.js `idle_timeout`, seconds). Omit on long-lived request isolates. */
   idleTimeoutSeconds?: number;
+  /**
+   * Send every drizzle statement as a named prepared statement (`unsafe(..., { prepare: true })`).
+   * Hyperdrive only caches named (extended-protocol) statements, so this is what makes the
+   * `HYPERDRIVE_CACHED` binding able to cache anything. Set only for the cached client, which
+   * runs the approved read models.
+   */
+  preparedStatements?: boolean;
 };
 
 /** `prepare` is intentionally a separate decision for the Deno/self-hosted path (direct Postgres, no Hyperdrive). */
@@ -89,7 +107,27 @@ export function createWorkersDb(
         DEFAULT_WORKERS_STATEMENT_TIMEOUT_MS,
     },
   });
-  return drizzle(client, { schema });
+  return drizzle(
+    options.preparedStatements ? withPreparedUnsafe(client) : client,
+    { schema },
+  );
+}
+
+/**
+ * Wrap a postgres.js client so `unsafe()` (which drizzle uses for every query) sends named
+ * prepared statements. postgres.js spreads caller options after its `prepare: false` default,
+ * so passing `{ prepare: true }` is enough. Everything else is forwarded untouched.
+ */
+export function withPreparedUnsafe<T extends ReturnType<typeof postgres>>(client: T): T {
+  return new Proxy(client, {
+    get(target, prop, receiver) {
+      if (prop === "unsafe") {
+        return (query: string, args?: unknown[], opts?: Record<string, unknown>) =>
+          target.unsafe(query, (args ?? []) as never[], { prepare: true, ...opts });
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
 }
 
 const DATABASE_URL_REQUIRED = "TURBOPANEL_DATABASE_URL is required";

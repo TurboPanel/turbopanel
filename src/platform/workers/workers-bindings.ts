@@ -3,6 +3,7 @@ import {
   endDbConnection,
   type Db,
   type HyperdriveBinding,
+  type WorkersDbOptions,
 } from '../../db/connection.ts'
 import { createHyperdriveQueryCache } from '../../query-cache/hyperdrive-query-cache.ts'
 import { createPassthroughQueryCache } from '../../query-cache/passthrough-query-cache.ts'
@@ -35,7 +36,10 @@ export type WorkersRequestDbHandles = {
   queryCache: QueryCache | undefined
 }
 
-type WorkersDbFactory = (binding: HyperdriveBinding) => Db | undefined
+type WorkersDbFactory = (
+  binding: HyperdriveBinding,
+  options?: WorkersDbOptions
+) => Db | undefined
 
 let workersDbFactory: WorkersDbFactory = createWorkersDb
 
@@ -86,7 +90,7 @@ export function resolveWorkersCachedDb(
   env: CloudflareBindings
 ): ReturnType<typeof createWorkersDb> | undefined {
   if (env.HYPERDRIVE_CACHED) {
-    return workersDbFactory(env.HYPERDRIVE_CACHED) ?? undefined
+    return workersDbFactory(env.HYPERDRIVE_CACHED, { preparedStatements: true }) ?? undefined
   }
   return undefined
 }
