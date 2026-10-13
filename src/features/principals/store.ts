@@ -17,13 +17,17 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import {
+  binding,
   environment,
   managed,
   organization,
   principal,
+  PRINCIPAL_NAME_POOL_WHERE,
   project,
   replica,
+  secret,
   server,
+  storage,
   tenancy,
   workspace,
 } from '../../db/schema.ts'
@@ -31,6 +35,7 @@ import {
 export const PRINCIPAL_PROVIDERS = new Set(['server', 'postgres', 'mysql', 'redis', 'clickhouse'])
 export const SERVER_PRINCIPAL_PROVIDER = 'server'
 export const USERNAME_IN_USE_ERROR = 'username_in_use'
+export const PRINCIPAL_IN_USE_ERROR = 'principal_in_use'
 export const USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -39,10 +44,53 @@ export function isUuid(value: string): boolean {
 }
 
 /**
- * True when another server-provider principal in the organization already uses
- * this username (trimmed, case-insensitive) — as either its short `username`
- * or its `applied_username` (the name that lands on the host). Managed-engine
- * rows (`managed_id` set, `project_id` null) are excluded by the project join.
+ * True when a principal owned by one of `organizationIds` already holds `key`
+ * (lower-cased) as its typed `username` or its applied login. One pool per
+ * organization across system users and database logins; managed root and
+ * replication logins are outside it. Mirrors the partial unique indexes
+ * `uniq_principal_organization_*` so a collision answers 409 before the index
+ * refuses the insert.
+ */
+async function isPoolNameTaken(
+  db: Db,
+  organizationIds: readonly string[],
+  key: string,
+  excludePrincipalId?: string,
+  opts: {
+    /**
+     * Also count managed root and replication logins. An engine login must not
+     * collide with the cluster's own `postgres` / `root` / `tp_repl`, even
+     * though those names sit outside the organization pool.
+     */
+    includeManagedSystemLogins?: boolean
+  } = {}
+): Promise<boolean> {
+  // Pool plus root/replication logins is every principal of the org, so the
+  // managed probe simply drops the pool predicate.
+  const conditions = [
+    inArray(principal.organizationId, [...organizationIds]),
+    ...(opts.includeManagedSystemLogins ? [] : [PRINCIPAL_NAME_POOL_WHERE]),
+    sql`(lower(${principal.username}) = ${key} OR lower(${principal.appliedUsername}) = ${key})`,
+  ]
+  if (excludePrincipalId) {
+    conditions.push(ne(principal.id, excludePrincipalId))
+  }
+
+  const rows = await db
+    .select({ id: principal.id })
+    .from(principal)
+    .where(and(...conditions))
+    .limit(1)
+
+  return rows.length > 0
+}
+
+/**
+ * True when another principal in the organization already uses this username
+ * (trimmed, case-insensitive) — as either its short `username` or its
+ * `applied_username` (the name that lands on the host). Keyed on
+ * `principal.organization_id`, so a row with no project (tenancy-only, or a
+ * database login) counts too.
  */
 export async function isServerPrincipalUsernameTaken(
   db: Db,
@@ -52,25 +100,48 @@ export async function isServerPrincipalUsernameTaken(
 ): Promise<boolean> {
   const key = username.trim().toLowerCase()
   if (!key) return false
+  return await isPoolNameTaken(db, [organizationId], key, excludePrincipalId)
+}
 
-  const conditions = [
-    eq(workspace.organizationId, organizationId),
-    eq(principal.provider, SERVER_PRINCIPAL_PROVIDER),
-    sql`(lower(btrim(${principal.username})) = ${key} OR lower(btrim(${principal.appliedUsername})) = ${key})`,
-  ]
-  if (excludePrincipalId) {
-    conditions.push(ne(principal.id, excludePrincipalId))
+export type PrincipalReferences = {
+  /** Services that run as the principal (`tenancy`). */
+  services: number
+  /** Consumer services bound to the principal's engine login (`binding`). */
+  bindings: number
+  /** Storage entries owned by the principal. */
+  storage: number
+  /** Secrets owned by the principal. */
+  secrets: number
+}
+
+/** True when any count in `refs` is above zero. */
+export function isPrincipalReferenced(refs: PrincipalReferences): boolean {
+  return refs.services > 0 || refs.bindings > 0 || refs.storage > 0 || refs.secrets > 0
+}
+
+/**
+ * What still uses a principal. A delete is refused while any of these is
+ * non-zero: the row going away would strand the service, binding, storage
+ * entry or secret that names it, and the host account could not be removed
+ * anyway while something still runs as it.
+ */
+export async function countPrincipalReferences(
+  db: Db,
+  principalId: string
+): Promise<PrincipalReferences> {
+  const count = async (table: typeof tenancy | typeof binding | typeof storage | typeof secret) => {
+    const [row] = await db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(table)
+      .where(eq(table.principalId, principalId))
+    return row?.total ?? 0
   }
-
-  const rows = await db
-    .select({ id: principal.id })
-    .from(principal)
-    .innerJoin(project, eq(principal.projectId, project.id))
-    .innerJoin(workspace, eq(project.workspaceId, workspace.id))
-    .where(and(...conditions))
-    .limit(1)
-
-  return rows.length > 0
+  return {
+    services: await count(tenancy),
+    bindings: await count(binding),
+    storage: await count(storage),
+    secrets: await count(secret),
+  }
 }
 
 export async function replaceTenancies(
@@ -250,12 +321,21 @@ export async function ensureComposePrincipal(
     const raced = await findComposePrincipal(tx, input.projectId, input.alias)
     if (raced) return { principalId: raced, created: false }
 
-    const username = composeAliasShortUsername(input.alias)
+    const shortUsername = composeAliasShortUsername(input.alias)
     const { appliedUsername, nameScheme } = await resolveComposeAppliedUsername(
       tx,
       input.organizationId,
-      username
+      shortUsername
     )
+    // The typed name sits in the organization pool too. When another
+    // principal already holds the alias's short name (the same alias in a
+    // second project, say), the row keeps its derived login as the typed name
+    // as well; the alias itself lives in `metadata.composeAlias`.
+    const username =
+      appliedUsername !== shortUsername &&
+      (await isServerPrincipalUsernameTaken(tx, input.organizationId, shortUsername))
+        ? appliedUsername
+        : shortUsername
 
     const [row] = await tx
       .insert(principal)
@@ -474,7 +554,7 @@ export const REPLICATION_PASSWORD_LENGTH = 32
  * which returns the (possibly plural, possibly empty) set of orgs whose
  * servers currently host the cluster's replicas.
  */
-async function resolveManagedHomeOrganizationId(db: Db, managedId: string): Promise<string> {
+export async function resolveManagedHomeOrganizationId(db: Db, managedId: string): Promise<string> {
   const [row] = await db
     .select({ organizationId: workspace.organizationId })
     .from(managed)
@@ -588,13 +668,17 @@ export async function listManagedPrincipals(
 /**
  * Distinct non-null `server.organization_id` across the cluster's
  * `replica` servers (server owner — not the creating org, because a
- * server may host another org's cluster via grants).
+ * server may host another org's cluster via grants), plus the cluster's home
+ * organization when given: that is the org whose name pool the cluster's
+ * logins live in (`principal.organization_id`), so a name probe must see it
+ * even when every member server belongs to someone else.
  */
 export async function resolveManagedOwningOrganizationIds(
   db: Db,
   managedId: string,
   /** Prospective member server still being added (not yet in `replica`). */
-  extraServerIds: readonly string[] = []
+  extraServerIds: readonly string[] = [],
+  homeOrganizationId?: string
 ): Promise<string[]> {
   const memberOrgs = await db
     .selectDistinct({ organizationId: server.organizationId })
@@ -603,6 +687,7 @@ export async function resolveManagedOwningOrganizationIds(
     .where(and(eq(replica.managedId, managedId), isNotNull(server.organizationId)))
 
   const ids = new Set<string>()
+  if (homeOrganizationId) ids.add(homeOrganizationId)
   for (const row of memberOrgs) {
     if (row.organizationId) ids.add(row.organizationId)
   }
@@ -621,11 +706,12 @@ export async function resolveManagedOwningOrganizationIds(
 }
 
 /**
- * True when a managed-engine principal (`managed_id IS NOT NULL`) already uses
- * this username — short or applied — on any cluster whose member servers
- * belong to one of the given owning-organization ids (trimmed,
- * case-insensitive). Mirrors {@link isServerPrincipalUsernameTaken} for the
- * managed login namespace.
+ * True when a principal owned by one of the given organizations already uses
+ * this username, short or applied (trimmed, case-insensitive): the same
+ * organization pool {@link isServerPrincipalUsernameTaken} consults, plus the
+ * managed root and replication logins of those organizations' clusters, so an
+ * engine login can never be named after one. Callers pass the cluster's home
+ * organization alongside the owning ones.
  */
 export async function isManagedUsernameTaken(
   db: Db,
@@ -635,25 +721,9 @@ export async function isManagedUsernameTaken(
 ): Promise<boolean> {
   const key = username.trim().toLowerCase()
   if (!key || owningOrganizationIds.length === 0) return false
-
-  const conditions = [
-    isNotNull(principal.managedId),
-    inArray(server.organizationId, [...owningOrganizationIds]),
-    sql`(lower(btrim(${principal.username})) = ${key} OR lower(btrim(${principal.appliedUsername})) = ${key})`,
-  ]
-  if (excludePrincipalId) {
-    conditions.push(ne(principal.id, excludePrincipalId))
-  }
-
-  const rows = await db
-    .select({ id: principal.id })
-    .from(principal)
-    .innerJoin(replica, eq(principal.managedId, replica.managedId))
-    .innerJoin(server, eq(replica.serverId, server.id))
-    .where(and(...conditions))
-    .limit(1)
-
-  return rows.length > 0
+  return await isPoolNameTaken(db, owningOrganizationIds, key, excludePrincipalId, {
+    includeManagedSystemLogins: true,
+  })
 }
 
 /**
@@ -740,7 +810,12 @@ export async function ensureManagedReplicationPrincipal(
   }
 
   const preferred = params.preferredUsername ?? 'tp_repl'
-  const owningOrgIds = await resolveManagedOwningOrganizationIds(db, params.managedId)
+  const owningOrgIds = await resolveManagedOwningOrganizationIds(
+    db,
+    params.managedId,
+    [],
+    await resolveManagedHomeOrganizationId(db, params.managedId)
+  )
   await lockOrganizationsForUpdate(db, owningOrgIds)
   const appliedUsername = await resolveManagedAppliedUsername(
     db,

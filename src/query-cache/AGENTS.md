@@ -22,13 +22,13 @@ Read-through cache for **reviewed, read-only** Postgres read models. Permission 
 
 Workers must **not** fall back to the primary Hyperdrive binding as the cached connection. `resolveWorkersCachedDb()` returns a database only when `HYPERDRIVE_CACHED` is present; otherwise `resolveWorkersQueryCache` uses passthrough (no Hyperdrive caching).
 
-On Workers, Hyperdrive caching for approved read models relies on **`prepare: true`** on the postgres.js client (`PG_OPTS_WORKERS` in `src/db/connection.ts`). With `prepare: false`, Hyperdrive treats parameterized `SELECT`s as uncacheable. See **Workers Hyperdrive** in `../../AGENTS.md` (instance repo root). A source-scan regression test in `src/db/connection.test.ts` pins `prepare: true` so it cannot silently regress.
+On Workers, Hyperdrive only caches **named prepared statements**. Drizzle sends every query through postgres.js `unsafe()`, which defaults to `prepare: false` regardless of the client-level `prepare: true`, so the cached client is built with `preparedStatements: true` (`withPreparedUnsafe` in `src/db/connection.ts`, wired in `resolveWorkersCachedDb`), which passes `{ prepare: true }` per query. The primary `HYPERDRIVE` client stays unprepared. `PG_OPTS_WORKERS` also sets `fetch_types: false` so postgres.js does not run a `pg_type` lookup on every new connection. Source-scan and wrapper tests in `src/db/connection.test.ts` pin all three. See **Workers Hyperdrive** in `../../AGENTS.md`. Expect one distinct statement per `IN (...)` list length in `servers-list`.
 
 ### Hyperdrive binding ids
 
 | Env | `HYPERDRIVE_CACHED` | Notes |
 | --- | --- | --- |
-| `live` | real id (`d9c4…5d67`, `prod-cached`) | Caching enabled against prod Postgres |
+| `live` | real id (`536236e3…d61391`, `prod-cached`) | Caching enabled against prod Postgres |
 | `testing` | real id (dedicated `testing-cached` config) | Must point at the testing Postgres origin with caching enabled — **not** the placeholder (`0000…dev0`) and **not** the primary `HYPERDRIVE` id. Create or resolve via `CLOUDFLARE_API_TOKEN=… ./scripts/ensure-testing-hyperdrive-cached.sh --write-wrangler` when missing. |
 | top-level / `wrangler dev` / vitest | placeholder (`0000…dev0`) | Local dev/tests use passthrough when the binding is absent or placeholder. |
 

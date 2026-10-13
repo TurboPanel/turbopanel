@@ -11,6 +11,7 @@ import {
   principalIdsOnServer,
   reconcilePrincipalAccess,
   reconcilePrincipalsAccess,
+  retireDeletedPrincipal,
   serversForPrincipal,
 } from './reconcile.ts'
 
@@ -65,24 +66,39 @@ function recordingQueue(fail = false): CommandQueue & { envelopes: CommandEnvelo
   }
 }
 
+const MATERIAL_ROW = { id: PRINCIPAL, username: 'prin_1', options: null, password: null }
+
 /**
  * Join queries return `{ serverId, principalId }` so both `serversForPrincipal`
- * and `principalIdsOnServer` can share one shape. Empty `principalIds` keeps
- * `loadPrincipalMaterial` from issuing extra selects.
+ * and `principalIdsOnServer` can share one shape. The plain select answers
+ * `loadPrincipalMaterial` with `materialRows` (default: one account whenever
+ * there are join rows, so a server with accounts gets a non-empty set).
+ * `stillPlaced` answers `principalsStillOnServer` for `retireDeletedPrincipal`.
  */
 function reconcileDb(options: {
   joinRows?: Array<{ serverId: string; principalId: string }>
+  materialRows?: Array<typeof MATERIAL_ROW>
+  stillPlaced?: string[]
   insertEmpty?: boolean
 }): Db {
   const joinRows = options.joinRows ?? []
   const created = commandRow()
-  const failed = commandRow({ status: 'failed', errorMessage: 'Failed to enqueue principals reconcile' })
+  const failed = commandRow({
+    status: 'failed',
+    errorMessage: 'Failed to enqueue principals reconcile',
+  })
+  // `loadPrincipalMaterial` issues two plain selects per server (accounts,
+  // then their keys); the first of each pair carries the material.
+  let plainSelects = 0
+  const nextPlainSelect = () =>
+    plainSelects++ % 2 === 0
+      ? (options.materialRows ?? (joinRows.length > 0 ? [MATERIAL_ROW] : []))
+      : []
 
   const thenableValues = () => {
     const promise = Promise.resolve(undefined)
     return Object.assign(promise, {
-      returning: () =>
-        Promise.resolve(options.insertEmpty ? [] : [created]),
+      returning: () => Promise.resolve(options.insertEmpty ? [] : [created]),
     })
   }
 
@@ -94,7 +110,17 @@ function reconcileDb(options: {
             where: () => Promise.resolve(joinRows),
           }),
         }),
-        where: () => Promise.resolve([]),
+        where: () => Promise.resolve(nextPlainSelect()),
+      }),
+    }),
+    selectDistinct: () => ({
+      from: () => ({
+        innerJoin: () => ({
+          leftJoin: () => ({
+            where: () =>
+              Promise.resolve((options.stillPlaced ?? []).map((username) => ({ username }))),
+          }),
+        }),
       }),
     }),
     // createCommandRecord writes command + dispatch in one transaction.
@@ -141,25 +167,25 @@ test('principalIdsOnServer dedupes accounts materialized on one host', async () 
 })
 
 test('enqueuePrincipalsReconcile marks every server failed when the queue is missing', async () => {
-  const outcome = await enqueuePrincipalsReconcile(
-    reconcileDb({}),
-    undefined,
-    ACTOR,
-    [SERVER_A, SERVER_B],
-  )
+  const outcome = await enqueuePrincipalsReconcile(reconcileDb({}), undefined, ACTOR, [
+    SERVER_A,
+    SERVER_B,
+  ])
   assertEquals(outcome, {
     queuedServerIds: [],
     failedServerIds: [SERVER_A, SERVER_B],
   })
 })
 
+const ON_SERVER_A = [{ serverId: SERVER_A, principalId: PRINCIPAL }]
+
 test('enqueuePrincipalsReconcile queues a full-state command per server', async () => {
   const queue = recordingQueue()
   const outcome = await enqueuePrincipalsReconcile(
-    reconcileDb({ joinRows: [] }),
+    reconcileDb({ joinRows: ON_SERVER_A }),
     queue,
     ACTOR,
-    [SERVER_A],
+    [SERVER_A]
   )
   assertEquals(outcome, { queuedServerIds: [SERVER_A], failedServerIds: [] })
   assertEquals(queue.envelopes.length, 1)
@@ -168,24 +194,75 @@ test('enqueuePrincipalsReconcile queues a full-state command per server', async 
   assertEquals(queue.envelopes[0]?.attempt, 1)
 })
 
-test('enqueuePrincipalsReconcile marks failed when enqueue throws', async () => {
+test('enqueuePrincipalsReconcile skips a server whose managed set is empty', async () => {
+  // An empty set would tell the daemon to remove every key file on the host.
+  const queue = recordingQueue()
+  const outcome = await enqueuePrincipalsReconcile(reconcileDb({ joinRows: [] }), queue, ACTOR, [
+    SERVER_A,
+  ])
+  assertEquals(outcome, { queuedServerIds: [], failedServerIds: [] })
+  assertEquals(queue.envelopes, [])
+})
+
+test('enqueuePrincipalsReconcile still sends an empty set when there is an account to retire', async () => {
+  const queue = recordingQueue()
   const outcome = await enqueuePrincipalsReconcile(
     reconcileDb({ joinRows: [] }),
-    recordingQueue(true),
+    queue,
     ACTOR,
     [SERVER_A],
+    { retirePrincipals: ['gone', 'gone'] }
+  )
+  assertEquals(outcome, { queuedServerIds: [SERVER_A], failedServerIds: [] })
+  assertEquals(queue.envelopes.length, 1)
+})
+
+test('enqueuePrincipalsReconcile marks failed when enqueue throws', async () => {
+  const outcome = await enqueuePrincipalsReconcile(
+    reconcileDb({ joinRows: ON_SERVER_A }),
+    recordingQueue(true),
+    ACTOR,
+    [SERVER_A]
   )
   assertEquals(outcome, { queuedServerIds: [], failedServerIds: [SERVER_A] })
 })
 
 test('enqueuePrincipalsReconcile marks failed when command insert is empty', async () => {
   const outcome = await enqueuePrincipalsReconcile(
-    reconcileDb({ joinRows: [], insertEmpty: true }),
+    reconcileDb({ joinRows: ON_SERVER_A, insertEmpty: true }),
     recordingQueue(),
     ACTOR,
-    [SERVER_A],
+    [SERVER_A]
   )
   assertEquals(outcome, { queuedServerIds: [], failedServerIds: [SERVER_A] })
+})
+
+test('retireDeletedPrincipal retires on servers nothing else still places the login on', async () => {
+  const queue = recordingQueue()
+  const outcome = await retireDeletedPrincipal(
+    reconcileDb({ joinRows: ON_SERVER_A }),
+    queue,
+    ACTOR,
+    { serverIds: [SERVER_A, SERVER_B], appliedUsername: 'gone' }
+  )
+  assertEquals(outcome, { queuedServerIds: [SERVER_A, SERVER_B], failedServerIds: [] })
+  assertEquals(
+    queue.envelopes.map((envelope) => envelope.serverId),
+    [SERVER_A, SERVER_B]
+  )
+})
+
+test('retireDeletedPrincipal keeps the account where another row still places it', async () => {
+  const queue = recordingQueue()
+  const outcome = await retireDeletedPrincipal(
+    reconcileDb({ joinRows: [], stillPlaced: ['gone'] }),
+    queue,
+    ACTOR,
+    { serverIds: [SERVER_A], appliedUsername: 'gone' }
+  )
+  // Nothing to retire and no managed set left to send: no command at all.
+  assertEquals(outcome, { queuedServerIds: [], failedServerIds: [] })
+  assertEquals(queue.envelopes, [])
 })
 
 test('reconcilePrincipalAccess resolves hosts then enqueues', async () => {
@@ -196,19 +273,14 @@ test('reconcilePrincipalAccess resolves hosts then enqueues', async () => {
     }),
     queue,
     ACTOR,
-    PRINCIPAL,
+    PRINCIPAL
   )
   assertEquals(outcome.queuedServerIds, [SERVER_A])
   assertEquals(outcome.failedServerIds, [])
 })
 
 test('reconcilePrincipalsAccess is a no-op for an empty id set', async () => {
-  const outcome = await reconcilePrincipalsAccess(
-    reconcileDb({}),
-    recordingQueue(),
-    ACTOR,
-    [],
-  )
+  const outcome = await reconcilePrincipalsAccess(reconcileDb({}), recordingQueue(), ACTOR, [])
   assertEquals(outcome, { queuedServerIds: [], failedServerIds: [] })
 })
 
@@ -224,7 +296,7 @@ test('reconcilePrincipalsAccess dedupes hosts across principals', async () => {
     }),
     queue,
     ACTOR,
-    [PRINCIPAL, 'prin-2'],
+    [PRINCIPAL, 'prin-2']
   )
   assertEquals(outcome.queuedServerIds, [SERVER_A, SERVER_B])
   assertEquals(outcome.failedServerIds, [])

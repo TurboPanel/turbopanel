@@ -179,9 +179,15 @@
     },
     {
       "idx": 29,
-      "tag": "0029_add_placement",
-      "when": 1791900284022,
-      "sha256": "c358966ce0842adbc8c0d03422442e3f4f0bebe8726b8ed92f3fc8b918782590"
+      "tag": "0029_principal_name_pool_unique",
+      "when": 1791901242009,
+      "sha256": "03f32ddb09338e03ea948fb3efa3d45e92e3880e9dc5d92cda7e39e196995b8c"
+    },
+    {
+      "idx": 30,
+      "tag": "0030_add_placement",
+      "when": 1791904226638,
+      "sha256": "87abe6795340c44d27f34231fc6227152e389792ab21a8bed724999426c815a2"
     }
   ]
 }

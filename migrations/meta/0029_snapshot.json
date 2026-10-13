@@ -1,5 +1,5 @@
 {
-  "id": "debdd7d0-ed13-45b7-a07e-51da99380149",
+  "id": "81580356-b755-4a70-8efd-073f1cc12b7e",
   "prevId": "375d4a2a-6d3d-4685-9e7a-4dff33c3a554",
   "version": "7",
   "dialect": "postgresql",
@@ -7132,6 +7132,50 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "uniq_principal_organization_username": {
+          "name": "uniq_principal_organization_username",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "lower(\"username\")",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "coalesce(metadata ->> 'managedRoot', '') <> 'true' AND coalesce(metadata ->> 'managedReplication', '') <> 'true'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_principal_organization_applied_username": {
+          "name": "uniq_principal_organization_applied_username",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "lower(\"applied_username\")",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "coalesce(metadata ->> 'managedRoot', '') <> 'true' AND coalesce(metadata ->> 'managedReplication', '') <> 'true'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -7194,166 +7238,6 @@
         "principal_applied_username_format_check": {
           "name": "principal_applied_username_format_check",
           "value": "(char_length((applied_username)::text) >= 1) AND (char_length((applied_username)::text) <= 255) AND ((applied_username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.placement": {
-      "name": "placement",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "uuidv7()"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "principal_id": {
-          "name": "principal_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "server_id": {
-          "name": "server_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "uid": {
-          "name": "uid",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "gid": {
-          "name": "gid",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "home": {
-          "name": "home",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source": {
-          "name": "source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "idx_placement_server_id": {
-          "name": "idx_placement_server_id",
-          "columns": [
-            {
-              "expression": "server_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uniq_placement_server_uid": {
-          "name": "uniq_placement_server_uid",
-          "columns": [
-            {
-              "expression": "server_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "uid",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"placement\".\"uid\" IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "placement_principal_id_principal_id_fk": {
-          "name": "placement_principal_id_principal_id_fk",
-          "tableFrom": "placement",
-          "tableTo": "principal",
-          "columnsFrom": [
-            "principal_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "placement_server_id_server_id_fk": {
-          "name": "placement_server_id_server_id_fk",
-          "tableFrom": "placement",
-          "tableTo": "server",
-          "columnsFrom": [
-            "server_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uniq_placement_principal_server": {
-          "name": "uniq_placement_principal_server",
-          "nullsNotDistinct": false,
-          "columns": [
-            "principal_id",
-            "server_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "placement_state_check": {
-          "name": "placement_state_check",
-          "value": "state IN ('pending', 'present', 'retiring', 'absent')"
-        },
-        "placement_source_check": {
-          "name": "placement_source_check",
-          "value": "source IN ('compose', 'manual', 'storage')"
         }
       },
       "isRLSEnabled": false

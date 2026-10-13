@@ -31,6 +31,7 @@ import {
   listManagedPrincipals,
   lockOrganizationsForUpdate,
   resolveManagedAppliedUsername,
+  resolveManagedHomeOrganizationId,
   resolveManagedOwningOrganizationIds,
   rotatePrincipalPassword,
   USERNAME_IN_USE_ERROR,
@@ -732,7 +733,12 @@ async function insertManagedCreateTransaction(
 
   await ensureManagedPrimaryMember(tx, { managedId, serverId })
 
-  const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, managedId, [serverId])
+  const owningOrgIds = await resolveManagedOwningOrganizationIds(
+    tx,
+    managedId,
+    [serverId],
+    ctx.organizationId
+  )
   await lockOrganizationsForUpdate(tx, owningOrgIds)
 
   // Never plain, whatever the org scheme: the exposed root login is
@@ -1153,9 +1159,19 @@ async function hasManagedUsernameNamespaceConflict(
 ): Promise<boolean> {
   const clusterPrincipals = await listManagedPrincipals(db, managedId)
   return db.transaction(async (tx) => {
-    const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, managedId, [serverId])
+    const owningOrgIds = await resolveManagedOwningOrganizationIds(
+      tx,
+      managedId,
+      [serverId],
+      await resolveManagedHomeOrganizationId(tx, managedId)
+    )
     await lockOrganizationsForUpdate(tx, owningOrgIds)
     for (const entry of clusterPrincipals) {
+      // Root and replication logins never reach the shared ProxySQL frontend
+      // and every cluster carries one of each, so they are not probed.
+      if (isManagedRootPrincipal(entry.metadata) || isManagedReplicationPrincipal(entry.metadata)) {
+        continue
+      }
       // The applied login is what lands on the shared ProxySQL frontend —
       // that's the name that must be free in the new owner's namespace.
       if (await isManagedUsernameTaken(tx, owningOrgIds, entry.appliedUsername, entry.id)) {
@@ -1726,12 +1742,18 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         managedId: row.id,
         serverId: targetServerId,
       })
-      const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, row.id, [targetServerId])
+      const owningOrgIds = await resolveManagedOwningOrganizationIds(
+        tx,
+        row.id,
+        [targetServerId],
+        ctx.organizationId
+      )
       await lockOrganizationsForUpdate(tx, owningOrgIds)
-      // `plain`: the operator-typed name is the login and must be free
-      // org-wide. `partial` / `random`: the server derives a collision-free
-      // system name; the typed name stays the display name.
-      if (nameScheme === 'plain' && (await isManagedUsernameTaken(tx, owningOrgIds, username))) {
+      // The typed name must be free in the organization pool under every
+      // scheme: it is stored as `username`, which `uniq_principal_organization_username`
+      // keeps unique per org next to the applied login. Under `partial` /
+      // `random` the server then derives a collision-free login from it.
+      if (await isManagedUsernameTaken(tx, owningOrgIds, username)) {
         return { ok: false as const, error: USERNAME_IN_USE_ERROR }
       }
       const appliedUsername = await resolveManagedAppliedUsername(

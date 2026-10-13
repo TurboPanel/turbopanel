@@ -17,8 +17,7 @@ CREATE TABLE "placement" (
 ALTER TABLE "placement" ADD CONSTRAINT "placement_principal_id_principal_id_fk" FOREIGN KEY ("principal_id") REFERENCES "public"."principal"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "placement" ADD CONSTRAINT "placement_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "idx_placement_server_id" ON "placement" USING btree ("server_id" uuid_ops);--> statement-breakpoint
-CREATE UNIQUE INDEX "uniq_placement_server_uid" ON "placement" USING btree ("server_id","uid") WHERE "placement"."uid" IS NOT NULL;--> statement-breakpoint
--- Backfill from the implicit reach: a system principal exists on every server
+CREATE UNIQUE INDEX "uniq_placement_server_uid" ON "placement" USING btree ("server_id","uid") WHERE "placement"."uid" IS NOT NULL;-- Backfill from the implicit reach: a system principal exists on every server
 -- its project's environments are pinned to or deployed on. Host ids stay NULL
 -- until the daemon reports them.
 INSERT INTO "placement" ("principal_id", "server_id", "state", "home", "source")
