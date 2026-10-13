@@ -175,6 +175,62 @@ export type UpdateProgressMessage = {
   errorCode?: string
 }
 
+/** Where one deploy step stands. Twin of the daemon's `cell-messages.ts`. */
+export type CommandProgressStepState =
+  | 'ready' // already on the server, nothing to do (shown ticked from the start)
+  | 'pending' // planned, not started
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'skipped' // never ran because an earlier step failed or the deploy was cancelled
+
+export const COMMAND_PROGRESS_STEP_STATES = [
+  'ready',
+  'pending',
+  'running',
+  'done',
+  'failed',
+  'skipped',
+] as const
+
+export type CommandProgressStep = {
+  /** Stable id: a kind, optionally `:` and a target (`install-php:8.3`). */
+  id: string
+  /** Plain words, user facing, no vendor platform names. */
+  label: string
+  state: CommandProgressStepState
+  startedAt?: string
+  finishedAt?: string
+  /** Live one-line detail for the running step (the install step the server is on). */
+  detail?: string
+}
+
+/**
+ * The step plan of one command and where it stands. Every message carries
+ * the whole payload, so a lost one is harmless; the control plane stores the
+ * latest copy on `command.progress`.
+ */
+export type CommandProgress = {
+  version: 1
+  /** In execution order, at most {@link MAX_DAEMON_WS_PROGRESS_STEPS}. */
+  steps: CommandProgressStep[]
+  /** Id of the running step, or null when none is running. */
+  current: string | null
+  updatedAt: string
+}
+
+/**
+ * Fire-and-forget deploy progress. No correlated request: it must not
+ * complete the pending `command-dispatch` it describes.
+ */
+export type CommandProgressMessage = {
+  type: 'command-progress'
+  id: string
+  commandId: string
+  at: string
+  progress: CommandProgress
+}
+
 /**
  * JSON messages exchanged between the instance and daemon over /ws.
  *
@@ -736,6 +792,7 @@ export type DaemonMessage =
     }
   | InstanceUpdateMessage
   | UpdateProgressMessage
+  | CommandProgressMessage
   | InstanceUpdateResultMessage
   | {
       type: 'command-dispatch'
@@ -804,6 +861,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'update-result',
   'instance-update-result',
   'update-progress',
+  'command-progress',
   'command-ack',
   'command-outcome',
 ] as const)
@@ -822,6 +880,21 @@ export const MAX_DAEMON_WS_FEATURE_CHARS = 64
 
 /** Max characters for `update-progress.errorCode`. */
 export const MAX_DAEMON_WS_ERROR_CODE_CHARS = 64
+
+/** Max steps in one `command-progress.progress.steps`. */
+export const MAX_DAEMON_WS_PROGRESS_STEPS = 24
+
+/** Max characters for one `command-progress` step id. */
+export const MAX_DAEMON_WS_PROGRESS_STEP_ID_CHARS = 64
+
+/** Max characters for one `command-progress` step label. */
+export const MAX_DAEMON_WS_PROGRESS_LABEL_CHARS = 60
+
+/** Max characters for one `command-progress` step detail line. */
+export const MAX_DAEMON_WS_PROGRESS_DETAIL_CHARS = 200
+
+/** Max serialized size of one `command-progress.progress` payload. */
+export const MAX_DAEMON_WS_PROGRESS_JSON_BYTES = 8 * 1024
 
 /** Max characters for daemon-reported error strings. */
 export const MAX_DAEMON_WS_ERROR_CHARS = 4 * 1024
@@ -1014,6 +1087,89 @@ function validateUpdateProgressFields(record: Record<string, unknown>): string |
     validateOptionalBoundedString(record.detail, 'detail', MAX_DAEMON_WS_ERROR_CHARS) ??
     validateOptionalBoundedString(record.errorCode, 'errorCode', MAX_DAEMON_WS_ERROR_CODE_CHARS)
   )
+}
+
+/**
+ * Envelope of a `command-progress` frame. The `progress` payload itself is
+ * checked by {@link validateCommandProgress} at the handler: a daemon one
+ * release ahead may send a step shape this build does not know, and that
+ * must drop the payload, not the socket.
+ */
+function validateCommandProgressFields(record: Record<string, unknown>): string | null {
+  if (!isBoundedId(record.id)) return 'invalid id'
+  if (!isBoundedId(record.commandId)) return 'invalid commandId'
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
+  return null
+}
+
+const COMMAND_PROGRESS_STEP_STATE_SET = new Set<string>(COMMAND_PROGRESS_STEP_STATES)
+
+function validateBoundedString(value: unknown, field: string, maxChars: number): string | null {
+  if (typeof value !== 'string' || value.length === 0) return `invalid ${field}`
+  if (value.length > maxChars) return `${field} exceeds max length`
+  return null
+}
+
+function validateCommandProgressStep(value: unknown, index: number): string | null {
+  if (!isRecord(value)) return `invalid step ${index}`
+  if (typeof value.state !== 'string' || !COMMAND_PROGRESS_STEP_STATE_SET.has(value.state)) {
+    return `invalid step ${index} state`
+  }
+  return (
+    validateBoundedString(value.id, `step ${index} id`, MAX_DAEMON_WS_PROGRESS_STEP_ID_CHARS) ??
+    validateBoundedString(value.label, `step ${index} label`, MAX_DAEMON_WS_PROGRESS_LABEL_CHARS) ??
+    validateOptionalBoundedString(
+      value.detail,
+      `step ${index} detail`,
+      MAX_DAEMON_WS_PROGRESS_DETAIL_CHARS
+    ) ??
+    validateOptionalIsoTimestamp(value.startedAt, `step ${index} startedAt`) ??
+    validateOptionalIsoTimestamp(value.finishedAt, `step ${index} finishedAt`)
+  )
+}
+
+/**
+ * Shape and size of one {@link CommandProgress} payload. `null` when it is
+ * acceptable, otherwise the reason. Steps are capped at
+ * {@link MAX_DAEMON_WS_PROGRESS_STEPS}, every string at its own cap, and the
+ * whole payload at {@link MAX_DAEMON_WS_PROGRESS_JSON_BYTES}.
+ */
+export function validateCommandProgress(value: unknown): string | null {
+  if (!isRecord(value)) return 'invalid progress'
+  if (value.version !== 1) return 'invalid progress version'
+  if (!isIsoTimestamp(value.updatedAt)) return 'invalid progress updatedAt'
+  if (value.current !== null && !isBoundedId(value.current)) return 'invalid progress current'
+  if (!Array.isArray(value.steps)) return 'invalid progress steps'
+  if (value.steps.length > MAX_DAEMON_WS_PROGRESS_STEPS) return 'progress steps exceed max entries'
+  return (
+    validateCommandProgressSteps(value.steps, value.current) ??
+    validateBoundedJson(value, MAX_DAEMON_WS_PROGRESS_JSON_BYTES, 'progress')
+  )
+}
+
+/**
+ * The plan as a whole: every step well formed, ids unique, at most one step
+ * running, and `current` naming exactly that step (or null when none runs).
+ */
+function validateCommandProgressSteps(steps: unknown[], current: unknown): string | null {
+  const ids = new Set<string>()
+  let running: string | null = null
+  for (const [index, step] of steps.entries()) {
+    const issue = validateCommandProgressStep(step, index)
+    if (issue) return issue
+    const { id, state } = step as CommandProgressStep
+    if (ids.has(id)) return `duplicate step id ${id}`
+    ids.add(id)
+    if (state !== 'running') continue
+    if (running !== null) return 'more than one running step'
+    running = id
+  }
+  return current === running ? null : 'progress current does not match the running step'
+}
+
+/** {@link validateCommandProgress} as a type guard. */
+export function isCommandProgress(value: unknown): value is CommandProgress {
+  return validateCommandProgress(value) === null
 }
 
 function validateAddressesResultFields(record: Record<string, unknown>): string | null {
@@ -1650,6 +1806,8 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateCommandOutcomeFields(record)
     case 'update-progress':
       return validateUpdateProgressFields(record)
+    case 'command-progress':
+      return validateCommandProgressFields(record)
     default:
       return `disallowed type ${String(record.type)}`
   }
@@ -2093,9 +2251,10 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
     case 'acme-issuance-event':
     case 'instance-acme-issuance-event':
     case 'update-progress':
+    case 'command-progress':
       // Fire-and-forget (or session setup). Not a correlated request.
-      // `update-progress` must stay in this list: it never completes a
-      // pending update.
+      // `update-progress` and `command-progress` must stay in this list:
+      // neither completes a pending update or command.
       return null
 
     case 'addresses-result':

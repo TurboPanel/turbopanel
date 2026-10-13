@@ -238,6 +238,20 @@ export type NtpSetCommandResult = {
  */
 export type PrincipalsReconcileCommandPayload = {
   principals: EnvironmentDeployPrincipalMaterial[]
+  /**
+   * Accounts the panel has deleted and the host should remove once the set
+   * above is applied (`tp-host principal-remove`, the same path a delete
+   * teardown's `environment.stop` takes). A name here may not also be in
+   * `principals`. Optional, additive; an older daemon ignores it.
+   */
+  retirePrincipals?: Array<{ username: string }>
+  /**
+   * Explicit opt-in for an **empty** `principals`. Without it the daemon
+   * prunes nothing on an empty set: an empty list is far more often a control
+   * plane that lost track of the server than a host that manages nobody.
+   * Never set by the control plane today.
+   */
+  allowEmpty?: boolean
 }
 
 /** Must stay in sync with the daemon `server.principals.reconcile` shape. */
@@ -246,6 +260,11 @@ export type PrincipalsReconcileCommandResult = {
   keysChanged: string[]
   keysRemoved: string[]
   sshdReloaded: boolean
+  /**
+   * Accounts from `retirePrincipals` the host removed. One it kept is named in
+   * `warnings`. Optional: an older daemon does not send it.
+   */
+  principalsRetired?: string[]
   /**
    * Host conditions that will stop a valid key from working and that TurboPanel
    * refuses to edit its way around (`AllowUsers`, `DenyGroups`, …). Reported so
@@ -587,7 +606,20 @@ export function parsePrincipalsReconcilePayload(value: unknown): PrincipalsRecon
     }
     seen.add(principal.username)
   }
-  return { principals }
+  const retirePrincipals = parseRetirePrincipals(value.retirePrincipals)
+  for (const entry of retirePrincipals ?? []) {
+    if (seen.has(entry.username)) {
+      throw new Error(`retirePrincipals names ${entry.username}, which is also in principals`)
+    }
+  }
+  if (value.allowEmpty !== undefined && typeof value.allowEmpty !== 'boolean') {
+    throw new TypeError('allowEmpty must be a boolean')
+  }
+  return {
+    principals,
+    ...(retirePrincipals === undefined ? {} : { retirePrincipals }),
+    ...(value.allowEmpty === undefined ? {} : { allowEmpty: value.allowEmpty }),
+  }
 }
 
 function parseStringArrayField(value: unknown, field: string): string[] {
@@ -612,6 +644,9 @@ export function parsePrincipalsReconcileResult(value: unknown): PrincipalsReconc
     keysChanged: parseStringArrayField(value.keysChanged, 'keysChanged'),
     keysRemoved: parseStringArrayField(value.keysRemoved, 'keysRemoved'),
     sshdReloaded: value.sshdReloaded,
+    ...(value.principalsRetired === undefined
+      ? {}
+      : { principalsRetired: parseStringArrayField(value.principalsRetired, 'principalsRetired') }),
     warnings: parseStringArrayField(value.warnings, 'warnings'),
   }
 }
@@ -4433,7 +4468,8 @@ function parseStopSiteReleases(
   return out
 }
 
-function parseStopRetirePrincipals(value: unknown): Array<{ username: string }> | undefined {
+/** `retirePrincipals[]` on `environment.stop` and `server.principals.reconcile`. */
+function parseRetirePrincipals(value: unknown): Array<{ username: string }> | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
     throw new TypeError('retirePrincipals must be an array')
@@ -4444,7 +4480,7 @@ function parseStopRetirePrincipals(value: unknown): Array<{ username: string }> 
       !isString(entry.username) ||
       !STOP_SITE_RELEASE_USERNAME_RE.test(entry.username)
     ) {
-      throw new Error('Invalid environment.stop retirePrincipals entry')
+      throw new Error('Invalid retirePrincipals entry')
     }
     return { username: entry.username }
   })
@@ -4489,7 +4525,7 @@ export function parseEnvironmentStopPayload(value: unknown): EnvironmentStopComm
   const ingressServices = parseStopIngressServices(value.ingressServices)
   const fabricNetworks = parseStopFabricNetworks(value.fabricNetworks)
   const siteReleases = parseStopSiteReleases(value.siteReleases)
-  const retirePrincipals = parseStopRetirePrincipals(value.retirePrincipals)
+  const retirePrincipals = parseRetirePrincipals(value.retirePrincipals)
   return {
     environmentId,
     projectId,

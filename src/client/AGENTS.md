@@ -43,7 +43,9 @@ changes.
   (`crashing` / `crashed` are **not served**: no restart count is recorded; an
   unknown filter is **400**), `limit` 1–100 (default 50, larger clamps),
   `offset`. Returns `{ ok, items, total, hasMore }`; `step` / `totalSteps` /
-  `crashCount` are always `null` until those are recorded. Gate as the members
+  `stepLabel` come from the daemon's step plan on `command.progress` (`null`
+  until it reports one); `crashCount` is always `null` until restart counts
+  are recorded. Gate as the members
   list: unreachable org or bad uuid **404**, no owner/manager rights **403**;
   rows are limited to `listVisible(server)` and to servers of the **path** org
   (never the active-org header). Reads `command` only (never `dispatch`); the
@@ -623,3 +625,15 @@ id)` order. `resolveOneFromCaches` walks the up list first; a down network is
   authorization (OAuth) during installation_ and set the _Callback URL_ to
   `<origin>/api/client/v1/repositories/github/callback` — or every install ends
   in `install_authorization_required`.
+- **Repository inspect refs (client surface):** `GET /repositories/:id/inspect?ref=`
+  answers a ref the repository does not have with **404**
+  `{ ok: false, error: 'ref_not_found', code: 'ref_not_found', message, ref }`
+  — not the 502 an upstream failure gets. The signal is GitHub's **422** on the
+  commit lookup, GitLab's 404 "Commit Not Found" (its "Project Not Found" is a
+  different 404), or git's "couldn't find remote ref" from a connected server.
+  A named ref git would refuse (`isValidGitRefName`, the `check-ref-format`
+  rules; a blank `?ref=` included) is **400** `invalid_ref`, same body, before
+  any provider or server is contacted; leaving `ref` out still means the default
+  branch. Daemon-lane failures return a fixed sentence in `message`; git's
+  stderr goes to the log (`repository-inspect`), never the response. The UI
+  debounces the branch field, so a half-typed name is not looked up at all.

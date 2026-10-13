@@ -3,7 +3,7 @@ import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
 import type { GitProvider, GitProviderSourceRow } from '../../features/git/git-provider.ts'
 import { createServerPresenceDb } from '../managed/server-status-test-db.ts'
-import { inspectRepository, INSPECT_PROBE_PATHS } from './inspect.ts'
+import { inspectRepository, INSPECT_PROBE_PATHS, isGitRefNotFoundMessage } from './inspect.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -22,9 +22,11 @@ const test = Deno.test.bind(Deno)
  * one without a status never got an HTTP answer and is therefore a reachability
  * problem the daemon may not share.
  */
-function shouldFallBackToDaemon(
-  read: { unsupported?: true; failure?: string; status?: number },
-): boolean {
+function shouldFallBackToDaemon(read: {
+  unsupported?: true
+  failure?: string
+  status?: number
+}): boolean {
   if (read.unsupported) return true
   if (read.failure === undefined) return false
   return read.status === undefined
@@ -39,14 +41,7 @@ test('INSPECT_PROBE_PATHS is a closed compose/app filename set', () => {
 test('INSPECT_PROBE_PATHS covers every compose filename the wizard ranks', () => {
   // The UI's lane ranking checks all four compose spellings; a spelling the
   // probe set misses is a repository the wizard silently mis-detects.
-  for (
-    const path of [
-      'docker-compose.yml',
-      'docker-compose.yaml',
-      'compose.yaml',
-      'compose.yml',
-    ]
-  ) {
+  for (const path of ['docker-compose.yml', 'docker-compose.yaml', 'compose.yaml', 'compose.yml']) {
     assertEquals(INSPECT_PROBE_PATHS.includes(path), true)
   }
 })
@@ -105,7 +100,7 @@ test('the generic provider answers unsupported rather than throwing', async () =
       },
       ref: 'main',
       paths: ['docker-compose.yml'],
-    },
+    }
   )
   assertEquals(read, { unsupported: true })
 })
@@ -120,9 +115,11 @@ const GIT_ROW: GitProviderSourceRow = {
   secretId: 'c1',
 }
 
-function inspectRegistry(
-  record: { status: string; result?: unknown; error?: string },
-): DaemonCellRegistry {
+function inspectRegistry(record: {
+  status: string
+  result?: unknown
+  error?: string
+}): DaemonCellRegistry {
   return {
     getCell: () => ({
       createRequestAndWait: () => Promise.resolve(record),
@@ -203,4 +200,67 @@ test('inspectRepository returns daemon files when the generic provider is unsupp
   assertEquals(outcome.via, 'daemon')
   assertEquals(outcome.commitSha, 'deadbeef')
   assertEquals(outcome.files[0]?.path, 'package.json')
+})
+
+function inspectGitRow(registry: DaemonCellRegistry, ref = 'l') {
+  return inspectRepository({
+    db: createServerPresenceDb('server-1', true),
+    registry,
+    dataEncryptionSecrets: null,
+    organizationId: 'org-1',
+    row: GIT_ROW,
+    ref,
+    serverIds: ['server-1'],
+  })
+}
+
+test('isGitRefNotFoundMessage knows what git says about a missing ref', () => {
+  assertEquals(isGitRefNotFoundMessage("fatal: couldn't find remote ref l"), true)
+  assertEquals(isGitRefNotFoundMessage("fatal: Couldn't find remote ref refs/heads/l"), true)
+  assertEquals(
+    isGitRefNotFoundMessage('warning: Remote branch l not found in upstream origin'),
+    true
+  )
+  assertEquals(isGitRefNotFoundMessage('fatal: repository not found'), false)
+  assertEquals(isGitRefNotFoundMessage('fatal: Authentication failed'), false)
+})
+
+test('inspectRepository answers 404 ref_not_found when git cannot find the ref', async () => {
+  // The production report: `?ref=l` while typing "live" came back as a 502
+  // carrying git's own stderr.
+  for (const registry of [
+    inspectRegistry({ status: 'failed', error: "fatal: couldn't find remote ref l\n" }),
+    inspectRegistry({
+      status: 'done',
+      result: { ok: false, error: "fatal: couldn't find remote ref l" },
+    }),
+  ]) {
+    const outcome = await inspectGitRow(registry)
+    if (outcome.ok) throw new TypeError('expected failure')
+    assertEquals(outcome, {
+      ok: false,
+      status: 404,
+      error: 'ref_not_found',
+      message: 'This repository has no branch, tag or commit called "l".',
+      ref: 'l',
+    })
+  }
+})
+
+test('inspectRepository keeps git stderr out of a genuine daemon failure', async () => {
+  const stderr = 'fatal: unable to access https://example.com/o/r.git/: Could not resolve host'
+  const outcome = await inspectGitRow(inspectRegistry({ status: 'failed', error: stderr }), 'main')
+  if (outcome.ok) throw new TypeError('expected failure')
+  assertEquals(outcome.status, 502)
+  assertEquals(outcome.error, 'failed')
+  assertEquals(outcome.message, 'The connected server could not read this repository.')
+  assertEquals(outcome.message.includes('fatal'), false)
+})
+
+test('inspectRepository gives a daemon timeout a plain sentence', async () => {
+  const outcome = await inspectGitRow(inspectRegistry({ status: 'expired' }), 'main')
+  if (outcome.ok) throw new TypeError('expected failure')
+  assertEquals(outcome.status, 502)
+  assertEquals(outcome.error, 'timeout')
+  assertEquals(outcome.message.includes('took too long'), true)
 })

@@ -2,6 +2,8 @@ import { assertEquals } from '@std/assert'
 import {
   DEFAULT_NATIVE_APP_DENO_SERIES,
   denoRuntimeSeries,
+  NEWEST_NATIVE_APP_NODE_SERIES,
+  newestRuntimeSeries,
   runtimeSeries,
 } from './runtime-registry.ts'
 
@@ -26,4 +28,16 @@ test('denoRuntimeSeries normalizes Deno pins to the major series', () => {
   assertEquals(denoRuntimeSeries('2'), '2')
   assertEquals(denoRuntimeSeries(''), DEFAULT_NATIVE_APP_DENO_SERIES)
   assertEquals(denoRuntimeSeries('latest'), DEFAULT_NATIVE_APP_DENO_SERIES)
+})
+
+test('an app with no Node pin runs the newest offered series, compared as numbers', () => {
+  assertEquals(NEWEST_NATIVE_APP_NODE_SERIES, '26')
+  assertEquals(newestRuntimeSeries('node'), '26')
+  assertEquals(newestRuntimeSeries('php'), '8.5')
+  assertEquals(newestRuntimeSeries('ruby'), undefined)
+  // The newest offered series is the highest number, not the last string.
+  assertEquals(
+    Math.max(...runtimeSeries('node').map(Number)),
+    Number(NEWEST_NATIVE_APP_NODE_SERIES)
+  )
 })

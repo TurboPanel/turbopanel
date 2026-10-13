@@ -723,7 +723,8 @@ layout & path model). Defaults and overrides are pinned by
 ## Database (Drizzle + Postgres.js)
 
 The instance uses **Drizzle ORM** over **postgres.js**. The Workers/Hyperdrive
-client uses `prepare: true` (see Workers Hyperdrive below); the Deno client uses
+client uses `prepare: true` and `fetch_types: false`, and the cached client also sends drizzle's
+`unsafe()` calls as named prepared statements (see Workers Hyperdrive below); the Deno client uses
 `prepare: false` (direct Postgres, no Hyperdrive). Connection factories live in
 `src/db/connection.ts`; schema in `src/db/schema.ts`; drizzle-kit config in
 `drizzle.config.mjs`. **Read `src/db/AGENTS.md` before touching schema or the
@@ -774,13 +775,18 @@ pooling/caching in this mode). **`TURBOPANEL_DATABASE_URL`** (or
 and may use different credentials than the Hyperdrive runtime user in
 production.
 
-The Workers DB client uses `prepare: true` on postgres.js. Hyperdrive has
-supported named prepared statements since June 2024 and manages their lifecycle
-across its internal connection pool — per-session state is not a concern.
-Setting `prepare: true` is **required** for Hyperdrive to cache parameterized
-`SELECT` queries on the `HYPERDRIVE_CACHED` binding; with `prepare: false`,
-Hyperdrive sends every query as a simple (unprepared) query and marks all
-parameterized reads as uncacheable.
+The Workers DB client uses `prepare: true` and `fetch_types: false` on
+postgres.js. Hyperdrive has supported named prepared statements since June 2024
+and manages their lifecycle across its internal connection pool, so per-session
+state is not a concern. Hyperdrive only caches named (extended-protocol)
+statements; unnamed ones are marked uncacheable. **`prepare: true` alone does
+not reach drizzle queries:** drizzle runs everything through `client.unsafe()`,
+whose own default is `prepare: false`. The `HYPERDRIVE_CACHED` client is
+therefore wrapped with `withPreparedUnsafe` (`createWorkersDb(..., {
+preparedStatements: true })`), which passes `{ prepare: true }` on each call.
+`fetch_types: false` drops the `pg_catalog.pg_type` lookup postgres.js would
+otherwise run on every new connection (one per request); drizzle parses the
+`cidr[]`/`inet[]` columns itself.
 
 #### `scripts/test-coverage.sh` is all-or-nothing without a local Postgres
 

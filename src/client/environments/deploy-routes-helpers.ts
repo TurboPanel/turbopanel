@@ -1,7 +1,7 @@
 import { attachWebMetadataToSites } from '../../features/hostings/hosting-web-env.ts'
 import { assignSiteListenPorts } from '../../features/compose/site.ts'
 import { assignNativeAppListenPorts } from '../../features/compose/native-app.ts'
-import { DEFAULT_NATIVE_APP_NODE_SERIES } from '../../contracts/runtime-registry.ts'
+import { NEWEST_NATIVE_APP_NODE_SERIES } from '../../contracts/runtime-registry.ts'
 import type {
   EnvironmentDeployComposeFile,
   EnvironmentDeployHosting,
@@ -681,7 +681,7 @@ function nodeVersionErrorBody(
     return {
       error: prepared.kind,
       composeServiceName: name,
-      message: `Could not read the repository of Node app "${name}" to find which Node version it needs: ${prepared.message}. Try again in a moment. ${pinHint(name, DEFAULT_NATIVE_APP_NODE_SERIES)} With that set, the repository is not read.`,
+      message: `Could not read the repository of Node app "${name}" to find which Node version it needs: ${prepared.message}. Try again in a moment. ${pinHint(name, NEWEST_NATIVE_APP_NODE_SERIES)} With that set, the repository is not read.`,
     }
   }
   if (prepared.kind === 'node_version_invalid') {
@@ -690,10 +690,10 @@ function nodeVersionErrorBody(
       composeServiceName: name,
       requested: prepared.requested,
       path: prepared.path,
-      message: `Node app "${name}": engines.node in ${prepared.path} is "${prepared.requested}", which is not a version range npm accepts (a range between two versions needs spaces around the dash, like "20 - 24"). Fix it in ${prepared.path}. ${pinHint(name, DEFAULT_NATIVE_APP_NODE_SERIES)}`,
+      message: `Node app "${name}": engines.node in ${prepared.path} is "${prepared.requested}", which is not a version range npm accepts (a range between two versions needs spaces around the dash, like "20 - 24"). Fix it in ${prepared.path}. ${pinHint(name, NEWEST_NATIVE_APP_NODE_SERIES)}`,
     }
   }
-  const newest = prepared.supported.at(-1) ?? DEFAULT_NATIVE_APP_NODE_SERIES
+  const newest = prepared.supported.at(-1) ?? NEWEST_NATIVE_APP_NODE_SERIES
   return {
     error: prepared.kind,
     composeServiceName: name,
