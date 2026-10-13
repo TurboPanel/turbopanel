@@ -2628,6 +2628,22 @@ const INBOUND_DISPATCH_CASES: ReadonlyArray<{
     correlatedResult: false,
   },
   {
+    // Fire-and-forget deploy progress: liveness, then a guarded command write.
+    name: 'command-progress',
+    frame: {
+      type: 'command-progress',
+      id: 'req-command-progress',
+      commandId: '00000000-0000-4000-8000-000000000010',
+      progress: {
+        version: 1,
+        steps: [{ id: 'fetch', label: 'Fetch the code', state: 'running' }],
+        current: 'fetch',
+        updatedAt: INBOUND_DISPATCH_AT,
+      },
+    },
+    correlatedResult: false,
+  },
+  {
     // Fire-and-forget; its handler is covered by the dedicated test below.
     name: 'acme-issuance-event',
     frame: {

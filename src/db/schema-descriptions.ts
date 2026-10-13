@@ -1231,6 +1231,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Allowlisted non-secret identifier bag (`managedId`, `environmentId`, `generation`) extracted by commands/context.ts so reads never need the dispatch payload.',
       result_summary:
         'Small bounded typed result reported by the daemon on completion (API field `result`); execution logs live in the execution-log store, not here.',
+      progress:
+        'Live step plan and current step the server reports during a deploy (`CommandProgress`); NULL until reported, finalised when the command ends.',
       error_code: 'Machine-readable terminal error code set when the command fails or times out.',
       error_message:
         'Human-readable terminal error text (API field `error`) set alongside `error_code`.',

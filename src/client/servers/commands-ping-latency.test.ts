@@ -23,6 +23,7 @@ function pingRecord(
     updatedAt: '2020-01-01T00:00:01.000Z',
     attempts: 1,
     result: null,
+    progress: null,
     queuedAt: null,
     dispatchStartedAt: null,
     sentAt: null,

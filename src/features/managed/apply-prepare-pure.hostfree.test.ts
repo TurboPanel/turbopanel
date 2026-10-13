@@ -485,6 +485,7 @@ function commandRecord(status: CommandStatus): CommandRecord {
     status,
     context: null,
     result: null,
+    progress: null,
     errorCode: null,
     errorMessage: null,
     errorLine: null,

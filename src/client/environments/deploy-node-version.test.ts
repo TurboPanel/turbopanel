@@ -221,7 +221,7 @@ test('an explicit compose nodeVersion wins and nothing is read', async () => {
   assertEquals(calls, [])
 })
 
-test('nothing in the repository leaves the series unset (daemon default)', async () => {
+test('nothing in the repository leaves the series unset (the daemon runs the newest)', async () => {
   const { read } = reader([])
   const result = await withNativeAppNodeVersions([app()], [source()], {
     mode: 'deploy',
@@ -231,10 +231,10 @@ test('nothing in the repository leaves the series unset (daemon default)', async
   })
   if ('kind' in result) throw new TypeError('expected apps')
   assertEquals('nodeVersion' in (result.apps[0] ?? {}), false)
-  assertEquals(result.views, [{ composeServiceName: 'web', nodeVersion: '24', source: 'default' }])
+  assertEquals(result.views, [{ composeServiceName: 'web', nodeVersion: '26', source: 'newest' }])
 })
 
-test('an app with no repository binding gets the default without a read', async () => {
+test('an app with no repository binding gets the newest series without a read', async () => {
   const { read, calls } = reader([])
   const result = await withNativeAppNodeVersions([app()], [], {
     mode: 'deploy',
@@ -243,7 +243,7 @@ test('an app with no repository binding gets the default without a read', async 
     offered: OFFERED,
   })
   if ('kind' in result) throw new TypeError('expected apps')
-  assertEquals(result.views[0]?.source, 'default')
+  assertEquals(result.views[0]?.source, 'newest')
   assertEquals(calls, [])
 })
 
@@ -412,13 +412,13 @@ test('a deploy refuses an unreadable repository instead of guessing', async () =
   assertEquals(response.body.error, 'node_version_unreadable')
   assertEquals(
     String(response.body.message).includes(
-      'add to service "web": x-turbopanel: { nodeVersion: "24" }'
+      'add to service "web": x-turbopanel: { nodeVersion: "26" }'
     ),
     true
   )
 })
 
-test('a rollback of an unreadable repository falls back to the default', async () => {
+test('a rollback of an unreadable repository falls back to the newest series', async () => {
   const rollback = { ...source(), rollbackToReleaseId: 'rel-0' } as EnvironmentDeploySource
   const warnings: NodeVersionWarning[] = []
   const result = await withNativeAppNodeVersions([app()], [rollback], {
@@ -428,7 +428,7 @@ test('a rollback of an unreadable repository falls back to the default', async (
     offered: OFFERED,
   })
   if ('kind' in result) throw new TypeError('expected apps')
-  assertEquals(result.views[0]?.source, 'default')
+  assertEquals(result.views[0]?.source, 'newest')
   assertEquals(warnings.length, 1)
 })
 
@@ -460,7 +460,7 @@ test('a rollback to a release that recorded no series still says what it did', a
     rollbackPins: { web: {} },
   })
   if ('kind' in result) throw new TypeError('expected apps')
-  assertEquals(result.views[0]?.source, 'default')
+  assertEquals(result.views[0]?.source, 'newest')
   assertEquals(warnings[0]?.message.includes('recorded no Node version'), true)
 })
 
@@ -488,7 +488,7 @@ test('a disabled app with an unreadable repository does not hold up the deploy',
     offered: OFFERED,
   })
   if ('kind' in result) throw new TypeError('expected apps')
-  assertEquals(result.views[0]?.source, 'default')
+  assertEquals(result.views[0]?.source, 'newest')
   assertEquals(warnings[0]?.message.includes('The app is disabled'), true)
 })
 
@@ -511,7 +511,7 @@ test('an engines.node npm would not accept is refused with a clear message', asy
   assertEquals(response.status, 422)
   assertEquals(
     response.body.message,
-    'Node app "web": engines.node in package.json is "20-24", which is not a version range npm accepts (a range between two versions needs spaces around the dash, like "20 - 24"). Fix it in package.json. To choose one yourself, add to service "web": x-turbopanel: { nodeVersion: "24" }.'
+    'Node app "web": engines.node in package.json is "20-24", which is not a version range npm accepts (a range between two versions needs spaces around the dash, like "20 - 24"). Fix it in package.json. To choose one yourself, add to service "web": x-turbopanel: { nodeVersion: "26" }.'
   )
 })
 
@@ -556,7 +556,7 @@ test('a deploy builds the commit the version files were read at', () => {
   )
 })
 
-test('every native app records the series it ran, the default when none was sent', () => {
+test('every native app records the series it ran, the newest offered series when none was sent', () => {
   assertEquals(
     [
       ...recordedNodeVersions([
@@ -566,7 +566,7 @@ test('every native app records the series it ran, the default when none was sent
     ],
     [
       ['web', '26'],
-      ['api', '24'],
+      ['api', '26'],
     ]
   )
   assertEquals(recordedNodeVersions(undefined).size, 0)
@@ -776,7 +776,7 @@ test('a deploy command records each native app series on its release row', () =>
     releases?.map((row) => [row.composeServiceName, row.nodeVersion]),
     [
       ['web', '26'],
-      ['api', '24'],
+      ['api', '26'],
       // Not a native app: nothing to record.
       ['blog', undefined],
     ]
@@ -820,6 +820,6 @@ test('a Deno app is never read for a Node series, and keeps its place among the 
         { composeServiceName: 'web' },
       ]),
     ],
-    [['web', '24']]
+    [['web', '26']]
   )
 })

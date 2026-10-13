@@ -28,6 +28,7 @@ import {
   persistUpgradeOutcome,
   persistUpgradeProgress,
 } from '../features/upgrades/persist.ts'
+import { recordCommandProgress } from '../features/commands/command-progress.ts'
 import { getDb } from '../db/connection.ts'
 import type { Db } from '../db/connection.ts'
 import { compatLogError, compatLogWarn } from '../lib/log-compat.ts'
@@ -304,6 +305,34 @@ async function handleUpdateProgressInbound(params: {
     errorCode: message.errorCode,
     requestId: message.id,
   })
+}
+
+/**
+ * Fire-and-forget deploy progress: liveness, then the step plan onto the
+ * command row (own server, still live). A bad payload is dropped, the socket
+ * stays up.
+ */
+async function handleCommandProgressInbound(params: {
+  cell: ReturnType<DaemonCellRegistry['getCell']>
+  db: Db
+  serverId: string
+  connectionId: string | undefined
+  message: Extract<DaemonMessage, { type: 'command-progress' }>
+}): Promise<void> {
+  const { cell, db, serverId, connectionId, message } = params
+  await cell.recordInbound({ connectionId, at: message.at })
+  const result = await recordCommandProgress(db, {
+    serverId,
+    commandId: message.commandId,
+    progress: message.progress,
+  })
+  if (result !== 'stored') {
+    cellTrace(`command-progress-${result}`, {
+      serverId,
+      conn: connectionId,
+      commandId: message.commandId,
+    })
+  }
 }
 
 async function handleDaemonPresenceInbound(params: {
@@ -671,6 +700,15 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
       return
     case 'update-progress':
       await handleUpdateProgressInbound({
+        cell,
+        db,
+        serverId,
+        connectionId,
+        message,
+      })
+      return
+    case 'command-progress':
+      await handleCommandProgressInbound({
         cell,
         db,
         serverId,

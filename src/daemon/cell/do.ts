@@ -43,6 +43,7 @@ import {
   handleBackupRunReport,
 } from '../../features/backups/run-report.ts'
 import { recordInstanceAcmeIssuance } from '../../features/install/instance-hostnames.ts'
+import { recordCommandProgress } from '../../features/commands/command-progress.ts'
 import {
   persistDaemonReachedTarget,
   persistUpgradeOutcome,
@@ -1825,6 +1826,26 @@ export class DaemonCellObject {
   }
 
   /**
+   * Fire-and-forget progress frames (`update-progress`, `command-progress`):
+   * liveness, then a projection write; neither completes a pending request.
+   * Returns true when handled.
+   */
+  async #handleProgressInbound(
+    attachment: { connectionId: string; serverId: string },
+    parsed: DaemonMessage
+  ): Promise<boolean> {
+    if (parsed.type === 'update-progress') {
+      await this.#handleUpdateProgressInbound(attachment, parsed)
+      return true
+    }
+    if (parsed.type === 'command-progress') {
+      await this.#handleCommandProgressInbound(attachment, parsed)
+      return true
+    }
+    return false
+  }
+
+  /**
    * Fire-and-forget upgrade progress. Records liveness, then writes the
    * matching step. Never enqueues.
    */
@@ -1861,6 +1882,31 @@ export class DaemonCellObject {
         requestId: parsed.id,
       })
     )
+  }
+
+  /**
+   * Fire-and-forget deploy progress. Records liveness, then stores the step
+   * plan on the command row when it belongs to this server and is still
+   * live. A payload that fails the shape check is dropped; the socket stays.
+   * Never enqueues.
+   */
+  async #handleCommandProgressInbound(
+    attachment: { connectionId: string; serverId: string },
+    parsed: { commandId: string; at: string; progress: unknown }
+  ): Promise<void> {
+    await this.#recordInboundRepairingPresence(attachment, parsed.at)
+    await this.#withProjectionDb('command-progress', attachment.serverId, async (db) => {
+      const result = await recordCommandProgress(db, {
+        serverId: attachment.serverId,
+        commandId: parsed.commandId,
+        progress: parsed.progress,
+      })
+      if (result !== 'stored') {
+        console.warn(
+          `daemon-cell event=command-progress-${result} serverId=${attachment.serverId} commandId=${parsed.commandId}`
+        )
+      }
+    })
   }
 
   /**
@@ -2005,10 +2051,7 @@ export class DaemonCellObject {
         return
       }
 
-      if (parsed.type === 'update-progress') {
-        await this.#handleUpdateProgressInbound(attachment, parsed)
-        return
-      }
+      if (await this.#handleProgressInbound(attachment, parsed)) return
 
       await this.#recordInboundRepairingPresence(attachment, parsed.at)
       await this.#handleInboundMessage(attachment.serverId, parsed, ws)

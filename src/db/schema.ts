@@ -1071,6 +1071,12 @@ export const command = pgTable(
     context: jsonb(),
     /** Bounded daemon result summary (was `result`). */
     resultSummary: jsonb('result_summary'),
+    /**
+     * Latest `command-progress` payload from the daemon (`CommandProgress`,
+     * `src/contracts/cell-protocol.ts`): the step plan and where it stands.
+     * Null until the daemon reports one; finalised on the terminal transition.
+     */
+    progress: jsonb(),
     errorCode: text('error_code'),
     errorMessage: text('error_message'),
     queuedAt: timestamp('queued_at', {
