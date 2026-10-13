@@ -36,10 +36,7 @@ export type WorkersRequestDbHandles = {
   queryCache: QueryCache | undefined
 }
 
-type WorkersDbFactory = (
-  binding: HyperdriveBinding,
-  options?: WorkersDbOptions
-) => Db | undefined
+type WorkersDbFactory = (binding: HyperdriveBinding, options?: WorkersDbOptions) => Db | undefined
 
 let workersDbFactory: WorkersDbFactory = createWorkersDb
 

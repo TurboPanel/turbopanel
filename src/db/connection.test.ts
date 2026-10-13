@@ -46,7 +46,7 @@ test('withPreparedUnsafe forces prepare: true on unsafe() and forwards the rest'
 
 test('resolveWorkersCachedDb asks for prepared statements; the primary does not', async () => {
   const source = await Deno.readTextFile(
-    new URL('../platform/workers/workers-bindings.ts', import.meta.url),
+    new URL('../platform/workers/workers-bindings.ts', import.meta.url)
   )
   assertEquals(/HYPERDRIVE_CACHED, \{ preparedStatements: true \}/.test(source), true)
   assertEquals(/workersDbFactory\(env\.HYPERDRIVE\)/.test(source), true)
