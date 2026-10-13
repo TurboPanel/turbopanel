@@ -196,7 +196,7 @@ export async function retireDeletedPrincipal(
       const kept = await principalsStillOnServer(db, serverId, [params.appliedUsername])
       ;(kept.has(params.appliedUsername) ? keep : retire).push(serverId)
     } catch {
-      // The row is already gone; a lookup failure keeps the account there
+      // The row is already gone; a lookup failure sends that server nothing
       // (never retire on a guess) and is reported, not thrown.
       failed.push(serverId)
     }

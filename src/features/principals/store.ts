@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, ne, or, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm'
 import {
   isReservedPrincipalUsername,
   MAX_PRINCIPAL_USERNAME_LENGTH,
@@ -65,11 +65,11 @@ async function isPoolNameTaken(
     includeManagedSystemLogins?: boolean
   } = {}
 ): Promise<boolean> {
+  // Pool plus root/replication logins is every principal of the org, so the
+  // managed probe simply drops the pool predicate.
   const conditions = [
     inArray(principal.organizationId, [...organizationIds]),
-    opts.includeManagedSystemLogins
-      ? or(PRINCIPAL_NAME_POOL_WHERE, isNotNull(principal.managedId))
-      : PRINCIPAL_NAME_POOL_WHERE,
+    ...(opts.includeManagedSystemLogins ? [] : [PRINCIPAL_NAME_POOL_WHERE]),
     sql`(lower(${principal.username}) = ${key} OR lower(${principal.appliedUsername}) = ${key})`,
   ]
   if (excludePrincipalId) {
