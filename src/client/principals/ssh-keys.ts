@@ -10,7 +10,7 @@
 
 import { and, asc, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { principal, sshKey, project, workspace } from '../../db/schema.ts'
+import { principal, sshKey } from '../../db/schema.ts'
 import { parseSshPublicKey } from '../../features/principals/ssh-public-key.ts'
 
 /**
@@ -204,7 +204,5 @@ export async function principalsWithFingerprint(
     })
     .from(sshKey)
     .innerJoin(principal, eq(principal.id, sshKey.principalId))
-    .innerJoin(project, eq(principal.projectId, project.id))
-    .innerJoin(workspace, eq(project.workspaceId, workspace.id))
-    .where(and(eq(workspace.organizationId, organizationId), eq(sshKey.fingerprint, fingerprint)))
+    .where(and(eq(principal.organizationId, organizationId), eq(sshKey.fingerprint, fingerprint)))
 }

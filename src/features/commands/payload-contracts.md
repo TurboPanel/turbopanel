@@ -361,6 +361,46 @@ running as it or in its slice, or a tree left under its `sites/`); a refusal is
 logged and the account kept, never a stop failure. An older daemon ignores the
 field.
 
+**`server.principals.reconcile` carries the same `retirePrincipals[]`** for a
+single deleted principal (`DELETE /projects/:projectId/principals/:id`, refused
+with `principal_in_use` while a service, binding, storage entry or secret still
+names it): the control plane names the applied login on every server the
+principal reached (`retireDeletedPrincipal`, except a server where another row
+still places that login) next to the surviving full set, and the daemon
+retires it after the set is applied, reporting it in `principalsRetired[]`.
+The control plane **never sends an empty `principals` set on its own**
+(`enqueuePrincipalsReconcile` skips such a server unless it has an account to
+retire there) and the daemon prunes no key file on an empty set without the
+explicit `allowEmpty: true`, which nothing sets today.
+
+**Account ids are allocated centrally and reported back.** A principal that has
+no uid/gid on any server yet takes one number from `principal_id_seq` when it is
+first placed (deploy prepare or a reconcile), recorded on its `placement` row;
+every later server gets the same number in `principalMaterial[]` /
+`principals[]`. An operator override on the principal wins; an account that
+already exists on a host is never renumbered (the control plane sends nothing
+for it until a report fills its row). `environment.deploy` and
+`server.principals.reconcile` results carry `principals[]` (`{ principalId, uid,
+gid }`, the ids the host actually has); an empty placement row is filled from it
+and a recorded id is never overwritten. When a host holds a requested id for
+another account, the daemon refuses before creating anything with an error
+starting `principal_id_taken kind=uid|gid id=<n> principalId=<id>`; if no
+placement of that principal is `present`, the control plane forgets the id on
+the refusing server so the next deploy or reconcile takes the next free number.
+
+Ids the control plane chose are marked `idSource: 'central'` in the principal
+material (also on `sites[].principal` and `sourceMaterial[].principal`); an
+operator override carries no `idSource` and is binding. The daemon uses central
+ids only to create a brand-new account: if the account or its group is already
+on the host it drops them, adopts the account as it is and reports its real ids,
+so an existing account's uid/gid never changes. The control plane records the
+report first, correcting a placement that is not yet `present` (its ids were only
+a pick), then marks the account present. Known limits: if a host refuses a pick for a principal whose account already exists on another server, the pick cannot change (that account is never renumbered) and the deploy there keeps failing with `principal_id_taken` until the id is freed on that host or an operator sets an override. A pre-#492 daemon treats `idSource` as binding, so deploy the daemon before relying on allocation. An id reported by one host
+for an older account can equal the pick held on another principal's pending
+placement; that principal's daemon then refuses with `principal_id_taken`
+(or adopts, if its account exists) and the pick is released and re-taken, so the
+cost is one failed attempt, not a wrong account.
+
 `environment.lifecycle` uses a 120s consumer timeout. On success the consumer
 reconciles the daemon's authoritative `compose ps -a` report through
 `reconcileEnvironmentContainers` (live rows update pins rather than clearing

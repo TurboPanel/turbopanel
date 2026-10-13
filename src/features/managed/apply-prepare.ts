@@ -42,7 +42,7 @@ import {
   resolvePrivateEndpoints,
 } from '../net/private-endpoint.ts'
 import { ensureOrganizationManagedNetwork } from '../fabric/fabric-records.ts'
-import { managed, principal, server as serverTable, tls } from '../../db/schema.ts'
+import { managed, server as serverTable, tls } from '../../db/schema.ts'
 import {
   issueLeafCertificate,
   metadataFromParsed,
@@ -52,10 +52,15 @@ import {
 import type { Db } from '../../db/connection.ts'
 import {
   ensureManagedReplicationPrincipal,
-  listManagedPrincipals,
   REPLICATION_PASSWORD_LENGTH,
-  setPrincipalPassword,
 } from '../principals/store.ts'
+import {
+  findManagedLoginByRole,
+  legacyPrincipalIdOf,
+  listManagedLoginCredentials,
+  type ManagedLoginCredentialRow,
+  setLoginPassword,
+} from './logins.ts'
 import { loadPrincipalNamePolicy } from './load-org-defaults.ts'
 import { generatePassword } from '../../lib/secrets/generate-secret.ts'
 import {
@@ -249,8 +254,8 @@ export type BuildManagedApplyInput = {
   rootUsername?: string
   dropUsers?: string[]
   dropDatabases?: string[]
-  /** Principals to omit from credentials (e.g. about-to-be-deleted users). */
-  omitPrincipalIds?: string[]
+  /** Logins to omit from credentials (e.g. an about-to-be-deleted user). */
+  omitLoginIds?: string[]
   /**
    * Members to omit from this prepare (e.g. a replica being destroyed).
    * Shrinks primary `desiredSlots` / peers before the row is deleted.
@@ -337,16 +342,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function isManagedRootPrincipal(metadata: unknown): boolean {
-  if (!isRecord(metadata)) return false
-  return metadata.managedRoot === true
-}
-
-function isManagedReplicationPrincipal(metadata: unknown): boolean {
-  if (!isRecord(metadata)) return false
-  return metadata.managedReplication === true
-}
-
 function principalDatabases(metadata: unknown): string[] {
   if (!isRecord(metadata)) return []
   if (!Array.isArray(metadata.databases)) return []
@@ -419,10 +414,10 @@ async function buildCredentials(
   dataEncryptionSecrets: DerivedSecretsConfig,
   managedId: string,
   serverId: string,
-  omitPrincipalIds?: string[]
+  omitLoginIds?: string[]
 ): Promise<ManagedApplyCommandPayload['credentials'] | ManagedApplyPrepareError> {
-  const omit = new Set(omitPrincipalIds ?? [])
-  const rows = (await listManagedPrincipals(db, managedId)).filter((row) => !omit.has(row.id))
+  const omit = new Set(omitLoginIds ?? [])
+  const rows = (await listManagedLoginCredentials(db, managedId)).filter((row) => !omit.has(row.id))
   if (rows.length === 0) {
     return { kind: 'managed_credential_not_sealed' }
   }
@@ -434,15 +429,10 @@ async function buildCredentials(
 
   const credentials: ManagedApplyCommandPayload['credentials'] = []
   const failure = await firstSequential(rows, async (row) => {
-    // Replication principals are attached separately when multi-member.
-    if (isManagedReplicationPrincipal(row.metadata)) return undefined
+    // The replication login is attached separately when multi-member.
+    if (row.role === 'replication') return undefined
 
-    const [passwordRow] = await db
-      .select({ password: principal.password })
-      .from(principal)
-      .where(eq(principal.id, row.id))
-      .limit(1)
-    const sealed = passwordRow?.password
+    const sealed = row.password
     if (typeof sealed !== 'string' || !sealed.startsWith(ENVELOPE_PREFIX_SECRET)) {
       return { kind: 'managed_credential_not_sealed' } as const
     }
@@ -454,12 +444,11 @@ async function buildCredentials(
       sealed
     )
 
-    const role = isManagedRootPrincipal(row.metadata) ? 'root' : 'user'
     const credential: ManagedApplyCommandPayload['credentials'][number] = {
-      principalId: row.id,
+      principalId: credentialPrincipalId(row),
       // Applied login — the engine role name, not the internal short name.
       username: row.appliedUsername,
-      role,
+      role: row.role,
       databases: principalDatabases(row.metadata),
       password: resealed,
     }
@@ -471,6 +460,16 @@ async function buildCredentials(
   if (failure) return failure
 
   return credentials
+}
+
+/**
+ * The daemon only needs username, password and role; `principalId` is kept
+ * on the wire unchanged. A user login names its principal; the cluster's own
+ * root and replication logins name the legacy principal row while it exists,
+ * then themselves.
+ */
+function credentialPrincipalId(row: ManagedLoginCredentialRow): string {
+  return row.principalId ?? legacyPrincipalIdOf(row.metadata) ?? row.id
 }
 
 function organizationCaSetOrSealedError(
@@ -941,20 +940,14 @@ async function attachReplicationCredential(
   const { managedId, serverId, multiMember, replicationUsername, credentials } = params
   if (!multiMember || !replicationUsername) return null
 
-  const rows = await listManagedPrincipals(db, managedId)
-  const repl = rows.find((row) => isManagedReplicationPrincipal(row.metadata))
+  const repl = await findManagedLoginByRole(db, managedId, 'replication')
   if (!repl) return null
 
   const daemonState = await getServerDaemonStateByServerId(db, serverId)
   if (!daemonState || !isDaemonKeyActive(daemonState.key)) {
     return { kind: 'daemon_key_unavailable', serverId }
   }
-  const [passwordRow] = await db
-    .select({ password: principal.password })
-    .from(principal)
-    .where(eq(principal.id, repl.id))
-    .limit(1)
-  const sealed = passwordRow?.password
+  const sealed = repl.password
   if (typeof sealed !== 'string' || !sealed.startsWith(ENVELOPE_PREFIX_SECRET)) {
     return { kind: 'managed_credential_not_sealed' }
   }
@@ -965,7 +958,7 @@ async function attachReplicationCredential(
     sealed
   )
   credentials.push({
-    principalId: repl.id,
+    principalId: credentialPrincipalId(repl),
     username: repl.appliedUsername,
     role: 'replication',
     databases: [],
@@ -1384,7 +1377,7 @@ async function buildPayloadForMember(
     dataEncryptionSecrets,
     input.managedRow.id,
     member.serverId,
-    input.omitPrincipalIds
+    input.omitLoginIds
   )
   if (!Array.isArray(credentials)) return credentials
 
@@ -1557,17 +1550,16 @@ async function ensureClusterReplicationUsername(
   // rotating a Postgres cluster's replication password would strand
   // streaming standbys whose seeded primary_conninfo holds the old one.
   if (input.spec.engine === 'mysql' || input.spec.engine === 'mariadb') {
-    const [pwRow] = await db
-      .select({ password: principal.password })
-      .from(principal)
-      .where(eq(principal.id, repl.principalId))
-      .limit(1)
-    if (typeof pwRow?.password === 'string' && pwRow.password.startsWith(ENVELOPE_PREFIX_SECRET)) {
-      const plain = await decryptSecret(dataEncryptionSecrets, pwRow.password)
+    const replLogin = await findManagedLoginByRole(db, input.managedRow.id, 'replication')
+    const sealed = replLogin?.password
+    if (replLogin && typeof sealed === 'string' && sealed.startsWith(ENVELOPE_PREFIX_SECRET)) {
+      const plain = await decryptSecret(dataEncryptionSecrets, sealed)
       if (plain.length > REPLICATION_PASSWORD_LENGTH) {
-        await setPrincipalPassword(db, dataEncryptionSecrets, repl.principalId, {
-          password: generatePassword(REPLICATION_PASSWORD_LENGTH),
-        })
+        await setLoginPassword(
+          db,
+          replLogin.id,
+          await encryptSecret(dataEncryptionSecrets, generatePassword(REPLICATION_PASSWORD_LENGTH))
+        )
       }
     }
   }

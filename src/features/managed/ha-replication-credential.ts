@@ -7,9 +7,9 @@ import type { Db } from '../../db/connection.ts'
 import { ENVELOPE_PREFIX_SECRET, resealSecretForDaemon } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { getServerDaemonStateByServerId, isDaemonKeyActive } from '../servers/server-identity-db.ts'
-import { environment, managed, principal, project, replica, workspace } from '../../db/schema.ts'
+import { environment, managed, project, replica, workspace } from '../../db/schema.ts'
 import { orchestratorManagesEngine } from './ha-policy.ts'
-import { isManagedReplicationPrincipal } from './ingress-desired-pure.ts'
+import { findManagedLoginByRole } from './logins.ts'
 import type { ManagedEngineSpec } from './index.ts'
 
 export type HaSecretsParams = {
@@ -68,16 +68,7 @@ async function resealReplicationPassword(
   managedId: string,
   serverId: string
 ): Promise<{ username: string; envelope: string } | null> {
-  const principals = await db
-    .select({
-      id: principal.id,
-      username: principal.appliedUsername,
-      password: principal.password,
-      metadata: principal.metadata,
-    })
-    .from(principal)
-    .where(eq(principal.managedId, managedId))
-  const repl = principals.find((row) => isManagedReplicationPrincipal(row.metadata))
+  const repl = await findManagedLoginByRole(db, managedId, 'replication')
   if (!repl || typeof repl.password !== 'string') return null
   if (!repl.password.startsWith(ENVELOPE_PREFIX_SECRET)) return null
 
@@ -89,7 +80,7 @@ async function resealReplicationPassword(
     { serverId, keyId: daemonState.key.id },
     repl.password
   )
-  return { username: repl.username, envelope: resealed }
+  return { username: repl.appliedUsername, envelope: resealed }
 }
 
 export async function resolveReplicationCredentialForHa(

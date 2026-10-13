@@ -15,7 +15,8 @@ import { and, asc, eq, inArray } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
-import { materializeBindingsForPrincipal } from '../../features/bindings/materialize.ts'
+import { materializeBindingsForManaged } from '../../features/bindings/materialize.ts'
+import { bindingLoginJoin, bindingManagedId } from '../../features/managed/logins.ts'
 import {
   enqueuePreparedManagedApply,
   isPrepareError,
@@ -38,6 +39,7 @@ import {
   environment,
   managed,
   replica,
+  login,
   principal,
   project,
   server,
@@ -223,14 +225,15 @@ async function collectConsumerServers(
   if (ownedManagedIds.length === 0) return
   const rows = await db
     .select({
-      managedId: principal.managedId,
+      managedId: bindingManagedId,
       environmentServerId: environment.serverId,
       projectOptions: project.options,
       taskServerId: slot.serverId,
       workspaceOrganizationId: workspace.organizationId,
     })
     .from(binding)
-    .innerJoin(principal, eq(binding.principalId, principal.id))
+    .leftJoin(login, bindingLoginJoin())
+    .leftJoin(principal, eq(principal.id, binding.principalId))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
@@ -239,7 +242,7 @@ async function collectConsumerServers(
     .where(
       and(
         eq(workspace.organizationId, organizationId),
-        inArray(principal.managedId, [...ownedManagedIds])
+        inArray(bindingManagedId, [...ownedManagedIds])
       )
     )
 
@@ -365,15 +368,9 @@ async function rematerializeClusterBindings(
   managedId: string,
   dataEncryptionSecrets: DerivedSecretsConfig
 ): Promise<RematerializeOutcome> {
-  const principals = await db
-    .select({ id: principal.id })
-    .from(principal)
-    .where(eq(principal.managedId, managedId))
-  for (const row of principals) {
-    const result = await materializeBindingsForPrincipal(db, dataEncryptionSecrets, row.id)
-    if (!('ok' in result)) {
-      return { ok: false, error: result.kind }
-    }
+  const result = await materializeBindingsForManaged(db, dataEncryptionSecrets, managedId)
+  if (!('ok' in result)) {
+    return { ok: false, error: result.kind }
   }
   return {
     ok: true,
@@ -392,11 +389,12 @@ async function loadNeedsRedeployForManaged(
       projectOptions: project.options,
     })
     .from(binding)
-    .innerJoin(principal, eq(binding.principalId, principal.id))
+    .leftJoin(login, bindingLoginJoin())
+    .leftJoin(principal, eq(principal.id, binding.principalId))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
-    .where(eq(principal.managedId, managedId))
+    .where(eq(bindingManagedId, managedId))
 
   const seen = new Set<string>()
   const needs: CaRotationNeedsRedeploy[] = []

@@ -26,6 +26,7 @@ import {
   UPGRADE_STEP_UNITS,
 } from '../features/upgrades/vocabulary.ts'
 import { BACKUP_RUN_STATUSES, BACKUP_TARGET_KINDS } from '../features/backups/vocabulary.ts'
+import { DATABASE_LOGIN_ROLES } from '../features/managed/logins.ts'
 import {
   FIREWALL_MODES,
   FIREWALL_RULE_ACTIONS,
@@ -34,6 +35,7 @@ import {
   FIREWALL_SOURCE_KINDS,
   FIREWALL_STATES,
 } from '../features/firewall/vocabulary.ts'
+import { PLACEMENT_SOURCES, PLACEMENT_STATES } from '../features/principals/placement-vocabulary.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -76,6 +78,8 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['subscription_status_check', [...KNOWN_SUBSCRIPTION_STATUSES, 'unknown']],
   ['tier_provider_check', BILLING_PROVIDER_IDS],
   ['payer_provider_check', BILLING_PROVIDER_IDS],
+  ['placement_state_check', PLACEMENT_STATES],
+  ['placement_source_check', PLACEMENT_SOURCES],
   ['channel_scope_check', NOTIFICATION_CHANNEL_SCOPES],
   ['channel_kind_check', NOTIFICATION_CHANNEL_KINDS],
   ['rule_event_check', NOTIFICATION_RULE_EVENTS],
@@ -99,6 +103,7 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['bulwark_mode_check', FIREWALL_MODES],
   ['bulwark_state_check', FIREWALL_STATES],
   ['stage_status_check', UPGRADE_STEP_STATUSES],
+  ['login_role_check', DATABASE_LOGIN_ROLES],
 ]
 
 for (const [constraint, values] of CASES) {

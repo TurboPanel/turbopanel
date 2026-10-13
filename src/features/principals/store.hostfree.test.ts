@@ -99,36 +99,31 @@ test('isUuid accepts v5-shaped ids and rejects garbage', () => {
 test('isServerPrincipalUsernameTaken short-circuits blank and hits/misses', async () => {
   assertEquals(await isServerPrincipalUsernameTaken({} as Db, 'org', '   '), false)
 
-  const hit = {
-    select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([{ id: 'p1' }]),
-            }),
-          }),
-        }),
-      }),
-    }),
-  } as unknown as Db
-  assertEquals(await isServerPrincipalUsernameTaken(hit, 'org', 'AppUser'), true)
-
-  const miss = {
-    select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([]),
-            }),
-          }),
-        }),
-      }),
-    }),
-  } as unknown as Db
-  assertEquals(await isServerPrincipalUsernameTaken(miss, 'org', 'free', 'exclude-me'), false)
+  assertEquals(
+    await isServerPrincipalUsernameTaken(poolProbeDb([{ id: 'p1' }]), 'org', 'AppUser'),
+    true
+  )
+  assertEquals(
+    await isServerPrincipalUsernameTaken(poolProbeDb([]), 'org', 'free', 'exclude-me'),
+    false
+  )
 })
+
+/**
+ * The organization name pool is one single-table probe (no joins): a row with
+ * no project, or a database login, counts the same as a system user.
+ */
+function poolProbeDb(rows: Array<{ id: string }>): Db {
+  return {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve(rows),
+        }),
+      }),
+    }),
+  } as unknown as Db
+}
 
 test('replaceTenancies deletes inserts and no-ops when unchanged', async () => {
   let deleted: string[] | null = null
@@ -282,36 +277,28 @@ test('isManagedUsernameTaken handles empty orgs and hits', async () => {
   assertEquals(await isManagedUsernameTaken({} as Db, [], 'app'), false)
   assertEquals(await isManagedUsernameTaken({} as Db, ['org'], '  '), false)
 
-  const hit = {
-    select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([{ id: 'p' }]),
-            }),
-          }),
-        }),
-      }),
-    }),
-  } as unknown as Db
-  assertEquals(await isManagedUsernameTaken(hit, ['org'], 'Root', 'exclude'), true)
+  assertEquals(
+    await isManagedUsernameTaken(poolProbeDb([{ id: 'p' }]), ['org'], 'Root', 'exclude'),
+    true
+  )
+  assertEquals(await isManagedUsernameTaken(poolProbeDb([]), ['org'], 'Root'), false)
 })
 
+/**
+ * Answers every name probe: the principal pool query (`from.where.limit`) and
+ * the login query (`from.innerJoin.innerJoin.where.limit`) share one row source.
+ */
+function nameProbeDb(rows: () => unknown[]): Db {
+  const chain = {
+    innerJoin: () => chain,
+    where: () => chain,
+    limit: () => Promise.resolve(rows()),
+  }
+  return { select: () => ({ from: () => chain }) } as unknown as Db
+}
+
 test('resolveManagedAppliedUsername prefers free short name without suffix', async () => {
-  const free = {
-    select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([]),
-            }),
-          }),
-        }),
-      }),
-    }),
-  } as unknown as Db
+  const free = nameProbeDb(() => [])
 
   const preferred = await resolveManagedAppliedUsername(
     free,
@@ -323,23 +310,11 @@ test('resolveManagedAppliedUsername prefers free short name without suffix', asy
   assertEquals(preferred, 'root')
 
   let takenCalls = 0
-  const takenThenFree = {
-    select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => {
-                takenCalls += 1
-                // preferred taken, suffixed free
-                return Promise.resolve(takenCalls === 1 ? [{ id: 'x' }] : [])
-              },
-            }),
-          }),
-        }),
-      }),
-    }),
-  } as unknown as Db
+  const takenThenFree = nameProbeDb(() => {
+    takenCalls += 1
+    // preferred taken, suffixed free
+    return takenCalls === 1 ? [{ id: 'x' }] : []
+  })
   const derived = await resolveManagedAppliedUsername(
     takenThenFree,
     ['org'],
@@ -351,19 +326,7 @@ test('resolveManagedAppliedUsername prefers free short name without suffix', asy
 })
 
 test('resolveManagedAppliedUsername suffix mode never returns the bare name', async () => {
-  const free = {
-    select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([]),
-            }),
-          }),
-        }),
-      }),
-    }),
-  } as unknown as Db
+  const free = nameProbeDb(() => [])
 
   const derived = await resolveManagedAppliedUsername(
     free,
@@ -379,12 +342,8 @@ test('resolveManagedAppliedUsername throws when pattern cannot fit', async () =>
   const free = {
     select: () => ({
       from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([{ id: 'x' }]),
-            }),
-          }),
+        where: () => ({
+          limit: () => Promise.resolve([{ id: 'x' }]),
         }),
       }),
     }),
@@ -570,7 +529,7 @@ test('rotatePrincipalPassword returns generated plaintext', async () => {
 
 test('createManagedPrincipal inserts sealed password and validates inputs', async () => {
   const dataEncryptionSecrets = await testDataEncryptionSecrets()
-  let insertValues: Record<string, unknown> | undefined
+  const inserts: Record<string, unknown>[] = []
 
   const db = {
     select: () => ({
@@ -588,9 +547,10 @@ test('createManagedPrincipal inserts sealed password and validates inputs', asyn
     }),
     insert: () => ({
       values: (values: Record<string, unknown>) => {
-        insertValues = values
+        inserts.push(values)
         return {
-          returning: () => Promise.resolve([{ id: 'managed-user' }]),
+          returning: () =>
+            Promise.resolve([{ id: inserts.length === 1 ? 'managed-user' : 'login-1' }]),
         }
       },
     }),
@@ -603,11 +563,20 @@ test('createManagedPrincipal inserts sealed password and validates inputs', asyn
     metadata: { role: 'app' },
   })
   assertEquals(created.principalId, 'managed-user')
+  assertEquals(created.loginId, 'login-1')
   assertEquals(typeof created.password, 'string')
-  assertEquals(insertValues?.organizationId, 'org-1')
-  assertEquals(insertValues?.managedId, 'm1')
-  assertEquals(typeof insertValues?.password, 'string')
-  assertEquals((insertValues?.password as string).startsWith('tpsecret.'), true)
+  // The principal row, then its login twin with the same sealed password.
+  const [principalValues, loginValues] = inserts
+  assertEquals(principalValues?.organizationId, 'org-1')
+  assertEquals(principalValues?.managedId, 'm1')
+  assertEquals(typeof principalValues?.password, 'string')
+  assertEquals((principalValues?.password as string).startsWith('tpsecret.'), true)
+  assertEquals(loginValues?.managedId, 'm1')
+  assertEquals(loginValues?.principalId, 'managed-user')
+  assertEquals(loginValues?.role, 'user')
+  assertEquals(loginValues?.appliedUsername, 'app_user')
+  assertEquals(loginValues?.password, principalValues?.password)
+  inserts.length = 0
 
   await assertRejects(
     () =>
@@ -691,15 +660,11 @@ test('resolveManagedAppliedUsername returns a fresh suffix when candidate is tak
   const db = {
     select: () => ({
       from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => {
-                takenCalls += 1
-                return Promise.resolve([{ id: 'x' }])
-              },
-            }),
-          }),
+        where: () => ({
+          limit: () => {
+            takenCalls += 1
+            return Promise.resolve([{ id: 'x' }])
+          },
         }),
       }),
     }),

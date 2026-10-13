@@ -5,13 +5,19 @@
 
 import { and, eq, inArray, isNotNull, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { binding, hosting, managed, principal, variable } from '../../db/schema.ts'
+import { binding, hosting, login, managed, principal, variable } from '../../db/schema.ts'
 import { getManagedEngineSpec } from '../../features/managed/index.ts'
 import { assertSafeBindingKeyPrefix, DEFAULT_BINDING_KEY_PREFIX } from '../../lib/naming.ts'
 import { parseManagedRowOptions } from '../../features/managed/options.ts'
-import { isManagedReplicationPrincipal, isManagedRootPrincipal } from '../../features/managed/routes-helpers.ts'
+import {
+  isManagedReplicationPrincipal,
+  isManagedRootPrincipal,
+} from '../../features/managed/routes-helpers.ts'
 import { listBindingEmittedKeys } from '../../features/bindings/materialize.ts'
-import { isBindingEndpointError, resolveBindingEndpoint } from '../../features/bindings/resolve-endpoint.ts'
+import {
+  isBindingEndpointError,
+  resolveBindingEndpoint,
+} from '../../features/bindings/resolve-endpoint.ts'
 import {
   isPostgresUniqueViolation,
   uniqueViolationMessage as uniqueViolationLayerMessage,
@@ -29,6 +35,8 @@ export const BINDING_ENDPOINT_UNAVAILABLE_ERROR = 'binding_endpoint_unavailable'
 export type BindingRow = {
   id: string
   principalId: string
+  /** Null only on a row the previous release wrote before the login split. */
+  loginId: string | null
   serviceId: string
   databaseName: string
   keyPrefix: string
@@ -41,9 +49,10 @@ export type BindingRow = {
  * Map a materialize failure onto the HTTP status + body the bindings API
  * returns (callers wrap with `c.json`).
  */
-export function bindingMaterializeHttpPayload(
-  materializeResult: Readonly<{ kind: string }>,
-): { status: 400 | 422; body: { error: string } } {
+export function bindingMaterializeHttpPayload(materializeResult: Readonly<{ kind: string }>): {
+  status: 400 | 422
+  body: { error: string }
+} {
   if (
     materializeResult.kind === 'binding_endpoint_unavailable' ||
     materializeResult.kind === 'datacenter_ip_required' ||
@@ -63,7 +72,7 @@ export function bindingMaterializeHttpPayload(
  */
 export function checkBindingDatabaseTarget(
   managedRow: Readonly<{ engine: string | null; options: unknown }>,
-  databaseName: string,
+  databaseName: string
 ): string | null {
   if (!managedRow.engine) {
     return 'binding_engine_unsupported'
@@ -89,10 +98,8 @@ export function checkBindingDatabaseTarget(
  */
 export function resolvePatchBindingFields(
   body: Readonly<Record<string, unknown>>,
-  row: Readonly<{ keyPrefix: string; emitEngineDefaults: boolean }>,
-):
-  | { ok: true; keyPrefix: string; emitEngineDefaults: boolean }
-  | { ok: false; error: string } {
+  row: Readonly<{ keyPrefix: string; emitEngineDefaults: boolean }>
+): { ok: true; keyPrefix: string; emitEngineDefaults: boolean } | { ok: false; error: string } {
   let keyPrefix = row.keyPrefix
   if (body.keyPrefix !== undefined) {
     const prefixParsed = parseBindingKeyPrefix(body.keyPrefix)
@@ -122,15 +129,12 @@ export async function detectBindingCreateConflicts(
     keyPrefix: string
     emitEngineDefaults: boolean
     engineCode: string
-  }>,
+  }>
 ): Promise<BindingConflictError | null> {
   if (await isPrefixInUse(db, params.serviceId, params.keyPrefix)) {
     return { error: BINDING_KEY_PREFIX_IN_USE_ERROR }
   }
-  if (
-    params.emitEngineDefaults &&
-    (await isEngineDefaultsInUse(db, params.serviceId))
-  ) {
+  if (params.emitEngineDefaults && (await isEngineDefaultsInUse(db, params.serviceId))) {
     return { error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR }
   }
   const keyCheck = await assertNoBindingKeyConflicts(db, {
@@ -155,7 +159,7 @@ export async function detectBindingUpdateConflicts(
     nextKeyPrefix: string
     nextEmitEngineDefaults: boolean
     engineCode: string
-  }>,
+  }>
 ): Promise<BindingConflictError | null> {
   if (
     params.nextKeyPrefix !== params.previousKeyPrefix &&
@@ -185,7 +189,7 @@ export async function detectBindingUpdateConflicts(
 
 export async function resolveBindingPrincipalManagedId(
   db: Db,
-  principalId: string,
+  principalId: string
 ): Promise<string | null> {
   const [principalRow] = await db
     .select({ managedId: principal.managedId })
@@ -195,12 +199,38 @@ export async function resolveBindingPrincipalManagedId(
   return principalRow?.managedId ?? null
 }
 
+/**
+ * The cluster a binding points at: through its login, or through the legacy
+ * principal row while a binding written by the previous release still has no
+ * `login_id`.
+ */
+export async function resolveBindingManagedId(
+  db: Db,
+  row: Readonly<{ loginId: string | null; principalId: string }>
+): Promise<string | null> {
+  if (!row.loginId) return resolveBindingPrincipalManagedId(db, row.principalId)
+  const [loginRow] = await db
+    .select({ managedId: login.managedId })
+    .from(login)
+    .where(eq(login.id, row.loginId))
+    .limit(1)
+  return loginRow?.managedId ?? null
+}
+
 /** Resolve the engine code (default `postgres`) driving a binding's key set. */
 export async function resolveBindingPrincipalEngine(
   db: Db,
-  principalId: string,
+  principalId: string
 ): Promise<{ managedId: string | null; engineCode: string }> {
-  const managedId = await resolveBindingPrincipalManagedId(db, principalId)
+  return resolveBindingEngine(db, { loginId: null, principalId })
+}
+
+/** {@link resolveBindingPrincipalEngine} through the binding's login when it has one. */
+export async function resolveBindingEngine(
+  db: Db,
+  row: Readonly<{ loginId: string | null; principalId: string }>
+): Promise<{ managedId: string | null; engineCode: string }> {
+  const managedId = await resolveBindingManagedId(db, row)
   if (!managedId) return { managedId: null, engineCode: 'postgres' }
 
   const [mrow] = await db
@@ -212,17 +242,9 @@ export async function resolveBindingPrincipalEngine(
 }
 
 export async function serializeBindingRow(db: Db, row: BindingRow) {
-  const [principalRow] = await db
-    .select({
-      managedId: principal.managedId,
-      username: principal.username,
-    })
-    .from(principal)
-    .where(eq(principal.id, row.principalId))
-    .limit(1)
+  const managedId = await resolveBindingManagedId(db, row)
 
   let engine: string | null = null
-  const managedId: string | null = principalRow?.managedId ?? null
   let managedEnvironmentId: string | null = null
   let endpoint: { host: string; port: number } | null = null
   let readSplit: boolean | null = null
@@ -243,11 +265,12 @@ export async function serializeBindingRow(db: Db, row: BindingRow) {
       engine = mrow.engine
       managedEnvironmentId = mrow.environmentId
       const spec = getManagedEngineSpec(mrow.engine)
-      keys = listBindingEmittedKeys({
-        keyPrefix: row.keyPrefix,
-        emitEngineDefaults: row.emitEngineDefaults,
-        engineCode: mrow.engine,
-      }) ?? []
+      keys =
+        listBindingEmittedKeys({
+          keyPrefix: row.keyPrefix,
+          emitEngineDefaults: row.emitEngineDefaults,
+          engineCode: mrow.engine,
+        }) ?? []
       if (spec) {
         const options = parseManagedRowOptions(spec, mrow.options)
         if (options) {
@@ -269,6 +292,7 @@ export async function serializeBindingRow(db: Db, row: BindingRow) {
   return {
     id: row.id,
     principalId: row.principalId,
+    loginId: row.loginId,
     serviceId: row.serviceId,
     databaseName: row.databaseName,
     keyPrefix: row.keyPrefix,
@@ -287,6 +311,7 @@ export async function serializeBindingRow(db: Db, row: BindingRow) {
 export type BindingListRow = {
   id: string
   principalId: string
+  loginId: string | null
   serviceId: string
   databaseName: string
   keyPrefix: string
@@ -306,7 +331,7 @@ export type BindingListRow = {
  * prefix or an error code string (caller maps to HTTP status).
  */
 export function parseBindingKeyPrefix(
-  value: unknown,
+  value: unknown
 ): { ok: true; prefix: string } | { ok: false; error: string } {
   if (value === undefined || value === null || value === '') {
     return { ok: true, prefix: DEFAULT_BINDING_KEY_PREFIX }
@@ -322,7 +347,7 @@ export function parseBindingKeyPrefix(
 }
 
 export function parseEmitEngineDefaults(
-  value: unknown,
+  value: unknown
 ): { ok: true; value: boolean } | { ok: false; error: string } {
   if (value === undefined || value === null) {
     return { ok: true, value: true }
@@ -344,7 +369,7 @@ export async function findBindingKeyConflicts(
     keys: readonly string[]
     /** Exclude this binding's own rows (PATCH). */
     excludeBindingId?: string
-  }>,
+  }>
 ): Promise<string | null> {
   if (params.keys.length === 0) return null
 
@@ -356,8 +381,8 @@ export async function findBindingKeyConflicts(
     serviceConds.push(
       or(
         sql`${variable.bindingId} IS NULL`,
-        sql`${variable.bindingId} != ${params.excludeBindingId}`,
-      )!,
+        sql`${variable.bindingId} != ${params.excludeBindingId}`
+      )!
     )
   } else {
     serviceConds.push(sql`${variable.bindingId} IS NULL`)
@@ -383,10 +408,10 @@ export async function findBindingKeyConflicts(
       and(
         inArray(
           variable.hostingId,
-          hostingIds.map((h) => h.id),
+          hostingIds.map((h) => h.id)
         ),
-        inArray(variable.key, [...params.keys]),
-      ),
+        inArray(variable.key, [...params.keys])
+      )
     )
     .limit(1)
   return hostingHit?.key ?? null
@@ -404,7 +429,7 @@ export async function assertNoBindingKeyConflicts(
     emitEngineDefaults: boolean
     engineCode: string
     excludeBindingId?: string
-  }>,
+  }>
 ): Promise<{ ok: true } | { ok: false; key: string }> {
   const keys = listBindingEmittedKeys({
     keyPrefix: params.keyPrefix,
@@ -425,12 +450,9 @@ export async function isPrefixInUse(
   db: Db,
   serviceId: string,
   keyPrefix: string,
-  excludeBindingId?: string,
+  excludeBindingId?: string
 ): Promise<boolean> {
-  const conds = [
-    eq(binding.serviceId, serviceId),
-    eq(binding.keyPrefix, keyPrefix),
-  ]
+  const conds = [eq(binding.serviceId, serviceId), eq(binding.keyPrefix, keyPrefix)]
   if (excludeBindingId) {
     conds.push(sql`${binding.id} != ${excludeBindingId}`)
   }
@@ -445,12 +467,9 @@ export async function isPrefixInUse(
 export async function isEngineDefaultsInUse(
   db: Db,
   serviceId: string,
-  excludeBindingId?: string,
+  excludeBindingId?: string
 ): Promise<boolean> {
-  const conds = [
-    eq(binding.serviceId, serviceId),
-    eq(binding.isEmitEngineDefaults, true),
-  ]
+  const conds = [eq(binding.serviceId, serviceId), eq(binding.isEmitEngineDefaults, true)]
   if (excludeBindingId) {
     conds.push(sql`${binding.id} != ${excludeBindingId}`)
   }
@@ -469,17 +488,13 @@ export async function isEngineDefaultsInUse(
 export async function isKeyOwnedByBindingOnService(
   db: Db,
   serviceId: string,
-  key: string,
+  key: string
 ): Promise<boolean> {
   const [row] = await db
     .select({ id: variable.id })
     .from(variable)
     .where(
-      and(
-        eq(variable.serviceId, serviceId),
-        eq(variable.key, key),
-        isNotNull(variable.bindingId),
-      ),
+      and(eq(variable.serviceId, serviceId), eq(variable.key, key), isNotNull(variable.bindingId))
     )
     .limit(1)
   return Boolean(row)
@@ -487,7 +502,7 @@ export async function isKeyOwnedByBindingOnService(
 
 export async function resolveServiceIdForHosting(
   db: Db,
-  hostingId: string,
+  hostingId: string
 ): Promise<string | null> {
   const [row] = await db
     .select({ serviceId: hosting.serviceId })
@@ -513,11 +528,9 @@ export function parseBindingsListFilter(params: {
   environmentId: string | undefined
   managedEnvironmentId: string | undefined
 }): { ok: true; filter: BindingsListFilter } | BindingsListFilterError {
-  const filterCount = [
-    params.serviceId,
-    params.environmentId,
-    params.managedEnvironmentId,
-  ].filter(Boolean).length
+  const filterCount = [params.serviceId, params.environmentId, params.managedEnvironmentId].filter(
+    Boolean
+  ).length
   if (filterCount !== 1) {
     return {
       ok: false,
@@ -546,9 +559,7 @@ export function parseBindingsListFilter(params: {
   }
 }
 
-export function bindingDatabaseTargetHttpStatus(
-  error: string,
-): 400 | 404 {
+export function bindingDatabaseTargetHttpStatus(error: string): 400 | 404 {
   if (error === 'database_not_found') return 404
   return 400
 }
@@ -558,7 +569,7 @@ function uniqueViolationMessage(err: unknown): string {
 }
 
 export function mapBindingUniqueViolation(
-  err: unknown,
+  err: unknown
 ):
   | { error: typeof BINDING_ENGINE_DEFAULTS_IN_USE_ERROR; status: 409 }
   | { error: typeof BINDING_KEY_PREFIX_IN_USE_ERROR; status: 409 }

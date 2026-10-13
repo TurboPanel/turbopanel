@@ -238,6 +238,20 @@ export type NtpSetCommandResult = {
  */
 export type PrincipalsReconcileCommandPayload = {
   principals: EnvironmentDeployPrincipalMaterial[]
+  /**
+   * Accounts the panel has deleted and the host should remove once the set
+   * above is applied (`tp-host principal-remove`, the same path a delete
+   * teardown's `environment.stop` takes). A name here may not also be in
+   * `principals`. Optional, additive; an older daemon ignores it.
+   */
+  retirePrincipals?: Array<{ username: string }>
+  /**
+   * Explicit opt-in for an **empty** `principals`. Without it the daemon
+   * prunes nothing on an empty set: an empty list is far more often a control
+   * plane that lost track of the server than a host that manages nobody.
+   * Never set by the control plane today.
+   */
+  allowEmpty?: boolean
 }
 
 /** Must stay in sync with the daemon `server.principals.reconcile` shape. */
@@ -246,6 +260,16 @@ export type PrincipalsReconcileCommandResult = {
   keysChanged: string[]
   keysRemoved: string[]
   sshdReloaded: boolean
+  /**
+   * Accounts from `retirePrincipals` the host removed. One it kept is named in
+   * `warnings`. Optional: an older daemon does not send it.
+   */
+  principalsRetired?: string[]
+  /**
+   * The uid and primary gid each applied account has on the host, recorded on
+   * its placement. Optional: an older daemon does not send it.
+   */
+  principals?: PrincipalIdReport[]
   /**
    * Host conditions that will stop a valid key from working and that TurboPanel
    * refuses to edit its way around (`AllowUsers`, `DenyGroups`, …). Reported so
@@ -587,7 +611,20 @@ export function parsePrincipalsReconcilePayload(value: unknown): PrincipalsRecon
     }
     seen.add(principal.username)
   }
-  return { principals }
+  const retirePrincipals = parseRetirePrincipals(value.retirePrincipals)
+  for (const entry of retirePrincipals ?? []) {
+    if (seen.has(entry.username)) {
+      throw new Error(`retirePrincipals names ${entry.username}, which is also in principals`)
+    }
+  }
+  if (value.allowEmpty !== undefined && typeof value.allowEmpty !== 'boolean') {
+    throw new TypeError('allowEmpty must be a boolean')
+  }
+  return {
+    principals,
+    ...(retirePrincipals === undefined ? {} : { retirePrincipals }),
+    ...(value.allowEmpty === undefined ? {} : { allowEmpty: value.allowEmpty }),
+  }
 }
 
 function parseStringArrayField(value: unknown, field: string): string[] {
@@ -595,6 +632,29 @@ function parseStringArrayField(value: unknown, field: string): string[] {
     throw new Error(`${field} must be an array of strings`)
   }
   return [...value]
+}
+
+/** The ids one account has on a host, as the daemon reads them back. */
+export type PrincipalIdReport = {
+  principalId: string
+  uid: number
+  gid: number
+}
+
+const MAX_PRINCIPAL_ID_REPORTS = 1000
+
+/** Lenient like the rest of the result parsers: well-formed rows only, bounded. */
+export function parsePrincipalIdReports(value: unknown): PrincipalIdReport[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const out: PrincipalIdReport[] = []
+  for (const entry of value.slice(0, MAX_PRINCIPAL_ID_REPORTS)) {
+    if (!isRecord(entry) || !isString(entry.principalId)) continue
+    const { uid, gid } = entry
+    if (typeof uid !== 'number' || !Number.isInteger(uid) || uid <= 0) continue
+    if (typeof gid !== 'number' || !Number.isInteger(gid) || gid <= 0) continue
+    out.push({ principalId: entry.principalId, uid, gid })
+  }
+  return out.length > 0 ? out : undefined
 }
 
 export function parsePrincipalsReconcileResult(value: unknown): PrincipalsReconcileCommandResult {
@@ -607,11 +667,16 @@ export function parsePrincipalsReconcileResult(value: unknown): PrincipalsReconc
   if (typeof value.sshdReloaded !== 'boolean') {
     throw new TypeError('sshdReloaded must be a boolean')
   }
+  const principals = parsePrincipalIdReports(value.principals)
   return {
     principalsApplied: value.principalsApplied,
     keysChanged: parseStringArrayField(value.keysChanged, 'keysChanged'),
     keysRemoved: parseStringArrayField(value.keysRemoved, 'keysRemoved'),
     sshdReloaded: value.sshdReloaded,
+    ...(value.principalsRetired === undefined
+      ? {}
+      : { principalsRetired: parseStringArrayField(value.principalsRetired, 'principalsRetired') }),
+    ...(principals === undefined ? {} : { principals }),
     warnings: parseStringArrayField(value.warnings, 'warnings'),
   }
 }
@@ -1609,6 +1674,13 @@ export type EnvironmentDeployPrincipalMaterial = {
   uid?: number
   /** Optional operator override — omitted when the host allocates. */
   gid?: number
+  /**
+   * `central` when `uid`/`gid` are the control plane's installation-wide pick
+   * rather than an operator override. The daemon uses such ids to create a new
+   * account but adopts one that already exists as it is (and reports its ids);
+   * absent means an operator override, which is binding.
+   */
+  idSource?: 'central'
   home?: string
   /**
    * Absolute shell path (default `/usr/sbin/nologin`), applied by the daemon
@@ -1714,6 +1786,13 @@ export type EnvironmentDeploySitePrincipal = {
   uid?: number
   /** Optional operator override — omitted when the host allocates. */
   gid?: number
+  /**
+   * `central` when `uid`/`gid` are the control plane's installation-wide pick
+   * rather than an operator override. The daemon uses such ids to create a new
+   * account but adopts one that already exists as it is (and reports its ids);
+   * absent means an operator override, which is binding.
+   */
+  idSource?: 'central'
 }
 
 /**
@@ -2471,6 +2550,8 @@ export type EnvironmentDeployCommandResult = {
    * Absent from older daemons and when there were none.
    */
   warnings?: string[]
+  /** The uid/gid each account this deploy ensured has on the host; absent from older daemons. */
+  principals?: PrincipalIdReport[]
 }
 
 const MAX_ENVIRONMENT_DEPLOY_CONTAINERS = 100
@@ -2933,6 +3014,7 @@ function parseDeployPrincipalMaterialEntry(entry: unknown): EnvironmentDeployPri
     username: entry.username,
     ...(uid !== undefined ? { uid } : {}),
     ...(gid !== undefined ? { gid } : {}),
+    ...(entry.idSource === 'central' ? { idSource: 'central' as const } : {}),
   }
   if (entry.home !== undefined) {
     material.home = requirePrincipalPath(entry.home, isValidAbsolutePrincipalPath)
@@ -3228,6 +3310,7 @@ function parseDeploySitePrincipal(value: unknown): EnvironmentDeploySitePrincipa
     username: value.username,
     ...(uid !== undefined ? { uid } : {}),
     ...(gid !== undefined ? { gid } : {}),
+    ...(value.idSource === 'central' ? { idSource: 'central' as const } : {}),
   }
 }
 
@@ -4262,6 +4345,8 @@ export function parseEnvironmentDeployResult(value: unknown): EnvironmentDeployC
   if (sites !== undefined) result.sites = sites
   const warnings = parseDeployResultWarnings(value.warnings)
   if (warnings !== undefined) result.warnings = warnings
+  const principals = parsePrincipalIdReports(value.principals)
+  if (principals !== undefined) result.principals = principals
   return result
 }
 
@@ -4433,7 +4518,8 @@ function parseStopSiteReleases(
   return out
 }
 
-function parseStopRetirePrincipals(value: unknown): Array<{ username: string }> | undefined {
+/** `retirePrincipals[]` on `environment.stop` and `server.principals.reconcile`. */
+function parseRetirePrincipals(value: unknown): Array<{ username: string }> | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
     throw new TypeError('retirePrincipals must be an array')
@@ -4444,7 +4530,7 @@ function parseStopRetirePrincipals(value: unknown): Array<{ username: string }> 
       !isString(entry.username) ||
       !STOP_SITE_RELEASE_USERNAME_RE.test(entry.username)
     ) {
-      throw new Error('Invalid environment.stop retirePrincipals entry')
+      throw new Error('Invalid retirePrincipals entry')
     }
     return { username: entry.username }
   })
@@ -4489,7 +4575,7 @@ export function parseEnvironmentStopPayload(value: unknown): EnvironmentStopComm
   const ingressServices = parseStopIngressServices(value.ingressServices)
   const fabricNetworks = parseStopFabricNetworks(value.fabricNetworks)
   const siteReleases = parseStopSiteReleases(value.siteReleases)
-  const retirePrincipals = parseStopRetirePrincipals(value.retirePrincipals)
+  const retirePrincipals = parseRetirePrincipals(value.retirePrincipals)
   return {
     environmentId,
     projectId,

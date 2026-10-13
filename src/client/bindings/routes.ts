@@ -6,7 +6,7 @@
  */
 
 import type { Context, Hono } from 'hono'
-import { eq, inArray } from 'drizzle-orm'
+import { eq, inArray, sql } from 'drizzle-orm'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -17,7 +17,13 @@ import { recordAudit, type AuditAction } from '../../features/audit/audit-record
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db/connection.ts'
 import { mapSequential } from '../../lib/sequential.ts'
-import { binding, managed, principal, service } from '../../db/schema.ts'
+import { binding, login, managed, principal, service } from '../../db/schema.ts'
+import {
+  bindingLoginJoin,
+  findManagedLogin,
+  type ManagedLoginRow,
+  syncLegacyLogins,
+} from '../../features/managed/logins.ts'
 import {
   assertCanManageOr403,
   assertCanReadOr403,
@@ -41,13 +47,12 @@ import {
   checkBindingDatabaseTarget,
   detectBindingCreateConflicts,
   detectBindingUpdateConflicts,
-  isBindableDatabasePrincipal,
   mapBindingUniqueViolation,
   parseBindingKeyPrefix,
   parseBindingsListFilter,
   parseEmitEngineDefaults,
-  resolveBindingPrincipalEngine,
-  resolveBindingPrincipalManagedId,
+  resolveBindingEngine,
+  resolveBindingManagedId,
   resolvePatchBindingFields,
   serializeBindingRow,
   bindingDatabaseTargetHttpStatus,
@@ -57,6 +62,7 @@ import {
 const BINDING_SELECT = {
   id: binding.id,
   principalId: binding.principalId,
+  loginId: binding.loginId,
   serviceId: binding.serviceId,
   databaseName: binding.databaseName,
   keyPrefix: binding.keyPrefix,
@@ -158,7 +164,7 @@ async function selectBindingsByServiceId(
     .orderBy(binding.createdAt)
 }
 
-/** Managed-cluster list: principal → managed.environment_id (not consumer services). */
+/** Managed-cluster list: login → managed.environment_id (not consumer services). */
 async function selectBindingsByManagedEnvironmentId(
   c: Context<AppEnv>,
   db: Db,
@@ -183,17 +189,12 @@ async function selectBindingsByManagedEnvironmentId(
     .limit(1)
   if (!managedRow) return []
 
-  const principalRows = await db
-    .select({ id: principal.id })
-    .from(principal)
-    .where(eq(principal.managedId, managedRow.id))
-  const principalIds = principalRows.map((r) => r.id)
-  if (principalIds.length === 0) return []
-
+  await syncLegacyLogins(db, managedRow.id)
   return db
     .select(BINDING_SELECT)
     .from(binding)
-    .where(inArray(binding.principalId, principalIds))
+    .innerJoin(login, bindingLoginJoin())
+    .where(eq(login.managedId, managedRow.id))
     .orderBy(binding.createdAt)
 }
 
@@ -224,7 +225,8 @@ async function selectBindingsByConsumerEnvironmentId(
 }
 
 type CreateBindingInput = {
-  principalId: string
+  /** The login to bind (`loginId`), or the principal whose single login it is (`principalId`). */
+  login: { loginId: string } | { principalId: string }
   serviceId: string
   databaseName: string
   keyPrefix: string
@@ -235,8 +237,14 @@ async function parseCreateBindingInput(c: Context<AppEnv>): Promise<CreateBindin
   const body = await parseJsonBody(c)
   if (body instanceof Response) return body
 
-  const principalId = requireStringField(c, body, 'principalId')
-  if (principalId instanceof Response) return principalId
+  let loginRef: CreateBindingInput['login']
+  if (typeof body.loginId === 'string' && body.loginId.length > 0) {
+    loginRef = { loginId: body.loginId }
+  } else {
+    const principalId = requireStringField(c, body, 'principalId')
+    if (principalId instanceof Response) return principalId
+    loginRef = { principalId }
+  }
   const serviceId = requireStringField(c, body, 'serviceId')
   if (serviceId instanceof Response) return serviceId
   const databaseName = requireStringField(c, body, 'databaseName')
@@ -248,7 +256,7 @@ async function parseCreateBindingInput(c: Context<AppEnv>): Promise<CreateBindin
   if (!emitParsed.ok) return c.json({ error: emitParsed.error }, 400)
 
   return {
-    principalId,
+    login: loginRef,
     serviceId,
     databaseName,
     keyPrefix: prefixParsed.prefix,
@@ -256,32 +264,67 @@ async function parseCreateBindingInput(c: Context<AppEnv>): Promise<CreateBindin
   }
 }
 
-/** Load + validate the source principal for a new binding (database principal, not root/replication). */
-async function loadBindablePrincipal(
+type BindableLogin = { loginId: string; principalId: string; managedId: string }
+
+function toBindableLogin(row: ManagedLoginRow): BindableLogin | null {
+  if (row.role !== 'user' || !row.principalId) return null
+  return { loginId: row.id, principalId: row.principalId, managedId: row.managedId }
+}
+
+/**
+ * Load + validate the login a new binding hands out: a `user` login, never the
+ * cluster's root or replication login. By `loginId` directly; by
+ * `principalId` when the principal has exactly one login (a legacy database
+ * principal always has, once its login row is synced), 409 when it has
+ * several and the caller must name one.
+ */
+async function loadBindableLogin(
   c: Context<AppEnv>,
   db: Db,
-  principalId: string
-): Promise<{ id: string; managedId: string } | Response> {
-  const [principalRow] = await db
-    .select({
-      id: principal.id,
-      kind: principal.kind,
-      managedId: principal.managedId,
-      metadata: principal.metadata,
-    })
-    .from(principal)
-    .where(eq(principal.id, principalId))
-    .limit(1)
-  if (
-    !isBindableDatabasePrincipal({
-      kind: principalRow?.kind,
-      managedId: principalRow?.managedId,
-      metadata: principalRow?.metadata,
-    })
-  ) {
-    return c.json({ error: 'Not found' }, 404)
+  ref: CreateBindingInput['login']
+): Promise<BindableLogin | Response> {
+  if ('loginId' in ref) {
+    const [row] = await db
+      .select({ managedId: login.managedId })
+      .from(login)
+      .where(sql`${login.id}::text = ${ref.loginId}`)
+      .limit(1)
+    const found = row ? await findManagedLogin(db, row.managedId, ref.loginId) : undefined
+    const bindable = found ? toBindableLogin(found) : null
+    return bindable ?? c.json({ error: 'Not found' }, 404)
   }
-  return { id: principalRow!.id, managedId: principalRow!.managedId! }
+
+  const [principalRow] = await db
+    .select({ id: principal.id, kind: principal.kind, managedId: principal.managedId })
+    .from(principal)
+    .where(sql`${principal.id}::text = ${ref.principalId}`)
+    .limit(1)
+  if (!principalRow) return c.json({ error: 'Not found' }, 404)
+  // A legacy database principal written by the previous release may still
+  // lack its login row; the cluster-scoped sync adds it.
+  if (principalRow.kind === 'database' && principalRow.managedId) {
+    await syncLegacyLogins(db, principalRow.managedId)
+  }
+  const rows = await db
+    .select({ id: login.id, managedId: login.managedId, role: login.role })
+    .from(login)
+    .where(eq(login.principalId, principalRow.id))
+  const candidates = rows.filter((row) => row.role === 'user')
+  if (candidates.length === 0) return c.json({ error: 'Not found' }, 404)
+  if (candidates.length > 1) {
+    return c.json(
+      {
+        error: 'binding_login_ambiguous',
+        logins: candidates.map((row) => ({ loginId: row.id, managedId: row.managedId })),
+      },
+      409
+    )
+  }
+  return {
+    loginId: candidates[0]!.id,
+    principalId: principalRow.id,
+    managedId: candidates[0]!.managedId,
+  }
 }
 
 /** Load the managed cluster row for a binding and confirm it belongs to the caller's org. */
@@ -349,6 +392,7 @@ async function insertAndMaterializeBinding(
   dataEncryptionSecrets: DerivedSecretsConfig,
   params: Readonly<{
     principalId: string
+    loginId: string
     serviceId: string
     databaseName: string
     keyPrefix: string
@@ -364,6 +408,7 @@ async function insertAndMaterializeBinding(
         .insert(binding)
         .values({
           principalId: params.principalId,
+          loginId: params.loginId,
           serviceId: params.serviceId,
           databaseName: params.databaseName,
           keyPrefix: params.keyPrefix,
@@ -392,6 +437,7 @@ async function insertAndMaterializeBinding(
     await recordBindingAudit(c, db, params.organizationId, 'binding.create', id, {
       serviceId: params.serviceId,
       principalId: params.principalId,
+      loginId: params.loginId,
       managedId: params.managedId,
       databaseName: params.databaseName,
       keyPrefix: params.keyPrefix,
@@ -531,14 +577,14 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const serviceDenied = await assertServiceCreatable(c, db, organizationId, input.serviceId)
     if (serviceDenied) return serviceDenied
 
-    const principalResult = await loadBindablePrincipal(c, db, input.principalId)
-    if (principalResult instanceof Response) return principalResult
+    const loginResult = await loadBindableLogin(c, db, input.login)
+    if (loginResult instanceof Response) return loginResult
 
     const managedResult = await loadManagedForBindingOrg(
       c,
       db,
       organizationId,
-      principalResult.managedId
+      loginResult.managedId
     )
     if (managedResult instanceof Response) return managedResult
 
@@ -585,7 +631,8 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     }
 
     return insertAndMaterializeBinding(c, db, dataEncryptionSecrets, {
-      principalId: input.principalId,
+      principalId: loginResult.principalId,
+      loginId: loginResult.loginId,
       serviceId: input.serviceId,
       databaseName: input.databaseName,
       keyPrefix: input.keyPrefix,
@@ -622,7 +669,7 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (fieldsResult instanceof Response) return fieldsResult
     const { keyPrefix: nextPrefix, emitEngineDefaults: nextEmit } = fieldsResult
 
-    const { managedId, engineCode } = await resolveBindingPrincipalEngine(db, row.principalId)
+    const { managedId, engineCode } = await resolveBindingEngine(db, row)
 
     const conflictDenied = await assertBindingUpdateConflicts(
       db,
@@ -700,6 +747,7 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         id: binding.id,
         serviceId: binding.serviceId,
         principalId: binding.principalId,
+        loginId: binding.loginId,
         databaseName: binding.databaseName,
         keyPrefix: binding.keyPrefix,
       })
@@ -714,7 +762,7 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const stepUp = await requireStepUpIfConfigured(c, organizationId, 'binding.delete')
     if (stepUp) return stepUp
 
-    const managedId = await resolveBindingPrincipalManagedId(db, row.principalId)
+    const managedId = await resolveBindingManagedId(db, row)
 
     await db.delete(binding).where(eq(binding.id, id))
 
@@ -732,6 +780,7 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     await recordBindingAudit(c, db, organizationId, 'binding.delete', id, {
       serviceId: row.serviceId,
       principalId: row.principalId,
+      loginId: row.loginId,
       managedId,
       databaseName: row.databaseName,
       keyPrefix: row.keyPrefix,

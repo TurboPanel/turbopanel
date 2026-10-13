@@ -557,7 +557,15 @@ export const managedSchemas = {
     type: 'object',
     required: ['id', 'username', 'appliedUsername', 'databases', 'privileges', 'createdAt'],
     properties: {
-      id: { type: 'string' },
+      id: {
+        type: 'string',
+        description: 'The principal id; the routes under /managed/users address a user by it.',
+      },
+      principalId: {
+        type: ['string', 'null'],
+        description: 'The principal (identity) the login belongs to.',
+      },
+      loginId: { type: 'string', description: 'The database login on this cluster.' },
       username: { type: 'string' },
       appliedUsername: {
         type: 'string',
@@ -586,9 +594,18 @@ export const managedSchemas = {
   },
   CreateManagedUserRequest: {
     type: 'object',
-    required: ['username', 'databases'],
+    required: ['databases'],
     properties: {
-      username: { type: 'string' },
+      username: {
+        type: 'string',
+        description:
+          'Name for a new principal and login. Required unless `principalId` is given; ignored when it is.',
+      },
+      principalId: {
+        type: 'string',
+        description:
+          "Create a login for an existing principal of the organization instead of a new one. The engine role takes the principal's own name, so it must be a valid role name for the engine (422 `principal_name_does_not_fit` or `principal_name_reserved` otherwise); 404 `principal_not_found` for an unknown principal; 409 `managed_login_exists` when it already has a login on this cluster.",
+      },
       databases: { type: 'array', items: { type: 'string' } },
       privileges: {
         type: 'array',

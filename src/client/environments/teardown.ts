@@ -17,11 +17,13 @@
  * rows recorded — so a Git-backed service that was removed from the compose
  * before the delete is still named here, rather than orphaned on the host.
  *
- * The project's server principals are captured too: once the delete commits,
- * any of them that no surviving environment still places on a server is named
- * in `retirePrincipals` on the last stop sent there, and the daemon removes the
- * account, its group, home and slice (`tp-host principal-remove`, which
- * re-checks on the host that nothing still references it).
+ * An environment delete captures the project's server principals too: once the
+ * delete commits, any of them that no surviving environment still places on a
+ * server is named in `retirePrincipals` on the last stop sent there, and the
+ * daemon removes the account, its group, home and slice (`tp-host
+ * principal-remove`, which re-checks on the host that nothing still references
+ * it). A project delete does not (`keepPrincipals`): principals outlive their
+ * project and are removed only by their own explicit delete.
  */
 import { mapSequential, forEachSequential } from '../../lib/sequential.ts'
 import { and, eq, inArray, or } from 'drizzle-orm'
@@ -42,6 +44,7 @@ import {
 } from '../../features/projects/project-options.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { SERVER_PRINCIPAL_PROVIDER } from '../../features/principals/store.ts'
+import { markPlacementsRetiring } from '../../features/principals/placement-records.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import { retireHostingIngressIfIdle } from '../../features/system/reconcile.ts'
 import { composeProjectName } from './deploy-routes-helpers.ts'
@@ -69,6 +72,15 @@ export type EnvironmentTeardownPlan = {
    * environments that survive it ({@link resolvePrincipalRetirement}).
    */
   principalUsernames: string[]
+}
+
+export type TeardownPlanOptions = {
+  /**
+   * Leave the project's Linux users alone: plan no `retirePrincipals`. Project
+   * delete sets this — the site trees go, the user and its home stay, and the
+   * principal outlives the project (`principal.project_id` becomes NULL).
+   */
+  keepPrincipals?: boolean
 }
 
 /** Applied logins of the project's server (Linux) principals. */
@@ -113,7 +125,8 @@ async function resolveTeardownServerIds(
  */
 export async function planEnvironmentTeardown(
   db: Db,
-  environmentId: string
+  environmentId: string,
+  options: TeardownPlanOptions = {}
 ): Promise<EnvironmentTeardownPlan | null> {
   const [envRow] = await db
     .select({
@@ -144,7 +157,9 @@ export async function planEnvironmentTeardown(
   const tcpUdpServices = await resolveTcpUdpIngressServices(db, environmentId)
   const composeNetworks = await listEnvironmentComposeNetworks(db, environmentId)
   const siteReleases = await resolveEnvironmentSiteReleases(db, environmentId)
-  const principalUsernames = await loadProjectPrincipalUsernames(db, projectRow.id)
+  const principalUsernames = options.keepPrincipals
+    ? []
+    : await loadProjectPrincipalUsernames(db, projectRow.id)
 
   return {
     environmentId,
@@ -161,10 +176,11 @@ export async function planEnvironmentTeardown(
 /** Plan teardown for several environments, dropping the ones with no target. */
 export async function planEnvironmentsTeardown(
   db: Db,
-  environmentIds: readonly string[]
+  environmentIds: readonly string[],
+  options: TeardownPlanOptions = {}
 ): Promise<EnvironmentTeardownPlan[]> {
   const planned = await mapSequential(environmentIds, (environmentId) =>
-    planEnvironmentTeardown(db, environmentId)
+    planEnvironmentTeardown(db, environmentId, options)
   )
   return planned.filter((plan): plan is EnvironmentTeardownPlan => !!plan)
 }
@@ -179,7 +195,7 @@ function planServerIds(plan: EnvironmentTeardownPlan): Set<string> {
  * a principal of a project with an environment pinned there or deployed there.
  * Run after the delete commits, so the deleted rows are no longer counted.
  */
-async function principalsStillOnServer(
+export async function principalsStillOnServer(
   db: Db,
   serverId: string,
   usernames: readonly string[]
@@ -225,6 +241,27 @@ export async function resolvePrincipalRetirement(
     if (gone.length > 0) retire.set(serverId, gone)
   })
   return retire
+}
+
+/**
+ * Bookkeeping only: the stop below is what retires the account, and it must go
+ * out whether or not the placement row could be marked.
+ */
+async function markPlacementsRetiringBestEffort(
+  db: Db,
+  serverId: string,
+  usernames: readonly string[]
+): Promise<void> {
+  if (usernames.length === 0) return
+  try {
+    await markPlacementsRetiring(db, serverId, usernames)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    compatLogWarn(
+      'environments',
+      `placement retiring mark skipped on server ${serverId}: ${message}`
+    )
+  }
 }
 
 async function enqueueTeardownStop(
@@ -275,6 +312,9 @@ async function enqueueTeardownStop(
     })
     throw new Error('Command queue unavailable')
   }
+  // Only once the stop is on its way: a row marked before a failed enqueue
+  // would say `retiring` about an account nothing is retiring.
+  await markPlacementsRetiringBestEffort(db, serverId, retirePrincipals)
 }
 
 /**

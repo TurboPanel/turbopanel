@@ -47,7 +47,7 @@ import {
   isDaemonKeyActive,
   revokeDaemonKey,
 } from '../../features/servers/server-identity-db.ts'
-import { datacenter, license, organization, server } from '../../db/schema.ts'
+import { datacenter, license, organization, principal, server } from '../../db/schema.ts'
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveInstanceRevision } from '../../app/build-info.ts'
 import { isExplicitDevelopmentMode } from '../../lib/dev-mode.ts'
@@ -80,6 +80,21 @@ import {
   runHierarchyDeleteResult,
 } from '../hierarchy-delete.ts'
 import { purgeServerForeignKeysForDelete } from './server-fk.ts'
+import {
+  isPrincipalUnused,
+  loadPrincipalUsage,
+} from '../../features/principals/placement-records.ts'
+import {
+  loadPrincipalRemovalPlan,
+  parsePrincipalRemovalChoices,
+  PRINCIPAL_DELETE_REFUSED_CODE,
+  PRINCIPAL_DELETE_REFUSED_ERROR,
+  PRINCIPAL_NOT_ON_SERVER_CODE,
+  PRINCIPAL_NOT_ON_SERVER_ERROR,
+  principalIdsToDelete,
+  registerServerPrincipalRemovalRoutes,
+  resolvePrincipalRemovalRefusals,
+} from './principal-removal.ts'
 import * as systemHierarchy from '../../features/system/hierarchy.ts'
 import { enqueueSystemReconcile } from '../../features/system/reconcile.ts'
 import type { SystemReconcileAction } from '../../contracts/commands/schemas.ts'
@@ -704,12 +719,35 @@ async function assertSystemEnvironmentIdleOrBlocked(
   return { systemEnvironmentIds }
 }
 
+async function stillUnusedPrincipalIds(
+  db: Db,
+  serverId: string,
+  principalIds: readonly string[]
+): Promise<string[]> {
+  if (principalIds.length === 0) return []
+  const usage = await loadPrincipalUsage(db, principalIds, serverId)
+  const unused = principalIds.filter((id) => {
+    const counts = usage.get(id)
+    return counts !== undefined && isPrincipalUnused(counts)
+  })
+  const kept = principalIds.filter((id) => !unused.includes(id))
+  if (kept.length > 0) {
+    compatLogWarn(
+      'servers',
+      `principal delete on server ${serverId} kept ${kept.join(', ')}: used again since the check`
+    )
+  }
+  return unused
+}
+
 async function deleteServerWithSystemSubtree(
   db: Db,
   serverId: string,
   organizationId: string,
   systemEnvironmentIds: readonly string[],
-  forgetResources: boolean
+  forgetResources: boolean,
+  /** Principals the owner chose to delete outright (already checked unused). */
+  deletePrincipalIds: readonly string[] = []
 ): Promise<{
   status: 'ok' | 'has_children' | 'online' | 'blockers'
   forgotten: ForgottenServerResources | null
@@ -731,6 +769,19 @@ async function deleteServerWithSystemSubtree(
         )
       )
       await purgeServerForeignKeysForDelete(tx, serverId)
+      // Placements on this server go with it (cascade); a principal chosen
+      // for outright deletion goes too. The usage check ran before the
+      // transaction, so it is repeated here: a tenancy or binding created in
+      // between keeps the identity (the default answer) rather than being
+      // cascaded away.
+      const stillUnused = await stillUnusedPrincipalIds(tx, serverId, deletePrincipalIds)
+      if (stillUnused.length > 0) {
+        await tx
+          .delete(principal)
+          .where(
+            and(inArray(principal.id, stillUnused), eq(principal.organizationId, organizationId))
+          )
+      }
       await tx.delete(server).where(eq(server.id, serverId))
     })
     return {
@@ -762,6 +813,42 @@ async function deleteServerWithSystemSubtree(
     }
     throw error
   }
+}
+
+/**
+ * Per-principal answers on server removal. Every placement defaults to keep;
+ * a `delete` is refused (409) while something else still uses the principal,
+ * and a choice naming a principal that is not on this server is a 400.
+ */
+async function refusePrincipalRemovalChoices(
+  c: Context,
+  db: Db,
+  serverId: string,
+  choices: ReadonlyArray<{ principalId: string; action: 'keep' | 'delete' }>
+): Promise<Response | null> {
+  if (choices.length === 0) return null
+  const plan = await loadPrincipalRemovalPlan(db, serverId)
+  const refusals = resolvePrincipalRemovalRefusals(plan, choices)
+  if (refusals.length === 0) return null
+  const notOnServer = refusals.filter((refusal) => refusal.reason === 'not_on_server')
+  if (notOnServer.length > 0) {
+    return c.json(
+      {
+        error: PRINCIPAL_NOT_ON_SERVER_ERROR,
+        code: PRINCIPAL_NOT_ON_SERVER_CODE,
+        principals: notOnServer,
+      },
+      400
+    )
+  }
+  return c.json(
+    {
+      error: PRINCIPAL_DELETE_REFUSED_ERROR,
+      code: PRINCIPAL_DELETE_REFUSED_CODE,
+      principals: refusals,
+    },
+    409
+  )
 }
 
 async function reconcileFabricAfterServerDelete(
@@ -1657,6 +1744,10 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
     const forgetResources = parseForgetResourcesFlag(c.req.query('forgetResources'), body)
+    const principalChoices = parsePrincipalRemovalChoices(body)
+    if ('error' in principalChoices) {
+      return c.json({ error: principalChoices.error }, 400)
+    }
 
     // Co-located guard before the registry 503 so an unavailable registry can
     // never turn a self-host-pinned (or probe-matched) host into a deletable one.
@@ -1685,12 +1776,16 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     })
     if (idleOrBlocked instanceof Response) return idleOrBlocked
 
+    const principalRefusal = await refusePrincipalRemovalChoices(c, db, id, principalChoices)
+    if (principalRefusal) return principalRefusal
+
     const result = await deleteServerWithSystemSubtree(
       db,
       id,
       organizationId,
       idleOrBlocked.systemEnvironmentIds,
-      forgetResources
+      forgetResources,
+      principalIdsToDelete(principalChoices)
     )
     if (result.status === 'online') {
       return serverOnlineForgetBlockedResponse(c)
@@ -1754,5 +1849,6 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   registerServerTrafficMapRoutes(router, opts)
   registerServerLabelRoutes(router, opts)
   registerServerServicesRoutes(router, opts)
+  registerServerPrincipalRemovalRoutes(router, opts)
   registerServerLicenseTierRoutes(router, opts)
 }

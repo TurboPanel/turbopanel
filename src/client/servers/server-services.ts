@@ -1,4 +1,5 @@
 import { and, count, eq, inArray, max, sql } from 'drizzle-orm'
+import { bindingLoginJoin, bindingManagedId } from '../../features/managed/logins.ts'
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import {
@@ -11,6 +12,7 @@ import {
   ip,
   managed,
   network,
+  login,
   principal,
   project,
   replica,
@@ -609,8 +611,9 @@ async function loadDatabaseUserRows(
     .innerJoin(environment, eq(environment.id, service.environmentId))
     .innerJoin(project, eq(project.id, environment.projectId))
     .innerJoin(workspace, eq(workspace.id, project.workspaceId))
-    .innerJoin(principal, eq(principal.id, binding.principalId))
-    .innerJoin(managed, eq(managed.id, principal.managedId))
+    .leftJoin(login, bindingLoginJoin())
+    .leftJoin(principal, eq(principal.id, binding.principalId))
+    .innerJoin(managed, eq(managed.id, bindingManagedId))
     .where(and(eq(container.serverId, serverId), notSystemWorkspace()))
   return groupDatabaseUsers(rows)
 }

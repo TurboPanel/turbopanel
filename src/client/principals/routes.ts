@@ -31,7 +31,11 @@ import {
   servicesBelongToProject,
 } from './tenancies.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
-import { reconcilePrincipalAccess } from './reconcile.ts'
+import {
+  reconcilePrincipalAccess,
+  retireDeletedPrincipal,
+  serversForPrincipal,
+} from './reconcile.ts'
 import {
   addSshKey,
   countSshKeysByPrincipalIds,
@@ -43,8 +47,11 @@ import {
 } from './ssh-keys.ts'
 import {
   clearServerPrincipalPassword,
+  countPrincipalReferences,
+  isPrincipalReferenced,
   isServerPrincipalUsernameTaken,
   passwordEnabledByPrincipalIds,
+  PRINCIPAL_IN_USE_ERROR,
   replaceTenancies,
   SERVER_PRINCIPAL_PROVIDER,
   setServerPrincipalPasswordHash,
@@ -436,8 +443,29 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const immutable = await assertNotSystemOwnedOr403(c, 'project', projectId)
     if (immutable) return immutable
 
+    // Removal is an explicit action and never silent: refused while a
+    // service, binding, storage entry, secret or database login still names
+    // the principal.
+    const usedBy = await countPrincipalReferences(db, id)
+    if (isPrincipalReferenced(usedBy)) {
+      return c.json({ error: PRINCIPAL_IN_USE_ERROR, usedBy }, 409)
+    }
+
+    // Resolved before the delete: the reach is found through the row.
+    const serverIds =
+      row.provider === SERVER_PRINCIPAL_PROVIDER ? await serversForPrincipal(db, id) : []
+
     await db.delete(principal).where(eq(principal.id, id))
-    return c.json({ ok: true as const })
+
+    // The row is gone; now the account. Same best-effort outcome shape as a
+    // PATCH, so the operator sees which servers were and were not reached.
+    const reconciled = await retireDeletedPrincipal(
+      db,
+      getCommandQueue(c),
+      { actorType: 'user', actorId: session.userId },
+      { serverIds, appliedUsername: row.appliedUsername }
+    )
+    return c.json({ ok: true as const, reconciled })
   })
 
   // --- SSH keys ----------------------------------------------------------

@@ -28,7 +28,11 @@ import {
   resolveManagedServerId,
   resolveManagedUserPrivileges,
   serializeContainerRow,
+  serializeManagedLogin,
   serializeManagedUser,
+  evaluateExistingPrincipalLoginName,
+  evaluateManagedLoginDropGuard,
+  evaluateManagedLoginRotateGuard,
 } from './routes-helpers.ts'
 
 /**
@@ -412,6 +416,67 @@ test('principalMetadata and isManagedRootPrincipal', () => {
   assertEquals(isManagedRootPrincipal({ managedRoot: true }), true)
   assertEquals(isManagedRootPrincipal({ managedRoot: false }), false)
   assertEquals(isManagedRootPrincipal(undefined), false)
+})
+
+test('serializeManagedLogin keeps the users shape, names the principal and login, and the cluster logins are guarded by role', () => {
+  const row = {
+    id: 'login-1',
+    principalId: 'prin-1',
+    managedId: 'm1',
+    role: 'user' as const,
+    username: 'app_user',
+    appliedUsername: 'app_user',
+    metadata: { databases: ['postgres'] },
+    options: { nameScheme: 'plain' },
+    createdAt: '2024-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-01T00:00:00.000Z',
+  }
+  const serialized = serializeManagedLogin(row)
+  assertEquals(serialized.id, 'prin-1')
+  assertEquals(serialized.principalId, 'prin-1')
+  assertEquals(serialized.loginId, 'login-1')
+  assertEquals(serialized.nameScheme, 'plain')
+  assertEquals(serialized.databases, ['postgres'])
+  // A cluster login has no principal: `id` falls back to the login id.
+  assertEquals(serializeManagedLogin({ ...row, principalId: null, role: 'root' }).id, 'login-1')
+
+  assertEquals(evaluateManagedLoginRotateGuard('root')?.error, 'use_root_password_route')
+  assertEquals(
+    evaluateManagedLoginRotateGuard('replication')?.error,
+    'cannot_rotate_replication_user'
+  )
+  assertEquals(evaluateManagedLoginRotateGuard('user'), null)
+  assertEquals(evaluateManagedLoginDropGuard('root')?.error, 'cannot_drop_root_user')
+  assertEquals(evaluateManagedLoginDropGuard('replication'), null)
+  assertEquals(evaluateManagedLoginDropGuard('user'), null)
+})
+
+test('evaluateExistingPrincipalLoginName accepts a name the engine takes and refuses the rest', () => {
+  assertEquals(evaluateExistingPrincipalLoginName(postgresEngineSpec, 'alice'), null)
+  assertEquals(evaluateExistingPrincipalLoginName(postgresEngineSpec, 'site_owner_01'), null)
+  // A Linux name may carry a hyphen no engine role name takes, and MySQL
+  // role names stop at 32 characters: the login is refused, never renamed.
+  assertEquals(
+    evaluateExistingPrincipalLoginName(postgresEngineSpec, 'site-owner')?.error,
+    'principal_name_does_not_fit'
+  )
+  const long = 'a'.repeat(mysqlEngineSpec.userOperations.identifier.maxLength + 1)
+  assertEquals(
+    evaluateExistingPrincipalLoginName(mysqlEngineSpec, long)?.error,
+    'principal_name_does_not_fit'
+  )
+  assertEquals(
+    evaluateExistingPrincipalLoginName(postgresEngineSpec, 'postgres')?.error,
+    'principal_name_reserved'
+  )
+  assertEquals(
+    evaluateExistingPrincipalLoginName(postgresEngineSpec, 'postgres_abc', 'postgres_abc')?.error,
+    'principal_name_reserved'
+  )
+  assertStringIncludes(
+    evaluateExistingPrincipalLoginName(mysqlEngineSpec, long)?.message ?? '',
+    'Create a login with a new name instead'
+  )
 })
 
 test('serializeManagedUser filters databases and privileges to strings', () => {

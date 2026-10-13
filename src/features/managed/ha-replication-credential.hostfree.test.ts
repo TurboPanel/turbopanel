@@ -110,7 +110,36 @@ function daemonJoinRow() {
   ]
 }
 
-test('resolveReplicationCredentialForHa reseals an existing replication principal', async () => {
+/** The `login` read in `findManagedLoginByRole`: from, left join, where, order by. */
+function loginSelect(rows: unknown[]) {
+  return {
+    from: () => ({
+      leftJoin: () => ({
+        where: () => ({
+          orderBy: () => Promise.resolve(rows),
+        }),
+      }),
+    }),
+  }
+}
+
+function replicationLoginRow(password: string) {
+  return {
+    id: 'repl-1',
+    principalId: null,
+    managedId: MANAGED_ID,
+    role: 'replication',
+    username: 'tp_repl',
+    appliedUsername: 'tp_repl',
+    password,
+    metadata: { managedReplication: true },
+    options: null,
+    createdAt: '2020-01-01T00:00:00.000Z',
+    updatedAt: '2020-01-01T00:00:00.000Z',
+  }
+}
+
+test('resolveReplicationCredentialForHa reseals an existing replication login', async () => {
   const secrets = parseTestSecretsConfig()
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(secrets, 'data-encryption')
   const { sealed } = await generateSealedSecret(dataEncryptionSecrets)
@@ -125,23 +154,10 @@ test('resolveReplicationCredentialForHa reseals an existing replication principa
   }
   let selectN = 0
   const db = {
+    execute: () => Promise.resolve([]),
     select: () => {
       selectN += 1
-      if (selectN === 1) {
-        return {
-          from: () => ({
-            where: () =>
-              Promise.resolve([
-                {
-                  id: 'repl-1',
-                  username: 'tp_repl',
-                  password: sealed,
-                  metadata: { managedReplication: true },
-                },
-              ]),
-          }),
-        }
-      }
+      if (selectN === 1) return loginSelect([replicationLoginRow(sealed)])
       return {
         from: () => ({
           innerJoin: () => ({
@@ -170,23 +186,10 @@ test('resolveReplicationCredentialForHa returns null when replication password i
   }
   let selectN = 0
   const db = {
+    execute: () => Promise.resolve([]),
     select: () => {
       selectN += 1
-      if (selectN === 1) {
-        return {
-          from: () => ({
-            where: () =>
-              Promise.resolve([
-                {
-                  id: 'repl-1',
-                  username: 'tp_repl',
-                  password: 'plaintext',
-                  metadata: { managedReplication: true },
-                },
-              ]),
-          }),
-        }
-      }
+      if (selectN === 1) return loginSelect([replicationLoginRow('plaintext')])
       return {
         from: () => ({
           innerJoin: () => ({
@@ -205,7 +208,7 @@ test('resolveReplicationCredentialForHa returns null when replication password i
   assertEquals(await resolveReplicationCredentialForHa(db, params, MANAGED_ID, spec), null)
 })
 
-test('resolveReplicationCredentialForHa returns null when replication principal row is absent', async () => {
+test('resolveReplicationCredentialForHa returns null when the replication login is absent', async () => {
   const secrets = parseTestSecretsConfig()
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(secrets, 'data-encryption')
   const spec = getManagedEngineSpec('mysql')
@@ -217,13 +220,10 @@ test('resolveReplicationCredentialForHa returns null when replication principal 
   }
   let selectCalls = 0
   const db = {
+    execute: () => Promise.resolve([]),
     select: () => {
       selectCalls += 1
-      return {
-        from: () => ({
-          where: () => Promise.resolve([]),
-        }),
-      }
+      return loginSelect([])
     },
   } as unknown as Db
   assertEquals(await resolveReplicationCredentialForHa(db, params, MANAGED_ID, spec), null)

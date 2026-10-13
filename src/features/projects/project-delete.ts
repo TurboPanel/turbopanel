@@ -1,5 +1,6 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
+import { ensureProjectPlacements } from '../principals/placement-records.ts'
 import {
   binding,
   container,
@@ -8,6 +9,7 @@ import {
   hosting,
   leaf,
   managed,
+  login,
   principal,
   project,
   service,
@@ -23,6 +25,7 @@ import {
   type BindingListenerSync,
 } from '../bindings/enqueue-change.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { bindingLoginJoin, bindingManagedId } from '../managed/logins.ts'
 
 /** Docker Compose states that are considered fully stopped (safe to cascade-delete). */
 const STOPPED_CONTAINER_STATUSES = new Set(['exited', 'dead', 'removing'])
@@ -93,11 +96,12 @@ async function loadBindingListenerTargets(
   if (serviceIds.length === 0) return []
   const rows = await db
     .select({
-      managedId: principal.managedId,
+      managedId: bindingManagedId,
       serviceId: binding.serviceId,
     })
     .from(binding)
-    .innerJoin(principal, eq(binding.principalId, principal.id))
+    .leftJoin(login, bindingLoginJoin())
+    .leftJoin(principal, eq(principal.id, binding.principalId))
     .where(inArray(binding.serviceId, [...serviceIds]))
   return rows.filter((row): row is { managedId: string; serviceId: string } =>
     Boolean(row.managedId)
@@ -267,6 +271,10 @@ export async function deleteProjectCascade(
 
   const bindingTargets = await loadBindingListenerTargets(db, children.serviceIds)
   await db.transaction(async (tx) => {
+    // The principals outlive the project (`project_id` SET NULL); their
+    // placements become the only record of which servers they are on, so
+    // write any that are missing while the environments still say where.
+    await ensureProjectPlacements(tx, projectId)
     await dropEnvironmentRows(tx, {
       projectId,
       environmentIds,

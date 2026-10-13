@@ -6,6 +6,8 @@ import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
 import { nowIso } from './ids.ts'
 import { type CommandStatus, TERMINAL_COMMAND_STATUSES } from './types.ts'
 import { command, dispatch } from '../../db/schema.ts'
+import type { CommandProgress } from '../../contracts/cell-protocol.ts'
+import { finalizeStoredCommandProgress, parseStoredCommandProgress } from './command-progress.ts'
 import { sealExecutionLogOnTerminal } from '../execution-logs/seal-on-terminal.ts'
 
 /**
@@ -26,6 +28,7 @@ const COMMAND_COLUMNS = {
   attempts: command.attempts,
   context: command.context,
   resultSummary: command.resultSummary,
+  progress: command.progress,
   errorCode: command.errorCode,
   errorMessage: command.errorMessage,
   queuedAt: command.queuedAt,
@@ -41,6 +44,13 @@ type CommandDbRow = {
   [K in keyof typeof COMMAND_COLUMNS]: (typeof command.$inferSelect)[K]
 }
 
+/**
+ * What {@link serializeCommandRecord} accepts: the explicit column list, with
+ * `progress` optional because a row shaped before the column existed carries
+ * none and serializes as `progress: null`.
+ */
+type CommandRowInput = Omit<CommandDbRow, 'progress'> & Partial<Pick<CommandDbRow, 'progress'>>
+
 export type CommandRecord = {
   id: string
   serverId: string
@@ -51,6 +61,8 @@ export type CommandRecord = {
   /** Small non-secret identifier bag captured at enqueue time. */
   context: unknown
   result: unknown
+  /** Latest step plan from the daemon, settled once the command ends; `null` until reported. */
+  progress: CommandProgress | null
   errorCode: string | null
   /** Canonical human-readable error for terminal failures. */
   errorMessage: string | null
@@ -149,7 +161,7 @@ function toIsoTimestamp(value: string | Date | null | undefined): string | null 
   return parsed.toISOString()
 }
 
-export function serializeCommandRecord(row: CommandDbRow): CommandRecord {
+export function serializeCommandRecord(row: CommandRowInput): CommandRecord {
   return {
     id: row.id,
     serverId: row.serverId,
@@ -159,6 +171,7 @@ export function serializeCommandRecord(row: CommandDbRow): CommandRecord {
     status: (row.status ?? 'queued') as CommandStatus,
     context: row.context ?? null,
     result: row.resultSummary ?? null,
+    progress: parseStoredCommandProgress(row.progress),
     errorCode: row.errorCode ?? null,
     errorMessage: row.errorMessage ?? null,
     errorLine: lastErrorLine(row.errorMessage),
@@ -505,10 +518,17 @@ export async function transitionCommand(
   // finalizes the dispatch payload. Best effort and sink-based (no store is
   // threaded through Postgres helpers) — see
   // `src/features/execution-logs/seal-on-terminal.ts`.
-  if (TERMINAL_COMMAND_STATUSES.has(patch.status)) {
-    await sealExecutionLogOnTerminal(commandId)
-  }
-  return serializeCommandRecord(row)
+  if (!TERMINAL_COMMAND_STATUSES.has(patch.status)) return serializeCommandRecord(row)
+  await sealExecutionLogOnTerminal(commandId)
+  // Settle the daemon's step plan on the same terminal transition: the steps
+  // it never got to report become done, failed or skipped by the outcome.
+  const progress = await finalizeStoredCommandProgress(db, {
+    commandId,
+    status: patch.status,
+    progress: row.progress,
+    at: now,
+  })
+  return serializeCommandRecord({ ...row, progress })
 }
 
 async function cancelCommandWhen(
@@ -528,10 +548,17 @@ async function cancelCommandWhen(
       ...(patch.errorCode === undefined ? {} : { errorCode: patch.errorCode }),
     })
     .where(and(eq(command.id, commandId), extraWhere))
-    .returning({ id: command.id })
-  if (rows.length === 0) return false
+    .returning({ id: command.id, progress: command.progress })
+  const row = rows[0]
+  if (!row) return false
   await finalizeCommandDispatch(db, commandId, 'cancelled')
   await sealExecutionLogOnTerminal(commandId)
+  await finalizeStoredCommandProgress(db, {
+    commandId,
+    status: 'cancelled',
+    progress: row.progress,
+    at: now,
+  })
   return true
 }
 

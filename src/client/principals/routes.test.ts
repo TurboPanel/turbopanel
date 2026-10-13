@@ -730,34 +730,78 @@ test('PATCH /projects/:projectId/principals/:id rejects invalid serviceIds', asy
 })
 
 test('DELETE /projects/:projectId/principals/:id removes principal', async () => {
-  await withPrincipalFixtures(async ({ db, app, secrets, userId, organizationId, projectId }) => {
-    const cookie = await sessionCookie(db, secrets, userId)
-    const headers = {
-      Cookie: cookie,
-      [ORG_ID_HEADER]: organizationId,
-      'Content-Type': 'application/json',
+  await withPrincipalFixtures(
+    async ({ db, app, secrets, userId, organizationId, projectId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+
+      const create = await app.request(`/projects/${projectId}/principals`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ username: 'deleteme' }),
+      })
+      const created = (await create.json()) as { id: string }
+
+      const del = await app.request(`/projects/${projectId}/principals/${created.id}`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(del.status, 200)
+      // The test app has no command queue, so the one server the project's
+      // environment is pinned to is reported as not reached rather than queued.
+      assertEquals(await del.json(), {
+        ok: true,
+        reconciled: { queuedServerIds: [], failedServerIds: [serverId] },
+      })
+
+      const rows = await db
+        .select({ id: principal.id })
+        .from(principal)
+        .where(eq(principal.id, created.id))
+      assertEquals(rows.length, 0)
     }
+  )
+})
 
-    const create = await app.request(`/projects/${projectId}/principals`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ username: 'deleteme' }),
-    })
-    const created = (await create.json()) as { id: string }
+test('DELETE /projects/:projectId/principals/:id refuses while a service still runs as it', async () => {
+  await withPrincipalFixtures(
+    async ({ db, app, secrets, userId, organizationId, projectId, serviceId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
 
-    const del = await app.request(`/projects/${projectId}/principals/${created.id}`, {
-      method: 'DELETE',
-      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-    })
-    assertEquals(del.status, 200)
-    assertEquals(await del.json(), { ok: true })
+      const create = await app.request(`/projects/${projectId}/principals`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ username: 'busy', serviceIds: [serviceId] }),
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { id: string }
 
-    const rows = await db
-      .select({ id: principal.id })
-      .from(principal)
-      .where(eq(principal.id, created.id))
-    assertEquals(rows.length, 0)
-  })
+      const del = await app.request(`/projects/${projectId}/principals/${created.id}`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(del.status, 409)
+      assertEquals(await del.json(), {
+        error: 'principal_in_use',
+        usedBy: { services: 1, bindings: 0, storage: 0, secrets: 0, logins: 0 },
+      })
+
+      const rows = await db
+        .select({ id: principal.id })
+        .from(principal)
+        .where(eq(principal.id, created.id))
+      assertEquals(rows.length, 1)
+    }
+  )
 })
 
 test('DELETE /projects/:projectId/principals/:id returns 404 when principal belongs to another project', async () => {

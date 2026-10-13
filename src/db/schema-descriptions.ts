@@ -671,6 +671,24 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     },
   },
   // ── resources ─────────────────────────────────────────────────────────
+  login: {
+    group: 'resources',
+    summary:
+      'One engine role on one managed cluster, the database form of a principal; written by the managed users API in step with the legacy `principal` rows.',
+    columns: {
+      metadata:
+        'Jsonb: `engine`, `databases`, `privileges`, optional `connectionRole`; cluster logins add `managedRoot` or `managedReplication` and `legacyPrincipalId`.',
+      options:
+        'Jsonb: `nameScheme` the applied name was derived with (`plain`, `partial`, `random`).',
+      principal_id:
+        'Identity the login belongs to, cascade-deleted with it; NULL only for the cluster root and replication logins, which are outside the organization name pool.',
+      password:
+        'Write-only credential sealed as a `tpsecret` envelope, never returned on GET and resealed to `tpdaemon` for delivery.',
+      role: '`root` for the cluster admin login, `replication` for the member-to-member login, `user` for an operator-created login.',
+      applied_username:
+        'Engine role name created on the cluster, copied from the principal for a `user` login; unique per cluster after trim and case-fold.',
+    },
+  },
   binding: {
     group: 'resources',
     summary:
@@ -680,6 +698,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       options: 'Reserved jsonb; no current code path writes it.',
       principal_id:
         'Managed database user whose credentials are injected; cascade-deleted with the principal (user gone, binding gone).',
+      login_id:
+        'The `login` row whose credentials are injected; set beside `principal_id` on every insert and backfilled from it, nullable until the contract migration.',
       service_id:
         'Consuming compose service; ON DELETE RESTRICT so a service with bindings cannot be deleted.',
       database_name:
@@ -805,9 +825,23 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       organization_id:
         "Home organization set on every insert, not derived; for a managed user it is the cluster's home org via its environment, not the hosting servers' orgs.",
       project_id:
-        'Optional project scope for compose-declared hosting principals; cascade-deleted with the project.',
+        'Optional project scope for compose-declared hosting principals; set to NULL when the project is deleted, the principal stays.',
       managed_id:
         'Optional managed-engine scope for database users (root and per-user rows); cascade-deleted with the cluster.',
+    },
+  },
+  placement: {
+    group: 'resources',
+    summary:
+      'One system principal on one server, the per-server form of a `principal` row; written by deploy fan-out, teardown and server removal.',
+    columns: {
+      state:
+        '`pending` when a deploy that creates the account is queued, `present` once it succeeded, `retiring` once a stop that retires it is queued, `absent` after.',
+      uid: 'Linux uid the host assigned, reported by the daemon; NULL until then, unique per server when set.',
+      gid: 'Linux gid the host assigned, reported by the daemon; NULL until then.',
+      home: 'Account home on the host, `/srv/users/` plus the applied username, copied from the deploy material.',
+      source:
+        'Why the account is on this server: `compose` (an `x-turbopanel.principals` alias), `manual` (a project principal), or `storage` (a storage entry owner).',
     },
   },
   project: {
@@ -1231,6 +1265,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Allowlisted non-secret identifier bag (`managedId`, `environmentId`, `generation`) extracted by commands/context.ts so reads never need the dispatch payload.',
       result_summary:
         'Small bounded typed result reported by the daemon on completion (API field `result`); execution logs live in the execution-log store, not here.',
+      progress:
+        'Live step plan and current step the server reports during a deploy (`CommandProgress`); NULL until reported, finalised when the command ends.',
       error_code: 'Machine-readable terminal error code set when the command fails or times out.',
       error_message:
         'Human-readable terminal error text (API field `error`) set alongside `error_code`.',
