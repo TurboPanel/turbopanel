@@ -164,12 +164,6 @@
       "tag": "0026_invitation_table_comment",
       "when": 1791603582204,
       "sha256": "c53587e5d139528a4c092ba3c894a3bfe046a8ce59b3b83857c421a3c8d0c7ac"
-    },
-    {
-      "idx": 27,
-      "tag": "0027_principal_name_pool_unique",
-      "when": 1791900728080,
-      "sha256": "03f32ddb09338e03ea948fb3efa3d45e92e3880e9dc5d92cda7e39e196995b8c"
     }
   ]
 }
