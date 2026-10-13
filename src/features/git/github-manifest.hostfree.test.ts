@@ -302,6 +302,25 @@ test('a non-JSON error body is truncated and never repeats the code', async () =
   )
 })
 
+test('a code straddling the truncation point is still scrubbed', async () => {
+  const code = 'one-shot-code-xyz'
+  // The code starts a few characters before the cut, so truncating first
+  // would leave a prefix of it that no longer matches.
+  const lead = 'x'.repeat(GITHUB_MANIFEST_MESSAGE_LIMIT - 5)
+  await withFetch(
+    () => new Response(`${lead}${code} tail`, { status: 502 }),
+    async () => {
+      const error = await assertRejects(
+        () => convertGithubAppManifest('https://api.github.com', code),
+        GithubManifestError
+      )
+      const message = error.details?.githubMessage ?? ''
+      assertEquals(message.includes(code.slice(0, 5)), false)
+      assertEquals(message.length <= GITHUB_MANIFEST_MESSAGE_LIMIT + 1, true)
+    }
+  )
+})
+
 test('a thrown fetch keeps its name and message as the cause, without the code', async () => {
   const code = 'one-shot-code-xyz'
   const original = globalThis.fetch

@@ -96,7 +96,7 @@ async function httpFailureDetails(
   code: string
 ): Promise<GithubManifestFailureDetails> {
   const body = await response.text().catch(() => '')
-  const message = scrubCode(truncate(githubErrorMessage(body).trim()), code)
+  const message = truncate(scrubCode(githubErrorMessage(body).trim(), code))
   return {
     kind: 'http',
     githubMessage: message || undefined,
@@ -109,7 +109,7 @@ async function httpFailureDetails(
 
 function networkFailureCause(error: unknown, code: string): string {
   if (!(error instanceof Error)) return 'network error'
-  return scrubCode(truncate(`${error.name}: ${error.message}`), code)
+  return truncate(scrubCode(`${error.name}: ${error.message}`, code))
 }
 
 /**
