@@ -197,7 +197,6 @@ export {
   type ComposeServiceTurbopanelExtension,
   type ComposeSiteServiceExtension,
   type ComposeSourceBuildKind,
-  DEFAULT_NODE_SERIES,
   isHostNativeServiceKind,
   isNodeComposeService,
   isSafeRoot,
