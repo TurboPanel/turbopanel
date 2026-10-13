@@ -732,7 +732,12 @@ async function insertManagedCreateTransaction(
 
   await ensureManagedPrimaryMember(tx, { managedId, serverId })
 
-  const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, managedId, [serverId])
+  const owningOrgIds = await resolveManagedOwningOrganizationIds(
+    tx,
+    managedId,
+    [serverId],
+    ctx.organizationId
+  )
   await lockOrganizationsForUpdate(tx, owningOrgIds)
 
   // Never plain, whatever the org scheme: the exposed root login is
@@ -1726,12 +1731,18 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         managedId: row.id,
         serverId: targetServerId,
       })
-      const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, row.id, [targetServerId])
+      const owningOrgIds = await resolveManagedOwningOrganizationIds(
+        tx,
+        row.id,
+        [targetServerId],
+        ctx.organizationId
+      )
       await lockOrganizationsForUpdate(tx, owningOrgIds)
-      // `plain`: the operator-typed name is the login and must be free
-      // org-wide. `partial` / `random`: the server derives a collision-free
-      // system name; the typed name stays the display name.
-      if (nameScheme === 'plain' && (await isManagedUsernameTaken(tx, owningOrgIds, username))) {
+      // The typed name must be free in the organization pool under every
+      // scheme: it is stored as `username`, which `uniq_principal_organization_username`
+      // keeps unique per org next to the applied login. Under `partial` /
+      // `random` the server then derives a collision-free login from it.
+      if (await isManagedUsernameTaken(tx, owningOrgIds, username)) {
         return { ok: false as const, error: USERNAME_IN_USE_ERROR }
       }
       const appliedUsername = await resolveManagedAppliedUsername(

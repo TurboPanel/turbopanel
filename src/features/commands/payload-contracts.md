@@ -361,6 +361,18 @@ running as it or in its slice, or a tree left under its `sites/`); a refusal is
 logged and the account kept, never a stop failure. An older daemon ignores the
 field.
 
+**`server.principals.reconcile` carries the same `retirePrincipals[]`** for a
+single deleted principal (`DELETE /projects/:projectId/principals/:id`, refused
+with `principal_in_use` while a service, binding, storage entry or secret still
+names it): the control plane names the applied login on every server the
+principal reached (`retireDeletedPrincipal`, except a server where another row
+still places that login) next to the surviving full set, and the daemon
+retires it after the set is applied, reporting it in `principalsRetired[]`.
+The control plane **never sends an empty `principals` set on its own**
+(`enqueuePrincipalsReconcile` skips such a server unless it has an account to
+retire there) and the daemon prunes no key file on an empty set without the
+explicit `allowEmpty: true`, which nothing sets today.
+
 `environment.lifecycle` uses a 120s consumer timeout. On success the consumer
 reconciles the daemon's authoritative `compose ps -a` report through
 `reconcileEnvironmentContainers` (live rows update pins rather than clearing

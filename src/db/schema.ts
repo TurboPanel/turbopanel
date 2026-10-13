@@ -3259,11 +3259,25 @@ export const container = pgTable(
   ]
 )
 /**
+ * Rows in the organization-wide name pool: every principal except a managed
+ * cluster's root and replication logins (each cluster has one of both, so they
+ * can never be unique per organization). NULL-safe on purpose: a partial
+ * index only covers rows where the predicate is TRUE, so a bare `NOT (…)` over
+ * a NULL `metadata` would quietly exclude the row.
+ *
+ * Column names are bare so the same text works as the index predicate and as
+ * a single-table WHERE in `features/principals/store.ts`.
+ */
+export const PRINCIPAL_NAME_POOL_WHERE = sql`coalesce(metadata ->> 'managedRoot', '') <> 'true' AND coalesce(metadata ->> 'managedReplication', '') <> 'true'`
+
+/**
  * A principal is an account identity that can be attached to services — a
- * Linux (server) host account or a database engine user. Org is derived through
- * `steward` → `service` (or `project` → `workspace` for project principals);
- * there is deliberately no `organization_id` column here. Host-account username
- * uniqueness is app-enforced per organization (trim + case-insensitive).
+ * Linux (server) host account or a database engine user. `organization_id` is
+ * the owning org (set on every insert, see the column note). Names are one
+ * pool per organization across both forms: `uniq_principal_organization_*`
+ * keep the typed `username` and the applied login unique per org,
+ * case-insensitively, outside managed root/replication logins
+ * ({@link PRINCIPAL_NAME_POOL_WHERE}).
  */
 export const principal = pgTable(
   'principal',
@@ -3302,7 +3316,8 @@ export const principal = pgTable(
      * Account name. Allowlist mirrors POSIX/database account naming: starts
      * with a letter or underscore, then letters/digits/underscore/hyphen
      * (`^[A-Za-z_][A-Za-z0-9_-]*$`), 1–255 chars. Server principals additionally
-     * enforce ≤ 32 at the API layer (daemon username limit).
+     * enforce `MAX_PRINCIPAL_USERNAME_LENGTH` (28) at the API layer (Linux
+     * login limit).
      */
     username: varchar({ length: 255 }).notNull(),
     /**
@@ -3378,10 +3393,16 @@ export const principal = pgTable(
       'principal_applied_username_format_check',
       sql`(char_length((applied_username)::text) >= 1) AND (char_length((applied_username)::text) <= 255) AND ((applied_username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)`
     ),
-    // No global unique on `username`: the same account name (e.g. `postgres`,
-    // `www-data`) legitimately recurs across different systems/services.
-    // Server-provider host accounts are uniqueness-checked per org in app code
-    // (both the short `username` and the `applied_username` namespaces).
+    // One name pool per organization across system users and database logins
+    // (owner decision 2026-10-13). No global unique: the same name legitimately
+    // recurs across organizations. The app checks (`isServerPrincipalUsernameTaken`,
+    // `isManagedUsernameTaken`) answer 409 first; these indexes are the backstop.
+    uniqueIndex('uniq_principal_organization_username')
+      .on(table.organizationId, sql`lower(${table.username})`)
+      .where(PRINCIPAL_NAME_POOL_WHERE),
+    uniqueIndex('uniq_principal_organization_applied_username')
+      .on(table.organizationId, sql`lower(${table.appliedUsername})`)
+      .where(PRINCIPAL_NAME_POOL_WHERE),
   ]
 )
 /**

@@ -264,6 +264,94 @@ test('isServerPrincipalUsernameTaken is org-scoped and case-insensitive', async 
   })
 })
 
+test('principal names are one pool per organization, outside managed root and replication logins', async () => {
+  await withPrincipalFixtures(async ({ db, organizationId }) => {
+    const insertPool = async (values: {
+      kind: string
+      provider: string
+      username: string
+      appliedUsername: string
+      projectId?: string
+      metadata?: Record<string, unknown>
+    }) => {
+      const [row] = await db
+        .insert(principal)
+        .values({ organizationId, ...values })
+        .returning({ id: principal.id })
+      return row!.id
+    }
+    const ids: string[] = []
+    try {
+      // No project at all: visible to the server check through organization_id.
+      ids.push(
+        await insertPool({
+          kind: 'system',
+          provider: SERVER_PRINCIPAL_PROVIDER,
+          username: 'orphan',
+          appliedUsername: 'orphan_x1y2z3a4b5c',
+        })
+      )
+      assertEquals(await isServerPrincipalUsernameTaken(db, organizationId, 'ORPHAN'), true)
+      assertEquals(
+        await isServerPrincipalUsernameTaken(db, organizationId, 'orphan_x1y2z3a4b5c'),
+        true
+      )
+      // The fixture's database login `app_user` is in the same pool.
+      assertEquals(await isServerPrincipalUsernameTaken(db, organizationId, 'app_user'), true)
+      assertEquals(await isManagedUsernameTaken(db, [organizationId], 'orphan'), true)
+
+      // Root and replication logins are outside the pool: two clusters each
+      // carry one, and a user may not be refused `postgres` because of them.
+      ids.push(
+        await insertPool({
+          kind: 'database',
+          provider: 'postgres',
+          username: 'postgres',
+          appliedUsername: 'postgres_r00tr00tr00',
+          metadata: { managedRoot: true },
+        })
+      )
+      ids.push(
+        await insertPool({
+          kind: 'database',
+          provider: 'postgres',
+          username: 'postgres',
+          appliedUsername: 'postgres_r00tr00tr01',
+          metadata: { managedRoot: true },
+        })
+      )
+      assertEquals(await isServerPrincipalUsernameTaken(db, organizationId, 'postgres'), false)
+
+      // The index backs the check: a second pool row with the same typed or
+      // applied name is refused by the database, case-insensitively.
+      await assertRejects(
+        () =>
+          insertPool({
+            kind: 'database',
+            provider: 'mysql',
+            username: 'Orphan',
+            appliedUsername: 'orphan_other',
+          }),
+        Error,
+        'uniq_principal_organization_username'
+      )
+      await assertRejects(
+        () =>
+          insertPool({
+            kind: 'system',
+            provider: SERVER_PRINCIPAL_PROVIDER,
+            username: 'other',
+            appliedUsername: 'ORPHAN_X1Y2Z3A4B5C',
+          }),
+        Error,
+        'uniq_principal_organization_applied_username'
+      )
+    } finally {
+      if (ids.length > 0) await db.delete(principal).where(inArray(principal.id, ids))
+    }
+  })
+})
+
 test('isManagedUsernameTaken scopes by server-owning org not create chain', async () => {
   if (!dbUrl) {
     skipWithoutDatabase('managed username tests')

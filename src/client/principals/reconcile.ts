@@ -22,6 +22,7 @@ import { createCommandRecord, transitionCommand } from '../../features/commands/
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { loadPrincipalMaterial } from '../environments/deploy-prepare.ts'
+import { principalsStillOnServer } from '../environments/teardown.ts'
 
 export type PrincipalsReconcileActor = {
   actorType: string
@@ -63,6 +64,15 @@ export type PrincipalsReconcileOutcome = {
   failedServerIds: string[]
 }
 
+export type PrincipalsReconcileOptions = {
+  /**
+   * Applied logins of principals the panel has just deleted; the daemon
+   * removes the accounts after it applies the surviving set
+   * (`tp-host principal-remove`). Sent to every server in `serverIds`.
+   */
+  retirePrincipals?: readonly string[]
+}
+
 /**
  * Enqueue a full-state reconcile on every server a principal reaches.
  *
@@ -71,27 +81,40 @@ export type PrincipalsReconcileOutcome = {
  * into a 500 would tell the operator their revocation did not happen when the
  * row is in fact gone — the opposite of the truth, and the reason the caller
  * gets an outcome to report rather than an exception to swallow.
+ *
+ * A server whose managed set comes back **empty** is skipped unless there is
+ * an account to retire there: an empty set would tell the daemon to remove
+ * every key file on the host, and this code can never be sure enough of that
+ * to say it (the daemon refuses it too, without an explicit opt-in).
  */
 export async function enqueuePrincipalsReconcile(
   db: Db,
   queue: CommandQueue | undefined,
   actor: PrincipalsReconcileActor,
-  serverIds: readonly string[]
+  serverIds: readonly string[],
+  options: PrincipalsReconcileOptions = {}
 ): Promise<PrincipalsReconcileOutcome> {
   const queued: string[] = []
   const failed: string[] = []
   if (!queue) return { queuedServerIds: queued, failedServerIds: [...serverIds] }
+  const retirePrincipals = [...new Set(options.retirePrincipals ?? [])]
 
   await forEachSequential(serverIds, async (serverId) => {
     try {
       const principalIds = await principalIdsOnServer(db, serverId)
       const principals = await loadPrincipalMaterial(db, principalIds)
+      if (principals.length === 0 && retirePrincipals.length === 0) return
       const record = await createCommandRecord(db, {
         serverId,
         actorType: actor.actorType,
         actorId: actor.actorId,
         type: 'server.principals.reconcile',
-        payload: { principals },
+        payload: {
+          principals,
+          ...(retirePrincipals.length > 0
+            ? { retirePrincipals: retirePrincipals.map((username) => ({ username })) }
+            : {}),
+        },
       })
       const envelope: CommandEnvelope = {
         commandId: record.id,
@@ -148,4 +171,35 @@ export async function reconcilePrincipalsAccess(
     .where(and(inArray(principal.id, [...principalIds]), isNotNull(environment.serverId)))
   const serverIds = [...new Set(rows.map((row) => row.serverId as string))]
   return await enqueuePrincipalsReconcile(db, queue, actor, serverIds)
+}
+
+/**
+ * After a principal row is deleted: reconcile every server it reached and
+ * name its login in `retirePrincipals` there, so the daemon removes the
+ * account (user, group, home, slice) once the surviving set is applied. The
+ * one exception is a server where another row still places the same login
+ * (`principalsStillOnServer`, the teardown rule); that server gets a plain
+ * reconcile and keeps the account. Call with the server list resolved
+ * **before** the delete — `serversForPrincipal` joins through the row.
+ */
+export async function retireDeletedPrincipal(
+  db: Db,
+  queue: CommandQueue | undefined,
+  actor: PrincipalsReconcileActor,
+  params: Readonly<{ serverIds: readonly string[]; appliedUsername: string }>
+): Promise<PrincipalsReconcileOutcome> {
+  const retire: string[] = []
+  const keep: string[] = []
+  await forEachSequential(params.serverIds, async (serverId) => {
+    const kept = await principalsStillOnServer(db, serverId, [params.appliedUsername])
+    ;(kept.has(params.appliedUsername) ? keep : retire).push(serverId)
+  })
+  const retired = await enqueuePrincipalsReconcile(db, queue, actor, retire, {
+    retirePrincipals: [params.appliedUsername],
+  })
+  const reconciled = await enqueuePrincipalsReconcile(db, queue, actor, keep)
+  return {
+    queuedServerIds: [...retired.queuedServerIds, ...reconciled.queuedServerIds],
+    failedServerIds: [...retired.failedServerIds, ...reconciled.failedServerIds],
+  }
 }
