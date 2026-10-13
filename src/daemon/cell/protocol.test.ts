@@ -1,5 +1,6 @@
 import { assert, assertEquals, assertNotEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
+import type { CommandProgress } from '../../contracts/cell-protocol.ts'
 import {
   DAEMON_CELL_PING,
   DAEMON_CELL_PONG,
@@ -27,6 +28,7 @@ import {
   parseDaemonBuildInfo,
   parseDaemonMessage,
   validateDaemonInboundEnvelope,
+  validateCommandProgress,
   validateDaemonInboundFrame,
   wireMessageToInboundEnvelope,
 } from '../../contracts/cell-protocol.ts'
@@ -812,6 +814,55 @@ it('validateDaemonInboundFrame validates update-progress', () => {
     assertEquals(badStage.ignored, false)
     assertEquals(badStage.reason, 'invalid stage')
   }
+})
+
+it('validateDaemonInboundFrame accepts a command-progress envelope and rejects a bad one', () => {
+  const progress: CommandProgress = {
+    version: 1,
+    steps: [{ id: 'fetch', label: 'Fetch the code', state: 'running' }],
+    current: 'fetch',
+    updatedAt: VALID_AT,
+  }
+  const ok = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: 'command-progress',
+      id: 'prog-1',
+      commandId: 'cmd-1',
+      at: VALID_AT,
+      progress,
+    })
+  )
+  assertEquals(ok.ok, true)
+  if (ok.ok && ok.message.type === 'command-progress') {
+    assertEquals(ok.message.commandId, 'cmd-1')
+    assertEquals(ok.message.progress, progress)
+  }
+
+  const noCommand = validateDaemonInboundFrame(
+    JSON.stringify({ type: 'command-progress', id: 'prog-1', at: VALID_AT, progress })
+  )
+  assertEquals(noCommand.ok, false)
+  if (!noCommand.ok) {
+    assertEquals(noCommand.ignored, false)
+    assertEquals(noCommand.reason, 'invalid commandId')
+  }
+
+  // The payload is the handler's to judge: a step shape this build does not
+  // know passes the frame check, so the socket stays up and the payload is dropped.
+  const oddPayload = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: 'command-progress',
+      id: 'prog-1',
+      commandId: 'cmd-1',
+      at: VALID_AT,
+      progress: { version: 1, steps: 'later' },
+    })
+  )
+  assertEquals(oddPayload.ok, true)
+  assertEquals(
+    validateCommandProgress({ version: 1, steps: 'later' }),
+    'invalid progress updatedAt'
+  )
 })
 
 it('validateDaemonInboundFrame accepts hello with optional fields', () => {

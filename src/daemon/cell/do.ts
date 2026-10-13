@@ -43,6 +43,7 @@ import {
   handleBackupRunReport,
 } from '../../features/backups/run-report.ts'
 import { recordInstanceAcmeIssuance } from '../../features/install/instance-hostnames.ts'
+import { recordCommandProgress } from '../../features/commands/command-progress.ts'
 import {
   persistDaemonReachedTarget,
   persistUpgradeOutcome,
@@ -1864,6 +1865,31 @@ export class DaemonCellObject {
   }
 
   /**
+   * Fire-and-forget deploy progress. Records liveness, then stores the step
+   * plan on the command row when it belongs to this server and is still
+   * live. A payload that fails the shape check is dropped; the socket stays.
+   * Never enqueues.
+   */
+  async #handleCommandProgressInbound(
+    attachment: { connectionId: string; serverId: string },
+    parsed: { commandId: string; at: string; progress: unknown }
+  ): Promise<void> {
+    await this.#recordInboundRepairingPresence(attachment, parsed.at)
+    await this.#withProjectionDb('command-progress', attachment.serverId, async (db) => {
+      const result = await recordCommandProgress(db, {
+        serverId: attachment.serverId,
+        commandId: parsed.commandId,
+        progress: parsed.progress,
+      })
+      if (result !== 'stored') {
+        console.warn(
+          `daemon-cell event=command-progress-${result} serverId=${attachment.serverId} commandId=${parsed.commandId}`
+        )
+      }
+    })
+  }
+
+  /**
    * Fire-and-forget daemon reports that only write a projection
    * (`managed-health-report`, `topology-report`). Returns true when handled.
    */
@@ -2007,6 +2033,11 @@ export class DaemonCellObject {
 
       if (parsed.type === 'update-progress') {
         await this.#handleUpdateProgressInbound(attachment, parsed)
+        return
+      }
+
+      if (parsed.type === 'command-progress') {
+        await this.#handleCommandProgressInbound(attachment, parsed)
         return
       }
 

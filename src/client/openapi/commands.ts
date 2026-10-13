@@ -1,9 +1,54 @@
 export const commandSchemas = {
+  CommandProgressStep: {
+    type: 'object',
+    required: ['id', 'label', 'state'],
+    properties: {
+      id: {
+        type: 'string',
+        maxLength: 64,
+        description: 'Stable step id: a kind, optionally `:` and a target (`install-php:8.3`).',
+      },
+      label: { type: 'string', maxLength: 60, description: 'Plain-words label for the step.' },
+      state: {
+        type: 'string',
+        enum: ['ready', 'pending', 'running', 'done', 'failed', 'skipped'],
+        description:
+          '`ready` was already on the server; `skipped` never ran because an earlier step failed or the command was cancelled.',
+      },
+      startedAt: { type: 'string', format: 'date-time' },
+      finishedAt: { type: 'string', format: 'date-time' },
+      detail: {
+        type: 'string',
+        maxLength: 200,
+        description: 'Live one-line detail for the running step.',
+      },
+    },
+  },
+  CommandProgress: {
+    type: 'object',
+    description:
+      'The step plan the server reported for this command and where it stands. Settled by the control plane when the command ends: on success every unfinished step is `done`; on failure or timeout the running step is `failed` and the rest `skipped`; on cancel they are all `skipped`.',
+    required: ['version', 'steps', 'current', 'updatedAt'],
+    properties: {
+      version: { type: 'integer', enum: [1] },
+      steps: {
+        type: 'array',
+        maxItems: 24,
+        items: { $ref: '#/components/schemas/CommandProgressStep' },
+        description: 'In execution order.',
+      },
+      current: {
+        type: ['string', 'null'],
+        description: 'Id of the running step, or null when none is running.',
+      },
+      updatedAt: { type: 'string', format: 'date-time' },
+    },
+  },
   CommandStatusRecord: {
     type: 'object',
     description:
       'Lean command lifecycle projection. Never includes the daemon dispatch payload or the result summary — fetch the per-server command detail route for those.',
-    required: ['id', 'serverId', 'status', 'type', 'hasLog'],
+    required: ['id', 'serverId', 'status', 'type', 'hasLog', 'progress'],
     properties: {
       id: { type: 'string', format: 'uuid' },
       serverId: { type: 'string', format: 'uuid' },
@@ -32,6 +77,10 @@ export const commandSchemas = {
       hasLog: {
         type: 'boolean',
         description: 'Whether a retained execution log exists for this command.',
+      },
+      progress: {
+        oneOf: [{ $ref: '#/components/schemas/CommandProgress' }, { type: 'null' }],
+        description: 'Step plan and current step; null until the server reports one.',
       },
     },
   },

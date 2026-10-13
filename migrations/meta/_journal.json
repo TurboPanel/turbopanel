@@ -190,6 +190,13 @@
       "when": 1791603582204,
       "tag": "0026_invitation_table_comment",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1791862811099,
+      "tag": "0027_command_progress",
+      "breakpoints": true
     }
   ]
 }
