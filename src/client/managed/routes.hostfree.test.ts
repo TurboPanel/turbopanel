@@ -3235,7 +3235,7 @@ test('POST users past apply-ready hits namespace and insert short-circuits', asy
  * (the new login) and which commands were queued.
  */
 function recordingUserCreate(memberRows: unknown[]) {
-  const base = applyReadyDb({ principalRows: [], memberRows })
+  const base = applyReadyDb({ principalRows: [], loginRows: [], memberRows })
   const inserted: Array<Record<string, unknown>> = []
   const db = {
     ...base,

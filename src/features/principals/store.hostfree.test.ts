@@ -284,16 +284,21 @@ test('isManagedUsernameTaken handles empty orgs and hits', async () => {
   assertEquals(await isManagedUsernameTaken(poolProbeDb([]), ['org'], 'Root'), false)
 })
 
+/**
+ * Answers every name probe: the principal pool query (`from.where.limit`) and
+ * the login query (`from.innerJoin.innerJoin.where.limit`) share one row source.
+ */
+function nameProbeDb(rows: () => unknown[]): Db {
+  const chain = {
+    innerJoin: () => chain,
+    where: () => chain,
+    limit: () => Promise.resolve(rows()),
+  }
+  return { select: () => ({ from: () => chain }) } as unknown as Db
+}
+
 test('resolveManagedAppliedUsername prefers free short name without suffix', async () => {
-  const free = {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([]),
-        }),
-      }),
-    }),
-  } as unknown as Db
+  const free = nameProbeDb(() => [])
 
   const preferred = await resolveManagedAppliedUsername(
     free,
@@ -305,19 +310,11 @@ test('resolveManagedAppliedUsername prefers free short name without suffix', asy
   assertEquals(preferred, 'root')
 
   let takenCalls = 0
-  const takenThenFree = {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => {
-            takenCalls += 1
-            // preferred taken, suffixed free
-            return Promise.resolve(takenCalls === 1 ? [{ id: 'x' }] : [])
-          },
-        }),
-      }),
-    }),
-  } as unknown as Db
+  const takenThenFree = nameProbeDb(() => {
+    takenCalls += 1
+    // preferred taken, suffixed free
+    return takenCalls === 1 ? [{ id: 'x' }] : []
+  })
   const derived = await resolveManagedAppliedUsername(
     takenThenFree,
     ['org'],
@@ -329,15 +326,7 @@ test('resolveManagedAppliedUsername prefers free short name without suffix', asy
 })
 
 test('resolveManagedAppliedUsername suffix mode never returns the bare name', async () => {
-  const free = {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([]),
-        }),
-      }),
-    }),
-  } as unknown as Db
+  const free = nameProbeDb(() => [])
 
   const derived = await resolveManagedAppliedUsername(
     free,
