@@ -8,7 +8,7 @@
  * judging them is the caller's job, with the same classifier the Deno
  * resolver's answers go through.
  *
- * Every failure throws — a non-2xx reply, a body that is not the expected
+ * Every failure throws — a non-2xx reply (a redirect included), a body that is not the expected
  * JSON, any `Status` but NOERROR (NXDOMAIN included), an address that does
  * not parse, a timeout. The caller decides what a failure means; at fetch
  * time it refuses the request.
@@ -60,7 +60,10 @@ export const dohLookup: DohLookup = async (name, recordType, options = {}) => {
   const query = new URLSearchParams({ name, type: recordType })
   const response = await fetch(`${DOH_ENDPOINT}?${query}`, {
     headers: { accept: 'application/dns-json' },
-    redirect: 'error',
+    // Never 'error': the Workers runtime rejects it outright ("must be one
+    // of follow or manual"), which failed every lookup on hosted. With
+    // 'manual' a redirect comes back as a 3xx, refused just below.
+    redirect: 'manual',
     signal,
   })
   if (!response.ok) {
