@@ -5,6 +5,8 @@ import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
 import {
   environment,
+  login,
+  managed,
   organization,
   principal,
   project,
@@ -223,6 +225,7 @@ test('loadPrincipalUsage counts tenancies and placements on other servers only',
       bindings: 0,
       storages: 0,
       secrets: 0,
+      logins: 0,
       otherPlacements: 0,
     })
     assertEquals(usage.get(manualPrincipalId), {
@@ -230,6 +233,7 @@ test('loadPrincipalUsage counts tenancies and placements on other servers only',
       bindings: 0,
       storages: 0,
       secrets: 0,
+      logins: 0,
       otherPlacements: 1,
     })
 
@@ -242,5 +246,32 @@ test('loadPrincipalUsage counts tenancies and placements on other servers only',
     await markPlacementsAbsent(db, serverB, [manualRow!.appliedUsername])
     const after = await loadPrincipalUsage(db, [manualPrincipalId], serverA)
     assertEquals(after.get(manualPrincipalId)?.otherPlacements, 0)
+  })
+})
+
+test("loadPrincipalUsage counts the principal's database logins", async () => {
+  await withFixtures(async ({ db, environmentId, serverIds, composePrincipalId }) => {
+    const [cluster] = await db
+      .insert(managed)
+      .values({
+        environmentId,
+        serverId: serverIds[1],
+        name: 'Placement Usage DB',
+        engine: 'postgres',
+        status: 'ready',
+      })
+      .returning({ id: managed.id })
+    try {
+      await db.insert(login).values({
+        managedId: cluster!.id,
+        principalId: composePrincipalId,
+        role: 'user',
+        appliedUsername: 'pl_login_user',
+      })
+      const usage = await loadPrincipalUsage(db, [composePrincipalId], serverIds[0])
+      assertEquals(usage.get(composePrincipalId)?.logins, 1)
+    } finally {
+      await db.delete(managed).where(eq(managed.id, cluster!.id))
+    }
   })
 })

@@ -4492,7 +4492,14 @@ test('DELETE /servers/:id refuses an outright principal delete while a service s
         {
           principalId: busyId,
           reason: 'in_use',
-          usedBy: { tenancies: 1, bindings: 0, storages: 0, secrets: 0, otherPlacements: 0 },
+          usedBy: {
+            tenancies: 1,
+            bindings: 0,
+            storages: 0,
+            secrets: 0,
+            logins: 0,
+            otherPlacements: 0,
+          },
         },
       ])
       const remaining = await db

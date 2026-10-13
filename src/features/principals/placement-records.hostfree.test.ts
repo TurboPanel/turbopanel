@@ -1,5 +1,10 @@
 import { assertEquals } from '@std/assert'
-import { emptyPrincipalUsage, isPrincipalUnused, placementSourceFor } from './placement-records.ts'
+import {
+  emptyPrincipalUsage,
+  isPrincipalUnused,
+  placementSourceFor,
+  PRINCIPAL_USAGE_KINDS,
+} from './placement-records.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -41,7 +46,7 @@ test('placementSourceFor: storage only when the principal reaches the server thr
 
 test('isPrincipalUnused is true only when every usage count is zero', () => {
   assertEquals(isPrincipalUnused(emptyPrincipalUsage()), true)
-  for (const kind of ['tenancies', 'bindings', 'storages', 'secrets', 'otherPlacements'] as const) {
+  for (const kind of PRINCIPAL_USAGE_KINDS) {
     assertEquals(isPrincipalUnused({ ...emptyPrincipalUsage(), [kind]: 1 }), false, kind)
   }
 })

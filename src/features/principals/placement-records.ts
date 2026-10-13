@@ -17,6 +17,7 @@ import { and, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   binding,
+  login,
   principal,
   principalPlacement,
   secret,
@@ -270,16 +271,16 @@ export async function listServerPlacements(
 }
 
 /**
- * What else still uses a principal, counted per kind. `otherPlacements`
- * leaves out `excludeServerId` (the server being removed) and rows already
- * `absent`. Database logins arrive with the login table and join this list
- * then.
+ * What else still uses a principal, counted per kind. `logins` are the
+ * principal's database logins (its other form). `otherPlacements` leaves out
+ * `excludeServerId` (the server being removed) and rows already `absent`.
  */
 export type PrincipalUsage = {
   tenancies: number
   bindings: number
   storages: number
   secrets: number
+  logins: number
   otherPlacements: number
 }
 
@@ -288,11 +289,12 @@ export const PRINCIPAL_USAGE_KINDS = [
   'bindings',
   'storages',
   'secrets',
+  'logins',
   'otherPlacements',
 ] as const satisfies ReadonlyArray<keyof PrincipalUsage>
 
 export function emptyPrincipalUsage(): PrincipalUsage {
-  return { tenancies: 0, bindings: 0, storages: 0, secrets: 0, otherPlacements: 0 }
+  return { tenancies: 0, bindings: 0, storages: 0, secrets: 0, logins: 0, otherPlacements: 0 }
 }
 
 /** True when nothing but the placement under review still uses the principal. */
@@ -353,6 +355,14 @@ export async function loadPrincipalUsage(
       .where(and(isNotNull(secret.principalId), inArray(secret.principalId, ids))),
     usage,
     'secrets'
+  )
+  await countByPrincipal(
+    db
+      .select({ principalId: login.principalId })
+      .from(login)
+      .where(and(isNotNull(login.principalId), inArray(login.principalId, ids))),
+    usage,
+    'logins'
   )
   await countByPrincipal(
     db
