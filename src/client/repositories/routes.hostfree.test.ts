@@ -2181,6 +2181,85 @@ test('inspect rejects an unsafe listPath before touching the provider', async ()
   )
 })
 
+test('inspect refuses a ref git would refuse, before any lookup', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (() => {
+    throw new TypeError('an invalid ref must not reach the provider')
+  }) as typeof fetch
+  try {
+    for (const ref of ['', '  ', 'a..b', 'x.lock', 'a b', 'a@{1}', '-x', 'a/', '.hidden', 'a~1']) {
+      const db = sourceHttpDb({ selectRows: [sourceRow()], limitQueue: [[{ role: 'superadmin' }]] })
+      const { app, cookie } = await buildSourceApp(db)
+      await expectJson(
+        await app.request(`/repositories/${SOURCE_ID}/inspect?ref=${encodeURIComponent(ref)}`, {
+          headers: authHeaders(cookie),
+        }),
+        400,
+        {
+          ok: false,
+          error: 'invalid_ref',
+          code: 'invalid_ref',
+          message: 'That is not a valid branch or tag name.',
+          ref: ref.trim(),
+        }
+      )
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('inspect answers 404 ref_not_found for a branch the repository does not have', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = ((input: RequestInfo | URL) => {
+    const url = String(input instanceof Request ? input.url : input)
+    if (url.includes('/commits/')) {
+      return Promise.resolve(
+        Response.json({ message: 'No commit found for SHA: l' }, { status: 422 })
+      )
+    }
+    return Promise.reject(new TypeError(`unexpected ${url}`))
+  }) as typeof fetch
+  try {
+    // A public github.com clone with no App or secret: anonymous REST answers.
+    const row = sourceRow({ connectionId: null, provider: 'git' })
+    const db = sourceHttpDb({
+      selectRows: [row],
+      limitQueue: [[{ role: 'superadmin' }], [row], []],
+    })
+    const { app, cookie } = await buildSourceApp(db)
+    await expectJson(
+      await app.request(`/repositories/${SOURCE_ID}/inspect?ref=l`, {
+        headers: authHeaders(cookie),
+      }),
+      404,
+      {
+        ok: false,
+        error: 'ref_not_found',
+        code: 'ref_not_found',
+        message: 'This repository has no branch, tag or commit called "l".',
+        ref: 'l',
+      }
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('inspect lets an unusual but valid branch name through to the lookup', async () => {
+  const db = sourceHttpDb({
+    selectRows: [sourceRow()],
+    limitQueue: [[{ role: 'superadmin' }], [sourceRow()], []],
+  })
+  const { app, cookie } = await buildSourceApp(db)
+  const res = await app.request(
+    `/repositories/${SOURCE_ID}/inspect?ref=${encodeURIComponent('feature/a+b')}`,
+    { headers: authHeaders(cookie) }
+  )
+  const body = (await res.json()) as { error?: unknown }
+  assertEquals(body.error === 'invalid_ref', false)
+})
+
 test('inspect passes a safe listPath through to the provider boundary', async () => {
   const db = sourceHttpDb({
     selectRows: [sourceRow()],

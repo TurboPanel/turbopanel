@@ -59,7 +59,11 @@ import {
 import { enforceAuthRateLimit } from '../authn/http.ts'
 import { isPostgresUniqueViolation, isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { resolveGitProvider, type RepositorySummary } from '../../features/git/git-provider.ts'
-import { canonicalizeRepositoryUrl } from '../../features/git/clone-url.ts'
+import {
+  canonicalizeRepositoryUrl,
+  GIT_REF_NAME_MAX_LENGTH,
+  isValidGitRefName,
+} from '../../features/git/clone-url.ts'
 import { forgeFetch } from '../../features/git/forge-url.ts'
 import { fetchPublicGithubDefaultBranch } from '../../features/git/github-provider.ts'
 import {
@@ -1411,6 +1415,25 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     const denied = await assertCanReadOr403(c, 'organization', organizationId)
     if (denied) return denied
 
+    // A named ref git itself would refuse (blank, `a..b`, `x.lock`, a space)
+    // cannot exist on any remote, so it is answered here without contacting
+    // the provider or a server. Leaving `ref` out still means the default
+    // branch.
+    const queryRef = c.req.query('ref')
+    const requestedRef = (queryRef ?? '').trim()
+    if (queryRef !== undefined && !isValidGitRefName(requestedRef)) {
+      return c.json(
+        {
+          ok: false,
+          error: 'invalid_ref',
+          code: 'invalid_ref',
+          message: 'That is not a valid branch or tag name.',
+          ref: requestedRef.slice(0, GIT_REF_NAME_MAX_LENGTH),
+        },
+        400
+      )
+    }
+
     const [row] = await db
       .select(SOURCE_SELECT)
       .from(repository)
@@ -1418,7 +1441,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       .limit(1)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const ref = await resolveInspectRef(db, row, (c.req.query('ref') ?? '').trim())
+    const ref = await resolveInspectRef(db, row, requestedRef)
     if (ref.length === 0) {
       return c.json(
         {
@@ -1465,6 +1488,18 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     })
 
     if (!outcome.ok) {
+      if (outcome.error === 'ref_not_found') {
+        return c.json(
+          {
+            ok: false,
+            error: outcome.error,
+            code: outcome.error,
+            message: outcome.message,
+            ref: outcome.ref ?? ref,
+          },
+          404
+        )
+      }
       return c.json({ error: outcome.error, message: outcome.message }, outcome.status as 400)
     }
 

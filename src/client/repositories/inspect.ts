@@ -5,12 +5,14 @@ import {
   isGitProviderFailure,
   isRepositoryReadUnsupported,
   MAX_REPOSITORY_FILE_BYTES,
+  type GitProviderFailure,
   type GitProviderSourceRow,
   type RepositoryEntry,
   type RepositoryFileEntry,
 } from '../../features/git/git-provider.ts'
 import { resolveGitProvider } from '../../features/git/git-provider.ts'
 import { isGithubDotComHttpsCloneUrl } from '../../features/git/clone-url.ts'
+import { logWarn } from '../../lib/logger.ts'
 import { readRepositoryViaDaemon } from './read-repository.ts'
 
 /**
@@ -57,7 +59,42 @@ export type InspectOutcome =
       entries: RepositoryEntry[]
       via: 'provider' | 'daemon'
     }
-  | { ok: false; status: number; error: string; message: string }
+  | { ok: false; status: number; error: string; message: string; ref?: string }
+
+/**
+ * What git prints when the remote has no such ref: `git fetch origin <ref>`
+ * ("couldn't find remote ref") and `git clone --branch <ref>` ("Remote branch
+ * <ref> not found"). The daemon sends git's stderr through `sanitizeForLog`,
+ * which keeps these phrases.
+ */
+const GIT_REF_NOT_FOUND_RE = /couldn't find remote ref|remote branch .+ not found/i
+
+/** Whether a failed daemon read means only "that ref does not exist". */
+export function isGitRefNotFoundMessage(message: string): boolean {
+  return GIT_REF_NOT_FOUND_RE.test(message)
+}
+
+/** The answer for a ref the repository does not have: the caller's input, not an outage. */
+export function refNotFoundOutcome(ref: string): InspectOutcome {
+  return {
+    ok: false,
+    status: 404,
+    error: 'ref_not_found',
+    message: `This repository has no branch, tag or commit called "${ref}".`,
+    ref,
+  }
+}
+
+/**
+ * Plain sentences for the daemon lane's failures. git's stderr and the
+ * daemon's own wording go to the log, never into the response: they can name
+ * commands, paths and remotes, and they mean nothing to the person reading
+ * the wizard.
+ */
+const DAEMON_FAILURE_MESSAGES: Readonly<Record<'timeout' | 'failed', string>> = {
+  timeout: 'The connected server took too long to read this repository. Try again in a moment.',
+  failed: 'The connected server could not read this repository.',
+}
 
 /**
  * Read a repository, provider-first with a daemon fallback.
@@ -149,11 +186,24 @@ async function inspectViaDaemon(
   })
 
   if (!viaDaemon.ok) {
+    if (viaDaemon.code === 'no_daemon_available') {
+      return { ok: false, status: 503, error: viaDaemon.code, message: viaDaemon.message }
+    }
+    if (viaDaemon.code === 'failed' && isGitRefNotFoundMessage(viaDaemon.message)) {
+      return refNotFoundOutcome(params.ref)
+    }
+    // The daemon already sanitized this text for logs (a git error can echo
+    // the clone URL); it is kept here, not in the response.
+    logWarn(
+      'repository-inspect',
+      `daemon read failed repositoryId=${params.row.id} code=${viaDaemon.code}:`,
+      viaDaemon.message
+    )
     return {
       ok: false,
-      status: viaDaemon.code === 'no_daemon_available' ? 503 : 502,
+      status: 502,
       error: viaDaemon.code,
-      message: viaDaemon.message,
+      message: DAEMON_FAILURE_MESSAGES[viaDaemon.code],
     }
   }
   return {
@@ -188,7 +238,7 @@ export function isRateLimited(status: number, row: GitProviderSourceRow): boolea
 export function providerAnswerStands(
   read: unknown,
   params: Pick<InspectRepositoryParams, 'row' | 'daemonOnRateLimit'>
-): read is { failure: string; status: number } {
+): read is GitProviderFailure & { status: number } {
   if (!isGitProviderFailure(read) || typeof read.status !== 'number') return false
   return !(params.daemonOnRateLimit === true && isRateLimited(read.status, params.row))
 }
@@ -221,6 +271,7 @@ export async function inspectRepository(params: InspectRepositoryParams): Promis
   }
 
   if (providerAnswerStands(read, params)) {
+    if (read.reason === 'ref_not_found') return refNotFoundOutcome(params.ref)
     return {
       ok: false,
       status: read.status === 404 ? 404 : 502,
