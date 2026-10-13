@@ -204,6 +204,13 @@
       "when": 1791866058815,
       "tag": "0028_command_progress_comment",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1791901242009,
+      "tag": "0029_principal_name_pool_unique",
+      "breakpoints": true
     }
   ]
 }

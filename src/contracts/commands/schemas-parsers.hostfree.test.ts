@@ -75,6 +75,57 @@ test('parsePrincipalsReconcilePayload accepts principals and rejects duplicates'
   )
 })
 
+test('parsePrincipalsReconcilePayload carries retirePrincipals and allowEmpty', () => {
+  assertEquals(
+    parsePrincipalsReconcilePayload({
+      principals: [],
+      retirePrincipals: [{ username: 'old_user' }],
+      allowEmpty: true,
+    }),
+    { principals: [], retirePrincipals: [{ username: 'old_user' }], allowEmpty: true }
+  )
+  assertThrows(
+    () =>
+      parsePrincipalsReconcilePayload({
+        principals: [{ principalId: PRINCIPAL_ID, username: 'kept' }],
+        retirePrincipals: [{ username: 'kept' }],
+      }),
+    Error,
+    'retirePrincipals names kept, which is also in principals'
+  )
+  assertThrows(
+    () =>
+      parsePrincipalsReconcilePayload({ principals: [], retirePrincipals: [{ username: 'a b' }] }),
+    Error,
+    'Invalid retirePrincipals entry'
+  )
+  assertThrows(
+    () => parsePrincipalsReconcilePayload({ principals: [], allowEmpty: 'yes' }),
+    TypeError,
+    'allowEmpty must be a boolean'
+  )
+})
+
+test('parsePrincipalsReconcileResult keeps principalsRetired when the daemon sends it', () => {
+  const base = {
+    principalsApplied: 0,
+    keysChanged: [],
+    keysRemoved: [],
+    sshdReloaded: false,
+    warnings: [],
+  }
+  assertEquals(parsePrincipalsReconcileResult(base), base)
+  assertEquals(parsePrincipalsReconcileResult({ ...base, principalsRetired: ['gone'] }), {
+    ...base,
+    principalsRetired: ['gone'],
+  })
+  assertThrows(
+    () => parsePrincipalsReconcileResult({ ...base, principalsRetired: 'gone' }),
+    Error,
+    'principalsRetired must be an array of strings'
+  )
+})
+
 test('parsePrincipalsReconcileResult validates integer and boolean fields', () => {
   assertEquals(
     parsePrincipalsReconcileResult({
