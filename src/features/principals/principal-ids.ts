@@ -54,9 +54,9 @@ export function decidePrincipalIds(
 ): PrincipalIdDecision {
   const here = rows.find((row) => row.serverId === serverId)
   // This server's own record comes first, whatever its state.
-  if (here && here.uid !== null && here.gid !== null) {
-    return { kind: 'use', uid: here.uid, gid: here.gid }
-  }
+  const hereUid = here?.uid ?? null
+  const hereGid = here?.gid ?? null
+  if (hereUid !== null && hereGid !== null) return { kind: 'use', uid: hereUid, gid: hereGid }
   if (here?.state === 'present') return { kind: 'none' }
   const withIds = rows.filter((row) => row.uid !== null && row.gid !== null)
   // Deterministic: an account that exists wins, then the lowest server id.
