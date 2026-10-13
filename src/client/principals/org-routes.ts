@@ -16,8 +16,7 @@
  * The path id alone drives the check, never the active-organization header.
  */
 import { and, eq } from 'drizzle-orm'
-import type { Hono } from 'hono'
-import type { Context } from 'hono'
+import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { type Db, getDb } from '../../db/connection.ts'
 import { principal, server } from '../../db/schema.ts'
