@@ -367,6 +367,7 @@ test('DELETE /organizations/:id/principals/:principalId refuses a principal that
       assertEquals(b.status, 409)
       assertEquals(await b.json(), {
         error: 'principal_in_use',
+        code: 'principal_in_use',
         usedBy: { services: 0, bindings: 0, storage: 0, secrets: 0, logins: 1 },
       })
 
