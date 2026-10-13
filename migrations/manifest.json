@@ -164,6 +164,18 @@
       "tag": "0026_invitation_table_comment",
       "when": 1791603582204,
       "sha256": "c53587e5d139528a4c092ba3c894a3bfe046a8ce59b3b83857c421a3c8d0c7ac"
+    },
+    {
+      "idx": 27,
+      "tag": "0027_command_progress",
+      "when": 1791862811099,
+      "sha256": "be1ca1eb28fa43a148366868bad480a7451847dbc4bd2bfa82b44dee491950fb"
+    },
+    {
+      "idx": 28,
+      "tag": "0028_command_progress_comment",
+      "when": 1791866058815,
+      "sha256": "4672cee82ce5b15572cc92121711253ed0bc8af838cc83fb0b0eb65071d2a38b"
     }
   ]
 }

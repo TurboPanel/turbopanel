@@ -110,10 +110,22 @@ const STATUS_SOURCE = {
   finishedAt: null,
   errorCode: null,
   errorMessage: null,
+  progress: null,
 }
 
 test('shapeCommandStatusResponse defaults hasLog to false', () => {
   assertEquals(shapeCommandStatusResponse(STATUS_SOURCE).hasLog, false)
+})
+
+test('shapeCommandStatusResponse carries the step plan through', () => {
+  const progress = {
+    version: 1 as const,
+    steps: [{ id: 'fetch', label: 'Fetch the code', state: 'running' as const }],
+    current: 'fetch',
+    updatedAt: '2026-10-12T10:00:00.000Z',
+  }
+  assertEquals(shapeCommandStatusResponse({ ...STATUS_SOURCE, progress }).progress, progress)
+  assertEquals(shapeCommandStatusResponse(STATUS_SOURCE).progress, null)
 })
 
 test('shapeCommandStatusResponse carries the error line of a failure', () => {

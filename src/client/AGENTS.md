@@ -43,7 +43,9 @@ changes.
   (`crashing` / `crashed` are **not served**: no restart count is recorded; an
   unknown filter is **400**), `limit` 1–100 (default 50, larger clamps),
   `offset`. Returns `{ ok, items, total, hasMore }`; `step` / `totalSteps` /
-  `crashCount` are always `null` until those are recorded. Gate as the members
+  `stepLabel` come from the daemon's step plan on `command.progress` (`null`
+  until it reports one); `crashCount` is always `null` until restart counts
+  are recorded. Gate as the members
   list: unreachable org or bad uuid **404**, no owner/manager rights **403**;
   rows are limited to `listVisible(server)` and to servers of the **path** org
   (never the active-org header). Reads `command` only (never `dispatch`); the
