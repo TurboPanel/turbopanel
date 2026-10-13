@@ -18,6 +18,7 @@ import {
   buildConnectionHistoryPayload,
   buildCpuLimitsEnvelope,
   buildFleetLatestPayload,
+  buildHostFactsPayload,
   buildHostSummaryPayload,
   buildSeriesRouteResponse,
   buildTopologyContext,
@@ -414,7 +415,7 @@ test('parseSeriesMetricSelectors defaults to every queryable host.* canonical na
   assertEquals(blank.value.hostCanonicalNames, defaultHostCanonicalNames())
 })
 
-test('parseSeriesMetricSelectors accepts the v7 extended numbers by name but never defaults to them', () => {
+test('parseSeriesMetricSelectors accepts the v8 extended numbers by name but never defaults to them', () => {
   const named = parseSeriesMetricSelectors(
     'extended.host.oomKills,extended.docker.containersUnhealthy,extended.ingress.tlsCertSoonestExpiryDays'
   )
@@ -1289,4 +1290,24 @@ test('buildFleetLatestPayload attaches per-server derived values from the batche
 
   const srv2 = payload.servers.find((row) => row.serverId === 'srv-2')!
   assertEquals(srv2.derived.memoryUsedPercent, null)
+})
+
+test('buildHostFactsPayload names the backend and carries the facts through', () => {
+  const payload = buildHostFactsPayload({
+    kind: 'duckdb',
+    available: true,
+    serverId: 'srv-1',
+    sampledAt: '2026-10-07T10:00:00.000Z',
+    facts: {
+      text: { kernel: '6.12.0' },
+      blockDevices: [{ deviceId: 'sda', smart: 'passed' }],
+      gpus: [],
+      filesystems: [{ filesystemId: 'fs:a', totalBytes: 1000 }],
+      networks: [{ deviceId: 'eth0', linkSpeedMbps: 10000 }],
+    },
+  })
+  assertEquals(payload.ok, true)
+  assertEquals(payload.backend, 'duckdb')
+  assertEquals(payload.facts.text.kernel, '6.12.0')
+  assertEquals(payload.sampledAt, '2026-10-07T10:00:00.000Z')
 })

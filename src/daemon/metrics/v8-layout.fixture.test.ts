@@ -1,12 +1,12 @@
 /**
- * Pins the metrics v7 canonical layout fixture (testing/v7-layout.fixture.json,
+ * Pins the metrics v8 canonical layout fixture (testing/v8-layout.fixture.json,
  * generated from the owner-sealed explorer model by
- * scripts/metrics-v7-layout/generate.mjs) against the numbers the sealed plan
+ * scripts/metrics-v8-layout/generate.mjs) against the numbers the sealed plan
  * states, so the spec cannot drift unnoticed before the writer is built on it.
  */
 import { assert, assertEquals } from '@std/assert'
 import { describe, it } from '@std/testing/bdd'
-import fixtureJson from './testing/v7-layout.fixture.json' with { type: 'json' }
+import fixtureJson from './testing/v8-layout.fixture.json' with { type: 'json' }
 
 type Row = { family: string; page?: number; entities?: string[] }
 type Case = {
@@ -41,7 +41,7 @@ const find = (id: string): Case => {
   return found
 }
 
-describe('metrics v7 layout fixture', () => {
+describe('metrics v8 layout fixture', () => {
   it('covers every plan x machine x hardware shape x service mix', () => {
     assertEquals(fixture.cases.length, 8 * 2 * 5 * 3)
   })

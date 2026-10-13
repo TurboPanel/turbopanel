@@ -480,6 +480,88 @@ export const metricsSchemas = {
       },
     },
   },
+  HostFactsResponse: {
+    type: 'object',
+    required: ['ok', 'serverId', 'backend', 'available', 'sampledAt', 'facts'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      serverId: { type: 'string', format: 'uuid' },
+      backend: backendEnumSchema,
+      available: { type: 'boolean' },
+      sampledAt: {
+        type: ['string', 'null'],
+        format: 'date-time',
+        description:
+          'When the sample the facts came from was taken; `null` when none is in the last day.',
+      },
+      facts: {
+        type: 'object',
+        required: ['text', 'blockDevices', 'gpus', 'filesystems', 'networks'],
+        properties: {
+          text: {
+            type: 'object',
+            description:
+              'Host-wide short text by name (kernel, os, virt, web engines, PHP versions and so on). Only fields the host reported.',
+            additionalProperties: { type: 'string' },
+          },
+          blockDevices: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['deviceId'],
+              properties: {
+                deviceId: { type: 'string' },
+                model: { type: 'string' },
+                smart: { type: 'string' },
+              },
+            },
+          },
+          gpus: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['gpuId'],
+              properties: {
+                gpuId: { type: 'string' },
+                driver: { type: 'string' },
+                model: { type: 'string' },
+                memoryTotalBytes: {
+                  type: 'integer',
+                  description: 'The GPU’s own memory size, as the host reported it.',
+                },
+              },
+            },
+          },
+          filesystems: {
+            type: 'array',
+            description:
+              'Each extra filesystem’s size as the host reported it (whichever of bytes and inodes it knew).',
+            items: {
+              type: 'object',
+              required: ['filesystemId'],
+              properties: {
+                filesystemId: { type: 'string' },
+                totalBytes: { type: 'integer' },
+                totalInodes: { type: 'integer' },
+              },
+            },
+          },
+          networks: {
+            type: 'array',
+            description: 'Each NIC’s negotiated link speed, when the host reported one.',
+            items: {
+              type: 'object',
+              required: ['deviceId'],
+              properties: {
+                deviceId: { type: 'string' },
+                linkSpeedMbps: { type: 'integer', description: 'Megabits per second.' },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
   MetricsBackendUnavailableResponse: {
     type: 'object',
     required: ['ok', 'error', 'backend'],
@@ -611,7 +693,7 @@ export const metricsPaths: Record<string, unknown> = {
           required: false,
           schema: { type: 'string' },
           description:
-            'Comma-separated entity-metric-id list — a host-singleton canonical name (`host.cpu.busyPercent`, and the explicit-only `diagnostics.averageFrequencyMHz` / `router.backendsUp` / `storage.hostingUsedBytes` / `dockerUsage.layersBytes`, and the v7 health numbers `extended.host.oomKills` / `extended.docker.containersUnhealthy` / `extended.ingress.tlsCertSoonestExpiryDays` — the shared HTTP router, the host storage picture and the Docker daemon are each host-wide and singleton, so they carry no source id) or an entity-scoped id (`<family alias>:<entityId>.<field>`, e.g. `network:eth0.receiveBytesPerSecond`, `hardware:psu1.value`, `ingress:caddy-1.requests`). Omit for every `host.*` canonical metric; the explicit-only singleton scopes are never in that default. A `network` entity id that is a TurboFabric mesh device per the current topology is rejected with 400 — see `inventory`. A NIC in a normal slot is queryable like any other `network` entity, but only `receiveBytesPerSecond`/`transmitBytesPerSecond` resolve on the Cloudflare backend; every other `network` field is `null` for it there (DuckDB always resolves the full field set).',
+            'Comma-separated entity-metric-id list — a host-singleton canonical name (`host.cpu.busyPercent`, and the explicit-only `diagnostics.averageFrequencyMHz` / `router.backendsUp` / `storage.hostingUsedBytes` / `dockerUsage.layersBytes`, and the v8 health numbers `extended.host.oomKills` / `extended.docker.containersUnhealthy` / `extended.ingress.tlsCertSoonestExpiryDays`, and the per-sample sizes `extended.sizes.memoryTotalBytes` / `swapTotalBytes` / `commitLimitBytes` / `logicalCores` / `rootFilesystemTotalBytes` / `rootFilesystemTotalInodes` — the shared HTTP router, the host storage picture and the Docker daemon are each host-wide and singleton, so they carry no source id) or an entity-scoped id (`<family alias>:<entityId>.<field>`, e.g. `network:eth0.receiveBytesPerSecond`, `hardware:psu1.value`, `ingress:caddy-1.requests`). Omit for every `host.*` canonical metric; the explicit-only singleton scopes are never in that default. A `network` entity id that is a TurboFabric mesh device per the current topology is rejected with 400 — see `inventory`. A NIC in a normal slot is queryable like any other `network` entity, but only `receiveBytesPerSecond`/`transmitBytesPerSecond` resolve on the Cloudflare backend; every other `network` field is `null` for it there (DuckDB always resolves the full field set).',
         },
         {
           name: 'resolution',
@@ -716,6 +798,27 @@ export const metricsPaths: Record<string, unknown> = {
               schema: {
                 $ref: '#/components/schemas/ConnectionHistoryChartResponse',
               },
+            },
+          },
+        },
+        ...metricsQueryErrorResponses,
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/metrics/facts': {
+    get: {
+      tags: ['Servers'],
+      summary: 'Get what a visible server last told us about itself',
+      description:
+        "Short text, never numbers: kernel, OS, virtualisation, web engine and PHP versions, each drive's model and SMART verdict, each GPU's driver and model. Read from the newest sample in the last day; empty when the host reports none.",
+      security: [{ cookieAuth: [] }],
+      parameters: [serverIdParam],
+      responses: {
+        '200': {
+          description: 'Latest host facts',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/HostFactsResponse' },
             },
           },
         },

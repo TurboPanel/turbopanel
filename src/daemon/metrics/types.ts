@@ -1,4 +1,8 @@
-import type { MetricEvent, MetricsSample } from '../../contracts/metrics-contract.ts'
+import type {
+  MetricEvent,
+  MetricsSample,
+  MetricsTextFieldName,
+} from '../../contracts/metrics-contract.ts'
 import type { HostedFamily } from './metric-descriptors.ts'
 import type { IngressDerivedValues } from './query/derived-metrics.ts'
 import type { SlotMapping } from '../../contracts/topology-types.ts'
@@ -81,7 +85,7 @@ export type AuthenticatedMetricsSample = MetricsSample & {
  * one of each, never many).
  *
  * `managed.ingress` / `managed.database_proxy` are included for entity-scoped
- * querying even though the Analytics Engine v7 layout no longer writes rows of
+ * querying even though the Analytics Engine v8 layout no longer writes rows of
  * their own: Caddy totals ride `host.web` and ProxySQL rides
  * `managed.database`, one source each (ids `caddy` and `proxysql`). DuckDB
  * still stores one row per source, keyed by `sourceId`; see the
@@ -193,8 +197,8 @@ export type HostSummaryResult = {
  *    `block` -> `deviceId`, `hardware.physical` -> `signalId`: the contract
  *    entity id, matching `entity-metric-id.ts`'s per-entity identity.
  *  - `managed.ingress` / `managed.database_proxy` -> `sourceId`, **not**
- *    `sourceKind`. Cloudflare Analytics Engine v7 has a single fixed source
- *    per family (`v7-layout.ts`'s `V7_SOURCE_IDS`) and writes no source id —
+ *    `sourceKind`. Cloudflare Analytics Engine v8 has a single fixed source
+ *    per family (`v8-layout.ts`'s `V8_SOURCE_IDS`) and writes no source id —
  *    `sourceKind` never reaches AE at all. DuckDB stores both
  *    columns but groups by `source_id` here too so the two backends agree on
  *    what an "entity id" means for these families — two different sources of
@@ -363,6 +367,39 @@ export type MetricEventsResult = {
   truncated: boolean
 }
 
+export type HostFactsQuery = {
+  serverId: string
+  /** Only a sample taken at or after `from` counts (the lookback window). */
+  from: string
+  to: string
+}
+
+/**
+ * What a host told us about itself: kernel, OS, versions, a drive's model, a GPU's driver, and each
+ * device's own size (a filesystem's bytes and inodes, a GPU's memory, a NIC's link speed). The sizes are
+ * facts about the device, shown as text; the series route carries the numbers that are measured.
+ */
+export type HostFacts = {
+  /** Host-wide short text by name; only fields the host actually reported. */
+  text: Partial<Record<MetricsTextFieldName, string>>
+  blockDevices: { deviceId: string; model?: string; smart?: string }[]
+  gpus: { gpuId: string; driver?: string; model?: string; memoryTotalBytes?: number }[]
+  /** Each extra filesystem's size as the host reported it (bytes and inodes, whichever it knew). */
+  filesystems: { filesystemId: string; totalBytes?: number; totalInodes?: number }[]
+  /** Each NIC's negotiated link speed in Mb/s, when the host reported one. */
+  networks: { deviceId: string; linkSpeedMbps?: number }[]
+}
+
+/** The latest host facts a store holds for one server. */
+export type HostFactsResult = {
+  kind: MetricsBackendKind
+  available: boolean
+  serverId: string
+  /** When the sample these facts came from was taken; `null` when no sample is in the window. */
+  sampledAt: string | null
+  facts: HostFacts
+}
+
 /**
  * Backend-neutral write sink for v5 host metrics samples and connection
  * status events, plus (where a real query-capable backend implements it)
@@ -398,4 +435,6 @@ export interface ServerMetricsStore {
   queryEntityIdsSeen?(input: EntityIdsSeenQuery): Promise<EntityIdsSeenResult>
   queryFleetHostSnapshot?(input: FleetHostSnapshotQuery): Promise<FleetHostSnapshotResult>
   queryMetricEvents?(input: MetricEventsQuery): Promise<MetricEventsResult>
+  /** Latest host facts (text the v8 layout stores outside the numbers). */
+  queryHostFacts?(input: HostFactsQuery): Promise<HostFactsResult>
 }

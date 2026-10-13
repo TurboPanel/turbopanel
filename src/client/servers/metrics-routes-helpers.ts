@@ -8,6 +8,7 @@ import { DisabledServerMetricsStore } from '../../daemon/metrics/disabled-store.
 import type {
   EntitySeriesResult,
   HostSeriesResult,
+  HostFactsResult,
   MetricEventsResult,
   MetricsBackendKind,
   PerEntityHostedFamily,
@@ -24,6 +25,7 @@ import {
 } from '../../daemon/metrics/entity-metric-id.ts'
 import {
   computeDerivedHostValues,
+  sizeMetricsNeededFor,
   computeIngressDerivedValues,
   type DerivedHostValues,
   type HostCapacities,
@@ -576,9 +578,9 @@ const HOST_SINGLETON_QUERYABLE_SCOPES: ReadonlySet<MetricEntityScope> = new Set(
  * plan (the capability plan's `managedDockerEnabled`, no longer tier-gated). Both answer a storage panel that
  * asks for them by name, never the fleet overview's default selection.
  *
- * `extended.*`: the v7 health and limit numbers (OOM kills, PID limit, root
+ * `extended.*`: the v8 health and limit numbers (OOM kills, PID limit, root
  * disk queue/ops, failed units, RAID, container health, Docker reclaimable,
- * certificate days). Only a v7 daemon reports them, so a panel asks for them
+ * certificate days). Only a v8 daemon reports them, so a panel asks for them
  * by name and the overview default stays the v6 host set.
  */
 const HOST_SINGLETON_EXPLICIT_ONLY_SCOPES: ReadonlySet<MetricEntityScope> = new Set([
@@ -589,6 +591,7 @@ const HOST_SINGLETON_EXPLICIT_ONLY_SCOPES: ReadonlySet<MetricEntityScope> = new 
   'extended.host',
   'extended.docker',
   'extended.ingress',
+  'extended.sizes',
 ])
 
 /** Per-entity scope -> the `PerEntityHostedFamily` its entity id/metrics are queried under. */
@@ -888,9 +891,8 @@ export function buildTopologyContext(
 
 /**
  * Host capacity totals (RAM, swap, root filesystem) for one topology
- * snapshot. Split out of {@link buildTopologyContext} so the same
- * derivation can run against a *historical* generation — see
- * {@link buildCapacitiesByGeneration}.
+ * snapshot: the fallback for a sample that carries no sizes of its own (a
+ * daemon that does not send `extended.sizes` yet).
  */
 function capacitiesFromSnapshot(
   snapshot: TopologySnapshot,
@@ -901,43 +903,6 @@ function capacitiesFromSnapshot(
     swapTotalBytes: snapshot.swapTotalBytes,
     rootFilesystemTotalBytes: rootFilesystemTotalBytes(snapshot, slotMapping),
   }
-}
-
-/**
- * Capacity totals per topology generation, for the generations a queried
- * range actually spans.
- *
- * Capacities are the denominator of every derived percentage
- * (`memoryUsedPercent`, `rootFilesystemUsedPercent`). Resolving them once
- * from the latest generation — which is what v4 did — means adding RAM or
- * resizing a volume silently restates every historical point against the new
- * total, so a box that was at 90% memory last week reads as 45% today. Each
- * bucket carries the generation that was active when it was sampled, so this
- * maps that generation back to the capacities that were true at the time.
- *
- * A generation with no recorded snapshot, or one whose snapshot predates
- * `computeSlotMapping`'s required arrays, is omitted; the caller falls back
- * to the latest context's capacities for those points.
- */
-export function buildCapacitiesByGeneration(
-  records: ReadonlyMap<number, { snapshot: unknown }>,
-  hardwareProfile: ServerHardwareProfile | undefined
-): Map<number, HostCapacities> {
-  const overrides = topologyOverridesFromHardwareProfile(hardwareProfile)
-  const out = new Map<number, HostCapacities>()
-  for (const [generation, record] of records) {
-    if (!isSlotMappableTopologySnapshot(record.snapshot)) continue
-    try {
-      out.set(
-        generation,
-        capacitiesFromSnapshot(record.snapshot, computeSlotMapping(record.snapshot, overrides))
-      )
-    } catch {
-      // A snapshot the slot mapper rejects contributes nothing rather than
-      // failing the whole series query.
-    }
-  }
-  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -1058,6 +1023,8 @@ export type SeriesQueryOutcome =
       entityResults: EntitySeriesResult[]
       /** Entity families whose query failed — answered as unavailable, never cached. */
       failedFamilies: PerEntityHostedFamily[]
+      /** Metrics read only to take a derived percentage (a size beside a use metric); hidden from the response. */
+      hiddenHostMetrics: ReadonlySet<string>
     }
   | { ok: false }
 
@@ -1143,7 +1110,13 @@ export async function querySeriesResults(input: SeriesQueryInput): Promise<Serie
     hostResult: hostOutcome.hostResult,
     failedFamilies,
   })
-  return { ok: true, hostResult: hostOutcome.hostResult, entityResults, failedFamilies }
+  return {
+    ok: true,
+    hostResult: hostOutcome.hostResult,
+    entityResults,
+    failedFamilies,
+    hiddenHostMetrics: hostOutcome.hiddenMetrics,
+  }
 }
 
 const SERIES_GAP_LOG_INTERVAL_MS = 60_000
@@ -1189,13 +1162,19 @@ type HostSeriesQueryOutcome =
   | {
       ok: true
       hostResult: HostSeriesResult | null
+      hiddenMetrics: ReadonlySet<string>
     }
   | { ok: false }
 
 async function queryHostSeriesForRoute(input: SeriesQueryInput): Promise<HostSeriesQueryOutcome> {
   if (input.selectors.hostCanonicalNames.length === 0) {
-    return { ok: true, hostResult: null }
+    return { ok: true, hostResult: null, hiddenMetrics: new Set() }
   }
+  // A percentage is taken against the size at that moment, so the size beside
+  // each requested use metric is read too, then hidden from the response.
+  const sizeMetrics = sizeMetricsNeededFor(input.selectors.hostCanonicalNames)
+  const queryMetrics = [...input.selectors.hostCanonicalNames, ...sizeMetrics]
+  const hiddenMetrics = new Set(sizeMetrics)
   try {
     const store = input.store
     if (!store?.queryHostSeries) {
@@ -1206,11 +1185,12 @@ async function queryHostSeriesForRoute(input: SeriesQueryInput): Promise<HostSer
           metrics: input.selectors.hostCanonicalNames,
           backend: input.backend,
         }),
+        hiddenMetrics: new Set(),
       }
     }
     const hostResult = await store.queryHostSeries({
       serverId: input.serverId,
-      metrics: input.selectors.hostCanonicalNames,
+      metrics: queryMetrics,
       from: input.fromIso,
       to: input.toIso,
       resolutionSeconds: input.resolutionSeconds,
@@ -1218,6 +1198,7 @@ async function queryHostSeriesForRoute(input: SeriesQueryInput): Promise<HostSer
     return {
       ok: true,
       hostResult,
+      hiddenMetrics,
     }
   } catch (err) {
     const message = metricsQueryErrorMessage(err)
@@ -1306,10 +1287,13 @@ export const FLEET_HOST_METRICS = [
   'host.cpu.iowaitPercent',
   'host.memory.usedBytes',
   'host.memory.swapUsedBytes',
+  // The sizes the memory and swap percentages are taken against, as of the latest sample.
+  'extended.sizes.memoryTotalBytes',
+  'extended.sizes.swapTotalBytes',
 ] as const
 
 /**
- * `HostCapacities` for the fleet route from one server's topology
+ * Fallback `HostCapacities` for the fleet route from one server's topology
  * snapshot — memory/swap totals only (never `rootFilesystemTotalBytes`,
  * which needs a per-server `SlotMapping`/hardware-profile-override lookup
  * that would break this route's O(1)-in-server-count invariant; the fleet
@@ -1560,4 +1544,28 @@ export function buildMetricEventsPayload(
 /** True when metric-events history has something worth caching. */
 export function metricEventsHasCacheableData(result: MetricEventsResult): boolean {
   return result.events.length > 0
+}
+
+/** How far back the newest sample may be for its host facts to count (one day). */
+export const HOST_FACTS_LOOKBACK_MS = 24 * 60 * 60 * 1000
+
+export type HostFactsResponse = {
+  ok: true
+  serverId: string
+  backend: MetricsBackendKind
+  available: boolean
+  /** When the sample the facts came from was taken; `null` when none is in the last day. */
+  sampledAt: string | null
+  facts: HostFactsResult['facts']
+}
+
+export function buildHostFactsPayload(result: HostFactsResult): HostFactsResponse {
+  return {
+    ok: true,
+    serverId: result.serverId,
+    backend: result.kind,
+    available: result.available,
+    sampledAt: result.sampledAt,
+    facts: result.facts,
+  }
 }

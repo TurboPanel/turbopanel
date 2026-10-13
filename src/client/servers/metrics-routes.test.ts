@@ -573,6 +573,8 @@ it('GET /servers/:id/metrics/series issues one fan-in queryHostSeries call', asy
             values: {
               'host.cpu.busyPercent': 25,
               'host.memory.usedBytes': 2_000,
+              // The size the route asked for beside the use reading.
+              'extended.sizes.memoryTotalBytes': 8_000,
             },
             sampleCount: 1,
             expectedSampleCount: 5,
@@ -596,18 +598,21 @@ it('GET /servers/:id/metrics/series issues one fan-in queryHostSeries call', asy
       const values = body.host!.points[0]!.values
       assertEquals(values['host.cpu.busyPercent'], 25)
       assertEquals(values['host.memory.usedBytes'], 2_000)
+      // The size is read beside the use metric, then hidden from the response.
+      assertEquals('extended.sizes.memoryTotalBytes' in values, false)
       // Derived presentation values are server-computed. v5's
       // host.cpu.busyPercent is already the "used" semantic (no v3
-      // idle-inversion); memoryUsedPercent needs the topology-reported
-      // memoryTotalBytes, which no generation was recorded here, so it's null.
+      // idle-inversion); memoryUsedPercent is taken against the memory size
+      // that very sample carried (2,000 of 8,000).
       const derived = body.host!.points[0]!.derived!
       assertEquals(derived.cpuUsagePercent, 25)
-      assertEquals(derived.memoryUsedPercent, null)
+      assertEquals(derived.memoryUsedPercent, 25)
       assertEquals(body.host!.points[0]!.sampleCount, 1)
       assertEquals(fakeStore.seriesCalls.length, 1)
       assertEquals(fakeStore.seriesCalls[0]!.metrics, [
         'host.cpu.busyPercent',
         'host.memory.usedBytes',
+        'extended.sizes.memoryTotalBytes',
       ])
       assertEquals(fakeStore.seriesCalls[0]!.resolutionSeconds, 60)
 
@@ -1387,17 +1392,32 @@ it('GET /servers/:id/metrics/connection returns 401 without session', async () =
   })
 })
 
-it('GET /servers/:id/metrics/connection returns 403 without read access', async () => {
+it('GET /servers/:id/metrics/facts returns 401 without session', async () => {
+  await withMetricsFixtures(async ({ app, serverId }) => {
+    const res = await app.request(`/servers/${serverId}/metrics/facts`)
+    assertEquals(res.status, 401)
+  })
+})
+
+/** A signed-in user with no access to a server that exists: what every read route must answer 403 for. */
+async function withDeniedReader(
+  label: string,
+  fn: (ctx: {
+    app: Awaited<ReturnType<typeof createMetricsRoutesTestApp>>['app']
+    serverId: string
+    cookie: string
+  }) => Promise<void>
+): Promise<void> {
   if (!dbUrl) return
 
   resetDenoMetricsChartCacheForTests()
   const db = createDenoDb()
   const { app, secrets } = await createMetricsRoutesTestApp(db)
 
-  const email = `metrics-conn-deny-${crypto.randomUUID()}@example.com`
+  const email = `metrics-${label}-deny-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ name: 'Metrics Connection Deny Org' })
+    .values({ name: `Metrics ${label} Deny Org` })
     .returning({ id: organization.id })
   const organizationId = insertedOrg!.id
 
@@ -1409,22 +1429,53 @@ it('GET /servers/:id/metrics/connection returns 403 without read access', async 
 
   const [insertedServer] = await db
     .insert(server)
-    .values({ organizationId, name: 'Denied Connection Server' })
+    .values({ organizationId, name: `Denied ${label} Server` })
     .returning({ id: server.id })
   const serverId = insertedServer!.id
 
   const cookie = await sessionCookie(db, secrets, userId)
 
   try {
-    const res = await app.request(`/servers/${serverId}/metrics/connection?from=${FROM}&to=${TO}`, {
-      headers: { Cookie: cookie },
-    })
-    assertEquals(res.status, 403)
+    await fn({ app, serverId, cookie })
   } finally {
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
+}
+
+it('GET /servers/:id/metrics/connection returns 403 without read access', async () => {
+  await withDeniedReader('connection', async ({ app, serverId, cookie }) => {
+    const res = await app.request(`/servers/${serverId}/metrics/connection?from=${FROM}&to=${TO}`, {
+      headers: { Cookie: cookie },
+    })
+    assertEquals(res.status, 403)
+  })
+})
+
+it('GET /servers/:id/metrics/facts returns 403 without read access', async () => {
+  await withDeniedReader('facts', async ({ app, serverId, cookie }) => {
+    const res = await app.request(`/servers/${serverId}/metrics/facts`, {
+      headers: { Cookie: cookie },
+    })
+    assertEquals(res.status, 403)
+  })
+})
+
+it('GET /servers/:id/metrics/facts answers like its siblings for a server that does not exist', async () => {
+  await withMetricsFixtures(async ({ app, cookie }) => {
+    const missing = crypto.randomUUID()
+    const facts = await app.request(`/servers/${missing}/metrics/facts`, {
+      headers: { Cookie: cookie },
+    })
+    const sibling = await app.request(
+      `/servers/${missing}/metrics/connection?from=${FROM}&to=${TO}`,
+      { headers: { Cookie: cookie } }
+    )
+    // Whatever the siblings do for an unknown id (never a 200 with data), facts does too.
+    assertEquals(facts.status, sibling.status)
+    assertEquals(facts.status === 200, false)
+  })
 })
 
 it('GET /servers/:id/metrics/connection rejects invalid range', async () => {

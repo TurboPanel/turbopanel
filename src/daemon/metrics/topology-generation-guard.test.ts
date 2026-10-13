@@ -28,6 +28,7 @@
  * mapping.
  */
 import { assertEquals } from '@std/assert'
+import { V8_HOST_ROW_SPECS } from './backends/cloudflare/v8-layout.ts'
 import { it } from '@std/testing/bdd'
 import {
   buildMetricsSample,
@@ -171,8 +172,8 @@ function hostNetworkPoint(points: AnalyticsEngineDataPointLike[]): AnalyticsEngi
 
 // host.network's NIC0 rx-bytes/s embed slot: after the root filesystem pair
 // (double1..2), the folded filesystem pair (double3..4) and tcp retransmits
-// (double5), so double6 (index 5) in the v7 layout.
-const NIC0_RX_DOUBLE_INDEX = 5
+// (double5), so double6 (index 5) in the v8 layout.
+const NIC0_RX_DOUBLE_INDEX = V8_HOST_ROW_SPECS['host.network'].doubles.indexOf('nic1.rx')
 
 // ---------------------------------------------------------------------------
 // Own-generation resolution: two generations, two distinct devices, each
