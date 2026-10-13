@@ -139,7 +139,7 @@ export async function enqueuePrincipalsReconcile(
   await forEachSequential(serverIds, async (serverId) => {
     try {
       const principalIds = await principalIdsOnServer(db, serverId)
-      const principals = await loadPrincipalMaterial(db, principalIds)
+      const principals = await loadPrincipalMaterial(db, principalIds, { serverId, allocate: true })
       if (principals.length === 0 && retirePrincipals.length === 0) return
       const record = await createCommandRecord(db, {
         serverId,

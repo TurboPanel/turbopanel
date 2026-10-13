@@ -306,6 +306,7 @@ function toDeploySourcePrincipal(
     username: material.username,
     ...(material.uid === undefined ? {} : { uid: material.uid }),
     ...(material.gid === undefined ? {} : { gid: material.gid }),
+    ...(material.idSource === undefined ? {} : { idSource: material.idSource }),
   }
 }
 

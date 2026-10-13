@@ -98,6 +98,7 @@ import {
   parseEnvironmentDeployResult,
   parseEnvironmentLifecyclePayload,
   parseEnvironmentLifecycleResult,
+  parsePrincipalsReconcileResult,
   parseEnvironmentStopPayload,
   parseEnvironmentStopResult,
   parseFabricReconcilePayload,
@@ -129,6 +130,10 @@ import {
 } from '../../contracts/commands/schemas.ts'
 import { updateManagedMemberObservedReplication } from '../managed/members.ts'
 import { markPlacementsAbsent, markPlacementsPresent } from '../principals/placement-records.ts'
+import {
+  recordReportedPrincipalIds,
+  releaseRefusedPrincipalIds,
+} from '../principals/principal-ids.ts'
 import { orchestratorManagesEngine } from '../managed/ha-policy.ts'
 import { findManagedHaHierarchy, findManagedIngressHierarchy } from '../system/hierarchy.ts'
 import {
@@ -1073,15 +1078,18 @@ async function applyEnvironmentDeploySideEffect(
       }
     }
     await markEnvironmentCopiesReady(db, payload.environmentId, envelope.serverId)
-    // The accounts this deploy carried now exist on the host, whether or not
-    // a newer deploy has since replaced this one.
+    // What the host says each account has is recorded first, while a row the
+    // control plane only chose ids for is still not `present`; then the
+    // accounts this deploy carried are marked present, whether or not a newer
+    // deploy has since replaced this one.
+    const deployResult = parseEnvironmentDeployResult(result)
+    await recordReportedIdsSafely(db, record, envelope.serverId, deployResult.principals)
     await markPlacementsPresentSafely(
       db,
       record,
       envelope.serverId,
       (payload.principalMaterial ?? []).map((entry) => entry.principalId)
     )
-    const deployResult = parseEnvironmentDeployResult(result)
     await recordSiteAppsSafely(db, record, payload.environmentId, deployResult.sites)
     // Only reconcile when the daemon included an authoritative containers
     // report (including `[]`). Omitting the field means collection failed.
@@ -1122,6 +1130,64 @@ async function markPlacementsPresentSafely(
     compatLogWarn(
       'command-consumer',
       `placement present mark failed for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+/** The ids the host reports fill empty placement rows; a miss is logged, never fatal. */
+async function recordReportedIdsSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  serverId: string,
+  reports: Parameters<typeof recordReportedPrincipalIds>[2] | undefined
+): Promise<void> {
+  if (reports === undefined || reports.length === 0) return
+  try {
+    await recordReportedPrincipalIds(db, serverId, reports)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `reported principal ids not recorded for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+async function applyPrincipalsReconcileSideEffect(
+  db: Db,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown
+): Promise<void> {
+  if (record.type !== 'server.principals.reconcile') return
+  try {
+    const parsed = parsePrincipalsReconcileResult(result)
+    await recordReportedIdsSafely(db, record, envelope.serverId, parsed.principals)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `principals reconcile result not read for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+/** A host refused an id the control plane allocated: let it go so the next attempt takes another. */
+async function applyPrincipalIdRefusedSideEffect(
+  db: Db,
+  record: DispatchableCommandRecord,
+  error: string
+): Promise<void> {
+  if (record.type !== 'environment.deploy' && record.type !== 'server.principals.reconcile') return
+  if (!error.includes('principal_id_taken')) return
+  try {
+    const released = await releaseRefusedPrincipalIds(db, error)
+    compatLogWarn(
+      'command-consumer',
+      `command ${record.id} was refused an account id (${released ? 'released for a new pick' : 'kept, the account already exists'}): ${error.slice(0, 300)}`
+    )
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `refused account id not released for command ${record.id}: ${errorMessage(err)}`
     )
   }
 }
@@ -2370,6 +2436,7 @@ async function applySucceededSideEffects(
   await applyFabricSideEffect(db, record, envelope, result, deps)
   await applyEnvironmentDeploySideEffect(db, record, envelope, result, deps)
   await applyEnvironmentStopSideEffect(db, record, envelope, result)
+  await applyPrincipalsReconcileSideEffect(db, record, envelope, result)
   await applyEnvironmentLifecycleSideEffect(db, record, envelope, result)
   await applySystemReconcileSideEffect(db, record, envelope, result)
   await applyManagedIngressReconcileSideEffect(db, record, envelope, result)
@@ -2852,6 +2919,7 @@ async function handlePendingFailed(
   await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error, 'failed', deps)
   await applyFabricFailedSideEffect(db, record, envelope)
   await applyFirewallFailedSideEffect(db, record, envelope, error)
+  await applyPrincipalIdRefusedSideEffect(db, record, error)
 }
 
 async function handlePendingExpired(
