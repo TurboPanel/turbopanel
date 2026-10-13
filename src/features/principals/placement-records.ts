@@ -354,7 +354,8 @@ async function countByPrincipal(
 export async function loadPrincipalUsage(
   db: Db,
   principalIds: ReadonlyArray<string>,
-  excludeServerId: string
+  /** The server being looked at; omit to count a placement on every server. */
+  excludeServerId?: string
 ): Promise<Map<string, PrincipalUsage>> {
   const usage = new Map<string, PrincipalUsage>()
   const ids = [...new Set(principalIds)]
@@ -408,7 +409,9 @@ export async function loadPrincipalUsage(
       .where(
         and(
           inArray(principalPlacement.principalId, ids),
-          ne(principalPlacement.serverId, excludeServerId),
+          ...(excludeServerId === undefined
+            ? []
+            : [ne(principalPlacement.serverId, excludeServerId)]),
           ne(principalPlacement.state, 'absent')
         )
       ),

@@ -53,6 +53,7 @@ import { registerNotificationRoutes } from './notifications/routes.ts'
 import { registerNotificationVerifyRoutes } from './notifications/verify-routes.ts'
 import { registerOrganizationActivityRoutes } from './organizations/activity-routes.ts'
 import { registerOrganizationMemberRoutes } from './organizations/members.ts'
+import { registerOrganizationPrincipalRoutes } from './principals/org-routes.ts'
 import { registerOrganizationPrincipalDefaultsRoutes } from './organizations/principal-defaults-routes.ts'
 import { registerPhpModeRoutes } from './hostings/php-mode-routes.ts'
 import { registerOrganizationRoutes } from './organizations/routes.ts'
@@ -129,6 +130,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerComposeRemoteBuildSourcesRoutes(client)
   registerOrganizationMemberRoutes(client, opts)
   registerOrganizationActivityRoutes(client, opts)
+  registerOrganizationPrincipalRoutes(client, opts)
   registerReauthSettingsRoutes(client, opts)
   registerOrganizationFirewallRoutes(client, opts)
   registerAccessRoutes(client, opts)
