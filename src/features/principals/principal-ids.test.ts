@@ -299,7 +299,7 @@ test('a refused id is released only while no account has it', async () => {
     ).get(p1)!
     const refusal = (id: string) =>
       `principal_id_taken kind=uid id=${ids.uid} principalId=${id}: the uid is used`
-    assertEquals(await releaseRefusedPrincipalIds(db, refusal(p1)), true)
+    assertEquals(await releaseRefusedPrincipalIds(db, a, refusal(p1)), true)
     const fresh = (
       await resolvePrincipalIds(
         db,
@@ -328,6 +328,7 @@ test('a refused id is released only while no account has it', async () => {
     assertEquals(
       await releaseRefusedPrincipalIds(
         db,
+        b,
         `principal_id_taken kind=uid id=15010 principalId=${p2}: x`
       ),
       false
@@ -362,5 +363,29 @@ test('principal material carries the central id, keeps an operator override, and
     // Without a target nothing is allocated (the old behaviour).
     const bare = await loadPrincipalMaterial(db, [p1])
     assertEquals(bare[0]?.uid, undefined)
+  })
+})
+
+test('a refusal on one server leaves the principal ids recorded on other servers', async () => {
+  await withFixtures(async ({ db, serverIds: [a, b], principalIds: [p1] }) => {
+    const request = [{ principalId: p1, home: homeOf(p1) }]
+    const ids = (await resolvePrincipalIds(db, a, request, { allocate: true })).get(p1)!
+    await db.insert(principalPlacement).values({
+      principalId: p1,
+      serverId: b,
+      state: 'pending',
+      uid: ids.uid,
+      gid: ids.gid,
+      home: homeOf(p1),
+      source: 'manual',
+    })
+    const refusal = `principal_id_taken kind=uid id=${ids.uid} principalId=${p1}: x`
+    assertEquals(await releaseRefusedPrincipalIds(db, b, refusal), true)
+    const rows = await db
+      .select({ serverId: principalPlacement.serverId, uid: principalPlacement.uid })
+      .from(principalPlacement)
+      .where(eq(principalPlacement.principalId, p1))
+    assertEquals(rows.find((row) => row.serverId === a)?.uid, ids.uid)
+    assertEquals(rows.find((row) => row.serverId === b)?.uid, null)
   })
 })

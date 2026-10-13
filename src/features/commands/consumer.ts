@@ -1172,12 +1172,13 @@ async function applyPrincipalsReconcileSideEffect(
 async function applyPrincipalIdRefusedSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
+  serverId: string,
   error: string
 ): Promise<void> {
   if (record.type !== 'environment.deploy' && record.type !== 'server.principals.reconcile') return
   if (!error.includes('principal_id_taken')) return
   try {
-    const released = await releaseRefusedPrincipalIds(db, error)
+    const released = await releaseRefusedPrincipalIds(db, serverId, error)
     compatLogWarn(
       'command-consumer',
       `command ${record.id} was refused an account id (${released ? 'released for a new pick' : 'kept, the account already exists'}): ${error.slice(0, 300)}`
@@ -2917,7 +2918,7 @@ async function handlePendingFailed(
   await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error, 'failed', deps)
   await applyFabricFailedSideEffect(db, record, envelope)
   await applyFirewallFailedSideEffect(db, record, envelope, error)
-  await applyPrincipalIdRefusedSideEffect(db, record, error)
+  await applyPrincipalIdRefusedSideEffect(db, record, envelope.serverId, error)
 }
 
 async function handlePendingExpired(

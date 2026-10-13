@@ -57,7 +57,13 @@ export function decidePrincipalIds(
       ? { kind: 'use', uid: here.uid, gid: here.gid }
       : { kind: 'none' }
   }
-  const known = rows.find((row) => row.uid !== null && row.gid !== null)
+  const withIds = rows.filter((row) => row.uid !== null && row.gid !== null)
+  // Deterministic: an account that exists wins, then the lowest server id.
+  const known = [...withIds].sort(
+    (a, b) =>
+      Number(b.state === 'present') - Number(a.state === 'present') ||
+      a.serverId.localeCompare(b.serverId)
+  )[0]
   if (known) {
     return { kind: 'use', uid: known.uid as number, gid: known.gid as number }
   }
@@ -167,10 +173,19 @@ async function allocateForPrincipal(
       })
       .onConflictDoUpdate({
         target: [principalPlacement.principalId, principalPlacement.serverId],
-        set: { uid: id, gid: id, state: 'pending' satisfies PlacementState },
+        set: {
+          uid: id,
+          gid: id,
+          state: sql`CASE WHEN ${principalPlacement.state} = 'present' THEN 'present' ELSE 'pending' END`,
+        },
       })
     return { uid: id, gid: id }
   })
+}
+
+function logSkipped(serverId: string, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err)
+  compatLogWarn('principals', `principal id allocation skipped on server ${serverId}: ${message}`)
 }
 
 /**
@@ -189,12 +204,18 @@ export async function resolvePrincipalIds(
 ): Promise<Map<string, PrincipalIds>> {
   const out = new Map<string, PrincipalIds>()
   if (requests.length === 0) return out
+  let rowsByPrincipal: Map<string, PlacementIdRow[]>
   try {
-    const rowsByPrincipal = await loadPlacementIdRows(
+    rowsByPrincipal = await loadPlacementIdRows(
       db,
       requests.map((request) => request.principalId)
     )
-    for (const request of requests) {
+  } catch (err) {
+    logSkipped(serverId, err)
+    return out
+  }
+  for (const request of requests) {
+    try {
       const decision = decidePrincipalIds(rowsByPrincipal.get(request.principalId) ?? [], serverId)
       if (decision.kind === 'use') {
         out.set(request.principalId, { uid: decision.uid, gid: decision.gid })
@@ -202,10 +223,9 @@ export async function resolvePrincipalIds(
         const ids = await allocateForPrincipal(db, serverId, request)
         if (ids) out.set(request.principalId, ids)
       }
+    } catch (err) {
+      logSkipped(serverId, err)
     }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    compatLogWarn('principals', `principal id allocation skipped on server ${serverId}: ${message}`)
   }
   return out
 }
@@ -288,14 +308,18 @@ export function parsePrincipalIdTaken(
 
 /**
  * A host refused an id the control plane allocated. If that id is not on any
- * account yet (no placement is `present`), forget it, so the next attempt takes
+ * account yet (no placement is `present`), forget it on the refusing server only, so the next attempt takes
  * the next free number from the sequence. If the principal already exists
  * somewhere with this id, nothing changes: the account is never renumbered, the
  * failed command stays failed and says why.
  *
  * Returns true when the recorded ids were cleared.
  */
-export async function releaseRefusedPrincipalIds(db: Db, error: string): Promise<boolean> {
+export async function releaseRefusedPrincipalIds(
+  db: Db,
+  serverId: string,
+  error: string
+): Promise<boolean> {
   const taken = parsePrincipalIdTaken(error)
   if (!taken) return false
   const rows = await db
@@ -309,7 +333,9 @@ export async function releaseRefusedPrincipalIds(db: Db, error: string): Promise
     .where(
       and(
         eq(principalPlacement.principalId, taken.principalId),
-        ne(principalPlacement.state, 'present')
+        eq(principalPlacement.serverId, serverId),
+        ne(principalPlacement.state, 'present'),
+        eq(principalPlacement.uid, taken.id)
       )
     )
   return true
