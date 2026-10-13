@@ -1078,16 +1078,18 @@ async function applyEnvironmentDeploySideEffect(
       }
     }
     await markEnvironmentCopiesReady(db, payload.environmentId, envelope.serverId)
-    // The accounts this deploy carried now exist on the host, whether or not
-    // a newer deploy has since replaced this one.
+    // What the host says each account has is recorded first, while a row the
+    // control plane only chose ids for is still not `present`; then the
+    // accounts this deploy carried are marked present, whether or not a newer
+    // deploy has since replaced this one.
+    const deployResult = parseEnvironmentDeployResult(result)
+    await recordReportedIdsSafely(db, record, envelope.serverId, deployResult.principals)
     await markPlacementsPresentSafely(
       db,
       record,
       envelope.serverId,
       (payload.principalMaterial ?? []).map((entry) => entry.principalId)
     )
-    const deployResult = parseEnvironmentDeployResult(result)
-    await recordReportedIdsSafely(db, record, envelope.serverId, deployResult.principals)
     await recordSiteAppsSafely(db, record, payload.environmentId, deployResult.sites)
     // Only reconcile when the daemon included an authoritative containers
     // report (including `[]`). Omitting the field means collection failed.

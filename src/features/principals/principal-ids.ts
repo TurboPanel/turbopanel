@@ -23,10 +23,10 @@
  * An operator's own uid/gid on the principal's options always wins and is
  * handled by the caller; nothing here runs for it.
  */
-import { and, eq, inArray, ne, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm'
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { Db } from '../../db/connection.ts'
-import { principalPlacement } from '../../db/schema.ts'
+import { principal, principalPlacement } from '../../db/schema.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import type { PlacementState } from './placement-vocabulary.ts'
 
@@ -53,11 +53,11 @@ export function decidePrincipalIds(
   serverId: string
 ): PrincipalIdDecision {
   const here = rows.find((row) => row.serverId === serverId)
-  if (here?.state === 'present') {
-    return here.uid !== null && here.gid !== null
-      ? { kind: 'use', uid: here.uid, gid: here.gid }
-      : { kind: 'none' }
+  // This server's own record comes first, whatever its state.
+  if (here && here.uid !== null && here.gid !== null) {
+    return { kind: 'use', uid: here.uid, gid: here.gid }
   }
+  if (here?.state === 'present') return { kind: 'none' }
   const withIds = rows.filter((row) => row.uid !== null && row.gid !== null)
   // Deterministic: an account that exists wins, then the lowest server id.
   const known = [...withIds].sort(
@@ -134,7 +134,16 @@ async function takeFreshId(tx: Db, principalId: string): Promise<number> {
         )
       )
       .limit(1)
-    if (taken.length === 0) return id
+    if (taken.length > 0) continue
+    // Also skip a number an operator pinned on some principal's options.
+    const pinned = await tx
+      .select({ id: principal.id })
+      .from(principal)
+      .where(
+        sql`(${principal.options} ->> 'uid' = ${String(id)} OR ${principal.options} ->> 'gid' = ${String(id)})`
+      )
+      .limit(1)
+    if (pinned.length === 0) return id
   }
   throw new Error('no free principal id found in the sequence')
 }
@@ -242,9 +251,11 @@ function isReportableId(value: number): boolean {
 }
 
 /**
- * Fill placement rows from what the host reports. Only an empty row is
- * filled: a recorded id is never overwritten, so a host that disagrees with
- * the record shows up as a warning instead of a silent change. Rows that do
+ * Fill placement rows from what the host reports. An empty row is filled, and
+ * so is a row that is not `present` yet (its ids were the control plane's pick
+ * and the account already existed under others): the host's answer is the
+ * truth and the daemon never renumbers. A `present` row keeps its ids, so a
+ * host that disagrees shows up as a warning instead of a silent change. Rows that do
  * not exist are not created (the report is not a reason for a placement).
  */
 export async function recordReportedPrincipalIds(
@@ -260,6 +271,7 @@ export async function recordReportedPrincipalIds(
           id: principalPlacement.id,
           uid: principalPlacement.uid,
           gid: principalPlacement.gid,
+          state: principalPlacement.state,
         })
         .from(principalPlacement)
         .where(
@@ -270,12 +282,26 @@ export async function recordReportedPrincipalIds(
         )
         .limit(1)
       if (!row) return
-      if (row.uid === null || row.gid === null) {
+      const unset = row.uid === null && row.gid === null
+      if (row.uid === report.uid && row.gid === report.gid) return
+      if (unset || row.state !== 'present') {
+        // An empty row is filled; so is a row nobody has confirmed yet (the id
+        // was the control plane's pick and the host already had the account
+        // under another one). The host's answer is the truth. The WHERE
+        // repeats the conditions so a concurrent write is not overwritten.
         await db
           .update(principalPlacement)
           .set({ uid: report.uid, gid: report.gid })
-          .where(eq(principalPlacement.id, row.id))
-      } else if (row.uid !== report.uid || row.gid !== report.gid) {
+          .where(
+            and(
+              eq(principalPlacement.id, row.id),
+              or(
+                ne(principalPlacement.state, 'present'),
+                and(isNull(principalPlacement.uid), isNull(principalPlacement.gid))
+              )
+            )
+          )
+      } else {
         compatLogWarn(
           'principals',
           `server ${serverId} reports uid=${report.uid} gid=${report.gid} for principal ${report.principalId}, recorded uid=${row.uid} gid=${row.gid}; the record is kept`

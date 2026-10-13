@@ -385,8 +385,21 @@ gid }`, the ids the host actually has); an empty placement row is filled from it
 and a recorded id is never overwritten. When a host holds a requested id for
 another account, the daemon refuses before creating anything with an error
 starting `principal_id_taken kind=uid|gid id=<n> principalId=<id>`; if no
-placement of that principal is `present`, the control plane forgets the id so
-the next deploy or reconcile takes the next free number.
+placement of that principal is `present`, the control plane forgets the id on
+the refusing server so the next deploy or reconcile takes the next free number.
+
+Ids the control plane chose are marked `idSource: 'central'` in the principal
+material (also on `sites[].principal` and `sourceMaterial[].principal`); an
+operator override carries no `idSource` and is binding. The daemon uses central
+ids only to create a brand-new account: if the account or its group is already
+on the host it drops them, adopts the account as it is and reports its real ids,
+so an existing account's uid/gid never changes. The control plane records the
+report first, correcting a placement that is not yet `present` (its ids were only
+a pick), then marks the account present. Known limit: an id reported by one host
+for an older account can equal the pick held on another principal's pending
+placement; that principal's daemon then refuses with `principal_id_taken`
+(or adopts, if its account exists) and the pick is released and re-taken, so the
+cost is one failed attempt, not a wrong account.
 
 `environment.lifecycle` uses a 120s consumer timeout. On success the consumer
 reconciles the daemon's authoritative `compose ps -a` report through

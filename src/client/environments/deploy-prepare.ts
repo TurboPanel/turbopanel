@@ -1415,7 +1415,9 @@ export async function loadPrincipalMaterial(
       sshKeys: keys,
       ...(passwordHash === undefined ? {} : { passwordHash }),
       ...(override ? { uid: override.uid, gid: override.gid } : {}),
-      ...(override ? {} : (centralIds.get(row.id) ?? {})),
+      ...(override || !centralIds.has(row.id)
+        ? {}
+        : { ...centralIds.get(row.id), idSource: 'central' as const }),
     })
   }
   return material
@@ -3955,6 +3957,7 @@ function toSitePrincipal(
     username: material.username,
     ...(material.uid !== undefined ? { uid: material.uid } : {}),
     ...(material.gid !== undefined ? { gid: material.gid } : {}),
+    ...(material.idSource !== undefined ? { idSource: material.idSource } : {}),
   }
 }
 

@@ -88,3 +88,15 @@ test('parsePrincipalIdReports keeps well-formed rows and drops the rest', () => 
   assertEquals(parsePrincipalIdReports(undefined), undefined)
   assertEquals(parsePrincipalIdReports([]), undefined)
 })
+
+test('decidePrincipalIds: the ids on this server own row come first, in any state', () => {
+  const rows = [
+    row({ serverId: A, state: 'pending', uid: 30005, gid: 30005 }),
+    row({ serverId: B, uid: 30001, gid: 30001 }),
+  ]
+  assertEquals(decidePrincipalIds(rows, A), { kind: 'use', uid: 30005, gid: 30005 })
+  assertEquals(
+    decidePrincipalIds([row({ serverId: A, state: 'absent', uid: 30006, gid: 30006 })], A),
+    { kind: 'use', uid: 30006, gid: 30006 }
+  )
+})

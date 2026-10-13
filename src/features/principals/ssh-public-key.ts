@@ -65,8 +65,7 @@ export type ParsedSshPublicKey = {
 }
 
 export type SshPublicKeyParseResult =
-  | { ok: true; value: ParsedSshPublicKey }
-  | { ok: false; error: string }
+  { ok: true; value: ParsedSshPublicKey } | { ok: false; error: string }
 
 const textDecoder = new TextDecoder('utf-8', { fatal: true })
 
@@ -93,11 +92,7 @@ class SshBlobReader {
   /** Next length-prefixed field, or `null` when the blob is malformed. */
   readString(): Uint8Array | null {
     if (this.#offset + 4 > this.#bytes.length) return null
-    const view = new DataView(
-      this.#bytes.buffer,
-      this.#bytes.byteOffset + this.#offset,
-      4,
-    )
+    const view = new DataView(this.#bytes.buffer, this.#bytes.byteOffset + this.#offset, 4)
     const length = view.getUint32(0, false)
     this.#offset += 4
     // A length field can claim up to 4 GiB. Compare against what is actually
@@ -239,17 +234,13 @@ function readRsaKeyBody(reader: SshBlobReader): KeyBodyResult {
   if (bits < MIN_RSA_MODULUS_BITS) {
     return {
       ok: false,
-      error:
-        `RSA keys must be at least ${MIN_RSA_MODULUS_BITS} bits; this one is ${bits}. Generate a new key with \`ssh-keygen -t ed25519\`.`,
+      error: `RSA keys must be at least ${MIN_RSA_MODULUS_BITS} bits; this one is ${bits}. Generate a new key with \`ssh-keygen -t ed25519\`.`,
     }
   }
   return { ok: true, bits }
 }
 
-function readEd25519KeyBody(
-  keyType: SshKeyType,
-  reader: SshBlobReader,
-): KeyBodyResult {
+function readEd25519KeyBody(keyType: SshKeyType, reader: SshBlobReader): KeyBodyResult {
   const publicKey = reader.readString()
   if (publicKey?.length !== 32) return MALFORMED_KEY_BODY
   if (keyType === 'sk-ssh-ed25519@openssh.com') {
@@ -260,10 +251,7 @@ function readEd25519KeyBody(
 }
 
 /** Curve name, then an uncompressed point, then (FIDO only) the application. */
-function readEcdsaKeyBody(
-  keyType: SshKeyType,
-  reader: SshBlobReader,
-): KeyBodyResult {
+function readEcdsaKeyBody(keyType: SshKeyType, reader: SshBlobReader): KeyBodyResult {
   const declaredCurve = ecCurveForKeyType(keyType)
   if (declaredCurve === null) return MALFORMED_KEY_BODY
   const curve = reader.readAsciiString()
@@ -271,8 +259,7 @@ function readEcdsaKeyBody(
   if (curve !== declaredCurve) {
     return {
       ok: false,
-      error:
-        `the key declares curve \`${declaredCurve}\` but its data carries \`${curve}\``,
+      error: `the key declares curve \`${declaredCurve}\` but its data carries \`${curve}\``,
     }
   }
   const point = reader.readString()
@@ -292,10 +279,7 @@ function readEcdsaKeyBody(
  * Returning the RSA size (and only ever that) keeps the caller from having to
  * know which types carry a variable-length parameter.
  */
-function readKeyBody(
-  keyType: SshKeyType,
-  reader: SshBlobReader,
-): KeyBodyResult {
+function readKeyBody(keyType: SshKeyType, reader: SshBlobReader): KeyBodyResult {
   if (keyType === 'ssh-rsa') return readRsaKeyBody(reader)
   if (keyType === 'ssh-ed25519' || keyType === 'sk-ssh-ed25519@openssh.com') {
     return readEd25519KeyBody(keyType, reader)
@@ -310,10 +294,7 @@ function readKeyBody(
  * Split out so the three cases each get the message that tells the operator
  * what to do next — "unsupported" is true of all three and useful for none.
  */
-function explainRejectedKeyType(
-  declaredType: string,
-  tokens: readonly string[],
-): string {
+function explainRejectedKeyType(declaredType: string, tokens: readonly string[]): string {
   if (declaredType === 'ssh-dss') {
     return 'DSA keys (`ssh-dss`) are not accepted — OpenSSH disabled them by default in 7.0. Generate a new key with `ssh-keygen -t ed25519`.'
   }
@@ -325,9 +306,9 @@ function explainRejectedKeyType(
   if (tokens.length >= 3 && isAllowedKeyType(tokens[1] as string)) {
     return 'remove the options in front of the key (`command=`, `from=`, `no-pty`, …) — TurboPanel sets those itself and will not honour pasted ones'
   }
-  return `unsupported key type \`${declaredType.slice(0, 40)}\` — supported: ${
-    ALLOWED_SSH_KEY_TYPES.join(', ')
-  }`
+  return `unsupported key type \`${declaredType.slice(0, 40)}\` — supported: ${ALLOWED_SSH_KEY_TYPES.join(
+    ', '
+  )}`
 }
 
 /**
@@ -337,9 +318,7 @@ function explainRejectedKeyType(
  * parse rather than a later step: a caller that could hold a `ParsedSshPublicKey`
  * without one would be able to persist a key it cannot uniquely identify.
  */
-export async function parseSshPublicKey(
-  input: unknown,
-): Promise<SshPublicKeyParseResult> {
+export async function parseSshPublicKey(input: unknown): Promise<SshPublicKeyParseResult> {
   if (typeof input !== 'string') return fail('a public key must be text')
   if (input.length > MAX_KEY_LINE_LENGTH) {
     return fail(`a public key must be under ${MAX_KEY_LINE_LENGTH} characters`)
@@ -351,10 +330,13 @@ export async function parseSshPublicKey(
     return fail('a public key must be a single line')
   }
 
-  const tokens = input.trim().split(/[ \t]+/).filter((token) => token.length > 0)
+  const tokens = input
+    .trim()
+    .split(/[ \t]+/)
+    .filter((token) => token.length > 0)
   if (tokens.length < 2) {
     return fail(
-      'expected a key in `ssh-ed25519 AAAA…` form — paste the contents of your `.pub` file',
+      'expected a key in `ssh-ed25519 AAAA…` form — paste the contents of your `.pub` file'
     )
   }
 
@@ -372,9 +354,10 @@ export async function parseSshPublicKey(
   if (embeddedType === null) return fail('the key data is malformed')
   if (embeddedType !== declaredType) {
     return fail(
-      `the key is labelled \`${declaredType}\` but its data is \`${
-        embeddedType.slice(0, 40)
-      }\` — \`sshd\` trusts the data, so this key would not do what the label says`,
+      `the key is labelled \`${declaredType}\` but its data is \`${embeddedType.slice(
+        0,
+        40
+      )}\` — \`sshd\` trusts the data, so this key would not do what the label says`
     )
   }
 
@@ -383,9 +366,7 @@ export async function parseSshPublicKey(
   // Trailing bytes mean the line carries something beyond the key.
   if (!reader.exhausted) return fail('the key data has trailing bytes')
 
-  const comment = tokens.length > 2
-    ? sanitizeComment(tokens.slice(2).join(' '))
-    : undefined
+  const comment = tokens.length > 2 ? sanitizeComment(tokens.slice(2).join(' ')) : undefined
 
   return {
     ok: true,
@@ -413,11 +394,9 @@ export async function parseSshPublicKey(
  * reach a file `sshd` authenticates against.
  */
 const CANONICAL_KEY_LINE_RE = new RegExp(
-  `^(?:${
-    ALLOWED_SSH_KEY_TYPES.map((type) =>
-      type.replaceAll(/[.*+?^${}()|[\]\\@]/g, String.raw`\$&`)
-    ).join('|')
-  }) [A-Za-z0-9+/]+={0,2}$`,
+  `^(?:${ALLOWED_SSH_KEY_TYPES.map((type) =>
+    type.replaceAll(/[.*+?^${}()|[\]\\@]/g, String.raw`\$&`)
+  ).join('|')}) [A-Za-z0-9+/]+={0,2}$`
 )
 
 export function isCanonicalSshPublicKey(value: unknown): value is string {

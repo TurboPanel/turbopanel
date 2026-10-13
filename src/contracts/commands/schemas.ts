@@ -1674,6 +1674,13 @@ export type EnvironmentDeployPrincipalMaterial = {
   uid?: number
   /** Optional operator override — omitted when the host allocates. */
   gid?: number
+  /**
+   * `central` when `uid`/`gid` are the control plane's installation-wide pick
+   * rather than an operator override. The daemon uses such ids to create a new
+   * account but adopts one that already exists as it is (and reports its ids);
+   * absent means an operator override, which is binding.
+   */
+  idSource?: 'central'
   home?: string
   /**
    * Absolute shell path (default `/usr/sbin/nologin`), applied by the daemon
@@ -1779,6 +1786,13 @@ export type EnvironmentDeploySitePrincipal = {
   uid?: number
   /** Optional operator override — omitted when the host allocates. */
   gid?: number
+  /**
+   * `central` when `uid`/`gid` are the control plane's installation-wide pick
+   * rather than an operator override. The daemon uses such ids to create a new
+   * account but adopts one that already exists as it is (and reports its ids);
+   * absent means an operator override, which is binding.
+   */
+  idSource?: 'central'
 }
 
 /**
@@ -3000,6 +3014,7 @@ function parseDeployPrincipalMaterialEntry(entry: unknown): EnvironmentDeployPri
     username: entry.username,
     ...(uid !== undefined ? { uid } : {}),
     ...(gid !== undefined ? { gid } : {}),
+    ...(entry.idSource === 'central' ? { idSource: 'central' as const } : {}),
   }
   if (entry.home !== undefined) {
     material.home = requirePrincipalPath(entry.home, isValidAbsolutePrincipalPath)
@@ -3295,6 +3310,7 @@ function parseDeploySitePrincipal(value: unknown): EnvironmentDeploySitePrincipa
     username: value.username,
     ...(uid !== undefined ? { uid } : {}),
     ...(gid !== undefined ? { gid } : {}),
+    ...(value.idSource === 'central' ? { idSource: 'central' as const } : {}),
   }
 }
 

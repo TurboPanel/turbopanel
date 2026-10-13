@@ -19,8 +19,7 @@ const test = Deno.test.bind(Deno)
  * the same files. Hand-built vectors would only prove the parser agrees with
  * itself; these prove it agrees with OpenSSH.
  */
-const ED25519 =
-  'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGEmvBcjT+NvO6sokGNoJ0zA3dr0nhIQhhZ3wP220uFZ'
+const ED25519 = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGEmvBcjT+NvO6sokGNoJ0zA3dr0nhIQhhZ3wP220uFZ'
 const ED25519_FINGERPRINT = 'SHA256:HDSPSzosi+vPKLM3F8mb+5In9aGdwTMftxl3drl9WmU'
 
 const RSA_2048 =
@@ -32,8 +31,7 @@ const RSA_1024 =
 
 const ECDSA_256 =
   'ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBKEU8h4UaSBQFDa5ce1lMJGCmEGx2JEIwDF/JPyvVn6A3uA6DtWorSXPBxQqsV9BbEHfcL5R5ugZsQ03yOlKb60='
-const ECDSA_256_FINGERPRINT =
-  'SHA256:rhTaV/vR1kXeYI1xoEg7Sx1jIbT2+B26Qzj6r4ToQoY'
+const ECDSA_256_FINGERPRINT = 'SHA256:rhTaV/vR1kXeYI1xoEg7Sx1jIbT2+B26Qzj6r4ToQoY'
 
 const ECDSA_521 =
   'ecdsa-sha2-nistp521 AAAAE2VjZHNhLXNoYTItbmlzdHA1MjEAAAAIbmlzdHA1MjEAAACFBAEEj1AY7uuDkz7r9DfyNincNRfaL3D0eoh7rcXzs5xBU3IBIYZ59dP1vRzlmBGpdt1mNcn4/RG6so5rTBpJpmRjHwDaZX3kIBSyg/4zhBqXMyf2gFwPpHd7ITiqP4aJs3o1pHm8bylnAxokIwVSjJAMiEsKlD/AHfizTv9A+b5B0ZLOkA=='
@@ -66,9 +64,7 @@ test('every allowed key type in the list actually parses', async () => {
   // the list and the body reader cannot drift apart silently.
   for (const key of [ED25519, RSA_2048, ECDSA_256, ECDSA_521]) {
     const parsed = await expectOk(key)
-    assert(
-      (ALLOWED_SSH_KEY_TYPES as readonly string[]).includes(parsed.keyType),
-    )
+    assert((ALLOWED_SSH_KEY_TYPES as readonly string[]).includes(parsed.keyType))
   }
 })
 
@@ -107,9 +103,7 @@ test('a key labelled ed25519 but carrying RSA data is rejected', async () => {
 })
 
 test('an options field is rejected, not silently stripped', async () => {
-  const error = await expectError(
-    `command="/bin/false",no-pty,from="10.0.0.0/8" ${ED25519}`,
-  )
+  const error = await expectError(`command="/bin/false",no-pty,from="10.0.0.0/8" ${ED25519}`)
   assertStringIncludes(error, 'remove the options in front of the key')
 })
 
@@ -145,15 +139,12 @@ test('malformed and non-key input is rejected', async () => {
   assertStringIncludes(await expectError('ssh-ed25519'), 'ssh-ed25519 AAAA')
   assertStringIncludes(await expectError(42), 'must be text')
   assertStringIncludes(await expectError(undefined), 'must be text')
-  assertStringIncludes(
-    await expectError('ssh-ed25519 not-base64!!'),
-    'not valid base64',
-  )
+  assertStringIncludes(await expectError('ssh-ed25519 not-base64!!'), 'not valid base64')
   // Unpadded base64 decodes in lenient runtimes; two spellings of one key must
   // not become two rows sharing one fingerprint.
   assertStringIncludes(
     await expectError(`ecdsa-sha2-nistp256 ${blobOf(ECDSA_256).replace(/=+$/, '')}`),
-    'not valid base64',
+    'not valid base64'
   )
   assertStringIncludes(await expectError(`${ED25519}AAAA`), 'trailing bytes')
   assertStringIncludes(await expectError('ssh-rsa AAAAB3NzaC1yc2E='), 'malformed')
@@ -168,7 +159,7 @@ test('an unsupported type names what is supported', async () => {
 test('an oversized line is rejected before any parsing', async () => {
   assertStringIncludes(
     await expectError(`ssh-ed25519 ${'A'.repeat(9000)}`),
-    'under 8192 characters',
+    'under 8192 characters'
   )
 })
 
@@ -181,9 +172,6 @@ test('isCanonicalSshPublicKey accepts only two-field canonical lines', async () 
   const parsed = await expectOk(ED25519)
   assert(isCanonicalSshPublicKey(parsed.publicKey))
   assertEquals(isCanonicalSshPublicKey(`${ED25519} comment`), false)
-  assertEquals(
-    isCanonicalSshPublicKey(`command="/bin/false" ${ED25519}`),
-    false,
-  )
+  assertEquals(isCanonicalSshPublicKey(`command="/bin/false" ${ED25519}`), false)
   assertEquals(isCanonicalSshPublicKey('ssh-magic AAAA'), false)
 })

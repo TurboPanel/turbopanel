@@ -355,6 +355,8 @@ test('principal material carries the central id, keeps an operator override, and
     const onB = await loadPrincipalMaterial(db, [p1, p2], { serverId: b, allocate: true })
     const byId = (rows: typeof onA, id: string) => rows.find((row) => row.principalId === id)!
     assert(byId(onA, p1).uid !== undefined)
+    assertEquals(byId(onA, p1).idSource, 'central')
+    assertEquals(byId(onA, p2).idSource, undefined)
     assertEquals(byId(onB, p1).uid, byId(onA, p1).uid)
     assertEquals(byId(onB, p1).gid, byId(onA, p1).gid)
     assertEquals(byId(onA, p2).uid, 45000)
@@ -387,5 +389,53 @@ test('a refusal on one server leaves the principal ids recorded on other servers
       .where(eq(principalPlacement.principalId, p1))
     assertEquals(rows.find((row) => row.serverId === a)?.uid, ids.uid)
     assertEquals(rows.find((row) => row.serverId === b)?.uid, null)
+  })
+})
+
+test('a row holding only the control plane pick is corrected by the host report; a present row is not', async () => {
+  await withFixtures(async ({ db, serverIds: [a, b], principalIds: [p1] }) => {
+    const request = [{ principalId: p1, home: homeOf(p1) }]
+    const chosen = (await resolvePrincipalIds(db, a, request, { allocate: true })).get(p1)!
+    // The account already existed on the host under other ids.
+    await recordReportedPrincipalIds(db, a, [{ principalId: p1, uid: 15021, gid: 15022 }])
+    const [fixed] = await db
+      .select({ uid: principalPlacement.uid, gid: principalPlacement.gid })
+      .from(principalPlacement)
+      .where(eq(principalPlacement.serverId, a))
+    assertEquals(fixed, { uid: 15021, gid: 15022 })
+    assertNotEquals(fixed!.uid, chosen.uid)
+
+    // Once present, a different report changes nothing.
+    await db
+      .update(principalPlacement)
+      .set({ state: 'present' })
+      .where(eq(principalPlacement.serverId, a))
+    await recordReportedPrincipalIds(db, a, [{ principalId: p1, uid: 15999, gid: 15999 }])
+    const [kept] = await db
+      .select({ uid: principalPlacement.uid })
+      .from(principalPlacement)
+      .where(eq(principalPlacement.serverId, a))
+    assertEquals(kept?.uid, 15021)
+
+    // The next server is sent the confirmed ids.
+    const next = await resolvePrincipalIds(db, b, request, { allocate: true })
+    assertEquals(next.get(p1), { uid: 15021, gid: 15022 })
+  })
+})
+
+test('a number pinned by an operator on a principal is skipped by the sequence', async () => {
+  await withFixtures(async ({ db, serverIds: [a], principalIds: [p1, p2, p3] }) => {
+    const first = (
+      await resolvePrincipalIds(db, a, [{ principalId: p1, home: homeOf(p1) }], { allocate: true })
+    ).get(p1)!
+    const pinned = first.uid + 1
+    await db
+      .update(principal)
+      .set({ options: { uid: pinned, gid: pinned } })
+      .where(eq(principal.id, p2))
+    const got = (
+      await resolvePrincipalIds(db, a, [{ principalId: p3, home: homeOf(p3) }], { allocate: true })
+    ).get(p3)!
+    assert(got.uid > pinned)
   })
 })
