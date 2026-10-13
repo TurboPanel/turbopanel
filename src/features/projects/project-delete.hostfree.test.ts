@@ -73,6 +73,11 @@ function createCascadeMockDb(scenario: {
         return Promise.resolve(undefined)
       },
     }),
+    // ensureProjectPlacements: one raw upsert before the rows go.
+    execute: () => {
+      deletes.push({ table: 'tx-placements', ids: [projectId] })
+      return Promise.resolve(undefined)
+    },
   } as unknown as Db
 
   const db = {
@@ -189,7 +194,7 @@ test('deleteProjectCascade ignores running platform components (ingress/ha)', as
 })
 
 test('deleteProjectCascade cascades stopped containers inside a transaction', async () => {
-  const { db, stats } = createCascadeMockDb({
+  const { db, stats, deletes } = createCascadeMockDb({
     environmentIds: ['env-1'],
     serviceIds: ['svc-1'],
     containers: [{ id: 'c1', status: 'exited' }],
@@ -198,4 +203,6 @@ test('deleteProjectCascade cascades stopped containers inside a transaction', as
   const result = await deleteProjectCascade(db, 'proj-1')
   assertEquals(result, { ok: true })
   assertEquals(stats.transactions, 1)
+  // The principals' placements are written first, inside the same transaction.
+  assertEquals(deletes[0], { table: 'tx-placements', ids: ['proj-1'] })
 })

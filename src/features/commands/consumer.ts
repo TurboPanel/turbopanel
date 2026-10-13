@@ -128,6 +128,7 @@ import {
   parseTimezoneSetResult,
 } from '../../contracts/commands/schemas.ts'
 import { updateManagedMemberObservedReplication } from '../managed/members.ts'
+import { markPlacementsAbsent, markPlacementsPresent } from '../principals/placement-records.ts'
 import { orchestratorManagesEngine } from '../managed/ha-policy.ts'
 import { findManagedHaHierarchy, findManagedIngressHierarchy } from '../system/hierarchy.ts'
 import {
@@ -1072,6 +1073,14 @@ async function applyEnvironmentDeploySideEffect(
       }
     }
     await markEnvironmentCopiesReady(db, payload.environmentId, envelope.serverId)
+    // The accounts this deploy carried now exist on the host, whether or not
+    // a newer deploy has since replaced this one.
+    await markPlacementsPresentSafely(
+      db,
+      record,
+      envelope.serverId,
+      (payload.principalMaterial ?? []).map((entry) => entry.principalId)
+    )
     const deployResult = parseEnvironmentDeployResult(result)
     await recordSiteAppsSafely(db, record, payload.environmentId, deployResult.sites)
     // Only reconcile when the daemon included an authoritative containers
@@ -1100,6 +1109,39 @@ async function applyEnvironmentDeploySideEffect(
   }
 }
 
+/** Placement bookkeeping never fails a command result; a miss is logged. */
+async function markPlacementsPresentSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  serverId: string,
+  principalIds: readonly string[]
+): Promise<void> {
+  try {
+    await markPlacementsPresent(db, serverId, principalIds)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `placement present mark failed for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+async function markPlacementsAbsentSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  serverId: string,
+  usernames: readonly string[]
+): Promise<void> {
+  try {
+    await markPlacementsAbsent(db, serverId, usernames)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `placement absent mark failed for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
 async function applyEnvironmentStopSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
@@ -1108,8 +1150,16 @@ async function applyEnvironmentStopSideEffect(
 ): Promise<void> {
   if (record.type !== 'environment.stop') return
   try {
-    const { environmentId } = parseEnvironmentStopPayload(record.payload)
+    const { environmentId, retirePrincipals } = parseEnvironmentStopPayload(record.payload)
     const stopResult = parseEnvironmentStopResult(result)
+    if (retirePrincipals !== undefined && retirePrincipals.length > 0) {
+      await markPlacementsAbsentSafely(
+        db,
+        record,
+        envelope.serverId,
+        retirePrincipals.map((entry) => entry.username)
+      )
+    }
     if (stopResult.containers === undefined) return
     await reconcileContainersSafely(db, record, envelope, environmentId, stopResult.containers)
   } catch (err) {

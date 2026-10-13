@@ -825,9 +825,23 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       organization_id:
         "Home organization set on every insert, not derived; for a managed user it is the cluster's home org via its environment, not the hosting servers' orgs.",
       project_id:
-        'Optional project scope for compose-declared hosting principals; cascade-deleted with the project.',
+        'Optional project scope for compose-declared hosting principals; set to NULL when the project is deleted, the principal stays.',
       managed_id:
         'Optional managed-engine scope for database users (root and per-user rows); cascade-deleted with the cluster.',
+    },
+  },
+  placement: {
+    group: 'resources',
+    summary:
+      'One system principal on one server, the per-server form of a `principal` row; written by deploy fan-out, teardown and server removal.',
+    columns: {
+      state:
+        '`pending` when a deploy that creates the account is queued, `present` once it succeeded, `retiring` once a stop that retires it is queued, `absent` after.',
+      uid: 'Linux uid the host assigned, reported by the daemon; NULL until then, unique per server when set.',
+      gid: 'Linux gid the host assigned, reported by the daemon; NULL until then.',
+      home: 'Account home on the host, `/srv/users/` plus the applied username, copied from the deploy material.',
+      source:
+        'Why the account is on this server: `compose` (an `x-turbopanel.principals` alias), `manual` (a project principal), or `storage` (a storage entry owner).',
     },
   },
   project: {
