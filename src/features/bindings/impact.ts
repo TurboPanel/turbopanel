@@ -5,7 +5,8 @@
 
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { binding, environment, principal, service } from '../../db/schema.ts'
+import { binding, environment, login, principal, service } from '../../db/schema.ts'
+import { bindingLoginJoin, bindingManagedId } from '../managed/logins.ts'
 import { enqueueIngressForBindingChange, type BindingListenerSync } from './enqueue-change.ts'
 
 export type BindingImpactService = {
@@ -76,13 +77,14 @@ async function listManagedBindingImpact(
       keyPrefix: binding.keyPrefix,
     })
     .from(binding)
-    .innerJoin(principal, eq(binding.principalId, principal.id))
+    .leftJoin(login, bindingLoginJoin())
+    .leftJoin(principal, eq(principal.id, binding.principalId))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .where(
       databaseName === undefined
-        ? eq(principal.managedId, managedId)
-        : and(eq(principal.managedId, managedId), eq(binding.databaseName, databaseName))
+        ? eq(bindingManagedId, managedId)
+        : and(eq(bindingManagedId, managedId), eq(binding.databaseName, databaseName))
     )
   return rows.map(toImpact)
 }
@@ -125,8 +127,13 @@ export async function detachBindingsForManaged(
     .delete(binding)
     .where(
       inArray(
-        binding.principalId,
-        db.select({ id: principal.id }).from(principal).where(eq(principal.managedId, managedId))
+        binding.id,
+        db
+          .select({ id: binding.id })
+          .from(binding)
+          .leftJoin(login, bindingLoginJoin())
+          .leftJoin(principal, eq(principal.id, binding.principalId))
+          .where(eq(bindingManagedId, managedId))
       )
     )
   if (listenerSync && serviceIds.length > 0) {
@@ -144,6 +151,39 @@ export async function hasBindingsForPrincipal(db: Db, principalId: string): Prom
     .select({ id: binding.id })
     .from(binding)
     .where(eq(binding.principalId, principalId))
+    .limit(1)
+  return Boolean(row)
+}
+
+/** Services bound to one login (a legacy binding without `login_id` counts by its principal). */
+export async function listBindingImpactForLogin(
+  db: Db,
+  loginId: string
+): Promise<BindingRedeployRequired> {
+  const rows = await db
+    .select({
+      serviceId: binding.serviceId,
+      name: service.name,
+      environmentId: service.environmentId,
+      projectId: environment.projectId,
+      keyPrefix: binding.keyPrefix,
+    })
+    .from(binding)
+    .innerJoin(login, bindingLoginJoin())
+    .innerJoin(service, eq(binding.serviceId, service.id))
+    .innerJoin(environment, eq(service.environmentId, environment.id))
+    .where(eq(login.id, loginId))
+
+  const services = rows.map(toImpact).sort((a, b) => a.keyPrefix.localeCompare(b.keyPrefix))
+  return { count: services.length, services }
+}
+
+export async function hasBindingsForLogin(db: Db, loginId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: binding.id })
+    .from(binding)
+    .innerJoin(login, bindingLoginJoin())
+    .where(eq(login.id, loginId))
     .limit(1)
   return Boolean(row)
 }

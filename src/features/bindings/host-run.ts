@@ -11,7 +11,8 @@
 
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { binding, principal, managed, variable } from '../../db/schema.ts'
+import { binding, login, managed, principal, variable } from '../../db/schema.ts'
+import { bindingLoginJoin, bindingManagedId } from '../managed/logins.ts'
 import { isNodeComposeService, isSiteComposeService } from '../compose/service-kind.ts'
 import { getManagedEngineSpec } from '../managed/index.ts'
 import { MANAGED_INGRESS_MYSQL_PORT, MANAGED_INGRESS_PGSQL_PORT } from '../managed/ingress-ports.ts'
@@ -146,8 +147,9 @@ export async function loadHostSiteBindingNeeds(
       engine: managed.engine,
     })
     .from(binding)
-    .innerJoin(principal, eq(binding.principalId, principal.id))
-    .innerJoin(managed, eq(principal.managedId, managed.id))
+    .leftJoin(login, bindingLoginJoin())
+    .leftJoin(principal, eq(principal.id, binding.principalId))
+    .innerJoin(managed, eq(managed.id, bindingManagedId))
     .where(and(inArray(binding.serviceId, [...serviceIds])))
   for (const row of rows) {
     if (!row.engine) continue

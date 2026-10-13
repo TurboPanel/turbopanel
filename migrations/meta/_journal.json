@@ -215,15 +215,22 @@
     {
       "idx": 30,
       "version": "7",
-      "when": 1791904226638,
-      "tag": "0030_add_placement",
+      "when": 1791904250847,
+      "tag": "0030_login_table",
       "breakpoints": true
     },
     {
       "idx": 31,
       "version": "7",
-      "when": 1791904266956,
-      "tag": "0031_principal_project_set_null",
+      "when": 1791911939418,
+      "tag": "0031_add_placement",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1791911940093,
+      "tag": "0032_principal_project_set_null",
       "breakpoints": true
     }
   ]

@@ -1,6 +1,6 @@
 {
-  "id": "50ba64d5-4552-4c58-9003-07fb36ca83d0",
-  "prevId": "3d7c2447-296d-448c-99a6-2e78c4af1cb4",
+  "id": "57b6069d-951c-4292-9978-8e03f1365bbc",
+  "prevId": "c0e0c23c-4562-47cf-b670-d68944ea452d",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -782,6 +782,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "login_id": {
+          "name": "login_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "service_id": {
           "name": "service_id",
           "type": "uuid",
@@ -842,6 +848,22 @@
           "method": "btree",
           "with": {}
         },
+        "idx_binding_login_id": {
+          "name": "idx_binding_login_id",
+          "columns": [
+            {
+              "expression": "login_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "uniq_binding_service_engine_defaults": {
           "name": "uniq_binding_service_engine_defaults",
           "columns": [
@@ -866,6 +888,19 @@
           "tableTo": "principal",
           "columnsFrom": [
             "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "binding_login_id_login_id_fk": {
+          "name": "binding_login_id_login_id_fk",
+          "tableFrom": "binding",
+          "tableTo": "login",
+          "columnsFrom": [
+            "login_id"
           ],
           "columnsTo": [
             "id"
@@ -4816,6 +4851,194 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.login": {
+      "name": "login",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "options": {
+          "name": "options",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "managed_id": {
+          "name": "managed_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "applied_username": {
+          "name": "applied_username",
+          "type": "varchar(255)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "password": {
+          "name": "password",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_login_managed_id": {
+          "name": "idx_login_managed_id",
+          "columns": [
+            {
+              "expression": "managed_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_login_principal_id": {
+          "name": "idx_login_principal_id",
+          "columns": [
+            {
+              "expression": "principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_login_managed_principal": {
+          "name": "uniq_login_managed_principal",
+          "columns": [
+            {
+              "expression": "managed_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"login\".\"principal_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_login_managed_applied_username": {
+          "name": "uniq_login_managed_applied_username",
+          "columns": [
+            {
+              "expression": "managed_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "lower(btrim((\"applied_username\")::text))",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "login_managed_id_managed_id_fk": {
+          "name": "login_managed_id_managed_id_fk",
+          "tableFrom": "login",
+          "tableTo": "managed",
+          "columnsFrom": [
+            "managed_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "login_principal_id_principal_id_fk": {
+          "name": "login_principal_id_principal_id_fk",
+          "tableFrom": "login",
+          "tableTo": "principal",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "login_role_check": {
+          "name": "login_role_check",
+          "value": "role IN ('root', 'replication', 'user')"
+        },
+        "login_applied_username_format_check": {
+          "name": "login_applied_username_format_check",
+          "value": "(char_length((applied_username)::text) >= 1) AND (char_length((applied_username)::text) <= 255) AND ((applied_username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.managed": {
       "name": "managed",
       "schema": "",
@@ -7202,7 +7425,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         },
         "principal_managed_id_managed_id_fk": {

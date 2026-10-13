@@ -29,7 +29,7 @@ import type {
   ManagedIngressReconcileUser,
 } from '../../contracts/commands/schemas.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
-import { container, managed, principal, replica, server, service } from '../../db/schema.ts'
+import { container, login, managed, replica, server, service } from '../../db/schema.ts'
 import { getManagedEngineSpec } from './index.ts'
 import type { ManagedIngressPorts } from './ingress-ports.ts'
 import type { ManagedSettings } from './settings.ts'
@@ -48,7 +48,8 @@ import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
 import { hasRemoteConsumerServers } from '../bindings/remote-consumers.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
 import { loadManagedExternalAccess } from './external-access.ts'
-import { materializeBindingsForPrincipal } from '../bindings/materialize.ts'
+import { materializeBindingsForManaged } from '../bindings/materialize.ts'
+import { syncLegacyLogins } from './logins.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { loadManagedIngressPorts, loadManagedOrgDefaults } from './load-org-defaults.ts'
 import {
@@ -222,21 +223,22 @@ async function loadClusterUsersForManagedIds(
     return { kind: 'daemon_key_unavailable', serverId: params.serverId }
   }
 
+  await forEachSequential(managedIds, (managedId) => syncLegacyLogins(db, managedId))
   const rows = await db
     .select({
-      managedId: principal.managedId,
-      id: principal.id,
+      managedId: login.managedId,
+      id: login.id,
+      role: login.role,
       // Applied login — ProxySQL frontend usernames are what clients type.
-      username: principal.appliedUsername,
-      metadata: principal.metadata,
-      password: principal.password,
+      username: login.appliedUsername,
+      metadata: login.metadata,
+      password: login.password,
     })
-    .from(principal)
-    .where(inArray(principal.managedId, [...managedIds]))
+    .from(login)
+    .where(inArray(login.managedId, [...managedIds]))
 
   const failure = await firstSequential(rows, async (row) => {
-    if (!row.managedId) return undefined
-    if (shouldSkipIngressFrontendUser(row.username, row.metadata)) {
+    if (row.role === 'replication' || shouldSkipIngressFrontendUser(row.username, row.metadata)) {
       return undefined
     }
     const sealed = row.password
@@ -857,19 +859,13 @@ async function rematerializeManagedBindings(
   managedId: string,
   dataEncryptionSecrets: DerivedSecretsConfig
 ): Promise<void> {
-  const principals = await db
-    .select({ id: principal.id })
-    .from(principal)
-    .where(eq(principal.managedId, managedId))
-  await forEachSequential(principals, async (row) => {
-    const result = await materializeBindingsForPrincipal(db, dataEncryptionSecrets, row.id)
-    if (!('ok' in result)) {
-      compatLogWarn(
-        'managed-ingress',
-        `binding rematerialize failed during promote fan-out managedId=${managedId} principalId=${row.id} kind=${result.kind}`
-      )
-    }
-  })
+  const result = await materializeBindingsForManaged(db, dataEncryptionSecrets, managedId)
+  if (!('ok' in result)) {
+    compatLogWarn(
+      'managed-ingress',
+      `binding rematerialize failed during promote fan-out managedId=${managedId} kind=${result.kind}`
+    )
+  }
 }
 
 /**

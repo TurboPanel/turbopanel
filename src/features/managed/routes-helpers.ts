@@ -35,6 +35,7 @@ import { isMysqlFamilyEngine, MAX_REPLAY_DELTA_BYTES, parsePgLsn } from './ha-fr
 import { loadManagedStatusError } from './last-error.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import { type ManagedResidualMetadata, serializeManagedRow } from './serialize.ts'
+import { type DatabaseLoginRole, loginRoleFromMetadata, type ManagedLoginRow } from './logins.ts'
 
 export { evaluateManagedPromoteLagGate }
 
@@ -470,6 +471,18 @@ export function serializeManagedUser(row: {
   }
 }
 
+/**
+ * A login row in the managed users API shape: `id` stays the principal id
+ * (what the routes are addressed by), plus `principalId` and `loginId`.
+ */
+export function serializeManagedLogin(row: ManagedLoginRow) {
+  return {
+    ...serializeManagedUser({ ...row, id: row.principalId ?? row.id }),
+    principalId: row.principalId,
+    loginId: row.id,
+  }
+}
+
 export function serializeContainerRow(row: {
   id: string
   serviceId: string
@@ -546,6 +559,28 @@ export function parseManagedUserCreateFields(
     return c.json({ error: 'Invalid username' }, 400)
   }
 
+  const grants = parseManagedLoginGrantFields(c, ctx, body, options)
+  if (grants instanceof Response) return grants
+  return { username, ...grants }
+}
+
+/**
+ * What a login may do, independent of its name: the databases it is granted
+ * on, its connection role and its privileges. Shared by a login with a new
+ * name and a login created for an existing principal.
+ */
+export function parseManagedLoginGrantFields(
+  c: Context,
+  ctx: ManagedContext,
+  body: Record<string, unknown>,
+  options: ManagedRowOptions
+):
+  | {
+      databases: string[]
+      privileges: string[]
+      connectionRole: ManagedConnectionRole
+    }
+  | Response {
   if (!Array.isArray(body.databases) || body.databases.length === 0) {
     return c.json({ error: 'Invalid request' }, 400)
   }
@@ -584,7 +619,35 @@ export function parseManagedUserCreateFields(
     )
   }
 
-  return { username, databases, privileges, connectionRole }
+  return { databases, privileges, connectionRole }
+}
+
+/**
+ * Whether an existing principal's applied name can be this engine's role
+ * name as-is (a login for a principal never renames). `null` when it fits.
+ */
+export function evaluateExistingPrincipalLoginName(
+  spec: ManagedContext['spec'],
+  appliedUsername: string,
+  rootUsername?: string
+): { error: string; message: string } | null {
+  const { pattern, maxLength } = spec.userOperations.identifier
+  if (!pattern.test(appliedUsername) || appliedUsername.length > maxLength) {
+    return {
+      error: 'principal_name_does_not_fit',
+      message: `The principal's name '${appliedUsername}' is not a valid ${spec.engine} role name (at most ${maxLength} characters, matching ${pattern}). Create a login with a new name instead.`,
+    }
+  }
+  if (
+    appliedUsername === (rootUsername ?? spec.rootUsername) ||
+    RESERVED_MANAGED_USERNAMES.has(appliedUsername.toLowerCase())
+  ) {
+    return {
+      error: 'principal_name_reserved',
+      message: `The principal's name '${appliedUsername}' is reserved on ${spec.engine}. Create a login with a new name instead.`,
+    }
+  }
+  return null
 }
 
 /** `privileges` was present but empty, unknown, or not a list of names. */
@@ -1022,10 +1085,17 @@ export type ManagedUserRotateGuardError =
 export function evaluateManagedUserRotateGuard(
   metadata: unknown
 ): ManagedUserRotateGuardError | null {
-  if (isManagedRootPrincipal(metadata)) {
+  return evaluateManagedLoginRotateGuard(loginRoleFromMetadata(metadata))
+}
+
+/** The cluster's own logins rotate elsewhere (root) or never (replication). */
+export function evaluateManagedLoginRotateGuard(
+  role: DatabaseLoginRole
+): ManagedUserRotateGuardError | null {
+  if (role === 'root') {
     return { ok: false, error: 'use_root_password_route', status: 400 }
   }
-  if (isManagedReplicationPrincipal(metadata)) {
+  if (role === 'replication') {
     return { ok: false, error: 'cannot_rotate_replication_user', status: 400 }
   }
   return null
@@ -1034,7 +1104,13 @@ export function evaluateManagedUserRotateGuard(
 export function evaluateManagedUserDropGuard(
   metadata: unknown
 ): { ok: false; error: 'cannot_drop_root_user'; status: 400 } | null {
-  if (isManagedRootPrincipal(metadata)) {
+  return evaluateManagedLoginDropGuard(loginRoleFromMetadata(metadata))
+}
+
+export function evaluateManagedLoginDropGuard(
+  role: DatabaseLoginRole
+): { ok: false; error: 'cannot_drop_root_user'; status: 400 } | null {
+  if (role === 'root') {
     return { ok: false, error: 'cannot_drop_root_user', status: 400 }
   }
   return null

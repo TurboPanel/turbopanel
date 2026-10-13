@@ -26,6 +26,7 @@ import {
   UPGRADE_STEP_UNITS,
 } from '../features/upgrades/vocabulary.ts'
 import { BACKUP_RUN_STATUSES, BACKUP_TARGET_KINDS } from '../features/backups/vocabulary.ts'
+import { DATABASE_LOGIN_ROLES } from '../features/managed/logins.ts'
 import {
   FIREWALL_MODES,
   FIREWALL_RULE_ACTIONS,
@@ -102,6 +103,7 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['bulwark_mode_check', FIREWALL_MODES],
   ['bulwark_state_check', FIREWALL_STATES],
   ['stage_status_check', UPGRADE_STEP_STATUSES],
+  ['login_role_check', DATABASE_LOGIN_ROLES],
 ]
 
 for (const [constraint, values] of CASES) {

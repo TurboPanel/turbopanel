@@ -85,11 +85,13 @@ function createCascadeMockDb(scenario: {
         }
         const join = {
           innerJoin: () => join,
+          leftJoin: () => join,
           where: next,
         }
         return {
           where: next,
           innerJoin: () => join,
+          leftJoin: () => join,
         }
       },
     }),
