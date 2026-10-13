@@ -16,14 +16,44 @@ import {
   type CommandProgressStep,
   type CommandProgressStepState,
   isCommandProgress,
-  validateCommandProgress,
 } from '../../contracts/cell-protocol.ts'
 import { nowIso } from './ids.ts'
 import { type CommandStatus, TERMINAL_COMMAND_STATUSES } from './types.ts'
 
-/** The stored jsonb as a typed payload; `null` for anything that is not one. */
+/**
+ * The stored jsonb as a typed payload; `null` for anything that is not one.
+ * A cheap shape check only: rows were validated in full on the way in
+ * ({@link recordCommandProgress}), and this runs on every command read.
+ */
 export function parseStoredCommandProgress(value: unknown): CommandProgress | null {
-  return isCommandProgress(value) ? value : null
+  if (typeof value !== 'object' || value === null) return null
+  const record = value as Record<string, unknown>
+  const shaped =
+    record.version === 1 &&
+    Array.isArray(record.steps) &&
+    (record.current === null || typeof record.current === 'string') &&
+    typeof record.updatedAt === 'string'
+  return shaped ? (value as CommandProgress) : null
+}
+
+/**
+ * Re-build a validated payload from its known fields only, so a key this
+ * build does not know never reaches the row or the client API.
+ */
+function normalizeCommandProgress(progress: CommandProgress): CommandProgress {
+  return {
+    version: 1,
+    steps: progress.steps.map((step) => ({
+      id: step.id,
+      label: step.label,
+      state: step.state,
+      ...(step.startedAt === undefined ? {} : { startedAt: step.startedAt }),
+      ...(step.finishedAt === undefined ? {} : { finishedAt: step.finishedAt }),
+      ...(step.detail === undefined ? {} : { detail: step.detail }),
+    })),
+    current: progress.current,
+    updatedAt: progress.updatedAt,
+  }
 }
 
 /**
@@ -80,11 +110,12 @@ export async function recordCommandProgress(
   db: Db,
   input: { serverId: string; commandId: string; progress: unknown }
 ): Promise<RecordCommandProgressResult> {
-  if (validateCommandProgress(input.progress) !== null) return 'invalid'
+  if (!isCommandProgress(input.progress)) return 'invalid'
+  const progress = normalizeCommandProgress(input.progress)
   try {
     const rows = await db
       .update(command)
-      .set({ progress: input.progress, updatedAt: nowIso() })
+      .set({ progress, updatedAt: nowIso() })
       .where(
         and(
           eq(command.id, input.commandId),
@@ -104,6 +135,8 @@ export async function recordCommandProgress(
  * write it back when it changed. Returns the progress the record should
  * carry. Callers pass the `progress` column of the row the terminal update
  * returned; once the status is terminal no daemon frame can replace it.
+ * Best effort: the transition has already committed, so a failed write-back
+ * is logged and the settled plan is still returned, never thrown.
  */
 export async function finalizeStoredCommandProgress(
   db: Db,
@@ -113,9 +146,17 @@ export async function finalizeStoredCommandProgress(
   if (stored === null) return null
   const finalized = finalizeCommandProgress(stored, input.status, input.at)
   if (finalized === stored) return stored
-  await db
-    .update(command)
-    .set({ progress: finalized, updatedAt: input.at })
-    .where(eq(command.id, input.commandId))
+  try {
+    await db
+      .update(command)
+      .set({ progress: finalized, updatedAt: input.at })
+      .where(eq(command.id, input.commandId))
+  } catch (err) {
+    console.warn(
+      `command-progress finalize failed (${input.commandId}): ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    )
+  }
   return finalized
 }

@@ -201,7 +201,7 @@ export type CommandProgressStep = {
   state: CommandProgressStepState
   startedAt?: string
   finishedAt?: string
-  /** Live ticker text for the running step (e.g. the current playbook task). */
+  /** Live one-line detail for the running step (the install step the server is on). */
   detail?: string
 }
 
@@ -1141,10 +1141,20 @@ export function validateCommandProgress(value: unknown): string | null {
   if (value.current !== null && !isBoundedId(value.current)) return 'invalid progress current'
   if (!Array.isArray(value.steps)) return 'invalid progress steps'
   if (value.steps.length > MAX_DAEMON_WS_PROGRESS_STEPS) return 'progress steps exceed max entries'
+  const ids = new Set<string>()
+  let running: string | null = null
   for (const [index, step] of value.steps.entries()) {
     const issue = validateCommandProgressStep(step, index)
     if (issue) return issue
+    const { id, state } = step as CommandProgressStep
+    if (ids.has(id)) return `duplicate step id ${id}`
+    ids.add(id)
+    if (state !== 'running') continue
+    if (running !== null) return 'more than one running step'
+    running = id
   }
+  // `current` is derived from the steps: the one running step, or nothing.
+  if (value.current !== running) return 'progress current does not match the running step'
   return validateBoundedJson(value, MAX_DAEMON_WS_PROGRESS_JSON_BYTES, 'progress')
 }
 

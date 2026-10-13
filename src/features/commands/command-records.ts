@@ -44,6 +44,13 @@ type CommandDbRow = {
   [K in keyof typeof COMMAND_COLUMNS]: (typeof command.$inferSelect)[K]
 }
 
+/**
+ * What {@link serializeCommandRecord} accepts: the explicit column list, with
+ * `progress` optional because a row shaped before the column existed carries
+ * none and serializes as `progress: null`.
+ */
+type CommandRowInput = Omit<CommandDbRow, 'progress'> & Partial<Pick<CommandDbRow, 'progress'>>
+
 export type CommandRecord = {
   id: string
   serverId: string
@@ -154,7 +161,7 @@ function toIsoTimestamp(value: string | Date | null | undefined): string | null 
   return parsed.toISOString()
 }
 
-export function serializeCommandRecord(row: CommandDbRow): CommandRecord {
+export function serializeCommandRecord(row: CommandRowInput): CommandRecord {
   return {
     id: row.id,
     serverId: row.serverId,

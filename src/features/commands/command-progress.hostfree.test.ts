@@ -103,6 +103,34 @@ test('validateCommandProgress accepts a plan and names what is wrong otherwise',
   )
 })
 
+test('validateCommandProgress ties current to the one running step and keeps ids unique', () => {
+  assertEquals(
+    validateCommandProgress({ ...PLAN, current: null }),
+    'progress current does not match the running step'
+  )
+  assertEquals(
+    validateCommandProgress({ ...PLAN, current: 'build' }),
+    'progress current does not match the running step'
+  )
+  const settled = { ...PLAN, steps: PLAN.steps.map((step) => ({ ...step, state: 'done' })) }
+  assertEquals(validateCommandProgress({ ...settled, current: null }), null)
+  assertEquals(
+    validateCommandProgress({ ...settled, current: 'fetch' }),
+    'progress current does not match the running step'
+  )
+  assertEquals(
+    validateCommandProgress({
+      ...PLAN,
+      steps: PLAN.steps.map((step) => (step.id === 'build' ? { ...step, state: 'running' } : step)),
+    }),
+    'more than one running step'
+  )
+  assertEquals(
+    validateCommandProgress({ ...PLAN, steps: [...PLAN.steps, PLAN.steps[3]] }),
+    'duplicate step id build'
+  )
+})
+
 test('validateCommandProgress caps the step count and the serialized size', () => {
   const step = { id: 'build', label: 'Build', state: 'pending' as const }
   assertEquals(
@@ -118,7 +146,7 @@ test('validateCommandProgress caps the step count and the serialized size', () =
     startedAt: AT,
     finishedAt: AT,
   }))
-  const oversized = { ...PLAN, steps: wide }
+  const oversized = { ...PLAN, steps: wide, current: null }
   assertEquals(JSON.stringify(oversized).length > MAX_DAEMON_WS_PROGRESS_JSON_BYTES, true)
   assertEquals(validateCommandProgress(oversized), 'progress exceeds max size')
 })
@@ -127,6 +155,7 @@ test('parseStoredCommandProgress returns a typed plan or null', () => {
   assertEquals(parseStoredCommandProgress(PLAN), PLAN)
   assertEquals(parseStoredCommandProgress(null), null)
   assertEquals(parseStoredCommandProgress({ steps: [] }), null)
+  assertEquals(parseStoredCommandProgress({ ...PLAN, current: 3 }), null)
 })
 
 test('recordCommandProgress writes a valid plan guarded by server and live status', async () => {
@@ -143,6 +172,17 @@ test('recordCommandProgress writes a valid plan guarded by server and live statu
   assertEquals(calls[0].where.includes('"command"."status" not in'), true)
   assertEquals(calls[0].params.slice(0, 2), [COMMAND_ID, SERVER_ID])
   assertEquals(calls[0].params.slice(2), ['succeeded', 'failed', 'timed_out', 'cancelled'])
+})
+
+test('recordCommandProgress stores only the fields it knows', async () => {
+  const { db, calls } = fakeUpdateDb([{ id: COMMAND_ID }])
+  const padded = {
+    ...PLAN,
+    extra: 'later',
+    steps: PLAN.steps.map((step) => ({ ...step, note: 'ignored' })),
+  }
+  await recordCommandProgress(db, { serverId: SERVER_ID, commandId: COMMAND_ID, progress: padded })
+  assertEquals(calls[0].set.progress, PLAN)
 })
 
 test('recordCommandProgress drops a malformed plan without touching the database', async () => {
@@ -251,4 +291,16 @@ test('finalizeStoredCommandProgress writes back only when the plan changed', asy
     null
   )
   assertEquals(calls.length, 1)
+})
+
+test('finalizeStoredCommandProgress survives a failed write-back', async () => {
+  // The terminal transition already committed; a cleanup hiccup must not undo it.
+  const { db } = fakeUpdateDb(new Error('connection reset'))
+  const written = await finalizeStoredCommandProgress(db, {
+    commandId: COMMAND_ID,
+    status: 'failed',
+    progress: PLAN,
+    at: AT,
+  })
+  assertEquals(states(written!), ['ready', 'done', 'failed', 'skipped', 'skipped'])
 })
