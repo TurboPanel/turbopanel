@@ -80,6 +80,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'origin',
   'passkey',
   'payer',
+  // `principal` × `server`: where a system principal is a Linux account (2026-10-13).
+  'placement',
   'principal',
   'project',
   'recovery',

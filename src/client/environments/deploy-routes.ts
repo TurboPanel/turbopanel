@@ -131,6 +131,11 @@ import {
 } from '../../features/fabric/spanning.ts'
 import { environment, project, server } from '../../db/schema.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
+import { principalHomeDir } from '../../lib/naming.ts'
+import {
+  recordPendingPlacements,
+  resolvePlacementInputs,
+} from '../../features/principals/placement-records.ts'
 import {
   assertCanManageOr403,
   assertNotSystemOwnedOr403,
@@ -957,6 +962,29 @@ function rolloutByServerId(
  * Queue delivery stays outside. Callers must treat spanning networks as
  * committed once this returns.
  */
+/**
+ * Record a `pending` placement for every account this deploy materializes on
+ * the server (its tenancy principals and storage owners), in the same
+ * transaction as the command, so the row exists before the daemon can answer.
+ */
+async function recordDeployPlacements(
+  tx: Db,
+  environmentId: string,
+  row: PreparedServerDeploy
+): Promise<void> {
+  const inputs = await resolvePlacementInputs(tx, {
+    environmentId,
+    principals: row.prepared.principalMaterial.map((entry) => ({
+      principalId: entry.principalId,
+      home: entry.home ?? principalHomeDir(entry.username),
+    })),
+    storagePrincipalIds: row.prepared.storageMaterial
+      .map((entry) => entry.principalId)
+      .filter((id): id is string => typeof id === 'string'),
+  })
+  await recordPendingPlacements(tx, row.serverId, inputs)
+}
+
 async function persistDeployFanOut(
   db: Db,
   params: DeployActor & {
@@ -998,7 +1026,7 @@ async function persistDeployFanOut(
     // One transaction connection: the writes must stay ordered.
     const created = await mapSequential(
       params.preparedByServer,
-      (row): Promise<CreatedDeployCommand> => {
+      async (row): Promise<CreatedDeployCommand> => {
         const createParams = createParamsForPreparedServer(row, {
           actorType: params.actorType,
           actorId: params.actorId,
@@ -1015,7 +1043,8 @@ async function persistDeployFanOut(
           reservedListenPorts: reservedPorts.get(row.serverId),
         })
         listenPortsByServer.set(row.serverId, deployListenPorts(createParams))
-        return createDeployCommand(tx, createParams)
+        await recordDeployPlacements(tx, params.environmentId, row)
+        return await createDeployCommand(tx, createParams)
       }
     )
 

@@ -3496,6 +3496,79 @@ export const sshKey = pgTable(
 )
 
 /**
+ * One principal on one server: where a `system` principal exists (or is about
+ * to exist) as a Linux account. `principal` stays the single org-scoped
+ * identity row; this is its per-server form. `state` follows the host:
+ * `pending` once a deploy that materializes the account is queued, `present`
+ * when that deploy succeeded, `retiring` once a stop carrying
+ * `retirePrincipals` is queued, `absent` when it succeeded. `uid` / `gid`
+ * are what the host actually assigned and stay NULL until the daemon reports
+ * them; the partial unique on `(server_id, uid)` is what makes a reported id
+ * trustworthy. `source` says why the account is there: a compose
+ * `x-turbopanel.principals` alias, a manually created project principal, or a
+ * storage entry owned by the principal. Rows are bookkeeping beside the
+ * implicit reach (project → environment.server_id) until that reach is
+ * retired; deploy, teardown and server removal write them.
+ */
+export const principalPlacement = pgTable(
+  'placement',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    principalId: uuid('principal_id').notNull(),
+    serverId: uuid('server_id').notNull(),
+    /** `pending` | `present` | `retiring` | `absent` */
+    state: text().notNull(),
+    /** Host-assigned ids, reported by the daemon; NULL until then. */
+    uid: integer(),
+    gid: integer(),
+    /** Account home on the host (`/srv/users/<applied_username>`). */
+    home: text().notNull(),
+    /** `compose` | `manual` | `storage` */
+    source: text().notNull(),
+  },
+  (table) => [
+    index('idx_placement_server_id').using(
+      'btree',
+      table.serverId.asc().nullsLast().op('uuid_ops')
+    ),
+    unique('uniq_placement_principal_server').on(table.principalId, table.serverId),
+    uniqueIndex('uniq_placement_server_uid')
+      .on(table.serverId, table.uid)
+      .where(sql`${table.uid} IS NOT NULL`),
+    foreignKey({
+      columns: [table.principalId],
+      foreignColumns: [principal.id],
+      name: 'placement_principal_id_principal_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'placement_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    check('placement_state_check', sql`state IN ('pending', 'present', 'retiring', 'absent')`),
+    check('placement_source_check', sql`source IN ('compose', 'manual', 'storage')`),
+  ]
+)
+
+/**
  * Join edge: the Linux/system principal that runs as / owns a service (the
  * site tree). Deleting a principal removes its edges (cascade); a service
  * still referenced by principals cannot be deleted (restrict), mirroring

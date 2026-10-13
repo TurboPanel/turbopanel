@@ -42,6 +42,7 @@ import {
 } from '../../features/projects/project-options.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { SERVER_PRINCIPAL_PROVIDER } from '../../features/principals/store.ts'
+import { markPlacementsRetiring } from '../../features/principals/placement-records.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import { retireHostingIngressIfIdle } from '../../features/system/reconcile.ts'
 import { composeProjectName } from './deploy-routes-helpers.ts'
@@ -227,6 +228,27 @@ export async function resolvePrincipalRetirement(
   return retire
 }
 
+/**
+ * Bookkeeping only: the stop below is what retires the account, and it must go
+ * out whether or not the placement row could be marked.
+ */
+async function markPlacementsRetiringBestEffort(
+  db: Db,
+  serverId: string,
+  usernames: readonly string[]
+): Promise<void> {
+  if (usernames.length === 0) return
+  try {
+    await markPlacementsRetiring(db, serverId, usernames)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    compatLogWarn(
+      'environments',
+      `placement retiring mark skipped on server ${serverId}: ${message}`
+    )
+  }
+}
+
 async function enqueueTeardownStop(
   db: Db,
   commandQueue: CommandQueue,
@@ -239,6 +261,7 @@ async function enqueueTeardownStop(
 ): Promise<void> {
   const { plan, serverId, retirePrincipals } = params
   const fabricNetworks = plan.fabricNetworksByServer.get(serverId) ?? []
+  await markPlacementsRetiringBestEffort(db, serverId, retirePrincipals)
   const record = await createCommandRecord(db, {
     serverId,
     actorType: 'user',
