@@ -88,6 +88,7 @@ import {
 } from '../../features/compose/docker-external-networks.ts'
 import { principalHomeDir, principalVolumePath, resolveDockerVolumeName } from '../../lib/naming.ts'
 import { accessGroupsFor } from '../../features/principals/principal-access.ts'
+import { resolvePrincipalIds } from '../../features/principals/principal-ids.ts'
 import { SHA512_CRYPT_HASH_RE } from '../../lib/sha512-crypt.ts'
 import {
   CRON_JOB_NAME_RE,
@@ -1347,7 +1348,14 @@ async function sealStorageMaterialForDaemon(
 
 export async function loadPrincipalMaterial(
   db: Db,
-  principalIds: string[]
+  principalIds: string[],
+  /**
+   * The server the material is for. With it, an account that has no uid/gid
+   * override gets the installation-wide id the principal already has on
+   * another server, or a new one (see `features/principals/principal-ids.ts`).
+   * `allocate: false` (a preview) never takes a new number.
+   */
+  target?: { serverId: string; allocate: boolean }
 ): Promise<EnvironmentDeployPrincipalMaterial[]> {
   if (principalIds.length === 0) return []
 
@@ -1367,6 +1375,17 @@ export async function loadPrincipalMaterial(
   // Always present for every id asked about, so `[]` genuinely means "this
   // account holds no keys" rather than "we did not look".
   const sshKeys = await loadSshKeysByPrincipalIds(db, uniqueIds)
+
+  const centralIds = target
+    ? await resolvePrincipalIds(
+        db,
+        target.serverId,
+        rows
+          .filter((row) => !resolvePrincipalIdOverride(parsePrincipalOptions(row.options)))
+          .map((row) => ({ principalId: row.id, home: principalHomeDir(row.username) })),
+        { allocate: target.allocate }
+      )
+    : new Map<string, { uid: number; gid: number }>()
 
   const material: EnvironmentDeployPrincipalMaterial[] = []
   for (const row of rows) {
@@ -1396,6 +1415,7 @@ export async function loadPrincipalMaterial(
       sshKeys: keys,
       ...(passwordHash === undefined ? {} : { passwordHash }),
       ...(override ? { uid: override.uid, gid: override.gid } : {}),
+      ...(override ? {} : (centralIds.get(row.id) ?? {})),
     })
   }
   return material
@@ -3513,10 +3533,11 @@ export async function prepareDeployCompose(
   const storagePrincipalIds = storageMaterial
     .map((entry) => entry.principalId)
     .filter((id): id is string => typeof id === 'string')
-  const principalMaterial = await loadPrincipalMaterial(db, [
-    ...stewardPrincipalIds,
-    ...storagePrincipalIds,
-  ])
+  const principalMaterial = await loadPrincipalMaterial(
+    db,
+    [...stewardPrincipalIds, ...storagePrincipalIds],
+    { serverId: params.serverId, allocate: mode !== 'preview' }
+  )
 
   const split = splitHostNativeFromDocument(withServiceOptions.document)
   // Drop host-native hooks — neither sites nor native apps are

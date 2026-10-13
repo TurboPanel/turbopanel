@@ -25,6 +25,7 @@ import {
   index,
   integer,
   jsonb,
+  pgSequence,
   pgTable,
   smallint,
   text,
@@ -3519,6 +3520,24 @@ export const sshKey = pgTable(
     check('ssh_name_check', sql`char_length(${table.name}) >= 1`),
   ]
 )
+
+/**
+ * Installation-wide source of numeric ids for new site owner Linux users.
+ * One `nextval` gives a principal its uid and gid; the same number is then
+ * sent to every server the principal is placed on. Starts well above the
+ * floor of the band (15001) because hosts that predate it picked their own
+ * ids from the bottom of the band, one at a time; the daemon still refuses an
+ * id that is taken. Gaps are fine. It does not cycle: at 60000 it errors
+ * rather than hand out an id outside the band.
+ */
+export const principalIdSeq = pgSequence('principal_id_seq', {
+  startWith: 30001,
+  minValue: 15001,
+  maxValue: 60000,
+  increment: 1,
+  cache: 1,
+  cycle: false,
+})
 
 /**
  * One principal on one server: where a `system` principal exists (or is about

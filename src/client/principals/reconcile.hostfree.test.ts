@@ -123,7 +123,10 @@ function reconcileDb(options: {
             // Placement server lookup selects only `serverId`; material lookups never do.
             fields && Object.keys(fields).join() === 'serverId'
               ? (options.placedServerIds ?? []).map((serverId) => ({ serverId }))
-              : nextPlainSelect()
+              : fields && 'uid' in fields
+                ? // `resolvePrincipalIds` reading placement ids: none recorded.
+                  []
+                : nextPlainSelect()
           ),
       }),
     }),
