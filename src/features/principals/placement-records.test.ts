@@ -333,6 +333,15 @@ test('ensureProjectPlacements covers pinned and deployed servers, promotes pendi
           appliedUsername: `pl_db_${tag}`,
         })
         .returning({ id: principal.id })
+      // A stop already queued for the manual principal on server B: not ours to undo.
+      const [manualRow] = await db
+        .select({ appliedUsername: principal.appliedUsername })
+        .from(principal)
+        .where(eq(principal.id, manualPrincipalId))
+      await recordPendingPlacements(db, serverB, [
+        { principalId: manualPrincipalId, home: '/srv/users/m', source: 'manual' },
+      ])
+      await markPlacementsRetiring(db, serverB, [manualRow!.appliedUsername])
       try {
         await ensureProjectPlacements(db, projectId)
         await ensureProjectPlacements(db, projectId)
@@ -345,7 +354,12 @@ test('ensureProjectPlacements covers pinned and deployed servers, promotes pendi
           `${manualPrincipalId}:present:manual`,
         ].sort((a, b) => a.localeCompare(b))
         assertEquals(await view(serverA), expected)
-        assertEquals(await view(serverB), expected)
+        assertEquals(
+          await view(serverB),
+          [`${composePrincipalId}:present:compose`, `${manualPrincipalId}:retiring:manual`].sort(
+            (a, b) => a.localeCompare(b)
+          )
+        )
         const strays = await db
           .select({ id: principalPlacement.id })
           .from(principalPlacement)

@@ -3,11 +3,7 @@ import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import {
-  listServerPlacements,
-  markPlacementsPresent,
-  recordPendingPlacements,
-} from '../principals/placement-records.ts'
+import { listServerPlacements, recordPendingPlacements } from '../principals/placement-records.ts'
 import {
   container,
   environment,
@@ -440,10 +436,12 @@ test('deleteProjectCascade removes tenancy edges before services', async () => {
     .values({ organizationId, name: 'Tenancy Cascade Server' })
     .returning({ id: server.id })
   const serverId = srv!.id
+  // The environment is pinned here and a deploy left the placement
+  // `pending` (its result was never recorded): the cascade must promote it.
+  await db.update(environment).set({ serverId }).where(eq(environment.id, environmentId))
   await recordPendingPlacements(db, serverId, [
     { principalId, home: '/srv/users/app', source: 'manual' },
   ])
-  await markPlacementsPresent(db, serverId, [principalId])
 
   try {
     const result = await deleteProjectCascade(db, projectId)
