@@ -5,8 +5,8 @@
  * which is the default answer for each principal: keep the identity, it is
  * simply no longer on this server. The owner may instead ask for a principal
  * to be deleted outright, and that is refused while anything else still uses
- * it — a tenancy, a binding, a storage entry, a secret, or a placement on
- * another server. `GET /servers/:id/principal-removal-plan` lists the
+ * it — a tenancy, a binding, a storage entry, a secret, a database login, or
+ * a placement on another server. `GET /servers/:id/principal-removal-plan` lists the
  * placements with that verdict; `DELETE /servers/:id` accepts the choices.
  */
 import { and, eq } from 'drizzle-orm'

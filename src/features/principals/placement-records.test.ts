@@ -16,6 +16,7 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import {
+  ensureProjectPlacements,
   listServerPlacements,
   loadPrincipalUsage,
   markPlacementsAbsent,
@@ -274,4 +275,35 @@ test("loadPrincipalUsage counts the principal's database logins", async () => {
       await db.delete(managed).where(eq(managed.id, cluster!.id))
     }
   })
+})
+
+test("ensureProjectPlacements records every system principal on the project's servers, once", async () => {
+  await withFixtures(
+    async ({ db, projectId, serverIds, composePrincipalId, manualPrincipalId }) => {
+      const [serverA] = serverIds
+      // One row already present stays as it is.
+      await recordPendingPlacements(db, serverA, [
+        { principalId: composePrincipalId, home: '/srv/users/kept', source: 'compose' },
+      ])
+      await ensureProjectPlacements(db, projectId)
+      await ensureProjectPlacements(db, projectId)
+      const rows = await listServerPlacements(db, serverA)
+      assertEquals(
+        rows
+          .map((row) => [
+            row.principalId,
+            row.state,
+            row.source,
+            row.home.startsWith('/srv/users/'),
+          ])
+          .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+        [
+          [composePrincipalId, 'pending', 'compose', true],
+          [manualPrincipalId, 'present', 'manual', true],
+        ].sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+      )
+      // The environment is pinned to server A only, so nothing lands on B.
+      assertEquals((await listServerPlacements(db, serverIds[1])).length, 0)
+    }
+  )
 })

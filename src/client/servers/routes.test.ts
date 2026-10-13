@@ -22,6 +22,7 @@ import {
   managed,
   network,
   organization,
+  login,
   principal,
   principalPlacement,
   project,
@@ -4575,6 +4576,63 @@ test('DELETE /servers/:id answers 400 for a malformed principals list or a princ
         .from(server)
         .where(eq(server.id, serverId))
       assertEquals(remaining.length, 1)
+    })
+  })
+})
+
+test('DELETE /servers/:id refuses an outright delete while the principal has a database login', async () => {
+  await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    await withPlacedPrincipals(db, organizationId, serverId, async ({ freeId }) => {
+      const [envRow] = await db
+        .select({ id: environment.id })
+        .from(environment)
+        .innerJoin(project, eq(environment.projectId, project.id))
+        .where(eq(project.organizationId, organizationId))
+        .limit(1)
+      const [cluster] = await db
+        .insert(managed)
+        .values({
+          environmentId: envRow!.id,
+          name: 'Login Use DB',
+          engine: 'postgres',
+          status: 'ready',
+        })
+        .returning({ id: managed.id })
+      try {
+        await db.insert(login).values({
+          managedId: cluster!.id,
+          principalId: freeId,
+          role: 'user',
+          appliedUsername: 'pl_free',
+        })
+        const cookie = await sessionCookie(db, secrets, userId)
+        const plan = await app.request(`/servers/${serverId}/principal-removal-plan`, {
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+        })
+        const planBody = (await plan.json()) as {
+          principals: Array<{
+            principalId: string
+            canDeleteOutright: boolean
+            usedBy: { logins: number }
+          }>
+        }
+        const entry = planBody.principals.find((row) => row.principalId === freeId)
+        assertEquals([entry?.canDeleteOutright, entry?.usedBy.logins], [false, 1])
+
+        const res = await app.request(`/servers/${serverId}`, {
+          method: 'DELETE',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ principals: [{ principalId: freeId, action: 'delete' }] }),
+        })
+        assertEquals(res.status, 409)
+        assertEquals(((await res.json()) as { code: string }).code, PRINCIPAL_DELETE_REFUSED_CODE)
+      } finally {
+        await db.delete(managed).where(eq(managed.id, cluster!.id))
+      }
     })
   })
 })

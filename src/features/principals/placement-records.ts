@@ -137,6 +137,38 @@ export async function recordPendingPlacements(
     })
 }
 
+/**
+ * Record a `present` placement for every system principal of `projectId` on
+ * every server the project reaches (pinned or deployed), where none exists.
+ * The 0031 backfill, scoped to one project. Project delete runs it before the
+ * project goes: afterwards the placements are the only record of where the
+ * accounts live, and a deploy whose `pending` write was skipped (or that the
+ * previous release queued) would otherwise leave an account unrecorded and
+ * its key files dropped by the next reconcile.
+ */
+export async function ensureProjectPlacements(db: Db, projectId: string): Promise<void> {
+  await db.execute(sql`
+    INSERT INTO "placement" ("principal_id", "server_id", "state", "home", "source")
+    SELECT DISTINCT
+      p."id",
+      reach."server_id",
+      'present',
+      '/srv/users/' || p."applied_username",
+      CASE WHEN COALESCE(p."metadata" ->> 'composeAlias', '') <> '' THEN 'compose' ELSE 'manual' END
+    FROM "principal" p
+    JOIN (
+      SELECT e."project_id", e."server_id" FROM "environment" e
+      WHERE e."server_id" IS NOT NULL AND e."project_id" = ${projectId}
+      UNION
+      SELECT e."project_id", d."server_id" FROM "deployment" d
+      JOIN "environment" e ON e."id" = d."environment_id"
+      WHERE e."project_id" = ${projectId}
+    ) reach ON reach."project_id" = p."project_id"
+    WHERE p."kind" = 'system' AND p."provider" = ${SERVER_PRINCIPAL_PROVIDER} AND p."project_id" = ${projectId}
+    ON CONFLICT DO NOTHING
+  `)
+}
+
 /** The deploy that carried these accounts to `serverId` succeeded. */
 export async function markPlacementsPresent(
   db: Db,
