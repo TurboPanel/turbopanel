@@ -394,6 +394,7 @@ export function getAdminOpenApiSpec(
                 'tls',
                 'certificates',
                 'principals',
+                'logins',
                 'storage',
                 'secrets',
                 'forge',

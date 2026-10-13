@@ -3571,6 +3571,93 @@ export const tenancy = pgTable(
   ]
 )
 /**
+ * A database login: one engine role on one managed cluster. The second form
+ * a principal can take (the first is a system user on a server).
+ *
+ * `principal_id` names the identity the login belongs to and is NULL only for
+ * the cluster's own `root` and `replication` logins, which are not in the
+ * organization's name pool. A `user` login copies its `applied_username` from
+ * the principal, so the same name reaches every cluster the principal has a
+ * login on. Added 2026-10-13 (expand step): the legacy `principal` rows with
+ * `kind = 'database'` stay and are written in step with these rows until the
+ * contract migration retires them.
+ */
+export const login = pgTable(
+  'login',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    /**
+     * `engine`, `databases`, `privileges`, optional `connectionRole`
+     * (`read-only`), `managedRoot` / `managedReplication` on the cluster's own
+     * logins, and `legacyPrincipalId` for a root or replication login whose
+     * old `principal` row is still kept in step.
+     */
+    metadata: jsonb(),
+    /** `nameScheme` the applied name was derived with. */
+    options: jsonb(),
+    /** Cluster the role exists on; cascade-deletes with it. */
+    managedId: uuid('managed_id').notNull(),
+    /** Identity this login belongs to; NULL for root and replication logins. */
+    principalId: uuid('principal_id'),
+    /** `root` | `replication` | `user` */
+    role: text().notNull(),
+    /** Engine role name actually created on the cluster. */
+    appliedUsername: varchar('applied_username', { length: 255 }).notNull(),
+    /** Write-only credential, a `tpsecret` envelope; never returned on GET. */
+    password: text(),
+  },
+  (table) => [
+    index('idx_login_managed_id').using('btree', table.managedId.asc().nullsLast().op('uuid_ops')),
+    index('idx_login_principal_id').using(
+      'btree',
+      table.principalId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.managedId],
+      foreignColumns: [managed.id],
+      name: 'login_managed_id_managed_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.principalId],
+      foreignColumns: [principal.id],
+      name: 'login_principal_id_principal_id_fk',
+    }).onDelete('cascade'),
+    // One login per principal per cluster; a second login on the same cluster
+    // is a second principal.
+    uniqueIndex('uniq_login_managed_principal')
+      .on(table.managedId, table.principalId)
+      .where(sql`${table.principalId} IS NOT NULL`),
+    // Engine role names are one namespace per cluster, case-insensitively.
+    uniqueIndex('uniq_login_managed_applied_username').on(
+      table.managedId,
+      sql`lower(btrim((${table.appliedUsername})::text))`
+    ),
+    check('login_role_check', sql`role IN ('root', 'replication', 'user')`),
+    check(
+      'login_applied_username_format_check',
+      sql`(char_length((applied_username)::text) >= 1) AND (char_length((applied_username)::text) <= 255) AND ((applied_username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)`
+    ),
+  ]
+)
+/**
  * Join edge: managed-database principal ↔ consuming compose service.
  * Materializes system-owned `variable` rows (marked via `variable.binding_id`)
  * so DB credentials ride the existing deploy injection rail.
@@ -3603,6 +3690,12 @@ export const binding = pgTable(
     metadata: jsonb(),
     options: jsonb(),
     principalId: uuid('principal_id').notNull(),
+    /**
+     * The login whose credentials are injected (expand step of the login
+     * split; nullable until the contract migration). Filled beside
+     * `principalId` on every insert; backfilled from it.
+     */
+    loginId: uuid('login_id'),
     serviceId: uuid('service_id').notNull(),
     databaseName: varchar('database_name', { length: 255 }).notNull(),
     keyPrefix: varchar('key_prefix', { length: 64 }).default('DATABASE').notNull(),
@@ -3618,10 +3711,16 @@ export const binding = pgTable(
       'btree',
       table.serviceId.asc().nullsLast().op('uuid_ops')
     ),
+    index('idx_binding_login_id').using('btree', table.loginId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
       columns: [table.principalId],
       foreignColumns: [principal.id],
       name: 'binding_principal_id_principal_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.loginId],
+      foreignColumns: [login.id],
+      name: 'binding_login_id_login_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.serviceId],

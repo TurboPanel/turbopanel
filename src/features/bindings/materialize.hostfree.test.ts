@@ -28,8 +28,7 @@ import {
 const test = Deno.test.bind(Deno)
 
 async function dataSecrets() {
-  const config = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    'deno')
+  const config = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
   return await deriveEncryptionSecretsConfig(config, 'data-encryption')
 }
 
@@ -42,11 +41,15 @@ async function dataSecrets() {
  * "innerJoin is not a function" in ten unrelated tests.
  */
 function materializeJoinDb(limitRows: unknown[]): Db {
+  // Answers both the login pre-check (from.leftJoin.where.limit) and the
+  // credential join (from.innerJoin….where.limit) with the same rows.
   const chain: {
     innerJoin: () => typeof chain
+    leftJoin: () => typeof chain
     where: () => { limit: () => Promise<unknown[]> }
   } = {
     innerJoin: () => chain,
+    leftJoin: () => chain,
     where: () => ({ limit: () => Promise.resolve(limitRows) }),
   }
   return {
@@ -57,28 +60,24 @@ function materializeJoinDb(limitRows: unknown[]): Db {
 }
 
 /**
- * Queued select responses after the initial materialize join. Supports
- * `.limit()` / `.orderBy()` / thenable `.where()` chains used by CA + endpoint.
+ * Queued select responses after the login pre-check and the materialize
+ * join (the first two selects). Supports `.limit()` / `.orderBy()` /
+ * thenable `.where()` chains used by CA + endpoint.
  */
-function materializeFlowDb(
-  joinRows: unknown[],
-  followUps: unknown[][],
-): Db {
+function materializeFlowDb(joinRows: unknown[], followUps: unknown[][]): Db {
   let n = 0
   return {
     select: () => {
       n += 1
-      if (n === 1) {
+      if (n <= 2) {
         return materializeJoinDb(joinRows).select()
       }
-      const rows = followUps[n - 2] ?? []
+      const rows = followUps[n - 3] ?? []
       const thenable = {
         limit: () => Promise.resolve(rows),
         orderBy: () => Promise.resolve(rows),
-        then: (
-          onFulfilled: (v: unknown) => unknown,
-          onRejected?: (e: unknown) => unknown,
-        ) => Promise.resolve(rows).then(onFulfilled, onRejected),
+        then: (onFulfilled: (v: unknown) => unknown, onRejected?: (e: unknown) => unknown) =>
+          Promise.resolve(rows).then(onFulfilled, onRejected),
         catch: (onRejected: (e: unknown) => unknown) => Promise.resolve(rows).catch(onRejected),
         finally: (onFinally: () => void) => Promise.resolve(rows).finally(onFinally),
       }
@@ -121,7 +120,7 @@ function baseBindingRow(overrides: Record<string, unknown> = {}) {
     databaseName: 'app',
     keyPrefix: 'DATABASE',
     emitEngineDefaults: false,
-    principalKind: 'database',
+    loginId: 'l1',
     principalUsername: 'u',
     principalPassword: 'tpsecret.placeholder',
     principalManagedId: 'm1',
@@ -138,10 +137,9 @@ function baseBindingRow(overrides: Record<string, unknown> = {}) {
 }
 
 test('materializeBindingsForServices short-circuits empty service list', async () => {
-  assertEquals(
-    await materializeBindingsForServices({} as Db, await dataSecrets(), []),
-    { ok: true },
-  )
+  assertEquals(await materializeBindingsForServices({} as Db, await dataSecrets(), []), {
+    ok: true,
+  })
 })
 
 test('listBindingEmittedKeys returns null for unsupported engines', () => {
@@ -151,47 +149,40 @@ test('listBindingEmittedKeys returns null for unsupported engines', () => {
       emitEngineDefaults: true,
       engineCode: 'not-a-real-engine',
     }),
-    null,
+    null
   )
 })
 
 test('materializeBinding returns binding_not_found when join misses', async () => {
-  assertEquals(
-    await materializeBinding(
-      materializeJoinDb([]),
-      await dataSecrets(),
-      'missing',
-    ),
-    { kind: 'binding_not_found' },
-  )
+  assertEquals(await materializeBinding(materializeJoinDb([]), await dataSecrets(), 'missing'), {
+    kind: 'binding_not_found',
+  })
 })
 
-test('materializeBinding returns binding_principal_invalid for non-database principals', async () => {
+test('materializeBinding returns binding_principal_invalid for a login without a role name', async () => {
   assertEquals(
     await materializeBinding(
       materializeJoinDb([
         baseBindingRow({
-          principalKind: 'system',
+          principalUsername: '',
           principalManagedId: 'm1',
         }),
       ]),
       await dataSecrets(),
-      'b1',
+      'b1'
     ),
-    { kind: 'binding_principal_invalid' },
+    { kind: 'binding_principal_invalid' }
   )
 })
 
 test('materializeBinding returns binding_engine_unsupported for unknown engines', async () => {
   assertEquals(
     await materializeBinding(
-      materializeJoinDb([
-        baseBindingRow({ managedEngine: 'not-a-real-engine' }),
-      ]),
+      materializeJoinDb([baseBindingRow({ managedEngine: 'not-a-real-engine' })]),
       await dataSecrets(),
-      'b1',
+      'b1'
     ),
-    { kind: 'binding_engine_unsupported' },
+    { kind: 'binding_engine_unsupported' }
   )
 })
 
@@ -200,9 +191,9 @@ test('materializeBinding returns binding_engine_unsupported when engine blank', 
     await materializeBinding(
       materializeJoinDb([baseBindingRow({ managedEngine: null })]),
       await dataSecrets(),
-      'b1',
+      'b1'
     ),
-    { kind: 'binding_engine_unsupported' },
+    { kind: 'binding_engine_unsupported' }
   )
 })
 
@@ -211,9 +202,9 @@ test('materializeBinding returns binding_cluster_invalid for bad options', async
     await materializeBinding(
       materializeJoinDb([baseBindingRow({ managedOptions: 'nope' })]),
       await dataSecrets(),
-      'b1',
+      'b1'
     ),
-    { kind: 'binding_cluster_invalid' },
+    { kind: 'binding_cluster_invalid' }
   )
 })
 
@@ -222,22 +213,20 @@ test('materializeBinding returns binding_password_unavailable when password blan
     await materializeBinding(
       materializeJoinDb([baseBindingRow({ principalPassword: '' })]),
       await dataSecrets(),
-      'b1',
+      'b1'
     ),
-    { kind: 'binding_password_unavailable' },
+    { kind: 'binding_password_unavailable' }
   )
 })
 
 test('materializeBinding returns binding_password_unavailable when decrypt fails', async () => {
   assertEquals(
     await materializeBinding(
-      materializeJoinDb([
-        baseBindingRow({ principalPassword: 'not-a-valid-enc-envelope' }),
-      ]),
+      materializeJoinDb([baseBindingRow({ principalPassword: 'not-a-valid-enc-envelope' })]),
       await dataSecrets(),
-      'b1',
+      'b1'
     ),
-    { kind: 'binding_password_unavailable' },
+    { kind: 'binding_password_unavailable' }
   )
 })
 
@@ -249,18 +238,20 @@ test('materializeBinding returns binding_ca_unavailable when CA is unsealed', as
       materializeFlowDb(
         [baseBindingRow({ principalPassword: password })],
         [
-          [{
-            certificatePem: '-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----',
-            privateKeyPem: 'plaintext-not-sealed',
-            caState: 'active',
-            caGeneration: 1,
-          }],
-        ],
+          [
+            {
+              certificatePem: '-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----',
+              privateKeyPem: 'plaintext-not-sealed',
+              caState: 'active',
+              caGeneration: 1,
+            },
+          ],
+        ]
       ),
       secrets,
-      'b1',
+      'b1'
     ),
-    { kind: 'binding_ca_unavailable' },
+    { kind: 'binding_ca_unavailable' }
   )
 })
 
@@ -273,40 +264,34 @@ test('materializeBinding returns binding_endpoint_unavailable when cluster has n
       materializeFlowDb(
         [baseBindingRow({ principalPassword: password })],
         [
-          [{
-            certificatePem: '-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----',
-            privateKeyPem: sealedKey,
-            caState: 'active',
-            caGeneration: 1,
-          }],
+          [
+            {
+              certificatePem: '-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----',
+              privateKeyPem: sealedKey,
+              caState: 'active',
+              caGeneration: 1,
+            },
+          ],
           [], // loadClusterMembers → empty
-        ],
+        ]
       ),
       secrets,
-      'b1',
+      'b1'
     ),
-    { kind: 'binding_endpoint_unavailable' },
+    { kind: 'binding_endpoint_unavailable' }
   )
 })
 
 test('materializeBindingsForServices / Principal propagate first error', async () => {
   const secrets = await dataSecrets()
   assertEquals(
-    await materializeBindingsForServices(
-      selectThenInnerThenMaterialize(),
-      secrets,
-      ['svc'],
-    ),
-    { kind: 'binding_not_found' },
+    await materializeBindingsForServices(selectThenInnerThenMaterialize(), secrets, ['svc']),
+    { kind: 'binding_not_found' }
   )
 
   assertEquals(
-    await materializeBindingsForPrincipal(
-      selectThenInnerThenMaterialize(),
-      secrets,
-      'principal',
-    ),
-    { kind: 'binding_not_found' },
+    await materializeBindingsForPrincipal(selectThenInnerThenMaterialize(), secrets, 'principal'),
+    { kind: 'binding_not_found' }
   )
 })
 
@@ -318,10 +303,7 @@ test('materializeBindingsForPrincipal returns ok when principal has no bindings'
       }),
     }),
   } as unknown as Db
-  assertEquals(
-    await materializeBindingsForPrincipal(db, await dataSecrets(), 'p1'),
-    { ok: true },
-  )
+  assertEquals(await materializeBindingsForPrincipal(db, await dataSecrets(), 'p1'), { ok: true })
 })
 
 test('upsertBindingOwnedVariables inserts updates and deletes stale keys', async () => {
@@ -379,10 +361,7 @@ test('upsertBindingOwnedVariables inserts updates and deletes stale keys', async
 
   assertEquals(updates.length, 1)
   assertEquals(typeof updates[0]?.value, 'string')
-  assertEquals(
-    String(updates[0]?.value).startsWith('tpsecret.'),
-    true,
-  )
+  assertEquals(String(updates[0]?.value).startsWith('tpsecret.'), true)
   assertEquals(inserts.length, 1)
   assertEquals(inserts[0]?.key, 'DATABASE_HOST')
   assertEquals(inserts[0]?.value, 'db')

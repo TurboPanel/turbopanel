@@ -182,6 +182,12 @@
       "tag": "0029_principal_name_pool_unique",
       "when": 1791901242009,
       "sha256": "03f32ddb09338e03ea948fb3efa3d45e92e3880e9dc5d92cda7e39e196995b8c"
+    },
+    {
+      "idx": 30,
+      "tag": "0030_login_table",
+      "when": 1791904250847,
+      "sha256": "0c9fe32cd6ffe220c78b39e10d791743b2100e11c00e7e594d154fd843840057"
     }
   ]
 }

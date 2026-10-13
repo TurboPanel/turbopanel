@@ -29,6 +29,7 @@ import {
   command,
   container,
   environment,
+  login,
   managed,
   organization,
   principal,
@@ -292,6 +293,43 @@ function principalRow(overrides: Record<string, unknown> = {}) {
   }
 }
 
+const LOGIN_ID = '0192d6a0-0000-7000-8000-00000000c0c1'
+
+function loginRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: LOGIN_ID,
+    principalId: PRINCIPAL_ID,
+    managedId: MANAGED_ID,
+    role: 'user',
+    username: 'appuser',
+    appliedUsername: 'appuser',
+    metadata: { engine: 'postgres', databases: ['postgres'] },
+    options: {},
+    password: 'sealed',
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides,
+  }
+}
+
+/** The cluster's root login, kept in step with the legacy root principal row. */
+function rootLoginRow(overrides: Record<string, unknown> = {}) {
+  return loginRow({
+    id: '0192d6a0-0000-7000-8000-00000000c0c2',
+    principalId: null,
+    role: 'root',
+    username: 'postgres',
+    appliedUsername: 'postgres',
+    metadata: {
+      managedRoot: true,
+      engine: 'postgres',
+      databases: ['postgres'],
+      legacyPrincipalId: PRINCIPAL_ID,
+    },
+    ...overrides,
+  })
+}
+
 function queryChain(rows: unknown[]) {
   const promise = Promise.resolve(rows)
   const next: Record<string, unknown> = {
@@ -342,6 +380,8 @@ type FakeDbConfig = {
   orgRows?: unknown[]
   serverRows?: unknown[]
   principalRows?: unknown[]
+  /** `login` rows, the shape `selectLogins` in features/managed/logins.ts returns. */
+  loginRows?: unknown[]
   memberRows?: unknown[]
   bindingRows?: unknown[]
   recoveryRows?: unknown[]
@@ -393,6 +433,9 @@ function fakeDb(config: FakeDbConfig = {}): Db {
         }
         if (table === principal) {
           return queryChain(config.principalRows ?? [])
+        }
+        if (table === login) {
+          return queryChain(config.loginRows ?? [])
         }
         if (table === replica) {
           return queryChain(config.memberRows ?? [])
@@ -1025,29 +1068,33 @@ test('GET databases / backups / members return stored values', async () => {
   assertEquals(memberList[0]?.role, 'replica')
 })
 
-test('GET users filters root and replication principals', async () => {
+test('GET users filters root and replication logins and names the principal and login', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      principalRows: [
-        principalRow({ metadata: { managedRoot: true } }),
-        principalRow({
+      loginRows: [
+        loginRow({ role: 'root', principalId: null, metadata: { managedRoot: true } }),
+        loginRow({
           id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          principalId: null,
+          role: 'replication',
           username: 'repl',
           metadata: { managedReplication: true },
         }),
-        principalRow({
-          id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-          username: 'appuser',
-        }),
+        loginRow({ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', username: 'appuser' }),
       ],
     }),
   })
   const body = await jsonOf(await app.request(envPath('/users'), { headers: authHeaders(cookie) }))
-  const users = body.users as Array<{ username: string }>
+  const users = body.users as Array<{
+    id: string
+    principalId: string
+    loginId: string
+    username: string
+  }>
   assertEquals(
-    users.map((entry) => entry.username),
-    ['appuser']
+    users.map((entry) => [entry.username, entry.id, entry.principalId, entry.loginId]),
+    [['appuser', PRINCIPAL_ID, PRINCIPAL_ID, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb']]
   )
 })
 
@@ -1658,11 +1705,11 @@ test('POST users returns 400 for invalid stored options', async () => {
   )
 })
 
-test('POST user password returns 404 when the principal is missing', async () => {
+test('POST user password returns 404 when the login is missing', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      principalRows: [],
+      loginRows: [],
     }),
   })
   await expectJson(
@@ -1675,11 +1722,17 @@ test('POST user password returns 404 when the principal is missing', async () =>
   )
 })
 
-test('POST user password refuses the root principal', async () => {
+test('POST user password refuses the root login', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      principalRows: [principalRow({ metadata: { managedRoot: true } })],
+      loginRows: [
+        loginRow({
+          role: 'root',
+          principalId: null,
+          metadata: { legacyPrincipalId: PRINCIPAL_ID },
+        }),
+      ],
     }),
   })
   await expectJson(
@@ -1692,11 +1745,17 @@ test('POST user password refuses the root principal', async () => {
   )
 })
 
-test('POST user password refuses a replication principal', async () => {
+test('POST user password refuses the replication login', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      principalRows: [principalRow({ metadata: { managedReplication: true } })],
+      loginRows: [
+        loginRow({
+          role: 'replication',
+          principalId: null,
+          metadata: { legacyPrincipalId: PRINCIPAL_ID },
+        }),
+      ],
     }),
   })
   await expectJson(
@@ -1709,11 +1768,17 @@ test('POST user password refuses a replication principal', async () => {
   )
 })
 
-test('DELETE user refuses the root principal', async () => {
+test('DELETE user refuses the root login', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      principalRows: [principalRow({ metadata: { managedRoot: true } })],
+      loginRows: [
+        loginRow({
+          role: 'root',
+          principalId: null,
+          metadata: { managedRoot: true, legacyPrincipalId: PRINCIPAL_ID },
+        }),
+      ],
     }),
   })
   await expectJson(
@@ -1730,7 +1795,7 @@ test('DELETE user returns 409 while bindings remain', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      principalRows: [principalRow()],
+      loginRows: [loginRow()],
       bindingRows: [
         {
           id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
@@ -1823,20 +1888,27 @@ test('DELETE database returns 409 listing the SQL users that still have access',
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      principalRows: [
-        principalRow({ metadata: { managedRoot: true, databases: ['appdb'] } }),
-        principalRow({
+      loginRows: [
+        loginRow({
+          role: 'root',
+          principalId: null,
+          metadata: { managedRoot: true, databases: ['appdb'] },
+        }),
+        loginRow({
           id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          principalId: null,
+          role: 'replication',
           username: 'repl',
           metadata: { managedReplication: true, databases: ['appdb'] },
         }),
-        principalRow({
+        loginRow({
           id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
           username: 'appuser',
           metadata: { engine: 'postgres', databases: ['defaultdb', 'appdb'] },
         }),
-        principalRow({
+        loginRow({
           id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccd',
+          principalId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
           username: 'other',
           metadata: { engine: 'postgres', databases: ['defaultdb'] },
         }),
@@ -2401,7 +2473,7 @@ test('POST root-password / users return 422 when the daemon key is missing', asy
     db: fakeDb({
       managedRows: [managedRow()],
       serverRows: [presenceServer(true)],
-      principalRows: [principalRow()],
+      loginRows: [loginRow(), rootLoginRow()],
     }),
     registry: stubRegistry(),
     commandQueue: recordingQueue(),
@@ -2593,7 +2665,7 @@ test('DELETE user / PATCH member / POST database hit apply-ready after validatio
     db: fakeDb({
       managedRows: [managedRow()],
       serverRows: [presenceServer(true)],
-      principalRows: [principalRow()],
+      loginRows: [loginRow()],
       memberRows: [memberRow()],
     }),
     registry: stubRegistry(),
@@ -2668,6 +2740,7 @@ function applyReadyDb(extra: FakeDbConfig = {}) {
         },
       }),
     ],
+    loginRows: extra.loginRows ?? [rootLoginRow()],
     serviceRows: extra.serviceRows ?? [engineServiceRow()],
     containerRows: extra.containerRows ?? [engineContainerRow()],
     backupRows: extra.backupRows ?? [backupRow()],
@@ -3067,7 +3140,7 @@ test('POST members surfaces a private-path error for an unreachable replica host
 test('POST user-password past apply-ready restores the prior hash on prepare failure', async () => {
   const { app, cookie } = await buildApp({
     db: applyReadyDb({
-      principalRows: [principalRow()],
+      loginRows: [loginRow()],
     }),
     registry: stubRegistry(),
     commandQueue: recordingQueue(),
@@ -3127,7 +3200,7 @@ test('POST root-password past apply-ready maps a later prepare error', async () 
 test('POST users past apply-ready hits namespace and insert short-circuits', async () => {
   const { app, cookie } = await buildApp({
     db: applyReadyDb({
-      principalRows: [principalRow({ username: 'appuser' })],
+      loginRows: [loginRow({ username: 'appuser' })],
     }),
     registry: stubRegistry(),
     commandQueue: recordingQueue(),
@@ -3162,7 +3235,7 @@ test('POST users past apply-ready hits namespace and insert short-circuits', asy
  * (the new login) and which commands were queued.
  */
 function recordingUserCreate(memberRows: unknown[]) {
-  const base = applyReadyDb({ principalRows: [], memberRows })
+  const base = applyReadyDb({ principalRows: [], loginRows: [], memberRows })
   const inserted: Array<Record<string, unknown>> = []
   const db = {
     ...base,
@@ -3269,11 +3342,7 @@ test('GET users reports a stored read-only login as read-only', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      principalRows: [
-        principalRow({
-          metadata: { engine: 'postgres', connectionRole: 'read-only' },
-        }),
-      ],
+      loginRows: [loginRow({ metadata: { engine: 'postgres', connectionRole: 'read-only' } })],
     }),
   })
   const body = await jsonOf(await app.request(envPath('/users'), { headers: authHeaders(cookie) }))
