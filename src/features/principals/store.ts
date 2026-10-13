@@ -638,7 +638,7 @@ export async function createManagedPrincipal(
     metadata:
       role === 'user'
         ? (input.metadata ?? null)
-        : { ...(input.metadata ?? {}), legacyPrincipalId: inserted.id },
+        : { ...input.metadata, legacyPrincipalId: inserted.id },
     nameScheme: input.nameScheme,
   })
 

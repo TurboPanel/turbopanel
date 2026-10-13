@@ -511,7 +511,7 @@ test('a new managed principal gets a login twin, rotation writes both, and remov
 })
 
 test('removing a shared login in either order never revives it and keeps countable references', async () => {
-  await withManagedFixture(async ({ db, dataEncryptionSecrets, organizationId, managedId }) => {
+  await withManagedFixture(async ({ db, dataEncryptionSecrets, managedId }) => {
     // A cluster is one per environment: add a second environment with its own cluster.
     const [first] = await db
       .select({ environmentId: managed.environmentId, serverId: managed.serverId })
