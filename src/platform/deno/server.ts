@@ -14,6 +14,7 @@ import { resolveInstanceRevision } from '../../app/build-info.ts'
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveColocatedServerId } from '../../client/authn/install-state.ts'
 import { createDenoDb, type Db, endDbConnection } from '../../db/connection.ts'
+import { createInMemoryMetricsGate } from '../../daemon/metrics/ingest-gate.ts'
 import { assertSchemaCurrent, SchemaStateError } from '../../db/schema-state.ts'
 import { logError, logInfo, logWarn } from '../../lib/logger.ts'
 import {
@@ -576,6 +577,8 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     emailFrom: emailSettings.from,
     baseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? undefined,
     daemonCellRegistry,
+    // Self-hosted has no Cloudflare: the same gate rules over an in-process map.
+    metricsGate: createInMemoryMetricsGate(),
     queryCache,
     serverMetricsStore,
     executionLogStore,

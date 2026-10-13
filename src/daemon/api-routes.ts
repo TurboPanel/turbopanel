@@ -30,6 +30,7 @@ import {
   getDaemonCellRegistry,
   getDb,
   getExecutionLogStore,
+  getMetricsGate,
   getServerMetricsStore,
 } from '../db/connection.ts'
 import { contentLengthExceeds, readBodyWithByteLimit } from '../lib/http/bounded-body.ts'
@@ -88,6 +89,8 @@ import {
   topologyChurnLimitedRecently,
 } from '../features/servers/server-topology-records.ts'
 import { recordCapabilityPlanGenerationIfChanged } from '../client/servers/capability-plan-records.ts'
+import type { GateDecision, MetricsGate } from './metrics/ingest-gate.ts'
+import type { MetricEvent } from '../contracts/metrics-contract.ts'
 import { enqueueCapabilityPlanUpdate } from '../client/servers/capability-plan-push.ts'
 import { computeSlotMapping } from '../contracts/topology-slot-mapping.ts'
 import {
@@ -638,6 +641,68 @@ export function topologyResyncRecentlyRequested(
   return Number.isFinite(requestedMs) && nowMs - requestedMs < TOPOLOGY_RESYNC_MARK_COOLDOWN_MS
 }
 
+const EVENT_SEVERITY_RANK: Readonly<Record<MetricEvent['severity'], number>> = {
+  critical: 0,
+  warning: 1,
+  info: 2,
+}
+
+/** Events ordered most severe first, then oldest: what survives a budget cut. */
+function mostSevereFirst(events: readonly MetricEvent[]): MetricEvent[] {
+  return [...events].sort(
+    (a, b) =>
+      EVENT_SEVERITY_RANK[a.severity] - EVENT_SEVERITY_RANK[b.severity] ||
+      Date.parse(a.at) - Date.parse(b.at)
+  )
+}
+
+/**
+ * Ask the ingest gate whether this durable sample may be stored, and trim its
+ * events to the hourly budget. Returns the refusal response (429 over the
+ * limits, 503 when the gate itself cannot answer), or `null` when the sample
+ * goes on to be stored — possibly with fewer events than it arrived with.
+ */
+async function applyMetricsIngestGate<E extends Env>(
+  c: Context<E>,
+  metricsGate: MetricsGate,
+  serverId: string,
+  sample: AuthenticatedMetricsSample
+): Promise<Response | null> {
+  let gate: GateDecision
+  try {
+    gate = await metricsGate.admit(serverId, sample.metadata.sampledAt, sample.events.length)
+  } catch (err) {
+    // No exact count, no write: an unmetered path is what the gate stops.
+    rateLimitedMetricsLog(serverId, 'metrics_gate_failed', () => {
+      console.warn(`metrics gate failed for ${serverId}: ${describeError(err)}`)
+    })
+    c.header('Retry-After', '60')
+    return c.json({ ok: false, error: 'metrics_gate_unavailable' }, 503)
+  }
+  if (!gate.stored) {
+    rateLimitedMetricsLog(serverId, `metrics_gate_${gate.reason}`, () => {
+      console.warn(`metrics sample refused for ${serverId}: ${gate.reason}`)
+    })
+    // A duplicate (or replayed) sample can never be accepted later, so it gets
+    // 409, which the daemon does not retry; only an early sample is worth
+    // retrying, so only that one gets 429 with a Retry-After.
+    if (gate.reason === 'duplicate') {
+      return c.json({ ok: false, error: 'duplicate_sample' }, 409)
+    }
+    c.header('Retry-After', String(gate.retryAfterSeconds))
+    return c.json({ ok: false, error: 'rate_limited', reason: gate.reason }, 429)
+  }
+  if (gate.eventsAllowed < sample.events.length) {
+    rateLimitedMetricsLog(serverId, 'metrics_gate_events_dropped', () => {
+      console.warn(
+        `metrics events over the hourly budget for ${serverId}: kept ${gate.eventsAllowed} of ${sample.events.length}`
+      )
+    })
+    sample.events = mostSevereFirst(sample.events).slice(0, gate.eventsAllowed)
+  }
+  return null
+}
+
 type IngestPlanAndTopology = {
   plan: MetricsCapabilityPlan
   slotMapping: SlotMapping | undefined
@@ -954,6 +1019,9 @@ export function registerDaemonApiRoutes<E extends Env>(
       key: daemonMetricsRateLimitKey(serverId),
     })
     if (!success) {
+      // The binding's window is 60 s: telling the daemon when to try again
+      // stops a well-behaved one from hammering the limit.
+      c.header('Retry-After', '60')
       return c.json({ ok: false, error: 'rate_limited' }, 429)
     }
     return null
@@ -1629,6 +1697,16 @@ export function registerDaemonApiRoutes<E extends Env>(
         await cacheLiveSample(metricsChartCache, sample)
         return c.json({ ok: true }, 202)
       }
+      // Exactly one stored sample a minute per server, and a bounded number of
+      // events an hour (`metrics/ingest-gate.ts`): a Durable Object per server
+      // on Workers, an in-process map on Deno. Every deployment binds one, so
+      // its absence only happens in tests that exercise other parts of the route.
+      const metricsGate = getMetricsGate(c)
+      if (metricsGate) {
+        const refused = await applyMetricsIngestGate(c, metricsGate, serverId, sample)
+        if (refused) return refused
+      }
+
       if (await isServerLiveSessionActive(metricsChartCache, serverId)) {
         await cacheLiveSample(metricsChartCache, sample)
       }

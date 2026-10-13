@@ -58,6 +58,7 @@ import {
 } from './daemon/metrics/store-selection-workers.ts'
 import { setServerStatusEventSink } from './daemon/metrics/status-events.ts'
 import type { ServerMetricsStore } from './daemon/metrics/types.ts'
+import { createDurableObjectMetricsGate } from './daemon/metrics/ingest-gate.ts'
 import {
   parseExecutionLogRetentionDays,
   type R2BucketLike,
@@ -96,6 +97,7 @@ import {
 } from './client/authn/two-factor.ts'
 
 export { DaemonCellObject } from './daemon/cell/do.ts'
+export { MetricsGateObject } from './daemon/metrics/ingest-gate-object.ts'
 
 let initPromise: Promise<void> | null = null
 let cachedApp: ReturnType<typeof createApp> | null = null
@@ -437,6 +439,9 @@ export default {
         if (cachedDaemonCellRegistryFactory) {
           const registry = cachedDaemonCellRegistryFactory(env, db)
           c.set('daemonCellRegistry', registry)
+        }
+        if (env.METRICS_GATE) {
+          c.set('metricsGate', createDurableObjectMetricsGate(env.METRICS_GATE))
         }
         if (cachedServerMetricsStore) {
           c.set('serverMetricsStore', cachedServerMetricsStore)
