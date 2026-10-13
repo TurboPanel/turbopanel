@@ -1,14 +1,16 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
 import {
+  deployment,
   environment,
   login,
   managed,
   organization,
   principal,
+  principalPlacement,
   project,
   server,
   service,
@@ -277,33 +279,85 @@ test("loadPrincipalUsage counts the principal's database logins", async () => {
   })
 })
 
-test("ensureProjectPlacements records every system principal on the project's servers, once", async () => {
+test('ensureProjectPlacements covers pinned and deployed servers, promotes pending, and stays in its project', async () => {
   await withFixtures(
-    async ({ db, projectId, serverIds, composePrincipalId, manualPrincipalId }) => {
-      const [serverA] = serverIds
-      // One row already present stays as it is.
+    async ({
+      db,
+      organizationId,
+      projectId,
+      environmentId,
+      serverIds,
+      composePrincipalId,
+      manualPrincipalId,
+    }) => {
+      const [serverA, serverB] = serverIds
+      // Server A is the pin; server B is reached only through a deployment row.
+      await db.insert(deployment).values({ environmentId, serverId: serverB })
+      // A deploy whose result was never recorded left this one pending.
       await recordPendingPlacements(db, serverA, [
         { principalId: composePrincipalId, home: '/srv/users/kept', source: 'compose' },
       ])
-      await ensureProjectPlacements(db, projectId)
-      await ensureProjectPlacements(db, projectId)
-      const rows = await listServerPlacements(db, serverA)
-      assertEquals(
-        rows
-          .map((row) => [
-            row.principalId,
-            row.state,
-            row.source,
-            row.home.startsWith('/srv/users/'),
-          ])
-          .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
-        [
-          [composePrincipalId, 'pending', 'compose', true],
-          [manualPrincipalId, 'present', 'manual', true],
-        ].sort((a, b) => String(a[0]).localeCompare(String(b[0])))
-      )
-      // The environment is pinned to server A only, so nothing lands on B.
-      assertEquals((await listServerPlacements(db, serverIds[1])).length, 0)
+      const [projectRow] = await db
+        .select({ workspaceId: project.workspaceId })
+        .from(project)
+        .where(eq(project.id, projectId))
+      // Another project's principal and a database principal must not be touched.
+      const [otherProject] = await db
+        .insert(project)
+        .values({
+          name: `Other ${crypto.randomUUID().slice(0, 8)}`,
+          workspaceId: projectRow!.workspaceId,
+          organizationId,
+        })
+        .returning({ id: project.id })
+      const tag = crypto.randomUUID().slice(0, 6)
+      const [otherPrincipal] = await db
+        .insert(principal)
+        .values({
+          organizationId,
+          projectId: otherProject!.id,
+          kind: 'system',
+          provider: 'server',
+          username: `pl_other_${tag}`,
+          appliedUsername: `pl_other_${tag}`,
+        })
+        .returning({ id: principal.id })
+      const [dbPrincipal] = await db
+        .insert(principal)
+        .values({
+          organizationId,
+          projectId,
+          kind: 'database',
+          provider: 'postgres',
+          username: `pl_db_${tag}`,
+          appliedUsername: `pl_db_${tag}`,
+        })
+        .returning({ id: principal.id })
+      try {
+        await ensureProjectPlacements(db, projectId)
+        await ensureProjectPlacements(db, projectId)
+        const view = async (serverId: string) =>
+          (await listServerPlacements(db, serverId))
+            .map((row) => `${row.principalId}:${row.state}:${row.source}`)
+            .sort((a, b) => a.localeCompare(b))
+        const expected = [
+          `${composePrincipalId}:present:compose`,
+          `${manualPrincipalId}:present:manual`,
+        ].sort((a, b) => a.localeCompare(b))
+        assertEquals(await view(serverA), expected)
+        assertEquals(await view(serverB), expected)
+        const strays = await db
+          .select({ id: principalPlacement.id })
+          .from(principalPlacement)
+          .where(inArray(principalPlacement.principalId, [otherPrincipal!.id, dbPrincipal!.id]))
+        assertEquals(strays.length, 0)
+      } finally {
+        await db.delete(deployment).where(eq(deployment.environmentId, environmentId))
+        await db
+          .delete(principal)
+          .where(inArray(principal.id, [otherPrincipal!.id, dbPrincipal!.id]))
+        await db.delete(project).where(eq(project.id, otherProject!.id))
+      }
     }
   )
 })

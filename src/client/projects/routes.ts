@@ -27,7 +27,6 @@ import {
   requireStringField,
 } from '../shared.ts'
 import { deleteProjectCascade } from '../../features/projects/project-delete.ts'
-import { ensureProjectPlacements } from '../../features/principals/placement-records.ts'
 import {
   planEnvironmentsTeardown,
   reclaimDeletedEnvironmentHosts,
@@ -933,9 +932,6 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       // The site trees go with the project; the Linux users and their homes stay.
       { keepPrincipals: true }
     )
-    // The principals outlive the project; their placements become the only
-    // record of which servers they are on, so make sure every one is written.
-    await ensureProjectPlacements(db, id)
 
     const result = await deleteProjectCascade(db, id, {
       c,

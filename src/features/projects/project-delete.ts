@@ -1,5 +1,6 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
+import { ensureProjectPlacements } from '../principals/placement-records.ts'
 import {
   binding,
   container,
@@ -270,6 +271,10 @@ export async function deleteProjectCascade(
 
   const bindingTargets = await loadBindingListenerTargets(db, children.serviceIds)
   await db.transaction(async (tx) => {
+    // The principals outlive the project (`project_id` SET NULL); their
+    // placements become the only record of which servers they are on, so
+    // write any that are missing while the environments still say where.
+    await ensureProjectPlacements(tx, projectId)
     await dropEnvironmentRows(tx, {
       projectId,
       environmentIds,

@@ -9,9 +9,10 @@
  * (project → environment.server_id) still decides what the daemon is sent;
  * these rows are bookkeeping beside it until the reach is retired.
  *
- * Every writer here is best-effort from the caller's point of view: a deploy
- * or a delete must never fail because bookkeeping did, so the callers wrap
- * these in a warn-and-continue.
+ * Every writer here is best-effort from the caller's point of view (a deploy
+ * or a stop must never fail because bookkeeping did, so the callers wrap
+ * these in a warn-and-continue), except `ensureProjectPlacements`, which runs
+ * inside the project delete's transaction and fails it closed.
  */
 import { and, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
@@ -139,12 +140,14 @@ export async function recordPendingPlacements(
 
 /**
  * Record a `present` placement for every system principal of `projectId` on
- * every server the project reaches (pinned or deployed), where none exists.
- * The 0031 backfill, scoped to one project. Project delete runs it before the
- * project goes: afterwards the placements are the only record of where the
- * accounts live, and a deploy whose `pending` write was skipped (or that the
- * previous release queued) would otherwise leave an account unrecorded and
- * its key files dropped by the next reconcile.
+ * every server the project reaches (pinned or deployed): the 0031 backfill,
+ * scoped to one project, and a `pending` row left by a deploy whose result
+ * was never recorded moves to `present`. `retiring` / `absent` rows are left
+ * alone. Project delete runs it inside its transaction, after the refusal
+ * checks: afterwards the placements are the only record of where the accounts
+ * live, and an unrecorded account would lose its key files on the next
+ * reconcile. Unlike the other writers here it is not best-effort — it runs in
+ * the delete's transaction, so a failure fails the delete closed.
  */
 export async function ensureProjectPlacements(db: Db, projectId: string): Promise<void> {
   await db.execute(sql`
@@ -165,7 +168,9 @@ export async function ensureProjectPlacements(db: Db, projectId: string): Promis
       WHERE e."project_id" = ${projectId}
     ) reach ON reach."project_id" = p."project_id"
     WHERE p."kind" = 'system' AND p."provider" = ${SERVER_PRINCIPAL_PROVIDER} AND p."project_id" = ${projectId}
-    ON CONFLICT DO NOTHING
+    ON CONFLICT ("principal_id", "server_id") DO UPDATE
+      SET "state" = 'present', "updated_at" = now()
+      WHERE "placement"."state" = 'pending'
   `)
 }
 
