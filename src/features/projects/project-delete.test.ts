@@ -4,6 +4,11 @@ import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
 import {
+  listServerPlacements,
+  markPlacementsPresent,
+  recordPendingPlacements,
+} from '../principals/placement-records.ts'
+import {
   container,
   environment,
   hosting,
@@ -430,6 +435,15 @@ test('deleteProjectCascade removes tenancy edges before services', async () => {
   const principalId = acct!.id
 
   await db.insert(tenancy).values({ principalId, serviceId })
+  const [srv] = await db
+    .insert(server)
+    .values({ organizationId, name: 'Tenancy Cascade Server' })
+    .returning({ id: server.id })
+  const serverId = srv!.id
+  await recordPendingPlacements(db, serverId, [
+    { principalId, home: '/srv/users/app', source: 'manual' },
+  ])
+  await markPlacementsPresent(db, serverId, [principalId])
 
   try {
     const result = await deleteProjectCascade(db, projectId)
@@ -459,9 +473,17 @@ test('deleteProjectCascade removes tenancy edges before services', async () => {
       .where(eq(principal.id, principalId))
       .limit(1)
     assertEquals(kept, { id: principalId, projectId: null, appliedUsername: 'app' })
+
+    // Its placement survives too: it is the only record of where the account lives.
+    const placements = await listServerPlacements(db, serverId)
+    assertEquals(
+      placements.map((row) => [row.principalId, row.state]),
+      [[principalId, 'present']]
+    )
   } finally {
     await db.delete(tenancy).where(eq(tenancy.serviceId, serviceId))
     await db.delete(principal).where(eq(principal.id, principalId))
+    await db.delete(server).where(eq(server.id, serverId))
     await db.delete(service).where(eq(service.id, serviceId))
     await db.delete(environment).where(eq(environment.id, environmentId))
     await db.delete(project).where(eq(project.id, projectId))

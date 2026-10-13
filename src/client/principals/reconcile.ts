@@ -29,8 +29,12 @@ export type PrincipalsReconcileActor = {
   actorId: string
 }
 
-/** Placement states that mean the account is, or is about to be, on the host. */
-const LIVE_PLACEMENT_STATES = ['pending', 'present']
+/**
+ * Placement states that put an account on the host. `pending` is left out on
+ * purpose: a deploy that never finished leaves one behind forever, and the
+ * project reach already covers a deploy in flight.
+ */
+const LIVE_PLACEMENT_STATES = ['present']
 
 /**
  * Servers where this principal exists or will.
