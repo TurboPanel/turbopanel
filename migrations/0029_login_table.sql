@@ -57,7 +57,11 @@ ORDER BY p."created_at", p."id";--> statement-breakpoint
 UPDATE "binding" b
 SET "login_id" = l."id"
 FROM "login" l
-WHERE l."principal_id" = b."principal_id" AND b."login_id" IS NULL;--> statement-breakpoint
+WHERE b."login_id" IS NULL
+	AND (
+		l."principal_id" = b."principal_id"
+		OR (l."principal_id" IS NULL AND l."metadata" ->> 'legacyPrincipalId' = b."principal_id"::text)
+	);--> statement-breakpoint
 -- Report duplicates instead of renaming anything: the unique index below
 -- refuses the upgrade with the offending names when two legacy rows on one
 -- cluster share a login name (case-insensitively).

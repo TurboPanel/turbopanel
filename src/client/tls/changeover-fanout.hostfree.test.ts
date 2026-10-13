@@ -91,8 +91,12 @@ function rotationTargetsDb(rows: QueryRows): Db {
             return rows.ownedManaged
           }
           if (fromName === 'binding') {
-            // `materializeBindingsForManaged`: binding ids through the login join.
-            if (joinNames.length === 0 || (joinNames.length === 1 && joinNames[0] === 'login')) {
+            // `materializeBindingsForManaged`: binding ids through the login
+            // and principal joins alone.
+            if (
+              joinNames.length === 0 ||
+              joinNames.every((name) => name === 'login' || name === 'principal')
+            ) {
               return rows.bindingIds ?? []
             }
             if (joinNames.includes('task')) return rows.consumers

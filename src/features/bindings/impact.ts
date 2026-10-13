@@ -5,8 +5,8 @@
 
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { binding, environment, login, service } from '../../db/schema.ts'
-import { bindingLoginJoin } from '../managed/logins.ts'
+import { binding, environment, login, principal, service } from '../../db/schema.ts'
+import { bindingLoginJoin, bindingManagedId } from '../managed/logins.ts'
 import { enqueueIngressForBindingChange, type BindingListenerSync } from './enqueue-change.ts'
 
 export type BindingImpactService = {
@@ -77,13 +77,14 @@ async function listManagedBindingImpact(
       keyPrefix: binding.keyPrefix,
     })
     .from(binding)
-    .innerJoin(login, bindingLoginJoin())
+    .leftJoin(login, bindingLoginJoin())
+    .leftJoin(principal, eq(principal.id, binding.principalId))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .where(
       databaseName === undefined
-        ? eq(login.managedId, managedId)
-        : and(eq(login.managedId, managedId), eq(binding.databaseName, databaseName))
+        ? eq(bindingManagedId, managedId)
+        : and(eq(bindingManagedId, managedId), eq(binding.databaseName, databaseName))
     )
   return rows.map(toImpact)
 }
@@ -130,8 +131,9 @@ export async function detachBindingsForManaged(
         db
           .select({ id: binding.id })
           .from(binding)
-          .innerJoin(login, bindingLoginJoin())
-          .where(eq(login.managedId, managedId))
+          .leftJoin(login, bindingLoginJoin())
+          .leftJoin(principal, eq(principal.id, binding.principalId))
+          .where(eq(bindingManagedId, managedId))
       )
     )
   if (listenerSync && serviceIds.length > 0) {

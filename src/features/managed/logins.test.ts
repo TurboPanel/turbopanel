@@ -85,6 +85,7 @@ async function withShadowedLegacyRows(
   fn: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<void>
 ): Promise<void> {
   const rollback = new Error('rollback')
+  let inner: unknown
   await assertRejects(
     () =>
       db.transaction(async (tx) => {
@@ -109,12 +110,25 @@ async function withShadowedLegacyRows(
             VALUES (${row.id}::uuid, ${row.principalId}::uuid, ${row.serviceId}::uuid, 'app')
           `)
         }
-        await fn(tx)
+        try {
+          await fn(tx)
+        } catch (error) {
+          inner = error
+        }
         throw rollback
       }),
     Error,
     'rollback'
   )
+  // An assertion that failed inside the transaction, not the rollback sentinel.
+  if (inner !== undefined) throw inner
+}
+
+/** The database's own message: drizzle wraps it as `Failed query` with the cause underneath. */
+function rootMessage(error: unknown): string {
+  let current = error
+  while (current instanceof Error && current.cause instanceof Error) current = current.cause
+  return current instanceof Error ? current.message : String(current)
 }
 
 async function replayBackfill(
@@ -210,7 +224,7 @@ test('the migration backfill gives every legacy database principal a login and f
         // upgrade; replaying the unique index here proves it holds.
         const [indexed] = await tx.execute(
           sql.raw(
-            "SELECT count(*)::int AS n FROM pg_indexes WHERE indexname = 'uniq_login_managed_applied_username' AND tablename = 'login'"
+            "SELECT count(*)::int AS n FROM pg_indexes WHERE indexname = 'uniq_login_managed_applied_username' AND tablename = 'login' AND schemaname = pg_my_temp_schema()::regnamespace::text"
           )
         )
         assertEquals(indexed?.n, 1)
@@ -255,7 +269,7 @@ test('the migration refuses an upgrade whose legacy rows share a login name on o
         try {
           await replayBackfill(tx)
         } catch (error) {
-          message = error instanceof Error ? error.message : String(error)
+          message = rootMessage(error)
         }
       }
     )

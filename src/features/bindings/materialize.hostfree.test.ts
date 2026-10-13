@@ -41,11 +41,15 @@ async function dataSecrets() {
  * "innerJoin is not a function" in ten unrelated tests.
  */
 function materializeJoinDb(limitRows: unknown[]): Db {
+  // Answers both the login pre-check (from.leftJoin.where.limit) and the
+  // credential join (from.innerJoin….where.limit) with the same rows.
   const chain: {
     innerJoin: () => typeof chain
+    leftJoin: () => typeof chain
     where: () => { limit: () => Promise<unknown[]> }
   } = {
     innerJoin: () => chain,
+    leftJoin: () => chain,
     where: () => ({ limit: () => Promise.resolve(limitRows) }),
   }
   return {
@@ -56,18 +60,19 @@ function materializeJoinDb(limitRows: unknown[]): Db {
 }
 
 /**
- * Queued select responses after the initial materialize join. Supports
- * `.limit()` / `.orderBy()` / thenable `.where()` chains used by CA + endpoint.
+ * Queued select responses after the login pre-check and the materialize
+ * join (the first two selects). Supports `.limit()` / `.orderBy()` /
+ * thenable `.where()` chains used by CA + endpoint.
  */
 function materializeFlowDb(joinRows: unknown[], followUps: unknown[][]): Db {
   let n = 0
   return {
     select: () => {
       n += 1
-      if (n === 1) {
+      if (n <= 2) {
         return materializeJoinDb(joinRows).select()
       }
-      const rows = followUps[n - 2] ?? []
+      const rows = followUps[n - 3] ?? []
       const thenable = {
         limit: () => Promise.resolve(rows),
         orderBy: () => Promise.resolve(rows),

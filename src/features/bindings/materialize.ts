@@ -16,6 +16,7 @@ import {
   managed,
   organization,
   login,
+  principal,
   project,
   service,
   variable,
@@ -28,7 +29,7 @@ import { bindingPrefixedKeys } from '../../lib/naming.ts'
 import type { ResolvedVariableEntry, ResolvedVariableMap } from '../variables/resolve-inherited.ts'
 import { ensureActiveOrganizationCa } from '../managed/apply-prepare.ts'
 import { parseManagedRowOptions } from '../managed/options.ts'
-import { bindingLoginJoin } from '../managed/logins.ts'
+import { bindingLoginJoin, bindingManagedId, syncLegacyLogins } from '../managed/logins.ts'
 import {
   type BindingDelivery,
   HOST_RUN_LOOPBACK_HOST,
@@ -271,6 +272,7 @@ export async function materializeBinding(
   bindingId: string,
   delivery?: BindingDelivery
 ): Promise<{ ok: true } | MaterializeBindingError> {
+  await ensureBindingLogin(db, bindingId)
   const [row] = await db
     .select({
       id: binding.id,
@@ -440,9 +442,27 @@ export async function materializeBindingsForManaged(
   const rows = await db
     .select({ id: binding.id })
     .from(binding)
-    .innerJoin(login, bindingLoginJoin())
-    .where(eq(login.managedId, managedId))
+    .leftJoin(login, bindingLoginJoin())
+    .leftJoin(principal, eq(principal.id, binding.principalId))
+    .where(eq(bindingManagedId, managedId))
   return materializeEach(db, dataEncryptionSecrets, rows)
+}
+
+/**
+ * A binding the previous release wrote during the deploy window names a
+ * principal whose login row may not exist yet; sync that cluster first so
+ * the credential read below finds it.
+ */
+async function ensureBindingLogin(db: Db, bindingId: string): Promise<void> {
+  const [row] = await db
+    .select({ loginId: binding.loginId, principalManagedId: principal.managedId })
+    .from(binding)
+    .leftJoin(principal, eq(principal.id, binding.principalId))
+    .where(eq(binding.id, bindingId))
+    .limit(1)
+  if (row && !row.loginId && row.principalManagedId) {
+    await syncLegacyLogins(db, row.principalManagedId)
+  }
 }
 
 async function materializeEach(

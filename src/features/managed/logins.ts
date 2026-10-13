@@ -107,18 +107,23 @@ export async function syncLegacyLogins(db: Db, managedId: string): Promise<void>
       AND p."kind" = 'database'
       AND NOT EXISTS (
         SELECT 1 FROM ${login} l
-        WHERE l."managed_id" = p."managed_id"
-          AND (l."principal_id" = p."id" OR l."metadata" ->> 'legacyPrincipalId' = p."id"::text)
+        WHERE l."principal_id" = p."id"
+          OR (l."managed_id" = p."managed_id" AND l."metadata" ->> 'legacyPrincipalId' = p."id"::text)
       )
     ORDER BY p."created_at", p."id"
+    ON CONFLICT DO NOTHING
   `)
   await db.execute(sql`
     UPDATE ${binding} b
     SET "login_id" = l."id"
-    FROM ${login} l
-    WHERE l."managed_id" = ${managedId}
-      AND l."principal_id" = b."principal_id"
+    FROM ${login} l, ${principal} p
+    WHERE p."id" = b."principal_id"
+      AND l."managed_id" = ${managedId}
       AND b."login_id" IS NULL
+      AND (
+        (l."principal_id" = p."id" AND l."managed_id" = p."managed_id")
+        OR (l."principal_id" IS NULL AND l."metadata" ->> 'legacyPrincipalId' = p."id"::text)
+      )
   `)
 }
 
@@ -402,13 +407,35 @@ export async function isManagedLoginNameTaken(
   return rows.length > 0
 }
 
-/** Bindings join their login by `login_id`, or by principal while a legacy row still lacks it. */
+/**
+ * Bindings join their login by `login_id`. A binding the previous release
+ * wrote without one reaches the login of its principal on the principal's
+ * own cluster, or the cluster login whose legacy row it names.
+ */
 export function bindingLoginJoin() {
+  const principalCluster = sql`(SELECT "managed_id" FROM ${principal} WHERE "id" = ${binding.principalId})`
   return or(
     eq(binding.loginId, login.id),
-    and(isNull(binding.loginId), eq(binding.principalId, login.principalId))
+    and(
+      isNull(binding.loginId),
+      eq(login.principalId, binding.principalId),
+      eq(login.managedId, principalCluster)
+    ),
+    and(
+      isNull(binding.loginId),
+      isNull(login.principalId),
+      sql`${login.metadata} ->> 'legacyPrincipalId' = ${binding.principalId}::text`
+    )
   )
 }
+
+/**
+ * The cluster a binding reaches, for readers that left-join `login` through
+ * {@link bindingLoginJoin} and `principal` on `binding.principal_id`: the
+ * login's cluster, or the legacy principal's while its login row does not
+ * exist yet (a row the previous release wrote during the deploy window).
+ */
+export const bindingManagedId = sql<string>`coalesce(${login.managedId}, ${principal.managedId})`
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)

@@ -837,6 +837,16 @@ test('ensureMemberPrivatePorts clears leftover ports on single-member clusters',
   assertEquals(await ensureMemberPrivatePorts({} as Db, []), [])
 })
 
+/** `consumerServerIdsForManaged`: left joins (login, principal, slot) around the service chain. */
+function consumerJoins(rows: () => Promise<unknown[]>) {
+  const joins = {
+    innerJoin: () => joins,
+    leftJoin: () => joins,
+    where: rows,
+  }
+  return joins
+}
+
 test('commitClearedPrivatePortsIfUnused writes the clear after apply is queued', async () => {
   const sole = member({
     id: 'p',
@@ -850,19 +860,7 @@ test('commitClearedPrivatePortsIfUnused writes the clear after apply is queued',
     select: (fields: Record<string, unknown>) => {
       if (Object.keys(fields).includes('taskServerId')) {
         return {
-          from: () => ({
-            innerJoin: () => ({
-              innerJoin: () => ({
-                innerJoin: () => ({
-                  innerJoin: () => ({
-                    leftJoin: () => ({
-                      where: () => Promise.resolve([]),
-                    }),
-                  }),
-                }),
-              }),
-            }),
-          }),
+          from: () => consumerJoins(() => Promise.resolve([])),
         }
       }
       return {
@@ -899,26 +897,16 @@ test('commitClearedPrivatePortsIfUnused keeps the port when a remote consumer re
     select: (fields: Record<string, unknown>) => {
       if (Object.keys(fields).includes('taskServerId')) {
         return {
-          from: () => ({
-            innerJoin: () => ({
-              innerJoin: () => ({
-                innerJoin: () => ({
-                  innerJoin: () => ({
-                    leftJoin: () => ({
-                      where: () =>
-                        Promise.resolve([
-                          {
-                            environmentServerId: 'srv-app',
-                            projectOptions: null,
-                            taskServerId: null,
-                          },
-                        ]),
-                    }),
-                  }),
-                }),
-              }),
-            }),
-          }),
+          from: () =>
+            consumerJoins(() =>
+              Promise.resolve([
+                {
+                  environmentServerId: 'srv-app',
+                  projectOptions: null,
+                  taskServerId: null,
+                },
+              ])
+            ),
         }
       }
       return {

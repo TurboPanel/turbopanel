@@ -16,7 +16,7 @@ import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
 import { materializeBindingsForManaged } from '../../features/bindings/materialize.ts'
-import { bindingLoginJoin } from '../../features/managed/logins.ts'
+import { bindingLoginJoin, bindingManagedId } from '../../features/managed/logins.ts'
 import {
   enqueuePreparedManagedApply,
   isPrepareError,
@@ -40,6 +40,7 @@ import {
   managed,
   replica,
   login,
+  principal,
   project,
   server,
   service,
@@ -224,14 +225,15 @@ async function collectConsumerServers(
   if (ownedManagedIds.length === 0) return
   const rows = await db
     .select({
-      managedId: login.managedId,
+      managedId: bindingManagedId,
       environmentServerId: environment.serverId,
       projectOptions: project.options,
       taskServerId: slot.serverId,
       workspaceOrganizationId: workspace.organizationId,
     })
     .from(binding)
-    .innerJoin(login, bindingLoginJoin())
+    .leftJoin(login, bindingLoginJoin())
+    .leftJoin(principal, eq(principal.id, binding.principalId))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
@@ -240,7 +242,7 @@ async function collectConsumerServers(
     .where(
       and(
         eq(workspace.organizationId, organizationId),
-        inArray(login.managedId, [...ownedManagedIds])
+        inArray(bindingManagedId, [...ownedManagedIds])
       )
     )
 
@@ -387,11 +389,12 @@ async function loadNeedsRedeployForManaged(
       projectOptions: project.options,
     })
     .from(binding)
-    .innerJoin(login, bindingLoginJoin())
+    .leftJoin(login, bindingLoginJoin())
+    .leftJoin(principal, eq(principal.id, binding.principalId))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
-    .where(eq(login.managedId, managedId))
+    .where(eq(bindingManagedId, managedId))
 
   const seen = new Set<string>()
   const needs: CaRotationNeedsRedeploy[] = []
