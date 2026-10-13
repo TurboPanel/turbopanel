@@ -81,7 +81,7 @@ const HOST_METRICS = Object.entries(HOST_METRICS_METRIC_DESCRIPTORS)
   .filter(([, descriptor]) => HOST_SCOPES.has(descriptor.entityScope))
   .map(([name]) => name)
 
-/** Every field v7 stores for the family (the dropped v6 fields are not queryable). */
+/** Every field v8 stores for the family (the dropped v6 fields are not queryable). */
 function fieldsFor(family: PerEntityHostedFamily): string[] {
   const stored: readonly (string | null)[] =
     family === 'managed.ingress' || family === 'managed.database_proxy'

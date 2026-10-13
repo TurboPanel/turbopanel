@@ -303,7 +303,7 @@ test('isDurableSample: only an explicit durable:false marks a live-only sample',
   assertEquals(isDurableSample(meta(false)), false)
 })
 
-test('hostValuesFromSample reads the v7 extended numbers and falls back for Docker reclaimable bytes', () => {
+test('hostValuesFromSample reads the v8 extended numbers and falls back for Docker reclaimable bytes', () => {
   const base = authenticatedSample({ sampledAt: '2026-01-01T00:00:10.000Z' })
   const withExtended: AuthenticatedMetricsSample = {
     ...base,

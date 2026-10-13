@@ -414,7 +414,7 @@ test('parseSeriesMetricSelectors defaults to every queryable host.* canonical na
   assertEquals(blank.value.hostCanonicalNames, defaultHostCanonicalNames())
 })
 
-test('parseSeriesMetricSelectors accepts the v7 extended numbers by name but never defaults to them', () => {
+test('parseSeriesMetricSelectors accepts the v8 extended numbers by name but never defaults to them', () => {
   const named = parseSeriesMetricSelectors(
     'extended.host.oomKills,extended.docker.containersUnhealthy,extended.ingress.tlsCertSoonestExpiryDays'
   )
