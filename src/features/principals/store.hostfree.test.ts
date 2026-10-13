@@ -570,7 +570,7 @@ test('rotatePrincipalPassword returns generated plaintext', async () => {
 
 test('createManagedPrincipal inserts sealed password and validates inputs', async () => {
   const dataEncryptionSecrets = await testDataEncryptionSecrets()
-  let insertValues: Record<string, unknown> | undefined
+  const inserts: Record<string, unknown>[] = []
 
   const db = {
     select: () => ({
@@ -588,9 +588,10 @@ test('createManagedPrincipal inserts sealed password and validates inputs', asyn
     }),
     insert: () => ({
       values: (values: Record<string, unknown>) => {
-        insertValues = values
+        inserts.push(values)
         return {
-          returning: () => Promise.resolve([{ id: 'managed-user' }]),
+          returning: () =>
+            Promise.resolve([{ id: inserts.length === 1 ? 'managed-user' : 'login-1' }]),
         }
       },
     }),
@@ -603,11 +604,20 @@ test('createManagedPrincipal inserts sealed password and validates inputs', asyn
     metadata: { role: 'app' },
   })
   assertEquals(created.principalId, 'managed-user')
+  assertEquals(created.loginId, 'login-1')
   assertEquals(typeof created.password, 'string')
-  assertEquals(insertValues?.organizationId, 'org-1')
-  assertEquals(insertValues?.managedId, 'm1')
-  assertEquals(typeof insertValues?.password, 'string')
-  assertEquals((insertValues?.password as string).startsWith('tpsecret.'), true)
+  // The principal row, then its login twin with the same sealed password.
+  const [principalValues, loginValues] = inserts
+  assertEquals(principalValues?.organizationId, 'org-1')
+  assertEquals(principalValues?.managedId, 'm1')
+  assertEquals(typeof principalValues?.password, 'string')
+  assertEquals((principalValues?.password as string).startsWith('tpsecret.'), true)
+  assertEquals(loginValues?.managedId, 'm1')
+  assertEquals(loginValues?.principalId, 'managed-user')
+  assertEquals(loginValues?.role, 'user')
+  assertEquals(loginValues?.appliedUsername, 'app_user')
+  assertEquals(loginValues?.password, principalValues?.password)
+  inserts.length = 0
 
   await assertRejects(
     () =>

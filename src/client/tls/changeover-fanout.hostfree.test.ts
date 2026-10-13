@@ -90,9 +90,11 @@ function rotationTargetsDb(rows: QueryRows): Db {
             }
             return rows.ownedManaged
           }
-          if (fromName === 'principal') return rows.principals ?? []
           if (fromName === 'binding') {
-            if (joinNames.length === 0) return rows.bindingIds ?? []
+            // `materializeBindingsForManaged`: binding ids through the login join.
+            if (joinNames.length === 0 || (joinNames.length === 1 && joinNames[0] === 'login')) {
+              return rows.bindingIds ?? []
+            }
             if (joinNames.includes('task')) return rows.consumers
             if (joinNames.includes('organization')) {
               return rows.materializeBindings ?? []
@@ -334,7 +336,6 @@ test('runOrganizationCaRotationFanout records binding rematerialize failure and 
     ],
     ownedClusterMembers: [],
     consumers: [],
-    principals: [{ id: 'p1' }],
     bindingIds: [{ id: 'b1' }],
     materializeBindings: [{ id: 'b1' }],
   })

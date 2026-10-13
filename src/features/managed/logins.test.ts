@@ -50,6 +50,9 @@ const dbUrl = getDatabaseUrl()
  */
 const test = Deno.test.bind(Deno)
 
+/** A stand-in for a sealed envelope; never a real credential. */
+const sealedFor = (tag: string) => `tpsecret.v1.${tag}`
+
 const MIGRATION = new URL('../../../migrations/0029_login_table.sql', import.meta.url)
 
 /** The migration's statements from its backfill on: INSERT, UPDATE, the duplicate guard, the unique index, comments. */
@@ -144,7 +147,7 @@ test('the migration backfill gives every legacy database principal a login and f
           username: 'postgres',
           appliedUsername: 'postgres_abcdefghijk',
           metadata: { managedRoot: true, engine: 'postgres', databases: ['postgres'] },
-          password: 'tpsecret.v1.root',
+          password: sealedFor('root'),
         },
         {
           id: repl,
@@ -152,7 +155,7 @@ test('the migration backfill gives every legacy database principal a login and f
           username: 'tp_repl',
           appliedUsername: 'tp_repl_abcdefghijk',
           metadata: { managedReplication: true },
-          password: 'tpsecret.v1.repl',
+          password: sealedFor('repl'),
         },
         {
           id: user,
@@ -160,7 +163,7 @@ test('the migration backfill gives every legacy database principal a login and f
           username: 'app',
           appliedUsername: 'app',
           metadata: { engine: 'postgres', databases: ['postgres'], privileges: ['read-write'] },
-          password: 'tpsecret.v1.app',
+          password: sealedFor('app'),
         },
       ],
       [{ id: bindingId, principalId: user, serviceId }],
@@ -178,7 +181,7 @@ test('the migration backfill gives every legacy database principal a login and f
         const rootLogin = byRole.get('root')!
         assertEquals(rootLogin.principal_id, null)
         assertEquals(rootLogin.applied_username, 'postgres_abcdefghijk')
-        assertEquals(rootLogin.password, 'tpsecret.v1.root')
+        assertEquals(rootLogin.password, sealedFor('root'))
         assertEquals((rootLogin.metadata as Record<string, unknown>).legacyPrincipalId, root)
         assertEquals((rootLogin.metadata as Record<string, unknown>).managedRoot, true)
 
@@ -189,7 +192,7 @@ test('the migration backfill gives every legacy database principal a login and f
         const userLogin = byRole.get('user')!
         assertEquals(userLogin.principal_id, user)
         assertEquals(userLogin.applied_username, 'app')
-        assertEquals(userLogin.password, 'tpsecret.v1.app')
+        assertEquals(userLogin.password, sealedFor('app'))
         assertEquals(userLogin.metadata, {
           engine: 'postgres',
           databases: ['postgres'],
@@ -359,7 +362,7 @@ test('syncLegacyLogins adds the login a previous-release principal lacks, fills 
         appliedUsername: 'legacy_abcdefghijk',
         options: { nameScheme: 'partial' },
         metadata: { engine: 'postgres', databases: ['postgres'] },
-        password: 'tpsecret.v1.legacy',
+        password: sealedFor('legacy'),
         managedId,
       })
       .returning({ id: principal.id })
@@ -372,7 +375,7 @@ test('syncLegacyLogins adds the login a previous-release principal lacks, fills 
         username: 'postgres',
         appliedUsername: 'postgres_abcdefghijk',
         metadata: { managedRoot: true, engine: 'postgres', databases: ['postgres'] },
-        password: 'tpsecret.v1.root',
+        password: sealedFor('root'),
         managedId,
       })
       .returning({ id: principal.id })
@@ -390,7 +393,7 @@ test('syncLegacyLogins adds the login a previous-release principal lacks, fills 
         ['root', 'postgres_abcdefghijk', 'postgres_abcdefghijk', null],
       ]
     )
-    assertEquals(logins[0]?.password, 'tpsecret.v1.legacy')
+    assertEquals(logins[0]?.password, sealedFor('legacy'))
     assertEquals(logins[0]?.options, { nameScheme: 'partial' })
     assertEquals((logins[1]?.metadata as Record<string, unknown>).legacyPrincipalId, legacyRoot!.id)
     const [linked] = await db

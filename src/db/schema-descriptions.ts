@@ -682,11 +682,11 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Jsonb: `nameScheme` the applied name was derived with (`plain`, `partial`, `random`).',
       principal_id:
         'Identity the login belongs to, cascade-deleted with it; NULL only for the cluster root and replication logins, which are outside the organization name pool.',
+      password:
+        'Write-only credential sealed as a `tpsecret` envelope, never returned on GET and resealed to `tpdaemon` for delivery.',
       role: '`root` for the cluster admin login, `replication` for the member-to-member login, `user` for an operator-created login.',
       applied_username:
         'Engine role name created on the cluster, copied from the principal for a `user` login; unique per cluster after trim and case-fold.',
-      password:
-        'Write-only credential sealed as a `tpsecret` envelope, never returned on GET and resealed to `tpdaemon` for delivery.',
     },
   },
   binding: {
