@@ -190,9 +190,16 @@ export async function retireDeletedPrincipal(
 ): Promise<PrincipalsReconcileOutcome> {
   const retire: string[] = []
   const keep: string[] = []
+  const failed: string[] = []
   await forEachSequential(params.serverIds, async (serverId) => {
-    const kept = await principalsStillOnServer(db, serverId, [params.appliedUsername])
-    ;(kept.has(params.appliedUsername) ? keep : retire).push(serverId)
+    try {
+      const kept = await principalsStillOnServer(db, serverId, [params.appliedUsername])
+      ;(kept.has(params.appliedUsername) ? keep : retire).push(serverId)
+    } catch {
+      // The row is already gone; a lookup failure keeps the account there
+      // (never retire on a guess) and is reported, not thrown.
+      failed.push(serverId)
+    }
   })
   const retired = await enqueuePrincipalsReconcile(db, queue, actor, retire, {
     retirePrincipals: [params.appliedUsername],
@@ -200,6 +207,6 @@ export async function retireDeletedPrincipal(
   const reconciled = await enqueuePrincipalsReconcile(db, queue, actor, keep)
   return {
     queuedServerIds: [...retired.queuedServerIds, ...reconciled.queuedServerIds],
-    failedServerIds: [...retired.failedServerIds, ...reconciled.failedServerIds],
+    failedServerIds: [...failed, ...retired.failedServerIds, ...reconciled.failedServerIds],
   }
 }

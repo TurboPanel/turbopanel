@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, ne, or, sql } from 'drizzle-orm'
 import {
   isReservedPrincipalUsername,
   MAX_PRINCIPAL_USERNAME_LENGTH,
@@ -55,11 +55,21 @@ async function isPoolNameTaken(
   db: Db,
   organizationIds: readonly string[],
   key: string,
-  excludePrincipalId?: string
+  excludePrincipalId?: string,
+  opts: {
+    /**
+     * Also count managed root and replication logins. An engine login must not
+     * collide with the cluster's own `postgres` / `root` / `tp_repl`, even
+     * though those names sit outside the organization pool.
+     */
+    includeManagedSystemLogins?: boolean
+  } = {}
 ): Promise<boolean> {
   const conditions = [
     inArray(principal.organizationId, [...organizationIds]),
-    PRINCIPAL_NAME_POOL_WHERE,
+    opts.includeManagedSystemLogins
+      ? or(PRINCIPAL_NAME_POOL_WHERE, isNotNull(principal.managedId))
+      : PRINCIPAL_NAME_POOL_WHERE,
     sql`(lower(${principal.username}) = ${key} OR lower(${principal.appliedUsername}) = ${key})`,
   ]
   if (excludePrincipalId) {
@@ -544,7 +554,7 @@ export const REPLICATION_PASSWORD_LENGTH = 32
  * which returns the (possibly plural, possibly empty) set of orgs whose
  * servers currently host the cluster's replicas.
  */
-async function resolveManagedHomeOrganizationId(db: Db, managedId: string): Promise<string> {
+export async function resolveManagedHomeOrganizationId(db: Db, managedId: string): Promise<string> {
   const [row] = await db
     .select({ organizationId: workspace.organizationId })
     .from(managed)
@@ -696,11 +706,12 @@ export async function resolveManagedOwningOrganizationIds(
 }
 
 /**
- * True when a principal owned by one of the given organizations — a system
- * user or a database login, never a cluster's root or replication login —
- * already uses this username, short or applied (trimmed, case-insensitive).
- * The same organization pool {@link isServerPrincipalUsernameTaken} consults;
- * callers pass the cluster's home organization alongside the owning ones.
+ * True when a principal owned by one of the given organizations already uses
+ * this username, short or applied (trimmed, case-insensitive): the same
+ * organization pool {@link isServerPrincipalUsernameTaken} consults, plus the
+ * managed root and replication logins of those organizations' clusters, so an
+ * engine login can never be named after one. Callers pass the cluster's home
+ * organization alongside the owning ones.
  */
 export async function isManagedUsernameTaken(
   db: Db,
@@ -710,7 +721,9 @@ export async function isManagedUsernameTaken(
 ): Promise<boolean> {
   const key = username.trim().toLowerCase()
   if (!key || owningOrganizationIds.length === 0) return false
-  return await isPoolNameTaken(db, owningOrganizationIds, key, excludePrincipalId)
+  return await isPoolNameTaken(db, owningOrganizationIds, key, excludePrincipalId, {
+    includeManagedSystemLogins: true,
+  })
 }
 
 /**
@@ -797,7 +810,12 @@ export async function ensureManagedReplicationPrincipal(
   }
 
   const preferred = params.preferredUsername ?? 'tp_repl'
-  const owningOrgIds = await resolveManagedOwningOrganizationIds(db, params.managedId)
+  const owningOrgIds = await resolveManagedOwningOrganizationIds(
+    db,
+    params.managedId,
+    [],
+    await resolveManagedHomeOrganizationId(db, params.managedId)
+  )
   await lockOrganizationsForUpdate(db, owningOrgIds)
   const appliedUsername = await resolveManagedAppliedUsername(
     db,

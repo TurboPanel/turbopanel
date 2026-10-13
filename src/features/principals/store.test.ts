@@ -3,6 +3,7 @@ import { assertEquals, assertMatch, assertRejects } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
+import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { decryptSecret } from '../../lib/secrets/data-encryption.ts'
 import {
@@ -321,30 +322,33 @@ test('principal names are one pool per organization, outside managed root and re
         })
       )
       assertEquals(await isServerPrincipalUsernameTaken(db, organizationId, 'postgres'), false)
+      // ... but an engine login may still not take a cluster's root name.
+      assertEquals(await isManagedUsernameTaken(db, [organizationId], 'postgres'), true)
 
       // The index backs the check: a second pool row with the same typed or
       // applied name is refused by the database, case-insensitively.
-      await assertRejects(
-        () =>
-          insertPool({
-            kind: 'database',
-            provider: 'mysql',
-            username: 'Orphan',
-            appliedUsername: 'orphan_other',
-          }),
-        Error,
-        'uniq_principal_organization_username'
+      const typedDup = await insertPool({
+        kind: 'database',
+        provider: 'mysql',
+        username: 'Orphan',
+        appliedUsername: 'orphan_other',
+      }).then(
+        () => null,
+        (err: unknown) => err
       )
-      await assertRejects(
-        () =>
-          insertPool({
-            kind: 'system',
-            provider: SERVER_PRINCIPAL_PROVIDER,
-            username: 'other',
-            appliedUsername: 'ORPHAN_X1Y2Z3A4B5C',
-          }),
-        Error,
-        'uniq_principal_organization_applied_username'
+      assertEquals(isUniqueViolationOn(typedDup, 'uniq_principal_organization_username'), true)
+      const appliedDup = await insertPool({
+        kind: 'system',
+        provider: SERVER_PRINCIPAL_PROVIDER,
+        username: 'other',
+        appliedUsername: 'ORPHAN_X1Y2Z3A4B5C',
+      }).then(
+        () => null,
+        (err: unknown) => err
+      )
+      assertEquals(
+        isUniqueViolationOn(appliedDup, 'uniq_principal_organization_applied_username'),
+        true
       )
     } finally {
       if (ids.length > 0) await db.delete(principal).where(inArray(principal.id, ids))

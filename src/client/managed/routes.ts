@@ -31,6 +31,7 @@ import {
   listManagedPrincipals,
   lockOrganizationsForUpdate,
   resolveManagedAppliedUsername,
+  resolveManagedHomeOrganizationId,
   resolveManagedOwningOrganizationIds,
   rotatePrincipalPassword,
   USERNAME_IN_USE_ERROR,
@@ -1158,7 +1159,12 @@ async function hasManagedUsernameNamespaceConflict(
 ): Promise<boolean> {
   const clusterPrincipals = await listManagedPrincipals(db, managedId)
   return db.transaction(async (tx) => {
-    const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, managedId, [serverId])
+    const owningOrgIds = await resolveManagedOwningOrganizationIds(
+      tx,
+      managedId,
+      [serverId],
+      await resolveManagedHomeOrganizationId(tx, managedId)
+    )
     await lockOrganizationsForUpdate(tx, owningOrgIds)
     for (const entry of clusterPrincipals) {
       // The applied login is what lands on the shared ProxySQL frontend —
