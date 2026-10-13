@@ -15,6 +15,7 @@ import {
   githubAppCreateUrl,
   GithubManifestError,
   GITHUB_MANIFEST_EVENTS,
+  GITHUB_MANIFEST_MESSAGE_LIMIT,
 } from './github-manifest.ts'
 import { useUnpinnedForgeFetchForTests } from './forge-url.ts'
 
@@ -243,6 +244,85 @@ test('convertGithubAppManifest maps transport and HTTP failures', async () => {
       )
     }
   )
+})
+
+test('a non-OK conversion carries GitHub status, message and rate-limit headers', async () => {
+  await withFetch(
+    () =>
+      new Response(
+        JSON.stringify({
+          message: 'API rate limit exceeded for 203.0.113.7.',
+          documentation_url: 'https://docs.github.com/rest',
+        }),
+        {
+          status: 403,
+          headers: {
+            'x-ratelimit-remaining': '0',
+            'x-ratelimit-reset': '1760000000',
+            'retry-after': '60',
+            'x-github-request-id': 'ABCD:1234',
+          },
+        }
+      ),
+    async () => {
+      const error = await assertRejects(
+        () => convertGithubAppManifest('https://api.github.com', 'code'),
+        GithubManifestError
+      )
+      assertEquals(error.status, 403)
+      assertEquals(error.details, {
+        kind: 'http',
+        githubMessage: 'API rate limit exceeded for 203.0.113.7.',
+        rateLimitRemaining: '0',
+        rateLimitReset: '1760000000',
+        retryAfter: '60',
+        requestId: 'ABCD:1234',
+      })
+    }
+  )
+})
+
+test('a non-JSON error body is truncated and never repeats the code', async () => {
+  const code = 'one-shot-code-xyz'
+  await withFetch(
+    () =>
+      new Response(`bad ${code} ${'x'.repeat(GITHUB_MANIFEST_MESSAGE_LIMIT * 2)}`, { status: 502 }),
+    async () => {
+      const error = await assertRejects(
+        () => convertGithubAppManifest('https://api.github.com', code),
+        GithubManifestError
+      )
+      const message = error.details?.githubMessage ?? ''
+      assertEquals(error.details?.kind, 'http')
+      assertEquals(message.startsWith('bad [code] x'), true)
+      assertEquals(message.includes(code), false)
+      assertEquals(message.length <= GITHUB_MANIFEST_MESSAGE_LIMIT + 1, true)
+      assertEquals(error.details?.rateLimitRemaining, undefined)
+    }
+  )
+})
+
+test('a thrown fetch keeps its name and message as the cause, without the code', async () => {
+  const code = 'one-shot-code-xyz'
+  const original = globalThis.fetch
+  globalThis.fetch = (() => {
+    const error = new TypeError(`fetch failed for /app-manifests/${code}/conversions`)
+    return Promise.reject(error)
+  }) as typeof fetch
+  try {
+    const error = await assertRejects(
+      () => convertGithubAppManifest('https://api.github.com', code),
+      GithubManifestError
+    )
+    assertEquals(error.status, undefined)
+    assertEquals(error.details, {
+      kind: 'network',
+      cause: 'TypeError: fetch failed for /app-manifests/[code]/conversions',
+    })
+    assertEquals(error.message.includes(code), false)
+  } finally {
+    globalThis.fetch = original
+  }
 })
 
 test('convertGithubAppManifest rejects an empty or incomplete body', async () => {

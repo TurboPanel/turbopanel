@@ -529,10 +529,38 @@ export async function startGithubManifestHandler(
 function redirectToForgesUi(
   c: Context<AppEnv>,
   scope: ForgeScope,
-  query: { created?: string; error?: GithubManifestReturnError }
+  query: { created?: string; error?: GithubManifestReturnError; status?: string }
 ): Response {
   const location = githubManifestUiReturnPath(scope.organizationId, query)
   return c.redirect(location, 302)
+}
+
+/** The redirect's `status`: GitHub's HTTP status, else what kind of failure it was. */
+function githubManifestFailureStatusToken(error: GithubManifestError): string {
+  const kind = error.details?.kind
+  if (kind === 'http' && error.status !== undefined) return String(error.status)
+  return kind ?? 'network'
+}
+
+/**
+ * One greppable line saying what GitHub answered. The error never carries the
+ * one-shot code or a 2xx body (see `GithubManifestFailureDetails`), so nothing
+ * here can leak the App's credentials.
+ */
+function logGithubManifestConversionFailure(error: GithubManifestError): void {
+  const details = error.details
+  console.error(
+    `github-manifest: conversion failed ${JSON.stringify({
+      kind: details?.kind,
+      status: error.status,
+      githubMessage: details?.githubMessage,
+      rateLimitRemaining: details?.rateLimitRemaining,
+      rateLimitReset: details?.rateLimitReset,
+      retryAfter: details?.retryAfter,
+      requestId: details?.requestId,
+      cause: details?.cause,
+    })}`
+  )
 }
 
 /**
@@ -582,7 +610,11 @@ export async function completeGithubManifestHandler(
     )
   } catch (error) {
     if (error instanceof GithubManifestError) {
-      return redirectToForgesUi(c, scope, { error: 'conversion_failed' })
+      logGithubManifestConversionFailure(error)
+      return redirectToForgesUi(c, scope, {
+        error: 'conversion_failed',
+        status: githubManifestFailureStatusToken(error),
+      })
     }
     throw error
   }

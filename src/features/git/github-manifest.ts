@@ -23,22 +23,93 @@
  */
 
 import { stringifyGithubAppId } from './github-app-id.ts'
-import {
-  GITHUB_API_ACCEPT,
-  GITHUB_API_VERSION,
-  GITHUB_USER_AGENT,
-} from './github-app-token.ts'
+import { GITHUB_API_ACCEPT, GITHUB_API_VERSION, GITHUB_USER_AGENT } from './github-app-token.ts'
 import { stripTrailingSlashes } from './origin.ts'
 import { forgeFetch } from './forge-url.ts'
 
+/**
+ * What GitHub (or the transport) said when a conversion failed.
+ *
+ * Only ever built from a non-OK response or a thrown fetch: a 2xx body carries
+ * the App's PEM and secrets and is never copied here. The one-shot `code` is
+ * scrubbed from every string before it lands on the error.
+ */
+export interface GithubManifestFailureDetails {
+  /** `http`: GitHub answered non-OK; `network`: the fetch threw; `invalid_response`: 2xx without usable credentials. */
+  readonly kind: 'http' | 'network' | 'invalid_response'
+  /** GitHub's `message` (or the raw body), truncated. */
+  readonly githubMessage?: string
+  readonly rateLimitRemaining?: string
+  readonly rateLimitReset?: string
+  readonly retryAfter?: string
+  readonly requestId?: string
+  /** `name: message` of the thrown fetch error (e.g. a `ForgeUrlError` reason). */
+  readonly cause?: string
+}
+
 export class GithubManifestError extends Error {
   readonly status?: number
+  readonly details?: GithubManifestFailureDetails
 
-  constructor(message: string, status?: number) {
+  constructor(message: string, status?: number, details?: GithubManifestFailureDetails) {
     super(message)
     this.name = 'GithubManifestError'
     this.status = status
+    this.details = details
   }
+}
+
+/** Longest slice of GitHub's error body kept for diagnostics. */
+export const GITHUB_MANIFEST_MESSAGE_LIMIT = 300
+
+function scrubCode(text: string, code: string): string {
+  if (!code) return text
+  return text.replaceAll(encodeURIComponent(code), '[code]').replaceAll(code, '[code]')
+}
+
+function truncate(text: string): string {
+  return text.length > GITHUB_MANIFEST_MESSAGE_LIMIT
+    ? `${text.slice(0, GITHUB_MANIFEST_MESSAGE_LIMIT)}…`
+    : text
+}
+
+function headerValue(response: Response, name: string): string | undefined {
+  return response.headers.get(name) ?? undefined
+}
+
+/** GitHub's JSON `message` when the body has one, otherwise the raw text. */
+function githubErrorMessage(body: string): string {
+  try {
+    const parsed: unknown = JSON.parse(body)
+    if (parsed && typeof parsed === 'object') {
+      const message = (parsed as Record<string, unknown>).message
+      if (typeof message === 'string' && message.length > 0) return message
+    }
+  } catch {
+    // Not JSON: keep the raw text.
+  }
+  return body
+}
+
+async function httpFailureDetails(
+  response: Response,
+  code: string
+): Promise<GithubManifestFailureDetails> {
+  const body = await response.text().catch(() => '')
+  const message = scrubCode(truncate(githubErrorMessage(body).trim()), code)
+  return {
+    kind: 'http',
+    githubMessage: message || undefined,
+    rateLimitRemaining: headerValue(response, 'x-ratelimit-remaining'),
+    rateLimitReset: headerValue(response, 'x-ratelimit-reset'),
+    retryAfter: headerValue(response, 'retry-after'),
+    requestId: headerValue(response, 'x-github-request-id'),
+  }
+}
+
+function networkFailureCause(error: unknown, code: string): string {
+  if (!(error instanceof Error)) return 'network error'
+  return scrubCode(truncate(`${error.name}: ${error.message}`), code)
 }
 
 /**
@@ -84,11 +155,7 @@ export type GithubPullRequestAccess = (typeof GITHUB_PULL_REQUEST_ACCESS)[number
  * subscribe-able `default_events` — a manifest that names them is rejected
  * ("Default events unsupported" / "not supported by permissions").
  */
-export const GITHUB_MANIFEST_EVENTS = [
-  'push',
-  'check_suite',
-  'check_run',
-] as const
+export const GITHUB_MANIFEST_EVENTS = ['push', 'check_suite', 'check_run'] as const
 
 /**
  * Extra event delivered only when the App can act on pull requests.
@@ -181,9 +248,10 @@ export function buildGithubAppManifest(params: {
     },
     // Subscribing without the write permission would deliver events the
     // instance has no way to act on, so the two move together.
-    default_events: pullRequestAccess === 'write'
-      ? [...GITHUB_MANIFEST_EVENTS, GITHUB_PULL_REQUEST_EVENT]
-      : [...GITHUB_MANIFEST_EVENTS],
+    default_events:
+      pullRequestAccess === 'write'
+        ? [...GITHUB_MANIFEST_EVENTS, GITHUB_PULL_REQUEST_EVENT]
+        : [...GITHUB_MANIFEST_EVENTS],
   }
   return manifest
 }
@@ -198,7 +266,7 @@ export function buildGithubAppManifest(params: {
 export function githubAppCreateUrl(
   baseUrl: string,
   state: string,
-  organizationLogin?: string | null,
+  organizationLogin?: string | null
 ): string {
   const origin = stripTrailingSlashes(baseUrl)
   const path = organizationLogin
@@ -220,7 +288,7 @@ function readString(value: unknown): string | null {
  */
 export async function convertGithubAppManifest(
   apiBase: string,
-  code: string,
+  code: string
 ): Promise<GithubManifestConversion> {
   let response: Response
   try {
@@ -233,27 +301,29 @@ export async function convertGithubAppManifest(
           'x-github-api-version': GITHUB_API_VERSION,
           'user-agent': GITHUB_USER_AGENT,
         },
-      },
+      }
     )
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'network error'
-    throw new GithubManifestError(
-      `github manifest conversion failed: ${errorMessage}`,
-    )
+    const errorMessage = error instanceof Error ? scrubCode(error.message, code) : 'network error'
+    throw new GithubManifestError(`github manifest conversion failed: ${errorMessage}`, undefined, {
+      kind: 'network',
+      cause: networkFailureCause(error, code),
+    })
   }
 
   if (!response.ok) {
     throw new GithubManifestError(
       `github manifest conversion failed (${response.status})`,
       response.status,
+      await httpFailureDetails(response, code)
     )
   }
 
-  const payload = (await response.json().catch(() => null)) as
-    | Record<string, unknown>
-    | null
+  const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null
   if (!payload) {
-    throw new GithubManifestError('github manifest conversion returned no body')
+    throw new GithubManifestError('github manifest conversion returned no body', response.status, {
+      kind: 'invalid_response',
+    })
   }
 
   const externalAppId = stringifyGithubAppId(payload.id)
@@ -261,6 +331,8 @@ export async function convertGithubAppManifest(
   if (!externalAppId || !privateKeyPem) {
     throw new GithubManifestError(
       'github manifest conversion returned no app id or private key',
+      response.status,
+      { kind: 'invalid_response' }
     )
   }
 
