@@ -24,6 +24,7 @@
  * handled by the caller; nothing here runs for it.
  */
 import { and, eq, inArray, ne, sql } from 'drizzle-orm'
+import { forEachSequential } from '../../lib/sequential.ts'
 import type { Db } from '../../db/connection.ts'
 import { principalPlacement } from '../../db/schema.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
@@ -149,9 +150,8 @@ async function allocateForPrincipal(
   request: PrincipalIdRequest
 ): Promise<PrincipalIds | null> {
   return await db.transaction(async (tx) => {
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`principal-ids:${request.principalId}`}, 0))`
-    )
+    const lockKey = 'principal-ids:' + request.principalId
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`)
     const rows = (await loadPlacementIdRows(tx, [request.principalId])).get(request.principalId)
     const decision = decidePrincipalIds(rows ?? [], serverId)
     if (decision.kind === 'use') {
@@ -214,7 +214,7 @@ export async function resolvePrincipalIds(
     logSkipped(serverId, err)
     return out
   }
-  for (const request of requests) {
+  await forEachSequential(requests, async (request) => {
     try {
       const decision = decidePrincipalIds(rowsByPrincipal.get(request.principalId) ?? [], serverId)
       if (decision.kind === 'use') {
@@ -226,7 +226,7 @@ export async function resolvePrincipalIds(
     } catch (err) {
       logSkipped(serverId, err)
     }
-  }
+  })
   return out
 }
 
@@ -252,8 +252,8 @@ export async function recordReportedPrincipalIds(
   serverId: string,
   reports: ReadonlyArray<ReportedPrincipalId>
 ): Promise<void> {
-  for (const report of reports) {
-    if (!isReportableId(report.uid) || !isReportableId(report.gid)) continue
+  await forEachSequential(reports, async (report) => {
+    if (!isReportableId(report.uid) || !isReportableId(report.gid)) return
     try {
       const [row] = await db
         .select({
@@ -269,7 +269,7 @@ export async function recordReportedPrincipalIds(
           )
         )
         .limit(1)
-      if (!row) continue
+      if (!row) return
       if (row.uid === null || row.gid === null) {
         await db
           .update(principalPlacement)
@@ -288,7 +288,7 @@ export async function recordReportedPrincipalIds(
         `reported ids for principal ${report.principalId} on server ${serverId} not recorded: ${message}`
       )
     }
-  }
+  })
 }
 
 const ID_TAKEN_RE = /principal_id_taken kind=(uid|gid) id=(\d+) principalId=([0-9a-f-]{36})/
