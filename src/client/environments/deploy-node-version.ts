@@ -12,7 +12,7 @@
  * 2. `package.json` `engines.node` (a range such as `>=26.7.0`, `^22`,
  *    `20 || 22`) → the newest offered series it allows.
  * 3. `.nvmrc`, then `.node-version` (a version such as `26` or `v24.1.0`).
- * 4. Nothing usable → left unset, and the daemon uses its default (24).
+ * 4. Nothing usable → left unset, and the daemon runs the newest offered series.
  *
  * Files are read from the service's `subdirectory` first and, when it has one,
  * from the repository root after that, so a monorepo that keeps `.nvmrc` at
@@ -22,17 +22,17 @@
  * like a range no offered series satisfies: both name the file and the value.
  *
  * A repository that cannot be read fails a deploy (`node_version_unreadable`):
- * building with the default instead would quietly bring back the very bug this
+ * building with the newest series instead would quietly bring back the very bug this
  * fixes, and the error says how to go on (pin `x-turbopanel.nodeVersion`, which
  * skips the read). A preview only warns, and says the deploy reads it again
- * with the clone secret. A disabled app warns and uses the default rather than
+ * with the clone secret. A disabled app warns and uses the newest series rather than
  * holding up the whole deploy.
  *
  * **Rollbacks** send the series the release was built with, recorded on the
  * deploy command's release row (`context.releases[].nodeVersion`), and read
  * nothing: a rollback seals no clone secret, so a private repository could not
  * be read anyway. A release recorded before the series was is read as before
- * and falls back to the default with a warning in the deploy response.
+ * and falls back to the newest series with a warning in the deploy response.
  *
  * A deploy pins a source whose commit the provider could not resolve (a plain
  * git remote, a deploy-key repository: `commitSha` is still the branch) to the
@@ -48,7 +48,7 @@ import type { AppEnv } from '../../app/app.ts'
 import { type Db, getDaemonCellRegistry } from '../../db/connection.ts'
 import { repository } from '../../db/schema.ts'
 import type { EnvironmentDeploySource } from '../../contracts/commands/schemas.ts'
-import { DEFAULT_NATIVE_APP_NODE_SERIES, runtimeSeries } from '../../contracts/runtime-registry.ts'
+import { NEWEST_NATIVE_APP_NODE_SERIES, runtimeSeries } from '../../contracts/runtime-registry.ts'
 import type { PreparedNativeAppService } from '../../features/compose/ir.ts'
 import type { GitProviderSourceRow, RepositoryFileEntry } from '../../features/git/git-provider.ts'
 import { newestAllowedSeries, parseNodeVersionRange } from '../../lib/node-version-range.ts'
@@ -56,13 +56,13 @@ import { inspectRepository, type InspectRepositoryParams } from '../repositories
 
 /** Where a native app's Node series came from. */
 export type NodeVersionOrigin =
-  'compose' | 'release' | 'package.json' | '.nvmrc' | '.node-version' | 'default' | 'unresolved'
+  'compose' | 'release' | 'package.json' | '.nvmrc' | '.node-version' | 'newest' | 'unresolved'
 
 /** One native app's Node series, for people (the deploy preview). */
 export type NativeAppNodeVersionView = {
   composeServiceName: string
   /**
-   * The series the app runs: what is sent, or the daemon default when nothing
+   * The series the app runs: what is sent, or the newest offered series when nothing
    * is. Absent when the preview could not read the repository (`unresolved`).
    */
   nodeVersion?: string
@@ -212,11 +212,11 @@ export function nodeVersionFromFiles(
   return null
 }
 
-function defaultView(composeServiceName: string, note?: string): NativeAppNodeVersionView {
+function newestView(composeServiceName: string, note?: string): NativeAppNodeVersionView {
   return {
     composeServiceName,
-    nodeVersion: DEFAULT_NATIVE_APP_NODE_SERIES,
-    source: 'default',
+    nodeVersion: NEWEST_NATIVE_APP_NODE_SERIES,
+    source: 'newest',
     ...(note === undefined ? {} : { note }),
   }
 }
@@ -257,7 +257,7 @@ function unreadableOutcome(
   const name = app.composeServiceName
   const pin = `Set x-turbopanel.nodeVersion on the service to skip this read.`
   if (mode === 'preview') {
-    const note = `Could not read the repository in this preview (${message}). The deploy reads it again at the commit it builds, with the clone secret; without a version file the app uses Node ${DEFAULT_NATIVE_APP_NODE_SERIES}. ${pin}`
+    const note = `Could not read the repository in this preview (${message}). The deploy reads it again at the commit it builds, with the clone secret; without a version file the app uses Node ${NEWEST_NATIVE_APP_NODE_SERIES}. ${pin}`
     return {
       app,
       view: { composeServiceName: name, source: 'unresolved', note },
@@ -271,10 +271,10 @@ function unreadableOutcome(
   const why = rollback
     ? 'The release being restored recorded no Node version (it was published before that was recorded)'
     : 'The app is disabled'
-  const note = `${why}, and its repository could not be read (${message}), so it uses Node ${DEFAULT_NATIVE_APP_NODE_SERIES}. ${pin}`
+  const note = `${why}, and its repository could not be read (${message}), so it uses Node ${NEWEST_NATIVE_APP_NODE_SERIES}. ${pin}`
   return {
     app,
-    view: defaultView(name, note),
+    view: newestView(name, note),
     warning: unresolvedWarning(name, `"${name}": ${note}`, source.commitSha),
   }
 }
@@ -332,7 +332,7 @@ function answerWithoutRead(
   if (pinned) {
     return { app, view: { composeServiceName: name, nodeVersion: pinned, source: 'compose' } }
   }
-  return source ? undefined : { app, view: defaultView(name) }
+  return source ? undefined : { app, view: newestView(name) }
 }
 
 async function resolveOneApp(
@@ -341,7 +341,7 @@ async function resolveOneApp(
   ctx: ResolveContext
 ): Promise<AppOutcome> {
   const known = answerWithoutRead(app, source, ctx.recorded)
-  if (known || !source) return known ?? { app, view: defaultView(app.composeServiceName) }
+  if (known || !source) return known ?? { app, view: newestView(app.composeServiceName) }
 
   const paths = nodeVersionFilePaths(source.subdirectory)
   const fetched = await ctx.read(source, paths)
@@ -351,7 +351,7 @@ async function resolveOneApp(
   const decision = nodeVersionFromFiles(fetched.files, paths, ctx.offered)
   const outcome =
     decision === null
-      ? { app, view: defaultView(app.composeServiceName) }
+      ? { app, view: newestView(app.composeServiceName) }
       : decisionOutcome(app, decision, ctx.offered)
   if ('error' in outcome || readCommitSha === undefined) return outcome
   return { ...outcome, readCommitSha }
@@ -483,7 +483,7 @@ export function pinSourcesToReadCommits(
 
 /**
  * The series to record on each native app's release row: what was sent, else
- * the default the daemon applied. A rollback sends it back unchanged.
+ * the newest series the daemon applied. A rollback sends it back unchanged.
  */
 export function recordedNodeVersions(
   apps:
@@ -496,7 +496,7 @@ export function recordedNodeVersions(
       .filter((app) => app.runtime !== 'deno')
       .map((app) => [
         app.composeServiceName,
-        app.nodeVersion?.trim() || DEFAULT_NATIVE_APP_NODE_SERIES,
+        app.nodeVersion?.trim() || NEWEST_NATIVE_APP_NODE_SERIES,
       ])
   )
 }
