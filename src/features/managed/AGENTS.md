@@ -382,30 +382,47 @@ downgrade to plaintext.
 **Minimum under external access: `require`.** While any server that fronts a
 cluster allows external access, the cluster's effective mode may not be
 `disable` / `allow` / `prefer` (`isWeakManagedSslMode`,
-`MANAGED_SSL_MINIMUM_WITH_EXTERNAL_ACCESS` in `ssl.ts`). `external-access-tls.ts`
-refuses each save that would break it, with a 409, a plain `message` and nothing
-saved:
+`MANAGED_SSL_MINIMUM_WITH_EXTERNAL_ACCESS` in `ssl.ts`). "Fronts" is the ingress
+builder's set: `loadFrontedManagedIds` per server (members placed there plus
+bindings of the server owner's organization), and `loadManagedFrontendServerIds`
+per cluster, filtered to that same set. `external-access-tls.ts` refuses each
+save that would break the minimum, with a 409, a plain `message` and nothing
+saved. Check and write run together under one transaction-scoped advisory lock
+(`withManagedTlsPolicyLock`), so two of these saves never pass at once:
 
-| Save                                                             | Code                                          | Names       |
-| ---------------------------------------------------------------- | --------------------------------------------- | ----------- |
-| Cluster mode change (`PATCH …/managed`, incl. clearing it)       | `managed_ssl_external_access_minimum`         | `servers`   |
-| Org default (`PUT …/managed-defaults`) a fronted cluster follows | `managed_ssl_default_external_access_minimum` | `databases` |
-| External access on (`PUT /servers/:id/managed-external-access`)  | `external_access_weak_ssl`                    | `databases` |
+| Save                                                                    | Code                                          | Names                                                      |
+| ----------------------------------------------------------------------- | --------------------------------------------- | ---------------------------------------------------------- |
+| Cluster mode change (`PATCH …/managed`, incl. clearing it)              | `managed_ssl_external_access_minimum`         | `servers`                                                  |
+| Org default change (`PUT …/managed-defaults`) a fronted cluster follows | `managed_ssl_default_external_access_minimum` | `databases`                                                |
+| External access on (`PUT /servers/:id/managed-external-access`)         | `external_access_weak_ssl`                    | `databases` (server owner's own), `otherDatabases` (count) |
 
-Turning external access off is never refused, and an unrelated save (a rename,
-a ports-only default) never re-checks the mode. A cluster created on an
-external-access server while the org default is weak gets its own mode set to
-`require`. Placement, binding or replica moves are not checked; the ingress
-payload covers them: `clusterRequireTls` sets `requireTls` when the mode
-requires TLS **or** the server allows external access. `use_ssl` is per login,
-so that also makes clients on the server itself use TLS for the cluster (they
-already do under the default `require`).
+Turning external access off is never refused. A save that does not change the
+mode (a rename, a ports-only default, re-sending the stored default) is not
+re-checked. A cluster created on an external-access server while the org
+default is weak gets its own mode set to `require`.
+
+What is **not** checked at save time: a binding, replica or placement change
+that puts a weak cluster under an external-access server, and rows that were
+already weak before this rule. For those:
+
+- The ingress payload refuses plaintext: `clusterRequireTls` sets `requireTls`
+  when the mode requires TLS **or** the server allows external access.
+  `use_ssl` is per login, so clients on the server itself must use TLS for that
+  cluster too (they already do under the default `require`).
+- `resolveEffectiveManagedSsl` raises the mode to `require` where it is handed
+  out: the detail DSN, binding variables (on their next materialize) and the
+  Connect view (`ssl.raisedForExternalAccess: true`).
+- A client that sets `sslmode=disable` (or `ssl-mode=DISABLED`) itself, outside
+  TurboPanel's variables, is refused and must change it; `allow` / `prefer`
+  clients move to TLS on their own. Binding variables written before the change
+  keep the old value until the binding is materialized again (a deploy, a
+  password rotation).
 
 | Layer            | Module                                                                                           | Route                                                                                                    |
 | ---------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
 | Org default      | `org-defaults.ts` (`parseManagedOrganizationDefaults`, `parseManagedSslModeInput`)               | `GET`/`PUT /api/client/v1/organizations/:id/managed-defaults` (manage-gated; PUT `sslMode: null` clears) |
 | Per-request load | `../../client/managed/org-defaults.ts` (`loadManagedOrgDefaults`) → `ManagedContext.orgDefaults` | every managed route                                                                                      |
-| Effective view   | `buildManagedSslView` (`../../client/managed/routes-helpers.ts`)                                 | `GET …/managed` → `ssl: { configured, effective, organizationDefault }`                                  |
+| Effective view   | `buildManagedSslView` (`routes-helpers.ts`)                                                      | `GET …/managed` → `ssl: { configured, effective, organizationDefault, raisedForExternalAccess }`         |
 
 The detail `ssl` view is present even **before** provisioning
 (`buildEmptyManagedDetailResponse` takes the org default) so the create surface

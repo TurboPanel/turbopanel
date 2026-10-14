@@ -1,20 +1,31 @@
-import { eq, sql } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import type { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { createOrganizationForUser } from '../authn/install-state.ts'
-import { assertOrgOwnerOr403 } from '../authz/index.ts'
 import { canAccessOrganization, listAccessibleOrganizations } from '../org-context.ts'
-import { assertCanManageOr403, parseJsonBody } from '../shared.ts'
+import { parseJsonBody } from '../shared.ts'
 import { type Db, getDb } from '../../db/connection.ts'
 import {
   AUDIT_MAX_PAGE_SIZE,
   listAuditForOrganization,
-  recordAudit,
 } from '../../features/audit/audit-records.ts'
 import { organization } from '../../db/schema.ts'
-import { checkOrgDefaultSslModeForExternalAccess } from '../../features/managed/external-access-tls.ts'
+import {
+  checkOrgDefaultSslModeForExternalAccess,
+  withManagedTlsPolicyLock,
+} from '../../features/managed/external-access-tls.ts'
+import {
+  loadOrgOptionsRow,
+  mergeOrgOptionsSql,
+  openOrgSettingsScope,
+  orgOptionsGetRoute,
+  orgOptionsPatchRoute,
+  recordOrgSettingAudit,
+  removeOrgOptionSql,
+  writeOrgOptions,
+} from './settings-route.ts'
 import {
   parseOrganizationOptions,
   resolveRandomizedPrincipalUsernames,
@@ -152,12 +163,9 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
   })
 
   router.patch('/organizations/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
+    const scope = await openOrgSettingsScope(c, 'manage')
+    if (scope instanceof Response) return scope
+    const { db, id } = scope
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -187,205 +195,48 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     })
   })
 
-  router.get('/organizations/:id/default-timezone', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    const options = parseOrganizationOptions(orgRow.options)
-    return c.json(defaultTimezoneGetResponse(options))
-  })
-
-  router.put('/organizations/:id/default-timezone', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    const parsedPatch = parseDefaultTimezonePatch(body)
-    if (!parsedPatch.ok) {
-      return c.json({ error: parsedPatch.error }, parsedPatch.status)
-    }
-    const patch = parsedPatch.patch
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    await db
-      .update(organization)
-      .set({
-        options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${JSON.stringify(
-          patch
-        )}::jsonb`,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(organization.id, id))
-
-    const [updated] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    const options = parseOrganizationOptions(updated?.options)
-
-    return c.json(defaultTimezonePutResponse(options))
-  })
-
-  router.get('/organizations/:id/temperature-unit', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    const options = parseOrganizationOptions(orgRow.options)
-    return c.json(temperatureUnitGetResponse(options))
-  })
-
-  router.put('/organizations/:id/temperature-unit', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    const parsedPatch = parseTemperatureUnitPatch(body)
-    if (!parsedPatch.ok) {
-      return c.json({ error: parsedPatch.error }, parsedPatch.status)
-    }
-    const patch = parsedPatch.patch
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    await db
-      .update(organization)
-      .set({
-        options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${JSON.stringify(
-          patch
-        )}::jsonb`,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(organization.id, id))
-
-    const [updated] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    const options = parseOrganizationOptions(updated?.options)
-
-    return c.json(temperatureUnitPutResponse(options))
-  })
-
-  router.get('/organizations/:id/tls-settings', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    const options = parseOrganizationOptions(orgRow.options)
-    return c.json(tlsSettingsGetResponse(options))
-  })
-
-  router.put('/organizations/:id/tls-settings', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    const parsedPatch = parseTlsSettingsPatch(body)
-    if (!parsedPatch.ok) {
-      return c.json({ error: parsedPatch.error }, parsedPatch.status)
-    }
-    const patch = parsedPatch.patch
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    await db
-      .update(organization)
-      .set({
-        options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${JSON.stringify(
-          patch
-        )}::jsonb`,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(organization.id, id))
-
-    const [updated] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    const options = parseOrganizationOptions(updated?.options)
-
-    await recordAudit(db, {
-      organizationId: id,
-      actorUserId: session?.userId ?? null,
-      actorEmail: session?.email ?? null,
-      action: 'organization.acme.set',
-      targetType: 'organization',
-      targetId: id,
-      context: { acmeEnabled: patch.acmeEnabled },
+  router.get(
+    '/organizations/:id/default-timezone',
+    orgOptionsGetRoute('manage', defaultTimezoneGetResponse)
+  )
+  router.put(
+    '/organizations/:id/default-timezone',
+    orgOptionsPatchRoute({
+      gate: 'manage',
+      parse: parseDefaultTimezonePatch,
+      respond: defaultTimezonePutResponse,
     })
+  )
 
-    return c.json(tlsSettingsPutResponse(options))
-  })
+  router.get(
+    '/organizations/:id/temperature-unit',
+    orgOptionsGetRoute('manage', temperatureUnitGetResponse)
+  )
+  router.put(
+    '/organizations/:id/temperature-unit',
+    orgOptionsPatchRoute({
+      gate: 'manage',
+      parse: parseTemperatureUnitPatch,
+      respond: temperatureUnitPutResponse,
+    })
+  )
+
+  router.get(
+    '/organizations/:id/tls-settings',
+    orgOptionsGetRoute('manage', tlsSettingsGetResponse)
+  )
+  router.put(
+    '/organizations/:id/tls-settings',
+    orgOptionsPatchRoute({
+      gate: 'manage',
+      parse: parseTlsSettingsPatch,
+      respond: tlsSettingsPutResponse,
+      audit: (patch) => ({
+        action: 'organization.acme.set',
+        context: { acmeEnabled: patch.acmeEnabled },
+      }),
+    })
+  )
 
   // Org-owner, not just organization:manage — this gates namespace/
   // capability-escaping Compose fields (privileged, cap_add, network_mode,
@@ -393,156 +244,40 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
   // compromising every co-hosted tenant. See `sec-compose-privileged-gate`
   // (2026-09-15 security audit) and `lib/compose/field-policy.ts`'s
   // `GATED_SERVICE_FIELD_KEYS`.
-  router.get('/organizations/:id/compose-privileged-fields', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertOrgOwnerOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    const options = parseOrganizationOptions(orgRow.options)
-    return c.json(composeGatedFieldsGetResponse(options))
-  })
+  router.get(
+    '/organizations/:id/compose-privileged-fields',
+    orgOptionsGetRoute('owner', composeGatedFieldsGetResponse)
+  )
+  router.put(
+    '/organizations/:id/compose-privileged-fields',
+    orgOptionsPatchRoute({
+      gate: 'owner',
+      parse: parseComposeGatedFieldsPatch,
+      respond: composeGatedFieldsPutResponse,
+      audit: (patch) => ({
+        action: 'organization.compose_privileged_fields.set',
+        context: { composeGatedFieldsEnabled: patch.composeGatedFieldsEnabled },
+      }),
+    })
+  )
 
   // Deploy hooks (`preDeployCommand` / `postDeployCommand`) are arbitrary
   // shell a project member authors and the daemon runs at deploy time —
   // confined to the service container, but code nobody reviewed in a commit.
   // Off by default; the owner opts the organization in here.
-  router.get('/organizations/:id/deploy-hooks', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertOrgOwnerOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    return c.json(deployHooksGetResponse(parseOrganizationOptions(orgRow.options)))
-  })
-
-  router.put('/organizations/:id/deploy-hooks', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    const id = c.req.param('id')
-    const denied = await assertOrgOwnerOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    const parsedPatch = parseDeployHooksPatch(body)
-    if (!parsedPatch.ok) {
-      return c.json({ error: parsedPatch.error }, parsedPatch.status)
-    }
-    const patch = parsedPatch.patch
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    await db
-      .update(organization)
-      .set({
-        options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${JSON.stringify(
-          patch
-        )}::jsonb`,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(organization.id, id))
-
-    const [updated] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    const options = parseOrganizationOptions(updated?.options)
-
-    await recordAudit(db, {
-      organizationId: id,
-      actorUserId: session?.userId ?? null,
-      actorEmail: session?.email ?? null,
-      action: 'organization.deploy_hooks.set',
-      targetType: 'organization',
-      targetId: id,
-      context: { deployHooksEnabled: patch.deployHooksEnabled },
+  router.get('/organizations/:id/deploy-hooks', orgOptionsGetRoute('owner', deployHooksGetResponse))
+  router.put(
+    '/organizations/:id/deploy-hooks',
+    orgOptionsPatchRoute({
+      gate: 'owner',
+      parse: parseDeployHooksPatch,
+      respond: deployHooksPutResponse,
+      audit: (patch) => ({
+        action: 'organization.deploy_hooks.set',
+        context: { deployHooksEnabled: patch.deployHooksEnabled },
+      }),
     })
-
-    return c.json(deployHooksPutResponse(options))
-  })
-
-  router.put('/organizations/:id/compose-privileged-fields', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    const id = c.req.param('id')
-    const denied = await assertOrgOwnerOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    const parsedPatch = parseComposeGatedFieldsPatch(body)
-    if (!parsedPatch.ok) {
-      return c.json({ error: parsedPatch.error }, parsedPatch.status)
-    }
-    const patch = parsedPatch.patch
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    await db
-      .update(organization)
-      .set({
-        options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${JSON.stringify(
-          patch
-        )}::jsonb`,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(organization.id, id))
-
-    const [updated] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    const options = parseOrganizationOptions(updated?.options)
-
-    await recordAudit(db, {
-      organizationId: id,
-      actorUserId: session?.userId ?? null,
-      actorEmail: session?.email ?? null,
-      action: 'organization.compose_privileged_fields.set',
-      targetType: 'organization',
-      targetId: id,
-      context: { composeGatedFieldsEnabled: patch.composeGatedFieldsEnabled },
-    })
-
-    return c.json(composeGatedFieldsPutResponse(options))
-  })
+  )
 
   /**
    * The organization's audit trail, newest first.
@@ -553,12 +288,9 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
    * pass the last row's `createdAt` as `before`.
    */
   router.get('/organizations/:id/audit', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertOrgOwnerOr403(c, 'organization', id)
-    if (denied) return denied
+    const scope = await openOrgSettingsScope(c, 'owner')
+    if (scope instanceof Response) return scope
+    const { db, id } = scope
 
     const before = c.req.query('before')
     const limitRaw = c.req.query('limit')
@@ -578,32 +310,14 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     return c.json({ entries })
   })
 
-  router.get('/organizations/:id/compose-resource-defaults', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertOrgOwnerOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    return c.json(composeDefaultResourceLimitsGetResponse(parseOrganizationOptions(orgRow.options)))
-  })
+  router.get(
+    '/organizations/:id/compose-resource-defaults',
+    orgOptionsGetRoute('owner', composeDefaultResourceLimitsGetResponse)
+  )
 
   router.put('/organizations/:id/compose-resource-defaults', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    const id = c.req.param('id')
-    const denied = await assertOrgOwnerOr403(c, 'organization', id)
-    if (denied) return denied
+    const scope = await openOrgSettingsScope(c, 'owner')
+    if (scope instanceof Response) return scope
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -613,43 +327,24 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
       return c.json({ error: parsedPatch.error }, parsedPatch.status)
     }
 
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
+    if (!(await loadOrgOptionsRow(scope.db, scope.id))) {
+      return c.json({ error: 'Not found' }, 404)
+    }
 
     // `null` clears the opt-in; jsonb merge-patch cannot remove a key, so the
     // clear is written as a key removal on the stored object.
     const patch = parsedPatch.patch.composeDefaultResourceLimits
-    await db
-      .update(organization)
-      .set({
-        options:
-          patch === null
-            ? sql`COALESCE(${organization.options}, '{}'::jsonb) - 'composeDefaultResourceLimits'`
-            : sql`COALESCE(${organization.options}, '{}'::jsonb) || ${JSON.stringify({
-                composeDefaultResourceLimits: patch,
-              })}::jsonb`,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(organization.id, id))
+    await writeOrgOptions(
+      scope.db,
+      scope.id,
+      patch === null
+        ? removeOrgOptionSql('composeDefaultResourceLimits')
+        : mergeOrgOptionsSql({ composeDefaultResourceLimits: patch })
+    )
+    const updated = await loadOrgOptionsRow(scope.db, scope.id)
 
-    const [updated] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-
-    await recordAudit(db, {
-      organizationId: id,
-      actorUserId: session?.userId ?? null,
-      actorEmail: session?.email ?? null,
-      action: 'organization.compose_resource_defaults.set',
-      targetType: 'organization',
-      targetId: id,
-      context: { composeDefaultResourceLimits: patch },
+    await recordOrgSettingAudit(c, scope, 'organization.compose_resource_defaults.set', {
+      composeDefaultResourceLimits: patch,
     })
 
     return c.json(
@@ -657,152 +352,50 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     )
   })
 
-  router.get('/organizations/:id/host-defaults', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  router.get(
+    '/organizations/:id/host-defaults',
+    orgOptionsGetRoute('manage', hostDefaultsGetResponse)
+  )
+  router.put(
+    '/organizations/:id/host-defaults',
+    orgOptionsPatchRoute({
+      gate: 'manage',
+      parse: parseHostDefaultsPatch,
+      respond: hostDefaultsPutResponse,
+    })
+  )
 
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    const options = parseOrganizationOptions(orgRow.options)
-    return c.json(hostDefaultsGetResponse(options))
-  })
-
-  router.put('/organizations/:id/host-defaults', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    const parsedPatch = parseHostDefaultsPatch(body)
-    if (!parsedPatch.ok) {
-      return c.json({ error: parsedPatch.error }, parsedPatch.status)
-    }
-    const patch = parsedPatch.patch
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    await db
-      .update(organization)
-      .set({
-        options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${JSON.stringify(
-          patch
-        )}::jsonb`,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(organization.id, id))
-
-    const [updated] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    const options = parseOrganizationOptions(updated?.options)
-
-    return c.json(hostDefaultsPutResponse(options))
-  })
-
-  router.get('/organizations/:id/default-environment', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    const options = parseOrganizationOptions(orgRow.options)
-    return c.json(defaultEnvironmentGetResponse(options))
-  })
-
-  router.put('/organizations/:id/default-environment', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    const parsed = parseDefaultEnvironmentPutBody(body)
-    if (!parsed.ok) {
-      return c.json({ error: parsed.error }, parsed.status)
-    }
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    await db
-      .update(organization)
-      .set({
-        options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${JSON.stringify({
-          defaultEnvironmentName: parsed.defaultEnvironmentName,
-        })}::jsonb`,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(organization.id, id))
-
-    const [updated] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    const options = parseOrganizationOptions(updated?.options)
-
-    return c.json(defaultEnvironmentPutResponse(options))
-  })
+  router.get(
+    '/organizations/:id/default-environment',
+    orgOptionsGetRoute('manage', defaultEnvironmentGetResponse)
+  )
+  router.put(
+    '/organizations/:id/default-environment',
+    orgOptionsPatchRoute({
+      gate: 'manage',
+      parse: (body) => {
+        const parsed = parseDefaultEnvironmentPutBody(body)
+        return parsed.ok
+          ? { ok: true, patch: { defaultEnvironmentName: parsed.defaultEnvironmentName } }
+          : parsed
+      },
+      respond: defaultEnvironmentPutResponse,
+    })
+  )
 
   router.get('/organizations/:id/server-capacity', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+    const scope = await openOrgSettingsScope(c, 'manage')
+    if (scope instanceof Response) return scope
 
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const capacity = await loadOrgServerCapacity(db, id)
+    const capacity = await loadOrgServerCapacity(scope.db, scope.id)
     if (!capacity) return c.json({ error: 'Not found' }, 404)
 
     return c.json(capacity)
   })
 
   router.put('/organizations/:id/server-capacity', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertOrgOwnerOr403(c, 'organization', id)
-    if (denied) return denied
+    const scope = await openOrgSettingsScope(c, 'owner')
+    if (scope instanceof Response) return scope
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -812,55 +405,27 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
       return c.json({ error: parsed.error }, parsed.status)
     }
 
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
+    if (!(await loadOrgOptionsRow(scope.db, scope.id))) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+    await writeOrgOptions(scope.db, scope.id, mergeOrgOptionsSql({ maxServers: parsed.maxServers }))
 
-    await db
-      .update(organization)
-      .set({
-        options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${JSON.stringify({
-          maxServers: parsed.maxServers,
-        })}::jsonb`,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(organization.id, id))
-
-    const capacity = await loadOrgServerCapacity(db, id)
+    const capacity = await loadOrgServerCapacity(scope.db, scope.id)
     if (!capacity) return c.json({ error: 'Not found' }, 404)
 
     return c.json({ ok: true as const, ...capacity })
   })
 
-  router.get('/organizations/:id/managed-defaults', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    const options = parseOrganizationOptions(orgRow.options)
-    return c.json(managedDefaultsGetResponse(options.managedDatabase ?? {}))
-  })
+  router.get(
+    '/organizations/:id/managed-defaults',
+    orgOptionsGetRoute('manage', (options) =>
+      managedDefaultsGetResponse(options.managedDatabase ?? {})
+    )
+  )
 
   router.put('/organizations/:id/managed-defaults', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
+    const scope = await openOrgSettingsScope(c, 'manage')
+    if (scope instanceof Response) return scope
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -870,77 +435,55 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
       return c.json({ error: parsedPatch.error }, parsedPatch.status)
     }
 
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
+    const orgRow = await loadOrgOptionsRow(scope.db, scope.id)
     if (!orgRow) return c.json({ error: 'Not found' }, 404)
 
     // Nested object: merge in app code, then write the whole `managedDatabase`
     // value — jsonb `||` is shallow and would drop sibling keys.
-    const next = applyManagedDefaultsPatch(
-      parseOrganizationOptions(orgRow.options).managedDatabase ?? {},
-      parsedPatch.patch
-    )
+    const stored = parseOrganizationOptions(orgRow.options).managedDatabase ?? {}
+    const next = applyManagedDefaultsPatch(stored, parsedPatch.patch)
 
     // Collisions only exist post-merge: one family's override can land on the
     // other family's still-inherited default.
     const invalid = validateManagedDefaults(next)
     if (invalid) return c.json({ error: invalid.error }, invalid.status)
 
-    // Only a change of the SSL default is checked, so a ports-only save never
-    // trips over an older default.
-    if ('sslMode' in parsedPatch.patch) {
-      const tlsRefusal = await checkOrgDefaultSslModeForExternalAccess(db, {
-        organizationId: id,
-        sslMode: next.sslMode,
-      })
-      if (tlsRefusal) return c.json(tlsRefusal, 409)
-    }
+    const write = (tx: Db) =>
+      writeOrgOptions(tx, scope.id, mergeOrgOptionsSql({ managedDatabase: next }))
 
-    await db
-      .update(organization)
-      .set({
-        options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${JSON.stringify({
-          managedDatabase: next,
-        })}::jsonb`,
-        updatedAt: new Date().toISOString(),
+    // A changed SSL default is checked and saved under the SSL policy lock:
+    // refused while a database that follows it is served by a server that
+    // allows external access. An unchanged default (a ports-only save) is not
+    // re-checked, so older data never blocks it.
+    if (next.sslMode === stored.sslMode) {
+      await write(scope.db)
+    } else {
+      const refusal = await withManagedTlsPolicyLock(scope.db, async (tx) => {
+        const found = await checkOrgDefaultSslModeForExternalAccess(tx, {
+          organizationId: scope.id,
+          sslMode: next.sslMode,
+        })
+        if (!found) await write(tx)
+        return found
       })
-      .where(eq(organization.id, id))
+      if (refusal) return c.json(refusal, 409)
+    }
 
     return c.json(managedDefaultsPutResponse(next))
   })
 
-  router.get('/organizations/:id/principal-defaults', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    const options = parseOrganizationOptions(orgRow.options)
-    return c.json({
+  router.get(
+    '/organizations/:id/principal-defaults',
+    orgOptionsGetRoute('manage', (options) => ({
       randomizedUsernames: options.randomizedPrincipalUsernames ?? null,
       effectiveRandomizedUsernames: resolveRandomizedPrincipalUsernames(options),
-    })
-  })
+    }))
+  )
 
   router.put('/organizations/:id/principal-defaults', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
+    const scope = await openOrgSettingsScope(c, 'manage')
+    if (scope instanceof Response) return scope
+    const { db, id } = scope
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -959,19 +502,13 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
       .limit(1)
     if (!orgRow) return c.json({ error: 'Not found' }, 404)
 
-    const patch =
+    await writeOrgOptions(
+      db,
+      id,
       value === null
-        ? sql`COALESCE(${organization.options}, '{}'::jsonb) - 'randomizedPrincipalUsernames'`
-        : sql`COALESCE(${organization.options}, '{}'::jsonb) || ${JSON.stringify({
-            randomizedPrincipalUsernames: value,
-          })}::jsonb`
-    await db
-      .update(organization)
-      .set({
-        options: patch,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(organization.id, id))
+        ? removeOrgOptionSql('randomizedPrincipalUsernames')
+        : mergeOrgOptionsSql({ randomizedPrincipalUsernames: value })
+    )
 
     return c.json({
       ok: true as const,
@@ -980,32 +517,15 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     })
   })
 
-  router.get('/organizations/:id/docker-networking', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    const options = parseOrganizationOptions(orgRow.options)
-    return c.json(dockerNetworkingGetResponse(options.docker ?? {}))
-  })
+  router.get(
+    '/organizations/:id/docker-networking',
+    orgOptionsGetRoute('manage', (options) => dockerNetworkingGetResponse(options.docker ?? {}))
+  )
 
   router.put('/organizations/:id/docker-networking', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
+    const scope = await openOrgSettingsScope(c, 'manage')
+    if (scope instanceof Response) return scope
+    const { db, id } = scope
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -1072,19 +592,11 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     // Top-level jsonb merge replaces the whole `docker` object, which is the
     // correct replace-all semantics for a list; an all-cleared body removes
     // the key.
-    const patch =
-      next === null
-        ? sql`COALESCE(${organization.options}, '{}'::jsonb) - 'docker'`
-        : sql`COALESCE(${organization.options}, '{}'::jsonb) || ${JSON.stringify({
-            docker: next,
-          })}::jsonb`
-    await db
-      .update(organization)
-      .set({
-        options: patch,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(organization.id, id))
+    await writeOrgOptions(
+      db,
+      id,
+      next === null ? removeOrgOptionSql('docker') : mergeOrgOptionsSql({ docker: next })
+    )
 
     return c.json(dockerNetworkingPutResponse(next ?? {}))
   })

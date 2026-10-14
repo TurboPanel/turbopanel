@@ -3659,6 +3659,62 @@ test('external access keeps every database on the server at Require or stronger'
   )
 })
 
+test('stored data without SSL under external access: shown raised to Require, and unchanged saves still pass', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId }) => {
+      registerOrganizationRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      await db
+        .update(managed)
+        .set({ status: 'ready' })
+        .where(eq(managed.environmentId, environmentId))
+
+      // Older data: a weak org default the cluster follows, external access on.
+      await db
+        .update(organization)
+        .set({ options: { managedDatabase: { sslMode: 'prefer' } } })
+        .where(eq(organization.id, organizationId))
+      await saveManagedExternalAccess(db, serverId, true)
+      // An address clients outside the server can dial, so the detail has a DSN.
+      await db.update(server).set({ hostname: 'db-1.example.test' }).where(eq(server.id, serverId))
+
+      const detail = await app.request(`/environments/${environmentId}/managed`, { headers })
+      const body = (await detail.json()) as {
+        connection: { dsn: string } | null
+        ssl: { configured: string | null; effective: string; raisedForExternalAccess: boolean }
+      }
+      assertEquals(body.ssl.configured, null)
+      assertEquals(body.ssl.effective, 'require')
+      assertEquals(body.ssl.raisedForExternalAccess, true)
+      assertEquals(body.connection?.dsn.endsWith('?sslmode=require'), true)
+
+      const putDefaults = async (payload: Record<string, unknown>) =>
+        await app.request(`/organizations/${organizationId}/managed-defaults`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify(payload),
+        })
+      // A ports-only save and re-sending the stored default are not re-checked.
+      assertEquals((await putDefaults({ ports: { postgres: 18432 } })).status, 200)
+      assertEquals((await putDefaults({ sslMode: 'prefer' })).status, 200)
+      // Changing it to another weak mode is.
+      assertEquals((await putDefaults({ sslMode: 'allow' })).status, 409)
+    }
+  )
+})
+
 test('a new cluster on a server with external access gets Require when the org default skips SSL', async () => {
   await withManagedFixtures(
     {},

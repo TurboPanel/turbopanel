@@ -1111,7 +1111,12 @@ export const managedSchemas = {
         type: 'array',
         items: { type: 'string' },
         description:
-          'The other two codes: the databases that would accept connections without SSL.',
+          "The other two codes: the databases that would accept connections without SSL. For `external_access_weak_ssl`, only the server owner's own databases.",
+      },
+      otherDatabases: {
+        type: 'integer',
+        description:
+          '`external_access_weak_ssl`: how many databases of other organizations on the server (granted placements) would accept connections without SSL. Counted, never named.',
       },
     },
   },
