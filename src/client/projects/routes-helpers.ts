@@ -18,7 +18,8 @@ import {
   type CatalogEntry,
   type CreateProjectType,
 } from './catalog/index.ts'
-import { isConfiguredProjectType } from './empty-setup.ts'
+import { isConfiguredProjectType, isProductionEnvironmentName } from './empty-setup.ts'
+import { isValidDisplayName, normalizeDisplayName } from '../../lib/display-name-format.ts'
 import { PROJECT_NAME_IN_USE_ERROR } from '../display-name-uniqueness.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 
@@ -217,6 +218,50 @@ export function parseCreateProjectServerIdField(
     return { ok: false, error: 'Invalid request', status: 400 }
   }
   return { ok: true, serverId: body.serverId }
+}
+
+/**
+ * Optional `environmentName`: the name of the project's first environment.
+ * Absent or null means "use the organization default". Validated like the
+ * org default name (trimmed, display-name rules).
+ */
+export function parseCreateProjectEnvironmentNameField(
+  body: Record<string, unknown>
+): { ok: true; environmentName: string | undefined } | ProjectRouteValidationError {
+  if (body.environmentName === undefined || body.environmentName === null) {
+    return { ok: true, environmentName: undefined }
+  }
+  if (typeof body.environmentName !== 'string') {
+    return { ok: false, error: 'Invalid request', status: 400 }
+  }
+  const normalized = normalizeDisplayName(body.environmentName)
+  if (!isValidDisplayName(normalized)) {
+    return { ok: false, error: 'Invalid request', status: 400 }
+  }
+  return { ok: true, environmentName: normalized }
+}
+
+/**
+ * Display names a catalog entry's environments are created under. The
+ * Production-like environment takes the chosen name, unless another environment
+ * of the entry already uses that name (then it keeps its declared name, so a
+ * project never gets two environments with the same name).
+ */
+export function scaffoldEnvironmentNames(
+  environments: readonly { displayName: string }[],
+  chosenName?: string
+): string[] {
+  const taken = (name: string, index: number) =>
+    environments.some(
+      (other, i) => i !== index && other.displayName.toLowerCase() === name.toLowerCase()
+    )
+  return environments.map((env, index) =>
+    chosenName !== undefined &&
+    isProductionEnvironmentName(env.displayName) &&
+    !taken(chosenName, index)
+      ? chosenName
+      : env.displayName
+  )
 }
 
 /**

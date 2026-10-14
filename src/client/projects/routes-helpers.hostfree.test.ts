@@ -10,11 +10,13 @@ import {
   normalizeProjectPatchOptions,
   parseConfigureProjectBody,
   parseCreateProjectMetadata,
+  parseCreateProjectEnvironmentNameField,
   parseCreateProjectNames,
   parseCreateProjectOptions,
   parseCreateProjectServerIdField,
   parseProjectPatchOptionsBody,
   resolveCatalogEntryForCreate,
+  scaffoldEnvironmentNames,
   resolveCreateProjectType,
   stampCreateProjectMetadata,
 } from './routes-helpers.ts'
@@ -56,10 +58,10 @@ test('resolveCatalogEntryForCreate handles template and managed codes', () => {
 test('mapCreateProjectError maps encryption failures only', () => {
   assertEquals(mapCreateProjectError(null), null)
   assertEquals(mapCreateProjectError(new Error('other')), null)
-  assertEquals(
-    mapCreateProjectError(new Error('encryption unavailable')),
-    { error: 'Encryption unavailable', status: 503 },
-  )
+  assertEquals(mapCreateProjectError(new Error('encryption unavailable')), {
+    error: 'Encryption unavailable',
+    status: 503,
+  })
 })
 
 test('catalogProjectOptions prefers caller options and engine defaults', () => {
@@ -75,16 +77,10 @@ test('catalogProjectOptions prefers caller options and engine defaults', () => {
 
   assertEquals(
     catalogProjectOptions({ options: { compose: { services: { web: {} } } }, entry }, true),
-    { compose: { services: { web: {} } } },
+    { compose: { services: { web: {} } } }
   )
-  assertEquals(
-    catalogProjectOptions({ options: null, entry }, true).managedEngine,
-    'postgres',
-  )
-  assertEquals(
-    catalogProjectOptions({ options: null, entry }, false),
-    { compose: entry.compose },
-  )
+  assertEquals(catalogProjectOptions({ options: null, entry }, true).managedEngine, 'postgres')
+  assertEquals(catalogProjectOptions({ options: null, entry }, false), { compose: entry.compose })
 })
 
 test('parseCreateProjectNames validates display names', () => {
@@ -107,8 +103,10 @@ test('parseCreateProjectOptions accepts valid compose documents', () => {
 
   const parsed = parseCreateProjectOptions({ options: { compose } })
   if (!parsed.ok) throw new TypeError('expected valid compose options')
-  const services = (parsed.options?.compose as ComposeDocument).data
-    .services as Record<string, { image?: string }>
+  const services = (parsed.options?.compose as ComposeDocument).data.services as Record<
+    string,
+    { image?: string }
+  >
   assertEquals(services.web?.image, 'nginx:alpine')
 })
 
@@ -130,14 +128,14 @@ test('stampCreateProjectMetadata lets canonical type win over caller metadata', 
   assertEquals(
     stampCreateProjectMetadata(
       { type: SYSTEM_PROJECT_METADATA_TYPE, note: 'keep' },
-      { type: 'docker-compose' },
+      { type: 'docker-compose' }
     ),
-    { type: 'docker-compose', note: 'keep' },
+    { type: 'docker-compose', note: 'keep' }
   )
-  assertEquals(
-    stampCreateProjectMetadata(null, { type: 'managed', code: 'postgres' }),
-    { type: 'managed', code: 'postgres' },
-  )
+  assertEquals(stampCreateProjectMetadata(null, { type: 'managed', code: 'postgres' }), {
+    type: 'managed',
+    code: 'postgres',
+  })
 })
 
 test('parseCreateProjectServerIdField accepts omitted, null, and uuid', () => {
@@ -154,6 +152,22 @@ test('parseCreateProjectServerIdField accepts omitted, null, and uuid', () => {
   const pinned = parseCreateProjectServerIdField({ serverId: validUuid })
   if (!pinned.ok) throw new TypeError('expected uuid serverId')
   assertEquals(pinned.serverId, validUuid)
+})
+
+test('parseCreateProjectEnvironmentNameField accepts omitted/null, trims, rejects bad values', () => {
+  for (const body of [{}, { environmentName: null }]) {
+    const absent = parseCreateProjectEnvironmentNameField(body)
+    if (!absent.ok) throw new TypeError('expected ok')
+    assertEquals(absent.environmentName, undefined)
+  }
+  const named = parseCreateProjectEnvironmentNameField({ environmentName: '  Staging  ' })
+  if (!named.ok) throw new TypeError('expected ok')
+  assertEquals(named.environmentName, 'Staging')
+
+  assertEquals(parseCreateProjectEnvironmentNameField({ environmentName: '' }).ok, false)
+  assertEquals(parseCreateProjectEnvironmentNameField({ environmentName: '   ' }).ok, false)
+  assertEquals(parseCreateProjectEnvironmentNameField({ environmentName: 5 }).ok, false)
+  assertEquals(parseCreateProjectEnvironmentNameField({ environmentName: 'a\u0000b' }).ok, false)
 })
 
 test('normalizeProjectPatchOptions validates containerNaming and defaultServerId', () => {
@@ -187,7 +201,10 @@ test('parseProjectPatchOptionsBody returns null when options omitted', () => {
 test('assertDefaultServerIdShape rejects malformed server ids', () => {
   assertEquals(assertDefaultServerIdShape(undefined), null)
   assertEquals(assertDefaultServerIdShape({ defaultServerId: null }), null)
-  assertEquals(assertDefaultServerIdShape({ defaultServerId: 'not-a-uuid' })?.error, 'Invalid request')
+  assertEquals(
+    assertDefaultServerIdShape({ defaultServerId: 'not-a-uuid' })?.error,
+    'Invalid request'
+  )
   assertEquals(assertDefaultServerIdShape({ defaultServerId: validUuid }), null)
 })
 
@@ -199,4 +216,18 @@ test('parseConfigureProjectBody requires catalog codes for template and managed'
   if (!managed.ok) throw new TypeError('expected managed configure body')
   assertEquals(managed.projectType, 'managed')
   assertEquals(managed.catalogCode, 'postgres')
+})
+
+Deno.test(
+  'scaffoldEnvironmentNames renames the Production-like environment to the chosen name',
+  () => {
+    assertEquals(scaffoldEnvironmentNames([{ displayName: 'production' }], 'Edge'), ['Edge'])
+    assertEquals(scaffoldEnvironmentNames([{ displayName: 'production' }]), ['production'])
+  }
+)
+
+Deno.test('scaffoldEnvironmentNames never gives two environments the same name', () => {
+  const envs = [{ displayName: 'production' }, { displayName: 'Staging' }]
+  assertEquals(scaffoldEnvironmentNames(envs, 'staging'), ['production', 'Staging'])
+  assertEquals(scaffoldEnvironmentNames(envs, 'Edge'), ['Edge', 'Staging'])
 })

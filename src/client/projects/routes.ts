@@ -37,7 +37,6 @@ import {
   configureProjectType,
   DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
   insertEmptyProject,
-  isProductionEnvironmentName,
   loadDefaultEnvironmentName,
 } from './empty-setup.ts'
 import { isProjectDisplayNameTaken, PROJECT_NAME_IN_USE_ERROR } from '../display-name-uniqueness.ts'
@@ -59,6 +58,8 @@ import {
   parseCreateProjectMetadata,
   parseCreateProjectNames,
   parseCreateProjectOptions,
+  parseCreateProjectEnvironmentNameField,
+  scaffoldEnvironmentNames,
   parseCreateProjectServerIdField,
   parseJsonbField,
   resolveCatalogEntryForCreate,
@@ -81,10 +82,9 @@ export async function scaffoldCatalogEnvironments(
   serverId?: string | null,
   defaultEnvironmentName?: string
 ) {
-  await forEachSequential(entry.environments, async (env) => {
-    const displayName = isProductionEnvironmentName(env.displayName)
-      ? (defaultEnvironmentName ?? env.displayName)
-      : env.displayName
+  const displayNames = scaffoldEnvironmentNames(entry.environments, defaultEnvironmentName)
+  await forEachSequential(entry.environments, async (env, index) => {
+    const displayName = displayNames[index]!
     const [insertedEnv] = await tx
       .insert(environment)
       .values({
@@ -329,7 +329,13 @@ async function parseCreateProjectInput(
   const serverId = await resolveServerIdForCreate(c, db, body, organizationId)
   if (serverId instanceof Response) return serverId
 
-  const defaultEnvironmentName = await loadDefaultEnvironmentName(db, organizationId)
+  const environmentName = parseCreateProjectEnvironmentNameField(body)
+  if (!environmentName.ok) {
+    return c.json({ error: environmentName.error }, environmentName.status)
+  }
+  // An explicit name wins; otherwise the organization default (or Production).
+  const defaultEnvironmentName =
+    environmentName.environmentName ?? (await loadDefaultEnvironmentName(db, organizationId))
 
   return {
     name,
