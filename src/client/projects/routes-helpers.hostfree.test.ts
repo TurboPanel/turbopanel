@@ -10,6 +10,7 @@ import {
   normalizeProjectPatchOptions,
   parseConfigureProjectBody,
   parseCreateProjectMetadata,
+  parseCreateProjectEnvironmentNameField,
   parseCreateProjectNames,
   parseCreateProjectOptions,
   parseCreateProjectServerIdField,
@@ -154,6 +155,22 @@ test('parseCreateProjectServerIdField accepts omitted, null, and uuid', () => {
   const pinned = parseCreateProjectServerIdField({ serverId: validUuid })
   if (!pinned.ok) throw new TypeError('expected uuid serverId')
   assertEquals(pinned.serverId, validUuid)
+})
+
+test('parseCreateProjectEnvironmentNameField accepts omitted/null, trims, rejects bad values', () => {
+  for (const body of [{}, { environmentName: null }]) {
+    const absent = parseCreateProjectEnvironmentNameField(body)
+    if (!absent.ok) throw new TypeError('expected ok')
+    assertEquals(absent.environmentName, undefined)
+  }
+  const named = parseCreateProjectEnvironmentNameField({ environmentName: '  Staging  ' })
+  if (!named.ok) throw new TypeError('expected ok')
+  assertEquals(named.environmentName, 'Staging')
+
+  assertEquals(parseCreateProjectEnvironmentNameField({ environmentName: '' }).ok, false)
+  assertEquals(parseCreateProjectEnvironmentNameField({ environmentName: '   ' }).ok, false)
+  assertEquals(parseCreateProjectEnvironmentNameField({ environmentName: 5 }).ok, false)
+  assertEquals(parseCreateProjectEnvironmentNameField({ environmentName: 'a\u0000b' }).ok, false)
 })
 
 test('normalizeProjectPatchOptions validates containerNaming and defaultServerId', () => {

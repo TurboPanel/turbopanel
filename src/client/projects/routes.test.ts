@@ -440,6 +440,42 @@ test('POST /projects empty uses org defaultEnvironmentName when set', async () =
   })
 })
 
+test('POST /projects environmentName overrides the org default for the first environment', async () => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
+    await db
+      .update(organization)
+      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .where(eq(organization.id, organizationId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const post = (payload: Record<string, unknown>) =>
+      app.request('/projects', {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ type: 'docker-compose', workspaceId, ...payload }),
+      })
+
+    const res = await post({ name: 'Named Env Project', environmentName: 'Edge' })
+    assertEquals(res.status, 200)
+    const body = (await res.json()) as { ok: boolean; id: string }
+    const envs = await db
+      .select({ name: environment.name })
+      .from(environment)
+      .where(eq(environment.projectId, body.id))
+    assertEquals(
+      envs.map((e) => e.name),
+      ['Edge']
+    )
+
+    const bad = await post({ name: 'Bad Env Project', environmentName: '   ' })
+    assertEquals(bad.status, 400)
+  })
+})
+
 test('POST /projects docker-compose uses org defaultEnvironmentName when set', async () => {
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db

@@ -72,6 +72,11 @@ export const projectSchemas = {
         type: 'string',
         description: 'Optional server pin for the scaffolded Production environment',
       },
+      environmentName: {
+        type: 'string',
+        description:
+          "Optional name for the project's first environment. Omitted means the organization default (else Production).",
+      },
       metadata: { type: 'object', nullable: true },
       options: {
         type: 'object',

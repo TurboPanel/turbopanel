@@ -59,6 +59,7 @@ import {
   parseCreateProjectMetadata,
   parseCreateProjectNames,
   parseCreateProjectOptions,
+  parseCreateProjectEnvironmentNameField,
   parseCreateProjectServerIdField,
   parseJsonbField,
   resolveCatalogEntryForCreate,
@@ -329,7 +330,13 @@ async function parseCreateProjectInput(
   const serverId = await resolveServerIdForCreate(c, db, body, organizationId)
   if (serverId instanceof Response) return serverId
 
-  const defaultEnvironmentName = await loadDefaultEnvironmentName(db, organizationId)
+  const environmentName = parseCreateProjectEnvironmentNameField(body)
+  if (!environmentName.ok) {
+    return c.json({ error: environmentName.error }, environmentName.status)
+  }
+  // An explicit name wins; otherwise the organization default (or Production).
+  const defaultEnvironmentName =
+    environmentName.environmentName ?? (await loadDefaultEnvironmentName(db, organizationId))
 
   return {
     name,
