@@ -127,7 +127,7 @@ export const projectSchemas = {
       repositoryId: {
         type: ['string', 'null'],
         description:
-          "Re-bind the project to a different repository, or null to unbind. Validated against the compose in the same request: a document naming any other repository is rejected. Omit to keep the current binding — a project with none adopts the first repository its compose names.",
+          'Re-bind the project to a different repository, or null to unbind. Validated against the compose in the same request: a document naming any other repository is rejected. Omit to keep the current binding — a project with none adopts the first repository its compose names.',
       },
       options: {
         type: 'object',

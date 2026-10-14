@@ -60,6 +60,7 @@ import {
   parseCreateProjectNames,
   parseCreateProjectOptions,
   parseCreateProjectEnvironmentNameField,
+  scaffoldEnvironmentNames,
   parseCreateProjectServerIdField,
   parseJsonbField,
   resolveCatalogEntryForCreate,
@@ -82,10 +83,9 @@ export async function scaffoldCatalogEnvironments(
   serverId?: string | null,
   defaultEnvironmentName?: string
 ) {
-  await forEachSequential(entry.environments, async (env) => {
-    const displayName = isProductionEnvironmentName(env.displayName)
-      ? (defaultEnvironmentName ?? env.displayName)
-      : env.displayName
+  const displayNames = scaffoldEnvironmentNames(entry.environments, defaultEnvironmentName)
+  await forEachSequential(entry.environments, async (env, index) => {
+    const displayName = displayNames[index]!
     const [insertedEnv] = await tx
       .insert(environment)
       .values({
