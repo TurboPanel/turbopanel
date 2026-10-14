@@ -37,7 +37,6 @@ import {
   configureProjectType,
   DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
   insertEmptyProject,
-  isProductionEnvironmentName,
   loadDefaultEnvironmentName,
 } from './empty-setup.ts'
 import { isProjectDisplayNameTaken, PROJECT_NAME_IN_USE_ERROR } from '../display-name-uniqueness.ts'

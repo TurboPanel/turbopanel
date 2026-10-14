@@ -484,7 +484,7 @@ test('POST /projects managed and empty honour environmentName, and null or absen
       .where(eq(organization.id, organizationId))
 
     const cookie = await sessionCookie(db, secrets, userId)
-    const create = async (payload: Record<string, unknown>): Promise<string[]> => {
+    const create = async (payload: Record<string, unknown>): Promise<(string | null)[]> => {
       const res = await app.request('/projects', {
         method: 'POST',
         headers: {
