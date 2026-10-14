@@ -9,6 +9,8 @@
  * setting, then queues the ingress reconcile that publishes (or stops
  * publishing) the listener. A push that could not be queued answers 502: the
  * setting is saved, the host is not told yet, and it is retried automatically.
+ * Turning it on is refused (409 `external_access_weak_ssl`, naming the
+ * databases) while a database the server fronts lets clients skip SSL.
  */
 import { and, eq } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
@@ -30,6 +32,7 @@ import {
   readManagedExternalAccess,
   saveManagedExternalAccess,
 } from '../../features/managed/external-access.ts'
+import { checkExternalAccessForWeakSslModes } from '../../features/managed/external-access-tls.ts'
 
 /** The server, scoped to the caller's organization: another org's server is 404. */
 async function loadServer(c: Context<AppEnv>) {
@@ -66,6 +69,14 @@ export function registerManagedExternalAccessRoutes(router: Hono<AppEnv>) {
     if (body instanceof Response) return body
     if (typeof body.enabled !== 'boolean') {
       return c.json({ error: 'invalid_external_access' }, 400)
+    }
+
+    // A published listener must never take a plaintext session: refuse "yes"
+    // while any database the server fronts lets clients skip SSL. "No" is
+    // never refused.
+    if (body.enabled) {
+      const tlsRefusal = await checkExternalAccessForWeakSslModes(loaded.db, loaded.id)
+      if (tlsRefusal) return c.json(tlsRefusal, 409)
     }
 
     // Refuse before saving when the server cannot be told.

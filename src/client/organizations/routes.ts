@@ -14,6 +14,7 @@ import {
   recordAudit,
 } from '../../features/audit/audit-records.ts'
 import { organization } from '../../db/schema.ts'
+import { checkOrgDefaultSslModeForExternalAccess } from '../../features/managed/external-access-tls.ts'
 import {
   parseOrganizationOptions,
   resolveRandomizedPrincipalUsernames,
@@ -887,6 +888,16 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     // other family's still-inherited default.
     const invalid = validateManagedDefaults(next)
     if (invalid) return c.json({ error: invalid.error }, invalid.status)
+
+    // Only a change of the SSL default is checked, so a ports-only save never
+    // trips over an older default.
+    if ('sslMode' in parsedPatch.patch) {
+      const tlsRefusal = await checkOrgDefaultSslModeForExternalAccess(db, {
+        organizationId: id,
+        sslMode: next.sslMode,
+      })
+      if (tlsRefusal) return c.json(tlsRefusal, 409)
+    }
 
     await db
       .update(organization)

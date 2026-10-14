@@ -24,6 +24,10 @@ import {
 import { clampManagedResources, type ManagedSettings } from '../../features/managed/settings.ts'
 import { registerManagedExternalAccessRoutes } from './external-access-routes.ts'
 import { loadManagedExternalAccessView } from '../../features/managed/external-access.ts'
+import {
+  checkManagedSslModeForExternalAccess,
+  pinSslMinimumOnExternalAccessServer,
+} from '../../features/managed/external-access-tls.ts'
 import { parseResourceLimits } from '../../features/organizations/resource-limits.ts'
 import {
   createManagedPrincipal,
@@ -693,6 +697,11 @@ async function resolveManagedCreatePlan(
 
   const { orgLimits, serverLimits } = await loadResourceLimits(db, organizationId, serverId)
   settings = clampManagedResources(settings, orgLimits, serverLimits)
+  settings = await pinSslMinimumOnExternalAccessServer(db, {
+    settings,
+    organizationDefault: ctx.orgDefaults.sslMode,
+    serverId,
+  })
 
   const infra = await preflightManagedApplyInfrastructure(c, db, { serverId })
   if (infra) return mapManagedApplyPrepareError(c, infra)
@@ -1616,6 +1625,18 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         { error: imageRefusal.error, message: imageRefusal.message },
         imageRefusal.status
       )
+    }
+
+    // A server fronting this cluster allows external access: its mode may not
+    // drop below `require` (checked only when the mode changes, so an
+    // unrelated save never trips over older data).
+    if (mergedSettings.ssl.mode !== current.settings.ssl.mode) {
+      const tlsRefusal = await checkManagedSslModeForExternalAccess(db, {
+        managedId: row.id,
+        configured: mergedSettings.ssl.mode,
+        organizationDefault: ctx.orgDefaults.sslMode,
+      })
+      if (tlsRefusal) return c.json(tlsRefusal, 409)
     }
 
     const { orgLimits, serverLimits } = await loadResourceLimits(

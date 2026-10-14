@@ -152,6 +152,14 @@ test('clusterRequireTls resolves override, then org default, then require', () =
   )
 })
 
+test('clusterRequireTls always refuses plaintext when the server allows external access', () => {
+  for (const mode of ['disable', 'allow', 'prefer', 'require', 'verify-ca', 'verify-full']) {
+    assertEquals(clusterRequireTls(mode as ManagedSslMode, undefined, true), true)
+    assertEquals(clusterRequireTls(undefined, mode as ManagedSslMode, true), true)
+  }
+  assertEquals(clusterRequireTls('disable', undefined, false), false)
+})
+
 test('looksLikeIpLiteral and SAN collectors', () => {
   assertEquals(looksLikeIpLiteral('203.0.113.10'), true)
   assertEquals(looksLikeIpLiteral('203.0.113'), false)

@@ -311,12 +311,21 @@ export function clusterAutoReadSplit(routing: { autoReadSplit?: boolean } | unde
  * (`use_ssl`), so it is resolved once here — service override → org default →
  * platform `require` — and the daemon applies it to every login of the cluster.
  * Backend (ProxySQL → engine) TLS is unconditional and unaffected.
+ *
+ * `externalAccess` (the fronting server's "allow external access" switch)
+ * forces TLS on whatever the mode says: saving a weak mode under external
+ * access is refused, so this only bites when stored data drifted. `use_ssl` is
+ * per login, not per listener, so it also makes clients on the server itself
+ * use TLS for that cluster — which they already do under the default `require`.
  */
 export function clusterRequireTls(
   configured: ManagedSslMode | undefined,
-  organizationDefault: ManagedSslMode | undefined
+  organizationDefault: ManagedSslMode | undefined,
+  externalAccess = false
 ): boolean {
-  return managedSslRequiresTls(resolveManagedSslMode(configured, organizationDefault))
+  return (
+    externalAccess || managedSslRequiresTls(resolveManagedSslMode(configured, organizationDefault))
+  )
 }
 
 export function shouldSkipIngressFrontendUser(username: unknown, metadata: unknown): boolean {

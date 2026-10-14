@@ -8,7 +8,7 @@
 
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertThrows } from '@std/assert'
-import { eq, inArray } from 'drizzle-orm'
+import { eq, inArray, sql } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
@@ -568,6 +568,39 @@ test('external access on publishes on every address of the server', async () => 
     }
   )
 })
+
+for (const externalAccess of [false, true]) {
+  test(`a stored weak SSL mode ${externalAccess ? 'still refuses plaintext under external access' : 'stays optional without external access'}`, async () => {
+    await withSingleClusterIngressFixture(
+      externalAccess,
+      async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
+        // Data that drifted past the save checks: a plaintext-allowing mode.
+        const members = await db
+          .select({ managedId: replica.managedId })
+          .from(replica)
+          .where(eq(replica.serverId, serverId))
+        await db
+          .update(managed)
+          .set({ options: sql`jsonb_set(options, '{settings,ssl}', '{"mode":"disable"}')` })
+          .where(
+            inArray(
+              managed.id,
+              members.map((row) => row.managedId)
+            )
+          )
+        const built = await buildManagedIngressReconcilePayload(db, {
+          serverId,
+          secretsConfig,
+          dataEncryptionSecrets,
+        })
+        if (built === null || 'kind' in built) {
+          throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`)
+        }
+        assertEquals(built.clusters[0]?.requireTls, externalAccess ? true : undefined)
+      }
+    )
+  })
+}
 
 async function insertBoundConsumer(
   db: ReturnType<typeof createDenoDb>,

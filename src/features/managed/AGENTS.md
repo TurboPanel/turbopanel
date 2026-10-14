@@ -316,8 +316,9 @@ after the ask (`consumer.ts` → `confirmManagedExternalAccessForServer`), and
 never did. `GET …/managed` reports `externalAccess.servers[]` (one row per
 fronting server: `enabled`, `pending`, `otherClusters`) and `endpoints[]` as
 `{ reach: 'local' | 'external', host, port }`. Access control on a published
-listener is credential auth + org-CA TLS. Out of scope (future hardening idea):
-per-login host restrictions via the admin login.
+listener is credential auth + org-CA TLS, and every cluster it serves must
+resolve to SSL mode `require` or stronger (see **Client TLS (SSL mode)**).
+Out of scope (future hardening idea): per-login host restrictions via the admin login.
 
 ## Client routing (connection role, not regex)
 
@@ -377,6 +378,28 @@ it. Persisting the resolved value would freeze a service against later
 org-default changes, so `parseManagedSslMode` keeps `undefined` (inherit) and
 `null` (reject) distinct — an unrecognized mode is a **400/422**, never a silent
 downgrade to plaintext.
+
+**Minimum under external access: `require`.** While any server that fronts a
+cluster allows external access, the cluster's effective mode may not be
+`disable` / `allow` / `prefer` (`isWeakManagedSslMode`,
+`MANAGED_SSL_MINIMUM_WITH_EXTERNAL_ACCESS` in `ssl.ts`). `external-access-tls.ts`
+refuses each save that would break it, with a 409, a plain `message` and nothing
+saved:
+
+| Save                                                             | Code                                          | Names       |
+| ---------------------------------------------------------------- | --------------------------------------------- | ----------- |
+| Cluster mode change (`PATCH …/managed`, incl. clearing it)       | `managed_ssl_external_access_minimum`         | `servers`   |
+| Org default (`PUT …/managed-defaults`) a fronted cluster follows | `managed_ssl_default_external_access_minimum` | `databases` |
+| External access on (`PUT /servers/:id/managed-external-access`)  | `external_access_weak_ssl`                    | `databases` |
+
+Turning external access off is never refused, and an unrelated save (a rename,
+a ports-only default) never re-checks the mode. A cluster created on an
+external-access server while the org default is weak gets its own mode set to
+`require`. Placement, binding or replica moves are not checked; the ingress
+payload covers them: `clusterRequireTls` sets `requireTls` when the mode
+requires TLS **or** the server allows external access. `use_ssl` is per login,
+so that also makes clients on the server itself use TLS for the cluster (they
+already do under the default `require`).
 
 | Layer            | Module                                                                                           | Route                                                                                                    |
 | ---------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
