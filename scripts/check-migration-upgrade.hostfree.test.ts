@@ -4,7 +4,13 @@
  * database run itself is `pnpm check:migration-upgrade` (CI deno db-1).
  */
 import { assertEquals, assertThrows } from '@std/assert'
-import { diffRows, diffSchemas, newestStableTag, withDatabase } from './check-migration-upgrade.mjs'
+import {
+  addBreakingOkAllowance,
+  diffRows,
+  diffSchemas,
+  newestStableTag,
+  withDatabase,
+} from './check-migration-upgrade.mjs'
 
 /** Alias so Sonar recognizes the suite (see check-deploy-env.test.ts). */
 const test = Deno.test.bind(Deno)
@@ -47,6 +53,58 @@ test('row diff allows new columns but not lost rows or rewritten values', () => 
     'ip(2): description was null, now "rewritten"',
     'login(3): row missing after upgrade',
   ])
+})
+
+test('row diff reports a dropped column', () => {
+  const before = new Map([['ip(1)', { id: '1', description: 'a' }]])
+  const after = new Map([['ip(1)', { id: '1' }]])
+  assertEquals(diffRows(before, after), ['ip(1): column description gone after upgrade'])
+})
+
+const CONTRACT = `-- breaking-ok: contract step for the expand shipped in the previous release
+ALTER TABLE "ip" DROP COLUMN "description";--> statement-breakpoint
+ALTER TABLE ip RENAME COLUMN scope TO reach;--> statement-breakpoint
+ALTER TABLE "public"."login" RENAME TO "dblogin";--> statement-breakpoint
+ALTER TABLE "ip" RENAME CONSTRAINT "a" TO "b";--> statement-breakpoint
+DROP TABLE IF EXISTS "subnet", hosting CASCADE;`
+
+test('breaking-ok migrations name what they drop or rename', () => {
+  const allowance = addBreakingOkAllowance(CONTRACT)
+  assertEquals([...allowance.droppedTables], ['subnet', 'hosting'])
+  assertEquals([...allowance.droppedColumns], ['ip.description'])
+  assertEquals([...allowance.tables], [['login', 'dblogin']])
+  assertEquals([...allowance.columns], [['ip.scope', 'reach']])
+})
+
+test('without the breaking-ok marker nothing is allowed', () => {
+  const allowance = addBreakingOkAllowance(CONTRACT.replace(/^-- breaking-ok.*\n/, ''))
+  assertEquals(allowance.droppedTables.size + allowance.droppedColumns.size, 0)
+  assertEquals(allowance.tables.size + allowance.columns.size, 0)
+})
+
+test('row diff lets a breaking-ok migration drop or rename what it names, nothing else', () => {
+  const before = new Map([
+    ['ip(1)', { id: '1', description: 'a', scope: 'public', address: '203.0.113.10' }],
+    ['login(2)', { id: '2', role: 'user' }],
+    ['subnet(3)', { id: '3' }],
+    ['server(4)', { id: '4', name: 'a' }],
+  ])
+  const after = new Map([
+    ['ip(1)', { id: '1', reach: 'public', address: '203.0.113.10' }],
+    ['dblogin(2)', { id: '2', role: 'user' }],
+    ['server(4)', { id: '4' }],
+  ])
+  assertEquals(diffRows(before, after, addBreakingOkAllowance(CONTRACT)), [
+    'server(4): column name gone after upgrade',
+  ])
+  assertEquals(
+    diffRows(
+      new Map([['ip(1)', { id: '1', scope: 'public' }]]),
+      new Map([['ip(1)', { id: '1', reach: 'datacenter' }]]),
+      addBreakingOkAllowance(CONTRACT)
+    ),
+    ['ip(1): scope was "public", now "datacenter"']
+  )
 })
 
 test('schema diff reports objects on either side only', () => {
