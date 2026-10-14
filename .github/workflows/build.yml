@@ -246,11 +246,22 @@ jobs:
       DENO_SHARD: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # db-1 runs the upgrade check, which reads release tags and the live
+          # branch; the other shards keep the shallow clone.
+          fetch-depth: ${{ matrix.shard == 'db-1' && 0 || 1 }}
 
       - uses: ./.github/actions/setup-toolchain
 
       - name: Apply database migrations
         run: pnpm migrate
+
+      # Previous release's migrations + seed rows, then this branch's
+      # migrations on top, compared with a fresh apply. Scratch databases
+      # only; see scripts/check-migration-upgrade.mjs.
+      - name: Check upgrade from the previous release
+        if: matrix.shard == 'db-1'
+        run: pnpm check:migration-upgrade
 
       - name: Test with coverage
         run: pnpm test:coverage

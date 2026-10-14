@@ -139,6 +139,30 @@ before `wrangler deploy`, and a Worker has no boot. Under `pnpm deploy`
 runtime user; fail closed when the origin cannot be read; skipped entirely
 when `CLOUDFLARE_ENV` is unset.
 
+**Every migration is tested as an upgrade from the previous release**
+(`scripts/check-migration-upgrade.mjs`, `pnpm check:migration-upgrade`, CI
+`deno db-1`). It takes the newest stable `vX.Y.Z` tag on `live` (else the
+newest stable tag), applies _that tag's_ `migrations/` (read from git) to an
+empty scratch database, inserts `scripts/migration-upgrade-seed.sql`, runs
+this checkout's `pnpm migrate` path on top, and fails unless every seeded row
+keeps its values, `public.migration` is `current`, and the schema (columns,
+constraints, indexes, comments, sequences, triggers, functions, history)
+matches a fresh apply. That catches a NOT NULL without a default, a CHECK or
+FK the existing rows break, a backfill that rewrites or deletes rows, and DDL
+that depends on data. The seed is written against the previous release's
+schema: when a release adds a required column to a seeded table, extend the
+seed. Locally, start a throwaway Postgres 18 whose role has CREATEDB (only
+`tp_upgrade_check_*` databases are created and dropped; nothing runs in the
+named database), then:
+
+```sh
+git fetch origin --tags live
+TURBOPANEL_DATABASE_URL='postgresql://…@127.0.0.1:5432/postgres' pnpm check:migration-upgrade
+```
+
+`node scripts/check-migration-upgrade.mjs --from <tag>` tests the upgrade from
+an older release instead (the seed may not fit releases before the newest).
+
 Physical boolean columns use an `is_` prefix (`is_connected`,
 `is_read_eligible`, `is_for_build`, `is_for_runtime`, `is_emit_engine_defaults`,
 `is_read_only`). Public API JSON still uses `connected`, `readEligible`,
