@@ -141,29 +141,39 @@ export function addBreakingOkAllowance(sql, allowance = noAllowance()) {
   return allowance
 }
 
+function tablesOf(rows) {
+  return new Set([...rows.keys()].map((key) => key.slice(0, key.indexOf('('))))
+}
+
 /**
  * Seeded rows that changed across the upgrade. `before`/`after` map a row key
  * (`table(pk)`) to its `to_jsonb` object; only columns present before are
  * compared, so a migration may add columns but not drop rows or rewrite
  * existing values. `allowance` (from addBreakingOkAllowance) lets a
- * sanctioned contract migration drop or rename what it names.
+ * sanctioned contract migration drop or rename what it names, but only when
+ * the old name is really gone afterwards (`tablesAfter`: tables that exist
+ * after the upgrade): a name that was dropped and re-added, or swapped in by
+ * a rename, is compared like any other.
  */
-export function diffRows(before, after, allowance = noAllowance()) {
+export function diffRows(before, after, allowance = noAllowance(), tablesAfter = tablesOf(after)) {
   const problems = []
   for (const [key, row] of before) {
     const table = key.slice(0, key.indexOf('('))
-    if (allowance.droppedTables.has(table)) continue
-    const renamed = allowance.tables.get(table) ?? table
+    const tableGone = !tablesAfter.has(table)
+    if (tableGone && allowance.droppedTables.has(table)) continue
+    const renamed = (tableGone && allowance.tables.get(table)) || table
     const next = after.get(`${renamed}${key.slice(table.length)}`)
     if (!next) {
       problems.push(`${key}: row missing after upgrade`)
       continue
     }
     for (const [column, value] of Object.entries(row)) {
-      const name = `${table}.${column}`
-      const renamedName = `${renamed}.${column}`
-      if (allowance.droppedColumns.has(name) || allowance.droppedColumns.has(renamedName)) continue
-      const target = allowance.columns.get(name) ?? allowance.columns.get(renamedName) ?? column
+      let target = column
+      if (!(column in next)) {
+        const names = [`${table}.${column}`, `${renamed}.${column}`]
+        if (names.some((name) => allowance.droppedColumns.has(name))) continue
+        target = names.map((name) => allowance.columns.get(name)).find(Boolean) ?? column
+      }
       if (!(target in next)) {
         problems.push(`${key}: column ${column} gone after upgrade`)
       } else if (JSON.stringify(next[target]) !== JSON.stringify(value)) {
@@ -174,6 +184,15 @@ export function diffRows(before, after, allowance = noAllowance()) {
     }
   }
   return problems
+}
+
+/** True when a seed error names an old table or column a pending rename moved away. */
+export function seedErrorFromRename(message, allowance) {
+  const oldNames = [
+    ...allowance.tables.keys(),
+    ...[...allowance.columns.keys()].map((name) => name.slice(name.indexOf('.') + 1)),
+  ]
+  return oldNames.some((name) => message.includes(`"${name}"`))
 }
 
 /** Allowance from this checkout's migrations that the previous release does not have. */
@@ -407,7 +426,12 @@ async function run(baseUrl, from) {
       const state = compareSchemaState(await readAppliedMigrationHashes(sql), shipped)
       if (state.status !== 'current')
         problems.push(`history after upgrade: ${describeSchemaState(state)}`)
-      problems.push(...diffRows(seeded, await rowSnapshot(sql), allowance))
+      const tablesAfter = new Set(
+        (await sql`select tablename from pg_tables where schemaname = 'public'`).map(
+          (row) => row.tablename
+        )
+      )
+      problems.push(...diffRows(seeded, await rowSnapshot(sql), allowance, tablesAfter))
       return schemaShape(sql)
     })
     const fresh = await withClient(freshUrl, async (sql) => {
@@ -417,7 +441,7 @@ async function run(baseUrl, from) {
       } catch (err) {
         // One seed cannot name both sides of a rename, so a sanctioned rename
         // defers the seed update to the change after this release ships.
-        if (allowance.tables.size + allowance.columns.size > 0) {
+        if (seedErrorFromRename(err.message, allowance)) {
           console.warn(`migration-upgrade: warning (pending breaking-ok rename): ${err.message}`)
         } else {
           problems.push(err.message)

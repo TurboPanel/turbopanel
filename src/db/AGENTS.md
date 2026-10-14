@@ -148,10 +148,10 @@ this checkout's `pnpm migrate` path on top, and fails unless every seeded row
 keeps its values, `public.migration` is `current`, and the schema (columns,
 constraints, indexes, comments, sequences, triggers, functions, views, types,
 history) matches a fresh apply. On the 20 seeded tables (of 81) that catches a
-NOT NULL without a default, a CHECK or FK the existing rows break, and a
-backfill that rewrites or deletes rows; anywhere, it catches DDL that depends
-on data. Other tables are empty in the run, so those catches do not reach
-them: seed a table before a migration that touches its existing rows.
+NOT NULL without a default, a CHECK or FK the existing rows break, a backfill
+that rewrites or deletes rows, and DDL that depends on their data. Other
+tables are empty in the run, so none of those catches reach them: seed a
+table before a migration that touches its existing rows.
 
 The seed targets the previous release's schema, and the fresh database gets
 it too, so a migration that makes the seed invalid fails in its own PR: update
@@ -159,10 +159,12 @@ the seed there. The one sanctioned loss is the contract step: a pending
 migration with a `-- breaking-ok: <reason>` line may drop tables
 (`DROP TABLE`), drop columns (`DROP COLUMN`) and rename either
 (`RENAME TO`, `RENAME COLUMN`); seeded rows are then compared under the new
-names and dropped ones are skipped. Nothing else is excused. A drop of a
+names and dropped ones are skipped, but only when the old name is really
+gone afterwards (a dropped and re-added column, or a new column renamed into
+the old name, is compared as usual). Nothing else is excused. A drop of a
 column the seed names means removing it from the seed in the same PR; a
-rename cannot be seeded on both sides, so while one is pending the fresh-seed
-failure is a warning and the seed is updated once that release ships.
+rename cannot be seeded on both sides, so while one is pending a fresh-seed
+failure that names a renamed table or column is a warning and the seed is updated once that release ships.
 
 Locally, start a throwaway Postgres 18 whose role has CREATEDB (only
 `tp_upgrade_check_*` databases are created and dropped; nothing runs in the

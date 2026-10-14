@@ -9,6 +9,7 @@ import {
   diffRows,
   diffSchemas,
   newestStableTag,
+  seedErrorFromRename,
   withDatabase,
 } from './check-migration-upgrade.mjs'
 
@@ -104,6 +105,55 @@ test('row diff lets a breaking-ok migration drop or rename what it names, nothin
       addBreakingOkAllowance(CONTRACT)
     ),
     ['ip(1): scope was "public", now "datacenter"']
+  )
+})
+
+test('a breaking-ok column dropped and re-added is compared, not excused', () => {
+  const allowance = addBreakingOkAllowance(CONTRACT)
+  const before = new Map([['ip(1)', { id: '1', description: 'a' }]])
+  assertEquals(diffRows(before, new Map([['ip(1)', { id: '1', description: 'a' }]]), allowance), [])
+  assertEquals(diffRows(before, new Map([['ip(1)', { id: '1', description: null }]]), allowance), [
+    'ip(1): description was "a", now null',
+  ])
+})
+
+test('a breaking-ok table dropped and re-added is compared, not excused', () => {
+  const allowance = addBreakingOkAllowance(CONTRACT)
+  const before = new Map([['subnet(3)', { id: '3', cidr: '172.30.1.0/24' }]])
+  // The table exists again after the upgrade but lost the row.
+  assertEquals(diffRows(before, new Map(), allowance, new Set(['subnet'])), [
+    'subnet(3): row missing after upgrade',
+  ])
+  assertEquals(
+    diffRows(before, new Map([['subnet(3)', { id: '3', cidr: '10.0.0.0/24' }]]), allowance),
+    ['subnet(3): cidr was "172.30.1.0/24", now "10.0.0.0/24"']
+  )
+  assertEquals(diffRows(before, new Map(), allowance, new Set()), [])
+})
+
+test('the swap pattern (add new, backfill, drop old, rename new to old) checks the backfill', () => {
+  const swap = addBreakingOkAllowance(`-- breaking-ok: swap ip.scope for a rebuilt column
+ALTER TABLE "ip" ADD COLUMN "scope_new" text;--> statement-breakpoint
+UPDATE "ip" SET "scope_new" = "scope";--> statement-breakpoint
+ALTER TABLE "ip" DROP COLUMN "scope";--> statement-breakpoint
+ALTER TABLE "ip" RENAME COLUMN "scope_new" TO "scope";`)
+  const before = new Map([['ip(1)', { id: '1', scope: 'public' }]])
+  assertEquals(diffRows(before, new Map([['ip(1)', { id: '1', scope: 'public' }]]), swap), [])
+  assertEquals(diffRows(before, new Map([['ip(1)', { id: '1', scope: null }]]), swap), [
+    'ip(1): scope was "public", now null',
+  ])
+})
+
+test('a pending rename only excuses seed errors that name the old names', () => {
+  const allowance = addBreakingOkAllowance(CONTRACT)
+  assertEquals(seedErrorFromRename('relation "login" does not exist', allowance), true)
+  assertEquals(
+    seedErrorFromRename('column "scope" of relation "ip" does not exist', allowance),
+    true
+  )
+  assertEquals(
+    seedErrorFromRename('null value in column "kind" of relation "network"', allowance),
+    false
   )
 })
 
