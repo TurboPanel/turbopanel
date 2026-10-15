@@ -127,12 +127,12 @@ export async function resolveManagedAccess(
 }> {
   const { enabled: externalAccess } = await loadManagedExternalAccess(db, params.serverId)
   const port = await resolveListenerPortForServer(db, params)
+  const family = managedIngressFamilyForEngine(params.engineCode, params.engineDefaultPort)
+  const portKey = family === 'mysql' ? 'mysql' : 'postgres'
   const external = externalAccess
     ? clientEndpointsForListener(
         await loadServerClientAddresses(db, params.serverId),
-        managedIngressFamilyForEngine(params.engineCode, params.engineDefaultPort) === 'mysql'
-          ? 'mysql'
-          : 'postgres',
+        portKey,
         port
       )
     : []
