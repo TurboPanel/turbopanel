@@ -36,6 +36,7 @@ import {
   FIREWALL_STATES,
 } from '../features/firewall/vocabulary.ts'
 import { PLACEMENT_SOURCES, PLACEMENT_STATES } from '../features/principals/placement-vocabulary.ts'
+import { CLIENT_ADDRESS_SCOPES } from '../features/net/client-addresses-pure.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -80,6 +81,7 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['payer_provider_check', BILLING_PROVIDER_IDS],
   ['placement_state_check', PLACEMENT_STATES],
   ['placement_source_check', PLACEMENT_SOURCES],
+  ['address_scope_check', CLIENT_ADDRESS_SCOPES],
   ['channel_scope_check', NOTIFICATION_CHANNEL_SCOPES],
   ['channel_kind_check', NOTIFICATION_CHANNEL_KINDS],
   ['rule_event_check', NOTIFICATION_RULE_EVENTS],

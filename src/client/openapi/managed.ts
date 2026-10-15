@@ -227,6 +227,37 @@ export const managedSchemas = {
         },
       },
       rootUsername: { type: 'string', nullable: true },
+      endpoints: {
+        type: 'array',
+        description:
+          'Where clients connect: one `external` entry per address clients use that reaches this engine (only while external access is on), main one first, then the `local` loopback endpoint.',
+        items: { $ref: '#/components/schemas/ManagedAccessEndpoint' },
+      },
+      connections: {
+        type: 'array',
+        description:
+          'One connection string per `external` endpoint, main one first. The main one is also `connection`.',
+        items: {
+          allOf: [
+            { $ref: '#/components/schemas/ManagedConnectionInfo' },
+            {
+              type: 'object',
+              required: ['label', 'scope', 'datacenterId', 'primary'],
+              properties: {
+                label: { type: 'string', description: '`Public`, or the datacenter name.' },
+                scope: { type: 'string', enum: ['public', 'datacenter'] },
+                datacenterId: { type: ['string', 'null'], format: 'uuid' },
+                primary: { type: 'boolean' },
+              },
+            },
+          ],
+        },
+      },
+      addressNeeded: {
+        type: 'boolean',
+        description:
+          'External access is on but the server has no address clients can use (at most a one-word Linux hostname, which never goes into a connection string). Prompt to set the address clients use.',
+      },
       externalAccess: {
         $ref: '#/components/schemas/ManagedExternalAccess',
         description:
@@ -245,6 +276,19 @@ export const managedSchemas = {
         ],
         description: 'Latest HA recovery journal row for this cluster (`null` when none).',
       },
+    },
+  },
+  ManagedAccessEndpoint: {
+    type: 'object',
+    required: ['reach', 'host', 'port'],
+    properties: {
+      reach: { type: 'string', enum: ['external', 'local'] },
+      host: { type: 'string' },
+      port: { type: 'integer' },
+      label: { type: 'string', description: 'External only: `Public`, or the datacenter name.' },
+      scope: { type: 'string', enum: ['public', 'datacenter'], description: 'External only.' },
+      datacenterId: { type: ['string', 'null'], format: 'uuid', description: 'External only.' },
+      primary: { type: 'boolean', description: 'External only: fills the main connection string.' },
     },
   },
   ManagedExternalAccess: {

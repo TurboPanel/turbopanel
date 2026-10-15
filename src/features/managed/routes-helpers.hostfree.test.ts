@@ -471,6 +471,8 @@ test('empty detail / delete / destroy / promote response shapes', () => {
     managed: null,
     connection: null,
     endpoints: [],
+    connections: [],
+    addressNeeded: false,
     // Nothing placed yet, so there is no host whose publish could be reported.
     exposure: null,
     settings: null,

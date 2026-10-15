@@ -485,10 +485,35 @@ named. Store/serve `ports` (configured, `null` per family = inherit) and
 | Username uniqueness        | Logins unique across every cluster on servers owned by the same organization (see Login namespace)                                                                                                                                                                                                                                                      |
 
 Connection info helpers surface the ProxySQL frontend port/host: loopback
-always, plus the server's public address or hostname when external access is on
-(`resolveManagedAccessEndpoints` on `GET …/managed` → `endpoints[]`);
-they never invent remapped engine ports. Public clients always dial ProxySQL,
-not native engine container ports.
+always, plus, when external access is on, one endpoint per **address clients
+use** (`features/net/client-addresses.ts`, table `address`): the public side and
+each datacenter the server belongs to, host = the entry's DNS name else its
+effective address (operator override, else the oldest public `ip` row per
+family, else the daemon-reported public interface address classified by the
+control plane — never the observed connection source; datacenter = its pin),
+port = the entry's `options.ports` override else the listen port (`null` = not
+reachable there, endpoint omitted). The main one (entry marked primary, else
+public, else the first datacenter) comes first and fills `connection`;
+`GET …/managed` also returns `connections[]` (one masked DSN per external
+endpoint) and `addressNeeded` (external access on, nothing to give out). A
+one-word Linux hostname never reaches a connection string; a dotted one is the
+public side's last resort. IPv6 hosts are bracketed in DSNs only. Public
+clients always dial ProxySQL, not native engine container ports.
+
+The ProxySQL leaf names the main host, every entry's DNS name and effective
+v4/v6 address (while external access is on), and the server's Linux hostname
+**always**, as a compatibility name for clients that already dial it
+(`clientAddressCertificateNames` → `collectProxySqlListenerSans.clientNames`).
+`PUT /servers/:id/addresses` queues `managed.ingress.reconcile`, which mints a
+new leaf with the new names. With databases to front it first runs the external
+access switch's preflight (503 no queue, 422 `daemon_key_unavailable`, nothing
+saved); a reconcile that still fails is a 502 with `reason` `enqueue_failed` or
+`prepare_failed`. Saves lock the server row, so concurrent PUTs serialize.
+Datacenter pins whose link is down are not given out. Leaving a datacenter (and
+joining one) prunes that datacenter's entry (`pruneClientAddressesWithoutPin`),
+except a pin removed through `DELETE /ips/:id`, whose stale entry is ignored by
+the resolver and pruned on the next join through the datacenter routes. The bind and the firewall do not read the entries:
+the single external access switch is the only on/off control.
 
 ## Backup descriptor
 

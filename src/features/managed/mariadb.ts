@@ -13,6 +13,7 @@
  */
 
 import { applyResourcesToComposeService } from '../compose/apply-service-options.ts'
+import { joinHostPort } from '../../lib/ip-address.ts'
 import {
   formatInnoDbBufferPoolSize,
   isValidMysqlCnfSnippet,
@@ -332,7 +333,7 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
 function buildConnectionInfo(input: BuildConnectionInfoInput): ManagedConnectionInfo {
   const dsn =
     `mysql://${encodeURIComponent(input.username)}:***@` +
-    `${input.host}:${input.port}/${encodeURIComponent(input.database)}` +
+    `${joinHostPort(input.host, input.port)}/${encodeURIComponent(input.database)}` +
     `?ssl-mode=${mysqlFamilySslMode(input.sslMode)}`
   return {
     dsn,
@@ -347,7 +348,7 @@ function buildBindingDsn(input: BuildConnectionInfoInput & { password: string })
   return (
     `mysql://${encodeURIComponent(input.username)}:` +
     `${encodeURIComponent(input.password)}@` +
-    `${input.host}:${input.port}/${encodeURIComponent(input.database)}` +
+    `${joinHostPort(input.host, input.port)}/${encodeURIComponent(input.database)}` +
     `?ssl-mode=${mysqlFamilySslMode(input.sslMode)}`
   )
 }

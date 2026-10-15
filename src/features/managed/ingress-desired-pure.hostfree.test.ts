@@ -189,6 +189,20 @@ test('looksLikeIpLiteral and SAN collectors', () => {
   assertEquals(dns.has('engine-1'), false)
 })
 
+test('collectProxySqlListenerSans adds every address clients use beside what it already names', () => {
+  const sans = collectProxySqlListenerSans({
+    hostname: 'omega.example.com',
+    clientNames: {
+      dnsNames: ['omega', 'omega.example.com', 'omega.dc1.example.com'],
+      ipAddresses: ['192.0.2.77', '2001:db8::4', '10.0.0.5'],
+    },
+    bindAddresses: sanBindAddresses(['0.0.0.0']),
+    backendAddresses: ['managed-abc', '10.0.0.9'],
+  })
+  assertEquals(sans.dnsNames, ['omega', 'omega.dc1.example.com', 'omega.example.com'])
+  assertEquals(sans.ipAddresses, ['10.0.0.5', '10.0.0.9', '127.0.0.1', '192.0.2.77', '2001:db8::4'])
+})
+
 test('collectProxySqlListenerSans and hierarchy merge', () => {
   const sans = collectProxySqlListenerSans({
     hostname: '  pg.example  ',

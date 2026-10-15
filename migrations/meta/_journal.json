@@ -239,6 +239,13 @@
       "when": 1791914088124,
       "tag": "0033_principal_id_seq",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1792027087828,
+      "tag": "0034_add_address_table",
+      "breakpoints": true
     }
   ]
 }
