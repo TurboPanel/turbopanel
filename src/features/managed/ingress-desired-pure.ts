@@ -185,10 +185,7 @@ export function collectProxySqlListenerSans(params: {
  */
 export function decideIngressBindAddresses(
   externalAccess: boolean,
-  ipv6: Readonly<{ serverHasIpv6: boolean; daemonPublishesIpv6: boolean }> = {
-    serverHasIpv6: false,
-    daemonPublishesIpv6: false,
-  }
+  ipv6: Readonly<{ serverHasIpv6: boolean; daemonPublishesIpv6: boolean }>
 ): string[] {
   if (!externalAccess) return [LOOPBACK_BIND]
   return ipv6.serverHasIpv6 && ipv6.daemonPublishesIpv6

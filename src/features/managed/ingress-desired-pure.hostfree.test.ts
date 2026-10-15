@@ -225,12 +225,14 @@ test('collectProxySqlListenerSans and hierarchy merge', () => {
   assertEquals(merged.ipAddresses, sans.ipAddresses)
 })
 
+const NO_IPV6 = { serverHasIpv6: false, daemonPublishesIpv6: false }
+
 test('decideIngressBindAddresses: no keeps loopback, yes opens every address', () => {
   // Regression: "no" must be loopback, never an empty publish. Sites run by a
   // site owner's Linux user dial 127.0.0.1, so an empty publish would cut every
   // one of them off from its database.
-  assertEquals(decideIngressBindAddresses(false), ['127.0.0.1'])
-  assertEquals(decideIngressBindAddresses(true), ['0.0.0.0'])
+  assertEquals(decideIngressBindAddresses(false, NO_IPV6), ['127.0.0.1'])
+  assertEquals(decideIngressBindAddresses(true, NO_IPV6), ['0.0.0.0'])
 })
 
 test('decideIngressBindAddresses never widens a "no" to a wildcard', () => {
@@ -239,7 +241,7 @@ test('decideIngressBindAddresses never widens a "no" to a wildcard', () => {
   // even on a server with IPv6 whose daemon can publish it.
   const ipv6Ready = { serverHasIpv6: true, daemonPublishesIpv6: true }
   for (const address of [
-    ...decideIngressBindAddresses(false),
+    ...decideIngressBindAddresses(false, NO_IPV6),
     ...decideIngressBindAddresses(false, ipv6Ready),
   ]) {
     assertEquals(WILDCARD_BIND_ADDRESSES.has(address), false)
