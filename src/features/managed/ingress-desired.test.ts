@@ -572,7 +572,7 @@ test('external access on publishes on every address of the server', async () => 
 test('external access on adds the IPv6 wildcard only for a daemon that publishes it on a server with IPv6', async () => {
   await withSingleClusterIngressFixture(
     true,
-    async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
+    async ({ db, serverId, organizationId, secretsConfig, dataEncryptionSecrets }) => {
       const build = async () => {
         const built = await buildManagedIngressReconcilePayload(db, {
           serverId,
@@ -588,11 +588,23 @@ test('external access on adds the IPv6 wildcard only for a daemon that publishes
         db.update(server).set(values).where(eq(server.id, serverId))
       const ipv6Ip = { address: '2001:db8::4', version: 6, scope: 'public' }
 
-      // A server with IPv6 whose daemon does not advertise the feature: IPv4 only.
-      await setServer({ metadata: { ips: [ipv6Ip] } })
+      // A stored IPv6 ip row alone never turns IPv6 on: only what the daemon
+      // reads from the kernel proves the kernel runs IPv6.
+      await db.insert(ip).values({
+        organizationId,
+        serverId,
+        address: '2001:db8::77',
+        allocation: 'dedicated',
+        scope: 'public',
+      })
+      await setServer({ daemon: { projection: { features: ['managed-ingress-ipv6-v1'] } } })
       assertEquals(await build(), ['0.0.0.0'])
 
-      // The daemon advertises it, but the server has no IPv6 (link-local only).
+      // A server with IPv6 whose daemon does not advertise the feature: IPv4 only.
+      await setServer({ daemon: { projection: { features: [] } }, metadata: { ips: [ipv6Ip] } })
+      assertEquals(await build(), ['0.0.0.0'])
+
+      // The daemon advertises it, but reports only a link-local IPv6 address.
       await setServer({
         daemon: { projection: { features: ['managed-ingress-ipv6-v1'] } },
         metadata: { ips: [{ address: 'fe80::1', version: 6, scope: 'private' }] },

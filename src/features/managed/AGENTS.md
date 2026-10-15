@@ -297,12 +297,13 @@ stays internal.
   publish): sites run by a site owner's Linux user dial `127.0.0.1:13306`
   (MySQL/MariaDB) or `:15432` (Postgres), and bound containers dial ProxySQL by
   name over the organization's managed Docker network with no host publish.
-- **Yes**: published on `0.0.0.0`, and on `::` too when the server has IPv6
-  (`hostHasIpv6`: a reported interface address, public `ip` row or datacenter
-  pin that is IPv6 and not loopback or link-local; an address override does
-  not count) **and** its daemon advertises `managed-ingress-ipv6-v1`. Without
-  IPv6 on the host a `[::]` publish fails and takes the listener down, and an
-  older daemon never receives `::`. The firewall (`features/firewall/`, preview
+- **Yes**: published on `0.0.0.0`, and on `::` too when the daemon reports a
+  live IPv6 address (`hostHasIpv6`: IPv6, not loopback or link-local, on an
+  interface that is up and is not a mesh tunnel or Docker bridge; stored `ip`
+  rows, datacenter pins and address overrides do not count) **and** advertises
+  `managed-ingress-ipv6-v1`. On a kernel with no IPv6 stack a `[::]` publish
+  fails and takes the listener down, which is why only what the daemon read
+  from the kernel counts; an older daemon never receives `::`. The firewall (`features/firewall/`, preview
   only so far) and the network rules decide who can reach it. Every cluster on
   the server is reachable that way, by design.
 

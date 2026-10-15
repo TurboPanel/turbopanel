@@ -173,9 +173,10 @@ export function collectProxySqlListenerSans(params: {
  *   the machine can reach it. Bound containers need no publish at all (they
  *   dial ProxySQL by name over the managed Docker network).
  * - external access **on**: every IPv4 address of the server (`0.0.0.0`), and
- *   every IPv6 address (`::`) too when the server has IPv6 and its daemon
- *   advertises `managed-ingress-ipv6-v1`. Without IPv6 on the host the IPv6
- *   publish would fail and take the listener down, so both must be true.
+ *   every IPv6 address (`::`) too when the daemon reports a live IPv6 address
+ *   (`hostHasIpv6`) and advertises `managed-ingress-ipv6-v1`. On a kernel with
+ *   no IPv6 stack a `[::]` publish fails and takes the listener down; a
+ *   reported IPv6 address is the proof the stack is there, so both must hold.
  *
  * Never empty here: a server with no cluster to front never reaches this
  * decision (the reconcile is `not_needed` or a teardown). **The publish is the

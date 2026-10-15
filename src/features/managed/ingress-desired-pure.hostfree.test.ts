@@ -254,7 +254,7 @@ test('decideIngressBindAddresses adds the IPv6 wildcard only with IPv6 and a dae
     decideIngressBindAddresses(true, { serverHasIpv6: true, daemonPublishesIpv6: true }),
     ['0.0.0.0', '::']
   )
-  // No IPv6 on the host: a `[::]` publish would fail and take the listener down.
+  // No IPv6 stack in the kernel: a `[::]` publish would fail and take the listener down.
   assertEquals(
     decideIngressBindAddresses(true, { serverHasIpv6: false, daemonPublishesIpv6: true }),
     ['0.0.0.0']

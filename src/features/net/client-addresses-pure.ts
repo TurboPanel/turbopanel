@@ -133,22 +133,24 @@ export function detectedPublicAddresses(reported: readonly ServerReportedIp[]): 
   return { v4: pick(4), v6: pick(6) }
 }
 
+/** Docker's own bridges and the container ends of their links. */
+const DOCKER_INTERFACE_RE = /^(docker\d|br-|veth)/
+
 /**
- * The server itself has IPv6: an interface address the daemon reported, a
- * public `ip` row or a datacenter pin that is IPv6 and neither loopback nor
- * link-local. An operator's address override does not count: it describes a
- * router in front of the server, not the server's own network.
+ * The server's kernel runs IPv6: the daemon reported an IPv6 address that is
+ * neither loopback nor link-local, on an interface that is up and is not a
+ * mesh tunnel or a Docker bridge. Only what the daemon reads from the kernel
+ * counts. Stored `ip` rows, datacenter pins and address overrides are what an
+ * operator typed, which says nothing about whether the kernel has IPv6.
  */
-export function hostHasIpv6(
-  facts: Pick<ClientAddressFacts, 'publicIp' | 'reportedIps' | 'pins'>
-): boolean {
-  const candidates = [
-    facts.publicIp.v6,
-    ...facts.pins.map((pin) => pin.v6),
-    ...facts.reportedIps.map((row) => row.address),
-  ]
-  return candidates.some(
-    (address) => address !== null && parseIpVersion(address) === 6 && isRoutableHostAddress(address)
+export function hostHasIpv6(reported: readonly ServerReportedIp[]): boolean {
+  return reported.some(
+    (row) =>
+      row.link !== 'down' &&
+      !MESH_INTERFACE_RE.test(row.interface ?? '') &&
+      !DOCKER_INTERFACE_RE.test(row.interface ?? '') &&
+      parseIpVersion(row.address) === 6 &&
+      isRoutableHostAddress(row.address)
   )
 }
 

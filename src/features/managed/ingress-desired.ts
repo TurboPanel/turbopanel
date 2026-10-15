@@ -623,7 +623,7 @@ async function buildManagedIngressReconcileDesired(
 
   const addressFacts = await loadClientAddressFacts(db, params.serverId)
   const bindAddresses = decideIngressBindAddresses(externalAccess, {
-    serverHasIpv6: addressFacts !== null && hostHasIpv6(addressFacts),
+    serverHasIpv6: addressFacts !== null && hostHasIpv6(addressFacts.reportedIps),
     // Only asked when it matters: loopback-only never publishes on IPv6.
     daemonPublishesIpv6: externalAccess && (await daemonPublishesIngressIpv6(db, params.serverId)),
   })
