@@ -101,22 +101,27 @@ test({
       const verifyCa = await openssl(['verify', '-x509_strict', '-CAfile', caPath, caPath])
       assertEquals(verifyCa.ok, true, verifyCa.out)
 
-      const caText = await openssl(['x509', '-noout', '-text', '-in', caPath])
+      // `oneline,-space_eq` prints `O=TurboPanel, OU=...` on every openssl
+      // release (older ones default to `O = TurboPanel`); whitespace runs are
+      // collapsed because indentation differs between releases too.
+      const caText = await openssl([
+        'x509',
+        '-noout',
+        '-text',
+        '-nameopt',
+        'oneline,-space_eq',
+        '-in',
+        caPath,
+      ])
       assertEquals(caText.ok, true, caText.out)
-      const text = caText.out
+      const text = caText.out.replaceAll(/\s+/g, ' ')
       assertStringIncludes(text, 'Signature Algorithm: ecdsa-with-SHA384')
       assertStringIncludes(text, 'Public-Key: (384 bit)')
       assertStringIncludes(text, 'ASN1 OID: secp384r1')
       assertStringIncludes(text, `Issuer: O=TurboPanel, OU=Organization CA, CN=${ORG_ID}`)
       assertStringIncludes(text, `Subject: O=TurboPanel, OU=Organization CA, CN=${ORG_ID}`)
-      assertStringIncludes(
-        text,
-        'X509v3 Basic Constraints: critical\n                CA:TRUE, pathlen:0'
-      )
-      assertStringIncludes(
-        text,
-        'X509v3 Key Usage: critical\n                Certificate Sign, CRL Sign'
-      )
+      assertStringIncludes(text, 'X509v3 Basic Constraints: critical CA:TRUE, pathlen:0')
+      assertStringIncludes(text, 'X509v3 Key Usage: critical Certificate Sign, CRL Sign')
       assertStringIncludes(text, 'X509v3 Subject Key Identifier')
 
       const leafText = await openssl(['x509', '-noout', '-text', '-in', leafPath])
