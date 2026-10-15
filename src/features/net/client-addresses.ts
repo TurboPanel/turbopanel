@@ -9,7 +9,7 @@
  * `PUT /servers/:id/addresses` route.
  */
 
-import { and, asc, eq, isNotNull } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { clientAddress, datacenter, ip, server } from '../../db/schema.ts'
 import { reportedIpsFromServerMetadata } from '../../contracts/server-addresses.ts'
@@ -18,6 +18,7 @@ import {
   resolveDatacenterPolicy,
 } from '../datacenters/datacenter-options.ts'
 import { inetAddressToString, parseIpVersion } from '../../lib/ip-address.ts'
+import { pinLinkIsDown } from './pin-link-state.ts'
 import {
   type ClientAddressDatacenterPin,
   type ClientAddressEntry,
@@ -94,6 +95,7 @@ export async function loadClientAddressDatacenterPins(
     .select({
       address: ip.address,
       datacenterId: ip.datacenterId,
+      metadata: ip.metadata,
       name: datacenter.name,
       options: datacenter.options,
     })
@@ -111,7 +113,10 @@ export async function loadClientAddressDatacenterPins(
     datacenterName: pins[0]!.name ?? 'Datacenter',
     addressPreference: parseDatacenterOptions(pins[0]!.options).addressPreference ?? 'ipv6',
     priority: resolveDatacenterPolicy(pins[0]!.options).priority,
-    ...firstPerFamily(pins),
+    // A pin whose network link is down is not where clients arrive, the same
+    // rule the public side applies to reported interfaces. The server still
+    // belongs to the datacenter, so the side stays (a DNS name still counts).
+    ...firstPerFamily(pins.filter((row) => !pinLinkIsDown(row.metadata))),
   }))
 }
 
@@ -164,6 +169,14 @@ export async function saveClientAddressEntries(
   }>
 ): Promise<void> {
   await db.transaction(async (tx) => {
+    // Serialize concurrent saves for one server: without the row lock two
+    // replace-alls interleave and the second insert trips the one-per-side
+    // unique index instead of simply winning.
+    await tx
+      .select({ id: server.id })
+      .from(server)
+      .where(eq(server.id, params.serverId))
+      .for('update')
     await tx.delete(clientAddress).where(eq(clientAddress.serverId, params.serverId))
     if (params.entries.length === 0) return
     await tx.insert(clientAddress).values(
@@ -180,4 +193,25 @@ export async function saveClientAddressEntries(
       }))
     )
   })
+}
+
+/**
+ * Forget datacenter entries of `serverIds` whose server no longer has a pin in
+ * that datacenter. Called when a server leaves a datacenter and before it joins
+ * one, so an entry saved for an earlier membership never silently returns.
+ */
+export async function pruneClientAddressesWithoutPin(
+  db: Db,
+  serverIds: readonly string[]
+): Promise<void> {
+  if (serverIds.length === 0) return
+  await db
+    .delete(clientAddress)
+    .where(
+      and(
+        inArray(clientAddress.serverId, [...serverIds]),
+        eq(clientAddress.scope, 'datacenter'),
+        sql`NOT EXISTS (SELECT 1 FROM ${ip} WHERE ${ip.serverId} = ${clientAddress.serverId} AND ${ip.datacenterId} = ${clientAddress.datacenterId} AND ${ip.scope} = 'datacenter')`
+      )
+    )
 }

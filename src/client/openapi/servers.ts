@@ -758,6 +758,7 @@ export const serverSchemas = {
       'ports',
       'primary',
       'main',
+      'mainFor',
       'effective',
     ],
     properties: {
@@ -779,7 +780,13 @@ export const serverSchemas = {
       main: {
         type: 'boolean',
         description:
-          'This side fills the main connection string now (primary, else public, else the first datacenter with a host).',
+          'This side fills the main connection string for at least one database engine (same rules as the managed endpoints).',
+      },
+      mainFor: {
+        type: 'array',
+        items: { type: 'string', enum: ['postgres', 'mysql'] },
+        description:
+          'The engines this side is main for: the entry marked primary, else public, else the first datacenter, each only with a host and a port not set to null.',
       },
       effective: {
         type: 'object',
@@ -815,7 +822,7 @@ export const serverSchemas = {
       addressNeeded: {
         type: 'boolean',
         description:
-          'External access is on and no side has a host clients can use: prompt to set the address clients use.',
+          'External access is on and no side can be given out for any database engine: prompt to set the address clients use.',
       },
       addresses: {
         type: 'array',
@@ -2654,9 +2661,13 @@ export const serverPaths: Record<string, unknown> = {
         },
         '403': { description: 'Not an owner or manager of the server' },
         '404': { description: 'Server not found in the caller organization' },
+        '422': {
+          description:
+            '`daemon_key_unavailable`: the server fronts databases and cannot take changes yet; nothing saved',
+        },
         '502': {
           description:
-            '`ingress_reconcile_failed`: saved, but the server could not be told yet; the body also carries the saved view and `message`',
+            '`ingress_reconcile_failed`: saved, but the certificate was not reissued. `reason` is `enqueue_failed` (save again, or the next listener update adds the names) or `prepare_failed` (the listener cannot be rebuilt until its databases are fixed). The body also carries the saved view and `message`.',
         },
         '503': { description: 'Command queue or daemon cell registry unavailable' },
       },

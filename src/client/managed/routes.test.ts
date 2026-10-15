@@ -58,6 +58,11 @@ import { getCatalogEntry, readManagedEngineOptions } from '../projects/catalog/i
 import { registerManagedRoutes } from './routes.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { registerServerAddressRoutes } from '../servers/address-routes.ts'
+import {
+  pruneClientAddressesWithoutPin,
+  saveClientAddressEntries,
+} from '../../features/net/client-addresses.ts'
+import { parseCertificatePem } from '../../lib/tls/parse.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import {
   createBackupRunReportStore,
@@ -3739,6 +3744,25 @@ test('saving the external access switch is audited with the new value only', asy
   })
 })
 
+/** DNS and IP names on the listener certificate of the newest queued ingress reconcile. */
+async function latestIngressReconcileSans(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string
+): Promise<{ dnsNames: string[]; ipAddresses: string[] }> {
+  const [row] = await db
+    .select({ payload: dispatch.payload })
+    .from(dispatch)
+    .innerJoin(command, eq(command.id, dispatch.commandId))
+    .where(and(eq(command.serverId, serverId), eq(command.name, 'managed.ingress.reconcile')))
+    .orderBy(desc(command.createdAt), desc(command.id))
+    .limit(1)
+  const pem = (row?.payload as { orgTlsMaterial?: { certificatePem?: string } } | undefined)
+    ?.orgTlsMaterial?.certificatePem
+  if (!pem) return { dnsNames: [], ipAddresses: [] }
+  const parsed = await parseCertificatePem(pem)
+  return { dnsNames: parsed.dnsNames, ipAddresses: parsed.ipAddresses }
+}
+
 type AddressesBody = {
   error?: string
   reconcile?: string
@@ -3752,6 +3776,7 @@ type AddressesBody = {
     hostname: string | null
     primary: boolean
     main: boolean
+    mainFor: string[]
     effective: { host: string | null; v4: string | null; v4Source: string | null }
   }>
 }
@@ -3923,6 +3948,22 @@ test('addresses clients use: saved, validated, certificate reissued, one connect
             .map((envelope) => [envelope.type, envelope.serverId]),
           [['managed.ingress.reconcile', serverId]]
         )
+        assertEquals(
+          savedBody.addresses.map((a) => [a.label, a.mainFor]),
+          [
+            ['Public', ['postgres', 'mysql']],
+            ['Ashburn', []],
+          ]
+        )
+        // The reissued certificate names every address clients use, and keeps
+        // the one-word Linux hostname for clients that already dial it.
+        const sans = await latestIngressReconcileSans(db, serverId)
+        for (const name of ['omega', 'omega.example.com', 'omega.dc1.example.com']) {
+          assertEquals(sans.dnsNames.includes(name), true, name)
+        }
+        for (const address of ['192.0.2.77', '10.93.0.10', '127.0.0.1']) {
+          assertEquals(sans.ipAddresses.includes(address), true, address)
+        }
 
         const after = await detail()
         assertEquals(after.addressNeeded, false)
@@ -3974,12 +4015,131 @@ test('addresses clients use: saved, validated, certificate reissued, one connect
         const audits = await listAuditForOrganization(db, { organizationId })
         const audit = audits.find((row) => row.action === 'server.addresses.set')
         assertEquals(audit?.targetId, serverId)
+
+        // A pin whose network link is down is not given out; the public side takes over.
+        await db
+          .update(ip)
+          .set({ metadata: { linkDown: { since: new Date().toISOString() } } })
+          .where(eq(ip.serverId, serverId))
+        const linkDown = (await (
+          await app.request(`/servers/${serverId}/addresses`, { headers })
+        ).json()) as AddressesBody
+        assertEquals(
+          linkDown.addresses.map((a) => [a.label, a.effective.host, a.mainFor]),
+          [
+            ['Public', 'omega.example.com', ['postgres', 'mysql']],
+            ['Ashburn', null, []],
+          ]
+        )
+
+        // A queue that refuses: saved, 502, honest about what happens next.
+        const refusing = await createManagedRoutesTestApp(db, parseTestSecretsConfig('deno'), {
+          commandQueue: { enqueue: () => Promise.reject(new Error('queue down')) },
+        })
+        const refusingApp = withAddressRoutes(refusing.app, refusing.secrets)
+        const failed = await refusingApp.request(`/servers/${serverId}/addresses`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ addresses: [{ scope: 'public', hostname: 'db.example.com' }] }),
+        })
+        assertEquals(failed.status, 502)
+        const failedBody = (await failed.json()) as AddressesBody & {
+          reason: string
+          message: string
+        }
+        assertEquals(failedBody.error, 'ingress_reconcile_failed')
+        assertEquals(failedBody.reason, 'enqueue_failed')
+        assertEquals(failedBody.addresses[0]!.hostname, 'db.example.com')
+        assertMatch(failedBody.message, /^Saved, but /)
+
+        // Leaving the datacenter forgets its entry, so it never silently returns.
+        await putAddresses([
+          { scope: 'datacenter', datacenterId: dc!.id, hostname: 'x.example.com' },
+        ])
+        await db.delete(ip).where(eq(ip.serverId, serverId))
+        await pruneClientAddressesWithoutPin(db, [serverId])
+        assertEquals(
+          (await db.select().from(clientAddress).where(eq(clientAddress.serverId, serverId)))
+            .length,
+          0
+        )
       } finally {
         await db.delete(clientAddress).where(eq(clientAddress.serverId, serverId))
         await db.delete(ip).where(eq(ip.serverId, serverId))
         await db.delete(network).where(eq(network.id, lan!.id))
         await db.delete(datacenter).where(eq(datacenter.id, dc!.id))
       }
+    }
+  )
+})
+
+test('addresses clients use: nothing is saved without a command queue, and a server with no databases needs no reconcile', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app: managedApp, secrets, commandQueue, userId, organizationId, serverId }) => {
+      const headers = {
+        Cookie: await sessionCookie(db, secrets, userId),
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const body = JSON.stringify({ addresses: [{ scope: 'public', hostname: 'db.example.com' }] })
+
+      // No daemon cell registry or command queue: 503, and nothing written.
+      const bare = new Hono<AppEnv>()
+      bare.use('*', (c, next) => {
+        c.set('db', db)
+        return next()
+      })
+      withAddressRoutes(bare, secrets)
+      const refused = await bare.request(`/servers/${serverId}/addresses`, {
+        method: 'PUT',
+        headers,
+        body,
+      })
+      assertEquals(refused.status, 503)
+      assertEquals(
+        (await db.select().from(clientAddress).where(eq(clientAddress.serverId, serverId))).length,
+        0
+      )
+
+      // No cluster on the server yet: saved, nothing queued.
+      const app = withAddressRoutes(managedApp, secrets)
+      const count = commandQueue.envelopes.length
+      const saved = await app.request(`/servers/${serverId}/addresses`, {
+        method: 'PUT',
+        headers,
+        body,
+      })
+      assertEquals(saved.status, 200)
+      assertEquals(((await saved.json()) as AddressesBody).reconcile, 'not_needed')
+      assertEquals(commandQueue.envelopes.length, count)
+
+      // Concurrent saves for one server serialize on the server row: the last
+      // one wins instead of one tripping the one-public-entry unique index.
+      await Promise.all(
+        ['a', 'b', 'c'].map((label) =>
+          saveClientAddressEntries(db, {
+            organizationId,
+            serverId,
+            entries: [
+              {
+                scope: 'public',
+                datacenterId: null,
+                hostname: `${label}.example.com`,
+                addressV4: null,
+                addressV6: null,
+                ports: {},
+                primary: false,
+              },
+            ],
+          })
+        )
+      )
+      assertEquals(
+        (await db.select().from(clientAddress).where(eq(clientAddress.serverId, serverId))).length,
+        1
+      )
+      await db.delete(clientAddress).where(eq(clientAddress.serverId, serverId))
     }
   )
 })

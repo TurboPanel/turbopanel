@@ -9,6 +9,7 @@ import {
   clientEndpointsForListener,
   detectedPublicAddresses,
   mainClientAddressHost,
+  mainDatabaseListeners,
   parseClientAddressesBody,
   parseClientAddressOptions,
   resolveClientAddresses,
@@ -331,4 +332,24 @@ test('stored options read back as the ports map', () => {
   })
   assertEquals(parseClientAddressOptions(null), { ports: {} })
   assertEquals(parseClientAddressOptions({ ports: { postgres: 'x' } }), { ports: {} })
+})
+
+test('mainDatabaseListeners follows the endpoint port rules per engine', () => {
+  const resolved = resolveClientAddresses(
+    facts({
+      publicIp: { v4: '198.51.100.4', v6: null },
+      pins: [pin({})],
+      saved: [entry({ ports: { mysql: null } })],
+    })
+  )
+  const main = mainDatabaseListeners(resolved)
+  assertEquals(
+    resolved.entries.map((e) => [e.label, main.get(e)]),
+    [
+      ['Public', ['postgres']],
+      ['Ashburn', ['mysql']],
+    ]
+  )
+  const none = mainDatabaseListeners(resolveClientAddresses(facts()))
+  assertEquals([...none.values()], [[]])
 })

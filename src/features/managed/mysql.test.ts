@@ -379,3 +379,15 @@ test('buildConnectionInfo renders disable as DISABLED', () => {
   })
   assertEquals(info.dsn.includes('ssl-mode=DISABLED'), true)
 })
+
+test('buildConnectionInfo brackets an IPv6 host in the DSN only', () => {
+  const info = mysqlEngineSpec.buildConnectionInfo({
+    host: '2001:db8::4',
+    port: 13306,
+    database: 'appdb',
+    username: 'root',
+    sslMode: 'verify-full',
+  })
+  assertEquals(info.dsn.includes('@[2001:db8::4]:13306/appdb?'), true)
+  assertEquals(info.host, '2001:db8::4')
+})

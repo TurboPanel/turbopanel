@@ -301,6 +301,34 @@ export function clientEndpointsForListener(
   return [main.endpoint, ...reachable.filter((r) => r !== main).map((r) => r.endpoint)]
 }
 
+/** The listeners a managed database connection string is built for. */
+export const CLIENT_ADDRESS_DATABASE_PORT_KEYS = ['postgres', 'mysql'] as const
+
+/**
+ * For each side, the database listeners it fills the main connection string
+ * for, by exactly the rules of {@link clientEndpointsForListener} (host
+ * present, port not `null`, primary, else public, else first datacenter). An
+ * empty list everywhere while external access is on is the "set the address
+ * clients use" prompt.
+ */
+export function mainDatabaseListeners(
+  addresses: ServerClientAddresses
+): Map<EffectiveClientAddress, ClientAddressPortKey[]> {
+  const out = new Map<EffectiveClientAddress, ClientAddressPortKey[]>(
+    addresses.entries.map((entry) => [entry, []])
+  )
+  for (const key of CLIENT_ADDRESS_DATABASE_PORT_KEYS) {
+    // The port value is irrelevant here; only which side is main.
+    const main = clientEndpointsForListener(addresses, key, 1)[0]
+    if (!main) continue
+    const entry = addresses.entries.find(
+      (e) => e.scope === main.scope && e.datacenterId === main.datacenterId
+    )
+    if (entry) out.get(entry)!.push(key)
+  }
+  return out
+}
+
 /**
  * Names and addresses the database listener certificate must carry for the
  * addresses clients use: the Linux hostname always (a compatibility name, even

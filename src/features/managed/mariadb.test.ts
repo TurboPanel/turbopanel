@@ -257,3 +257,15 @@ test('socket healthcheck and backup descriptor stay credential-free', () => {
   assertEquals(mariadbEngineSpec.backup?.supportsInstanceScope, false)
   assertEquals(mariadbEngineSpec.backup?.defaultRetentionKeep, 7)
 })
+
+test('buildConnectionInfo brackets an IPv6 host in the DSN only', () => {
+  const info = mariadbEngineSpec.buildConnectionInfo({
+    host: '2001:db8::4',
+    port: 13306,
+    database: 'appdb',
+    username: 'root',
+    sslMode: 'verify-full',
+  })
+  assertEquals(info.dsn.includes('@[2001:db8::4]:13306/appdb?'), true)
+  assertEquals(info.host, '2001:db8::4')
+})

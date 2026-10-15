@@ -465,7 +465,14 @@ v4/v6 address (while external access is on), and the server's Linux hostname
 **always**, as a compatibility name for clients that already dial it
 (`clientAddressCertificateNames` → `collectProxySqlListenerSans.clientNames`).
 `PUT /servers/:id/addresses` queues `managed.ingress.reconcile`, which mints a
-new leaf with the new names. The bind and the firewall do not read the entries:
+new leaf with the new names. With databases to front it first runs the external
+access switch's preflight (503 no queue, 422 `daemon_key_unavailable`, nothing
+saved); a reconcile that still fails is a 502 with `reason` `enqueue_failed` or
+`prepare_failed`. Saves lock the server row, so concurrent PUTs serialize.
+Datacenter pins whose link is down are not given out. Leaving a datacenter (and
+joining one) prunes that datacenter's entry (`pruneClientAddressesWithoutPin`),
+except a pin removed through `DELETE /ips/:id`, whose stale entry is ignored by
+the resolver and pruned on the next join through the datacenter routes. The bind and the firewall do not read the entries:
 the single external access switch is the only on/off control.
 
 ## Backup descriptor
