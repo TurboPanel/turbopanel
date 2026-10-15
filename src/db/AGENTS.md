@@ -139,6 +139,45 @@ before `wrangler deploy`, and a Worker has no boot. Under `pnpm deploy`
 runtime user; fail closed when the origin cannot be read; skipped entirely
 when `CLOUDFLARE_ENV` is unset.
 
+**Every migration is tested as an upgrade from the previous release**
+(`scripts/check-migration-upgrade.mjs`, `pnpm check:migration-upgrade`, CI
+`deno db-1`). It takes the newest stable `vX.Y.Z` tag on `live` (else the
+newest stable tag), applies _that tag's_ `migrations/` (read from git) to an
+empty scratch database, inserts `scripts/migration-upgrade-seed.sql`, runs
+this checkout's `pnpm migrate` path on top, and fails unless every seeded row
+keeps its values, `public.migration` is `current`, and the schema (columns,
+constraints, indexes, comments, sequences, triggers, functions, views, types,
+history) matches a fresh apply. On the 20 seeded tables (of 81) that catches a
+NOT NULL without a default, a CHECK or FK the existing rows break, a backfill
+that rewrites or deletes rows, and DDL that depends on their data. Other
+tables are empty in the run, so none of those catches reach them: seed a
+table before a migration that touches its existing rows.
+
+The seed targets the previous release's schema, and the fresh database gets
+it too, so a migration that makes the seed invalid fails in its own PR: update
+the seed there. The one sanctioned loss is the contract step: a pending
+migration with a `-- breaking-ok: <reason>` line may drop tables
+(`DROP TABLE`), drop columns (`DROP COLUMN`) and rename either
+(`RENAME TO`, `RENAME COLUMN`); seeded rows are then compared under the new
+names and dropped ones are skipped, but only when the old name is really
+gone afterwards (a dropped and re-added column, or a new column renamed into
+the old name, is compared as usual). Nothing else is excused. A drop of a
+column the seed names means removing it from the seed in the same PR; a
+rename cannot be seeded on both sides, so while one is pending a fresh-seed
+failure that names a renamed table or column is a warning and the seed is updated once that release ships.
+
+Locally, start a throwaway Postgres 18 whose role has CREATEDB (only
+`tp_upgrade_check_*` databases are created and dropped; nothing runs in the
+named database; refused when `CLOUDFLARE_ENV` is set), then:
+
+```sh
+git fetch origin --tags live
+TURBOPANEL_DATABASE_URL='postgresql://…@127.0.0.1:5432/postgres' pnpm check:migration-upgrade
+```
+
+`node scripts/check-migration-upgrade.mjs --from <tag>` tests the upgrade from
+an older release instead (the seed may not fit releases before the newest).
+
 Physical boolean columns use an `is_` prefix (`is_connected`,
 `is_read_eligible`, `is_for_build`, `is_for_runtime`, `is_emit_engine_defaults`,
 `is_read_only`). Public API JSON still uses `connected`, `readEligible`,
