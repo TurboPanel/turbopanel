@@ -530,7 +530,7 @@ CA ensure-or-create **`GET /tls/ca`** (`{ tls, trustBundlePem }`), rotate
 retired generations only after every tracked command `succeeded` and binding
 rematerialize rows are not failed; `PATCH /tls/:id` `revoke:true` cannot revoke
 an Organization CA), PEM-only download **`GET /tls/ca/download`** (concatenated
-active+retired bundle). **TurboFabric apply** ships via
+active+retired bundle, saved as `turbopanel-org-ca-{organizationId}.pem`). **TurboFabric apply** ships via
 `POST /organizations/:id/fabric/apply` → `server.fabric.reconcile` (see consumer
 paragraph above). **Platform CA rotation** ships via admin public-URL apply /
 explicit rotate → `server.tls.trust.reconcile`

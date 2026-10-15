@@ -3,7 +3,7 @@
  */
 
 import { assertEquals, assertRejects } from '@std/assert'
-import { randomSerial } from './self-signed.ts'
+import { ecdsaDerToRaw, ecdsaRawToDer, encodeValidityTime, randomSerial } from './self-signed.ts'
 import {
   buildBasicConstraintsExtension,
   buildKeyUsageExtension,
@@ -18,15 +18,18 @@ import {
   ORGANIZATION_CA_LEAF_VALID_DAYS,
   ORGANIZATION_CA_ORG_NAME,
   ORGANIZATION_CA_ORG_UNIT,
+  ORGANIZATION_CA_VALID_YEARS,
   parseCertificatePem,
+  privateKeyMatchesCertificate,
   readAuthorityKeyIdentifier,
   readBasicConstraintsCa,
   readKeyUsageBits,
   readSubjectKeyIdentifier,
   verifyCertificateSignature,
 } from './index.ts'
-import { children, content, readNode } from './asn1.ts'
+import { children, content, readNode, readOid } from './asn1.ts'
 import { extractSpkiDer } from './self-signed.ts'
+import { decodeFirstCertificate } from './pem.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -273,4 +276,166 @@ test('a leaf issued from a legacy CA without a key identifier still gets an AKI 
     readAuthorityKeyIdentifier(leaf.certificatePem),
     await expectedKeyIdentifier(legacy.certificatePem)
   )
+})
+
+/** Signature AlgorithmIdentifier TLVs: TBS `signature` and outer `signatureAlgorithm`. */
+function signatureAlgorithmTlvs(certificatePem: string): { tbs: string; outer: string } {
+  const der = decodeFirstCertificate(certificatePem)
+  const cert = readNode(der, 0)
+  const [tbs, outer] = children(cert)
+  const tbsSig = children(tbs!)[2]!
+  const hex = (node: typeof tbsSig) =>
+    Array.from(der.subarray(node.contentOffset - node.headerLength, node.end), (b) =>
+      b.toString(16).padStart(2, '0')
+    ).join('')
+  return { tbs: hex(tbsSig), outer: hex(outer!) }
+}
+
+/** SubjectPublicKeyInfo algorithm OID and, for EC keys, the named curve OID. */
+function spkiAlgorithm(certificatePem: string): { key: string; curve: string | null } {
+  const spki = readNode(extractSpkiDer(certificatePem), 0)
+  const [keyOid, params] = children(children(spki)[0]!)
+  return { key: readOid(keyOid!), curve: params?.tag === 0x06 ? readOid(params) : null }
+}
+
+/** ecdsa-with-SHA384 with absent parameters (RFC 5758), never a NULL. */
+const ECDSA_SHA384_ALG_ID_HEX = '300a06082a8648ce3d040303'
+/** sha256WithRSAEncryption with NULL parameters. */
+const SHA256_RSA_ALG_ID_HEX = '300d06092a864886f70d01010b0500'
+
+test('mintOrganizationCa uses an ECDSA P-384 key and signs itself with ecdsa-with-SHA384', async () => {
+  const ca = await mintOrganizationCa({ organizationId: 'P384 Org CA' })
+  assertEquals(spkiAlgorithm(ca.certificatePem), {
+    key: '1.2.840.10045.2.1',
+    curve: '1.3.132.0.34',
+  })
+  assertEquals(signatureAlgorithmTlvs(ca.certificatePem), {
+    tbs: ECDSA_SHA384_ALG_ID_HEX,
+    outer: ECDSA_SHA384_ALG_ID_HEX,
+  })
+  assertEquals(await verifyCertificateSignature(ca.certificatePem, ca.certificatePem), true)
+  assertEquals(await privateKeyMatchesCertificate(ca.privateKeyPem, ca.parsed), true)
+  assertEquals(readKeyUsageBits(ca.certificatePem), [KEY_USAGE_KEY_CERT_SIGN, KEY_USAGE_CRL_SIGN])
+})
+
+test('mintOrganizationCa defaults to a 15-calendar-year lifetime', async () => {
+  assertEquals(ORGANIZATION_CA_VALID_YEARS, 15)
+  const before = new Date()
+  const ca = await mintOrganizationCa({ organizationId: 'fifteen-year-ca' })
+  const expected = new Date(before)
+  expected.setUTCFullYear(before.getUTCFullYear() + 15)
+  const driftMs = ca.parsed.notAfter.getTime() - expected.getTime()
+  // Whole-second encoding plus the time spent minting.
+  assertEquals(driftMs > -1_000 && driftMs < 60_000, true)
+})
+
+test('encodeValidityTime switches from UTCTime to GeneralizedTime at 2050', () => {
+  const decode = (bytes: Uint8Array) => ({
+    tag: bytes[0],
+    text: new TextDecoder().decode(content(readNode(bytes, 0))),
+  })
+  assertEquals(decode(encodeValidityTime(new Date('2041-10-15T12:34:56Z'))), {
+    tag: 0x17,
+    text: '411015123456Z',
+  })
+  assertEquals(decode(encodeValidityTime(new Date('2049-12-31T23:59:59Z'))), {
+    tag: 0x17,
+    text: '491231235959Z',
+  })
+  assertEquals(decode(encodeValidityTime(new Date('2050-01-01T00:00:00Z'))), {
+    tag: 0x18,
+    text: '20500101000000Z',
+  })
+  assertEquals(decode(encodeValidityTime(new Date('1949-12-31T23:59:59Z'))), {
+    tag: 0x18,
+    text: '19491231235959Z',
+  })
+  assertEquals(decode(encodeValidityTime(new Date('1950-01-01T00:00:00Z'))), {
+    tag: 0x17,
+    text: '500101000000Z',
+  })
+})
+
+test('an Organization CA expiring after 2049 encodes and parses its notAfter as GeneralizedTime', async () => {
+  const ca = await mintOrganizationCa({ organizationId: 'far-future-ca', validDays: 40 * 366 })
+  assertEquals(ca.parsed.notAfter.getUTCFullYear() >= 2066, true)
+  const der = decodeFirstCertificate(ca.certificatePem)
+  const tbs = children(readNode(der, 0))[0]!
+  const [notBefore, notAfter] = children(children(tbs)[4]!)
+  assertEquals(notBefore!.tag, 0x17)
+  assertEquals(notAfter!.tag, 0x18)
+  const leaf = await issueLeafCertificate(ca.certificatePem, ca.privateKeyPem, ['db.example.com'])
+  assertEquals(await verifyCertificateSignature(leaf.certificatePem, ca.certificatePem), true)
+})
+
+test('a leaf from a P-384 Organization CA keeps an RSA key and carries ecdsa-with-SHA384', async () => {
+  const ca = await mintOrganizationCa({ organizationId: 'p384-leaf-ca' })
+  const leaf = await issueLeafCertificate(ca.certificatePem, ca.privateKeyPem, ['db.example.com'], {
+    includeClientAuth: true,
+    ipAddresses: ['10.0.0.5'],
+  })
+  assertEquals(spkiAlgorithm(leaf.certificatePem), { key: '1.2.840.113549.1.1.1', curve: null })
+  assertEquals(signatureAlgorithmTlvs(leaf.certificatePem), {
+    tbs: ECDSA_SHA384_ALG_ID_HEX,
+    outer: ECDSA_SHA384_ALG_ID_HEX,
+  })
+  assertEquals(await verifyCertificateSignature(leaf.certificatePem, ca.certificatePem), true)
+  assertEquals(await privateKeyMatchesCertificate(leaf.privateKeyPem, leaf.parsed), true)
+  const lifetimeDays =
+    (leaf.parsed.notAfter.getTime() - leaf.parsed.notBefore.getTime()) / 86_400_000
+  assertEquals(Math.round(lifetimeDays), ORGANIZATION_CA_LEAF_VALID_DAYS)
+})
+
+test('a leaf from an RSA issuer (Organization CAs minted before P-384) keeps sha256WithRSAEncryption', async () => {
+  const legacy = await mintSelfSignedCertificate(['legacy-rsa-ca.example.com'])
+  const leaf = await issueLeafCertificate(legacy.certificatePem, legacy.privateKeyPem, [
+    'db.example.com',
+  ])
+  assertEquals(signatureAlgorithmTlvs(leaf.certificatePem), {
+    tbs: SHA256_RSA_ALG_ID_HEX,
+    outer: SHA256_RSA_ALG_ID_HEX,
+  })
+  assertEquals(await verifyCertificateSignature(leaf.certificatePem, legacy.certificatePem), true)
+})
+
+test('verifyCertificateSignature refuses a leaf checked against the other key type', async () => {
+  const ecCa = await mintOrganizationCa({ organizationId: 'ec-ca' })
+  const rsaCa = await mintSelfSignedCertificate(['rsa-ca.example.com'])
+  const ecLeaf = await issueLeafCertificate(ecCa.certificatePem, ecCa.privateKeyPem, ['a.example'])
+  const rsaLeaf = await issueLeafCertificate(rsaCa.certificatePem, rsaCa.privateKeyPem, [
+    'b.example',
+  ])
+  assertEquals(await verifyCertificateSignature(ecLeaf.certificatePem, rsaCa.certificatePem), false)
+  assertEquals(await verifyCertificateSignature(rsaLeaf.certificatePem, ecCa.certificatePem), false)
+})
+
+test('issueLeafCertificate refuses a CA key that does not match the CA certificate type', async () => {
+  const ecCa = await mintOrganizationCa({ organizationId: 'mismatch-ca' })
+  const rsaCa = await mintSelfSignedCertificate(['rsa-ca.example.com'])
+  await assertRejects(
+    () => issueLeafCertificate(ecCa.certificatePem, rsaCa.privateKeyPem, ['a.example']),
+    TypeError,
+    'must be EC'
+  )
+})
+
+test('ecdsaRawToDer encodes minimal INTEGERs and ecdsaDerToRaw restores the fixed width', () => {
+  const r = new Uint8Array(48).fill(0x11)
+  r[0] = 0x00
+  r[1] = 0x00
+  r[2] = 0x7f
+  const s = new Uint8Array(48).fill(0x22)
+  s[0] = 0x80
+  const raw = new Uint8Array([...r, ...s])
+  const der = ecdsaRawToDer(raw)
+  const [rNode, sNode] = children(readNode(der, 0))
+  // Leading zero bytes stripped; a high bit gets one 0x00 so the INTEGER stays positive.
+  assertEquals(content(rNode!).length, 46)
+  assertEquals(content(rNode!)[0], 0x7f)
+  assertEquals(content(sNode!).length, 49)
+  assertEquals(content(sNode!)[0], 0x00)
+  assertEquals(ecdsaDerToRaw(der, 48), raw)
+  assertEquals(ecdsaDerToRaw(der, 32), null)
+  assertEquals(ecdsaDerToRaw(Uint8Array.of(0x30, 0x00), 48), null)
+  assertEquals(ecdsaDerToRaw(Uint8Array.of(0x04, 0x00), 48), null)
 })

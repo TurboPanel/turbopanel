@@ -1,5 +1,6 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
+import { X509Certificate } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -640,6 +641,11 @@ test('POST /tls/ca/rotate retires prior CA and mints a new active generation', a
       trustBundlePem: string
     }
     assertEquals(afterBody.tls.id, rotateBody.id)
+    // Rotation mints the current kind of Organization CA: ECDSA P-384.
+    assertEquals(
+      new X509Certificate(afterBody.tls.certificatePem).publicKey.asymmetricKeyDetails?.namedCurve,
+      'secp384r1'
+    )
     assertEquals(afterBody.trustBundlePem.includes(afterBody.tls.certificatePem.trim()), true)
     assertEquals(afterBody.trustBundlePem.includes(priorPem.trim()), true)
 
@@ -700,6 +706,10 @@ test('GET /tls/ca/download returns the Organization CA trust-bundle PEM', async 
     const download = await app.request('/tls/ca/download', { headers })
     assertEquals(download.status, 200)
     assertEquals(download.headers.get('content-type')?.includes('application/x-pem-file'), true)
+    assertEquals(
+      download.headers.get('content-disposition'),
+      `attachment; filename="turbopanel-org-ca-${organizationId}.pem"`
+    )
     const body = await download.text()
     assertEquals(body, firstBody.trustBundlePem)
     assertEquals(body.includes('BEGIN CERTIFICATE'), true)
