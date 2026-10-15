@@ -7,7 +7,7 @@ import {
 } from './index.ts'
 
 // The Organization CA is minted on Workers too (GET /tls/ca, rotation), so the
-// P-384 key generation, PKCS#8 export and ECDSA signing must work in workerd.
+// P-384 key generation, PKCS#8 export and ECDSA signing must work in the Workers runtime.
 describe('Organization CA (Workers Web Crypto)', () => {
   it('mints a P-384 Organization CA and signs a leaf with it', async () => {
     const ca = await mintOrganizationCa({ organizationId: '019a0000-0000-7000-8000-000000000002' })

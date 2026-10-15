@@ -32,6 +32,8 @@ import {
   parseTlsOptions,
   resolveTlsForHosting,
 } from '../../lib/tls/index.ts'
+import { metadataFromParsed, splitTlsMetadata } from '../../lib/tls/metadata.ts'
+import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { TlsCandidate, TlsMetadata, TlsSource } from '../../lib/tls/types.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerTlsRoutes } from './routes.ts'
@@ -654,6 +656,72 @@ test('POST /tls/ca/rotate retires prior CA and mints a new active generation', a
     const downloadBody = await download.text()
     assertEquals(downloadBody, afterBody.trustBundlePem)
     assertEquals(downloadBody.split('BEGIN CERTIFICATE').length - 1, 2)
+  })
+})
+
+test('an existing RSA Organization CA is kept until rotated, and rotation mints P-384', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    // An organization whose CA predates P-384: RSA key, already active.
+    const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+      parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno'),
+      'data-encryption'
+    )
+    const legacy = await mintSelfSignedCertificate(['legacy-org-ca.example.com'])
+    const { columns, residual } = splitTlsMetadata(metadataFromParsed(legacy.parsed, 'ready'))
+    const [legacyRow] = await db
+      .insert(tls)
+      .values({
+        organizationId,
+        name: 'Organization CA',
+        source: 'organization_ca',
+        certificatePem: legacy.certificatePem,
+        privateKeyPem: await encryptSecret(dataEncryptionSecrets, legacy.privateKeyPem),
+        status: columns.status,
+        notAfter: columns.notAfter,
+        fingerprintSha256: columns.fingerprintSha256,
+        metadata: residual,
+        options: null,
+        caState: 'active',
+        caGeneration: 1,
+      })
+      .returning({ id: tls.id })
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
+    const keyType = (pem: string) => new X509Certificate(pem).publicKey.asymmetricKeyType
+
+    const ensure = await app.request('/tls/ca', { headers })
+    assertEquals(ensure.status, 200)
+    const ensureBody = (await ensure.json()) as { tls: { id: string; certificatePem: string } }
+    assertEquals(ensureBody.tls.id, legacyRow!.id)
+    assertEquals(keyType(ensureBody.tls.certificatePem), 'rsa')
+
+    const rotate = await app.request('/tls/ca/rotate', { method: 'POST', headers })
+    assertEquals(rotate.status, 200)
+
+    const after = await app.request('/tls/ca', { headers })
+    const afterBody = (await after.json()) as { tls: { id: string; certificatePem: string } }
+    assertEquals(afterBody.tls.id === legacyRow!.id, false)
+    assertEquals(
+      new X509Certificate(afterBody.tls.certificatePem).publicKey.asymmetricKeyDetails?.namedCurve,
+      'secp384r1'
+    )
+    const [retired] = await db
+      .select({ caState: tls.caState, certificatePem: tls.certificatePem })
+      .from(tls)
+      .where(eq(tls.id, legacyRow!.id))
+      .limit(1)
+    assertEquals(retired?.caState, 'retired')
+    assertEquals(keyType(retired!.certificatePem!), 'rsa')
+
+    const download = await app.request('/tls/ca/download', { headers })
+    const bundle = await download.text()
+    assertEquals(bundle.includes(legacy.certificatePem.trim()), true)
+    assertEquals(bundle.includes(afterBody.tls.certificatePem.trim()), true)
   })
 })
 
