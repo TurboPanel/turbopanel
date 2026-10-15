@@ -1746,6 +1746,7 @@ export const clientAddress = pgTable(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops')
     ),
+    index('idx_address_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
     index('idx_address_datacenter_id').using(
       'btree',
       table.datacenterId.asc().nullsLast().op('uuid_ops')

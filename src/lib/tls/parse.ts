@@ -16,6 +16,7 @@ import {
 } from './asn1.ts'
 import { decodeFirstCertificate, PemError } from './pem.ts'
 import type { ParsedCertificate } from './types.ts'
+import { bigIntToIp } from '../ip-address.ts'
 
 const OID_COMMON_NAME = '2.5.4.3'
 const OID_ORGANIZATION_NAME = '2.5.4.10'
@@ -99,11 +100,14 @@ function namesFromGeneralNames(sanSeq: Asn1Node): {
       if (dns.length > 0) dnsNames.push(dns)
       continue
     }
-    // iPAddress [7] OCTET STRING (IPv4 = 4 octets)
+    // iPAddress [7] OCTET STRING (IPv4 = 4 octets, IPv6 = 16)
     if (general.tag === 0x87) {
       const raw = content(general)
       if (raw.length === 4) {
         ipAddresses.push(`${raw[0]}.${raw[1]}.${raw[2]}.${raw[3]}`)
+      } else if (raw.length === 16) {
+        const value = raw.reduce((acc, byte) => (acc << 8n) | BigInt(byte), 0n)
+        ipAddresses.push(bigIntToIp(value, 6))
       }
     }
   }
@@ -154,7 +158,7 @@ function uniquePreservingOrder(names: string[]): string[] {
 
 function sanNamesFromTbs(
   tbsChildren: Asn1Node[],
-  fieldStart: number,
+  fieldStart: number
 ): { dnsNames: string[]; ipAddresses: string[] } {
   for (let i = fieldStart; i < tbsChildren.length; i += 1) {
     const node = tbsChildren[i]!
@@ -177,15 +181,12 @@ function wrapAsn1ParseError(err: unknown): never {
     throw new CertificateParseError(err.message)
   }
   throw new CertificateParseError(
-    err instanceof Error ? err.message : 'failed to parse certificate',
+    err instanceof Error ? err.message : 'failed to parse certificate'
   )
 }
 
 function spkiTlv(leafDer: Uint8Array, spkiNode: Asn1Node): Uint8Array {
-  return leafDer.subarray(
-    spkiNode.contentOffset - spkiNode.headerLength,
-    spkiNode.end,
-  )
+  return leafDer.subarray(spkiNode.contentOffset - spkiNode.headerLength, spkiNode.end)
 }
 
 async function parseLeafCertificate(leafDer: Uint8Array): Promise<ParsedCertificate> {

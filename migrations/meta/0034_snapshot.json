@@ -1,5 +1,5 @@
 {
-  "id": "3b93e145-6331-415a-a9a4-faf4335800e3",
+  "id": "958f98fe-072c-4371-bc5c-aaae36f1f4b5",
   "prevId": "22e6ab88-59b8-4588-9d07-f18f0871e5c4",
   "version": "7",
   "dialect": "postgresql",
@@ -1423,6 +1423,22 @@
           "columns": [
             {
               "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_address_server_id": {
+          "name": "idx_address_server_id",
+          "columns": [
+            {
+              "expression": "server_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last",

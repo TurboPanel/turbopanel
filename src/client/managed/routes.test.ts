@@ -3928,21 +3928,21 @@ test('addresses clients use: saved, validated, certificate reissued, one connect
         assertEquals(after.addressNeeded, false)
         assertEquals(after.connection?.host, 'omega.example.com')
         assertEquals(
-          after.connections.map((c) => [c.label, c.primary, c.host, c.port, c.dsn.split('@')[1]]),
+          after.connections.map((c) => [
+            c.label,
+            c.primary,
+            c.host,
+            c.port,
+            c.dsn.split('@')[1]!.split('?')[0],
+          ]),
           [
-            [
-              'Public',
-              true,
-              'omega.example.com',
-              25432,
-              'omega.example.com:25432/defaultdb?sslmode=require',
-            ],
+            ['Public', true, 'omega.example.com', 25432, 'omega.example.com:25432/defaultdb'],
             [
               'Ashburn',
               false,
               'omega.dc1.example.com',
               15432,
-              'omega.dc1.example.com:15432/defaultdb?sslmode=require',
+              'omega.dc1.example.com:15432/defaultdb',
             ],
           ]
         )

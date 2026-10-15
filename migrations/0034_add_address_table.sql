@@ -22,6 +22,7 @@ ALTER TABLE "address" ADD CONSTRAINT "address_organization_id_organization_id_fk
 ALTER TABLE "address" ADD CONSTRAINT "address_server_id_server_id_fk" FOREIGN KEY ("server_id") REFERENCES "public"."server"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "address" ADD CONSTRAINT "address_datacenter_id_datacenter_id_fk" FOREIGN KEY ("datacenter_id") REFERENCES "public"."datacenter"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "idx_address_organization_id" ON "address" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_address_server_id" ON "address" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_address_datacenter_id" ON "address" USING btree ("datacenter_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_address_server_public" ON "address" USING btree ("server_id") WHERE "address"."scope" = 'public';--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_address_server_datacenter" ON "address" USING btree ("server_id","datacenter_id") WHERE "address"."datacenter_id" IS NOT NULL;--> statement-breakpoint
