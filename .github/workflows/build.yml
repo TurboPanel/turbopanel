@@ -246,6 +246,11 @@ jobs:
       DENO_SHARD: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # db-1 runs the upgrade check, which reads release tags and the live
+          # branch; the other shards keep the shallow clone. Written with != so
+          # the expression never yields 0, which `&& ||` would treat as false.
+          fetch-depth: ${{ matrix.shard != 'db-1' && 1 || 0 }}
 
       - uses: ./.github/actions/setup-toolchain
 
@@ -262,6 +267,14 @@ jobs:
           path: coverage/deno.lcov
           if-no-files-found: error
           retention-days: 1
+
+      # Previous release's migrations + seed rows, then this branch's
+      # migrations on top, compared with a fresh apply. Scratch databases
+      # only; see scripts/check-migration-upgrade.mjs. Last, and run even when
+      # the tests failed, so neither hides the other's result.
+      - name: Check upgrade from the previous release
+        if: ${{ !cancelled() && matrix.shard == 'db-1' }}
+        run: pnpm check:migration-upgrade
 
   # The daemon-cell suites talk to Redis over a unix socket, so the container
   # shares a host directory and serves the socket there. They are outside the
