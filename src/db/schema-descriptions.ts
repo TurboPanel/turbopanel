@@ -578,6 +578,32 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       name: 'Optional display name (1..255 chars of letters, digits, space, dot, underscore, dash); no control-plane code path writes it today.',
     },
   },
+  address: {
+    group: 'networking',
+    summary:
+      'An address clients use to reach a server, set by an operator: one `public` entry per server and one per datacenter the server belongs to.',
+    columns: {
+      metadata: 'Reserved for the last DNS check of `hostname`; nothing writes it yet.',
+      organization_id:
+        'Organization that owns the server, copied from it on save; entries cascade away with the organization.',
+      server_id:
+        'The server this entry belongs to; entries cascade away when the server is deleted.',
+      options:
+        'External port per listener under `ports` (`postgres`, `mysql`, `http`, `https`); absent = the listen port, null = not reachable here.',
+      scope:
+        'Which side of the server this entry describes: `public`, or `datacenter` for one datacenter the server belongs to.',
+      datacenter_id:
+        "The datacenter whose address this entry names; set if and only if `scope = 'datacenter'`; cascades away with the datacenter.",
+      hostname:
+        'Optional DNS name clients type, lower case and always containing a dot; it fills connection strings and goes on the database certificate.',
+      address_v4:
+        "Optional IPv4 address clients use when it is not the server's own, such as a router; NULL = the server's own address on that side.",
+      address_v6:
+        "Optional IPv6 address clients use when it is not the server's own; NULL = the server's own address on that side.",
+      is_primary:
+        'True on the entry that fills the main connection string, at most one per server; with none marked the public entry is used.',
+    },
+  },
   ip: {
     group: 'networking',
     summary:

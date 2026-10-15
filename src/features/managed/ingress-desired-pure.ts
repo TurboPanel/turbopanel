@@ -127,11 +127,18 @@ export function addBackendAddressSan(
 
 /**
  * Collect DNS + IP SANs that clients are told to dial for this server's
- * ProxySQL — hostname, bind address, and remote peer endpoints used by backends.
+ * ProxySQL — the main host, the addresses clients use, bind address, and
+ * remote peer endpoints used by backends.
  * Synthetic names (leaf CN) stay additional SANs only via the builder.
  */
 export function collectProxySqlListenerSans(params: {
   hostname: string | null | undefined
+  /**
+   * Every DNS name and address of the server's addresses clients use, plus its
+   * Linux hostname (`clientAddressCertificateNames`). A client verifies the
+   * host it typed, so each one it may type needs its own entry.
+   */
+  clientNames?: { dnsNames: readonly string[]; ipAddresses: readonly string[] }
   /**
    * Every address the frontend publishes on. All of them are dial targets, so
    * all of them need a SAN or `verify-full` fails on whichever one the client
@@ -144,6 +151,8 @@ export function collectProxySqlListenerSans(params: {
   const ipAddresses = new Set<string>()
   const hostname = params.hostname?.trim()
   if (hostname) addSanValue(hostname, dnsNames, ipAddresses)
+  for (const name of params.clientNames?.dnsNames ?? []) dnsNames.add(name)
+  for (const address of params.clientNames?.ipAddresses ?? []) ipAddresses.add(address)
   for (const address of params.bindAddresses) {
     addBindAddressSan(address, dnsNames, ipAddresses)
   }
@@ -311,12 +320,21 @@ export function clusterAutoReadSplit(routing: { autoReadSplit?: boolean } | unde
  * (`use_ssl`), so it is resolved once here — service override → org default →
  * platform `require` — and the daemon applies it to every login of the cluster.
  * Backend (ProxySQL → engine) TLS is unconditional and unaffected.
+ *
+ * `externalAccess` (the fronting server's "allow external access" switch)
+ * forces TLS on whatever the mode says: saving a weak mode under external
+ * access is refused, so this only bites when stored data drifted. `use_ssl` is
+ * per login, not per listener, so it also makes clients on the server itself
+ * use TLS for that cluster — which they already do under the default `require`.
  */
 export function clusterRequireTls(
   configured: ManagedSslMode | undefined,
-  organizationDefault: ManagedSslMode | undefined
+  organizationDefault: ManagedSslMode | undefined,
+  externalAccess = false
 ): boolean {
-  return managedSslRequiresTls(resolveManagedSslMode(configured, organizationDefault))
+  return (
+    externalAccess || managedSslRequiresTls(resolveManagedSslMode(configured, organizationDefault))
+  )
 }
 
 export function shouldSkipIngressFrontendUser(username: unknown, metadata: unknown): boolean {

@@ -1,7 +1,6 @@
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
-import { resolveManagedSslMode } from '../../features/managed/ssl.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
@@ -24,6 +23,12 @@ import {
 import { clampManagedResources, type ManagedSettings } from '../../features/managed/settings.ts'
 import { registerManagedExternalAccessRoutes } from './external-access-routes.ts'
 import { loadManagedExternalAccessView } from '../../features/managed/external-access.ts'
+import {
+  checkManagedSslModeForExternalAccess,
+  pinSslMinimumOnExternalAccessServer,
+  resolveEffectiveManagedSsl,
+  withManagedTlsPolicyLock,
+} from '../../features/managed/external-access-tls.ts'
 import { parseResourceLimits } from '../../features/organizations/resource-limits.ts'
 import {
   createManagedPrincipal,
@@ -163,6 +168,7 @@ import {
   buildQueuedFanoutResponse,
   buildStatusMemberView,
   canHardDeleteManaged,
+  connectionListenerFromAccess,
   evaluateExistingPrincipalLoginName,
   evaluateManagedDatabaseDelete,
   evaluateManagedLoginDropGuard,
@@ -201,8 +207,7 @@ import {
   readInitialDatabase,
   replicaEndpointPurpose,
   replicaPlacementNeedsDatacenter,
-  resolveManagedAccessEndpoints,
-  resolveManagedConnectionListener,
+  resolveManagedAccess,
   resolveManagedServerId,
   serializeContainerRow,
   serializeOrgManagedListRow,
@@ -693,6 +698,11 @@ async function resolveManagedCreatePlan(
 
   const { orgLimits, serverLimits } = await loadResourceLimits(db, organizationId, serverId)
   settings = clampManagedResources(settings, orgLimits, serverLimits)
+  settings = await pinSslMinimumOnExternalAccessServer(db, {
+    settings,
+    organizationDefault: ctx.orgDefaults.sslMode,
+    serverId,
+  })
 
   const infra = await preflightManagedApplyInfrastructure(c, db, { serverId })
   if (infra) return mapManagedApplyPrepareError(c, infra)
@@ -1518,29 +1528,41 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const residual = parseManagedResidual(row.metadata)
     const rootUsername = residual.rootUsername ?? ctx.spec.rootUsername
     const database = parsed.databases[0] ?? readInitialDatabase(ctx.spec)
-    const listener = serverId
-      ? await resolveManagedConnectionListener(db, {
+    const ssl = await resolveEffectiveManagedSsl(db, {
+      managedId: row.id,
+      configured: parsed.settings.ssl.mode,
+      organizationDefault: ctx.orgDefaults.sslMode,
+    })
+    const access = serverId
+      ? await resolveManagedAccess(db, {
           serverId,
           engineCode: ctx.spec.engine,
           engineDefaultPort: ctx.spec.defaultPort,
         })
       : null
-    const connection = listener
-      ? buildConnectionPayload(ctx.spec, {
-          host: listener.host,
-          port: listener.port,
-          database,
-          username: rootUsername,
-          sslMode: resolveManagedSslMode(parsed.settings.ssl.mode, ctx.orgDefaults.sslMode),
-        })
-      : null
-    const endpoints = serverId
-      ? await resolveManagedAccessEndpoints(db, {
-          serverId,
-          engineCode: ctx.spec.engine,
-          engineDefaultPort: ctx.spec.defaultPort,
-        })
-      : []
+    const listener = access ? connectionListenerFromAccess(access) : null
+    // Every connection string carries the effective mode, raised to the
+    // external access minimum while the server allows outside connections.
+    const connectionAt = (endpoint: { host: string; port: number }) =>
+      buildConnectionPayload(ctx.spec, {
+        host: endpoint.host,
+        port: endpoint.port,
+        database,
+        username: rootUsername,
+        sslMode: ssl.mode,
+      })
+    const connection = listener ? connectionAt(listener) : null
+    const endpoints = access?.endpoints ?? []
+    // One connection string per address clients use, main one first.
+    const connections = endpoints
+      .filter((endpoint) => endpoint.reach === 'external')
+      .map((endpoint) => ({
+        label: endpoint.label ?? null,
+        scope: endpoint.scope ?? null,
+        datacenterId: endpoint.datacenterId ?? null,
+        primary: endpoint.primary === true,
+        ...connectionAt(endpoint),
+      }))
     // The "allow external access" setting of every server that fronts this
     // cluster, with how many other clusters share each server.
     const externalAccessServers = await loadManagedExternalAccessView(db, row.id)
@@ -1567,9 +1589,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       }),
       connection,
       endpoints,
+      connections,
+      addressNeeded: access?.addressNeeded ?? false,
       externalAccess: { servers: externalAccessServers },
       settings: parsed.settings,
-      ssl: buildManagedSslView(parsed.settings.ssl.mode, ctx.orgDefaults.sslMode),
+      ssl: buildManagedSslView(
+        parsed.settings.ssl.mode,
+        ctx.orgDefaults.sslMode,
+        ssl.raisedForExternalAccess
+      ),
       release: buildManagedReleaseView(ctx.spec, parsed.settings),
       server: serverRow ?? null,
       rootUsername,
@@ -1630,26 +1658,45 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       databases: current.databases,
     })
 
-    const [updated] = await db
-      .update(managed)
-      .set({
-        options: nextOptions,
-        ...(patchName.name === undefined ? {} : { name: patchName.name }),
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(managed.id, row.id))
-      .returning({
-        id: managed.id,
-        environmentId: managed.environmentId,
-        name: managed.name,
-        engine: managed.engine,
-        status: managed.status,
-        metadata: managed.metadata,
-        options: managed.options,
-        serverId: managed.serverId,
-        createdAt: managed.createdAt,
-        updatedAt: managed.updatedAt,
-      })
+    const save = (tx: Db) =>
+      tx
+        .update(managed)
+        .set({
+          options: nextOptions,
+          ...(patchName.name === undefined ? {} : { name: patchName.name }),
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(managed.id, row.id))
+        .returning({
+          id: managed.id,
+          environmentId: managed.environmentId,
+          name: managed.name,
+          engine: managed.engine,
+          status: managed.status,
+          metadata: managed.metadata,
+          options: managed.options,
+          serverId: managed.serverId,
+          createdAt: managed.createdAt,
+          updatedAt: managed.updatedAt,
+        })
+
+    // A server fronting this cluster allows external access: its mode may not
+    // drop below `require`. Checked and saved under the SSL policy lock, and
+    // only when the mode changes, so an unrelated save never trips over older
+    // data.
+    const saved =
+      mergedSettings.ssl.mode === current.settings.ssl.mode
+        ? { rows: await save(db) }
+        : await withManagedTlsPolicyLock(db, async (tx) => {
+            const refusal = await checkManagedSslModeForExternalAccess(tx, {
+              managedId: row.id,
+              configured: mergedSettings.ssl.mode,
+              organizationDefault: ctx.orgDefaults.sslMode,
+            })
+            return refusal ? { refusal } : { rows: await save(tx) }
+          })
+    if ('refusal' in saved) return c.json(saved.refusal, 409)
+    const [updated] = saved.rows
 
     return c.json({
       ok: true,

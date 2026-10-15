@@ -471,12 +471,19 @@ test('empty detail / delete / destroy / promote response shapes', () => {
     managed: null,
     connection: null,
     endpoints: [],
+    connections: [],
+    addressNeeded: false,
     // Nothing placed yet, so there is no host whose publish could be reported.
     exposure: null,
     settings: null,
     // No org default configured, so a not-yet-created cluster still reports the
     // platform TLS policy it will inherit.
-    ssl: { configured: null, effective: 'require', organizationDefault: null },
+    ssl: {
+      configured: null,
+      effective: 'require',
+      organizationDefault: null,
+      raisedForExternalAccess: false,
+    },
     release: null,
     server: null,
     rootUsername: null,
@@ -487,12 +494,21 @@ test('empty detail / delete / destroy / promote response shapes', () => {
     configured: null,
     effective: 'verify-full',
     organizationDefault: 'verify-full',
+    raisedForExternalAccess: false,
   })
   // A service override wins over the org default in both directions.
   assertEquals(buildManagedSslView('prefer', 'verify-full'), {
     configured: 'prefer',
     effective: 'prefer',
     organizationDefault: 'verify-full',
+    raisedForExternalAccess: false,
+  })
+  // Under external access a mode without SSL is shown raised to require.
+  assertEquals(buildManagedSslView('disable', undefined, true), {
+    configured: 'disable',
+    effective: 'require',
+    organizationDefault: null,
+    raisedForExternalAccess: true,
   })
   assertEquals(buildManagedDeleteHardResponse(), { ok: true, deleted: true })
   assertEquals(buildManagedDeleteQueuedResponse([{ commandId: 'd1', serverId: 's1' }], 'fb'), {

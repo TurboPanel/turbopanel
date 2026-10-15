@@ -1691,6 +1691,100 @@ export const ip = pgTable(
   ]
 )
 /**
+ * An address clients use to reach a server, as the operator states it: one
+ * `public` entry per server and one per datacenter the server belongs to.
+ * Intent only, layered over what the panel already knows (`ip` rows, datacenter
+ * pins, daemon-reported interfaces): a blank `address_v4` / `address_v6` means
+ * "this server's own address on that side", so repin and existing rows keep
+ * working and only router or 1:1 NAT addresses are typed in. Never in `ip`, so
+ * one router address may front several servers of an org on different ports.
+ * `options.ports` holds the external port per listener (`postgres`, `mysql`,
+ * `http`, `https`): absent means the listen port, `null` means not reachable
+ * through this address. Read by `src/features/net/client-addresses.ts`.
+ */
+export const clientAddress = pgTable(
+  'address',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    metadata: jsonb(),
+    options: jsonb(),
+    organizationId: uuid('organization_id').notNull(),
+    serverId: uuid('server_id').notNull(),
+    /** `public` | `datacenter` */
+    scope: text().notNull(),
+    /** Set if and only if `scope = 'datacenter'`. */
+    datacenterId: uuid('datacenter_id'),
+    /** The DNS name clients type; always contains a dot. */
+    hostname: varchar('hostname', { length: 253 }),
+    /** Override for the IPv4 address clients use; NULL = this server's own. */
+    addressV4: inet('address_v4'),
+    /** Override for the IPv6 address clients use; NULL = this server's own. */
+    addressV6: inet('address_v6'),
+    /** The entry that fills the main connection string (at most one per server). */
+    isPrimary: boolean('is_primary').default(false).notNull(),
+  },
+  (table) => [
+    index('idx_address_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_address_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
+    index('idx_address_datacenter_id').using(
+      'btree',
+      table.datacenterId.asc().nullsLast().op('uuid_ops')
+    ),
+    uniqueIndex('uniq_address_server_public')
+      .on(table.serverId)
+      .where(sql`${table.scope} = 'public'`),
+    uniqueIndex('uniq_address_server_datacenter')
+      .on(table.serverId, table.datacenterId)
+      .where(sql`${table.datacenterId} IS NOT NULL`),
+    uniqueIndex('uniq_address_server_primary')
+      .on(table.serverId)
+      .where(sql`${table.isPrimary}`),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'address_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'address_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.datacenterId],
+      foreignColumns: [datacenter.id],
+      name: 'address_datacenter_id_datacenter_id_fk',
+    }).onDelete('cascade'),
+    check('address_scope_check', sql`scope IN ('public', 'datacenter')`),
+    check(
+      'address_datacenter_scope_check',
+      sql`(${table.scope} = 'datacenter') = (${table.datacenterId} IS NOT NULL)`
+    ),
+    check('address_v4_family_check', sql`family(${table.addressV4}) = 4`),
+    check('address_v6_family_check', sql`family(${table.addressV6}) = 6`),
+  ]
+)
+/**
  * One server in an org TurboFabric mesh (parallel to managed `node`). Private
  * key never stored; `public_key` stays null until the first successful
  * `server.fabric.reconcile`. `address` is the `tp0` host address; `prefix` is

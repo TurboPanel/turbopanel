@@ -1,6 +1,6 @@
 {
   "name": "turbopanel",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -35,6 +35,7 @@
     "check:migration-freeze": "node scripts/check-migration-freeze.mjs",
     "check:migration-additions": "node scripts/check-migration-additions.mjs",
     "check:migration-forward-only": "node scripts/check-migration-forward-only.mjs",
+    "check:migration-upgrade": "node scripts/check-migration-upgrade.mjs",
     "schema:comments": "node scripts/schema-comments.mjs",
     "schema:comments:check": "node scripts/schema-comments.mjs --check",
     "docs:errors:check": "node scripts/check-error-appendix.mjs",

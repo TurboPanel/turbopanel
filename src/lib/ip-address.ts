@@ -518,3 +518,9 @@ export function isRoutableHostAddress(value: string): boolean {
   const scope = ipAddressScope(value)
   return scope === 'private' || scope === 'public'
 }
+
+/** `host:port`, with brackets around an IPv6 literal (`[fd00::5]:51821`). */
+export function joinHostPort(host: string, port: number): string {
+  const bare = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+  return bare.includes(':') ? `[${bare}]:${String(port)}` : `${bare}:${String(port)}`
+}
