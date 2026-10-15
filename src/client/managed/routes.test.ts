@@ -63,6 +63,7 @@ import {
   saveClientAddressEntries,
 } from '../../features/net/client-addresses.ts'
 import { parseCertificatePem } from '../../lib/tls/parse.ts'
+import { registerOrganizationRoutes } from '../organizations/routes.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import {
   createBackupRunReportStore,
@@ -3563,6 +3564,200 @@ test("the external access switch refuses a non-boolean and another organization'
   )
 })
 
+test('external access keeps every database on the server at Require or stronger', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId, serverId }) => {
+      registerOrganizationRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const setExternalAccess = async (enabled: boolean) =>
+        await app.request(`/servers/${serverId}/managed-external-access`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ enabled }),
+        })
+      const setMode = async (ssl: { mode?: string }) =>
+        await app.request(`/environments/${environmentId}/managed`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify({ settings: { ssl } }),
+        })
+      const setOrgDefault = async (sslMode: string | null) =>
+        await app.request(`/organizations/${organizationId}/managed-defaults`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ sslMode }),
+        })
+
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ name: 'Orders' }),
+      })
+      assertEquals(create.status, 200)
+      await db
+        .update(managed)
+        .set({ status: 'ready' })
+        .where(eq(managed.environmentId, environmentId))
+
+      // Off: any mode may be saved, including ones without SSL.
+      assertEquals((await setMode({ mode: 'prefer' })).status, 200)
+
+      // Turning external access on is refused while a database here skips SSL,
+      // names it, and saves nothing.
+      const before = commandQueue.envelopes.length
+      const refusedOn = await setExternalAccess(true)
+      assertEquals(refusedOn.status, 409)
+      const refusedOnBody = (await refusedOn.json()) as { error: string; databases: string[] }
+      assertEquals(refusedOnBody.error, 'external_access_weak_ssl')
+      assertEquals(refusedOnBody.databases, ['Orders'])
+      assertEquals((await loadManagedExternalAccess(db, serverId)).enabled, false)
+      assertEquals(commandQueue.envelopes.length, before)
+
+      // Back to Require: external access can go on.
+      assertEquals((await setMode({ mode: 'require' })).status, 200)
+      assertEquals((await setExternalAccess(true)).status, 200)
+
+      // On: a mode without SSL is refused for this database...
+      for (const mode of ['disable', 'allow', 'prefer']) {
+        const refused = await setMode({ mode })
+        assertEquals(refused.status, 409)
+        const body = (await refused.json()) as { error: string; servers: string[] }
+        assertEquals(body.error, 'managed_ssl_external_access_minimum')
+        assertEquals(body.servers, ['Managed Route Server'])
+      }
+      // ...stronger modes and following the (unset, so Require) default are fine.
+      assertEquals((await setMode({ mode: 'verify-full' })).status, 200)
+      assertEquals((await setMode({})).status, 200)
+      // An unrelated save never re-checks the mode.
+      assertEquals(
+        (
+          await app.request(`/environments/${environmentId}/managed`, {
+            method: 'PATCH',
+            headers,
+            body: JSON.stringify({ name: 'Orders database' }),
+          })
+        ).status,
+        200
+      )
+
+      // The database follows the org default, so a weak default is refused too.
+      const refusedDefault = await setOrgDefault('allow')
+      assertEquals(refusedDefault.status, 409)
+      const refusedDefaultBody = (await refusedDefault.json()) as {
+        error: string
+        databases: string[]
+      }
+      assertEquals(refusedDefaultBody.error, 'managed_ssl_default_external_access_minimum')
+      assertEquals(refusedDefaultBody.databases, ['Orders database'])
+      assertEquals((await setOrgDefault('verify-ca')).status, 200)
+      assertEquals((await setOrgDefault(null)).status, 200)
+
+      // With its own mode the database no longer follows the default.
+      assertEquals((await setMode({ mode: 'require' })).status, 200)
+      assertEquals((await setOrgDefault('prefer')).status, 200)
+      // Clearing its own mode now would land on that weak default: refused.
+      assertEquals((await setMode({})).status, 409)
+
+      // Turning external access off is never refused.
+      assertEquals((await setExternalAccess(false)).status, 200)
+    }
+  )
+})
+
+test('stored data without SSL under external access: shown raised to Require, and unchanged saves still pass', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId }) => {
+      registerOrganizationRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      await db
+        .update(managed)
+        .set({ status: 'ready' })
+        .where(eq(managed.environmentId, environmentId))
+
+      // Older data: a weak org default the cluster follows, external access on.
+      await db
+        .update(organization)
+        .set({ options: { managedDatabase: { sslMode: 'prefer' } } })
+        .where(eq(organization.id, organizationId))
+      await saveManagedExternalAccess(db, serverId, true)
+      // An address clients outside the server can dial, so the detail has a DSN.
+      await db.update(server).set({ hostname: 'db-1.example.test' }).where(eq(server.id, serverId))
+
+      const detail = await app.request(`/environments/${environmentId}/managed`, { headers })
+      const body = (await detail.json()) as {
+        connection: { dsn: string } | null
+        ssl: { configured: string | null; effective: string; raisedForExternalAccess: boolean }
+      }
+      assertEquals(body.ssl.configured, null)
+      assertEquals(body.ssl.effective, 'require')
+      assertEquals(body.ssl.raisedForExternalAccess, true)
+      assertEquals(body.connection?.dsn.endsWith('?sslmode=require'), true)
+
+      const putDefaults = async (payload: Record<string, unknown>) =>
+        await app.request(`/organizations/${organizationId}/managed-defaults`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify(payload),
+        })
+      // A ports-only save and re-sending the stored default are not re-checked.
+      assertEquals((await putDefaults({ ports: { postgres: 18432 } })).status, 200)
+      assertEquals((await putDefaults({ sslMode: 'prefer' })).status, 200)
+      // Changing it to another weak mode is.
+      assertEquals((await putDefaults({ sslMode: 'allow' })).status, 409)
+    }
+  )
+})
+
+test('a new cluster on a server with external access gets Require when the org default skips SSL', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId }) => {
+      await db
+        .update(organization)
+        .set({ options: { managedDatabase: { sslMode: 'prefer' } } })
+        .where(eq(organization.id, organizationId))
+      await saveManagedExternalAccess(db, serverId, true)
+      const cookie = await sessionCookie(db, secrets, userId)
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const [row] = await db
+        .select({ options: managed.options })
+        .from(managed)
+        .where(eq(managed.environmentId, environmentId))
+      assertEquals(
+        (row?.options as { settings: { ssl: { mode?: string } } }).settings.ssl.mode,
+        'require'
+      )
+    }
+  )
+})
+
 test('PATCH renames a cluster and rejects a bad name before saving anything', async () => {
   await withManagedFixtures(
     {},
@@ -3963,6 +4158,18 @@ test('addresses clients use: saved, validated, certificate reissued, one connect
         }
         for (const address of ['192.0.2.77', '10.93.0.10', '127.0.0.1']) {
           assertEquals(sans.ipAddresses.includes(address), true, address)
+        }
+
+        // A weak stored mode is raised to the external access minimum on every
+        // connection string, not only the main one.
+        await db
+          .update(managed)
+          .set({ options: sql`jsonb_set(options, '{settings,ssl,mode}', '"disable"')` })
+          .where(eq(managed.id, created.managed.id))
+        const raised = await detail()
+        assertEquals(raised.connections.length, 2)
+        for (const conn of [raised.connection!, ...raised.connections]) {
+          assertEquals(conn.dsn.endsWith('?sslmode=require'), true, conn.dsn)
         }
 
         const after = await detail()

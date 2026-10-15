@@ -1130,6 +1130,40 @@ export const managedSchemas = {
       },
     },
   },
+  ManagedSslMinimumRefusal: {
+    type: 'object',
+    required: ['error', 'message'],
+    description:
+      'While a server allows external access, every database it serves must use SSL mode require or stronger. Nothing is saved.',
+    properties: {
+      error: {
+        type: 'string',
+        enum: [
+          'managed_ssl_external_access_minimum',
+          'managed_ssl_default_external_access_minimum',
+          'external_access_weak_ssl',
+        ],
+      },
+      message: { type: 'string', description: 'Plain-words explanation of the refusal.' },
+      servers: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          '`managed_ssl_external_access_minimum`: the servers serving this database that allow external access.',
+      },
+      databases: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          "The other two codes: the databases that would accept connections without SSL. For `external_access_weak_ssl`, only the server owner's own databases.",
+      },
+      otherDatabases: {
+        type: 'integer',
+        description:
+          '`external_access_weak_ssl`: how many databases of other organizations on the server (granted placements) would accept connections without SSL. Counted, never named.',
+      },
+    },
+  },
   ManagedImageRefusalError: {
     type: 'object',
     required: ['error', 'message'],
@@ -1265,6 +1299,11 @@ export const managedPaths = {
         },
         403: { description: 'Not an owner or manager of the server' },
         404: { description: 'Server not found in the caller organization' },
+        409: {
+          description:
+            '`external_access_weak_ssl`: turning it on is refused while a database on the server uses an SSL mode weaker than require; `databases` names them. Turning it off is never refused.',
+          ...jsonSchema('ManagedSslMinimumRefusal'),
+        },
         422: {
           description: '`daemon_key_unavailable`: the server cannot take changes yet',
         },
@@ -1376,13 +1415,14 @@ export const managedPaths = {
         },
         409: {
           description:
-            'managed_busy, or an image change that is refused before anything is written: managed_series_immutable (the engine series cannot change on an existing cluster; create a new cluster and restore a backup into it) / managed_variant_swap_unsafe (PostgreSQL alpine <-> debian would corrupt text indexes); both carry a `message`',
+            'managed_busy, or an image change that is refused before anything is written: managed_series_immutable (the engine series cannot change on an existing cluster; create a new cluster and restore a backup into it) / managed_variant_swap_unsafe (PostgreSQL alpine <-> debian would corrupt text indexes); both carry a `message`. Also managed_ssl_external_access_minimum: a new SSL mode (or following an organization default) weaker than require while a server serving the cluster allows external access.',
           content: {
             'application/json': {
               schema: {
                 oneOf: [
                   { $ref: '#/components/schemas/ManagedBusyError' },
                   { $ref: '#/components/schemas/ManagedImageRefusalError' },
+                  { $ref: '#/components/schemas/ManagedSslMinimumRefusal' },
                 ],
               },
             },

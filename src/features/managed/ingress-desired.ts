@@ -431,19 +431,21 @@ function buildIngressClusterFromLoaded(
     users,
   }
   if (clusterAutoReadSplit(settings.routing)) cluster.autoReadSplit = true
-  if (clusterRequireTls(settings.ssl.mode, orgDefaults.sslMode)) {
+  if (clusterRequireTls(settings.ssl.mode, orgDefaults.sslMode, orgDefaults.externalAccess)) {
     cluster.requireTls = true
   }
   return cluster
 }
 
 /**
- * Organization-resolved managed-database policy that applies to every cluster
- * on one ProxySQL: the effective client TLS default and the listener ports.
+ * Policy that applies to every cluster on one ProxySQL: the organization's
+ * client TLS default, the listener ports, and the server's "allow external
+ * access" switch (which forces TLS for every cluster it fronts).
  */
 type IngressOrgDefaults = {
   sslMode: ManagedSslMode | undefined
   listenerPorts: ManagedIngressPorts
+  externalAccess: boolean
 }
 
 /** Build every cluster entry for `managedIds`, short-circuiting on the first error. */
@@ -594,6 +596,9 @@ async function buildManagedIngressReconcileDesired(
   // server, so they come from the server owner.
   const listenerPorts = await loadManagedIngressPorts(db, serverOwnerOrganizationId)
 
+  // The server's own setting, not any one cluster's: one ProxySQL fronts them all.
+  const { enabled: externalAccess } = await loadManagedExternalAccess(db, params.serverId)
+
   const clusters = await buildIngressClusters(
     db,
     params.serverId,
@@ -602,13 +607,11 @@ async function buildManagedIngressReconcileDesired(
       secretsConfig: params.secretsConfig,
       dataEncryptionSecrets: params.dataEncryptionSecrets,
     },
-    { sslMode: orgDefaults.sslMode, listenerPorts }
+    { sslMode: orgDefaults.sslMode, listenerPorts, externalAccess }
   )
   if ('kind' in clusters) return clusters
   if (clusters.length === 0) return null
 
-  // The server's own setting, not any one cluster's: one ProxySQL fronts them all.
-  const { enabled: externalAccess } = await loadManagedExternalAccess(db, params.serverId)
   const bindAddresses = decideIngressBindAddresses(externalAccess)
 
   const clientNames = await resolveListenerClientNames(db, params.serverId, externalAccess)

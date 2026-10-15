@@ -18,7 +18,11 @@ import {
   managedIngressPortForEngine,
   resolveManagedIngressPorts,
 } from './ingress-ports.ts'
-import { type ManagedSslMode, resolveManagedSslMode } from './ssl.ts'
+import {
+  MANAGED_SSL_MINIMUM_WITH_EXTERNAL_ACCESS,
+  type ManagedSslMode,
+  resolveManagedSslMode,
+} from './ssl.ts'
 import { organization, server } from '../../db/schema.ts'
 import { parseOrganizationOptions } from '../organizations/organization-options.ts'
 import { BadRequestError, parseName, requireStringField } from '../../lib/http/request-fields.ts'
@@ -1303,15 +1307,22 @@ export function buildEmptyManagedDetailResponse(organizationSslMode?: ManagedSsl
  * `configured` is the service override (`null` = inheriting); `effective` is
  * what ProxySQL enforces and DSNs render, so the UI can label the inherit
  * option with what it resolves to without recomputing the hierarchy.
+ * `raisedForExternalAccess` (from `resolveEffectiveManagedSsl`) means the
+ * resolved mode let clients skip SSL and `effective` was raised to `require`
+ * because a server serving the cluster allows external access.
  */
 export function buildManagedSslView(
   configured: ManagedSslMode | undefined,
-  organizationDefault: ManagedSslMode | undefined
+  organizationDefault: ManagedSslMode | undefined,
+  raisedForExternalAccess = false
 ) {
   return {
     configured: configured ?? null,
-    effective: resolveManagedSslMode(configured, organizationDefault),
+    effective: raisedForExternalAccess
+      ? MANAGED_SSL_MINIMUM_WITH_EXTERNAL_ACCESS
+      : resolveManagedSslMode(configured, organizationDefault),
     organizationDefault: organizationDefault ?? null,
+    raisedForExternalAccess,
   }
 }
 
