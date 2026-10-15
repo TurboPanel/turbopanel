@@ -23,7 +23,12 @@
 
 import { isValidHostname } from '../../contracts/commands/hostname.ts'
 import type { ServerReportedIp } from '../../contracts/server-addresses.ts'
-import { ipAddressScope, normalizeIpAddress, parseIpVersion } from '../../lib/ip-address.ts'
+import {
+  ipAddressScope,
+  isRoutableHostAddress,
+  normalizeIpAddress,
+  parseIpVersion,
+} from '../../lib/ip-address.ts'
 
 export const CLIENT_ADDRESS_SCOPES = ['public', 'datacenter'] as const
 export type ClientAddressScope = (typeof CLIENT_ADDRESS_SCOPES)[number]
@@ -126,6 +131,25 @@ export function detectedPublicAddresses(reported: readonly ServerReportedIp[]): 
     return row ? normalizeIpAddress(row.address) : null
   }
   return { v4: pick(4), v6: pick(6) }
+}
+
+/**
+ * The server itself has IPv6: an interface address the daemon reported, a
+ * public `ip` row or a datacenter pin that is IPv6 and neither loopback nor
+ * link-local. An operator's address override does not count: it describes a
+ * router in front of the server, not the server's own network.
+ */
+export function hostHasIpv6(
+  facts: Pick<ClientAddressFacts, 'publicIp' | 'reportedIps' | 'pins'>
+): boolean {
+  const candidates = [
+    facts.publicIp.v6,
+    ...facts.pins.map((pin) => pin.v6),
+    ...facts.reportedIps.map((row) => row.address),
+  ]
+  return candidates.some(
+    (address) => address !== null && parseIpVersion(address) === 6 && isRoutableHostAddress(address)
+  )
 }
 
 function pickFamily(

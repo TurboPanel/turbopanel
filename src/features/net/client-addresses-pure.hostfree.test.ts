@@ -8,6 +8,7 @@ import {
   type ClientAddressFacts,
   clientEndpointsForListener,
   detectedPublicAddresses,
+  hostHasIpv6,
   mainClientAddressHost,
   mainDatabaseListeners,
   parseClientAddressesBody,
@@ -352,4 +353,21 @@ test('mainDatabaseListeners follows the endpoint port rules per engine', () => {
   )
   const none = mainDatabaseListeners(resolveClientAddresses(facts()))
   assertEquals([...none.values()], [[]])
+})
+
+test("hostHasIpv6 counts the server's own IPv6, never loopback, link-local or an override", () => {
+  assertEquals(hostHasIpv6(facts()), false)
+  assertEquals(hostHasIpv6(facts({ reportedIps: [reported('203.0.113.7')] })), false)
+  assertEquals(
+    hostHasIpv6(
+      facts({ reportedIps: [reported('::1'), reported('fe80::1', { scope: 'private' })] })
+    ),
+    false
+  )
+  // An address override describes a router in front, not the server itself.
+  assertEquals(hostHasIpv6(facts({ saved: [entry({ addressV6: '2001:db8::99' })] })), false)
+
+  assertEquals(hostHasIpv6(facts({ reportedIps: [reported('2001:db8::4')] })), true)
+  assertEquals(hostHasIpv6(facts({ publicIp: { v4: null, v6: '2001:db8::5' } })), true)
+  assertEquals(hostHasIpv6(facts({ pins: [pin({ v6: 'fd00::5' })] })), true)
 })

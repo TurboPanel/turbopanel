@@ -6,7 +6,7 @@
  */
 
 import type { ManagedIngressReconcileBackend } from '../../contracts/commands/schemas.ts'
-import { ALL_INTERFACES_BIND, LOOPBACK_BIND } from './access-address.ts'
+import { ALL_INTERFACES_BIND, ALL_INTERFACES_IPV6_BIND, LOOPBACK_BIND } from './access-address.ts'
 import {
   DEFAULT_MANAGED_INGRESS_PORTS,
   type ManagedIngressFamily,
@@ -172,7 +172,10 @@ export function collectProxySqlListenerSans(params: {
  *   owner's Linux user dial `127.0.0.1`; loopback is not exposure, nothing off
  *   the machine can reach it. Bound containers need no publish at all (they
  *   dial ProxySQL by name over the managed Docker network).
- * - external access **on**: every address of the server (`0.0.0.0`).
+ * - external access **on**: every IPv4 address of the server (`0.0.0.0`), and
+ *   every IPv6 address (`::`) too when the server has IPv6 and its daemon
+ *   advertises `managed-ingress-ipv6-v1`. Without IPv6 on the host the IPv6
+ *   publish would fail and take the listener down, so both must be true.
  *
  * Never empty here: a server with no cluster to front never reaches this
  * decision (the reconcile is `not_needed` or a teardown). **The publish is the
@@ -180,8 +183,17 @@ export function collectProxySqlListenerSans(params: {
  * ProxySQL has no per-user source ACL, so "off" must stay loopback and must
  * never widen to a wildcard.
  */
-export function decideIngressBindAddresses(externalAccess: boolean): string[] {
-  return [externalAccess ? ALL_INTERFACES_BIND : LOOPBACK_BIND]
+export function decideIngressBindAddresses(
+  externalAccess: boolean,
+  ipv6: Readonly<{ serverHasIpv6: boolean; daemonPublishesIpv6: boolean }> = {
+    serverHasIpv6: false,
+    daemonPublishesIpv6: false,
+  }
+): string[] {
+  if (!externalAccess) return [LOOPBACK_BIND]
+  return ipv6.serverHasIpv6 && ipv6.daemonPublishesIpv6
+    ? [ALL_INTERFACES_BIND, ALL_INTERFACES_IPV6_BIND]
+    : [ALL_INTERFACES_BIND]
 }
 
 /**

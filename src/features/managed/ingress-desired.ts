@@ -44,11 +44,15 @@ import {
 import { ensureOrganizationManagedNetwork, listServerSubnets } from '../fabric/fabric-records.ts'
 import { loadListenerAttachedSubnetNames } from './ingress-attachments.ts'
 import { LOOPBACK_BIND } from './access-address.ts'
-import { loadServerClientAddresses } from '../net/client-addresses.ts'
+import { loadClientAddressFacts } from '../net/client-addresses.ts'
 import {
+  type ClientAddressFacts,
   clientAddressCertificateNames,
+  hostHasIpv6,
   mainClientAddressHost,
+  resolveClientAddresses,
 } from '../net/client-addresses-pure.ts'
+import { MANAGED_INGRESS_IPV6_FEATURE } from '../../lib/version-wire.ts'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
 import { hasRemoteConsumerServers } from '../bindings/remote-consumers.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
@@ -511,16 +515,21 @@ async function buildIngressClusters(
  * certificate even after it left connection strings, so clients that already
  * dial it keep verifying.
  */
-async function resolveListenerClientNames(
-  db: Db,
-  serverId: string,
+function resolveListenerClientNames(
+  facts: ClientAddressFacts | null,
   externalAccess: boolean
-): Promise<{ advertisedHost: string | null; dnsNames: string[]; ipAddresses: string[] }> {
-  const addresses = await loadServerClientAddresses(db, serverId)
+): { advertisedHost: string | null; dnsNames: string[]; ipAddresses: string[] } {
+  const addresses = facts ? resolveClientAddresses(facts) : { linuxHostname: null, entries: [] }
   return {
     advertisedHost: externalAccess ? mainClientAddressHost(addresses) : LOOPBACK_BIND,
     ...clientAddressCertificateNames(addresses, externalAccess),
   }
+}
+
+/** The server's daemon advertises `managed-ingress-ipv6-v1` on its hello. */
+async function daemonPublishesIngressIpv6(db: Db, serverId: string): Promise<boolean> {
+  const state = await getServerDaemonStateByServerId(db, serverId)
+  return (state?.projection?.features ?? []).includes(MANAGED_INGRESS_IPV6_FEATURE)
 }
 
 type BuiltManagedIngressReconcile = {
@@ -612,9 +621,14 @@ async function buildManagedIngressReconcileDesired(
   if ('kind' in clusters) return clusters
   if (clusters.length === 0) return null
 
-  const bindAddresses = decideIngressBindAddresses(externalAccess)
+  const addressFacts = await loadClientAddressFacts(db, params.serverId)
+  const bindAddresses = decideIngressBindAddresses(externalAccess, {
+    serverHasIpv6: addressFacts !== null && hostHasIpv6(addressFacts),
+    // Only asked when it matters: loopback-only never publishes on IPv6.
+    daemonPublishesIpv6: externalAccess && (await daemonPublishesIngressIpv6(db, params.serverId)),
+  })
 
-  const clientNames = await resolveListenerClientNames(db, params.serverId, externalAccess)
+  const clientNames = resolveListenerClientNames(addressFacts, externalAccess)
 
   const backendAddresses = clusters.flatMap((c) => c.backends.map((b) => b.address))
   const listenerSans = collectProxySqlListenerSans({

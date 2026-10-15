@@ -219,7 +219,9 @@ async function loadHostingExposures(db: Db, serverId: string): Promise<DerivedEx
 
 async function loadManagedExposures(db: Db, serverId: string): Promise<DerivedExposure[]> {
   // External access on publishes the ProxySQL listeners on every address of
-  // the server; off publishes loopback only, which needs no rule.
+  // the server (IPv4, and IPv6 on a server that has it); off publishes
+  // loopback only, which needs no rule. Rules carry no family: the policy's
+  // `ipv6: 'mirror'` (the default) covers the IPv6 listener too.
   const { external, ports } = await loadHostIngressListeners(db, serverId)
   if (!external) return []
   return ports.map((port) => ({
