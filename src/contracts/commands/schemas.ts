@@ -5393,10 +5393,11 @@ export type ManagedIngressReconcileCommandPayload = {
    */
   managedNetwork: string
   /**
-   * Every host address the client listeners publish on. The control plane sends
-   * exactly one entry, from the server's single "allow external access to the
-   * databases on this server" setting: `127.0.0.1` for no, `0.0.0.0` for yes.
-   * Empty/absent still means no host publish at all.
+   * Every host address the client listeners publish on, from the server's
+   * single "allow external access to the databases on this server" setting:
+   * `127.0.0.1` for no; `0.0.0.0` for yes, plus `::` when the server has IPv6
+   * and its daemon advertises `managed-ingress-ipv6-v1`. Empty/absent still
+   * means no host publish at all.
    */
   bindAddresses?: string[]
   /**

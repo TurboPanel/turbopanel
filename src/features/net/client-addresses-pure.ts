@@ -23,7 +23,12 @@
 
 import { isValidHostname } from '../../contracts/commands/hostname.ts'
 import type { ServerReportedIp } from '../../contracts/server-addresses.ts'
-import { ipAddressScope, normalizeIpAddress, parseIpVersion } from '../../lib/ip-address.ts'
+import {
+  ipAddressScope,
+  isRoutableHostAddress,
+  normalizeIpAddress,
+  parseIpVersion,
+} from '../../lib/ip-address.ts'
 
 export const CLIENT_ADDRESS_SCOPES = ['public', 'datacenter'] as const
 export type ClientAddressScope = (typeof CLIENT_ADDRESS_SCOPES)[number]
@@ -126,6 +131,27 @@ export function detectedPublicAddresses(reported: readonly ServerReportedIp[]): 
     return row ? normalizeIpAddress(row.address) : null
   }
   return { v4: pick(4), v6: pick(6) }
+}
+
+/** Docker's own bridges and the container ends of their links. */
+const DOCKER_INTERFACE_RE = /^(docker\d|br-|veth)/
+
+/**
+ * The server's kernel runs IPv6: the daemon reported an IPv6 address that is
+ * neither loopback nor link-local, on an interface that is up and is not a
+ * mesh tunnel or a Docker bridge. Only what the daemon reads from the kernel
+ * counts. Stored `ip` rows, datacenter pins and address overrides are what an
+ * operator typed, which says nothing about whether the kernel has IPv6.
+ */
+export function hostHasIpv6(reported: readonly ServerReportedIp[]): boolean {
+  return reported.some(
+    (row) =>
+      row.link !== 'down' &&
+      !MESH_INTERFACE_RE.test(row.interface ?? '') &&
+      !DOCKER_INTERFACE_RE.test(row.interface ?? '') &&
+      parseIpVersion(row.address) === 6 &&
+      isRoutableHostAddress(row.address)
+  )
 }
 
 function pickFamily(

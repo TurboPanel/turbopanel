@@ -219,7 +219,11 @@ async function loadHostingExposures(db: Db, serverId: string): Promise<DerivedEx
 
 async function loadManagedExposures(db: Db, serverId: string): Promise<DerivedExposure[]> {
   // External access on publishes the ProxySQL listeners on every address of
-  // the server; off publishes loopback only, which needs no rule.
+  // the server (IPv4, and IPv6 on a server that has it); off publishes
+  // loopback only, which needs no rule. Known gap, preview only while apply is
+  // off: a `published` rule lands in DOCKER-USER (forwarded traffic), but
+  // Docker serves the IPv6 publish from a host process, so IPv6 clients pass
+  // the host's input chain instead and this rule does not reach them.
   const { external, ports } = await loadHostIngressListeners(db, serverId)
   if (!external) return []
   return ports.map((port) => ({

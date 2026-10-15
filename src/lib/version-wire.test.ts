@@ -14,6 +14,7 @@ import {
   MANAGED_REPLICA_FRESHNESS_FEATURE,
   MANAGED_HEALTH_FEATURE,
   MANAGED_HEALTH_REPORT_FEATURE,
+  MANAGED_INGRESS_IPV6_FEATURE,
   PHP_SITE_MODES_FEATURE,
   MIN_SUPPORTED_DAEMON_VERSION,
   parseSemver,
@@ -200,5 +201,14 @@ test('deploy-cancel-v1 is an advertised wire feature and raised no floor', () =>
 test('deno-native-apps-v1 is an advertised wire feature and raised no floor', () => {
   assertEquals(DENO_NATIVE_APPS_FEATURE, 'deno-native-apps-v1')
   assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes(DENO_NATIVE_APPS_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('managed-ingress-ipv6-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(MANAGED_INGRESS_IPV6_FEATURE, 'managed-ingress-ipv6-v1')
+  assertEquals(
+    (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_INGRESS_IPV6_FEATURE),
+    true
+  )
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
