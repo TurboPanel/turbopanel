@@ -3,6 +3,8 @@ import { parseManagedOrganizationDefaults, parseManagedSslModeInput } from './or
 import {
   DEFAULT_MANAGED_SSL_MODE,
   isManagedSslMode,
+  isWeakManagedSslMode,
+  MANAGED_SSL_MINIMUM_WITH_EXTERNAL_ACCESS,
   MANAGED_SSL_MODES,
   managedSslRequiresTls,
   managedSslVerifiesServer,
@@ -63,24 +65,18 @@ test('only require and the verify modes force TLS on the frontend', () => {
     'verify-ca',
     'verify-full',
   ])
-  assertEquals(MANAGED_SSL_MODES.filter(managedSslVerifiesServer), [
-    'verify-ca',
-    'verify-full',
-  ])
+  assertEquals(MANAGED_SSL_MODES.filter(managedSslVerifiesServer), ['verify-ca', 'verify-full'])
 })
 
 test('MySQL-family spelling collapses allow/prefer and renames the verify modes', () => {
-  assertEquals(
-    MANAGED_SSL_MODES.map(mysqlFamilySslMode),
-    [
-      'DISABLED',
-      'PREFERRED',
-      'PREFERRED',
-      'REQUIRED',
-      'VERIFY_CA',
-      'VERIFY_IDENTITY',
-    ],
-  )
+  assertEquals(MANAGED_SSL_MODES.map(mysqlFamilySslMode), [
+    'DISABLED',
+    'PREFERRED',
+    'PREFERRED',
+    'REQUIRED',
+    'VERIFY_CA',
+    'VERIFY_IDENTITY',
+  ])
 })
 
 test('org defaults parsing drops malformed jsonb instead of failing the read', () => {
@@ -88,10 +84,7 @@ test('org defaults parsing drops malformed jsonb instead of failing the read', (
   assertEquals(parseManagedOrganizationDefaults(null), {})
   assertEquals(parseManagedOrganizationDefaults('require'), {})
   assertEquals(parseManagedOrganizationDefaults([]), {})
-  assertEquals(
-    parseManagedOrganizationDefaults({ sslMode: 'verify-ca' }),
-    { sslMode: 'verify-ca' },
-  )
+  assertEquals(parseManagedOrganizationDefaults({ sslMode: 'verify-ca' }), { sslMode: 'verify-ca' })
   // A bad stored value inherits rather than making the org unreadable.
   assertEquals(parseManagedOrganizationDefaults({ sslMode: 'nope' }), {})
   assertEquals(parseManagedOrganizationDefaults({ other: 1 }), {})
@@ -106,4 +99,13 @@ test('PUT body parsing distinguishes clearing from an invalid mode', () => {
   assertEquals(parseManagedSslModeInput('nope'), { ok: false })
   // Unlike the stored read path, omitting the value is not a silent no-op here.
   assertEquals(parseManagedSslModeInput(undefined), { ok: false })
+})
+
+test('weak modes are exactly the ones that let a client skip TLS; the external minimum is require', () => {
+  assertEquals(MANAGED_SSL_MINIMUM_WITH_EXTERNAL_ACCESS, 'require')
+  assertEquals(isWeakManagedSslMode(MANAGED_SSL_MINIMUM_WITH_EXTERNAL_ACCESS), false)
+  assertEquals(
+    MANAGED_SSL_MODES.filter((mode) => isWeakManagedSslMode(mode)),
+    ['disable', 'allow', 'prefer']
+  )
 })

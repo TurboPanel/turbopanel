@@ -316,8 +316,9 @@ after the ask (`consumer.ts` → `confirmManagedExternalAccessForServer`), and
 never did. `GET …/managed` reports `externalAccess.servers[]` (one row per
 fronting server: `enabled`, `pending`, `otherClusters`) and `endpoints[]` as
 `{ reach: 'local' | 'external', host, port }`. Access control on a published
-listener is credential auth + org-CA TLS. Out of scope (future hardening idea):
-per-login host restrictions via the admin login.
+listener is credential auth + org-CA TLS, and every cluster it serves must
+resolve to SSL mode `require` or stronger (see **Client TLS (SSL mode)**).
+Out of scope (future hardening idea): per-login host restrictions via the admin login.
 
 ## Client routing (connection role, not regex)
 
@@ -378,11 +379,50 @@ org-default changes, so `parseManagedSslMode` keeps `undefined` (inherit) and
 `null` (reject) distinct — an unrecognized mode is a **400/422**, never a silent
 downgrade to plaintext.
 
+**Minimum under external access: `require`.** While any server that fronts a
+cluster allows external access, the cluster's effective mode may not be
+`disable` / `allow` / `prefer` (`isWeakManagedSslMode`,
+`MANAGED_SSL_MINIMUM_WITH_EXTERNAL_ACCESS` in `ssl.ts`). "Fronts" is the ingress
+builder's set: `loadFrontedManagedIds` per server (members placed there plus
+bindings of the server owner's organization), and `loadManagedFrontendServerIds`
+per cluster, filtered to that same set. `external-access-tls.ts` refuses each
+save that would break the minimum, with a 409, a plain `message` and nothing
+saved. Check and write run together under one transaction-scoped advisory lock
+(`withManagedTlsPolicyLock`), so two of these saves never pass at once:
+
+| Save                                                                    | Code                                          | Names                                                      |
+| ----------------------------------------------------------------------- | --------------------------------------------- | ---------------------------------------------------------- |
+| Cluster mode change (`PATCH …/managed`, incl. clearing it)              | `managed_ssl_external_access_minimum`         | `servers`                                                  |
+| Org default change (`PUT …/managed-defaults`) a fronted cluster follows | `managed_ssl_default_external_access_minimum` | `databases`                                                |
+| External access on (`PUT /servers/:id/managed-external-access`)         | `external_access_weak_ssl`                    | `databases` (server owner's own), `otherDatabases` (count) |
+
+Turning external access off is never refused. A save that does not change the
+mode (a rename, a ports-only default, re-sending the stored default) is not
+re-checked. A cluster created on an external-access server while the org
+default is weak gets its own mode set to `require`.
+
+What is **not** checked at save time: a binding, replica or placement change
+that puts a weak cluster under an external-access server, and rows that were
+already weak before this rule. For those:
+
+- The ingress payload refuses plaintext: `clusterRequireTls` sets `requireTls`
+  when the mode requires TLS **or** the server allows external access.
+  `use_ssl` is per login, so clients on the server itself must use TLS for that
+  cluster too (they already do under the default `require`).
+- `resolveEffectiveManagedSsl` raises the mode to `require` where it is handed
+  out: the detail DSN, binding variables (on their next materialize) and the
+  Connect view (`ssl.raisedForExternalAccess: true`).
+- A client that sets `sslmode=disable` (or `ssl-mode=DISABLED`) itself, outside
+  TurboPanel's variables, is refused and must change it; `allow` / `prefer`
+  clients move to TLS on their own. Binding variables written before the change
+  keep the old value until the binding is materialized again (a deploy, a
+  password rotation).
+
 | Layer            | Module                                                                                           | Route                                                                                                    |
 | ---------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
 | Org default      | `org-defaults.ts` (`parseManagedOrganizationDefaults`, `parseManagedSslModeInput`)               | `GET`/`PUT /api/client/v1/organizations/:id/managed-defaults` (manage-gated; PUT `sslMode: null` clears) |
 | Per-request load | `../../client/managed/org-defaults.ts` (`loadManagedOrgDefaults`) → `ManagedContext.orgDefaults` | every managed route                                                                                      |
-| Effective view   | `buildManagedSslView` (`../../client/managed/routes-helpers.ts`)                                 | `GET …/managed` → `ssl: { configured, effective, organizationDefault }`                                  |
+| Effective view   | `buildManagedSslView` (`routes-helpers.ts`)                                                      | `GET …/managed` → `ssl: { configured, effective, organizationDefault, raisedForExternalAccess }`         |
 
 The detail `ssl` view is present even **before** provisioning
 (`buildEmptyManagedDetailResponse` takes the org default) so the create surface
@@ -445,10 +485,35 @@ named. Store/serve `ports` (configured, `null` per family = inherit) and
 | Username uniqueness        | Logins unique across every cluster on servers owned by the same organization (see Login namespace)                                                                                                                                                                                                                                                      |
 
 Connection info helpers surface the ProxySQL frontend port/host: loopback
-always, plus the server's public address or hostname when external access is on
-(`resolveManagedAccessEndpoints` on `GET …/managed` → `endpoints[]`);
-they never invent remapped engine ports. Public clients always dial ProxySQL,
-not native engine container ports.
+always, plus, when external access is on, one endpoint per **address clients
+use** (`features/net/client-addresses.ts`, table `address`): the public side and
+each datacenter the server belongs to, host = the entry's DNS name else its
+effective address (operator override, else the oldest public `ip` row per
+family, else the daemon-reported public interface address classified by the
+control plane — never the observed connection source; datacenter = its pin),
+port = the entry's `options.ports` override else the listen port (`null` = not
+reachable there, endpoint omitted). The main one (entry marked primary, else
+public, else the first datacenter) comes first and fills `connection`;
+`GET …/managed` also returns `connections[]` (one masked DSN per external
+endpoint) and `addressNeeded` (external access on, nothing to give out). A
+one-word Linux hostname never reaches a connection string; a dotted one is the
+public side's last resort. IPv6 hosts are bracketed in DSNs only. Public
+clients always dial ProxySQL, not native engine container ports.
+
+The ProxySQL leaf names the main host, every entry's DNS name and effective
+v4/v6 address (while external access is on), and the server's Linux hostname
+**always**, as a compatibility name for clients that already dial it
+(`clientAddressCertificateNames` → `collectProxySqlListenerSans.clientNames`).
+`PUT /servers/:id/addresses` queues `managed.ingress.reconcile`, which mints a
+new leaf with the new names. With databases to front it first runs the external
+access switch's preflight (503 no queue, 422 `daemon_key_unavailable`, nothing
+saved); a reconcile that still fails is a 502 with `reason` `enqueue_failed` or
+`prepare_failed`. Saves lock the server row, so concurrent PUTs serialize.
+Datacenter pins whose link is down are not given out. Leaving a datacenter (and
+joining one) prunes that datacenter's entry (`pruneClientAddressesWithoutPin`),
+except a pin removed through `DELETE /ips/:id`, whose stale entry is ignored by
+the resolver and pruned on the next join through the datacenter routes. The bind and the firewall do not read the entries:
+the single external access switch is the only on/off control.
 
 ## Backup descriptor
 

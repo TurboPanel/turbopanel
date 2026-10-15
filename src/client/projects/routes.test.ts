@@ -440,6 +440,89 @@ test('POST /projects empty uses org defaultEnvironmentName when set', async () =
   })
 })
 
+test('POST /projects environmentName overrides the org default for the first environment', async () => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
+    await db
+      .update(organization)
+      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .where(eq(organization.id, organizationId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const post = (payload: Record<string, unknown>) =>
+      app.request('/projects', {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ type: 'docker-compose', workspaceId, ...payload }),
+      })
+
+    const res = await post({ name: 'Named Env Project', environmentName: 'Edge' })
+    assertEquals(res.status, 200)
+    const body = (await res.json()) as { ok: boolean; id: string }
+    const envs = await db
+      .select({ name: environment.name })
+      .from(environment)
+      .where(eq(environment.projectId, body.id))
+    assertEquals(
+      envs.map((e) => e.name),
+      ['Edge']
+    )
+
+    const bad = await post({ name: 'Bad Env Project', environmentName: '   ' })
+    assertEquals(bad.status, 400)
+  })
+})
+
+test('POST /projects managed and empty honour environmentName, and null or absent falls back to the org default', async () => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
+    await db
+      .update(organization)
+      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .where(eq(organization.id, organizationId))
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const create = async (payload: Record<string, unknown>): Promise<(string | null)[]> => {
+      const res = await app.request('/projects', {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ workspaceId, ...payload }),
+      })
+      assertEquals(res.status, 200)
+      const { id } = (await res.json()) as { id: string }
+      const envs = await db
+        .select({ name: environment.name })
+        .from(environment)
+        .where(eq(environment.projectId, id))
+      return envs.map((e) => e.name)
+    }
+
+    // Catalog creation (managed shares the scaffold path with templates; the
+    // catalog ships no template entries to post).
+    assertEquals(
+      await create({ type: 'managed', code: 'postgres', name: 'Env M1', environmentName: 'Edge' }),
+      ['Edge']
+    )
+    assertEquals(await create({ type: 'managed', code: 'postgres', name: 'Env M2' }), ['Staging'])
+    assertEquals(
+      await create({ type: 'managed', code: 'postgres', name: 'Env M3', environmentName: null }),
+      ['Staging']
+    )
+
+    assertEquals(await create({ type: 'empty', name: 'Env E1', environmentName: 'Edge' }), ['Edge'])
+    assertEquals(await create({ type: 'empty', name: 'Env E2', environmentName: null }), [
+      'Staging',
+    ])
+    assertEquals(await create({ type: 'empty', name: 'Env E3' }), ['Staging'])
+  })
+})
+
 test('POST /projects docker-compose uses org defaultEnvironmentName when set', async () => {
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db

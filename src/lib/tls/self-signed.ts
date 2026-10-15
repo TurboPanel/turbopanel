@@ -11,6 +11,7 @@ import { children, content, expectTag, readNode, type Asn1Node } from './asn1.ts
 import { decodeFirstCertificate, decodePrivateKeyToPkcs8, encodePemBlock } from './pem.ts'
 import { parseCertificatePem } from './parse.ts'
 import type { ParsedCertificate } from './types.ts'
+import { ipToBigInt, parseIpVersion } from '../ip-address.ts'
 
 function concat(...parts: Uint8Array[]): Uint8Array {
   let total = 0
@@ -142,18 +143,17 @@ function algorithmIdentifier(oidBytes: Uint8Array): Uint8Array {
   return seq(concat(oid(oidBytes), Uint8Array.of(0x05, 0x00)))
 }
 
+/** iPAddress SAN octets: 4 for IPv4, 16 for IPv6 (RFC 5280 4.2.1.6). */
 function encodeIpAddress(address: string): Uint8Array | null {
-  const trimmed = address.trim()
-  // IPv4 only — managed private listeners are IPv4 literals today.
-  const v4 = trimmed.split('.')
-  if (v4.length !== 4) return null
-  const bytes = new Uint8Array(4)
-  for (let i = 0; i < 4; i += 1) {
-    const part = v4[i]!
-    if (!/^\d{1,3}$/.test(part)) return null
-    const n = Number(part)
-    if (!Number.isInteger(n) || n < 0 || n > 255) return null
-    bytes[i] = n
+  const trimmed = address.trim().replace(/^\[(.*)\]$/, '$1')
+  const version = parseIpVersion(trimmed)
+  const value = version === null ? null : ipToBigInt(trimmed)
+  if (version === null || value === null) return null
+  const bytes = new Uint8Array(version === 4 ? 4 : 16)
+  let rest = value
+  for (let i = bytes.length - 1; i >= 0; i -= 1) {
+    bytes[i] = Number(rest & 0xffn)
+    rest >>= 8n
   }
   return bytes
 }

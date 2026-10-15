@@ -2,6 +2,10 @@ import {
   SERVER_DELETE_BLOCKER_KIND_VALUES,
   SERVER_SERVICES_REMOVAL_KIND_VALUES,
 } from '../servers/delete-guards.ts'
+import {
+  CLIENT_ADDRESS_PORT_KEYS,
+  CLIENT_ADDRESS_SCOPES,
+} from '../../features/net/client-addresses-pure.ts'
 
 function cappedListSchema(item: Record<string, unknown>) {
   return {
@@ -679,6 +683,151 @@ export const serverSchemas = {
         additionalProperties: { type: 'string' },
         description:
           'Replace-all map of label key to value (max 64 entries). Empty object clears all labels.',
+      },
+    },
+  },
+  ServerClientAddressPorts: {
+    type: 'object',
+    additionalProperties: false,
+    description:
+      'External port per listener when a router translates it. A missing key means the same as the listen port; `null` means this address does not reach that service.',
+    properties: Object.fromEntries(
+      CLIENT_ADDRESS_PORT_KEYS.map((key) => [
+        key,
+        { type: ['integer', 'null'], minimum: 1, maximum: 65535 },
+      ])
+    ),
+  },
+  ServerClientAddressInput: {
+    type: 'object',
+    required: ['scope'],
+    properties: {
+      scope: { type: 'string', enum: [...CLIENT_ADDRESS_SCOPES] },
+      datacenterId: {
+        type: ['string', 'null'],
+        format: 'uuid',
+        description:
+          'Required for `datacenter` (one the server belongs to); absent or null for `public`.',
+      },
+      hostname: {
+        type: ['string', 'null'],
+        maxLength: 253,
+        description:
+          'DNS name clients type. Must contain a dot; trimmed and lower-cased. Blank or null = no name.',
+      },
+      addressV4: {
+        type: ['string', 'null'],
+        description:
+          "IPv4 address clients use when it is not the server's own (a router). Blank or null = the server's own.",
+      },
+      addressV6: {
+        type: ['string', 'null'],
+        description:
+          "IPv6 address clients use when it is not the server's own. Blank or null = the server's own.",
+      },
+      ports: { $ref: '#/components/schemas/ServerClientAddressPorts' },
+      primary: {
+        type: 'boolean',
+        description:
+          'Fills the main connection string. At most one entry; with none, the public side is used.',
+      },
+    },
+  },
+  ServerClientAddressesPutRequest: {
+    type: 'object',
+    required: ['addresses'],
+    properties: {
+      addresses: {
+        type: 'array',
+        maxItems: 64,
+        items: { $ref: '#/components/schemas/ServerClientAddressInput' },
+        description: 'Replaces every saved entry of the server. An empty list clears them.',
+      },
+    },
+  },
+  ServerClientAddress: {
+    type: 'object',
+    required: [
+      'scope',
+      'datacenterId',
+      'label',
+      'saved',
+      'hostname',
+      'addressV4',
+      'addressV6',
+      'ports',
+      'primary',
+      'main',
+      'mainFor',
+      'effective',
+    ],
+    properties: {
+      scope: { type: 'string', enum: [...CLIENT_ADDRESS_SCOPES] },
+      datacenterId: { type: ['string', 'null'], format: 'uuid' },
+      label: { type: 'string', description: '`Public`, or the datacenter name.' },
+      saved: { type: 'boolean', description: 'An entry was saved for this side.' },
+      hostname: { type: ['string', 'null'] },
+      addressV4: {
+        type: ['string', 'null'],
+        description: 'Saved override, not the effective value.',
+      },
+      addressV6: {
+        type: ['string', 'null'],
+        description: 'Saved override, not the effective value.',
+      },
+      ports: { $ref: '#/components/schemas/ServerClientAddressPorts' },
+      primary: { type: 'boolean', description: 'Saved primary mark.' },
+      main: {
+        type: 'boolean',
+        description:
+          'This side fills the main connection string for at least one database engine (same rules as the managed endpoints).',
+      },
+      mainFor: {
+        type: 'array',
+        items: { type: 'string', enum: ['postgres', 'mysql'] },
+        description:
+          'The engines this side is main for: the entry marked primary, else public, else the first datacenter, each only with a host and a port not set to null.',
+      },
+      effective: {
+        type: 'object',
+        required: ['v4', 'v4Source', 'v6', 'v6Source', 'host', 'hostSource'],
+        properties: {
+          v4: { type: ['string', 'null'] },
+          v4Source: { type: ['string', 'null'], enum: ['entry', 'ip', 'reported', 'pin', null] },
+          v6: { type: ['string', 'null'] },
+          v6Source: { type: ['string', 'null'], enum: ['entry', 'ip', 'reported', 'pin', null] },
+          host: {
+            type: ['string', 'null'],
+            description:
+              'What clients type: the DNS name, else an address. Never a one-word Linux hostname.',
+          },
+          hostSource: {
+            type: ['string', 'null'],
+            enum: ['hostname', 'address', 'linux-hostname', null],
+          },
+        },
+      },
+    },
+  },
+  ServerClientAddresses: {
+    type: 'object',
+    required: ['externalAccess', 'linuxHostname', 'addressNeeded', 'addresses'],
+    properties: {
+      externalAccess: {
+        type: 'boolean',
+        description:
+          'The server\'s "allow external access to the databases" switch, the only on/off control.',
+      },
+      linuxHostname: { type: ['string', 'null'] },
+      addressNeeded: {
+        type: 'boolean',
+        description:
+          'External access is on and no side can be given out for any database engine: prompt to set the address clients use.',
+      },
+      addresses: {
+        type: 'array',
+        description: 'The public side first, then each datacenter the server belongs to.',
+        items: { $ref: '#/components/schemas/ServerClientAddress' },
       },
     },
   },
@@ -2431,6 +2580,96 @@ export const serverPaths: Record<string, unknown> = {
             },
           },
         },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/addresses': {
+    get: {
+      tags: ['Servers'],
+      summary: 'Get the addresses clients use',
+      description:
+        "Owners and managers only; a server of another organization is 404. One entry for the public side and one per datacenter the server belongs to, with what was saved and what the panel will use. Blank values fall back to the server's own address: a public address row, else the public interface address the server reports, and the datacenter pin.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'The addresses',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ServerClientAddresses' },
+            },
+          },
+        },
+        '403': { description: 'Not an owner or manager of the server' },
+        '404': { description: 'Server not found in the caller organization' },
+      },
+    },
+    put: {
+      tags: ['Servers'],
+      summary: 'Replace the addresses clients use',
+      description:
+        'Owners and managers only. Replaces every saved entry, then tells the server so its database certificate carries the new names and addresses. External access is still switched on and off only by `/servers/{id}/managed-external-access`.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/ServerClientAddressesPutRequest' },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description:
+            'Saved. `reconcile` is `queued`, or `not_needed` when the server fronts no database.',
+          content: {
+            'application/json': {
+              schema: {
+                allOf: [
+                  { $ref: '#/components/schemas/ServerClientAddresses' },
+                  {
+                    type: 'object',
+                    required: ['ok', 'reconcile'],
+                    properties: {
+                      ok: { type: 'boolean', const: true },
+                      reconcile: { type: 'string', enum: ['queued', 'not_needed'] },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+        '400': {
+          description:
+            '`invalid_addresses`, `address_scope_invalid`, `address_datacenter_not_member`, `address_duplicate`, `address_hostname_invalid`, `address_hostname_single_label`, `address_v4_invalid`, `address_v6_invalid`, `address_ports_invalid` or `address_primary_multiple`, with `message` and the entry `index`',
+        },
+        '403': { description: 'Not an owner or manager of the server' },
+        '404': { description: 'Server not found in the caller organization' },
+        '422': {
+          description:
+            '`daemon_key_unavailable`: the server fronts databases and cannot take changes yet; nothing saved',
+        },
+        '502': {
+          description:
+            '`ingress_reconcile_failed`: saved, but the certificate was not reissued. `reason` is `enqueue_failed` (save again, or the next listener update adds the names) or `prepare_failed` (the listener cannot be rebuilt until its databases are fixed). The body also carries the saved view and `message`.',
+        },
+        '503': { description: 'Command queue or daemon cell registry unavailable' },
       },
     },
   },
