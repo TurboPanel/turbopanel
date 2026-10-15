@@ -1328,6 +1328,15 @@ export const organizationPaths: Record<string, unknown> = {
             },
           },
         },
+        '409': {
+          description:
+            '`managed_ssl_default_external_access_minimum`: an sslMode weaker than require while a database that follows the default is served by a server that allows external access; `databases` names them. Nothing is saved.',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ManagedSslMinimumRefusal' },
+            },
+          },
+        },
         '400': {
           description: 'Invalid sslMode or body',
           content: {

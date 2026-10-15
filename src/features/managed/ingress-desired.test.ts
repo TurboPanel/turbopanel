@@ -8,7 +8,7 @@
 
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertThrows } from '@std/assert'
-import { eq, inArray } from 'drizzle-orm'
+import { eq, inArray, sql } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
@@ -569,6 +569,39 @@ test('external access on publishes on every address of the server', async () => 
   )
 })
 
+for (const externalAccess of [false, true]) {
+  test(`a stored weak SSL mode ${externalAccess ? 'still refuses plaintext under external access' : 'stays optional without external access'}`, async () => {
+    await withSingleClusterIngressFixture(
+      externalAccess,
+      async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
+        // Data that drifted past the save checks: a plaintext-allowing mode.
+        const members = await db
+          .select({ managedId: replica.managedId })
+          .from(replica)
+          .where(eq(replica.serverId, serverId))
+        await db
+          .update(managed)
+          .set({ options: sql`jsonb_set(options, '{settings,ssl}', '{"mode":"disable"}')` })
+          .where(
+            inArray(
+              managed.id,
+              members.map((row) => row.managedId)
+            )
+          )
+        const built = await buildManagedIngressReconcilePayload(db, {
+          serverId,
+          secretsConfig,
+          dataEncryptionSecrets,
+        })
+        if (built === null || 'kind' in built) {
+          throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`)
+        }
+        assertEquals(built.clusters[0]?.requireTls, externalAccess ? true : undefined)
+      }
+    )
+  })
+}
+
 async function insertBoundConsumer(
   db: ReturnType<typeof createDenoDb>,
   params: {
@@ -907,6 +940,71 @@ test('serverHasHostRunBinding sees only loopback-form bindings placed on the ser
     await db.delete(workspace).where(eq(workspace.id, ws!.id))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
+})
+
+test('binding variables raise a stored mode without SSL to require while the server allows external access', async () => {
+  await withSingleClusterIngressFixture(
+    true,
+    async ({ db, serverId, organizationId, dataEncryptionSecrets }) => {
+      const [clusterRow] = await db
+        .select({ id: managed.id })
+        .from(managed)
+        .where(eq(managed.serverId, serverId))
+      await db
+        .update(managed)
+        .set({ options: sql`jsonb_set(options, '{settings,ssl}', '{"mode":"disable"}')` })
+        .where(eq(managed.id, clusterRow!.id))
+      const [ws] = await db
+        .select({ id: workspace.id })
+        .from(workspace)
+        .where(eq(workspace.organizationId, organizationId))
+      const [projectRow] = await db
+        .insert(project)
+        .values({ name: 'Floor Project', workspaceId: ws!.id, organizationId })
+        .returning({ id: project.id })
+      const [envRow] = await db
+        .insert(environment)
+        .values({ name: 'Production', projectId: projectRow!.id, serverId })
+        .returning({ id: environment.id })
+      const [serviceRow] = await db
+        .insert(service)
+        .values({ environmentId: envRow!.id, composeServiceName: 'app' })
+        .returning({ id: service.id })
+      const principalRow = await createManagedPrincipal(db, dataEncryptionSecrets, {
+        managedId: clusterRow!.id,
+        provider: 'postgres',
+        username: 'floor_user',
+      })
+      try {
+        const [bindingRow] = await db
+          .insert(binding)
+          .values({
+            principalId: principalRow.principalId,
+            serviceId: serviceRow!.id,
+            databaseName: 'postgres',
+            keyPrefix: 'DATABASE',
+            isEmitEngineDefaults: true,
+          })
+          .returning({ id: binding.id })
+        assertEquals(
+          await materializeBinding(db, dataEncryptionSecrets, bindingRow!.id, 'container'),
+          { ok: true }
+        )
+        const rows = await db
+          .select({ key: variable.key, value: variable.value })
+          .from(variable)
+          .where(eq(variable.bindingId, bindingRow!.id))
+        assertEquals(rows.find((row) => row.key === 'PGSSLMODE')?.value, 'require')
+      } finally {
+        await db.delete(variable).where(eq(variable.serviceId, serviceRow!.id))
+        await db.delete(binding).where(eq(binding.serviceId, serviceRow!.id))
+        await db.delete(principal).where(eq(principal.id, principalRow.principalId))
+        await db.delete(service).where(eq(service.id, serviceRow!.id))
+        await db.delete(environment).where(eq(environment.id, envRow!.id))
+        await db.delete(project).where(eq(project.id, projectRow!.id))
+      }
+    }
+  )
 })
 
 test('materializing a binding writes the form the deploy asks for and keeps it otherwise', async () => {

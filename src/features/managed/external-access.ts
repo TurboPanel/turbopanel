@@ -166,14 +166,27 @@ export async function loadFrontedManagedIds(db: Db, serverId: string): Promise<s
   return [...ids]
 }
 
-/** Every server whose ProxySQL fronts the cluster: its members and bound consumers. */
+/**
+ * Every server whose ProxySQL fronts the cluster: its members, plus the
+ * servers its bound consumers place on whose {@link loadFrontedManagedIds}
+ * includes it. A consumer's server fronts only bindings of the server owner's
+ * organization (the ingress builder's rule), so a consumer server is kept only
+ * when the ingress there would actually carry this cluster.
+ */
 export async function loadManagedFrontendServerIds(db: Db, managedId: string): Promise<string[]> {
   const members = await db
     .select({ serverId: replica.serverId })
     .from(replica)
     .where(eq(replica.managedId, managedId))
-  const consumers = await consumerServerIdsForManaged(db, managedId)
-  return [...new Set([...members.map((row) => row.serverId), ...consumers])]
+  const memberIds = new Set(members.map((row) => row.serverId))
+  const fronting = new Set(memberIds)
+  const consumers = (await consumerServerIdsForManaged(db, managedId)).filter(
+    (serverId) => !memberIds.has(serverId)
+  )
+  await forEachSequential(consumers, async (serverId) => {
+    if ((await loadFrontedManagedIds(db, serverId)).includes(managedId)) fronting.add(serverId)
+  })
+  return [...fronting]
 }
 
 /**
@@ -221,14 +234,11 @@ export type ManagedExternalAccessServerView = {
   otherClusters: number
 }
 
-/**
- * The setting on every server that fronts `managedId`, with how many other
- * clusters share each one. The cluster screens show this and warn on it.
- */
-export async function loadManagedExternalAccessView(
+/** Each server fronting `managedId`, by display name, with its external access setting. */
+export async function loadFrontendServerSettings(
   db: Db,
   managedId: string
-): Promise<ManagedExternalAccessServerView[]> {
+): Promise<Array<{ id: string; name: string; setting: ManagedExternalAccess }>> {
   const serverIds = await loadManagedFrontendServerIds(db, managedId)
   if (serverIds.length === 0) return []
   const rows = await db
@@ -240,13 +250,28 @@ export async function loadManagedExternalAccessView(
     })
     .from(server)
     .where(inArray(server.id, serverIds))
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name || row.hostname || row.id,
+    setting: readManagedExternalAccess(row.options),
+  }))
+}
+
+/**
+ * The setting on every server that fronts `managedId`, with how many other
+ * clusters share each one. The cluster screens show this and warn on it.
+ */
+export async function loadManagedExternalAccessView(
+  db: Db,
+  managedId: string
+): Promise<ManagedExternalAccessServerView[]> {
   const views: ManagedExternalAccessServerView[] = []
-  await forEachSequential(rows, async (row) => {
-    const setting = readManagedExternalAccess(row.options)
+  await forEachSequential(await loadFrontendServerSettings(db, managedId), async (row) => {
+    const { setting } = row
     const fronted = await loadFrontedManagedIds(db, row.id)
     views.push({
       id: row.id,
-      name: row.name || row.hostname || row.id,
+      name: row.name,
       enabled: setting.enabled,
       pending: setting.pendingSince !== undefined,
       otherClusters: fronted.filter((id) => id !== managedId).length,

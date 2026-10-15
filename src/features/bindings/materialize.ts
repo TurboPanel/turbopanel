@@ -23,7 +23,8 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import { getManagedEngineSpec } from '../managed/index.ts'
-import { type ManagedSslMode, resolveManagedSslMode } from '../managed/ssl.ts'
+import type { ManagedSslMode } from '../managed/ssl.ts'
+import { resolveEffectiveManagedSsl } from '../managed/external-access-tls.ts'
 import { parseOrganizationOptions } from '../organizations/organization-options.ts'
 import { bindingPrefixedKeys } from '../../lib/naming.ts'
 import type { ResolvedVariableEntry, ResolvedVariableMap } from '../variables/resolve-inherited.ts'
@@ -358,6 +359,14 @@ export async function materializeBinding(
   )
   if (typeof effectiveDelivery === 'object') return effectiveDelivery
 
+  // Raised to require while a server fronting the cluster allows external
+  // access: its listener refuses plaintext, so a weaker mode cannot connect.
+  const ssl = await resolveEffectiveManagedSsl(db, {
+    managedId: row.managedId,
+    configured: options.settings.ssl.mode,
+    organizationDefault: orgManagedDefaults?.sslMode,
+  })
+
   const desired = computeBindingVariableSet({
     keyPrefix: row.keyPrefix,
     emitEngineDefaults: row.emitEngineDefaults,
@@ -369,7 +378,7 @@ export async function materializeBinding(
     caCertPem: ca.trustBundlePem,
     readSplit: endpoint.readSplit,
     engineCode: row.managedEngine,
-    sslMode: resolveManagedSslMode(options.settings.ssl.mode, orgManagedDefaults?.sslMode),
+    sslMode: ssl.mode,
     delivery: effectiveDelivery,
   })
   if ('kind' in desired) return desired
