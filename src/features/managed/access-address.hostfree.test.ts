@@ -3,9 +3,10 @@ import type { Db } from '../../db/connection.ts'
 import {
   ALL_INTERFACES_BIND,
   LOOPBACK_BIND,
-  resolveManagedExternalDialHost,
   type ManagedAddressLoaders,
+  resolveManagedExternalDialHost,
 } from './access-address.ts'
+import { type ClientAddressFacts, resolveClientAddresses } from '../net/client-addresses-pure.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -21,57 +22,50 @@ test('bind constants stay loopback and all-interfaces wildcards', () => {
 })
 
 const SERVER_ID = '550e8400-e29b-41d4-a716-446655440000'
-const PUBLIC_ADDR = '203.0.113.50'
 const unusedDb = {} as Db
 
-function loaders(overrides: ManagedAddressLoaders = {}): ManagedAddressLoaders {
+function loaders(facts: Partial<ClientAddressFacts>): ManagedAddressLoaders {
   return {
-    loadPublicAddress: async () => PUBLIC_ADDR,
-    loadHostname: async () => 'edge.example',
-    ...overrides,
+    loadAddresses: async () =>
+      resolveClientAddresses({
+        linuxHostname: 'omega',
+        saved: [],
+        publicIp: { v4: null, v6: null },
+        reportedIps: [],
+        pins: [],
+        ...facts,
+      }),
   }
 }
 
-test('resolveManagedExternalDialHost prefers a pinned public IP then hostname', async () => {
-  assertEquals(await resolveManagedExternalDialHost(unusedDb, SERVER_ID, loaders()), PUBLIC_ADDR)
+test('resolveManagedExternalDialHost prefers the operator name, then an address', async () => {
+  const dial = (facts: Partial<ClientAddressFacts>) =>
+    resolveManagedExternalDialHost(unusedDb, SERVER_ID, loaders(facts))
+  const publicIp = { v4: '203.0.113.50', v6: null }
+  assertEquals(await dial({ publicIp }), '203.0.113.50')
   assertEquals(
-    await resolveManagedExternalDialHost(
-      unusedDb,
-      SERVER_ID,
-      loaders({ loadPublicAddress: async () => null })
-    ),
-    'edge.example'
+    await dial({
+      publicIp,
+      saved: [
+        {
+          scope: 'public',
+          datacenterId: null,
+          hostname: 'omega.example.com',
+          addressV4: null,
+          addressV6: null,
+          ports: {},
+          primary: false,
+        },
+      ],
+    }),
+    'omega.example.com'
   )
-  assertEquals(
-    await resolveManagedExternalDialHost(
-      unusedDb,
-      SERVER_ID,
-      loaders({
-        loadPublicAddress: async () => null,
-        loadHostname: async () => null,
-      })
-    ),
-    null
-  )
+  assertEquals(await dial({ linuxHostname: 'edge.example' }), 'edge.example')
 })
 
-function hostnameDb(hostname: string): Db {
-  return {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([{ hostname }]),
-        }),
-      }),
-    }),
-  } as unknown as Db
-}
-
-test('resolveManagedExternalDialHost trims a hostname from the default column read', async () => {
-  const noPinned = { loadPublicAddress: async () => null }
+test('resolveManagedExternalDialHost never gives out a one-word Linux hostname', async () => {
   assertEquals(
-    await resolveManagedExternalDialHost(hostnameDb('  edge.lan  '), SERVER_ID, noPinned),
-    'edge.lan'
+    await resolveManagedExternalDialHost(unusedDb, SERVER_ID, loaders({ linuxHostname: 'omega' })),
+    null
   )
-  assertEquals(await resolveManagedExternalDialHost(hostnameDb('   '), SERVER_ID, noPinned), null)
 })

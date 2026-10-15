@@ -10,6 +10,7 @@
  */
 
 import { applyResourcesToComposeService } from '../compose/apply-service-options.ts'
+import { joinHostPort } from '../../lib/ip-address.ts'
 import { requireDefaultManagedImage } from './releases.ts'
 import type { ManagedSslMode } from './ssl.ts'
 import {
@@ -531,7 +532,7 @@ function formatSslMode(mode: ManagedSslMode): string {
 function buildConnectionInfo(input: BuildConnectionInfoInput): ManagedConnectionInfo {
   const dsn =
     `postgresql://${encodeURIComponent(input.username)}:***@` +
-    `${input.host}:${input.port}/${encodeURIComponent(input.database)}` +
+    `${joinHostPort(input.host, input.port)}/${encodeURIComponent(input.database)}` +
     `?sslmode=${formatSslMode(input.sslMode)}`
   return {
     dsn,
@@ -546,7 +547,7 @@ function buildBindingDsn(input: BuildConnectionInfoInput & { password: string })
   return (
     `postgresql://${encodeURIComponent(input.username)}:` +
     `${encodeURIComponent(input.password)}@` +
-    `${input.host}:${input.port}/${encodeURIComponent(input.database)}` +
+    `${joinHostPort(input.host, input.port)}/${encodeURIComponent(input.database)}` +
     `?sslmode=${formatSslMode(input.sslMode)}`
   )
 }

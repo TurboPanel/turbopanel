@@ -43,7 +43,12 @@ import {
 } from '../net/private-endpoint.ts'
 import { ensureOrganizationManagedNetwork, listServerSubnets } from '../fabric/fabric-records.ts'
 import { loadListenerAttachedSubnetNames } from './ingress-attachments.ts'
-import { LOOPBACK_BIND, resolveManagedExternalDialHost } from './access-address.ts'
+import { LOOPBACK_BIND } from './access-address.ts'
+import { loadServerClientAddresses } from '../net/client-addresses.ts'
+import {
+  clientAddressCertificateNames,
+  mainClientAddressHost,
+} from '../net/client-addresses-pure.ts'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
 import { hasRemoteConsumerServers } from '../bindings/remote-consumers.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
@@ -497,17 +502,23 @@ async function buildIngressClusters(
 }
 
 /**
- * The host clients see (connection panel / binding resolver): the server's
- * dial address when external access is allowed, else loopback.
+ * What the listener certificate must name for clients: the main host clients
+ * dial (loopback while external access is off), plus every name and address
+ * of the server's addresses clients use and its Linux hostname
+ * (`clientAddressCertificateNames`). The Linux hostname stays a name on the
+ * certificate even after it left connection strings, so clients that already
+ * dial it keep verifying.
  */
-async function resolveAdvertisedHost(
+async function resolveListenerClientNames(
   db: Db,
   serverId: string,
-  fallbackHost: string | null,
   externalAccess: boolean
-): Promise<string | null> {
-  if (!externalAccess) return LOOPBACK_BIND
-  return (await resolveManagedExternalDialHost(db, serverId)) ?? fallbackHost
+): Promise<{ advertisedHost: string | null; dnsNames: string[]; ipAddresses: string[] }> {
+  const addresses = await loadServerClientAddresses(db, serverId)
+  return {
+    advertisedHost: externalAccess ? mainClientAddressHost(addresses) : LOOPBACK_BIND,
+    ...clientAddressCertificateNames(addresses, externalAccess),
+  }
 }
 
 type BuiltManagedIngressReconcile = {
@@ -529,7 +540,6 @@ async function buildManagedIngressReconcileDesired(
   const [serverRow] = await db
     .select({
       organizationId: server.organizationId,
-      hostname: server.hostname,
     })
     .from(server)
     .where(eq(server.id, params.serverId))
@@ -601,16 +611,12 @@ async function buildManagedIngressReconcileDesired(
   const { enabled: externalAccess } = await loadManagedExternalAccess(db, params.serverId)
   const bindAddresses = decideIngressBindAddresses(externalAccess)
 
-  const advertisedHost = await resolveAdvertisedHost(
-    db,
-    params.serverId,
-    serverRow.hostname,
-    externalAccess
-  )
+  const clientNames = await resolveListenerClientNames(db, params.serverId, externalAccess)
 
   const backendAddresses = clusters.flatMap((c) => c.backends.map((b) => b.address))
   const listenerSans = collectProxySqlListenerSans({
-    hostname: advertisedHost,
+    hostname: clientNames.advertisedHost,
+    clientNames,
     // A site run by a site owner's Linux user verifies the certificate against
     // `127.0.0.1`; under an all-interfaces publish the bind is a wildcard and
     // carries no SAN of its own.

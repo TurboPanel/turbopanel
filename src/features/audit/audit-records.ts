@@ -50,6 +50,7 @@ export const AUDIT_ACTIONS = [
   'organization.reauth_for_destructive.set',
   'server.firewall_mode.set',
   'server.managed_external_access.update',
+  'server.addresses.set',
   'deployment.cancel',
   'hosting.letsencrypt.requested',
   'mail.dead_letter.replay',

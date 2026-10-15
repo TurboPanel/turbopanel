@@ -13,7 +13,11 @@ import {
   resolveManagedImage,
 } from './releases.ts'
 import type { ManagedConnectionRole } from '../../contracts/commands/schemas.ts'
-import { managedIngressPortForEngine, resolveManagedIngressPorts } from './ingress-ports.ts'
+import {
+  managedIngressFamilyForEngine,
+  managedIngressPortForEngine,
+  resolveManagedIngressPorts,
+} from './ingress-ports.ts'
 import { type ManagedSslMode, resolveManagedSslMode } from './ssl.ts'
 import { organization, server } from '../../db/schema.ts'
 import { parseOrganizationOptions } from '../organizations/organization-options.ts'
@@ -26,7 +30,13 @@ import {
   type PrincipalNameScheme,
   principalNameSchemeOf,
 } from '../../lib/principal-name-scheme.ts'
-import { LOOPBACK_BIND, resolveManagedExternalDialHost } from './access-address.ts'
+import { LOOPBACK_BIND } from './access-address.ts'
+import { loadServerClientAddresses } from '../net/client-addresses.ts'
+import {
+  type ClientAddressScope,
+  clientAddressNeeded,
+  clientEndpointsForListener,
+} from '../net/client-addresses-pure.ts'
 import { loadManagedExternalAccess } from './external-access.ts'
 import type { ManagedContext } from './managed-context.ts'
 import { type ManagedRowOptions, parseManagedRowOptions } from './options.ts'
@@ -45,6 +55,14 @@ export type ManagedAccessEndpoint = {
   reach: 'local' | 'external'
   host: string
   port: number
+  /** External only: `Public`, or the name of the datacenter this address is in. */
+  label?: string
+  /** External only: which side of the server this address is on. */
+  scope?: ClientAddressScope
+  /** External only: set on a datacenter address. */
+  datacenterId?: string | null
+  /** External only: this endpoint fills the main connection string. */
+  primary?: boolean
 }
 
 /**
@@ -85,28 +103,44 @@ type ManagedAccessParams = Readonly<{
 
 /**
  * Every endpoint the server's shared ProxySQL listens on for this cluster,
- * outside-the-server first.
+ * outside-the-server first, main one first among those.
  *
  * The loopback endpoint is always there: sites run by a site owner's Linux user
  * dial it, and bound containers dial ProxySQL by name over the organization's
- * managed network (see `resolveBindingEndpoint`). The external endpoint is there
+ * managed network (see `resolveBindingEndpoint`). External endpoints are there
  * only while the server's "allow external access" setting is on
- * (`./external-access.ts`) and the server has an address to give out. The
- * setting belongs to the server, so every cluster on it reports the same thing.
+ * (`./external-access.ts`): one per address clients use that has a host and
+ * reaches this engine's port (`features/net/client-addresses.ts`). The setting
+ * belongs to the server, so every cluster on it reports the same thing.
+ *
+ * `addressNeeded` is the "set the address clients use" prompt: external access
+ * is on and the panel has nothing it can give out (at most a one-word Linux
+ * hostname, which never goes into a connection string).
  */
-async function resolveManagedAccess(
+export async function resolveManagedAccess(
   db: Db,
   params: ManagedAccessParams
-): Promise<{ externalAccess: boolean; endpoints: ManagedAccessEndpoint[] }> {
+): Promise<{
+  externalAccess: boolean
+  endpoints: ManagedAccessEndpoint[]
+  addressNeeded: boolean
+}> {
   const { enabled: externalAccess } = await loadManagedExternalAccess(db, params.serverId)
   const port = await resolveListenerPortForServer(db, params)
-  const endpoints: ManagedAccessEndpoint[] = []
-  if (externalAccess) {
-    const host = await resolveManagedExternalDialHost(db, params.serverId)
-    if (host !== null) endpoints.push({ reach: 'external', host, port })
-  }
-  endpoints.push({ reach: 'local', host: LOOPBACK_BIND, port })
-  return { externalAccess, endpoints }
+  const external = externalAccess
+    ? clientEndpointsForListener(
+        await loadServerClientAddresses(db, params.serverId),
+        managedIngressFamilyForEngine(params.engineCode, params.engineDefaultPort) === 'mysql'
+          ? 'mysql'
+          : 'postgres',
+        port
+      )
+    : []
+  const endpoints: ManagedAccessEndpoint[] = [
+    ...external.map((endpoint) => ({ reach: 'external' as const, ...endpoint })),
+    { reach: 'local', host: LOOPBACK_BIND, port },
+  ]
+  return { externalAccess, endpoints, addressNeeded: clientAddressNeeded(externalAccess, external) }
 }
 
 export async function resolveManagedAccessEndpoints(
@@ -117,8 +151,8 @@ export async function resolveManagedAccessEndpoints(
 }
 
 /**
- * The single endpoint used for the primary DSN and the listener TLS SANs: the
- * outside-the-server one when allowed, else loopback.
+ * The single endpoint used for the primary DSN: the main outside-the-server
+ * one when allowed, else loopback.
  *
  * `null` means "external access is on, but the server has no address to give
  * out" — a real misconfiguration worth surfacing rather than papering over with
@@ -128,9 +162,15 @@ export async function resolveManagedConnectionListener(
   db: Db,
   params: ManagedAccessParams
 ): Promise<{ host: string; port: number } | null> {
-  const { externalAccess, endpoints } = await resolveManagedAccess(db, params)
-  const primary = endpoints[0]!
-  if (externalAccess && primary.reach !== 'external') return null
+  return connectionListenerFromAccess(await resolveManagedAccess(db, params))
+}
+
+/** {@link resolveManagedConnectionListener} from an already resolved access view. */
+export function connectionListenerFromAccess(
+  access: Readonly<{ externalAccess: boolean; endpoints: readonly ManagedAccessEndpoint[] }>
+): { host: string; port: number } | null {
+  const primary = access.endpoints[0]!
+  if (access.externalAccess && primary.reach !== 'external') return null
   return { host: primary.host, port: primary.port }
 }
 
@@ -1246,6 +1286,8 @@ export function buildEmptyManagedDetailResponse(organizationSslMode?: ManagedSsl
     managed: null,
     connection: null,
     endpoints: [] as const,
+    connections: [] as const,
+    addressNeeded: false,
     exposure: null,
     settings: null,
     ssl: buildManagedSslView(undefined, organizationSslMode),

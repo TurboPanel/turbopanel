@@ -31,13 +31,17 @@ import { getManagedEngineSpec } from '../../features/managed/index.ts'
 import {
   backup,
   binding,
+  clientAddress,
   command,
   container,
+  datacenter,
   dispatch,
   environment,
   grant,
+  ip,
   login,
   managed,
+  network,
   organization,
   principal,
   project,
@@ -52,6 +56,8 @@ import { createCommandRecord, transitionCommand } from '../../features/commands/
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { getCatalogEntry, readManagedEngineOptions } from '../projects/catalog/index.ts'
 import { registerManagedRoutes } from './routes.ts'
+import { createSessionMiddleware } from '../authn/middleware.ts'
+import { registerServerAddressRoutes } from '../servers/address-routes.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import {
   createBackupRunReportStore,
@@ -3731,6 +3737,283 @@ test('saving the external access switch is audited with the new value only', asy
     assertEquals(entry?.targetId, serverId)
     assertEquals(entry?.context, { enabled: true })
   })
+})
+
+type AddressesBody = {
+  error?: string
+  reconcile?: string
+  externalAccess: boolean
+  addressNeeded: boolean
+  addresses: Array<{
+    scope: string
+    datacenterId: string | null
+    label: string
+    saved: boolean
+    hostname: string | null
+    primary: boolean
+    main: boolean
+    effective: { host: string | null; v4: string | null; v4Source: string | null }
+  }>
+}
+
+type DetailConnections = {
+  addressNeeded: boolean
+  connection: { dsn: string; host: string; port: number } | null
+  connections: Array<{
+    label: string
+    scope: string
+    primary: boolean
+    dsn: string
+    host: string
+    port: number
+  }>
+  endpoints: Array<{ reach: string; label?: string; host: string; port: number }>
+}
+
+/** The managed test app plus the server address routes (they live on the server router). */
+function withAddressRoutes(
+  app: Hono<AppEnv>,
+  secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
+): Hono<AppEnv> {
+  app.use('/servers/:id/addresses', createSessionMiddleware(secrets))
+  registerServerAddressRoutes(app)
+  return app
+}
+
+test('addresses clients use: saved, validated, certificate reissued, one connection string per address', async () => {
+  await withManagedFixtures(
+    {},
+    async ({
+      db,
+      app: managedApp,
+      secrets,
+      commandQueue,
+      userId,
+      organizationId,
+      environmentId,
+      serverId,
+    }) => {
+      const app = withAddressRoutes(managedApp, secrets)
+      const headers = {
+        Cookie: await sessionCookie(db, secrets, userId),
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const putAddresses = async (addresses: unknown) =>
+        await app.request(`/servers/${serverId}/addresses`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ addresses }),
+        })
+      const detail = async () =>
+        (await (
+          await app.request(`/environments/${environmentId}/managed`, { headers })
+        ).json()) as DetailConnections
+
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+      // The server knows only its one-word Linux name.
+      await db.update(server).set({ hostname: 'omega' }).where(eq(server.id, serverId))
+      const toYes = await app.request(`/servers/${serverId}/managed-external-access`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ enabled: true }),
+      })
+      assertEquals(toYes.status, 200)
+
+      // No outside connection string, and the prompt to set the address.
+      const before = await detail()
+      assertEquals(before.connection, null)
+      assertEquals(before.connections, [])
+      assertEquals(before.addressNeeded, true)
+      assertEquals(
+        before.endpoints.map((e) => e.reach),
+        ['local']
+      )
+      const initial = (await (
+        await app.request(`/servers/${serverId}/addresses`, { headers })
+      ).json()) as AddressesBody
+      assertEquals(initial.addressNeeded, true)
+      assertEquals(
+        initial.addresses.map((a) => [a.scope, a.saved, a.effective.host]),
+        [['public', false, null]]
+      )
+
+      // Validation refuses before anything is saved or queued.
+      const queued = commandQueue.envelopes.length
+      const single = await putAddresses([{ scope: 'public', hostname: 'omega' }])
+      assertEquals(single.status, 400)
+      assertEquals(
+        ((await single.json()) as { error: string }).error,
+        'address_hostname_single_label'
+      )
+      const foreignDc = await putAddresses([
+        { scope: 'datacenter', datacenterId: crypto.randomUUID() },
+      ])
+      assertEquals(foreignDc.status, 400)
+      assertEquals(
+        ((await foreignDc.json()) as { error: string }).error,
+        'address_datacenter_not_member'
+      )
+      assertEquals(commandQueue.envelopes.length, queued)
+      assertEquals(
+        (await db.select().from(clientAddress).where(eq(clientAddress.serverId, serverId))).length,
+        0
+      )
+
+      // A datacenter the server belongs to.
+      const now = new Date().toISOString()
+      const [dc] = await db
+        .insert(datacenter)
+        .values({ organizationId, name: 'Ashburn', createdAt: now, updatedAt: now })
+        .returning({ id: datacenter.id })
+      const [lan] = await db
+        .insert(network)
+        .values({
+          organizationId,
+          datacenterId: dc!.id,
+          kind: 'datacenter',
+          cidr: '10.93.0.0/24',
+          name: 'Ashburn LAN',
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning({ id: network.id })
+      await db.insert(ip).values({
+        organizationId,
+        datacenterId: dc!.id,
+        networkId: lan!.id,
+        serverId,
+        address: '10.93.0.10',
+        allocation: 'dedicated',
+        scope: 'datacenter',
+        createdAt: now,
+        updatedAt: now,
+      })
+      try {
+        const saved = await putAddresses([
+          {
+            scope: 'public',
+            hostname: 'omega.example.com',
+            addressV4: '192.0.2.77',
+            ports: { postgres: 25432 },
+          },
+          { scope: 'datacenter', datacenterId: dc!.id, hostname: 'omega.dc1.example.com' },
+        ])
+        assertEquals(saved.status, 200)
+        const savedBody = (await saved.json()) as AddressesBody
+        assertEquals(savedBody.reconcile, 'queued')
+        assertEquals(savedBody.addressNeeded, false)
+        assertEquals(
+          savedBody.addresses.map((a) => [a.label, a.saved, a.main, a.effective.host]),
+          [
+            ['Public', true, true, 'omega.example.com'],
+            ['Ashburn', true, false, 'omega.dc1.example.com'],
+          ]
+        )
+        assertEquals(
+          commandQueue.envelopes
+            .slice(queued)
+            .map((envelope) => [envelope.type, envelope.serverId]),
+          [['managed.ingress.reconcile', serverId]]
+        )
+
+        const after = await detail()
+        assertEquals(after.addressNeeded, false)
+        assertEquals(after.connection?.host, 'omega.example.com')
+        assertEquals(
+          after.connections.map((c) => [c.label, c.primary, c.host, c.port, c.dsn.split('@')[1]]),
+          [
+            [
+              'Public',
+              true,
+              'omega.example.com',
+              25432,
+              'omega.example.com:25432/defaultdb?sslmode=require',
+            ],
+            [
+              'Ashburn',
+              false,
+              'omega.dc1.example.com',
+              15432,
+              'omega.dc1.example.com:15432/defaultdb?sslmode=require',
+            ],
+          ]
+        )
+        assertEquals(
+          after.endpoints.map((e) => [e.reach, e.label ?? null, e.host]),
+          [
+            ['external', 'Public', 'omega.example.com'],
+            ['external', 'Ashburn', 'omega.dc1.example.com'],
+            ['local', null, '127.0.0.1'],
+          ]
+        )
+
+        // Marking the datacenter as primary moves it to the main connection string.
+        const primary = await putAddresses([
+          { scope: 'public', hostname: 'omega.example.com' },
+          { scope: 'datacenter', datacenterId: dc!.id, primary: true },
+        ])
+        assertEquals(primary.status, 200)
+        const moved = await detail()
+        assertEquals(moved.connection?.host, '10.93.0.10')
+        assertEquals(
+          moved.connections.map((c) => [c.label, c.primary]),
+          [
+            ['Ashburn', true],
+            ['Public', false],
+          ]
+        )
+
+        const audits = await listAuditForOrganization(db, { organizationId })
+        const audit = audits.find((row) => row.action === 'server.addresses.set')
+        assertEquals(audit?.targetId, serverId)
+      } finally {
+        await db.delete(clientAddress).where(eq(clientAddress.serverId, serverId))
+        await db.delete(ip).where(eq(ip.serverId, serverId))
+        await db.delete(network).where(eq(network.id, lan!.id))
+        await db.delete(datacenter).where(eq(datacenter.id, dc!.id))
+      }
+    }
+  )
+})
+
+test('addresses clients use are forbidden without a manage grant and 404 for another organization', async () => {
+  for (const options of [{ withManageGrant: false }, { foreignServer: true }]) {
+    await withManagedFixtures(
+      options,
+      async ({ db, app: managedApp, secrets, commandQueue, userId, organizationId, serverId }) => {
+        const app = withAddressRoutes(managedApp, secrets)
+        const headers = {
+          Cookie: await sessionCookie(db, secrets, userId),
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        }
+        const expected = options.foreignServer ? 404 : 403
+        const count = commandQueue.envelopes.length
+        const get = await app.request(`/servers/${serverId}/addresses`, { headers })
+        assertEquals(get.status, expected)
+        const put = await app.request(`/servers/${serverId}/addresses`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ addresses: [{ scope: 'public', hostname: 'db.example.com' }] }),
+        })
+        assertEquals(put.status, expected)
+        assertEquals(commandQueue.envelopes.length, count)
+        assertEquals(
+          (await db.select().from(clientAddress).where(eq(clientAddress.serverId, serverId)))
+            .length,
+          0
+        )
+      }
+    )
+  }
 })
 
 test('a confirmation of an older ask never reverts or clears a newer one', async () => {

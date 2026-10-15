@@ -34,6 +34,7 @@ const PHYSICAL_TABLE_NAME_EXCEPTIONS = new Set<string>(['2fa'])
  */
 const APPROVED_TABLE_NAMES = new Set<string>([
   'account',
+  'address',
   'allowance',
   'archive',
   'attempt',

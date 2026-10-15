@@ -163,6 +163,7 @@ import {
   buildQueuedFanoutResponse,
   buildStatusMemberView,
   canHardDeleteManaged,
+  connectionListenerFromAccess,
   evaluateExistingPrincipalLoginName,
   evaluateManagedDatabaseDelete,
   evaluateManagedLoginDropGuard,
@@ -201,8 +202,7 @@ import {
   readInitialDatabase,
   replicaEndpointPurpose,
   replicaPlacementNeedsDatacenter,
-  resolveManagedAccessEndpoints,
-  resolveManagedConnectionListener,
+  resolveManagedAccess,
   resolveManagedServerId,
   serializeContainerRow,
   serializeOrgManagedListRow,
@@ -1518,29 +1518,35 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const residual = parseManagedResidual(row.metadata)
     const rootUsername = residual.rootUsername ?? ctx.spec.rootUsername
     const database = parsed.databases[0] ?? readInitialDatabase(ctx.spec)
-    const listener = serverId
-      ? await resolveManagedConnectionListener(db, {
+    const access = serverId
+      ? await resolveManagedAccess(db, {
           serverId,
           engineCode: ctx.spec.engine,
           engineDefaultPort: ctx.spec.defaultPort,
         })
       : null
-    const connection = listener
-      ? buildConnectionPayload(ctx.spec, {
-          host: listener.host,
-          port: listener.port,
-          database,
-          username: rootUsername,
-          sslMode: resolveManagedSslMode(parsed.settings.ssl.mode, ctx.orgDefaults.sslMode),
-        })
-      : null
-    const endpoints = serverId
-      ? await resolveManagedAccessEndpoints(db, {
-          serverId,
-          engineCode: ctx.spec.engine,
-          engineDefaultPort: ctx.spec.defaultPort,
-        })
-      : []
+    const listener = access ? connectionListenerFromAccess(access) : null
+    const sslMode = resolveManagedSslMode(parsed.settings.ssl.mode, ctx.orgDefaults.sslMode)
+    const connectionAt = (endpoint: { host: string; port: number }) =>
+      buildConnectionPayload(ctx.spec, {
+        host: endpoint.host,
+        port: endpoint.port,
+        database,
+        username: rootUsername,
+        sslMode,
+      })
+    const connection = listener ? connectionAt(listener) : null
+    const endpoints = access?.endpoints ?? []
+    // One connection string per address clients use, main one first.
+    const connections = endpoints
+      .filter((endpoint) => endpoint.reach === 'external')
+      .map((endpoint) => ({
+        label: endpoint.label ?? null,
+        scope: endpoint.scope ?? null,
+        datacenterId: endpoint.datacenterId ?? null,
+        primary: endpoint.primary === true,
+        ...connectionAt(endpoint),
+      }))
     // The "allow external access" setting of every server that fronts this
     // cluster, with how many other clusters share each server.
     const externalAccessServers = await loadManagedExternalAccessView(db, row.id)
@@ -1567,6 +1573,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       }),
       connection,
       endpoints,
+      connections,
+      addressNeeded: access?.addressNeeded ?? false,
       externalAccess: { servers: externalAccessServers },
       settings: parsed.settings,
       ssl: buildManagedSslView(parsed.settings.ssl.mode, ctx.orgDefaults.sslMode),

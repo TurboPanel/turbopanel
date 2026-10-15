@@ -206,6 +206,12 @@
       "tag": "0033_principal_id_seq",
       "when": 1791914088124,
       "sha256": "abff72a7d22ec0d7282e366773609ce1edea5a1afaa8d7fff41e86858d561993"
+    },
+    {
+      "idx": 34,
+      "tag": "0034_add_address_table",
+      "when": 1792025547380,
+      "sha256": "959cddb7e4ab46ad9fa17a7e34a1ef6deec74c16205456f44dea1cab96140407"
     }
   ]
 }
