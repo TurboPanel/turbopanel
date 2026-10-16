@@ -9,6 +9,7 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
+  command,
   container,
   environment,
   managed,
@@ -39,6 +40,7 @@ import {
   resolveManagedOwningOrganizationIds,
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
+import { planLoginPatch } from '../../features/managed/login-patch.ts'
 import {
   createLoginForPrincipal,
   findManagedLogin,
@@ -47,6 +49,8 @@ import {
   isManagedLoginNameTakenInFamily,
   legacyPrincipalIdOf,
   listManagedLogins,
+  loginGrantMode,
+  patchLoginMetadata,
   type ManagedLoginRow,
   removeManagedLogin,
   restoreManagedLogin,
@@ -185,6 +189,8 @@ import {
   isPlainObject,
   listUsersReferencingDatabase,
   parseManagedLoginGrantFields,
+  parseManagedLoginModeFields,
+  parseManagedLoginPatchFields,
   serializeManagedLogin,
   loadManagedStatusSnapshot,
   managedSessionPaths,
@@ -1956,6 +1962,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const request = await parseManagedLoginCreateRequest(c, db, ctx, body, options, residual)
     if (request instanceof Response) return request
     const { databases, privileges, connectionRole } = request.grants
+    const modeFields = parseManagedLoginModeFields(c, body)
+    if (modeFields instanceof Response) return modeFields
+    const { grantMode, tool } = modeFields
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
@@ -1985,6 +1994,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       privileges,
       // Stored only for read-only: an absent key is the read-write default.
       ...(connectionRole === 'read-only' ? { connectionRole } : {}),
+      grantMode,
+      ...(tool ? { tool } : {}),
+      origin: 'panel',
     }
     const userCreate = await db.transaction(async (tx) => {
       const existingLogins = await listManagedLogins(tx, row.id)
@@ -2056,9 +2068,110 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         databases,
         privileges,
         connectionRole,
+        grantMode,
+        tool,
         createdAt: createdLogin?.createdAt ?? new Date().toISOString(),
       },
       password,
+      commandId: primaryResult?.commandId,
+      serverId: primaryResult?.serverId ?? targetServerId,
+      results: enqueued,
+    })
+  })
+
+  router.patch('/environments/:id/managed/users/:principalId', async (c) => {
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    const { db, auth, ctx, row } = scope
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    const options = parseManagedRowOptions(ctx.spec, row.options)
+    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+
+    const target = await findManagedLogin(db, row.id, c.req.param('principalId'))
+    if (!target) return c.json({ error: 'Not found' }, 404)
+
+    const fields = parseManagedLoginPatchFields(c, ctx, body, options)
+    if (fields instanceof Response) return fields
+    const { dryRun, ...input } = fields
+    const plan = planLoginPatch(ctx.spec.engine, target, input)
+    if (!plan.ok) return c.json({ error: plan.error, message: plan.message }, plan.status)
+
+    if (dryRun) {
+      // The daemon builds the SQL, so the preview lists the kinds of statement.
+      return c.json({
+        ok: true,
+        dryRun: true,
+        grantMode: plan.grantMode,
+        statements: plan.summary,
+      })
+    }
+
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
+    if (targetServerId instanceof Response) return targetServerId
+    const previous = target.metadata
+    await patchLoginMetadata(db, target.id, plan.metadata)
+    const restore = async () => {
+      await patchLoginMetadata(db, target.id, {
+        grantMode: loginGrantMode(previous) === 'preset' ? undefined : loginGrantMode(previous),
+        tool: (previous as Record<string, unknown> | null)?.tool,
+        databases: (previous as Record<string, unknown> | null)?.databases,
+        privileges: (previous as Record<string, unknown> | null)?.privileges,
+        connectionRole: (previous as Record<string, unknown> | null)?.connectionRole,
+      })
+    }
+
+    // A thrown error (not just an error Response) must not leave the new
+    // metadata behind with nothing queued.
+    let prepared: Awaited<ReturnType<typeof prepareApplyForManaged>>
+    try {
+      prepared = await prepareApplyForManaged(c, db, ctx, row, options, targetServerId)
+    } catch (error) {
+      // Nothing is queued before prepare finishes, so restoring is safe.
+      await restore()
+      throw error
+    }
+    if (prepared instanceof Response) {
+      await restore()
+      return prepared
+    }
+    const startedAt = new Date(Date.now() - 2000).toISOString()
+    let enqueued: Awaited<ReturnType<typeof enqueuePreparedManagedApply>>
+    try {
+      enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
+        userId: auth.userId,
+        managedId: row.id,
+        members: prepared.members,
+      })
+    } catch (error) {
+      // Members are queued one by one. If any apply already reached the queue it
+      // carries the new settings, so restoring the old metadata would leave the
+      // server and the panel disagreeing: keep the change and let the next apply
+      // finish the job. Restore only when nothing was queued.
+      const queued = await db
+        .select({ id: command.id })
+        .from(command)
+        .where(
+          and(
+            inArray(command.serverId, [...new Set(prepared.members.map((m) => m.serverId))]),
+            eq(command.name, 'managed.apply'),
+            sql`${command.createdAt} >= ${startedAt}`
+          )
+        )
+        .limit(1)
+      if (queued.length === 0) await restore()
+      throw error
+    }
+    if (enqueued instanceof Response) {
+      await restore()
+      return enqueued
+    }
+    const updated = await findManagedLogin(db, row.id, target.id)
+    const primaryResult = pickPrimaryCommandResult(enqueued)
+    return c.json({
+      ok: true,
+      user: updated ? serializeManagedLogin(updated) : null,
       commandId: primaryResult?.commandId,
       serverId: primaryResult?.serverId ?? targetServerId,
       results: enqueued,

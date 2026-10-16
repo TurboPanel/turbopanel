@@ -500,6 +500,9 @@ test('serializeManagedUser filters databases and privileges to strings', () => {
     privileges: ['read-only'],
     // Absent metadata role → the writer hostgroup, never an implicit reader.
     connectionRole: 'read-write',
+    // No stored mode reads as today's behaviour.
+    grantMode: 'preset',
+    tool: false,
     createdAt: '2024-01-01T00:00:00.000Z',
   })
 })

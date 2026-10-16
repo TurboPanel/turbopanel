@@ -38,7 +38,9 @@ export type ManagedLoginRow = {
   updatedAt: string
 }
 
-export type ManagedLoginCredentialRow = ManagedLoginRow & { password: string | null }
+export type ManagedLoginCredentialRow = ManagedLoginRow & {
+  password: string | null
+}
 
 const LOGIN_SELECT = {
   id: login.id,
@@ -52,6 +54,58 @@ const LOGIN_SELECT = {
   createdAt: login.createdAt,
   updatedAt: login.updatedAt,
   password: login.password,
+}
+
+/**
+ * How reconcile treats a login's permissions. `preset` is today's behaviour
+ * and is what a login with no key reads as. `recipe` is the panel-built
+ * permission set (new logins start here). `self` means the owner manages
+ * permissions by hand and reconcile never resets them.
+ */
+export const LOGIN_GRANT_MODES = ['preset', 'recipe', 'self'] as const
+export type LoginGrantMode = (typeof LOGIN_GRANT_MODES)[number]
+
+export function isLoginGrantMode(value: unknown): value is LoginGrantMode {
+  return typeof value === 'string' && (LOGIN_GRANT_MODES as readonly string[]).includes(value)
+}
+
+/** Grant mode stored on `login.metadata`; absent or unknown reads as `preset`. */
+export function loginGrantMode(metadata: unknown): LoginGrantMode {
+  if (!isRecord(metadata)) return 'preset'
+  return isLoginGrantMode(metadata.grantMode) ? metadata.grantMode : 'preset'
+}
+
+/** A database-tool login routes everything to the primary (no read/write split). */
+export function loginIsTool(metadata: unknown): boolean {
+  return isRecord(metadata) && metadata.tool === true
+}
+
+/** Where a login came from (`panel` today); `null` when not recorded. */
+export function loginOrigin(metadata: unknown): string | null {
+  if (!isRecord(metadata)) return null
+  return typeof metadata.origin === 'string' && metadata.origin.length > 0 ? metadata.origin : null
+}
+
+/** Replace a user login's metadata (keys not in `patch` are kept). */
+export async function patchLoginMetadata(
+  db: Db,
+  loginId: string,
+  patch: Record<string, unknown>
+): Promise<void> {
+  const [row] = await db
+    .select({ metadata: login.metadata })
+    .from(login)
+    .where(eq(login.id, loginId))
+    .limit(1)
+  if (!row) throw new TypeError('Login not found')
+  const base = isRecord(row.metadata) ? row.metadata : {}
+  await db
+    .update(login)
+    .set({
+      metadata: { ...base, ...patch },
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(login.id, loginId))
 }
 
 /** Role a legacy principal row's metadata implies. */
