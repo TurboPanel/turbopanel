@@ -14,6 +14,7 @@ import {
   managedIngressPortForEngine,
   type ManagedIngressPorts,
 } from './ingress-ports.ts'
+import { describeManagedImage, effectiveManagedImage } from './releases.ts'
 import { type ManagedSslMode, managedSslRequiresTls, resolveManagedSslMode } from './ssl.ts'
 
 export {
@@ -63,6 +64,47 @@ export function protocolListenerForEngine(
     protocolPort: managedIngressPortForEngine(engine, defaultPort, ports),
     family: managedIngressFamilyForEngine(engine, defaultPort),
   }
+}
+
+/**
+ * Wire `engineVersion` for a cluster: the release series its image runs
+ * (`18`, `9.7`, `11.8`). ProxySQL reports it to clients as the server version
+ * (it would otherwise say PostgreSQL 16.1 / MySQL 8.0.11 whatever the engine).
+ * The series is all the image tag pins, so no patch level. `undefined` for an
+ * image outside the release catalog or of another engine; the daemon then
+ * leaves the version as is.
+ */
+export function ingressEngineVersion(
+  spec: { engine: string; defaultImage: string; legacyDefaultImage?: string },
+  image: string | undefined
+): string | undefined {
+  const release = describeManagedImage(effectiveManagedImage(spec, image?.trim()))
+  if (!release) return undefined
+  if (release.engine !== spec.engine) return undefined
+  return release.series
+}
+
+/**
+ * {@link ingressEngineVersion} from a `managed` row's raw `options`, read
+ * before any settings parse: a row that stores a series no longer creatable
+ * (`postgres:17`, `mariadb:11.4`) fails the creatable-image check and would
+ * otherwise fall back to the default settings, reporting the default series
+ * instead of the one the container runs. No stored image means the spec's
+ * legacy default (what an old row runs); unreadable options send nothing.
+ */
+export function ingressEngineVersionFromOptions(
+  spec: { engine: string; defaultImage: string; legacyDefaultImage?: string },
+  options: unknown
+): string | undefined {
+  if (!isIngressRecord(options)) return undefined
+  // No settings at all parses as the defaults: the legacy default image.
+  if (options.settings === undefined || options.settings === null) {
+    return ingressEngineVersion(spec, undefined)
+  }
+  if (!isIngressRecord(options.settings)) return undefined
+  const image = options.settings.image
+  if (image === undefined) return ingressEngineVersion(spec, undefined)
+  return typeof image === 'string' ? ingressEngineVersion(spec, image) : undefined
 }
 
 export function isManagedRootPrincipal(metadata: unknown): boolean {

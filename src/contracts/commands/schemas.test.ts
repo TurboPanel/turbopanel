@@ -5911,6 +5911,24 @@ test('parseManagedIngressReconcilePayload covers monitor, ports, bind, and clust
     TypeError,
     'Invalid managed.ingress.reconcile cluster requireTls'
   )
+  for (const engineVersion of ['', "9.7'", '18-alpine', '1.2.3.4', 18]) {
+    assertThrows(
+      () =>
+        parseManagedIngressReconcilePayload({
+          ...VALID_MANAGED_INGRESS_RECONCILE,
+          clusters: [{ ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0], engineVersion }],
+        }),
+      TypeError,
+      'Invalid managed.ingress.reconcile cluster engineVersion'
+    )
+  }
+  assertEquals(
+    parseManagedIngressReconcilePayload({
+      ...VALID_MANAGED_INGRESS_RECONCILE,
+      clusters: [{ ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0], engineVersion: '9.7' }],
+    }).clusters[0]?.engineVersion,
+    '9.7'
+  )
   assertThrows(
     () =>
       parseManagedIngressReconcilePayload({

@@ -651,6 +651,40 @@ for (const externalAccess of [false, true]) {
   })
 }
 
+test('each cluster carries its engine version so ProxySQL reports the real one', async () => {
+  await withSingleClusterIngressFixture(
+    false,
+    async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
+      const members = await db
+        .select({ managedId: replica.managedId })
+        .from(replica)
+        .where(eq(replica.serverId, serverId))
+      await db
+        .update(managed)
+        .set({
+          // A series no longer creatable: the settings parse refuses it, but the
+          // container still runs it, so that is the version to report.
+          options: sql`jsonb_set(options, '{settings,image}', '"docker.io/library/postgres:17"')`,
+        })
+        .where(
+          inArray(
+            managed.id,
+            members.map((row) => row.managedId)
+          )
+        )
+      const built = await buildManagedIngressReconcilePayload(db, {
+        serverId,
+        secretsConfig,
+        dataEncryptionSecrets,
+      })
+      if (built === null || 'kind' in built) {
+        throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`)
+      }
+      assertEquals(built.clusters[0]?.engineVersion, '17')
+    }
+  )
+})
+
 async function insertBoundConsumer(
   db: ReturnType<typeof createDenoDb>,
   params: {

@@ -15,6 +15,8 @@ import {
   collectProxySqlListenerSans,
   decideIngressBindAddresses,
   hostgroupsForClusterIndex,
+  ingressEngineVersion,
+  ingressEngineVersionFromOptions,
   isAtRestSealedPassword,
   isIngressRecord,
   isManagedReplicationPrincipal,
@@ -53,6 +55,74 @@ test('hostgroupsForClusterIndex pairs writer/reader and rejects bad indices', ()
   })
   assertThrows(() => hostgroupsForClusterIndex(-1), TypeError)
   assertThrows(() => hostgroupsForClusterIndex(1.5), TypeError)
+})
+
+test('ingressEngineVersion sends the release series of the image the cluster runs', () => {
+  const spec = { engine: 'postgres', defaultImage: 'docker.io/library/postgres:18-alpine' }
+  assertEquals(ingressEngineVersion(spec, 'docker.io/library/postgres:17'), '17')
+  assertEquals(
+    ingressEngineVersion(
+      { engine: 'mysql', defaultImage: 'docker.io/library/mysql:9.7' },
+      'docker.io/library/mysql:9.7-oraclelinux9'
+    ),
+    '9.7'
+  )
+  assertEquals(
+    ingressEngineVersion(
+      { engine: 'mariadb', defaultImage: 'docker.io/library/mariadb:11.8' },
+      'docker.io/library/mariadb:11.8-ubi'
+    ),
+    '11.8'
+  )
+  // Another engine's image sends nothing.
+  assertEquals(ingressEngineVersion(spec, 'docker.io/library/mysql:9.7'), undefined)
+  // No stored image: the spec's legacy default, else its default.
+  assertEquals(ingressEngineVersion(spec, undefined), '18')
+  assertEquals(
+    ingressEngineVersion(
+      { ...spec, legacyDefaultImage: 'docker.io/library/postgres:16-alpine' },
+      undefined
+    ),
+    '16'
+  )
+  // An image outside the catalog sends nothing.
+  assertEquals(ingressEngineVersion(spec, 'registry.example/postgres:custom'), undefined)
+})
+
+test('ingressEngineVersionFromOptions reads the stored image, not the parsed settings', () => {
+  const spec = {
+    engine: 'mariadb',
+    defaultImage: 'docker.io/library/mariadb:11.8',
+    legacyDefaultImage: 'docker.io/library/mariadb:12.3',
+  }
+  // A no-longer-creatable series still reports what it runs.
+  assertEquals(
+    ingressEngineVersionFromOptions(spec, {
+      settings: { image: 'docker.io/library/mariadb:11.4' },
+    }),
+    '11.4'
+  )
+  // A row with no stored image, or no settings at all, runs the legacy default.
+  assertEquals(ingressEngineVersionFromOptions(spec, { settings: {} }), '12.3')
+  assertEquals(ingressEngineVersionFromOptions(spec, { databases: [] }), '12.3')
+  // A padded image still matches; another engine's image sends nothing.
+  assertEquals(
+    ingressEngineVersionFromOptions(spec, {
+      settings: { image: ' docker.io/library/mariadb:11.4 ' },
+    }),
+    '11.4'
+  )
+  assertEquals(
+    ingressEngineVersionFromOptions(spec, { settings: { image: 'docker.io/library/mysql:9.7' } }),
+    undefined
+  )
+  // Unreadable options or an off-catalog image send nothing.
+  assertEquals(ingressEngineVersionFromOptions(spec, null), undefined)
+  assertEquals(ingressEngineVersionFromOptions(spec, { settings: { image: 7 } }), undefined)
+  assertEquals(
+    ingressEngineVersionFromOptions(spec, { settings: { image: 'registry.example/x:1' } }),
+    undefined
+  )
 })
 
 test('protocolListenerForEngine returns the platform default port and family', () => {
