@@ -7,7 +7,11 @@
  * statements by kind instead of printing them.
  */
 
-import { DATABASE_ADMIN_PRIVILEGE, evaluateDatabaseAdminGrant } from './owner-role.ts'
+import {
+  DATABASE_ADMIN_PRIVILEGE,
+  evaluateDatabaseAdminGrant,
+  type ReadWriteGrantState,
+} from './owner-role.ts'
 import {
   type DatabaseLoginRole,
   isLoginGrantMode,
@@ -114,6 +118,15 @@ function patchMetadata(after: LoginGrantMode, input: LoginPatchInput): Record<st
 function storedStrings(metadata: unknown, key: 'databases' | 'privileges'): string[] {
   const value = (metadata as Record<string, unknown> | null)?.[key]
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : []
+}
+
+/** A login's stored mode and levels, for the daemon rule on the read/write level. */
+export function readWriteGrantState(metadata: unknown): ReadWriteGrantState {
+  const mode = (metadata as Record<string, unknown> | null)?.grantMode
+  return {
+    grantMode: typeof mode === 'string' ? mode : 'preset',
+    privileges: storedStrings(metadata, 'privileges'),
+  }
 }
 
 export function planLoginPatch(

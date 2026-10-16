@@ -443,6 +443,21 @@ owner role (`ownerRole: true` asked for answers 409
 answers the same 409 (create, and PATCH that makes a login admin). Existing
 owner-role databases and logins are untouched.
 
+**MySQL and MariaDB: three jobs, data only below the migration login.** The
+daemon (`managed-data-only-readwrite-v1`, `MANAGED_DATA_ONLY_READWRITE_FEATURE`)
+grants `read-only` SELECT and SHOW VIEW; `read-write` row changes plus EXECUTE,
+LOCK TABLES, CREATE TEMPORARY TABLES and SHOW VIEW (no create, alter or drop of
+anything); `owner` ALL on its database without the grant option; only `admin`
+keeps the grant option. Its next apply also takes the older wide rights back
+from existing logins (no grace period, no new-logins-only mode). An older
+daemon would keep the wide grant, so the panel fails closed: a panel-managed
+`read-write` login on MySQL or MariaDB is refused with 409
+`managed_readwrite_needs_daemon_update` (create; PATCH when it adds the level or
+moves a `self` login back to panel-set), see `refuseReadWriteOnOldDaemon`. A
+login that already holds the level is left alone, and `self` logins are never
+written. Read-only has no EXECUTE on purpose: a routine runs with its definer's
+rights and could change data.
+
 A login with `owner` on an owner-role database is the migrations login (the
 daemon makes it a member of the owner role and sets its session role, so
 tables it creates belong to the owner role). The Database admin login is

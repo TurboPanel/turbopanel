@@ -15,6 +15,7 @@ import {
   MANAGED_HEALTH_REPORT_FEATURE,
   MANAGED_INGRESS_IPV6_FEATURE,
   MANAGED_LOGIN_LIMITS_FEATURE,
+  MANAGED_DATA_ONLY_READWRITE_FEATURE,
   MANAGED_OWNER_ROLE_FEATURE,
   MANAGED_REPLICA_FRESHNESS_FEATURE,
   MIN_SUPPORTED_DAEMON_VERSION,
@@ -227,6 +228,14 @@ test('managed-owner-role-v1 is an advertised wire feature and raised no floor', 
   assertEquals(MANAGED_OWNER_ROLE_FEATURE, 'managed-owner-role-v1')
   assertEquals(
     (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_OWNER_ROLE_FEATURE),
+    true
+  )
+})
+
+test('managed-data-only-readwrite-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(MANAGED_DATA_ONLY_READWRITE_FEATURE, 'managed-data-only-readwrite-v1')
+  assertEquals(
+    (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_DATA_ONLY_READWRITE_FEATURE),
     true
   )
 })

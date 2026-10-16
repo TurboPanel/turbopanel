@@ -41,7 +41,7 @@ import {
   resolveManagedOwningOrganizationIds,
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
-import { loginPatchUndo } from '../../features/managed/login-patch.ts'
+import { loginPatchUndo, readWriteGrantState } from '../../features/managed/login-patch.ts'
 import {
   daemonHonoursOwnerRole,
   refuseAdminOnOldDaemon,
@@ -49,6 +49,7 @@ import {
   parseGatedLoginLimits,
   parseLoginPatchRequest,
   refuseLoginPatchIfDaemonCannot,
+  refuseReadWriteIfDaemonTooOld,
 } from '../../features/managed/login-limit-fields.ts'
 import {
   createLoginForPrincipal,
@@ -2005,6 +2006,16 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     if (adminRefused) return adminRefused
 
+    const readWriteRefused = await refuseReadWriteIfDaemonTooOld(
+      c,
+      db,
+      ctx.spec.engine,
+      { privileges, grantMode },
+      null,
+      targetServerId
+    )
+    if (readWriteRefused) return readWriteRefused
+
     const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
     const limits = await parseGatedLoginLimits(c, db, ctx.organizationId, body, targetServerId)
@@ -2151,7 +2162,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const daemonRefused = await refuseLoginPatchIfDaemonCannot(
       c,
       db,
-      { limits, engine: ctx.spec.engine, privileges: plan.metadata.privileges },
+      {
+        limits,
+        engine: ctx.spec.engine,
+        privileges: plan.metadata.privileges,
+        readWrite: {
+          before: readWriteGrantState(target.metadata),
+          after: readWriteGrantState({ ...(target.metadata as object), ...plan.metadata }),
+        },
+      },
       targetServerId
     )
     if (daemonRefused) return daemonRefused

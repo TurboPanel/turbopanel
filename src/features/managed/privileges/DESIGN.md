@@ -130,11 +130,22 @@ privileges}]` (an `ALTER DEFAULT PRIVILEGES FOR ROLE creator`) and
 
 | Recipe         | Postgres (owner role per database)                                             | MySQL and MariaDB (direct grants on every host row)                                                                    |
 | -------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| App            | member of the database's read-write group role                                 | SELECT, INSERT, UPDATE, DELETE, EXECUTE, CREATE TEMPORARY TABLES, LOCK TABLES                                          |
-| Migrations     | member of the owner role, `INHERIT FALSE, SET TRUE`; migrations run `SET ROLE` | App plus CREATE, ALTER, DROP, INDEX, REFERENCES, CREATE VIEW, SHOW VIEW, TRIGGER, CREATE ROUTINE, ALTER ROUTINE, EVENT |
+| App            | member of the database's read-write group role                                 | SELECT, INSERT, UPDATE, DELETE, EXECUTE, CREATE TEMPORARY TABLES, LOCK TABLES, SHOW VIEW                               |
+| Migrations     | member of the owner role, `INHERIT FALSE, SET TRUE`; migrations run `SET ROLE` | ALL on its database, no GRANT OPTION (App plus CREATE, ALTER, DROP, INDEX, REFERENCES, CREATE VIEW, TRIGGER, CREATE ROUTINE, ALTER ROUTINE, EVENT) |
 | Read only      | member of the read-only group; `default_transaction_read_only = on`            | SELECT, SHOW VIEW                                                                                                      |
 | Analyst        | Read only limited to chosen schemas (`USAGE` + `IN SCHEMA` defaults)           | Read only on chosen tables                                                                                             |
 | Database admin | member of every owner role (with SET), no superuser                            | ALL on the environment's databases WITH GRANT OPTION, never CREATE USER                                                |
+
+On MySQL and MariaDB the App job is data only: it can never create, alter or
+drop a table, index, view, routine, trigger or event, and its temporary tables
+last only for the session. Read only has no EXECUTE: a stored routine runs with
+its definer's rights and could change data, so a read-only login cannot call
+one. Objects the Migrations login makes need no extra grant, because MySQL and
+MariaDB grants are database-wide. Only Database admin holds GRANT OPTION. The
+daemon (`managed-data-only-readwrite-v1`) grants a level and then revokes the
+rest of the database-level privileges the row holds, so logins made under the
+older wide App recipe are tightened at their next apply; the control plane
+refuses a new panel-managed App login on an older daemon.
 
 ## Panel ledger
 

@@ -4,7 +4,9 @@ import {
   evaluateDatabaseAdminGrant,
   OWNER_ROLE_MAX_DATABASE_NAME,
   OWNER_ROLE_NEEDS_DAEMON_ERROR,
+  READWRITE_NEEDS_DAEMON_ERROR,
   refuseAdminGrantOnOldDaemon,
+  refuseReadWriteOnOldDaemon,
   resolveDatabaseOwnerRole,
 } from './owner-role.ts'
 
@@ -105,4 +107,44 @@ test('a Database admin login on a Postgres primary needs the owner-role feature'
   assertEquals(refuseAdminGrantOnOldDaemon('postgres', [DATABASE_ADMIN_PRIVILEGE], true), null)
   assertEquals(refuseAdminGrantOnOldDaemon('postgres', ['select'], false), null)
   assertEquals(refuseAdminGrantOnOldDaemon('mysql', [DATABASE_ADMIN_PRIVILEGE], false), null)
+})
+
+const rw = { privileges: ['read-write'], grantMode: 'recipe' }
+
+test('a new MySQL or MariaDB read/write login needs the data-only daemon', () => {
+  for (const engine of ['mysql', 'mariadb']) {
+    const refused = refuseReadWriteOnOldDaemon(engine, rw, null, false)
+    assertEquals(refused?.error, READWRITE_NEEDS_DAEMON_ERROR)
+    assertEquals(refused?.status, 409)
+    assertEquals(refuseReadWriteOnOldDaemon(engine, rw, null, true), null)
+  }
+})
+
+test('the data-only daemon rule leaves other levels, modes, engines and held logins alone', () => {
+  assertEquals(refuseReadWriteOnOldDaemon('postgres', rw, null, false), null)
+  for (const privileges of [['read-only'], ['owner'], ['admin']]) {
+    assertEquals(
+      refuseReadWriteOnOldDaemon('mysql', { privileges, grantMode: 'recipe' }, null, false),
+      null
+    )
+  }
+  // A manage-myself login is never written by the panel.
+  assertEquals(refuseReadWriteOnOldDaemon('mysql', { ...rw, grantMode: 'self' }, null, false), null)
+  // Already panel-managed read/write: nothing new is asked of the daemon.
+  assertEquals(refuseReadWriteOnOldDaemon('mysql', rw, rw, false), null)
+  assertEquals(refuseReadWriteOnOldDaemon('mysql', rw, { ...rw, grantMode: 'preset' }, false), null)
+  // Moving a manage-myself login back to panel-set read/write, or adding the level, is new.
+  assertEquals(
+    refuseReadWriteOnOldDaemon('mysql', rw, { ...rw, grantMode: 'self' }, false)?.error,
+    READWRITE_NEEDS_DAEMON_ERROR
+  )
+  assertEquals(
+    refuseReadWriteOnOldDaemon(
+      'mysql',
+      rw,
+      { privileges: ['read-only'], grantMode: 'recipe' },
+      false
+    )?.error,
+    READWRITE_NEEDS_DAEMON_ERROR
+  )
 })
