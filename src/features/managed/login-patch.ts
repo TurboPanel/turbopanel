@@ -14,6 +14,7 @@ import {
   loginGrantMode,
   loginIsTool,
 } from './logins.ts'
+import { describeLoginLimits, loginAllowedSources, loginMaxConnections } from './login-sources.ts'
 
 export type LoginPatchError = {
   ok: false
@@ -30,6 +31,10 @@ export type LoginPatchInput = {
   connectionRole?: 'read-write' | 'read-only'
   privileges?: string[]
   confirmReset?: unknown
+  /** Parsed places; `null` clears (anywhere). Absent leaves the stored value. */
+  allowedSources?: string[] | null
+  /** Parsed cap; `null` clears. Absent leaves the stored value. */
+  maxConnections?: number | null
 }
 
 export type LoginPatchCurrent = {
@@ -91,6 +96,11 @@ function patchMetadata(after: LoginGrantMode, input: LoginPatchInput): Record<st
     // Stored only for read-only: an absent key is the read-write default.
     metadata.connectionRole = input.connectionRole === 'read-only' ? 'read-only' : undefined
   }
+  // `undefined` removes the key: absent means anywhere / no cap.
+  if (input.allowedSources !== undefined)
+    metadata.allowedSources = input.allowedSources ?? undefined
+  if (input.maxConnections !== undefined)
+    metadata.maxConnections = input.maxConnections ?? undefined
   return metadata
 }
 
@@ -143,7 +153,19 @@ export function planLoginPatch(
     return fail(400, 'Invalid request', 'Nothing to change.')
   }
   const tool = input.tool ?? loginIsTool(current.metadata)
-  return { ok: true, metadata, grantMode: after, summary: describeApply(engine, after, tool) }
+  const summary = describeApply(engine, after, tool)
+  if (input.allowedSources !== undefined || input.maxConnections !== undefined) {
+    const sources =
+      input.allowedSources === undefined
+        ? loginAllowedSources(current.metadata)
+        : (input.allowedSources ?? undefined)
+    const cap =
+      input.maxConnections === undefined
+        ? loginMaxConnections(current.metadata)
+        : (input.maxConnections ?? undefined)
+    summary.push(...describeLoginLimits(sources, cap))
+  }
+  return { ok: true, metadata, grantMode: after, summary }
 }
 
 /** Plain-words statement kinds the next apply runs for this login. */

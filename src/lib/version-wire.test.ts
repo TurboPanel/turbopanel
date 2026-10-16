@@ -15,6 +15,7 @@ import {
   MANAGED_HEALTH_FEATURE,
   MANAGED_HEALTH_REPORT_FEATURE,
   MANAGED_INGRESS_IPV6_FEATURE,
+  MANAGED_LOGIN_LIMITS_FEATURE,
   PHP_SITE_MODES_FEATURE,
   MIN_SUPPORTED_DAEMON_VERSION,
   parseSemver,
@@ -211,4 +212,12 @@ test('managed-ingress-ipv6-v1 is an advertised wire feature and raised no floor'
     true
   )
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('managed-login-limits-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(MANAGED_LOGIN_LIMITS_FEATURE, 'managed-login-limits-v1')
+  assertEquals(
+    (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_LOGIN_LIMITS_FEATURE),
+    true
+  )
 })

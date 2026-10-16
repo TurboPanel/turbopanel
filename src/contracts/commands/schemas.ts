@@ -5348,15 +5348,25 @@ export type ManagedIngressReconcileUser = {
    */
   tool?: boolean
   /**
-   * Root logins only: the addresses of the organization's servers (public,
-   * private network, mesh) the root login may be used from, as plain
-   * IPv4/IPv6 addresses. Present — even empty — limits the root login to the
-   * server itself, its containers and these addresses (the daemon adds the
-   * host-local sources). Absent means no limit, so a daemon that predates
+   * Where the login may be used from, as plain IPv4/IPv6 addresses or a
+   * trailing-`%` prefix (`203.0.113.%`). Root logins: the addresses of the
+   * organization's servers (public, private network, mesh); present — even
+   * empty — limits the root login to the server itself, its containers and
+   * these addresses (the daemon adds the host-local sources). App logins:
+   * sent only to a daemon that lists `managed-login-limits-v1`; present — even
+   * empty — limits the login to these addresses (plus the server itself when
+   * `allowLocalSources`). Absent means no limit, so a daemon that predates
    * the field keeps today's behaviour.
    */
   allowedSources?: string[]
+  /** App logins with `allowedSources`: also allow the server itself and its containers. */
+  allowLocalSources?: boolean
+  /** Most simultaneous connections for this login; absent means no per-login cap. */
+  maxConnections?: number
 }
+
+/** Largest per-login connection cap. */
+export const MAX_MANAGED_INGRESS_LOGIN_CONNECTIONS = 100_000
 
 /** Most addresses one root login may list. */
 export const MAX_MANAGED_INGRESS_ALLOWED_SOURCES = 1024
@@ -7412,6 +7422,22 @@ function parseManagedIngressReconcileUser(value: unknown): ManagedIngressReconci
   if (value.allowedSources !== undefined) {
     user.allowedSources = parseManagedIngressAllowedSources(value.allowedSources)
   }
+  if (value.allowLocalSources !== undefined) {
+    if (typeof value.allowLocalSources !== 'boolean') {
+      throw new TypeError('Invalid managed.ingress.reconcile user allowLocalSources')
+    }
+    user.allowLocalSources = value.allowLocalSources
+  }
+  if (value.maxConnections !== undefined) {
+    if (
+      !Number.isInteger(value.maxConnections) ||
+      (value.maxConnections as number) < 1 ||
+      (value.maxConnections as number) > MAX_MANAGED_INGRESS_LOGIN_CONNECTIONS
+    ) {
+      throw new TypeError('Invalid managed.ingress.reconcile user maxConnections')
+    }
+    user.maxConnections = value.maxConnections as number
+  }
   return user
 }
 
@@ -7424,7 +7450,8 @@ function parseManagedIngressAllowedSources(value: unknown): string[] {
         typeof entry !== 'string' ||
         entry.length === 0 ||
         entry.length > 45 ||
-        !/^[0-9a-fA-F:.]+$/.test(entry)
+        !/^[0-9a-fA-F:.]+%?$/.test(entry) ||
+        (entry.endsWith('%') && !/[.:]/.test(entry))
     )
   ) {
     throw new TypeError('Invalid managed.ingress.reconcile user allowedSources')

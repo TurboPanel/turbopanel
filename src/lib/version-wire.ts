@@ -185,6 +185,7 @@ export const DAEMON_WIRE_FEATURES = [
   'site-db-bindings-v1',
   'deno-native-apps-v1',
   'managed-ingress-ipv6-v1',
+  'managed-login-limits-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -297,6 +298,15 @@ export const DENO_NATIVE_APPS_FEATURE: DaemonWireFeature = 'deno-native-apps-v1'
  * access stays IPv4 only on that server.
  */
 export const MANAGED_INGRESS_IPV6_FEATURE: DaemonWireFeature = 'managed-ingress-ipv6-v1'
+
+/**
+ * The daemon enforces `allowedSources` / `allowLocalSources` and
+ * `maxConnections` on app logins of `managed.ingress.reconcile` (and accepts
+ * `%` prefixes in `allowedSources`). Without it the control plane never sends
+ * them: an older daemon would ignore the fields and leave the login unlimited,
+ * so a limited login is left out of that server's payload instead.
+ */
+export const MANAGED_LOGIN_LIMITS_FEATURE: DaemonWireFeature = 'managed-login-limits-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}

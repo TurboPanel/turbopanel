@@ -7500,3 +7500,41 @@ test('managed.ingress.reconcile root allowedSources is optional and validated', 
     )
   }
 })
+
+test('managed.ingress.reconcile app-login limits are optional and validated', () => {
+  const withFields = (fields: Record<string, unknown>) => ({
+    ...VALID_MANAGED_INGRESS_RECONCILE,
+    clusters: [
+      {
+        ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
+        users: [
+          {
+            ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0]!.users[0],
+            role: 'user',
+            ...fields,
+          },
+        ],
+      },
+    ],
+  })
+  const parsed = parseManagedIngressReconcilePayload(
+    withFields({
+      allowedSources: ['203.0.113.%', '2001:db8:1:%', '198.51.100.7'],
+      allowLocalSources: true,
+      maxConnections: 5,
+    })
+  ).clusters[0]!.users[0]!
+  assertEquals(parsed.allowedSources, ['203.0.113.%', '2001:db8:1:%', '198.51.100.7'])
+  assertEquals(parsed.allowLocalSources, true)
+  assertEquals(parsed.maxConnections, 5)
+  for (const bad of [
+    { allowLocalSources: 'yes' },
+    { maxConnections: 0 },
+    { maxConnections: 1.5 },
+    { maxConnections: 100_001 },
+    { allowedSources: ['%'] },
+    { allowedSources: ['10.%.1'] },
+  ]) {
+    assertThrows(() => parseManagedIngressReconcilePayload(withFields(bad)), TypeError)
+  }
+})

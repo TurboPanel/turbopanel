@@ -42,6 +42,11 @@ import {
 } from '../../features/principals/store.ts'
 import { planLoginPatch } from '../../features/managed/login-patch.ts'
 import {
+  loginLimitsRequested,
+  parseLoginLimitFields,
+  refuseIfDaemonCannotLimitLogins,
+} from '../../features/managed/login-limit-fields.ts'
+import {
   createLoginForPrincipal,
   findManagedLogin,
   findManagedLoginByRole,
@@ -1964,6 +1969,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const modeFields = parseManagedLoginModeFields(c, body)
     if (modeFields instanceof Response) return modeFields
     const { grantMode, tool } = modeFields
+    const limits = await parseLoginLimitFields(c, db, ctx.organizationId, body)
+    if (limits instanceof Response) return limits
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
@@ -1975,6 +1982,10 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
+    if (loginLimitsRequested(limits)) {
+      const refused = await refuseIfDaemonCannotLimitLogins(c, db, targetServerId)
+      if (refused) return refused
+    }
 
     // A read-only login on a cluster with no read-eligible replica is fine:
     // the daemon routes it to the primary, so SELECT-only works on one server.
@@ -1991,6 +2002,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       ...(connectionRole === 'read-only' ? { connectionRole } : {}),
       grantMode,
       ...(tool ? { tool } : {}),
+      // Absent = anywhere / no cap, which is today's behaviour.
+      ...(limits.allowedSources ? { allowedSources: limits.allowedSources } : {}),
+      ...(limits.maxConnections ? { maxConnections: limits.maxConnections } : {}),
       origin: 'panel',
     }
     const userCreate = await db.transaction(async (tx) => {
@@ -2065,6 +2079,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         connectionRole,
         grantMode,
         tool,
+        allowedSources: limits.allowedSources ?? ['any'],
+        maxConnections: limits.maxConnections ?? null,
         createdAt: createdLogin?.createdAt ?? new Date().toISOString(),
       },
       password,
@@ -2089,7 +2105,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const fields = parseManagedLoginPatchFields(c, ctx, body, options)
     if (fields instanceof Response) return fields
-    const { dryRun, ...input } = fields
+    const limits = await parseLoginLimitFields(c, db, ctx.organizationId, body)
+    if (limits instanceof Response) return limits
+    const { dryRun, ...input } = { ...fields, ...limits }
     const plan = planLoginPatch(ctx.spec.engine, target, input)
     if (!plan.ok) return c.json({ error: plan.error, message: plan.message }, plan.status)
 
@@ -2105,6 +2123,10 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
+    if (loginLimitsRequested(limits)) {
+      const refused = await refuseIfDaemonCannotLimitLogins(c, db, targetServerId)
+      if (refused) return refused
+    }
     const previous = target.metadata
     await patchLoginMetadata(db, target.id, plan.metadata)
     const restore = async () => {
@@ -2114,6 +2136,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         databases: (previous as Record<string, unknown> | null)?.databases,
         privileges: (previous as Record<string, unknown> | null)?.privileges,
         connectionRole: (previous as Record<string, unknown> | null)?.connectionRole,
+        allowedSources: (previous as Record<string, unknown> | null)?.allowedSources,
+        maxConnections: (previous as Record<string, unknown> | null)?.maxConnections,
       })
     }
 

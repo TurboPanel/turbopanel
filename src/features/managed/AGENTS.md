@@ -78,10 +78,10 @@ only a tested series can be created, saved into `settings.image`, or reach the
 daemon. Untested entries stay in the catalog for one reason: `describeManagedImage`
 must still be able to name an image an existing row already holds.
 
-| Engine   | Creatable (tested) | Catalogued but untested |
-| -------- | ------------------ | ----------------------- |
-| Postgres | **18**             | 17, 16, 15              |
-| MySQL    | **9.7**, **8.4**   |                         |
+| Engine   | Creatable (tested)                                | Catalogued but untested |
+| -------- | ------------------------------------------------- | ----------------------- |
+| Postgres | **18**                                            | 17, 16, 15              |
+| MySQL    | **9.7**, **8.4**                                  |                         |
 | MariaDB  | **11.8** (default), **12.3** (single server only) | 11.4, 10.11             |
 
 Each creatable series offers both of its base-OS variants, so the derived
@@ -231,31 +231,31 @@ re-asserted at the daemon command-contract boundary.
    TLS material (the daemon refuses it otherwise). Client traffic still enters
    via the shared ProxySQL client listeners (see Client listener ports) — never
    a per-service published map for public SQL clients and never per-managed
-   Traefik.   A binding change that places the app on another host enqueues
-  `managed.apply` so that listener exists before the consumer's
-  `managed.ingress.reconcile` can emit frontend users. Binding create
-  and remove (including project/environment cascade and cluster detach)
-  share `enqueueIngressForBindingChange`: apply first, then ingress.
-  A PATCH that only changes `keyPrefix` / emit flags does not apply.
-  `private_port` is allocated during prepare; it is cleared only after
-  at least one apply command is queued (`commitClearedPrivatePortsIfUnused`).
-  A failed enqueue leaves the port allocated — the failed command is
-  visible, and the next successful apply (operator Apply or another
-  binding change) retries the teardown.   When binding create/delete
-  cannot queue `managed.apply`, `enqueueIngressForBindingChange` skips
-  `managed.ingress.reconcile` and returns
-  `BINDING_PRIVATE_LISTENER_PENDING_WARNING` on the binding response;
-  a successful apply with a failed ingress reconcile returns
-  `BINDING_INGRESS_RECONCILE_PENDING_WARNING`. Binding-side apply uses
-  `enqueuePreparedManagedApply` with `updateManagedStatus: false` so a
-  saved credential never flips `managed.status` to `applying` / `failed`.
-  the next operator **Apply** or binding change runs the same apply-first
-  path again (no separate pending marker). A remote app with no private
-  path is skipped at apply (warning) so one unreachable consumer cannot
-  fail the cluster; binding create refuses that case with a plain-words
-  422 instead. Peers still fail apply hard. When peers dial one
-  transport and a consumer another, the peer bind wins and that
-  consumer is skipped — the published address is never widened.
+   Traefik. A binding change that places the app on another host enqueues
+   `managed.apply` so that listener exists before the consumer's
+   `managed.ingress.reconcile` can emit frontend users. Binding create
+   and remove (including project/environment cascade and cluster detach)
+   share `enqueueIngressForBindingChange`: apply first, then ingress.
+   A PATCH that only changes `keyPrefix` / emit flags does not apply.
+   `private_port` is allocated during prepare; it is cleared only after
+   at least one apply command is queued (`commitClearedPrivatePortsIfUnused`).
+   A failed enqueue leaves the port allocated — the failed command is
+   visible, and the next successful apply (operator Apply or another
+   binding change) retries the teardown. When binding create/delete
+   cannot queue `managed.apply`, `enqueueIngressForBindingChange` skips
+   `managed.ingress.reconcile` and returns
+   `BINDING_PRIVATE_LISTENER_PENDING_WARNING` on the binding response;
+   a successful apply with a failed ingress reconcile returns
+   `BINDING_INGRESS_RECONCILE_PENDING_WARNING`. Binding-side apply uses
+   `enqueuePreparedManagedApply` with `updateManagedStatus: false` so a
+   saved credential never flips `managed.status` to `applying` / `failed`.
+   the next operator **Apply** or binding change runs the same apply-first
+   path again (no separate pending marker). A remote app with no private
+   path is skipped at apply (warning) so one unreachable consumer cannot
+   fail the cluster; binding create refuses that case with a plain-words
+   422 instead. Peers still fail apply hard. When peers dial one
+   transport and a consumer another, the peer bind wins and that
+   consumer is skipped — the published address is never widened.
 3. **Named volumes only.** `volumes[]` are Docker named volumes — never host
    bind paths. Config/TLS dirs are relative mounts under managed state. Volume
    **names** must satisfy `SAFE_IDENTIFIER_RE` / `SAFE_VOLUME_NAME_RE`
@@ -339,6 +339,24 @@ Because the daemon allows the Docker network gateway (where `docker-proxy` shows
 loopback and hairpin callers), anything arriving as the gateway is allowed. The
 list is read on each reconcile; a server added to the organization reaches the
 other servers' root allow-list at their next ingress reconcile.
+
+**App logins can be limited by source address and connection count.**
+`login.metadata.allowedSources` (absent = anywhere) lists places: `internal`
+(this server: loopback + its Docker networks), `server:<id>` (an organization
+server, resolved to its public/private/mesh addresses on every reconcile,
+`login-sources-load.ts`) and `address:<ip | prefix% | cidr>` (a CIDR is turned
+into a `%` prefix on save only when ProxySQL can match it exactly: IPv4 /8 /16
+/24, IPv6 whole 16-bit groups; otherwise 400 `managed_login_source_range_not_exact`).
+`metadata.maxConnections` becomes the user row's `max_connections`. Both are set
+on `POST` and `PATCH .../managed/users` (`login-limit-fields.ts`, pure rules in
+`login-sources.ts`; an empty list is refused, `any` means clear). The reconcile
+sends `allowedSources` (+ `allowLocalSources` for `internal`) and
+`maxConnections` on the login's `users[]` entry (`loginWireLimits`) only to a
+daemon listing `managed-login-limits-v1`; for an older daemon a source-limited
+login is left out of that server's payload (fail closed) and a bare cap is
+dropped. Same behaviour as the root guard: the login signs in, every query from
+a refused address is answered with an error; anything arriving as the Docker
+gateway address counts as local.
 
 `decideIngressBindAddresses` in `ingress-desired-pure.ts` turns the setting into
 the `bindAddresses` sent in `managed.ingress.reconcile` (a server with no
@@ -961,7 +979,7 @@ stop`; an unreachable old primary blocks) then promote.
    holding the in-flight slot.
    A promote (or failover `recover`) command the target's daemon lost to a
    restart (the daemon answers `The daemon restarted while this command was
-   running…`) is **queued again** by `resumeInterruptedPromote`
+running…`) is **queued again** by `resumeInterruptedPromote`
    (`ha-recovery.ts`, called from the consumer's failure path) while the row is
    still `promoting`, the in-flight journal row still matches, no other member
    has become primary, the target is still a replica on a connected server (or

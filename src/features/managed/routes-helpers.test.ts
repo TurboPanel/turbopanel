@@ -503,6 +503,9 @@ test('serializeManagedUser filters databases and privileges to strings', () => {
     // No stored mode reads as today's behaviour.
     grantMode: 'preset',
     tool: false,
+    // No stored limits read as anywhere / no cap.
+    allowedSources: ['any'],
+    maxConnections: null,
     createdAt: '2024-01-01T00:00:00.000Z',
   })
 })
