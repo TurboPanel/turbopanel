@@ -452,6 +452,7 @@ export async function fanOutApplyForCluster(
     spec,
     settings: parsed.settings,
     databases: parsed.databases,
+    ownerRoleDatabases: parsed.ownerRoleDatabases,
     serverId: params.row.serverId,
     environmentId: params.row.environmentId,
     organizationId: params.organizationId,

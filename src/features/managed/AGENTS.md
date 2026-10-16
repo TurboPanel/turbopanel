@@ -402,6 +402,33 @@ listed databases. `PATCH /managed/users/:principalId` (`login-patch.ts`) plans
 the change; `dryRun` returns plain-words statement kinds because the SQL is
 built by the daemon. No migration: new jsonb keys only.
 
+## Postgres owner role per database and the Database admin login
+
+`managed.options.ownerRoleDatabases` (optional string list, a subset of
+`databases`; no migration, an absent key reads as none) names the Postgres
+databases made with an owner role: the daemon creates `tp_<db>_owner`, `_rw`
+and `_ro` (NOLOGIN) and the database belongs to the owner role. Only a new
+database gets it (`POST /managed/databases`, `ownerRole` default true on
+Postgres when the name is at most 54 characters; 400 on MySQL/MariaDB or a too
+long name when asked for). Existing databases keep their owner: moving one onto
+an owner role (`REASSIGN OWNED`) is a separate, explicit, backed-up action that
+does not exist yet. The flag rides on every apply as `databases[].ownerRole`
+(create) and on the drop op, so every `prepareManagedApplyPayloads` caller must
+pass `ownerRoleDatabases` from the parsed options (a missing flag makes the
+daemon treat the database as an ordinary one). `writeManagedRowOptions` keeps
+the key. The `tp_` login-name prefix is reserved (`isReservedManagedUsername`).
+
+A login with `owner` on an owner-role database is the migrations login (the
+daemon makes it a member of the owner role and sets its session role, so
+tables it creates belong to the owner role). The Database admin login is
+privilege `admin` (alone, never read-only, `tool` true by default;
+`owner-role.ts` holds the rules): on Postgres it needs every listed database to
+have an owner role (422 `managed_admin_needs_owner_role`) and joins the owner
+role with inherited rights, no CREATEROLE/SUPERUSER/REPLICATION/BYPASSRLS; on
+MySQL/MariaDB it gets `ALL` on each listed database with the grant option and
+nothing global. The panel owns these roles and memberships: reconcile re-asserts
+them on every apply.
+
 ## Client TLS (SSL mode)
 
 `ssl.ts` owns `ManagedSslMode` — `disable` | `allow` | `prefer` | `require` |

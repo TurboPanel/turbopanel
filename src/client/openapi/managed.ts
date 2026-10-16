@@ -670,9 +670,9 @@ export const managedSchemas = {
       databases: { type: 'array', items: { type: 'string' } },
       privileges: {
         type: 'array',
-        items: { type: 'string', enum: ['owner', 'read-write', 'read-only'] },
+        items: { type: 'string', enum: ['owner', 'read-write', 'read-only', 'admin'] },
         description:
-          'What the login may do in each listed database. Omitted = `read-only` for a `read-only` connectionRole, otherwise `read-write`. An empty list or an unknown name answers 400 `managed_user_privileges_invalid`, because a login with no grants can connect but is refused everywhere.',
+          "What the login may do in each listed database. `admin` makes it a Database admin login for tools: on Postgres it joins each database's owner role (every listed database must have one; 422 `managed_admin_needs_owner_role`), on MySQL and MariaDB it gets ALL on each listed database with the grant option and nothing global. It is never read-only (400 `managed_admin_login_not_read_only`), is stored alone, and is a tool login (`tool` true) unless the request says `tool: false`. On Postgres, `owner` on a database with an owner role makes the login a migrations login: it works as the owner role by session default, so tables it creates belong to the owner role and the other logins can use them at once. Omitted = `read-only` for a `read-only` connectionRole, otherwise `read-write`. An empty list or an unknown name answers 400 `managed_user_privileges_invalid`, because a login with no grants can connect but is refused everywhere.",
       },
       connectionRole: {
         type: 'string',
@@ -716,6 +716,12 @@ export const managedSchemas = {
     required: ['databases'],
     properties: {
       databases: { type: 'array', items: { type: 'string' } },
+      ownerRoleDatabases: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Databases that have an owner role (Postgres). Others keep their current owner.',
+      },
     },
   },
   CreateManagedDatabaseRequest: {
@@ -723,6 +729,11 @@ export const managedSchemas = {
     required: ['name'],
     properties: {
       name: { type: 'string' },
+      ownerRole: {
+        type: 'boolean',
+        description:
+          'Postgres only. Make the database with an owner role: three roles that cannot log in (`tp_<name>_owner`, `_rw`, `_ro`), with the database owned by the owner role. Default true on Postgres (when the name is at most 54 characters), false elsewhere. 400 `managed_owner_role_unsupported` (MySQL, MariaDB) or `managed_owner_role_name_too_long`. Databases made before this keep their owner; nothing converts them.',
+      },
     },
   },
   ManagedDatabaseMutationResponse: {
@@ -731,6 +742,15 @@ export const managedSchemas = {
     properties: {
       ok: { type: 'boolean', const: true },
       databases: { type: 'array', items: { type: 'string' } },
+      ownerRole: {
+        type: 'boolean',
+        description: 'Whether the created database has an owner role.',
+      },
+      ownerRoleDatabases: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Every database on the cluster that has an owner role.',
+      },
       commandId: { type: 'string' },
       serverId: { type: 'string' },
     },
@@ -1645,7 +1665,7 @@ export const managedPaths = {
                 connectionRole: { type: 'string', enum: ['read-write', 'read-only'] },
                 privileges: {
                   type: 'array',
-                  items: { type: 'string', enum: ['owner', 'read-write', 'read-only'] },
+                  items: { type: 'string', enum: ['owner', 'read-write', 'read-only', 'admin'] },
                 },
                 confirmReset: { type: 'boolean' },
                 dryRun: { type: 'boolean' },

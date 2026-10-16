@@ -50,6 +50,13 @@ import { loadManagedStatusError } from './last-error.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import { type ManagedResidualMetadata, serializeManagedRow } from './serialize.ts'
 import type { LoginPatchInput } from './login-patch.ts'
+import { DATABASE_ADMIN_PRIVILEGE, evaluateDatabaseAdminGrant } from './owner-role.ts'
+
+export {
+  DATABASE_ADMIN_PRIVILEGE,
+  evaluateDatabaseAdminGrant,
+  resolveDatabaseOwnerRole,
+} from './owner-role.ts'
 import {
   type DatabaseLoginRole,
   loginGrantMode,
@@ -582,6 +589,22 @@ export function serializeContainerRow(row: {
  */
 const RESERVED_MANAGED_USERNAMES = new Set(['postgres', 'root', 'mysql', 'superadmin'])
 
+/**
+ * The `tp_` prefix belongs to the platform: the roles of a database's owner
+ * role (`tp_<db>_owner`, `_rw`, `_ro`), the monitor login (`tp_monitor_…`) and
+ * the replication login (`tp_repl`). No client login may take a name with it.
+ */
+const RESERVED_MANAGED_USERNAME_PREFIX = 'tp_'
+
+export function isReservedManagedUsername(username: string, rootUsername?: string): boolean {
+  const lower = username.toLowerCase()
+  return (
+    RESERVED_MANAGED_USERNAMES.has(lower) ||
+    lower.startsWith(RESERVED_MANAGED_USERNAME_PREFIX) ||
+    (rootUsername !== undefined && username === rootUsername)
+  )
+}
+
 export function parseManagedUserCreateFields(
   c: Context,
   ctx: ManagedContext,
@@ -613,8 +636,7 @@ export function parseManagedUserCreateFields(
     !USERNAME_RE.test(username) ||
     !pattern.test(username) ||
     username.length > maxShortLength ||
-    username === effectiveRoot ||
-    RESERVED_MANAGED_USERNAMES.has(username.toLowerCase())
+    isReservedManagedUsername(username, effectiveRoot)
   ) {
     return c.json({ error: 'Invalid username' }, 400)
   }
@@ -679,7 +701,21 @@ export function parseManagedLoginGrantFields(
     )
   }
 
-  return { databases, privileges, connectionRole }
+  const admin = evaluateDatabaseAdminGrant(ctx.spec.engine, {
+    privileges,
+    databases,
+    connectionRole,
+    ownerRoleDatabases: options.ownerRoleDatabases,
+  })
+  if (admin) return c.json({ error: admin.error, message: admin.message }, admin.status)
+
+  return {
+    databases,
+    privileges: privileges.includes(DATABASE_ADMIN_PRIVILEGE)
+      ? [DATABASE_ADMIN_PRIVILEGE]
+      : privileges,
+    connectionRole,
+  }
 }
 
 /**
@@ -698,10 +734,7 @@ export function evaluateExistingPrincipalLoginName(
       message: `The principal's name '${appliedUsername}' is not a valid ${spec.engine} role name (at most ${maxLength} characters, matching ${pattern}). Create a login with a new name instead.`,
     }
   }
-  if (
-    appliedUsername === (rootUsername ?? spec.rootUsername) ||
-    RESERVED_MANAGED_USERNAMES.has(appliedUsername.toLowerCase())
-  ) {
+  if (isReservedManagedUsername(appliedUsername, rootUsername ?? spec.rootUsername)) {
     return {
       error: 'principal_name_reserved',
       message: `The principal's name '${appliedUsername}' is reserved on ${spec.engine}. Create a login with a new name instead.`,
@@ -716,7 +749,9 @@ export function evaluateExistingPrincipalLoginName(
  */
 export function parseManagedLoginModeFields(
   c: Context,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  /** A Database admin login is a tool login unless the request says otherwise. */
+  toolByDefault = false
 ): { grantMode: 'recipe' | 'self'; tool: boolean } | Response {
   const mode = body.grantMode ?? 'recipe'
   if (mode !== 'recipe' && mode !== 'self') {
@@ -738,7 +773,7 @@ export function parseManagedLoginModeFields(
       400
     )
   }
-  return { grantMode: mode, tool: body.tool === true }
+  return { grantMode: mode, tool: body.tool === undefined ? toolByDefault : body.tool === true }
 }
 
 /** Fields of a PATCH on a login; everything is optional, validated on its own. */

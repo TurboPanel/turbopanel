@@ -4997,6 +4997,13 @@ export type ManagedApplyCredential = {
 export type ManagedApplyDatabaseOp = {
   name: string
   action: 'create' | 'drop'
+  /**
+   * Postgres only. A database made with an owner role (`tp_<name>_owner`,
+   * `_rw`, `_ro`). On create the daemon makes the roles and the database for
+   * the owner role (an existing database with another owner is left alone); on
+   * drop it removes the roles. Absent = today's behaviour.
+   */
+  ownerRole?: boolean
 }
 
 /** Mirror of `ManagedTlsMaterialRequest` — daemon generates key material on host. */
@@ -6140,9 +6147,13 @@ function parseManagedApplyDatabases(value: unknown): ManagedApplyDatabaseOp[] | 
     ) {
       throw new Error('Invalid managed.apply databases entry')
     }
+    if (entry.ownerRole !== undefined && typeof entry.ownerRole !== 'boolean') {
+      throw new TypeError('Invalid managed.apply databases entry: ownerRole must be true or false')
+    }
     databases.push({
       name: entry.name,
       action: entry.action as ManagedApplyDatabaseOp['action'],
+      ...(entry.ownerRole === true ? { ownerRole: true } : {}),
     })
   }
   return databases
