@@ -12,15 +12,18 @@ a recipe; "Manage permissions myself" stays available.
 
 ## What is built
 
-| Piece                                            | Where                                                                                               |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| Catalogue data and lookup                        | `catalogue.ts`, `postgres.ts`, `mysql-family.ts`, `types.ts`, `series.ts`                           |
-| Engine ground truth for tests                    | `fixtures/<engine>-<series>.json`, `scripts/capture-privilege-fixtures.mjs`                         |
-| `GET …/managed/privilege-catalogue`              | `src/client/managed/privilege-routes.ts`                                                            |
-| Raw report shape and parser                      | `observed.ts` (twin of the daemon's `ManagedPermissionsObserved`)                                   |
-| Join of report and catalogue                     | `effective.ts`                                                                                      |
-| `GET …/users/:principalId/effective-permissions` | `privilege-routes.ts`, `src/client/managed/permissions-probe.ts`                                    |
-| Daemon read                                      | `turbopaneld/src/managed/permissions-read.ts` (cell message, feature `managed-permissions-read-v1`) |
+| Piece                               | Where                                                                       |
+| ----------------------------------- | --------------------------------------------------------------------------- |
+| Catalogue data and lookup           | `catalogue.ts`, `postgres.ts`, `mysql-family.ts`, `types.ts`, `series.ts`   |
+| Engine ground truth for tests       | `fixtures/<engine>-<series>.json`, `scripts/capture-privilege-fixtures.mjs` |
+| `GET …/managed/privilege-catalogue` | `src/client/managed/privilege-routes.ts`                                    |
+
+The read side of a login's current permissions follows in the next change of this
+slice and is described in "Read side contract" below in the future tense: a raw
+report shape and parser (`observed.ts`), the join of report and catalogue
+(`effective.ts`), `GET …/users/:principalId/effective-permissions`
+(`permissions-probe.ts`), and the daemon read (`turbopaneld/src/managed/permissions-read.ts`,
+cell message, feature `managed-permissions-read-v1`).
 
 ### Where the catalogue lives, and why
 
@@ -72,9 +75,15 @@ One entry per (level, privilege): `id` (`table:SELECT`), `level`, `keyword`
     `PROXY`, `RELOAD`, `SHUTDOWN`, `REPLICATION *`, every dynamic privilege),
     anything granted on `*.*`, anything on `mysql`, `sys`,
     `performance_schema`, `information_schema`; Postgres superuser-class
-    attributes and `pg_read_server_files`, `pg_write_server_files`,
-    `pg_execute_server_program`, `pg_create_subscription`.
-- Names starting `tp_` are reserved for the panel (roles and accounts).
+    attributes, `pg_read_server_files`, `pg_write_server_files`,
+    `pg_execute_server_program`, `pg_create_subscription`, and the Postgres
+    object kinds that reach the server itself or every database: settings
+    (`SET`, `ALTER SYSTEM`), tablespaces, languages, foreign data wrappers and
+    servers, large objects.
+- Names starting `tp_` are reserved for the panel (roles and accounts), as are
+  `pg_`, `mysql.`, `mariadb.` and the exact names in `blocked.reservedNames`
+  (`postgres`, `root`, `mysql`, `superadmin`). The cluster's own root login name
+  is added at write time. Role memberships and grants are checked against them.
 
 Adding an engine version: capture its fixture, add the series to the engine's
 series list, add or bound (`since` / `removedIn`) any entry that appeared or
@@ -83,8 +92,8 @@ went away, run the fixture tests (they list every difference).
 ## Validation against real engines
 
 `scripts/capture-privilege-fixtures.mjs` starts one throwaway container per
-series, probes it through `docker exec` (no password ever reaches argv, files or
-output), and writes `fixtures/<engine>-<series>.json`. Unit tests compare the
+series, probes it through `docker exec` (the password is random, lives only in the throwaway container's environment,
+and never reaches argv, fixtures or output), and writes `fixtures/<engine>-<series>.json`. Unit tests compare the
 catalogue with the fixtures, so CI needs no engines.
 
 - Postgres: `acldefault` / `aclexplode` privilege types per object kind, the real

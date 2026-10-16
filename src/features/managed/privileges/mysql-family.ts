@@ -6,11 +6,12 @@
  * underscored "dynamic" privileges (`SYSTEM_VARIABLES_ADMIN`), MariaDB has
  * space-separated administrative privileges (`BINLOG ADMIN`) and a few of its
  * own (`DELETE HISTORY`, `SHOW CREATE ROUTINE`). Every entry is checked
- * against captured engine output by `catalogue.fixtures.test.ts`.
+ * against captured engine output by `catalogue.fixtures.hostfree.test.ts`.
  *
  * Privileges that the engines accept on `*.*` but that are database-level in
  * kind (`SELECT ON *.*`) are not repeated at the `global` level: the effective
- * permissions reader reports them as a global placement the panel refuses.
+ * permissions view (added with the read side) reports them as a global
+ * placement the panel refuses.
  */
 
 import type {
@@ -122,7 +123,8 @@ const DELETE: Row = { keyword: 'DELETE', label: 'Delete rows', explanation: 'Del
 const DROP: Row = {
   keyword: 'DROP',
   label: 'Drop tables',
-  explanation: 'Drop tables and views, and empty a table with TRUNCATE.',
+  explanation:
+    'Drop tables and views, empty a table with TRUNCATE, and, on a whole database, drop the database itself.',
 }
 const INDEX: Row = {
   keyword: 'INDEX',
@@ -236,7 +238,8 @@ const SYSTEM_SCHEMAS = ['information_schema', 'mysql', 'performance_schema', 'sy
 const BLOCKED: PrivilegeBlocked = {
   databases: SYSTEM_SCHEMAS,
   schemas: [],
-  reservedPrefixes: ['tp_'],
+  reservedPrefixes: ['tp_', 'mysql.', 'mariadb.'],
+  reservedNames: ['root', 'mysql', 'superadmin'],
 }
 
 /** Static privileges that exist only at the global level, shared by both engines. */

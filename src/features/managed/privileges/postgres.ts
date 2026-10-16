@@ -2,7 +2,7 @@
  * PostgreSQL privilege data, 15 through 18.
  *
  * Every entry is checked against captured engine output by
- * `catalogue.fixtures.test.ts` (see `fixtures/README.md`). Adding a major
+ * `catalogue.fixtures.hostfree.test.ts` (see `fixtures/README.md`). Adding a major
  * version means: capture its fixture, add it to `POSTGRES_SERIES`, and add or
  * bound (`since` / `removedIn`) any entry that appeared or went away.
  */
@@ -55,6 +55,33 @@ const LEVELS: readonly PrivilegeLevelInfo[] = [
     id: 'type',
     label: 'Types and domains',
     explanation: 'Custom data types and domains.',
+  },
+  {
+    id: 'parameter',
+    label: 'Server settings',
+    explanation: 'Who may change server settings. Never given to a site owner\u2019s login.',
+  },
+  {
+    id: 'tablespace',
+    label: 'Tablespaces',
+    explanation:
+      'Places on disk where tables are stored. Never given to a site owner\u2019s login.',
+  },
+  {
+    id: 'language',
+    label: 'Procedural languages',
+    explanation: 'Languages functions can be written in. Never given to a site owner\u2019s login.',
+  },
+  {
+    id: 'foreign',
+    label: 'Foreign data',
+    explanation: 'Foreign data wrappers and servers. Never given to a site owner\u2019s login.',
+  },
+  {
+    id: 'largeobject',
+    label: 'Large objects',
+    explanation:
+      'Big binary values stored apart from tables. Never given to a site owner\u2019s login.',
   },
 ]
 
@@ -217,6 +244,81 @@ const TYPE = entries('type', [
   },
 ])
 
+const NOT_OFFERED =
+  'A site owner\u2019s login never gets this: it reaches server settings or things shared by every database.'
+
+const PARAMETER = entries('parameter', [
+  {
+    keyword: 'SET',
+    letter: 's',
+    label: 'Change a setting for a session',
+    explanation: 'Change a server setting that is normally restricted.',
+    allowed: 'no',
+    reason: NOT_OFFERED,
+  },
+  {
+    keyword: 'ALTER SYSTEM',
+    letter: 'A',
+    label: 'Change a setting for the server',
+    explanation:
+      'Change a server setting for good. Some settings let the holder run programs on the server.',
+    allowed: 'no',
+    reason: NOT_OFFERED,
+  },
+])
+
+const TABLESPACE = entries('tablespace', [
+  {
+    keyword: 'CREATE',
+    letter: 'C',
+    label: 'Create objects in a tablespace',
+    explanation: 'Store tables and indexes in a tablespace.',
+    allowed: 'no',
+    reason: NOT_OFFERED,
+  },
+])
+
+const LANGUAGE = entries('language', [
+  {
+    keyword: 'USAGE',
+    letter: 'U',
+    label: 'Use a procedural language',
+    explanation: 'Write functions in the language.',
+    allowed: 'no',
+    reason: NOT_OFFERED,
+  },
+])
+
+const FOREIGN = entries('foreign', [
+  {
+    keyword: 'USAGE',
+    letter: 'U',
+    label: 'Use a foreign data wrapper or server',
+    explanation: 'Create foreign tables and server links with it.',
+    allowed: 'no',
+    reason: NOT_OFFERED,
+  },
+])
+
+const LARGE_OBJECT = entries('largeobject', [
+  {
+    keyword: 'SELECT',
+    letter: 'r',
+    label: 'Read large objects',
+    explanation: 'Read stored large objects.',
+    allowed: 'no',
+    reason: NOT_OFFERED,
+  },
+  {
+    keyword: 'UPDATE',
+    letter: 'w',
+    label: 'Change large objects',
+    explanation: 'Write and delete stored large objects.',
+    allowed: 'no',
+    reason: NOT_OFFERED,
+  },
+])
+
 const PRIVILEGES: readonly PrivilegeEntry[] = [
   ...DATABASE,
   ...SCHEMA,
@@ -225,6 +327,11 @@ const PRIVILEGES: readonly PrivilegeEntry[] = [
   ...SEQUENCE,
   ...ROUTINE,
   ...TYPE,
+  ...PARAMETER,
+  ...TABLESPACE,
+  ...LANGUAGE,
+  ...FOREIGN,
+  ...LARGE_OBJECT,
 ]
 
 const CLUSTER_WIDE =
@@ -253,8 +360,7 @@ const ROLES: readonly PrivilegeRoleEntry[] = [
   role(
     'pg_checkpoint',
     'Run checkpoints',
-    'Force a checkpoint, which flushes pending writes to disk.',
-    { since: '15' }
+    'Force a checkpoint, which flushes pending writes to disk.'
   ),
   role(
     'pg_create_subscription',
@@ -438,6 +544,14 @@ const DEFAULT_OBJECTS: readonly PrivilegeDefaultObject[] = [
   },
   { id: 'types', keyword: 'TYPES', letter: 'T', level: 'type', label: 'New types' },
   { id: 'schemas', keyword: 'SCHEMAS', letter: 'n', level: 'schema', label: 'New schemas' },
+  {
+    id: 'largeobjects',
+    keyword: 'LARGE OBJECTS',
+    letter: 'L',
+    level: 'largeobject',
+    label: 'New large objects',
+    since: '18',
+  },
 ]
 
 export const POSTGRES_PRIVILEGE_DATA: EnginePrivilegeData = {
@@ -453,5 +567,6 @@ export const POSTGRES_PRIVILEGE_DATA: EnginePrivilegeData = {
     databases: ['postgres', 'template0', 'template1'],
     schemas: ['information_schema', 'pg_catalog', 'pg_toast'],
     reservedPrefixes: ['pg_', 'tp_'],
+    reservedNames: ['postgres', 'superadmin'],
   },
 }

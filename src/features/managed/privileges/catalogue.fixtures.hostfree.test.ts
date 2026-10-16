@@ -41,9 +41,6 @@ function letters(catalogue: PrivilegeCatalogue, level: PrivilegeLevel): string[]
     .sort()
 }
 
-/** Postgres object kinds the catalogue deliberately does not model. */
-const PG_UNMODELLED_KINDS = ['F', 'L', 'S', 'c', 'l', 'p', 't']
-
 const PG_KIND_LEVEL: Record<string, PrivilegeLevel> = {
   d: 'database',
   n: 'schema',
@@ -51,6 +48,12 @@ const PG_KIND_LEVEL: Record<string, PrivilegeLevel> = {
   s: 'sequence',
   f: 'routine',
   T: 'type',
+  p: 'parameter',
+  t: 'tablespace',
+  l: 'language',
+  F: 'foreign',
+  S: 'foreign',
+  L: 'largeobject',
 }
 
 for (const { engine, series } of privilegeCataloguePairs().filter((p) => p.engine === 'postgres')) {
@@ -63,8 +66,10 @@ for (const { engine, series } of privilegeCataloguePairs().filter((p) => p.engin
       assertEquals(keywords(cat, level), [...fx.aclPrivilegeTypes[kind]].sort(), `kind ${kind}`)
       assertEquals(letters(cat, level), [...fx.aclLetters[kind]].sort(), `letters ${kind}`)
     }
-    for (const kind of PG_UNMODELLED_KINDS) {
-      assert(kind in fx.aclPrivilegeTypes || kind === 'c', `fixture lacks kind ${kind}`)
+    // Every kind the engine reports is modelled (`c` is columns, checked below).
+    const modelled = new Set(Object.keys(PG_KIND_LEVEL))
+    for (const kind of Object.keys(fx.aclPrivilegeTypes)) {
+      assert(kind === 'c' || modelled.has(kind), `kind ${kind} is not in the catalogue`)
     }
     // Column grants: only the privileges the engine accepts, with its letters.
     const accepted = Object.entries(fx.columnGrants.accepted as Record<string, boolean>)
@@ -91,10 +96,11 @@ for (const { engine, series } of privilegeCataloguePairs().filter((p) => p.engin
       cat.privileges.some((entry) => entry.id === 'table:MAINTAIN'),
       fx.maintainGrantable
     )
-    // Every default-privilege kind in the catalogue is one the engine accepts.
-    for (const object of cat.defaultPrivilegeObjects) {
-      assert(fx.defaultAclObjTypes.includes(object.letter), `default kind ${object.letter}`)
-    }
+    // The default-privilege kinds are exactly the ones the engine accepts.
+    assertEquals(
+      cat.defaultPrivilegeObjects.map((object) => object.letter).sort(),
+      [...fx.defaultAclObjTypes].sort()
+    )
   })
 }
 
@@ -256,6 +262,15 @@ test('entries are well formed and the never-allowed list holds', () => {
     assertEquals(pg.roles.find((r) => r.name === name)?.allowed, 'no', name)
   }
   assertEquals(pg.blocked.reservedPrefixes.includes('tp_'), true)
+  assertEquals(pg.blocked.reservedNames.includes('postgres'), true)
+  for (const level of ['parameter', 'tablespace', 'language', 'foreign', 'largeobject'] as const) {
+    for (const entry of pg.privileges.filter((e) => e.level === level)) {
+      assertEquals(entry.allowed, 'no', entry.id)
+    }
+  }
+  const mysql = privilegeCatalogueFor('mysql', '8.4')!
+  assertEquals(mysql.blocked.reservedNames.includes('root'), true)
+  assertEquals(mysql.blocked.reservedPrefixes.includes('mysql.'), true)
 })
 
 test('series comparison and bounds', () => {

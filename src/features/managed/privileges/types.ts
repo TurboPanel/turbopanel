@@ -15,7 +15,10 @@ import type { ManagedEngineCode } from '../types.ts'
  * `table` covers tables, views, materialized views, foreign tables and
  * partitioned tables (Postgres treats them alike). `routine` covers functions
  * and procedures (and MariaDB packages). `type` covers types and domains.
- * `global` is MySQL and MariaDB only: a privilege on `*.*`.
+ * `global` is MySQL and MariaDB only: a privilege on `*.*`. The last five are
+ * Postgres object kinds a site owner's login never gets (settings, tablespaces,
+ * languages, foreign data wrappers and servers, large objects); they exist so
+ * an observed grant on one can be recognised and refused.
  */
 export const PRIVILEGE_LEVELS = [
   'global',
@@ -26,6 +29,11 @@ export const PRIVILEGE_LEVELS = [
   'sequence',
   'routine',
   'type',
+  'parameter',
+  'tablespace',
+  'language',
+  'foreign',
+  'largeobject',
 ] as const
 export type PrivilegeLevel = (typeof PRIVILEGE_LEVELS)[number]
 
@@ -126,6 +134,8 @@ export type PrivilegeBlocked = {
   schemas: readonly string[]
   /** Name prefixes the panel reserves for its own roles and accounts. */
   reservedPrefixes: readonly string[]
+  /** Exact names (compared in lower case) no login may be granted into or created as. */
+  reservedNames: readonly string[]
 }
 
 /** The catalogue as it applies to one engine and one series. */
