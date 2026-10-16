@@ -111,3 +111,28 @@ test('parseManagedRowOptions keeps ownerRoleDatabases (optional, only listed nam
   assertEquals(parsed?.ownerRoleDatabases, ['shop'])
   assertEquals(writeManagedRowOptions(parsed!).ownerRoleDatabases, ['shop'])
 })
+
+test('parseManagedRowOptions keeps databaseOwners only for owner-role databases and writes it back', () => {
+  const settings = defaultSettings()
+  const old = parseManagedRowOptions(postgresEngineSpec, {
+    settings,
+    databases: ['postgres'],
+  })
+  assertEquals('databaseOwners' in writeManagedRowOptions(old!), false)
+
+  const parsed = parseManagedRowOptions(postgresEngineSpec, {
+    settings,
+    databases: ['postgres', 'shop', 'blog'],
+    ownerRoleDatabases: ['shop'],
+    databaseOwners: {
+      shop: { loginId: 'l1', username: 'app', extra: 1 },
+      // Not an owner-role database, or malformed: dropped.
+      blog: { loginId: 'l2', username: 'x' },
+      gone: { loginId: 'l3', username: 'y' },
+    },
+  })
+  assertEquals(parsed?.databaseOwners, { shop: { loginId: 'l1', username: 'app' } })
+  assertEquals(writeManagedRowOptions(parsed!).databaseOwners, {
+    shop: { loginId: 'l1', username: 'app' },
+  })
+})

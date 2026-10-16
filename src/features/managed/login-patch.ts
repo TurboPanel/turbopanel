@@ -47,12 +47,6 @@ export type LoginPatchCurrent = {
   metadata: unknown
 }
 
-/** Facts about the cluster the planner needs; none are required. */
-export type LoginPatchCluster = {
-  /** Postgres: databases that have an owner role. */
-  ownerRoleDatabases?: readonly string[]
-}
-
 export type LoginPatchResult = {
   ok: true
   metadata: Record<string, unknown>
@@ -60,7 +54,7 @@ export type LoginPatchResult = {
   summary: string[]
 }
 
-function storedConnectionRole(metadata: unknown): 'read-only' | 'read-write' {
+export function storedConnectionRole(metadata: unknown): 'read-only' | 'read-write' {
   const role = (metadata as Record<string, unknown> | null)?.connectionRole
   return role === 'read-only' ? 'read-only' : 'read-write'
 }
@@ -108,14 +102,16 @@ function patchMetadata(after: LoginGrantMode, input: LoginPatchInput): Record<st
     metadata.connectionRole = input.connectionRole === 'read-only' ? 'read-only' : undefined
   }
   // `undefined` removes the key: absent means anywhere / no cap.
-  if (input.allowedSources !== undefined)
+  if (input.allowedSources !== undefined) {
     metadata.allowedSources = input.allowedSources ?? undefined
-  if (input.maxConnections !== undefined)
+  }
+  if (input.maxConnections !== undefined) {
     metadata.maxConnections = input.maxConnections ?? undefined
+  }
   return metadata
 }
 
-function storedStrings(metadata: unknown, key: 'databases' | 'privileges'): string[] {
+export function storedStrings(metadata: unknown, key: 'databases' | 'privileges'): string[] {
   const value = (metadata as Record<string, unknown> | null)?.[key]
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : []
 }
@@ -133,8 +129,7 @@ export function readWriteGrantState(metadata: unknown): ReadWriteGrantState {
 export function planLoginPatch(
   engine: string,
   current: LoginPatchCurrent,
-  input: LoginPatchInput,
-  cluster: LoginPatchCluster = {}
+  input: LoginPatchInput
 ): LoginPatchResult | LoginPatchError {
   if (current.role !== 'user') {
     return fail(
@@ -175,15 +170,13 @@ export function planLoginPatch(
     return fail(400, 'Invalid request', 'tool must be true or false.')
   }
 
-  // The Database admin login has fixed rules (never read-only; on Postgres
-  // only on databases with an owner role), checked on the state after the change.
+  // The Database admin login has one rule (never read-only), checked on the
+  // state after the change. Owner-role setup never refuses it.
   const privilegesAfter = input.privileges ?? storedStrings(current.metadata, 'privileges')
   const becomesAdmin = privilegesAfter.includes(DATABASE_ADMIN_PRIVILEGE)
   const adminRefusal = evaluateDatabaseAdminGrant(engine, {
     privileges: privilegesAfter,
-    databases: input.databases ?? storedStrings(current.metadata, 'databases'),
     connectionRole: input.connectionRole ?? storedConnectionRole(current.metadata),
-    ownerRoleDatabases: cluster.ownerRoleDatabases,
   })
   if (adminRefusal) {
     return fail(adminRefusal.status, adminRefusal.error, adminRefusal.message)
@@ -193,7 +186,9 @@ export function planLoginPatch(
   if (input.privileges !== undefined && becomesAdmin) {
     // Admin is exclusive, and a tool login by default.
     metadata.privileges = [DATABASE_ADMIN_PRIVILEGE]
-    if (input.tool === undefined && !loginIsTool(current.metadata)) metadata.tool = true
+    if (input.tool === undefined && !loginIsTool(current.metadata)) {
+      metadata.tool = true
+    }
   }
   if (Object.keys(metadata).length === 0) {
     return fail(400, 'Invalid request', 'Nothing to change.')
@@ -235,7 +230,7 @@ export function describeApply(
   if (admin) {
     lines.push(
       engine === 'postgres'
-        ? "Make the login a member of each listed database's owner role (it can grant on everything the owner role owns) and keep it from creating roles, databases or replication"
+        ? 'Make the login a member of the owner role of each listed database that has one (it can grant on everything the owner role owns), give it read and write access on listed databases made before owner roles, and keep it from creating roles, databases or replication'
         : 'Give the login all rights on each listed database, with the right to pass them on, and nothing outside those databases'
     )
   }

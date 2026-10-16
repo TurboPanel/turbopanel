@@ -1018,7 +1018,7 @@ export const managedSchemas = {
         type: 'array',
         items: { type: 'string', enum: ['owner', 'read-write', 'read-only', 'admin'] },
         description:
-          "What the login may do in each listed database. `admin` makes it a Database admin login for tools: on Postgres it joins each database's owner role (every listed database must have one; 422 `managed_admin_needs_owner_role`, 409 `managed_owner_role_needs_daemon_update` when the daemon of the server is too old), on MySQL and MariaDB it gets ALL on each listed database with the grant option and nothing global. It is never read-only (400 `managed_admin_login_not_read_only`), is stored alone, and is a tool login (`tool` true) unless the request says `tool: false`. On MySQL and MariaDB the three jobs are: `read-only` (SELECT and SHOW VIEW; it cannot call stored functions), `read-write` (change rows, call stored routines, lock tables and use session-only temporary tables; it cannot create, alter or drop anything, and 409 `managed_readwrite_needs_daemon_update` when the server's daemon is too old to enforce that) and `owner`, the migrations login (everything inside its database, without the grant option, so it cannot hand rights to others once the server's daemon is up to date). Tables the migrations login makes are usable by the other two at once. On Postgres, `owner` on a database with an owner role makes the login a migrations login: it works as the owner role by session default, so tables it creates belong to the owner role and the other logins can use them at once. Omitted = `read-only` for a `read-only` connectionRole, otherwise `read-write`. An empty list or an unknown name answers 400 `managed_user_privileges_invalid`, because a login with no grants can connect but is refused everywhere.",
+          'What the login may do in each listed database. `admin` makes it a Database admin login for tools: on Postgres it joins the owner role of each listed database that has one, and gets read and write access on a listed database made before owner roles (it is never refused over owner roles: the answer lists `notes` saying what it got; a daemon older than owner roles adds the login as read/write), on MySQL and MariaDB it gets ALL on each listed database with the grant option and nothing global. It is never read-only (400 `managed_admin_login_not_read_only`), is stored alone, and is a tool login (`tool` true) unless the request says `tool: false`. On MySQL and MariaDB the three jobs are: `read-only` (SELECT and SHOW VIEW; it cannot call stored functions), `read-write` (change rows, call stored routines, lock tables and use session-only temporary tables; it cannot create, alter or drop anything, and 409 `managed_readwrite_needs_daemon_update` when the daemon of the server is too old to enforce that) and `owner`, the migrations login (everything inside its database, without the grant option, so it cannot hand rights to others once the daemon of the server is up to date). Tables the migrations login makes are usable by the other two at once. On Postgres, `owner` on a database with an owner role makes the login a migrations login: it works as the owner role by session default, so tables it creates belong to the owner role and the other logins can use them at once. Omitted = `read-only` for a `read-only` connectionRole, otherwise `read-write`. An empty list or an unknown name answers 400 `managed_user_privileges_invalid`, because a login with no grants can connect but is refused everywhere.',
       },
       connectionRole: {
         type: 'string',
@@ -1055,6 +1055,12 @@ export const managedSchemas = {
         type: 'string',
         description: 'Show-once plaintext password',
       },
+      notes: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Plain-words notes on what a Database admin login got when it is not the full admin rights (a listed database made before owner roles, or a daemon older than owner roles). Absent when there is nothing to say. A login is never refused over owner roles.',
+      },
       commandId: { type: 'string' },
       serverId: { type: 'string' },
     },
@@ -1070,6 +1076,12 @@ export const managedSchemas = {
         description:
           'Databases that have an owner role (Postgres). Others keep their current owner.',
       },
+      owners: {
+        type: 'object',
+        description:
+          'Who owns each database that has an owner role (Postgres), keyed by database name: `{ kind: "role", role }` for the default no-login owner role, or `{ kind: "login", loginId, username }` for a login picked at create time. A database made before owner roles has no entry. Never the root login or the platform admin.',
+        additionalProperties: { type: 'object' },
+      },
     },
   },
   CreateManagedDatabaseRequest: {
@@ -1080,7 +1092,12 @@ export const managedSchemas = {
       ownerRole: {
         type: 'boolean',
         description:
-          'Postgres only. Make the database with an owner role: three roles that cannot log in (`tp_<name>_owner`, `_rw`, `_ro`), with the database owned by the owner role. Default true on Postgres when the name is at most 54 characters and the daemon of the server lists `managed-owner-role-v1` (false otherwise, and false on other engines). 409 `managed_owner_role_needs_daemon_update` when true is asked for and the daemon is too old. 400 `managed_owner_role_unsupported` (MySQL, MariaDB) or `managed_owner_role_name_too_long`. Databases made before this keep their owner; nothing converts them.',
+          'Postgres only, and only ever true (or left out): every new Postgres database is made with an owner role, three roles that cannot log in (`tp_<name>_owner`, `_rw`, `_ro`), with the database owned by the owner role (or by the login picked with ownerLoginId). 400 `managed_owner_role_required` for false. 400 `managed_owner_role_name_too_long` for a name over 54 characters (choose a shorter name). 409 `managed_owner_role_needs_daemon_update` when true is asked for and the daemon of the server lacks `managed-owner-role-v1`; left out, such a daemon still makes the database without an owner role. 400 `managed_owner_role_unsupported` (MySQL, MariaDB). Databases made before this keep their owner; nothing converts them.',
+      },
+      ownerLoginId: {
+        type: 'string',
+        description:
+          "Postgres only. The id (login id or principal id) of a login to make the database's owner instead of leaving the default owner role as the only owner. It has to be a migration (`owner`) or read/write login that the panel manages (not read-only, not a Database admin login, not root or replication, not manage-myself): 400 `managed_owner_login_invalid`. The database is added to the login's list so it can connect. The three owner-role roles are still made and still own what is created; the login owns the database itself and works through the owner role, so the other logins can use what it creates. 400 `managed_owner_login_unsupported` on MySQL and MariaDB (they have no database owner; a login gets rights on a database), 409 `managed_database_owner_needs_daemon_update` when the server's daemon lacks `managed-database-owner-v1`. Leave it out for the default owner role. The owner is never the root login or the platform admin.",
       },
     },
   },
@@ -1098,6 +1115,11 @@ export const managedSchemas = {
         type: 'array',
         items: { type: 'string' },
         description: 'Every database on the cluster that has an owner role.',
+      },
+      owners: {
+        type: 'object',
+        description: 'Who owns each database that has an owner role (same shape as the list).',
+        additionalProperties: { type: 'object' },
       },
       commandId: { type: 'string' },
       serverId: { type: 'string' },
@@ -2194,6 +2216,17 @@ export const managedPaths = {
     },
   },
   '/api/client/v1/environments/{id}/managed/databases/{name}': {
+    patch: {
+      tags: ['Managed services'],
+      summary: "Change a database's owner (not available yet)",
+      description:
+        'Answers 409 `managed_database_owner_change_not_available` with a plain-words message: changing the owner after the database was made has to move what the panel manages without touching anything made by hand, and is not built yet. Choose the owner when the database is created (`ownerLoginId` on create). The route exists so the answer is a clear message, with or without a dry run.',
+      parameters: [ENV_ID_PARAM, DATABASE_NAME_PARAM],
+      responses: {
+        404: { description: 'No such database' },
+        409: { description: 'managed_database_owner_change_not_available' },
+      },
+    },
     delete: {
       tags: ['Managed services'],
       summary: 'Drop managed database and enqueue apply',

@@ -106,16 +106,16 @@ test('moving a read-only postgres login to self needs confirmReset', () => {
   assertEquals(mysql.ok, true)
 })
 
-test('moving a login to admin needs owner-role databases on Postgres and makes it a tool login', () => {
+test('moving a login to admin is never refused over owner roles and makes it a tool login', () => {
+  // A database without an owner role does not stop it: the answer notes what it got.
   const noRole = planLoginPatch('postgres', user({ databases: ['shop'] }), {
     privileges: ['admin'],
   })
-  assertEquals(!noRole.ok && noRole.error, 'managed_admin_needs_owner_role')
+  assertEquals(noRole.ok, true)
   const plan = planLoginPatch(
     'postgres',
     user({ databases: ['shop'], privileges: ['read-write'] }),
-    { privileges: ['admin'] },
-    { ownerRoleDatabases: ['shop'] }
+    { privileges: ['admin'] }
   )
   if (!plan.ok) throw new Error('expected ok')
   assertEquals(plan.metadata.privileges, ['admin'])
@@ -125,12 +125,10 @@ test('moving a login to admin needs owner-role databases on Postgres and makes i
     true
   )
   // An explicit tool: false is kept.
-  const off = planLoginPatch(
-    'postgres',
-    user({ databases: ['shop'] }),
-    { privileges: ['admin'], tool: false },
-    { ownerRoleDatabases: ['shop'] }
-  )
+  const off = planLoginPatch('postgres', user({ databases: ['shop'] }), {
+    privileges: ['admin'],
+    tool: false,
+  })
   if (!off.ok) throw new Error('expected ok')
   assertEquals(off.metadata.tool, false)
 })

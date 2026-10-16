@@ -575,3 +575,22 @@ test('buildDatabaseOps flags only owner-role databases, on create and on drop', 
     ]
   )
 })
+
+test('buildDatabaseOps names the chosen owner login on an owner-role create', () => {
+  assertEquals(
+    buildDatabaseOps({
+      databases: ['a', 'shop'],
+      ownerRoleDatabases: ['a', 'shop'],
+      databaseOwners: { shop: { username: 'app_x' } },
+    }),
+    [
+      { name: 'a', action: 'create', ownerRole: true },
+      { name: 'shop', action: 'create', ownerRole: true, ownerLogin: 'app_x' },
+    ]
+  )
+  // A recorded owner for a database without an owner role is never sent.
+  assertEquals(
+    buildDatabaseOps({ databases: ['shop'], databaseOwners: { shop: { username: 'app_x' } } }),
+    [{ name: 'shop', action: 'create' }]
+  )
+})

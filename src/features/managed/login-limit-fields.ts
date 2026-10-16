@@ -11,13 +11,13 @@ import { type LoginPatchCurrent, type LoginPatchResult, planLoginPatch } from '.
 import { parseManagedLoginPatchFields } from './routes-helpers.ts'
 import type { Db } from '../../db/connection.ts'
 import {
-  DATABASE_ADMIN_PRIVILEGE,
-  refuseAdminGrantOnOldDaemon,
+  type DaemonOwnerSupport,
   refuseReadWriteOnOldDaemon,
   type ReadWriteGrantState,
 } from './owner-role.ts'
 import {
   MANAGED_DATA_ONLY_READWRITE_FEATURE,
+  MANAGED_DATABASE_OWNER_FEATURE,
   MANAGED_LOGIN_LIMITS_FEATURE,
   MANAGED_OWNER_ROLE_FEATURE,
 } from '../../lib/version-wire.ts'
@@ -133,29 +133,20 @@ export async function refuseIfDaemonCannotLimitLogins(
 
 /** Whether the server's daemon honours owner roles and the Database admin login. */
 export async function daemonHonoursOwnerRole(db: Db, serverId: string): Promise<boolean> {
+  return (await daemonOwnerSupport(db, serverId)).ownerRole
+}
+
+/** Which of the owner-role features the server's daemon lists. */
+export async function daemonOwnerSupport(db: Db, serverId: string): Promise<DaemonOwnerSupport> {
   const state = await getServerDaemonStateByServerId(db, serverId)
-  return (state?.projection?.features ?? []).includes(MANAGED_OWNER_ROLE_FEATURE)
+  const features = state?.projection?.features ?? []
+  return {
+    ownerRole: features.includes(MANAGED_OWNER_ROLE_FEATURE),
+    databaseOwner: features.includes(MANAGED_DATABASE_OWNER_FEATURE),
+  }
 }
 
-/** 409 for a Postgres Database admin grant when the server's daemon is too old; `null` when fine. */
-export async function refuseAdminOnOldDaemon(
-  c: Context,
-  db: Db,
-  engine: string,
-  privilegesValue: unknown,
-  serverId: string
-): Promise<Response | null> {
-  const privileges = Array.isArray(privilegesValue) ? (privilegesValue as string[]) : []
-  if (engine !== 'postgres' || !privileges.includes(DATABASE_ADMIN_PRIVILEGE)) return null
-  const refused = refuseAdminGrantOnOldDaemon(
-    engine,
-    privileges,
-    await daemonHonoursOwnerRole(db, serverId)
-  )
-  return refused ? c.json({ error: refused.error, message: refused.message }, refused.status) : null
-}
-
-/** 409 for a new panel-managed MySQL or MariaDB read/write login when the daemon is too old; `null` when fine. */
+/** 409 for a panel-managed MySQL or MariaDB read/write login (or a new database on one) when the daemon is too old; `null` when fine. */
 export async function refuseReadWriteIfDaemonTooOld(
   c: Context,
   db: Db,
@@ -173,7 +164,7 @@ export async function refuseReadWriteIfDaemonTooOld(
   return refused ? c.json({ error: refused.error, message: refused.message }, refused.status) : null
 }
 
-/** The daemon checks a login create needs: the Postgres admin grant and the MySQL and MariaDB read/write level. */
+/** The daemon check a login create needs: the MySQL and MariaDB read/write level. */
 export async function refuseLoginCreateIfDaemonCannot(
   c: Context,
   db: Db,
@@ -181,34 +172,29 @@ export async function refuseLoginCreateIfDaemonCannot(
   serverId: string
 ): Promise<Response | null> {
   const privileges = Array.isArray(change.privileges) ? (change.privileges as string[]) : []
-  return (
-    (await refuseAdminOnOldDaemon(c, db, change.engine, privileges, serverId)) ??
-    (await refuseReadWriteIfDaemonTooOld(
-      c,
-      db,
-      change.engine,
-      { privileges, grantMode: change.grantMode },
-      null,
-      serverId
-    ))
+  return refuseReadWriteIfDaemonTooOld(
+    c,
+    db,
+    change.engine,
+    { privileges, grantMode: change.grantMode },
+    null,
+    serverId
   )
 }
 
-/** The daemon checks a login PATCH needs: limits it can enforce, the Postgres admin grant, the MySQL and MariaDB read/write level. */
+/** The daemon checks a login PATCH needs: limits it can enforce and the MySQL and MariaDB read/write level. */
 export async function refuseLoginPatchIfDaemonCannot(
   c: Context,
   db: Db,
   change: {
     limits: LoginLimitFields
     engine: string
-    privileges: unknown
     readWrite: { after: ReadWriteGrantState; before: ReadWriteGrantState }
   },
   serverId: string
 ): Promise<Response | null> {
   return (
     (await refuseLimitsIfUnsupported(c, db, change.limits, serverId)) ??
-    (await refuseAdminOnOldDaemon(c, db, change.engine, change.privileges, serverId)) ??
     (await refuseReadWriteIfDaemonTooOld(
       c,
       db,
@@ -234,9 +220,7 @@ export async function parseLoginPatchRequest(
   const limits = await parseLoginLimitFields(c, db, ctx.organizationId, body)
   if (limits instanceof Response) return limits
   const { dryRun, ...input } = { ...fields, ...limits }
-  const plan = planLoginPatch(ctx.spec.engine, target, input, {
-    ownerRoleDatabases: options.ownerRoleDatabases,
-  })
+  const plan = planLoginPatch(ctx.spec.engine, target, input)
   if (!plan.ok) {
     return c.json({ error: plan.error, message: plan.message }, plan.status)
   }

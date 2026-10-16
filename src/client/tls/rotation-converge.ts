@@ -429,6 +429,7 @@ async function enqueueRotationApplyMembers(
     settings: parsed.settings,
     databases: parsed.databases,
     ownerRoleDatabases: parsed.ownerRoleDatabases,
+    databaseOwners: parsed.databaseOwners,
     serverId: managedRow.serverId,
     environmentId: managedRow.environmentId,
     organizationId: params.organizationId,

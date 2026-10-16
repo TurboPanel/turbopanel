@@ -189,6 +189,7 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-permissions-read-v1',
   'managed-owner-role-v1',
   'managed-data-only-readwrite-v1',
+  'managed-database-owner-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -338,6 +339,16 @@ export const MANAGED_OWNER_ROLE_FEATURE: DaemonWireFeature = 'managed-owner-role
  */
 export const MANAGED_DATA_ONLY_READWRITE_FEATURE: DaemonWireFeature =
   'managed-data-only-readwrite-v1'
+
+/**
+ * The daemon honours `databases[].ownerLogin` (a login the customer chose owns
+ * the database), moves a new cluster's own empty first database onto its owner
+ * role, and gives a Database admin login on a database without an owner role
+ * the read-write rights. Without it the control plane refuses a chosen login
+ * owner with 409 `managed_database_owner_needs_daemon_update`, and a new
+ * cluster's first database is made without an owner role as before.
+ */
+export const MANAGED_DATABASE_OWNER_FEATURE: DaemonWireFeature = 'managed-database-owner-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}

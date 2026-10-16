@@ -603,13 +603,13 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
   }
 })
 
-test('parseManagedUserCreateFields takes the admin privilege only with an owner role on Postgres', async () => {
+test('parseManagedUserCreateFields takes the admin privilege on any Postgres database', () => {
   const c = mockContext()
   const body = { username: 'dba', databases: ['postgres'], privileges: ['admin', 'read-write'] }
-  const refused = parseManagedUserCreateFields(c, mockManagedContext(), body, defaultRowOptions())
-  if (!(refused instanceof Response)) throw new TypeError('expected Response')
-  assertEquals(refused.status, 422)
-  assertEquals((await refused.json()).error, 'managed_admin_needs_owner_role')
+  // No owner role on the database: not refused (the answer says what it got).
+  const plain = parseManagedUserCreateFields(c, mockManagedContext(), body, defaultRowOptions())
+  if (plain instanceof Response) throw new TypeError('expected parsed fields')
+  assertEquals(plain.privileges, ['admin'])
 
   const ok = parseManagedUserCreateFields(c, mockManagedContext(), body, {
     ...defaultRowOptions(),

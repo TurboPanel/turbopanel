@@ -426,9 +426,10 @@ built by the daemon. No migration: new jsonb keys only.
 `databases`; no migration, an absent key reads as none) names the Postgres
 databases made with an owner role: the daemon creates `tp_<db>_owner`, `_rw`
 and `_ro` (NOLOGIN) and the database belongs to the owner role. Only a new
-database gets it (`POST /managed/databases`, `ownerRole` default true on
-Postgres when the name is at most 54 characters; 400 on MySQL/MariaDB or a too
-long name when asked for). Existing databases keep their owner: moving one onto
+database gets it (`POST /managed/databases`: on Postgres every new database
+gets one; `ownerRole: false` answers 400 `managed_owner_role_required` and a
+name over 54 characters 400 `managed_owner_role_name_too_long`; `ownerRole`
+stays accepted only as `true`; 400 on MySQL/MariaDB when asked for). Existing databases keep their owner: moving one onto
 an owner role (`REASSIGN OWNED`) is a separate, explicit, backed-up action that
 does not exist yet. The flag rides on every apply as `databases[].ownerRole`
 (create) and on the drop op, so every `prepareManagedApplyPayloads` caller must
@@ -439,9 +440,50 @@ the key. The `tp_` login-name prefix is reserved (`isReservedManagedUsername`).
 Gate: the primary's daemon must list `managed-owner-role-v1`
 (`MANAGED_OWNER_ROLE_FEATURE`). Without it a new database is made without an
 owner role (`ownerRole: true` asked for answers 409
-`managed_owner_role_needs_daemon_update`) and an `admin` login on Postgres
-answers the same 409 (create, and PATCH that makes a login admin). Existing
-owner-role databases and logins are untouched.
+`managed_owner_role_needs_daemon_update`). Existing owner-role databases and
+logins are untouched.
+
+**Adding a login is never refused over owner roles.** A Database admin login
+(`admin`) on Postgres is added whatever the databases' state: on a database with
+an owner role it joins the owner role; on a database made before owner roles the
+daemon (`managed-database-owner-v1`) gives it read and write access there, never
+ownership and never a platform role; a daemon older than owner roles gets it as
+a `read-write` login on the wire (`buildCredentials`), a daemon with owner roles
+but not the fallback leaves it connect-only on such databases. The POST/PATCH
+answer carries plain-words `notes` saying which (`adminAccessNotes`). Only real
+invalid input refuses: a read-only admin login is 400
+`managed_admin_login_not_read_only`.
+
+**Explicit database owner (`databaseOwners`).** Every Postgres database made with
+an owner role (always, for a new database; not for databases made before owner
+roles, nor for ones a daemon without `managed-owner-role-v1` made) has an owner that is
+never the root login or the platform admin: the cluster's
+first database too (made by the engine's first start for the platform admin; the
+daemon moves it onto `tp_<db>_owner` while it is empty, and cluster create records
+it in `ownerRoleDatabases` only when the primary's daemon lists
+`managed-database-owner-v1`). `managed.options.databaseOwners`
+(`{ [database]: { loginId, username } }`, optional, a subset of
+`ownerRoleDatabases`, no migration) records a login the customer picked with
+`ownerLoginId` on `POST /managed/databases` (`database-owners.ts`,
+`evaluateOwnerLogin`: a migration or read/write login the panel manages; the
+database is added to its list in the same request and put back if the apply is
+not queued). The wire carries `databases[].ownerLogin` (`buildDatabaseOps`); the
+daemon keeps `tp_<db>_owner` as the role that owns what is created, moves the
+database itself onto the login after the login exists, and the login works
+through the owner role. Gate: `managed-database-owner-v1`
+(`MANAGED_DATABASE_OWNER_FEATURE`), else 409
+`managed_database_owner_needs_daemon_update` for a chosen login (the default
+owner role needs only `managed-owner-role-v1`). GET/POST `databases` answer
+`owners` per database (`describeDatabaseOwners`). MySQL and MariaDB have no
+database owner: `ownerLoginId` is 400 `managed_owner_login_unsupported` and a
+login there only gets rights on a database. Changing the owner of an existing
+database is not built: `PATCH …/databases/{name}` answers 409
+`managed_database_owner_change_not_available` (it has to move only what the panel
+manages). A login that owns databases cannot be unlisted from them or made unable
+to own (409 `managed_login_owns_databases`); deleting it hands each database back
+to its default owner role (the daemon does it before dropping the role) and drops
+the entry from `databaseOwners`; dropping such a database also drops the login's
+listing of it.
 
 **MySQL and MariaDB: three jobs, data only below the migration login.** The
 daemon (`managed-data-only-readwrite-v1`, `MANAGED_DATA_ONLY_READWRITE_FEATURE`)
@@ -467,9 +509,8 @@ A login with `owner` on an owner-role database is the migrations login (the
 daemon makes it a member of the owner role and sets its session role, so
 tables it creates belong to the owner role). The Database admin login is
 privilege `admin` (alone, never read-only, `tool` true by default;
-`owner-role.ts` holds the rules): on Postgres it needs every listed database to
-have an owner role (422 `managed_admin_needs_owner_role`) and joins the owner
-role with inherited rights, no CREATEROLE/SUPERUSER/REPLICATION/BYPASSRLS; on
+`owner-role.ts` holds the rules): on Postgres it joins the owner role of each
+listed database that has one, with inherited rights, no CREATEROLE/SUPERUSER/REPLICATION/BYPASSRLS; on
 MySQL/MariaDB it gets `ALL` on each listed database with the grant option and
 nothing global. The panel owns these roles and memberships: reconcile re-asserts
 them on every apply.
