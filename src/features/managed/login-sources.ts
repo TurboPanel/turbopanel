@@ -252,6 +252,19 @@ function describePlace(place: string): string {
   return place.slice('address:'.length)
 }
 
+/** Dry-run lines for a PATCH; empty when it touches neither limit. */
+export function describePatchedLimits(
+  current: unknown,
+  input: { allowedSources?: string[] | null; maxConnections?: number | null }
+): string[] {
+  if (input.allowedSources === undefined && input.maxConnections === undefined) return []
+  const sources =
+    input.allowedSources === undefined ? loginAllowedSources(current) : input.allowedSources
+  const cap =
+    input.maxConnections === undefined ? loginMaxConnections(current) : input.maxConnections
+  return describeLoginLimits(sources ?? undefined, cap ?? undefined)
+}
+
 /** Plain-words lines for a dry run. */
 export function describeLoginLimits(
   sources: readonly string[] | undefined,

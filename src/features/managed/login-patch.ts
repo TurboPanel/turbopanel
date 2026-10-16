@@ -15,7 +15,7 @@ import {
   loginGrantMode,
   loginIsTool,
 } from './logins.ts'
-import { describeLoginLimits, loginAllowedSources, loginMaxConnections } from './login-sources.ts'
+import { describePatchedLimits } from './login-sources.ts'
 
 export type LoginPatchError = {
   ok: false
@@ -186,17 +186,7 @@ export function planLoginPatch(
   }
   const tool = (metadata.tool as boolean | undefined) ?? loginIsTool(current.metadata)
   const summary = describeApply(engine, after, tool, becomesAdmin)
-  if (input.allowedSources !== undefined || input.maxConnections !== undefined) {
-    const sources =
-      input.allowedSources === undefined
-        ? loginAllowedSources(current.metadata)
-        : (input.allowedSources ?? undefined)
-    const cap =
-      input.maxConnections === undefined
-        ? loginMaxConnections(current.metadata)
-        : (input.maxConnections ?? undefined)
-    summary.push(...describeLoginLimits(sources, cap))
-  }
+  summary.push(...describePatchedLimits(current.metadata, input))
   return { ok: true, metadata, grantMode: after, summary }
 }
 

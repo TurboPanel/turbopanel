@@ -41,7 +41,7 @@ import {
   resolveManagedOwningOrganizationIds,
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
-import { loginPatchUndo, planLoginPatch } from '../../features/managed/login-patch.ts'
+import { loginPatchUndo } from '../../features/managed/login-patch.ts'
 import {
   loginLimitMetadata,
   parseGatedLoginLimits,
@@ -2112,13 +2112,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const target = await findManagedLogin(db, row.id, c.req.param('principalId'))
     if (!target) return c.json({ error: 'Not found' }, 404)
 
-    const parsed = await parseLoginPatchRequest(c, db, ctx, body, options)
+    const parsed = await parseLoginPatchRequest(c, db, ctx, body, options, target)
     if (parsed instanceof Response) return parsed
-    const { dryRun, limits, input } = parsed
-    const plan = planLoginPatch(ctx.spec.engine, target, input, {
-      ownerRoleDatabases: options.ownerRoleDatabases,
-    })
-    if (!plan.ok) return c.json({ error: plan.error, message: plan.message }, plan.status)
+    const { dryRun, limits, plan } = parsed
 
     if (dryRun) {
       // The daemon builds the SQL, so the preview lists the kinds of statement.
