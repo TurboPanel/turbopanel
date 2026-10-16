@@ -1360,6 +1360,27 @@ async function forgetLoginOwners(
     .where(eq(managed.id, managedId))
 }
 
+/** Restore only when no member's apply reached the queue (it would carry the new settings). */
+async function restoreUnlessQueued(
+  db: Db,
+  members: readonly { serverId: string }[],
+  startedAt: string,
+  restore: () => Promise<void>
+): Promise<void> {
+  const queued = await db
+    .select({ id: command.id })
+    .from(command)
+    .where(
+      and(
+        inArray(command.serverId, [...new Set(members.map((m) => m.serverId))]),
+        eq(command.name, 'managed.apply'),
+        sql`${command.createdAt} >= ${startedAt}`
+      )
+    )
+    .limit(1)
+  if (queued.length === 0) await restore()
+}
+
 /** Owner checks around a login PATCH: a refusal Response, or the notes for the answer. */
 async function gateLoginPatchOwnership(
   c: Context<AppEnv>,
@@ -2297,18 +2318,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       // carries the new settings, so restoring the old metadata would leave the
       // server and the panel disagreeing: keep the change and let the next apply
       // finish the job. Restore only when nothing was queued.
-      const queued = await db
-        .select({ id: command.id })
-        .from(command)
-        .where(
-          and(
-            inArray(command.serverId, [...new Set(prepared.members.map((m) => m.serverId))]),
-            eq(command.name, 'managed.apply'),
-            sql`${command.createdAt} >= ${startedAt}`
-          )
-        )
-        .limit(1)
-      if (queued.length === 0) await restore()
+      await restoreUnlessQueued(db, prepared.members, startedAt, restore)
       throw error
     }
     if (enqueued instanceof Response) {
