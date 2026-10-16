@@ -145,7 +145,7 @@ MariaDB grants are database-wide. Only Database admin holds GRANT OPTION. The
 daemon (`managed-data-only-readwrite-v1`) grants a level and then revokes the
 rest of the database-level privileges the row holds, so logins made under the
 older wide App recipe are tightened at their next apply; the control plane
-refuses to create a panel-managed App login, or to change a login to App, on an older daemon. A login that still defines a trigger keeps TRIGGER until the triggers move to the Migrations login.
+refuses to create a panel-managed App login, or to change a login to App, on an older daemon. A login that still defines a trigger or a scheduled event keeps TRIGGER or EVENT until they move to the Migrations login.
 
 ## Panel ledger
 
