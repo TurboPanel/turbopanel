@@ -181,7 +181,6 @@ import {
   evaluateOperatorPromoteGate,
   evaluatePromoteMemberRole,
   evaluatePromoteReplicaClass,
-  evaluateReadOnlyLoginTargetsLazy,
   evaluateReplicaClassConversion,
   evaluateReplicaPlacementPrechecks,
   isManagedReplicationPrincipal,
@@ -1977,12 +1976,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
 
-    // A read-only login needs a read-eligible replica to land on; refuse it
-    // before anything is inserted or queued (a standalone cluster has none).
-    const readGuard = await evaluateReadOnlyLoginTargetsLazy(connectionRole, () =>
-      listManagedMembers(db, row.id)
-    )
-    if (readGuard) return c.json({ error: readGuard.error }, readGuard.status)
+    // A read-only login on a cluster with no read-eligible replica is fine:
+    // the daemon routes it to the primary, so SELECT-only works on one server.
 
     // Same-cluster collision, owning-org namespace probe, and the inserts
     // share one txn so the organization FOR UPDATE lock covers the insert —

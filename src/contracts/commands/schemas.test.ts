@@ -5897,6 +5897,31 @@ test('parseManagedIngressReconcilePayload covers monitor, ports, bind, and clust
   assertEquals(payload.clusters[0]?.autoReadSplit, true)
   assertEquals(payload.clusters[0]?.requireTls, true)
   assertEquals(payload.clusters[0]?.users[0]?.connectionRole, 'read-only')
+  assertEquals(payload.clusters[0]?.users[0]?.tool, undefined)
+  const toolPayload = parseManagedIngressReconcilePayload({
+    ...VALID_MANAGED_INGRESS_RECONCILE,
+    clusters: [
+      {
+        ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
+        users: [{ ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0]!.users[0], tool: true }],
+      },
+    ],
+  })
+  assertEquals(toolPayload.clusters[0]?.users[0]?.tool, true)
+  assertThrows(
+    () =>
+      parseManagedIngressReconcilePayload({
+        ...VALID_MANAGED_INGRESS_RECONCILE,
+        clusters: [
+          {
+            ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
+            users: [{ ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0]!.users[0], tool: 'yes' }],
+          },
+        ],
+      }),
+    TypeError,
+    'Invalid managed.ingress.reconcile user tool'
+  )
 
   assertThrows(
     () => parseManagedIngressReconcilePayload(null),

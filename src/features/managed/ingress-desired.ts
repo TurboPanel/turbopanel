@@ -100,6 +100,7 @@ import {
   isAtRestSealedPassword,
   mergeHierarchyContainerSan,
   principalConnectionRole,
+  principalIsTool,
   principalDefaultDatabase,
   protocolListenerForEngine,
   sanBindAddresses,
@@ -273,6 +274,7 @@ async function loadClusterUsersForManagedIds(
     if (defaultDatabase !== undefined) user.defaultDatabase = defaultDatabase
     const connectionRole = principalConnectionRole(row.metadata)
     if (connectionRole !== undefined) user.connectionRole = connectionRole
+    if (principalIsTool(row.metadata)) user.tool = true
     // Only the root login is limited by source address; an app login keeps
     // working from wherever its owner allows. Sent even when empty: present
     // means "limit to this server and its containers plus these".

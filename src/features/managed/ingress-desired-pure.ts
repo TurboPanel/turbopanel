@@ -343,6 +343,16 @@ export function sortManagedIds(ids: Iterable<string>): string[] {
   return [...ids].sort((a, b) => a.localeCompare(b))
 }
 
+/**
+ * A database-tool login (`metadata.tool === true`): the daemon sends all of
+ * its traffic to the primary and adds no read/write split rules. Only an
+ * explicit `true` is emitted, so the payload for other logins stays minimal.
+ */
+export function principalIsTool(metadata: unknown): true | undefined {
+  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) return undefined
+  return (metadata as Record<string, unknown>).tool === true ? true : undefined
+}
+
 export function buildIngressUserRole(metadata: unknown): 'root' | 'user' {
   return isManagedRootPrincipal(metadata) ? 'root' : 'user'
 }

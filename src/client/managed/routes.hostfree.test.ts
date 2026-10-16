@@ -3371,26 +3371,14 @@ const WITH_HIDDEN_REPLICA = [
   }),
 ]
 
-test('POST users refuses a read-only login on a standalone cluster', async () => {
-  const { res, inserted, envelopes } = await postUser(
-    {
-      connectionRole: 'read-only',
-    },
-    PRIMARY_ONLY
-  )
-  await expectJson(res, 422, { error: 'managed_no_read_targets' })
-  assertEquals(inserted, [])
-  assertEquals(envelopes, [])
+test('POST users accepts a read-only login on a standalone cluster', async () => {
+  const { inserted } = await postUser({ connectionRole: 'read-only' }, PRIMARY_ONLY)
+  assertEquals(loginMetadata(inserted).connectionRole, 'read-only')
 })
 
-test('POST users refuses a read-only login when no replica is read-eligible', async () => {
-  const { res, inserted, envelopes } = await postUser(
-    { connectionRole: 'read-only' },
-    WITH_HIDDEN_REPLICA
-  )
-  await expectJson(res, 422, { error: 'managed_no_read_targets' })
-  assertEquals(inserted, [])
-  assertEquals(envelopes, [])
+test('POST users accepts a read-only login when no replica is read-eligible', async () => {
+  const { inserted } = await postUser({ connectionRole: 'read-only' }, WITH_HIDDEN_REPLICA)
+  assertEquals(loginMetadata(inserted).connectionRole, 'read-only')
 })
 
 // The principal is inserted before the apply payloads are prepared, and the

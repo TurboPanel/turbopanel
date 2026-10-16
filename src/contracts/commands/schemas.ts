@@ -5343,6 +5343,11 @@ export type ManagedIngressReconcileUser = {
   /** Absent means `read-write`, so a skewed daemon keeps writer routing. */
   connectionRole?: ManagedConnectionRole
   /**
+   * Database-tool login: all traffic goes to the primary and no read/write
+   * split rule is added. Absent means false.
+   */
+  tool?: boolean
+  /**
    * Root logins only: the addresses of the organization's servers (public,
    * private network, mesh) the root login may be used from, as plain
    * IPv4/IPv6 addresses. Present — even empty — limits the root login to the
@@ -7397,6 +7402,12 @@ function parseManagedIngressReconcileUser(value: unknown): ManagedIngressReconci
       throw new TypeError('Invalid managed.ingress.reconcile user connectionRole')
     }
     user.connectionRole = value.connectionRole
+  }
+  if (value.tool !== undefined) {
+    if (typeof value.tool !== 'boolean') {
+      throw new TypeError('Invalid managed.ingress.reconcile user tool')
+    }
+    user.tool = value.tool
   }
   if (value.allowedSources !== undefined) {
     user.allowedSources = parseManagedIngressAllowedSources(value.allowedSources)
