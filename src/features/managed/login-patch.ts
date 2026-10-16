@@ -7,8 +7,13 @@
  * statements by kind instead of printing them.
  */
 
-import { isLoginGrantMode, type LoginGrantMode, loginGrantMode, loginIsTool } from './logins.ts'
-import type { DatabaseLoginRole } from './logins.ts'
+import {
+  type DatabaseLoginRole,
+  isLoginGrantMode,
+  type LoginGrantMode,
+  loginGrantMode,
+  loginIsTool,
+} from './logins.ts'
 
 export type LoginPatchError = {
   ok: false
