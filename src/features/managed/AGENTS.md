@@ -308,7 +308,9 @@ stays internal.
   the server is reachable that way, by design. With `::` the daemon also gives
   ProxySQL its own IPv6-only Docker network and an IPv6 listener, so IPv6
   clients reach it with their real address (and through `DOCKER-USER`, like
-  IPv4); loopback clients still show the managed network's gateway. Details:
+  IPv4); loopback clients still show the managed network's gateway. The daemon
+  does this only on Docker Engine 28+ / Compose 2.33.1+; older hosts keep the
+  old path. Details:
   `../turbopaneld/src/managed/AGENTS.md` → **Real client addresses (IPv6 network)**.
 
 Each `managed.ingress.reconcile` cluster also carries `engineVersion`, the
@@ -319,7 +321,8 @@ runs: `18`, `9.7`, `11.8`; absent for an image outside the catalog). The daemon 
 real engine instead of ProxySQL's defaults (PostgreSQL 16.1, MySQL 8.0.11).
 One listener per family is shared by every cluster on the server: it reports
 the newest series, MySQL before MariaDB on the MySQL-family listener, MariaDB
-as `<series>-MariaDB` (daemon `managed/proxysql-server-version.ts`).
+as `<series>-MariaDB`, padded with zeros because drivers parse it (`9.7.0`,
+`11.8.0-MariaDB`, `18.0`; daemon `managed/proxysql-server-version.ts`).
 
 `decideIngressBindAddresses` in `ingress-desired-pure.ts` turns the setting into
 the `bindAddresses` sent in `managed.ingress.reconcile` (a server with no
