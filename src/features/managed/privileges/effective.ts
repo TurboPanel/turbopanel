@@ -45,6 +45,8 @@ export type EffectiveGrant = {
   object?: string
   columns?: string[]
   host?: string
+  /** MySQL / MariaDB: the schema name is a wildcard pattern (`shop_%`); shown, never edited. */
+  pattern?: boolean
   via?: string
   /** Plain name for a grant that applies to everyone (Postgres PUBLIC): `everyone`. */
   viaLabel?: string
@@ -244,6 +246,7 @@ function classifyGrant(
     if (value !== undefined) out[key] = value
   }
   if (grant.columns) out.columns = grant.columns
+  if (grant.pattern === true) out.pattern = true
   if (grant.via === 'PUBLIC') out.viaLabel = 'everyone'
   return out
 }

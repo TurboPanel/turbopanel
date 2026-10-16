@@ -280,3 +280,25 @@ test('PUBLIC grants are labelled everyone; MySQL role grants are not expanded', 
     ['reader']
   )
 })
+
+test('the parser keeps databasesFailed and the wildcard pattern flag', () => {
+  const parsed = parseManagedPermissionsObserved({
+    engine: 'mysql',
+    observedAt: NOW,
+    databasesFailed: ['shop'],
+    logins: [
+      {
+        username: 'a',
+        exists: true,
+        memberships: [],
+        defaults: [],
+        grants: [{ level: 'database', database: 'shop_%', privileges: ['SELECT'], pattern: true }],
+      },
+    ],
+  })!
+  assertEquals(parsed.databasesFailed, ['shop'])
+  assertEquals(parsed.logins[0]!.grants[0]!.pattern, true)
+  const my = privilegeCatalogueFor('mysql', '8.4')!
+  const view = buildEffectivePermissions(my, parsed, parsed.logins[0]!)
+  assertEquals(view.grants[0]!.pattern, true)
+})

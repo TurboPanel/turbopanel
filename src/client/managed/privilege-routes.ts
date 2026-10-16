@@ -15,6 +15,7 @@
  */
 import { eq } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
+import { MAX_DAEMON_WS_PERMISSIONS_DATABASES } from '../../contracts/cell-protocol.ts'
 import type { AppEnv } from '../../app/app.ts'
 import { getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import { managed } from '../../db/schema.ts'
@@ -95,8 +96,14 @@ export function registerManagedPrivilegeRoutes(router: Hono<AppEnv>) {
     if (serverId instanceof Response) return serverId
 
     const placed = loginDatabases(target.metadata)
+    // Only Postgres reads per database; MySQL and MariaDB read every grant of the account.
     const databases =
-      placed.length > 0 ? placed : (parseManagedRowOptions(ctx.spec, row.options)?.databases ?? [])
+      ctx.spec.engine === 'postgres'
+        ? (placed.length > 0
+            ? placed
+            : (parseManagedRowOptions(ctx.spec, row.options)?.databases ?? [])
+          ).slice(0, MAX_DAEMON_WS_PERMISSIONS_DATABASES)
+        : []
     const outcome = await probeManagedPermissions(db, getDaemonCellRegistry(c), {
       serverId,
       managedId: row.id,
@@ -122,7 +129,10 @@ export function registerManagedPrivilegeRoutes(router: Hono<AppEnv>) {
         {
           error: 'permissions_read_failed',
           reason: outcome.reason,
-          message: 'The server did not answer in time. Try again in a moment.',
+          message:
+            outcome.reason === 'timeout'
+              ? 'The server did not answer in time. Try again in a moment.'
+              : 'The server could not read the permissions. Try again in a moment.',
         },
         outcome.reason === 'timeout' ? 504 : 502
       )
@@ -142,7 +152,9 @@ export function registerManagedPrivilegeRoutes(router: Hono<AppEnv>) {
     }
     return c.json({
       ...buildEffectivePermissions(catalogue, report, observed),
-      databases: databases,
+      databases,
+      databasesRead: report.databasesRead ?? [],
+      databasesFailed: report.databasesFailed ?? [],
       versionMatchesCatalogue: reportMatchesSeries(report.serverVersion, catalogue.series),
     })
   })

@@ -45,6 +45,8 @@ export type ObservedGrant = {
   via?: string
   /** MySQL / MariaDB: the account host row the grant was read from. */
   host?: string
+  /** MySQL / MariaDB: the schema name holds an unescaped `_` or `%`, so it is a wildcard pattern. */
+  pattern?: boolean
   /** Postgres: the role that made the grant. */
   grantor?: string
 }
@@ -116,6 +118,8 @@ export type ManagedPermissionsObserved = {
   observedAt: string
   /** Postgres: the databases whose objects were read. */
   databasesRead?: string[]
+  /** Postgres: databases that could not be read (error or out of time); their grants are missing. */
+  databasesFailed?: string[]
   logins: ObservedLogin[]
 }
 
@@ -171,6 +175,7 @@ function parseGrant(value: unknown): ObservedGrant | null {
   }
   const columns = names(value.columns, OBSERVED_MAX_COLUMNS)
   if (columns) grant.columns = columns
+  if (value.pattern === true) grant.pattern = true
   const grantable = names(value.grantable, OBSERVED_MAX_PRIVILEGES)
   if (grantable) grant.grantable = grantable
   return grant
@@ -289,5 +294,7 @@ export function parseManagedPermissionsObserved(value: unknown): ManagedPermissi
   if (version) out.serverVersion = version
   const databases = names(value.databasesRead, 1000)
   if (databases) out.databasesRead = databases
+  const failed = names(value.databasesFailed, 1000)
+  if (failed) out.databasesFailed = failed
   return out
 }

@@ -815,6 +815,8 @@ export const managedSchemas = {
       'outsidePolicyCount',
       'ledger',
       'databases',
+      'databasesRead',
+      'databasesFailed',
       'versionMatchesCatalogue',
     ],
     description:
@@ -886,6 +888,7 @@ export const managedSchemas = {
             host: { type: 'string' },
             via: { type: 'string', description: 'The role the grant comes through.' },
             viaLabel: { type: 'string', description: '`everyone` for a Postgres PUBLIC grant.' },
+            pattern: { type: 'boolean', description: 'The schema name is a wildcard pattern.' },
             grantor: { type: 'string' },
             privileges: {
               type: 'array',
