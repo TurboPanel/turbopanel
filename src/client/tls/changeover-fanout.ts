@@ -37,11 +37,11 @@ import {
 import {
   binding,
   environment,
-  login,
   managed,
+  replica,
+  login,
   principal,
   project,
-  replica,
   server,
   service,
   slot,
@@ -326,11 +326,7 @@ function dropBindingResult(results: CaRotationResultRow[], managedId: string): v
 }
 
 type RematerializeOutcome =
-  | {
-      ok: true
-      needsRedeploy: CaRotationNeedsRedeploy[]
-    }
-  | { ok: false; error: string }
+  { ok: true; needsRedeploy: CaRotationNeedsRedeploy[] } | { ok: false; error: string }
 
 async function loadManagedRowsForRotation(
   db: Db,
