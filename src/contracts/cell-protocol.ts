@@ -9,6 +9,7 @@ import type {
 } from '../features/servers/server-metadata.ts'
 import type { MetricsCapabilityPlan } from './capability-plan.ts'
 import type { ServiceRunState } from './service-run-state.ts'
+import type { ManagedPermissionsObserved } from '../features/managed/privileges/observed.ts'
 import { isValidWireguardEndpoint, isValidWireguardPublicKey } from '../features/fabric/wg.ts'
 
 export type DaemonBuildInfo = {
@@ -364,6 +365,38 @@ export type ManagedHealthObservedMember = {
   }
 }
 
+/**
+ * Ask a host for the current permissions of some logins on one managed
+ * cluster it runs (feature `managed-permissions-read-v1`). Read only.
+ * Twin of the daemon's `ManagedPermissionsRequestMessage`.
+ */
+export type ManagedPermissionsRequestMessage = {
+  type: 'managed-permissions-request'
+  id: string
+  managedId: string
+  engine: string
+  /** Applied engine usernames (up to {@link MAX_DAEMON_WS_PERMISSIONS_LOGINS}). */
+  logins: string[]
+  /** Postgres: databases whose objects to read. Ignored for MySQL and MariaDB. */
+  databases: string[]
+  at: string
+}
+
+/**
+ * The host's answer: what the engine reports, bounded to
+ * {@link MAX_DAEMON_WS_PERMISSIONS_JSON_BYTES}. The control plane parses
+ * `permissions` with `parseManagedPermissionsObserved`.
+ * Twin of the daemon's `ManagedPermissionsResultMessage`.
+ */
+export type ManagedPermissionsResultMessage = {
+  type: 'managed-permissions-result'
+  id: string
+  ok: boolean
+  permissions?: ManagedPermissionsObserved
+  error?: string
+  at: string
+}
+
 /** One replica in a `managed-health-report`: `down`, or its reading. */
 export type ManagedHealthReportMember = {
   managedId: string
@@ -479,6 +512,8 @@ export type DaemonMessage =
       error?: string
       at: string
     }
+  | ManagedPermissionsRequestMessage
+  | ManagedPermissionsResultMessage
   | {
       /**
        * Daemon-initiated, fire-and-forget: every managed replica the host runs,
@@ -838,6 +873,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'addresses-result',
   'managed-logs-result',
   'managed-health-result',
+  'managed-permissions-result',
   'container-logs-result',
   'metrics-live-start-result',
   'metrics-live-stop-result',
@@ -906,6 +942,13 @@ export const MAX_DAEMON_WS_LOGS_CHARS = 200 * 1024
 export const MAX_DAEMON_WS_MANAGED_HEALTH_FIELD_CHARS = 128
 /** Bound for a replica's opaque GTID set text (`receivedGtid`, `executedGtid`). */
 export const MAX_DAEMON_WS_MANAGED_GTID_CHARS = 4096
+
+/** Max logins in one `managed-permissions-request`. */
+export const MAX_DAEMON_WS_PERMISSIONS_LOGINS = 50
+/** Max databases in one `managed-permissions-request`. */
+export const MAX_DAEMON_WS_PERMISSIONS_DATABASES = 100
+/** Max UTF-8 bytes of `managed-permissions-result.permissions` JSON. */
+export const MAX_DAEMON_WS_PERMISSIONS_JSON_BYTES = 128 * 1024
 
 /** Max UTF-8 bytes of `metrics-capabilities-result.capabilities` JSON. */
 export const MAX_DAEMON_WS_CAPABILITIES_BYTES = 96 * 1024
@@ -1617,6 +1660,20 @@ function validateManagedHealthResultFields(record: Record<string, unknown>): str
   return validateManagedHealthMember(record.member)
 }
 
+function validateManagedPermissionsResultFields(record: Record<string, unknown>): string | null {
+  const base = validateOkResultFields(record)
+  if (base) return base
+  if (record.permissions === undefined) return null
+  if (typeof record.permissions !== 'object' || record.permissions === null) {
+    return 'invalid permissions'
+  }
+  return validateBoundedJson(
+    record.permissions,
+    MAX_DAEMON_WS_PERMISSIONS_JSON_BYTES,
+    'permissions'
+  )
+}
+
 /**
  * What the host did with a `deploy-cancel`: `cancelling` (it was told to stop;
  * the deploy command's own outcome says how it ended), `too_late` (the deploy
@@ -1767,6 +1824,8 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateManagedLogsResultFields(record)
     case 'managed-health-result':
       return validateManagedHealthResultFields(record)
+    case 'managed-permissions-result':
+      return validateManagedPermissionsResultFields(record)
     case 'repo-read-result':
       return validateRepoReadResultFields(record)
     case 'repo-default-branch-result':
@@ -1886,6 +1945,7 @@ function validateInboundEnvelopeKind(inbound: DaemonInboundEnvelope): string | n
       return validateRepoReadEnvelope(inbound)
     case 'repo-default-branch-result':
     case 'managed-health-result':
+    case 'managed-permissions-result':
       return validateOptionalError(inbound.error)
     case 'fabric-paths-result':
       return validateFabricPathsEnvelope(inbound)
@@ -1965,6 +2025,13 @@ export type DaemonOutboundEnvelope =
       memberId: string
       role: 'primary' | 'replica'
       engine: string
+    })
+  | (OutboundEnvelopeBase & {
+      kind: 'managed-permissions-request'
+      managedId: string
+      engine: string
+      logins: string[]
+      databases: string[]
     })
   | (OutboundEnvelopeBase & {
       kind: 'container-logs-request'
@@ -2086,6 +2153,14 @@ export type DaemonInboundEnvelope =
       at: string
       ok: boolean
       member?: ManagedHealthObservedMember
+      error?: string
+    }
+  | {
+      kind: 'managed-permissions-result'
+      requestId: string
+      at: string
+      ok: boolean
+      permissions?: ManagedPermissionsObserved
       error?: string
     }
   | {
@@ -2279,6 +2354,15 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
         at: msg.at,
         ok: msg.ok,
         member: msg.member,
+        error: msg.error,
+      }
+    case 'managed-permissions-result':
+      return {
+        kind: 'managed-permissions-result',
+        requestId: msg.id,
+        at: msg.at,
+        ok: msg.ok,
+        permissions: msg.permissions,
         error: msg.error,
       }
     case 'container-logs-result':
@@ -2520,6 +2604,16 @@ export function outboundEnvelopeToWireMessage(env: DaemonOutboundEnvelope): Daem
         memberId: env.memberId,
         role: env.role,
         engine: env.engine,
+        at: env.at,
+      }
+    case 'managed-permissions-request':
+      return {
+        type: 'managed-permissions-request',
+        id: env.requestId,
+        managedId: env.managedId,
+        engine: env.engine,
+        logins: env.logins,
+        databases: env.databases,
         at: env.at,
       }
     case 'container-logs-request':

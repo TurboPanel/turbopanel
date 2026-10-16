@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm'
+import { MANAGED_OWNER_ROLE_FEATURE } from '../../lib/version-wire.ts'
 import { effectiveManagedImage } from './releases.ts'
 import type { Context } from 'hono'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
@@ -36,8 +37,8 @@ import type { ManagedSettings } from './settings.ts'
 import {
   isPrivateEndpointError,
   type PrivateEndpointError,
-  type PrivateEndpointPurpose,
   privateEndpointErrorResponse,
+  type PrivateEndpointPurpose,
   resolvePrivateEndpoint,
   resolvePrivateEndpoints,
 } from '../net/private-endpoint.ts'
@@ -58,16 +59,17 @@ import {
   findManagedLoginByRole,
   legacyPrincipalIdOf,
   listManagedLoginCredentials,
+  loginGrantMode,
   type ManagedLoginCredentialRow,
   setLoginPassword,
 } from './logins.ts'
 import { loadPrincipalNamePolicy } from './load-org-defaults.ts'
 import { generatePassword } from '../../lib/secrets/generate-secret.ts'
 import {
+  isOrganizationCaUniqueViolation,
   loadOrganizationCaSet,
   nextOrganizationCaGeneration,
   type OrganizationCaSet,
-  isOrganizationCaUniqueViolation,
 } from '../tls/organization-ca.ts'
 import {
   organizationCaLeafNotAfterIso,
@@ -245,6 +247,12 @@ export type BuildManagedApplyInput = {
   spec: ManagedEngineSpec
   settings: ManagedSettings
   databases: string[]
+  /** Postgres: the subset of `databases` made with an owner role. */
+  ownerRoleDatabases: string[] | undefined
+  /** Postgres: owner-role databases whose owner is a login the customer chose. */
+  databaseOwners?: Record<string, { username: string }>
+  /** Postgres: dropped databases that had an owner role (their roles go too). */
+  dropOwnerRoleDatabases?: string[]
   /** Primary pin — the server `ensureManagedPrimaryMember` binds the primary to. */
   serverId: string
   environmentId: string
@@ -427,6 +435,13 @@ async function buildCredentials(
     return { kind: 'daemon_key_unavailable', serverId }
   }
 
+  // A daemon older than owner roles does not know the Database admin login
+  // (on any engine) and would ignore it, leaving a login with no rights. It gets the same login as a
+  // read/write login instead (the answer to the request says so), never a
+  // refusal and never more than read/write.
+  const daemonKnowsAdmin = (daemonState.projection?.features ?? []).includes(
+    MANAGED_OWNER_ROLE_FEATURE
+  )
   const credentials: ManagedApplyCommandPayload['credentials'] = []
   const failure = await firstSequential(rows, async (row) => {
     // The replication login is attached separately when multi-member.
@@ -453,7 +468,14 @@ async function buildCredentials(
       password: resealed,
     }
     const privileges = principalPrivileges(row.metadata)
-    if (privileges !== undefined) credential.privileges = privileges
+    if (privileges !== undefined) {
+      credential.privileges =
+        !daemonKnowsAdmin && privileges.includes('admin') ? ['read-write'] : privileges
+    }
+    // Only a non-default mode goes on the wire, so payloads for logins made
+    // before modes existed stay exactly as they were.
+    const grantMode = loginGrantMode(row.metadata)
+    if (grantMode !== 'preset') credential.grantMode = grantMode
     credentials.push(credential)
     return undefined
   })
@@ -597,7 +619,10 @@ async function buildOrgTlsMaterialForServer(
     ipAddresses?: readonly string[]
   }
 ): Promise<
-  | { material: ManagedApplyOrgTlsMaterial; pendingTlsLeaf: UpsertTlsLeafTrackingParams }
+  | {
+      material: ManagedApplyOrgTlsMaterial
+      pendingTlsLeaf: UpsertTlsLeafTrackingParams
+    }
   | ManagedApplyPrepareError
 > {
   const {
@@ -777,7 +802,9 @@ export async function resolveMemberPrivateBindAddress(
   const consumerDialers = extraFromServerIds.filter(
     (id) => id !== member.serverId && !memberServerIds.has(id)
   )
-  if (remotePeers.length === 0 && consumerDialers.length === 0) return undefined
+  if (remotePeers.length === 0 && consumerDialers.length === 0) {
+    return undefined
+  }
 
   const dialers: Array<{ serverId: string; purpose: PrivateEndpointPurpose }> = [
     ...remotePeers.map((peer) => ({
@@ -1033,8 +1060,12 @@ function attachMemberApplyFlags(
     topologyUser?: NonNullable<ManagedApplyCommandPayload['topologyUser']>
   }
 ): void {
-  if (extra.monitorUsers !== undefined) payload.monitorUsers = extra.monitorUsers
-  if (extra.topologyUser !== undefined) payload.topologyUser = extra.topologyUser
+  if (extra.monitorUsers !== undefined) {
+    payload.monitorUsers = extra.monitorUsers
+  }
+  if (extra.topologyUser !== undefined) {
+    payload.topologyUser = extra.topologyUser
+  }
   if (
     extra.roleForSpec === 'standby' &&
     (input.forceResyncMemberIds?.includes(extra.memberId) ?? false)
@@ -1242,6 +1273,37 @@ async function resolvePayloadMonitorUsers(
 }
 
 /**
+ * The create/drop operations of one apply. Every listed database is a create
+ * (idempotent on the daemon); `ownerRole` marks Postgres databases made with
+ * an owner role, on drop too so the daemon removes its roles.
+ */
+export function buildDatabaseOps(
+  input: Pick<BuildManagedApplyInput, 'databases'> &
+    Partial<
+      Pick<
+        BuildManagedApplyInput,
+        'dropDatabases' | 'ownerRoleDatabases' | 'dropOwnerRoleDatabases' | 'databaseOwners'
+      >
+    >
+): NonNullable<ManagedApplyCommandPayload['databases']> {
+  return [
+    ...input.databases.map((name) => ({
+      name,
+      action: 'create' as const,
+      ...(input.ownerRoleDatabases?.includes(name) ? { ownerRole: true } : {}),
+      ...(input.ownerRoleDatabases?.includes(name) && input.databaseOwners?.[name]
+        ? { ownerLogin: input.databaseOwners[name].username }
+        : {}),
+    })),
+    ...(input.dropDatabases ?? []).map((name) => ({
+      name,
+      action: 'drop' as const,
+      ...(input.dropOwnerRoleDatabases?.includes(name) ? { ownerRole: true } : {}),
+    })),
+  ]
+}
+
+/**
  * The organization's single Orchestrator topology account, on MySQL/MariaDB
  * primary payloads only.
  *
@@ -1290,7 +1352,10 @@ async function buildPayloadForMember(
     consumerServerIds: readonly string[]
   }
 ): Promise<
-  | { payload: ManagedApplyCommandPayload; pendingTlsLeaf: UpsertTlsLeafTrackingParams }
+  | {
+      payload: ManagedApplyCommandPayload
+      pendingTlsLeaf: UpsertTlsLeafTrackingParams
+    }
   | ManagedApplyPrepareError
 > {
   const { members, member, multiMember, replicationUsername, containerSans, consumerServerIds } =
@@ -1390,13 +1455,7 @@ async function buildPayloadForMember(
   })
   if (replError) return replError
 
-  const databases: NonNullable<ManagedApplyCommandPayload['databases']> = [
-    ...input.databases.map((name) => ({ name, action: 'create' as const })),
-    ...(input.dropDatabases ?? []).map((name) => ({
-      name,
-      action: 'drop' as const,
-    })),
-  ]
+  const databases = buildDatabaseOps(input)
 
   const builtMonitorUsers = await resolvePayloadMonitorUsers(
     db,
@@ -1492,7 +1551,9 @@ export async function prepareManagedApplyPayloads(
     members.map((m) => m.serverId),
     consumerServerIds
   )
-  const ports = await ensureMemberPrivatePorts(db, members, { hasRemoteConsumers })
+  const ports = await ensureMemberPrivatePorts(db, members, {
+    hasRemoteConsumers,
+  })
   if (isManagedPrivatePortExhaustedError(ports)) {
     return ports
   }

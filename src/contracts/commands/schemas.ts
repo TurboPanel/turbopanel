@@ -675,7 +675,9 @@ export function parsePrincipalsReconcileResult(value: unknown): PrincipalsReconc
     sshdReloaded: value.sshdReloaded,
     ...(value.principalsRetired === undefined
       ? {}
-      : { principalsRetired: parseStringArrayField(value.principalsRetired, 'principalsRetired') }),
+      : {
+          principalsRetired: parseStringArrayField(value.principalsRetired, 'principalsRetired'),
+        }),
     ...(principals === undefined ? {} : { principals }),
     warnings: parseStringArrayField(value.warnings, 'warnings'),
   }
@@ -4985,6 +4987,11 @@ export type ManagedApplyCredential = {
   role: 'root' | 'user' | 'replication'
   databases: string[]
   privileges?: string[]
+  /**
+   * How apply treats this login's permissions. Absent = `preset` (today's
+   * behaviour); only sent for `recipe` or `self`.
+   */
+  grantMode?: 'preset' | 'recipe' | 'self'
   /** Daemon-recipient sealed password (`tpdaemon.…`). */
   password: string
 }
@@ -4992,6 +4999,19 @@ export type ManagedApplyCredential = {
 export type ManagedApplyDatabaseOp = {
   name: string
   action: 'create' | 'drop'
+  /**
+   * Postgres only. A database made with an owner role (`tp_<name>_owner`,
+   * `_rw`, `_ro`). On create the daemon makes the roles and the database for
+   * the owner role (an existing database with another owner is left alone); on
+   * drop it removes the roles. Absent = today's behaviour.
+   */
+  ownerRole?: boolean
+  /**
+   * Postgres only, with `ownerRole` on a create. The applied username of the
+   * login the customer chose as the database's owner; the daemon moves the
+   * database onto it once the login exists. Needs `managed-database-owner-v1`.
+   */
+  ownerLogin?: string
 }
 
 /** Mirror of `ManagedTlsMaterialRequest` — daemon generates key material on host. */
@@ -5337,7 +5357,34 @@ export type ManagedIngressReconcileUser = {
   defaultDatabase?: string
   /** Absent means `read-write`, so a skewed daemon keeps writer routing. */
   connectionRole?: ManagedConnectionRole
+  /**
+   * Database-tool login: all traffic goes to the primary and no read/write
+   * split rule is added. Absent means false.
+   */
+  tool?: boolean
+  /**
+   * Where the login may be used from, as plain IPv4/IPv6 addresses or a
+   * trailing-`%` prefix (`203.0.113.%`). Root logins: the addresses of the
+   * organization's servers (public, private network, mesh); present — even
+   * empty — limits the root login to the server itself, its containers and
+   * these addresses (the daemon adds the host-local sources). App logins:
+   * sent only to a daemon that lists `managed-login-limits-v1`; present — even
+   * empty — limits the login to these addresses (plus the server itself when
+   * `allowLocalSources`). Absent means no limit, so a daemon that predates
+   * the field keeps today's behaviour.
+   */
+  allowedSources?: string[]
+  /** App logins with `allowedSources`: also allow the server itself and its containers. */
+  allowLocalSources?: boolean
+  /** Most simultaneous connections for this login; absent means no per-login cap. */
+  maxConnections?: number
 }
+
+/** Largest per-login connection cap. */
+export const MAX_MANAGED_INGRESS_LOGIN_CONNECTIONS = 100_000
+
+/** Most addresses one root login may list. */
+export const MAX_MANAGED_INGRESS_ALLOWED_SOURCES = 1024
 
 /**
  * Which ProxySQL hostgroup a frontend login defaults to. `read-only` is the
@@ -5360,6 +5407,13 @@ export function isManagedConnectionRole(value: unknown): value is ManagedConnect
 export type ManagedIngressReconcileCluster = {
   managedId: string
   engine: ManagedEngineCode
+  /**
+   * Engine release series (`18`, `9.7`, `11.8`) from the cluster's image.
+   * ProxySQL reports it to clients as the server version; an older daemon
+   * ignores it. Absent when the stored image is unreadable, is another
+   * engine's, or is outside the release catalog.
+   */
+  engineVersion?: string
   /**
    * Organization-resolved client listener port. Platform defaults are
    * 15432 / 13306; legacy 5432/3306 stay accepted for daemon skew.
@@ -5393,10 +5447,11 @@ export type ManagedIngressReconcileCommandPayload = {
    */
   managedNetwork: string
   /**
-   * Every host address the client listeners publish on. The control plane sends
-   * exactly one entry, from the server's single "allow external access to the
-   * databases on this server" setting: `127.0.0.1` for no, `0.0.0.0` for yes.
-   * Empty/absent still means no host publish at all.
+   * Every host address the client listeners publish on, from the server's
+   * single "allow external access to the databases on this server" setting:
+   * `127.0.0.1` for no; `0.0.0.0` for yes, plus `::` when the server has IPv6
+   * and its daemon advertises `managed-ingress-ipv6-v1`. Empty/absent still
+   * means no host publish at all.
    */
   bindAddresses?: string[]
   /**
@@ -6065,6 +6120,16 @@ function parseManagedApplyCredentialEntry(entry: unknown): ManagedApplyCredentia
   }
   const privileges = parseManagedApplyCredentialPrivileges(entry.privileges)
   if (privileges !== undefined) credential.privileges = privileges
+  if (entry.grantMode !== undefined) {
+    if (
+      entry.grantMode !== 'preset' &&
+      entry.grantMode !== 'recipe' &&
+      entry.grantMode !== 'self'
+    ) {
+      throw new Error('Invalid managed.apply credentials grantMode')
+    }
+    credential.grantMode = entry.grantMode
+  }
   return credential
 }
 
@@ -6079,6 +6144,23 @@ function parseManagedApplyCredentials(value: unknown): ManagedApplyCredential[] 
     throw new Error('Invalid managed.apply credentials: too many entries')
   }
   return value.map(parseManagedApplyCredentialEntry)
+}
+
+/** `ownerLogin` of a database op: a login name, only on a create with `ownerRole`. */
+function parseManagedDatabaseOwnerLogin(entry: Record<string, unknown>): string | undefined {
+  const value = entry.ownerLogin
+  if (value === undefined) return undefined
+  if (
+    typeof value !== 'string' ||
+    !isSafeIdentifier(value) ||
+    entry.ownerRole !== true ||
+    entry.action !== 'create'
+  ) {
+    throw new TypeError(
+      'Invalid managed.apply databases entry: ownerLogin must be a login name on a created database with ownerRole'
+    )
+  }
+  return value
 }
 
 function parseManagedApplyDatabases(value: unknown): ManagedApplyDatabaseOp[] | undefined {
@@ -6100,9 +6182,15 @@ function parseManagedApplyDatabases(value: unknown): ManagedApplyDatabaseOp[] | 
     ) {
       throw new Error('Invalid managed.apply databases entry')
     }
+    if (entry.ownerRole !== undefined && typeof entry.ownerRole !== 'boolean') {
+      throw new TypeError('Invalid managed.apply databases entry: ownerRole must be true or false')
+    }
+    const ownerLogin = parseManagedDatabaseOwnerLogin(entry)
     databases.push({
       name: entry.name,
       action: entry.action as ManagedApplyDatabaseOp['action'],
+      ...(entry.ownerRole === true ? { ownerRole: true } : {}),
+      ...(ownerLogin === undefined ? {} : { ownerLogin }),
     })
   }
   return databases
@@ -7363,7 +7451,61 @@ function parseManagedIngressReconcileUser(value: unknown): ManagedIngressReconci
     }
     user.connectionRole = value.connectionRole
   }
+  if (value.tool !== undefined) {
+    if (typeof value.tool !== 'boolean') {
+      throw new TypeError('Invalid managed.ingress.reconcile user tool')
+    }
+    user.tool = value.tool
+  }
+  parseManagedIngressUserLimits(value, user)
   return user
+}
+
+/** Optional source limit and connection cap of a login (absent = no limit). */
+function parseManagedIngressUserLimits(
+  value: Record<string, unknown>,
+  user: ManagedIngressReconcileUser
+): void {
+  if (value.allowedSources !== undefined) {
+    user.allowedSources = parseManagedIngressAllowedSources(value.allowedSources)
+  }
+  if (value.allowLocalSources !== undefined) {
+    if (typeof value.allowLocalSources !== 'boolean') {
+      throw new TypeError('Invalid managed.ingress.reconcile user allowLocalSources')
+    }
+    user.allowLocalSources = value.allowLocalSources
+  }
+  const cap = value.maxConnections
+  if (cap !== undefined) {
+    if (
+      typeof cap !== 'number' ||
+      !Number.isInteger(cap) ||
+      cap < 1 ||
+      cap > MAX_MANAGED_INGRESS_LOGIN_CONNECTIONS
+    ) {
+      throw new TypeError('Invalid managed.ingress.reconcile user maxConnections')
+    }
+    user.maxConnections = cap
+  }
+}
+
+function parseManagedIngressAllowedSources(value: unknown): string[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > MAX_MANAGED_INGRESS_ALLOWED_SOURCES ||
+    value.some(
+      (entry) =>
+        typeof entry !== 'string' ||
+        entry.length === 0 ||
+        entry.length > 45 ||
+        !/^[0-9a-fA-F:.]+%?$/.test(entry) ||
+        (entry.endsWith('%') &&
+          (!/^[0-9a-fA-F]{1,4}[.:](?:[0-9a-fA-F:.]*[.:])?%$/.test(entry) || entry.includes('::')))
+    )
+  ) {
+    throw new TypeError('Invalid managed.ingress.reconcile user allowedSources')
+  }
+  return [...value]
 }
 
 function parseManagedIngressReconcileCluster(value: unknown): ManagedIngressReconcileCluster {
@@ -7390,9 +7532,13 @@ function parseManagedIngressReconcileCluster(value: unknown): ManagedIngressReco
   if (value.requireTls !== undefined && typeof value.requireTls !== 'boolean') {
     throw new TypeError('Invalid managed.ingress.reconcile cluster requireTls')
   }
+  if (value.engineVersion !== undefined && !isManagedIngressEngineVersion(value.engineVersion)) {
+    throw new TypeError('Invalid managed.ingress.reconcile cluster engineVersion')
+  }
   const cluster: ManagedIngressReconcileCluster = {
     managedId: value.managedId,
     engine: value.engine,
+    ...(value.engineVersion === undefined ? {} : { engineVersion: value.engineVersion }),
     protocolPort: value.protocolPort,
     family: value.family,
     writerHostgroup: value.writerHostgroup,
@@ -7405,6 +7551,13 @@ function parseManagedIngressReconcileCluster(value: unknown): ManagedIngressReco
   }
   if (value.requireTls !== undefined) cluster.requireTls = value.requireTls
   return cluster
+}
+
+/** Must stay in sync with the daemon's `isProxySqlEngineVersion`. */
+const MANAGED_INGRESS_ENGINE_VERSION_RE = /^\d{1,4}(?:\.\d{1,4}){0,2}$/
+
+function isManagedIngressEngineVersion(value: unknown): value is string {
+  return isString(value) && MANAGED_INGRESS_ENGINE_VERSION_RE.test(value)
 }
 
 function isManagedIngressFamily(value: unknown): value is ManagedIngressFamily {

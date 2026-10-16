@@ -45,7 +45,7 @@ import {
   isTlsFingerprintUniqueViolation,
   isTlsUuid,
   materialFromOrganizationCa,
-  ORGANIZATION_CA_DOWNLOAD_HEADERS,
+  organizationCaDownloadHeaders,
   parseSource,
   rotationConflictResponse,
   rotationStatusResponse,
@@ -845,7 +845,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
 
     return new Response(set.trustBundlePem, {
       status: 200,
-      headers: { ...ORGANIZATION_CA_DOWNLOAD_HEADERS },
+      headers: organizationCaDownloadHeaders(organizationId),
     })
   })
 

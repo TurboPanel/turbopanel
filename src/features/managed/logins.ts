@@ -13,7 +13,7 @@
 
 import { and, asc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { binding, login, principal, replica, server } from '../../db/schema.ts'
+import { binding, login, managed, principal, replica, server } from '../../db/schema.ts'
 import { generateSealedSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { PrincipalNameScheme } from '../../lib/principal-name-scheme.ts'
@@ -38,7 +38,9 @@ export type ManagedLoginRow = {
   updatedAt: string
 }
 
-export type ManagedLoginCredentialRow = ManagedLoginRow & { password: string | null }
+export type ManagedLoginCredentialRow = ManagedLoginRow & {
+  password: string | null
+}
 
 const LOGIN_SELECT = {
   id: login.id,
@@ -52,6 +54,58 @@ const LOGIN_SELECT = {
   createdAt: login.createdAt,
   updatedAt: login.updatedAt,
   password: login.password,
+}
+
+/**
+ * How reconcile treats a login's permissions. `preset` is today's behaviour
+ * and is what a login with no key reads as. `recipe` is the panel-built
+ * permission set (new logins start here). `self` means the owner manages
+ * permissions by hand and reconcile never resets them.
+ */
+export const LOGIN_GRANT_MODES = ['preset', 'recipe', 'self'] as const
+export type LoginGrantMode = (typeof LOGIN_GRANT_MODES)[number]
+
+export function isLoginGrantMode(value: unknown): value is LoginGrantMode {
+  return typeof value === 'string' && (LOGIN_GRANT_MODES as readonly string[]).includes(value)
+}
+
+/** Grant mode stored on `login.metadata`; absent or unknown reads as `preset`. */
+export function loginGrantMode(metadata: unknown): LoginGrantMode {
+  if (!isRecord(metadata)) return 'preset'
+  return isLoginGrantMode(metadata.grantMode) ? metadata.grantMode : 'preset'
+}
+
+/** A database-tool login routes everything to the primary (no read/write split). */
+export function loginIsTool(metadata: unknown): boolean {
+  return isRecord(metadata) && metadata.tool === true
+}
+
+/** Where a login came from (`panel` today); `null` when not recorded. */
+export function loginOrigin(metadata: unknown): string | null {
+  if (!isRecord(metadata)) return null
+  return typeof metadata.origin === 'string' && metadata.origin.length > 0 ? metadata.origin : null
+}
+
+/** Replace a user login's metadata (keys not in `patch` are kept). */
+export async function patchLoginMetadata(
+  db: Db,
+  loginId: string,
+  patch: Record<string, unknown>
+): Promise<void> {
+  const [row] = await db
+    .select({ metadata: login.metadata })
+    .from(login)
+    .where(eq(login.id, loginId))
+    .limit(1)
+  if (!row) throw new TypeError('Login not found')
+  const base = isRecord(row.metadata) ? row.metadata : {}
+  await db
+    .update(login)
+    .set({
+      metadata: { ...base, ...patch },
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(login.id, loginId))
 }
 
 /** Role a legacy principal row's metadata implies. */
@@ -431,6 +485,54 @@ export async function isManagedLoginNameTaken(
     .innerJoin(replica, eq(login.managedId, replica.managedId))
     .innerJoin(server, eq(replica.serverId, server.id))
     .where(and(...conditions))
+    .limit(1)
+  return rows.length > 0
+}
+
+/**
+ * Engines whose logins share one ProxySQL frontend listener: MySQL and MariaDB
+ * speak one protocol family and share a listener, Postgres has its own.
+ * Redis and ClickHouse never reach the frontend (no family).
+ */
+export function managedProtocolFamilyEngines(engine: string): readonly string[] {
+  if (engine === 'mysql' || engine === 'mariadb') return ['mysql', 'mariadb']
+  if (engine === 'postgres') return ['postgres']
+  return []
+}
+
+/**
+ * True when another cluster of the same protocol family that shares a server
+ * with `managedId` already has a login with this name (even the same
+ * principal's): ProxySQL keeps one user table per family per server, so such a
+ * pair would fail every ingress reconcile. A cluster of another family is not
+ * a clash (separate user tables). Same-cluster names are checked elsewhere.
+ */
+export async function isManagedLoginNameTakenInFamily(
+  db: Db,
+  managedId: string,
+  engine: string,
+  name: string
+): Promise<boolean> {
+  const key = name.trim().toLowerCase()
+  const engines = managedProtocolFamilyEngines(engine)
+  if (!key || engines.length === 0) return false
+  const mine = db
+    .select({ serverId: replica.serverId })
+    .from(replica)
+    .where(eq(replica.managedId, managedId))
+  const rows = await db
+    .select({ id: login.id })
+    .from(login)
+    .innerJoin(managed, eq(login.managedId, managed.id))
+    .innerJoin(replica, eq(login.managedId, replica.managedId))
+    .where(
+      and(
+        ne(login.managedId, managedId),
+        inArray(managed.engine, [...engines]),
+        inArray(replica.serverId, mine),
+        sql`lower(btrim(${login.appliedUsername})) = ${key}`
+      )
+    )
     .limit(1)
   return rows.length > 0
 }

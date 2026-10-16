@@ -1,3 +1,18 @@
+const ALLOWED_SOURCES_SCHEMA = {
+  type: 'array',
+  items: { type: 'string' },
+  description:
+    "Where the login may be used from. Items: `any` (alone: everywhere, the default), `internal` (this server: its own programs and containers; anything arriving as the Docker gateway address counts as local), `server:<id>` (one of the organization's servers, all its addresses), `address:<ip | prefix% | cidr>` (one address, a prefix such as `203.0.113.%` or `2001:db8:1:%`, or a range that can be said exactly: IPv4 /8, /16, /24 or /32, IPv6 whole 16-bit groups /16 to /112; other ranges answer 400 `managed_login_source_range_not_exact`). The login still signs in from anywhere: the database proxy refuses every query from other addresses, so tools may show an empty page. An empty list answers 400 `managed_login_sources_empty`. Needs a server daemon that supports it (409 `managed_login_limits_need_daemon_update`). Other 400s: `managed_login_sources_invalid`, `managed_login_source_invalid`, `managed_login_sources_too_many`, `managed_login_sources_any_alone`, `managed_login_source_server_unknown`.",
+} as const
+
+const MAX_CONNECTIONS_SCHEMA = {
+  type: 'integer',
+  minimum: 1,
+  maximum: 10000,
+  description:
+    'Most connections this login may hold open at once. Omit for no per-login cap. Answers 400 `managed_login_max_connections_invalid` outside 1 to 10000.',
+} as const
+
 const ENV_ID_PARAM = {
   name: 'id',
   in: 'path',
@@ -623,7 +638,355 @@ export const managedSchemas = {
       },
       databases: { type: 'array', items: { type: 'string' } },
       privileges: { type: 'array', items: { type: 'string' } },
+      connectionRole: {
+        type: 'string',
+        enum: ['read-write', 'read-only'],
+        description:
+          'Where the login is routed: `read-write` to the primary, `read-only` to read replicas (or the primary when the cluster has none).',
+      },
+      grantMode: {
+        type: 'string',
+        enum: ['preset', 'recipe', 'self'],
+        description:
+          "Who sets the login's permissions. `preset` = logins made before modes existed (the panel resets permissions on every apply, as before). `recipe` = the panel sets them. `self` = you set them by hand and the panel never resets them; it still owns the password, LOGIN, connection limit and CONNECT on the listed databases.",
+      },
+      allowedSources: {
+        ...ALLOWED_SOURCES_SCHEMA,
+        description: "Places the login may connect from; `['any']` when unrestricted.",
+      },
+      maxConnections: {
+        type: 'integer',
+        nullable: true,
+        description: 'Per-login connection cap, or null.',
+      },
+      tool: {
+        type: 'boolean',
+        description:
+          'A database-tool login: everything goes to the primary, never split between reader and writer.',
+      },
       createdAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  PrivilegeCatalogueResponse: {
+    type: 'object',
+    required: [
+      'engine',
+      'series',
+      'levels',
+      'privileges',
+      'roles',
+      'attributes',
+      'membershipOptions',
+      'defaultPrivilegeObjects',
+      'blocked',
+    ],
+    description:
+      "Everything the cluster's exact engine series can grant, in plain words. Only series the panel supports have a catalogue.",
+    properties: {
+      engine: { type: 'string', enum: ['postgres', 'mysql', 'mariadb'] },
+      series: { type: 'string', description: 'Engine series, for example 18, 9.7 or 11.8.' },
+      levels: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['id', 'label', 'explanation'],
+          properties: {
+            id: {
+              type: 'string',
+              enum: [
+                'global',
+                'database',
+                'schema',
+                'table',
+                'column',
+                'sequence',
+                'routine',
+                'type',
+                'parameter',
+                'tablespace',
+                'language',
+                'foreign',
+                'largeobject',
+              ],
+            },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+          },
+        },
+      },
+      privileges: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['id', 'level', 'keyword', 'label', 'explanation', 'allowed', 'grid'],
+          properties: {
+            id: { type: 'string', description: '`<level>:<keyword>`, for example `table:SELECT`.' },
+            level: { type: 'string' },
+            keyword: { type: 'string', description: 'The word used in GRANT.' },
+            aliases: { type: 'array', items: { type: 'string' } },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+            since: { type: 'string', description: 'First series that has it, when not all.' },
+            allowed: {
+              type: 'string',
+              enum: ['yes', 'needs-admin', 'no'],
+              description:
+                "Whether a site owner's login may hold it: `yes`, `needs-admin` (reserved for a Database admin login) or `no` (never).",
+            },
+            reason: { type: 'string' },
+            aclLetter: { type: 'string', description: 'Postgres access-list letter.' },
+            grid: { type: 'boolean', description: 'False when it never shows as a grid cell.' },
+          },
+        },
+      },
+      roles: {
+        type: 'array',
+        description: 'Postgres predefined roles. Empty for MySQL and MariaDB.',
+        items: {
+          type: 'object',
+          required: ['name', 'label', 'explanation', 'grantable', 'allowed'],
+          properties: {
+            name: { type: 'string' },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+            since: { type: 'string' },
+            grantable: { type: 'boolean' },
+            allowed: { type: 'string', enum: ['yes', 'needs-admin', 'no'] },
+            reason: { type: 'string' },
+          },
+        },
+      },
+      attributes: {
+        type: 'array',
+        description: 'Postgres role attributes. Empty for MySQL and MariaDB.',
+        items: {
+          type: 'object',
+          required: ['name', 'column', 'label', 'explanation', 'allowed'],
+          properties: {
+            name: { type: 'string' },
+            column: { type: 'string' },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+            allowed: { type: 'string', enum: ['yes', 'needs-admin', 'no'] },
+            reason: { type: 'string' },
+          },
+        },
+      },
+      membershipOptions: {
+        type: 'array',
+        description: 'Options on a Postgres role membership (INHERIT and SET exist from 16).',
+        items: { type: 'object' },
+      },
+      defaultPrivilegeObjects: {
+        type: 'array',
+        description: 'Object kinds Postgres default privileges can name.',
+        items: { type: 'object' },
+      },
+      blocked: {
+        type: 'object',
+        required: ['databases', 'schemas', 'reservedPrefixes'],
+        properties: {
+          databases: { type: 'array', items: { type: 'string' } },
+          schemas: { type: 'array', items: { type: 'string' } },
+          reservedPrefixes: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+  },
+  PrivilegeCatalogueUnsupportedError: {
+    type: 'object',
+    required: ['error', 'message'],
+    properties: {
+      error: { type: 'string', const: 'privilege_catalogue_unsupported_version' },
+      message: { type: 'string' },
+    },
+  },
+  EffectivePrivilege: {
+    type: 'object',
+    required: ['keyword', 'catalogueId', 'label', 'explanation', 'allowed', 'grantable'],
+    properties: {
+      keyword: { type: 'string', description: 'As the engine spells it.' },
+      catalogueId: {
+        type: ['string', 'null'],
+        description: 'Catalogue id, or null when this engine version has no such privilege.',
+      },
+      label: { type: 'string' },
+      explanation: { type: 'string' },
+      allowed: {
+        type: 'string',
+        enum: ['yes', 'needs-admin', 'no', 'unknown'],
+        description:
+          "Whether a site owner's login may hold it. `unknown`: not in the catalogue for this version.",
+      },
+      reason: { type: 'string' },
+      grantable: { type: 'boolean', description: 'The holder may pass this privilege on.' },
+    },
+  },
+  EffectivePermissionsResponse: {
+    type: 'object',
+    required: [
+      'username',
+      'exists',
+      'engine',
+      'series',
+      'observedAt',
+      'attributes',
+      'accounts',
+      'memberships',
+      'grants',
+      'defaults',
+      'truncated',
+      'outsidePolicyCount',
+      'ledger',
+      'databases',
+      'databasesRead',
+      'databasesFailed',
+      'databasesNotAsked',
+      'versionMatchesCatalogue',
+    ],
+    description:
+      'What the engine says a login can do right now, read from the host. Every item is `observed`: the panel keeps no record of its own grants yet, so it cannot say which grants it set and which were set outside the panel.',
+    properties: {
+      username: { type: 'string' },
+      exists: { type: 'boolean' },
+      engine: { type: 'string', enum: ['postgres', 'mysql', 'mariadb'] },
+      series: { type: 'string' },
+      observedAt: { type: 'string', format: 'date-time' },
+      serverVersion: { type: 'string' },
+      attributes: {
+        type: 'array',
+        description: 'Postgres role attributes the engine reports.',
+        items: {
+          type: 'object',
+          required: ['name', 'label', 'explanation', 'value', 'allowed'],
+          properties: {
+            name: { type: 'string' },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+            value: { type: ['boolean', 'integer'] },
+            allowed: { type: 'string', enum: ['yes', 'needs-admin', 'no'] },
+            reason: { type: 'string' },
+          },
+        },
+      },
+      accounts: {
+        type: 'array',
+        description: 'MySQL and MariaDB account rows (one per host).',
+        items: {
+          type: 'object',
+          required: ['host'],
+          properties: { host: { type: 'string' }, locked: { type: 'boolean' } },
+        },
+      },
+      memberships: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['role', 'kind', 'allowed', 'origin'],
+          properties: {
+            role: { type: 'string' },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+            kind: { type: 'string', enum: ['predefined', 'panel', 'other'] },
+            allowed: { type: 'string', enum: ['yes', 'needs-admin', 'no', 'unknown'] },
+            reason: { type: 'string' },
+            inherit: { type: 'boolean' },
+            set: { type: 'boolean' },
+            admin: { type: 'boolean' },
+            via: { type: 'string', description: 'The role the membership is held through.' },
+            host: { type: 'string' },
+            origin: { type: 'string', const: 'observed' },
+          },
+        },
+      },
+      grants: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['level', 'privileges', 'origin'],
+          properties: {
+            level: { type: 'string' },
+            database: { type: 'string' },
+            schema: { type: 'string' },
+            object: { type: 'string' },
+            columns: { type: 'array', items: { type: 'string' } },
+            host: { type: 'string' },
+            via: { type: 'string', description: 'The role the grant comes through.' },
+            viaLabel: { type: 'string', description: '`everyone` for a Postgres PUBLIC grant.' },
+            pattern: { type: 'boolean', description: 'The schema name is a wildcard pattern.' },
+            grantor: { type: 'string' },
+            privileges: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/EffectivePrivilege' },
+            },
+            origin: { type: 'string', const: 'observed' },
+          },
+        },
+      },
+      defaults: {
+        type: 'array',
+        description: 'Postgres default privileges for objects made later.',
+        items: {
+          type: 'object',
+          required: ['database', 'creator', 'appliesTo', 'objectType', 'privileges', 'origin'],
+          properties: {
+            database: { type: 'string' },
+            creator: { type: 'string' },
+            schema: { type: 'string' },
+            appliesTo: { type: 'string' },
+            objectType: { type: 'string' },
+            via: { type: 'string' },
+            privileges: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/EffectivePrivilege' },
+            },
+            origin: { type: 'string', const: 'observed' },
+          },
+        },
+      },
+      truncated: { type: 'boolean', description: 'The host cut a list short.' },
+      outsidePolicyCount: {
+        type: 'integer',
+        description:
+          "Privileges, role memberships and attributes a site owner's login may not hold.",
+      },
+      ledger: {
+        type: 'object',
+        required: ['available'],
+        properties: { available: { type: 'boolean', const: false } },
+      },
+      databases: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Databases asked for (Postgres, at most 100).',
+      },
+      databasesRead: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Databases the host read.',
+      },
+      databasesFailed: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Databases the host could not read; their grants are missing from this answer.',
+      },
+      databasesNotAsked: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Databases left out because more than 100 are placed; their grants are missing.',
+      },
+      versionMatchesCatalogue: { type: 'boolean' },
+    },
+  },
+  EffectivePermissionsFailure: {
+    type: 'object',
+    required: ['error'],
+    properties: {
+      error: { type: 'string', enum: ['daemon_update_required', 'permissions_read_failed'] },
+      reason: { type: 'string' },
+      message: { type: 'string' },
     },
   },
   ManagedUsersResponse: {
@@ -653,10 +1016,27 @@ export const managedSchemas = {
       databases: { type: 'array', items: { type: 'string' } },
       privileges: {
         type: 'array',
-        items: { type: 'string', enum: ['owner', 'read-write', 'read-only'] },
+        items: { type: 'string', enum: ['owner', 'read-write', 'read-only', 'admin'] },
         description:
-          'What the login may do in each listed database. Omitted = `read-only` for a `read-only` connectionRole, otherwise `read-write`. An empty list or an unknown name answers 400 `managed_user_privileges_invalid`, because a login with no grants can connect but is refused everywhere.',
+          'What the login may do in each listed database. `admin` makes it a Database admin login for tools: on Postgres it joins the owner role of each listed database that has one, and gets read and write access on a listed database made before owner roles (it is never refused over owner roles: the answer lists `notes` saying what it got; a daemon older than owner roles adds the login as read/write), on MySQL and MariaDB it gets ALL on each listed database with the grant option and nothing global. It is never read-only (400 `managed_admin_login_not_read_only`), is stored alone, and is a tool login (`tool` true) unless the request says `tool: false`. On MySQL and MariaDB the three jobs are: `read-only` (SELECT and SHOW VIEW; it cannot call stored functions), `read-write` (change rows, call stored routines, lock tables and use session-only temporary tables; it cannot create, alter or drop anything, and 409 `managed_readwrite_needs_daemon_update` when the daemon of the server is too old to enforce that) and `owner`, the migrations login (everything inside its database, without the grant option, so it cannot hand rights to others once the daemon of the server is up to date). Tables the migrations login makes are usable by the other two at once. On Postgres, `owner` on a database with an owner role makes the login a migrations login: it works as the owner role by session default, so tables it creates belong to the owner role and the other logins can use them at once. Omitted = `read-only` for a `read-only` connectionRole, otherwise `read-write`. An empty list or an unknown name answers 400 `managed_user_privileges_invalid`, because a login with no grants can connect but is refused everywhere.',
       },
+      connectionRole: {
+        type: 'string',
+        enum: ['read-write', 'read-only'],
+        description: 'Default `read-write`.',
+      },
+      grantMode: {
+        type: 'string',
+        enum: ['recipe', 'self'],
+        description:
+          'Default `recipe` (the panel sets permissions). `self` = you set permissions yourself and the panel never resets them. Anything else answers 400 `managed_grant_mode_invalid`.',
+      },
+      tool: {
+        type: 'boolean',
+        description: 'Mark the login as used by a database tool: routed to the primary only.',
+      },
+      allowedSources: ALLOWED_SOURCES_SCHEMA,
+      maxConnections: MAX_CONNECTIONS_SCHEMA,
       nameScheme: {
         type: 'string',
         enum: ['plain', 'partial', 'random'],
@@ -675,6 +1055,12 @@ export const managedSchemas = {
         type: 'string',
         description: 'Show-once plaintext password',
       },
+      notes: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Plain-words notes on what a Database admin login got when it is not the full admin rights (a listed database made before owner roles, or a daemon older than owner roles). Absent when there is nothing to say. A login is never refused over owner roles.',
+      },
       commandId: { type: 'string' },
       serverId: { type: 'string' },
     },
@@ -684,6 +1070,18 @@ export const managedSchemas = {
     required: ['databases'],
     properties: {
       databases: { type: 'array', items: { type: 'string' } },
+      ownerRoleDatabases: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Databases that have an owner role (Postgres). Others keep their current owner.',
+      },
+      owners: {
+        type: 'object',
+        description:
+          'Who owns each database that has an owner role (Postgres), keyed by database name: `{ kind: "role", role }` for the default no-login owner role, or `{ kind: "login", loginId, username }` for a login picked at create time. A database made before owner roles has no entry. Never the root login or the platform admin.',
+        additionalProperties: { type: 'object' },
+      },
     },
   },
   CreateManagedDatabaseRequest: {
@@ -691,6 +1089,16 @@ export const managedSchemas = {
     required: ['name'],
     properties: {
       name: { type: 'string' },
+      ownerRole: {
+        type: 'boolean',
+        description:
+          'Postgres only, and only ever true (or left out): every new Postgres database is made with an owner role, three roles that cannot log in (`tp_<name>_owner`, `_rw`, `_ro`), with the database owned by the owner role (or by the login picked with ownerLoginId). 400 `managed_owner_role_required` for false. 400 `managed_owner_role_name_too_long` for a name over 54 characters (choose a shorter name). 409 `managed_owner_role_needs_daemon_update` when true is asked for and the daemon of the server lacks `managed-owner-role-v1`; left out, such a daemon still makes the database without an owner role. 400 `managed_owner_role_unsupported` (MySQL, MariaDB). Databases made before this keep their owner; nothing converts them.',
+      },
+      ownerLoginId: {
+        type: 'string',
+        description:
+          "Postgres only. The id (login id or principal id) of a login to make the database's owner instead of leaving the default owner role as the only owner. It has to be a migration (`owner`) or read/write login that the panel manages (not read-only, not a Database admin login, not root or replication, not manage-myself): 400 `managed_owner_login_invalid`. The database is added to the login's list so it can connect. The three owner-role roles are still made and still own what is created; the login owns the database itself and works through the owner role, so the other logins can use what it creates. 400 `managed_owner_login_unsupported` on MySQL and MariaDB (they have no database owner; a login gets rights on a database), 409 `managed_database_owner_needs_daemon_update` when the server's daemon lacks `managed-database-owner-v1`. Leave it out for the default owner role. The owner is never the root login or the platform admin.",
+      },
     },
   },
   ManagedDatabaseMutationResponse: {
@@ -699,6 +1107,20 @@ export const managedSchemas = {
     properties: {
       ok: { type: 'boolean', const: true },
       databases: { type: 'array', items: { type: 'string' } },
+      ownerRole: {
+        type: 'boolean',
+        description: 'Whether the created database has an owner role.',
+      },
+      ownerRoleDatabases: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Every database on the cluster that has an owner role.',
+      },
+      owners: {
+        type: 'object',
+        description: 'Who owns each database that has an owner role (same shape as the list).',
+        additionalProperties: { type: 'object' },
+      },
       commandId: { type: 'string' },
       serverId: { type: 'string' },
     },
@@ -1547,6 +1969,25 @@ export const managedPaths = {
       },
     },
   },
+  '/api/client/v1/environments/{id}/managed/privilege-catalogue': {
+    get: {
+      tags: ['Managed services'],
+      summary: "Privilege catalogue for the cluster's engine version",
+      description:
+        "Read only. Lists every privilege, predefined role and role attribute that exists in the cluster's exact engine series, with a plain-words label and whether a site owner's login may hold it. A series the panel does not support answers 422 `privilege_catalogue_unsupported_version`.",
+      parameters: [ENV_ID_PARAM],
+      responses: {
+        200: {
+          description: 'The catalogue for this cluster',
+          ...jsonSchema('PrivilegeCatalogueResponse'),
+        },
+        422: {
+          description: 'privilege_catalogue_unsupported_version',
+          ...jsonSchema('PrivilegeCatalogueUnsupportedError'),
+        },
+      },
+    },
+  },
   '/api/client/v1/environments/{id}/managed/users': {
     get: {
       tags: ['Managed services'],
@@ -1593,7 +2034,111 @@ export const managedPaths = {
       },
     },
   },
+  '/api/client/v1/environments/{id}/managed/users/{principalId}/effective-permissions': {
+    get: {
+      tags: ['Managed services'],
+      summary: 'Effective permissions of a login, read from the engine',
+      description:
+        'Read only. Asks the host that runs the cluster what the engine says the login can do right now and joins it to the privilege catalogue. Everything is reported as observed; the panel keeps no ledger of its own grants yet. 409 `daemon_update_required` when the server runs a TurboPanel version that cannot answer; 409 `server_offline`; 502 or 504 `permissions_read_failed` when the host answers badly or too slowly.',
+      parameters: [ENV_ID_PARAM, PRINCIPAL_ID_PARAM],
+      responses: {
+        200: {
+          description: "The login's permissions as the engine reports them",
+          ...jsonSchema('EffectivePermissionsResponse'),
+        },
+        409: {
+          description: 'daemon_update_required / server_offline',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/EffectivePermissionsFailure' },
+                  { $ref: '#/components/schemas/ServerOfflineError' },
+                ],
+              },
+            },
+          },
+        },
+        422: {
+          description: 'privilege_catalogue_unsupported_version',
+          ...jsonSchema('PrivilegeCatalogueUnsupportedError'),
+        },
+        502: {
+          description: 'permissions_read_failed',
+          ...jsonSchema('EffectivePermissionsFailure'),
+        },
+        504: {
+          description: 'permissions_read_failed (timeout)',
+          ...jsonSchema('EffectivePermissionsFailure'),
+        },
+      },
+    },
+  },
   '/api/client/v1/environments/{id}/managed/users/{principalId}': {
+    patch: {
+      tags: ['Managed services'],
+      summary: 'Change a login (grant mode, databases, connection role, privileges, tool flag)',
+      description:
+        'Every field is optional. `dryRun: true` changes nothing and returns `statements`, a plain-words list of the kinds of SQL the next apply would run. Refusals: 422 `managed_login_not_editable` (root/replication logins), 422 `managed_grant_mode_invalid_transition` (back to `preset`), 409 `managed_grant_reset_needs_confirm` (self back to panel-set permissions, or a read-only Postgres login moving to self, needs `confirmReset: true`), 422 `managed_self_login_has_no_privileges`, 400 `managed_grant_mode_invalid`.',
+      parameters: [ENV_ID_PARAM, PRINCIPAL_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                grantMode: { type: 'string', enum: ['recipe', 'self'] },
+                tool: { type: 'boolean' },
+                allowedSources: {
+                  ...ALLOWED_SOURCES_SCHEMA,
+                  nullable: true,
+                  description: `${ALLOWED_SOURCES_SCHEMA.description} \`null\` clears the limit.`,
+                },
+                maxConnections: {
+                  ...MAX_CONNECTIONS_SCHEMA,
+                  nullable: true,
+                  description: `${MAX_CONNECTIONS_SCHEMA.description} \`null\` removes the cap.`,
+                },
+                databases: { type: 'array', items: { type: 'string' } },
+                connectionRole: { type: 'string', enum: ['read-write', 'read-only'] },
+                privileges: {
+                  type: 'array',
+                  items: { type: 'string', enum: ['owner', 'read-write', 'read-only', 'admin'] },
+                },
+                confirmReset: { type: 'boolean' },
+                dryRun: { type: 'boolean' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Dry-run preview, or the login updated and an apply enqueued',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok'],
+                properties: {
+                  ok: { type: 'boolean' },
+                  dryRun: { type: 'boolean', description: 'Present and true for a preview.' },
+                  grantMode: { type: 'string', enum: ['preset', 'recipe', 'self'] },
+                  statements: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Dry run only: plain-words kinds of SQL the next apply runs.',
+                  },
+                  user: { type: 'object', nullable: true, description: 'The updated login.' },
+                  commandId: { type: 'string', description: 'The queued apply command.' },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
     delete: {
       tags: ['Managed services'],
       summary: 'Delete managed user and enqueue apply with dropUsers',
@@ -1671,6 +2216,17 @@ export const managedPaths = {
     },
   },
   '/api/client/v1/environments/{id}/managed/databases/{name}': {
+    patch: {
+      tags: ['Managed services'],
+      summary: "Change a database's owner (not available yet)",
+      description:
+        'Answers 409 `managed_database_owner_change_not_available` with a plain-words message: changing the owner after the database was made has to move what the panel manages without touching anything made by hand, and is not built yet. Choose the owner when the database is created (`ownerLoginId` on create). The route exists so the answer is a clear message, with or without a dry run.',
+      parameters: [ENV_ID_PARAM, DATABASE_NAME_PARAM],
+      responses: {
+        404: { description: 'No such database' },
+        409: { description: 'managed_database_owner_change_not_available' },
+      },
+    },
     delete: {
       tags: ['Managed services'],
       summary: 'Drop managed database and enqueue apply',

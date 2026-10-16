@@ -6,7 +6,7 @@
  */
 
 import type { ManagedIngressReconcileBackend } from '../../contracts/commands/schemas.ts'
-import { ALL_INTERFACES_BIND, LOOPBACK_BIND } from './access-address.ts'
+import { ALL_INTERFACES_BIND, ALL_INTERFACES_IPV6_BIND, LOOPBACK_BIND } from './access-address.ts'
 import {
   DEFAULT_MANAGED_INGRESS_PORTS,
   type ManagedIngressFamily,
@@ -14,6 +14,7 @@ import {
   managedIngressPortForEngine,
   type ManagedIngressPorts,
 } from './ingress-ports.ts'
+import { describeManagedImage, effectiveManagedImage } from './releases.ts'
 import { type ManagedSslMode, managedSslRequiresTls, resolveManagedSslMode } from './ssl.ts'
 
 export {
@@ -63,6 +64,47 @@ export function protocolListenerForEngine(
     protocolPort: managedIngressPortForEngine(engine, defaultPort, ports),
     family: managedIngressFamilyForEngine(engine, defaultPort),
   }
+}
+
+/**
+ * Wire `engineVersion` for a cluster: the release series its image runs
+ * (`18`, `9.7`, `11.8`). ProxySQL reports it to clients as the server version
+ * (it would otherwise say PostgreSQL 16.1 / MySQL 8.0.11 whatever the engine).
+ * The series is all the image tag pins, so no patch level. `undefined` for an
+ * image outside the release catalog or of another engine; the daemon then
+ * leaves the version as is.
+ */
+export function ingressEngineVersion(
+  spec: { engine: string; defaultImage: string; legacyDefaultImage?: string },
+  image: string | undefined
+): string | undefined {
+  const release = describeManagedImage(effectiveManagedImage(spec, image?.trim()))
+  if (!release) return undefined
+  if (release.engine !== spec.engine) return undefined
+  return release.series
+}
+
+/**
+ * {@link ingressEngineVersion} from a `managed` row's raw `options`, read
+ * before any settings parse: a row that stores a series no longer creatable
+ * (`postgres:17`, `mariadb:11.4`) fails the creatable-image check and would
+ * otherwise fall back to the default settings, reporting the default series
+ * instead of the one the container runs. No stored image means the spec's
+ * legacy default (what an old row runs); unreadable options send nothing.
+ */
+export function ingressEngineVersionFromOptions(
+  spec: { engine: string; defaultImage: string; legacyDefaultImage?: string },
+  options: unknown
+): string | undefined {
+  if (!isIngressRecord(options)) return undefined
+  // No settings at all parses as the defaults: the legacy default image.
+  if (options.settings === undefined || options.settings === null) {
+    return ingressEngineVersion(spec, undefined)
+  }
+  if (!isIngressRecord(options.settings)) return undefined
+  const image = options.settings.image
+  if (image === undefined) return ingressEngineVersion(spec, undefined)
+  return typeof image === 'string' ? ingressEngineVersion(spec, image) : undefined
 }
 
 export function isManagedRootPrincipal(metadata: unknown): boolean {
@@ -172,7 +214,11 @@ export function collectProxySqlListenerSans(params: {
  *   owner's Linux user dial `127.0.0.1`; loopback is not exposure, nothing off
  *   the machine can reach it. Bound containers need no publish at all (they
  *   dial ProxySQL by name over the managed Docker network).
- * - external access **on**: every address of the server (`0.0.0.0`).
+ * - external access **on**: every IPv4 address of the server (`0.0.0.0`), and
+ *   every IPv6 address (`::`) too when the daemon reports a live IPv6 address
+ *   (`hostHasIpv6`) and advertises `managed-ingress-ipv6-v1`. On a kernel with
+ *   no IPv6 stack a `[::]` publish fails and takes the listener down; a
+ *   reported IPv6 address is the proof the stack is there, so both must hold.
  *
  * Never empty here: a server with no cluster to front never reaches this
  * decision (the reconcile is `not_needed` or a teardown). **The publish is the
@@ -180,8 +226,14 @@ export function collectProxySqlListenerSans(params: {
  * ProxySQL has no per-user source ACL, so "off" must stay loopback and must
  * never widen to a wildcard.
  */
-export function decideIngressBindAddresses(externalAccess: boolean): string[] {
-  return [externalAccess ? ALL_INTERFACES_BIND : LOOPBACK_BIND]
+export function decideIngressBindAddresses(
+  externalAccess: boolean,
+  ipv6: Readonly<{ serverHasIpv6: boolean; daemonPublishesIpv6: boolean }>
+): string[] {
+  if (!externalAccess) return [LOOPBACK_BIND]
+  return ipv6.serverHasIpv6 && ipv6.daemonPublishesIpv6
+    ? [ALL_INTERFACES_BIND, ALL_INTERFACES_IPV6_BIND]
+    : [ALL_INTERFACES_BIND]
 }
 
 /**
@@ -289,6 +341,16 @@ export function mergeHierarchyContainerSan(
 
 export function sortManagedIds(ids: Iterable<string>): string[] {
   return [...ids].sort((a, b) => a.localeCompare(b))
+}
+
+/**
+ * A database-tool login (`metadata.tool === true`): the daemon sends all of
+ * its traffic to the primary and adds no read/write split rules. Only an
+ * explicit `true` is emitted, so the payload for other logins stays minimal.
+ */
+export function principalIsTool(metadata: unknown): true | undefined {
+  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) return undefined
+  return (metadata as Record<string, unknown>).tool === true ? true : undefined
 }
 
 export function buildIngressUserRole(metadata: unknown): 'root' | 'user' {

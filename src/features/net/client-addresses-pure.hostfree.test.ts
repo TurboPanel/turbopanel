@@ -8,6 +8,7 @@ import {
   type ClientAddressFacts,
   clientEndpointsForListener,
   detectedPublicAddresses,
+  hostHasIpv6,
   mainClientAddressHost,
   mainDatabaseListeners,
   parseClientAddressesBody,
@@ -352,4 +353,36 @@ test('mainDatabaseListeners follows the endpoint port rules per engine', () => {
   )
   const none = mainDatabaseListeners(resolveClientAddresses(facts()))
   assertEquals([...none.values()], [[]])
+})
+
+test('hostHasIpv6 needs a live IPv6 address the daemon read from the kernel', () => {
+  assertEquals(hostHasIpv6([]), false)
+  assertEquals(hostHasIpv6([reported('203.0.113.7')]), false)
+  assertEquals(hostHasIpv6([reported('::1'), reported('fe80::1', { scope: 'private' })]), false)
+  // A link that is down, a mesh tunnel or a Docker bridge says nothing about the host's own IPv6.
+  assertEquals(hostHasIpv6([reported('2001:db8::4', { link: 'down' })]), false)
+  assertEquals(hostHasIpv6([reported('fd00::7', { scope: 'private', interface: 'tp0' })]), false)
+  assertEquals(hostHasIpv6([reported('fd00::8', { scope: 'private', interface: 'wg0' })]), false)
+  assertEquals(
+    hostHasIpv6([reported('fd00:dead::1', { scope: 'private', interface: 'docker0' })]),
+    false
+  )
+  assertEquals(
+    hostHasIpv6([reported('fd00:beef::1', { scope: 'private', interface: 'br-1a2b' })]),
+    false
+  )
+
+  assertEquals(hostHasIpv6([reported('2001:db8::4')]), true)
+  assertEquals(hostHasIpv6([reported('2001:db8::4', { link: 'up' })]), true)
+  assertEquals(hostHasIpv6([reported('fd98::1', { scope: 'private', interface: 'enp1s0' })]), true)
+})
+
+test('hostHasIpv6 ignores stored ip rows, datacenter pins and address overrides', () => {
+  // What an operator typed does not prove the kernel runs IPv6.
+  const stored = facts({
+    publicIp: { v4: null, v6: '2001:db8::5' },
+    pins: [pin({ v6: 'fd00::5' })],
+    saved: [entry({ addressV6: '2001:db8::99' })],
+  })
+  assertEquals(hostHasIpv6(stored.reportedIps), false)
 })
