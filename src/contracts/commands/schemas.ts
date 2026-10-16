@@ -6146,6 +6146,23 @@ function parseManagedApplyCredentials(value: unknown): ManagedApplyCredential[] 
   return value.map(parseManagedApplyCredentialEntry)
 }
 
+/** `ownerLogin` of a database op: a login name, only on a create with `ownerRole`. */
+function parseManagedDatabaseOwnerLogin(entry: Record<string, unknown>): string | undefined {
+  const value = entry.ownerLogin
+  if (value === undefined) return undefined
+  if (
+    typeof value !== 'string' ||
+    !isSafeIdentifier(value) ||
+    entry.ownerRole !== true ||
+    entry.action !== 'create'
+  ) {
+    throw new TypeError(
+      'Invalid managed.apply databases entry: ownerLogin must be a login name on a created database with ownerRole'
+    )
+  }
+  return value
+}
+
 function parseManagedApplyDatabases(value: unknown): ManagedApplyDatabaseOp[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
@@ -6168,22 +6185,12 @@ function parseManagedApplyDatabases(value: unknown): ManagedApplyDatabaseOp[] | 
     if (entry.ownerRole !== undefined && typeof entry.ownerRole !== 'boolean') {
       throw new TypeError('Invalid managed.apply databases entry: ownerRole must be true or false')
     }
-    if (
-      entry.ownerLogin !== undefined &&
-      (typeof entry.ownerLogin !== 'string' ||
-        !isSafeIdentifier(entry.ownerLogin) ||
-        entry.ownerRole !== true ||
-        entry.action !== 'create')
-    ) {
-      throw new TypeError(
-        'Invalid managed.apply databases entry: ownerLogin must be a login name on a created database with ownerRole'
-      )
-    }
+    const ownerLogin = parseManagedDatabaseOwnerLogin(entry)
     databases.push({
       name: entry.name,
       action: entry.action as ManagedApplyDatabaseOp['action'],
       ...(entry.ownerRole === true ? { ownerRole: true } : {}),
-      ...(typeof entry.ownerLogin === 'string' ? { ownerLogin: entry.ownerLogin } : {}),
+      ...(ownerLogin === undefined ? {} : { ownerLogin }),
     })
   }
   return databases

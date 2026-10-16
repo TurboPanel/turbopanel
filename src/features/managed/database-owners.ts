@@ -6,11 +6,18 @@
 import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
 import { daemonOwnerSupport } from './login-limit-fields.ts'
-import { findManagedLogin, loginGrantMode, type ManagedLoginCredentialRow } from './logins.ts'
+import {
+  findManagedLogin,
+  loginGrantMode,
+  patchLoginMetadata,
+  type ManagedLoginCredentialRow,
+} from './logins.ts'
 import { storedConnectionRole, storedStrings } from './login-patch.ts'
 import type { ManagedRowOptions } from './options.ts'
 import {
   DATABASE_OWNER_NEEDS_DAEMON_ERROR,
+  databasesOwnedByLogin,
+  evaluateOwnedDatabasesKept,
   DATABASE_OWNER_NEEDS_DAEMON_MESSAGE,
   evaluateOwnerLogin,
   OWNER_ROLE_MAX_DATABASE_NAME,
@@ -88,8 +95,104 @@ export async function resolveChosenOwnerLogin(
     grantMode: loginGrantMode(found.metadata),
   })
   if (invalid) return refuse(invalid.error, invalid.message ?? '', 400)
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(found.appliedUsername)) {
+    return refuse(
+      'managed_owner_login_invalid',
+      "This login's name has characters a database owner cannot have. Pick another login, or leave the owner out to use the default owner role.",
+      400
+    )
+  }
   if (!(await daemonOwnerSupport(db, serverId)).databaseOwner) {
     return refuse(DATABASE_OWNER_NEEDS_DAEMON_ERROR, DATABASE_OWNER_NEEDS_DAEMON_MESSAGE, 409)
   }
   return { login: found }
+}
+
+/** A login's database list with `name` added (once). */
+export function withDatabaseListed(metadata: unknown, name: string): string[] {
+  return [...new Set([...storedStrings(metadata, 'databases'), name])]
+}
+
+/** A login's database list without `name`. */
+export function withoutDatabaseListed(metadata: unknown, name: string): string[] {
+  return storedStrings(metadata, 'databases').filter((entry) => entry !== name)
+}
+
+/** `databaseOwners` without the entries of one login. */
+export function ownersWithoutLogin(
+  owners: ManagedRowOptions['databaseOwners'],
+  loginId: string
+): NonNullable<ManagedRowOptions['databaseOwners']> {
+  return Object.fromEntries(Object.entries(owners ?? {}).filter(([, o]) => o.loginId !== loginId))
+}
+
+/** `databaseOwners` without one database. */
+export function ownersWithoutDatabase(
+  owners: ManagedRowOptions['databaseOwners'],
+  database: string
+): NonNullable<ManagedRowOptions['databaseOwners']> {
+  return Object.fromEntries(Object.entries(owners ?? {}).filter(([name]) => name !== database))
+}
+
+/**
+ * Whether a login PATCH keeps a login able to own the databases it owns:
+ * the refusal, or `null`. `after` is the login's stored metadata with the
+ * change applied.
+ */
+export function ownedDatabasesRefusal(
+  options: Pick<ManagedRowOptions, 'databaseOwners'>,
+  loginId: string,
+  after: Record<string, unknown>,
+  grantMode: string
+): { status: 409; error: string; message: string } | null {
+  return evaluateOwnedDatabasesKept(databasesOwnedByLogin(options.databaseOwners, loginId), {
+    databases: storedStrings(after, 'databases'),
+    privileges: storedStrings(after, 'privileges'),
+    connectionRole: storedConnectionRole(after),
+    grantMode,
+  })
+}
+
+/**
+ * List a login on a database for the length of one request: `restore` puts
+ * the previous list back (call it on any failure, including a thrown error).
+ */
+export async function listLoginOnDatabase(
+  db: Db,
+  login: { id: string; metadata: unknown },
+  name: string
+): Promise<{ restore: () => Promise<void> }> {
+  const before = storedStrings(login.metadata, 'databases')
+  await patchLoginMetadata(db, login.id, { databases: withDatabaseListed(login.metadata, name) })
+  return { restore: () => patchLoginMetadata(db, login.id, { databases: before }) }
+}
+
+/** The opposite: take a login off a database, with a `restore`. */
+export async function unlistLoginFromDatabase(
+  db: Db,
+  login: { id: string; metadata: unknown },
+  name: string
+): Promise<{ restore: () => Promise<void> }> {
+  const before = storedStrings(login.metadata, 'databases')
+  await patchLoginMetadata(db, login.id, { databases: withoutDatabaseListed(login.metadata, name) })
+  return { restore: () => patchLoginMetadata(db, login.id, { databases: before }) }
+}
+
+/**
+ * Run `fn`; when it answers a Response (a refusal) or throws, run `restore`
+ * first, so a half-made change never stays behind.
+ */
+export async function restoringOnFailure<T>(
+  restore: () => Promise<void>,
+  fn: () => Promise<T>
+): Promise<T> {
+  let result: T
+  try {
+    result = await fn()
+  } catch (error) {
+    await restore()
+    throw error
+  }
+  if (result instanceof Response) await restore()
+  return result
 }

@@ -43,17 +43,21 @@ import {
 } from '../../features/principals/store.ts'
 import {
   loginPatchUndo,
-  storedConnectionRole,
   storedStrings,
 } from '../../features/managed/login-patch.ts'
 import {
   describeDatabaseOwners,
+  listLoginOnDatabase,
+  ownedDatabasesRefusal,
+  ownersWithoutDatabase,
+  ownersWithoutLogin,
   resolveChosenOwnerLogin,
+  restoringOnFailure,
+  unlistLoginFromDatabase,
 } from '../../features/managed/database-owners.ts'
 import {
   adminAccessNotes,
   databasesOwnedByLogin,
-  evaluateOwnedDatabasesKept,
   OWNER_CHANGE_NOT_AVAILABLE,
 } from '../../features/managed/owner-role.ts'
 import {
@@ -2173,24 +2177,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const { dryRun, limits, plan } = parsed
 
     // A login that owns a database stays able to own it.
-    const merged = {
+    const afterMetadata = {
       ...(target.metadata as Record<string, unknown> | null),
       ...plan.metadata,
     }
-    const afterGrant = {
-      privileges: storedStrings(merged, 'privileges'),
-      databases: storedStrings(merged, 'databases'),
-      ownerRoleDatabases: options.ownerRoleDatabases,
-    }
-    const ownerBlock = evaluateOwnedDatabasesKept(
-      databasesOwnedByLogin(options.databaseOwners, target.id),
-      {
-        databases: afterGrant.databases,
-        privileges: afterGrant.privileges,
-        connectionRole: storedConnectionRole(merged),
-        grantMode: plan.grantMode,
-      }
-    )
+    const ownerBlock = ownedDatabasesRefusal(options, target.id, afterMetadata, plan.grantMode)
     if (ownerBlock) {
       return c.json({ error: ownerBlock.error, message: ownerBlock.message }, ownerBlock.status)
     }
@@ -2199,7 +2190,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (targetServerId instanceof Response) return targetServerId
     const notes = adminAccessNotes(
       ctx.spec.engine,
-      afterGrant,
+      {
+        privileges: storedStrings(afterMetadata, 'privileges'),
+        databases: storedStrings(afterMetadata, 'databases'),
+        ownerRoleDatabases: options.ownerRoleDatabases,
+      },
       await daemonOwnerSupport(db, targetServerId)
     )
 
@@ -2448,20 +2443,22 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // the panel records that.
     const handedBack = databasesOwnedByLogin(options.databaseOwners, target.id)
     if (handedBack.length > 0) {
-      await db
-        .update(managed)
-        .set({
-          options: writeManagedRowOptions({
-            ...options,
-            databaseOwners: Object.fromEntries(
-              Object.entries(options.databaseOwners ?? {}).filter(
-                ([name]) => !handedBack.includes(name)
-              )
-            ),
-          }),
-          updatedAt: new Date().toISOString(),
-        })
-        .where(eq(managed.id, row.id))
+      // Read the row again so a database created or dropped while this request
+      // ran is not overwritten; only this login's owner entries are removed.
+      const fresh = await findManagedForEnvironment(db, environmentId)
+      const freshOptions = fresh ? parseManagedRowOptions(ctx.spec, fresh.options) : null
+      if (fresh && freshOptions) {
+        await db
+          .update(managed)
+          .set({
+            options: writeManagedRowOptions({
+              ...freshOptions,
+              databaseOwners: ownersWithoutLogin(freshOptions.databaseOwners, target.id),
+            }),
+            updatedAt: new Date().toISOString(),
+          })
+          .where(eq(managed.id, row.id))
+      }
     }
 
     const primaryFanout = pickPrimaryCommandResult(enqueued)
@@ -2472,7 +2469,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
             notes: [
               `The login owned ${handedBack.join(
                 ', '
-              )}. Each of those databases now belongs to its default owner role.`,
+              )}. Each of those databases goes back to its default owner role as the apply runs.`,
             ],
           }
         : {}),
@@ -2627,40 +2624,27 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     // The owner login is listed on the new database before the apply is built
     // (the apply reads its list), and put back if the apply cannot be queued.
-    const ownerLoginBefore = chosen?.login.metadata
-    const ownerLoginDatabases = chosen
-      ? nextDatabasesAfterCreate(storedStrings(chosen.login.metadata, 'databases'), name)
-      : []
+    const listing = chosen ? await listLoginOnDatabase(db, chosen.login, name) : null
     const restoreOwnerLogin = async () => {
-      if (chosen) {
-        await patchLoginMetadata(db, chosen.login.id, {
-          databases: storedStrings(ownerLoginBefore, 'databases'),
-        })
-      }
-    }
-    if (chosen) {
-      await patchLoginMetadata(db, chosen.login.id, {
-        databases: ownerLoginDatabases,
-      })
+      await listing?.restore()
     }
 
-    const prepared = await prepareApplyForManaged(
-      c,
-      db,
-      ctx,
-      row,
-      {
-        settings: options.settings,
-        databases: nextDatabases,
-        ownerRoleDatabases: nextOwnerRoleDatabases,
-        databaseOwners: nextDatabaseOwners,
-      },
-      targetServerId
+    const prepared = await restoringOnFailure(restoreOwnerLogin, () =>
+      prepareApplyForManaged(
+        c,
+        db,
+        ctx,
+        row,
+        {
+          settings: options.settings,
+          databases: nextDatabases,
+          ownerRoleDatabases: nextOwnerRoleDatabases,
+          databaseOwners: nextDatabaseOwners,
+        },
+        targetServerId
+      )
     )
-    if (prepared instanceof Response) {
-      await restoreOwnerLogin()
-      return prepared
-    }
+    if (prepared instanceof Response) return prepared
 
     const previousOptions = row.options
     await db
@@ -2756,9 +2740,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       options.ownerRoleDatabases ?? [],
       databaseName
     )
-    const nextDatabaseOwners = Object.fromEntries(
-      Object.entries(options.databaseOwners ?? {}).filter(([name]) => name !== databaseName)
-    )
+    const nextDatabaseOwners = ownersWithoutDatabase(options.databaseOwners, databaseName)
     const nextOptions = writeManagedRowOptions({
       settings: options.settings,
       databases: nextDatabases,
@@ -2771,38 +2753,33 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const ownerLogin = ownerEntry
       ? await findManagedLogin(db, row.id, ownerEntry.loginId)
       : undefined
-    const ownerLoginBefore = ownerLogin ? storedStrings(ownerLogin.metadata, 'databases') : []
-    if (ownerLogin) {
-      await patchLoginMetadata(db, ownerLogin.id, {
-        databases: ownerLoginBefore.filter((entry) => entry !== databaseName),
-      })
+    const unlisting = ownerLogin
+      ? await unlistLoginFromDatabase(db, ownerLogin, databaseName)
+      : null
+    const restoreOwnerLogin = async () => {
+      await unlisting?.restore()
     }
 
-    const prepared = await prepareApplyForManaged(
-      c,
-      db,
-      ctx,
-      row,
-      {
-        settings: options.settings,
-        databases: nextDatabases,
-        ownerRoleDatabases: nextOwnerRoleDatabases,
-        databaseOwners: nextDatabaseOwners,
-      },
-      targetServerId,
-      {
-        dropDatabases: [databaseName],
-        ...(hadOwnerRole ? { dropOwnerRoleDatabases: [databaseName] } : {}),
-      }
+    const prepared = await restoringOnFailure(restoreOwnerLogin, () =>
+      prepareApplyForManaged(
+        c,
+        db,
+        ctx,
+        row,
+        {
+          settings: options.settings,
+          databases: nextDatabases,
+          ownerRoleDatabases: nextOwnerRoleDatabases,
+          databaseOwners: nextDatabaseOwners,
+        },
+        targetServerId,
+        {
+          dropDatabases: [databaseName],
+          ...(hadOwnerRole ? { dropOwnerRoleDatabases: [databaseName] } : {}),
+        }
+      )
     )
-    if (prepared instanceof Response) {
-      if (ownerLogin) {
-        await patchLoginMetadata(db, ownerLogin.id, {
-          databases: ownerLoginBefore,
-        })
-      }
-      return prepared
-    }
+    if (prepared instanceof Response) return prepared
 
     const previousOptions = row.options
     await db
@@ -2823,11 +2800,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           updatedAt: new Date().toISOString(),
         })
         .where(eq(managed.id, row.id))
-      if (ownerLogin) {
-        await patchLoginMetadata(db, ownerLogin.id, {
-          databases: ownerLoginBefore,
-        })
-      }
+      await restoreOwnerLogin()
       return enqueued
     }
 

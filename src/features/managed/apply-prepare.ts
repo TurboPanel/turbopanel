@@ -422,8 +422,7 @@ async function buildCredentials(
   dataEncryptionSecrets: DerivedSecretsConfig,
   managedId: string,
   serverId: string,
-  omitLoginIds?: string[],
-  engine?: string
+  omitLoginIds?: string[]
 ): Promise<ManagedApplyCommandPayload['credentials'] | ManagedApplyPrepareError> {
   const omit = new Set(omitLoginIds ?? [])
   const rows = (await listManagedLoginCredentials(db, managedId)).filter((row) => !omit.has(row.id))
@@ -437,7 +436,7 @@ async function buildCredentials(
   }
 
   // A daemon older than owner roles does not know the Database admin login
-  // and would refuse the whole apply for it. It gets the same login as a
+  // (on any engine) and would ignore it, leaving a login with no rights. It gets the same login as a
   // read/write login instead (the answer to the request says so), never a
   // refusal and never more than read/write.
   const daemonKnowsAdmin = (daemonState.projection?.features ?? []).includes(
@@ -471,9 +470,7 @@ async function buildCredentials(
     const privileges = principalPrivileges(row.metadata)
     if (privileges !== undefined) {
       credential.privileges =
-        engine === 'postgres' && !daemonKnowsAdmin && privileges.includes('admin')
-          ? ['read-write']
-          : privileges
+        !daemonKnowsAdmin && privileges.includes('admin') ? ['read-write'] : privileges
     }
     // Only a non-default mode goes on the wire, so payloads for logins made
     // before modes existed stay exactly as they were.
@@ -1445,8 +1442,7 @@ async function buildPayloadForMember(
     dataEncryptionSecrets,
     input.managedRow.id,
     member.serverId,
-    input.omitLoginIds,
-    input.spec.engine
+    input.omitLoginIds
   )
   if (!Array.isArray(credentials)) return credentials
 

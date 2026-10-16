@@ -453,8 +453,10 @@ answer carries plain-words `notes` saying which (`adminAccessNotes`). Only real
 invalid input refuses: a read-only admin login is 400
 `managed_admin_login_not_read_only`.
 
-**Explicit database owner (`databaseOwners`).** Every Postgres database made now
-has an owner that is never the root login or the platform admin: the cluster's
+**Explicit database owner (`databaseOwners`).** Every Postgres database made with
+an owner role (the default; not with `ownerRole: false`, not for a name over 54
+characters, not for databases made before owner roles) has an owner that is
+never the root login or the platform admin: the cluster's
 first database too (made by the engine's first start for the platform admin; the
 daemon moves it onto `tp_<db>_owner` while it is empty, and cluster create records
 it in `ownerRoleDatabases` only when the primary's daemon lists

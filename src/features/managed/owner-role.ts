@@ -62,7 +62,14 @@ export function adminAccessNotes(
   },
   daemon: DaemonOwnerSupport
 ): string[] {
-  if (engine !== 'postgres' || !grant.privileges.includes(DATABASE_ADMIN_PRIVILEGE)) return []
+  if (!grant.privileges.includes(DATABASE_ADMIN_PRIVILEGE)) return []
+  if (engine !== 'postgres') {
+    return daemon.ownerRole
+      ? []
+      : [
+          "This server's TurboPanel daemon is older than the Database admin login, so the login was added with read and write access instead of all rights on its databases. Update the server and apply again to give it the full rights.",
+        ]
+  }
   if (!daemon.ownerRole) {
     return [
       "This server's TurboPanel daemon is older than owner roles, so the login was added with read and write access to the data instead of the full Database admin rights. Update the server and apply again to give it the full rights on databases that have an owner role.",

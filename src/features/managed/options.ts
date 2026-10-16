@@ -3,7 +3,7 @@ import type { ManagedSettings } from './settings.ts'
 
 /** A login the customer chose as a Postgres database's owner. */
 export type DatabaseOwnerLogin = {
-  /** The login's principal id (what `/managed/users/:principalId` takes). */
+  /** The login's id (`loginId` in the users API; the users routes accept it too). */
   loginId: string
   /** Its applied username on the engine; fixed for the life of the login. */
   username: string
