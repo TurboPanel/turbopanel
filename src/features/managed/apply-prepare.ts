@@ -247,7 +247,7 @@ export type BuildManagedApplyInput = {
   settings: ManagedSettings
   databases: string[]
   /** Postgres: the subset of `databases` made with an owner role. */
-  ownerRoleDatabases?: string[]
+  ownerRoleDatabases: string[] | undefined
   /** Postgres: dropped databases that had an owner role (their roles go too). */
   dropOwnerRoleDatabases?: string[]
   /** Primary pin — the server `ensureManagedPrimaryMember` binds the primary to. */
@@ -1265,10 +1265,13 @@ async function resolvePayloadMonitorUsers(
  * an owner role, on drop too so the daemon removes its roles.
  */
 export function buildDatabaseOps(
-  input: Pick<
-    BuildManagedApplyInput,
-    'databases' | 'dropDatabases' | 'ownerRoleDatabases' | 'dropOwnerRoleDatabases'
-  >
+  input: Pick<BuildManagedApplyInput, 'databases'> &
+    Partial<
+      Pick<
+        BuildManagedApplyInput,
+        'dropDatabases' | 'ownerRoleDatabases' | 'dropOwnerRoleDatabases'
+      >
+    >
 ): NonNullable<ManagedApplyCommandPayload['databases']> {
   return [
     ...input.databases.map((name) => ({

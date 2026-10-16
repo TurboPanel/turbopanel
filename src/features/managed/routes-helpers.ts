@@ -50,13 +50,13 @@ import { loadManagedStatusError } from './last-error.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import { type ManagedResidualMetadata, serializeManagedRow } from './serialize.ts'
 import type { LoginPatchInput } from './login-patch.ts'
-import {
+import { DATABASE_ADMIN_PRIVILEGE, evaluateDatabaseAdminGrant } from './owner-role.ts'
+
+export {
   DATABASE_ADMIN_PRIVILEGE,
   evaluateDatabaseAdminGrant,
   resolveDatabaseOwnerRole,
 } from './owner-role.ts'
-
-export { DATABASE_ADMIN_PRIVILEGE, evaluateDatabaseAdminGrant, resolveDatabaseOwnerRole }
 import {
   type DatabaseLoginRole,
   loginGrantMode,
