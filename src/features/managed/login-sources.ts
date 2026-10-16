@@ -20,12 +20,18 @@
  * the rules from the already-resolved list ({@link resolveLoginSourcesForWire}).
  */
 
-import { ipToBigInt, normalizeIpAddress, parseCidr, parseIpVersion } from '../../lib/ip-address.ts'
+import {
+  bigIntToIp,
+  ipToBigInt,
+  normalizeIpAddress,
+  parseCidr,
+  parseIpVersion,
+} from '../../lib/ip-address.ts'
 
 /** Most places one login may list. */
 export const MAX_LOGIN_SOURCE_ENTRIES = 100
 /** Most resolved addresses sent to the daemon for one login. */
-export const MAX_LOGIN_RESOLVED_SOURCES = 256
+export const MAX_LOGIN_RESOLVED_SOURCES = 1024
 /** ProxySQL's own default; a larger cap would do nothing. */
 export const MAX_LOGIN_CONNECTIONS = 10_000
 
@@ -73,7 +79,7 @@ export function cidrToSourcePrefix(value: string): string | LoginSourcesError {
   const cidr = parseCidr(value)
   if (!cidr) return fail('managed_login_source_invalid', `'${value}' is not a valid address range.`)
   const hostBits = (cidr.version === 4 ? 32 : 128) - cidr.prefix
-  if (hostBits === 0) return normalizeIpAddress(value.split('/')[0]) ?? value.split('/')[0]!
+  if (hostBits === 0) return standardAddress(value.split('/')[0]!) ?? value.split('/')[0]!
   if (cidr.version === 4) {
     if (cidr.prefix % 8 !== 0 || cidr.prefix === 0) {
       return fail(
@@ -100,6 +106,15 @@ export function cidrToSourcePrefix(value: string): string | LoginSourcesError {
   return `${groups.map((g) => g.toString(16)).join(':')}:%`
 }
 
+/** An IP address in the short form ProxySQL shows a client (lowercase, `::` compressed). */
+function standardAddress(raw: string): string | null {
+  const address = normalizeIpAddress(raw)
+  if (address === null) return null
+  if (parseIpVersion(address) !== 6) return address
+  const big = ipToBigInt(address)
+  return big === null ? null : bigIntToIp(big, 6)
+}
+
 function parseAddressEntry(raw: string): string | LoginSourcesError {
   const value = raw.trim()
   if (value.includes('/')) return cidrToSourcePrefix(value)
@@ -111,15 +126,17 @@ function parseAddressEntry(raw: string): string | LoginSourcesError {
       if (ok) return value
     } else if (IPV6_PREFIX_RE.test(value)) {
       const groups = value.slice(0, -2).split(':')
-      if (groups.every((g) => Number.parseInt(g, 16) !== 0)) return value.toLowerCase()
+      if (groups.every((g) => Number.parseInt(g, 16) !== 0)) {
+        return `${groups.map((g) => Number.parseInt(g, 16).toString(16)).join(':')}:%`
+      }
     }
     return fail(
       'managed_login_source_invalid',
       `'${value}' is not a valid address prefix. Use something like 203.0.113.% or 2001:db8:1:% (no zero groups, no '::').`
     )
   }
-  const address = normalizeIpAddress(value)
-  if (address === null || parseIpVersion(address) === null || ipToBigInt(address) === null) {
+  const address = standardAddress(value)
+  if (address === null) {
     return fail('managed_login_source_invalid', `'${value}' is not a valid IP address.`)
   }
   return address
@@ -263,6 +280,8 @@ export function loginWireLimits(
   options: {
     daemonSupportsLimits: boolean
     serverAddresses: ReadonlyMap<string, readonly string[]>
+    /** The server this payload is for: naming it also lets its own programs in. */
+    serverId?: string
   }
 ): LoginWireLimits {
   const sources = loginAllowedSources(metadata)
@@ -277,7 +296,10 @@ export function loginWireLimits(
   if (sources !== undefined) {
     const resolved = resolveLoginSourcesForWire(sources, options.serverAddresses)
     fields.allowedSources = resolved.allowedSources
-    if (resolved.allowLocalSources) fields.allowLocalSources = true
+    // Programs on a server reach its proxy as the Docker gateway, never as the server's own address.
+    const namesThisServer =
+      options.serverId !== undefined && sources.includes(`server:${options.serverId}`)
+    if (resolved.allowLocalSources || namesThisServer) fields.allowLocalSources = true
   }
   if (cap !== undefined) fields.maxConnections = cap
   return { omit: false, fields }

@@ -288,12 +288,16 @@ async function loadClusterUsersForManagedIds(
     const connectionRole = principalConnectionRole(row.metadata)
     if (connectionRole !== undefined) user.connectionRole = connectionRole
     if (principalIsTool(row.metadata)) user.tool = true
-    // Only the root login is limited by source address; an app login keeps
-    // working from wherever its owner allows. Sent even when empty: present
-    // means "limit to this server and its containers plus these".
+    // Root: always limited to this server, its containers and the organization's
+    // servers (sent even when empty). App logins: limited only when their owner
+    // chose places (below).
     if (user.role === 'root') user.allowedSources = [...params.rootAllowedSources]
     else {
-      const limits = loginWireLimits(row.metadata, { daemonSupportsLimits, serverAddresses })
+      const limits = loginWireLimits(row.metadata, {
+        daemonSupportsLimits,
+        serverAddresses,
+        serverId: params.serverId,
+      })
       // Fail closed: a source-limited login never goes to a daemon that cannot enforce it.
       if (limits.omit) return undefined
       Object.assign(user, limits.fields)

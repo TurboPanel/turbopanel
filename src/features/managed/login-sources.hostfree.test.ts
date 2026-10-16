@@ -61,6 +61,11 @@ test('allowedSources: any alone clears, an empty list is refused, mixes are chec
     'managed_login_source_invalid'
   )
   assertEquals(errorOf(parseLoginAllowedSources(['address:%'])), 'managed_login_source_invalid')
+  assertEquals(parseLoginAllowedSources(['address:2001:DB8:0000::1', 'address:2001:0DB8:1:%']), [
+    'address:2001:db8::1',
+    'address:2001:db8:1:%',
+  ])
+  assertEquals(parseLoginAllowedSources(['address:2001:DB8::1/128']), ['address:2001:db8::1'])
   assertEquals(
     errorOf(parseLoginAllowedSources(['address:10.0.0.0/12'])),
     'managed_login_source_range_not_exact'
@@ -127,6 +132,14 @@ test('wire limits resolve servers, keep prefixes, and fail closed on an old daem
     {
       omit: true,
     }
+  )
+  // Naming the server the payload is for lets its own programs in (they arrive as the gateway).
+  assertEquals(
+    loginWireLimits(
+      { allowedSources: [`server:${SERVER}`] },
+      { daemonSupportsLimits: true, serverAddresses: new Map(), serverId: SERVER }
+    ),
+    { omit: false, fields: { allowedSources: [], allowLocalSources: true } }
   )
   // No source limit: nothing sent to an old daemon, so version skew changes nothing.
   assertEquals(
