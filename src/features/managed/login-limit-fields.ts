@@ -173,6 +173,27 @@ export async function refuseReadWriteIfDaemonTooOld(
   return refused ? c.json({ error: refused.error, message: refused.message }, refused.status) : null
 }
 
+/** The daemon checks a login create needs: the Postgres admin grant and the MySQL and MariaDB read/write level. */
+export async function refuseLoginCreateIfDaemonCannot(
+  c: Context,
+  db: Db,
+  change: { engine: string; privileges: unknown; grantMode: string },
+  serverId: string
+): Promise<Response | null> {
+  const privileges = Array.isArray(change.privileges) ? (change.privileges as string[]) : []
+  return (
+    (await refuseAdminOnOldDaemon(c, db, change.engine, privileges, serverId)) ??
+    (await refuseReadWriteIfDaemonTooOld(
+      c,
+      db,
+      change.engine,
+      { privileges, grantMode: change.grantMode },
+      null,
+      serverId
+    ))
+  )
+}
+
 /** The daemon checks a login PATCH needs: limits it can enforce, the Postgres admin grant, the MySQL and MariaDB read/write level. */
 export async function refuseLoginPatchIfDaemonCannot(
   c: Context,

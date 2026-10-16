@@ -44,12 +44,11 @@ import {
 import { loginPatchUndo, readWriteGrantState } from '../../features/managed/login-patch.ts'
 import {
   daemonHonoursOwnerRole,
-  refuseAdminOnOldDaemon,
+  refuseLoginCreateIfDaemonCannot,
   loginLimitMetadata,
   parseGatedLoginLimits,
   parseLoginPatchRequest,
   refuseLoginPatchIfDaemonCannot,
-  refuseReadWriteIfDaemonTooOld,
 } from '../../features/managed/login-limit-fields.ts'
 import {
   createLoginForPrincipal,
@@ -1997,24 +1996,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const adminRefused = await refuseAdminOnOldDaemon(
+    const daemonRefused = await refuseLoginCreateIfDaemonCannot(
       c,
       db,
-      ctx.spec.engine,
-      privileges,
+      { engine: ctx.spec.engine, privileges, grantMode },
       targetServerId
     )
-    if (adminRefused) return adminRefused
-
-    const readWriteRefused = await refuseReadWriteIfDaemonTooOld(
-      c,
-      db,
-      ctx.spec.engine,
-      { privileges, grantMode },
-      null,
-      targetServerId
-    )
-    if (readWriteRefused) return readWriteRefused
+    if (daemonRefused) return daemonRefused
 
     const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
