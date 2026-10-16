@@ -42,13 +42,13 @@ import {
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
 import { loginPatchUndo } from '../../features/managed/login-patch.ts'
-import { refuseAdminGrantOnOldDaemon } from '../../features/managed/owner-role.ts'
 import {
   daemonHonoursOwnerRole,
+  refuseAdminOnOldDaemon,
   loginLimitMetadata,
   parseGatedLoginLimits,
   parseLoginPatchRequest,
-  refuseLimitsIfUnsupported,
+  refuseLoginPatchIfDaemonCannot,
 } from '../../features/managed/login-limit-fields.ts'
 import {
   createLoginForPrincipal,
@@ -1996,20 +1996,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const adminRefused = refuseAdminGrantOnOldDaemon(
+    const adminRefused = await refuseAdminOnOldDaemon(
+      c,
+      db,
       ctx.spec.engine,
       privileges,
-      ctx.spec.engine !== 'postgres' || (await daemonHonoursOwnerRole(db, targetServerId))
+      targetServerId
     )
-    if (adminRefused) {
-      return c.json(
-        {
-          error: adminRefused.error,
-          message: adminRefused.message,
-        },
-        adminRefused.status
-      )
-    }
+    if (adminRefused) return adminRefused
 
     const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
@@ -2154,22 +2148,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
-    const limitsRefused = await refuseLimitsIfUnsupported(c, db, limits, targetServerId)
-    if (limitsRefused) return limitsRefused
-    const adminRefused = refuseAdminGrantOnOldDaemon(
-      ctx.spec.engine,
-      Array.isArray(plan.metadata.privileges) ? (plan.metadata.privileges as string[]) : [],
-      ctx.spec.engine !== 'postgres' || (await daemonHonoursOwnerRole(db, targetServerId))
+    const daemonRefused = await refuseLoginPatchIfDaemonCannot(
+      c,
+      db,
+      { limits, engine: ctx.spec.engine, privileges: plan.metadata.privileges },
+      targetServerId
     )
-    if (adminRefused) {
-      return c.json(
-        {
-          error: adminRefused.error,
-          message: adminRefused.message,
-        },
-        adminRefused.status
-      )
-    }
+    if (daemonRefused) return daemonRefused
     const previous = target.metadata
     await patchLoginMetadata(db, target.id, plan.metadata)
     const restore = async () => {

@@ -10,6 +10,7 @@ import type { ManagedRowOptions } from './options.ts'
 import { type LoginPatchCurrent, type LoginPatchResult, planLoginPatch } from './login-patch.ts'
 import { parseManagedLoginPatchFields } from './routes-helpers.ts'
 import type { Db } from '../../db/connection.ts'
+import { DATABASE_ADMIN_PRIVILEGE, refuseAdminGrantOnOldDaemon } from './owner-role.ts'
 import { MANAGED_LOGIN_LIMITS_FEATURE, MANAGED_OWNER_ROLE_FEATURE } from '../../lib/version-wire.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import {
@@ -125,6 +126,37 @@ export async function refuseIfDaemonCannotLimitLogins(
 export async function daemonHonoursOwnerRole(db: Db, serverId: string): Promise<boolean> {
   const state = await getServerDaemonStateByServerId(db, serverId)
   return (state?.projection?.features ?? []).includes(MANAGED_OWNER_ROLE_FEATURE)
+}
+
+/** 409 for a Postgres Database admin grant when the server's daemon is too old; `null` when fine. */
+export async function refuseAdminOnOldDaemon(
+  c: Context,
+  db: Db,
+  engine: string,
+  privilegesValue: unknown,
+  serverId: string
+): Promise<Response | null> {
+  const privileges = Array.isArray(privilegesValue) ? (privilegesValue as string[]) : []
+  if (engine !== 'postgres' || !privileges.includes(DATABASE_ADMIN_PRIVILEGE)) return null
+  const refused = refuseAdminGrantOnOldDaemon(
+    engine,
+    privileges,
+    await daemonHonoursOwnerRole(db, serverId)
+  )
+  return refused ? c.json({ error: refused.error, message: refused.message }, refused.status) : null
+}
+
+/** The daemon checks a login PATCH needs: limits it can enforce and, on Postgres, the admin grant. */
+export async function refuseLoginPatchIfDaemonCannot(
+  c: Context,
+  db: Db,
+  change: { limits: LoginLimitFields; engine: string; privileges: unknown },
+  serverId: string
+): Promise<Response | null> {
+  return (
+    (await refuseLimitsIfUnsupported(c, db, change.limits, serverId)) ??
+    (await refuseAdminOnOldDaemon(c, db, change.engine, change.privileges, serverId))
+  )
 }
 
 /** PATCH body: the ordinary fields plus the limit fields, as one planning input. */
