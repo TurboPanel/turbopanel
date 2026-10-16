@@ -187,7 +187,7 @@ function parseDefault(value: unknown): ObservedDefaultGrant | null {
   const creator = name(value.creator)
   const objectType = typeof value.objectType === 'string' ? value.objectType : undefined
   const privileges = names(value.privileges, OBSERVED_MAX_PRIVILEGES)
-  if (!database || !creator || !objectType || objectType.length !== 1 || !privileges) return null
+  if (!database || !creator || objectType?.length !== 1 || !privileges) return null
   const out: ObservedDefaultGrant = { database, creator, objectType, privileges }
   const target = out as Record<string, unknown>
   optionalName(target, 'schema', value.schema)

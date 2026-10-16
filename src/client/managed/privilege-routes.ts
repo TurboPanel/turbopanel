@@ -89,7 +89,7 @@ export function registerManagedPrivilegeRoutes(router: Hono<AppEnv>) {
     const { db, ctx, row, catalogue } = scope
 
     const target = await findManagedLogin(db, row.id, c.req.param('principalId') ?? '')
-    if (!target || target.role !== 'user') return c.json({ error: 'Not found' }, 404)
+    if (target?.role !== 'user') return c.json({ error: 'Not found' }, 404)
 
     // Reads go to the primary: it is the host that holds the writable copy.
     const serverId = resolveManagedTargetServerId(c, row.serverId)
@@ -151,8 +151,11 @@ export function registerManagedPrivilegeRoutes(router: Hono<AppEnv>) {
         502
       )
     }
+    const view = buildEffectivePermissions(catalogue, report, observed)
     return c.json({
-      ...buildEffectivePermissions(catalogue, report, observed),
+      ...view,
+      // Databases left out of the request mean the answer is incomplete.
+      truncated: view.truncated || wanted.length > databases.length,
       databases,
       databasesRead: report.databasesRead ?? [],
       databasesFailed: report.databasesFailed ?? [],
