@@ -1194,8 +1194,11 @@ async function hasManagedUsernameNamespaceConflict(
     )
     await lockOrganizationsForUpdate(tx, owningOrgIds)
     for (const entry of clusterLogins) {
-      // Root and replication logins never reach the shared ProxySQL frontend
-      // and every cluster carries one of each, so they are not probed.
+      // Every cluster carries one root and one replication login, so neither is
+      // probed. Root does have a row on the shared ProxySQL frontend (limited to
+      // this server, its containers and the organization's servers); its name is
+      // made from the cluster id, so it cannot collide with another login.
+      // The replication login never reaches the frontend.
       if (entry.role !== 'user') continue
       // The applied login is what lands on the shared ProxySQL frontend —
       // that's the name that must be free in the new owner's namespace.
