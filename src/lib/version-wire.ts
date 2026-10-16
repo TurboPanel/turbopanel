@@ -187,6 +187,7 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-ingress-ipv6-v1',
   'managed-login-limits-v1',
   'managed-permissions-read-v1',
+  'managed-owner-role-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -316,6 +317,14 @@ export const MANAGED_LOGIN_LIMITS_FEATURE: DaemonWireFeature = 'managed-login-li
  * `daemon_update_required` on the effective-permissions route.
  */
 export const MANAGED_PERMISSIONS_READ_FEATURE: DaemonWireFeature = 'managed-permissions-read-v1'
+
+/**
+ * The daemon honours `ownerRole` on a Postgres database and the Database admin
+ * login built on it. Without it the control plane records no owner role (a new
+ * database is made without one) and refuses an admin login with 409
+ * `managed_owner_role_needs_daemon_update`: an older daemon would ignore both.
+ */
+export const MANAGED_OWNER_ROLE_FEATURE: DaemonWireFeature = 'managed-owner-role-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}

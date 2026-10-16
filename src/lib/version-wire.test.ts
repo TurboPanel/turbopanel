@@ -4,21 +4,22 @@ import {
   compareSemver,
   DAEMON_FEATURE_MIN_VERSIONS,
   DAEMON_WIRE_FEATURES,
+  daemonUnsupportedReason,
   DENO_NATIVE_APPS_FEATURE,
   DEPLOY_CANCEL_FEATURE,
-  daemonUnsupportedReason,
   INSTANCE_REVISION_HEADER,
   INSTANCE_VERSION_HEADER,
   MANAGED_HA_BOOT_HOLD_FEATURE,
   MANAGED_HA_INSTANCE_FEATURE,
-  MANAGED_REPLICA_FRESHNESS_FEATURE,
   MANAGED_HEALTH_FEATURE,
   MANAGED_HEALTH_REPORT_FEATURE,
   MANAGED_INGRESS_IPV6_FEATURE,
   MANAGED_LOGIN_LIMITS_FEATURE,
-  PHP_SITE_MODES_FEATURE,
+  MANAGED_OWNER_ROLE_FEATURE,
+  MANAGED_REPLICA_FRESHNESS_FEATURE,
   MIN_SUPPORTED_DAEMON_VERSION,
   parseSemver,
+  PHP_SITE_MODES_FEATURE,
   resolveDaemonCapabilities,
   resolveDaemonSupport,
   resolveInstanceCapabilities,
@@ -218,6 +219,14 @@ test('managed-login-limits-v1 is an advertised wire feature and raised no floor'
   assertEquals(MANAGED_LOGIN_LIMITS_FEATURE, 'managed-login-limits-v1')
   assertEquals(
     (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_LOGIN_LIMITS_FEATURE),
+    true
+  )
+})
+
+test('managed-owner-role-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(MANAGED_OWNER_ROLE_FEATURE, 'managed-owner-role-v1')
+  assertEquals(
+    (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_OWNER_ROLE_FEATURE),
     true
   )
 })

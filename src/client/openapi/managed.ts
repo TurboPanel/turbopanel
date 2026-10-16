@@ -1018,7 +1018,7 @@ export const managedSchemas = {
         type: 'array',
         items: { type: 'string', enum: ['owner', 'read-write', 'read-only', 'admin'] },
         description:
-          "What the login may do in each listed database. `admin` makes it a Database admin login for tools: on Postgres it joins each database's owner role (every listed database must have one; 422 `managed_admin_needs_owner_role`), on MySQL and MariaDB it gets ALL on each listed database with the grant option and nothing global. It is never read-only (400 `managed_admin_login_not_read_only`), is stored alone, and is a tool login (`tool` true) unless the request says `tool: false`. On Postgres, `owner` on a database with an owner role makes the login a migrations login: it works as the owner role by session default, so tables it creates belong to the owner role and the other logins can use them at once. Omitted = `read-only` for a `read-only` connectionRole, otherwise `read-write`. An empty list or an unknown name answers 400 `managed_user_privileges_invalid`, because a login with no grants can connect but is refused everywhere.",
+          "What the login may do in each listed database. `admin` makes it a Database admin login for tools: on Postgres it joins each database's owner role (every listed database must have one; 422 `managed_admin_needs_owner_role`, 409 `managed_owner_role_needs_daemon_update` when the daemon of the server is too old), on MySQL and MariaDB it gets ALL on each listed database with the grant option and nothing global. It is never read-only (400 `managed_admin_login_not_read_only`), is stored alone, and is a tool login (`tool` true) unless the request says `tool: false`. On Postgres, `owner` on a database with an owner role makes the login a migrations login: it works as the owner role by session default, so tables it creates belong to the owner role and the other logins can use them at once. Omitted = `read-only` for a `read-only` connectionRole, otherwise `read-write`. An empty list or an unknown name answers 400 `managed_user_privileges_invalid`, because a login with no grants can connect but is refused everywhere.",
       },
       connectionRole: {
         type: 'string',
@@ -1080,7 +1080,7 @@ export const managedSchemas = {
       ownerRole: {
         type: 'boolean',
         description:
-          'Postgres only. Make the database with an owner role: three roles that cannot log in (`tp_<name>_owner`, `_rw`, `_ro`), with the database owned by the owner role. Default true on Postgres (when the name is at most 54 characters), false elsewhere. 400 `managed_owner_role_unsupported` (MySQL, MariaDB) or `managed_owner_role_name_too_long`. Databases made before this keep their owner; nothing converts them.',
+          'Postgres only. Make the database with an owner role: three roles that cannot log in (`tp_<name>_owner`, `_rw`, `_ro`), with the database owned by the owner role. Default true on Postgres when the name is at most 54 characters and the daemon of the server lists `managed-owner-role-v1` (false otherwise, and false on other engines). 409 `managed_owner_role_needs_daemon_update` when true is asked for and the daemon is too old. 400 `managed_owner_role_unsupported` (MySQL, MariaDB) or `managed_owner_role_name_too_long`. Databases made before this keep their owner; nothing converts them.',
       },
     },
   },

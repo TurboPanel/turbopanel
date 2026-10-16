@@ -3,6 +3,8 @@ import {
   DATABASE_ADMIN_PRIVILEGE,
   evaluateDatabaseAdminGrant,
   OWNER_ROLE_MAX_DATABASE_NAME,
+  OWNER_ROLE_NEEDS_DAEMON_ERROR,
+  refuseAdminGrantOnOldDaemon,
   resolveDatabaseOwnerRole,
 } from './owner-role.ts'
 
@@ -72,4 +74,35 @@ test('a Database admin login needs an owner role on Postgres and is never read-o
   assertEquals(evaluateDatabaseAdminGrant('mysql', grant({ ownerRoleDatabases: [] })), null)
   // Other privileges are not this rule's business.
   assertEquals(evaluateDatabaseAdminGrant('postgres', grant({ privileges: ['owner'] })), null)
+})
+
+test('an old daemon gets no owner role by default and a 409 when one is asked for', () => {
+  assertEquals(resolveDatabaseOwnerRole('postgres', 'shop', undefined, false), {
+    ok: true,
+    ownerRole: false,
+  })
+  assertEquals(resolveDatabaseOwnerRole('postgres', 'shop', false, false), {
+    ok: true,
+    ownerRole: false,
+  })
+  const asked = resolveDatabaseOwnerRole('postgres', 'shop', true, false)
+  assertEquals(asked.ok, false)
+  if (!asked.ok) {
+    assertEquals(asked.status, 409)
+    assertEquals(asked.error, OWNER_ROLE_NEEDS_DAEMON_ERROR)
+  }
+  // MySQL never has one, whatever the daemon.
+  assertEquals(resolveDatabaseOwnerRole('mysql', 'shop', undefined, false), {
+    ok: true,
+    ownerRole: false,
+  })
+})
+
+test('a Database admin login on a Postgres primary needs the owner-role feature', () => {
+  const refused = refuseAdminGrantOnOldDaemon('postgres', [DATABASE_ADMIN_PRIVILEGE], false)
+  assertEquals(refused?.status, 409)
+  assertEquals(refused?.error, OWNER_ROLE_NEEDS_DAEMON_ERROR)
+  assertEquals(refuseAdminGrantOnOldDaemon('postgres', [DATABASE_ADMIN_PRIVILEGE], true), null)
+  assertEquals(refuseAdminGrantOnOldDaemon('postgres', ['select'], false), null)
+  assertEquals(refuseAdminGrantOnOldDaemon('mysql', [DATABASE_ADMIN_PRIVILEGE], false), null)
 })

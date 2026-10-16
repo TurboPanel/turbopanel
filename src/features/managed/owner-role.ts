@@ -47,7 +47,7 @@ export function evaluateDatabaseAdminGrant(
         error: 'managed_admin_needs_owner_role',
         message: `A Database admin login works through a database's owner role, and these databases do not have one: ${missing.join(
           ', '
-        )}. Databases made before owner roles existed keep their current owner; create a new database to use a Database admin login.`,
+        )}. Databases made before owner roles existed keep their current owner; create a new database to use a Database admin login (the server's TurboPanel daemon must be up to date, or the new database is made without an owner role).`,
       }
     }
   }
@@ -65,7 +65,8 @@ export const OWNER_ROLE_MAX_DATABASE_NAME = 54
 export function resolveDatabaseOwnerRole(
   engine: string,
   name: string,
-  requested: unknown
+  requested: unknown,
+  daemonHonoursOwnerRole = true
 ): { ok: true; ownerRole: boolean } | OwnerRoleValidationError {
   if (requested !== undefined && typeof requested !== 'boolean') {
     return {
@@ -97,5 +98,39 @@ export function resolveDatabaseOwnerRole(
     }
     return { ok: true, ownerRole: false }
   }
+  if (!daemonHonoursOwnerRole) {
+    // An older daemon would ignore the flag and leave an ordinary database
+    // that the panel believes has an owner role.
+    if (requested === true) return ownerRoleNeedsDaemonUpdate()
+    return { ok: true, ownerRole: false }
+  }
   return { ok: true, ownerRole: requested !== false }
+}
+
+export const OWNER_ROLE_NEEDS_DAEMON_ERROR = 'managed_owner_role_needs_daemon_update'
+
+const OWNER_ROLE_NEEDS_DAEMON_MESSAGE =
+  "This server's TurboPanel daemon is too old to give a database an owner role or to set up a Database admin login. Update the server, then try again."
+
+function ownerRoleNeedsDaemonUpdate(): OwnerRoleValidationError {
+  return {
+    ok: false,
+    error: OWNER_ROLE_NEEDS_DAEMON_ERROR,
+    message: OWNER_ROLE_NEEDS_DAEMON_MESSAGE,
+    status: 409,
+  }
+}
+
+/**
+ * The refusal for a Database admin login on a Postgres primary whose daemon
+ * lacks the owner-role feature, or `null` when the grant is fine.
+ */
+export function refuseAdminGrantOnOldDaemon(
+  engine: string,
+  privileges: readonly string[],
+  daemonHonoursOwnerRole: boolean
+): OwnerRoleValidationError | null {
+  if (engine !== 'postgres' || daemonHonoursOwnerRole) return null
+  if (!privileges.includes(DATABASE_ADMIN_PRIVILEGE)) return null
+  return ownerRoleNeedsDaemonUpdate()
 }
