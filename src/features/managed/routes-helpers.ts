@@ -289,6 +289,7 @@ export function managedSessionPaths(): string[] {
     '/environments/:id/managed/users/:principalId/password',
     '/environments/:id/managed/databases',
     '/environments/:id/managed/databases/:databaseName',
+    '/environments/:id/managed/privilege-catalogue',
     '/environments/:id/managed/status',
     '/environments/:id/managed/logs',
     '/environments/:id/managed/backups',

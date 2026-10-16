@@ -78,10 +78,10 @@ only a tested series can be created, saved into `settings.image`, or reach the
 daemon. Untested entries stay in the catalog for one reason: `describeManagedImage`
 must still be able to name an image an existing row already holds.
 
-| Engine   | Creatable (tested) | Catalogued but untested |
-| -------- | ------------------ | ----------------------- |
-| Postgres | **18**             | 17, 16, 15              |
-| MySQL    | **9.7**, **8.4**   |                         |
+| Engine   | Creatable (tested)                                | Catalogued but untested |
+| -------- | ------------------------------------------------- | ----------------------- |
+| Postgres | **18**                                            | 17, 16, 15              |
+| MySQL    | **9.7**, **8.4**                                  |                         |
 | MariaDB  | **11.8** (default), **12.3** (single server only) | 11.4, 10.11             |
 
 Each creatable series offers both of its base-OS variants, so the derived
@@ -231,31 +231,31 @@ re-asserted at the daemon command-contract boundary.
    TLS material (the daemon refuses it otherwise). Client traffic still enters
    via the shared ProxySQL client listeners (see Client listener ports) — never
    a per-service published map for public SQL clients and never per-managed
-   Traefik.   A binding change that places the app on another host enqueues
-  `managed.apply` so that listener exists before the consumer's
-  `managed.ingress.reconcile` can emit frontend users. Binding create
-  and remove (including project/environment cascade and cluster detach)
-  share `enqueueIngressForBindingChange`: apply first, then ingress.
-  A PATCH that only changes `keyPrefix` / emit flags does not apply.
-  `private_port` is allocated during prepare; it is cleared only after
-  at least one apply command is queued (`commitClearedPrivatePortsIfUnused`).
-  A failed enqueue leaves the port allocated — the failed command is
-  visible, and the next successful apply (operator Apply or another
-  binding change) retries the teardown.   When binding create/delete
-  cannot queue `managed.apply`, `enqueueIngressForBindingChange` skips
-  `managed.ingress.reconcile` and returns
-  `BINDING_PRIVATE_LISTENER_PENDING_WARNING` on the binding response;
-  a successful apply with a failed ingress reconcile returns
-  `BINDING_INGRESS_RECONCILE_PENDING_WARNING`. Binding-side apply uses
-  `enqueuePreparedManagedApply` with `updateManagedStatus: false` so a
-  saved credential never flips `managed.status` to `applying` / `failed`.
-  the next operator **Apply** or binding change runs the same apply-first
-  path again (no separate pending marker). A remote app with no private
-  path is skipped at apply (warning) so one unreachable consumer cannot
-  fail the cluster; binding create refuses that case with a plain-words
-  422 instead. Peers still fail apply hard. When peers dial one
-  transport and a consumer another, the peer bind wins and that
-  consumer is skipped — the published address is never widened.
+   Traefik. A binding change that places the app on another host enqueues
+   `managed.apply` so that listener exists before the consumer's
+   `managed.ingress.reconcile` can emit frontend users. Binding create
+   and remove (including project/environment cascade and cluster detach)
+   share `enqueueIngressForBindingChange`: apply first, then ingress.
+   A PATCH that only changes `keyPrefix` / emit flags does not apply.
+   `private_port` is allocated during prepare; it is cleared only after
+   at least one apply command is queued (`commitClearedPrivatePortsIfUnused`).
+   A failed enqueue leaves the port allocated — the failed command is
+   visible, and the next successful apply (operator Apply or another
+   binding change) retries the teardown. When binding create/delete
+   cannot queue `managed.apply`, `enqueueIngressForBindingChange` skips
+   `managed.ingress.reconcile` and returns
+   `BINDING_PRIVATE_LISTENER_PENDING_WARNING` on the binding response;
+   a successful apply with a failed ingress reconcile returns
+   `BINDING_INGRESS_RECONCILE_PENDING_WARNING`. Binding-side apply uses
+   `enqueuePreparedManagedApply` with `updateManagedStatus: false` so a
+   saved credential never flips `managed.status` to `applying` / `failed`.
+   the next operator **Apply** or binding change runs the same apply-first
+   path again (no separate pending marker). A remote app with no private
+   path is skipped at apply (warning) so one unreachable consumer cannot
+   fail the cluster; binding create refuses that case with a plain-words
+   422 instead. Peers still fail apply hard. When peers dial one
+   transport and a consumer another, the peer bind wins and that
+   consumer is skipped — the published address is never widened.
 3. **Named volumes only.** `volumes[]` are Docker named volumes — never host
    bind paths. Config/TLS dirs are relative mounts under managed state. Volume
    **names** must satisfy `SAFE_IDENTIFIER_RE` / `SAFE_VOLUME_NAME_RE`
@@ -988,7 +988,7 @@ stop`; an unreachable old primary blocks) then promote.
    holding the in-flight slot.
    A promote (or failover `recover`) command the target's daemon lost to a
    restart (the daemon answers `The daemon restarted while this command was
-   running…`) is **queued again** by `resumeInterruptedPromote`
+running…`) is **queued again** by `resumeInterruptedPromote`
    (`ha-recovery.ts`, called from the consumer's failure path) while the row is
    still `promoting`, the in-flight journal row still matches, no other member
    has become primary, the target is still a replica on a connected server (or
@@ -1176,3 +1176,7 @@ row remains (`environment_id` CASCADE must not drop live host runtime). Hard-del
 the Postgres row only when the cluster was never placed.
 
 Daemon teardown: `turbopaneld/src/managed/AGENTS.md` (`destroy.ts`).
+
+## Privilege catalogue
+
+`privileges/` holds the versioned privilege catalogue (per engine and supported series, checked against captured engine output in `privileges/fixtures/`) and the design for the permission grid: `privileges/DESIGN.md`. Adding an engine version: capture a fixture with `scripts/capture-privilege-fixtures.mjs`, then add the series and any new or removed privileges to the catalogue data.

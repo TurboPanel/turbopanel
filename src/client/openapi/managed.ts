@@ -643,6 +643,140 @@ export const managedSchemas = {
       createdAt: { type: 'string', format: 'date-time' },
     },
   },
+  PrivilegeCatalogueResponse: {
+    type: 'object',
+    required: [
+      'engine',
+      'series',
+      'levels',
+      'privileges',
+      'roles',
+      'attributes',
+      'membershipOptions',
+      'defaultPrivilegeObjects',
+      'blocked',
+    ],
+    description:
+      "Everything the cluster's exact engine series can grant, in plain words. Only series the panel supports have a catalogue.",
+    properties: {
+      engine: { type: 'string', enum: ['postgres', 'mysql', 'mariadb'] },
+      series: { type: 'string', description: 'Engine series, for example 18, 9.7 or 11.8.' },
+      levels: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['id', 'label', 'explanation'],
+          properties: {
+            id: {
+              type: 'string',
+              enum: [
+                'global',
+                'database',
+                'schema',
+                'table',
+                'column',
+                'sequence',
+                'routine',
+                'type',
+                'parameter',
+                'tablespace',
+                'language',
+                'foreign',
+                'largeobject',
+              ],
+            },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+          },
+        },
+      },
+      privileges: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['id', 'level', 'keyword', 'label', 'explanation', 'allowed', 'grid'],
+          properties: {
+            id: { type: 'string', description: '`<level>:<keyword>`, for example `table:SELECT`.' },
+            level: { type: 'string' },
+            keyword: { type: 'string', description: 'The word used in GRANT.' },
+            aliases: { type: 'array', items: { type: 'string' } },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+            since: { type: 'string', description: 'First series that has it, when not all.' },
+            allowed: {
+              type: 'string',
+              enum: ['yes', 'needs-admin', 'no'],
+              description:
+                "Whether a site owner's login may hold it: `yes`, `needs-admin` (reserved for a Database admin login) or `no` (never).",
+            },
+            reason: { type: 'string' },
+            aclLetter: { type: 'string', description: 'Postgres access-list letter.' },
+            grid: { type: 'boolean', description: 'False when it never shows as a grid cell.' },
+          },
+        },
+      },
+      roles: {
+        type: 'array',
+        description: 'Postgres predefined roles. Empty for MySQL and MariaDB.',
+        items: {
+          type: 'object',
+          required: ['name', 'label', 'explanation', 'grantable', 'allowed'],
+          properties: {
+            name: { type: 'string' },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+            since: { type: 'string' },
+            grantable: { type: 'boolean' },
+            allowed: { type: 'string', enum: ['yes', 'needs-admin', 'no'] },
+            reason: { type: 'string' },
+          },
+        },
+      },
+      attributes: {
+        type: 'array',
+        description: 'Postgres role attributes. Empty for MySQL and MariaDB.',
+        items: {
+          type: 'object',
+          required: ['name', 'column', 'label', 'explanation', 'allowed'],
+          properties: {
+            name: { type: 'string' },
+            column: { type: 'string' },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+            allowed: { type: 'string', enum: ['yes', 'needs-admin', 'no'] },
+            reason: { type: 'string' },
+          },
+        },
+      },
+      membershipOptions: {
+        type: 'array',
+        description: 'Options on a Postgres role membership (INHERIT and SET exist from 16).',
+        items: { type: 'object' },
+      },
+      defaultPrivilegeObjects: {
+        type: 'array',
+        description: 'Object kinds Postgres default privileges can name.',
+        items: { type: 'object' },
+      },
+      blocked: {
+        type: 'object',
+        required: ['databases', 'schemas', 'reservedPrefixes'],
+        properties: {
+          databases: { type: 'array', items: { type: 'string' } },
+          schemas: { type: 'array', items: { type: 'string' } },
+          reservedPrefixes: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+  },
+  PrivilegeCatalogueUnsupportedError: {
+    type: 'object',
+    required: ['error', 'message'],
+    properties: {
+      error: { type: 'string', const: 'privilege_catalogue_unsupported_version' },
+      message: { type: 'string' },
+    },
+  },
   ManagedUsersResponse: {
     type: 'object',
     required: ['users'],
@@ -1595,6 +1729,25 @@ export const managedPaths = {
         200: {
           description: 'Rotated',
           ...jsonSchema('ManagedRootPasswordResponse'),
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/privilege-catalogue': {
+    get: {
+      tags: ['Managed services'],
+      summary: "Privilege catalogue for the cluster's engine version",
+      description:
+        "Read only. Lists every privilege, predefined role and role attribute that exists in the cluster's exact engine series, with a plain-words label and whether a site owner's login may hold it. A series the panel does not support answers 422 `privilege_catalogue_unsupported_version`.",
+      parameters: [ENV_ID_PARAM],
+      responses: {
+        200: {
+          description: 'The catalogue for this cluster',
+          ...jsonSchema('PrivilegeCatalogueResponse'),
+        },
+        422: {
+          description: 'privilege_catalogue_unsupported_version',
+          ...jsonSchema('PrivilegeCatalogueUnsupportedError'),
         },
       },
     },
