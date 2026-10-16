@@ -9,6 +9,7 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
+  command,
   container,
   environment,
   managed,
@@ -2121,16 +2122,47 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       })
     }
 
-    const prepared = await prepareApplyForManaged(c, db, ctx, row, options, targetServerId)
+    // A thrown error (not just an error Response) must not leave the new
+    // metadata behind with nothing queued.
+    let prepared: Awaited<ReturnType<typeof prepareApplyForManaged>>
+    try {
+      prepared = await prepareApplyForManaged(c, db, ctx, row, options, targetServerId)
+    } catch (error) {
+      // Nothing is queued before prepare finishes, so restoring is safe.
+      await restore()
+      throw error
+    }
     if (prepared instanceof Response) {
       await restore()
       return prepared
     }
-    const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
-      userId: auth.userId,
-      managedId: row.id,
-      members: prepared.members,
-    })
+    const startedAt = new Date(Date.now() - 2000).toISOString()
+    let enqueued: Awaited<ReturnType<typeof enqueuePreparedManagedApply>>
+    try {
+      enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
+        userId: auth.userId,
+        managedId: row.id,
+        members: prepared.members,
+      })
+    } catch (error) {
+      // Members are queued one by one. If any apply already reached the queue it
+      // carries the new settings, so restoring the old metadata would leave the
+      // server and the panel disagreeing: keep the change and let the next apply
+      // finish the job. Restore only when nothing was queued.
+      const queued = await db
+        .select({ id: command.id })
+        .from(command)
+        .where(
+          and(
+            inArray(command.serverId, [...new Set(prepared.members.map((m) => m.serverId))]),
+            eq(command.type, 'managed.apply'),
+            sql`${command.createdAt} >= ${startedAt}`
+          )
+        )
+        .limit(1)
+      if (queued.length === 0) await restore()
+      throw error
+    }
     if (enqueued instanceof Response) {
       await restore()
       return enqueued

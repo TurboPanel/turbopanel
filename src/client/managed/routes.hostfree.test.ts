@@ -3476,6 +3476,56 @@ test('PATCH user applies a change and queues an apply', async () => {
   assertEquals(badPriv.res.status, 400)
 })
 
+test('PATCH user restores the old settings when preparing the apply throws', async () => {
+  const loginWrites: Array<Record<string, unknown>> = []
+  const base = applyReadyDb({
+    principalRows: [],
+    loginRows: [loginRow({ metadata: { engine: 'postgres', databases: ['postgres'] } })],
+    memberRows: PRIMARY_ONLY,
+  })
+  const db = {
+    ...base,
+    select: (...args: unknown[]) => {
+      const chain = (base.select as (...a: unknown[]) => { from: (t: unknown) => unknown })(...args)
+      return {
+        from: (table: unknown) => {
+          // After the new metadata is saved, any read other than the login
+          // itself fails, as if the database dropped mid-request.
+          if (loginWrites.length === 1 && table !== login) {
+            throw new Error('database went away')
+          }
+          return chain.from(table)
+        },
+      }
+    },
+    update: (table: unknown) => {
+      const inner = base.update(table as never) as unknown as {
+        set: (next: Record<string, unknown>) => unknown
+      }
+      return {
+        set: (next: Record<string, unknown>) => {
+          if (table === login) loginWrites.push(next)
+          return inner.set(next)
+        },
+      }
+    },
+  } as unknown as Db
+  const { app, cookie } = await buildApp({
+    db,
+    registry: stubRegistry(),
+    commandQueue: recordingQueue(),
+  })
+  const res = await app.request(envPath(`/users/${PRINCIPAL_ID}`), {
+    method: 'PATCH',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ grantMode: 'self' }),
+  })
+  assertEquals(res.status, 500)
+  assertEquals(loginWrites.length, 2)
+  assertEquals((loginWrites[0]?.metadata as Record<string, unknown>).grantMode, 'self')
+  assertEquals((loginWrites[1]?.metadata as Record<string, unknown>).grantMode, undefined)
+})
+
 test('PATCH user refuses a bad mode and a move back to preset in plain words', async () => {
   const bad = await patchUser({ grantMode: 'wild' })
   assertEquals(bad.res.status, 400)

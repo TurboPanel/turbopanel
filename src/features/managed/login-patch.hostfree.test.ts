@@ -57,6 +57,10 @@ test('invalid transitions are refused in plain words', () => {
     confirmReset: true,
   })
   assertEquals(confirmed.ok, true)
+  const roSelf = planLoginPatch('postgres', user({ grantMode: 'self' }), {
+    connectionRole: 'read-only',
+  })
+  assertEquals(roSelf.ok, true)
   const priv = planLoginPatch('postgres', user({ grantMode: 'self' }), {
     privileges: ['owner'],
   })
@@ -72,4 +76,32 @@ test('read-only is stored only as read-only; read-write clears it', () => {
   if (!plan.ok) throw new Error('expected ok')
   assertEquals('connectionRole' in plan.metadata, true)
   assertEquals(plan.metadata.connectionRole, undefined)
+})
+
+test('moving a read-only postgres login to self needs confirmReset', () => {
+  const refused = planLoginPatch('postgres', user({ connectionRole: 'read-only' }), {
+    grantMode: 'self',
+  })
+  assertEquals(!refused.ok && refused.status, 409)
+  assertEquals(!refused.ok && refused.error, 'managed_grant_reset_needs_confirm')
+  assertEquals(!refused.ok && refused.message.includes('stays on'), true)
+  const sameRequest = planLoginPatch('postgres', user({}), {
+    grantMode: 'self',
+    connectionRole: 'read-only',
+  })
+  assertEquals(!sameRequest.ok && sameRequest.status, 409)
+  const confirmed = planLoginPatch('postgres', user({ connectionRole: 'read-only' }), {
+    grantMode: 'self',
+    confirmReset: true,
+  })
+  assertEquals(confirmed.ok, true)
+  const clears = planLoginPatch('postgres', user({ connectionRole: 'read-only' }), {
+    grantMode: 'self',
+    connectionRole: 'read-write',
+  })
+  assertEquals(clears.ok, true)
+  const mysql = planLoginPatch('mysql', user({ connectionRole: 'read-only' }), {
+    grantMode: 'self',
+  })
+  assertEquals(mysql.ok, true)
 })

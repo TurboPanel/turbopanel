@@ -44,6 +44,11 @@ export type LoginPatchResult = {
   summary: string[]
 }
 
+function storedConnectionRole(metadata: unknown): 'read-only' | 'read-write' {
+  const role = (metadata as Record<string, unknown> | null)?.connectionRole
+  return role === 'read-only' ? 'read-only' : 'read-write'
+}
+
 const fail = (
   status: LoginPatchError['status'],
   error: string,
@@ -104,11 +109,29 @@ export function planLoginPatch(
   const after = resolveGrantMode(loginGrantMode(current.metadata), input)
   if (typeof after !== 'string') return after
 
-  if (after === 'self' && (input.privileges !== undefined || input.connectionRole !== undefined)) {
+  // connectionRole is routing (read replicas vs primary), not privileges, so a
+  // manage-myself login may change it. Only the panel-set privileges are refused.
+  if (after === 'self' && input.privileges !== undefined) {
     return fail(
       422,
       'managed_self_login_has_no_privileges',
       'A manage-myself login has no panel-set permissions to change. Grant or revoke in SQL, or switch it back to panel-set permissions first.'
+    )
+  }
+  const before = loginGrantMode(current.metadata)
+  const readOnlyAfter =
+    (input.connectionRole ?? storedConnectionRole(current.metadata)) === 'read-only'
+  if (
+    engine === 'postgres' &&
+    after === 'self' &&
+    before !== 'self' &&
+    readOnlyAfter &&
+    input.confirmReset !== true
+  ) {
+    return fail(
+      409,
+      'managed_grant_reset_needs_confirm',
+      'This login is set to read-only. In PostgreSQL that is a default setting on the login itself, and a manage-myself login is never touched by the panel, so the read-only setting stays on until someone removes it by hand (ALTER ROLE ... RESET default_transaction_read_only). Send confirmReset: true to go ahead.'
     )
   }
   if (input.tool !== undefined && typeof input.tool !== 'boolean') {

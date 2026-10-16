@@ -1630,7 +1630,7 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Change a login (grant mode, databases, connection role, privileges, tool flag)',
       description:
-        'Every field is optional. `dryRun: true` changes nothing and returns `statements`, a plain-words list of the kinds of SQL the next apply would run. Refusals: 422 `managed_login_not_editable` (root/replication logins), 422 `managed_grant_mode_invalid_transition` (back to `preset`), 409 `managed_grant_reset_needs_confirm` (self back to panel-set permissions needs `confirmReset: true`), 422 `managed_self_login_has_no_privileges`, 400 `managed_grant_mode_invalid`.',
+        'Every field is optional. `dryRun: true` changes nothing and returns `statements`, a plain-words list of the kinds of SQL the next apply would run. Refusals: 422 `managed_login_not_editable` (root/replication logins), 422 `managed_grant_mode_invalid_transition` (back to `preset`), 409 `managed_grant_reset_needs_confirm` (self back to panel-set permissions, or a read-only Postgres login moving to self, needs `confirmReset: true`), 422 `managed_self_login_has_no_privileges`, 400 `managed_grant_mode_invalid`.',
       parameters: [ENV_ID_PARAM, PRINCIPAL_ID_PARAM],
       requestBody: {
         required: true,
@@ -1657,7 +1657,26 @@ export const managedPaths = {
       responses: {
         200: {
           description: 'Dry-run preview, or the login updated and an apply enqueued',
-          content: { 'application/json': { schema: { type: 'object' } } },
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok'],
+                properties: {
+                  ok: { type: 'boolean' },
+                  dryRun: { type: 'boolean', description: 'Present and true for a preview.' },
+                  grantMode: { type: 'string', enum: ['preset', 'recipe', 'self'] },
+                  statements: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Dry run only: plain-words kinds of SQL the next apply runs.',
+                  },
+                  user: { type: 'object', nullable: true, description: 'The updated login.' },
+                  commandId: { type: 'string', description: 'The queued apply command.' },
+                },
+              },
+            },
+          },
         },
       },
     },
