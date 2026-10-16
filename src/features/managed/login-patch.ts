@@ -126,6 +126,7 @@ export function readWriteGrantState(metadata: unknown): ReadWriteGrantState {
   return {
     grantMode: typeof mode === 'string' ? mode : 'preset',
     privileges: storedStrings(metadata, 'privileges'),
+    databases: storedStrings(metadata, 'databases'),
   }
 }
 

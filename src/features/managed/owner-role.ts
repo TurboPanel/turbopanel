@@ -140,9 +140,10 @@ export const READWRITE_NEEDS_DAEMON_ERROR = 'managed_readwrite_needs_daemon_upda
 const READWRITE_NEEDS_DAEMON_MESSAGE =
   "This server's TurboPanel daemon is too old to give a read/write login data changes only: it would still be able to create, change and drop tables. Update the server, then try again, or use a read-only login."
 
-/** What a login holds, for the read/write daemon rule: its engine and how it is managed. */
+/** What a login holds, for the read/write daemon rule: its levels, databases and how it is managed. */
 export type ReadWriteGrantState = {
   privileges: readonly string[]
+  databases?: readonly string[]
   /** `self` logins are never written by the panel. */
   grantMode: string
 }
@@ -167,7 +168,12 @@ export function refuseReadWriteOnOldDaemon(
 ): OwnerRoleValidationError | null {
   if (engine !== 'mysql' && engine !== 'mariadb') return null
   if (daemonGivesDataOnlyReadWrite || !panelWritesReadWrite(after)) return null
-  if (before && panelWritesReadWrite(before)) return null
+  if (before && panelWritesReadWrite(before)) {
+    // The level is not new, but a database it did not reach before would get
+    // the wide grant from an older daemon.
+    const had = new Set(before.databases ?? [])
+    if ((after.databases ?? []).every((name) => had.has(name))) return null
+  }
   return {
     ok: false,
     error: READWRITE_NEEDS_DAEMON_ERROR,

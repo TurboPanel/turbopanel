@@ -133,6 +133,25 @@ test('the data-only daemon rule leaves other levels, modes, engines and held log
   // Already panel-managed read/write: nothing new is asked of the daemon.
   assertEquals(refuseReadWriteOnOldDaemon('mysql', rw, rw, false), null)
   assertEquals(refuseReadWriteOnOldDaemon('mysql', rw, { ...rw, grantMode: 'preset' }, false), null)
+  // A database it did not reach before is new to an older daemon.
+  assertEquals(
+    refuseReadWriteOnOldDaemon(
+      'mysql',
+      { ...rw, databases: ['a', 'b'] },
+      { ...rw, databases: ['a'] },
+      false
+    )?.error,
+    READWRITE_NEEDS_DAEMON_ERROR
+  )
+  assertEquals(
+    refuseReadWriteOnOldDaemon(
+      'mysql',
+      { ...rw, databases: ['a'] },
+      { ...rw, databases: ['a', 'b'] },
+      false
+    ),
+    null
+  )
   // Moving a manage-myself login back to panel-set read/write, or adding the level, is new.
   assertEquals(
     refuseReadWriteOnOldDaemon('mysql', rw, { ...rw, grantMode: 'self' }, false)?.error,
