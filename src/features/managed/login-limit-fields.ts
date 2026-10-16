@@ -7,10 +7,10 @@
 import type { Context } from 'hono'
 import type { ManagedContext } from './managed-context.ts'
 import type { ManagedRowOptions } from './options.ts'
-import { type LoginPatchResult, type LoginPatchCurrent, planLoginPatch } from './login-patch.ts'
+import { type LoginPatchCurrent, type LoginPatchResult, planLoginPatch } from './login-patch.ts'
 import { parseManagedLoginPatchFields } from './routes-helpers.ts'
 import type { Db } from '../../db/connection.ts'
-import { MANAGED_LOGIN_LIMITS_FEATURE } from '../../lib/version-wire.ts'
+import { MANAGED_LOGIN_LIMITS_FEATURE, MANAGED_OWNER_ROLE_FEATURE } from '../../lib/version-wire.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import {
   type LoginSourcesError,
@@ -121,6 +121,12 @@ export async function refuseIfDaemonCannotLimitLogins(
   )
 }
 
+/** Whether the server's daemon honours owner roles and the Database admin login. */
+export async function daemonHonoursOwnerRole(db: Db, serverId: string): Promise<boolean> {
+  const state = await getServerDaemonStateByServerId(db, serverId)
+  return (state?.projection?.features ?? []).includes(MANAGED_OWNER_ROLE_FEATURE)
+}
+
 /** PATCH body: the ordinary fields plus the limit fields, as one planning input. */
 export async function parseLoginPatchRequest(
   c: Context,
@@ -138,6 +144,8 @@ export async function parseLoginPatchRequest(
   const plan = planLoginPatch(ctx.spec.engine, target, input, {
     ownerRoleDatabases: options.ownerRoleDatabases,
   })
-  if (!plan.ok) return c.json({ error: plan.error, message: plan.message }, plan.status)
+  if (!plan.ok) {
+    return c.json({ error: plan.error, message: plan.message }, plan.status)
+  }
   return { dryRun, limits, plan }
 }

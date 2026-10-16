@@ -436,6 +436,13 @@ pass `ownerRoleDatabases` from the parsed options (a missing flag makes the
 daemon treat the database as an ordinary one). `writeManagedRowOptions` keeps
 the key. The `tp_` login-name prefix is reserved (`isReservedManagedUsername`).
 
+Gate: the primary's daemon must list `managed-owner-role-v1`
+(`MANAGED_OWNER_ROLE_FEATURE`). Without it a new database is made without an
+owner role (`ownerRole: true` asked for answers 409
+`managed_owner_role_needs_daemon_update`) and an `admin` login on Postgres
+answers the same 409 (create, and PATCH that makes a login admin). Existing
+owner-role databases and logins are untouched.
+
 A login with `owner` on an owner-role database is the migrations login (the
 daemon makes it a member of the owner role and sets its session role, so
 tables it creates belong to the owner role). The Database admin login is

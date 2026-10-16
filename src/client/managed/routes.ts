@@ -42,7 +42,9 @@ import {
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
 import { loginPatchUndo } from '../../features/managed/login-patch.ts'
+import { refuseAdminGrantOnOldDaemon } from '../../features/managed/owner-role.ts'
 import {
+  daemonHonoursOwnerRole,
   loginLimitMetadata,
   parseGatedLoginLimits,
   parseLoginPatchRequest,
@@ -56,8 +58,8 @@ import {
   isManagedLoginNameTakenInFamily,
   legacyPrincipalIdOf,
   listManagedLogins,
-  patchLoginMetadata,
   type ManagedLoginRow,
+  patchLoginMetadata,
   removeManagedLogin,
   restoreManagedLogin,
   rotateLoginPassword,
@@ -180,6 +182,7 @@ import {
   buildStatusMemberView,
   canHardDeleteManaged,
   connectionListenerFromAccess,
+  DATABASE_ADMIN_PRIVILEGE,
   evaluateExistingPrincipalLoginName,
   evaluateManagedDatabaseDelete,
   evaluateManagedLoginDropGuard,
@@ -193,10 +196,6 @@ import {
   isManagedRootPrincipal,
   isPlainObject,
   listUsersReferencingDatabase,
-  parseManagedLoginGrantFields,
-  DATABASE_ADMIN_PRIVILEGE,
-  parseManagedLoginModeFields,
-  serializeManagedLogin,
   loadManagedStatusSnapshot,
   managedSessionPaths,
   type MemberPatchFields,
@@ -208,6 +207,8 @@ import {
   parseDisasterRecoveryPromoteBody,
   parseManagedCreateName,
   parseManagedLifecycleAction,
+  parseManagedLoginGrantFields,
+  parseManagedLoginModeFields,
   parseManagedPatchName,
   parseManagedUserCreateFields,
   parseManagedVersionSelection,
@@ -219,11 +220,12 @@ import {
   readInitialDatabase,
   replicaEndpointPurpose,
   replicaPlacementNeedsDatacenter,
+  resolveDatabaseOwnerRole,
   resolveManagedAccess,
   resolveManagedServerId,
   serializeContainerRow,
+  serializeManagedLogin,
   serializeOrgManagedListRow,
-  resolveDatabaseOwnerRole,
   validateManagedDatabaseCreateName,
 } from '../../features/managed/routes-helpers.ts'
 import {
@@ -1380,7 +1382,10 @@ type LoginCreateShared = {
 async function createLoginWithNewPrincipal(
   tx: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  params: LoginCreateShared & { username: string; nameScheme: PrincipalNameScheme }
+  params: LoginCreateShared & {
+    username: string
+    nameScheme: PrincipalNameScheme
+  }
 ): Promise<LoginCreateOutcome> {
   const { ctx, managedId, existingLogins, owningOrgIds, metadata, username, nameScheme } = params
   if (existingLogins.some((entry) => entry.username === username)) {
@@ -1991,6 +1996,21 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
+    const adminRefused = refuseAdminGrantOnOldDaemon(
+      ctx.spec.engine,
+      privileges,
+      ctx.spec.engine !== 'postgres' || (await daemonHonoursOwnerRole(db, targetServerId))
+    )
+    if (adminRefused) {
+      return c.json(
+        {
+          error: adminRefused.error,
+          message: adminRefused.message,
+        },
+        adminRefused.status
+      )
+    }
+
     const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
     const limits = await parseGatedLoginLimits(c, db, ctx.organizationId, body, targetServerId)
@@ -2028,7 +2048,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         ctx.organizationId
       )
       await lockOrganizationsForUpdate(tx, owningOrgIds)
-      const shared = { ctx, managedId: row.id, existingLogins, owningOrgIds, metadata }
+      const shared = {
+        ctx,
+        managedId: row.id,
+        existingLogins,
+        owningOrgIds,
+        metadata,
+      }
       return request.kind === 'existing-principal'
         ? createLoginForExistingPrincipal(tx, dataEncryptionSecrets, {
             ...shared,
@@ -2130,6 +2156,20 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (targetServerId instanceof Response) return targetServerId
     const limitsRefused = await refuseLimitsIfUnsupported(c, db, limits, targetServerId)
     if (limitsRefused) return limitsRefused
+    const adminRefused = refuseAdminGrantOnOldDaemon(
+      ctx.spec.engine,
+      Array.isArray(plan.metadata.privileges) ? (plan.metadata.privileges as string[]) : [],
+      ctx.spec.engine !== 'postgres' || (await daemonHonoursOwnerRole(db, targetServerId))
+    )
+    if (adminRefused) {
+      return c.json(
+        {
+          error: adminRefused.error,
+          message: adminRefused.message,
+        },
+        adminRefused.status
+      )
+    }
     const previous = target.metadata
     await patchLoginMetadata(db, target.id, plan.metadata)
     const restore = async () => {
@@ -2403,13 +2443,18 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       )
     }
 
-    const ownerRole = resolveDatabaseOwnerRole(ctx.spec.engine, name, body.ownerRole)
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
+    if (targetServerId instanceof Response) return targetServerId
+
+    const ownerRole = resolveDatabaseOwnerRole(
+      ctx.spec.engine,
+      name,
+      body.ownerRole,
+      ctx.spec.engine !== 'postgres' || (await daemonHonoursOwnerRole(db, targetServerId))
+    )
     if (!ownerRole.ok) {
       return c.json({ error: ownerRole.error, message: ownerRole.message }, ownerRole.status)
     }
-
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
-    if (targetServerId instanceof Response) return targetServerId
 
     const nextDatabases = nextDatabasesAfterCreate(options.databases, name)
     const nextOwnerRoleDatabases = ownerRole.ownerRole
