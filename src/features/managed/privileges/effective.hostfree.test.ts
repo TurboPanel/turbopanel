@@ -302,3 +302,20 @@ test('the parser keeps databasesFailed and the wildcard pattern flag', () => {
   const view = buildEffectivePermissions(my, parsed, parsed.logins[0]!)
   assertEquals(view.grants[0]!.pattern, true)
 })
+
+test('a wildcard grant that covers a protected database is refused', () => {
+  const my = privilegeCatalogueFor('mysql', '8.4')!
+  const login = {
+    username: 'a',
+    exists: true,
+    memberships: [],
+    defaults: [],
+    grants: [
+      { level: 'database' as const, database: 'm_sql', privileges: ['SELECT'], pattern: true },
+      { level: 'database' as const, database: 'shop_%', privileges: ['SELECT'], pattern: true },
+    ],
+  }
+  const view = buildEffectivePermissions(my, report(login, 'mysql'), login)
+  assertEquals(view.grants[0]!.privileges[0]!.allowed, 'no')
+  assertEquals(view.grants[1]!.privileges[0]!.allowed, 'yes')
+})

@@ -217,12 +217,28 @@ function classifyPrivileges(
   return out
 }
 
+/** A MySQL schema pattern (`%` any run, `_` any one character) as a case-insensitive regex. */
+function schemaPatternRegex(pattern: string): RegExp {
+  let source = ''
+  for (const ch of pattern) {
+    if (ch === '%') source += '.*'
+    else if (ch === '_') source += '.'
+    else source += ch.replace(/[\\^$.*+?()[\]{}|]/g, String.raw`\$&`)
+  }
+  return new RegExp(`^${source}$`, 'i')
+}
+
 function isBlockedTarget(catalogue: PrivilegeCatalogue, grant: ObservedGrant): boolean {
-  const blockedDatabases = catalogue.blocked.databases
   if (catalogue.engine === 'postgres') {
     return grant.schema !== undefined && catalogue.blocked.schemas.includes(grant.schema)
   }
-  return grant.database !== undefined && blockedDatabases.includes(grant.database)
+  if (grant.database === undefined) return false
+  if (grant.pattern === true) {
+    // A wildcard schema name (`%`, `m_sql`) covers a protected database when it matches.
+    const regex = schemaPatternRegex(grant.database)
+    return catalogue.blocked.databases.some((name) => regex.test(name))
+  }
+  return catalogue.blocked.databases.includes(grant.database)
 }
 
 function classifyGrant(

@@ -97,13 +97,14 @@ export function registerManagedPrivilegeRoutes(router: Hono<AppEnv>) {
 
     const placed = loginDatabases(target.metadata)
     // Only Postgres reads per database; MySQL and MariaDB read every grant of the account.
-    const databases =
-      ctx.spec.engine === 'postgres'
-        ? (placed.length > 0
-            ? placed
-            : (parseManagedRowOptions(ctx.spec, row.options)?.databases ?? [])
-          ).slice(0, MAX_DAEMON_WS_PERMISSIONS_DATABASES)
-        : []
+    let wanted: string[] = []
+    if (ctx.spec.engine === 'postgres') {
+      wanted =
+        placed.length > 0
+          ? placed
+          : (parseManagedRowOptions(ctx.spec, row.options)?.databases ?? [])
+    }
+    const databases = wanted.slice(0, MAX_DAEMON_WS_PERMISSIONS_DATABASES)
     const outcome = await probeManagedPermissions(db, getDaemonCellRegistry(c), {
       serverId,
       managedId: row.id,
@@ -155,6 +156,7 @@ export function registerManagedPrivilegeRoutes(router: Hono<AppEnv>) {
       databases,
       databasesRead: report.databasesRead ?? [],
       databasesFailed: report.databasesFailed ?? [],
+      databasesNotAsked: wanted.slice(databases.length),
       versionMatchesCatalogue: reportMatchesSeries(report.serverVersion, catalogue.series),
     })
   })

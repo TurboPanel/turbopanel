@@ -817,6 +817,7 @@ export const managedSchemas = {
       'databases',
       'databasesRead',
       'databasesFailed',
+      'databasesNotAsked',
       'versionMatchesCatalogue',
     ],
     description:
@@ -933,7 +934,24 @@ export const managedSchemas = {
       databases: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Databases read (Postgres).',
+        description: 'Databases asked for (Postgres, at most 100).',
+      },
+      databasesRead: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Databases the host read.',
+      },
+      databasesFailed: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Databases the host could not read; their grants are missing from this answer.',
+      },
+      databasesNotAsked: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Databases left out because more than 100 are placed; their grants are missing.',
       },
       versionMatchesCatalogue: { type: 'boolean' },
     },
