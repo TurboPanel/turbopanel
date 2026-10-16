@@ -284,6 +284,7 @@ async function enqueueApplyForBindingManaged(
     spec,
     settings: parsed.settings,
     databases: parsed.databases,
+    ownerRoleDatabases: parsed.ownerRoleDatabases,
     serverId: row.serverId,
     environmentId: row.environmentId,
     organizationId: params.organizationId,

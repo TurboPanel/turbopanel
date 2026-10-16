@@ -246,6 +246,10 @@ export type BuildManagedApplyInput = {
   spec: ManagedEngineSpec
   settings: ManagedSettings
   databases: string[]
+  /** Postgres: the subset of `databases` made with an owner role. */
+  ownerRoleDatabases?: string[]
+  /** Postgres: dropped databases that had an owner role (their roles go too). */
+  dropOwnerRoleDatabases?: string[]
   /** Primary pin — the server `ensureManagedPrimaryMember` binds the primary to. */
   serverId: string
   environmentId: string
@@ -1256,6 +1260,31 @@ async function resolvePayloadMonitorUsers(
 }
 
 /**
+ * The create/drop operations of one apply. Every listed database is a create
+ * (idempotent on the daemon); `ownerRole` marks Postgres databases made with
+ * an owner role, on drop too so the daemon removes its roles.
+ */
+export function buildDatabaseOps(
+  input: Pick<
+    BuildManagedApplyInput,
+    'databases' | 'dropDatabases' | 'ownerRoleDatabases' | 'dropOwnerRoleDatabases'
+  >
+): NonNullable<ManagedApplyCommandPayload['databases']> {
+  return [
+    ...input.databases.map((name) => ({
+      name,
+      action: 'create' as const,
+      ...(input.ownerRoleDatabases?.includes(name) ? { ownerRole: true } : {}),
+    })),
+    ...(input.dropDatabases ?? []).map((name) => ({
+      name,
+      action: 'drop' as const,
+      ...(input.dropOwnerRoleDatabases?.includes(name) ? { ownerRole: true } : {}),
+    })),
+  ]
+}
+
+/**
  * The organization's single Orchestrator topology account, on MySQL/MariaDB
  * primary payloads only.
  *
@@ -1407,13 +1436,7 @@ async function buildPayloadForMember(
   })
   if (replError) return replError
 
-  const databases: NonNullable<ManagedApplyCommandPayload['databases']> = [
-    ...input.databases.map((name) => ({ name, action: 'create' as const })),
-    ...(input.dropDatabases ?? []).map((name) => ({
-      name,
-      action: 'drop' as const,
-    })),
-  ]
+  const databases = buildDatabaseOps(input)
 
   const builtMonitorUsers = await resolvePayloadMonitorUsers(
     db,

@@ -7,6 +7,7 @@
  * statements by kind instead of printing them.
  */
 
+import { DATABASE_ADMIN_PRIVILEGE, evaluateDatabaseAdminGrant } from './owner-role.ts'
 import {
   type DatabaseLoginRole,
   isLoginGrantMode,
@@ -35,6 +36,12 @@ export type LoginPatchInput = {
 export type LoginPatchCurrent = {
   role: DatabaseLoginRole
   metadata: unknown
+}
+
+/** Facts about the cluster the planner needs; none are required. */
+export type LoginPatchCluster = {
+  /** Postgres: databases that have an owner role. */
+  ownerRoleDatabases?: readonly string[]
 }
 
 export type LoginPatchResult = {
@@ -94,10 +101,16 @@ function patchMetadata(after: LoginGrantMode, input: LoginPatchInput): Record<st
   return metadata
 }
 
+function storedStrings(metadata: unknown, key: 'databases' | 'privileges'): string[] {
+  const value = (metadata as Record<string, unknown> | null)?.[key]
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : []
+}
+
 export function planLoginPatch(
   engine: string,
   current: LoginPatchCurrent,
-  input: LoginPatchInput
+  input: LoginPatchInput,
+  cluster: LoginPatchCluster = {}
 ): LoginPatchResult | LoginPatchError {
   if (current.role !== 'user') {
     return fail(
@@ -138,16 +151,45 @@ export function planLoginPatch(
     return fail(400, 'Invalid request', 'tool must be true or false.')
   }
 
+  // The Database admin login has fixed rules (never read-only; on Postgres
+  // only on databases with an owner role), checked on the state after the change.
+  const privilegesAfter = input.privileges ?? storedStrings(current.metadata, 'privileges')
+  const becomesAdmin = privilegesAfter.includes(DATABASE_ADMIN_PRIVILEGE)
+  const adminRefusal = evaluateDatabaseAdminGrant(engine, {
+    privileges: privilegesAfter,
+    databases: input.databases ?? storedStrings(current.metadata, 'databases'),
+    connectionRole: input.connectionRole ?? storedConnectionRole(current.metadata),
+    ownerRoleDatabases: cluster.ownerRoleDatabases,
+  })
+  if (adminRefusal) {
+    return fail(adminRefusal.status, adminRefusal.error, adminRefusal.message)
+  }
+
   const metadata = patchMetadata(after, input)
+  if (input.privileges !== undefined && becomesAdmin) {
+    // Admin is exclusive, and a tool login by default.
+    metadata.privileges = [DATABASE_ADMIN_PRIVILEGE]
+    if (input.tool === undefined && !loginIsTool(current.metadata)) metadata.tool = true
+  }
   if (Object.keys(metadata).length === 0) {
     return fail(400, 'Invalid request', 'Nothing to change.')
   }
-  const tool = input.tool ?? loginIsTool(current.metadata)
-  return { ok: true, metadata, grantMode: after, summary: describeApply(engine, after, tool) }
+  const tool = (metadata.tool as boolean | undefined) ?? loginIsTool(current.metadata)
+  return {
+    ok: true,
+    metadata,
+    grantMode: after,
+    summary: describeApply(engine, after, tool, becomesAdmin),
+  }
 }
 
 /** Plain-words statement kinds the next apply runs for this login. */
-export function describeApply(engine: string, mode: LoginGrantMode, tool: boolean): string[] {
+export function describeApply(
+  engine: string,
+  mode: LoginGrantMode,
+  tool: boolean,
+  admin = false
+): string[] {
   const kept = [
     'Create the login if missing and set its password',
     engine === 'postgres'
@@ -169,6 +211,13 @@ export function describeApply(engine: string, mode: LoginGrantMode, tool: boolea
             ? 'Revoke the login from databases not listed, reset its permissions on listed databases to the chosen set, and set its default permissions for new tables'
             : 'Reset the login permissions on each listed database to the chosen set',
         ]
+  if (admin) {
+    lines.push(
+      engine === 'postgres'
+        ? "Make the login a member of each listed database's owner role (it can grant on everything the owner role owns) and keep it from creating roles, databases or replication"
+        : 'Give the login all rights on each listed database, with the right to pass them on, and nothing outside those databases'
+    )
+  }
   if (tool) {
     lines.push('Send all of this login traffic to the primary (no read/write splitting)')
   }
