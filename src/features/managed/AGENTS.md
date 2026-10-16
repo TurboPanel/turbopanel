@@ -309,11 +309,12 @@ stays internal.
   ProxySQL its own IPv6-only Docker network and an IPv6 listener, so IPv6
   clients reach it with their real address (and through `DOCKER-USER`, like
   IPv4); loopback clients still show the managed network's gateway. Details:
-  `../turbopaneld/src/managed/AGENTS.md` → **Real client addresses**.
+  `../turbopaneld/src/managed/AGENTS.md` → **Real client addresses (IPv6 network)**.
 
 Each `managed.ingress.reconcile` cluster also carries `engineVersion`, the
-release series of its image (`ingressEngineVersion`: `18`, `9.7`, `11.8`;
-absent for an image outside the catalog). The daemon sets ProxySQL's
+release series of the image the row stores (`ingressEngineVersionFromOptions`,
+read from the raw options so a no-longer-creatable series still reports what it
+runs: `18`, `9.7`, `11.8`; absent for an image outside the catalog). The daemon sets ProxySQL's
 `mysql-server_version` / `pgsql-server_version` from it, so clients see the
 real engine instead of ProxySQL's defaults (PostgreSQL 16.1, MySQL 8.0.11).
 One listener per family is shared by every cluster on the server: it reports

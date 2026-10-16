@@ -16,6 +16,7 @@ import {
   decideIngressBindAddresses,
   hostgroupsForClusterIndex,
   ingressEngineVersion,
+  ingressEngineVersionFromOptions,
   isAtRestSealedPassword,
   isIngressRecord,
   isManagedReplicationPrincipal,
@@ -72,6 +73,29 @@ test('ingressEngineVersion sends the release series of the image the cluster run
   )
   // An image outside the catalog sends nothing.
   assertEquals(ingressEngineVersion(spec, 'registry.example/postgres:custom'), undefined)
+})
+
+test('ingressEngineVersionFromOptions reads the stored image, not the parsed settings', () => {
+  const spec = {
+    defaultImage: 'docker.io/library/mariadb:11.8',
+    legacyDefaultImage: 'docker.io/library/mariadb:12.3',
+  }
+  // A no-longer-creatable series still reports what it runs.
+  assertEquals(
+    ingressEngineVersionFromOptions(spec, {
+      settings: { image: 'docker.io/library/mariadb:11.4' },
+    }),
+    '11.4'
+  )
+  // A row with no stored image runs the legacy default.
+  assertEquals(ingressEngineVersionFromOptions(spec, { settings: {} }), '12.3')
+  // Unreadable options or an off-catalog image send nothing.
+  assertEquals(ingressEngineVersionFromOptions(spec, null), undefined)
+  assertEquals(ingressEngineVersionFromOptions(spec, { settings: { image: 7 } }), undefined)
+  assertEquals(
+    ingressEngineVersionFromOptions(spec, { settings: { image: 'registry.example/x:1' } }),
+    undefined
+  )
 })
 
 test('protocolListenerForEngine returns the platform default port and family', () => {

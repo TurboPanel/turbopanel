@@ -95,7 +95,7 @@ import {
   collectProxySqlListenerSans,
   decideIngressBindAddresses,
   hostgroupsForClusterIndex,
-  ingressEngineVersion,
+  ingressEngineVersionFromOptions,
   isAtRestSealedPassword,
   mergeHierarchyContainerSan,
   principalConnectionRole,
@@ -423,7 +423,7 @@ function buildIngressClusterFromLoaded(
     orgDefaults.listenerPorts
   )
 
-  const engineVersion = ingressEngineVersion(spec, settings.image)
+  const engineVersion = ingressEngineVersionFromOptions(spec, sample.options)
   const cluster: ManagedIngressReconcileCluster = {
     managedId,
     engine: engineCode,

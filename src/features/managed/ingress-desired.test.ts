@@ -662,8 +662,9 @@ test('each cluster carries its engine version so ProxySQL reports the real one',
       await db
         .update(managed)
         .set({
-          // The Debian variant: a creatable image that is not the default one.
-          options: sql`jsonb_set(options, '{settings,image}', '"docker.io/library/postgres:18"')`,
+          // A series no longer creatable: the settings parse refuses it, but the
+          // container still runs it, so that is the version to report.
+          options: sql`jsonb_set(options, '{settings,image}', '"docker.io/library/postgres:17"')`,
         })
         .where(
           inArray(
@@ -679,7 +680,7 @@ test('each cluster carries its engine version so ProxySQL reports the real one',
       if (built === null || 'kind' in built) {
         throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`)
       }
-      assertEquals(built.clusters[0]?.engineVersion, '18')
+      assertEquals(built.clusters[0]?.engineVersion, '17')
     }
   )
 })

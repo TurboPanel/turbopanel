@@ -14,8 +14,8 @@ import {
   managedIngressPortForEngine,
   type ManagedIngressPorts,
 } from './ingress-ports.ts'
-import { type ManagedSslMode, managedSslRequiresTls, resolveManagedSslMode } from './ssl.ts'
 import { describeManagedImage, effectiveManagedImage } from './releases.ts'
+import { type ManagedSslMode, managedSslRequiresTls, resolveManagedSslMode } from './ssl.ts'
 
 export {
   DEFAULT_MANAGED_INGRESS_PORTS,
@@ -78,6 +78,24 @@ export function ingressEngineVersion(
   image: string | undefined
 ): string | undefined {
   return describeManagedImage(effectiveManagedImage(spec, image))?.series
+}
+
+/**
+ * {@link ingressEngineVersion} from a `managed` row's raw `options`, read
+ * before any settings parse: a row that stores a series no longer creatable
+ * (`postgres:17`, `mariadb:11.4`) fails the creatable-image check and would
+ * otherwise fall back to the default settings, reporting the default series
+ * instead of the one the container runs. No stored image means the spec's
+ * legacy default (what an old row runs); unreadable options send nothing.
+ */
+export function ingressEngineVersionFromOptions(
+  spec: { defaultImage: string; legacyDefaultImage?: string },
+  options: unknown
+): string | undefined {
+  if (!isIngressRecord(options) || !isIngressRecord(options.settings)) return undefined
+  const image = options.settings.image
+  if (image === undefined) return ingressEngineVersion(spec, undefined)
+  return typeof image === 'string' ? ingressEngineVersion(spec, image) : undefined
 }
 
 export function isManagedRootPrincipal(metadata: unknown): boolean {
