@@ -36,7 +36,7 @@ export function privilegeCatalogueFor(
   series: string
 ): PrivilegeCatalogue | undefined {
   const data = ENGINE_DATA[engine as ManagedEngineCode]
-  if (!data || !data.series.includes(series)) return undefined
+  if (!data?.series.includes(series)) return undefined
   const keep = <T extends { since?: string; removedIn?: string }>(rows: readonly T[]): T[] =>
     rows.filter((row) => existsInSeries(row, series))
   return {

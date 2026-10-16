@@ -172,7 +172,7 @@ for (const { engine, series } of privilegeCataloguePairs().filter((p) => p.engin
     }
 
     // The grant tables list the same table, column and routine privileges.
-    const expect = (member: string, level: PrivilegeLevel) =>
+    const assertMembers = (member: string, level: PrivilegeLevel) =>
       assertEquals(
         [...names(cat, level)]
           .filter((k) => !cat.privileges.find((e) => e.level === level && e.aliases?.includes(k)))
@@ -180,9 +180,9 @@ for (const { engine, series } of privilegeCataloguePairs().filter((p) => p.engin
         (fx.enumValues[member] as string[]).map(tableMember).sort(),
         member
       )
-    expect('tables_priv.Table_priv', 'table')
-    expect('columns_priv.Column_priv', 'column')
-    expect('procs_priv.Proc_priv', 'routine')
+    assertMembers('tables_priv.Table_priv', 'table')
+    assertMembers('columns_priv.Column_priv', 'column')
+    assertMembers('procs_priv.Proc_priv', 'routine')
   })
 }
 
