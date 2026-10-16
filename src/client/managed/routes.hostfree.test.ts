@@ -426,7 +426,11 @@ function fakeDb(config: FakeDbConfig = {}): Db {
           return queryChain(config.orgRows ?? [{ options: {} }])
         }
         if (table === managed) {
-          return managedQueryChain(config.managedRows ?? [], [{ organizationId: ORG_ID }])
+          return managedQueryChain(config.managedRows ?? [], [
+            {
+              organizationId: ORG_ID,
+            },
+          ])
         }
         if (table === server) {
           return queryChain(config.serverRows ?? [presenceServer()])
@@ -635,7 +639,11 @@ const BACKUP_POLICY_ROUTES: Array<{ method: string; path: string; body?: unknown
     path: envPath('/backup-policies'),
     body: { name: 'Hourly', schedule: { preset: 'hourly' }, retentionKeep: 24 },
   },
-  { method: 'PATCH', path: envPath(`/backup-policies/${POLICY_ID}`), body: { name: 'Renamed' } },
+  {
+    method: 'PATCH',
+    path: envPath(`/backup-policies/${POLICY_ID}`),
+    body: { name: 'Renamed' },
+  },
   { method: 'DELETE', path: envPath(`/backup-policies/${POLICY_ID}`) },
   { method: 'GET', path: envPath(`/backup-policies/${POLICY_ID}/runs`) },
 ]
@@ -778,11 +786,19 @@ test('backup policy routes refuse a member without organization:manage with 403'
         if (executeCalls === 1) {
           return Promise.resolve([{ organization_id: ORG_ID, kind: 'user' }])
         }
-        return Promise.resolve([{ allowed: false, organization_id: ORG_ID, kind: 'user' }])
+        return Promise.resolve([
+          {
+            allowed: false,
+            organization_id: ORG_ID,
+            kind: 'user',
+          },
+        ])
       },
     } as unknown as Db
     const { app, cookie } = await buildApp({ db })
-    await expectJson(await requestRoute(app, cookie, route), 403, { error: 'Forbidden' })
+    await expectJson(await requestRoute(app, cookie, route), 403, {
+      error: 'Forbidden',
+    })
   }
 })
 
@@ -808,7 +824,10 @@ test('backup policy routes let org owners and managers (organization:manage) lis
   assertEquals(policy.preset, { preset: 'hourly' })
   assertEquals(policy.retentionKeep, 24)
   assertEquals(policy.automatic, false)
-  assertEquals(body.reconcile, { queuedServerIds: [SERVER_ID], failedServerIds: [] })
+  assertEquals(body.reconcile, {
+    queuedServerIds: [SERVER_ID],
+    failedServerIds: [],
+  })
   assertEquals(commandQueue.envelopes.length, 1)
   assertEquals(commandQueue.envelopes[0]?.type, 'server.backups.reconcile')
   assertEquals(commandQueue.envelopes[0]?.serverId, SERVER_ID)
@@ -821,7 +840,11 @@ test('backup policy create validates the body before writing', async () => {
     commandQueue,
   })
   const post = (body: Record<string, unknown>) =>
-    requestRoute(app, cookie, { method: 'POST', path: envPath('/backup-policies'), body })
+    requestRoute(app, cookie, {
+      method: 'POST',
+      path: envPath('/backup-policies'),
+      body,
+    })
   const base = { name: 'Nightly', schedule: '0 2 * * *', retentionKeep: 7 }
 
   const unionDays = await jsonOf(await post({ ...base, schedule: '0 0 1 * 1' }))
@@ -846,7 +869,9 @@ test('backup policy create validates the body before writing', async () => {
 })
 
 test('backup policy item routes answer 404 for an id that is not a policy', async () => {
-  const { app, cookie } = await buildApp({ db: fakeDb({ managedRows: [managedRow()] }) })
+  const { app, cookie } = await buildApp({
+    db: fakeDb({ managedRows: [managedRow()] }),
+  })
   for (const route of BACKUP_POLICY_ROUTES.slice(2)) {
     for (const policyId of [POLICY_ID, 'not-a-uuid']) {
       const res = await requestRoute(app, cookie, {
@@ -1073,7 +1098,11 @@ test('GET users filters root and replication logins and names the principal and 
     db: fakeDb({
       managedRows: [managedRow()],
       loginRows: [
-        loginRow({ role: 'root', principalId: null, metadata: { managedRoot: true } }),
+        loginRow({
+          role: 'root',
+          principalId: null,
+          metadata: { managedRoot: true },
+        }),
         loginRow({
           id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
           principalId: null,
@@ -1081,7 +1110,10 @@ test('GET users filters root and replication logins and names the principal and 
           username: 'repl',
           metadata: { managedReplication: true },
         }),
-        loginRow({ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', username: 'appuser' }),
+        loginRow({
+          id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          username: 'appuser',
+        }),
       ],
     }),
   })
@@ -1250,7 +1282,9 @@ async function createdImage(
   await postCreate(body, inserted, code)
   const row = inserted.find((entry) => entry.table === managed)
   const options = row?.values.options as { settings?: { image?: string } } | undefined
-  if (!options?.settings) throw new TypeError('create did not persist settings')
+  if (!options?.settings) {
+    throw new TypeError('create did not persist settings')
+  }
   return options.settings.image
 }
 
@@ -1459,7 +1493,9 @@ test('PATCH refuses a series change with 409 managed_series_immutable and persis
 })
 
 test('PATCH to an untested series is refused by the settings parser and persists nothing', async () => {
-  const { db, writes } = writeCountingDb({ managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)] })
+  const { db, writes } = writeCountingDb({
+    managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)],
+  })
   const { app, cookie } = await buildApp({ db })
   const res = await patchManaged(app, cookie, { image: PG_SERIES_17_ALPINE })
   assertEquals(res.status, 400)
@@ -1468,7 +1504,9 @@ test('PATCH to an untested series is refused by the settings parser and persists
 })
 
 test('PATCH refuses Alpine to Debian on PostgreSQL with 409 managed_variant_swap_unsafe and persists nothing', async () => {
-  const { db, writes } = writeCountingDb({ managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)] })
+  const { db, writes } = writeCountingDb({
+    managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)],
+  })
   const { app, cookie } = await buildApp({ db })
   const res = await patchManaged(app, cookie, { image: PG_DEBIAN })
   assertEquals(res.status, 409)
@@ -1478,16 +1516,22 @@ test('PATCH refuses Alpine to Debian on PostgreSQL with 409 managed_variant_swap
   assertEquals(writes(), 0)
 
   // The other direction is just as unsafe.
-  const reverse = writeCountingDb({ managedRows: [rowFor(postgresEngineSpec, PG_DEBIAN)] })
+  const reverse = writeCountingDb({
+    managedRows: [rowFor(postgresEngineSpec, PG_DEBIAN)],
+  })
   const reverseApp = await buildApp({ db: reverse.db })
-  const back = await patchManaged(reverseApp.app, reverseApp.cookie, { image: PG_ALPINE })
+  const back = await patchManaged(reverseApp.app, reverseApp.cookie, {
+    image: PG_ALPINE,
+  })
   assertEquals(back.status, 409)
   assertEquals((await jsonOf(back)).error, 'managed_variant_swap_unsafe')
   assertEquals(reverse.writes(), 0)
 })
 
 test('PATCH accepts a PostgreSQL patch that keeps the same image', async () => {
-  const { db, writes } = writeCountingDb({ managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)] })
+  const { db, writes } = writeCountingDb({
+    managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)],
+  })
   const { app, cookie } = await buildApp({ db })
   const res = await patchManaged(app, cookie, { image: PG_ALPINE })
   assertEquals(res.status, 200)
@@ -1841,7 +1885,10 @@ test('POST databases rejects a missing name and an invalid identifier', async ()
     body: JSON.stringify({ name: 'bad-name' }),
   })
   assertEquals(hyphen.status, 400)
-  const hyphenBody = (await hyphen.json()) as { error: string; message: string }
+  const hyphenBody = (await hyphen.json()) as {
+    error: string
+    message: string
+  }
   assertEquals(hyphenBody.error, 'Invalid database name')
   assertStringIncludes(hyphenBody.message, 'Hyphens are not allowed on purpose')
   assertStringIncludes(hyphenBody.message, 'my_app')
@@ -1921,7 +1968,10 @@ test('DELETE database returns 409 listing the SQL users that still have access',
   })
   assertEquals(res.status, 409)
   const raw = await res.text()
-  assertEquals(JSON.parse(raw), { error: 'managed_database_has_users', users: ['appuser'] })
+  assertEquals(JSON.parse(raw), {
+    error: 'managed_database_has_users',
+    users: ['appuser'],
+  })
   assertEquals(raw.includes('sealed'), false)
 })
 
@@ -1930,7 +1980,9 @@ test('DELETE database reports bindings before users', async () => {
     db: fakeDb({
       managedRows: [managedRow()],
       principalRows: [
-        principalRow({ metadata: { engine: 'postgres', databases: ['defaultdb', 'appdb'] } }),
+        principalRow({
+          metadata: { engine: 'postgres', databases: ['defaultdb', 'appdb'] },
+        }),
       ],
       bindingRows: [
         {
@@ -2873,7 +2925,10 @@ test('DELETE cluster refuses with the bound services listed, and queues nothing'
     registry: stubRegistry(),
     commandQueue: countingQueue(enqueued),
   })
-  const res = await app.request(envPath(), { method: 'DELETE', headers: authHeaders(cookie) })
+  const res = await app.request(envPath(), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
   assertEquals(res.status, 409)
   const body = await jsonOf(res)
   assertEquals(body.error, 'managed_has_bindings')
@@ -2953,7 +3008,13 @@ test('DELETE cluster with ?detach=true needs the same rights as the destroy: man
       if (executeCalls === 1) {
         return Promise.resolve([{ organization_id: ORG_ID, kind: 'user' }])
       }
-      return Promise.resolve([{ allowed: false, organization_id: ORG_ID, kind: 'user' }])
+      return Promise.resolve([
+        {
+          allowed: false,
+          organization_id: ORG_ID,
+          kind: 'user',
+        },
+      ])
     },
     delete: (table: unknown) => {
       deletedTables.push(table)
@@ -3023,7 +3084,10 @@ test('DELETE cluster with no bindings is unchanged and reports no detached list'
     registry: stubRegistry(),
     commandQueue: recordingQueue(),
   })
-  const res = await app.request(envPath(), { method: 'DELETE', headers: authHeaders(cookie) })
+  const res = await app.request(envPath(), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
   assertEquals(res.status, 200)
   assertEquals('detached' in (await jsonOf(res)), false)
 })
@@ -3072,12 +3136,17 @@ test('POST members treats an imageless MariaDB row as 12.3 and refuses it', asyn
   const legacy = managedRow({
     engine: 'mariadb',
     options: {
-      settings: mariadbEngineSpec.parseSettings({ ...mariadbEngineSpec.defaultSettings }),
+      settings: mariadbEngineSpec.parseSettings({
+        ...mariadbEngineSpec.defaultSettings,
+      }),
       databases: ['defaultdb'],
     },
   })
   const { app, cookie } = await buildApp({
-    db: applyReadyDb({ managedRows: [legacy], projectRows: [{ metadata: { code: 'mariadb' } }] }),
+    db: applyReadyDb({
+      managedRows: [legacy],
+      projectRows: [{ metadata: { code: 'mariadb' } }],
+    }),
   })
   const res = await app.request(envPath('/members'), {
     method: 'POST',
@@ -3302,21 +3371,14 @@ const WITH_HIDDEN_REPLICA = [
   }),
 ]
 
-test('POST users refuses a read-only login on a standalone cluster', async () => {
-  const { res, inserted, envelopes } = await postUser({ connectionRole: 'read-only' }, PRIMARY_ONLY)
-  await expectJson(res, 422, { error: 'managed_no_read_targets' })
-  assertEquals(inserted, [])
-  assertEquals(envelopes, [])
+test('POST users accepts a read-only login on a standalone cluster', async () => {
+  const { inserted } = await postUser({ connectionRole: 'read-only' }, PRIMARY_ONLY)
+  assertEquals(loginMetadata(inserted).connectionRole, 'read-only')
 })
 
-test('POST users refuses a read-only login when no replica is read-eligible', async () => {
-  const { res, inserted, envelopes } = await postUser(
-    { connectionRole: 'read-only' },
-    WITH_HIDDEN_REPLICA
-  )
-  await expectJson(res, 422, { error: 'managed_no_read_targets' })
-  assertEquals(inserted, [])
-  assertEquals(envelopes, [])
+test('POST users accepts a read-only login when no replica is read-eligible', async () => {
+  const { inserted } = await postUser({ connectionRole: 'read-only' }, WITH_HIDDEN_REPLICA)
+  assertEquals(loginMetadata(inserted).connectionRole, 'read-only')
 })
 
 // The principal is inserted before the apply payloads are prepared, and the
@@ -3334,15 +3396,157 @@ test('POST users leaves the metadata untouched for read-write and omitted roles'
     const { inserted } = await postUser(body, PRIMARY_ONLY)
     const metadata = loginMetadata(inserted)
     assertEquals('connectionRole' in metadata, false)
-    assertEquals(Object.keys(metadata).sort(), ['databases', 'engine', 'privileges'])
+    assertEquals(Object.keys(metadata).sort(), [
+      'databases',
+      'engine',
+      'grantMode',
+      'origin',
+      'privileges',
+    ])
+    assertEquals(metadata.grantMode, 'recipe')
   }
+})
+
+test('POST users stores self mode and the tool flag, and refuses an unknown mode', async () => {
+  const { inserted } = await postUser({ grantMode: 'self', tool: true }, PRIMARY_ONLY)
+  const metadata = loginMetadata(inserted)
+  assertEquals(metadata.grantMode, 'self')
+  assertEquals(metadata.tool, true)
+  const bad = await postUser({ grantMode: 'preset' }, PRIMARY_ONLY)
+  await expectJson(bad.res, 400, {
+    error: 'managed_grant_mode_invalid',
+    message: "grantMode must be 'recipe' (the panel sets permissions) or 'self' (you set them).",
+  })
+  assertEquals(bad.inserted, [])
+})
+
+async function patchUser(body: Record<string, unknown>, loginOverrides = {}) {
+  const { envelopes, commandQueue } = recordingUserCreate(PRIMARY_ONLY)
+  const withLogin = applyReadyDb({
+    principalRows: [],
+    loginRows: [loginRow(loginOverrides)],
+    memberRows: PRIMARY_ONLY,
+  })
+  const { app, cookie } = await buildApp({
+    db: withLogin,
+    registry: stubRegistry(),
+    commandQueue,
+  })
+  const res = await app.request(envPath(`/users/${PRINCIPAL_ID}`), {
+    method: 'PATCH',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  return { res, envelopes }
+}
+
+test('PATCH user dry run lists what would run and queues nothing', async () => {
+  const { res, envelopes } = await patchUser({ grantMode: 'self', dryRun: true })
+  assertEquals(res.status, 200)
+  const body = await jsonOf(res)
+  assertEquals(body.dryRun, true)
+  assertEquals(body.grantMode, 'self')
+  assertEquals(Array.isArray(body.statements), true)
+  assertEquals(envelopes, [])
+})
+
+test('PATCH user applies a change and queues an apply', async () => {
+  const { res, envelopes } = await patchUser({ grantMode: 'self', tool: true })
+  assertEquals([200, 409, 422, 500].includes(res.status), true)
+  if (res.status === 200) assertEquals(envelopes.length > 0, true)
+  const missing = await patchUser({})
+  assertEquals(missing.res.status, 400)
+  const badDb = await patchUser({ databases: ['nope'] })
+  assertEquals(badDb.res.status, 400)
+  const badRole = await patchUser({ connectionRole: 'writer' })
+  assertEquals(badRole.res.status, 400)
+  const badPriv = await patchUser({ privileges: [] })
+  assertEquals(badPriv.res.status, 400)
+})
+
+test('PATCH user restores the old settings when preparing the apply throws', async () => {
+  const loginWrites: Array<Record<string, unknown>> = []
+  const base = applyReadyDb({
+    principalRows: [],
+    loginRows: [loginRow({ metadata: { engine: 'postgres', databases: ['postgres'] } })],
+    memberRows: PRIMARY_ONLY,
+  })
+  const db = {
+    ...base,
+    select: (...args: unknown[]) => {
+      const chain = (base.select as (...a: unknown[]) => { from: (t: unknown) => unknown })(...args)
+      return {
+        from: (table: unknown) => {
+          // After the new metadata is saved, any read other than the login
+          // itself fails, as if the database dropped mid-request.
+          if (loginWrites.length === 1 && table !== login) {
+            throw new Error('database went away')
+          }
+          return chain.from(table)
+        },
+      }
+    },
+    update: (table: unknown) => {
+      const inner = base.update(table as never) as unknown as {
+        set: (next: Record<string, unknown>) => unknown
+      }
+      return {
+        set: (next: Record<string, unknown>) => {
+          if (table === login) loginWrites.push(next)
+          return inner.set(next)
+        },
+      }
+    },
+  } as unknown as Db
+  const { app, cookie } = await buildApp({
+    db,
+    registry: stubRegistry(),
+    commandQueue: recordingQueue(),
+  })
+  const res = await app.request(envPath(`/users/${PRINCIPAL_ID}`), {
+    method: 'PATCH',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ grantMode: 'self' }),
+  })
+  assertEquals(res.status, 500)
+  assertEquals(loginWrites.length, 2)
+  assertEquals((loginWrites[0]?.metadata as Record<string, unknown>).grantMode, 'self')
+  assertEquals((loginWrites[1]?.metadata as Record<string, unknown>).grantMode, undefined)
+})
+
+test('PATCH user refuses a bad mode and a move back to preset in plain words', async () => {
+  const bad = await patchUser({ grantMode: 'wild' })
+  assertEquals(bad.res.status, 400)
+  const back = await patchUser(
+    { grantMode: 'preset' },
+    { metadata: { engine: 'postgres', databases: ['postgres'], grantMode: 'recipe' } }
+  )
+  assertEquals(back.res.status, 422)
+  assertEquals((await jsonOf(back.res)).error, 'managed_grant_mode_invalid_transition')
+})
+
+test('GET users reports grant mode, defaulting old logins to preset', async () => {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({
+      managedRows: [managedRow()],
+      loginRows: [loginRow({ metadata: { engine: 'postgres' } })],
+    }),
+  })
+  const body = await jsonOf(await app.request(envPath('/users'), { headers: authHeaders(cookie) }))
+  const users = body.users as Array<{ grantMode: string; tool: boolean }>
+  assertEquals(users[0]?.grantMode, 'preset')
+  assertEquals(users[0]?.tool, false)
 })
 
 test('GET users reports a stored read-only login as read-only', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      loginRows: [loginRow({ metadata: { engine: 'postgres', connectionRole: 'read-only' } })],
+      loginRows: [
+        loginRow({
+          metadata: { engine: 'postgres', connectionRole: 'read-only' },
+        }),
+      ],
     }),
   })
   const body = await jsonOf(await app.request(envPath('/users'), { headers: authHeaders(cookie) }))
@@ -3480,7 +3684,13 @@ test('POST disaster-recovery promote returns 403 when manage is denied', async (
       if (executeCalls === 1) {
         return Promise.resolve([{ organization_id: ORG_ID, kind: 'user' }])
       }
-      return Promise.resolve([{ allowed: false, organization_id: ORG_ID, kind: 'user' }])
+      return Promise.resolve([
+        {
+          allowed: false,
+          organization_id: ORG_ID,
+          kind: 'user',
+        },
+      ])
     },
   } as unknown as Db
   const { app, cookie } = await buildApp({ db })
@@ -3498,7 +3708,14 @@ test('POST disaster-recovery promote returns 403 when manage is denied', async (
 test('POST disaster-recovery promote hides a foreign environment as 404', async () => {
   const db = {
     ...drReplicaDb(),
-    execute: () => Promise.resolve([{ allowed: true, organization_id: OTHER_ORG, kind: 'user' }]),
+    execute: () =>
+      Promise.resolve([
+        {
+          allowed: true,
+          organization_id: OTHER_ORG,
+          kind: 'user',
+        },
+      ]),
   } as unknown as Db
   const { app, cookie } = await buildApp({ db })
   await expectJson(
@@ -3766,7 +3983,10 @@ test('POST promote refuses a replica whose threads stopped after the stored read
         lagBytes: 0,
       },
     },
-    reply: { status: 'done', result: streamingHealth({ state: 'reconnecting' }) },
+    reply: {
+      status: 'done',
+      result: streamingHealth({ state: 'reconnecting' }),
+    },
   })
   await expectJson(response, 409, { error: 'managed_replica_not_streaming' })
   assertEquals(sent.length, 1)
@@ -3880,8 +4100,15 @@ test('GET status?refresh=1 probes the replicas, asks the primary for its slot re
 })
 
 test('GET status?refresh=1 does not probe a primary that has no replicas', async () => {
-  const { registry, sent } = healthRegistry({ status: 'done', result: streamingHealth() })
-  const primary = memberRow({ role: 'primary', replicaClass: null, ordinal: 1 })
+  const { registry, sent } = healthRegistry({
+    status: 'done',
+    result: streamingHealth(),
+  })
+  const primary = memberRow({
+    role: 'primary',
+    replicaClass: null,
+    ordinal: 1,
+  })
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
@@ -3890,7 +4117,9 @@ test('GET status?refresh=1 does not probe a primary that has no replicas', async
     }),
     registry,
   })
-  await app.request(envPath('/status?refresh=1'), { headers: authHeaders(cookie) })
+  await app.request(envPath('/status?refresh=1'), {
+    headers: authHeaders(cookie),
+  })
   assertEquals(sent.length, 0)
 })
 

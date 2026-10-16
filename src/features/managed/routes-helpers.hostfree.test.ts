@@ -25,11 +25,8 @@ import {
   evaluatePromoteLagHttpGate,
   evaluatePromoteMemberRole,
   evaluatePromoteReplicaClass,
-  evaluateReadOnlyLoginTargets,
-  evaluateReadOnlyLoginTargetsLazy,
   evaluateReplicaClassConversion,
   evaluateReplicaPlacementPrechecks,
-  MANAGED_NO_READ_TARGETS_ERROR,
   managedStatusListenerParams,
   mergeManagedPatchSettings,
   nextDatabasesAfterCreate,
@@ -352,40 +349,6 @@ test('user rotate/drop guards', () => {
     status: 400,
   })
   assertEquals(evaluateManagedUserDropGuard({}), null)
-})
-
-test('evaluateReadOnlyLoginTargets refuses read-only without a replica', () => {
-  assertEquals(evaluateReadOnlyLoginTargets('read-write', []), null)
-  assertEquals(
-    evaluateReadOnlyLoginTargets('read-only', [{ role: 'primary', readEligible: true }]),
-    { ok: false, error: MANAGED_NO_READ_TARGETS_ERROR, status: 422 }
-  )
-  assertEquals(
-    evaluateReadOnlyLoginTargets('read-only', [{ role: 'replica', readEligible: false }]),
-    { ok: false, error: MANAGED_NO_READ_TARGETS_ERROR, status: 422 }
-  )
-  assertEquals(
-    evaluateReadOnlyLoginTargets('read-only', [{ role: 'replica', readEligible: true }]),
-    null
-  )
-})
-
-test('evaluateReadOnlyLoginTargetsLazy loads members only for read-only', async () => {
-  let loads = 0
-  const loadMembers = () => {
-    loads += 1
-    return Promise.resolve([{ role: 'replica', readEligible: true }])
-  }
-  assertEquals(await evaluateReadOnlyLoginTargetsLazy('read-write', loadMembers), null)
-  assertEquals(loads, 0)
-  assertEquals(await evaluateReadOnlyLoginTargetsLazy('read-only', loadMembers), null)
-  assertEquals(loads, 1)
-  assertEquals(
-    await evaluateReadOnlyLoginTargetsLazy('read-only', () =>
-      Promise.resolve([{ role: 'primary', readEligible: true }])
-    ),
-    { ok: false, error: MANAGED_NO_READ_TARGETS_ERROR, status: 422 }
-  )
 })
 
 test('evaluatePromoteLagHttpGate honors force bypass', () => {

@@ -15,6 +15,8 @@ import {
   collectProxySqlListenerSans,
   decideIngressBindAddresses,
   hostgroupsForClusterIndex,
+  ingressEngineVersion,
+  ingressEngineVersionFromOptions,
   isAtRestSealedPassword,
   isIngressRecord,
   isManagedReplicationPrincipal,
@@ -24,6 +26,7 @@ import {
   managedIngressPortForEngine,
   mergeHierarchyContainerSan,
   principalConnectionRole,
+  principalIsTool,
   principalDefaultDatabase,
   sanBindAddresses,
   protocolListenerForEngine,
@@ -53,6 +56,82 @@ test('hostgroupsForClusterIndex pairs writer/reader and rejects bad indices', ()
   })
   assertThrows(() => hostgroupsForClusterIndex(-1), TypeError)
   assertThrows(() => hostgroupsForClusterIndex(1.5), TypeError)
+})
+
+test('ingressEngineVersion sends the release series of the image the cluster runs', () => {
+  const spec = { engine: 'postgres', defaultImage: 'docker.io/library/postgres:18-alpine' }
+  assertEquals(ingressEngineVersion(spec, 'docker.io/library/postgres:17'), '17')
+  assertEquals(
+    ingressEngineVersion(
+      { engine: 'mysql', defaultImage: 'docker.io/library/mysql:9.7' },
+      'docker.io/library/mysql:9.7-oraclelinux9'
+    ),
+    '9.7'
+  )
+  assertEquals(
+    ingressEngineVersion(
+      { engine: 'mariadb', defaultImage: 'docker.io/library/mariadb:11.8' },
+      'docker.io/library/mariadb:11.8-ubi'
+    ),
+    '11.8'
+  )
+  // Another engine's image sends nothing.
+  assertEquals(ingressEngineVersion(spec, 'docker.io/library/mysql:9.7'), undefined)
+  // No stored image: the spec's legacy default, else its default.
+  assertEquals(ingressEngineVersion(spec, undefined), '18')
+  assertEquals(
+    ingressEngineVersion(
+      { ...spec, legacyDefaultImage: 'docker.io/library/postgres:16-alpine' },
+      undefined
+    ),
+    '16'
+  )
+  // An image outside the catalog sends nothing.
+  assertEquals(ingressEngineVersion(spec, 'registry.example/postgres:custom'), undefined)
+})
+
+test('ingressEngineVersionFromOptions reads the stored image, not the parsed settings', () => {
+  const spec = {
+    engine: 'mariadb',
+    defaultImage: 'docker.io/library/mariadb:11.8',
+    legacyDefaultImage: 'docker.io/library/mariadb:12.3',
+  }
+  // A no-longer-creatable series still reports what it runs.
+  assertEquals(
+    ingressEngineVersionFromOptions(spec, {
+      settings: { image: 'docker.io/library/mariadb:11.4' },
+    }),
+    '11.4'
+  )
+  // A row with no stored image, or no settings at all, runs the legacy default.
+  assertEquals(ingressEngineVersionFromOptions(spec, { settings: {} }), '12.3')
+  assertEquals(ingressEngineVersionFromOptions(spec, { databases: [] }), '12.3')
+  // A padded image still matches; another engine's image sends nothing.
+  assertEquals(
+    ingressEngineVersionFromOptions(spec, {
+      settings: { image: ' docker.io/library/mariadb:11.4 ' },
+    }),
+    '11.4'
+  )
+  assertEquals(
+    ingressEngineVersionFromOptions(spec, { settings: { image: 'docker.io/library/mysql:9.7' } }),
+    undefined
+  )
+  // Unreadable options or an off-catalog image send nothing.
+  assertEquals(ingressEngineVersionFromOptions(spec, null), undefined)
+  assertEquals(ingressEngineVersionFromOptions(spec, { settings: { image: 7 } }), undefined)
+  assertEquals(
+    ingressEngineVersionFromOptions(spec, { settings: { image: 'registry.example/x:1' } }),
+    undefined
+  )
+})
+
+test('principalIsTool is true only for an explicit tool flag', () => {
+  assertEquals(principalIsTool({ tool: true }), true)
+  assertEquals(principalIsTool({ tool: false }), undefined)
+  assertEquals(principalIsTool({ tool: 'true' }), undefined)
+  assertEquals(principalIsTool({}), undefined)
+  assertEquals(principalIsTool(null), undefined)
 })
 
 test('protocolListenerForEngine returns the platform default port and family', () => {
@@ -225,20 +304,54 @@ test('collectProxySqlListenerSans and hierarchy merge', () => {
   assertEquals(merged.ipAddresses, sans.ipAddresses)
 })
 
+const NO_IPV6 = { serverHasIpv6: false, daemonPublishesIpv6: false }
+
 test('decideIngressBindAddresses: no keeps loopback, yes opens every address', () => {
   // Regression: "no" must be loopback, never an empty publish. Sites run by a
   // site owner's Linux user dial 127.0.0.1, so an empty publish would cut every
   // one of them off from its database.
-  assertEquals(decideIngressBindAddresses(false), ['127.0.0.1'])
-  assertEquals(decideIngressBindAddresses(true), ['0.0.0.0'])
+  assertEquals(decideIngressBindAddresses(false, NO_IPV6), ['127.0.0.1'])
+  assertEquals(decideIngressBindAddresses(true, NO_IPV6), ['0.0.0.0'])
 })
 
 test('decideIngressBindAddresses never widens a "no" to a wildcard', () => {
   // The publish is the enforcement (no host firewall rule, no ProxySQL source
-  // rule yet), so "no" must stay on the loopback address and nothing else.
-  for (const address of decideIngressBindAddresses(false)) {
+  // rule yet), so "no" must stay on the loopback address and nothing else —
+  // even on a server with IPv6 whose daemon can publish it.
+  const ipv6Ready = { serverHasIpv6: true, daemonPublishesIpv6: true }
+  for (const address of [
+    ...decideIngressBindAddresses(false, NO_IPV6),
+    ...decideIngressBindAddresses(false, ipv6Ready),
+  ]) {
     assertEquals(WILDCARD_BIND_ADDRESSES.has(address), false)
   }
+  assertEquals(decideIngressBindAddresses(false, ipv6Ready), ['127.0.0.1'])
+})
+
+test('decideIngressBindAddresses adds the IPv6 wildcard only with IPv6 and a daemon that can publish it', () => {
+  assertEquals(
+    decideIngressBindAddresses(true, { serverHasIpv6: true, daemonPublishesIpv6: true }),
+    ['0.0.0.0', '::']
+  )
+  // No IPv6 stack in the kernel: a `[::]` publish would fail and take the listener down.
+  assertEquals(
+    decideIngressBindAddresses(true, { serverHasIpv6: false, daemonPublishesIpv6: true }),
+    ['0.0.0.0']
+  )
+  // An older daemon never receives `::`.
+  assertEquals(
+    decideIngressBindAddresses(true, { serverHasIpv6: true, daemonPublishesIpv6: false }),
+    ['0.0.0.0']
+  )
+})
+
+test('the IPv6 wildcard bind never lands on the listener certificate', () => {
+  const sans = collectProxySqlListenerSans({
+    hostname: 'omega.example.com',
+    bindAddresses: sanBindAddresses(['0.0.0.0', '::']),
+    backendAddresses: [],
+  })
+  assertEquals(sans.ipAddresses, ['127.0.0.1'])
 })
 
 test('buildLocalOrMissingPortBackend local and remote paths', () => {

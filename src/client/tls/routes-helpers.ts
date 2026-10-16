@@ -203,10 +203,17 @@ export function classifyTlsInsertConflict(err: unknown): TlsInsertConflict | nul
   return null
 }
 
-export const ORGANIZATION_CA_DOWNLOAD_HEADERS = {
-  'Content-Type': 'application/x-pem-file',
-  'Content-Disposition': 'attachment; filename="organization-ca.pem"',
-} as const
+/**
+ * `GET /tls/ca/download` headers. The file is named after the organization id
+ * (`turbopanel-org-ca-{organizationId}.pem`) so files from several
+ * organizations do not overwrite each other; the UI saves under the same name.
+ */
+export function organizationCaDownloadHeaders(organizationId: string): Record<string, string> {
+  return {
+    'Content-Type': 'application/x-pem-file',
+    'Content-Disposition': `attachment; filename="turbopanel-org-ca-${organizationId}.pem"`,
+  }
+}
 
 export function shouldRevokeTlsFromBody(body: Record<string, unknown>): boolean {
   return body.revoke === true

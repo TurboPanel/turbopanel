@@ -13,6 +13,7 @@ import type { CommandRecord } from '../commands/command-records.ts'
 import type { CommandStatus } from '../commands/types.ts'
 import type { Db } from '../../db/connection.ts'
 import {
+  buildDatabaseOps,
   awaitCommandTerminal,
   buildManagedOrgTlsMaterial,
   isPrepareError,
@@ -552,4 +553,44 @@ test('awaitCommandTerminal returns null when the command is missing', async () =
     sleep: () => Promise.resolve(),
   })
   assertEquals(result, null)
+})
+
+test('buildDatabaseOps flags only owner-role databases, on create and on drop', () => {
+  assertEquals(buildDatabaseOps({ databases: ['a', 'b'] }), [
+    { name: 'a', action: 'create' },
+    { name: 'b', action: 'create' },
+  ])
+  assertEquals(
+    buildDatabaseOps({
+      databases: ['a', 'shop'],
+      ownerRoleDatabases: ['shop'],
+      dropDatabases: ['old', 'older'],
+      dropOwnerRoleDatabases: ['old'],
+    }),
+    [
+      { name: 'a', action: 'create' },
+      { name: 'shop', action: 'create', ownerRole: true },
+      { name: 'old', action: 'drop', ownerRole: true },
+      { name: 'older', action: 'drop' },
+    ]
+  )
+})
+
+test('buildDatabaseOps names the chosen owner login on an owner-role create', () => {
+  assertEquals(
+    buildDatabaseOps({
+      databases: ['a', 'shop'],
+      ownerRoleDatabases: ['a', 'shop'],
+      databaseOwners: { shop: { username: 'app_x' } },
+    }),
+    [
+      { name: 'a', action: 'create', ownerRole: true },
+      { name: 'shop', action: 'create', ownerRole: true, ownerLogin: 'app_x' },
+    ]
+  )
+  // A recorded owner for a database without an owner role is never sent.
+  assertEquals(
+    buildDatabaseOps({ databases: ['shop'], databaseOwners: { shop: { username: 'app_x' } } }),
+    [{ name: 'shop', action: 'create' }]
+  )
 })

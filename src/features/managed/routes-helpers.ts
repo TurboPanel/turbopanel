@@ -37,8 +37,8 @@ import {
 import { LOOPBACK_BIND } from './access-address.ts'
 import { loadServerClientAddresses } from '../net/client-addresses.ts'
 import {
-  type ClientAddressScope,
   clientAddressNeeded,
+  type ClientAddressScope,
   clientEndpointsForListener,
 } from '../net/client-addresses-pure.ts'
 import { loadManagedExternalAccess } from './external-access.ts'
@@ -49,7 +49,22 @@ import { isMysqlFamilyEngine, MAX_REPLAY_DELTA_BYTES, parsePgLsn } from './ha-fr
 import { loadManagedStatusError } from './last-error.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import { type ManagedResidualMetadata, serializeManagedRow } from './serialize.ts'
-import { type DatabaseLoginRole, loginRoleFromMetadata, type ManagedLoginRow } from './logins.ts'
+import type { LoginPatchInput } from './login-patch.ts'
+import { loginAllowedSources, loginMaxConnections } from './login-sources.ts'
+import { DATABASE_ADMIN_PRIVILEGE, evaluateDatabaseAdminGrant } from './owner-role.ts'
+
+export {
+  DATABASE_ADMIN_PRIVILEGE,
+  evaluateDatabaseAdminGrant,
+  resolveDatabaseOwnerRole,
+} from './owner-role.ts'
+import {
+  type DatabaseLoginRole,
+  loginGrantMode,
+  loginIsTool,
+  loginRoleFromMetadata,
+  type ManagedLoginRow,
+} from './logins.ts'
 
 export { evaluateManagedPromoteLagGate }
 
@@ -141,10 +156,17 @@ export async function resolveManagedAccess(
       )
     : []
   const endpoints: ManagedAccessEndpoint[] = [
-    ...external.map((endpoint) => ({ reach: 'external' as const, ...endpoint })),
+    ...external.map((endpoint) => ({
+      reach: 'external' as const,
+      ...endpoint,
+    })),
     { reach: 'local', host: LOOPBACK_BIND, port },
   ]
-  return { externalAccess, endpoints, addressNeeded: clientAddressNeeded(externalAccess, external) }
+  return {
+    externalAccess,
+    endpoints,
+    addressNeeded: clientAddressNeeded(externalAccess, external),
+  }
 }
 
 export async function resolveManagedAccessEndpoints(
@@ -266,8 +288,10 @@ export function managedSessionPaths(): string[] {
     '/environments/:id/managed/users',
     '/environments/:id/managed/users/:principalId',
     '/environments/:id/managed/users/:principalId/password',
+    '/environments/:id/managed/users/:principalId/effective-permissions',
     '/environments/:id/managed/databases',
     '/environments/:id/managed/databases/:databaseName',
+    '/environments/:id/managed/privilege-catalogue',
     '/environments/:id/managed/status',
     '/environments/:id/managed/logs',
     '/environments/:id/managed/backups',
@@ -511,6 +535,11 @@ export function serializeManagedUser(row: {
     privileges,
     connectionRole:
       meta.connectionRole === 'read-only' ? ('read-only' as const) : ('read-write' as const),
+    grantMode: loginGrantMode(row.metadata),
+    tool: loginIsTool(row.metadata),
+    // 'any' when unrestricted; otherwise the places the login may connect from.
+    allowedSources: loginAllowedSources(row.metadata) ?? ['any'],
+    maxConnections: loginMaxConnections(row.metadata) ?? null,
     createdAt: row.createdAt,
   }
 }
@@ -566,6 +595,22 @@ export function serializeContainerRow(row: {
  */
 const RESERVED_MANAGED_USERNAMES = new Set(['postgres', 'root', 'mysql', 'superadmin'])
 
+/**
+ * The `tp_` prefix belongs to the platform: the roles of a database's owner
+ * role (`tp_<db>_owner`, `_rw`, `_ro`), the monitor login (`tp_monitor_…`) and
+ * the replication login (`tp_repl`). No client login may take a name with it.
+ */
+const RESERVED_MANAGED_USERNAME_PREFIX = 'tp_'
+
+export function isReservedManagedUsername(username: string, rootUsername?: string): boolean {
+  const lower = username.toLowerCase()
+  return (
+    RESERVED_MANAGED_USERNAMES.has(lower) ||
+    lower.startsWith(RESERVED_MANAGED_USERNAME_PREFIX) ||
+    (rootUsername !== undefined && username === rootUsername)
+  )
+}
+
 export function parseManagedUserCreateFields(
   c: Context,
   ctx: ManagedContext,
@@ -597,8 +642,7 @@ export function parseManagedUserCreateFields(
     !USERNAME_RE.test(username) ||
     !pattern.test(username) ||
     username.length > maxShortLength ||
-    username === effectiveRoot ||
-    RESERVED_MANAGED_USERNAMES.has(username.toLowerCase())
+    isReservedManagedUsername(username, effectiveRoot)
   ) {
     return c.json({ error: 'Invalid username' }, 400)
   }
@@ -663,7 +707,21 @@ export function parseManagedLoginGrantFields(
     )
   }
 
-  return { databases, privileges, connectionRole }
+  const admin = evaluateDatabaseAdminGrant(ctx.spec.engine, {
+    privileges,
+    connectionRole,
+  })
+  if (admin) {
+    return c.json({ error: admin.error, message: admin.message }, admin.status)
+  }
+
+  return {
+    databases,
+    privileges: privileges.includes(DATABASE_ADMIN_PRIVILEGE)
+      ? [DATABASE_ADMIN_PRIVILEGE]
+      : privileges,
+    connectionRole,
+  }
 }
 
 /**
@@ -682,16 +740,113 @@ export function evaluateExistingPrincipalLoginName(
       message: `The principal's name '${appliedUsername}' is not a valid ${spec.engine} role name (at most ${maxLength} characters, matching ${pattern}). Create a login with a new name instead.`,
     }
   }
-  if (
-    appliedUsername === (rootUsername ?? spec.rootUsername) ||
-    RESERVED_MANAGED_USERNAMES.has(appliedUsername.toLowerCase())
-  ) {
+  if (isReservedManagedUsername(appliedUsername, rootUsername ?? spec.rootUsername)) {
     return {
       error: 'principal_name_reserved',
       message: `The principal's name '${appliedUsername}' is reserved on ${spec.engine}. Create a login with a new name instead.`,
     }
   }
   return null
+}
+
+/**
+ * Grant mode and tool flag for a new login. A new login defaults to
+ * `recipe`; `preset` is not accepted for new logins. Plain-words 400 otherwise.
+ */
+export function parseManagedLoginModeFields(
+  c: Context,
+  body: Record<string, unknown>,
+  /** A Database admin login is a tool login unless the request says otherwise. */
+  toolByDefault = false
+): { grantMode: 'recipe' | 'self'; tool: boolean } | Response {
+  const mode = body.grantMode ?? 'recipe'
+  if (mode !== 'recipe' && mode !== 'self') {
+    return c.json(
+      {
+        error: 'managed_grant_mode_invalid',
+        message:
+          "grantMode must be 'recipe' (the panel sets permissions) or 'self' (you set them).",
+      },
+      400
+    )
+  }
+  if (body.tool !== undefined && typeof body.tool !== 'boolean') {
+    return c.json(
+      {
+        error: 'Invalid request',
+        message: 'tool must be true or false.',
+      },
+      400
+    )
+  }
+  return {
+    grantMode: mode,
+    tool: body.tool === undefined ? toolByDefault : body.tool === true,
+  }
+}
+
+/** Fields of a PATCH on a login; everything is optional, validated on its own. */
+export function parseManagedLoginPatchFields(
+  c: Context,
+  ctx: ManagedContext,
+  body: Record<string, unknown>,
+  options: ManagedRowOptions
+): (LoginPatchInput & { dryRun: boolean }) | Response {
+  const input: LoginPatchInput & { dryRun: boolean } = {
+    dryRun: body.dryRun === true,
+    grantMode: body.grantMode,
+    tool: body.tool,
+    confirmReset: body.confirmReset,
+  }
+  if (body.dryRun !== undefined && typeof body.dryRun !== 'boolean') {
+    return c.json(
+      {
+        error: 'Invalid request',
+        message: 'dryRun must be true or false.',
+      },
+      400
+    )
+  }
+  if (body.databases !== undefined) {
+    const list = body.databases
+    if (
+      !Array.isArray(list) ||
+      list.length === 0 ||
+      !list.every((name) => typeof name === 'string' && options.databases.includes(name))
+    ) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    if (list.some((name) => isReservedDatabaseName(ctx.spec.engine, name))) {
+      return c.json({ error: 'reserved_database_name' }, 400)
+    }
+    input.databases = [...new Set(list as string[])]
+  }
+  if (body.connectionRole !== undefined) {
+    if (body.connectionRole !== 'read-write' && body.connectionRole !== 'read-only') {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    input.connectionRole = body.connectionRole
+  }
+  if (body.privileges !== undefined) {
+    const privileges = resolveManagedUserPrivileges(
+      body.privileges,
+      ctx.spec.userOperations.privileges,
+      input.connectionRole ?? 'read-write'
+    )
+    if (privileges === null) {
+      return c.json(
+        {
+          error: MANAGED_USER_PRIVILEGES_INVALID_ERROR,
+          message: `privileges must list at least one of: ${ctx.spec.userOperations.privileges.join(
+            ', '
+          )}.`,
+        },
+        400
+      )
+    }
+    input.privileges = privileges
+  }
+  return input
 }
 
 /** `privileges` was present but empty, unknown, or not a list of names. */
@@ -718,46 +873,11 @@ export function resolveManagedUserPrivileges(
   return names.every((name) => allowed.includes(name)) ? [...new Set(names)] : null
 }
 
-/** A `read-only` login was requested for a cluster with no read-eligible replica. */
-export const MANAGED_NO_READ_TARGETS_ERROR = 'managed_no_read_targets'
-
-export type ManagedReadOnlyLoginGuardError = {
-  ok: false
-  error: typeof MANAGED_NO_READ_TARGETS_ERROR
-  status: 422
-}
-
-/**
- * Refuse a `read-only` login when the cluster has no read-eligible replica.
- * `read-write` is always allowed here.
- */
-export function evaluateReadOnlyLoginTargets(
-  connectionRole: ManagedConnectionRole,
-  members: ReadonlyArray<{ role: string; readEligible: boolean }>
-): ManagedReadOnlyLoginGuardError | null {
-  if (connectionRole !== 'read-only') return null
-  const hasReadTarget = members.some((member) => member.role === 'replica' && member.readEligible)
-  if (hasReadTarget) return null
-  return { ok: false, error: MANAGED_NO_READ_TARGETS_ERROR, status: 422 }
-}
-
-/**
- * Same guard as {@link evaluateReadOnlyLoginTargets}, but loads members only
- * when a `read-only` login was requested.
- */
-export async function evaluateReadOnlyLoginTargetsLazy(
-  connectionRole: ManagedConnectionRole,
-  loadMembers: () => Promise<ReadonlyArray<{ role: string; readEligible: boolean }>>
-): Promise<ManagedReadOnlyLoginGuardError | null> {
-  if (connectionRole !== 'read-only') return null
-  return evaluateReadOnlyLoginTargets(connectionRole, await loadMembers())
-}
-
 /**
  * Frontend hostgroup a login defaults to. Absent means `read-write` — the
  * historical behavior and the only safe default, since a `read-only` login is
- * useless (and provisioning is refused) when the cluster has no read-eligible
- * replica.
+ * useless when the cluster has no read-eligible replica, so the daemon
+ * routes it to the primary there.
  */
 export function parseManagedConnectionRole(value: unknown): ManagedConnectionRole | null {
   if (value === undefined || value === null) return 'read-write'

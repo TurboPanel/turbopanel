@@ -100,7 +100,7 @@ const USER_OPERATIONS: ManagedUserOperations = {
     'drop-database',
     'grant-database',
   ],
-  privileges: ['owner', 'read-write', 'read-only'],
+  privileges: ['owner', 'read-write', 'read-only', 'admin'],
   identifier: {
     quote: '"',
     maxLength: MAX_IDENTIFIER_LENGTH,

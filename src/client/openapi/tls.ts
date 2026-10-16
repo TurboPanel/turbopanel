@@ -402,7 +402,7 @@ export const tlsPaths = {
       tags: ['TLS'],
       summary: 'Download the organization CA trust-bundle PEM',
       description:
-        'Returns the concatenated active+retired Organization CA PEMs as `application/x-pem-file` so clients can pre-trust the overlap window. Private key is never included.',
+        'Returns the concatenated active+retired Organization CA PEMs as `application/x-pem-file` so clients can pre-trust the overlap window. Private key is never included. The attachment is named `turbopanel-org-ca-{organizationId}.pem`.',
       security: [{ cookieAuth: [] }],
       responses: {
         200: {

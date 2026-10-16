@@ -78,10 +78,10 @@ only a tested series can be created, saved into `settings.image`, or reach the
 daemon. Untested entries stay in the catalog for one reason: `describeManagedImage`
 must still be able to name an image an existing row already holds.
 
-| Engine   | Creatable (tested) | Catalogued but untested |
-| -------- | ------------------ | ----------------------- |
-| Postgres | **18**             | 17, 16, 15              |
-| MySQL    | **9.7**, **8.4**   |                         |
+| Engine   | Creatable (tested)                                | Catalogued but untested |
+| -------- | ------------------------------------------------- | ----------------------- |
+| Postgres | **18**                                            | 17, 16, 15              |
+| MySQL    | **9.7**, **8.4**                                  |                         |
 | MariaDB  | **11.8** (default), **12.3** (single server only) | 11.4, 10.11             |
 
 Each creatable series offers both of its base-OS variants, so the derived
@@ -231,31 +231,31 @@ re-asserted at the daemon command-contract boundary.
    TLS material (the daemon refuses it otherwise). Client traffic still enters
    via the shared ProxySQL client listeners (see Client listener ports) — never
    a per-service published map for public SQL clients and never per-managed
-   Traefik.   A binding change that places the app on another host enqueues
-  `managed.apply` so that listener exists before the consumer's
-  `managed.ingress.reconcile` can emit frontend users. Binding create
-  and remove (including project/environment cascade and cluster detach)
-  share `enqueueIngressForBindingChange`: apply first, then ingress.
-  A PATCH that only changes `keyPrefix` / emit flags does not apply.
-  `private_port` is allocated during prepare; it is cleared only after
-  at least one apply command is queued (`commitClearedPrivatePortsIfUnused`).
-  A failed enqueue leaves the port allocated — the failed command is
-  visible, and the next successful apply (operator Apply or another
-  binding change) retries the teardown.   When binding create/delete
-  cannot queue `managed.apply`, `enqueueIngressForBindingChange` skips
-  `managed.ingress.reconcile` and returns
-  `BINDING_PRIVATE_LISTENER_PENDING_WARNING` on the binding response;
-  a successful apply with a failed ingress reconcile returns
-  `BINDING_INGRESS_RECONCILE_PENDING_WARNING`. Binding-side apply uses
-  `enqueuePreparedManagedApply` with `updateManagedStatus: false` so a
-  saved credential never flips `managed.status` to `applying` / `failed`.
-  the next operator **Apply** or binding change runs the same apply-first
-  path again (no separate pending marker). A remote app with no private
-  path is skipped at apply (warning) so one unreachable consumer cannot
-  fail the cluster; binding create refuses that case with a plain-words
-  422 instead. Peers still fail apply hard. When peers dial one
-  transport and a consumer another, the peer bind wins and that
-  consumer is skipped — the published address is never widened.
+   Traefik. A binding change that places the app on another host enqueues
+   `managed.apply` so that listener exists before the consumer's
+   `managed.ingress.reconcile` can emit frontend users. Binding create
+   and remove (including project/environment cascade and cluster detach)
+   share `enqueueIngressForBindingChange`: apply first, then ingress.
+   A PATCH that only changes `keyPrefix` / emit flags does not apply.
+   `private_port` is allocated during prepare; it is cleared only after
+   at least one apply command is queued (`commitClearedPrivatePortsIfUnused`).
+   A failed enqueue leaves the port allocated — the failed command is
+   visible, and the next successful apply (operator Apply or another
+   binding change) retries the teardown. When binding create/delete
+   cannot queue `managed.apply`, `enqueueIngressForBindingChange` skips
+   `managed.ingress.reconcile` and returns
+   `BINDING_PRIVATE_LISTENER_PENDING_WARNING` on the binding response;
+   a successful apply with a failed ingress reconcile returns
+   `BINDING_INGRESS_RECONCILE_PENDING_WARNING`. Binding-side apply uses
+   `enqueuePreparedManagedApply` with `updateManagedStatus: false` so a
+   saved credential never flips `managed.status` to `applying` / `failed`.
+   the next operator **Apply** or binding change runs the same apply-first
+   path again (no separate pending marker). A remote app with no private
+   path is skipped at apply (warning) so one unreachable consumer cannot
+   fail the cluster; binding create refuses that case with a plain-words
+   422 instead. Peers still fail apply hard. When peers dial one
+   transport and a consumer another, the peer bind wins and that
+   consumer is skipped — the published address is never widened.
 3. **Named volumes only.** `volumes[]` are Docker named volumes — never host
    bind paths. Config/TLS dirs are relative mounts under managed state. Volume
    **names** must satisfy `SAFE_IDENTIFIER_RE` / `SAFE_VOLUME_NAME_RE`
@@ -297,14 +297,72 @@ stays internal.
   publish): sites run by a site owner's Linux user dial `127.0.0.1:13306`
   (MySQL/MariaDB) or `:15432` (Postgres), and bound containers dial ProxySQL by
   name over the organization's managed Docker network with no host publish.
-- **Yes**: published on `0.0.0.0`; the firewall (`features/firewall/`, preview
+- **Yes**: published on `0.0.0.0`, and on `::` too when the daemon reports a
+  live IPv6 address (`hostHasIpv6`: IPv6, not loopback or link-local, on an
+  interface that is up and is not a mesh tunnel or Docker bridge; stored `ip`
+  rows, datacenter pins and address overrides do not count) **and** advertises
+  `managed-ingress-ipv6-v1`. On a kernel with no IPv6 stack a `[::]` publish
+  fails and takes the listener down, which is why only what the daemon read
+  from the kernel counts; an older daemon never receives `::`. The firewall (`features/firewall/`, preview
   only so far) and the network rules decide who can reach it. Every cluster on
-  the server is reachable that way, by design.
+  the server is reachable that way, by design. With `::` the daemon also gives
+  ProxySQL its own IPv6-only Docker network and an IPv6 listener, so IPv6
+  clients reach it with their real address (and through `DOCKER-USER`, like
+  IPv4); loopback clients still show the managed network's gateway. The daemon
+  does this only on Docker Engine 28+ / Compose 2.33.1+; older hosts keep the
+  old path. Details:
+  `turbopaneld/src/managed/AGENTS.md` → **Real client addresses (IPv6 network)**.
+
+Each `managed.ingress.reconcile` cluster also carries `engineVersion`, the
+release series of the image the row stores (`ingressEngineVersionFromOptions`,
+read from the raw options so a no-longer-creatable series still reports what it
+runs: `18`, `9.7`, `11.8`; absent when the stored image is unreadable, is
+another engine's, or is outside the catalog). The daemon sets ProxySQL's
+`mysql-server_version` / `pgsql-server_version` from it, so clients see the
+real engine instead of ProxySQL's defaults (PostgreSQL 16.1, MySQL 8.0.11).
+One listener per family is shared by every cluster on the server: it reports
+the newest series, MySQL before MariaDB on the MySQL-family listener, MariaDB
+as `<series>-MariaDB`, padded with zeros because drivers parse it (`9.7.0`,
+`11.8.0-MariaDB`, `18.0`; daemon `managed/proxysql-server-version.ts`).
+
+**Root login is local-only.** Each cluster's root login (`role: 'root'` in the
+`managed.ingress.reconcile` user list) carries `allowedSources`: every address
+of the server owner's organization's servers (`root-login-sources.ts`: daemon
+reported interface addresses minus loopback, link-local and Docker bridges, plus
+stored `ip` rows and TurboFabric mesh addresses), sent even when empty. The
+daemon refuses the root login's queries from anywhere that is not in that list,
+loopback, or a Docker network the ProxySQL container is on (`proxysql-root-guard.ts`
+there). The login still authenticates; the block lands on the first query.
+`allowedSources` absent (a control plane or daemon that predates it) means no
+limit, as before, so version skew in either direction never breaks the login.
+Because the daemon allows the Docker network gateway (where `docker-proxy` shows
+loopback and hairpin callers), anything arriving as the gateway is allowed. The
+list is read on each reconcile; a server added to the organization reaches the
+other servers' root allow-list at their next ingress reconcile.
+
+**App logins can be limited by source address and connection count.**
+`login.metadata.allowedSources` (absent = anywhere) lists places: `internal`
+(this server: loopback + its Docker networks), `server:<id>` (an organization
+server, resolved to its public/private/mesh addresses on every reconcile,
+`login-sources-load.ts`) and `address:<ip | prefix% | cidr>` (a CIDR is turned
+into a `%` prefix on save only when ProxySQL can match it exactly: IPv4 /8 /16
+/24, IPv6 whole 16-bit groups; otherwise 400 `managed_login_source_range_not_exact`).
+`metadata.maxConnections` becomes the user row's `max_connections`. Both are set
+on `POST` and `PATCH .../managed/users` (`login-limit-fields.ts`, pure rules in
+`login-sources.ts`; an empty list is refused, `any` means clear). The reconcile
+sends `allowedSources` (+ `allowLocalSources` for `internal`) and
+`maxConnections` on the login's `users[]` entry (`loginWireLimits`) only to a
+daemon listing `managed-login-limits-v1`; for an older daemon a source-limited
+login is left out of that server's payload (fail closed) and a bare cap is
+dropped. Same behaviour as the root guard: the login signs in, every query from
+a refused address is answered with an error; anything arriving as the Docker
+gateway address counts as local.
 
 `decideIngressBindAddresses` in `ingress-desired-pure.ts` turns the setting into
-the one `bindAddresses` entry sent in `managed.ingress.reconcile` (a server with
-no cluster to front still takes the `not_needed` / teardown path). The wire
-contract is unchanged. Changes go through `PUT /servers/:id/managed-external-access`
+the `bindAddresses` sent in `managed.ingress.reconcile` (a server with no
+cluster to front still takes the `not_needed` / teardown path). The wire
+contract is unchanged; the IPv6 publish lands on the server's next ingress
+reconcile after its daemon updates. Changes go through `PUT /servers/:id/managed-external-access`
 (`client/managed/external-access-routes.ts`, org owners and managers): it saves
 the setting, marks `pendingSince`, and queues the ingress reconcile at once; a
 push that cannot be queued answers 502 `ingress_reconcile_failed` (saved, not
@@ -323,8 +381,9 @@ Out of scope (future hardening idea): per-login host restrictions via the admin 
 ## Client routing (connection role, not regex)
 
 `ManagedConnectionRole` (`read-write` | `read-only`, canonical in
-`../commands/schemas.ts`) is chosen per **managed login** at create time and
-persisted on `principal.metadata.connectionRole`. It decides that login's
+`../commands/schemas.ts`) is chosen per **managed login** at create time (and changed with
+`PATCH /managed/users/:principalId`) and persisted on `login.metadata.connectionRole`
+(an absent key is `read-write`). It decides that login's
 ProxySQL `default_hostgroup`, so a read-only credential reaches replicas without
 rewriting any application's consistency semantics:
 
@@ -333,16 +392,128 @@ rewriting any application's consistency semantics:
 | `read-write` (default, absent) | writer                     | current primary only                               |
 | `read-only`                    | reader                     | `readEligible` replicas (`OFFLINE_SOFT` otherwise) |
 
-Creating a `read-only` login with **no** read-eligible member is rejected
-(**422** `managed_no_read_targets`); disabling `readEligible` afterwards is
+A `read-only` login on a cluster with **no** read-eligible member is allowed:
+the daemon routes it to the primary, so SELECT-only works on one server
+(`managed_no_read_targets` no longer exists). Disabling `readEligible` is
 allowed and only removes that member from reader routing — it never changes
-promotion candidacy (`replicaClass` owns that).
+promotion candidacy (`replicaClass` owns that). A login with `metadata.tool`
+(database-tool login, sent as `tool: true` in `managed.ingress.reconcile`) is
+always routed to the primary with no split rules, so a tool session that
+locks to one backend never meets a rule that sends it elsewhere.
 
 `settings.routing.autoReadSplit` (default **off**) is the only thing that emits
 a blanket `^SELECT` query rule, and it applies to `read-write` logins only
 (`read-only` logins already default to the reader hostgroup). Leave it off
 unless an operator asks: a regex read-split silently breaks read-after-write and
 locking reads. `readEligible` alone must never turn it on.
+
+## Login grant mode (`login.metadata`)
+
+`login.metadata` carries `grantMode` (`preset` when absent: today's behaviour;
+`recipe`: new logins' default; `self`: the owner manages permissions by hand),
+`tool` (database-tool login: everything to the primary) and `origin`. Typed
+readers: `loginGrantMode`, `loginIsTool`, `loginOrigin` in `logins.ts`. The
+apply credential carries `grantMode` only when it is not `preset`, so payloads
+for old logins are unchanged. For `self` the daemon skips every grant reset
+and keeps password, LOGIN, NOSUPERUSER, connection limit and CONNECT on the
+listed databases. `PATCH /managed/users/:principalId` (`login-patch.ts`) plans
+the change; `dryRun` returns plain-words statement kinds because the SQL is
+built by the daemon. No migration: new jsonb keys only.
+
+## Postgres owner role per database and the Database admin login
+
+`managed.options.ownerRoleDatabases` (optional string list, a subset of
+`databases`; no migration, an absent key reads as none) names the Postgres
+databases made with an owner role: the daemon creates `tp_<db>_owner`, `_rw`
+and `_ro` (NOLOGIN) and the database belongs to the owner role. Only a new
+database gets it (`POST /managed/databases`: on Postgres every new database
+gets one; `ownerRole: false` answers 400 `managed_owner_role_required` and a
+name over 54 characters 400 `managed_owner_role_name_too_long`; `ownerRole`
+stays accepted only as `true`; 400 on MySQL/MariaDB when asked for). Existing databases keep their owner: moving one onto
+an owner role (`REASSIGN OWNED`) is a separate, explicit, backed-up action that
+does not exist yet. The flag rides on every apply as `databases[].ownerRole`
+(create) and on the drop op, so every `prepareManagedApplyPayloads` caller must
+pass `ownerRoleDatabases` from the parsed options (a missing flag makes the
+daemon treat the database as an ordinary one). `writeManagedRowOptions` keeps
+the key. The `tp_` login-name prefix is reserved (`isReservedManagedUsername`).
+
+Gate: the primary's daemon must list `managed-owner-role-v1`
+(`MANAGED_OWNER_ROLE_FEATURE`). Without it a new database is made without an
+owner role (`ownerRole: true` asked for answers 409
+`managed_owner_role_needs_daemon_update`). Existing owner-role databases and
+logins are untouched.
+
+**Adding a login is never refused over owner roles.** A Database admin login
+(`admin`) on Postgres is added whatever the databases' state: on a database with
+an owner role it joins the owner role; on a database made before owner roles the
+daemon (`managed-database-owner-v1`) gives it read and write access there, never
+ownership and never a platform role; a daemon older than owner roles gets it as
+a `read-write` login on the wire (`buildCredentials`), a daemon with owner roles
+but not the fallback leaves it connect-only on such databases. The POST/PATCH
+answer carries plain-words `notes` saying which (`adminAccessNotes`). Only real
+invalid input refuses: a read-only admin login is 400
+`managed_admin_login_not_read_only`.
+
+**Explicit database owner (`databaseOwners`).** Every Postgres database made with
+an owner role (always, for a new database; not for databases made before owner
+roles, nor for ones a daemon without `managed-owner-role-v1` made) has an owner that is
+never the root login or the platform admin: the cluster's
+first database too (made by the engine's first start for the platform admin; the
+daemon moves it onto `tp_<db>_owner` while it is empty, and cluster create records
+it in `ownerRoleDatabases` only when the primary's daemon lists
+`managed-database-owner-v1`). `managed.options.databaseOwners`
+(`{ [database]: { loginId, username } }`, optional, a subset of
+`ownerRoleDatabases`, no migration) records a login the customer picked with
+`ownerLoginId` on `POST /managed/databases` (`database-owners.ts`,
+`evaluateOwnerLogin`: a migration or read/write login the panel manages; the
+database is added to its list in the same request and put back if the apply is
+not queued). The wire carries `databases[].ownerLogin` (`buildDatabaseOps`); the
+daemon keeps `tp_<db>_owner` as the role that owns what is created, moves the
+database itself onto the login after the login exists, and the login works
+through the owner role. Gate: `managed-database-owner-v1`
+(`MANAGED_DATABASE_OWNER_FEATURE`), else 409
+`managed_database_owner_needs_daemon_update` for a chosen login (the default
+owner role needs only `managed-owner-role-v1`). GET/POST `databases` answer
+`owners` per database (`describeDatabaseOwners`). MySQL and MariaDB have no
+database owner: `ownerLoginId` is 400 `managed_owner_login_unsupported` and a
+login there only gets rights on a database. Changing the owner of an existing
+database is not built: `PATCH …/databases/{name}` answers 409
+`managed_database_owner_change_not_available` (it has to move only what the panel
+manages). A login that owns databases cannot be unlisted from them or made unable
+to own (409 `managed_login_owns_databases`); deleting it hands each database back
+to its default owner role (the daemon does it before dropping the role) and drops
+the entry from `databaseOwners`; dropping such a database also drops the login's
+listing of it.
+
+**MySQL and MariaDB: three jobs, data only below the migration login.** The
+daemon (`managed-data-only-readwrite-v1`, `MANAGED_DATA_ONLY_READWRITE_FEATURE`)
+grants `read-only` SELECT and SHOW VIEW; `read-write` row changes plus EXECUTE,
+LOCK TABLES, CREATE TEMPORARY TABLES and SHOW VIEW (no create, alter or drop of
+anything); `owner` ALL on its database without the grant option; only `admin`
+keeps the grant option. Its next apply also takes the older wide rights back
+from existing logins (no grace period, no new-logins-only mode). An older
+daemon would keep the wide grant, so the panel fails closed: a panel-managed
+`read-write` login on MySQL or MariaDB is refused with 409
+`managed_readwrite_needs_daemon_update` (create; PATCH when it adds the level, adds a
+database to it, or moves a `self` login back to panel-set), see `refuseReadWriteOnOldDaemon`. A
+login that already holds the level is left alone, and `self` logins are never
+written. Read-only has no EXECUTE on purpose: a routine runs with its definer's
+rights and could change data. The gate is checked at create and PATCH only: a
+failover onto a member whose daemon is older re-applies the wide set until that
+daemon updates. `owner` is not gated: an older daemon still gives it the grant
+option. `TRIGGER` and `EVENT` stay on a login that still defines a trigger or a
+scheduled event (a trigger fails with error 1142 once its definer loses it,
+an event stops firing) until those move to the migration login.
+
+A login with `owner` on an owner-role database is the migrations login (the
+daemon makes it a member of the owner role and sets its session role, so
+tables it creates belong to the owner role). The Database admin login is
+privilege `admin` (alone, never read-only, `tool` true by default;
+`owner-role.ts` holds the rules): on Postgres it joins the owner role of each
+listed database that has one, with inherited rights, no CREATEROLE/SUPERUSER/REPLICATION/BYPASSRLS; on
+MySQL/MariaDB it gets `ALL` on each listed database with the grant option and
+nothing global. The panel owns these roles and memberships: reconcile re-asserts
+them on every apply.
 
 ## Client TLS (SSL mode)
 
@@ -903,7 +1074,7 @@ stop`; an unreachable old primary blocks) then promote.
    holding the in-flight slot.
    A promote (or failover `recover`) command the target's daemon lost to a
    restart (the daemon answers `The daemon restarted while this command was
-   running…`) is **queued again** by `resumeInterruptedPromote`
+running…`) is **queued again** by `resumeInterruptedPromote`
    (`ha-recovery.ts`, called from the consumer's failure path) while the row is
    still `promoting`, the in-flight journal row still matches, no other member
    has become primary, the target is still a replica on a connected server (or
@@ -1091,3 +1262,7 @@ row remains (`environment_id` CASCADE must not drop live host runtime). Hard-del
 the Postgres row only when the cluster was never placed.
 
 Daemon teardown: `turbopaneld/src/managed/AGENTS.md` (`destroy.ts`).
+
+## Privilege catalogue
+
+`privileges/` holds the versioned privilege catalogue (per engine and supported series, checked against captured engine output in `privileges/fixtures/`) and the design for the permission grid: `privileges/DESIGN.md`. Adding an engine version: capture a fixture with `scripts/capture-privilege-fixtures.mjs`, then add the series and any new or removed privileges to the catalogue data.
