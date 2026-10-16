@@ -31,7 +31,10 @@ export function privilegeCatalogueSeries(engine: string): readonly string[] {
  * The catalogue for one engine and series, or `undefined` when the panel does
  * not support that series. Entries that do not exist in the series are left out.
  */
-export function privilegeCatalogueFor(engine: string, series: string): PrivilegeCatalogue | undefined {
+export function privilegeCatalogueFor(
+  engine: string,
+  series: string
+): PrivilegeCatalogue | undefined {
   const data = ENGINE_DATA[engine as ManagedEngineCode]
   if (!data || !data.series.includes(series)) return undefined
   const keep = <T extends { since?: string; removedIn?: string }>(rows: readonly T[]): T[] =>
@@ -59,6 +62,7 @@ export function privilegeCataloguePairs(): { engine: ManagedEngineCode; series: 
 /** Series the release catalogue offers (creatable) that the privilege catalogue does not cover. */
 export function uncataloguedCreatableSeries(): { engine: string; series: string }[] {
   return MANAGED_ENGINE_RELEASES.filter(
-    (release) => release.tested && !privilegeCatalogueSeries(release.engine).includes(release.series)
+    (release) =>
+      release.tested && !privilegeCatalogueSeries(release.engine).includes(release.series)
   ).map((release) => ({ engine: release.engine, series: release.series }))
 }

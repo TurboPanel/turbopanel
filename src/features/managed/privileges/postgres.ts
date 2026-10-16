@@ -163,7 +163,12 @@ const COLUMN = entries('column', [
     label: 'Read column',
     explanation: 'Read this column.',
   },
-  { keyword: 'INSERT', letter: 'a', label: 'Add column value', explanation: 'Set this column when adding a row.' },
+  {
+    keyword: 'INSERT',
+    letter: 'a',
+    label: 'Add column value',
+    explanation: 'Set this column when adding a row.',
+  },
   { keyword: 'UPDATE', letter: 'w', label: 'Change column', explanation: 'Change this column.' },
   {
     keyword: 'REFERENCES',
@@ -274,14 +279,26 @@ const ROLES: readonly PrivilegeRoleEntry[] = [
   role('pg_maintain', 'Maintain every table', 'Vacuum, analyze, reindex and cluster any table.', {
     since: '17',
   }),
-  role('pg_monitor', 'Monitor the server', 'Read server settings, statistics and monitoring views.'),
+  role(
+    'pg_monitor',
+    'Monitor the server',
+    'Read server settings, statistics and monitoring views.'
+  ),
   role(
     'pg_read_all_data',
     'Read everything',
     'Read every table, view and sequence in every database on the server.'
   ),
-  role('pg_read_all_settings', 'Read all settings', 'Read every server setting, including private ones.'),
-  role('pg_read_all_stats', 'Read all statistics', 'Read every statistics view, including other people’s queries.'),
+  role(
+    'pg_read_all_settings',
+    'Read all settings',
+    'Read every server setting, including private ones.'
+  ),
+  role(
+    'pg_read_all_stats',
+    'Read all statistics',
+    'Read every statistics view, including other people’s queries.'
+  ),
   role(
     'pg_read_server_files',
     'Read server files',
@@ -295,7 +312,11 @@ const ROLES: readonly PrivilegeRoleEntry[] = [
     { since: '18' }
   ),
   role('pg_signal_backend', 'Stop other sessions', 'Cancel or end other people’s sessions.'),
-  role('pg_stat_scan_tables', 'Scan tables for statistics', 'Run monitoring functions that take locks on tables.'),
+  role(
+    'pg_stat_scan_tables',
+    'Scan tables for statistics',
+    'Run monitoring functions that take locks on tables.'
+  ),
   role(
     'pg_use_reserved_connections',
     'Use reserved connections',

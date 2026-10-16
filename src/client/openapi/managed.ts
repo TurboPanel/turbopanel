@@ -657,7 +657,7 @@ export const managedSchemas = {
       'blocked',
     ],
     description:
-      'Everything the cluster\'s exact engine series can grant, in plain words. Only series the panel supports have a catalogue.',
+      "Everything the cluster's exact engine series can grant, in plain words. Only series the panel supports have a catalogue.",
     properties: {
       engine: { type: 'string', enum: ['postgres', 'mysql', 'mariadb'] },
       series: { type: 'string', description: 'Engine series, for example 18, 9.7 or 11.8.' },
@@ -669,7 +669,16 @@ export const managedSchemas = {
           properties: {
             id: {
               type: 'string',
-              enum: ['global', 'database', 'schema', 'table', 'column', 'sequence', 'routine', 'type'],
+              enum: [
+                'global',
+                'database',
+                'schema',
+                'table',
+                'column',
+                'sequence',
+                'routine',
+                'type',
+              ],
             },
             label: { type: 'string' },
             explanation: { type: 'string' },
@@ -693,7 +702,7 @@ export const managedSchemas = {
               type: 'string',
               enum: ['yes', 'needs-admin', 'no'],
               description:
-                'Whether a site owner\'s login may hold it: `yes`, `needs-admin` (reserved for a Database admin login) or `no` (never).',
+                "Whether a site owner's login may hold it: `yes`, `needs-admin` (reserved for a Database admin login) or `no` (never).",
             },
             reason: { type: 'string' },
             aclLetter: { type: 'string', description: 'Postgres access-list letter.' },
@@ -1702,9 +1711,9 @@ export const managedPaths = {
   '/api/client/v1/environments/{id}/managed/privilege-catalogue': {
     get: {
       tags: ['Managed services'],
-      summary: 'Privilege catalogue for the cluster\'s engine version',
+      summary: "Privilege catalogue for the cluster's engine version",
       description:
-        'Read only. Lists every privilege, predefined role and role attribute that exists in the cluster\'s exact engine series, with a plain-words label and whether a site owner\'s login may hold it. A series the panel does not support answers 422 `privilege_catalogue_unsupported_version`.',
+        "Read only. Lists every privilege, predefined role and role attribute that exists in the cluster's exact engine series, with a plain-words label and whether a site owner's login may hold it. A series the panel does not support answers 422 `privilege_catalogue_unsupported_version`.",
       parameters: [ENV_ID_PARAM],
       responses: {
         200: {

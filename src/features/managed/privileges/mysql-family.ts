@@ -103,16 +103,32 @@ const GRANT_OPTION: Row = {
 }
 
 /** Privileges that exist at database level and (mostly) at table level. */
-const ALTER: Row = { keyword: 'ALTER', label: 'Change tables', explanation: 'Alter the structure of tables.' }
-const CREATE: Row = { keyword: 'CREATE', label: 'Create tables', explanation: 'Create databases and tables.' }
-const CREATE_VIEW: Row = { keyword: 'CREATE VIEW', label: 'Create views', explanation: 'Create views.' }
+const ALTER: Row = {
+  keyword: 'ALTER',
+  label: 'Change tables',
+  explanation: 'Alter the structure of tables.',
+}
+const CREATE: Row = {
+  keyword: 'CREATE',
+  label: 'Create tables',
+  explanation: 'Create databases and tables.',
+}
+const CREATE_VIEW: Row = {
+  keyword: 'CREATE VIEW',
+  label: 'Create views',
+  explanation: 'Create views.',
+}
 const DELETE: Row = { keyword: 'DELETE', label: 'Delete rows', explanation: 'Delete rows.' }
 const DROP: Row = {
   keyword: 'DROP',
   label: 'Drop tables',
   explanation: 'Drop tables and views, and empty a table with TRUNCATE.',
 }
-const INDEX: Row = { keyword: 'INDEX', label: 'Manage indexes', explanation: 'Create and drop indexes.' }
+const INDEX: Row = {
+  keyword: 'INDEX',
+  label: 'Manage indexes',
+  explanation: 'Create and drop indexes.',
+}
 const INSERT: Row = { keyword: 'INSERT', label: 'Add rows', explanation: 'Add new rows.' }
 const REFERENCES: Row = {
   keyword: 'REFERENCES',
@@ -125,8 +141,16 @@ const SHOW_VIEW: Row = {
   label: 'See view definitions',
   explanation: 'Read how a view is defined.',
 }
-const TRIGGER: Row = { keyword: 'TRIGGER', label: 'Create triggers', explanation: 'Create and drop triggers.' }
-const UPDATE: Row = { keyword: 'UPDATE', label: 'Change rows', explanation: 'Change existing rows.' }
+const TRIGGER: Row = {
+  keyword: 'TRIGGER',
+  label: 'Create triggers',
+  explanation: 'Create and drop triggers.',
+}
+const UPDATE: Row = {
+  keyword: 'UPDATE',
+  label: 'Change rows',
+  explanation: 'Change existing rows.',
+}
 
 const DATABASE_BASE: readonly Row[] = [
   ALTER,
@@ -154,7 +178,11 @@ const DATABASE_BASE: readonly Row[] = [
     label: 'Scheduled events',
     explanation: 'Create, change and drop scheduled events.',
   },
-  { keyword: 'EXECUTE', label: 'Run routines', explanation: 'Call stored functions and procedures.' },
+  {
+    keyword: 'EXECUTE',
+    label: 'Run routines',
+    explanation: 'Call stored functions and procedures.',
+  },
   INDEX,
   INSERT,
   {
@@ -213,78 +241,364 @@ const BLOCKED: PrivilegeBlocked = {
 
 /** Static privileges that exist only at the global level, shared by both engines. */
 const GLOBAL_STATIC_SHARED: readonly Row[] = [
-  { keyword: 'CREATE USER', label: 'Manage accounts', explanation: 'Create, change, rename and drop accounts.', reason: ACCOUNTS },
-  { keyword: 'FILE', label: 'Read and write server files', explanation: 'Read and write files on the database server.', reason: HOST_FILES },
-  { keyword: 'PROCESS', label: 'See all sessions', explanation: 'See every session and its running query.', reason: PEEKS },
-  { keyword: 'RELOAD', label: 'Flush server state', explanation: 'Run FLUSH to reload privileges, logs and caches.' },
-  { keyword: 'REPLICATION SLAVE', label: 'Act as a replica', explanation: 'Read the change log so another server can copy this one.', reason: REPLICATION },
-  { keyword: 'SHOW DATABASES', label: 'List all databases', explanation: 'See the names of every database on the server.', reason: PEEKS },
+  {
+    keyword: 'CREATE TABLESPACE',
+    label: 'Manage tablespaces',
+    explanation: 'Create, change and drop tablespaces and storage files.',
+  },
+  {
+    keyword: 'PROXY',
+    label: 'Act as another account',
+    explanation: 'Log in as another account through a proxy mapping.',
+    reason: ACCOUNTS,
+  },
+  {
+    keyword: 'CREATE USER',
+    label: 'Manage accounts',
+    explanation: 'Create, change, rename and drop accounts.',
+    reason: ACCOUNTS,
+  },
+  {
+    keyword: 'FILE',
+    label: 'Read and write server files',
+    explanation: 'Read and write files on the database server.',
+    reason: HOST_FILES,
+  },
+  {
+    keyword: 'PROCESS',
+    label: 'See all sessions',
+    explanation: 'See every session and its running query.',
+    reason: PEEKS,
+  },
+  {
+    keyword: 'RELOAD',
+    label: 'Flush server state',
+    explanation: 'Run FLUSH to reload privileges, logs and caches.',
+  },
+  {
+    keyword: 'REPLICATION SLAVE',
+    label: 'Act as a replica',
+    explanation: 'Read the change log so another server can copy this one.',
+    reason: REPLICATION,
+  },
+  {
+    keyword: 'SHOW DATABASES',
+    label: 'List all databases',
+    explanation: 'See the names of every database on the server.',
+    reason: PEEKS,
+  },
   { keyword: 'SHUTDOWN', label: 'Shut the server down', explanation: 'Stop the database server.' },
-  { keyword: 'SUPER', label: 'Superuser', explanation: 'A catch-all for server-wide administration.' },
-  { keyword: 'USAGE', label: 'No access', explanation: 'Means the account has no privileges at this level.', allowed: 'yes', grid: false },
+  {
+    keyword: 'SUPER',
+    label: 'Superuser',
+    explanation: 'A catch-all for server-wide administration.',
+  },
+  {
+    keyword: 'USAGE',
+    label: 'No access',
+    explanation: 'Means the account has no privileges at this level.',
+    allowed: 'yes',
+    grid: false,
+  },
 ]
 
 const MYSQL_GLOBAL: readonly Row[] = [
   ...GLOBAL_STATIC_SHARED,
   { keyword: 'CREATE ROLE', label: 'Create roles', explanation: 'Create roles.', reason: ACCOUNTS },
-  { keyword: 'CREATE TABLESPACE', label: 'Manage tablespaces', explanation: 'Create, change and drop tablespaces and log file groups.' },
   { keyword: 'DROP ROLE', label: 'Drop roles', explanation: 'Drop roles.', reason: ACCOUNTS },
-  { keyword: 'REPLICATION CLIENT', label: 'See replication state', explanation: 'See the status of the server’s change log and replicas.', reason: REPLICATION },
-  { keyword: 'ALLOW_NONEXISTENT_DEFINER', label: 'Orphan-definer objects', explanation: 'Create stored objects owned by an account that does not exist.', reason: ACCOUNTS },
-  { keyword: 'APPLICATION_PASSWORD_ADMIN', label: 'Manage extra passwords', explanation: 'Manage the second password on accounts.', reason: ACCOUNTS },
-  { keyword: 'AUDIT_ABORT_EXEMPT', label: 'Audit exemption', explanation: 'Skip being blocked by the audit log filter.' },
-  { keyword: 'AUDIT_ADMIN', label: 'Manage the audit log', explanation: 'Change audit log settings.' },
-  { keyword: 'AUTHENTICATION_POLICY_ADMIN', label: 'Manage sign-in policy', explanation: 'Change how accounts sign in.', reason: ACCOUNTS },
-  { keyword: 'BACKUP_ADMIN', label: 'Run server backups', explanation: 'Take server-level backup locks.' },
-  { keyword: 'BINLOG_ADMIN', label: 'Manage the change log', explanation: 'Purge and change the binary log.', reason: REPLICATION },
-  { keyword: 'BINLOG_ENCRYPTION_ADMIN', label: 'Manage change log encryption', explanation: 'Change encryption of the binary log.', reason: REPLICATION },
-  { keyword: 'CLONE_ADMIN', label: 'Clone the server', explanation: 'Copy the whole server’s data to or from another server.' },
-  { keyword: 'CONNECTION_ADMIN', label: 'Manage connections', explanation: 'End other people’s sessions and ignore connection limits.', reason: PEEKS },
-  { keyword: 'ENCRYPTION_KEY_ADMIN', label: 'Manage encryption keys', explanation: 'Rotate the keys that encrypt data.' },
-  { keyword: 'FIREWALL_EXEMPT', label: 'Firewall exemption', explanation: 'Skip the query firewall.' },
-  { keyword: 'FLUSH_OPTIMIZER_COSTS', label: 'Flush optimizer costs', explanation: 'Reload query-planner cost settings.' },
-  { keyword: 'FLUSH_PRIVILEGES', label: 'Flush privileges', explanation: 'Reload the privilege tables.', reason: ACCOUNTS },
+  {
+    keyword: 'REPLICATION CLIENT',
+    label: 'See replication state',
+    explanation: 'See the status of the server’s change log and replicas.',
+    reason: REPLICATION,
+  },
+  {
+    keyword: 'ALLOW_NONEXISTENT_DEFINER',
+    label: 'Orphan-definer objects',
+    explanation: 'Create stored objects owned by an account that does not exist.',
+    reason: ACCOUNTS,
+  },
+  {
+    keyword: 'APPLICATION_PASSWORD_ADMIN',
+    label: 'Manage extra passwords',
+    explanation: 'Manage the second password on accounts.',
+    reason: ACCOUNTS,
+  },
+  {
+    keyword: 'AUDIT_ABORT_EXEMPT',
+    label: 'Audit exemption',
+    explanation: 'Skip being blocked by the audit log filter.',
+  },
+  {
+    keyword: 'AUDIT_ADMIN',
+    label: 'Manage the audit log',
+    explanation: 'Change audit log settings.',
+  },
+  {
+    keyword: 'AUTHENTICATION_POLICY_ADMIN',
+    label: 'Manage sign-in policy',
+    explanation: 'Change how accounts sign in.',
+    reason: ACCOUNTS,
+  },
+  {
+    keyword: 'BACKUP_ADMIN',
+    label: 'Run server backups',
+    explanation: 'Take server-level backup locks.',
+  },
+  {
+    keyword: 'BINLOG_ADMIN',
+    label: 'Manage the change log',
+    explanation: 'Purge and change the binary log.',
+    reason: REPLICATION,
+  },
+  {
+    keyword: 'BINLOG_ENCRYPTION_ADMIN',
+    label: 'Manage change log encryption',
+    explanation: 'Change encryption of the binary log.',
+    reason: REPLICATION,
+  },
+  {
+    keyword: 'CLONE_ADMIN',
+    label: 'Clone the server',
+    explanation: 'Copy the whole server’s data to or from another server.',
+  },
+  {
+    keyword: 'CONNECTION_ADMIN',
+    label: 'Manage connections',
+    explanation: 'End other people’s sessions and ignore connection limits.',
+    reason: PEEKS,
+  },
+  {
+    keyword: 'ENCRYPTION_KEY_ADMIN',
+    label: 'Manage encryption keys',
+    explanation: 'Rotate the keys that encrypt data.',
+  },
+  {
+    keyword: 'FIREWALL_EXEMPT',
+    label: 'Firewall exemption',
+    explanation: 'Skip the query firewall.',
+  },
+  {
+    keyword: 'FLUSH_OPTIMIZER_COSTS',
+    label: 'Flush optimizer costs',
+    explanation: 'Reload query-planner cost settings.',
+  },
+  {
+    keyword: 'FLUSH_PRIVILEGES',
+    label: 'Flush privileges',
+    explanation: 'Reload the privilege tables.',
+    reason: ACCOUNTS,
+  },
   { keyword: 'FLUSH_STATUS', label: 'Flush status', explanation: 'Reset server status counters.' },
   { keyword: 'FLUSH_TABLES', label: 'Flush tables', explanation: 'Close and reopen every table.' },
-  { keyword: 'FLUSH_USER_RESOURCES', label: 'Flush user limits', explanation: 'Reset per-account resource counters.' },
-  { keyword: 'GROUP_REPLICATION_ADMIN', label: 'Manage group replication', explanation: 'Start and stop group replication.', reason: REPLICATION },
-  { keyword: 'GROUP_REPLICATION_STREAM', label: 'Group replication stream', explanation: 'Use the group replication channel.', reason: REPLICATION },
-  { keyword: 'INNODB_REDO_LOG_ARCHIVE', label: 'Archive the redo log', explanation: 'Copy the storage engine’s redo log.' },
-  { keyword: 'INNODB_REDO_LOG_ENABLE', label: 'Switch the redo log', explanation: 'Turn the storage engine’s redo log on or off.' },
-  { keyword: 'OPTIMIZE_LOCAL_TABLE', label: 'Optimize without logging', explanation: 'Run OPTIMIZE LOCAL TABLE.' },
-  { keyword: 'PASSWORDLESS_USER_ADMIN', label: 'Manage passwordless accounts', explanation: 'Manage accounts that have no password.', reason: ACCOUNTS },
-  { keyword: 'PERSIST_RO_VARIABLES_ADMIN', label: 'Persist read-only settings', explanation: 'Write read-only settings to the server’s config.' },
-  { keyword: 'REPLICATION_APPLIER', label: 'Apply replicated changes', explanation: 'Act as the account that applies a replica’s changes.', reason: REPLICATION },
-  { keyword: 'REPLICATION_SLAVE_ADMIN', label: 'Manage replication', explanation: 'Start, stop and configure replication.', reason: REPLICATION },
-  { keyword: 'RESOURCE_GROUP_ADMIN', label: 'Manage resource groups', explanation: 'Create and change resource groups.' },
-  { keyword: 'RESOURCE_GROUP_USER', label: 'Use resource groups', explanation: 'Assign threads to resource groups.' },
-  { keyword: 'ROLE_ADMIN', label: 'Manage roles', explanation: 'Grant and revoke roles, and use WITH ADMIN OPTION.', reason: ACCOUNTS },
-  { keyword: 'SENSITIVE_VARIABLES_OBSERVER', label: 'See sensitive settings', explanation: 'See settings that hold secrets.', reason: PEEKS },
-  { keyword: 'SERVICE_CONNECTION_ADMIN', label: 'Use service connections', explanation: 'Connect on the reserved service port.' },
-  { keyword: 'SESSION_VARIABLES_ADMIN', label: 'Set restricted session settings', explanation: 'Change session settings that are otherwise restricted.' },
-  { keyword: 'SET_ANY_DEFINER', label: 'Act as any account', explanation: 'Create stored objects owned by any account.', reason: ACCOUNTS },
-  { keyword: 'SET_USER_ID', label: 'Act as any account (old)', explanation: 'Create stored objects owned by any account. Removed in 8.4.', removedIn: '8.4', reason: ACCOUNTS },
-  { keyword: 'SHOW_ROUTINE', label: 'See all routine definitions', explanation: 'Read the code of every stored routine on the server.', reason: PEEKS },
-  { keyword: 'SYSTEM_USER', label: 'System account', explanation: 'Marks an account as a system account that ordinary accounts cannot change.', reason: ACCOUNTS },
-  { keyword: 'SYSTEM_VARIABLES_ADMIN', label: 'Change server settings', explanation: 'Change global server settings.' },
-  { keyword: 'TABLE_ENCRYPTION_ADMIN', label: 'Manage table encryption', explanation: 'Override default table encryption.' },
-  { keyword: 'TELEMETRY_LOG_ADMIN', label: 'Manage telemetry log', explanation: 'Change the telemetry log.' },
-  { keyword: 'TRANSACTION_GTID_TAG', label: 'Tag transactions', explanation: 'Set a tag on replicated transaction ids.', reason: REPLICATION },
-  { keyword: 'XA_RECOVER_ADMIN', label: 'Recover prepared transactions', explanation: 'See and end other sessions’ prepared transactions.', reason: PEEKS },
+  {
+    keyword: 'FLUSH_USER_RESOURCES',
+    label: 'Flush user limits',
+    explanation: 'Reset per-account resource counters.',
+  },
+  {
+    keyword: 'GROUP_REPLICATION_ADMIN',
+    label: 'Manage group replication',
+    explanation: 'Start and stop group replication.',
+    reason: REPLICATION,
+  },
+  {
+    keyword: 'GROUP_REPLICATION_STREAM',
+    label: 'Group replication stream',
+    explanation: 'Use the group replication channel.',
+    reason: REPLICATION,
+  },
+  {
+    keyword: 'INNODB_REDO_LOG_ARCHIVE',
+    label: 'Archive the redo log',
+    explanation: 'Copy the storage engine’s redo log.',
+  },
+  {
+    keyword: 'INNODB_REDO_LOG_ENABLE',
+    label: 'Switch the redo log',
+    explanation: 'Turn the storage engine’s redo log on or off.',
+  },
+  {
+    keyword: 'OPTIMIZE_LOCAL_TABLE',
+    label: 'Optimize without logging',
+    explanation: 'Run OPTIMIZE LOCAL TABLE.',
+  },
+  {
+    keyword: 'PASSWORDLESS_USER_ADMIN',
+    label: 'Manage passwordless accounts',
+    explanation: 'Manage accounts that have no password.',
+    reason: ACCOUNTS,
+  },
+  {
+    keyword: 'PERSIST_RO_VARIABLES_ADMIN',
+    label: 'Persist read-only settings',
+    explanation: 'Write read-only settings to the server’s config.',
+  },
+  {
+    keyword: 'REPLICATION_APPLIER',
+    label: 'Apply replicated changes',
+    explanation: 'Act as the account that applies a replica’s changes.',
+    reason: REPLICATION,
+  },
+  {
+    keyword: 'REPLICATION_SLAVE_ADMIN',
+    label: 'Manage replication',
+    explanation: 'Start, stop and configure replication.',
+    reason: REPLICATION,
+  },
+  {
+    keyword: 'RESOURCE_GROUP_ADMIN',
+    label: 'Manage resource groups',
+    explanation: 'Create and change resource groups.',
+  },
+  {
+    keyword: 'RESOURCE_GROUP_USER',
+    label: 'Use resource groups',
+    explanation: 'Assign threads to resource groups.',
+  },
+  {
+    keyword: 'ROLE_ADMIN',
+    label: 'Manage roles',
+    explanation: 'Grant and revoke roles, and use WITH ADMIN OPTION.',
+    reason: ACCOUNTS,
+  },
+  {
+    keyword: 'SENSITIVE_VARIABLES_OBSERVER',
+    label: 'See sensitive settings',
+    explanation: 'See settings that hold secrets.',
+    reason: PEEKS,
+  },
+  {
+    keyword: 'SERVICE_CONNECTION_ADMIN',
+    label: 'Use service connections',
+    explanation: 'Connect on the reserved service port.',
+  },
+  {
+    keyword: 'SESSION_VARIABLES_ADMIN',
+    label: 'Set restricted session settings',
+    explanation: 'Change session settings that are otherwise restricted.',
+  },
+  {
+    keyword: 'SET_ANY_DEFINER',
+    label: 'Act as any account',
+    explanation: 'Create stored objects owned by any account.',
+    reason: ACCOUNTS,
+  },
+  {
+    keyword: 'SHOW_ROUTINE',
+    label: 'See all routine definitions',
+    explanation: 'Read the code of every stored routine on the server.',
+    reason: PEEKS,
+  },
+  {
+    keyword: 'SYSTEM_USER',
+    label: 'System account',
+    explanation: 'Marks an account as a system account that ordinary accounts cannot change.',
+    reason: ACCOUNTS,
+  },
+  {
+    keyword: 'SYSTEM_VARIABLES_ADMIN',
+    label: 'Change server settings',
+    explanation: 'Change global server settings.',
+  },
+  {
+    keyword: 'TABLE_ENCRYPTION_ADMIN',
+    label: 'Manage table encryption',
+    explanation: 'Override default table encryption.',
+  },
+  {
+    keyword: 'TELEMETRY_LOG_ADMIN',
+    label: 'Manage telemetry log',
+    explanation: 'Change the telemetry log.',
+  },
+  {
+    keyword: 'TRANSACTION_GTID_TAG',
+    label: 'Tag transactions',
+    explanation: 'Set a tag on replicated transaction ids.',
+    reason: REPLICATION,
+  },
+  {
+    keyword: 'CREATE_SPATIAL_REFERENCE_SYSTEM',
+    label: 'Manage spatial systems',
+    explanation: 'Create and change spatial reference systems.',
+    since: '9.7',
+  },
+  {
+    keyword: 'MANAGE_DATA_MASKING_POLICY',
+    label: 'Manage data masking',
+    explanation: 'Create and change data masking policies.',
+    since: '9.7',
+  },
+  {
+    keyword: 'XA_RECOVER_ADMIN',
+    label: 'Recover prepared transactions',
+    explanation: 'See and end other sessions’ prepared transactions.',
+    reason: PEEKS,
+  },
 ]
 
 const MARIADB_GLOBAL: readonly Row[] = [
   ...GLOBAL_STATIC_SHARED,
-  { keyword: 'BINLOG ADMIN', label: 'Manage the change log', explanation: 'Purge and change the binary log.', reason: REPLICATION },
-  { keyword: 'BINLOG MONITOR', aliases: ['REPLICATION CLIENT'], label: 'See the change log', explanation: 'See the binary log and replication status.', reason: REPLICATION },
-  { keyword: 'BINLOG REPLAY', label: 'Replay the change log', explanation: 'Replay binary log events.', reason: REPLICATION },
-  { keyword: 'CONNECTION ADMIN', label: 'Manage connections', explanation: 'End other people’s sessions and ignore connection limits.', reason: PEEKS },
-  { keyword: 'FEDERATED ADMIN', label: 'Manage remote servers', explanation: 'Create, change and drop remote server links.' },
-  { keyword: 'READ_ONLY ADMIN', label: 'Write on a read-only server', explanation: 'Write even when the server is read-only.' },
-  { keyword: 'REPLICATION MASTER ADMIN', label: 'Manage the source server', explanation: 'Manage replicas from the source side.', reason: REPLICATION },
-  { keyword: 'REPLICA MONITOR', aliases: ['SLAVE MONITOR'], label: 'See replica state', explanation: 'See the status of a replica.', reason: REPLICATION },
-  { keyword: 'REPLICATION SLAVE ADMIN', label: 'Manage replication', explanation: 'Start, stop and configure replication.', reason: REPLICATION },
-  { keyword: 'SET USER', label: 'Act as any account', explanation: 'Create stored objects owned by any account.', reason: ACCOUNTS },
+  {
+    keyword: 'BINLOG ADMIN',
+    label: 'Manage the change log',
+    explanation: 'Purge and change the binary log.',
+    reason: REPLICATION,
+  },
+  {
+    keyword: 'BINLOG MONITOR',
+    aliases: ['REPLICATION CLIENT'],
+    label: 'See the change log',
+    explanation: 'See the binary log and replication status.',
+    reason: REPLICATION,
+  },
+  {
+    keyword: 'BINLOG REPLAY',
+    label: 'Replay the change log',
+    explanation: 'Replay binary log events.',
+    reason: REPLICATION,
+  },
+  {
+    keyword: 'CONNECTION ADMIN',
+    label: 'Manage connections',
+    explanation: 'End other people’s sessions and ignore connection limits.',
+    reason: PEEKS,
+  },
+  {
+    keyword: 'FEDERATED ADMIN',
+    label: 'Manage remote servers',
+    explanation: 'Create, change and drop remote server links.',
+  },
+  {
+    keyword: 'READ_ONLY ADMIN',
+    label: 'Write on a read-only server',
+    explanation: 'Write even when the server is read-only.',
+  },
+  {
+    keyword: 'REPLICATION MASTER ADMIN',
+    label: 'Manage the source server',
+    explanation: 'Manage replicas from the source side.',
+    reason: REPLICATION,
+  },
+  {
+    keyword: 'REPLICA MONITOR',
+    aliases: ['SLAVE MONITOR'],
+    label: 'See replica state',
+    explanation: 'See the status of a replica.',
+    reason: REPLICATION,
+  },
+  {
+    keyword: 'REPLICATION SLAVE ADMIN',
+    label: 'Manage replication',
+    explanation: 'Start, stop and configure replication.',
+    reason: REPLICATION,
+  },
+  {
+    keyword: 'SET USER',
+    label: 'Act as any account',
+    explanation: 'Create stored objects owned by any account.',
+    reason: ACCOUNTS,
+  },
 ]
 
 const MARIADB_DB_EXTRA: readonly Row[] = [
@@ -313,12 +627,14 @@ const MYSQL_PRIVILEGES: readonly PrivilegeEntry[] = [
   ...entries('routine', ROUTINE_BASE),
 ]
 
+const MARIADB_ROUTINE: readonly Row[] = splice(ROUTINE_BASE, [MARIADB_DB_EXTRA[1]!])
+
 const MARIADB_PRIVILEGES: readonly PrivilegeEntry[] = [
   ...entries('global', MARIADB_GLOBAL),
   ...entries('database', splice(DATABASE_BASE, MARIADB_DB_EXTRA)),
   ...entries('table', splice(TABLE_BASE, [MARIADB_DB_EXTRA[0]!])),
   ...entries('column', COLUMN_BASE),
-  ...entries('routine', ROUTINE_BASE),
+  ...entries('routine', MARIADB_ROUTINE),
 ]
 
 const NO_POSTGRES_ONLY = {

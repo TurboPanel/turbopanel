@@ -6,7 +6,8 @@
  *   site owner's login may hold it. Nothing outside the supported series is
  *   ever listed.
  *
- * Kept apart from `routes.ts` so the users handlers there stay untouched.
+ * Kept apart from `routes.ts` so the users handlers there stay untouched. The
+ * session middleware for these paths comes from `managedSessionPaths()`.
  * Design: `features/managed/privileges/DESIGN.md`.
  */
 import { eq } from 'drizzle-orm'
@@ -17,21 +18,8 @@ import { managed } from '../../db/schema.ts'
 import { ingressEngineVersionFromOptions } from '../../features/managed/ingress-desired-pure.ts'
 import { privilegeCatalogueFor } from '../../features/managed/privileges/catalogue.ts'
 import { authorizeManagedRequest, loadManagedContext } from './context.ts'
-import type { AuthRouteOpts } from '../authn/http.ts'
-import { createSessionMiddleware } from '../authn/middleware.ts'
 
-/** Session paths these routes need, kept here so the shared managed list stays untouched. */
-export const MANAGED_PRIVILEGE_SESSION_PATHS = [
-  '/environments/:id/managed/privilege-catalogue',
-] as const
-
-export function registerManagedPrivilegeRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
-  if (!opts.secrets) {
-    throw new TypeError('session secrets are required for managed privilege routes')
-  }
-  for (const path of MANAGED_PRIVILEGE_SESSION_PATHS) {
-    router.use(path, createSessionMiddleware(opts.secrets))
-  }
+export function registerManagedPrivilegeRoutes(router: Hono<AppEnv>) {
   router.get('/environments/:id/managed/privilege-catalogue', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)

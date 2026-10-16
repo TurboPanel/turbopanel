@@ -1475,7 +1475,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     router.use(path, createSessionMiddleware(opts.secrets))
   }
   registerManagedExternalAccessRoutes(router)
-  registerManagedPrivilegeRoutes(router, opts)
+  registerManagedPrivilegeRoutes(router)
 
   router.post('/environments/:id/managed', async (c) => {
     const scope = await loadManagedContextScope(c)
