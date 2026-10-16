@@ -19,7 +19,7 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-test('a new Postgres database gets an owner role unless the name is too long or it is declined', () => {
+test('a new Postgres database always gets an owner role; false and a too-long name are refused', () => {
   assertEquals(resolveDatabaseOwnerRole('postgres', 'shop', undefined), {
     ok: true,
     ownerRole: true,
@@ -28,17 +28,17 @@ test('a new Postgres database gets an owner role unless the name is too long or 
     ok: true,
     ownerRole: true,
   })
-  assertEquals(resolveDatabaseOwnerRole('postgres', 'shop', false), {
-    ok: true,
-    ownerRole: false,
-  })
+  const declined = resolveDatabaseOwnerRole('postgres', 'shop', false)
+  assertEquals(!declined.ok && declined.error, 'managed_owner_role_required')
+  assertEquals(!declined.ok && declined.status, 400)
+  assertEquals(!declined.ok && declined.message?.includes('Leave ownerRole out'), true)
   const long = 'a'.repeat(OWNER_ROLE_MAX_DATABASE_NAME + 1)
-  assertEquals(resolveDatabaseOwnerRole('postgres', long, undefined), {
-    ok: true,
-    ownerRole: false,
-  })
-  const asked = resolveDatabaseOwnerRole('postgres', long, true)
-  assertEquals(!asked.ok && asked.error, 'managed_owner_role_name_too_long')
+  for (const requested of [undefined, true]) {
+    const refused = resolveDatabaseOwnerRole('postgres', long, requested)
+    assertEquals(!refused.ok && refused.error, 'managed_owner_role_name_too_long')
+    assertEquals(!refused.ok && refused.status, 400)
+    assertEquals(!refused.ok && refused.message?.includes('shorter name'), true)
+  }
   const exact = 'a'.repeat(OWNER_ROLE_MAX_DATABASE_NAME)
   assertEquals(resolveDatabaseOwnerRole('postgres', exact, undefined), {
     ok: true,
@@ -55,6 +55,11 @@ test('MySQL and MariaDB databases never get an owner role and refuse a request f
     const asked = resolveDatabaseOwnerRole(engine, 'shop', true)
     assertEquals(!asked.ok && asked.error, 'managed_owner_role_unsupported')
   }
+  // No owner role concept there: false is harmless, a long name is fine.
+  assertEquals(resolveDatabaseOwnerRole('mysql', 'a'.repeat(60), false), {
+    ok: true,
+    ownerRole: false,
+  })
   const bad = resolveDatabaseOwnerRole('postgres', 'shop', 'yes')
   assertEquals(!bad.ok && bad.status, 400)
 })
@@ -79,10 +84,9 @@ test('an old daemon gets no owner role by default and a 409 when one is asked fo
     ok: true,
     ownerRole: false,
   })
-  assertEquals(resolveDatabaseOwnerRole('postgres', 'shop', false, false), {
-    ok: true,
-    ownerRole: false,
-  })
+  // false is refused the same on any daemon.
+  const declined = resolveDatabaseOwnerRole('postgres', 'shop', false, false)
+  assertEquals(!declined.ok && declined.error, 'managed_owner_role_required')
   const asked = resolveDatabaseOwnerRole('postgres', 'shop', true, false)
   assertEquals(asked.ok, false)
   if (!asked.ok) {
