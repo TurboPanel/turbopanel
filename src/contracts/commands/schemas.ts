@@ -7419,6 +7419,15 @@ function parseManagedIngressReconcileUser(value: unknown): ManagedIngressReconci
     }
     user.tool = value.tool
   }
+  parseManagedIngressUserLimits(value, user)
+  return user
+}
+
+/** Optional source limit and connection cap of a login (absent = no limit). */
+function parseManagedIngressUserLimits(
+  value: Record<string, unknown>,
+  user: ManagedIngressReconcileUser
+): void {
   if (value.allowedSources !== undefined) {
     user.allowedSources = parseManagedIngressAllowedSources(value.allowedSources)
   }
@@ -7428,17 +7437,18 @@ function parseManagedIngressReconcileUser(value: unknown): ManagedIngressReconci
     }
     user.allowLocalSources = value.allowLocalSources
   }
-  if (value.maxConnections !== undefined) {
+  const cap = value.maxConnections
+  if (cap !== undefined) {
     if (
-      !Number.isInteger(value.maxConnections) ||
-      (value.maxConnections as number) < 1 ||
-      (value.maxConnections as number) > MAX_MANAGED_INGRESS_LOGIN_CONNECTIONS
+      typeof cap !== 'number' ||
+      !Number.isInteger(cap) ||
+      cap < 1 ||
+      cap > MAX_MANAGED_INGRESS_LOGIN_CONNECTIONS
     ) {
       throw new TypeError('Invalid managed.ingress.reconcile user maxConnections')
     }
-    user.maxConnections = value.maxConnections as number
+    user.maxConnections = cap
   }
-  return user
 }
 
 function parseManagedIngressAllowedSources(value: unknown): string[] {
@@ -7451,7 +7461,8 @@ function parseManagedIngressAllowedSources(value: unknown): string[] {
         entry.length === 0 ||
         entry.length > 45 ||
         !/^[0-9a-fA-F:.]+%?$/.test(entry) ||
-        (entry.endsWith('%') && !/[.:]/.test(entry))
+        (entry.endsWith('%') &&
+          (!/^[0-9a-fA-F]{1,4}[.:](?:[0-9a-fA-F:.]*[.:])?%$/.test(entry) || entry.includes('::')))
     )
   ) {
     throw new TypeError('Invalid managed.ingress.reconcile user allowedSources')

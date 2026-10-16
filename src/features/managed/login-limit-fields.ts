@@ -67,6 +67,38 @@ export function loginLimitsRequested(fields: LoginLimitFields): boolean {
   )
 }
 
+/** What the new limits add to a login's stored metadata (nothing for anywhere / no cap). */
+export function loginLimitMetadata(fields: LoginLimitFields): Record<string, unknown> {
+  return {
+    ...(fields.allowedSources ? { allowedSources: fields.allowedSources } : {}),
+    ...(fields.maxConnections ? { maxConnections: fields.maxConnections } : {}),
+  }
+}
+
+/** Parse the limit fields and refuse (400/409) what this server could not enforce. */
+export async function parseGatedLoginLimits(
+  c: Context,
+  db: Db,
+  organizationId: string,
+  body: Record<string, unknown>,
+  serverId: string
+): Promise<LoginLimitFields | Response> {
+  const fields = await parseLoginLimitFields(c, db, organizationId, body)
+  if (fields instanceof Response) return fields
+  return (await refuseLimitsIfUnsupported(c, db, fields, serverId)) ?? fields
+}
+
+/** Refuses (409) a requested limit when the server's daemon cannot enforce it; `null` when fine. */
+export async function refuseLimitsIfUnsupported(
+  c: Context,
+  db: Db,
+  fields: LoginLimitFields,
+  serverId: string
+): Promise<Response | null> {
+  if (!loginLimitsRequested(fields)) return null
+  return refuseIfDaemonCannotLimitLogins(c, db, serverId)
+}
+
 /** 409 when the server's daemon is too old to enforce limits; `null` when fine. */
 export async function refuseIfDaemonCannotLimitLogins(
   c: Context,

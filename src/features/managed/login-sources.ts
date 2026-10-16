@@ -148,9 +148,24 @@ function parseAddressEntry(raw: string): string | LoginSourcesError {
  * checks they belong to the organization.
  */
 export function parseLoginAllowedSources(raw: unknown): string[] | null | LoginSourcesError {
+  const list = normalizeSourceList(raw)
+  if (list === null || isLoginSourcesError(list)) return list
+  const out = new Set<string>()
+  for (const entry of list) {
+    const parsed = parseSourceEntry(entry)
+    if (typeof parsed !== 'string') return parsed
+    out.add(parsed)
+  }
+  return [...out]
+}
+
+const isLoginSourcesError = (value: unknown): value is LoginSourcesError =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+/** The trimmed, de-duplicated list; `null` for `any`/`null` (anywhere); or the refusal. */
+function normalizeSourceList(raw: unknown): string[] | null | LoginSourcesError {
   if (raw === null) return null
-  const isStrings = Array.isArray(raw) && raw.every((entry) => typeof entry === 'string')
-  if (!isStrings) {
+  if (!Array.isArray(raw) || !raw.every((entry) => typeof entry === 'string')) {
     return fail(
       'managed_login_sources_invalid',
       "allowedSources must be a list of places: 'any', 'internal', 'server:<id>' or 'address:<ip, prefix% or range>'."
@@ -169,35 +184,32 @@ export function parseLoginAllowedSources(raw: unknown): string[] | null | LoginS
       `A login can list at most ${MAX_LOGIN_SOURCE_ENTRIES} places. Use an address prefix such as 203.0.113.% to cover more.`
     )
   }
-  if (list.includes('any')) {
-    return list.length === 1
-      ? null
-      : fail(
-          'managed_login_sources_any_alone',
-          "'any' means everywhere, so it can't be combined with other places."
-        )
-  }
-  const out = new Set<string>()
-  for (const entry of list) {
-    if (entry === 'internal') {
-      out.add(entry)
-    } else if (entry.startsWith('server:')) {
-      if (!UUID_RE.test(entry.slice('server:'.length))) {
-        return fail('managed_login_source_invalid', `'${entry}' does not name a server.`)
-      }
-      out.add(`server:${entry.slice('server:'.length).toLowerCase()}`)
-    } else if (entry.startsWith('address:')) {
-      const parsed = parseAddressEntry(entry.slice('address:'.length))
-      if (typeof parsed !== 'string') return parsed
-      out.add(`address:${parsed}`)
-    } else {
-      return fail(
-        'managed_login_source_invalid',
-        `'${entry}' is not a place. Use 'any', 'internal', 'server:<id>' or 'address:<ip, prefix% or range>'.`
+  if (!list.includes('any')) return list
+  return list.length === 1
+    ? null
+    : fail(
+        'managed_login_sources_any_alone',
+        "'any' means everywhere, so it can't be combined with other places."
       )
-    }
+}
+
+/** One place in its stored form, or the refusal. */
+function parseSourceEntry(entry: string): string | LoginSourcesError {
+  if (entry === 'internal') return entry
+  if (entry.startsWith('server:')) {
+    const id = entry.slice('server:'.length)
+    return UUID_RE.test(id)
+      ? `server:${id.toLowerCase()}`
+      : fail('managed_login_source_invalid', `'${entry}' does not name a server.`)
   }
-  return [...out]
+  if (entry.startsWith('address:')) {
+    const parsed = parseAddressEntry(entry.slice('address:'.length))
+    return typeof parsed === 'string' ? `address:${parsed}` : parsed
+  }
+  return fail(
+    'managed_login_source_invalid',
+    `'${entry}' is not a place. Use 'any', 'internal', 'server:<id>' or 'address:<ip, prefix% or range>'.`
+  )
 }
 
 /** Validate a connection cap; `null` clears it. */
@@ -234,6 +246,12 @@ export function resolveLoginSourcesForWire(
   return { allowedSources: sorted, allowLocalSources }
 }
 
+function describePlace(place: string): string {
+  if (place === 'internal') return 'this server only (its own programs and containers)'
+  if (place.startsWith('server:')) return `server ${place.slice('server:'.length)}`
+  return place.slice('address:'.length)
+}
+
 /** Plain-words lines for a dry run. */
 export function describeLoginLimits(
   sources: readonly string[] | undefined,
@@ -243,13 +261,7 @@ export function describeLoginLimits(
   if (sources === undefined) {
     lines.push('Allow this login from anywhere (no source limit)')
   } else {
-    const places = sources.map((s) =>
-      s === 'internal'
-        ? 'this server only (its own programs and containers)'
-        : s.startsWith('server:')
-          ? `server ${s.slice('server:'.length)}`
-          : s.slice('address:'.length)
-    )
+    const places = sources.map(describePlace)
     lines.push(
       `Limit this login to: ${places.join(', ')}. The login still connects from anywhere, but the database proxy refuses every query from other addresses`
     )
