@@ -9,6 +9,7 @@ import {
   DEPLOY_CANCEL_FEATURE,
   INSTANCE_REVISION_HEADER,
   INSTANCE_VERSION_HEADER,
+  MANAGED_DATABASE_OWNER_FEATURE,
   MANAGED_HA_BOOT_HOLD_FEATURE,
   MANAGED_HA_INSTANCE_FEATURE,
   MANAGED_HEALTH_FEATURE,
@@ -219,6 +220,14 @@ test('managed-login-limits-v1 is an advertised wire feature and raised no floor'
   assertEquals(MANAGED_LOGIN_LIMITS_FEATURE, 'managed-login-limits-v1')
   assertEquals(
     (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_LOGIN_LIMITS_FEATURE),
+    true
+  )
+})
+
+test('managed-database-owner-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(MANAGED_DATABASE_OWNER_FEATURE, 'managed-database-owner-v1')
+  assertEquals(
+    (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_DATABASE_OWNER_FEATURE),
     true
   )
 })

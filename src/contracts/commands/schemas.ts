@@ -675,7 +675,9 @@ export function parsePrincipalsReconcileResult(value: unknown): PrincipalsReconc
     sshdReloaded: value.sshdReloaded,
     ...(value.principalsRetired === undefined
       ? {}
-      : { principalsRetired: parseStringArrayField(value.principalsRetired, 'principalsRetired') }),
+      : {
+          principalsRetired: parseStringArrayField(value.principalsRetired, 'principalsRetired'),
+        }),
     ...(principals === undefined ? {} : { principals }),
     warnings: parseStringArrayField(value.warnings, 'warnings'),
   }
@@ -5004,6 +5006,12 @@ export type ManagedApplyDatabaseOp = {
    * drop it removes the roles. Absent = today's behaviour.
    */
   ownerRole?: boolean
+  /**
+   * Postgres only, with `ownerRole` on a create. The applied username of the
+   * login the customer chose as the database's owner; the daemon moves the
+   * database onto it once the login exists. Needs `managed-database-owner-v1`.
+   */
+  ownerLogin?: string
 }
 
 /** Mirror of `ManagedTlsMaterialRequest` — daemon generates key material on host. */
@@ -6138,6 +6146,23 @@ function parseManagedApplyCredentials(value: unknown): ManagedApplyCredential[] 
   return value.map(parseManagedApplyCredentialEntry)
 }
 
+/** `ownerLogin` of a database op: a login name, only on a create with `ownerRole`. */
+function parseManagedDatabaseOwnerLogin(entry: Record<string, unknown>): string | undefined {
+  const value = entry.ownerLogin
+  if (value === undefined) return undefined
+  if (
+    typeof value !== 'string' ||
+    !isSafeIdentifier(value) ||
+    entry.ownerRole !== true ||
+    entry.action !== 'create'
+  ) {
+    throw new TypeError(
+      'Invalid managed.apply databases entry: ownerLogin must be a login name on a created database with ownerRole'
+    )
+  }
+  return value
+}
+
 function parseManagedApplyDatabases(value: unknown): ManagedApplyDatabaseOp[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
@@ -6160,10 +6185,12 @@ function parseManagedApplyDatabases(value: unknown): ManagedApplyDatabaseOp[] | 
     if (entry.ownerRole !== undefined && typeof entry.ownerRole !== 'boolean') {
       throw new TypeError('Invalid managed.apply databases entry: ownerRole must be true or false')
     }
+    const ownerLogin = parseManagedDatabaseOwnerLogin(entry)
     databases.push({
       name: entry.name,
       action: entry.action as ManagedApplyDatabaseOp['action'],
       ...(entry.ownerRole === true ? { ownerRole: true } : {}),
+      ...(ownerLogin === undefined ? {} : { ownerLogin }),
     })
   }
   return databases

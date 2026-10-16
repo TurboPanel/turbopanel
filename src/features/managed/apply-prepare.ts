@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm'
+import { MANAGED_OWNER_ROLE_FEATURE } from '../../lib/version-wire.ts'
 import { effectiveManagedImage } from './releases.ts'
 import type { Context } from 'hono'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
@@ -248,6 +249,8 @@ export type BuildManagedApplyInput = {
   databases: string[]
   /** Postgres: the subset of `databases` made with an owner role. */
   ownerRoleDatabases: string[] | undefined
+  /** Postgres: owner-role databases whose owner is a login the customer chose. */
+  databaseOwners?: Record<string, { username: string }>
   /** Postgres: dropped databases that had an owner role (their roles go too). */
   dropOwnerRoleDatabases?: string[]
   /** Primary pin — the server `ensureManagedPrimaryMember` binds the primary to. */
@@ -432,6 +435,13 @@ async function buildCredentials(
     return { kind: 'daemon_key_unavailable', serverId }
   }
 
+  // A daemon older than owner roles does not know the Database admin login
+  // (on any engine) and would ignore it, leaving a login with no rights. It gets the same login as a
+  // read/write login instead (the answer to the request says so), never a
+  // refusal and never more than read/write.
+  const daemonKnowsAdmin = (daemonState.projection?.features ?? []).includes(
+    MANAGED_OWNER_ROLE_FEATURE
+  )
   const credentials: ManagedApplyCommandPayload['credentials'] = []
   const failure = await firstSequential(rows, async (row) => {
     // The replication login is attached separately when multi-member.
@@ -458,7 +468,10 @@ async function buildCredentials(
       password: resealed,
     }
     const privileges = principalPrivileges(row.metadata)
-    if (privileges !== undefined) credential.privileges = privileges
+    if (privileges !== undefined) {
+      credential.privileges =
+        !daemonKnowsAdmin && privileges.includes('admin') ? ['read-write'] : privileges
+    }
     // Only a non-default mode goes on the wire, so payloads for logins made
     // before modes existed stay exactly as they were.
     const grantMode = loginGrantMode(row.metadata)
@@ -1269,7 +1282,7 @@ export function buildDatabaseOps(
     Partial<
       Pick<
         BuildManagedApplyInput,
-        'dropDatabases' | 'ownerRoleDatabases' | 'dropOwnerRoleDatabases'
+        'dropDatabases' | 'ownerRoleDatabases' | 'dropOwnerRoleDatabases' | 'databaseOwners'
       >
     >
 ): NonNullable<ManagedApplyCommandPayload['databases']> {
@@ -1278,6 +1291,9 @@ export function buildDatabaseOps(
       name,
       action: 'create' as const,
       ...(input.ownerRoleDatabases?.includes(name) ? { ownerRole: true } : {}),
+      ...(input.ownerRoleDatabases?.includes(name) && input.databaseOwners?.[name]
+        ? { ownerLogin: input.databaseOwners[name].username }
+        : {}),
     })),
     ...(input.dropDatabases ?? []).map((name) => ({
       name,
