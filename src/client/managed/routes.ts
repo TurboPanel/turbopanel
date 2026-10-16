@@ -41,10 +41,7 @@ import {
   resolveManagedOwningOrganizationIds,
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
-import {
-  loginPatchUndo,
-  storedStrings,
-} from '../../features/managed/login-patch.ts'
+import { loginPatchUndo, storedStrings } from '../../features/managed/login-patch.ts'
 import {
   describeDatabaseOwners,
   listLoginOnDatabase,
