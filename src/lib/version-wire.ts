@@ -186,6 +186,7 @@ export const DAEMON_WIRE_FEATURES = [
   'deno-native-apps-v1',
   'managed-ingress-ipv6-v1',
   'managed-login-limits-v1',
+  'managed-permissions-read-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -307,6 +308,14 @@ export const MANAGED_INGRESS_IPV6_FEATURE: DaemonWireFeature = 'managed-ingress-
  * so a limited login is left out of that server's payload instead.
  */
 export const MANAGED_LOGIN_LIMITS_FEATURE: DaemonWireFeature = 'managed-login-limits-v1'
+
+/**
+ * The daemon answers `managed-permissions-request` with
+ * `managed-permissions-result` (a login's current grants, read only). Without
+ * it the control plane never sends the message and answers 409
+ * `daemon_update_required` on the effective-permissions route.
+ */
+export const MANAGED_PERMISSIONS_READ_FEATURE: DaemonWireFeature = 'managed-permissions-read-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}

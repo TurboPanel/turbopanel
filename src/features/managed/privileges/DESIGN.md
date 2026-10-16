@@ -18,12 +18,10 @@ a recipe; "Manage permissions myself" stays available.
 | Engine ground truth for tests       | `fixtures/<engine>-<series>.json`, `scripts/capture-privilege-fixtures.mjs` |
 | `GET …/managed/privilege-catalogue` | `src/client/managed/privilege-routes.ts`                                    |
 
-The read side of a login's current permissions follows in the next change of this
-slice and is described in "Read side contract" below in the future tense: a raw
-report shape and parser (`observed.ts`), the join of report and catalogue
-(`effective.ts`), `GET …/users/:principalId/effective-permissions`
-(`permissions-probe.ts`), and the daemon read (`turbopaneld/src/managed/permissions-read.ts`,
-cell message, feature `managed-permissions-read-v1`).
+| Raw report shape and parser | `observed.ts` (twin of the daemon's `ManagedPermissionsObserved`) |
+| Join of report and catalogue | `effective.ts` |
+| `GET …/users/:principalId/effective-permissions` | `privilege-routes.ts`, `src/client/managed/permissions-probe.ts` |
+| Daemon read | `turbopaneld/src/managed/permissions-read.ts` (cell message, feature `managed-permissions-read-v1`) |
 
 ### Where the catalogue lives, and why
 
@@ -214,20 +212,19 @@ bounded report (50 logins, 2000 grants each, 128 KB). Advertised by feature
 `managed-permissions-read-v1`; a daemon without it gets 409
 `daemon_update_required`. New fields are optional on both sides.
 
-## Open questions for the owner
+## Owner answers (2026-10-16)
 
-1. Postgres `PUBLIC` privileges (CONNECT and TEMPORARY on databases, EXECUTE on
-   functions, USAGE on types) apply to everyone. Show them as read-only rows on
-   every login, or hide them?
-2. Cluster-wide predefined roles (`pg_read_all_data`, `pg_monitor`, …) are
-   marked `needs-admin`. Should a Database admin login be allowed to hand them
-   out, or should they stay off the panel entirely?
-3. Default privileges are keyed on the creating role. Should the grid show "who
-   will create the table" as a separate column, or hide it behind recipes only?
-4. MySQL and MariaDB wildcard databases (`shop\_%`) cannot be resolved against
-   the panel's database list. Refuse them in "custom" mode, or accept them as
-   read-only?
-5. Is "custom" a mode of its own, or does editing a cell always leave the login
-   in "manage myself"?
-6. Grants held through MySQL roles are listed as role memberships only. Is that
-   enough, or should effective permissions expand a role's grants?
+1. Postgres PUBLIC grants are shown as read-only rows labelled "everyone"
+   (`viaLabel: 'everyone'` on the grant).
+2. A Database admin login cannot hand out cluster-wide predefined roles
+   (`pg_read_all_data`, `pg_monitor`, …) in v1; they stay `needs-admin` and
+   nothing offers them.
+3. The default-privilege creator ("who will create the table") is hidden behind
+   recipes and shown only on the advanced grid.
+4. MySQL and MariaDB wildcard databases (`shop\_%`) are shown, but the grid only
+   edits exact names; hand-made wildcard grants are left alone.
+5. "Custom" is not a mode. Editing any cell means "I manage permissions myself"
+   (with the takeover confirmation used today).
+6. MySQL and MariaDB role grants show role names only; a role's own grants are
+   not expanded (`effective.ts` drops grants that arrive `via` a role on those
+   engines and keeps the membership row).
