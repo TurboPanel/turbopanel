@@ -63,6 +63,8 @@ test('login metadata readers default to today behaviour', () => {
   assertEquals(loginIsTool(null), false)
   assertEquals(loginOrigin({ origin: 'panel' }), 'panel')
   assertEquals(loginOrigin({ origin: '' }), null)
+})
+
 test('managedProtocolFamilyEngines: mysql and mariadb share a family, postgres is apart', () => {
   assertEquals(managedProtocolFamilyEngines('mysql'), ['mysql', 'mariadb'])
   assertEquals(managedProtocolFamilyEngines('mariadb'), ['mysql', 'mariadb'])
