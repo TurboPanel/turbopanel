@@ -623,6 +623,23 @@ export const managedSchemas = {
       },
       databases: { type: 'array', items: { type: 'string' } },
       privileges: { type: 'array', items: { type: 'string' } },
+      connectionRole: {
+        type: 'string',
+        enum: ['read-write', 'read-only'],
+        description:
+          'Where the login is routed: `read-write` to the primary, `read-only` to read replicas (or the primary when the cluster has none).',
+      },
+      grantMode: {
+        type: 'string',
+        enum: ['preset', 'recipe', 'self'],
+        description:
+          "Who sets the login's permissions. `preset` = logins made before modes existed (the panel resets permissions on every apply, as before). `recipe` = the panel sets them. `self` = you set them by hand and the panel never resets them; it still owns the password, LOGIN, connection limit and CONNECT on the listed databases.",
+      },
+      tool: {
+        type: 'boolean',
+        description:
+          'A database-tool login: everything goes to the primary, never split between reader and writer.',
+      },
       createdAt: { type: 'string', format: 'date-time' },
     },
   },
@@ -656,6 +673,21 @@ export const managedSchemas = {
         items: { type: 'string', enum: ['owner', 'read-write', 'read-only'] },
         description:
           'What the login may do in each listed database. Omitted = `read-only` for a `read-only` connectionRole, otherwise `read-write`. An empty list or an unknown name answers 400 `managed_user_privileges_invalid`, because a login with no grants can connect but is refused everywhere.',
+      },
+      connectionRole: {
+        type: 'string',
+        enum: ['read-write', 'read-only'],
+        description: 'Default `read-write`.',
+      },
+      grantMode: {
+        type: 'string',
+        enum: ['recipe', 'self'],
+        description:
+          'Default `recipe` (the panel sets permissions). `self` = you set permissions yourself and the panel never resets them. Anything else answers 400 `managed_grant_mode_invalid`.',
+      },
+      tool: {
+        type: 'boolean',
+        description: 'Mark the login as used by a database tool: routed to the primary only.',
       },
       nameScheme: {
         type: 'string',
@@ -1594,6 +1626,60 @@ export const managedPaths = {
     },
   },
   '/api/client/v1/environments/{id}/managed/users/{principalId}': {
+    patch: {
+      tags: ['Managed services'],
+      summary: 'Change a login (grant mode, databases, connection role, privileges, tool flag)',
+      description:
+        'Every field is optional. `dryRun: true` changes nothing and returns `statements`, a plain-words list of the kinds of SQL the next apply would run. Refusals: 422 `managed_login_not_editable` (root/replication logins), 422 `managed_grant_mode_invalid_transition` (back to `preset`), 409 `managed_grant_reset_needs_confirm` (self back to panel-set permissions, or a read-only Postgres login moving to self, needs `confirmReset: true`), 422 `managed_self_login_has_no_privileges`, 400 `managed_grant_mode_invalid`.',
+      parameters: [ENV_ID_PARAM, PRINCIPAL_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                grantMode: { type: 'string', enum: ['recipe', 'self'] },
+                tool: { type: 'boolean' },
+                databases: { type: 'array', items: { type: 'string' } },
+                connectionRole: { type: 'string', enum: ['read-write', 'read-only'] },
+                privileges: {
+                  type: 'array',
+                  items: { type: 'string', enum: ['owner', 'read-write', 'read-only'] },
+                },
+                confirmReset: { type: 'boolean' },
+                dryRun: { type: 'boolean' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Dry-run preview, or the login updated and an apply enqueued',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok'],
+                properties: {
+                  ok: { type: 'boolean' },
+                  dryRun: { type: 'boolean', description: 'Present and true for a preview.' },
+                  grantMode: { type: 'string', enum: ['preset', 'recipe', 'self'] },
+                  statements: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Dry run only: plain-words kinds of SQL the next apply runs.',
+                  },
+                  user: { type: 'object', nullable: true, description: 'The updated login.' },
+                  commandId: { type: 'string', description: 'The queued apply command.' },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
     delete: {
       tags: ['Managed services'],
       summary: 'Delete managed user and enqueue apply with dropUsers',

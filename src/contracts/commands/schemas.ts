@@ -4985,6 +4985,11 @@ export type ManagedApplyCredential = {
   role: 'root' | 'user' | 'replication'
   databases: string[]
   privileges?: string[]
+  /**
+   * How apply treats this login's permissions. Absent = `preset` (today's
+   * behaviour); only sent for `recipe` or `self`.
+   */
+  grantMode?: 'preset' | 'recipe' | 'self'
   /** Daemon-recipient sealed password (`tpdaemon.…`). */
   password: string
 }
@@ -6090,6 +6095,16 @@ function parseManagedApplyCredentialEntry(entry: unknown): ManagedApplyCredentia
   }
   const privileges = parseManagedApplyCredentialPrivileges(entry.privileges)
   if (privileges !== undefined) credential.privileges = privileges
+  if (entry.grantMode !== undefined) {
+    if (
+      entry.grantMode !== 'preset' &&
+      entry.grantMode !== 'recipe' &&
+      entry.grantMode !== 'self'
+    ) {
+      throw new Error('Invalid managed.apply credentials grantMode')
+    }
+    credential.grantMode = entry.grantMode
+  }
   return credential
 }
 
