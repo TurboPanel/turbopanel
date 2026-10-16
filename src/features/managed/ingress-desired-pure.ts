@@ -15,6 +15,7 @@ import {
   type ManagedIngressPorts,
 } from './ingress-ports.ts'
 import { type ManagedSslMode, managedSslRequiresTls, resolveManagedSslMode } from './ssl.ts'
+import { describeManagedImage, effectiveManagedImage } from './releases.ts'
 
 export {
   DEFAULT_MANAGED_INGRESS_PORTS,
@@ -63,6 +64,20 @@ export function protocolListenerForEngine(
     protocolPort: managedIngressPortForEngine(engine, defaultPort, ports),
     family: managedIngressFamilyForEngine(engine, defaultPort),
   }
+}
+
+/**
+ * Wire `engineVersion` for a cluster: the release series its image runs
+ * (`18`, `9.7`, `11.8`). ProxySQL reports it to clients as the server version
+ * (it would otherwise say PostgreSQL 16.1 / MySQL 8.0.11 whatever the engine).
+ * The series is all the image tag pins, so no patch level. `undefined` for an
+ * image outside the release catalog; the daemon then leaves the version as is.
+ */
+export function ingressEngineVersion(
+  spec: { defaultImage: string; legacyDefaultImage?: string },
+  image: string | undefined
+): string | undefined {
+  return describeManagedImage(effectiveManagedImage(spec, image))?.series
 }
 
 export function isManagedRootPrincipal(metadata: unknown): boolean {

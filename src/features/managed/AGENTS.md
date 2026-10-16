@@ -305,7 +305,20 @@ stays internal.
   fails and takes the listener down, which is why only what the daemon read
   from the kernel counts; an older daemon never receives `::`. The firewall (`features/firewall/`, preview
   only so far) and the network rules decide who can reach it. Every cluster on
-  the server is reachable that way, by design.
+  the server is reachable that way, by design. With `::` the daemon also gives
+  ProxySQL its own IPv6-only Docker network and an IPv6 listener, so IPv6
+  clients reach it with their real address (and through `DOCKER-USER`, like
+  IPv4); loopback clients still show the managed network's gateway. Details:
+  `../turbopaneld/src/managed/AGENTS.md` → **Real client addresses**.
+
+Each `managed.ingress.reconcile` cluster also carries `engineVersion`, the
+release series of its image (`ingressEngineVersion`: `18`, `9.7`, `11.8`;
+absent for an image outside the catalog). The daemon sets ProxySQL's
+`mysql-server_version` / `pgsql-server_version` from it, so clients see the
+real engine instead of ProxySQL's defaults (PostgreSQL 16.1, MySQL 8.0.11).
+One listener per family is shared by every cluster on the server: it reports
+the newest series, MySQL before MariaDB on the MySQL-family listener, MariaDB
+as `<series>-MariaDB` (daemon `managed/proxysql-server-version.ts`).
 
 `decideIngressBindAddresses` in `ingress-desired-pure.ts` turns the setting into
 the `bindAddresses` sent in `managed.ingress.reconcile` (a server with no

@@ -95,6 +95,7 @@ import {
   collectProxySqlListenerSans,
   decideIngressBindAddresses,
   hostgroupsForClusterIndex,
+  ingressEngineVersion,
   isAtRestSealedPassword,
   mergeHierarchyContainerSan,
   principalConnectionRole,
@@ -422,9 +423,11 @@ function buildIngressClusterFromLoaded(
     orgDefaults.listenerPorts
   )
 
+  const engineVersion = ingressEngineVersion(spec, settings.image)
   const cluster: ManagedIngressReconcileCluster = {
     managedId,
     engine: engineCode,
+    ...(engineVersion === undefined ? {} : { engineVersion }),
     protocolPort: listener.protocolPort,
     // Explicit: once ports are org-configurable the daemon can no longer infer
     // the protocol module from the port number.

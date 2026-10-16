@@ -5361,6 +5361,12 @@ export type ManagedIngressReconcileCluster = {
   managedId: string
   engine: ManagedEngineCode
   /**
+   * Engine release series (`18`, `9.7`, `11.8`) from the cluster's image.
+   * ProxySQL reports it to clients as the server version; an older daemon
+   * ignores it. Absent for an image outside the release catalog.
+   */
+  engineVersion?: string
+  /**
    * Organization-resolved client listener port. Platform defaults are
    * 15432 / 13306; legacy 5432/3306 stay accepted for daemon skew.
    */
@@ -7391,9 +7397,13 @@ function parseManagedIngressReconcileCluster(value: unknown): ManagedIngressReco
   if (value.requireTls !== undefined && typeof value.requireTls !== 'boolean') {
     throw new TypeError('Invalid managed.ingress.reconcile cluster requireTls')
   }
+  if (value.engineVersion !== undefined && !isManagedIngressEngineVersion(value.engineVersion)) {
+    throw new TypeError('Invalid managed.ingress.reconcile cluster engineVersion')
+  }
   const cluster: ManagedIngressReconcileCluster = {
     managedId: value.managedId,
     engine: value.engine,
+    ...(value.engineVersion === undefined ? {} : { engineVersion: value.engineVersion }),
     protocolPort: value.protocolPort,
     family: value.family,
     writerHostgroup: value.writerHostgroup,
@@ -7406,6 +7416,13 @@ function parseManagedIngressReconcileCluster(value: unknown): ManagedIngressReco
   }
   if (value.requireTls !== undefined) cluster.requireTls = value.requireTls
   return cluster
+}
+
+/** Must stay in sync with the daemon's `isProxySqlEngineVersion`. */
+const MANAGED_INGRESS_ENGINE_VERSION_RE = /^\d{1,4}(?:\.\d{1,4}){0,2}$/
+
+function isManagedIngressEngineVersion(value: unknown): value is string {
+  return isString(value) && MANAGED_INGRESS_ENGINE_VERSION_RE.test(value)
 }
 
 function isManagedIngressFamily(value: unknown): value is ManagedIngressFamily {

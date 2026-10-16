@@ -15,6 +15,7 @@ import {
   collectProxySqlListenerSans,
   decideIngressBindAddresses,
   hostgroupsForClusterIndex,
+  ingressEngineVersion,
   isAtRestSealedPassword,
   isIngressRecord,
   isManagedReplicationPrincipal,
@@ -53,6 +54,24 @@ test('hostgroupsForClusterIndex pairs writer/reader and rejects bad indices', ()
   })
   assertThrows(() => hostgroupsForClusterIndex(-1), TypeError)
   assertThrows(() => hostgroupsForClusterIndex(1.5), TypeError)
+})
+
+test('ingressEngineVersion sends the release series of the image the cluster runs', () => {
+  const spec = { defaultImage: 'docker.io/library/postgres:18-alpine' }
+  assertEquals(ingressEngineVersion(spec, 'docker.io/library/postgres:17'), '17')
+  assertEquals(ingressEngineVersion(spec, 'docker.io/library/mysql:9.7-oraclelinux9'), '9.7')
+  assertEquals(ingressEngineVersion(spec, 'docker.io/library/mariadb:11.8-ubi'), '11.8')
+  // No stored image: the spec's legacy default, else its default.
+  assertEquals(ingressEngineVersion(spec, undefined), '18')
+  assertEquals(
+    ingressEngineVersion(
+      { ...spec, legacyDefaultImage: 'docker.io/library/postgres:16-alpine' },
+      undefined
+    ),
+    '16'
+  )
+  // An image outside the catalog sends nothing.
+  assertEquals(ingressEngineVersion(spec, 'registry.example/postgres:custom'), undefined)
 })
 
 test('protocolListenerForEngine returns the platform default port and family', () => {
