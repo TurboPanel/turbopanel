@@ -1080,7 +1080,7 @@ export const managedSchemas = {
       ownerRole: {
         type: 'boolean',
         description:
-          'Postgres only. Make the database with an owner role: three roles that cannot log in (`tp_<name>_owner`, `_rw`, `_ro`), with the database owned by the owner role. Default true on Postgres (when the name is at most 54 characters), false elsewhere. 400 `managed_owner_role_unsupported` (MySQL, MariaDB) or `managed_owner_role_name_too_long`. Databases made before this keep their owner; nothing converts them.',
+          'Postgres only. Make the database with an owner role: three roles that cannot log in (`tp_<name>_owner`, `_rw`, `_ro`), with the database owned by the owner role. Default true on Postgres when the name is at most 54 characters and the daemon of the server lists `managed-owner-role-v1` (false otherwise, and false on other engines). 409 `managed_owner_role_needs_daemon_update` when true is asked for and the daemon is too old. 400 `managed_owner_role_unsupported` (MySQL, MariaDB) or `managed_owner_role_name_too_long`. Databases made before this keep their owner; nothing converts them.',
       },
     },
   },

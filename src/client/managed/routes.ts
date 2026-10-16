@@ -2443,6 +2443,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       )
     }
 
+    // Validate the request first; the daemon check needs the server.
+    const requestedOwnerRole = resolveDatabaseOwnerRole(ctx.spec.engine, name, body.ownerRole)
+    if (!requestedOwnerRole.ok) {
+      return c.json(
+        { error: requestedOwnerRole.error, message: requestedOwnerRole.message },
+        requestedOwnerRole.status
+      )
+    }
+
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 

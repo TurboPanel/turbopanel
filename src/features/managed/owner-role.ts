@@ -47,7 +47,7 @@ export function evaluateDatabaseAdminGrant(
         error: 'managed_admin_needs_owner_role',
         message: `A Database admin login works through a database's owner role, and these databases do not have one: ${missing.join(
           ', '
-        )}. Databases made before owner roles existed keep their current owner; create a new database to use a Database admin login.`,
+        )}. Databases made before owner roles existed keep their current owner; create a new database to use a Database admin login (the server's TurboPanel daemon must be up to date, or the new database is made without an owner role).`,
       }
     }
   }
@@ -110,7 +110,7 @@ export function resolveDatabaseOwnerRole(
 export const OWNER_ROLE_NEEDS_DAEMON_ERROR = 'managed_owner_role_needs_daemon_update'
 
 const OWNER_ROLE_NEEDS_DAEMON_MESSAGE =
-  "This server's TurboPanel daemon is too old to give a database an owner role or to run a Database admin login. Update the server, then try again."
+  "This server's TurboPanel daemon is too old to give a database an owner role or to set up a Database admin login. Update the server, then try again."
 
 function ownerRoleNeedsDaemonUpdate(): OwnerRoleValidationError {
   return {
