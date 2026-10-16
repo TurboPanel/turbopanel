@@ -325,6 +325,21 @@ the newest series, MySQL before MariaDB on the MySQL-family listener, MariaDB
 as `<series>-MariaDB`, padded with zeros because drivers parse it (`9.7.0`,
 `11.8.0-MariaDB`, `18.0`; daemon `managed/proxysql-server-version.ts`).
 
+**Root login is local-only.** Each cluster's root login (`role: 'root'` in the
+`managed.ingress.reconcile` user list) carries `allowedSources`: every address
+of the server owner's organization's servers (`root-login-sources.ts`: daemon
+reported interface addresses minus loopback, link-local and Docker bridges, plus
+stored `ip` rows and TurboFabric mesh addresses), sent even when empty. The
+daemon refuses the root login's queries from anywhere that is not in that list,
+loopback, or a Docker network the ProxySQL container is on (`proxysql-root-guard.ts`
+there). The login still authenticates; the block lands on the first query.
+`allowedSources` absent (a control plane or daemon that predates it) means no
+limit, as before, so version skew in either direction never breaks the login.
+Because the daemon allows the Docker network gateway (where `docker-proxy` shows
+loopback and hairpin callers), anything arriving as the gateway is allowed. The
+list is read on each reconcile; a server added to the organization reaches the
+other servers' root allow-list at their next ingress reconcile.
+
 `decideIngressBindAddresses` in `ingress-desired-pure.ts` turns the setting into
 the `bindAddresses` sent in `managed.ingress.reconcile` (a server with no
 cluster to front still takes the `not_needed` / teardown path). The wire
