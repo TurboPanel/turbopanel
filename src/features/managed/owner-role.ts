@@ -153,6 +153,16 @@ function panelWritesReadWrite(state: ReadWriteGrantState): boolean {
 }
 
 /**
+ * Whether `after` asks an older daemon for something new: the level on a login
+ * that did not hold it as panel-set, or a database the login did not reach.
+ */
+function addsReadWriteReach(before: ReadWriteGrantState, after: ReadWriteGrantState): boolean {
+  if (!panelWritesReadWrite(before)) return true
+  const had = new Set(before.databases ?? [])
+  return (after.databases ?? []).some((name) => !had.has(name))
+}
+
+/**
  * The refusal for giving a MySQL or MariaDB login the read/write level (new,
  * or newly panel-managed) on a primary whose daemon lacks
  * `managed-data-only-readwrite-v1`, or `null` when fine. An older daemon would
@@ -168,12 +178,7 @@ export function refuseReadWriteOnOldDaemon(
 ): OwnerRoleValidationError | null {
   if (engine !== 'mysql' && engine !== 'mariadb') return null
   if (daemonGivesDataOnlyReadWrite || !panelWritesReadWrite(after)) return null
-  if (before && panelWritesReadWrite(before)) {
-    // The level is not new, but a database it did not reach before would get
-    // the wide grant from an older daemon.
-    const had = new Set(before.databases ?? [])
-    if ((after.databases ?? []).every((name) => had.has(name))) return null
-  }
+  if (before && !addsReadWriteReach(before, after)) return null
   return {
     ok: false,
     error: READWRITE_NEEDS_DAEMON_ERROR,
