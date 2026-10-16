@@ -37,8 +37,8 @@ import {
 import { LOOPBACK_BIND } from './access-address.ts'
 import { loadServerClientAddresses } from '../net/client-addresses.ts'
 import {
-  type ClientAddressScope,
   clientAddressNeeded,
+  type ClientAddressScope,
   clientEndpointsForListener,
 } from '../net/client-addresses-pure.ts'
 import { loadManagedExternalAccess } from './external-access.ts'
@@ -49,7 +49,14 @@ import { isMysqlFamilyEngine, MAX_REPLAY_DELTA_BYTES, parsePgLsn } from './ha-fr
 import { loadManagedStatusError } from './last-error.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import { type ManagedResidualMetadata, serializeManagedRow } from './serialize.ts'
-import { type DatabaseLoginRole, loginRoleFromMetadata, type ManagedLoginRow } from './logins.ts'
+import { type LoginPatchInput } from './login-patch.ts'
+import {
+  type DatabaseLoginRole,
+  loginGrantMode,
+  loginIsTool,
+  loginRoleFromMetadata,
+  type ManagedLoginRow,
+} from './logins.ts'
 
 export { evaluateManagedPromoteLagGate }
 
@@ -141,10 +148,17 @@ export async function resolveManagedAccess(
       )
     : []
   const endpoints: ManagedAccessEndpoint[] = [
-    ...external.map((endpoint) => ({ reach: 'external' as const, ...endpoint })),
+    ...external.map((endpoint) => ({
+      reach: 'external' as const,
+      ...endpoint,
+    })),
     { reach: 'local', host: LOOPBACK_BIND, port },
   ]
-  return { externalAccess, endpoints, addressNeeded: clientAddressNeeded(externalAccess, external) }
+  return {
+    externalAccess,
+    endpoints,
+    addressNeeded: clientAddressNeeded(externalAccess, external),
+  }
 }
 
 export async function resolveManagedAccessEndpoints(
@@ -511,6 +525,8 @@ export function serializeManagedUser(row: {
     privileges,
     connectionRole:
       meta.connectionRole === 'read-only' ? ('read-only' as const) : ('read-write' as const),
+    grantMode: loginGrantMode(row.metadata),
+    tool: loginIsTool(row.metadata),
     createdAt: row.createdAt,
   }
 }
@@ -692,6 +708,101 @@ export function evaluateExistingPrincipalLoginName(
     }
   }
   return null
+}
+
+/**
+ * Grant mode and tool flag for a new login. A new login defaults to
+ * `recipe`; `preset` is not accepted for new logins. Plain-words 400 otherwise.
+ */
+export function parseManagedLoginModeFields(
+  c: Context,
+  body: Record<string, unknown>
+): { grantMode: 'recipe' | 'self'; tool: boolean } | Response {
+  const mode = body.grantMode ?? 'recipe'
+  if (mode !== 'recipe' && mode !== 'self') {
+    return c.json(
+      {
+        error: 'managed_grant_mode_invalid',
+        message:
+          "grantMode must be 'recipe' (the panel sets permissions) or 'self' (you set them).",
+      },
+      400
+    )
+  }
+  if (body.tool !== undefined && typeof body.tool !== 'boolean') {
+    return c.json(
+      {
+        error: 'Invalid request',
+        message: 'tool must be true or false.',
+      },
+      400
+    )
+  }
+  return { grantMode: mode, tool: body.tool === true }
+}
+
+/** Fields of a PATCH on a login; everything is optional, validated on its own. */
+export function parseManagedLoginPatchFields(
+  c: Context,
+  ctx: ManagedContext,
+  body: Record<string, unknown>,
+  options: ManagedRowOptions
+): (LoginPatchInput & { dryRun: boolean }) | Response {
+  const input: LoginPatchInput & { dryRun: boolean } = {
+    dryRun: body.dryRun === true,
+    grantMode: body.grantMode,
+    tool: body.tool,
+    confirmReset: body.confirmReset,
+  }
+  if (body.dryRun !== undefined && typeof body.dryRun !== 'boolean') {
+    return c.json(
+      {
+        error: 'Invalid request',
+        message: 'dryRun must be true or false.',
+      },
+      400
+    )
+  }
+  if (body.databases !== undefined) {
+    const list = body.databases
+    if (
+      !Array.isArray(list) ||
+      list.length === 0 ||
+      !list.every((name) => typeof name === 'string' && options.databases.includes(name))
+    ) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    if (list.some((name) => isReservedDatabaseName(ctx.spec.engine, name))) {
+      return c.json({ error: 'reserved_database_name' }, 400)
+    }
+    input.databases = [...new Set(list as string[])]
+  }
+  if (body.connectionRole !== undefined) {
+    if (body.connectionRole !== 'read-write' && body.connectionRole !== 'read-only') {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    input.connectionRole = body.connectionRole
+  }
+  if (body.privileges !== undefined) {
+    const privileges = resolveManagedUserPrivileges(
+      body.privileges,
+      ctx.spec.userOperations.privileges,
+      input.connectionRole ?? 'read-write'
+    )
+    if (privileges === null) {
+      return c.json(
+        {
+          error: MANAGED_USER_PRIVILEGES_INVALID_ERROR,
+          message: `privileges must list at least one of: ${ctx.spec.userOperations.privileges.join(
+            ', '
+          )}.`,
+        },
+        400
+      )
+    }
+    input.privileges = privileges
+  }
+  return input
 }
 
 /** `privileges` was present but empty, unknown, or not a list of names. */

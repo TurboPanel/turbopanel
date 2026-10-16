@@ -348,8 +348,9 @@ Out of scope (future hardening idea): per-login host restrictions via the admin 
 ## Client routing (connection role, not regex)
 
 `ManagedConnectionRole` (`read-write` | `read-only`, canonical in
-`../commands/schemas.ts`) is chosen per **managed login** at create time and
-persisted on `principal.metadata.connectionRole`. It decides that login's
+`../commands/schemas.ts`) is chosen per **managed login** at create time (and changed with
+`PATCH /managed/users/:principalId`) and persisted on `login.metadata.connectionRole`
+(an absent key is `read-write`). It decides that login's
 ProxySQL `default_hostgroup`, so a read-only credential reaches replicas without
 rewriting any application's consistency semantics:
 
@@ -368,6 +369,19 @@ a blanket `^SELECT` query rule, and it applies to `read-write` logins only
 (`read-only` logins already default to the reader hostgroup). Leave it off
 unless an operator asks: a regex read-split silently breaks read-after-write and
 locking reads. `readEligible` alone must never turn it on.
+
+## Login grant mode (`login.metadata`)
+
+`login.metadata` carries `grantMode` (`preset` when absent: today's behaviour;
+`recipe`: new logins' default; `self`: the owner manages permissions by hand),
+`tool` (database-tool login: everything to the primary) and `origin`. Typed
+readers: `loginGrantMode`, `loginIsTool`, `loginOrigin` in `logins.ts`. The
+apply credential carries `grantMode` only when it is not `preset`, so payloads
+for old logins are unchanged. For `self` the daemon skips every grant reset
+and keeps password, LOGIN, NOSUPERUSER, connection limit and CONNECT on the
+listed databases. `PATCH /managed/users/:principalId` (`login-patch.ts`) plans
+the change; `dryRun` returns plain-words statement kinds because the SQL is
+built by the daemon. No migration: new jsonb keys only.
 
 ## Client TLS (SSL mode)
 

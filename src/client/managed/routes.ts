@@ -39,6 +39,7 @@ import {
   resolveManagedOwningOrganizationIds,
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
+import { planLoginPatch } from '../../features/managed/login-patch.ts'
 import {
   createLoginForPrincipal,
   findManagedLogin,
@@ -46,6 +47,8 @@ import {
   isManagedLoginNameTaken,
   legacyPrincipalIdOf,
   listManagedLogins,
+  loginGrantMode,
+  patchLoginMetadata,
   type ManagedLoginRow,
   removeManagedLogin,
   restoreManagedLogin,
@@ -184,6 +187,8 @@ import {
   isPlainObject,
   listUsersReferencingDatabase,
   parseManagedLoginGrantFields,
+  parseManagedLoginModeFields,
+  parseManagedLoginPatchFields,
   serializeManagedLogin,
   loadManagedStatusSnapshot,
   managedSessionPaths,
@@ -1938,6 +1943,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const request = await parseManagedLoginCreateRequest(c, db, ctx, body, options, residual)
     if (request instanceof Response) return request
     const { databases, privileges, connectionRole } = request.grants
+    const modeFields = parseManagedLoginModeFields(c, body)
+    if (modeFields instanceof Response) return modeFields
+    const { grantMode, tool } = modeFields
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
@@ -1967,6 +1975,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       privileges,
       // Stored only for read-only: an absent key is the read-write default.
       ...(connectionRole === 'read-only' ? { connectionRole } : {}),
+      grantMode,
+      ...(tool ? { tool } : {}),
+      origin: 'panel',
     }
     const userCreate = await db.transaction(async (tx) => {
       const existingLogins = await listManagedLogins(tx, row.id)
@@ -2038,9 +2049,79 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         databases,
         privileges,
         connectionRole,
+        grantMode,
+        tool,
         createdAt: createdLogin?.createdAt ?? new Date().toISOString(),
       },
       password,
+      commandId: primaryResult?.commandId,
+      serverId: primaryResult?.serverId ?? targetServerId,
+      results: enqueued,
+    })
+  })
+
+  router.patch('/environments/:id/managed/users/:principalId', async (c) => {
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    const { db, auth, ctx, row } = scope
+
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    const options = parseManagedRowOptions(ctx.spec, row.options)
+    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+
+    const target = await findManagedLogin(db, row.id, c.req.param('principalId'))
+    if (!target) return c.json({ error: 'Not found' }, 404)
+
+    const fields = parseManagedLoginPatchFields(c, ctx, body, options)
+    if (fields instanceof Response) return fields
+    const { dryRun, ...input } = fields
+    const plan = planLoginPatch(ctx.spec.engine, target, input)
+    if (!plan.ok) return c.json({ error: plan.error, message: plan.message }, plan.status)
+
+    if (dryRun) {
+      // The daemon builds the SQL, so the preview lists the kinds of statement.
+      return c.json({
+        ok: true,
+        dryRun: true,
+        grantMode: plan.grantMode,
+        statements: plan.summary,
+      })
+    }
+
+    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
+    if (targetServerId instanceof Response) return targetServerId
+    const previous = target.metadata
+    await patchLoginMetadata(db, target.id, plan.metadata)
+    const restore = async () => {
+      await patchLoginMetadata(db, target.id, {
+        grantMode: loginGrantMode(previous) === 'preset' ? undefined : loginGrantMode(previous),
+        tool: (previous as Record<string, unknown> | null)?.tool,
+        databases: (previous as Record<string, unknown> | null)?.databases,
+        privileges: (previous as Record<string, unknown> | null)?.privileges,
+        connectionRole: (previous as Record<string, unknown> | null)?.connectionRole,
+      })
+    }
+
+    const prepared = await prepareApplyForManaged(c, db, ctx, row, options, targetServerId)
+    if (prepared instanceof Response) {
+      await restore()
+      return prepared
+    }
+    const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
+      userId: auth.userId,
+      managedId: row.id,
+      members: prepared.members,
+    })
+    if (enqueued instanceof Response) {
+      await restore()
+      return enqueued
+    }
+    const updated = await findManagedLogin(db, row.id, target.id)
+    const primaryResult = pickPrimaryCommandResult(enqueued)
+    return c.json({
+      ok: true,
+      user: updated ? serializeManagedLogin(updated) : null,
       commandId: primaryResult?.commandId,
       serverId: primaryResult?.serverId ?? targetServerId,
       results: enqueued,

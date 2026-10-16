@@ -2,6 +2,9 @@ import { assertEquals } from '@std/assert'
 import {
   DATABASE_LOGIN_ROLES,
   legacyPrincipalIdOf,
+  loginGrantMode,
+  loginIsTool,
+  loginOrigin,
   loginRoleFromMetadata,
   withoutPassword,
 } from './logins.ts'
@@ -44,4 +47,17 @@ test('withoutPassword drops the credential and keeps every other field', () => {
   const { password: _password, ...rest } = row
   assertEquals(withoutPassword(row), rest)
   assertEquals('password' in withoutPassword(row), false)
+})
+
+test('login metadata readers default to today behaviour', () => {
+  assertEquals(loginGrantMode(undefined), 'preset')
+  assertEquals(loginGrantMode({}), 'preset')
+  assertEquals(loginGrantMode({ grantMode: 'bogus' }), 'preset')
+  assertEquals(loginGrantMode({ grantMode: 'self' }), 'self')
+  assertEquals(loginGrantMode({ grantMode: 'recipe' }), 'recipe')
+  assertEquals(loginIsTool({ tool: true }), true)
+  assertEquals(loginIsTool({ tool: 'yes' }), false)
+  assertEquals(loginIsTool(null), false)
+  assertEquals(loginOrigin({ origin: 'panel' }), 'panel')
+  assertEquals(loginOrigin({ origin: '' }), null)
 })

@@ -36,8 +36,8 @@ import type { ManagedSettings } from './settings.ts'
 import {
   isPrivateEndpointError,
   type PrivateEndpointError,
-  type PrivateEndpointPurpose,
   privateEndpointErrorResponse,
+  type PrivateEndpointPurpose,
   resolvePrivateEndpoint,
   resolvePrivateEndpoints,
 } from '../net/private-endpoint.ts'
@@ -58,16 +58,17 @@ import {
   findManagedLoginByRole,
   legacyPrincipalIdOf,
   listManagedLoginCredentials,
+  loginGrantMode,
   type ManagedLoginCredentialRow,
   setLoginPassword,
 } from './logins.ts'
 import { loadPrincipalNamePolicy } from './load-org-defaults.ts'
 import { generatePassword } from '../../lib/secrets/generate-secret.ts'
 import {
+  isOrganizationCaUniqueViolation,
   loadOrganizationCaSet,
   nextOrganizationCaGeneration,
   type OrganizationCaSet,
-  isOrganizationCaUniqueViolation,
 } from '../tls/organization-ca.ts'
 import {
   organizationCaLeafNotAfterIso,
@@ -454,6 +455,10 @@ async function buildCredentials(
     }
     const privileges = principalPrivileges(row.metadata)
     if (privileges !== undefined) credential.privileges = privileges
+    // Only a non-default mode goes on the wire, so payloads for logins made
+    // before modes existed stay exactly as they were.
+    const grantMode = loginGrantMode(row.metadata)
+    if (grantMode !== 'preset') credential.grantMode = grantMode
     credentials.push(credential)
     return undefined
   })
@@ -597,7 +602,10 @@ async function buildOrgTlsMaterialForServer(
     ipAddresses?: readonly string[]
   }
 ): Promise<
-  | { material: ManagedApplyOrgTlsMaterial; pendingTlsLeaf: UpsertTlsLeafTrackingParams }
+  | {
+      material: ManagedApplyOrgTlsMaterial
+      pendingTlsLeaf: UpsertTlsLeafTrackingParams
+    }
   | ManagedApplyPrepareError
 > {
   const {
@@ -777,7 +785,9 @@ export async function resolveMemberPrivateBindAddress(
   const consumerDialers = extraFromServerIds.filter(
     (id) => id !== member.serverId && !memberServerIds.has(id)
   )
-  if (remotePeers.length === 0 && consumerDialers.length === 0) return undefined
+  if (remotePeers.length === 0 && consumerDialers.length === 0) {
+    return undefined
+  }
 
   const dialers: Array<{ serverId: string; purpose: PrivateEndpointPurpose }> = [
     ...remotePeers.map((peer) => ({
@@ -1033,8 +1043,12 @@ function attachMemberApplyFlags(
     topologyUser?: NonNullable<ManagedApplyCommandPayload['topologyUser']>
   }
 ): void {
-  if (extra.monitorUsers !== undefined) payload.monitorUsers = extra.monitorUsers
-  if (extra.topologyUser !== undefined) payload.topologyUser = extra.topologyUser
+  if (extra.monitorUsers !== undefined) {
+    payload.monitorUsers = extra.monitorUsers
+  }
+  if (extra.topologyUser !== undefined) {
+    payload.topologyUser = extra.topologyUser
+  }
   if (
     extra.roleForSpec === 'standby' &&
     (input.forceResyncMemberIds?.includes(extra.memberId) ?? false)
@@ -1290,7 +1304,10 @@ async function buildPayloadForMember(
     consumerServerIds: readonly string[]
   }
 ): Promise<
-  | { payload: ManagedApplyCommandPayload; pendingTlsLeaf: UpsertTlsLeafTrackingParams }
+  | {
+      payload: ManagedApplyCommandPayload
+      pendingTlsLeaf: UpsertTlsLeafTrackingParams
+    }
   | ManagedApplyPrepareError
 > {
   const { members, member, multiMember, replicationUsername, containerSans, consumerServerIds } =
@@ -1492,7 +1509,9 @@ export async function prepareManagedApplyPayloads(
     members.map((m) => m.serverId),
     consumerServerIds
   )
-  const ports = await ensureMemberPrivatePorts(db, members, { hasRemoteConsumers })
+  const ports = await ensureMemberPrivatePorts(db, members, {
+    hasRemoteConsumers,
+  })
   if (isManagedPrivatePortExhaustedError(ports)) {
     return ports
   }
