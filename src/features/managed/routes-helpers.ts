@@ -49,7 +49,7 @@ import { isMysqlFamilyEngine, MAX_REPLAY_DELTA_BYTES, parsePgLsn } from './ha-fr
 import { loadManagedStatusError } from './last-error.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import { type ManagedResidualMetadata, serializeManagedRow } from './serialize.ts'
-import { type LoginPatchInput } from './login-patch.ts'
+import type { LoginPatchInput } from './login-patch.ts'
 import {
   type DatabaseLoginRole,
   loginGrantMode,
