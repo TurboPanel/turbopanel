@@ -1,8 +1,11 @@
 import { assertEquals } from '@std/assert'
+import type { Db } from '../../db/connection.ts'
 import {
   DATABASE_LOGIN_ROLES,
+  isManagedLoginNameTakenInFamily,
   legacyPrincipalIdOf,
   loginRoleFromMetadata,
+  managedProtocolFamilyEngines,
   withoutPassword,
 } from './logins.ts'
 
@@ -44,4 +47,16 @@ test('withoutPassword drops the credential and keeps every other field', () => {
   const { password: _password, ...rest } = row
   assertEquals(withoutPassword(row), rest)
   assertEquals('password' in withoutPassword(row), false)
+})
+
+test('managedProtocolFamilyEngines: mysql and mariadb share a family, postgres is apart', () => {
+  assertEquals(managedProtocolFamilyEngines('mysql'), ['mysql', 'mariadb'])
+  assertEquals(managedProtocolFamilyEngines('mariadb'), ['mysql', 'mariadb'])
+  assertEquals(managedProtocolFamilyEngines('postgres'), ['postgres'])
+  assertEquals(managedProtocolFamilyEngines('redis'), [])
+})
+
+test('isManagedLoginNameTakenInFamily skips the query for blank names and non-frontend engines', async () => {
+  assertEquals(await isManagedLoginNameTakenInFamily({} as Db, 'm1', 'postgres', '  '), false)
+  assertEquals(await isManagedLoginNameTakenInFamily({} as Db, 'm1', 'redis', 'app'), false)
 })
