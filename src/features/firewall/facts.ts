@@ -223,8 +223,9 @@ async function loadManagedExposures(db: Db, serverId: string): Promise<DerivedEx
   // loopback only, which needs no rule. Both families reach ProxySQL as
   // forwarded traffic through DOCKER-USER, where this `published` rule lands:
   // IPv6 too, since ProxySQL has its own IPv6 network (daemon
-  // `managed/proxysql-ipv6.ts`). A daemon older than that still serves the
-  // IPv6 publish from a host process, which this rule does not reach.
+  // `managed/proxysql-ipv6.ts`). A daemon older than that, or a host below
+  // Docker Engine 28 / Compose 2.33.1, still serves the IPv6 publish from a
+  // host process, which this rule does not reach.
   const { external, ports } = await loadHostIngressListeners(db, serverId)
   if (!external) return []
   return ports.map((port) => ({

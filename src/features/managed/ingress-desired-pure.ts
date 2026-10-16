@@ -74,10 +74,13 @@ export function protocolListenerForEngine(
  * image outside the release catalog; the daemon then leaves the version as is.
  */
 export function ingressEngineVersion(
-  spec: { defaultImage: string; legacyDefaultImage?: string },
+  spec: { engine?: string; defaultImage: string; legacyDefaultImage?: string },
   image: string | undefined
 ): string | undefined {
-  return describeManagedImage(effectiveManagedImage(spec, image))?.series
+  const release = describeManagedImage(effectiveManagedImage(spec, image?.trim()))
+  if (!release) return undefined
+  if (spec.engine !== undefined && release.engine !== spec.engine) return undefined
+  return release.series
 }
 
 /**
@@ -89,10 +92,15 @@ export function ingressEngineVersion(
  * legacy default (what an old row runs); unreadable options send nothing.
  */
 export function ingressEngineVersionFromOptions(
-  spec: { defaultImage: string; legacyDefaultImage?: string },
+  spec: { engine?: string; defaultImage: string; legacyDefaultImage?: string },
   options: unknown
 ): string | undefined {
-  if (!isIngressRecord(options) || !isIngressRecord(options.settings)) return undefined
+  if (!isIngressRecord(options)) return undefined
+  // No settings at all parses as the defaults: the legacy default image.
+  if (options.settings === undefined || options.settings === null) {
+    return ingressEngineVersion(spec, undefined)
+  }
+  if (!isIngressRecord(options.settings)) return undefined
   const image = options.settings.image
   if (image === undefined) return ingressEngineVersion(spec, undefined)
   return typeof image === 'string' ? ingressEngineVersion(spec, image) : undefined

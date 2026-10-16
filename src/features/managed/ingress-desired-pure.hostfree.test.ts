@@ -87,8 +87,23 @@ test('ingressEngineVersionFromOptions reads the stored image, not the parsed set
     }),
     '11.4'
   )
-  // A row with no stored image runs the legacy default.
+  // A row with no stored image, or no settings at all, runs the legacy default.
   assertEquals(ingressEngineVersionFromOptions(spec, { settings: {} }), '12.3')
+  assertEquals(ingressEngineVersionFromOptions(spec, { databases: [] }), '12.3')
+  // A padded image still matches; another engine's image sends nothing.
+  assertEquals(
+    ingressEngineVersionFromOptions(spec, {
+      settings: { image: ' docker.io/library/mariadb:11.4 ' },
+    }),
+    '11.4'
+  )
+  assertEquals(
+    ingressEngineVersionFromOptions(
+      { ...spec, engine: 'mariadb' },
+      { settings: { image: 'docker.io/library/mysql:9.7' } }
+    ),
+    undefined
+  )
   // Unreadable options or an off-catalog image send nothing.
   assertEquals(ingressEngineVersionFromOptions(spec, null), undefined)
   assertEquals(ingressEngineVersionFromOptions(spec, { settings: { image: 7 } }), undefined)
