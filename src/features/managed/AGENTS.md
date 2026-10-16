@@ -485,6 +485,26 @@ to its default owner role (the daemon does it before dropping the role) and drop
 the entry from `databaseOwners`; dropping such a database also drops the login's
 listing of it.
 
+**MySQL and MariaDB: three jobs, data only below the migration login.** The
+daemon (`managed-data-only-readwrite-v1`, `MANAGED_DATA_ONLY_READWRITE_FEATURE`)
+grants `read-only` SELECT and SHOW VIEW; `read-write` row changes plus EXECUTE,
+LOCK TABLES, CREATE TEMPORARY TABLES and SHOW VIEW (no create, alter or drop of
+anything); `owner` ALL on its database without the grant option; only `admin`
+keeps the grant option. Its next apply also takes the older wide rights back
+from existing logins (no grace period, no new-logins-only mode). An older
+daemon would keep the wide grant, so the panel fails closed: a panel-managed
+`read-write` login on MySQL or MariaDB is refused with 409
+`managed_readwrite_needs_daemon_update` (create; PATCH when it adds the level, adds a
+database to it, or moves a `self` login back to panel-set), see `refuseReadWriteOnOldDaemon`. A
+login that already holds the level is left alone, and `self` logins are never
+written. Read-only has no EXECUTE on purpose: a routine runs with its definer's
+rights and could change data. The gate is checked at create and PATCH only: a
+failover onto a member whose daemon is older re-applies the wide set until that
+daemon updates. `owner` is not gated: an older daemon still gives it the grant
+option. `TRIGGER` and `EVENT` stay on a login that still defines a trigger or a
+scheduled event (a trigger fails with error 1142 once its definer loses it,
+an event stops firing) until those move to the migration login.
+
 A login with `owner` on an owner-role database is the migrations login (the
 daemon makes it a member of the owner role and sets its session role, so
 tables it creates belong to the owner role). The Database admin login is

@@ -10,8 +10,13 @@ import type { ManagedRowOptions } from './options.ts'
 import { type LoginPatchCurrent, type LoginPatchResult, planLoginPatch } from './login-patch.ts'
 import { parseManagedLoginPatchFields } from './routes-helpers.ts'
 import type { Db } from '../../db/connection.ts'
-import type { DaemonOwnerSupport } from './owner-role.ts'
 import {
+  type DaemonOwnerSupport,
+  refuseReadWriteOnOldDaemon,
+  type ReadWriteGrantState,
+} from './owner-role.ts'
+import {
+  MANAGED_DATA_ONLY_READWRITE_FEATURE,
   MANAGED_DATABASE_OWNER_FEATURE,
   MANAGED_LOGIN_LIMITS_FEATURE,
   MANAGED_OWNER_ROLE_FEATURE,
@@ -141,14 +146,64 @@ export async function daemonOwnerSupport(db: Db, serverId: string): Promise<Daem
   }
 }
 
-/** The daemon check a login PATCH needs: limits it can enforce. */
+/** 409 for a panel-managed MySQL or MariaDB read/write login (or a new database on one) when the daemon is too old; `null` when fine. */
+export async function refuseReadWriteIfDaemonTooOld(
+  c: Context,
+  db: Db,
+  engine: string,
+  after: ReadWriteGrantState,
+  before: ReadWriteGrantState | null,
+  serverId: string
+): Promise<Response | null> {
+  if (engine !== 'mysql' && engine !== 'mariadb') return null
+  const state = await getServerDaemonStateByServerId(db, serverId)
+  const supported = (state?.projection?.features ?? []).includes(
+    MANAGED_DATA_ONLY_READWRITE_FEATURE
+  )
+  const refused = refuseReadWriteOnOldDaemon(engine, after, before, supported)
+  return refused ? c.json({ error: refused.error, message: refused.message }, refused.status) : null
+}
+
+/** The daemon check a login create needs: the MySQL and MariaDB read/write level. */
+export async function refuseLoginCreateIfDaemonCannot(
+  c: Context,
+  db: Db,
+  change: { engine: string; privileges: unknown; grantMode: string },
+  serverId: string
+): Promise<Response | null> {
+  const privileges = Array.isArray(change.privileges) ? (change.privileges as string[]) : []
+  return refuseReadWriteIfDaemonTooOld(
+    c,
+    db,
+    change.engine,
+    { privileges, grantMode: change.grantMode },
+    null,
+    serverId
+  )
+}
+
+/** The daemon checks a login PATCH needs: limits it can enforce and the MySQL and MariaDB read/write level. */
 export async function refuseLoginPatchIfDaemonCannot(
   c: Context,
   db: Db,
-  change: { limits: LoginLimitFields },
+  change: {
+    limits: LoginLimitFields
+    engine: string
+    readWrite: { after: ReadWriteGrantState; before: ReadWriteGrantState }
+  },
   serverId: string
 ): Promise<Response | null> {
-  return refuseLimitsIfUnsupported(c, db, change.limits, serverId)
+  return (
+    (await refuseLimitsIfUnsupported(c, db, change.limits, serverId)) ??
+    (await refuseReadWriteIfDaemonTooOld(
+      c,
+      db,
+      change.engine,
+      change.readWrite.after,
+      change.readWrite.before,
+      serverId
+    ))
+  )
 }
 
 /** PATCH body: the ordinary fields plus the limit fields, as one planning input. */

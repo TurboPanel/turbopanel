@@ -41,7 +41,7 @@ import {
   resolveManagedOwningOrganizationIds,
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
-import { loginPatchUndo } from '../../features/managed/login-patch.ts'
+import { loginPatchUndo, readWriteGrantState } from '../../features/managed/login-patch.ts'
 import {
   describeDatabaseOwners,
   listLoginOnDatabase,
@@ -63,6 +63,7 @@ import {
 } from '../../features/managed/owner-role.ts'
 import {
   daemonHonoursOwnerRole,
+  refuseLoginCreateIfDaemonCannot,
   daemonOwnerSupport,
   loginLimitMetadata,
   parseGatedLoginLimits,
@@ -2109,6 +2110,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
+    const daemonRefused = await refuseLoginCreateIfDaemonCannot(
+      c,
+      db,
+      { engine: ctx.spec.engine, privileges, grantMode },
+      targetServerId
+    )
+    if (daemonRefused) return daemonRefused
+
     // Never a refusal: the login is added, and the answer says what it got.
     const notes = adminAccessNotes(
       ctx.spec.engine,
@@ -2281,6 +2290,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       db,
       {
         limits,
+        engine: ctx.spec.engine,
+        readWrite: {
+          before: readWriteGrantState(target.metadata),
+          after: readWriteGrantState({ ...(target.metadata as object), ...plan.metadata }),
+        },
       },
       targetServerId
     )

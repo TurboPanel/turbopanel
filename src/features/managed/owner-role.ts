@@ -260,3 +260,55 @@ export function evaluateOwnedDatabasesKept(
     )}. It has to stay listed on them and stay a migration or read/write login that the panel manages (not read-only, not a Database admin login), because changing a database's owner after it was made is not available yet.`,
   }
 }
+
+export const READWRITE_NEEDS_DAEMON_ERROR = 'managed_readwrite_needs_daemon_update'
+
+const READWRITE_NEEDS_DAEMON_MESSAGE =
+  "This server's TurboPanel daemon is too old to give a read/write login data changes only: it would still be able to create, change and drop tables. Update the server, then try again, or use a read-only login."
+
+/** What a login holds, for the read/write daemon rule: its levels, databases and how it is managed. */
+export type ReadWriteGrantState = {
+  privileges: readonly string[]
+  databases?: readonly string[]
+  /** `self` logins are never written by the panel. */
+  grantMode: string
+}
+
+function panelWritesReadWrite(state: ReadWriteGrantState): boolean {
+  return state.grantMode !== 'self' && state.privileges.includes('read-write')
+}
+
+/**
+ * Whether `after` asks an older daemon for something new: the level on a login
+ * that did not hold it as panel-set, or a database the login did not reach.
+ */
+function addsReadWriteReach(before: ReadWriteGrantState, after: ReadWriteGrantState): boolean {
+  if (!panelWritesReadWrite(before)) return true
+  const had = new Set(before.databases ?? [])
+  return (after.databases ?? []).some((name) => !had.has(name))
+}
+
+/**
+ * The refusal for giving a MySQL or MariaDB login the read/write level (new,
+ * or newly panel-managed) on a primary whose daemon lacks
+ * `managed-data-only-readwrite-v1`, or `null` when fine. An older daemon would
+ * leave the login able to create, change and drop tables, so the panel refuses
+ * rather than saving a level it cannot deliver. A login that already holds the
+ * level is left alone (nothing new is asked of the daemon).
+ */
+export function refuseReadWriteOnOldDaemon(
+  engine: string,
+  after: ReadWriteGrantState,
+  before: ReadWriteGrantState | null,
+  daemonGivesDataOnlyReadWrite: boolean
+): OwnerRoleValidationError | null {
+  if (engine !== 'mysql' && engine !== 'mariadb') return null
+  if (daemonGivesDataOnlyReadWrite || !panelWritesReadWrite(after)) return null
+  if (before && !addsReadWriteReach(before, after)) return null
+  return {
+    ok: false,
+    error: READWRITE_NEEDS_DAEMON_ERROR,
+    message: READWRITE_NEEDS_DAEMON_MESSAGE,
+    status: 409,
+  }
+}

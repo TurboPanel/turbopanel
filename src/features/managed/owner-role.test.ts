@@ -8,6 +8,8 @@ import {
   evaluateOwnerLogin,
   OWNER_ROLE_MAX_DATABASE_NAME,
   OWNER_ROLE_NEEDS_DAEMON_ERROR,
+  READWRITE_NEEDS_DAEMON_ERROR,
+  refuseReadWriteOnOldDaemon,
   resolveDatabaseOwnerRole,
 } from './owner-role.ts'
 
@@ -181,4 +183,63 @@ test('a login that owns databases has to stay able to own them', () => {
     assertEquals(refusal?.status, 409)
     assertEquals(refusal?.error, 'managed_login_owns_databases')
   }
+})
+
+const rw = { privileges: ['read-write'], grantMode: 'recipe' }
+
+test('a new MySQL or MariaDB read/write login needs the data-only daemon', () => {
+  for (const engine of ['mysql', 'mariadb']) {
+    const refused = refuseReadWriteOnOldDaemon(engine, rw, null, false)
+    assertEquals(refused?.error, READWRITE_NEEDS_DAEMON_ERROR)
+    assertEquals(refused?.status, 409)
+    assertEquals(refuseReadWriteOnOldDaemon(engine, rw, null, true), null)
+  }
+})
+
+test('the data-only daemon rule leaves other levels, modes, engines and held logins alone', () => {
+  assertEquals(refuseReadWriteOnOldDaemon('postgres', rw, null, false), null)
+  for (const privileges of [['read-only'], ['owner'], ['admin']]) {
+    assertEquals(
+      refuseReadWriteOnOldDaemon('mysql', { privileges, grantMode: 'recipe' }, null, false),
+      null
+    )
+  }
+  // A manage-myself login is never written by the panel.
+  assertEquals(refuseReadWriteOnOldDaemon('mysql', { ...rw, grantMode: 'self' }, null, false), null)
+  // Already panel-managed read/write: nothing new is asked of the daemon.
+  assertEquals(refuseReadWriteOnOldDaemon('mysql', rw, rw, false), null)
+  assertEquals(refuseReadWriteOnOldDaemon('mysql', rw, { ...rw, grantMode: 'preset' }, false), null)
+  // A database it did not reach before is new to an older daemon.
+  assertEquals(
+    refuseReadWriteOnOldDaemon(
+      'mysql',
+      { ...rw, databases: ['a', 'b'] },
+      { ...rw, databases: ['a'] },
+      false
+    )?.error,
+    READWRITE_NEEDS_DAEMON_ERROR
+  )
+  assertEquals(
+    refuseReadWriteOnOldDaemon(
+      'mysql',
+      { ...rw, databases: ['a'] },
+      { ...rw, databases: ['a', 'b'] },
+      false
+    ),
+    null
+  )
+  // Moving a manage-myself login back to panel-set read/write, or adding the level, is new.
+  assertEquals(
+    refuseReadWriteOnOldDaemon('mysql', rw, { ...rw, grantMode: 'self' }, false)?.error,
+    READWRITE_NEEDS_DAEMON_ERROR
+  )
+  assertEquals(
+    refuseReadWriteOnOldDaemon(
+      'mysql',
+      rw,
+      { privileges: ['read-only'], grantMode: 'recipe' },
+      false
+    )?.error,
+    READWRITE_NEEDS_DAEMON_ERROR
+  )
 })
