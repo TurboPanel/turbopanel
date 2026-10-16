@@ -426,9 +426,10 @@ built by the daemon. No migration: new jsonb keys only.
 `databases`; no migration, an absent key reads as none) names the Postgres
 databases made with an owner role: the daemon creates `tp_<db>_owner`, `_rw`
 and `_ro` (NOLOGIN) and the database belongs to the owner role. Only a new
-database gets it (`POST /managed/databases`, `ownerRole` default true on
-Postgres when the name is at most 54 characters; 400 on MySQL/MariaDB or a too
-long name when asked for). Existing databases keep their owner: moving one onto
+database gets it (`POST /managed/databases`: on Postgres every new database
+gets one; `ownerRole: false` answers 400 `managed_owner_role_required` and a
+name over 54 characters 400 `managed_owner_role_name_too_long`; `ownerRole`
+stays accepted only as `true`; 400 on MySQL/MariaDB when asked for). Existing databases keep their owner: moving one onto
 an owner role (`REASSIGN OWNED`) is a separate, explicit, backed-up action that
 does not exist yet. The flag rides on every apply as `databases[].ownerRole`
 (create) and on the drop op, so every `prepareManagedApplyPayloads` caller must
@@ -454,8 +455,8 @@ invalid input refuses: a read-only admin login is 400
 `managed_admin_login_not_read_only`.
 
 **Explicit database owner (`databaseOwners`).** Every Postgres database made with
-an owner role (the default; not with `ownerRole: false`, not for a name over 54
-characters, not for databases made before owner roles) has an owner that is
+an owner role (always, for a new database; not for databases made before owner
+roles, nor for ones a daemon without `managed-owner-role-v1` made) has an owner that is
 never the root login or the platform admin: the cluster's
 first database too (made by the engine's first start for the platform admin; the
 daemon moves it onto `tp_<db>_owner` while it is empty, and cluster create records

@@ -89,10 +89,12 @@ export function adminAccessNotes(
 }
 
 /**
- * Whether a new database is made with an owner role. Postgres only: the
- * default there is yes, unless the name is too long to fit
- * `tp_<name>_owner` in 63 characters (then the database is made without one,
- * unless it was asked for explicitly, which answers 400).
+ * Whether a new database is made with an owner role. Postgres only, and there
+ * it is always yes: `ownerRole: false` is refused (`managed_owner_role_required`)
+ * and so is a name too long to fit `tp_<name>_owner` in 63 characters
+ * (`managed_owner_role_name_too_long`). The one exception is a daemon too old
+ * to make owner roles: it keeps making databases without one (the safe
+ * downgrade), and asking for `true` there answers 409.
  */
 export const OWNER_ROLE_MAX_DATABASE_NAME = 54
 
@@ -106,7 +108,7 @@ export function resolveDatabaseOwnerRole(
     return {
       ok: false,
       error: 'Invalid request',
-      message: 'ownerRole must be true or false.',
+      message: 'ownerRole must be true, or left out.',
       status: 400,
     }
   }
@@ -121,16 +123,22 @@ export function resolveDatabaseOwnerRole(
     }
     return { ok: true, ownerRole: false }
   }
-  if (name.length > OWNER_ROLE_MAX_DATABASE_NAME) {
-    if (requested === true) {
-      return {
-        ok: false,
-        error: 'managed_owner_role_name_too_long',
-        message: `A database with an owner role can have a name of at most ${OWNER_ROLE_MAX_DATABASE_NAME} characters.`,
-        status: 400,
-      }
+  if (requested === false) {
+    return {
+      ok: false,
+      error: 'managed_owner_role_required',
+      message:
+        'Every Postgres database is made with an owner role, so ownerRole: false is not allowed. Leave ownerRole out (or send true), and pick a login as the owner with ownerLoginId if you want one.',
+      status: 400,
     }
-    return { ok: true, ownerRole: false }
+  }
+  if (name.length > OWNER_ROLE_MAX_DATABASE_NAME) {
+    return {
+      ok: false,
+      error: 'managed_owner_role_name_too_long',
+      message: `A Postgres database name can have at most ${OWNER_ROLE_MAX_DATABASE_NAME} characters, because every database gets an owner role named after it. Choose a shorter name.`,
+      status: 400,
+    }
   }
   if (!daemonHonoursOwnerRole) {
     // An older daemon would ignore the flag and leave an ordinary database
@@ -138,7 +146,7 @@ export function resolveDatabaseOwnerRole(
     if (requested === true) return ownerRoleNeedsDaemonUpdate()
     return { ok: true, ownerRole: false }
   }
-  return { ok: true, ownerRole: requested !== false }
+  return { ok: true, ownerRole: true }
 }
 
 export const OWNER_ROLE_NEEDS_DAEMON_ERROR = 'managed_owner_role_needs_daemon_update'
