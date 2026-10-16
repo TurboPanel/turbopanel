@@ -5,6 +5,10 @@
  */
 
 import type { Context } from 'hono'
+import type { ManagedContext } from './managed-context.ts'
+import type { ManagedRowOptions } from './options.ts'
+import type { LoginPatchInput } from './login-patch.ts'
+import { parseManagedLoginPatchFields } from './routes-helpers.ts'
 import type { Db } from '../../db/connection.ts'
 import { MANAGED_LOGIN_LIMITS_FEATURE } from '../../lib/version-wire.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
@@ -115,4 +119,20 @@ export async function refuseIfDaemonCannotLimitLogins(
     },
     409
   )
+}
+
+/** PATCH body: the ordinary fields plus the limit fields, as one planning input. */
+export async function parseLoginPatchRequest(
+  c: Context,
+  db: Db,
+  ctx: ManagedContext,
+  body: Record<string, unknown>,
+  options: ManagedRowOptions
+): Promise<{ dryRun: boolean; limits: LoginLimitFields; input: LoginPatchInput } | Response> {
+  const fields = parseManagedLoginPatchFields(c, ctx, body, options)
+  if (fields instanceof Response) return fields
+  const limits = await parseLoginLimitFields(c, db, ctx.organizationId, body)
+  if (limits instanceof Response) return limits
+  const { dryRun, ...input } = { ...fields, ...limits }
+  return { dryRun, limits, input }
 }

@@ -196,3 +196,18 @@ export function describeApply(engine: string, mode: LoginGrantMode, tool: boolea
   }
   return lines
 }
+
+/** The metadata keys a PATCH can change, as they were: writing this back undoes the PATCH. */
+export function loginPatchUndo(previous: unknown): Record<string, unknown> {
+  const before = (previous ?? {}) as Record<string, unknown>
+  const mode = loginGrantMode(previous)
+  return {
+    grantMode: mode === 'preset' ? undefined : mode,
+    tool: before.tool,
+    databases: before.databases,
+    privileges: before.privileges,
+    connectionRole: before.connectionRole,
+    allowedSources: before.allowedSources,
+    maxConnections: before.maxConnections,
+  }
+}

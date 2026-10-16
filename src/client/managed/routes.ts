@@ -40,11 +40,11 @@ import {
   resolveManagedOwningOrganizationIds,
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
-import { planLoginPatch } from '../../features/managed/login-patch.ts'
+import { loginPatchUndo, planLoginPatch } from '../../features/managed/login-patch.ts'
 import {
   loginLimitMetadata,
   parseGatedLoginLimits,
-  parseLoginLimitFields,
+  parseLoginPatchRequest,
   refuseLimitsIfUnsupported,
 } from '../../features/managed/login-limit-fields.ts'
 import {
@@ -2099,11 +2099,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const target = await findManagedLogin(db, row.id, c.req.param('principalId'))
     if (!target) return c.json({ error: 'Not found' }, 404)
 
-    const fields = parseManagedLoginPatchFields(c, ctx, body, options)
-    if (fields instanceof Response) return fields
-    const limits = await parseLoginLimitFields(c, db, ctx.organizationId, body)
-    if (limits instanceof Response) return limits
-    const { dryRun, ...input } = { ...fields, ...limits }
+    const parsed = await parseLoginPatchRequest(c, db, ctx, body, options)
+    if (parsed instanceof Response) return parsed
+    const { dryRun, limits, input } = parsed
     const plan = planLoginPatch(ctx.spec.engine, target, input)
     if (!plan.ok) return c.json({ error: plan.error, message: plan.message }, plan.status)
 
@@ -2124,15 +2122,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const previous = target.metadata
     await patchLoginMetadata(db, target.id, plan.metadata)
     const restore = async () => {
-      await patchLoginMetadata(db, target.id, {
-        grantMode: loginGrantMode(previous) === 'preset' ? undefined : loginGrantMode(previous),
-        tool: (previous as Record<string, unknown> | null)?.tool,
-        databases: (previous as Record<string, unknown> | null)?.databases,
-        privileges: (previous as Record<string, unknown> | null)?.privileges,
-        connectionRole: (previous as Record<string, unknown> | null)?.connectionRole,
-        allowedSources: (previous as Record<string, unknown> | null)?.allowedSources,
-        maxConnections: (previous as Record<string, unknown> | null)?.maxConnections,
-      })
+      await patchLoginMetadata(db, target.id, loginPatchUndo(previous))
     }
 
     // A thrown error (not just an error Response) must not leave the new
