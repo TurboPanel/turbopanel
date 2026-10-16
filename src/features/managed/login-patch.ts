@@ -45,6 +45,45 @@ const fail = (
   message: string
 ): LoginPatchError => ({ ok: false, status, error, message })
 
+/** The mode after the change, or the plain-words refusal. */
+function resolveGrantMode(
+  before: LoginGrantMode,
+  input: LoginPatchInput
+): LoginGrantMode | LoginPatchError {
+  if (input.grantMode === undefined) return before
+  if (!isLoginGrantMode(input.grantMode)) {
+    return fail(400, 'managed_grant_mode_invalid', "grantMode must be 'recipe' or 'self'.")
+  }
+  if (input.grantMode === 'preset' && before !== 'preset') {
+    return fail(
+      422,
+      'managed_grant_mode_invalid_transition',
+      "'preset' only describes logins made before permission modes existed. Choose 'recipe' (the panel sets permissions) or 'self' (you set them)."
+    )
+  }
+  if (before === 'self' && input.grantMode !== 'self' && input.confirmReset !== true) {
+    return fail(
+      409,
+      'managed_grant_reset_needs_confirm',
+      'Switching a manage-myself login back to panel-set permissions makes the panel reset its permissions to the chosen set, which removes any grants you made by hand. Send confirmReset: true to go ahead.'
+    )
+  }
+  return input.grantMode
+}
+
+function patchMetadata(after: LoginGrantMode, input: LoginPatchInput): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {}
+  if (input.grantMode !== undefined) metadata.grantMode = after
+  if (input.tool !== undefined) metadata.tool = input.tool
+  if (input.databases !== undefined) metadata.databases = input.databases
+  if (input.privileges !== undefined) metadata.privileges = input.privileges
+  if (input.connectionRole !== undefined) {
+    // Stored only for read-only: an absent key is the read-write default.
+    metadata.connectionRole = input.connectionRole === 'read-only' ? 'read-only' : undefined
+  }
+  return metadata
+}
+
 export function planLoginPatch(
   engine: string,
   current: LoginPatchCurrent,
@@ -57,30 +96,8 @@ export function planLoginPatch(
       'Only logins you created can be changed. The cluster administrator and replication logins are managed by TurboPanel.'
     )
   }
-  const before = loginGrantMode(current.metadata)
-  let after = before
-
-  if (input.grantMode !== undefined) {
-    if (!isLoginGrantMode(input.grantMode)) {
-      return fail(400, 'managed_grant_mode_invalid', "grantMode must be 'recipe' or 'self'.")
-    }
-    if (input.grantMode === 'preset' && before !== 'preset') {
-      return fail(
-        422,
-        'managed_grant_mode_invalid_transition',
-        "'preset' only describes logins made before permission modes existed. Choose 'recipe' (the panel sets permissions) or 'self' (you set them)."
-      )
-    }
-    after = input.grantMode
-  }
-
-  if (before === 'self' && after !== 'self' && input.confirmReset !== true) {
-    return fail(
-      409,
-      'managed_grant_reset_needs_confirm',
-      'Switching a manage-myself login back to panel-set permissions makes the panel reset its permissions to the chosen set, which removes any grants you made by hand. Send confirmReset: true to go ahead.'
-    )
-  }
+  const after = resolveGrantMode(loginGrantMode(current.metadata), input)
+  if (typeof after !== 'string') return after
 
   if (after === 'self' && (input.privileges !== undefined || input.connectionRole !== undefined)) {
     return fail(
@@ -89,32 +106,16 @@ export function planLoginPatch(
       'A manage-myself login has no panel-set permissions to change. Grant or revoke in SQL, or switch it back to panel-set permissions first.'
     )
   }
-
   if (input.tool !== undefined && typeof input.tool !== 'boolean') {
     return fail(400, 'Invalid request', 'tool must be true or false.')
   }
 
-  const metadata: Record<string, unknown> = {}
-  if (input.grantMode !== undefined) metadata.grantMode = after
-  if (input.tool !== undefined) metadata.tool = input.tool
-  if (input.databases !== undefined) metadata.databases = input.databases
-  if (input.privileges !== undefined) metadata.privileges = input.privileges
-  if (input.connectionRole !== undefined) {
-    // Stored only for read-only: an absent key is the read-write default.
-    metadata.connectionRole = input.connectionRole === 'read-only' ? 'read-only' : undefined
-  }
-
-  if (Object.keys(metadata).length === 0 && !(before === 'self' && after !== 'self')) {
+  const metadata = patchMetadata(after, input)
+  if (Object.keys(metadata).length === 0) {
     return fail(400, 'Invalid request', 'Nothing to change.')
   }
-
   const tool = input.tool ?? loginIsTool(current.metadata)
-  return {
-    ok: true,
-    metadata,
-    grantMode: after,
-    summary: describeApply(engine, after, tool),
-  }
+  return { ok: true, metadata, grantMode: after, summary: describeApply(engine, after, tool) }
 }
 
 /** Plain-words statement kinds the next apply runs for this login. */

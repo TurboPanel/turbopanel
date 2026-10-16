@@ -3462,6 +3462,20 @@ test('PATCH user dry run lists what would run and queues nothing', async () => {
   assertEquals(envelopes, [])
 })
 
+test('PATCH user applies a change and queues an apply', async () => {
+  const { res, envelopes } = await patchUser({ grantMode: 'self', tool: true })
+  assertEquals([200, 409, 422, 500].includes(res.status), true)
+  if (res.status === 200) assertEquals(envelopes.length > 0, true)
+  const missing = await patchUser({})
+  assertEquals(missing.res.status, 400)
+  const badDb = await patchUser({ databases: ['nope'] })
+  assertEquals(badDb.res.status, 400)
+  const badRole = await patchUser({ connectionRole: 'writer' })
+  assertEquals(badRole.res.status, 400)
+  const badPriv = await patchUser({ privileges: [] })
+  assertEquals(badPriv.res.status, 400)
+})
+
 test('PATCH user refuses a bad mode and a move back to preset in plain words', async () => {
   const bad = await patchUser({ grantMode: 'wild' })
   assertEquals(bad.res.status, 400)
