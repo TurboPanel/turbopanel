@@ -1,6 +1,10 @@
 import { assertEquals } from '@std/assert'
 import {
   describeDatabaseOwners,
+  handedBackNotes,
+  loginPatchOwnerChecks,
+  ownerChoiceConflict,
+  ownersAfterCreate,
   ownedDatabasesRefusal,
   ownersWithoutDatabase,
   ownersWithoutLogin,
@@ -71,4 +75,28 @@ test('restoringOnFailure restores on a refusal and on a throw, not on success', 
   }
   assertEquals(thrown, true)
   assertEquals(restored, 2)
+})
+
+test('small owner helpers answer the way the routes need', () => {
+  assertEquals(handedBackNotes([]), {})
+  assertEquals(handedBackNotes(['a', 'b']).notes?.[0]?.includes('a, b'), true)
+  assertEquals(ownerChoiceConflict(null, false), null)
+  assertEquals(ownerChoiceConflict({}, true), null)
+  assertEquals(ownerChoiceConflict({}, false)?.error, 'Invalid request')
+  const chosen = { login: { id: 'l1', appliedUsername: 'u1' } }
+  assertEquals(ownersAfterCreate(undefined, 'shop', chosen), {
+    shop: { loginId: 'l1', username: 'u1' },
+  })
+  assertEquals(ownersAfterCreate({ a: { loginId: 'x', username: 'y' } }, 'shop', null), {
+    a: { loginId: 'x', username: 'y' },
+  })
+  const checks = loginPatchOwnerChecks(
+    'postgres',
+    { databaseOwners: { shop: { loginId: 'l1', username: 'u1' } }, ownerRoleDatabases: [] },
+    { id: 'l1', metadata: { databases: ['shop'], privileges: ['owner'] } },
+    { metadata: { privileges: ['admin'] }, grantMode: 'preset' },
+    { ownerRole: true, databaseOwner: true }
+  )
+  assertEquals(checks.refusal?.error, 'managed_login_owns_databases')
+  assertEquals(checks.notes.length, 1)
 })

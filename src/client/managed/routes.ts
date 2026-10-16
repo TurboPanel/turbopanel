@@ -41,11 +41,14 @@ import {
   resolveManagedOwningOrganizationIds,
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
-import { loginPatchUndo, storedStrings } from '../../features/managed/login-patch.ts'
+import { loginPatchUndo } from '../../features/managed/login-patch.ts'
 import {
   describeDatabaseOwners,
   listLoginOnDatabase,
-  ownedDatabasesRefusal,
+  handedBackNotes,
+  loginPatchOwnerChecks,
+  ownersAfterCreate,
+  ownerChoiceConflict,
   ownersWithoutDatabase,
   ownersWithoutLogin,
   resolveChosenOwnerLogin,
@@ -1329,6 +1332,33 @@ type ExistingPrincipalForLogin = {
  * `principalId`, an existing principal of the organization whose applied
  * name becomes the login's engine role name.
  */
+/**
+ * Drop one login's owner entries from the cluster options. The row is read
+ * again here, so a database created or dropped while the request ran is not
+ * overwritten.
+ */
+async function forgetLoginOwners(
+  db: Db,
+  spec: ManagedContext['spec'],
+  environmentId: string,
+  managedId: string,
+  loginId: string
+): Promise<void> {
+  const fresh = await findManagedForEnvironment(db, environmentId)
+  const options = fresh ? parseManagedRowOptions(spec, fresh.options) : null
+  if (!options) return
+  await db
+    .update(managed)
+    .set({
+      options: writeManagedRowOptions({
+        ...options,
+        databaseOwners: ownersWithoutLogin(options.databaseOwners, loginId),
+      }),
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(managed.id, managedId))
+}
+
 async function parseManagedLoginCreateRequest(
   c: Context<AppEnv>,
   db: Db,
@@ -2173,27 +2203,24 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (parsed instanceof Response) return parsed
     const { dryRun, limits, plan } = parsed
 
-    // A login that owns a database stays able to own it.
-    const afterMetadata = {
-      ...(target.metadata as Record<string, unknown> | null),
-      ...plan.metadata,
-    }
-    const ownerBlock = ownedDatabasesRefusal(options, target.id, afterMetadata, plan.grantMode)
-    if (ownerBlock) {
-      return c.json({ error: ownerBlock.error, message: ownerBlock.message }, ownerBlock.status)
-    }
-
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
-    const notes = adminAccessNotes(
+    // A login that owns a database stays able to own it; an admin login gets
+    // notes on what it got.
+    const checks = loginPatchOwnerChecks(
       ctx.spec.engine,
-      {
-        privileges: storedStrings(afterMetadata, 'privileges'),
-        databases: storedStrings(afterMetadata, 'databases'),
-        ownerRoleDatabases: options.ownerRoleDatabases,
-      },
+      options,
+      target,
+      plan,
       await daemonOwnerSupport(db, targetServerId)
     )
+    if (checks.refusal) {
+      return c.json(
+        { error: checks.refusal.error, message: checks.refusal.message },
+        checks.refusal.status
+      )
+    }
+    const { notes } = checks
 
     if (dryRun) {
       // The daemon builds the SQL, so the preview lists the kinds of statement.
@@ -2440,36 +2467,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // the panel records that.
     const handedBack = databasesOwnedByLogin(options.databaseOwners, target.id)
     if (handedBack.length > 0) {
-      // Read the row again so a database created or dropped while this request
-      // ran is not overwritten; only this login's owner entries are removed.
-      const fresh = await findManagedForEnvironment(db, environmentId)
-      const freshOptions = fresh ? parseManagedRowOptions(ctx.spec, fresh.options) : null
-      if (fresh && freshOptions) {
-        await db
-          .update(managed)
-          .set({
-            options: writeManagedRowOptions({
-              ...freshOptions,
-              databaseOwners: ownersWithoutLogin(freshOptions.databaseOwners, target.id),
-            }),
-            updatedAt: new Date().toISOString(),
-          })
-          .where(eq(managed.id, row.id))
-      }
+      await forgetLoginOwners(db, ctx.spec, environmentId, row.id, target.id)
     }
 
     const primaryFanout = pickPrimaryCommandResult(enqueued)
     return c.json({
       ok: true,
-      ...(handedBack.length > 0
-        ? {
-            notes: [
-              `The login owned ${handedBack.join(
-                ', '
-              )}. Each of those databases goes back to its default owner role as the apply runs.`,
-            ],
-          }
-        : {}),
+      ...handedBackNotes(handedBack),
       commandId: primaryFanout?.commandId,
       serverId: primaryFanout?.serverId ?? targetServerId,
       results: enqueued,
@@ -2588,30 +2592,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       targetServerId
     )
     if (chosen instanceof Response) return chosen
-    if (chosen && !ownerRole.ownerRole) {
-      return c.json(
-        {
-          error: 'Invalid request',
-          message:
-            'A database with a login as its owner has an owner role: leave ownerRole out or set it to true.',
-        },
-        400
-      )
-    }
+    const conflict = ownerChoiceConflict(chosen, ownerRole.ownerRole)
+    if (conflict) return c.json(conflict, 400)
 
     const nextDatabases = nextDatabasesAfterCreate(options.databases, name)
     const nextOwnerRoleDatabases = ownerRole.ownerRole
       ? nextDatabasesAfterCreate(options.ownerRoleDatabases ?? [], name)
       : options.ownerRoleDatabases
-    const nextDatabaseOwners = chosen
-      ? {
-          ...options.databaseOwners,
-          [name]: {
-            loginId: chosen.login.id,
-            username: chosen.login.appliedUsername,
-          },
-        }
-      : options.databaseOwners
+    const nextDatabaseOwners = ownersAfterCreate(options.databaseOwners, name, chosen)
     const nextOptions = writeManagedRowOptions({
       settings: options.settings,
       databases: nextDatabases,

@@ -15,6 +15,8 @@ import {
 import { storedConnectionRole, storedStrings } from './login-patch.ts'
 import type { ManagedRowOptions } from './options.ts'
 import {
+  adminAccessNotes,
+  type DaemonOwnerSupport,
   DATABASE_OWNER_NEEDS_DAEMON_ERROR,
   databasesOwnedByLogin,
   evaluateOwnedDatabasesKept,
@@ -95,7 +97,7 @@ export async function resolveChosenOwnerLogin(
     grantMode: loginGrantMode(found.metadata),
   })
   if (invalid) return refuse(invalid.error, invalid.message ?? '', 400)
-  if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(found.appliedUsername)) {
+  if (!/^[A-Za-z_]\w{0,62}$/.test(found.appliedUsername)) {
     return refuse(
       'managed_owner_login_invalid',
       "This login's name has characters a database owner cannot have. Pick another login, or leave the owner out to use the default owner role.",
@@ -195,4 +197,64 @@ export async function restoringOnFailure<T>(
   }
   if (result instanceof Response) await restore()
   return result
+}
+
+/** The `notes` field for a login delete that handed databases back to their owner role. */
+export function handedBackNotes(databases: readonly string[]): { notes?: string[] } {
+  if (databases.length === 0) return {}
+  return {
+    notes: [
+      `The login owned ${databases.join(', ')}. Each of those databases goes back to its default owner role as the apply runs.`,
+    ],
+  }
+}
+
+/** Refuse a create that names a login owner but declines the owner role. */
+export function ownerChoiceConflict(
+  chosen: unknown,
+  ownerRole: boolean
+): { error: string; message: string } | null {
+  if (!chosen || ownerRole) return null
+  return {
+    error: 'Invalid request',
+    message:
+      'A database with a login as its owner has an owner role: leave ownerRole out or set it to true.',
+  }
+}
+
+/** `databaseOwners` after a create that may have picked an owner login. */
+export function ownersAfterCreate(
+  owners: ManagedRowOptions['databaseOwners'],
+  name: string,
+  chosen: { login: { id: string; appliedUsername: string } } | null
+): ManagedRowOptions['databaseOwners'] {
+  if (!chosen) return owners
+  return { ...owners, [name]: { loginId: chosen.login.id, username: chosen.login.appliedUsername } }
+}
+
+/**
+ * What a login PATCH must check around owner state: the refusal when it
+ * would stop the login owning its databases, and the notes on what a
+ * Database admin login gets.
+ */
+export function loginPatchOwnerChecks(
+  engine: string,
+  options: Pick<ManagedRowOptions, 'databaseOwners' | 'ownerRoleDatabases'>,
+  target: { id: string; metadata: unknown },
+  plan: { metadata: Record<string, unknown>; grantMode: string },
+  support: DaemonOwnerSupport
+): { refusal: ReturnType<typeof ownedDatabasesRefusal>; notes: string[] } {
+  const after = { ...(target.metadata as Record<string, unknown> | null), ...plan.metadata }
+  return {
+    refusal: ownedDatabasesRefusal(options, target.id, after, plan.grantMode),
+    notes: adminAccessNotes(
+      engine,
+      {
+        privileges: storedStrings(after, 'privileges'),
+        databases: storedStrings(after, 'databases'),
+        ownerRoleDatabases: options.ownerRoleDatabases,
+      },
+      support
+    ),
+  }
 }
