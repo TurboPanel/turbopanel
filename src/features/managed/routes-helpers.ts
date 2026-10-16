@@ -50,6 +50,7 @@ import { loadManagedStatusError } from './last-error.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import { type ManagedResidualMetadata, serializeManagedRow } from './serialize.ts'
 import type { LoginPatchInput } from './login-patch.ts'
+import { loginAllowedSources, loginMaxConnections } from './login-sources.ts'
 import { DATABASE_ADMIN_PRIVILEGE, evaluateDatabaseAdminGrant } from './owner-role.ts'
 
 export {
@@ -536,6 +537,9 @@ export function serializeManagedUser(row: {
       meta.connectionRole === 'read-only' ? ('read-only' as const) : ('read-write' as const),
     grantMode: loginGrantMode(row.metadata),
     tool: loginIsTool(row.metadata),
+    // 'any' when unrestricted; otherwise the places the login may connect from.
+    allowedSources: loginAllowedSources(row.metadata) ?? ['any'],
+    maxConnections: loginMaxConnections(row.metadata) ?? null,
     createdAt: row.createdAt,
   }
 }

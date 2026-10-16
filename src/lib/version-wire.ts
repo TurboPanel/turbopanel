@@ -301,6 +301,15 @@ export const DENO_NATIVE_APPS_FEATURE: DaemonWireFeature = 'deno-native-apps-v1'
 export const MANAGED_INGRESS_IPV6_FEATURE: DaemonWireFeature = 'managed-ingress-ipv6-v1'
 
 /**
+ * The daemon enforces `allowedSources` / `allowLocalSources` and
+ * `maxConnections` on app logins of `managed.ingress.reconcile` (and accepts
+ * `%` prefixes in `allowedSources`). Without it the control plane never sends
+ * them: an older daemon would ignore the fields and leave the login unlimited,
+ * so a limited login is left out of that server's payload instead.
+ */
+export const MANAGED_LOGIN_LIMITS_FEATURE: DaemonWireFeature = 'managed-login-limits-v1'
+
+/**
  * The daemon answers `managed-permissions-request` with
  * `managed-permissions-result` (a login's current grants, read only). Without
  * it the control plane never sends the message and answers 409
