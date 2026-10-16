@@ -23,6 +23,7 @@ import {
 } from '../../db/schema.ts'
 import { clampManagedResources, type ManagedSettings } from '../../features/managed/settings.ts'
 import { registerManagedExternalAccessRoutes } from './external-access-routes.ts'
+import { registerManagedPrivilegeRoutes } from './privilege-routes.ts'
 import { loadManagedExternalAccessView } from '../../features/managed/external-access.ts'
 import {
   checkManagedSslModeForExternalAccess,
@@ -193,6 +194,7 @@ import {
   isPlainObject,
   listUsersReferencingDatabase,
   parseManagedLoginGrantFields,
+  DATABASE_ADMIN_PRIVILEGE,
   parseManagedLoginModeFields,
   serializeManagedLogin,
   loadManagedStatusSnapshot,
@@ -221,6 +223,7 @@ import {
   resolveManagedServerId,
   serializeContainerRow,
   serializeOrgManagedListRow,
+  resolveDatabaseOwnerRole,
   validateManagedDatabaseCreateName,
 } from '../../features/managed/routes-helpers.ts'
 import {
@@ -829,6 +832,7 @@ async function insertManagedCreateTransaction(
     spec: ctx.spec,
     settings: parsedOptions.settings,
     databases: parsedOptions.databases,
+    ownerRoleDatabases: parsedOptions.ownerRoleDatabases,
     serverId,
     environmentId: ctx.environmentId,
     organizationId: ctx.organizationId,
@@ -913,6 +917,7 @@ async function prepareApplyForManaged(
   extra?: {
     dropUsers?: string[]
     dropDatabases?: string[]
+    dropOwnerRoleDatabases?: string[]
     omitLoginIds?: string[]
     excludeMemberIds?: string[]
     forceResyncMemberIds?: string[]
@@ -927,12 +932,14 @@ async function prepareApplyForManaged(
     spec: ctx.spec,
     settings: options.settings,
     databases: options.databases,
+    ownerRoleDatabases: options.ownerRoleDatabases,
     serverId: targetServerId,
     environmentId: ctx.environmentId,
     organizationId: ctx.organizationId,
     rootUsername: residual.rootUsername ?? ctx.spec.rootUsername,
     dropUsers: extra?.dropUsers,
     dropDatabases: extra?.dropDatabases,
+    dropOwnerRoleDatabases: extra?.dropOwnerRoleDatabases,
     omitLoginIds: extra?.omitLoginIds,
     excludeMemberIds: extra?.excludeMemberIds,
     forceResyncMemberIds: extra?.forceResyncMemberIds,
@@ -1478,6 +1485,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     router.use(path, createSessionMiddleware(opts.secrets))
   }
   registerManagedExternalAccessRoutes(router)
+  registerManagedPrivilegeRoutes(router)
 
   router.post('/environments/:id/managed', async (c) => {
     const scope = await loadManagedContextScope(c)
@@ -1683,6 +1691,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const nextOptions = writeManagedRowOptions({
       settings: clamped,
       databases: current.databases,
+      ownerRoleDatabases: current.ownerRoleDatabases,
     })
 
     const save = (tx: Db) =>
@@ -1904,6 +1913,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       spec: ctx.spec,
       settings: options.settings,
       databases: options.databases,
+      ownerRoleDatabases: options.ownerRoleDatabases,
       serverId: targetServerId,
       environmentId: ctx.environmentId,
       organizationId: ctx.organizationId,
@@ -1965,7 +1975,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const request = await parseManagedLoginCreateRequest(c, db, ctx, body, options, residual)
     if (request instanceof Response) return request
     const { databases, privileges, connectionRole } = request.grants
-    const modeFields = parseManagedLoginModeFields(c, body)
+    const modeFields = parseManagedLoginModeFields(
+      c,
+      body,
+      privileges.includes(DATABASE_ADMIN_PRIVILEGE)
+    )
     if (modeFields instanceof Response) return modeFields
     const { grantMode, tool } = modeFields
 
@@ -2036,6 +2050,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       spec: ctx.spec,
       settings: options.settings,
       databases: options.databases,
+      ownerRoleDatabases: options.ownerRoleDatabases,
       serverId: targetServerId,
       environmentId: ctx.environmentId,
       organizationId: ctx.organizationId,
@@ -2100,7 +2115,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const parsed = await parseLoginPatchRequest(c, db, ctx, body, options)
     if (parsed instanceof Response) return parsed
     const { dryRun, limits, input } = parsed
-    const plan = planLoginPatch(ctx.spec.engine, target, input)
+    const plan = planLoginPatch(ctx.spec.engine, target, input, {
+      ownerRoleDatabases: options.ownerRoleDatabases,
+    })
     if (!plan.ok) return c.json({ error: plan.error, message: plan.message }, plan.status)
 
     if (dryRun) {
@@ -2242,6 +2259,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       spec: ctx.spec,
       settings: options.settings,
       databases: options.databases,
+      ownerRoleDatabases: options.ownerRoleDatabases,
       serverId: targetServerId,
       environmentId: ctx.environmentId,
       organizationId: ctx.organizationId,
@@ -2353,7 +2371,10 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const options = parseManagedRowOptions(ctx.spec, row.options)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
-    return c.json({ databases: options.databases })
+    return c.json({
+      databases: options.databases,
+      ownerRoleDatabases: options.ownerRoleDatabases ?? [],
+    })
   })
 
   router.post('/environments/:id/managed/databases', async (c) => {
@@ -2386,13 +2407,22 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       )
     }
 
+    const ownerRole = resolveDatabaseOwnerRole(ctx.spec.engine, name, body.ownerRole)
+    if (!ownerRole.ok) {
+      return c.json({ error: ownerRole.error, message: ownerRole.message }, ownerRole.status)
+    }
+
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
     const nextDatabases = nextDatabasesAfterCreate(options.databases, name)
+    const nextOwnerRoleDatabases = ownerRole.ownerRole
+      ? nextDatabasesAfterCreate(options.ownerRoleDatabases ?? [], name)
+      : options.ownerRoleDatabases
     const nextOptions = writeManagedRowOptions({
       settings: options.settings,
       databases: nextDatabases,
+      ownerRoleDatabases: nextOwnerRoleDatabases,
     })
 
     const prepared = await prepareApplyForManaged(
@@ -2403,6 +2433,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       {
         settings: options.settings,
         databases: nextDatabases,
+        ownerRoleDatabases: nextOwnerRoleDatabases,
       },
       targetServerId
     )
@@ -2434,6 +2465,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     return c.json({
       ok: true,
       databases: nextDatabases,
+      ownerRole: ownerRole.ownerRole,
+      ownerRoleDatabases: nextOwnerRoleDatabases ?? [],
       commandId: primaryFanout?.commandId,
       serverId: primaryFanout?.serverId ?? targetServerId,
       results: enqueued,
@@ -2482,9 +2515,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (targetServerId instanceof Response) return targetServerId
 
     const nextDatabases = nextDatabasesAfterDelete(options.databases, databaseName)
+    const hadOwnerRole = options.ownerRoleDatabases?.includes(databaseName) === true
+    const nextOwnerRoleDatabases = nextDatabasesAfterDelete(
+      options.ownerRoleDatabases ?? [],
+      databaseName
+    )
     const nextOptions = writeManagedRowOptions({
       settings: options.settings,
       databases: nextDatabases,
+      ownerRoleDatabases: nextOwnerRoleDatabases,
     })
 
     const prepared = await prepareApplyForManaged(
@@ -2495,9 +2534,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       {
         settings: options.settings,
         databases: nextDatabases,
+        ownerRoleDatabases: nextOwnerRoleDatabases,
       },
       targetServerId,
-      { dropDatabases: [databaseName] }
+      {
+        dropDatabases: [databaseName],
+        ...(hadOwnerRole ? { dropOwnerRoleDatabases: [databaseName] } : {}),
+      }
     )
     if (prepared instanceof Response) return prepared
 

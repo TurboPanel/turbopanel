@@ -89,7 +89,8 @@ test('isPlainObject accepts records only', () => {
 
 test('managedSessionPaths lists every managed session route', () => {
   const paths = managedSessionPaths()
-  assertEquals(paths.length, 24)
+  assertEquals(paths.length, 25)
+  assertEquals(paths.includes('/environments/:id/managed/privilege-catalogue'), true)
   assertEquals(paths.includes('/environments/:id/managed/logs'), true)
   assertEquals(paths.includes('/environments/:id/managed/backup-policies'), true)
   assertEquals(paths.includes('/environments/:id/managed/backup-policies/:policyId'), true)
@@ -574,7 +575,17 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
 
   // Reserved platform-internal names stay rejected even when the exposed
   // root login is a suffixed name that no longer equals them.
-  for (const reserved of ['postgres', 'root', 'mysql', 'superadmin', 'Root']) {
+  for (const reserved of [
+    'postgres',
+    'root',
+    'mysql',
+    'superadmin',
+    'Root',
+    // The platform's own prefix: owner roles, monitor and replication logins.
+    'tp_shop_owner',
+    'tp_monitor_ab12',
+    'TP_repl',
+  ]) {
     const res = parseManagedUserCreateFields(
       c,
       mockManagedContext(),
@@ -586,6 +597,22 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
     assertEquals(res.status, 400)
     assertEquals(await res.json(), { error: 'Invalid username' })
   }
+})
+
+test('parseManagedUserCreateFields takes the admin privilege only with an owner role on Postgres', async () => {
+  const c = mockContext()
+  const body = { username: 'dba', databases: ['postgres'], privileges: ['admin', 'read-write'] }
+  const refused = parseManagedUserCreateFields(c, mockManagedContext(), body, defaultRowOptions())
+  if (!(refused instanceof Response)) throw new TypeError('expected Response')
+  assertEquals(refused.status, 422)
+  assertEquals((await refused.json()).error, 'managed_admin_needs_owner_role')
+
+  const ok = parseManagedUserCreateFields(c, mockManagedContext(), body, {
+    ...defaultRowOptions(),
+    ownerRoleDatabases: ['postgres'],
+  })
+  if (ok instanceof Response) throw new TypeError('expected parsed fields')
+  assertEquals(ok.privileges, ['admin'])
 })
 
 test('parseManagedUserCreateFields refuses a system schema listed by an older cluster', async () => {

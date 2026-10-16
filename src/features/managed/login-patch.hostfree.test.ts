@@ -105,3 +105,46 @@ test('moving a read-only postgres login to self needs confirmReset', () => {
   })
   assertEquals(mysql.ok, true)
 })
+
+test('moving a login to admin needs owner-role databases on Postgres and makes it a tool login', () => {
+  const noRole = planLoginPatch('postgres', user({ databases: ['shop'] }), {
+    privileges: ['admin'],
+  })
+  assertEquals(!noRole.ok && noRole.error, 'managed_admin_needs_owner_role')
+  const plan = planLoginPatch(
+    'postgres',
+    user({ databases: ['shop'], privileges: ['read-write'] }),
+    { privileges: ['admin'] },
+    { ownerRoleDatabases: ['shop'] }
+  )
+  if (!plan.ok) throw new Error('expected ok')
+  assertEquals(plan.metadata.privileges, ['admin'])
+  assertEquals(plan.metadata.tool, true)
+  assertEquals(
+    plan.summary.some((line) => line.includes('owner role')),
+    true
+  )
+  // An explicit tool: false is kept.
+  const off = planLoginPatch(
+    'postgres',
+    user({ databases: ['shop'] }),
+    { privileges: ['admin'], tool: false },
+    { ownerRoleDatabases: ['shop'] }
+  )
+  if (!off.ok) throw new Error('expected ok')
+  assertEquals(off.metadata.tool, false)
+})
+
+test('an admin login cannot become read-only, and MySQL admin needs no owner role', () => {
+  const ro = planLoginPatch('mysql', user({ databases: ['shop'], privileges: ['admin'] }), {
+    connectionRole: 'read-only',
+  })
+  assertEquals(!ro.ok && ro.error, 'managed_admin_login_not_read_only')
+  const my = planLoginPatch('mysql', user({ databases: ['shop'] }), { privileges: ['admin'] })
+  if (!my.ok) throw new Error('expected ok')
+  assertEquals(my.metadata.privileges, ['admin'])
+  assertEquals(
+    my.summary.some((line) => line.includes('all rights on each listed database')),
+    true
+  )
+})

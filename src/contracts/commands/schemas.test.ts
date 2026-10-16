@@ -7501,6 +7501,18 @@ test('managed.ingress.reconcile root allowedSources is optional and validated', 
   }
 })
 
+test('parseManagedApplyPayload reads an optional databases[].ownerRole', () => {
+  const withOp = (extra: Record<string, unknown>) =>
+    parseManagedApplyPayload({
+      ...VALID_MANAGED_APPLY,
+      databases: [{ name: 'shop', action: 'create', ...extra }],
+    }).databases![0]!
+  assertEquals('ownerRole' in withOp({}), false)
+  assertEquals(withOp({ ownerRole: true }).ownerRole, true)
+  assertEquals('ownerRole' in withOp({ ownerRole: false }), false)
+  assertThrows(() => withOp({ ownerRole: 'yes' }), TypeError, 'ownerRole must be true or false')
+})
+
 test('managed.ingress.reconcile app-login limits are optional and validated', () => {
   const withFields = (fields: Record<string, unknown>) => ({
     ...VALID_MANAGED_INGRESS_RECONCILE,
