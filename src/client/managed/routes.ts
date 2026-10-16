@@ -46,6 +46,7 @@ import {
   describeDatabaseOwners,
   listLoginOnDatabase,
   handedBackNotes,
+  notesField,
   loginPatchOwnerChecks,
   ownersAfterCreate,
   ownerChoiceConflict,
@@ -1359,6 +1360,30 @@ async function forgetLoginOwners(
     .where(eq(managed.id, managedId))
 }
 
+/** Owner checks around a login PATCH: a refusal Response, or the notes for the answer. */
+async function gateLoginPatchOwnership(
+  c: Context<AppEnv>,
+  db: Db,
+  engine: string,
+  options: ManagedRowOptions,
+  target: { id: string; metadata: unknown },
+  plan: { metadata: Record<string, unknown>; grantMode: string },
+  serverId: string
+): Promise<Response | { notes: string[] }> {
+  const checks = loginPatchOwnerChecks(
+    engine,
+    options,
+    target,
+    plan,
+    await daemonOwnerSupport(db, serverId)
+  )
+  if (!checks.refusal) return { notes: checks.notes }
+  return c.json(
+    { error: checks.refusal.error, message: checks.refusal.message },
+    checks.refusal.status
+  )
+}
+
 async function parseManagedLoginCreateRequest(
   c: Context<AppEnv>,
   db: Db,
@@ -2179,7 +2204,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         createdAt: createdLogin?.createdAt ?? new Date().toISOString(),
       },
       password,
-      ...(notes.length > 0 ? { notes } : {}),
+      ...notesField(notes),
       commandId: primaryResult?.commandId,
       serverId: primaryResult?.serverId ?? targetServerId,
       results: enqueued,
@@ -2207,20 +2232,17 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (targetServerId instanceof Response) return targetServerId
     // A login that owns a database stays able to own it; an admin login gets
     // notes on what it got.
-    const checks = loginPatchOwnerChecks(
+    const gate = await gateLoginPatchOwnership(
+      c,
+      db,
       ctx.spec.engine,
       options,
       target,
       plan,
-      await daemonOwnerSupport(db, targetServerId)
+      targetServerId
     )
-    if (checks.refusal) {
-      return c.json(
-        { error: checks.refusal.error, message: checks.refusal.message },
-        checks.refusal.status
-      )
-    }
-    const { notes } = checks
+    if (gate instanceof Response) return gate
+    const { notes } = gate
 
     if (dryRun) {
       // The daemon builds the SQL, so the preview lists the kinds of statement.
@@ -2229,7 +2251,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         dryRun: true,
         grantMode: plan.grantMode,
         statements: plan.summary,
-        ...(notes.length > 0 ? { notes } : {}),
+        ...notesField(notes),
       })
     }
 
@@ -2298,7 +2320,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     return c.json({
       ok: true,
       user: updated ? serializeManagedLogin(updated) : null,
-      ...(notes.length > 0 ? { notes } : {}),
+      ...notesField(notes),
       commandId: primaryResult?.commandId,
       serverId: primaryResult?.serverId ?? targetServerId,
       results: enqueued,
@@ -2609,10 +2631,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     // The owner login is listed on the new database before the apply is built
     // (the apply reads its list), and put back if the apply cannot be queued.
-    const listing = chosen ? await listLoginOnDatabase(db, chosen.login, name) : null
-    const restoreOwnerLogin = async () => {
-      await listing?.restore()
-    }
+    const listing = await listLoginOnDatabase(db, chosen?.login, name)
+    const restoreOwnerLogin = listing.restore
 
     const prepared = await restoringOnFailure(restoreOwnerLogin, () =>
       prepareApplyForManaged(

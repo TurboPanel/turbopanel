@@ -161,9 +161,10 @@ export function ownedDatabasesRefusal(
  */
 export async function listLoginOnDatabase(
   db: Db,
-  login: { id: string; metadata: unknown },
+  login: { id: string; metadata: unknown } | undefined,
   name: string
 ): Promise<{ restore: () => Promise<void> }> {
+  if (!login) return { restore: () => Promise.resolve() }
   const before = storedStrings(login.metadata, 'databases')
   await patchLoginMetadata(db, login.id, { databases: withDatabaseListed(login.metadata, name) })
   return { restore: () => patchLoginMetadata(db, login.id, { databases: before }) }
@@ -257,4 +258,9 @@ export function loginPatchOwnerChecks(
       support
     ),
   }
+}
+
+/** The `notes` field of an answer, left out when there is nothing to say. */
+export function notesField(notes: readonly string[]): { notes?: string[] } {
+  return notes.length > 0 ? { notes: [...notes] } : {}
 }
