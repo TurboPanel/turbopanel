@@ -7272,3 +7272,42 @@ test('the deploy result keeps daemon warnings, bounded, and ignores anything els
   const long = parseEnvironmentDeployResult({ projectName: 'p', warnings: ['x'.repeat(5000)] })
   assertEquals(long.warnings?.[0]?.length, 1000)
 })
+
+test('managed.ingress.reconcile root allowedSources is optional and validated', () => {
+  const withSources = (allowedSources: unknown) => ({
+    ...VALID_MANAGED_INGRESS_RECONCILE,
+    clusters: [
+      {
+        ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
+        users: [
+          {
+            ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0]!.users[0],
+            role: 'root',
+            allowedSources,
+          },
+        ],
+      },
+    ],
+  })
+  assertEquals(
+    parseManagedIngressReconcilePayload(withSources(['10.0.0.2', '2001:db8::1'])).clusters[0]
+      ?.users[0]?.allowedSources,
+    ['10.0.0.2', '2001:db8::1']
+  )
+  assertEquals(
+    parseManagedIngressReconcilePayload(withSources([])).clusters[0]?.users[0]?.allowedSources,
+    []
+  )
+  assertEquals(
+    parseManagedIngressReconcilePayload(VALID_MANAGED_INGRESS_RECONCILE).clusters[0]?.users[0]
+      ?.allowedSources,
+    undefined
+  )
+  for (const bad of ['10.0.0.2', [1], ['10.0.0.0/8'], ['a%'], ['']]) {
+    assertThrows(
+      () => parseManagedIngressReconcilePayload(withSources(bad)),
+      TypeError,
+      'Invalid managed.ingress.reconcile user allowedSources'
+    )
+  }
+})

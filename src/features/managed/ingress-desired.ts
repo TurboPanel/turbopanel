@@ -57,6 +57,7 @@ import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
 import { hasRemoteConsumerServers } from '../bindings/remote-consumers.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
 import { loadManagedExternalAccess } from './external-access.ts'
+import { loadOrganizationRootAllowedSources } from './root-login-sources.ts'
 import { materializeBindingsForManaged } from '../bindings/materialize.ts'
 import { syncLegacyLogins } from './logins.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
@@ -222,6 +223,8 @@ async function loadClusterUsersForManagedIds(
     serverId: string
     secretsConfig: SecretsConfig
     dataEncryptionSecrets: DerivedSecretsConfig
+    /** Where each root login may be used from (see `root-login-sources.ts`). */
+    rootAllowedSources: readonly string[]
   }
 ): Promise<Map<string, ManagedIngressReconcileUser[]> | ManagedIngressReconcilePrepareError> {
   const byManaged = new Map<string, ManagedIngressReconcileUser[]>()
@@ -270,6 +273,10 @@ async function loadClusterUsersForManagedIds(
     if (defaultDatabase !== undefined) user.defaultDatabase = defaultDatabase
     const connectionRole = principalConnectionRole(row.metadata)
     if (connectionRole !== undefined) user.connectionRole = connectionRole
+    // Only the root login is limited by source address; an app login keeps
+    // working from wherever its owner allows. Sent even when empty: present
+    // means "limit to this server and its containers plus these".
+    if (user.role === 'root') user.allowedSources = [...params.rootAllowedSources]
     const list = byManaged.get(row.managedId) ?? []
     list.push(user)
     byManaged.set(row.managedId, list)
@@ -453,6 +460,8 @@ type IngressOrgDefaults = {
   sslMode: ManagedSslMode | undefined
   listenerPorts: ManagedIngressPorts
   externalAccess: boolean
+  /** Addresses the root login may be used from besides this server itself. */
+  rootAllowedSources: readonly string[]
 }
 
 /** Build every cluster entry for `managedIds`, short-circuiting on the first error. */
@@ -482,6 +491,7 @@ async function buildIngressClusters(
     serverId,
     secretsConfig: reseal.secretsConfig,
     dataEncryptionSecrets: reseal.dataEncryptionSecrets,
+    rootAllowedSources: orgDefaults.rootAllowedSources,
   })
   if ('kind' in usersByManaged) return usersByManaged
 
@@ -619,7 +629,14 @@ async function buildManagedIngressReconcileDesired(
       secretsConfig: params.secretsConfig,
       dataEncryptionSecrets: params.dataEncryptionSecrets,
     },
-    { sslMode: orgDefaults.sslMode, listenerPorts, externalAccess }
+    {
+      sslMode: orgDefaults.sslMode,
+      listenerPorts,
+      externalAccess,
+      // The server owner's organization, like the listener ports: the servers
+      // that may use the root login are the ones that organization owns.
+      rootAllowedSources: await loadOrganizationRootAllowedSources(db, serverOwnerOrganizationId),
+    }
   )
   if ('kind' in clusters) return clusters
   if (clusters.length === 0) return null

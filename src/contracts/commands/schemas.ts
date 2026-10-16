@@ -5337,7 +5337,19 @@ export type ManagedIngressReconcileUser = {
   defaultDatabase?: string
   /** Absent means `read-write`, so a skewed daemon keeps writer routing. */
   connectionRole?: ManagedConnectionRole
+  /**
+   * Root logins only: the addresses of the organization's servers (public,
+   * private network, mesh) the root login may be used from, as plain
+   * IPv4/IPv6 addresses. Present — even empty — limits the root login to the
+   * server itself, its containers and these addresses (the daemon adds the
+   * host-local sources). Absent means no limit, so a daemon that predates
+   * the field keeps today's behaviour.
+   */
+  allowedSources?: string[]
 }
+
+/** Most addresses one root login may list. */
+export const MAX_MANAGED_INGRESS_ALLOWED_SOURCES = 1024
 
 /**
  * Which ProxySQL hostgroup a frontend login defaults to. `read-only` is the
@@ -7371,7 +7383,27 @@ function parseManagedIngressReconcileUser(value: unknown): ManagedIngressReconci
     }
     user.connectionRole = value.connectionRole
   }
+  if (value.allowedSources !== undefined) {
+    user.allowedSources = parseManagedIngressAllowedSources(value.allowedSources)
+  }
   return user
+}
+
+function parseManagedIngressAllowedSources(value: unknown): string[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > MAX_MANAGED_INGRESS_ALLOWED_SOURCES ||
+    value.some(
+      (entry) =>
+        typeof entry !== 'string' ||
+        entry.length === 0 ||
+        entry.length > 45 ||
+        !/^[0-9a-fA-F:.]+$/.test(entry)
+    )
+  ) {
+    throw new TypeError('Invalid managed.ingress.reconcile user allowedSources')
+  }
+  return [...value]
 }
 
 function parseManagedIngressReconcileCluster(value: unknown): ManagedIngressReconcileCluster {
