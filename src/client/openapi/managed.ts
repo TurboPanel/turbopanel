@@ -885,6 +885,7 @@ export const managedSchemas = {
             columns: { type: 'array', items: { type: 'string' } },
             host: { type: 'string' },
             via: { type: 'string', description: 'The role the grant comes through.' },
+            viaLabel: { type: 'string', description: '`everyone` for a Postgres PUBLIC grant.' },
             grantor: { type: 'string' },
             privileges: {
               type: 'array',

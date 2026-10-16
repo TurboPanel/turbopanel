@@ -241,3 +241,42 @@ test('reportMatchesSeries compares the engine version with the catalogue series'
   assertEquals(reportMatchesSeries('11.4.2-MariaDB', '11.8'), false)
   assertEquals(reportMatchesSeries(undefined, '18'), true)
 })
+
+test('PUBLIC grants are labelled everyone; MySQL role grants are not expanded', () => {
+  const pg = privilegeCatalogueFor('postgres', '18')!
+  const pgLogin = {
+    username: 'app',
+    exists: true,
+    memberships: [],
+    grants: [
+      { level: 'database' as const, database: 'shop', privileges: ['CONNECT'], via: 'PUBLIC' },
+    ],
+    defaults: [],
+  }
+  const pgView = buildEffectivePermissions(pg, report(pgLogin), pgLogin)
+  assertEquals(pgView.grants[0]!.viaLabel, 'everyone')
+
+  const my = privilegeCatalogueFor('mysql', '8.4')!
+  const myLogin = {
+    username: 'app',
+    exists: true,
+    memberships: [{ role: 'reader' }],
+    grants: [
+      { level: 'database' as const, database: 'shop', host: '%', privileges: ['SELECT'] },
+      {
+        level: 'database' as const,
+        database: 'shop',
+        host: '%',
+        privileges: ['INSERT'],
+        via: 'reader',
+      },
+    ],
+    defaults: [],
+  }
+  const myView = buildEffectivePermissions(my, report(myLogin, 'mysql'), myLogin)
+  assertEquals(myView.grants.length, 1)
+  assertEquals(
+    myView.memberships.map((m) => m.role),
+    ['reader']
+  )
+})

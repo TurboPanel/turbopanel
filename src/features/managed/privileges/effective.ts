@@ -46,6 +46,8 @@ export type EffectiveGrant = {
   columns?: string[]
   host?: string
   via?: string
+  /** Plain name for a grant that applies to everyone (Postgres PUBLIC): `everyone`. */
+  viaLabel?: string
   grantor?: string
   privileges: EffectivePrivilege[]
   /** Where the grant came from. Always `observed` until the panel keeps a ledger. */
@@ -242,6 +244,7 @@ function classifyGrant(
     if (value !== undefined) out[key] = value
   }
   if (grant.columns) out.columns = grant.columns
+  if (grant.via === 'PUBLIC') out.viaLabel = 'everyone'
   return out
 }
 
@@ -353,7 +356,12 @@ export function buildEffectivePermissions(
   login: ObservedLogin
 ): EffectivePermissions {
   const index = indexCatalogue(catalogue)
-  const grants = login.grants.map((grant) => classifyGrant(index, catalogue, grant))
+  // MySQL and MariaDB show role names only; a role's own grants are not expanded.
+  const shown =
+    catalogue.engine === 'postgres'
+      ? login.grants
+      : login.grants.filter((grant) => grant.via === undefined)
+  const grants = shown.map((grant) => classifyGrant(index, catalogue, grant))
   const defaults = login.defaults.map((item) => classifyDefault(index, catalogue, item))
   const memberships = login.memberships.map((item) => classifyMembership(catalogue, item))
   const attributes = classifyAttributes(catalogue, login.attributes)
