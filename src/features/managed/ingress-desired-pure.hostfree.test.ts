@@ -58,10 +58,24 @@ test('hostgroupsForClusterIndex pairs writer/reader and rejects bad indices', ()
 })
 
 test('ingressEngineVersion sends the release series of the image the cluster runs', () => {
-  const spec = { defaultImage: 'docker.io/library/postgres:18-alpine' }
+  const spec = { engine: 'postgres', defaultImage: 'docker.io/library/postgres:18-alpine' }
   assertEquals(ingressEngineVersion(spec, 'docker.io/library/postgres:17'), '17')
-  assertEquals(ingressEngineVersion(spec, 'docker.io/library/mysql:9.7-oraclelinux9'), '9.7')
-  assertEquals(ingressEngineVersion(spec, 'docker.io/library/mariadb:11.8-ubi'), '11.8')
+  assertEquals(
+    ingressEngineVersion(
+      { engine: 'mysql', defaultImage: 'docker.io/library/mysql:9.7' },
+      'docker.io/library/mysql:9.7-oraclelinux9'
+    ),
+    '9.7'
+  )
+  assertEquals(
+    ingressEngineVersion(
+      { engine: 'mariadb', defaultImage: 'docker.io/library/mariadb:11.8' },
+      'docker.io/library/mariadb:11.8-ubi'
+    ),
+    '11.8'
+  )
+  // Another engine's image sends nothing.
+  assertEquals(ingressEngineVersion(spec, 'docker.io/library/mysql:9.7'), undefined)
   // No stored image: the spec's legacy default, else its default.
   assertEquals(ingressEngineVersion(spec, undefined), '18')
   assertEquals(
@@ -77,6 +91,7 @@ test('ingressEngineVersion sends the release series of the image the cluster run
 
 test('ingressEngineVersionFromOptions reads the stored image, not the parsed settings', () => {
   const spec = {
+    engine: 'mariadb',
     defaultImage: 'docker.io/library/mariadb:11.8',
     legacyDefaultImage: 'docker.io/library/mariadb:12.3',
   }
@@ -98,10 +113,7 @@ test('ingressEngineVersionFromOptions reads the stored image, not the parsed set
     '11.4'
   )
   assertEquals(
-    ingressEngineVersionFromOptions(
-      { ...spec, engine: 'mariadb' },
-      { settings: { image: 'docker.io/library/mysql:9.7' } }
-    ),
+    ingressEngineVersionFromOptions(spec, { settings: { image: 'docker.io/library/mysql:9.7' } }),
     undefined
   )
   // Unreadable options or an off-catalog image send nothing.

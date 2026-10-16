@@ -5363,7 +5363,8 @@ export type ManagedIngressReconcileCluster = {
   /**
    * Engine release series (`18`, `9.7`, `11.8`) from the cluster's image.
    * ProxySQL reports it to clients as the server version; an older daemon
-   * ignores it. Absent for an image outside the release catalog.
+   * ignores it. Absent when the stored image is unreadable, is another
+   * engine's, or is outside the release catalog.
    */
   engineVersion?: string
   /**

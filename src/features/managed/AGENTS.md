@@ -311,12 +311,13 @@ stays internal.
   IPv4); loopback clients still show the managed network's gateway. The daemon
   does this only on Docker Engine 28+ / Compose 2.33.1+; older hosts keep the
   old path. Details:
-  `../turbopaneld/src/managed/AGENTS.md` → **Real client addresses (IPv6 network)**.
+  `turbopaneld/src/managed/AGENTS.md` → **Real client addresses (IPv6 network)**.
 
 Each `managed.ingress.reconcile` cluster also carries `engineVersion`, the
 release series of the image the row stores (`ingressEngineVersionFromOptions`,
 read from the raw options so a no-longer-creatable series still reports what it
-runs: `18`, `9.7`, `11.8`; absent for an image outside the catalog). The daemon sets ProxySQL's
+runs: `18`, `9.7`, `11.8`; absent when the stored image is unreadable, is
+another engine's, or is outside the catalog). The daemon sets ProxySQL's
 `mysql-server_version` / `pgsql-server_version` from it, so clients see the
 real engine instead of ProxySQL's defaults (PostgreSQL 16.1, MySQL 8.0.11).
 One listener per family is shared by every cluster on the server: it reports

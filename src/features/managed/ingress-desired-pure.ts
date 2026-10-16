@@ -71,15 +71,16 @@ export function protocolListenerForEngine(
  * (`18`, `9.7`, `11.8`). ProxySQL reports it to clients as the server version
  * (it would otherwise say PostgreSQL 16.1 / MySQL 8.0.11 whatever the engine).
  * The series is all the image tag pins, so no patch level. `undefined` for an
- * image outside the release catalog; the daemon then leaves the version as is.
+ * image outside the release catalog or of another engine; the daemon then
+ * leaves the version as is.
  */
 export function ingressEngineVersion(
-  spec: { engine?: string; defaultImage: string; legacyDefaultImage?: string },
+  spec: { engine: string; defaultImage: string; legacyDefaultImage?: string },
   image: string | undefined
 ): string | undefined {
   const release = describeManagedImage(effectiveManagedImage(spec, image?.trim()))
   if (!release) return undefined
-  if (spec.engine !== undefined && release.engine !== spec.engine) return undefined
+  if (release.engine !== spec.engine) return undefined
   return release.series
 }
 
@@ -92,7 +93,7 @@ export function ingressEngineVersion(
  * legacy default (what an old row runs); unreadable options send nothing.
  */
 export function ingressEngineVersionFromOptions(
-  spec: { engine?: string; defaultImage: string; legacyDefaultImage?: string },
+  spec: { engine: string; defaultImage: string; legacyDefaultImage?: string },
   options: unknown
 ): string | undefined {
   if (!isIngressRecord(options)) return undefined
