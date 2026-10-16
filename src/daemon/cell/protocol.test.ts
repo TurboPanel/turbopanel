@@ -2426,6 +2426,24 @@ it('validateDaemonInboundFrame accepts managed-health-result, ok and error forms
   )
 })
 
+it('managed-permissions-result is allowed inbound; the request stays outbound-only', () => {
+  const allowed = DAEMON_INBOUND_ALLOWED as ReadonlySet<string>
+  assertEquals(allowed.has('managed-permissions-result'), true)
+  assertEquals(allowed.has('managed-permissions-request'), false)
+})
+
+it('validateDaemonInboundFrame checks managed-permissions-result', () => {
+  const base = { type: 'managed-permissions-result', id: 'req-1', ok: true, at: VALID_AT }
+  const accept = (frame: Record<string, unknown>) =>
+    validateDaemonInboundFrame(JSON.stringify(frame)).ok
+  assertEquals(accept({ ...base, permissions: { engine: 'postgres', logins: [] } }), true)
+  assertEquals(accept({ ...base, ok: false, error: 'engine not running' }), true)
+  assertEquals(accept({ ...base, ok: 'yes' }), false)
+  assertEquals(accept({ ...base, id: '' }), false)
+  assertEquals(accept({ ...base, permissions: 'nope' }), false)
+  assertEquals(accept({ ...base, permissions: { blob: 'x'.repeat(130 * 1024) } }), false)
+})
+
 it('validateDaemonInboundFrame rejects malformed managed-health-result frames', () => {
   const base = {
     type: 'managed-health-result',

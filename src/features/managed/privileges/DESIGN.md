@@ -18,12 +18,10 @@ a recipe; "Manage permissions myself" stays available.
 | Engine ground truth for tests       | `fixtures/<engine>-<series>.json`, `scripts/capture-privilege-fixtures.mjs` |
 | `GET …/managed/privilege-catalogue` | `src/client/managed/privilege-routes.ts`                                    |
 
-The read side of a login's current permissions follows in the next change of this
-slice and is described in "Read side contract" below in the future tense: a raw
-report shape and parser (`observed.ts`), the join of report and catalogue
-(`effective.ts`), `GET …/users/:principalId/effective-permissions`
-(`permissions-probe.ts`), and the daemon read (`turbopaneld/src/managed/permissions-read.ts`,
-cell message, feature `managed-permissions-read-v1`).
+| Raw report shape and parser | `observed.ts` (twin of the daemon's `ManagedPermissionsObserved`) |
+| Join of report and catalogue | `effective.ts` |
+| `GET …/users/:principalId/effective-permissions` | `privilege-routes.ts`, `src/client/managed/permissions-probe.ts` |
+| Daemon read | `turbopaneld/src/managed/permissions-read.ts` (cell message, feature `managed-permissions-read-v1`) |
 
 ### Where the catalogue lives, and why
 

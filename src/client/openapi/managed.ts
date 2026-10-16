@@ -777,6 +777,172 @@ export const managedSchemas = {
       message: { type: 'string' },
     },
   },
+  EffectivePrivilege: {
+    type: 'object',
+    required: ['keyword', 'catalogueId', 'label', 'explanation', 'allowed', 'grantable'],
+    properties: {
+      keyword: { type: 'string', description: 'As the engine spells it.' },
+      catalogueId: {
+        type: ['string', 'null'],
+        description: 'Catalogue id, or null when this engine version has no such privilege.',
+      },
+      label: { type: 'string' },
+      explanation: { type: 'string' },
+      allowed: {
+        type: 'string',
+        enum: ['yes', 'needs-admin', 'no', 'unknown'],
+        description:
+          "Whether a site owner's login may hold it. `unknown`: not in the catalogue for this version.",
+      },
+      reason: { type: 'string' },
+      grantable: { type: 'boolean', description: 'The holder may pass this privilege on.' },
+    },
+  },
+  EffectivePermissionsResponse: {
+    type: 'object',
+    required: [
+      'username',
+      'exists',
+      'engine',
+      'series',
+      'observedAt',
+      'attributes',
+      'accounts',
+      'memberships',
+      'grants',
+      'defaults',
+      'truncated',
+      'outsidePolicyCount',
+      'ledger',
+      'databases',
+      'versionMatchesCatalogue',
+    ],
+    description:
+      'What the engine says a login can do right now, read from the host. Every item is `observed`: the panel keeps no record of its own grants yet, so it cannot say which grants it set and which were set outside the panel.',
+    properties: {
+      username: { type: 'string' },
+      exists: { type: 'boolean' },
+      engine: { type: 'string', enum: ['postgres', 'mysql', 'mariadb'] },
+      series: { type: 'string' },
+      observedAt: { type: 'string', format: 'date-time' },
+      serverVersion: { type: 'string' },
+      attributes: {
+        type: 'array',
+        description: 'Postgres role attributes the engine reports.',
+        items: {
+          type: 'object',
+          required: ['name', 'label', 'explanation', 'value', 'allowed'],
+          properties: {
+            name: { type: 'string' },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+            value: { type: ['boolean', 'integer'] },
+            allowed: { type: 'string', enum: ['yes', 'needs-admin', 'no'] },
+            reason: { type: 'string' },
+          },
+        },
+      },
+      accounts: {
+        type: 'array',
+        description: 'MySQL and MariaDB account rows (one per host).',
+        items: {
+          type: 'object',
+          required: ['host'],
+          properties: { host: { type: 'string' }, locked: { type: 'boolean' } },
+        },
+      },
+      memberships: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['role', 'kind', 'allowed', 'origin'],
+          properties: {
+            role: { type: 'string' },
+            label: { type: 'string' },
+            explanation: { type: 'string' },
+            kind: { type: 'string', enum: ['predefined', 'panel', 'other'] },
+            allowed: { type: 'string', enum: ['yes', 'needs-admin', 'no', 'unknown'] },
+            reason: { type: 'string' },
+            inherit: { type: 'boolean' },
+            set: { type: 'boolean' },
+            admin: { type: 'boolean' },
+            via: { type: 'string', description: 'The role the membership is held through.' },
+            host: { type: 'string' },
+            origin: { type: 'string', const: 'observed' },
+          },
+        },
+      },
+      grants: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['level', 'privileges', 'origin'],
+          properties: {
+            level: { type: 'string' },
+            database: { type: 'string' },
+            schema: { type: 'string' },
+            object: { type: 'string' },
+            columns: { type: 'array', items: { type: 'string' } },
+            host: { type: 'string' },
+            via: { type: 'string', description: 'The role the grant comes through.' },
+            grantor: { type: 'string' },
+            privileges: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/EffectivePrivilege' },
+            },
+            origin: { type: 'string', const: 'observed' },
+          },
+        },
+      },
+      defaults: {
+        type: 'array',
+        description: 'Postgres default privileges for objects made later.',
+        items: {
+          type: 'object',
+          required: ['database', 'creator', 'appliesTo', 'objectType', 'privileges', 'origin'],
+          properties: {
+            database: { type: 'string' },
+            creator: { type: 'string' },
+            schema: { type: 'string' },
+            appliesTo: { type: 'string' },
+            objectType: { type: 'string' },
+            via: { type: 'string' },
+            privileges: {
+              type: 'array',
+              items: { $ref: '#/components/schemas/EffectivePrivilege' },
+            },
+            origin: { type: 'string', const: 'observed' },
+          },
+        },
+      },
+      truncated: { type: 'boolean', description: 'The host cut a list short.' },
+      outsidePolicyCount: {
+        type: 'integer',
+        description:
+          "Privileges, role memberships and attributes a site owner's login may not hold.",
+      },
+      ledger: {
+        type: 'object',
+        required: ['available'],
+        properties: { available: { type: 'boolean', const: false } },
+      },
+      databases: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Databases read (Postgres).',
+      },
+      versionMatchesCatalogue: { type: 'boolean' },
+    },
+  },
+  EffectivePermissionsFailure: {
+    type: 'object',
+    required: ['error'],
+    properties: {
+      error: { type: 'string', enum: ['daemon_update_required', 'permissions_read_failed'] },
+      reason: { type: 'string' },
+      message: { type: 'string' },
+    },
+  },
   ManagedUsersResponse: {
     type: 'object',
     required: ['users'],
@@ -1794,6 +1960,46 @@ export const managedPaths = {
               },
             },
           },
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/users/{principalId}/effective-permissions': {
+    get: {
+      tags: ['Managed services'],
+      summary: 'Effective permissions of a login, read from the engine',
+      description:
+        'Read only. Asks the host that runs the cluster what the engine says the login can do right now and joins it to the privilege catalogue. Everything is reported as observed; the panel keeps no ledger of its own grants yet. 409 `daemon_update_required` when the server runs a TurboPanel version that cannot answer; 409 `server_offline`; 502 or 504 `permissions_read_failed` when the host answers badly or too slowly.',
+      parameters: [ENV_ID_PARAM, PRINCIPAL_ID_PARAM],
+      responses: {
+        200: {
+          description: "The login's permissions as the engine reports them",
+          ...jsonSchema('EffectivePermissionsResponse'),
+        },
+        409: {
+          description: 'daemon_update_required / server_offline',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/EffectivePermissionsFailure' },
+                  { $ref: '#/components/schemas/ServerOfflineError' },
+                ],
+              },
+            },
+          },
+        },
+        422: {
+          description: 'privilege_catalogue_unsupported_version',
+          ...jsonSchema('PrivilegeCatalogueUnsupportedError'),
+        },
+        502: {
+          description: 'permissions_read_failed',
+          ...jsonSchema('EffectivePermissionsFailure'),
+        },
+        504: {
+          description: 'permissions_read_failed (timeout)',
+          ...jsonSchema('EffectivePermissionsFailure'),
         },
       },
     },
