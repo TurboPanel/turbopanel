@@ -2155,7 +2155,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         .where(
           and(
             inArray(command.serverId, [...new Set(prepared.members.map((m) => m.serverId))]),
-            eq(command.type, 'managed.apply'),
+            eq(command.name, 'managed.apply'),
             sql`${command.createdAt} >= ${startedAt}`
           )
         )
