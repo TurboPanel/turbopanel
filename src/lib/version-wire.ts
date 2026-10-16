@@ -185,6 +185,7 @@ export const DAEMON_WIRE_FEATURES = [
   'site-db-bindings-v1',
   'deno-native-apps-v1',
   'managed-ingress-ipv6-v1',
+  'managed-login-limits-v1',
   'managed-permissions-read-v1',
 ] as const
 
