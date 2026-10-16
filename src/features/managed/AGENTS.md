@@ -340,6 +340,24 @@ loopback and hairpin callers), anything arriving as the gateway is allowed. The
 list is read on each reconcile; a server added to the organization reaches the
 other servers' root allow-list at their next ingress reconcile.
 
+**App logins can be limited by source address and connection count.**
+`login.metadata.allowedSources` (absent = anywhere) lists places: `internal`
+(this server: loopback + its Docker networks), `server:<id>` (an organization
+server, resolved to its public/private/mesh addresses on every reconcile,
+`login-sources-load.ts`) and `address:<ip | prefix% | cidr>` (a CIDR is turned
+into a `%` prefix on save only when ProxySQL can match it exactly: IPv4 /8 /16
+/24, IPv6 whole 16-bit groups; otherwise 400 `managed_login_source_range_not_exact`).
+`metadata.maxConnections` becomes the user row's `max_connections`. Both are set
+on `POST` and `PATCH .../managed/users` (`login-limit-fields.ts`, pure rules in
+`login-sources.ts`; an empty list is refused, `any` means clear). The reconcile
+sends `allowedSources` (+ `allowLocalSources` for `internal`) and
+`maxConnections` on the login's `users[]` entry (`loginWireLimits`) only to a
+daemon listing `managed-login-limits-v1`; for an older daemon a source-limited
+login is left out of that server's payload (fail closed) and a bare cap is
+dropped. Same behaviour as the root guard: the login signs in, every query from
+a refused address is answered with an error; anything arriving as the Docker
+gateway address counts as local.
+
 `decideIngressBindAddresses` in `ingress-desired-pure.ts` turns the setting into
 the `bindAddresses` sent in `managed.ingress.reconcile` (a server with no
 cluster to front still takes the `not_needed` / teardown path). The wire

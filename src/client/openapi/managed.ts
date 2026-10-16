@@ -1,3 +1,18 @@
+const ALLOWED_SOURCES_SCHEMA = {
+  type: 'array',
+  items: { type: 'string' },
+  description:
+    "Where the login may be used from. Items: `any` (alone: everywhere, the default), `internal` (this server: its own programs and containers; anything arriving as the Docker gateway address counts as local), `server:<id>` (one of the organization's servers, all its addresses), `address:<ip | prefix% | cidr>` (one address, a prefix such as `203.0.113.%` or `2001:db8:1:%`, or a range that can be said exactly: IPv4 /8, /16, /24 or /32, IPv6 whole 16-bit groups /16 to /112; other ranges answer 400 `managed_login_source_range_not_exact`). The login still signs in from anywhere: the database proxy refuses every query from other addresses, so tools may show an empty page. An empty list answers 400 `managed_login_sources_empty`. Needs a server daemon that supports it (409 `managed_login_limits_need_daemon_update`). Other 400s: `managed_login_sources_invalid`, `managed_login_source_invalid`, `managed_login_sources_too_many`, `managed_login_sources_any_alone`, `managed_login_source_server_unknown`.",
+} as const
+
+const MAX_CONNECTIONS_SCHEMA = {
+  type: 'integer',
+  minimum: 1,
+  maximum: 10000,
+  description:
+    'Most connections this login may hold open at once. Omit for no per-login cap. Answers 400 `managed_login_max_connections_invalid` outside 1 to 10000.',
+} as const
+
 const ENV_ID_PARAM = {
   name: 'id',
   in: 'path',
@@ -635,6 +650,15 @@ export const managedSchemas = {
         description:
           "Who sets the login's permissions. `preset` = logins made before modes existed (the panel resets permissions on every apply, as before). `recipe` = the panel sets them. `self` = you set them by hand and the panel never resets them; it still owns the password, LOGIN, connection limit and CONNECT on the listed databases.",
       },
+      allowedSources: {
+        ...ALLOWED_SOURCES_SCHEMA,
+        description: "Places the login may connect from; `['any']` when unrestricted.",
+      },
+      maxConnections: {
+        type: 'integer',
+        nullable: true,
+        description: 'Per-login connection cap, or null.',
+      },
       tool: {
         type: 'boolean',
         description:
@@ -823,6 +847,8 @@ export const managedSchemas = {
         type: 'boolean',
         description: 'Mark the login as used by a database tool: routed to the primary only.',
       },
+      allowedSources: ALLOWED_SOURCES_SCHEMA,
+      maxConnections: MAX_CONNECTIONS_SCHEMA,
       nameScheme: {
         type: 'string',
         enum: ['plain', 'partial', 'random'],
@@ -1814,6 +1840,16 @@ export const managedPaths = {
               properties: {
                 grantMode: { type: 'string', enum: ['recipe', 'self'] },
                 tool: { type: 'boolean' },
+                allowedSources: {
+                  ...ALLOWED_SOURCES_SCHEMA,
+                  nullable: true,
+                  description: `${ALLOWED_SOURCES_SCHEMA.description} \`null\` clears the limit.`,
+                },
+                maxConnections: {
+                  ...MAX_CONNECTIONS_SCHEMA,
+                  nullable: true,
+                  description: `${MAX_CONNECTIONS_SCHEMA.description} \`null\` removes the cap.`,
+                },
                 databases: { type: 'array', items: { type: 'string' } },
                 connectionRole: { type: 'string', enum: ['read-write', 'read-only'] },
                 privileges: {

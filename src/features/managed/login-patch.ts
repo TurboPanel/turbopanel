@@ -15,6 +15,7 @@ import {
   loginGrantMode,
   loginIsTool,
 } from './logins.ts'
+import { describePatchedLimits } from './login-sources.ts'
 
 export type LoginPatchError = {
   ok: false
@@ -31,6 +32,10 @@ export type LoginPatchInput = {
   connectionRole?: 'read-write' | 'read-only'
   privileges?: string[]
   confirmReset?: unknown
+  /** Parsed places; `null` clears (anywhere). Absent leaves the stored value. */
+  allowedSources?: string[] | null
+  /** Parsed cap; `null` clears. Absent leaves the stored value. */
+  maxConnections?: number | null
 }
 
 export type LoginPatchCurrent = {
@@ -98,6 +103,11 @@ function patchMetadata(after: LoginGrantMode, input: LoginPatchInput): Record<st
     // Stored only for read-only: an absent key is the read-write default.
     metadata.connectionRole = input.connectionRole === 'read-only' ? 'read-only' : undefined
   }
+  // `undefined` removes the key: absent means anywhere / no cap.
+  if (input.allowedSources !== undefined)
+    metadata.allowedSources = input.allowedSources ?? undefined
+  if (input.maxConnections !== undefined)
+    metadata.maxConnections = input.maxConnections ?? undefined
   return metadata
 }
 
@@ -175,12 +185,9 @@ export function planLoginPatch(
     return fail(400, 'Invalid request', 'Nothing to change.')
   }
   const tool = (metadata.tool as boolean | undefined) ?? loginIsTool(current.metadata)
-  return {
-    ok: true,
-    metadata,
-    grantMode: after,
-    summary: describeApply(engine, after, tool, becomesAdmin),
-  }
+  const summary = describeApply(engine, after, tool, becomesAdmin)
+  summary.push(...describePatchedLimits(current.metadata, input))
+  return { ok: true, metadata, grantMode: after, summary }
 }
 
 /** Plain-words statement kinds the next apply runs for this login. */
@@ -222,4 +229,19 @@ export function describeApply(
     lines.push('Send all of this login traffic to the primary (no read/write splitting)')
   }
   return lines
+}
+
+/** The metadata keys a PATCH can change, as they were: writing this back undoes the PATCH. */
+export function loginPatchUndo(previous: unknown): Record<string, unknown> {
+  const before = (previous ?? {}) as Record<string, unknown>
+  const mode = loginGrantMode(previous)
+  return {
+    grantMode: mode === 'preset' ? undefined : mode,
+    tool: before.tool,
+    databases: before.databases,
+    privileges: before.privileges,
+    connectionRole: before.connectionRole,
+    allowedSources: before.allowedSources,
+    maxConnections: before.maxConnections,
+  }
 }

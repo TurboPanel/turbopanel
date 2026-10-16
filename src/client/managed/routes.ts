@@ -41,7 +41,13 @@ import {
   resolveManagedOwningOrganizationIds,
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
-import { planLoginPatch } from '../../features/managed/login-patch.ts'
+import { loginPatchUndo } from '../../features/managed/login-patch.ts'
+import {
+  loginLimitMetadata,
+  parseGatedLoginLimits,
+  parseLoginPatchRequest,
+  refuseLimitsIfUnsupported,
+} from '../../features/managed/login-limit-fields.ts'
 import {
   createLoginForPrincipal,
   findManagedLogin,
@@ -50,7 +56,6 @@ import {
   isManagedLoginNameTakenInFamily,
   legacyPrincipalIdOf,
   listManagedLogins,
-  loginGrantMode,
   patchLoginMetadata,
   type ManagedLoginRow,
   removeManagedLogin,
@@ -191,7 +196,6 @@ import {
   parseManagedLoginGrantFields,
   DATABASE_ADMIN_PRIVILEGE,
   parseManagedLoginModeFields,
-  parseManagedLoginPatchFields,
   serializeManagedLogin,
   loadManagedStatusSnapshot,
   managedSessionPaths,
@@ -1989,6 +1993,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
+    const limits = await parseGatedLoginLimits(c, db, ctx.organizationId, body, targetServerId)
+    if (limits instanceof Response) return limits
 
     // A read-only login on a cluster with no read-eligible replica is fine:
     // the daemon routes it to the primary, so SELECT-only works on one server.
@@ -2005,6 +2011,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       ...(connectionRole === 'read-only' ? { connectionRole } : {}),
       grantMode,
       ...(tool ? { tool } : {}),
+      // Absent = anywhere / no cap, which is today's behaviour.
+      ...loginLimitMetadata(limits),
       origin: 'panel',
     }
     const userCreate = await db.transaction(async (tx) => {
@@ -2080,6 +2088,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         connectionRole,
         grantMode,
         tool,
+        allowedSources: limits.allowedSources ?? ['any'],
+        maxConnections: limits.maxConnections ?? null,
         createdAt: createdLogin?.createdAt ?? new Date().toISOString(),
       },
       password,
@@ -2102,13 +2112,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const target = await findManagedLogin(db, row.id, c.req.param('principalId'))
     if (!target) return c.json({ error: 'Not found' }, 404)
 
-    const fields = parseManagedLoginPatchFields(c, ctx, body, options)
-    if (fields instanceof Response) return fields
-    const { dryRun, ...input } = fields
-    const plan = planLoginPatch(ctx.spec.engine, target, input, {
-      ownerRoleDatabases: options.ownerRoleDatabases,
-    })
-    if (!plan.ok) return c.json({ error: plan.error, message: plan.message }, plan.status)
+    const parsed = await parseLoginPatchRequest(c, db, ctx, body, options, target)
+    if (parsed instanceof Response) return parsed
+    const { dryRun, limits, plan } = parsed
 
     if (dryRun) {
       // The daemon builds the SQL, so the preview lists the kinds of statement.
@@ -2122,16 +2128,12 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
+    const limitsRefused = await refuseLimitsIfUnsupported(c, db, limits, targetServerId)
+    if (limitsRefused) return limitsRefused
     const previous = target.metadata
     await patchLoginMetadata(db, target.id, plan.metadata)
     const restore = async () => {
-      await patchLoginMetadata(db, target.id, {
-        grantMode: loginGrantMode(previous) === 'preset' ? undefined : loginGrantMode(previous),
-        tool: (previous as Record<string, unknown> | null)?.tool,
-        databases: (previous as Record<string, unknown> | null)?.databases,
-        privileges: (previous as Record<string, unknown> | null)?.privileges,
-        connectionRole: (previous as Record<string, unknown> | null)?.connectionRole,
-      })
+      await patchLoginMetadata(db, target.id, loginPatchUndo(previous))
     }
 
     // A thrown error (not just an error Response) must not leave the new
