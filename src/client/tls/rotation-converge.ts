@@ -209,7 +209,12 @@ async function findRotationApplyCommand(
     serverId: string
     rotationStartedAt: string
   }
-): Promise<{ id: string; status: string; error: string | null; errorCode: string | null } | null> {
+): Promise<{
+  id: string
+  status: string
+  error: string | null
+  errorCode: string | null
+} | null> {
   const [row] = await db
     .select({
       id: command.id,
@@ -429,6 +434,7 @@ async function enqueueRotationApplyMembers(
     settings: parsed.settings,
     databases: parsed.databases,
     ownerRoleDatabases: parsed.ownerRoleDatabases,
+    databaseOwners: parsed.databaseOwners,
     serverId: managedRow.serverId,
     environmentId: managedRow.environmentId,
     organizationId: params.organizationId,

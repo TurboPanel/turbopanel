@@ -675,7 +675,9 @@ export function parsePrincipalsReconcileResult(value: unknown): PrincipalsReconc
     sshdReloaded: value.sshdReloaded,
     ...(value.principalsRetired === undefined
       ? {}
-      : { principalsRetired: parseStringArrayField(value.principalsRetired, 'principalsRetired') }),
+      : {
+          principalsRetired: parseStringArrayField(value.principalsRetired, 'principalsRetired'),
+        }),
     ...(principals === undefined ? {} : { principals }),
     warnings: parseStringArrayField(value.warnings, 'warnings'),
   }
@@ -5004,6 +5006,12 @@ export type ManagedApplyDatabaseOp = {
    * drop it removes the roles. Absent = today's behaviour.
    */
   ownerRole?: boolean
+  /**
+   * Postgres only, with `ownerRole` on a create. The applied username of the
+   * login the customer chose as the database's owner; the daemon moves the
+   * database onto it once the login exists. Needs `managed-database-owner-v1`.
+   */
+  ownerLogin?: string
 }
 
 /** Mirror of `ManagedTlsMaterialRequest` — daemon generates key material on host. */
@@ -6160,10 +6168,22 @@ function parseManagedApplyDatabases(value: unknown): ManagedApplyDatabaseOp[] | 
     if (entry.ownerRole !== undefined && typeof entry.ownerRole !== 'boolean') {
       throw new TypeError('Invalid managed.apply databases entry: ownerRole must be true or false')
     }
+    if (
+      entry.ownerLogin !== undefined &&
+      (typeof entry.ownerLogin !== 'string' ||
+        !isSafeIdentifier(entry.ownerLogin) ||
+        entry.ownerRole !== true ||
+        entry.action !== 'create')
+    ) {
+      throw new TypeError(
+        'Invalid managed.apply databases entry: ownerLogin must be a login name on a created database with ownerRole'
+      )
+    }
     databases.push({
       name: entry.name,
       action: entry.action as ManagedApplyDatabaseOp['action'],
       ...(entry.ownerRole === true ? { ownerRole: true } : {}),
+      ...(typeof entry.ownerLogin === 'string' ? { ownerLogin: entry.ownerLogin } : {}),
     })
   }
   return databases

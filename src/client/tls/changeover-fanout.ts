@@ -37,11 +37,11 @@ import {
 import {
   binding,
   environment,
-  managed,
-  replica,
   login,
+  managed,
   principal,
   project,
+  replica,
   server,
   service,
   slot,
@@ -326,7 +326,11 @@ function dropBindingResult(results: CaRotationResultRow[], managedId: string): v
 }
 
 type RematerializeOutcome =
-  { ok: true; needsRedeploy: CaRotationNeedsRedeploy[] } | { ok: false; error: string }
+  | {
+      ok: true
+      needsRedeploy: CaRotationNeedsRedeploy[]
+    }
+  | { ok: false; error: string }
 
 async function loadManagedRowsForRotation(
   db: Db,
@@ -453,6 +457,7 @@ export async function fanOutApplyForCluster(
     settings: parsed.settings,
     databases: parsed.databases,
     ownerRoleDatabases: parsed.ownerRoleDatabases,
+    databaseOwners: parsed.databaseOwners,
     serverId: params.row.serverId,
     environmentId: params.row.environmentId,
     organizationId: params.organizationId,

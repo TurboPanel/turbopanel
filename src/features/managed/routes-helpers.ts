@@ -709,11 +709,11 @@ export function parseManagedLoginGrantFields(
 
   const admin = evaluateDatabaseAdminGrant(ctx.spec.engine, {
     privileges,
-    databases,
     connectionRole,
-    ownerRoleDatabases: options.ownerRoleDatabases,
   })
-  if (admin) return c.json({ error: admin.error, message: admin.message }, admin.status)
+  if (admin) {
+    return c.json({ error: admin.error, message: admin.message }, admin.status)
+  }
 
   return {
     databases,
@@ -779,7 +779,10 @@ export function parseManagedLoginModeFields(
       400
     )
   }
-  return { grantMode: mode, tool: body.tool === undefined ? toolByDefault : body.tool === true }
+  return {
+    grantMode: mode,
+    tool: body.tool === undefined ? toolByDefault : body.tool === true,
+  }
 }
 
 /** Fields of a PATCH on a login; everything is optional, validated on its own. */

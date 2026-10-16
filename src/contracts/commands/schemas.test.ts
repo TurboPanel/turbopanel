@@ -5903,7 +5903,12 @@ test('parseManagedIngressReconcilePayload covers monitor, ports, bind, and clust
     clusters: [
       {
         ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
-        users: [{ ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0]!.users[0], tool: true }],
+        users: [
+          {
+            ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0]!.users[0],
+            tool: true,
+          },
+        ],
       },
     ],
   })
@@ -5915,7 +5920,12 @@ test('parseManagedIngressReconcilePayload covers monitor, ports, bind, and clust
         clusters: [
           {
             ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
-            users: [{ ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0]!.users[0], tool: 'yes' }],
+            users: [
+              {
+                ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0]!.users[0],
+                tool: 'yes',
+              },
+            ],
           },
         ],
       }),
@@ -7511,6 +7521,22 @@ test('parseManagedApplyPayload reads an optional databases[].ownerRole', () => {
   assertEquals(withOp({ ownerRole: true }).ownerRole, true)
   assertEquals('ownerRole' in withOp({ ownerRole: false }), false)
   assertThrows(() => withOp({ ownerRole: 'yes' }), TypeError, 'ownerRole must be true or false')
+})
+
+test('parseManagedApplyPayload reads an optional databases[].ownerLogin that needs ownerRole', () => {
+  const withOp = (extra: Record<string, unknown>) =>
+    parseManagedApplyPayload({
+      ...VALID_MANAGED_APPLY,
+      databases: [{ name: 'shop', action: 'create', ...extra }],
+    }).databases![0]!
+  assertEquals('ownerLogin' in withOp({ ownerRole: true }), false)
+  assertEquals(withOp({ ownerRole: true, ownerLogin: 'app' }).ownerLogin, 'app')
+  assertThrows(() => withOp({ ownerLogin: 'app' }), TypeError, 'ownerLogin must be a login name')
+  assertThrows(
+    () => withOp({ ownerRole: true, ownerLogin: 7 }),
+    TypeError,
+    'ownerLogin must be a login name'
+  )
 })
 
 test('managed.ingress.reconcile app-login limits are optional and validated', () => {

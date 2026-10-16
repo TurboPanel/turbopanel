@@ -1,6 +1,14 @@
 import type { ManagedEngineSpec } from './index.ts'
 import type { ManagedSettings } from './settings.ts'
 
+/** A login the customer chose as a Postgres database's owner. */
+export type DatabaseOwnerLogin = {
+  /** The login's principal id (what `/managed/users/:principalId` takes). */
+  loginId: string
+  /** Its applied username on the engine; fixed for the life of the login. */
+  username: string
+}
+
 export type ManagedRowOptions = {
   settings: ManagedSettings
   databases: string[]
@@ -10,6 +18,12 @@ export type ManagedRowOptions = {
    * A subset of `databases`.
    */
   ownerRoleDatabases?: string[]
+  /**
+   * Postgres: databases whose owner is a login the customer chose, not the
+   * default no-login owner role. A subset of `ownerRoleDatabases`; absent =
+   * every owner-role database is owned by its default owner role.
+   */
+  databaseOwners?: Record<string, DatabaseOwnerLogin>
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -50,10 +64,28 @@ export function parseManagedRowOptions(
       )
     : []
 
+  const databaseOwners: Record<string, DatabaseOwnerLogin> = {}
+  if (isRecord(value.databaseOwners)) {
+    for (const [name, owner] of Object.entries(value.databaseOwners)) {
+      if (
+        ownerRoleDatabases.includes(name) &&
+        isRecord(owner) &&
+        typeof owner.loginId === 'string' &&
+        typeof owner.username === 'string'
+      ) {
+        databaseOwners[name] = {
+          loginId: owner.loginId,
+          username: owner.username,
+        }
+      }
+    }
+  }
+
   return {
     settings,
     databases,
     ...(ownerRoleDatabases.length > 0 ? { ownerRoleDatabases } : {}),
+    ...(Object.keys(databaseOwners).length > 0 ? { databaseOwners } : {}),
   }
 }
 
@@ -63,6 +95,9 @@ export function writeManagedRowOptions(options: ManagedRowOptions): Record<strin
     databases: options.databases,
     ...(options.ownerRoleDatabases && options.ownerRoleDatabases.length > 0
       ? { ownerRoleDatabases: options.ownerRoleDatabases }
+      : {}),
+    ...(options.databaseOwners && Object.keys(options.databaseOwners).length > 0
+      ? { databaseOwners: options.databaseOwners }
       : {}),
   }
 }
