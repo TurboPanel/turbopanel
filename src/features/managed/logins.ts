@@ -13,7 +13,7 @@
 
 import { and, asc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { binding, login, principal, replica, server } from '../../db/schema.ts'
+import { binding, login, managed, principal, replica, server } from '../../db/schema.ts'
 import { generateSealedSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { PrincipalNameScheme } from '../../lib/principal-name-scheme.ts'
@@ -485,6 +485,54 @@ export async function isManagedLoginNameTaken(
     .innerJoin(replica, eq(login.managedId, replica.managedId))
     .innerJoin(server, eq(replica.serverId, server.id))
     .where(and(...conditions))
+    .limit(1)
+  return rows.length > 0
+}
+
+/**
+ * Engines whose logins share one ProxySQL frontend listener: MySQL and MariaDB
+ * speak one protocol family and share a listener, Postgres has its own.
+ * Redis and ClickHouse never reach the frontend (no family).
+ */
+export function managedProtocolFamilyEngines(engine: string): readonly string[] {
+  if (engine === 'mysql' || engine === 'mariadb') return ['mysql', 'mariadb']
+  if (engine === 'postgres') return ['postgres']
+  return []
+}
+
+/**
+ * True when another cluster of the same protocol family that shares a server
+ * with `managedId` already has a login with this name (even the same
+ * principal's): ProxySQL keeps one user table per family per server, so such a
+ * pair would fail every ingress reconcile. A cluster of another family is not
+ * a clash (separate user tables). Same-cluster names are checked elsewhere.
+ */
+export async function isManagedLoginNameTakenInFamily(
+  db: Db,
+  managedId: string,
+  engine: string,
+  name: string
+): Promise<boolean> {
+  const key = name.trim().toLowerCase()
+  const engines = managedProtocolFamilyEngines(engine)
+  if (!key || engines.length === 0) return false
+  const mine = db
+    .select({ serverId: replica.serverId })
+    .from(replica)
+    .where(eq(replica.managedId, managedId))
+  const rows = await db
+    .select({ id: login.id })
+    .from(login)
+    .innerJoin(managed, eq(login.managedId, managed.id))
+    .innerJoin(replica, eq(login.managedId, replica.managedId))
+    .where(
+      and(
+        ne(login.managedId, managedId),
+        inArray(managed.engine, [...engines]),
+        inArray(replica.serverId, mine),
+        sql`lower(btrim(${login.appliedUsername})) = ${key}`
+      )
+    )
     .limit(1)
   return rows.length > 0
 }

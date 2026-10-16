@@ -45,6 +45,7 @@ import {
   findManagedLogin,
   findManagedLoginByRole,
   isManagedLoginNameTaken,
+  isManagedLoginNameTakenInFamily,
   legacyPrincipalIdOf,
   listManagedLogins,
   loginGrantMode,
@@ -1424,7 +1425,21 @@ async function createLoginForExistingPrincipal(
   }
   if (
     (await isManagedUsernameTaken(tx, owningOrgIds, target.appliedUsername, target.id)) ||
-    (await isManagedLoginNameTaken(tx, owningOrgIds, target.appliedUsername, undefined, target.id))
+    (await isManagedLoginNameTaken(
+      tx,
+      owningOrgIds,
+      target.appliedUsername,
+      undefined,
+      target.id
+    )) ||
+    // The principal's own name is the allowed overlap across engines, but not
+    // inside one protocol family on one server (one shared frontend namespace).
+    (await isManagedLoginNameTakenInFamily(
+      tx,
+      managedId,
+      params.ctx.spec.engine,
+      target.appliedUsername
+    ))
   ) {
     return { ok: false, error: USERNAME_IN_USE_ERROR, status: 409 }
   }
