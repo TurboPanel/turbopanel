@@ -5337,6 +5337,11 @@ export type ManagedIngressReconcileUser = {
   defaultDatabase?: string
   /** Absent means `read-write`, so a skewed daemon keeps writer routing. */
   connectionRole?: ManagedConnectionRole
+  /**
+   * Database-tool login: all traffic goes to the primary and no read/write
+   * split rule is added. Absent means false.
+   */
+  tool?: boolean
 }
 
 /**
@@ -7370,6 +7375,12 @@ function parseManagedIngressReconcileUser(value: unknown): ManagedIngressReconci
       throw new TypeError('Invalid managed.ingress.reconcile user connectionRole')
     }
     user.connectionRole = value.connectionRole
+  }
+  if (value.tool !== undefined) {
+    if (typeof value.tool !== 'boolean') {
+      throw new TypeError('Invalid managed.ingress.reconcile user tool')
+    }
+    user.tool = value.tool
   }
   return user
 }

@@ -26,6 +26,7 @@ import {
   managedIngressPortForEngine,
   mergeHierarchyContainerSan,
   principalConnectionRole,
+  principalIsTool,
   principalDefaultDatabase,
   sanBindAddresses,
   protocolListenerForEngine,
@@ -123,6 +124,14 @@ test('ingressEngineVersionFromOptions reads the stored image, not the parsed set
     ingressEngineVersionFromOptions(spec, { settings: { image: 'registry.example/x:1' } }),
     undefined
   )
+})
+
+test('principalIsTool is true only for an explicit tool flag', () => {
+  assertEquals(principalIsTool({ tool: true }), true)
+  assertEquals(principalIsTool({ tool: false }), undefined)
+  assertEquals(principalIsTool({ tool: 'true' }), undefined)
+  assertEquals(principalIsTool({}), undefined)
+  assertEquals(principalIsTool(null), undefined)
 })
 
 test('protocolListenerForEngine returns the platform default port and family', () => {

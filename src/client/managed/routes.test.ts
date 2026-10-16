@@ -2676,13 +2676,13 @@ test('POST managed user honours name schemes, the org lock, and the root login s
       ).json()) as UserBody
       assertMatch(partial.user.appliedUsername, /^dbpart_[a-z0-9]{11}$/)
 
-      // A read-only login needs a read-eligible replica: a standalone cluster has none.
+      // A read-only login works on a standalone cluster: the daemon routes it to the primary.
       const readOnly = await createUser({
         username: 'dbro',
         connectionRole: 'read-only',
       })
-      assertEquals(readOnly.status, 422)
-      assertEquals(await readOnly.json(), { error: 'managed_no_read_targets' })
+      assertEquals(readOnly.status, 200)
+      assertEquals(((await readOnly.json()) as UserBody).user.connectionRole, 'read-only')
 
       const bad = await createUser({ username: 'dbbad', nameScheme: 'full' })
       assertEquals(bad.status, 400)

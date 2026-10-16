@@ -99,6 +99,7 @@ import {
   isAtRestSealedPassword,
   mergeHierarchyContainerSan,
   principalConnectionRole,
+  principalIsTool,
   principalDefaultDatabase,
   protocolListenerForEngine,
   sanBindAddresses,
@@ -270,6 +271,7 @@ async function loadClusterUsersForManagedIds(
     if (defaultDatabase !== undefined) user.defaultDatabase = defaultDatabase
     const connectionRole = principalConnectionRole(row.metadata)
     if (connectionRole !== undefined) user.connectionRole = connectionRole
+    if (principalIsTool(row.metadata)) user.tool = true
     const list = byManaged.get(row.managedId) ?? []
     list.push(user)
     byManaged.set(row.managedId, list)

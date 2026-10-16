@@ -718,46 +718,11 @@ export function resolveManagedUserPrivileges(
   return names.every((name) => allowed.includes(name)) ? [...new Set(names)] : null
 }
 
-/** A `read-only` login was requested for a cluster with no read-eligible replica. */
-export const MANAGED_NO_READ_TARGETS_ERROR = 'managed_no_read_targets'
-
-export type ManagedReadOnlyLoginGuardError = {
-  ok: false
-  error: typeof MANAGED_NO_READ_TARGETS_ERROR
-  status: 422
-}
-
-/**
- * Refuse a `read-only` login when the cluster has no read-eligible replica.
- * `read-write` is always allowed here.
- */
-export function evaluateReadOnlyLoginTargets(
-  connectionRole: ManagedConnectionRole,
-  members: ReadonlyArray<{ role: string; readEligible: boolean }>
-): ManagedReadOnlyLoginGuardError | null {
-  if (connectionRole !== 'read-only') return null
-  const hasReadTarget = members.some((member) => member.role === 'replica' && member.readEligible)
-  if (hasReadTarget) return null
-  return { ok: false, error: MANAGED_NO_READ_TARGETS_ERROR, status: 422 }
-}
-
-/**
- * Same guard as {@link evaluateReadOnlyLoginTargets}, but loads members only
- * when a `read-only` login was requested.
- */
-export async function evaluateReadOnlyLoginTargetsLazy(
-  connectionRole: ManagedConnectionRole,
-  loadMembers: () => Promise<ReadonlyArray<{ role: string; readEligible: boolean }>>
-): Promise<ManagedReadOnlyLoginGuardError | null> {
-  if (connectionRole !== 'read-only') return null
-  return evaluateReadOnlyLoginTargets(connectionRole, await loadMembers())
-}
-
 /**
  * Frontend hostgroup a login defaults to. Absent means `read-write` — the
  * historical behavior and the only safe default, since a `read-only` login is
- * useless (and provisioning is refused) when the cluster has no read-eligible
- * replica.
+ * useless when the cluster has no read-eligible replica, so the daemon
+ * routes it to the primary there.
  */
 export function parseManagedConnectionRole(value: unknown): ManagedConnectionRole | null {
   if (value === undefined || value === null) return 'read-write'

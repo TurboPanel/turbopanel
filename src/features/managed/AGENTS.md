@@ -358,10 +358,14 @@ rewriting any application's consistency semantics:
 | `read-write` (default, absent) | writer                     | current primary only                               |
 | `read-only`                    | reader                     | `readEligible` replicas (`OFFLINE_SOFT` otherwise) |
 
-Creating a `read-only` login with **no** read-eligible member is rejected
-(**422** `managed_no_read_targets`); disabling `readEligible` afterwards is
+A `read-only` login on a cluster with **no** read-eligible member is allowed:
+the daemon routes it to the primary, so SELECT-only works on one server
+(`managed_no_read_targets` no longer exists). Disabling `readEligible` is
 allowed and only removes that member from reader routing — it never changes
-promotion candidacy (`replicaClass` owns that).
+promotion candidacy (`replicaClass` owns that). A login with `metadata.tool`
+(database-tool login, sent as `tool: true` in `managed.ingress.reconcile`) is
+always routed to the primary with no split rules, so a tool session that
+locks to one backend never meets a rule that sends it elsewhere.
 
 `settings.routing.autoReadSplit` (default **off**) is the only thing that emits
 a blanket `^SELECT` query rule, and it applies to `read-write` logins only
