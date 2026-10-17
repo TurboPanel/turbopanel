@@ -190,7 +190,7 @@ test('POST/PATCH /environments strip metadata.serverId from stored JSONB', async
         },
         body: JSON.stringify({
           projectId,
-          name: 'Env Metadata Strip',
+          name: 'env-metadata-strip',
           serverId,
           metadata: { serverId, note: 'keep-me' },
         }),
@@ -286,7 +286,7 @@ test('POST /environments reconciles service rows from the project base compose w
       },
       body: JSON.stringify({
         projectId,
-        name: 'Env Base Compose Reconcile',
+        name: 'env-base-compose-reconcile',
       }),
     })
     assertEquals(createRes.status, 200)
@@ -340,7 +340,7 @@ test('POST /environments defaults a new environment to the sequential strategy',
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
     const res = await sendJson(ctx, cookie, 'POST', '/environments', {
       projectId: ctx.projectId,
-      name: 'Env Default Strategy',
+      name: 'env-default-strategy',
     })
     assertEquals(res.status, 200)
     const { id } = (await res.json()) as { id: string }
@@ -353,7 +353,7 @@ test('POST /environments keeps a strategy the caller chose, and null means unset
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
     const chosen = await sendJson(ctx, cookie, 'POST', '/environments', {
       projectId: ctx.projectId,
-      name: 'Env Chosen Strategy',
+      name: 'env-chosen-strategy',
       options: { deployStrategy: 'inplace', migrations: 'none' },
     })
     assertEquals(chosen.status, 200)
@@ -366,7 +366,7 @@ test('POST /environments keeps a strategy the caller chose, and null means unset
     // `null` means "unset", so the new-environment default applies.
     const cleared = await sendJson(ctx, cookie, 'POST', '/environments', {
       projectId: ctx.projectId,
-      name: 'Env Null Strategy',
+      name: 'env-null-strategy',
       options: { deployStrategy: null },
     })
     assertEquals(cleared.status, 200)
@@ -380,7 +380,7 @@ test('POST /environments refuses invalid deploy settings with a reason', async (
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
     const res = await sendJson(ctx, cookie, 'POST', '/environments', {
       projectId: ctx.projectId,
-      name: 'Env Bad Strategy',
+      name: 'env-bad-strategy',
       options: { deployStrategy: 'rolling' },
     })
     assertEquals(res.status, 400)
@@ -396,7 +396,7 @@ test('PATCH /environments validates deploy settings and keeps stored ones the bo
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
     const created = await sendJson(ctx, cookie, 'POST', '/environments', {
       projectId: ctx.projectId,
-      name: 'Env Patch Strategy',
+      name: 'env-patch-strategy',
       options: { deployStrategy: 'bluegreen', migrations: 'compatible', drainSeconds: 5 },
     })
     const { id } = (await created.json()) as { id: string }
@@ -487,22 +487,22 @@ test('an environment is added with an overlay, renamed with the overlay kept, an
   await withEnvironmentFixtures(async (ctx) => {
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
     const id = await createEnvironmentWith(ctx, cookie, {
-      name: 'Staging',
+      name: 'staging',
       description: 'first',
       options: { compose: EMPTY_OVERLAY },
     })
-    assertEquals((await environmentRow(ctx, id))?.name, 'Staging')
+    assertEquals((await environmentRow(ctx, id))?.name, 'staging')
     assertEquals(
       ((await storedOptions(ctx, id))?.compose as typeof EMPTY_OVERLAY).data,
       EMPTY_OVERLAY.data
     )
 
     const renamed = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
-      name: 'Pre-production',
+      name: 'pre-production',
       description: 'second',
     })
     assertEquals(renamed.status, 200)
-    assertEquals(await environmentRow(ctx, id), { name: 'Pre-production', description: 'second' })
+    assertEquals(await environmentRow(ctx, id), { name: 'pre-production', description: 'second' })
     // Renaming is not an overlay edit: the overlay survives.
     assertEquals(
       ((await storedOptions(ctx, id))?.compose as typeof EMPTY_OVERLAY).data,
@@ -583,13 +583,13 @@ function addContainer(ctx: EnvironmentTestContext, serviceId: string, status: st
 test('an environment with a running container is refused with environment_running and nothing is removed', async () => {
   await withEnvironmentFixtures(async (ctx) => {
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
-    const { id, serviceId } = await createEnvironmentWithWeb(ctx, cookie, 'Running')
+    const { id, serviceId } = await createEnvironmentWithWeb(ctx, cookie, 'running')
     await addContainer(ctx, serviceId, 'running')
 
     const refused = await deleteEnvironmentRequest(ctx, cookie, id)
     assertEquals(refused.status, 409)
     assertEquals(await refused.json(), { error: 'environment_running' })
-    assertEquals((await environmentRow(ctx, id))?.name, 'Running')
+    assertEquals((await environmentRow(ctx, id))?.name, 'running')
     assertEquals((await countRows(ctx, id, serviceId)).containers, 1)
   })
 })
@@ -597,7 +597,7 @@ test('an environment with a running container is refused with environment_runnin
 test('an environment with a deploy in progress is refused with environment_running', async () => {
   await withEnvironmentFixtures(async (ctx) => {
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
-    const { id } = await createEnvironmentWithWeb(ctx, cookie, 'Deploying')
+    const { id } = await createEnvironmentWithWeb(ctx, cookie, 'deploying')
     await ctx.db
       .insert(deployment)
       .values({ environmentId: id, serverId: ctx.serverId, status: 'applying' })
@@ -605,7 +605,7 @@ test('an environment with a deploy in progress is refused with environment_runni
     const refused = await deleteEnvironmentRequest(ctx, cookie, id)
     assertEquals(refused.status, 409)
     assertEquals(await refused.json(), { error: 'environment_running' })
-    assertEquals((await environmentRow(ctx, id))?.name, 'Deploying')
+    assertEquals((await environmentRow(ctx, id))?.name, 'deploying')
 
     // A finished deploy no longer blocks.
     await ctx.db
@@ -620,8 +620,8 @@ test('an environment with a deploy in progress is refused with environment_runni
 test('a stopped environment is deleted with its services, containers, hostings, bindings and variables', async () => {
   await withEnvironmentFixtures(async (ctx) => {
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
-    const { id, serviceId } = await createEnvironmentWithWeb(ctx, cookie, 'Stopped')
-    const sibling = await createEnvironmentWithWeb(ctx, cookie, 'Sibling')
+    const { id, serviceId } = await createEnvironmentWithWeb(ctx, cookie, 'stopped')
+    const sibling = await createEnvironmentWithWeb(ctx, cookie, 'sibling')
     await addContainer(ctx, serviceId, 'exited')
     await ctx.db.insert(hosting).values({ serviceId })
     await ctx.db
@@ -653,7 +653,7 @@ test('a stopped environment is deleted with its services, containers, hostings, 
       .where(eq(deployment.environmentId, id))
     assertEquals(deployments.length, 0)
     // The sibling environment is untouched.
-    assertEquals((await environmentRow(ctx, sibling.id))?.name, 'Sibling')
+    assertEquals((await environmentRow(ctx, sibling.id))?.name, 'sibling')
     assertEquals((await countRows(ctx, sibling.id, sibling.serviceId)).services, 1)
   })
 })
@@ -661,7 +661,7 @@ test('a stopped environment is deleted with its services, containers, hostings, 
 test('a never-deployed environment with services deletes', async () => {
   await withEnvironmentFixtures(async (ctx) => {
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
-    const { id, serviceId } = await createEnvironmentWithWeb(ctx, cookie, 'Fresh')
+    const { id, serviceId } = await createEnvironmentWithWeb(ctx, cookie, 'fresh')
     assertEquals((await deleteEnvironmentRequest(ctx, cookie, id)).status, 200)
     assertEquals((await countRows(ctx, id, serviceId)).services, 0)
   })
@@ -670,7 +670,7 @@ test('a never-deployed environment with services deletes', async () => {
 test('environment delete: another organization gets 404 and a member without manage gets 403, nothing removed', async () => {
   await withEnvironmentFixtures(async (ctx) => {
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
-    const { id } = await createEnvironmentWithWeb(ctx, cookie, 'Protected')
+    const { id } = await createEnvironmentWithWeb(ctx, cookie, 'protected')
 
     const [otherOrg] = await ctx.db
       .insert(organization)
@@ -719,7 +719,7 @@ test('environment delete: another organization gets 404 and a member without man
       const readerCookie = await sessionCookie(ctx.db, ctx.secrets, reader!.id)
       const denied = await deleteEnvironmentRequest(ctx, readerCookie, id)
       assertEquals(denied.status, 403)
-      assertEquals((await environmentRow(ctx, id))?.name, 'Protected')
+      assertEquals((await environmentRow(ctx, id))?.name, 'protected')
     } finally {
       await ctx.db.delete(grant).where(inArray(grant.actorId, [other!.id, reader!.id]))
       await ctx.db.delete(user).where(inArray(user.id, [other!.id, reader!.id]))
@@ -756,7 +756,7 @@ test('an environment moves to another server only by an explicit pin change, and
       .returning({ id: server.id })
     try {
       const id = await createEnvironmentWith(ctx, cookie, {
-        name: 'Placed',
+        name: 'placed',
         serverId: ctx.serverId,
       })
       const pinned = async () =>
@@ -769,7 +769,7 @@ test('an environment moves to another server only by an explicit pin change, and
 
       assertEquals(await pinned(), ctx.serverId)
       // A rename leaves placement alone: nothing moves implicitly.
-      await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, { name: 'Placed renamed' })
+      await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, { name: 'placed-renamed' })
       assertEquals(await pinned(), ctx.serverId)
 
       const moved = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
@@ -787,7 +787,7 @@ test('an environment moves to another server only by an explicit pin change, and
         (
           await sendJson(ctx, cookie, 'POST', '/environments', {
             projectId: ctx.projectId,
-            name: 'Nope',
+            name: 'nope',
             serverId: foreign!.id,
           })
         ).status,
@@ -833,7 +833,7 @@ test('PATCH /environments saves changes that only set a field on a service the B
   await withEnvironmentFixtures(async (ctx) => {
     await setProjectBase(ctx, { web: { image: 'nginx:alpine' } })
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
-    const id = await createEnvironmentWith(ctx, cookie, { name: 'Changes only' })
+    const id = await createEnvironmentWith(ctx, cookie, { name: 'changes-only' })
 
     const changes = composeDoc({ services: { web: { command: ['npm', 'start'] } } })
     const saved = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
@@ -849,7 +849,7 @@ test('PATCH /environments still needs an image or build for a service that is ne
   await withEnvironmentFixtures(async (ctx) => {
     await setProjectBase(ctx, { web: { image: 'nginx:alpine' } })
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
-    const id = await createEnvironmentWith(ctx, cookie, { name: 'New service' })
+    const id = await createEnvironmentWith(ctx, cookie, { name: 'new-service' })
     const before = await storedOptions(ctx, id)
 
     const bare = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
@@ -872,7 +872,7 @@ test('PATCH /environments refuses changes that leave a service with nothing to r
   await withEnvironmentFixtures(async (ctx) => {
     await setProjectBase(ctx, { web: { image: 'nginx:alpine' } })
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
-    const id = await createEnvironmentWith(ctx, cookie, { name: 'Reset image' })
+    const id = await createEnvironmentWith(ctx, cookie, { name: 'reset-image' })
 
     const reset = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
       options: {
@@ -889,7 +889,7 @@ test('PATCH /environments keeps refusing banned keys and unknown fields in the c
   await withEnvironmentFixtures(async (ctx) => {
     await setProjectBase(ctx, { web: { image: 'nginx:alpine' } })
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
-    const id = await createEnvironmentWith(ctx, cookie, { name: 'Banned' })
+    const id = await createEnvironmentWith(ctx, cookie, { name: 'banned' })
 
     const unknown = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
       options: { compose: composeDoc({ services: { web: { imaage: 'nginx' } } }) },
@@ -913,7 +913,7 @@ test('PATCH /environments keeps refusing banned keys and unknown fields in the c
 test('PATCH /environments with no Base compose needs the image in the environment', async () => {
   await withEnvironmentFixtures(async (ctx) => {
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
-    const id = await createEnvironmentWith(ctx, cookie, { name: 'No base' })
+    const id = await createEnvironmentWith(ctx, cookie, { name: 'no-base' })
     const res = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
       options: { compose: composeDoc({ services: { web: { command: ['npm', 'start'] } } }) },
     })
@@ -928,14 +928,14 @@ test('POST /environments accepts changes to a Base service and refuses a new bar
 
     const ok = await sendJson(ctx, cookie, 'POST', '/environments', {
       projectId: ctx.projectId,
-      name: 'Created with changes',
+      name: 'created-with-changes',
       options: { compose: composeDoc({ services: { web: { command: ['npm', 'start'] } } }) },
     })
     assertEquals(ok.status, 200)
 
     const refused = await sendJson(ctx, cookie, 'POST', '/environments', {
       projectId: ctx.projectId,
-      name: 'Created with a bare service',
+      name: 'created-with-a-bare-service',
       options: { compose: composeDoc({ services: { worker: { command: ['node'] } } }) },
     })
     await assertComposeRefused(refused, 'worker')

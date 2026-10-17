@@ -3,7 +3,7 @@
  * in the control-plane schema — the single source the Postgres `COMMENT ON`
  * migrations are generated from (`scripts/schema-comments.mjs`).
  *
- * Keyed by **physical** names (`seat`, `copy`, `2fa`, …), exactly as they
+ * Keyed by **physical** names (`seat`, `copy`, `totp`, …), exactly as they
  * appear in the latest `migrations/meta/NNNN_snapshot.json` — never by the
  * drizzle export name. `schema-descriptions.test.ts` holds this file to the
  * shipped schema: every table needs a `group` and a `summary`; every column
@@ -120,10 +120,10 @@ export type TableDescription = Readonly<{
 /** Physical table name → description. Alphabetical within each group. */
 export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   // ── identity ──────────────────────────────────────────────────────────
-  '2fa': {
+  totp: {
     group: 'identity',
     summary:
-      'TOTP enrolment for a user, at most one row per user (`uniq_2fa_user_id`); inserted or reset on enable, verified once, and deleted when two-factor is disabled.',
+      'TOTP enrolment for a user, at most one row per user (`uniq_totp_user_id`); inserted or reset on enable, verified once, and deleted when two-factor is disabled.',
     columns: {
       user_id:
         'Enrolled user; unique, so re-enabling resets the existing row instead of adding one, and disable deletes it.',
@@ -210,7 +210,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       is_email_verified:
         'True once the address is proven: set at creation by OTP or OAuth sign-up and the install wizard, or later by the verify-email link and OTP routes.',
       is_2fa_enabled:
-        'Derived flag kept in step with the `2fa` row: set true when TOTP enrolment is verified and false when two-factor is disabled.',
+        'Derived flag kept in step with the `totp` row: set true when TOTP enrolment is verified and false when two-factor is disabled.',
       is_disabled:
         'Sign-in gate read by every authn path (password, OTP, passkey, OAuth) and refused with `account_disabled`; no control-plane route writes it today.',
       role: 'Instance role `user`, `admin` or `superadmin`; sign-ups get `user`, the install wizard mints the one `superadmin`, and admins bypass org grants.',
@@ -478,7 +478,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Small non-secret JSON facts kept beside the action, such as `purged`, `acmeEnabled`, `deployHooksEnabled` or the grant details; never a credential.',
     },
   },
-  grant: {
+  permission: {
     group: 'platform',
     summary:
       'Allow-only ACL row: one positive grant of `permission` from a subject (`actor_type`, `actor_id`) on an entity; written by access routes, invitations, install.',
@@ -856,6 +856,30 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Optional managed-engine scope for database users (root and per-user rows); cascade-deleted with the cluster.',
     },
   },
+  folder: {
+    group: 'resources',
+    summary:
+      'One service or volume folder on one server, the record of what exists under a site owner scope; it locks environment, asset, project and organization naming.',
+    columns: {
+      scope:
+        'Scope folder name exactly as created on the host: the environment name, or `common` for assets shared by every environment.',
+      kind: '`service` or `volume`; decides which of `service_id` and `storage_id` can be set.',
+      slug: 'Folder name of the asset, copied from its slug when the folder was planned.',
+      state:
+        '`planned` before the host has it, `present`, `removing` until the host confirms a delete, `orphan` found with no asset, `missing` gone from the host.',
+    },
+  },
+  share: {
+    group: 'resources',
+    summary:
+      'An environment using a common asset, a service or volume shared by a site owner; the asset cannot be deleted while a row names it.',
+    columns: {
+      environment_id:
+        'The environment that uses the common asset; it may belong to any project of the organization.',
+      service_id: 'The common service being used; exactly one of service_id and storage_id is set.',
+      storage_id: 'The common volume being used; exactly one of service_id and storage_id is set.',
+    },
+  },
   placement: {
     group: 'resources',
     summary:
@@ -875,6 +899,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'One application or stack described by one compose document, owned by a workspace; user projects come from the API, system projects from the platform hierarchy.',
     columns: {
+      slug: 'Short name taken from the project name, unique per organization and never part of a path; editable until any folder exists under the project, then locked.',
       metadata:
         'Client jsonb: `type` is `docker-compose`, `managed`, `template` or platform-only `system` (absent means setup not chosen yet), plus optional catalog `code`.',
       options:
@@ -895,6 +920,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'One deployable unit (a compose service) within an environment; rows are derived from the compose document by reconcile, managed allocation or daemon reports.',
     columns: {
+      slug: 'Folder name under the site owner tree, unique per environment; set at creation, locked once a `folder` row exists, NULL until set.',
+      is_common:
+        'True when the folder is in the `common` scope shared by every environment; chosen at creation and never changed.',
       metadata:
         'Client jsonb reserved for non-indexed facts; promoted identity keys are stripped on write and the compose name never lives here.',
       options:
@@ -1210,6 +1238,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'Logical identity of persistent data owned by an organization and scoped to at most one of workspace, project, environment or service; bytes live on `copy` rows.',
     columns: {
+      slug: 'Folder name of a panel-owned volume under the site owner tree; set at creation, locked once a `folder` row exists, NULL until set.',
+      is_common:
+        'True when the volume folder is in the `common` scope shared by every environment; chosen at creation and never changed.',
       metadata:
         'Free-form jsonb from the API; `dockerVolumeName` is stamped to the storage UUID on volume create because the Docker volume name is the storage id.',
       options:

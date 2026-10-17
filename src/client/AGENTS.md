@@ -13,7 +13,7 @@ contract — keep them current when adding or changing routes.
 | `POST`   | `/api/client/v1/invitations`                                    | Create a pending invitation (`canInviteToTeam`); optional `grants` require `organization:own`; emails the accept link (`/accept-invitation?token=<secret>`; the secret is stored only as `token_hash` and never returned); **409** `invitation_pending`, **503** `email_unavailable` |
 | `GET`    | `/api/client/v1/invitations`                                    | List pending, unexpired invitations across the org's teams (`organization:manage`); `{ invitations: [{ id, email, teamId, teamName, expiresAt, createdAt, invitedBy }] }`                                                                                                            |
 | `DELETE` | `/api/client/v1/invitations/{id}`                               | Revoke a pending invitation (`canInviteToTeam`); atomic `pending` → `revoked`; **404** if missing or not pending                                                                                                                                                                     |
-| `POST`   | `/api/client/v1/invitations/{id}/accept`                        | Accept a pending invitation; atomically claims the row, adds team membership, materializes `invitation.grants` into `grant` rows when present (null/omitted grants confer none), updates session `organizationId`                                                                    |
+| `POST`   | `/api/client/v1/invitations/{id}/accept`                        | Accept a pending invitation; atomically claims the row, adds team membership, materializes `invitation.grants` into `permission` rows when present (null/omitted grants confer none), updates session `organizationId`                                                                    |
 | `GET`    | `/api/client/v1/permissions`                                    | Permission catalog — static, no DB query (any authenticated user)                                                                                                                                                                                                                    |
 | `GET`    | `/api/client/v1/access?resourceId=<uuid>`                       | List access grants for a resource; returns `{ access: AccessRecord[] }` with `subjectKind`, `subjectId`, `resourceId`, `effect`, and `permissionKey`                                                                                                                                 |
 | `GET`    | `/api/client/v1/access/check?resourceId=<uuid>&permissionKey=…` | Check a single permission for the signed-in user; returns `{ allowed: boolean }`                                                                                                                                                                                                     |
@@ -235,7 +235,45 @@ changes.
   `organization.options.defaultEnvironmentName` (unset = `production`).
   `GET`/`PUT /organizations/:id/default-environment` (manage-gated) names the
   environment scaffolded by project create / configure. Matching for existing
-  literal "production" catalog environments is unchanged.
+  literal "production" catalog environments is unchanged. The name is also the
+  scope folder on every server, so the PUT only takes a valid environment name
+  (`isValidEnvironmentName`) and a saved value that is not one is ignored.
+- **Folder names (`folder` table):** one row per service or volume directory per
+  server (`features/folders/records.ts`). While a row exists (any state but
+  `missing`) the environment's name (`environments/rename-lock.ts`) and server
+  pin, the asset's `slug`, the project slug and the organization's
+  `directoryNames` / `directoryNamesLocked` setting
+  (`GET`/`PUT /organizations/:id/directory-defaults`) cannot change.
+  - **Who writes rows** (`features/folders/allocate.ts`): `persistDeployFanOut`
+    takes `lockEnvironmentRow`, then `planDeployFolders` names each host-run
+    service (`slug`, the domain for web hosting) and each owned path volume that
+    has none, inserts the rows as `planned` per server and site owner, and sets
+    `directoryNamesLocked`. The ids go on the deploy command's
+    `metadata.folderIds`; the consumer marks exactly those `present` when the
+    deploy succeeds. A volume with a site owner and a `path` copy is planned when
+    the copy is added (`planVolumeFolder`). The deploy, lifecycle and stop paths
+    queue their command under the same environment row lock as a rename.
+  - **Names and scope:** `POST /storage` takes `slug`, `directoryName`, `common`
+    (a volume outside an environment is always shared). Services have no create
+    body (rows come from compose), so `PATCH /services/:id` takes the same fields
+    until the first folder exists (`service_slug_locked`, `scope_locked`).
+    Organization setting, typed names (never suffixed) and default names
+    (`-2` to `-99`) follow `features/folders/names.ts`.
+  - **Delete and stop:** deleting a service or volume (and a volume copy) flips
+    its rows to `removing` first and keeps them, with their locks, until the host
+    confirms (`confirmFolderRemoved`). An explicit environment stop sends no
+    `siteReleases`, so every folder stays; delete teardown and a server leaving
+    the environment still do. Wire: `siteReleases[].folder` and
+    `storageMaterial[].folder` ride beside the old fields, which stay
+    authoritative until the daemon resolves folders itself.
+- **Common assets (`share` table):** a common service or volume belongs to the
+  site owner and lives in the owner's `common` scope; any environment of any
+  project in the organization uses it through `/environments/:id/shares`
+  (`features/folders/shares.ts`). Deleting the environment removes its rows;
+  deleting the asset, its environment or its project is refused with
+  `common_asset_in_use` while another environment uses it; common folders never
+  block a rename. A deploy carries the common volumes its environment uses
+  (with only its own mounts).
 - **Project default server:** `project.options.defaultServerId` (optional UUID).
   Environments without their own `server_id` inherit it at deploy / lifecycle /
   stop (`resolveEffectivePlacementServerId`). Overview Base shows an inline

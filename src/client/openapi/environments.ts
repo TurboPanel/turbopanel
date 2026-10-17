@@ -211,7 +211,8 @@ export const environmentSchemas = {
       serverId: {
         type: ['string', 'null'],
         format: 'uuid',
-        description: 'Placement pin source of truth.',
+        description:
+          'Placement pin source of truth. Moving to another server is refused while the environment has folders: **409** `environment_server_locked` (the body lists them like `environment_name_locked`).',
       },
       metadata: {
         type: 'object',
@@ -223,6 +224,22 @@ export const environmentSchemas = {
         nullable: true,
         description: 'Environment options; options.compose holds the per-environment overlay',
       },
+    },
+  },
+  EnvironmentShare: {
+    type: 'object',
+    required: ['id', 'environmentId', 'kind', 'assetId'],
+    description:
+      'An environment using a common service or volume of a site owner. Deleting the environment removes it; the asset cannot be deleted while another environment uses it (**409** `common_asset_in_use`, with the environments in `uses`).',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      environmentId: { type: 'string', format: 'uuid' },
+      environmentName: { type: ['string', 'null'] },
+      projectId: { type: 'string', format: 'uuid' },
+      projectName: { type: ['string', 'null'] },
+      kind: { type: 'string', enum: ['service', 'volume'] },
+      assetId: { type: 'string', format: 'uuid' },
+      assetName: { type: ['string', 'null'] },
     },
   },
 }
@@ -258,6 +275,142 @@ const environmentCrudPaths = buildResourceCrudPaths({
 
 export const environmentPaths = {
   ...environmentCrudPaths,
+  '/api/client/v1/environments/{id}/folders': {
+    get: {
+      tags: ['Environments'],
+      summary: 'Service and volume folders under this environment',
+      description:
+        "The folders that exist under the environment's name on any server (planned, present, removing, orphan; not missing). While any exists the environment cannot be renamed or deleted: PATCH and DELETE answer 409 environment_name_locked or environment_has_folders with this same list. A removing folder is one the host has not confirmed deleted yet, for example because the server is offline. `total` counts all of them; `folders` lists the first 20, oldest first. Assets in the shared (common) scope belong to no environment and are not listed.",
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: {
+        200: {
+          description: 'Folders under the environment',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'folders', 'total'],
+                properties: {
+                  ok: { type: 'boolean' },
+                  total: { type: 'integer' },
+                  folders: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      required: ['id', 'kind', 'state', 'scope', 'slug', 'serverId'],
+                      properties: {
+                        id: { type: 'string', format: 'uuid' },
+                        kind: { type: 'string', enum: ['service', 'volume'] },
+                        state: {
+                          type: 'string',
+                          enum: ['planned', 'present', 'removing', 'orphan', 'missing'],
+                        },
+                        scope: { type: 'string' },
+                        slug: { type: 'string' },
+                        serverId: { type: 'string', format: 'uuid' },
+                        serverName: { type: 'string', nullable: true },
+                        assetId: { type: 'string', format: 'uuid', nullable: true },
+                        assetName: { type: 'string', nullable: true },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        403: { description: 'Requires read access to the environment' },
+        404: { description: 'Environment not found in this organization' },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/shares': {
+    get: {
+      tags: ['Environments'],
+      summary: 'Common services and volumes this environment uses',
+      description:
+        "A common service or volume belongs to a site owner (a Linux user on a server) and lives in that owner's shared `common` folder, so environments of any project in the organization can use it. This lists what this environment uses; the environment that owns the asset is not listed for it.",
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: {
+        200: {
+          description: 'Common assets in use',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'shares'],
+                properties: {
+                  ok: { type: 'boolean' },
+                  shares: {
+                    type: 'array',
+                    items: { $ref: '#/components/schemas/EnvironmentShare' },
+                  },
+                },
+              },
+            },
+          },
+        },
+        403: { description: 'Requires read access to the environment' },
+        404: { description: 'Environment not found in this organization' },
+      },
+    },
+    post: {
+      tags: ['Environments'],
+      summary: 'Start using a common service or volume',
+      description:
+        'Send exactly one of `serviceId` and `storageId`. Idempotent: using the same asset again returns the same id. **409** `asset_not_common` (only shared assets can be used by other environments), `asset_in_this_environment` (it belongs to this environment already) or `asset_has_no_owner` (a shared asset belongs to a site owner).',
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                serviceId: { type: 'string', format: 'uuid' },
+                storageId: { type: 'string', format: 'uuid' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Now in use',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'id'],
+                properties: { ok: { type: 'boolean' }, id: { type: 'string', format: 'uuid' } },
+              },
+            },
+          },
+        },
+        400: { description: 'Not exactly one of serviceId and storageId' },
+        403: { description: 'Requires organization manage access' },
+        404: { description: 'Environment or asset not found in this organization' },
+        409: { description: 'The asset cannot be shared (see description)' },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/shares/{shareId}': {
+    delete: {
+      tags: ['Environments'],
+      summary: 'Stop using a common service or volume',
+      description:
+        "Removes this environment's use of the asset; the asset and its folder are untouched. Deleting the environment does the same for all of them.",
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        { name: 'shareId', in: 'path', required: true, schema: { type: 'string' } },
+      ],
+      responses: {
+        200: { description: 'No longer in use' },
+        403: { description: 'Requires organization manage access' },
+        404: { description: 'No such use on this environment' },
+      },
+    },
+  },
   '/api/client/v1/environments/{id}/config-view': {
     get: {
       tags: ['Environments'],

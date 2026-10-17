@@ -35,6 +35,12 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core'
+import {
+  ENVIRONMENT_NAME_RE,
+  FOLDER_NAME_RE,
+  PROJECT_SLUG_RE,
+  RESERVED_SCOPE_NAMES,
+} from '../contracts/directory-names.ts'
 import { cidr, inet } from './net-types.ts'
 
 export const invitation = pgTable(
@@ -1971,6 +1977,17 @@ export const workspace = pgTable(
       .where(sql`kind = 'turbopanel'`),
   ]
 )
+/**
+ * SQL for the folder-name CHECKs, built from the shared rule patterns in
+ * `contracts/directory-names.ts` so a CHECK cannot drift from the code that
+ * validates a typed name. A slug never contains `..` (the pattern allows a
+ * single dot inside the name).
+ */
+const FOLDER_NAME_SQL = FOLDER_NAME_RE.source
+const PROJECT_SLUG_SQL = PROJECT_SLUG_RE.source
+const ENVIRONMENT_NAME_SQL = ENVIRONMENT_NAME_RE.source
+const RESERVED_ENVIRONMENT_NAMES_SQL = RESERVED_SCOPE_NAMES.map((name) => `'${name}'`).join(', ')
+
 export const project = pgTable(
   'project',
   {
@@ -2054,6 +2071,13 @@ export const project = pgTable(
      * `environment.metadata.component`.
      */
     component: text(),
+    /**
+     * Short name derived from the project name, unique per organization. It is
+     * never part of a path on a host (names and labels only). Changeable until
+     * a folder exists under any environment of the project, then locked. NULL
+     * only for system projects and rows from before the column existed.
+     */
+    slug: text(),
   },
   (table) => [
     index('idx_project_workspace_id').using(
@@ -2095,6 +2119,11 @@ export const project = pgTable(
     uniqueIndex('uniq_project_workspace_system_component')
       .on(table.workspaceId, table.component)
       .where(sql`component IS NOT NULL`),
+    /** Unique per organization; partial because system projects have no slug. */
+    uniqueIndex('uniq_project_organization_slug')
+      .on(table.organizationId, table.slug)
+      .where(sql`slug IS NOT NULL`),
+    check('project_slug_check', sql.raw(`slug IS NULL OR slug ~ '${PROJECT_SLUG_SQL}'`)),
   ]
 )
 
@@ -2842,6 +2871,17 @@ export const service = pgTable(
      * `name` itself is not unique and must not be assumed so.
      */
     composeServiceName: varchar('compose_service_name', { length: 255 }).notNull(),
+    /**
+     * Folder name under the site owner's tree (`services/<slug>`). Chosen at
+     * creation (a slug, or the service id in uuid mode) and locked once a
+     * `folder` row exists for the service. NULL until set.
+     */
+    slug: text(),
+    /**
+     * True when the folder lives in the `common` scope instead of the
+     * environment's own. Chosen at creation, never changed.
+     */
+    isCommon: boolean('is_common').default(false).notNull(),
   },
   (table) => [
     index('idx_service_environment_id').using(
@@ -2853,6 +2893,10 @@ export const service = pgTable(
       table.environmentId,
       table.composeServiceName
     ),
+    /** One folder name per environment; partial while slugs are being filled in. */
+    uniqueIndex('uniq_service_environment_slug')
+      .on(table.environmentId, table.slug)
+      .where(sql`slug IS NOT NULL`),
     foreignKey({
       columns: [table.environmentId],
       foreignColumns: [environment.id],
@@ -2861,6 +2905,10 @@ export const service = pgTable(
     check(
       'service_name_format_check',
       sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+    ),
+    check(
+      'service_slug_check',
+      sql.raw(String.raw`slug IS NULL OR (slug ~ '${FOLDER_NAME_SQL}' AND slug !~ '\.\.')`)
     ),
   ]
 )
@@ -3707,6 +3755,197 @@ export const principalPlacement = pgTable(
 )
 
 /**
+ * One row per service or volume folder on one server: the single record of
+ * "something exists under this scope on that server". The folder name is the
+ * asset's `slug` at the moment the folder was planned, and `scope` is the
+ * environment name (or `common`) exactly as it is on disk. While a row exists
+ * (any state but `missing`) the environment's name, the asset's slug, the
+ * project slug and the organization's folder-name setting cannot change.
+ *
+ * `planned` (reserved, not yet on the host), `present`, `removing` (asset
+ * deleted, the host has not confirmed, for example an offline server),
+ * `orphan` (found on the host with no asset behind it), `missing` (recorded
+ * but gone from the host). `service_id` and `storage_id` become NULL when the
+ * asset row is deleted first; the row stays (and keeps its locks) until the
+ * host confirms the folder is gone. Nothing here is a path: the daemon builds paths from the
+ * components.
+ */
+export const folder = pgTable(
+  'folder',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    serverId: uuid('server_id').notNull(),
+    /** The site owner whose tree holds the folder (its `applied_username` is the first path part). */
+    principalId: uuid('principal_id').notNull(),
+    /** NULL in the `common` scope. */
+    environmentId: uuid('environment_id'),
+    /** Scope folder name as created: the environment name, or `common`. */
+    scope: text().notNull(),
+    /** `service` | `volume` */
+    kind: text().notNull(),
+    /** Folder name: copy of the asset's slug. */
+    slug: text().notNull(),
+    serviceId: uuid('service_id'),
+    storageId: uuid('storage_id'),
+    /** `planned` | `present` | `removing` | `orphan` | `missing` */
+    state: text().notNull(),
+  },
+  (table) => [
+    uniqueIndex('uniq_folder_location').on(
+      table.serverId,
+      table.principalId,
+      table.scope,
+      table.kind,
+      table.slug
+    ),
+    index('idx_folder_principal_id').using(
+      'btree',
+      table.principalId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_folder_environment_id').using(
+      'btree',
+      table.environmentId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_folder_service_id').using('btree', table.serviceId.asc().nullsLast().op('uuid_ops')),
+    index('idx_folder_storage_id').using('btree', table.storageId.asc().nullsLast().op('uuid_ops')),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'folder_server_id_server_id_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.principalId],
+      foreignColumns: [principal.id],
+      name: 'folder_principal_id_principal_id_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.environmentId],
+      foreignColumns: [environment.id],
+      name: 'folder_environment_id_environment_id_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'folder_service_id_service_id_fk',
+    }).onDelete('set null'),
+    foreignKey({
+      columns: [table.storageId],
+      foreignColumns: [storage.id],
+      name: 'folder_storage_id_storage_id_fk',
+    }).onDelete('set null'),
+    check('folder_kind_check', sql`kind IN ('service', 'volume')`),
+    check(
+      'folder_state_check',
+      sql`state IN ('planned', 'present', 'removing', 'orphan', 'missing')`
+    ),
+    check('folder_slug_check', sql.raw(String.raw`slug ~ '${FOLDER_NAME_SQL}' AND slug !~ '\.\.'`)),
+    check(
+      'folder_scope_check',
+      sql.raw(
+        `scope = 'common' OR (scope ~ '${ENVIRONMENT_NAME_SQL}' AND scope NOT IN (${RESERVED_ENVIRONMENT_NAMES_SQL}))`
+      )
+    ),
+    // `common` has no environment; every other scope has one, except an orphan
+    // found on a host whose environment is not (or no longer) known.
+    check(
+      'folder_common_scope_check',
+      sql`(scope = 'common' AND environment_id IS NULL) OR (scope <> 'common' AND (environment_id IS NOT NULL OR state = 'orphan'))`
+    ),
+    check(
+      'folder_asset_kind_check',
+      sql`(kind = 'service' AND storage_id IS NULL) OR (kind = 'volume' AND service_id IS NULL)`
+    ),
+  ]
+)
+
+/**
+ * An environment using a common asset: a service or volume in the `common`
+ * scope of a site owner, which belongs to that owner and not to any one
+ * environment. Any environment of any project in the organization can share
+ * it. Deleting the environment removes its rows (cascade); deleting the asset
+ * is refused while a row names it (restrict), and the routes say so in plain
+ * words first.
+ */
+export const share = pgTable(
+  'share',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    environmentId: uuid('environment_id').notNull(),
+    serviceId: uuid('service_id'),
+    storageId: uuid('storage_id'),
+  },
+  (table) => [
+    index('idx_share_environment_id').using(
+      'btree',
+      table.environmentId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_share_service_id').using('btree', table.serviceId.asc().nullsLast().op('uuid_ops')),
+    index('idx_share_storage_id').using('btree', table.storageId.asc().nullsLast().op('uuid_ops')),
+    uniqueIndex('uniq_share_environment_service')
+      .on(table.environmentId, table.serviceId)
+      .where(sql`service_id IS NOT NULL`),
+    uniqueIndex('uniq_share_environment_storage')
+      .on(table.environmentId, table.storageId)
+      .where(sql`storage_id IS NOT NULL`),
+    foreignKey({
+      columns: [table.environmentId],
+      foreignColumns: [environment.id],
+      name: 'share_environment_id_environment_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'share_service_id_service_id_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.storageId],
+      foreignColumns: [storage.id],
+      name: 'share_storage_id_storage_id_fk',
+    }).onDelete('restrict'),
+    check(
+      'share_asset_check',
+      sql`(service_id IS NOT NULL AND storage_id IS NULL) OR (service_id IS NULL AND storage_id IS NOT NULL)`
+    ),
+  ]
+)
+
+/**
  * Join edge: the Linux/system principal that runs as / owns a service (the
  * site tree). Deleting a principal removes its edges (cascade); a service
  * still referenced by principals cannot be deleted (restrict), mirroring
@@ -4053,6 +4292,17 @@ export const storage = pgTable(
      * column to sit on.
      */
     composeVolumeKey: text('compose_volume_key'),
+    /**
+     * Folder name under the site owner's tree (`volumes/<slug>`) for volumes
+     * the panel owns. Locked once a `folder` row exists. NULL for kinds with
+     * no folder and until set.
+     */
+    slug: text(),
+    /**
+     * True when the volume folder lives in the `common` scope. Chosen at
+     * creation, never changed; a volume not tied to an environment is common.
+     */
+    isCommon: boolean('is_common').default(false).notNull(),
   },
   (table) => [
     index('idx_storage_organization_id').using(
@@ -4121,6 +4371,10 @@ export const storage = pgTable(
       sql`access_mode IN ('single_writer', 'multi_reader', 'multi_writer')`
     ),
     check('storage_retention_check', sql`retention IN ('retain', 'delete')`),
+    check(
+      'storage_slug_check',
+      sql.raw(String.raw`slug IS NULL OR (slug ~ '${FOLDER_NAME_SQL}' AND slug !~ '\.\.')`)
+    ),
     check(
       'storage_at_most_one_parent_check',
       sql`((workspace_id IS NOT NULL)::int +
@@ -5104,7 +5358,7 @@ export const webhookDelivery = pgTable(
   ]
 )
 export const grant = pgTable(
-  'grant',
+  'permission',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -5124,20 +5378,20 @@ export const grant = pgTable(
     permission: text().notNull(),
   },
   (table) => [
-    unique('grant_unique').on(
+    unique('permission_unique').on(
       table.entityType,
       table.entityId,
       table.actorType,
       table.actorId,
       table.permission
     ),
-    index('idx_grant_entity').on(table.entityType, table.entityId),
-    index('idx_grant_actor').on(table.actorType, table.actorId),
+    index('idx_permission_entity').on(table.entityType, table.entityId),
+    index('idx_permission_actor').on(table.actorType, table.actorId),
     // Mirror `SUBJECT_TYPES` / `GRANT_ENTITY_TYPES` (src/client/authz/catalog.ts) —
     // pinned by enum-checks.test.ts.
-    check('grant_actor_type_check', sql`actor_type IN ('user', 'team', 'organization')`),
+    check('permission_actor_type_check', sql`actor_type IN ('user', 'team', 'organization')`),
     check(
-      'grant_entity_type_check',
+      'permission_entity_type_check',
       sql`entity_type IN ('organization', 'workspace', 'environment', 'project', 'service', 'server', 'hosting', 'variable', 'managed', 'container', 'tls', 'team')`
     ),
   ]
@@ -5603,7 +5857,7 @@ export const user = pgTable(
   ]
 )
 export const twoFactor = pgTable(
-  '2fa',
+  'totp',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -5631,12 +5885,12 @@ export const twoFactor = pgTable(
     backupCodes: text('backup_codes').notNull(),
   },
   (table) => [
-    index('idx_2fa_user_id').using('btree', table.userId.asc().nullsLast().op('uuid_ops')),
-    unique('uniq_2fa_user_id').on(table.userId),
+    index('idx_totp_user_id').using('btree', table.userId.asc().nullsLast().op('uuid_ops')),
+    unique('uniq_totp_user_id').on(table.userId),
     foreignKey({
       columns: [table.userId],
       foreignColumns: [user.id],
-      name: '2fa_user_id_user_id_fk',
+      name: 'totp_user_id_user_id_fk',
     }).onDelete('cascade'),
   ]
 )

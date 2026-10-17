@@ -1,11 +1,15 @@
-import { and, eq, inArray } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { assertCanOr403, listVisible } from '../authz/index.ts'
-import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
+import { assertCanOr403, listVisibleVersions } from '../authz/index.ts'
+import { resolveEntityOrganizationId, resolveEntityVersion } from '../authz/create-access-grant.ts'
+import {
+  cachedEnvironmentDetail,
+  cachedEnvironmentsList,
+} from '../../query-cache/read-models/hierarchy-reads.ts'
 import { getDb, type Db } from '../../db/connection.ts'
 import { environment } from '../../db/schema.ts'
 import { settleDeployOptions } from '../../features/deploy/deploy-options.ts'
@@ -17,6 +21,7 @@ import {
 import { verifyServerInOrg } from './deploy-prepare.ts'
 import { loadRepinNeedsRedeployForEnvironment } from './repin-needs-redeploy.ts'
 import { reconcileServicesForEnvironment } from './reconcile-after-compose-save.ts'
+import { refuseDeleteWhileFolders, updateEnvironmentChecked } from './rename-lock.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -48,18 +53,6 @@ import {
   parseOptionalServerIdShape,
   serializeEnvironment,
 } from './routes-helpers.ts'
-
-const ENVIRONMENT_SELECT = {
-  id: environment.id,
-  name: environment.name,
-  description: environment.description,
-  projectId: environment.projectId,
-  serverId: environment.serverId,
-  metadata: environment.metadata,
-  options: environment.options,
-  createdAt: environment.createdAt,
-  updatedAt: environment.updatedAt,
-} as const
 
 type EnvironmentPatchFields = {
   name?: string | null
@@ -221,7 +214,12 @@ async function parseCreateEnvironmentInput(
 
   const names = parseCreateEnvironmentNames(body)
   if (!names.ok) {
-    return c.json({ error: names.error }, names.status)
+    return c.json(
+      names.message === undefined
+        ? { error: names.error }
+        : { error: names.error, message: names.message },
+      names.status
+    )
   }
 
   const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
@@ -278,8 +276,26 @@ async function deleteEnvironmentCascadeGuarded(
   }
 }
 
-function environmentDeleteRefusal(c: Context<AppEnv>, error: EnvironmentDeleteRefusal): Response {
-  return c.json({ error }, 409)
+function environmentDeleteRefusal(
+  c: Context<AppEnv>,
+  error: EnvironmentDeleteRefusal,
+  detail?: Record<string, unknown>
+): Response {
+  return c.json({ error, ...detail }, 409)
+}
+
+/** After a saved `options` patch: adopt the repository the compose names and refresh the service rows. */
+async function settleAfterOptionsPatch(
+  db: Db,
+  environmentId: string,
+  parent: { projectId: string; repositoryId: string | null } | null | undefined,
+  patchFields: EnvironmentPatchFields
+): Promise<void> {
+  if (patchFields.options === undefined) return
+  if (parent) {
+    await adoptProjectRepository(db, parent.projectId, patchFields.options, parent.repositoryId)
+  }
+  await reconcileServicesForEnvironment(db, environmentId)
 }
 
 export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -304,26 +320,20 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
 
     const projectId = c.req.query('projectId')
 
-    const visibleIds = await listVisible(db, {
+    // Who may see which environment is decided here, on the primary connection;
+    // the visible ids (with when each last changed) go into the cached read.
+    const visible = await listVisibleVersions(db, {
       kind: 'environment',
       userId: session.userId,
       organizationId,
     })
 
-    if (visibleIds.length === 0) {
+    if (visible.length === 0) {
       return c.json({ environments: [] })
     }
 
-    const conditions = [inArray(environment.id, visibleIds)]
-    if (projectId) {
-      conditions.push(eq(environment.projectId, projectId))
-    }
-
-    const rows = await db
-      .select(ENVIRONMENT_SELECT)
-      .from(environment)
-      .where(and(...conditions))
-      .orderBy(environment.createdAt)
+    const all = await cachedEnvironmentsList(c, { organizationId, visible })
+    const rows = projectId ? all.filter((row) => row.projectId === projectId) : all
 
     return c.json({ environments: rows.map(serializeEnvironment) })
   })
@@ -340,18 +350,16 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     const organizationId = orgResult
 
     const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'environment', id)
-    if (!entityOrgId || entityOrgId !== organizationId) {
+    const entity = await resolveEntityVersion(db, 'environment', id)
+    if (entity?.organizationId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const rows = await db
-      .select(ENVIRONMENT_SELECT)
-      .from(environment)
-      .where(eq(environment.id, id))
-      .limit(1)
-
-    const row = rows[0]
+    const row = await cachedEnvironmentDetail(c, {
+      organizationId,
+      id,
+      updatedAt: entity.updatedAt,
+    })
     if (!row) {
       return c.json({ error: 'Not found' }, 404)
     }
@@ -459,14 +467,10 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     if (optionsError) return optionsError
     await keepStoredDeployOptions(db, id, patchFields)
 
-    await db.update(environment).set(patchFields).where(eq(environment.id, id))
+    const refused = await updateEnvironmentChecked(c, db, id, patchFields)
+    if (refused) return refused
 
-    if (patchFields.options !== undefined) {
-      if (parent) {
-        await adoptProjectRepository(db, parent.projectId, patchFields.options, parent.repositoryId)
-      }
-      await reconcileServicesForEnvironment(db, id)
-    }
+    await settleAfterOptionsPatch(db, id, parent, patchFields)
 
     return c.json({ ok: true as const })
   })
@@ -497,6 +501,10 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     const stepUp = await requireStepUpIfConfigured(c, organizationId, 'environment.delete')
     if (stepUp) return stepUp
 
+    // The name is a folder on the servers: an environment with folders cannot go.
+    const foldersBlock = await refuseDeleteWhileFolders(c, db, id)
+    if (foldersBlock) return foldersBlock
+
     // Planned before the delete: the payload is built from rows the delete
     // removes. Dispatched after it commits.
     const teardownPlan = await planEnvironmentTeardown(db, id)
@@ -509,7 +517,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
       organizationId,
     })
     if (result === 'has_children') return hierarchyDeleteHasChildrenResponse(c)
-    if (!result.ok) return environmentDeleteRefusal(c, result.error)
+    if (!result.ok) return environmentDeleteRefusal(c, result.error, result.detail)
 
     await reclaimDeletedEnvironmentHosts(c, db, teardownPlan ? [teardownPlan] : [], session.userId)
 

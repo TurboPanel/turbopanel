@@ -246,6 +246,27 @@
       "when": 1792027087828,
       "tag": "0034_add_address_table",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1792264483900,
+      "tag": "0035_folder_table_and_slugs",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1792267808717,
+      "tag": "0036_share_table",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1792276025071,
+      "tag": "0037_rename_grant_and_2fa_tables",
+      "breakpoints": true
     }
   ]
 }

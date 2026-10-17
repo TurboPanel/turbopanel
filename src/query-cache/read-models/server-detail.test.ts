@@ -3,11 +3,13 @@ import type { Context } from 'hono'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
 import type { RedisCellClient } from '../../daemon/cell/redis/client.ts'
+import { inspectCachedRead, versionStamp } from '../cached-read.ts'
 import { createHyperdriveQueryCache } from '../hyperdrive-query-cache.ts'
 import { createPassthroughQueryCache } from '../passthrough-query-cache.ts'
 import { createRedisQueryCache } from '../redis-query-cache.ts'
 import {
   cachedServerDetailReadModel,
+  serverDetailCachedRead,
   type ServerDetailRow,
 } from './server-detail.ts'
 
@@ -54,6 +56,7 @@ function thenableRows(rows: unknown[]) {
 
 /** Documented cached SELECT #1 column set (see `server-detail.ts` module comment). */
 const CACHED_DETAIL_SELECT_KEYS = [
+  '_v',
   'createdAt',
   'id',
   'licenseId',
@@ -62,6 +65,20 @@ const CACHED_DETAIL_SELECT_KEYS = [
   'options',
   'organizationId',
 ]
+
+/** The row the primary connection returns for a server (also the source of the version stamp). */
+function bareServerRow(id: string, updatedAt = 'u1') {
+  return {
+    id,
+    daemon: null,
+    metadata: null,
+    hostname: null,
+    machineKey: null,
+    connected: false,
+    statusChangedAt: null,
+    updatedAt,
+  }
+}
 
 function createStubDb(opts: {
   detailRows?: ServerDetailRow[]
@@ -73,6 +90,7 @@ function createStubDb(opts: {
     machineKey: string | null
     connected: boolean
     statusChangedAt: string | null
+    updatedAt?: string
   }>
   selectKinds?: string[]
   cachedSelectKeys?: string[][]
@@ -85,9 +103,7 @@ function createStubDb(opts: {
       const isPresence = 'daemon' in fields || 'connected' in fields
       opts.selectKinds?.push(isPresence ? 'presence' : 'cached-row')
       if (!isPresence) {
-        opts.cachedSelectKeys?.push(
-          Object.keys(fields).sort((a, b) => a.localeCompare(b)),
-        )
+        opts.cachedSelectKeys?.push(Object.keys(fields).sort((a, b) => a.localeCompare(b)))
       }
       const rows = isPresence ? presenceRows : detailRows
       return {
@@ -123,16 +139,16 @@ test('cachedServerDetailReadModel rejects when database is missing', async () =>
         serverId: 'srv-1',
       }),
     Error,
-    'Database unavailable',
+    'Database unavailable'
   )
 })
 
 test('cachedServerDetailReadModel returns null when the row is missing', async () => {
   const db = createStubDb({ detailRows: [] })
-  const result = await cachedServerDetailReadModel(
-    fakeContext({ db }),
-    { organizationId: 'org-1', serverId: 'srv-missing' },
-  )
+  const result = await cachedServerDetailReadModel(fakeContext({ db }), {
+    organizationId: 'org-1',
+    serverId: 'srv-missing',
+  })
   assertEquals(result, null)
 })
 
@@ -146,24 +162,26 @@ test('cachedServerDetailReadModel returns row plus presence enrichment', async (
     createdAt: '2024-01-01T00:00:00.000Z',
     machineClass: null,
   }
-  const presenceRows = [{
-    id: 'srv-1',
-    daemon: {
-      projection: { remoteAddress: '__direct__' },
+  const presenceRows = [
+    {
+      id: 'srv-1',
+      daemon: {
+        projection: { remoteAddress: '__direct__' },
+      },
+      metadata: null,
+      hostname: 'primary',
+      machineKey: null,
+      connected: true,
+      statusChangedAt: '2024-01-01T00:00:00.000Z',
     },
-    metadata: null,
-    hostname: 'primary',
-    machineKey: null,
-    connected: true,
-    statusChangedAt: '2024-01-01T00:00:00.000Z',
-  }]
+  ]
   const db = createStubDb({ detailRows: [row], presenceRows })
   const cache = createPassthroughQueryCache(db)
 
-  const result = await cachedServerDetailReadModel(
-    fakeContext({ db, queryCache: cache }),
-    { organizationId: 'org-1', serverId: 'srv-1' },
-  )
+  const result = await cachedServerDetailReadModel(fakeContext({ db, queryCache: cache }), {
+    organizationId: 'org-1',
+    serverId: 'srv-1',
+  })
 
   assertEquals(result?.row, row)
   assertEquals(result?.presence?.serverId, 'srv-1')
@@ -183,21 +201,23 @@ test('cachedServerDetailReadModel works without query cache in context', async (
   }
   const db = createStubDb({
     detailRows: [row],
-    presenceRows: [{
-      id: 'srv-1',
-      daemon: null,
-      metadata: null,
-      hostname: 'primary',
-      machineKey: null,
-      connected: false,
-      statusChangedAt: null,
-    }],
+    presenceRows: [
+      {
+        id: 'srv-1',
+        daemon: null,
+        metadata: null,
+        hostname: 'primary',
+        machineKey: null,
+        connected: false,
+        statusChangedAt: null,
+      },
+    ],
   })
 
-  const result = await cachedServerDetailReadModel(
-    fakeContext({ db }),
-    { organizationId: 'org-1', serverId: 'srv-1' },
-  )
+  const result = await cachedServerDetailReadModel(fakeContext({ db }), {
+    organizationId: 'org-1',
+    serverId: 'srv-1',
+  })
 
   assertEquals(result?.row, row)
   assertEquals(result?.presence?.serverId, 'srv-1')
@@ -213,28 +233,30 @@ test('cachedServerDetailReadModel reports colocated when projection is __direct_
     createdAt: '2024-01-01T00:00:00.000Z',
     machineClass: null,
   }
-  const presenceRows = [{
-    id: 'srv-1',
-    daemon: directAttachDaemonState(),
-    metadata: null,
-    hostname: 'primary',
-    machineKey: null,
-    connected: true,
-    statusChangedAt: '2024-01-01T00:00:00.000Z',
-  }]
+  const presenceRows = [
+    {
+      id: 'srv-1',
+      daemon: directAttachDaemonState(),
+      metadata: null,
+      hostname: 'primary',
+      machineKey: null,
+      connected: true,
+      statusChangedAt: '2024-01-01T00:00:00.000Z',
+    },
+  ]
   const db = createStubDb({ detailRows: [row], presenceRows })
   const cache = createPassthroughQueryCache(db)
 
-  const result = await cachedServerDetailReadModel(
-    fakeContext({ db, queryCache: cache }),
-    { organizationId: 'org-1', serverId: 'srv-1' },
-  )
+  const result = await cachedServerDetailReadModel(fakeContext({ db, queryCache: cache }), {
+    organizationId: 'org-1',
+    serverId: 'srv-1',
+  })
 
   assertEquals(result?.colocatedWithInstance, true)
   assertEquals(result?.presence?.connected, true)
 })
 
-test('cachedServerDetailReadModel uses redis cache key for org and server', async () => {
+test('cachedServerDetailReadModel derives its redis cache key from the statement', async () => {
   const row: ServerDetailRow = {
     id: 'srv-1',
     name: 'Primary',
@@ -244,7 +266,7 @@ test('cachedServerDetailReadModel uses redis cache key for org and server', asyn
     createdAt: '2024-01-01T00:00:00.000Z',
     machineClass: null,
   }
-  const db = createStubDb({ detailRows: [row], presenceRows: [] })
+  const db = createStubDb({ detailRows: [row], presenceRows: [bareServerRow(row.id)] })
   const store = new Map<string, string>()
   const cache = createRedisQueryCache({
     client: {
@@ -263,15 +285,20 @@ test('cachedServerDetailReadModel uses redis cache key for org and server', asyn
   const first = await cachedServerDetailReadModel(ctx, opts)
   assertEquals(first?.row, row)
   assertEquals(
-    store.has('tp:qcache:server-detail:org-203.0.113.2:srv-1'),
-    true,
+    store.has(
+      inspectCachedRead(serverDetailCachedRead.definition, {
+        ...opts,
+        stamp: versionStamp(['srv-1', 'u1']),
+      }).key
+    ),
+    true
   )
 
   const second = await cachedServerDetailReadModel(ctx, opts)
   assertEquals(second?.row, row)
 })
 
-test('cachedServerDetailReadModel returns null presence when preload is empty', async () => {
+test('cachedServerDetailReadModel returns null when the server is gone on the primary connection', async () => {
   const row: ServerDetailRow = {
     id: 'srv-1',
     name: 'Primary',
@@ -281,17 +308,18 @@ test('cachedServerDetailReadModel returns null presence when preload is empty', 
     createdAt: '2024-01-01T00:00:00.000Z',
     machineClass: null,
   }
-  const db = createStubDb({ detailRows: [row], presenceRows: [] })
+  const selectKinds: string[] = []
+  const db = createStubDb({ detailRows: [row], presenceRows: [], selectKinds })
   const cache = createPassthroughQueryCache(db)
 
-  const result = await cachedServerDetailReadModel(
-    fakeContext({ db, queryCache: cache }),
-    { organizationId: 'org-1', serverId: 'srv-1' },
-  )
+  const result = await cachedServerDetailReadModel(fakeContext({ db, queryCache: cache }), {
+    organizationId: 'org-1',
+    serverId: 'srv-1',
+  })
 
-  assertEquals(result?.row, row)
-  assertEquals(result?.presence, null)
-  assertEquals(result?.colocatedWithInstance, false)
+  assertEquals(result, null)
+  // The version stamp comes first; with no row there is nothing to cache.
+  assertEquals(selectKinds, ['presence'])
 })
 
 /**
@@ -318,13 +346,13 @@ test('cachedServerDetailReadModel never returns a managedMonitor secret', async 
     createdAt: '2024-01-01T00:00:00.000Z',
     machineClass: null,
   }
-  const db = createStubDb({ detailRows: [row], presenceRows: [] })
+  const db = createStubDb({ detailRows: [row], presenceRows: [bareServerRow(row.id)] })
   const cache = createPassthroughQueryCache(db)
 
-  const result = await cachedServerDetailReadModel(
-    fakeContext({ db, queryCache: cache }),
-    { organizationId: 'org-1', serverId: 'srv-1' },
-  )
+  const result = await cachedServerDetailReadModel(fakeContext({ db, queryCache: cache }), {
+    organizationId: 'org-1',
+    serverId: 'srv-1',
+  })
 
   assertEquals(result?.row.options, { timezone: 'UTC' })
   const serialized = JSON.stringify(result)
@@ -342,7 +370,7 @@ test('cachedServerDetailReadModel never caches a managedMonitor secret in redis'
     createdAt: '2024-01-01T00:00:00.000Z',
     machineClass: null,
   }
-  const db = createStubDb({ detailRows: [row], presenceRows: [] })
+  const db = createStubDb({ detailRows: [row], presenceRows: [bareServerRow(row.id)] })
   const store = new Map<string, string>()
   const cache = createRedisQueryCache({
     client: {
@@ -381,13 +409,17 @@ test('cachedServerDetailReadModel cached SELECT includes machineClass', async ()
     machineClass: 'physical',
   }
   const cachedSelectKeys: string[][] = []
-  const db = createStubDb({ detailRows: [row], presenceRows: [], cachedSelectKeys })
+  const db = createStubDb({
+    detailRows: [row],
+    presenceRows: [bareServerRow(row.id)],
+    cachedSelectKeys,
+  })
   const cache = createPassthroughQueryCache(db)
 
-  const result = await cachedServerDetailReadModel(
-    fakeContext({ db, queryCache: cache }),
-    { organizationId: 'org-1', serverId: 'srv-1' },
-  )
+  const result = await cachedServerDetailReadModel(fakeContext({ db, queryCache: cache }), {
+    organizationId: 'org-1',
+    serverId: 'srv-1',
+  })
 
   const keys = cachedSelectKeys[0]
   if (!keys) throw new TypeError()
@@ -409,15 +441,17 @@ test('cachedServerDetailReadModel runs cached SELECT on Hyperdrive db only', asy
   const primaryKinds: string[] = []
   const cachedDb = createStubDb({ detailRows: [row], selectKinds: cachedKinds })
   const primaryDb = createStubDb({
-    presenceRows: [{
-      id: 'srv-1',
-      daemon: null,
-      metadata: null,
-      hostname: 'primary',
-      machineKey: null,
-      connected: false,
-      statusChangedAt: null,
-    }],
+    presenceRows: [
+      {
+        id: 'srv-1',
+        daemon: null,
+        metadata: null,
+        hostname: 'primary',
+        machineKey: null,
+        connected: false,
+        statusChangedAt: null,
+      },
+    ],
     selectKinds: primaryKinds,
   })
   const cache = createHyperdriveQueryCache(cachedDb)
@@ -428,7 +462,7 @@ test('cachedServerDetailReadModel runs cached SELECT on Hyperdrive db only', asy
       queryCache: cache,
       daemonCellRegistry: cellMustStayAsleep(),
     }),
-    { organizationId: 'org-1', serverId: 'srv-1' },
+    { organizationId: 'org-1', serverId: 'srv-1' }
   )
 
   assertEquals(result?.row, row)
@@ -438,9 +472,20 @@ test('cachedServerDetailReadModel runs cached SELECT on Hyperdrive db only', asy
 
 test('cachedServerDetailReadModel redis hit serves JSON null without reloading', async () => {
   const selectKinds: string[] = []
-  const db = createStubDb({ detailRows: [], selectKinds })
+  const db = createStubDb({
+    detailRows: [],
+    presenceRows: [bareServerRow('srv-missing')],
+    selectKinds,
+  })
   const store = new Map<string, string>([
-    ['tp:qcache:server-detail:org-1:srv-missing', 'null'],
+    [
+      inspectCachedRead(serverDetailCachedRead.definition, {
+        organizationId: 'org-1',
+        serverId: 'srv-missing',
+        stamp: versionStamp(['srv-missing', 'u1']),
+      }).key,
+      'null',
+    ],
   ])
   const cache = createRedisQueryCache({
     client: {
@@ -453,11 +498,89 @@ test('cachedServerDetailReadModel redis hit serves JSON null without reloading',
     db,
   })
 
-  const result = await cachedServerDetailReadModel(
-    fakeContext({ db, queryCache: cache }),
-    { organizationId: 'org-1', serverId: 'srv-missing' },
-  )
+  const result = await cachedServerDetailReadModel(fakeContext({ db, queryCache: cache }), {
+    organizationId: 'org-1',
+    serverId: 'srv-missing',
+  })
 
   assertEquals(result, null)
-  assertEquals(selectKinds, [])
+  // Only the primary row (the version stamp) is read; the cached copy answers.
+  assertEquals(selectKinds, ['presence'])
+})
+
+function memoryRedis(store: Map<string, string>, db: Db) {
+  return createRedisQueryCache({
+    client: {
+      get: (key: string) => Promise.resolve(store.get(key) ?? null),
+      set: (key: string, value: string) => {
+        store.set(key, value)
+        return Promise.resolve()
+      },
+    } as unknown as RedisCellClient,
+    db,
+  })
+}
+
+function detailRow(overrides: Partial<ServerDetailRow> = {}): ServerDetailRow {
+  return {
+    id: 'srv-1',
+    name: 'Before',
+    organizationId: 'org-1',
+    licenseId: null,
+    options: null,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    machineClass: null,
+    ...overrides,
+  }
+}
+
+test('cachedServerDetailReadModel shows a person their own edit at once, and caches until then', async () => {
+  const detailRows = [detailRow()]
+  const presenceRows = [bareServerRow('srv-1', 'u1')]
+  const db = createStubDb({ detailRows, presenceRows })
+  const cache = memoryRedis(new Map(), db)
+  const ctx = fakeContext({ db, queryCache: cache })
+  const opts = { organizationId: 'org-1', serverId: 'srv-1' }
+
+  assertEquals((await cachedServerDetailReadModel(ctx, opts))?.row.name, 'Before')
+
+  // The row changes underneath but its last-change time has not moved: the cached copy answers.
+  detailRows[0] = detailRow({ name: 'Hidden' })
+  assertEquals((await cachedServerDetailReadModel(ctx, opts))?.row.name, 'Before')
+
+  // An edit moves the last-change time, which changes the key: the new row shows at once.
+  presenceRows[0] = bareServerRow('srv-1', 'u2')
+  detailRows[0] = detailRow({ name: 'After' })
+  assertEquals((await cachedServerDetailReadModel(ctx, opts))?.row.name, 'After')
+})
+
+test('cachedServerDetailReadModel never serves one organization the copy of another', async () => {
+  const store = new Map<string, string>()
+  const dbOne = createStubDb({
+    detailRows: [detailRow({ name: 'Org one server' })],
+    presenceRows: [bareServerRow('srv-1', 'u1')],
+  })
+  const dbTwo = createStubDb({
+    detailRows: [detailRow({ name: 'Org two server', organizationId: 'org-2' })],
+    presenceRows: [bareServerRow('srv-1', 'u1')],
+  })
+  const one = fakeContext({ db: dbOne, queryCache: memoryRedis(store, dbOne) })
+  const two = fakeContext({ db: dbTwo, queryCache: memoryRedis(store, dbTwo) })
+
+  const first = await cachedServerDetailReadModel(one, {
+    organizationId: 'org-1',
+    serverId: 'srv-1',
+  })
+  const second = await cachedServerDetailReadModel(two, {
+    organizationId: 'org-2',
+    serverId: 'srv-1',
+  })
+  assertEquals(first?.row.name, 'Org one server')
+  assertEquals(second?.row.name, 'Org two server')
+  assertEquals(store.size, 2)
+  const again = await cachedServerDetailReadModel(one, {
+    organizationId: 'org-1',
+    serverId: 'srv-1',
+  })
+  assertEquals(again?.row.name, 'Org one server')
 })

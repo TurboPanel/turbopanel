@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -6,8 +6,12 @@ import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { assertCanOr403, listVisible } from '../authz/index.ts'
-import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
+import { assertCanOr403, listVisibleVersions } from '../authz/index.ts'
+import { resolveEntityOrganizationId, resolveEntityVersion } from '../authz/create-access-grant.ts'
+import {
+  cachedProjectDetail,
+  cachedProjectsList,
+} from '../../query-cache/read-models/hierarchy-reads.ts'
 import { getDb, type Db } from '../../db/connection.ts'
 import { environment, project, variable, workspace } from '../../db/schema.ts'
 import {
@@ -52,6 +56,7 @@ import {
   assertDefaultServerIdShape,
   catalogProjectOptions,
   isProjectNameUniqueViolation,
+  isProjectSlugUniqueViolation,
   mapCreateProjectError,
   normalizeProjectPatchOptions,
   parseConfigureProjectBody,
@@ -71,6 +76,13 @@ import {
   stampNewEnvironmentDeployOptions,
 } from '../../features/deploy/deploy-options.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import {
+  allocateProjectSlug,
+  PROJECT_SLUG_IN_USE_ERROR,
+  PROJECT_SLUG_LOCKED_ERROR,
+  projectSlugIsLocked,
+} from '../../features/folders/records.ts'
+import { isValidProjectSlug } from '../../contracts/directory-names.ts'
 
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -331,7 +343,12 @@ async function parseCreateProjectInput(
 
   const environmentName = parseCreateProjectEnvironmentNameField(body)
   if (!environmentName.ok) {
-    return c.json({ error: environmentName.error }, environmentName.status)
+    return c.json(
+      environmentName.message === undefined
+        ? { error: environmentName.error }
+        : { error: environmentName.error, message: environmentName.message },
+      environmentName.status
+    )
   }
   // An explicit name wins; otherwise the organization default (or Production).
   const defaultEnvironmentName =
@@ -431,11 +448,62 @@ function parseProjectPatchOptions(
 
 type ProjectPatchFields = {
   name?: string | null
+  slug?: string
   description?: string | null
   repositoryId?: string | null
   options?: Record<string, unknown> | null
   workspaceId?: string
   updatedAt: string
+}
+
+/** The name and slug a PATCH asks for must be free (and the slug unlocked). */
+async function checkProjectPatchConflicts(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  projectId: string,
+  body: Record<string, unknown>,
+  patchFields: ProjectPatchFields
+): Promise<Response | null> {
+  if (
+    patchFields.name !== undefined &&
+    (isReservedSystemProjectName(patchFields.name) ||
+      (await isProjectDisplayNameTaken(db, organizationId, patchFields.name, projectId)))
+  ) {
+    return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
+  }
+  return await checkProjectSlugPatch(c, db, projectId, body, patchFields)
+}
+
+/**
+ * A `slug` in the PATCH body changes the project slug: it has to match the
+ * rule, and it is refused once any folder exists under the project or a site
+ * owner directory exists for it. Writing the slug the project already has is a
+ * no-op. Sets `patchFields.slug` when the slug changes.
+ */
+async function checkProjectSlugPatch(
+  c: Context<AppEnv>,
+  db: Db,
+  projectId: string,
+  body: Record<string, unknown>,
+  patchFields: ProjectPatchFields
+): Promise<Response | null> {
+  if (body.slug === undefined) return null
+  if (!isValidProjectSlug(body.slug)) {
+    return c.json({ error: 'invalid_project_slug' }, 400)
+  }
+  const slug = body.slug as string
+  const [current] = await db
+    .select({ slug: project.slug })
+    .from(project)
+    .where(eq(project.id, projectId))
+    .limit(1)
+  if (current?.slug === slug) return null
+  if (await projectSlugIsLocked(db, projectId)) {
+    return c.json({ error: PROJECT_SLUG_LOCKED_ERROR }, 409)
+  }
+  patchFields.slug = slug
+  return null
 }
 
 function buildProjectPatchFields(
@@ -594,6 +662,7 @@ async function insertDockerComposeProject(
   const [inserted] = await tx
     .insert(project)
     .values({
+      slug: await allocateProjectSlug(tx, fields.organizationId, fields.name),
       name: fields.name,
       description: fields.description,
       workspaceId: fields.workspaceId,
@@ -635,6 +704,7 @@ async function insertCatalogProject(
   const [inserted] = await tx
     .insert(project)
     .values({
+      slug: await allocateProjectSlug(tx, fields.organizationId, fields.name),
       name: fields.name,
       description: fields.description,
       workspaceId: fields.workspaceId,
@@ -691,36 +761,20 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const workspaceId = c.req.query('workspaceId')
 
-    const visibleIds = await listVisible(db, {
+    // Who may see which project is decided here, on the primary connection; the
+    // visible ids (with when each last changed) go into the cached read.
+    const visible = await listVisibleVersions(db, {
       kind: 'project',
       userId: session.userId,
       organizationId,
     })
 
-    if (visibleIds.length === 0) {
+    if (visible.length === 0) {
       return c.json({ projects: [] })
     }
 
-    const conditions = [inArray(project.id, visibleIds)]
-    if (workspaceId) {
-      conditions.push(eq(project.workspaceId, workspaceId))
-    }
-
-    const rows = await db
-      .select({
-        id: project.id,
-        name: project.name,
-        description: project.description,
-        workspaceId: project.workspaceId,
-        repositoryId: project.repositoryId,
-        metadata: project.metadata,
-        options: project.options,
-        createdAt: project.createdAt,
-        updatedAt: project.updatedAt,
-      })
-      .from(project)
-      .where(and(...conditions))
-      .orderBy(project.createdAt)
+    const all = await cachedProjectsList(c, { organizationId, visible })
+    const rows = workspaceId ? all.filter((row) => row.workspaceId === workspaceId) : all
 
     return c.json({ projects: rows })
   })
@@ -737,28 +791,16 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const organizationId = orgResult
 
     const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'project', id)
-    if (!entityOrgId || entityOrgId !== organizationId) {
+    const entity = await resolveEntityVersion(db, 'project', id)
+    if (entity?.organizationId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const rows = await db
-      .select({
-        id: project.id,
-        name: project.name,
-        description: project.description,
-        workspaceId: project.workspaceId,
-        repositoryId: project.repositoryId,
-        metadata: project.metadata,
-        options: project.options,
-        createdAt: project.createdAt,
-        updatedAt: project.updatedAt,
-      })
-      .from(project)
-      .where(eq(project.id, id))
-      .limit(1)
-
-    const row = rows[0]
+    const row = await cachedProjectDetail(c, {
+      organizationId,
+      id,
+      updatedAt: entity.updatedAt,
+    })
     if (!row) {
       return c.json({ error: 'Not found' }, 404)
     }
@@ -883,13 +925,8 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (patchFields instanceof Response) return patchFields
     if (rebind !== undefined) patchFields.repositoryId = rebind
 
-    if (
-      patchFields.name !== undefined &&
-      (isReservedSystemProjectName(patchFields.name) ||
-        (await isProjectDisplayNameTaken(db, organizationId, patchFields.name, id)))
-    ) {
-      return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
-    }
+    const conflict = await checkProjectPatchConflicts(c, db, organizationId, id, body, patchFields)
+    if (conflict) return conflict
 
     const defaultServerError = await assertDefaultServerIdInOrg(
       c,
@@ -905,6 +942,9 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     } catch (err) {
       if (isProjectNameUniqueViolation(err)) {
         return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
+      }
+      if (isProjectSlugUniqueViolation(err)) {
+        return c.json({ error: PROJECT_SLUG_IN_USE_ERROR }, 409)
       }
       throw err
     }
@@ -945,7 +985,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       organizationId,
     })
     if (!result.ok) {
-      return c.json({ error: result.error }, 409)
+      return c.json({ error: result.error, ...result.detail }, 409)
     }
 
     await reclaimDeletedEnvironmentHosts(c, db, teardownPlans, userId)

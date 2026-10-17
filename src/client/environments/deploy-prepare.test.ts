@@ -436,7 +436,9 @@ function createStorageMaterialDb(opts: {
             },
             where() {
               calls += 1
-              if (calls === 1) return Promise.resolve(opts.locations)
+              // 1: the shared volumes the environment uses (none here), 2: locations, 3: mounts.
+              if (calls === 1) return Promise.resolve([])
+              if (calls === 2) return Promise.resolve(opts.locations)
               return Promise.resolve(opts.mounts ?? [])
             },
           }

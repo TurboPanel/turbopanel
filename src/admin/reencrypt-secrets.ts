@@ -5,7 +5,7 @@
  * control-plane certificate keys (`certificate.key_pem`),
  * `principal.password`, `storage.content_envelope`, `secret.secret_envelope`,
  * `forge.envelopes` (private key / client secret / webhook secret),
- * `connection.oauth_envelope` (GitLab access/refresh token pair), `2fa.secret`,
+ * `connection.oauth_envelope` (GitLab access/refresh token pair), `totp.secret`,
  * `monitor.secret_envelope`, `relay.preshared_key`, the `ALERT_WEBHOOK_URL`
  * setting, `SYSTEM_AUTH_PROVIDERS` secret keys, and email secret keys in the
  * `SYSTEM_EMAIL` setting row onto the current data-encryption key version.
@@ -118,7 +118,7 @@ export const REENCRYPT_COVERED_PLACES = [
   'secret.secret_envelope',
   'forge.envelopes',
   'connection.oauth_envelope',
-  '2fa.secret',
+  'totp.secret',
   'channel.address',
   'channel.signing_secret',
   'monitor.secret_envelope',

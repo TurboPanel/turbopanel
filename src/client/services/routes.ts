@@ -14,7 +14,10 @@ import {
 import type { ParseServiceOptionsOptions } from '../../features/projects/service-options.ts'
 import { preserveServiceApp } from '../../features/environments/app-facts.ts'
 import { loadServiceRunStates } from '../../features/environments/service-run-state.ts'
-import { applyStorageRetentionOnParentDelete } from '../../features/storage/storage-records.ts'
+import {
+  applyStorageRetentionOnParentDelete,
+  listStorageIdsDeletedWith,
+} from '../../features/storage/storage-records.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -24,6 +27,11 @@ import {
   requireStringField,
 } from '../shared.ts'
 import { respondAfterHierarchyDelete } from '../hierarchy-delete.ts'
+import { FolderPlanError, markAssetFoldersRemoving } from '../../features/folders/allocate.ts'
+import { parseFolderOptions } from '../../features/folders/options.ts'
+import { SCOPE_LOCKED_ERROR, SERVICE_SLUG_LOCKED_ERROR } from '../../features/folders/records.ts'
+import { applyServiceFolderSettings } from '../../features/folders/service-settings.ts'
+import { inUseBody, listUsesOfAssets } from '../../features/folders/shares.ts'
 import {
   parseServiceCreateFields,
   parseServicePatchFields,
@@ -37,6 +45,8 @@ const SERVICE_SELECT = {
   description: service.description,
   environmentId: service.environmentId,
   composeServiceName: service.composeServiceName,
+  slug: service.slug,
+  isCommon: service.isCommon,
   metadata: service.metadata,
   options: service.options,
   createdAt: service.createdAt,
@@ -56,6 +66,27 @@ function buildServicePatchFields(
     return c.json({ error: parsed.error }, parsed.status)
   }
   return parsed.patch
+}
+
+const FOLDER_SETTING_MESSAGES = {
+  service_slug_locked:
+    'This service already has a folder on a server, so its folder name can no longer change.',
+  scope_locked:
+    'Whether this service is shared by every environment is chosen before its first folder exists and cannot change afterwards.',
+} as const
+
+/** The 409 for a refused folder setting; a shared service in use lists who uses it. */
+async function folderSettingsRefusal(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  serviceId: string,
+  error: 'service_slug_locked' | 'scope_locked' | 'common_asset_in_use'
+): Promise<Response> {
+  if (error === 'common_asset_in_use') {
+    return c.json(inUseBody(await listUsesOfAssets(db, { serviceIds: [serviceId] })), 409)
+  }
+  const code = error === 'scope_locked' ? SCOPE_LOCKED_ERROR : SERVICE_SLUG_LOCKED_ERROR
+  return c.json({ error: code, message: FOLDER_SETTING_MESSAGES[error] }, 409)
 }
 
 export function registerServiceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -232,7 +263,25 @@ export function registerServiceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       patchFields.metadata = preserveServiceApp(existing?.metadata, patchFields.metadata)
     }
 
-    await db.update(service).set(patchFields).where(eq(service.id, id))
+    const folderOptions = parseFolderOptions(body)
+    if (!folderOptions.ok) return c.json({ error: 'Invalid request' }, 400)
+
+    try {
+      const refused = await db.transaction(async (tx) => {
+        const settings = await applyServiceFolderSettings(tx, {
+          serviceId: id,
+          organizationId,
+          options: folderOptions.options,
+        })
+        if (!settings.ok) return settings.error
+        await tx.update(service).set(patchFields).where(eq(service.id, id))
+        return null
+      })
+      if (refused !== null) return folderSettingsRefusal(c, db, id, refused)
+    } catch (err) {
+      if (err instanceof FolderPlanError) return c.json(err.body(), err.status)
+      throw err
+    }
 
     return c.json({ ok: true as const })
   })
@@ -260,7 +309,14 @@ export function registerServiceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const immutable = await assertNotSystemOwnedOr403(c, 'service', id)
     if (immutable) return immutable
 
+    // A shared service cannot go while another environment uses it.
+    const storageIds = await listStorageIdsDeletedWith(db, { serviceIds: [id] })
+    const uses = await listUsesOfAssets(db, { serviceIds: [id], storageIds })
+    if (uses.length > 0) return c.json(inUseBody(uses), 409)
+
     return respondAfterHierarchyDelete(c, db, async (tx) => {
+      // The folder rows stay, locked, until the host confirms the folder is gone.
+      await markAssetFoldersRemoving(tx, { serviceIds: [id] })
       await applyStorageRetentionOnParentDelete(tx, { serviceIds: [id] })
       await tx.delete(service).where(eq(service.id, id))
     })

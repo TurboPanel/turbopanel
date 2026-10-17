@@ -73,6 +73,15 @@ function createCascadeMockDb(scenario: {
         return Promise.resolve(undefined)
       },
     }),
+    // markAssetFoldersRemoving: the folder rows of a deleted service wait for the host.
+    update: (_table: unknown) => ({
+      set: () => ({
+        where: () => {
+          deletes.push({ table: 'tx-folders-removing', ids: ['tx-batch'] })
+          return Promise.resolve(undefined)
+        },
+      }),
+    }),
     // ensureProjectPlacements: one raw upsert before the rows go.
     execute: () => {
       deletes.push({ table: 'tx-placements', ids: [projectId] })
@@ -86,7 +95,12 @@ function createCascadeMockDb(scenario: {
         const next = () => {
           const rows = selectQueue[selectIndex] ?? []
           selectIndex += 1
-          return Promise.resolve(rows)
+          // `where(...)` can be awaited, or continue into `orderBy(...).limit(...)`.
+          const result = Promise.resolve(rows) as Promise<unknown[]> & {
+            orderBy: () => { limit: () => Promise<unknown[]> }
+          }
+          result.orderBy = () => ({ limit: () => Promise.resolve(rows) })
+          return result
         }
         const join = {
           innerJoin: () => join,
@@ -132,8 +146,8 @@ test('deleteProjectCascade deletes bare project when no environments exist', asy
   const result = await deleteProjectCascade(db, 'proj-1')
   assertEquals(result, { ok: true })
   assertEquals(stats.transactions, 1)
-  // storage retention delete + project row
-  assertEquals(deletes.length, 2)
+  // No volume goes with the project, so only the project row is deleted.
+  assertEquals(deletes.length, 1)
 })
 
 test('deleteProjectCascade removes environments when no services exist', async () => {

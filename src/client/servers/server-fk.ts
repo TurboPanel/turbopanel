@@ -3,6 +3,7 @@ import type { Db } from '../../db/connection.ts'
 import {
   container,
   deployment,
+  folder,
   ip,
   network,
   relay,
@@ -100,6 +101,7 @@ export const SERVER_RESTRICT_FOREIGN_KEY_HANDLERS: Readonly<
   copy: 'purge',
   deployment: 'purge',
   environment: 'forget-or-block',
+  folder: 'purge',
   ip: 'purge',
   managed: 'forget-or-block',
   network: 'purge',
@@ -117,10 +119,12 @@ export const ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS: Readonly<
   Record<string, 'drop-subtree' | 'cascade-on-environment' | 'set-null-on-environment'>
 > = {
   deployment: 'drop-subtree',
+  folder: 'drop-subtree',
   managed: 'cascade-on-environment',
   marker: 'cascade-on-environment',
   network: 'set-null-on-environment',
   service: 'drop-subtree',
+  share: 'cascade-on-environment',
   slot: 'drop-subtree',
   storage: 'set-null-on-environment',
   variable: 'cascade-on-environment',
@@ -166,6 +170,7 @@ export async function purgeServerFabricForeignKeys(tx: Db, serverId: string): Pr
  * dropped them earlier in the same transaction.
  */
 export async function purgeServerRestrictForeignKeys(tx: Db, serverId: string): Promise<void> {
+  await tx.delete(folder).where(eq(folder.serverId, serverId))
   await tx.delete(deployment).where(eq(deployment.serverId, serverId))
   await tx.delete(slot).where(eq(slot.serverId, serverId))
   await tx.delete(storageCopy).where(eq(storageCopy.serverId, serverId))

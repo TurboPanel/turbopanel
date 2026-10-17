@@ -1490,6 +1490,123 @@ export const organizationPaths: Record<string, unknown> = {
       },
     },
   },
+  '/api/client/v1/organizations/{id}/directory-defaults': {
+    get: {
+      tags: ['Organizations'],
+      summary: 'Get organization folder naming',
+      description:
+        'Manage-gated. Returns how service and volume folders are named under a site owner: slug (a readable name, the default), uuid (the asset id) or both (a choice per asset, default slug). locked is true once the setting was locked by hand or any folder exists for the organization; lockedByFolders says which.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Folder naming',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['names', 'effectiveNames', 'locked', 'lockedByFolders'],
+                properties: {
+                  names: {
+                    type: 'string',
+                    enum: ['slug', 'uuid', 'both'],
+                    nullable: true,
+                  },
+                  effectiveNames: { type: 'string', enum: ['slug', 'uuid', 'both'] },
+                  locked: { type: 'boolean' },
+                  lockedByFolders: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+    put: {
+      tags: ['Organizations'],
+      summary: 'Update organization folder naming',
+      description:
+        'Manage-gated. Sets organization.options.directoryNames (null clears it to the default, slug) and/or directoryNamesLocked. Changing the value, or clearing the lock, fails with 409 directory_names_locked once any folder exists for the organization, or while the lock is set by hand. Existing folders are never renamed.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                names: {
+                  type: 'string',
+                  enum: ['slug', 'uuid', 'both'],
+                  nullable: true,
+                },
+                locked: { type: 'boolean' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        '200': { description: 'Updated folder naming' },
+        '400': {
+          description: 'Invalid request',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '409': { description: 'directory_names_locked' },
+      },
+    },
+  },
   '/api/client/v1/organizations/{id}/docker-networking': {
     get: {
       tags: ['Organizations'],

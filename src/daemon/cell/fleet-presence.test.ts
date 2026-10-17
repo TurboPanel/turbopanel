@@ -42,6 +42,7 @@ type MockRow = {
   ntpLastSyncedAt: string | null
   connected: boolean
   statusChangedAt: string | null
+  updatedAt: string
 }
 
 function buildMockRow(
@@ -84,6 +85,7 @@ function buildMockRow(
     ntpLastSyncedAt: columns.ntpLastSyncedAt ?? null,
     connected: status.connected,
     statusChangedAt: status.statusChangedAt,
+    updatedAt: '2020-01-01T00:00:00.000Z',
   }
 }
 
