@@ -36,6 +36,7 @@ import {
   FIREWALL_STATES,
 } from '../features/firewall/vocabulary.ts'
 import { PLACEMENT_SOURCES, PLACEMENT_STATES } from '../features/principals/placement-vocabulary.ts'
+import { FOLDER_KINDS, FOLDER_STATES } from '../features/folders/vocabulary.ts'
 import { CLIENT_ADDRESS_SCOPES } from '../features/net/client-addresses-pure.ts'
 
 /**
@@ -81,6 +82,8 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['payer_provider_check', BILLING_PROVIDER_IDS],
   ['placement_state_check', PLACEMENT_STATES],
   ['placement_source_check', PLACEMENT_SOURCES],
+  ['folder_kind_check', FOLDER_KINDS],
+  ['folder_state_check', FOLDER_STATES],
   ['address_scope_check', CLIENT_ADDRESS_SCOPES],
   ['channel_scope_check', NOTIFICATION_CHANNEL_SCOPES],
   ['channel_kind_check', NOTIFICATION_CHANNEL_KINDS],

@@ -856,6 +856,19 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Optional managed-engine scope for database users (root and per-user rows); cascade-deleted with the cluster.',
     },
   },
+  folder: {
+    group: 'resources',
+    summary:
+      'One service or volume folder on one server, the record of what exists under a site owner scope; it locks environment, asset, project and organization naming.',
+    columns: {
+      scope:
+        'Scope folder name exactly as created on the host: the environment name, or `common` for assets shared by every environment.',
+      kind: '`service` or `volume`; decides which of `service_id` and `storage_id` can be set.',
+      slug: 'Folder name of the asset, copied from its slug when the folder was planned.',
+      state:
+        '`planned` before the host has it, `present`, `removing` until the host confirms a delete, `orphan` found with no asset, `missing` gone from the host.',
+    },
+  },
   placement: {
     group: 'resources',
     summary:
@@ -875,6 +888,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'One application or stack described by one compose document, owned by a workspace; user projects come from the API, system projects from the platform hierarchy.',
     columns: {
+      slug: 'Short name taken from the project name, unique per organization and never part of a path; editable until any folder exists under the project, then locked.',
       metadata:
         'Client jsonb: `type` is `docker-compose`, `managed`, `template` or platform-only `system` (absent means setup not chosen yet), plus optional catalog `code`.',
       options:
@@ -895,6 +909,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'One deployable unit (a compose service) within an environment; rows are derived from the compose document by reconcile, managed allocation or daemon reports.',
     columns: {
+      slug: 'Folder name under the site owner tree, unique per environment; set at creation, locked once a `folder` row exists, NULL until set.',
+      is_common:
+        'True when the folder is in the `common` scope shared by every environment; chosen at creation and never changed.',
       metadata:
         'Client jsonb reserved for non-indexed facts; promoted identity keys are stripped on write and the compose name never lives here.',
       options:
@@ -1210,6 +1227,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'Logical identity of persistent data owned by an organization and scoped to at most one of workspace, project, environment or service; bytes live on `copy` rows.',
     columns: {
+      slug: 'Folder name of a panel-owned volume under the site owner tree; set at creation, locked once a `folder` row exists, NULL until set.',
+      is_common:
+        'True when the volume folder is in the `common` scope shared by every environment; chosen at creation and never changed.',
       metadata:
         'Free-form jsonb from the API; `dockerVolumeName` is stamped to the storage UUID on volume create because the Docker volume name is the storage id.',
       options:

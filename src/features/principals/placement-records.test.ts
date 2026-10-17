@@ -229,6 +229,7 @@ test('loadPrincipalUsage counts tenancies and placements on other servers only',
       storages: 0,
       secrets: 0,
       logins: 0,
+      folders: 0,
       otherPlacements: 0,
     })
     assertEquals(usage.get(manualPrincipalId), {
@@ -237,6 +238,7 @@ test('loadPrincipalUsage counts tenancies and placements on other servers only',
       storages: 0,
       secrets: 0,
       logins: 0,
+      folders: 0,
       otherPlacements: 1,
     })
 

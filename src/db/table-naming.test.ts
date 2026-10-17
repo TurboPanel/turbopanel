@@ -59,6 +59,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'entitlement',
   'environment',
   'fabric',
+  // One service or volume directory per server under a site owner's tree.
+  'folder',
   'forge',
   'generation',
   'grant',

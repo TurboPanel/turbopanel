@@ -18,6 +18,7 @@ import { and, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   binding,
+  folder,
   login,
   principal,
   principalPlacement,
@@ -318,6 +319,8 @@ export type PrincipalUsage = {
   storages: number
   secrets: number
   logins: number
+  /** Folder rows on servers other than `excludeServerId`. */
+  folders: number
   otherPlacements: number
 }
 
@@ -327,11 +330,20 @@ export const PRINCIPAL_USAGE_KINDS = [
   'storages',
   'secrets',
   'logins',
+  'folders',
   'otherPlacements',
 ] as const satisfies ReadonlyArray<keyof PrincipalUsage>
 
 export function emptyPrincipalUsage(): PrincipalUsage {
-  return { tenancies: 0, bindings: 0, storages: 0, secrets: 0, logins: 0, otherPlacements: 0 }
+  return {
+    tenancies: 0,
+    bindings: 0,
+    storages: 0,
+    secrets: 0,
+    logins: 0,
+    folders: 0,
+    otherPlacements: 0,
+  }
 }
 
 /** True when nothing but the placement under review still uses the principal. */
@@ -401,6 +413,19 @@ export async function loadPrincipalUsage(
       .where(and(isNotNull(login.principalId), inArray(login.principalId, ids))),
     usage,
     'logins'
+  )
+  await countByPrincipal(
+    db
+      .select({ principalId: folder.principalId })
+      .from(folder)
+      .where(
+        and(
+          inArray(folder.principalId, ids),
+          ...(excludeServerId === undefined ? [] : [ne(folder.serverId, excludeServerId)])
+        )
+      ),
+    usage,
+    'folders'
   )
   await countByPrincipal(
     db

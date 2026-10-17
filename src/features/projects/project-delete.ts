@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, ne } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { ensureProjectPlacements } from '../principals/placement-records.ts'
 import {
@@ -6,6 +6,7 @@ import {
   container,
   deployment,
   environment,
+  folder,
   hosting,
   leaf,
   managed,
@@ -47,7 +48,7 @@ export type ProjectDeleteResult =
   | { ok: true; warning?: string }
   | {
       ok: false
-      error: 'project_has_running_services' | 'managed_runtime_present'
+      error: 'project_has_running_services' | 'managed_runtime_present' | 'project_has_folders'
     }
 
 /**
@@ -194,6 +195,11 @@ async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<voi
     await tx.delete(binding).where(inArray(binding.serviceId, serviceIds))
     await tx.delete(service).where(inArray(service.id, serviceIds))
   }
+  // Rows for folders already confirmed gone no longer lock anything; the others
+  // were refused before this point (or belong to a host that is gone).
+  await tx
+    .delete(folder)
+    .where(and(inArray(folder.environmentId, environmentIds), eq(folder.state, 'missing')))
   await tx.delete(environment).where(inArray(environment.id, environmentIds))
 }
 
@@ -269,6 +275,14 @@ export async function deleteProjectCascade(
     return { ok: false, error: 'project_has_running_services' }
   }
 
+  // A folder on a server holds its environment's name (and the project's slug)
+  // until the host confirms it is gone; the delete waits for that.
+  const folderRows = await db
+    .select({ id: folder.id })
+    .from(folder)
+    .where(and(inArray(folder.environmentId, environmentIds), ne(folder.state, 'missing')))
+  if (folderRows.length > 0) return { ok: false, error: 'project_has_folders' }
+
   const bindingTargets = await loadBindingListenerTargets(db, children.serviceIds)
   await db.transaction(async (tx) => {
     // The principals outlive the project (`project_id` SET NULL); their
@@ -327,6 +341,8 @@ export async function dropEnvironmentSubtreeInTx(
   if (opts?.serverId) {
     await purgeEnvironmentServerPlacementArtifacts(tx, ids, opts.serverId)
   }
+  // The host is gone, so nothing will ever confirm these folders removed.
+  await tx.delete(folder).where(inArray(folder.environmentId, ids))
   const children = await loadEnvironmentChildren(tx, ids)
   await dropEnvironmentRows(tx, {
     environmentIds: ids,

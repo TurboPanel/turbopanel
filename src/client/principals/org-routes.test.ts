@@ -368,7 +368,7 @@ test('DELETE /organizations/:id/principals/:principalId refuses a principal that
       assertEquals(await b.json(), {
         error: 'principal_in_use',
         code: 'principal_in_use',
-        usedBy: { services: 0, bindings: 0, storage: 0, secrets: 0, logins: 1 },
+        usedBy: { services: 0, bindings: 0, storage: 0, secrets: 0, logins: 1, folders: 0 },
       })
 
       const [dbRow] = await db

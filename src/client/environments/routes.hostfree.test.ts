@@ -7,7 +7,16 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
-import { environment, hosting, managed, project, repository, server } from '../../db/schema.ts'
+import {
+  command,
+  environment,
+  folder,
+  hosting,
+  managed,
+  project,
+  repository,
+  server,
+} from '../../db/schema.ts'
 import {
   createEmptyMockAuthState,
   createMockAuthDb,
@@ -122,6 +131,20 @@ type SessionAppOpts = {
   afterSession?: 'drop-db' | 'swallow-session'
 }
 
+/**
+ * A select chain that ends in no rows however it is joined, filtered or locked.
+ * The rename lock itself is exercised only by the database tests in
+ * `client/folder-locks.test.ts`.
+ */
+function emptyRows(): unknown {
+  const chain: Record<string, unknown> = {}
+  for (const method of ['innerJoin', 'leftJoin', 'where', 'orderBy', 'limit', 'for']) {
+    chain[method] = () => chain
+  }
+  chain.then = (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve)
+  return chain
+}
+
 async function buildSessionApp(opts: SessionAppOpts): Promise<{
   app: Hono<AppEnv>
   cookie: string
@@ -183,11 +206,14 @@ async function buildSessionApp(opts: SessionAppOpts): Promise<{
     },
     select: (fields?: unknown) => ({
       from: (table: unknown) => {
+        // No folder rows and no running commands in this fixture.
+        if (table === folder || table === command) return emptyRows()
         if (opts.withEnvironmentRow && table === environment) {
           return {
             where: () => ({
               limit: () => Promise.resolve([ENV_ROW]),
               orderBy: () => Promise.resolve([ENV_ROW]),
+              for: () => Promise.resolve([ENV_ROW]),
             }),
             orderBy: () => Promise.resolve([ENV_ROW]),
             innerJoin: () => ({
@@ -663,7 +689,7 @@ test('PATCH /environments/:id returns 200 for a name-only update', async () => {
   const res = await app.request(`/environments/${environmentId}`, {
     method: 'PATCH',
     headers: sessionHeaders(cookie, true),
-    body: JSON.stringify({ name: 'Renamed' }),
+    body: JSON.stringify({ name: 'renamed' }),
   })
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })

@@ -258,6 +258,55 @@ const environmentCrudPaths = buildResourceCrudPaths({
 
 export const environmentPaths = {
   ...environmentCrudPaths,
+  '/api/client/v1/environments/{id}/folders': {
+    get: {
+      tags: ['Environments'],
+      summary: 'Service and volume folders under this environment',
+      description:
+        "The folders that exist under the environment's name on any server (planned, present, removing, orphan; not missing). While any exists the environment cannot be renamed or deleted: PATCH and DELETE answer 409 environment_name_locked or environment_has_folders with this same list. A removing folder is one the host has not confirmed deleted yet, for example because the server is offline. `total` counts all of them; `folders` lists the first 20, oldest first. Assets in the shared (common) scope belong to no environment and are not listed.",
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: {
+        200: {
+          description: 'Folders under the environment',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'folders', 'total'],
+                properties: {
+                  ok: { type: 'boolean' },
+                  total: { type: 'integer' },
+                  folders: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      required: ['id', 'kind', 'state', 'scope', 'slug', 'serverId'],
+                      properties: {
+                        id: { type: 'string', format: 'uuid' },
+                        kind: { type: 'string', enum: ['service', 'volume'] },
+                        state: {
+                          type: 'string',
+                          enum: ['planned', 'present', 'removing', 'orphan', 'missing'],
+                        },
+                        scope: { type: 'string' },
+                        slug: { type: 'string' },
+                        serverId: { type: 'string', format: 'uuid' },
+                        serverName: { type: 'string', nullable: true },
+                        assetId: { type: 'string', format: 'uuid', nullable: true },
+                        assetName: { type: 'string', nullable: true },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        403: { description: 'Requires read access to the environment' },
+        404: { description: 'Environment not found in this organization' },
+      },
+    },
+  },
   '/api/client/v1/environments/{id}/config-view': {
     get: {
       tags: ['Environments'],
