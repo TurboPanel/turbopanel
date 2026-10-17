@@ -25,6 +25,7 @@ import {
   deployment,
   dispatch,
   environment,
+  folder,
   fabric,
   grant,
   hosting,
@@ -599,6 +600,7 @@ async function withDeployFixtures(
   } finally {
     await db.delete(command).where(eq(command.serverId, serverId))
     await db.delete(container).where(eq(container.serverId, serverId))
+    await db.delete(folder).where(eq(folder.serverId, serverId))
     await db.delete(service).where(eq(service.environmentId, environmentId))
     await db.delete(environment).where(eq(environment.id, environmentId))
     await db.delete(project).where(eq(project.id, projectId))
@@ -795,7 +797,7 @@ test('POST /environments/:id/deploy payload carries runtime composeFiles', async
         .update(environment)
         .set({
           serverId,
-          name: 'Production',
+          name: 'production',
           options: { compose: emptyComposeDocument() },
           updatedAt: new Date().toISOString(),
         })
@@ -858,7 +860,7 @@ test('POST /environments/:id/deploy records a pending placement for each compose
         .update(environment)
         .set({
           serverId,
-          name: 'Production',
+          name: 'production',
           options: { compose: emptyComposeDocument() },
           updatedAt: new Date().toISOString(),
         })
@@ -914,12 +916,29 @@ test('POST /environments/:id/deploy records a pending placement for each compose
       assertEquals(placed[0]!.composeAlias, 'app')
       assertEquals(placed[0]!.home, `/srv/users/${placed[0]!.appliedUsername}`)
 
+      // The deploy also planned the site's folder under the owner's tree, named
+      // after the service, in the environment's own scope.
+      const planned = await db
+        .select({
+          state: folder.state,
+          scope: folder.scope,
+          kind: folder.kind,
+          slug: folder.slug,
+          environmentId: folder.environmentId,
+        })
+        .from(folder)
+        .where(eq(folder.serverId, serverId))
+      assertEquals(planned, [
+        { state: 'planned', scope: 'production', kind: 'service', slug: 'site', environmentId },
+      ])
+
       // The deploy created the principal and its tenancy; the fixture only
       // knows the rows it made itself, and `tenancy.service_id` is RESTRICT.
       const serviceIds = await db
         .select({ id: service.id })
         .from(service)
         .where(eq(service.environmentId, environmentId))
+      await db.delete(folder).where(eq(folder.serverId, serverId))
       await db.delete(tenancy).where(
         inArray(
           tenancy.serviceId,
@@ -938,7 +957,7 @@ test('POST /environments/:id/deploy payload carries the non-secret envFile', asy
         .update(environment)
         .set({
           serverId,
-          name: 'Production',
+          name: 'production',
           options: { compose: emptyComposeDocument() },
           updatedAt: new Date().toISOString(),
         })
@@ -1006,7 +1025,7 @@ async function deployWithStrategy(
         .update(environment)
         .set({
           serverId,
-          name: 'Production',
+          name: 'production',
           options: { compose: emptyComposeDocument(), ...environmentOptions },
           updatedAt: new Date().toISOString(),
         })
@@ -1135,7 +1154,7 @@ test('POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames', a
           .update(environment)
           .set({
             serverId,
-            name: 'Production',
+            name: 'production',
             options: { compose: emptyComposeDocument() },
             updatedAt: new Date().toISOString(),
           })
@@ -1240,7 +1259,7 @@ test("POST /environments/:id/deploy uses internal TLS after revoking a Let's Enc
           .update(environment)
           .set({
             serverId,
-            name: 'Production',
+            name: 'production',
             options: { compose: emptyComposeDocument() },
             updatedAt: new Date().toISOString(),
           })
@@ -2645,7 +2664,7 @@ async function useCompose(
   const now = new Date().toISOString()
   await ctx.db
     .update(environment)
-    .set({ serverId: ctx.serverId, name: 'Production', updatedAt: now })
+    .set({ serverId: ctx.serverId, name: 'production', updatedAt: now })
     .where(eq(environment.id, ctx.environmentId))
   await ctx.db
     .update(project)
@@ -3313,7 +3332,7 @@ async function pinWebEnvironment(
     .update(environment)
     .set({
       serverId: ctx.serverId,
-      name: 'Production',
+      name: 'production',
       options: { compose: emptyComposeDocument() },
       updatedAt: now,
     })

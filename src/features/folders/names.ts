@@ -4,10 +4,15 @@
  * The shape rules themselves live in `contracts/directory-names.ts`.
  */
 import {
+  COMMON_SCOPE,
+  defaultFolderNameFromDomain,
+  type FolderRefParts,
   FOLDER_NAME_MAX_LENGTH,
   firstFreeFolderName,
   isPathId,
+  isValidEnvironmentName,
   isValidFolderName,
+  isValidOwnerName,
   isValidProjectSlug,
   PROJECT_SLUG_MAX_LENGTH,
 } from '../../contracts/directory-names.ts'
@@ -119,4 +124,71 @@ export function resolveFolderName(input: FolderNameInput): FolderNameResult {
   }
   const free = firstFreeFolderName(base, input.isTaken)
   return free === null ? { ok: false, error: 'directory_name_taken' } : { ok: true, slug: free }
+}
+
+/**
+ * A folder name made from a display name or a compose key: accents folded to
+ * plain letters, every other run of characters becomes one hyphen, dots and
+ * underscores are kept, edges trimmed, cut to 63 characters. Null when nothing
+ * usable is left (the caller then falls back to the asset id).
+ */
+export function folderNameFromLabel(label: string | null | undefined): string | null {
+  const folded = (label ?? '')
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9._]+/g, '-')
+    .replace(/\.{2,}/g, '.')
+  const cut = trimFolderEdges(folded.slice(0, FOLDER_NAME_MAX_LENGTH))
+  return isValidFolderName(cut) ? cut : null
+}
+
+/** Trim `.`, `-` and `_` from both ends (a single pass, so a long run costs no more than one). */
+function trimFolderEdges(value: string): string {
+  const isEdge = (ch: string | undefined) => ch === '.' || ch === '-' || ch === '_'
+  let start = 0
+  let end = value.length
+  while (start < end && isEdge(value[start])) start += 1
+  while (end > start && isEdge(value[end - 1])) end -= 1
+  return value.slice(start, end)
+}
+
+/**
+ * The name a new asset gets when none was typed: the domain for web hosting
+ * (when it has one), else the display name or compose key, else the asset id.
+ * The asset id always fits the rule, so this never returns null.
+ */
+export function defaultFolderBase(input: {
+  domain?: string | null
+  label?: string | null
+  assetId: string
+}): string {
+  if (input.domain) {
+    const fromDomain = defaultFolderNameFromDomain(input.domain)
+    if (fromDomain !== null) return fromDomain
+  }
+  return folderNameFromLabel(input.label) ?? input.assetId
+}
+
+/**
+ * The folder reference of an asset from what its rows say, or undefined while
+ * any part is missing or does not satisfy the rule (an environment named
+ * before names became folder names, a slug not set yet). The wire then carries
+ * no `folder` for it and the old fields stay authoritative.
+ */
+export function assetFolderRef(input: {
+  owner: string | null | undefined
+  isCommon: boolean
+  environmentName: string | null | undefined
+  slug: string | null | undefined
+}): FolderRefParts | undefined {
+  const scope = input.isCommon ? COMMON_SCOPE : input.environmentName
+  if (
+    !isValidOwnerName(input.owner) ||
+    !isValidFolderName(input.slug) ||
+    (!input.isCommon && !isValidEnvironmentName(scope))
+  ) {
+    return undefined
+  }
+  return { owner: input.owner as string, scope: scope as string, slug: input.slug as string }
 }

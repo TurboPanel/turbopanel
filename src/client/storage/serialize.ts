@@ -20,6 +20,8 @@ export type StorageSelectRow = Pick<
   | 'retention'
   | 'generation'
   | 'principalId'
+  | 'slug'
+  | 'isCommon'
   | 'metadata'
   | 'options'
   | 'createdAt'
@@ -74,7 +76,9 @@ export type SerializedCopy = CopySelectRow & {
 
 export type SerializedMount = MountSelectRow // NOSONAR typescript:S6564 — public API alias parallel to SerializedCopy
 
-export type SerializedStorage = Omit<StorageSelectRow, 'principalUsername'> & {
+export type SerializedStorage = Omit<StorageSelectRow, 'principalUsername' | 'isCommon'> & {
+  /** True when the volume folder is in the `common` scope shared by every environment. */
+  common: boolean
   copies: SerializedCopy[]
   mounts: SerializedMount[]
 }
@@ -133,6 +137,8 @@ export function serializeStorage(
     retention: row.retention,
     generation: row.generation,
     principalId: row.principalId,
+    slug: row.slug,
+    common: row.isCommon,
     metadata: row.metadata,
     options: row.options,
     createdAt: row.createdAt,

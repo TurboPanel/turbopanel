@@ -29,6 +29,8 @@ function baseRow(overrides?: Partial<StorageSelectRow>): StorageSelectRow {
     retention: 'retain',
     generation: 0,
     principalId: null,
+    slug: null,
+    isCommon: false,
     metadata: {},
     options: null,
     createdAt: '2024-01-01T00:00:00.000Z',
@@ -93,4 +95,11 @@ test('serializeCopy returns null for docker copies without path', () => {
     serializeCopy(loc, loc.storageId, 'app').resolvedSourcePath,
     null,
   )
+})
+
+test('serializeStorage exposes the folder name and whether the volume is shared', () => {
+  const serialized = serializeStorage(baseRow({ slug: 'uploads', isCommon: true }))
+  assertEquals(serialized.slug, 'uploads')
+  assertEquals(serialized.common, true)
+  assertEquals('isCommon' in serialized, false)
 })

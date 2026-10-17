@@ -869,6 +869,18 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         '`planned` before the host has it, `present`, `removing` until the host confirms a delete, `orphan` found with no asset, `missing` gone from the host.',
     },
   },
+  share: {
+    group: 'resources',
+    summary:
+      'An environment using a common asset, a service or volume shared by a site owner; the asset cannot be deleted while a row names it.',
+    columns: {
+      environment_id:
+        'The environment that uses the common asset; it may belong to any project of the organization.',
+      service_id:
+        'The common service being used; exactly one of service_id and storage_id is set.',
+      storage_id: 'The common volume being used; exactly one of service_id and storage_id is set.',
+    },
+  },
   placement: {
     group: 'resources',
     summary:

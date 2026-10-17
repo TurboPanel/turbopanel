@@ -129,6 +129,7 @@ import {
   parseTimezoneSetResult,
 } from '../../contracts/commands/schemas.ts'
 import { updateManagedMemberObservedReplication } from '../managed/members.ts'
+import { markFoldersPresent } from '../folders/allocate.ts'
 import { markPlacementsAbsent, markPlacementsPresent } from '../principals/placement-records.ts'
 import {
   recordReportedPrincipalIds,
@@ -1078,6 +1079,7 @@ async function applyEnvironmentDeploySideEffect(
       }
     }
     await markEnvironmentCopiesReady(db, payload.environmentId, envelope.serverId)
+    await markPlannedFoldersPresentSafely(db, record)
     // What the host says each account has is recorded first, while a row the
     // control plane only chose ids for is still not `present`; then the
     // accounts this deploy carried are marked present, whether or not a newer
@@ -1113,6 +1115,27 @@ async function applyEnvironmentDeploySideEffect(
     compatLogWarn(
       'command-consumer',
       `container reconcile failed for command ${record.id}: ${message}`
+    )
+  }
+}
+
+/** The folder rows a deploy planned are on the host now; a miss is logged, never fatal. */
+async function markPlannedFoldersPresentSafely(
+  db: Db,
+  record: DispatchableCommandRecord
+): Promise<void> {
+  try {
+    const metadata = await getCommandMetadata(db, record.id)
+    const ids = metadata?.folderIds
+    if (!Array.isArray(ids)) return
+    await markFoldersPresent(
+      db,
+      ids.filter((id): id is string => typeof id === 'string')
+    )
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `folder present mark failed for command ${record.id}: ${errorMessage(err)}`
     )
   }
 }

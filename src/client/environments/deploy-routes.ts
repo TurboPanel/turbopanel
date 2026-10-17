@@ -71,6 +71,14 @@ import {
   resolveSourcedEnvironmentSiteReleases,
 } from './site-releases.ts'
 import { recordSitePhpModes } from './deploy-php-modes.ts'
+import {
+  FolderPlanError,
+  markServerServiceFoldersRemoving,
+  type PlannedFolders,
+  planDeployFolders,
+} from '../../features/folders/allocate.ts'
+import { lockEnvironmentRow } from '../../features/folders/records.ts'
+import { servicesNeedingFolders, volumesNeedingFolders, withVolumeFolders } from './deploy-folders.ts'
 import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
 import {
   type CommandContextRelease,
@@ -549,6 +557,8 @@ type DeployCommandCreateParams = DeployActor & {
   replicaCounts: Record<string, number>
   listenerPorts: ManagedIngressPorts
   selection: DeploySourceSelection
+  /** Folder rows this deploy planned on the server, flipped to present when it succeeds. */
+  folderIds?: readonly string[]
 }
 
 type CreatedDeployCommand = QueuedCommandRef & { queuedAt: string }
@@ -678,7 +688,12 @@ async function createDeployCommand(
   const expiresAt = new Date(Date.now() + 600_000).toISOString()
   const replicaCounts = normalizeReplicaCounts(params.replicaCounts)
   const releases = contextReleasesFor(params.sourceMaterial, params.nativeAppServices)
-  const metadata = deploySelectionMetadata(params.selection)
+  const selectionMetadata = deploySelectionMetadata(params.selection)
+  const folderIds = params.folderIds ?? []
+  const metadata =
+    selectionMetadata === undefined && folderIds.length === 0
+      ? undefined
+      : { ...selectionMetadata, ...(folderIds.length > 0 ? { folderIds: [...folderIds] } : {}) }
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
     actorType: params.actorType,
@@ -817,6 +832,8 @@ function createParamsForPreparedServer(
     selection: DeploySourceSelection
     /** Ports other environments already hold on this server; allocation probes past them. */
     reservedListenPorts?: ReadonlySet<number>
+    /** The folders planned for this server's deploy; their references ride on the payload. */
+    plannedFolders?: PlannedFolders
   }
 ): DeployCommandCreateParams {
   // One loopback-port ledger for both host-native lanes: site vhosts
@@ -856,7 +873,7 @@ function createParamsForPreparedServer(
       : {}),
     tlsMaterial: row.prepared.tlsMaterial,
     variableMaterial: row.prepared.variableMaterial,
-    storageMaterial: row.prepared.storageMaterial,
+    storageMaterial: withVolumeFolders(row.prepared.storageMaterial, params.plannedFolders),
     principalMaterial: row.prepared.principalMaterial,
     envFile: row.prepared.envFile,
     secretPlan: row.prepared.secretPlan,
@@ -876,6 +893,9 @@ function createParamsForPreparedServer(
     desiredHash: row.prepared.desiredHash,
     replicaCounts: row.prepared.replicaCounts,
     listenerPorts: row.prepared.listenerPorts,
+    ...(params.plannedFolders && params.plannedFolders.folderIds.length > 0
+      ? { folderIds: params.plannedFolders.folderIds }
+      : {}),
   }
 }
 
@@ -1023,8 +1043,6 @@ async function persistDeployFanOut(
     hostLevelApproved: boolean
     remoteBuildSourcesApproved: boolean
     selection: DeploySourceSelection
-    /** Release trees to record on each target — see `deploymentTargetsForFanOut`. */
-    siteReleases: readonly EnvironmentSiteRelease[]
   }
 ): Promise<CreatedDeployCommand[]> {
   const batches = planDeployBatches(
@@ -1032,6 +1050,9 @@ async function persistDeployFanOut(
     params.preparedByServer.map((row) => row.serverId)
   )
   const all = await db.transaction(async (tx) => {
+    // The environment row's lock first: a rename that passed its running-command
+    // check commits before this goes on, and the folder plan below sees its name.
+    await lockEnvironmentRow(tx, params.environmentId)
     const generation = await bumpEnvironmentGeneration(tx, params.environmentId)
     await replaceEnvironmentSlotsInTx(tx, {
       environmentId: params.environmentId,
@@ -1049,7 +1070,15 @@ async function persistDeployFanOut(
     const created = await mapSequential(
       params.preparedByServer,
       async (row): Promise<CreatedDeployCommand> => {
+        const plannedFolders = await planDeployFolders(tx, {
+          organizationId: params.organizationId,
+          environmentId: params.environmentId,
+          serverId: row.serverId,
+          services: servicesNeedingFolders(row.prepared),
+          volumeIds: volumesNeedingFolders(row.prepared),
+        })
         const createParams = createParamsForPreparedServer(row, {
+          plannedFolders,
           actorType: params.actorType,
           actorId: params.actorId,
           environmentId: params.environmentId,
@@ -1070,6 +1099,8 @@ async function persistDeployFanOut(
       }
     )
 
+    // Resolved after the folder plan, so a first deploy records the folder names it just set.
+    const siteReleases = await resolveSourcedEnvironmentSiteReleases(tx, params.environmentId)
     await upsertDeploymentTargets(tx, {
       environmentId: params.environmentId,
       targets: deploymentTargetsForFanOut({
@@ -1078,7 +1109,7 @@ async function persistDeployFanOut(
         drainedIds: params.drainedIds,
         generation,
         created,
-        siteReleases: params.siteReleases,
+        siteReleases,
         listenPortsByServer,
         batches,
       }),
@@ -1087,6 +1118,41 @@ async function persistDeployFanOut(
   })
   // `created` is in `preparedByServer` order, which is the order the batches were cut in.
   return batches.length < 2 ? all : all.slice(0, batches[0]?.length ?? 0)
+}
+
+/**
+ * Queue a command for an environment while holding its row lock, the lock an
+ * environment rename takes. A rename that passed its running-command check
+ * commits before the command exists, and a command queued first is seen by the
+ * rename's check.
+ */
+async function createCommandUnderEnvironmentLock(
+  db: Db,
+  environmentId: string,
+  params: Parameters<typeof createCommandRecord>[1]
+): Promise<Awaited<ReturnType<typeof createCommandRecord>>> {
+  return await db.transaction(async (tx) => {
+    await lockEnvironmentRow(tx, environmentId)
+    return await createCommandRecord(tx, params)
+  })
+}
+
+/**
+ * `persistDeployFanOut`, answering a folder name that cannot be used (an
+ * environment name that is not a folder name, a taken folder name) with its
+ * plain 400 or 409 instead of an error.
+ */
+async function persistDeployFanOutOrRefuse(
+  c: Context<AppEnv>,
+  db: Db,
+  params: Parameters<typeof persistDeployFanOut>[1]
+): Promise<CreatedDeployCommand[] | Response> {
+  try {
+    return await persistDeployFanOut(db, params)
+  } catch (err) {
+    if (err instanceof FolderPlanError) return c.json(err.body(), err.status)
+    throw err
+  }
 }
 
 /**
@@ -1763,6 +1829,12 @@ async function stopDrainedDeployments(
         siteReleases,
       })
       if (stopped instanceof Response) return stopped
+      // The stop reclaims this environment's release trees on that server; their
+      // folder rows wait, locked, for the host to confirm.
+      await markServerServiceFoldersRemoving(db, {
+        environmentId: params.environmentId,
+        serverId,
+      })
       if (!params.attachmentServers.has(serverId)) {
         await releaseSubnetsForServer(db, {
           environmentId: params.environmentId,
@@ -1974,10 +2046,10 @@ async function runEnvironmentDeploy(
       planned,
       auth.strategyOverride ?? { strategy: null, migration: null }
     )
-    // Recorded, not consumed, here: the current compose still names these, so
-    // this is the snapshot a later stop/delete falls back to once it does not.
-    const siteReleases = await resolveSourcedEnvironmentSiteReleases(db, environmentId)
-    const created = await persistDeployFanOut(db, {
+    // The release trees this deploy publishes are recorded in `persistDeployFanOut`: the
+    // current compose still names them, so that snapshot is what a later stop or delete
+    // falls back to once it does not.
+    const persisted = await persistDeployFanOutOrRefuse(c, db, {
       preparedByServer,
       planServerIds: planned.plan.serverIds,
       drainedIds,
@@ -1993,8 +2065,9 @@ async function runEnvironmentDeploy(
       hostLevelApproved: planned.hostLevelApproved,
       remoteBuildSourcesApproved: planned.remoteBuildSourcesApproved,
       selection: auth.selection,
-      siteReleases,
     })
+    if (persisted instanceof Response) return persisted
+    const created = persisted
     spanningCommitted = true
     const { queued, enqueueError } = await deliverDeployFanOut(db, commandQueue, {
       created,
@@ -2197,7 +2270,7 @@ async function enqueueStopCommand(
   }
 ): Promise<QueuedCommandRef | Response> {
   const expiresAt = new Date(Date.now() + 120_000).toISOString()
-  const record = await createCommandRecord(db, {
+  const record = await createCommandUnderEnvironmentLock(db, params.environmentId, {
     serverId: params.serverId,
     actorType: params.actorType,
     actorId: params.actorId,
@@ -2274,10 +2347,10 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
     const tcpUdpServices = await resolveTcpUdpIngressServices(db, environmentId)
     const composeNetworks = await listEnvironmentComposeNetworks(db, environmentId)
     const namesByServer = composeNetworkNamesByServer(composeNetworks)
-    // Captured before the daemon runs: an explicit stop leaves the rows in
-    // place, but this is the same set delete teardown has to snapshot, so both
-    // paths resolve it the same way.
-    const siteReleases = await resolveEnvironmentSiteReleases(db, environmentId)
+    // An explicit stop keeps every service and volume folder, uploads included;
+    // only deleting the environment, a server leaving it, or the asset removes
+    // files. So no release tree is named here (delete teardown still names them).
+    const siteReleases: EnvironmentSiteRelease[] = []
     const queued: QueuedCommandRef[] = []
     for (const serverId of loaded.serverIds) {
       const enqueued = await enqueueStopCommand(db, commandQueue, {
@@ -2328,7 +2401,7 @@ async function enqueueLifecycleCommand(
   }
 ): Promise<QueuedCommandRef | Response> {
   const expiresAt = new Date(Date.now() + 120_000).toISOString()
-  const record = await createCommandRecord(db, {
+  const record = await createCommandUnderEnvironmentLock(db, params.environmentId, {
     serverId: params.serverId,
     actorType: 'user',
     actorId: params.userId,

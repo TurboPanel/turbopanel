@@ -141,7 +141,7 @@ async function withStorageFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Storage Route Env',
+      name: 'storage-route-env',
       projectId,
       createdAt: now,
       updatedAt: now,

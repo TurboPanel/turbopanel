@@ -11,6 +11,11 @@ import {
   stampNewEnvironmentDeployOptions,
   validateDeployOptions,
 } from '../../features/deploy/deploy-options.ts'
+import { isValidEnvironmentName } from '../../contracts/directory-names.ts'
+import {
+  ENVIRONMENT_NAME_INVALID_ERROR,
+  ENVIRONMENT_NAME_RULE_MESSAGE,
+} from '../../features/folders/records.ts'
 import { parseDescription, parseName, stripPromotedMetadataKeys } from '../shared.ts'
 
 /** Placement lives on `environment.server_id` — never persist it into metadata.
@@ -84,9 +89,19 @@ export function parseCreateEnvironmentNames(
   body: Record<string, unknown>
 ): { ok: true; name: string | null; description: string | null } | EnvironmentRouteValidationError {
   try {
+    const name = parseName(body)
+    // The name is the scope folder on every server, so it must be a folder name.
+    if (!isValidEnvironmentName(name)) {
+      return {
+        ok: false,
+        error: ENVIRONMENT_NAME_INVALID_ERROR,
+        message: ENVIRONMENT_NAME_RULE_MESSAGE,
+        status: 400,
+      }
+    }
     return {
       ok: true,
-      name: parseName(body),
+      name,
       description: parseDescription(body),
     }
   } catch {

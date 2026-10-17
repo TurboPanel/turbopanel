@@ -86,6 +86,7 @@ import {
   collectComposeExternalDockerNetworkNames,
   pruneUnreferencedComposeNetworks,
 } from '../../features/compose/docker-external-networks.ts'
+import { sharedVolumeIds } from '../../features/folders/shares.ts'
 import { principalHomeDir, principalVolumePath, resolveDockerVolumeName } from '../../lib/naming.ts'
 import { accessGroupsFor } from '../../features/principals/principal-access.ts'
 import { resolvePrincipalIds } from '../../features/principals/principal-ids.ts'
@@ -1018,6 +1019,7 @@ type LocationJoinRow = {
 type MountJoinRow = {
   storageId: string
   serviceId: string
+  serviceEnvironmentId: string
   composeServiceName: string
   destinationPath: string
   subpath: string | null
@@ -1147,6 +1149,11 @@ export async function loadStorageMaterial(
   if (params.serviceIds.length > 0) {
     scopeConditions.push(inArray(storage.serviceId, params.serviceIds))
   }
+  // Shared (common) volumes of a site owner that this environment uses.
+  const sharedIds = new Set(await sharedVolumeIds(db, params.environmentId))
+  if (sharedIds.size > 0) {
+    scopeConditions.push(inArray(storage.id, [...sharedIds]))
+  }
 
   const locationRows = await db
     .select({
@@ -1183,6 +1190,7 @@ export async function loadStorageMaterial(
           .select({
             storageId: mount.storageId,
             serviceId: mount.serviceId,
+            serviceEnvironmentId: service.environmentId,
             composeServiceName: service.composeServiceName,
             destinationPath: mount.destinationPath,
             subpath: mount.subpath,
@@ -1194,6 +1202,8 @@ export async function loadStorageMaterial(
 
   const mountsByStorage = new Map<string, MountJoinRow[]>()
   for (const row of mountRows) {
+    // A shared volume is mounted by many environments; this deploy carries only its own.
+    if (sharedIds.has(row.storageId) && row.serviceEnvironmentId !== params.environmentId) continue
     const list = mountsByStorage.get(row.storageId) ?? []
     list.push(row)
     mountsByStorage.set(row.storageId, list)

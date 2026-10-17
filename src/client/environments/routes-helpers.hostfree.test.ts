@@ -43,11 +43,21 @@ test('serializeEnvironment maps row fields', () => {
 })
 
 test('parseCreateEnvironmentNames validates names', () => {
-  const ok = parseCreateEnvironmentNames({ name: 'Staging' })
+  const ok = parseCreateEnvironmentNames({ name: 'staging' })
   if (!ok.ok) throw new TypeError('expected valid environment names')
-  assertEquals(ok.name, 'Staging')
-  assertEquals(parseCreateEnvironmentNames({ name: 'bad/name' }).ok, true)
+  assertEquals(ok.name, 'staging')
   assertEquals(parseCreateEnvironmentNames({ name: 'bad\nname' }).ok, false)
+})
+
+test('parseCreateEnvironmentNames refuses names that are not folder names', () => {
+  for (const name of ['Staging', 'bad/name', 'my env', 'common', 'home', '-x', 'a'.repeat(33)]) {
+    const refused = parseCreateEnvironmentNames({ name })
+    if (refused.ok) throw new TypeError(`expected a refusal for ${name}`)
+    assertEquals(refused.error, 'invalid_environment_name', name)
+    assertEquals(typeof refused.message, 'string')
+  }
+  // A create without a name has no folder to be.
+  assertEquals(parseCreateEnvironmentNames({}).ok, false)
 })
 
 test('stripEnvironmentPromotedMetadata removes serverId and component', () => {
@@ -128,10 +138,10 @@ test('parseEnvironmentPatchOptions rejects invalid compose', () => {
 })
 
 test('parseCreateEnvironmentNames rejects bad description and reads name', () => {
-  assertEquals(parseCreateEnvironmentNames({ name: 'Ok', description: 12 }).ok, false)
-  const named = parseCreateEnvironmentNames({ name: 'Prod', description: 'live' })
+  assertEquals(parseCreateEnvironmentNames({ name: 'ok', description: 12 }).ok, false)
+  const named = parseCreateEnvironmentNames({ name: 'prod', description: 'live' })
   if (!named.ok) throw new TypeError('expected valid name create')
-  assertEquals(named.name, 'Prod')
+  assertEquals(named.name, 'prod')
   assertEquals(named.description, 'live')
 })
 

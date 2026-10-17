@@ -8,7 +8,7 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db/connection.ts'
-import { storageCopy, mount, principal, secret, storage } from '../../db/schema.ts'
+import { environment, service, storageCopy, mount, principal, secret, storage } from '../../db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanManageOr403,
@@ -46,6 +46,18 @@ import {
   type StorageParentRef,
 } from './routes-helpers.ts'
 import { copyOptionsError, copyPathWriteError } from '../../features/backups/copy-targets.ts'
+import {
+  FolderPlanError,
+  markAssetFoldersRemoving,
+  markVolumeFolderRemoving,
+  planVolumeFolder,
+  readDirectoryNameMode,
+  scopeFor,
+  settleFolderName,
+} from '../../features/folders/allocate.ts'
+import { hasFolderOptions, parseFolderOptions } from '../../features/folders/options.ts'
+import { SCOPE_LOCKED_ERROR, storageHasFolder } from '../../features/folders/records.ts'
+import { inUseBody, listUsesOfAssets } from '../../features/folders/shares.ts'
 
 async function sealStorageContent(c: Context<AppEnv>, content: string): Promise<string | Response> {
   if (isStorageContentTooLarge(content)) {
@@ -85,6 +97,8 @@ const STORAGE_SELECT = {
   principalId: storage.principalId,
   // Applied login — storage paths live under /srv/users/<applied>/volumes.
   principalUsername: principal.appliedUsername,
+  slug: storage.slug,
+  isCommon: storage.isCommon,
   metadata: storage.metadata,
   options: storage.options,
   createdAt: storage.createdAt,
@@ -408,6 +422,63 @@ async function insertMountRow(db: StorageDb, storageId: string, fields: CreateMo
   return inserted.id
 }
 
+/** The environment a new volume sits in: its own, or its service's; null for any other parent. */
+async function resolveParentEnvironmentId(
+  db: StorageDb,
+  parent: StorageParentRef
+): Promise<string | null> {
+  if (parent.column === 'environmentId') return parent.id
+  if (parent.column !== 'serviceId' || parent.id === null) return null
+  const [row] = await db
+    .select({ environmentId: service.environmentId })
+    .from(service)
+    .where(eq(service.id, parent.id))
+    .limit(1)
+  return row?.environmentId ?? null
+}
+
+/**
+ * Settle the folder name of a new volume: the organization setting, the typed
+ * name (never suffixed) or the default from the display name, and the clash
+ * check against the site owner's other volumes in the same scope.
+ */
+async function nameVolumeFolder(
+  tx: StorageDb,
+  input: {
+    storageId: string
+    organizationId: string
+    principalId: string | null
+    name: string
+    isCommon: boolean
+    environmentId: string | null
+    options: { slug?: string; directoryName?: 'slug' | 'uuid' }
+  }
+): Promise<void> {
+  let environmentName: string | null = null
+  if (!input.isCommon && input.environmentId !== null) {
+    const [row] = await tx
+      .select({ name: environment.name })
+      .from(environment)
+      .where(eq(environment.id, input.environmentId))
+      .limit(1)
+    environmentName = row?.name ?? null
+  }
+  const scope = scopeFor(input.isCommon, environmentName)
+  const settled = await settleFolderName(tx, {
+    mode: await readDirectoryNameMode(tx, input.organizationId),
+    kind: 'volume',
+    assetId: input.storageId,
+    principalId: input.principalId,
+    scope,
+    request: {
+      ...(input.options.slug === undefined ? {} : { typed: input.options.slug }),
+      ...(input.options.directoryName === undefined ? {} : { choice: input.options.directoryName }),
+    },
+    label: input.name,
+  })
+  await tx.update(storage).set({ slug: settled.slug }).where(eq(storage.id, input.storageId))
+}
+
 async function createStorageRecord(
   c: Context<AppEnv>,
   db: StorageDb,
@@ -450,6 +521,23 @@ async function createStorageRecord(
   const sealedContent = await resolveSealedStorageContent(c, body.content)
   if (sealedContent instanceof Response) return sealedContent
 
+  const folderOptions = parseFolderOptions(body)
+  if (!folderOptions.ok) return c.json({ error: 'Invalid request' }, 400)
+  const hasFolder = fields.kind === 'volume' || fields.kind === 'directory'
+  if (!hasFolder && hasFolderOptions(folderOptions.options)) {
+    return c.json(
+      {
+        error: 'folder_options_not_supported',
+        message: 'Only volumes and directories have a folder. Remove slug, directoryName and common.',
+      },
+      400
+    )
+  }
+  // A volume that belongs to no environment (organization, workspace or project) is shared.
+  const parentEnvironmentId = await resolveParentEnvironmentId(db, parent)
+  const isCommon =
+    hasFolder && (parentEnvironmentId === null || folderOptions.options.common === true)
+
   try {
     const storageId = await db.transaction(async (tx) => {
       const [inserted] = await tx
@@ -457,6 +545,7 @@ async function createStorageRecord(
         .values({
           organizationId: orgId,
           ...parentInsertValues(parent),
+          isCommon,
           kind: fields.kind,
           name: fields.name,
           accessMode: fields.accessMode,
@@ -474,8 +563,22 @@ async function createStorageRecord(
           .set({ metadata: dockerVolumeMetadataWithId(fields.metadata, id) })
           .where(eq(storage.id, id))
       }
+      if (hasFolder) {
+        await nameVolumeFolder(tx as StorageDb, {
+          storageId: id,
+          organizationId: orgId,
+          principalId: fields.principalId,
+          name: fields.name,
+          isCommon,
+          environmentId: parentEnvironmentId,
+          options: folderOptions.options,
+        })
+      }
       if (fields.copy) {
         await insertCopyRow(tx as StorageDb, id, fields.copy)
+        if (hasFolder && fields.copy.provider === 'path') {
+          await planVolumeFolder(tx as StorageDb, { storageId: id, serverId: fields.copy.serverId })
+        }
       }
       if (fields.mount) {
         await insertMountRow(tx as StorageDb, id, fields.mount)
@@ -484,8 +587,44 @@ async function createStorageRecord(
     })
     return c.json({ ok: true as const, id: storageId })
   } catch (err) {
+    if (err instanceof FolderPlanError) return c.json(err.body(), err.status)
     return uniqueViolationResponse(c, err)
   }
+}
+
+/**
+ * The folder is chosen at creation: `common` never changes, the folder name
+ * and the site owner stop changing once a folder exists for the volume.
+ */
+async function refuseLockedFolderPatch(
+  c: Context<AppEnv>,
+  db: StorageDb,
+  existing: StorageRow,
+  body: Record<string, unknown>
+): Promise<Response | null> {
+  if ('common' in body && body.common !== existing.isCommon) {
+    return c.json(
+      {
+        error: SCOPE_LOCKED_ERROR,
+        message:
+          'Whether a volume is shared by every environment is chosen when it is created and cannot change.',
+      },
+      409
+    )
+  }
+  const ownerChange =
+    'principalId' in body && (body.principalId ?? null) !== (existing.principalId ?? null)
+  const slugChange = 'slug' in body && body.slug !== existing.slug
+  if (!ownerChange && !slugChange) return null
+  if (!(await storageHasFolder(db, existing.id))) return null
+  return c.json(
+    {
+      error: 'storage_slug_locked',
+      message:
+        'This volume already has a folder on a server, so its folder name and site owner can no longer change.',
+    },
+    409
+  )
 }
 
 async function patchStorageRecord(
@@ -503,6 +642,9 @@ async function patchStorageRecord(
     existing.projectId
   )
   if (principalError) return principalError
+
+  const folderRefused = await refuseLockedFolderPatch(c, db, existing, body)
+  if (folderRefused) return folderRefused
 
   const updateFields = buildStorageUpdateFields(c, body)
   if (updateFields instanceof Response) return updateFields
@@ -712,10 +854,18 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const stepUp = await requireStepUpIfConfigured(c, ctx.orgId, 'storage.delete')
     if (stepUp) return stepUp
 
+    // A shared volume cannot go while another environment uses it.
+    const uses = await listUsesOfAssets(ctx.db, { storageIds: [id] })
+    if (uses.length > 0) return c.json(inUseBody(uses), 409)
+
     const backupHosts = await captureCopyBackupHosts(ctx.db, c.get('commandQueue'), {
       storageId: id,
     })
-    await ctx.db.delete(storage).where(eq(storage.id, id))
+    // The folder rows stay, locked, until the host confirms the folder is gone.
+    await ctx.db.transaction(async (tx) => {
+      await markAssetFoldersRemoving(tx, { storageIds: [id] })
+      await tx.delete(storage).where(eq(storage.id, id))
+    })
     await repushCopyBackups(c, ctx.db, [], backupHosts)
     return c.json({ ok: true as const })
   })
@@ -763,9 +913,16 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (ownershipError) return ownershipError
 
     try {
-      const id = await insertCopyRow(ctx.db, storageId, fields)
+      const id = await ctx.db.transaction(async (tx) => {
+        const copyId = await insertCopyRow(tx as StorageDb, storageId, fields)
+        if (fields.provider === 'path' && row.slug !== null) {
+          await planVolumeFolder(tx as StorageDb, { storageId, serverId: fields.serverId })
+        }
+        return copyId
+      })
       return c.json({ ok: true as const, id })
     } catch (err) {
+      if (err instanceof FolderPlanError) return c.json(err.body(), err.status)
       return uniqueViolationResponse(c, err)
     }
   })
@@ -828,10 +985,16 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const backupHosts = await captureCopyBackupHosts(ctx.db, c.get('commandQueue'), {
       copyIds: [copyId],
     })
-    const deleted = await ctx.db
-      .delete(storageCopy)
-      .where(and(eq(storageCopy.id, copyId), eq(storageCopy.storageId, storageId)))
-      .returning({ id: storageCopy.id })
+    const deleted = await ctx.db.transaction(async (tx) => {
+      const removed = await tx
+        .delete(storageCopy)
+        .where(and(eq(storageCopy.id, copyId), eq(storageCopy.storageId, storageId)))
+        .returning({ id: storageCopy.id, serverId: storageCopy.serverId })
+      // The copy's folder on that server waits, locked, for the host to confirm.
+      const serverId = removed[0]?.serverId
+      if (serverId) await markVolumeFolderRemoving(tx, { storageId, serverId })
+      return removed
+    })
     if (deleted.length === 0) return c.json({ error: 'Not found' }, 404)
     // Its policies cascaded away; the host drops their timers.
     await repushCopyBackups(c, ctx.db, [], backupHosts)
