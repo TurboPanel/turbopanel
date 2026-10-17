@@ -216,10 +216,10 @@ test('loadDefaultEnvironmentName falls back when org is missing', async () => {
 
 test('loadDefaultEnvironmentName resolves org options', async () => {
   const name = await loadDefaultEnvironmentName(
-    createOrgSelectDb([{ options: { defaultEnvironmentName: ' Staging ' } }]),
+    createOrgSelectDb([{ options: { defaultEnvironmentName: ' staging ' } }]),
     'org-1'
   )
-  assertEquals(name, 'Staging')
+  assertEquals(name, 'staging')
 })
 
 test('loadDefaultEnvironmentName uses platform default when options omit name', async () => {

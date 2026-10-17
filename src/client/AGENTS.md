@@ -235,7 +235,18 @@ changes.
   `organization.options.defaultEnvironmentName` (unset = `production`).
   `GET`/`PUT /organizations/:id/default-environment` (manage-gated) names the
   environment scaffolded by project create / configure. Matching for existing
-  literal "production" catalog environments is unchanged.
+  literal "production" catalog environments is unchanged. The name is also the
+  scope folder on every server, so the PUT only takes a valid environment name
+  (`isValidEnvironmentName`) and a saved value that is not one is ignored.
+- **Folder names (`folder` table):** one row per service or volume directory per
+  server (`features/folders/records.ts`). While a row exists (any state but
+  `missing`) the environment's name (`environments/rename-lock.ts`), the
+  asset's `slug`, the project slug and the organization's
+  `directoryNames` / `directoryNamesLocked` setting
+  (`GET`/`PUT /organizations/:id/directory-defaults`) cannot change. Writers of
+  the rows (deploy planning, reconcile) must take the environment row lock
+  (`lockEnvironmentRow`) before inserting the first row, and set
+  `directoryNamesLocked` in the same transaction.
 - **Project default server:** `project.options.defaultServerId` (optional UUID).
   Environments without their own `server_id` inherit it at deploy / lifecycle /
   stop (`resolveEffectivePlacementServerId`). Overview Base shows an inline

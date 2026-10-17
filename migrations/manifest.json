@@ -212,6 +212,12 @@
       "tag": "0034_add_address_table",
       "when": 1792027087828,
       "sha256": "4094dc67536bf77629b278509e3b6285d31288c03a008803c9d73c217335accc"
+    },
+    {
+      "idx": 35,
+      "tag": "0035_folder_table_and_slugs",
+      "when": 1792262567946,
+      "sha256": "7e96b8dd1835cc3042fad200b96ff102d38431eaf65c33dc81ca014bf9043be1"
     }
   ]
 }

@@ -498,11 +498,11 @@ test('an environment is added with an overlay, renamed with the overlay kept, an
     )
 
     const renamed = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
-      name: 'Pre-production',
+      name: 'pre-production',
       description: 'second',
     })
     assertEquals(renamed.status, 200)
-    assertEquals(await environmentRow(ctx, id), { name: 'Pre-production', description: 'second' })
+    assertEquals(await environmentRow(ctx, id), { name: 'pre-production', description: 'second' })
     // Renaming is not an overlay edit: the overlay survives.
     assertEquals(
       ((await storedOptions(ctx, id))?.compose as typeof EMPTY_OVERLAY).data,

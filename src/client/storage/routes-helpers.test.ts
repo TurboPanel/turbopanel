@@ -72,6 +72,8 @@ function baseRow(overrides?: Partial<StorageRow>): StorageRow {
     options: null,
     contentEnvelope: null,
     composeVolumeKey: null,
+    slug: null,
+    isCommon: false,
     createdAt: "2024-01-01T00:00:00.000Z",
     updatedAt: "2024-01-01T00:00:00.000Z",
     ...overrides,
