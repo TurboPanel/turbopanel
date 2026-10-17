@@ -327,7 +327,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
 
     const id = c.req.param('id')
     const entity = await resolveEntityVersion(db, 'environment', id)
-    if (!entity || entity.organizationId !== organizationId) {
+    if (entity?.organizationId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 

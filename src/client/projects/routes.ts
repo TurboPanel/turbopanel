@@ -726,7 +726,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const id = c.req.param('id')
     const entity = await resolveEntityVersion(db, 'project', id)
-    if (!entity || entity.organizationId !== organizationId) {
+    if (entity?.organizationId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
