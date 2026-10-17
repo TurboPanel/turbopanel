@@ -19,18 +19,24 @@ export type CachedReadRegistration = {
   readonly versionStamp: boolean
 }
 
+/** A read whose statement carries the version stamp (see `cached-read.ts`). */
+function stamped(fingerprint: string): CachedReadRegistration {
+  return {
+    fingerprint,
+    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
+    versionStamp: true,
+  }
+}
+
 export const CACHED_READ_REGISTRY = {
-  'servers-list': {
-    fingerprint: 'ce2766c84e1e7439',
-    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
-    versionStamp: true,
-  },
-  'server-detail': {
-    fingerprint: '38a4113cda59ba1c',
-    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
-    versionStamp: true,
-  },
-} as const satisfies Record<string, CachedReadRegistration>
+  'servers-list': stamped('ce2766c84e1e7439'),
+  'server-detail': stamped('38a4113cda59ba1c'),
+  'projects-list': stamped('8cfa9b11b2f4ce72'),
+  'project-detail': stamped('91843181f2ba2e30'),
+  'environments-list': stamped('d458aba4df4f21c9'),
+  'environment-detail': stamped('2035011bf1a6bcf4'),
+  'workspaces-list': stamped('abd2761821e1adfd'),
+} satisfies Record<string, CachedReadRegistration>
 
 export type ApprovedReadModelId = keyof typeof CACHED_READ_REGISTRY
 

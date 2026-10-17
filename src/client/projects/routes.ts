@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -6,8 +6,12 @@ import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { assertCanOr403, listVisible } from '../authz/index.ts'
-import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
+import { assertCanOr403, listVisibleVersions } from '../authz/index.ts'
+import { resolveEntityOrganizationId, resolveEntityVersion } from '../authz/create-access-grant.ts'
+import {
+  cachedProjectDetail,
+  cachedProjectsList,
+} from '../../query-cache/read-models/hierarchy-reads.ts'
 import { getDb, type Db } from '../../db/connection.ts'
 import { environment, project, variable, workspace } from '../../db/schema.ts'
 import {
@@ -757,37 +761,20 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const workspaceId = c.req.query('workspaceId')
 
-    const visibleIds = await listVisible(db, {
+    // Who may see which project is decided here, on the primary connection; the
+    // visible ids (with when each last changed) go into the cached read.
+    const visible = await listVisibleVersions(db, {
       kind: 'project',
       userId: session.userId,
       organizationId,
     })
 
-    if (visibleIds.length === 0) {
+    if (visible.length === 0) {
       return c.json({ projects: [] })
     }
 
-    const conditions = [inArray(project.id, visibleIds)]
-    if (workspaceId) {
-      conditions.push(eq(project.workspaceId, workspaceId))
-    }
-
-    const rows = await db
-      .select({
-        id: project.id,
-        name: project.name,
-        slug: project.slug,
-        description: project.description,
-        workspaceId: project.workspaceId,
-        repositoryId: project.repositoryId,
-        metadata: project.metadata,
-        options: project.options,
-        createdAt: project.createdAt,
-        updatedAt: project.updatedAt,
-      })
-      .from(project)
-      .where(and(...conditions))
-      .orderBy(project.createdAt)
+    const all = await cachedProjectsList(c, { organizationId, visible })
+    const rows = workspaceId ? all.filter((row) => row.workspaceId === workspaceId) : all
 
     return c.json({ projects: rows })
   })
@@ -804,29 +791,16 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const organizationId = orgResult
 
     const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'project', id)
-    if (!entityOrgId || entityOrgId !== organizationId) {
+    const entity = await resolveEntityVersion(db, 'project', id)
+    if (entity?.organizationId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const rows = await db
-      .select({
-        id: project.id,
-        name: project.name,
-        slug: project.slug,
-        description: project.description,
-        workspaceId: project.workspaceId,
-        repositoryId: project.repositoryId,
-        metadata: project.metadata,
-        options: project.options,
-        createdAt: project.createdAt,
-        updatedAt: project.updatedAt,
-      })
-      .from(project)
-      .where(eq(project.id, id))
-      .limit(1)
-
-    const row = rows[0]
+    const row = await cachedProjectDetail(c, {
+      organizationId,
+      id,
+      updatedAt: entity.updatedAt,
+    })
     if (!row) {
       return c.json({ error: 'Not found' }, 404)
     }

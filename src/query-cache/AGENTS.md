@@ -36,6 +36,10 @@ On Workers, Hyperdrive only caches **named prepared statements**. Drizzle sends 
 | `testing` | real id (dedicated `testing-cached` config) | Must point at the testing Postgres origin with caching enabled — **not** the placeholder (`0000…dev0`) and **not** the primary `HYPERDRIVE` id. Create or resolve via `CLOUDFLARE_API_TOKEN=… ./scripts/ensure-testing-hyperdrive-cached.sh --write-wrangler` when missing. |
 | top-level / `wrangler dev` / vitest | placeholder (`0000…dev0`) | Local dev/tests use passthrough when the binding is absent or placeholder. |
 
+### Projects, environments and workspaces
+
+Who may see what is decided on the primary connection first. Lists call `listVisibleVersions` (the same grant check as `listVisible`, same result set, plus each row's last change) and pass those ids to the cached read, so the allowed set is part of the statement and its key; the `workspaceId` / `projectId` list filters are applied after the read so one statement serves every filter. Details call `resolveEntityVersion` (organization plus last change in one primary statement, replacing the organization lookup), compare the organization, read the row through the cache, and only then run the route's own read check. Permission decisions, `getOrgId`, the redeploy notice and every write stay on the primary connection. The stamp is `updated_at` (millisecond precision, transaction time), so two commits in the same millisecond share a stamp; the 75 second window bounds that. A row deleted between the primary lookup and the cached read can leave a cached `null` under that stamp for the same window.
+
 ## Freshness after an edit (version stamp)
 
 Hyperdrive never purges on a write, and the self-hosted copy has no purge either; the only lever is changing the statement or its parameters. So a cached read that can be edited carries a version stamp: one bound parameter, selected as `$n::text as "_v"`, built from values the primary connection already returned in the same request (`id` and `updated_at` of the rows, from `loadServerRowsForFleetPresence`, which therefore runs first). An edit moves `updated_at`, the parameter changes, the key changes, and the new row shows at once. The stamp is only ever in the select list, never in a WHERE clause, so it can never hide a row; `cached-reads.test.ts` checks that for every entry marked `versionStamp: true`. The stamp column is dropped before the rows are returned or stored. Any update of the row (a daemon connecting, for example) also moves `updated_at` and so also skips a stale copy; the cost is a lower hit rate on rows that change often, never a stale answer. A read with no free stamp is not cached. Known gap: a licence being bound to a server does not change `server.updated_at`, so `licenseId` can lag by up to 75 seconds.
@@ -76,6 +80,11 @@ Both backends are thin wrappers — they do not decide what SQL runs or what get
 | --- | --- | --- | --- |
 | `servers-list` | `cachedServersListReadModel` | `ServersListRow[]` (list rows only) | **Only** statement #1 — list-rows `SELECT` on `server` — see `read-models/servers-list.ts` |
 | `server-detail` | `cachedServerDetailReadModel` | `ServerDetailRow \| null` (single row) | **Only** statement #1 — detail-row `SELECT` on `server` — see `read-models/server-detail.ts` |
+| `projects-list` | `cachedProjectsList` | `ProjectRow[]` | One `SELECT` on `project` by visible ids — `read-models/hierarchy-reads.ts` |
+| `project-detail` | `cachedProjectDetail` | `ProjectRow \| null` | One `SELECT` on `project` by id |
+| `environments-list` | `cachedEnvironmentsList` | `EnvironmentRow[]` | One `SELECT` on `environment` by visible ids |
+| `environment-detail` | `cachedEnvironmentDetail` | `EnvironmentRow \| null` | One `SELECT` on `environment` by id |
+| `workspaces-list` | `cachedWorkspacesList` | `WorkspaceRow[]` | One `SELECT` on `workspace` by visible ids |
 
 For `servers-list` and `server-detail`, daemon/metadata presence projections (`resolveFleetPresence`) and colocated machine-id matching (`resolveColocatedServerIdSet`) run on the **primary** connection on every request, outside the cache. Route-facing payloads assemble rows + presence after the cached read returns.
 
