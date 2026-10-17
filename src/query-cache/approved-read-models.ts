@@ -30,6 +30,31 @@ export const CACHED_READ_REGISTRY = {
     tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
     versionStamp: true,
   },
+  'projects-list': {
+    fingerprint: 'a5f6360b56562fef',
+    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
+    versionStamp: true,
+  },
+  'project-detail': {
+    fingerprint: '41c6ed8973e54ec2',
+    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
+    versionStamp: true,
+  },
+  'environments-list': {
+    fingerprint: 'd458aba4df4f21c9',
+    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
+    versionStamp: true,
+  },
+  'environment-detail': {
+    fingerprint: '2035011bf1a6bcf4',
+    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
+    versionStamp: true,
+  },
+  'workspaces-list': {
+    fingerprint: 'abd2761821e1adfd',
+    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
+    versionStamp: true,
+  },
 } as const satisfies Record<string, CachedReadRegistration>
 
 export type ApprovedReadModelId = keyof typeof CACHED_READ_REGISTRY

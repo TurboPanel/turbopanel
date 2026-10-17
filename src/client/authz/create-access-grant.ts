@@ -287,6 +287,41 @@ export async function validateGrantEntityTarget(
   return { ok: true, organizationId }
 }
 
+export type EntityVersion = { organizationId: string; updatedAt: string }
+
+/**
+ * The organization of a project or environment together with the time its row
+ * last changed, in one statement. The cached detail reads use the time as
+ * their version stamp; the organization is checked exactly as
+ * {@link resolveEntityOrganizationId} would. `null` for an unknown id.
+ */
+export async function resolveEntityVersion(
+  db: Db,
+  entityType: 'project' | 'environment',
+  entityId: string
+): Promise<EntityVersion | null> {
+  if (!isUuid(entityId)) return null
+  const rows =
+    entityType === 'project'
+      ? await db.execute<{ organization_id: string; updated_at: string }>(sql`
+          SELECT w.organization_id, p.updated_at::text AS updated_at
+          FROM project p
+          JOIN workspace w ON w.id = p.workspace_id
+          WHERE p.id = ${entityId}::uuid
+          LIMIT 1
+        `)
+      : await db.execute<{ organization_id: string; updated_at: string }>(sql`
+          SELECT w.organization_id, e.updated_at::text AS updated_at
+          FROM environment e
+          JOIN project p ON p.id = e.project_id
+          JOIN workspace w ON w.id = p.workspace_id
+          WHERE e.id = ${entityId}::uuid
+          LIMIT 1
+        `)
+  const row = rows[0]
+  return row ? { organizationId: row.organization_id, updatedAt: row.updated_at } : null
+}
+
 export async function resolveEntityOrganizationId(
   db: Db,
   entityType: string,

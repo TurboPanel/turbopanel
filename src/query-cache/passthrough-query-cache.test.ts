@@ -20,7 +20,15 @@ import { createPassthroughQueryCache } from './passthrough-query-cache.ts'
 const test = Deno.test.bind(Deno)
 
 test('isApprovedReadModelId accepts only allowlisted ids', () => {
-  assertEquals(APPROVED_READ_MODELS, ['servers-list', 'server-detail'])
+  assertEquals(APPROVED_READ_MODELS, [
+    'servers-list',
+    'server-detail',
+    'projects-list',
+    'project-detail',
+    'environments-list',
+    'environment-detail',
+    'workspaces-list',
+  ])
   assertEquals(isApprovedReadModelId('servers-list'), true)
   assertEquals(isApprovedReadModelId('server-detail'), true)
   assertEquals(isApprovedReadModelId('daemon-status'), false)

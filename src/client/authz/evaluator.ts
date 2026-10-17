@@ -795,17 +795,19 @@ export type ListVisibleInput = {
 }
 
 /**
- * Return entity ids of `kind` within `organizationId` visible to the user.
- * Org owners/managers and platform admins see all leaves; others see none.
+ * The grant check shared by {@link listVisible} and {@link listVisibleVersions}:
+ * org owners/managers and platform admins see every leaf, others see none.
+ * `columns` is the select list over the `leaves` rows.
  */
-export async function listVisible(
+async function selectVisibleLeaves<Row>(
   db: Db,
-  { kind, userId, organizationId }: ListVisibleInput
-): Promise<string[]> {
+  { userId, organizationId }: Pick<ListVisibleInput, 'userId' | 'organizationId'>,
+  leavesBody: SQL,
+  columns: SQL
+): Promise<Row[]> {
   const actorsetBody = buildActorsetBody(userId)
-  const leavesBody = buildLeavesBody(kind, organizationId)
 
-  const rows = (await db.execute(sql`
+  return (await db.execute(sql`
     WITH
     actorset(actor_type, actor_id) AS (
       ${actorsetBody}
@@ -829,10 +831,69 @@ export async function listVisible(
     leaves AS (
       ${leavesBody}
     )
-    SELECT l.id AS item_id
+    SELECT ${columns}
     FROM leaves l
     WHERE (SELECT val FROM is_superadmin) OR (SELECT val FROM has_org_access)
-  `)) as unknown as Array<{ item_id: string }>
+  `)) as unknown as Row[]
+}
+
+/**
+ * Return entity ids of `kind` within `organizationId` visible to the user.
+ * Org owners/managers and platform admins see all leaves; others see none.
+ */
+export async function listVisible(
+  db: Db,
+  { kind, userId, organizationId }: ListVisibleInput
+): Promise<string[]> {
+  const rows = await selectVisibleLeaves<{ item_id: string }>(
+    db,
+    { userId, organizationId },
+    buildLeavesBody(kind, organizationId),
+    sql`l.id AS item_id`
+  )
 
   return rows.map((row) => row.item_id)
+}
+
+/** Kinds whose rows carry a version stamp for the cached read models. */
+export type VersionedKind = 'workspace' | 'project' | 'environment'
+
+export type VisibleVersion = { id: string; updatedAt: string }
+
+function buildVersionedLeavesBody(kind: VersionedKind, organizationId: string): SQL {
+  switch (kind) {
+    case 'workspace':
+      return sql`SELECT id, updated_at FROM workspace WHERE organization_id = ${organizationId}::uuid`
+    case 'environment':
+      return sql`SELECT e.id, e.updated_at FROM environment e
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid`
+    case 'project':
+      return sql`SELECT p.id, p.updated_at FROM project p
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid`
+  }
+}
+
+/**
+ * Same visibility decision as {@link listVisible} (same grant check, same
+ * result set), but each visible id also carries the time its row last changed.
+ * The cached read models use that as their version stamp, so an edit changes
+ * the cache key at once without another statement. Ordered by id.
+ */
+export async function listVisibleVersions(
+  db: Db,
+  { kind, userId, organizationId }: ListVisibleInput & { kind: VersionedKind }
+): Promise<VisibleVersion[]> {
+  const rows = await selectVisibleLeaves<{ item_id: string; updated_at: string }>(
+    db,
+    { userId, organizationId },
+    buildVersionedLeavesBody(kind, organizationId),
+    sql`l.id AS item_id, l.updated_at::text AS updated_at`
+  )
+
+  return rows
+    .map((row) => ({ id: row.item_id, updatedAt: row.updated_at }))
+    .sort((a, b) => a.id.localeCompare(b.id))
 }

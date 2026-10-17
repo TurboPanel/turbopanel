@@ -1,7 +1,14 @@
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import { RESOURCE_KINDS } from './catalog.ts'
-import { assertCan, can, ForbiddenError, getSubjects, listVisible } from './evaluator.ts'
+import {
+  assertCan,
+  can,
+  ForbiddenError,
+  getSubjects,
+  listVisible,
+  listVisibleVersions,
+} from './evaluator.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -261,4 +268,22 @@ test('can applies superadmin-only filter for system:manage checks', async () => 
   )
 
   assertEquals(allowed, true)
+})
+
+test('listVisibleVersions returns each visible id with its last change, in id order', async () => {
+  const db = {
+    execute: () =>
+      Promise.resolve([
+        { item_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', updated_at: '2024-02-01 00:00:00+00' },
+        { item_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', updated_at: '2024-01-01 00:00:00+00' },
+      ]),
+  } as unknown as Db
+
+  for (const kind of ['workspace', 'project', 'environment'] as const) {
+    const visible = await listVisibleVersions(db, { kind, userId, organizationId })
+    assertEquals(visible, [
+      { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', updatedAt: '2024-01-01 00:00:00+00' },
+      { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', updatedAt: '2024-02-01 00:00:00+00' },
+    ])
+  }
 })

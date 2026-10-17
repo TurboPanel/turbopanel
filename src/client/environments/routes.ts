@@ -1,11 +1,15 @@
-import { and, eq, inArray } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { assertCanOr403, listVisible } from '../authz/index.ts'
-import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
+import { assertCanOr403, listVisibleVersions } from '../authz/index.ts'
+import { resolveEntityOrganizationId, resolveEntityVersion } from '../authz/create-access-grant.ts'
+import {
+  cachedEnvironmentDetail,
+  cachedEnvironmentsList,
+} from '../../query-cache/read-models/hierarchy-reads.ts'
 import { getDb, type Db } from '../../db/connection.ts'
 import { environment } from '../../db/schema.ts'
 import { settleDeployOptions } from '../../features/deploy/deploy-options.ts'
@@ -48,18 +52,6 @@ import {
   parseOptionalServerIdShape,
   serializeEnvironment,
 } from './routes-helpers.ts'
-
-const ENVIRONMENT_SELECT = {
-  id: environment.id,
-  name: environment.name,
-  description: environment.description,
-  projectId: environment.projectId,
-  serverId: environment.serverId,
-  metadata: environment.metadata,
-  options: environment.options,
-  createdAt: environment.createdAt,
-  updatedAt: environment.updatedAt,
-} as const
 
 type EnvironmentPatchFields = {
   name?: string | null
@@ -304,26 +296,20 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
 
     const projectId = c.req.query('projectId')
 
-    const visibleIds = await listVisible(db, {
+    // Who may see which environment is decided here, on the primary connection;
+    // the visible ids (with when each last changed) go into the cached read.
+    const visible = await listVisibleVersions(db, {
       kind: 'environment',
       userId: session.userId,
       organizationId,
     })
 
-    if (visibleIds.length === 0) {
+    if (visible.length === 0) {
       return c.json({ environments: [] })
     }
 
-    const conditions = [inArray(environment.id, visibleIds)]
-    if (projectId) {
-      conditions.push(eq(environment.projectId, projectId))
-    }
-
-    const rows = await db
-      .select(ENVIRONMENT_SELECT)
-      .from(environment)
-      .where(and(...conditions))
-      .orderBy(environment.createdAt)
+    const all = await cachedEnvironmentsList(c, { organizationId, visible })
+    const rows = projectId ? all.filter((row) => row.projectId === projectId) : all
 
     return c.json({ environments: rows.map(serializeEnvironment) })
   })
@@ -340,18 +326,16 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     const organizationId = orgResult
 
     const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'environment', id)
-    if (!entityOrgId || entityOrgId !== organizationId) {
+    const entity = await resolveEntityVersion(db, 'environment', id)
+    if (!entity || entity.organizationId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const rows = await db
-      .select(ENVIRONMENT_SELECT)
-      .from(environment)
-      .where(eq(environment.id, id))
-      .limit(1)
-
-    const row = rows[0]
+    const row = await cachedEnvironmentDetail(c, {
+      organizationId,
+      id,
+      updatedAt: entity.updatedAt,
+    })
     if (!row) {
       return c.json({ error: 'Not found' }, 404)
     }
