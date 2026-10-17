@@ -118,7 +118,9 @@ async function resolveServersListEnrichment(
   const wanted = new Set(serverIds)
   const kept = loaded.filter((row) => wanted.has(row.id))
   const rows =
-    kept.length === new Set(serverIds).size ? kept : await loadServerRowsForFleetPresence(db, serverIds)
+    kept.length === new Set(serverIds).size
+      ? kept
+      : await loadServerRowsForFleetPresence(db, serverIds)
   const preloaded = {
     rows,
     projections: buildProjectionsFromDaemonRows(rows),
