@@ -186,8 +186,17 @@ export const principalSchemas = {
       source: { type: 'string', enum: ['compose', 'manual', 'storage'] },
       usedBy: {
         type: 'object',
-        description: 'What else uses the principal; otherPlacements and folders leave this server out.',
-        required: ['tenancies', 'bindings', 'storages', 'secrets', 'logins', 'folders', 'otherPlacements'],
+        description:
+          'What else uses the principal; otherPlacements and folders leave this server out.',
+        required: [
+          'tenancies',
+          'bindings',
+          'storages',
+          'secrets',
+          'logins',
+          'folders',
+          'otherPlacements',
+        ],
         properties: {
           tenancies: { type: 'integer' },
           bindings: { type: 'integer' },
