@@ -288,6 +288,19 @@ test('a service takes a typed folder name and the common scope only until its fi
   })
 })
 
+test('sharing a service leaves its folder name to the deploy', async () => {
+  await withFixtures(async (ctx) => {
+    const { envId } = await createProject(ctx, 'Scope Only')
+    const web = await addService(ctx, envId, 'web')
+    assertEquals((await send(ctx, 'PATCH', `/services/${web}`, { common: true })).status, 200)
+    const [row] = await ctx.db
+      .select({ slug: service.slug, isCommon: service.isCommon })
+      .from(service)
+      .where(eq(service.id, web))
+    assertEquals(row, { slug: null, isCommon: true })
+  })
+})
+
 test('a typed service folder name that another service of the owner uses is refused', async () => {
   await withFixtures(async (ctx) => {
     const first = await createProject(ctx, 'Service Clash One')

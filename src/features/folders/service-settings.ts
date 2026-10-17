@@ -63,6 +63,30 @@ export async function applyServiceFolderSettings(
   }
 
   const isCommon = input.options.common ?? row.isCommon
+  // A scope change on a service with no name yet leaves the name to the deploy, which
+  // defaults a web hosting service to its domain.
+  if (!wantsName && row.slug === null) {
+    await tx.update(service).set({ isCommon }).where(eq(service.id, input.serviceId))
+    return { ok: true }
+  }
+  await settleAndWriteName(tx, input, row, isCommon)
+  return { ok: true }
+}
+
+type ServiceNameRow = {
+  environmentId: string
+  name: string | null
+  composeServiceName: string
+  slug: string | null
+}
+
+/** Settle the folder name in the (possibly new) scope and store it with the scope. */
+async function settleAndWriteName(
+  tx: Db,
+  input: { serviceId: string; organizationId: string; options: FolderOptions },
+  row: ServiceNameRow,
+  isCommon: boolean
+): Promise<void> {
   const [env] = await tx
     .select({ name: environment.name })
     .from(environment)
@@ -92,5 +116,4 @@ export async function applyServiceFolderSettings(
     label: row.name ?? row.composeServiceName,
   })
   await writeServiceFolderName(tx, input.serviceId, { slug: settled.slug, isCommon })
-  return { ok: true }
 }

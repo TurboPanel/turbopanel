@@ -361,3 +361,17 @@ test('rows move planned, present, removing and are deleted only once the host co
     assertEquals((await listEnvironmentFolders(ctx.db, envId)).total, 0)
   })
 })
+
+test('planning a folder again while the host has not confirmed its removal makes it planned again', async () => {
+  await withFixtures(async (ctx) => {
+    const { envId } = await createProject(ctx, 'Replan')
+    const web = await addService(ctx, envId, 'web')
+    const first = await plan(ctx, envId, { services: [{ serviceId: web }] })
+    await markFoldersPresent(ctx.db, first.folderIds)
+    await markServerServiceFoldersRemoving(ctx.db, { environmentId: envId, serverId: ctx.serverId })
+    const again = await plan(ctx, envId, { services: [{ serviceId: web }] })
+    assertEquals(again.folderIds, first.folderIds)
+    const [row] = await ctx.db.select().from(folder).where(eq(folder.id, first.folderIds[0]!))
+    assertEquals(row!.state, 'planned')
+  })
+})

@@ -63,8 +63,16 @@ import {
   scopeFor,
   settleFolderName,
 } from '../../features/folders/allocate.ts'
-import { hasFolderOptions, parseFolderOptions } from '../../features/folders/options.ts'
-import { SCOPE_LOCKED_ERROR, storageHasFolder } from '../../features/folders/records.ts'
+import {
+  type FolderOptions,
+  hasFolderOptions,
+  parseFolderOptions,
+} from '../../features/folders/options.ts'
+import {
+  lockEnvironmentRow,
+  SCOPE_LOCKED_ERROR,
+  storageHasFolder,
+} from '../../features/folders/records.ts'
 import { inUseBody, listUsesOfAssets } from '../../features/folders/shares.ts'
 
 async function sealStorageContent(c: Context<AppEnv>, content: string): Promise<string | Response> {
@@ -495,6 +503,72 @@ async function nameVolumeFolder(
   await tx.update(storage).set({ slug: settled.slug }).where(eq(storage.id, input.storageId))
 }
 
+type CreateFolderPlan = {
+  hasFolder: boolean
+  isCommon: boolean
+  parentEnvironmentId: string | null
+  options: FolderOptions
+}
+
+/** What a create body asks of the folder: its fields, whether the kind has a folder, and the scope. */
+async function resolveCreateFolderPlan(
+  c: Context<AppEnv>,
+  db: StorageDb,
+  parent: StorageParentRef,
+  kind: string,
+  body: Record<string, unknown>
+): Promise<CreateFolderPlan | Response> {
+  const folderOptions = parseFolderOptions(body)
+  if (!folderOptions.ok) return c.json({ error: 'Invalid request' }, 400)
+  const hasFolder = kind === 'volume' || kind === 'directory'
+  if (!hasFolder && hasFolderOptions(folderOptions.options)) {
+    return c.json(
+      {
+        error: 'folder_options_not_supported',
+        message:
+          'Only volumes and directories have a folder. Remove slug, directoryName and common.',
+      },
+      400
+    )
+  }
+  // A volume that belongs to no environment (organization, workspace or project) is shared.
+  const parentEnvironmentId = await resolveParentEnvironmentId(db, parent)
+  return {
+    hasFolder,
+    parentEnvironmentId,
+    options: folderOptions.options,
+    isCommon: hasFolder && (parentEnvironmentId === null || folderOptions.options.common === true),
+  }
+}
+
+/** The folder name, copy and mount of a volume that was just inserted. */
+async function addCreatedChildren(
+  tx: StorageDb,
+  id: string,
+  orgId: string,
+  fields: Exclude<ReturnType<typeof parseCreateStorageFields>, Response>,
+  plan: CreateFolderPlan
+): Promise<void> {
+  if (plan.hasFolder) {
+    await nameVolumeFolder(tx, {
+      storageId: id,
+      organizationId: orgId,
+      principalId: fields.principalId,
+      name: fields.name,
+      isCommon: plan.isCommon,
+      environmentId: plan.parentEnvironmentId,
+      options: plan.options,
+    })
+  }
+  if (fields.copy) {
+    await insertCopyRow(tx, id, fields.copy)
+    if (plan.hasFolder && fields.copy.provider === 'path') {
+      await planVolumeFolder(tx, { storageId: id, serverId: fields.copy.serverId })
+    }
+  }
+  if (fields.mount) await insertMountRow(tx, id, fields.mount)
+}
+
 async function createStorageRecord(
   c: Context<AppEnv>,
   db: StorageDb,
@@ -537,23 +611,8 @@ async function createStorageRecord(
   const sealedContent = await resolveSealedStorageContent(c, body.content)
   if (sealedContent instanceof Response) return sealedContent
 
-  const folderOptions = parseFolderOptions(body)
-  if (!folderOptions.ok) return c.json({ error: 'Invalid request' }, 400)
-  const hasFolder = fields.kind === 'volume' || fields.kind === 'directory'
-  if (!hasFolder && hasFolderOptions(folderOptions.options)) {
-    return c.json(
-      {
-        error: 'folder_options_not_supported',
-        message:
-          'Only volumes and directories have a folder. Remove slug, directoryName and common.',
-      },
-      400
-    )
-  }
-  // A volume that belongs to no environment (organization, workspace or project) is shared.
-  const parentEnvironmentId = await resolveParentEnvironmentId(db, parent)
-  const isCommon =
-    hasFolder && (parentEnvironmentId === null || folderOptions.options.common === true)
+  const plan = await resolveCreateFolderPlan(c, db, parent, fields.kind, body)
+  if (plan instanceof Response) return plan
 
   try {
     const storageId = await db.transaction(async (tx) => {
@@ -562,7 +621,7 @@ async function createStorageRecord(
         .values({
           organizationId: orgId,
           ...parentInsertValues(parent),
-          isCommon,
+          isCommon: plan.isCommon,
           kind: fields.kind,
           name: fields.name,
           accessMode: fields.accessMode,
@@ -580,26 +639,7 @@ async function createStorageRecord(
           .set({ metadata: dockerVolumeMetadataWithId(fields.metadata, id) })
           .where(eq(storage.id, id))
       }
-      if (hasFolder) {
-        await nameVolumeFolder(tx as StorageDb, {
-          storageId: id,
-          organizationId: orgId,
-          principalId: fields.principalId,
-          name: fields.name,
-          isCommon,
-          environmentId: parentEnvironmentId,
-          options: folderOptions.options,
-        })
-      }
-      if (fields.copy) {
-        await insertCopyRow(tx as StorageDb, id, fields.copy)
-        if (hasFolder && fields.copy.provider === 'path') {
-          await planVolumeFolder(tx as StorageDb, { storageId: id, serverId: fields.copy.serverId })
-        }
-      }
-      if (fields.mount) {
-        await insertMountRow(tx as StorageDb, id, fields.mount)
-      }
+      await addCreatedChildren(tx as StorageDb, id, orgId, fields, plan)
       return id
     })
     return c.json({ ok: true as const, id: storageId })
@@ -671,9 +711,6 @@ async function patchStorageRecord(
   )
   if (principalError) return principalError
 
-  const folderRefused = await refuseLockedFolderPatch(c, db, existing, body)
-  if (folderRefused) return folderRefused
-
   const updateFields = buildStorageUpdateFields(c, body)
   if (updateFields instanceof Response) return updateFields
   const pinned = (updateFields.metadata as Record<string, unknown> | undefined)?.dockerVolumeName
@@ -688,7 +725,13 @@ async function patchStorageRecord(
   }
 
   try {
-    await db.transaction(async (tx) => {
+    const refused = await db.transaction(async (tx) => {
+      // The folder rows are read under the environment row lock a deploy plans under, so a
+      // folder cannot appear between the check and the write.
+      const environmentId = await resolveVolumeEnvironmentId(tx as StorageDb, existing)
+      if (environmentId !== null && !existing.isCommon) await lockEnvironmentRow(tx, environmentId)
+      const locked = await refuseLockedFolderPatch(c, tx as StorageDb, existing, body)
+      if (locked) return locked
       await tx.update(storage).set(updateFields).where(eq(storage.id, id))
       // A new folder name is accepted until the volume has a folder (checked above).
       if (typeof body.slug === 'string' && body.slug !== existing.slug) {
@@ -705,7 +748,9 @@ async function patchStorageRecord(
           options: { slug: body.slug },
         })
       }
+      return null
     })
+    if (refused) return refused
   } catch (err) {
     if (err instanceof FolderPlanError) return c.json(err.body(), err.status)
     throw err

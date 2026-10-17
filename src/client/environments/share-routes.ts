@@ -23,6 +23,7 @@ import {
   insertShare,
   listEnvironmentShares,
 } from '../../features/folders/shares.ts'
+import { isUuid } from '../../features/principals/store.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403 } from '../authz/index.ts'
@@ -38,8 +39,10 @@ type Asset = { kind: 'service'; id: string } | { kind: 'volume'; id: string }
 
 function parseAsset(body: Record<string, unknown>): Asset | null {
   const { serviceId, storageId } = body
-  const hasService = typeof serviceId === 'string' && serviceId.length > 0
-  const hasStorage = typeof storageId === 'string' && storageId.length > 0
+  const hasService = serviceId !== undefined
+  const hasStorage = storageId !== undefined
+  if (hasService && (typeof serviceId !== 'string' || !isUuid(serviceId))) return null
+  if (hasStorage && (typeof storageId !== 'string' || !isUuid(storageId))) return null
   if (hasService === hasStorage) return null
   return hasService
     ? { kind: 'service', id: serviceId as string }
@@ -104,7 +107,7 @@ async function refuseUnusableAsset(
       {
         error: ASSET_NOT_COMMON_ERROR,
         message:
-          'Only a shared service or volume can be used by other environments. Whether it is shared is chosen when it is created.',
+          'Only a shared service or volume can be used by other environments. Whether one is shared is chosen when it is created, or for a service before its first folder exists.',
       },
       409
     )
@@ -183,7 +186,9 @@ export function registerEnvironmentShareRoutes(router: Hono<AppEnv>, opts: AuthR
     const environmentId = c.req.param('id')
     const denied = await assertCanOr403(c, 'organization:manage', 'environment', environmentId)
     if (denied) return denied
-    const removed = await deleteShare(db, environmentId, c.req.param('shareId'))
+    const shareId = c.req.param('shareId')
+    if (!isUuid(shareId)) return c.json({ error: 'Not found' }, 404)
+    const removed = await deleteShare(db, environmentId, shareId)
     if (!removed) return c.json({ error: 'Not found' }, 404)
     return c.json({ ok: true as const })
   })

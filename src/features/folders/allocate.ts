@@ -21,6 +21,7 @@ import {
 } from '../../contracts/directory-names.ts'
 import type { Db } from '../../db/connection.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import {
   environment,
   folder,
@@ -110,7 +111,7 @@ async function readDirectoryNameModeLocked(
     .select({ options: organization.options })
     .from(organization)
     .where(eq(organization.id, organizationId))
-    .for('update')
+    .for('no key update')
     .limit(1)
   return resolveDirectoryNames(parseOrganizationOptions(row?.options)).mode
 }
@@ -379,13 +380,13 @@ export async function planDeployFolders(
   await collectServiceTargets(tx, input, modeOf, environmentName, targets)
   await collectVolumeTargets(tx, input, modeOf, environmentName, targets)
 
-  for (const target of targets) {
+  await forEachSequential(targets, async (target) => {
     const folderId = await upsertFolderRow(tx, input.serverId, target)
     planned.folderIds.push(folderId)
     const ref: FolderRefParts = { owner: target.username, scope: target.scope, slug: target.slug }
     if (target.kind === 'service') planned.services.set(target.assetId, ref)
     else planned.volumes.set(target.assetId, ref)
-  }
+  })
   if (planned.folderIds.length > 0) await lockDirectoryNames(tx, input.organizationId)
   return planned
 }
@@ -446,26 +447,25 @@ async function collectServiceTargets(
     ...resolved.flatMap(({ entry }) => (entry.principalId ? [entry.principalId] : [])),
     ...sole.values(),
   ])
-  for (const { entry, row } of resolved) {
+  await forEachSequential(resolved, async ({ entry, row }) => {
     const principalId = entry.principalId ?? sole.get(row.id)
     const owner = principalId === undefined ? undefined : owners.get(principalId)
-    if (!owner) continue
+    if (!owner) return
     const scope = scopeFor(row.isCommon, environmentName)
-    const slug =
-      row.slug ??
-      (
-        await settleFolderName(tx, {
-          mode: await modeOf(),
-          kind: 'service',
-          assetId: row.id,
-          principalId: owner.id,
-          scope,
-          request: {},
-          domain: entry.domain ?? null,
-          label: row.name ?? row.composeServiceName,
-        })
-      ).slug
-    if (row.slug === null) await writeServiceFolderName(tx, row.id, { slug }, true)
+    if (row.slug === null) {
+      const settled = await settleFolderName(tx, {
+        mode: await modeOf(),
+        kind: 'service',
+        assetId: row.id,
+        principalId: owner.id,
+        scope,
+        request: {},
+        domain: entry.domain ?? null,
+        label: row.name ?? row.composeServiceName,
+      })
+      await writeServiceFolderName(tx, row.id, { slug: settled.slug }, true)
+      row.slug = settled.slug
+    }
     targets.push({
       kind: 'service',
       assetId: row.id,
@@ -473,9 +473,9 @@ async function collectServiceTargets(
       principalId: owner.id,
       username: owner.username,
       scope,
-      slug,
+      slug: row.slug as string,
     })
-  }
+  })
 }
 
 async function collectVolumeTargets(
@@ -501,31 +501,28 @@ async function collectVolumeTargets(
     tx,
     rows.flatMap((row) => (row.principalId ? [row.principalId] : []))
   )
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     const owner = row.principalId ? owners.get(row.principalId) : undefined
-    if (!owner) continue
+    if (!owner) return
     const ownEnvironment = row.environmentId === null || row.environmentId === input.environmentId
     // A volume of another environment is only planned through its own deploy.
-    if (!row.isCommon && !ownEnvironment) continue
+    if (!row.isCommon && !ownEnvironment) return
     const scope = scopeFor(row.isCommon, environmentName)
-    const slug =
-      row.slug ??
-      (
-        await settleFolderName(tx, {
-          mode: await modeOf(),
-          kind: 'volume',
-          assetId: row.id,
-          principalId: owner.id,
-          scope,
-          request: {},
-          label: row.name,
-        })
-      ).slug
     if (row.slug === null) {
+      const settled = await settleFolderName(tx, {
+        mode: await modeOf(),
+        kind: 'volume',
+        assetId: row.id,
+        principalId: owner.id,
+        scope,
+        request: {},
+        label: row.name,
+      })
       await tx
         .update(storage)
-        .set({ slug })
+        .set({ slug: settled.slug })
         .where(and(eq(storage.id, row.id), isNull(storage.slug)))
+      row.slug = settled.slug
     }
     targets.push({
       kind: 'volume',
@@ -534,9 +531,9 @@ async function collectVolumeTargets(
       principalId: owner.id,
       username: owner.username,
       scope,
-      slug,
+      slug: row.slug as string,
     })
-  }
+  })
 }
 
 /** Insert the planned row, or find the one that is already there for this very asset. */
@@ -558,7 +555,12 @@ async function upsertFolderRow(tx: Db, serverId: string, target: FolderTarget): 
       target: [folder.serverId, folder.principalId, folder.scope, folder.kind, folder.slug],
     })
   const [row] = await tx
-    .select({ id: folder.id, serviceId: folder.serviceId, storageId: folder.storageId })
+    .select({
+      id: folder.id,
+      serviceId: folder.serviceId,
+      storageId: folder.storageId,
+      state: folder.state,
+    })
     .from(folder)
     .where(
       and(
@@ -572,6 +574,11 @@ async function upsertFolderRow(tx: Db, serverId: string, target: FolderTarget): 
     .limit(1)
   const owner = target.kind === 'service' ? row?.serviceId : row?.storageId
   if (!row || owner !== target.assetId) throw new FolderPlanError('directory_name_taken')
+  // The asset is back on this server (a server re-added, a copy re-added) before the host
+  // confirmed the removal: the folder is in use again, so it must not be confirmed away.
+  if (row.state === 'removing') {
+    await tx.update(folder).set({ state: 'planned' }).where(eq(folder.id, row.id))
+  }
   return row.id
 }
 

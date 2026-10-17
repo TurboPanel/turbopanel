@@ -14,7 +14,10 @@ import {
 import type { ParseServiceOptionsOptions } from '../../features/projects/service-options.ts'
 import { preserveServiceApp } from '../../features/environments/app-facts.ts'
 import { loadServiceRunStates } from '../../features/environments/service-run-state.ts'
-import { applyStorageRetentionOnParentDelete } from '../../features/storage/storage-records.ts'
+import {
+  applyStorageRetentionOnParentDelete,
+  listStorageIdsDeletedWith,
+} from '../../features/storage/storage-records.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -307,7 +310,8 @@ export function registerServiceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (immutable) return immutable
 
     // A shared service cannot go while another environment uses it.
-    const uses = await listUsesOfAssets(db, { serviceIds: [id] })
+    const storageIds = await listStorageIdsDeletedWith(db, { serviceIds: [id] })
+    const uses = await listUsesOfAssets(db, { serviceIds: [id], storageIds })
     if (uses.length > 0) return c.json(inUseBody(uses), 409)
 
     return respondAfterHierarchyDelete(c, db, async (tx) => {

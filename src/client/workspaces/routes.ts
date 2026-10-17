@@ -7,7 +7,11 @@ import { assertCanOr403, listVisibleVersions } from '../authz/index.ts'
 import { cachedWorkspacesList } from '../../query-cache/read-models/hierarchy-reads.ts'
 import { getDb } from '../../db/connection.ts'
 import { workspace } from '../../db/schema.ts'
-import { applyStorageRetentionOnParentDelete } from '../../features/storage/storage-records.ts'
+import {
+  applyStorageRetentionOnParentDelete,
+  listStorageIdsDeletedWith,
+} from '../../features/storage/storage-records.ts'
+import { inUseBody, listUsesOfAssets } from '../../features/folders/shares.ts'
 import { WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
 import {
   assertCanCreateOr403,
@@ -215,6 +219,11 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
 
     const immutable = await assertNotSystemOwnedOr403(c, 'workspace', id)
     if (immutable) return immutable
+
+    // A shared volume of the workspace cannot go while an environment elsewhere uses it.
+    const storageIds = await listStorageIdsDeletedWith(db, { workspaceIds: [id] })
+    const uses = await listUsesOfAssets(db, { storageIds })
+    if (uses.length > 0) return c.json(inUseBody(uses), 409)
 
     return respondAfterHierarchyDelete(c, db, async (tx) => {
       await applyStorageRetentionOnParentDelete(tx, { workspaceIds: [id] })
