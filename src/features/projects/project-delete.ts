@@ -21,11 +21,7 @@ import {
   tenancy,
 } from '../../db/schema.ts'
 import { markAssetFoldersRemoving } from '../folders/allocate.ts'
-import {
-  type COMMON_ASSET_IN_USE_ERROR,
-  inUseBody,
-  listUsesOfAssets,
-} from '../folders/shares.ts'
+import { type COMMON_ASSET_IN_USE_ERROR, inUseBody, listUsesOfAssets } from '../folders/shares.ts'
 import {
   applyStorageRetentionOnParentDelete,
   listStorageIdsDeletedWith,

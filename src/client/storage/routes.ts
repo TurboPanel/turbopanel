@@ -430,19 +430,27 @@ async function insertMountRow(db: StorageDb, storageId: string, fields: CreateMo
   return inserted.id
 }
 
-/** The environment a new volume sits in: its own, or its service's; null for any other parent. */
-async function resolveParentEnvironmentId(
+/** The environment a volume sits in: its own, or its service's; null for any other parent. */
+async function resolveVolumeEnvironmentId(
   db: StorageDb,
-  parent: StorageParentRef
+  volume: { environmentId: string | null; serviceId: string | null }
 ): Promise<string | null> {
-  if (parent.column === 'environmentId') return parent.id
-  if (parent.column !== 'serviceId' || parent.id === null) return null
+  if (volume.environmentId !== null) return volume.environmentId
+  if (volume.serviceId === null) return null
   const [row] = await db
     .select({ environmentId: service.environmentId })
     .from(service)
-    .where(eq(service.id, parent.id))
+    .where(eq(service.id, volume.serviceId))
     .limit(1)
   return row?.environmentId ?? null
+}
+
+/** The environment a new volume sits in, from the parent named in the request. */
+function resolveParentEnvironmentId(db: StorageDb, parent: StorageParentRef) {
+  return resolveVolumeEnvironmentId(db, {
+    environmentId: parent.column === 'environmentId' ? parent.id : null,
+    serviceId: parent.column === 'serviceId' ? parent.id : null,
+  })
 }
 
 /**
@@ -623,6 +631,17 @@ async function refuseLockedFolderPatch(
   }
   const ownerChange =
     'principalId' in body && (body.principalId ?? null) !== (existing.principalId ?? null)
+  if ('slug' in body && typeof body.slug !== 'string')
+    return c.json({ error: 'Invalid request' }, 400)
+  if ('slug' in body && existing.kind !== 'volume' && existing.kind !== 'directory') {
+    return c.json(
+      {
+        error: 'folder_options_not_supported',
+        message: 'Only volumes and directories have a folder name.',
+      },
+      400
+    )
+  }
   const slugChange = 'slug' in body && body.slug !== existing.slug
   if (!ownerChange && !slugChange) return null
   if (!(await storageHasFolder(db, existing.id))) return null
@@ -668,7 +687,29 @@ async function patchStorageRecord(
     updateFields.contentEnvelope = sealedContent
   }
 
-  await db.update(storage).set(updateFields).where(eq(storage.id, id))
+  try {
+    await db.transaction(async (tx) => {
+      await tx.update(storage).set(updateFields).where(eq(storage.id, id))
+      // A new folder name is accepted until the volume has a folder (checked above).
+      if (typeof body.slug === 'string' && body.slug !== existing.slug) {
+        await nameVolumeFolder(tx as StorageDb, {
+          storageId: id,
+          organizationId: existing.organizationId,
+          principalId:
+            'principalId' in updateFields
+              ? (updateFields.principalId as string | null)
+              : existing.principalId,
+          name: existing.name,
+          isCommon: existing.isCommon,
+          environmentId: await resolveVolumeEnvironmentId(tx as StorageDb, existing),
+          options: { slug: body.slug },
+        })
+      }
+    })
+  } catch (err) {
+    if (err instanceof FolderPlanError) return c.json(err.body(), err.status)
+    throw err
+  }
   return c.json({ ok: true as const })
 }
 

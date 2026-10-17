@@ -173,6 +173,37 @@ test('a volume with a path copy has a folder row, which locks its name and shows
   })
 })
 
+test('a volume folder name can be changed until a folder exists', async () => {
+  await withFixtures(async (ctx) => {
+    const { envId } = await createProject(ctx, 'Volume Rename')
+    const created = await createVolume(ctx, envId)
+    const other = await createVolume(ctx, envId, { name: 'Other' })
+    const id = created.json.id as string
+
+    const renamed = await send(ctx, 'PATCH', `/storage/${id}`, { slug: 'pictures' })
+    assertEquals(renamed.status, 200)
+    assertEquals((await readVolume(ctx, id)).slug, 'pictures')
+    // The name another volume of the owner has is taken; a bad one is refused.
+    const clash = await send(ctx, 'PATCH', `/storage/${other.json.id}`, { slug: 'pictures' })
+    assertEquals(clash.status, 409)
+    assertEquals(clash.json.error, 'directory_name_taken')
+    assertEquals((await readVolume(ctx, other.json.id as string)).slug, 'other')
+    const bad = await send(ctx, 'PATCH', `/storage/${id}`, { slug: 'Not A Name' })
+    assertEquals(bad.status, 400)
+    assertEquals((await send(ctx, 'PATCH', `/storage/${id}`, { slug: 5 })).status, 400)
+
+    const file = await send(ctx, 'POST', '/storage', {
+      environmentId: envId,
+      kind: 'file',
+      name: 'Config',
+      content: 'x',
+    })
+    const refused = await send(ctx, 'PATCH', `/storage/${file.json.id}`, { slug: 'config' })
+    assertEquals(refused.status, 400)
+    assertEquals(refused.json.error, 'folder_options_not_supported')
+  })
+})
+
 test('deleting a volume keeps its folder row as removing, and the lock stays', async () => {
   await withFixtures(async (ctx) => {
     const { envId } = await createProject(ctx, 'Volume Delete')
