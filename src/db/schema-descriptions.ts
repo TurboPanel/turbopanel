@@ -3,7 +3,7 @@
  * in the control-plane schema — the single source the Postgres `COMMENT ON`
  * migrations are generated from (`scripts/schema-comments.mjs`).
  *
- * Keyed by **physical** names (`seat`, `copy`, `2fa`, …), exactly as they
+ * Keyed by **physical** names (`seat`, `copy`, `totp`, …), exactly as they
  * appear in the latest `migrations/meta/NNNN_snapshot.json` — never by the
  * drizzle export name. `schema-descriptions.test.ts` holds this file to the
  * shipped schema: every table needs a `group` and a `summary`; every column
@@ -120,10 +120,10 @@ export type TableDescription = Readonly<{
 /** Physical table name → description. Alphabetical within each group. */
 export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   // ── identity ──────────────────────────────────────────────────────────
-  '2fa': {
+  totp: {
     group: 'identity',
     summary:
-      'TOTP enrolment for a user, at most one row per user (`uniq_2fa_user_id`); inserted or reset on enable, verified once, and deleted when two-factor is disabled.',
+      'TOTP enrolment for a user, at most one row per user (`uniq_totp_user_id`); inserted or reset on enable, verified once, and deleted when two-factor is disabled.',
     columns: {
       user_id:
         'Enrolled user; unique, so re-enabling resets the existing row instead of adding one, and disable deletes it.',
@@ -210,7 +210,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       is_email_verified:
         'True once the address is proven: set at creation by OTP or OAuth sign-up and the install wizard, or later by the verify-email link and OTP routes.',
       is_2fa_enabled:
-        'Derived flag kept in step with the `2fa` row: set true when TOTP enrolment is verified and false when two-factor is disabled.',
+        'Derived flag kept in step with the `totp` row: set true when TOTP enrolment is verified and false when two-factor is disabled.',
       is_disabled:
         'Sign-in gate read by every authn path (password, OTP, passkey, OAuth) and refused with `account_disabled`; no control-plane route writes it today.',
       role: 'Instance role `user`, `admin` or `superadmin`; sign-ups get `user`, the install wizard mints the one `superadmin`, and admins bypass org grants.',
@@ -478,7 +478,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Small non-secret JSON facts kept beside the action, such as `purged`, `acmeEnabled`, `deployHooksEnabled` or the grant details; never a credential.',
     },
   },
-  grant: {
+  permission: {
     group: 'platform',
     summary:
       'Allow-only ACL row: one positive grant of `permission` from a subject (`actor_type`, `actor_id`) on an entity; written by access routes, invitations, install.',

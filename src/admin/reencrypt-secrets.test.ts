@@ -190,7 +190,7 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
   )
   await tx.execute(
     sql.raw(`
-    CREATE TABLE "2fa" (
+    CREATE TABLE "totp" (
       id uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
       created_at timestamptz(3) DEFAULT now() NOT NULL,
       updated_at timestamptz(3) DEFAULT now() NOT NULL,
@@ -728,7 +728,7 @@ test('tryBeginReencryptSweep allows only one of two independent concurrent calle
   })
 })
 
-test('reencryptAtRestSecrets reseals 2fa.secret onto the current key version', async () => {
+test('reencryptAtRestSecrets reseals totp.secret onto the current key version', async () => {
   const v1Only = await createV1OnlySecrets()
   const rotated = await createRotatedSecrets()
   const totpPlain = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'
