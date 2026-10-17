@@ -12,7 +12,7 @@ export type CacheableClientOptions = {
   usage?: DbUsage
 }
 
-/** The only client members drizzle needs; every other function on the client is refused. */
+/** The client members drizzle and the connection helpers use; every other function on the client is refused. */
 const ALLOWED_CLIENT_MEMBERS = new Set([
   'unsafe',
   'end',

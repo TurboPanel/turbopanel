@@ -77,6 +77,7 @@ test('comments and alternative quoting are refused', () => {
     "select 1 /* ' */ ; delete from t where a = '",
     'select 1 -- note',
     'select $$x$$',
+    'select $a$;drop$a$',
     "select E'a\\'b'",
   ]) {
     assertNotEquals(uncacheableReason(text), null, text)
