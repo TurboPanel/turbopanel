@@ -2908,7 +2908,7 @@ export const service = pgTable(
     ),
     check(
       'service_slug_check',
-      sql.raw(`slug IS NULL OR (slug ~ '${FOLDER_NAME_SQL}' AND slug !~ '\\.\\.')`)
+      sql.raw(String.raw`slug IS NULL OR (slug ~ '${FOLDER_NAME_SQL}' AND slug !~ '\.\.')`)
     ),
   ]
 )
@@ -3766,8 +3766,8 @@ export const principalPlacement = pgTable(
  * deleted, the host has not confirmed, for example an offline server),
  * `orphan` (found on the host with no asset behind it), `missing` (recorded
  * but gone from the host). `service_id` and `storage_id` become NULL when the
- * asset row is deleted first, which only a `removing`, `orphan` or `missing`
- * row may show. Nothing here is a path: the daemon builds paths from the
+ * asset row is deleted first; the row stays (and keeps its locks) until the
+ * host confirms the folder is gone. Nothing here is a path: the daemon builds paths from the
  * components.
  */
 export const folder = pgTable(
@@ -3856,21 +3856,22 @@ export const folder = pgTable(
       'folder_state_check',
       sql`state IN ('planned', 'present', 'removing', 'orphan', 'missing')`
     ),
-    check('folder_slug_check', sql.raw(`slug ~ '${FOLDER_NAME_SQL}' AND slug !~ '\\.\\.'`)),
+    check('folder_slug_check', sql.raw(String.raw`slug ~ '${FOLDER_NAME_SQL}' AND slug !~ '\.\.'`)),
     check(
       'folder_scope_check',
       sql.raw(
         `scope = 'common' OR (scope ~ '${ENVIRONMENT_NAME_SQL}' AND scope NOT IN (${RESERVED_ENVIRONMENT_NAMES_SQL}))`
       )
     ),
-    check('folder_common_scope_check', sql`scope <> 'common' OR environment_id IS NULL`),
+    // `common` has no environment; every other scope has one, except an orphan
+    // found on a host whose environment is not (or no longer) known.
+    check(
+      'folder_common_scope_check',
+      sql`(scope = 'common' AND environment_id IS NULL) OR (scope <> 'common' AND (environment_id IS NOT NULL OR state = 'orphan'))`
+    ),
     check(
       'folder_asset_kind_check',
       sql`(kind = 'service' AND storage_id IS NULL) OR (kind = 'volume' AND service_id IS NULL)`
-    ),
-    check(
-      'folder_asset_present_check',
-      sql`state IN ('removing', 'orphan', 'missing') OR (kind = 'service' AND service_id IS NOT NULL) OR (kind = 'volume' AND storage_id IS NOT NULL)`
     ),
   ]
 )
@@ -4303,7 +4304,7 @@ export const storage = pgTable(
     check('storage_retention_check', sql`retention IN ('retain', 'delete')`),
     check(
       'storage_slug_check',
-      sql.raw(`slug IS NULL OR (slug ~ '${FOLDER_NAME_SQL}' AND slug !~ '\\.\\.')`)
+      sql.raw(String.raw`slug IS NULL OR (slug ~ '${FOLDER_NAME_SQL}' AND slug !~ '\.\.')`)
     ),
     check(
       'storage_at_most_one_parent_check',

@@ -15,9 +15,8 @@ CREATE TABLE "folder" (
 	CONSTRAINT "folder_state_check" CHECK (state IN ('planned', 'present', 'removing', 'orphan', 'missing')),
 	CONSTRAINT "folder_slug_check" CHECK (slug ~ '^[a-z0-9]([a-z0-9._-]{0,61}[a-z0-9])?$' AND slug !~ '\.\.'),
 	CONSTRAINT "folder_scope_check" CHECK (scope = 'common' OR (scope ~ '^[a-z0-9][a-z0-9_-]{0,31}$' AND scope NOT IN ('common', 'home', 'tmp', 'services', 'volumes', 'data', 'sites', 'backup', 'backups', 'logs', 'cache', 'run', 'var', 'etc', 'bin', 'root', 'public', 'releases', 'current', 'shared', 'lost-found', 'tmp-staging'))),
-	CONSTRAINT "folder_common_scope_check" CHECK (scope <> 'common' OR environment_id IS NULL),
-	CONSTRAINT "folder_asset_kind_check" CHECK ((kind = 'service' AND storage_id IS NULL) OR (kind = 'volume' AND service_id IS NULL)),
-	CONSTRAINT "folder_asset_present_check" CHECK (state IN ('removing', 'orphan', 'missing') OR (kind = 'service' AND service_id IS NOT NULL) OR (kind = 'volume' AND storage_id IS NOT NULL))
+	CONSTRAINT "folder_common_scope_check" CHECK ((scope = 'common' AND environment_id IS NULL) OR (scope <> 'common' AND (environment_id IS NOT NULL OR state = 'orphan'))),
+	CONSTRAINT "folder_asset_kind_check" CHECK ((kind = 'service' AND storage_id IS NULL) OR (kind = 'volume' AND service_id IS NULL))
 );
 --> statement-breakpoint
 ALTER TABLE "project" ADD COLUMN "slug" text;--> statement-breakpoint
@@ -44,9 +43,9 @@ COMMENT ON TABLE "folder" IS 'One service or volume folder on one server, the re
 COMMENT ON COLUMN "folder"."scope" IS 'Scope folder name exactly as created on the host: the environment name, or `common` for assets shared by every environment.';--> statement-breakpoint
 COMMENT ON COLUMN "folder"."kind" IS '`service` or `volume`; decides which of `service_id` and `storage_id` can be set.';--> statement-breakpoint
 COMMENT ON COLUMN "folder"."slug" IS 'Folder name of the asset, copied from its slug when the folder was planned.';--> statement-breakpoint
+COMMENT ON COLUMN "folder"."state" IS '`planned` before the host has it, `present`, `removing` until the host confirms a delete, `orphan` found with no asset, `missing` gone from the host.';--> statement-breakpoint
 COMMENT ON COLUMN "project"."slug" IS 'Short name taken from the project name, unique per organization and never part of a path; editable until any folder exists under the project, then locked.';--> statement-breakpoint
 COMMENT ON COLUMN "service"."slug" IS 'Folder name under the site owner tree, unique per environment; set at creation, locked once a `folder` row exists, NULL until set.';--> statement-breakpoint
 COMMENT ON COLUMN "service"."is_common" IS 'True when the folder is in the `common` scope shared by every environment; chosen at creation and never changed.';--> statement-breakpoint
 COMMENT ON COLUMN "storage"."slug" IS 'Folder name of a panel-owned volume under the site owner tree; set at creation, locked once a `folder` row exists, NULL until set.';--> statement-breakpoint
-COMMENT ON COLUMN "storage"."is_common" IS 'True when the volume folder is in the `common` scope shared by every environment; chosen at creation and never changed.';;--> statement-breakpoint
-COMMENT ON COLUMN "folder"."state" IS '`planned` before the host has it, `present`, `removing` until the host confirms a delete, `orphan` found with no asset, `missing` gone from the host.';
+COMMENT ON COLUMN "storage"."is_common" IS 'True when the volume folder is in the `common` scope shared by every environment; chosen at creation and never changed.';

@@ -447,6 +447,25 @@ type ProjectPatchFields = {
   updatedAt: string
 }
 
+/** The name and slug a PATCH asks for must be free (and the slug unlocked). */
+async function checkProjectPatchConflicts(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  projectId: string,
+  body: Record<string, unknown>,
+  patchFields: ProjectPatchFields
+): Promise<Response | null> {
+  if (
+    patchFields.name !== undefined &&
+    (isReservedSystemProjectName(patchFields.name) ||
+      (await isProjectDisplayNameTaken(db, organizationId, patchFields.name, projectId)))
+  ) {
+    return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
+  }
+  return await checkProjectSlugPatch(c, db, projectId, body, patchFields)
+}
+
 /**
  * A `slug` in the PATCH body changes the project slug: it has to match the
  * rule, and it is refused once any folder exists under the project or a site

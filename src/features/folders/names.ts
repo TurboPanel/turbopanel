@@ -27,8 +27,17 @@ export function projectSlugFromName(name: string | null | undefined): string {
     .replace(/\p{M}+/gu, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
-  const cut = folded.slice(0, PROJECT_SLUG_MAX_LENGTH).replace(/^-+|-+$/g, '')
+  const cut = trimHyphens(folded.slice(0, PROJECT_SLUG_MAX_LENGTH))
   return isValidProjectSlug(cut) ? cut : PROJECT_SLUG_FALLBACK
+}
+
+/** Strip hyphens from both ends (a loop, so a long run cannot cost more than one pass). */
+export function trimHyphens(value: string): string {
+  let start = 0
+  let end = value.length
+  while (start < end && value[start] === '-') start += 1
+  while (end > start && value[end - 1] === '-') end -= 1
+  return value.slice(start, end)
 }
 
 /** The first free project slug: the base, then `-2`, `-3` and so on up to `-99`. Null when all are taken. */
@@ -39,7 +48,7 @@ export function nextFreeProjectSlug(
   if (!isTaken(base)) return base
   for (let n = 2; n <= 99; n += 1) {
     const suffix = `-${n}`
-    const candidate = `${base.slice(0, PROJECT_SLUG_MAX_LENGTH - suffix.length).replace(/-+$/g, '')}${suffix}`
+    const candidate = `${trimHyphens(base.slice(0, PROJECT_SLUG_MAX_LENGTH - suffix.length))}${suffix}`
     if (!isTaken(candidate)) return candidate
   }
   return null
@@ -71,9 +80,9 @@ export type FolderNameInput = {
   /** The asset's own id (a lowercase canonical UUID). */
   assetId: string
   /** A name the person typed. Never suffixed on a clash. */
-  typed?: string | undefined
+  typed?: string
   /** The name made when nothing was typed (from the domain or the display name). */
-  defaultBase?: string | null | undefined
+  defaultBase?: string | null
   isTaken: (name: string) => boolean
 }
 

@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, ne } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { ensureProjectPlacements } from '../principals/placement-records.ts'
 import {
@@ -195,6 +195,11 @@ async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<voi
     await tx.delete(binding).where(inArray(binding.serviceId, serviceIds))
     await tx.delete(service).where(inArray(service.id, serviceIds))
   }
+  // Rows for folders already confirmed gone no longer lock anything; the others
+  // were refused before this point (or belong to a host that is gone).
+  await tx
+    .delete(folder)
+    .where(and(inArray(folder.environmentId, environmentIds), eq(folder.state, 'missing')))
   await tx.delete(environment).where(inArray(environment.id, environmentIds))
 }
 
@@ -275,7 +280,7 @@ export async function deleteProjectCascade(
   const folderRows = await db
     .select({ id: folder.id })
     .from(folder)
-    .where(inArray(folder.environmentId, environmentIds))
+    .where(and(inArray(folder.environmentId, environmentIds), ne(folder.state, 'missing')))
   if (folderRows.length > 0) return { ok: false, error: 'project_has_folders' }
 
   const bindingTargets = await loadBindingListenerTargets(db, children.serviceIds)

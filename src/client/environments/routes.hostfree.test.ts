@@ -131,7 +131,11 @@ type SessionAppOpts = {
   afterSession?: 'drop-db' | 'swallow-session'
 }
 
-/** A select chain that ends in no rows however it is joined, filtered or locked. */
+/**
+ * A select chain that ends in no rows however it is joined, filtered or locked.
+ * The rename lock itself is exercised only by the database tests in
+ * `client/folder-locks.test.ts`.
+ */
 function emptyRows(): unknown {
   const chain: Record<string, unknown> = {}
   for (const method of ['innerJoin', 'leftJoin', 'where', 'orderBy', 'limit', 'for']) {

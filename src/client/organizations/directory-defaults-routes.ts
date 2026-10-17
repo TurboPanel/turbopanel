@@ -100,7 +100,8 @@ export function registerOrganizationDirectoryDefaultsRoutes(
     }
 
     // One atomic jsonb expression so a concurrent change to another org
-    // option is never clobbered, guarded against a folder appearing meanwhile.
+    // option is never clobbered. The NOT EXISTS guard is best effort against a
+    // folder appearing meanwhile (no lock is held on the organization row).
     const { remove, set } = directoryDefaultsOptionChanges(parsed.patch)
     let nextOptions = sql`COALESCE(${organization.options}, '{}'::jsonb)`
     for (const key of remove) nextOptions = sql`${nextOptions} - ${key}::text`

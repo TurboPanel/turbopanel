@@ -4499,6 +4499,7 @@ test('DELETE /servers/:id refuses an outright principal delete while a service s
             storages: 0,
             secrets: 0,
             logins: 0,
+            folders: 0,
             otherPlacements: 0,
           },
         },

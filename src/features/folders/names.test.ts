@@ -6,6 +6,7 @@ import {
   projectSlugFromName,
   resolveDirectoryNameChoice,
   resolveFolderName,
+  trimHyphens,
 } from './names.ts'
 
 const test = Deno.test.bind(Deno)
@@ -124,4 +125,10 @@ test('resolveFolderName: a defaulted name gets -2 to -99, then asks the person t
     resolveFolderName({ choice: 'slug', assetId: ID, defaultBase: null, isTaken: () => false }),
     { ok: false, error: 'invalid_directory_name' }
   )
+})
+
+test('trimHyphens strips both ends only', () => {
+  assertEquals(trimHyphens('--a-b--'), 'a-b')
+  assertEquals(trimHyphens('---'), '')
+  assertEquals(trimHyphens('ab'), 'ab')
 })

@@ -27,6 +27,8 @@ import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from './authn/crypto.ts'
 import { createSession } from './authn/session-store.ts'
 import { ORG_ID_HEADER } from './org-context.ts'
+import { countPrincipalReferences } from '../features/principals/store.ts'
+import { loadPrincipalUsage } from '../features/principals/placement-records.ts'
 import { registerEnvironmentFolderRoutes } from './environments/folder-routes.ts'
 import { registerEnvironmentRoutes } from './environments/routes.ts'
 import { registerOrganizationDirectoryDefaultsRoutes } from './organizations/directory-defaults-routes.ts'
@@ -422,5 +424,37 @@ test('a project with a folder under it cannot be deleted', async () => {
     const refused = await send(ctx, 'DELETE', `/projects/${projectId}`)
     assertEquals(refused.status, 409)
     assertEquals(refused.json.error, 'project_has_folders')
+  })
+})
+
+test('deleting a service whose folder is recorded keeps the folder row and its lock', async () => {
+  await withFixtures(async (ctx) => {
+    const { envId } = await createProject(ctx, 'Asset Delete')
+    await addServiceFolder(ctx, envId, 'example.com', 'present')
+    const [row] = await ctx.db
+      .select({ id: folder.id, serviceId: folder.serviceId })
+      .from(folder)
+      .where(eq(folder.serverId, ctx.serverId))
+    await ctx.db.delete(service).where(eq(service.id, row!.serviceId!))
+    const [after] = await ctx.db
+      .select({ id: folder.id, serviceId: folder.serviceId, state: folder.state })
+      .from(folder)
+      .where(eq(folder.id, row!.id))
+    assertEquals(after?.serviceId, null)
+    assertEquals(after?.state, 'present')
+    const blocked = await send(ctx, 'PATCH', `/environments/${envId}`, { name: 'staging' })
+    assertEquals(blocked.status, 409)
+  })
+})
+
+test('a site owner with folders is counted as in use', async () => {
+  await withFixtures(async (ctx) => {
+    const { envId } = await createProject(ctx, 'Owner In Use')
+    await addServiceFolder(ctx, envId, 'example.com', 'present')
+    assertEquals((await countPrincipalReferences(ctx.db, ctx.principalId)).folders, 1)
+    const usage = await loadPrincipalUsage(ctx.db, [ctx.principalId], ctx.serverId)
+    assertEquals(usage.get(ctx.principalId)?.folders, 0)
+    const all = await loadPrincipalUsage(ctx.db, [ctx.principalId])
+    assertEquals(all.get(ctx.principalId)?.folders, 1)
   })
 })

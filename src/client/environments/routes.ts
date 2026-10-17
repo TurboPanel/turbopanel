@@ -283,6 +283,20 @@ function environmentDeleteRefusal(c: Context<AppEnv>, error: EnvironmentDeleteRe
   return c.json({ error }, 409)
 }
 
+/** After a saved `options` patch: adopt the repository the compose names and refresh the service rows. */
+async function settleAfterOptionsPatch(
+  db: Db,
+  environmentId: string,
+  parent: { projectId: string; repositoryId: string | null } | null | undefined,
+  patchFields: EnvironmentPatchFields
+): Promise<void> {
+  if (patchFields.options === undefined) return
+  if (parent) {
+    await adoptProjectRepository(db, parent.projectId, patchFields.options, parent.repositoryId)
+  }
+  await reconcileServicesForEnvironment(db, environmentId)
+}
+
 export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for environment routes')
@@ -463,12 +477,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     const refused = await updateEnvironmentChecked(c, db, id, patchFields)
     if (refused) return refused
 
-    if (patchFields.options !== undefined) {
-      if (parent) {
-        await adoptProjectRepository(db, parent.projectId, patchFields.options, parent.repositoryId)
-      }
-      await reconcileServicesForEnvironment(db, id)
-    }
+    await settleAfterOptionsPatch(db, id, parent, patchFields)
 
     return c.json({ ok: true as const })
   })

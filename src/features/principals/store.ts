@@ -24,6 +24,7 @@ import { forEachSequential } from '../../lib/sequential.ts'
 import {
   binding,
   environment,
+  folder,
   login,
   managed,
   organization,
@@ -120,6 +121,8 @@ export type PrincipalReferences = {
   secrets: number
   /** Database logins that belong to the principal (`login`). */
   logins: number
+  /** Service and volume folders on any server (`folder`, any state). */
+  folders: number
 }
 
 /** True when any count in `refs` is above zero. */
@@ -129,7 +132,8 @@ export function isPrincipalReferenced(refs: PrincipalReferences): boolean {
     refs.bindings > 0 ||
     refs.storage > 0 ||
     refs.secrets > 0 ||
-    refs.logins > 0
+    refs.logins > 0 ||
+    refs.folders > 0
   )
 }
 
@@ -144,7 +148,13 @@ export async function countPrincipalReferences(
   principalId: string
 ): Promise<PrincipalReferences> {
   const count = async (
-    table: typeof tenancy | typeof binding | typeof storage | typeof secret | typeof login
+    table:
+      | typeof tenancy
+      | typeof binding
+      | typeof storage
+      | typeof secret
+      | typeof login
+      | typeof folder
   ) => {
     const [row] = await db
       .select({ total: sql<number>`count(*)::int` })
@@ -158,6 +168,7 @@ export async function countPrincipalReferences(
     storage: await count(storage),
     secrets: await count(secret),
     logins: await count(login),
+    folders: await count(folder),
   }
 }
 

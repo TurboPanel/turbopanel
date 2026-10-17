@@ -1,5 +1,5 @@
 {
-  "id": "52998cbf-5db8-49f2-9bc3-fe5fa245cc21",
+  "id": "9486cb25-c020-4560-b4a4-429df324bb75",
   "prevId": "958f98fe-072c-4371-bc5c-aaae36f1f4b5",
   "version": "7",
   "dialect": "postgresql",
@@ -3208,15 +3208,11 @@
         },
         "folder_common_scope_check": {
           "name": "folder_common_scope_check",
-          "value": "scope <> 'common' OR environment_id IS NULL"
+          "value": "(scope = 'common' AND environment_id IS NULL) OR (scope <> 'common' AND (environment_id IS NOT NULL OR state = 'orphan'))"
         },
         "folder_asset_kind_check": {
           "name": "folder_asset_kind_check",
           "value": "(kind = 'service' AND storage_id IS NULL) OR (kind = 'volume' AND service_id IS NULL)"
-        },
-        "folder_asset_present_check": {
-          "name": "folder_asset_present_check",
-          "value": "state IN ('removing', 'orphan', 'missing') OR (kind = 'service' AND service_id IS NOT NULL) OR (kind = 'volume' AND storage_id IS NOT NULL)"
         }
       },
       "isRLSEnabled": false

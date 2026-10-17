@@ -8,6 +8,14 @@
  * or a deploy, lifecycle or stop command that has not finished. Assets in the
  * `common` scope carry no environment id and never block. When it refuses, the
  * body lists up to 20 blocking folders with the names a person can recognise.
+ *
+ * A rename takes `FOR UPDATE` on the environment row. A folder insert for the
+ * environment takes the matching `FOR KEY SHARE` through its foreign key, so
+ * one waits for the other. A deploy dispatch does not take that lock, so a
+ * command queued between the running-command check and the commit is possible;
+ * the dispatch paths and the folder insert should call `lockEnvironmentRow`
+ * first. Moving an environment to another server (`serverId`) is not locked by
+ * folders.
  */
 import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'

@@ -111,7 +111,7 @@ test('folder rows are held to the name rules and to one row per location', async
     await refuses('folder_asset_kind_check', { kind: 'site' })
     await refuses('folder_state_check', { state: 'gone' })
     await refuses('folder_asset_kind_check', { kind: 'volume' })
-    await refuses('folder_asset_present_check', { serviceId: null })
+    await refuses('folder_common_scope_check', { environmentId: null })
 
     await db.insert(folder).values(base)
     let duplicate: unknown
@@ -125,8 +125,12 @@ test('folder rows are held to the name rules and to one row per location', async
     // A deleted asset leaves the row behind as `removing`, with no asset id.
     await db.delete(folder).where(eq(folder.serverId, srv!.id))
     await db.insert(folder).values({ ...base, serviceId: null, state: 'removing' })
+    // An orphan may name a scope whose environment is unknown.
+    await db
+      .insert(folder)
+      .values({ ...base, environmentId: null, serviceId: null, slug: 'stray', state: 'orphan' })
     const rows = await db.select({ id: folder.id }).from(folder).where(eq(folder.serverId, srv!.id))
-    assertEquals(rows.length, 1)
+    assertEquals(rows.length, 2)
     // The scope `common` is allowed with no environment.
     await db
       .insert(folder)

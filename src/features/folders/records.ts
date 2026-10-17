@@ -14,7 +14,7 @@
  * transaction and must take the same row lock on the environment that the
  * rename uses, so a rename and a first folder cannot both succeed.
  */
-import { and, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, ne, notInArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   command,
@@ -28,7 +28,7 @@ import {
   storage,
 } from '../../db/schema.ts'
 import { TERMINAL_COMMAND_STATUSES } from '../commands/types.ts'
-import { nextFreeProjectSlug, projectSlugFromName } from './names.ts'
+import { nextFreeProjectSlug, projectSlugFromName, trimHyphens } from './names.ts'
 
 export const ENVIRONMENT_NAME_LOCKED_ERROR = 'environment_name_locked'
 export const ENVIRONMENT_NAME_INVALID_ERROR = 'invalid_environment_name'
@@ -131,16 +131,18 @@ export async function environmentHasRunningCommand(
   db: Reader,
   environmentId: string
 ): Promise<boolean> {
-  const rows = await db
-    .select({ status: command.status })
+  const [row] = await db
+    .select({ id: command.id })
     .from(command)
     .where(
       and(
         inArray(command.name, ['environment.deploy', 'environment.lifecycle', 'environment.stop']),
+        notInArray(command.status, [...TERMINAL_COMMAND_STATUSES]),
         sql`${command.context} ->> 'environmentId' = ${environmentId}`
       )
     )
-  return rows.some((row) => !(TERMINAL_COMMAND_STATUSES as ReadonlySet<string>).has(row.status))
+    .limit(1)
+  return row !== undefined
 }
 
 /**
@@ -236,6 +238,6 @@ export async function allocateProjectSlug(
   const base = projectSlugFromName(name)
   return (
     nextFreeProjectSlug(base, (slug) => taken.has(slug)) ??
-    `${base.slice(0, 31).replace(/-+$/, '')}-${crypto.randomUUID().slice(0, 8)}`
+    `${trimHyphens(base.slice(0, 31))}-${crypto.randomUUID().slice(0, 8)}`
   )
 }
