@@ -1,11 +1,6 @@
 import type { Context } from 'hono'
 import { and, eq } from 'drizzle-orm'
-import {
-  getDb,
-  getDaemonCellRegistry,
-  getQueryCache,
-  type Db,
-} from '../../db/connection.ts'
+import { getDb, getDaemonCellRegistry, type Db } from '../../db/connection.ts'
 import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
 import type { ServerFleetPresence } from '../../daemon/cell/server-status.ts'
 import {
@@ -15,7 +10,7 @@ import {
 import { license, server } from '../../db/schema.ts'
 import { redactServerOptions } from '../../features/servers/server-metadata.ts'
 import { resolveColocatedServerIdSet } from '../../client/servers/colocated.ts'
-import { runApprovedCachedReadModel } from '../cached-query.ts'
+import { defineCachedRead, type CachedReadDb } from '../cached-read.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 
 export type ServerDetailRow = {
@@ -39,7 +34,7 @@ export type ServerDetailDisplayPayload = {
  * Approved cached read model: single-server detail display/projection data.
  *
  * **Cached connection (`readDb` / `HYPERDRIVE_CACHED` / Redis):** only statement #1
- * — the detail-row `SELECT` — runs here via `loadCachedDetailRow`. Do not move
+ * — the detail-row `SELECT` — runs here via `serverDetailCachedRead`. Do not move
  * presence, colocated, or authorization queries onto `readDb`.
  *
  * **Primary connection (`db` / `HYPERDRIVE`):** statement #2 — one shared
@@ -64,12 +59,8 @@ export type ServerDetailDisplayPayload = {
  * (and therefore before it is cached), so a secret-bearing key left on the jsonb
  * by an older control plane never reaches Redis.
  */
-async function loadCachedDetailRow(
-  readDb: Db,
-  organizationId: string,
-  serverId: string,
-): Promise<ServerDetailRow | null> {
-  const [row] = await readDb
+function buildDetailRowQuery(readDb: CachedReadDb, input: DetailInput) {
+  return readDb
     .select({
       id: server.id,
       name: server.name,
@@ -81,22 +72,30 @@ async function loadCachedDetailRow(
     })
     .from(server)
     .leftJoin(license, eq(license.serverId, server.id))
-    .where(
-      and(eq(server.id, serverId), eq(server.organizationId, organizationId)),
-    )
+    .where(and(eq(server.id, input.serverId), eq(server.organizationId, input.organizationId)))
     .limit(1)
-
-  const detail = row as ServerDetailRow | undefined
-  if (!detail) return null
-  // Redact before returning, so the cache stores the redacted row (see
-  // `REDACTED_SERVER_OPTION_KEYS`).
-  return { ...detail, options: redactServerOptions(detail.options) }
 }
+
+type DetailInput = { organizationId: string; serverId: string }
+
+/**
+ * Registered cached read: statement #1 above. Redaction runs on the result, so
+ * the self-hosted copy stores the redacted row.
+ */
+export const serverDetailCachedRead = defineCachedRead({
+  id: 'server-detail',
+  build: (readDb: CachedReadDb, input: DetailInput) => buildDetailRowQuery(readDb, input),
+  transform: (rows, _input: DetailInput): ServerDetailRow | null => {
+    const detail = rows[0] as ServerDetailRow | undefined
+    return detail ? { ...detail, options: redactServerOptions(detail.options) } : null
+  },
+  samples: [{ organizationId: 'org-1', serverId: 'srv-1' }],
+})
 
 async function resolveServerDetailEnrichment(
   db: Db,
   registry: DaemonCellRegistry | undefined,
-  serverId: string,
+  serverId: string
 ): Promise<Pick<ServerDetailDisplayPayload, 'presence' | 'colocatedWithInstance'>> {
   const rows = await loadServerRowsForFleetPresence(db, [serverId])
   const preloaded = {
@@ -123,7 +122,7 @@ export async function cachedServerDetailReadModel(
   opts: {
     organizationId: string
     serverId: string
-  },
+  }
 ): Promise<ServerDetailDisplayPayload | null> {
   const db = getDb(c)
   if (!db) {
@@ -132,15 +131,7 @@ export async function cachedServerDetailReadModel(
 
   const { organizationId, serverId } = opts
   const registry = getDaemonCellRegistry(c)
-  const cache = getQueryCache(c)
-
-  const row = await runApprovedCachedReadModel(
-    cache,
-    db,
-    'server-detail',
-    [organizationId, serverId],
-    (readDb) => loadCachedDetailRow(readDb, organizationId, serverId),
-  )
+  const row = await serverDetailCachedRead(c, { organizationId, serverId })
 
   if (!row) return null
 
