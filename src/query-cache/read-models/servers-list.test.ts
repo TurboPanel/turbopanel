@@ -335,7 +335,12 @@ test('cachedServersListReadModel derives its redis cache key from the statement 
   assertEquals(first.rows, listRows)
   // The key comes from the statement: the sorted ids are its parameters.
   assertEquals(
-    store.has(inspectCachedRead(serversListCachedRead.definition, ['srv-a', 'srv-b']).key),
+    store.has(
+      inspectCachedRead(serversListCachedRead.definition, {
+        organizationId: 'org-1',
+        ids: ['srv-a', 'srv-b'],
+      }).key
+    ),
     true
   )
 

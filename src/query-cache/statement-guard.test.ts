@@ -1,5 +1,7 @@
 import { assertEquals, assertNotEquals } from '@std/assert'
 import {
+  UncacheableStatementError,
+  findUncacheableStatementError,
   isCacheableStatement,
   normaliseStatement,
   statementFingerprint,
@@ -70,6 +72,31 @@ test('volatile functions and keywords are refused wherever they appear', () => {
   }
 })
 
+test('comments and alternative quoting are refused', () => {
+  for (const text of [
+    "select 1 /* ' */ ; delete from t where a = '",
+    'select 1 -- note',
+    'select $$x$$',
+    "select E'a\\'b'",
+  ]) {
+    assertNotEquals(uncacheableReason(text), null, text)
+  }
+})
+
+test('more volatile names are refused', () => {
+  for (const text of [
+    'select current_user',
+    'select session_user',
+    'select pg_backend_pid()',
+    "select current_setting('a')",
+    "select 'now'::timestamp",
+    'select current_schema',
+    'select uuidv4()',
+  ]) {
+    assertNotEquals(uncacheableReason(text), null, text)
+  }
+})
+
 test('similar names are not mistaken for volatile tokens', () => {
   assertEquals(
     isCacheableStatement('select "created_at", "now_playing", "current_dates" from "t"'),
@@ -89,4 +116,11 @@ test('the fingerprint ignores list length and spacing but not the statement', ()
     normaliseStatement('select 1 from "t" where "a" in ($1, $2) and "b" = $3 limit $4'),
     'select 1 from "t" where "a" in ($*) and "b" = $1 limit $2'
   )
+})
+
+test('the guard error is found under a wrapper', () => {
+  const inner = new UncacheableStatementError('x')
+  const wrapped = new Error('Failed query', { cause: inner })
+  assertEquals(findUncacheableStatementError(wrapped), inner)
+  assertEquals(findUncacheableStatementError(new Error('other')), null)
 })

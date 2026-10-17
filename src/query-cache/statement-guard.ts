@@ -40,6 +40,14 @@ const VOLATILE_TOKENS: ReadonlyArray<readonly [string, RegExp]> = [
   ['pg_sleep', /\bpg_sleep/i],
   ['txid_current', /\btxid_current/i],
   ['pg_advisory', /\bpg_(try_)?advisory/i],
+  ['current_user', /\b(current|session)_user\b/i],
+  ['current_schema', /\bcurrent_(schema|catalog|role)\b/i],
+  ['current_setting', /\bcurrent_setting\b/i],
+  ['pg_backend_pid', /\bpg_backend_pid/i],
+  ['pg_notify', /\bpg_notify/i],
+  ['setseed', /\bsetseed\b/i],
+  ['uuidv4()', /\buuidv4\s*\(/i],
+  ['a time word cast from text', /'\s*(now|today|tomorrow|yesterday)\s*'/i],
 ]
 
 /** The statement text with string literals and quoted identifiers blanked out. */
@@ -50,6 +58,9 @@ function stripQuoted(text: string): string {
 /** Reason the statement cannot use the cached connection, or `null` when it can. */
 export function uncacheableReason(text: string): string | null {
   if (!/^\s*select\b/i.test(text)) return 'not a SELECT'
+  // The cache matches the text as written, and comments or alternative quoting
+  // can hide a second statement from a quote-stripping check, so none is allowed.
+  if (/--|\/\*|\$\$|\be'/i.test(text)) return 'comment or alternative quoting'
   const bare = stripQuoted(text)
   if (/;\s*\S/.test(bare)) return 'more than one statement'
   if (/\bfor\s+(no\s+key\s+update|update|key\s+share|share)\b/i.test(bare)) {
@@ -93,4 +104,14 @@ export function statementKeyHash(text: string, params: readonly unknown[]): stri
     .update(JSON.stringify(params))
     .digest('hex')
     .slice(0, 32)
+}
+
+/** The guard's error itself, or the one a query driver wrapped as its `cause`. */
+export function findUncacheableStatementError(err: unknown): UncacheableStatementError | null {
+  let current: unknown = err
+  for (let depth = 0; depth < 4 && current instanceof Error; depth++) {
+    if (current instanceof UncacheableStatementError) return current
+    current = (current as { cause?: unknown }).cause
+  }
+  return null
 }

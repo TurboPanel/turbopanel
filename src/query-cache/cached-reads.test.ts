@@ -47,9 +47,13 @@ test('different inputs give different keys', () => {
     assertEquals(new Set(keys).size, keys.length, read.definition.id)
   }
   const [list] = ALL_CACHED_READS
-  const a = inspectCachedRead(list.definition, ['srv-1'])
-  const b = inspectCachedRead(list.definition, ['srv-2'])
+  const a = inspectCachedRead(list.definition, { organizationId: 'org-1', ids: ['srv-1'] })
+  const b = inspectCachedRead(list.definition, { organizationId: 'org-1', ids: ['srv-2'] })
   assertNotEquals(a.key, b.key)
+  // Same statement and parameters in another organization is another key.
+  const other = inspectCachedRead(list.definition, { organizationId: 'org-2', ids: ['srv-1'] })
+  assertEquals(other.keyHash, a.keyHash)
+  assertNotEquals(other.key, a.key)
   assertEquals(a.fingerprint, b.fingerprint)
 })
 

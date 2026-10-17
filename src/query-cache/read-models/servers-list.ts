@@ -59,7 +59,9 @@ export type ServersListDisplayPayload = {
  * before it is returned (and therefore before it is cached), so a secret-bearing
  * key left on the jsonb by an older control plane never reaches Redis.
  */
-function buildListRowsQuery(readDb: CachedReadDb, visibleIds: string[]) {
+type ListInput = { organizationId: string; ids: string[] }
+
+function buildListRowsQuery(readDb: CachedReadDb, input: ListInput) {
   return readDb
     .select({
       id: server.id,
@@ -72,7 +74,7 @@ function buildListRowsQuery(readDb: CachedReadDb, visibleIds: string[]) {
     })
     .from(server)
     .leftJoin(license, eq(license.serverId, server.id))
-    .where(inArray(server.id, visibleIds))
+    .where(inArray(server.id, input.ids))
     .orderBy(server.createdAt)
 }
 
@@ -83,13 +85,17 @@ function buildListRowsQuery(readDb: CachedReadDb, visibleIds: string[]) {
  */
 export const serversListCachedRead = defineCachedRead({
   id: 'servers-list',
-  build: (readDb: CachedReadDb, visibleIds: string[]) => buildListRowsQuery(readDb, visibleIds),
-  transform: (rows, _visibleIds: string[]): ServersListRow[] =>
+  scope: (input: ListInput) => [input.organizationId],
+  build: (readDb: CachedReadDb, input: ListInput) => buildListRowsQuery(readDb, input),
+  transform: (rows, _input: ListInput): ServersListRow[] =>
     (rows as ServersListRow[]).map((row) => ({
       ...row,
       options: redactServerOptions(row.options),
     })),
-  samples: [['srv-1'], ['srv-1', 'srv-2', 'srv-3']],
+  samples: [
+    { organizationId: 'org-1', ids: ['srv-1'] },
+    { organizationId: 'org-1', ids: ['srv-1', 'srv-2', 'srv-3'] },
+  ],
 })
 
 async function resolveServersListEnrichment(
@@ -130,11 +136,14 @@ export async function cachedServersListReadModel(
     throw new Error('Database unavailable')
   }
 
-  const { visibleIds } = opts
+  const { organizationId, visibleIds } = opts
   // Canonical order so the same set of ids always builds the same statement.
   const sortedVisibleIds = [...visibleIds].sort((a, b) => a.localeCompare(b))
   const registry = getDaemonCellRegistry(c)
-  const rows = sortedVisibleIds.length === 0 ? [] : await serversListCachedRead(c, sortedVisibleIds)
+  const rows =
+    sortedVisibleIds.length === 0
+      ? []
+      : await serversListCachedRead(c, { organizationId, ids: sortedVisibleIds })
 
   if (rows.length === 0) {
     return { rows: [], presence: [], colocatedIds: [] }

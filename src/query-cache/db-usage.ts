@@ -17,8 +17,8 @@ export type DbUsage = {
   /** Cached read models that had to be re-run on the primary connection. */
   fallback: number
   readModels: Array<{ id: string; outcome: ReadModelOutcome }>
-  /** True while a fallback re-run is in progress, so it is not counted as missed. */
-  rerunning: boolean
+  /** Fallback re-runs in progress, so their statements are not counted as missed. */
+  rerunning: number
 }
 
 export function createDbUsage(): DbUsage {
@@ -28,7 +28,7 @@ export function createDbUsage(): DbUsage {
     primaryCacheable: 0,
     fallback: 0,
     readModels: [],
-    rerunning: false,
+    rerunning: 0,
   }
 }
 
@@ -52,7 +52,7 @@ export function withPrimaryStatementCount<T extends object>(client: T, usage: Db
       if (prop === 'unsafe') {
         return (query: string, ...rest: unknown[]) => {
           usage.primary += 1
-          if (!usage.rerunning && isCacheableStatement(query)) usage.primaryCacheable += 1
+          if (usage.rerunning === 0 && isCacheableStatement(query)) usage.primaryCacheable += 1
           return (target as never as { unsafe: (...a: unknown[]) => unknown }).unsafe(
             query,
             ...rest

@@ -29,6 +29,8 @@ export type CachedReadDefinition<Input, Row, Out> = {
   transform: (rows: Row[], input: Input) => Out
   /** Example inputs the registry test builds the statement from. */
   samples: readonly Input[]
+  /** Extra key parts that do not change the statement (for example the organization), kept so cached copies stay partitioned. */
+  scope?: (input: Input) => string[]
   ttlSeconds?: number
 }
 
@@ -56,12 +58,13 @@ export function inspectCachedRead<Input, Row, Out>(
 ): PreparedCachedRead {
   const { sql, params } = def.build(offlineDb, input).toSQL()
   const keyHash = statementKeyHash(sql, params)
+  const scope = def.scope?.(input) ?? []
   return {
     sql,
     params,
     fingerprint: statementFingerprint(sql),
     keyHash,
-    key: queryCacheKey(def.id, keyHash),
+    key: queryCacheKey(def.id, ...scope, keyHash),
   }
 }
 
@@ -101,7 +104,7 @@ export function defineCachedRead<Input, Row, Out>(
       getQueryCache(c),
       db,
       def.id,
-      [prepared.keyHash],
+      [...(def.scope?.(input) ?? []), prepared.keyHash],
       load,
       def.ttlSeconds ?? DEFAULT_QUERY_CACHE_TTL_SECONDS
     )

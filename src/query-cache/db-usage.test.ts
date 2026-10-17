@@ -29,7 +29,7 @@ test('primary statements are counted and cacheable ones are told apart', () => {
   assertEquals(sent.length, 3)
   assertEquals(usage.primary, 3)
   assertEquals(usage.primaryCacheable, 1)
-  usage.rerunning = true
+  usage.rerunning = 1
   client.unsafe('select "id" from "t"')
   assertEquals(usage.primary, 4)
   assertEquals(usage.primaryCacheable, 1)

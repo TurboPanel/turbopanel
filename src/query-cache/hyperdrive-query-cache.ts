@@ -3,7 +3,7 @@ import { logWarn } from '../lib/logger.ts'
 import { isApprovedReadModelId } from './approved-read-models.ts'
 import type { ApprovedReadModelCacheOpts, QueryCache } from './contracts.ts'
 import { recordReadModel, type DbUsage } from './db-usage.ts'
-import { UncacheableStatementError } from './statement-guard.ts'
+import { findUncacheableStatementError } from './statement-guard.ts'
 
 export type HyperdriveQueryCacheOptions = {
   usage?: DbUsage
@@ -40,19 +40,20 @@ class HyperdriveQueryCache implements QueryCache {
       recordReadModel(usage, opts.readModel, 'cached')
       return value
     } catch (err) {
-      const refused = err instanceof UncacheableStatementError
-      if (!opts.primaryDb || (!refused && !isConnectionClosedError(err))) throw err
-      if (refused && this.options.strict) throw err
+      // The query driver wraps what the cached client throws, so look at the cause too.
+      const refusal = findUncacheableStatementError(err)
+      if (!opts.primaryDb || (!refusal && !isConnectionClosedError(err))) throw err
+      if (refusal && this.options.strict) throw err
       logWarn(
         'query-cache',
-        `${opts.readModel} fell back to the primary connection (${refused ? err.reason : 'cached connection closed'})`
+        `${opts.readModel} fell back to the primary connection (${refusal ? refusal.reason : 'cached connection closed'})`
       )
       recordReadModel(usage, opts.readModel, 'fallback')
-      if (usage) usage.rerunning = true
+      if (usage) usage.rerunning += 1
       try {
         return await opts.load(opts.primaryDb)
       } finally {
-        if (usage) usage.rerunning = false
+        if (usage) usage.rerunning -= 1
       }
     }
   }

@@ -12,14 +12,15 @@ export type CacheableClientOptions = {
   usage?: DbUsage
 }
 
-const BLOCKED_CLIENT_METHODS = new Set([
-  'begin',
-  'reserve',
-  'listen',
-  'notify',
-  'subscribe',
-  'file',
-  'savepoint',
+/** The only client members drizzle needs; every other function on the client is refused. */
+const ALLOWED_CLIENT_MEMBERS = new Set([
+  'unsafe',
+  'end',
+  'options',
+  'parameters',
+  'CLOSE',
+  'PostgresError',
+  'types',
 ])
 
 /**
@@ -29,8 +30,9 @@ const BLOCKED_CLIENT_METHODS = new Set([
  * cache accepts) and is checked first: it must be a single read-only SELECT
  * with no volatile function, and its fingerprint must be one the registry
  * lists. Anything else throws {@link UncacheableStatementError} before a byte
- * leaves the Worker. Transactions, listeners and the tagged-template call form
- * are refused for the same reason.
+ * leaves the Worker. Every client member except the few drizzle needs
+ * (transactions, listeners, the tagged-template form, large objects) is refused
+ * for the same reason.
  */
 export function withCacheableUnsafe<T extends ReturnType<typeof postgres>>(
   client: T,
@@ -49,15 +51,23 @@ export function withCacheableUnsafe<T extends ReturnType<typeof postgres>>(
             throw new UncacheableStatementError('statement is not in the registry')
           }
           if (options.usage) options.usage.cached += 1
-          return target.unsafe(query, (args ?? []) as never[], { ...opts, prepare: true })
+          // `simple: false` keeps a statement with no parameters on the extended protocol
+          // (postgres.js otherwise sends it as a simple query, which is never cached).
+          const forced = { ...opts, prepare: true, simple: false }
+          return target.unsafe(query, (args ?? []) as never[], forced as never)
         }
       }
-      if (typeof prop === 'string' && BLOCKED_CLIENT_METHODS.has(prop)) {
+      const value = Reflect.get(target, prop, receiver)
+      if (
+        typeof prop === 'string' &&
+        typeof value === 'function' &&
+        !ALLOWED_CLIENT_MEMBERS.has(prop)
+      ) {
         return () => {
           throw new UncacheableStatementError(`${prop} is not available on the cached connection`)
         }
       }
-      return Reflect.get(target, prop, receiver)
+      return value
     },
   })
 }

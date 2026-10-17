@@ -84,7 +84,7 @@ test('hyperdrive cache re-runs a refused statement once on the primary connectio
   assertEquals(targets, [cachedDb, primaryDb])
   assertEquals(usage.fallback, 1)
   assertEquals(usage.readModels, [{ id: 'servers-list', outcome: 'fallback' }])
-  assertEquals(usage.rerunning, false)
+  assertEquals(usage.rerunning, 0)
 })
 
 test('hyperdrive cache falls back when the cached connection closed', async () => {

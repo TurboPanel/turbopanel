@@ -445,11 +445,14 @@ export default {
         if (cachedExecutionLogStore) {
           c.set('executionLogStore', cachedExecutionLogStore)
         }
-        await next()
-        // One line per request that touched the database (see query-cache/db-usage.ts).
-        const line = dbUsageLine(c.req.routePath, dbHandles.usage)
-        if (line && shouldLogDbUsage(dbHandles.usage)) {
-          compatLogInfo('db-usage', JSON.stringify(line))
+        try {
+          await next()
+        } finally {
+          // One line per request that touched the database (see query-cache/db-usage.ts).
+          const line = dbUsageLine(c.req.routePath, dbHandles.usage)
+          if (line && shouldLogDbUsage(dbHandles.usage)) {
+            compatLogInfo('db-usage', JSON.stringify(line))
+          }
         }
       })
       requestApp.route('/', cachedApp!)
