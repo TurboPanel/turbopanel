@@ -343,8 +343,13 @@ itself. The explicit stop route sends **no** `siteReleases`: stopping keeps
 every service and volume folder, uploads included, and only delete teardown or a
 server leaving the environment names trees to reclaim. A deploy's
 `storageMaterial[].folder` (`{ owner, scope, slug }`) carries the same for an
-owned volume, and the deploy command keeps `metadata.folderIds`, the folder rows
-it planned, which its success marks present. **Contrast with `environment.lifecycle`:**
+owned volume, and `serviceFolders[]` (`{ serviceId, folder }`) names the folder of
+every host-run service (site, native app or Git-backed source) by service id.
+A host that gets a service folder serves, publishes and runs that service from
+`<owner>/<scope>/services/<name>`; a service with no entry keeps the older
+per-service tree. The stop result's `folders[]` (`{ owner, scope, kind: 'service',
+slug, removed }`) says which reclaimed folders are gone. The deploy command keeps
+`metadata.folderIds`, the folder rows it planned, which its success marks present. **Contrast with `environment.lifecycle`:**
 stop is **destructive teardown** (`down --remove-orphans --volumes`, hosting
 site + deployment dir + `/run` secrets removed, `containers: []` clears pins);
 lifecycle is **non-destructive** (`compose start|stop|restart`,

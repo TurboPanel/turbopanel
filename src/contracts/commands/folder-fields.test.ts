@@ -81,3 +81,23 @@ it('keeps a volume folder on storage material and refuses a bad one', () => {
     TypeError
   )
 })
+
+it('keeps the service folders of a deploy and refuses a bad one', () => {
+  const folder = { owner: 'alice', scope: 'production', slug: 'example.com' }
+  const parsed = parseEnvironmentDeployPayload({
+    ...DEPLOY_BASE,
+    serviceFolders: [{ serviceId: 'svc-1', folder }],
+  })
+  assertEquals(parsed.serviceFolders, [{ serviceId: 'svc-1', folder }])
+  assertEquals(parseEnvironmentDeployPayload(DEPLOY_BASE).serviceFolders, undefined)
+  for (const bad of [{ ...folder, slug: '..' }, { ...folder, scope: 'home' }, undefined]) {
+    assertThrows(
+      () =>
+        parseEnvironmentDeployPayload({
+          ...DEPLOY_BASE,
+          serviceFolders: [{ serviceId: 'svc-1', folder: bad }],
+        }),
+      TypeError
+    )
+  }
+})
