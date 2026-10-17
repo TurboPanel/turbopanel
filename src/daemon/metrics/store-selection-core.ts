@@ -166,5 +166,7 @@ export type ResolveServerMetricsStoreInput = {
     threads?: number
     memoryLimitMb?: number
     retentionDays?: number
+    /** Cap for the whole metrics store in bytes (default 5 GiB, `TURBOPANEL_SERVER_METRICS_MAX_BYTES`). */
+    maxBytes?: number
   }
 }
