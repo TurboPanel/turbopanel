@@ -3877,6 +3877,75 @@ export const folder = pgTable(
 )
 
 /**
+ * An environment using a common asset: a service or volume in the `common`
+ * scope of a site owner, which belongs to that owner and not to any one
+ * environment. Any environment of any project in the organization can share
+ * it. Deleting the environment removes its rows (cascade); deleting the asset
+ * is refused while a row names it (restrict), and the routes say so in plain
+ * words first.
+ */
+export const share = pgTable(
+  'share',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    environmentId: uuid('environment_id').notNull(),
+    serviceId: uuid('service_id'),
+    storageId: uuid('storage_id'),
+  },
+  (table) => [
+    index('idx_share_environment_id').using(
+      'btree',
+      table.environmentId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_share_service_id').using('btree', table.serviceId.asc().nullsLast().op('uuid_ops')),
+    index('idx_share_storage_id').using('btree', table.storageId.asc().nullsLast().op('uuid_ops')),
+    uniqueIndex('uniq_share_environment_service')
+      .on(table.environmentId, table.serviceId)
+      .where(sql`service_id IS NOT NULL`),
+    uniqueIndex('uniq_share_environment_storage')
+      .on(table.environmentId, table.storageId)
+      .where(sql`storage_id IS NOT NULL`),
+    foreignKey({
+      columns: [table.environmentId],
+      foreignColumns: [environment.id],
+      name: 'share_environment_id_environment_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'share_service_id_service_id_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.storageId],
+      foreignColumns: [storage.id],
+      name: 'share_storage_id_storage_id_fk',
+    }).onDelete('restrict'),
+    check(
+      'share_asset_check',
+      sql`(service_id IS NOT NULL AND storage_id IS NULL) OR (service_id IS NULL AND storage_id IS NOT NULL)`
+    ),
+  ]
+)
+
+/**
  * Join edge: the Linux/system principal that runs as / owns a service (the
  * site tree). Deleting a principal removes its edges (cascade); a service
  * still referenced by principals cannot be deleted (restrict), mirroring

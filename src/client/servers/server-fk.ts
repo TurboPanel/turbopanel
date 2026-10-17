@@ -124,6 +124,7 @@ export const ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS: Readonly<
   marker: 'cascade-on-environment',
   network: 'set-null-on-environment',
   service: 'drop-subtree',
+  share: 'cascade-on-environment',
   slot: 'drop-subtree',
   storage: 'set-null-on-environment',
   variable: 'cascade-on-environment',

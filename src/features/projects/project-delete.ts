@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne } from 'drizzle-orm'
+import { and, eq, inArray, ne, or } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { ensureProjectPlacements } from '../principals/placement-records.ts'
 import {
@@ -14,12 +14,18 @@ import {
   principal,
   project,
   service,
+  share,
   slot,
   storage,
   storageCopy,
   tenancy,
 } from '../../db/schema.ts'
-import { applyStorageRetentionOnParentDelete } from '../storage/storage-records.ts'
+import { markAssetFoldersRemoving } from '../folders/allocate.ts'
+import { type COMMON_ASSET_IN_USE_ERROR, inUseBody, listUsesOfAssets } from '../folders/shares.ts'
+import {
+  applyStorageRetentionOnParentDelete,
+  listStorageIdsDeletedWith,
+} from '../storage/storage-records.ts'
 import { purgeEnvironmentsComposeNetworks } from '../fabric/fabric-records.ts'
 import {
   enqueueIngressForBindingChange,
@@ -48,7 +54,13 @@ export type ProjectDeleteResult =
   | { ok: true; warning?: string }
   | {
       ok: false
-      error: 'project_has_running_services' | 'managed_runtime_present' | 'project_has_folders'
+      error:
+        | 'project_has_running_services'
+        | 'managed_runtime_present'
+        | 'project_has_folders'
+        | typeof COMMON_ASSET_IN_USE_ERROR
+      /** Extra fields for the 409 body (who still uses a shared asset). */
+      detail?: Record<string, unknown>
     }
 
 /**
@@ -177,11 +189,25 @@ async function purgeEnvironmentServerPlacementArtifacts(
 
 async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<void> {
   const { environmentIds, serviceIds, containerIds, hostingIds } = rows
-  await applyStorageRetentionOnParentDelete(tx, {
+  const retentionScope = {
     ...(rows.projectId ? { projectIds: [rows.projectId] } : {}),
     environmentIds,
     ...(serviceIds.length > 0 ? { serviceIds } : {}),
-  })
+  }
+  // These environments stop using shared assets first, and so does anything still
+  // using an asset that goes with them (a delete that got this far has been checked;
+  // a forget has no one to ask), so no asset meets a row that names it.
+  const goneStorageIds = await listStorageIdsDeletedWith(tx, retentionScope)
+  await tx
+    .delete(share)
+    .where(
+      or(
+        inArray(share.environmentId, [...environmentIds]),
+        serviceIds.length > 0 ? inArray(share.serviceId, serviceIds) : undefined,
+        goneStorageIds.length > 0 ? inArray(share.storageId, goneStorageIds) : undefined
+      )
+    )
+  await applyStorageRetentionOnParentDelete(tx, retentionScope)
   // `network.environment_id` has no FK, so compose rows are not covered by cascade.
   await purgeEnvironmentsComposeNetworks(tx, environmentIds)
   if (containerIds.length > 0) {
@@ -191,6 +217,8 @@ async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<voi
     await tx.delete(hosting).where(inArray(hosting.id, hostingIds))
   }
   if (serviceIds.length > 0) {
+    // A shared service's folder row stays, locked, until the host confirms it gone.
+    await markAssetFoldersRemoving(tx, { serviceIds })
     await tx.delete(tenancy).where(inArray(tenancy.serviceId, serviceIds))
     await tx.delete(binding).where(inArray(binding.serviceId, serviceIds))
     await tx.delete(service).where(inArray(service.id, serviceIds))
@@ -236,6 +264,30 @@ async function loadEnvironmentChildren(
 }
 
 /**
+ * The shared (common) services and volumes that go with these environments,
+ * when another environment, of this project or any other, still uses one.
+ * Those environments have to stop using it first.
+ */
+async function sharedAssetsStillUsed(
+  db: Db,
+  scope: {
+    projectIds?: readonly string[]
+    environmentIds: readonly string[]
+    serviceIds: readonly string[]
+  }
+): Promise<{ error: typeof COMMON_ASSET_IN_USE_ERROR; detail: Record<string, unknown> } | null> {
+  const storageIds = await listStorageIdsDeletedWith(db, scope)
+  const uses = await listUsesOfAssets(
+    db,
+    { serviceIds: scope.serviceIds, storageIds },
+    scope.environmentIds
+  )
+  if (uses.length === 0) return null
+  const { error, ...detail } = inUseBody(uses)
+  return { error, detail }
+}
+
+/**
  * Cascade-delete a project and all child resources after verifying no active
  * containers remain and no managed-engine rows still exist. Managed host
  * runtime must be torn down with `managed.destroy` first —
@@ -275,6 +327,13 @@ export async function deleteProjectCascade(
     return { ok: false, error: 'project_has_running_services' }
   }
 
+  const sharedInUse = await sharedAssetsStillUsed(db, {
+    projectIds: [projectId],
+    environmentIds,
+    serviceIds: children.serviceIds,
+  })
+  if (sharedInUse) return { ok: false, error: sharedInUse.error, detail: sharedInUse.detail }
+
   // A folder on a server holds its environment's name (and the project's slug)
   // until the host confirms it is gone; the delete waits for that.
   const folderRows = await db
@@ -303,10 +362,13 @@ export async function deleteProjectCascade(
 }
 
 export type EnvironmentDeleteRefusal =
-  typeof ENVIRONMENT_RUNNING_ERROR | typeof MANAGED_RUNTIME_PRESENT_ERROR
+  | typeof ENVIRONMENT_RUNNING_ERROR
+  | typeof MANAGED_RUNTIME_PRESENT_ERROR
+  | typeof COMMON_ASSET_IN_USE_ERROR
 
 export type EnvironmentDeleteResult =
-  { ok: true; warning?: string } | { ok: false; error: EnvironmentDeleteRefusal }
+  | { ok: true; warning?: string }
+  | { ok: false; error: EnvironmentDeleteRefusal; detail?: Record<string, unknown> }
 
 async function hasInProgressDeployment(db: Db, environmentId: string): Promise<boolean> {
   const rows = await db
@@ -381,6 +443,12 @@ export async function deleteEnvironmentCascade(
   ) {
     return { ok: false, error: ENVIRONMENT_RUNNING_ERROR }
   }
+
+  const sharedInUse = await sharedAssetsStillUsed(db, {
+    environmentIds: [environmentId],
+    serviceIds: children.serviceIds,
+  })
+  if (sharedInUse) return { ok: false, error: sharedInUse.error, detail: sharedInUse.detail }
 
   const bindingTargets = await loadBindingListenerTargets(db, children.serviceIds)
   await db.transaction((tx) =>

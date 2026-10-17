@@ -343,7 +343,12 @@ async function parseCreateProjectInput(
 
   const environmentName = parseCreateProjectEnvironmentNameField(body)
   if (!environmentName.ok) {
-    return c.json({ error: environmentName.error }, environmentName.status)
+    return c.json(
+      environmentName.message === undefined
+        ? { error: environmentName.error }
+        : { error: environmentName.error, message: environmentName.message },
+      environmentName.status
+    )
   }
   // An explicit name wins; otherwise the organization default (or Production).
   const defaultEnvironmentName =
@@ -980,7 +985,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       organizationId,
     })
     if (!result.ok) {
-      return c.json({ error: result.error }, 409)
+      return c.json({ error: result.error, ...result.detail }, 409)
     }
 
     await reclaimDeletedEnvironmentHosts(c, db, teardownPlans, userId)

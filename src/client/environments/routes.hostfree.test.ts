@@ -333,7 +333,7 @@ test('environment routes return 401 without a session cookie', async () => {
       body:
         method === 'GET' || method === 'DELETE'
           ? undefined
-          : JSON.stringify({ projectId: environmentId, name: 'Staging' }),
+          : JSON.stringify({ projectId: environmentId, name: 'staging' }),
     })
     assertEquals(res.status, 401, `${method} ${path}`)
     assertEquals(await res.json(), { ok: false, error: 'Unauthorized' })
@@ -386,7 +386,7 @@ test('POST /environments returns 403 when create/manage is denied', async () => 
   const res = await app.request('/environments', {
     method: 'POST',
     headers: sessionHeaders(cookie, true),
-    body: JSON.stringify({ projectId, name: 'Staging' }),
+    body: JSON.stringify({ projectId, name: 'staging' }),
   })
   assertEquals(res.status, 403)
   assertEquals(await res.json(), { error: 'Forbidden' })
@@ -404,7 +404,7 @@ test('environment routes return 503 after session when db is dropped', async () 
       body:
         method === 'GET' || method === 'DELETE'
           ? undefined
-          : JSON.stringify({ projectId, name: 'Staging' }),
+          : JSON.stringify({ projectId, name: 'staging' }),
     })
     assertEquals(res.status, 503, `${method} ${path}`)
     assertEquals(await res.json(), { error: 'Database unavailable' })
@@ -423,7 +423,7 @@ test('environment routes return 401 after session is swallowed', async () => {
       body:
         method === 'GET' || method === 'DELETE'
           ? undefined
-          : JSON.stringify({ projectId, name: 'Staging' }),
+          : JSON.stringify({ projectId, name: 'staging' }),
     })
     assertEquals(res.status, 401, `${method} ${path}`)
     assertEquals(await res.json(), { error: 'Unauthorized' })
@@ -524,7 +524,7 @@ test('POST /environments returns 400 when projectId is missing', async () => {
   const res = await app.request('/environments', {
     method: 'POST',
     headers: sessionHeaders(cookie, true),
-    body: JSON.stringify({ name: 'Staging' }),
+    body: JSON.stringify({ name: 'staging' }),
   })
   assertEquals(res.status, 400)
 })
@@ -545,7 +545,7 @@ test('POST /environments returns 400 for invalid options jsonb', async () => {
   const res = await app.request('/environments', {
     method: 'POST',
     headers: sessionHeaders(cookie, true),
-    body: JSON.stringify({ projectId, name: 'Staging', options: [] }),
+    body: JSON.stringify({ projectId, name: 'staging', options: [] }),
   })
   assertEquals(res.status, 400)
   assertEquals(await res.json(), { error: 'Invalid request' })
@@ -559,7 +559,7 @@ test('POST /environments returns 404 when the project is in another org', async 
   const res = await app.request('/environments', {
     method: 'POST',
     headers: sessionHeaders(cookie, true),
-    body: JSON.stringify({ projectId, name: 'Staging' }),
+    body: JSON.stringify({ projectId, name: 'staging' }),
   })
   assertEquals(res.status, 404)
   assertEquals(await res.json(), { error: 'Not found' })
@@ -573,7 +573,7 @@ test('POST /environments returns 404 when the project lookup misses', async () =
   const res = await app.request('/environments', {
     method: 'POST',
     headers: sessionHeaders(cookie, true),
-    body: JSON.stringify({ projectId, name: 'Staging' }),
+    body: JSON.stringify({ projectId, name: 'staging' }),
   })
   assertEquals(res.status, 404)
   assertEquals(await res.json(), { error: 'Not found' })
@@ -586,7 +586,7 @@ test('POST /environments returns 400 for an invalid serverId shape', async () =>
     headers: sessionHeaders(cookie, true),
     body: JSON.stringify({
       projectId,
-      name: 'Staging',
+      name: 'staging',
       serverId: 'not-a-uuid',
     }),
   })
@@ -601,7 +601,7 @@ test('POST /environments returns 404 when serverId is not in the org', async () 
     headers: sessionHeaders(cookie, true),
     body: JSON.stringify({
       projectId,
-      name: 'Staging',
+      name: 'staging',
       serverId,
     }),
   })
@@ -767,7 +767,7 @@ test('POST /environments returns 400 for invalid metadata jsonb', async () => {
   const res = await app.request('/environments', {
     method: 'POST',
     headers: sessionHeaders(cookie, true),
-    body: JSON.stringify({ projectId, name: 'Staging', metadata: [] }),
+    body: JSON.stringify({ projectId, name: 'staging', metadata: [] }),
   })
   assertEquals(res.status, 400)
   assertEquals(await res.json(), { error: 'Invalid request' })
@@ -781,7 +781,7 @@ test('POST /environments returns 403 when the parent project is system-owned', a
   const res = await app.request('/environments', {
     method: 'POST',
     headers: sessionHeaders(cookie, true),
-    body: JSON.stringify({ projectId, name: 'Staging' }),
+    body: JSON.stringify({ projectId, name: 'staging' }),
   })
   assertEquals(res.status, 403)
   assertEquals(await res.json(), { error: 'system_resource_immutable' })
@@ -792,7 +792,7 @@ test('POST /environments returns 200 for a valid create', async () => {
   const res = await app.request('/environments', {
     method: 'POST',
     headers: sessionHeaders(cookie, true),
-    body: JSON.stringify({ projectId, name: 'Staging' }),
+    body: JSON.stringify({ projectId, name: 'staging' }),
   })
   assertEquals(res.status, 200)
   const body = (await res.json()) as { ok: boolean; id: string }
@@ -808,7 +808,7 @@ test('POST /environments returns 200 when serverId is in the org', async () => {
   const res = await app.request('/environments', {
     method: 'POST',
     headers: sessionHeaders(cookie, true),
-    body: JSON.stringify({ projectId, name: 'Staging', serverId }),
+    body: JSON.stringify({ projectId, name: 'staging', serverId }),
   })
   assertEquals(res.status, 200)
   const body = (await res.json()) as { ok: boolean; id: string }

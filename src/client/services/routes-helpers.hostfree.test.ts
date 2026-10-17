@@ -29,6 +29,8 @@ test('serializeService exposes composeServiceName', () => {
       description: null,
       environmentId: validUuid,
       composeServiceName: 'web',
+      slug: null,
+      isCommon: false,
       metadata: null,
       options: null,
       createdAt: '2026-01-01T00:00:00.000Z',
@@ -45,6 +47,8 @@ test('serializeService exposes the detected app only when metadata carries a val
     description: null,
     environmentId: validUuid,
     composeServiceName: 'blog',
+    slug: null,
+    isCommon: false,
     options: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
@@ -161,6 +165,8 @@ test('serializeService serves runState only once the daemon has reported one', (
     description: null,
     environmentId: validUuid,
     composeServiceName: 'web',
+    slug: null,
+    isCommon: false,
     metadata: null,
     options: null,
     createdAt: '2026-01-01T00:00:00.000Z',
@@ -175,4 +181,22 @@ test('serializeService serves runState only once the daemon has reported one', (
     asOf: '2026-10-04T12:00:00.000Z',
   }
   assertEquals(serializeService(row, runState).runState, runState)
+})
+
+test('serializeService exposes the folder name and whether it is shared', () => {
+  const serialized = serializeService({
+    id: validUuid,
+    name: 'Web',
+    description: null,
+    environmentId: validUuid,
+    composeServiceName: 'web',
+    slug: 'example.com',
+    isCommon: true,
+    metadata: null,
+    options: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  })
+  assertEquals(serialized.slug, 'example.com')
+  assertEquals(serialized.common, true)
 })

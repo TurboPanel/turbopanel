@@ -23,6 +23,7 @@ import {
   dispatch,
   environment,
   fabric,
+  folder,
   ip,
   managed,
   network,
@@ -2628,6 +2629,87 @@ test('processCommandEnvelope reconciles containers on environment.deploy success
       assertEquals(copyRow?.state, 'ready')
       await db.delete(storageCopy).where(eq(storageCopy.id, copy!.id))
       await db.delete(storage).where(eq(storage.id, vol!.id))
+    }
+  )
+})
+
+test('processCommandEnvelope marks the folders a deploy planned as present, and only those', async () => {
+  await withDeployFixtures(
+    async ({ db, organizationId, serverId, environmentId, projectId, webServiceId }) => {
+      await attachConnectedDaemonStatus(db, serverId)
+      const username = `fp_${crypto.randomUUID().slice(0, 8).replaceAll('-', '')}`
+      const [owner] = await db
+        .insert(principal)
+        .values({
+          organizationId,
+          kind: 'system',
+          provider: 'server',
+          username,
+          appliedUsername: username,
+        })
+        .returning({ id: principal.id })
+      const base = {
+        serverId,
+        principalId: owner!.id,
+        environmentId,
+        scope: 'production',
+        kind: 'service',
+        state: 'planned',
+      }
+      const [planned, untouched] = await db
+        .insert(folder)
+        .values([
+          { ...base, slug: 'web', serviceId: webServiceId },
+          { ...base, slug: 'other' },
+        ])
+        .returning({ id: folder.id })
+      try {
+        const record = await createCommandRecord(db, {
+          serverId,
+          ...TEST_COMMAND_ACTOR,
+          type: 'environment.deploy',
+          metadata: { folderIds: [planned!.id] },
+          payload: {
+            environmentId,
+            projectId,
+            organizationId,
+            projectName: 'tp-deploy-test',
+            composeFiles: [
+              {
+                filename: 'compose.yaml',
+                role: 'runtime',
+                source: 'inline',
+                content: 'services:\n  web:\n    image: nginx\n',
+              },
+            ],
+            hostings: [],
+          },
+        })
+        const registry = createDispatchMockRegistry(serverId, {
+          waitForRequestResult: {
+            serverId,
+            requestId: record.id,
+            requestKind: 'command-dispatch',
+            status: 'done',
+            createdAt: record.createdAt,
+            expiresAt: record.createdAt,
+            finishedAt: new Date().toISOString(),
+            result: { projectName: 'tp-deploy-test', summary: 'deployed' },
+          },
+        })
+        await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+        const states = await db
+          .select({ id: folder.id, state: folder.state })
+          .from(folder)
+          .where(eq(folder.serverId, serverId))
+        assertEquals(Object.fromEntries(states.map((row) => [row.id, row.state])), {
+          [planned!.id]: 'present',
+          [untouched!.id]: 'planned',
+        })
+      } finally {
+        await db.delete(folder).where(eq(folder.serverId, serverId))
+        await db.delete(principal).where(eq(principal.id, owner!.id))
+      }
     }
   )
 })

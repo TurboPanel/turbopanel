@@ -160,9 +160,15 @@ test('parseCreateProjectEnvironmentNameField accepts omitted/null, trims, reject
     if (!absent.ok) throw new TypeError('expected ok')
     assertEquals(absent.environmentName, undefined)
   }
-  const named = parseCreateProjectEnvironmentNameField({ environmentName: '  Staging  ' })
+  const named = parseCreateProjectEnvironmentNameField({ environmentName: '  staging  ' })
   if (!named.ok) throw new TypeError('expected ok')
-  assertEquals(named.environmentName, 'Staging')
+  assertEquals(named.environmentName, 'staging')
+  // The name is the folder on every server, so it must be a folder name.
+  for (const environmentName of ['Staging', 'my env', 'common', 'tmp']) {
+    const refused = parseCreateProjectEnvironmentNameField({ environmentName })
+    if (refused.ok) throw new TypeError(`expected a refusal for ${environmentName}`)
+    assertEquals(refused.error, 'invalid_environment_name', environmentName)
+  }
 
   assertEquals(parseCreateProjectEnvironmentNameField({ environmentName: '' }).ok, false)
   assertEquals(parseCreateProjectEnvironmentNameField({ environmentName: '   ' }).ok, false)

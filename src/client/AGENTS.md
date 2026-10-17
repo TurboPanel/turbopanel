@@ -240,13 +240,40 @@ changes.
   (`isValidEnvironmentName`) and a saved value that is not one is ignored.
 - **Folder names (`folder` table):** one row per service or volume directory per
   server (`features/folders/records.ts`). While a row exists (any state but
-  `missing`) the environment's name (`environments/rename-lock.ts`), the
-  asset's `slug`, the project slug and the organization's
+  `missing`) the environment's name (`environments/rename-lock.ts`) and server
+  pin, the asset's `slug`, the project slug and the organization's
   `directoryNames` / `directoryNamesLocked` setting
-  (`GET`/`PUT /organizations/:id/directory-defaults`) cannot change. Writers of
-  the rows (deploy planning, reconcile) must take the environment row lock
-  (`lockEnvironmentRow`) before inserting the first row, and set
-  `directoryNamesLocked` in the same transaction.
+  (`GET`/`PUT /organizations/:id/directory-defaults`) cannot change.
+  - **Who writes rows** (`features/folders/allocate.ts`): `persistDeployFanOut`
+    takes `lockEnvironmentRow`, then `planDeployFolders` names each host-run
+    service (`slug`, the domain for web hosting) and each owned path volume that
+    has none, inserts the rows as `planned` per server and site owner, and sets
+    `directoryNamesLocked`. The ids go on the deploy command's
+    `metadata.folderIds`; the consumer marks exactly those `present` when the
+    deploy succeeds. A volume with a site owner and a `path` copy is planned when
+    the copy is added (`planVolumeFolder`). The deploy, lifecycle and stop paths
+    queue their command under the same environment row lock as a rename.
+  - **Names and scope:** `POST /storage` takes `slug`, `directoryName`, `common`
+    (a volume outside an environment is always shared). Services have no create
+    body (rows come from compose), so `PATCH /services/:id` takes the same fields
+    until the first folder exists (`service_slug_locked`, `scope_locked`).
+    Organization setting, typed names (never suffixed) and default names
+    (`-2` to `-99`) follow `features/folders/names.ts`.
+  - **Delete and stop:** deleting a service or volume (and a volume copy) flips
+    its rows to `removing` first and keeps them, with their locks, until the host
+    confirms (`confirmFolderRemoved`). An explicit environment stop sends no
+    `siteReleases`, so every folder stays; delete teardown and a server leaving
+    the environment still do. Wire: `siteReleases[].folder` and
+    `storageMaterial[].folder` ride beside the old fields, which stay
+    authoritative until the daemon resolves folders itself.
+- **Common assets (`share` table):** a common service or volume belongs to the
+  site owner and lives in the owner's `common` scope; any environment of any
+  project in the organization uses it through `/environments/:id/shares`
+  (`features/folders/shares.ts`). Deleting the environment removes its rows;
+  deleting the asset, its environment or its project is refused with
+  `common_asset_in_use` while another environment uses it; common folders never
+  block a rename. A deploy carries the common volumes its environment uses
+  (with only its own mounts).
 - **Project default server:** `project.options.defaultServerId` (optional UUID).
   Environments without their own `server_id` inherit it at deploy / lifecycle /
   stop (`resolveEffectivePlacementServerId`). Overview Base shows an inline

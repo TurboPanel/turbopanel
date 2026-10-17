@@ -9,13 +9,12 @@
  * `common` scope carry no environment id and never block. When it refuses, the
  * body lists up to 20 blocking folders with the names a person can recognise.
  *
- * A rename takes `FOR UPDATE` on the environment row. A folder insert for the
- * environment takes the matching `FOR KEY SHARE` through its foreign key, so
- * one waits for the other. A deploy dispatch does not take that lock, so a
- * command queued between the running-command check and the commit is possible;
- * the dispatch paths and the folder insert should call `lockEnvironmentRow`
- * first. Moving an environment to another server (`serverId`) is not locked by
- * folders.
+ * A rename takes `FOR UPDATE` on the environment row. The folder plan of a
+ * deploy and the deploy, lifecycle and stop dispatch paths take the same lock
+ * (`lockEnvironmentRow`) before they write, so a rename that passed the
+ * running-command check commits before any of them proceeds, and the other way
+ * round. Moving an environment to another server (`serverId`) is refused the
+ * same way, with the same folder list, while any folder row counts.
  */
 import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
@@ -27,6 +26,8 @@ import {
   ENVIRONMENT_DEPLOY_RUNNING_ERROR,
   ENVIRONMENT_HAS_FOLDERS_ERROR,
   ENVIRONMENT_NAME_INVALID_ERROR,
+  ENVIRONMENT_NAME_RULE_MESSAGE,
+  ENVIRONMENT_SERVER_LOCKED_ERROR,
   ENVIRONMENT_NAME_LOCKED_ERROR,
   environmentHasRunningCommand,
   listEnvironmentFolders,
@@ -52,11 +53,14 @@ async function blockedBody(db: Reader, environmentId: string, error: string, mes
 const LOCKED_MESSAGE =
   "This environment's name is part of the folder path on your servers, so it cannot change while services or volumes have folders in it. Remove the listed ones first, or put assets that should not depend on the name in the shared (common) scope."
 
+const SERVER_LOCKED_MESSAGE =
+  "This environment's folders are on its current server, so it cannot move to another server while services or volumes have folders in it. Remove the listed ones first."
+
 /**
- * Apply a PATCH. A change of name takes the environment row's lock, checks the
- * new name against the folder rule and the folder rows, then writes in the same
- * transaction; every other patch is a plain update. Returns a response when the
- * patch is refused, otherwise null.
+ * Apply a PATCH. A change of name or of server takes the environment row's
+ * lock, checks the folder rows, then writes in the same transaction; every
+ * other patch is a plain update. Returns a response when the patch is refused,
+ * otherwise null.
  */
 export async function updateEnvironmentChecked(
   c: Context<AppEnv>,
@@ -64,47 +68,34 @@ export async function updateEnvironmentChecked(
   environmentId: string,
   fields: EnvironmentRenameFields
 ): Promise<Response | null> {
-  if (fields.name === undefined) {
+  if (fields.name === undefined && fields.serverId === undefined) {
     await db.update(environment).set(fields).where(eq(environment.id, environmentId))
     return null
   }
-  const nextName = fields.name
   return await db.transaction(async (tx) => {
     if (!(await lockEnvironmentRow(tx, environmentId))) {
       return c.json({ error: 'Not found' }, 404)
     }
     const [current] = await tx
-      .select({ name: environment.name })
+      .select({ name: environment.name, serverId: environment.serverId })
       .from(environment)
       .where(eq(environment.id, environmentId))
       .limit(1)
-    if (current?.name !== nextName) {
-      // A name that is not changing is accepted as is, so an environment named
-      // before names became folder names can still be edited.
-      if (!isValidEnvironmentName(nextName)) {
-        return c.json(
-          {
-            error: ENVIRONMENT_NAME_INVALID_ERROR,
-            message:
-              'An environment name uses lowercase letters, digits, hyphens and underscores, starts with a letter or digit, is at most 32 characters, and is not a reserved word such as common, home or tmp.',
-          },
-          400
-        )
-      }
+    const refused =
+      fields.name !== undefined && current?.name !== fields.name
+        ? await refuseRename(c, tx, environmentId, fields.name)
+        : null
+    if (refused) return refused
+    if (fields.serverId !== undefined && (current?.serverId ?? null) !== fields.serverId) {
       const { total } = await listEnvironmentFolders(tx, environmentId, 0)
       if (total > 0) {
         return c.json(
-          await blockedBody(tx, environmentId, ENVIRONMENT_NAME_LOCKED_ERROR, LOCKED_MESSAGE),
-          409
-        )
-      }
-      if (await environmentHasRunningCommand(tx, environmentId)) {
-        return c.json(
-          {
-            error: ENVIRONMENT_DEPLOY_RUNNING_ERROR,
-            message:
-              'A deploy is running for this environment. Rename it when the deploy finishes.',
-          },
+          await blockedBody(
+            tx,
+            environmentId,
+            ENVIRONMENT_SERVER_LOCKED_ERROR,
+            SERVER_LOCKED_MESSAGE
+          ),
           409
         )
       }
@@ -112,6 +103,40 @@ export async function updateEnvironmentChecked(
     await tx.update(environment).set(fields).where(eq(environment.id, environmentId))
     return null
   })
+}
+
+/** The checks a changed name must pass, with the row lock already held. */
+async function refuseRename(
+  c: Context<AppEnv>,
+  tx: Reader,
+  environmentId: string,
+  nextName: string | null
+): Promise<Response | null> {
+  // A name that is not changing is accepted as is, so an environment named
+  // before names became folder names can still be edited.
+  if (!isValidEnvironmentName(nextName)) {
+    return c.json(
+      { error: ENVIRONMENT_NAME_INVALID_ERROR, message: ENVIRONMENT_NAME_RULE_MESSAGE },
+      400
+    )
+  }
+  const { total } = await listEnvironmentFolders(tx, environmentId, 0)
+  if (total > 0) {
+    return c.json(
+      await blockedBody(tx, environmentId, ENVIRONMENT_NAME_LOCKED_ERROR, LOCKED_MESSAGE),
+      409
+    )
+  }
+  if (await environmentHasRunningCommand(tx, environmentId)) {
+    return c.json(
+      {
+        error: ENVIRONMENT_DEPLOY_RUNNING_ERROR,
+        message: 'A deploy is running for this environment. Rename it when the deploy finishes.',
+      },
+      409
+    )
+  }
+  return null
 }
 
 /** Refuse to delete an environment while any folder exists under it. */

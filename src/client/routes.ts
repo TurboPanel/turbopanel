@@ -18,6 +18,7 @@ import {
 import { registerEnvironmentConfigViewRoutes } from './environments/config-view-routes.ts'
 import { registerEnvironmentDeploymentHistoryRoutes } from './environments/deployment-history-routes.ts'
 import { registerEnvironmentFolderRoutes } from './environments/folder-routes.ts'
+import { registerEnvironmentShareRoutes } from './environments/share-routes.ts'
 import { registerEnvironmentReleaseRoutes } from './environments/release-routes.ts'
 import { registerManagedRoutes } from './managed/routes.ts'
 import { registerEnvironmentRoutes } from './environments/routes.ts'
@@ -143,6 +144,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerWorkspaceRoutes(client, opts)
   registerEnvironmentRoutes(client, opts)
   registerEnvironmentFolderRoutes(client, opts)
+  registerEnvironmentShareRoutes(client, opts)
   registerEnvironmentDeployPreviewRoutes(client, opts)
   registerEnvironmentConfigViewRoutes(client, opts)
   registerEnvironmentDeployRoutes(client, opts)

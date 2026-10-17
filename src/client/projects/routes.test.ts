@@ -459,7 +459,7 @@ test('POST /projects environmentName overrides the org default for the first env
         body: JSON.stringify({ type: 'docker-compose', workspaceId, ...payload }),
       })
 
-    const res = await post({ name: 'Named Env Project', environmentName: 'Edge' })
+    const res = await post({ name: 'Named Env Project', environmentName: 'edge' })
     assertEquals(res.status, 200)
     const body = (await res.json()) as { ok: boolean; id: string }
     const envs = await db
@@ -468,7 +468,7 @@ test('POST /projects environmentName overrides the org default for the first env
       .where(eq(environment.projectId, body.id))
     assertEquals(
       envs.map((e) => e.name),
-      ['Edge']
+      ['edge']
     )
 
     const bad = await post({ name: 'Bad Env Project', environmentName: '   ' })
@@ -506,8 +506,8 @@ test('POST /projects managed and empty honour environmentName, and null or absen
     // Catalog creation (managed shares the scaffold path with templates; the
     // catalog ships no template entries to post).
     assertEquals(
-      await create({ type: 'managed', code: 'postgres', name: 'Env M1', environmentName: 'Edge' }),
-      ['Edge']
+      await create({ type: 'managed', code: 'postgres', name: 'Env M1', environmentName: 'edge' }),
+      ['edge']
     )
     assertEquals(await create({ type: 'managed', code: 'postgres', name: 'Env M2' }), ['staging'])
     assertEquals(
@@ -515,7 +515,7 @@ test('POST /projects managed and empty honour environmentName, and null or absen
       ['staging']
     )
 
-    assertEquals(await create({ type: 'empty', name: 'Env E1', environmentName: 'Edge' }), ['Edge'])
+    assertEquals(await create({ type: 'empty', name: 'Env E1', environmentName: 'edge' }), ['edge'])
     assertEquals(await create({ type: 'empty', name: 'Env E2', environmentName: null }), [
       'staging',
     ])

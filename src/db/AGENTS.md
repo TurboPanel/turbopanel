@@ -100,6 +100,18 @@ columns follow the `is_` rule, so the spec's `common` is `is_common`. The CHECK
 patterns are built from `contracts/directory-names.ts`, so a rule cannot drift
 from the database.
 
+**The `share` table** (`0036_share_table`) records that an environment uses a
+common (shared) service or volume: an asset of a site owner that lives in the
+owner's `common` folder scope and belongs to no one environment, so an
+environment of any project in the organization can use it. It carries no
+`metadata` / `options` pair. Exactly one of `service_id` and `storage_id` is set
+(`share_asset_check`), each unique per environment. `environment_id` is `ON
+DELETE CASCADE` (deleting the environment detaches it); `service_id` and
+`storage_id` are `RESTRICT`, so an asset cannot be deleted while a row names it
+and the routes refuse first, in plain words, listing who uses it. The asset's own
+environment (the service row still needs one) uses it without a row. The
+single-word name is pending the owner's nod, like `folder`.
+
 **Shipped migration files are immutable, and the guard for that is
 `migrations/manifest.json`** (`scripts/check-migration-freeze.mjs`,
 enforced by `src/db/migration-manifest.test.ts`). It pins every journal

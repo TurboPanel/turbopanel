@@ -100,6 +100,7 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'service',
   'session',
   'setting',
+  'share',
   'slot',
   'snapshot',
   'ssh',

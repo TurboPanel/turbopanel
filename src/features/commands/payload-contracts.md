@@ -318,7 +318,7 @@ snippet, reclaims listed `siteReleases[]` trees, deletes the deployment dir, and
 `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets` tree
 (`turbopaneld/src/commands/stop-environment.ts`).
 
-**`siteReleases[]` (`{ serviceId, username }[]`) is generic host reclaim, not a
+**`siteReleases[]` (`{ serviceId, username, folder? }[]`) is generic host reclaim, not a
 site detail.** It names `<principalHome>/sites/<serviceId>` — the tree the Git
 release engine publishes into (`releases/`, `current`, `shared/`) and the one
 the native-runtime phase will run out of. Like `fabricNetworks[]`, it is
@@ -336,7 +336,15 @@ bound — a redeploy reclaims removed trees on the host itself, from
 `deployment.json` `releases[]`. The tree is root-owned, so the daemon removes it
 through its privileged runner; removal is best-effort per entry and never fails
 the stop. Idempotent when the compose file is already gone. Used as the teardown
-gate before project cascade delete. **Contrast with `environment.lifecycle`:**
+gate before project cascade delete. `folder` (`{ owner, scope, slug }`, the
+service folder as components) rides beside the old fields once the service has a
+folder name; the old fields stay authoritative until the daemon resolves folders
+itself. The explicit stop route sends **no** `siteReleases`: stopping keeps
+every service and volume folder, uploads included, and only delete teardown or a
+server leaving the environment names trees to reclaim. A deploy's
+`storageMaterial[].folder` (`{ owner, scope, slug }`) carries the same for an
+owned volume, and the deploy command keeps `metadata.folderIds`, the folder rows
+it planned, which its success marks present. **Contrast with `environment.lifecycle`:**
 stop is **destructive teardown** (`down --remove-orphans --volumes`, hosting
 site + deployment dir + `/run` secrets removed, `containers: []` clears pins);
 lifecycle is **non-destructive** (`compose start|stop|restart`,

@@ -1,6 +1,9 @@
 import { assertEquals } from '@std/assert'
 import { isValidProjectSlug } from '../../contracts/directory-names.ts'
 import {
+  assetFolderRef,
+  defaultFolderBase,
+  folderNameFromLabel,
   nextFreeProjectSlug,
   PROJECT_SLUG_FALLBACK,
   projectSlugFromName,
@@ -131,4 +134,43 @@ test('trimHyphens strips both ends only', () => {
   assertEquals(trimHyphens('--a-b--'), 'a-b')
   assertEquals(trimHyphens('---'), '')
   assertEquals(trimHyphens('ab'), 'ab')
+})
+
+test('folderNameFromLabel makes a folder name from a display name or compose key', () => {
+  assertEquals(folderNameFromLabel('Uploads'), 'uploads')
+  assertEquals(folderNameFromLabel('My Shop & Blog'), 'my-shop-blog')
+  assertEquals(folderNameFromLabel('web_app.v2'), 'web_app.v2')
+  assertEquals(folderNameFromLabel('Café Münster'), 'cafe-munster')
+  assertEquals(folderNameFromLabel('a..b'), 'a.b')
+  assertEquals(folderNameFromLabel('-._edge._-'), 'edge')
+  assertEquals(folderNameFromLabel('x'.repeat(80)), 'x'.repeat(63))
+  assertEquals(folderNameFromLabel('***'), null)
+  assertEquals(folderNameFromLabel(null), null)
+})
+
+test('defaultFolderBase prefers the domain, then the label, then the id', () => {
+  assertEquals(
+    defaultFolderBase({ domain: 'Example.COM', label: 'web', assetId: ID }),
+    'example.com'
+  )
+  assertEquals(defaultFolderBase({ domain: '', label: 'Web App', assetId: ID }), 'web-app')
+  assertEquals(defaultFolderBase({ domain: 'not a domain', label: 'web', assetId: ID }), 'web')
+  assertEquals(defaultFolderBase({ label: '***', assetId: ID }), ID)
+  assertEquals(defaultFolderBase({ assetId: ID }), ID)
+})
+
+test('assetFolderRef gives the components only when every part is usable', () => {
+  const base = { owner: 'appuser', isCommon: false, environmentName: 'production', slug: 'web' }
+  assertEquals(assetFolderRef(base), { owner: 'appuser', scope: 'production', slug: 'web' })
+  assertEquals(assetFolderRef({ ...base, isCommon: true, environmentName: 'Old Name' }), {
+    owner: 'appuser',
+    scope: 'common',
+    slug: 'web',
+  })
+  assertEquals(assetFolderRef({ ...base, environmentName: 'Old Name' }), undefined)
+  assertEquals(assetFolderRef({ ...base, environmentName: null }), undefined)
+  assertEquals(assetFolderRef({ ...base, slug: null }), undefined)
+  assertEquals(assetFolderRef({ ...base, slug: 'Web' }), undefined)
+  assertEquals(assetFolderRef({ ...base, owner: 'Bad Owner' }), undefined)
+  assertEquals(assetFolderRef({ ...base, owner: undefined }), undefined)
 })

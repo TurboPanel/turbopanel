@@ -214,7 +214,12 @@ async function parseCreateEnvironmentInput(
 
   const names = parseCreateEnvironmentNames(body)
   if (!names.ok) {
-    return c.json({ error: names.error }, names.status)
+    return c.json(
+      names.message === undefined
+        ? { error: names.error }
+        : { error: names.error, message: names.message },
+      names.status
+    )
   }
 
   const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
@@ -271,8 +276,12 @@ async function deleteEnvironmentCascadeGuarded(
   }
 }
 
-function environmentDeleteRefusal(c: Context<AppEnv>, error: EnvironmentDeleteRefusal): Response {
-  return c.json({ error }, 409)
+function environmentDeleteRefusal(
+  c: Context<AppEnv>,
+  error: EnvironmentDeleteRefusal,
+  detail?: Record<string, unknown>
+): Response {
+  return c.json({ error, ...detail }, 409)
 }
 
 /** After a saved `options` patch: adopt the repository the compose names and refresh the service rows. */
@@ -508,7 +517,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
       organizationId,
     })
     if (result === 'has_children') return hierarchyDeleteHasChildrenResponse(c)
-    if (!result.ok) return environmentDeleteRefusal(c, result.error)
+    if (!result.ok) return environmentDeleteRefusal(c, result.error, result.detail)
 
     await reclaimDeletedEnvironmentHosts(c, db, teardownPlan ? [teardownPlan] : [], session.userId)
 
