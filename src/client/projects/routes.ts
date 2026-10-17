@@ -946,16 +946,8 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (patchFields instanceof Response) return patchFields
     if (rebind !== undefined) patchFields.repositoryId = rebind
 
-    if (
-      patchFields.name !== undefined &&
-      (isReservedSystemProjectName(patchFields.name) ||
-        (await isProjectDisplayNameTaken(db, organizationId, patchFields.name, id)))
-    ) {
-      return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
-    }
-
-    const slugRefusal = await checkProjectSlugPatch(c, db, id, body, patchFields)
-    if (slugRefusal) return slugRefusal
+    const conflict = await checkProjectPatchConflicts(c, db, organizationId, id, body, patchFields)
+    if (conflict) return conflict
 
     const defaultServerError = await assertDefaultServerIdInOrg(
       c,
