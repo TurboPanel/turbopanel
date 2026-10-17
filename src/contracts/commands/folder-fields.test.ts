@@ -1,6 +1,10 @@
 import { assertEquals, assertThrows } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import { parseEnvironmentDeployPayload, parseEnvironmentStopPayload } from './schemas.ts'
+import {
+  parseEnvironmentDeployPayload,
+  parseEnvironmentStopPayload,
+  parseEnvironmentStopResult,
+} from './schemas.ts'
 
 // The optional `folder` fields sit beside the fields they will replace. They
 // carry components, never a path, and the parsers use the shared folder rules.
@@ -79,5 +83,49 @@ it('keeps a volume folder on storage material and refuses a bad one', () => {
         storageMaterial: [{ ...VOLUME, folder: { ...folder, slug: 'a/b' } }],
       }),
     TypeError
+  )
+})
+
+it('keeps the service folders of a deploy and refuses a bad one', () => {
+  const folder = { owner: 'alice', scope: 'production', slug: 'example.com' }
+  const parsed = parseEnvironmentDeployPayload({
+    ...DEPLOY_BASE,
+    serviceFolders: [{ serviceId: 'svc-1', folder }],
+  })
+  assertEquals(parsed.serviceFolders, [{ serviceId: 'svc-1', folder }])
+  assertEquals(parseEnvironmentDeployPayload(DEPLOY_BASE).serviceFolders, undefined)
+  for (const bad of [{ ...folder, slug: '..' }, { ...folder, scope: 'home' }, undefined]) {
+    assertThrows(
+      () =>
+        parseEnvironmentDeployPayload({
+          ...DEPLOY_BASE,
+          serviceFolders: [{ serviceId: 'svc-1', folder: bad }],
+        }),
+      TypeError
+    )
+  }
+})
+
+it('keeps the folders a stop reports and drops entries that are not valid', () => {
+  const folder = { owner: 'alice', scope: 'production', slug: 'example.com' }
+  const result = parseEnvironmentStopResult({
+    projectName: 'tp-demo',
+    containers: [],
+    folders: [
+      { ...folder, kind: 'service', removed: true },
+      { ...folder, kind: 'volume', removed: true },
+      { ...folder, kind: 'service' },
+      'x',
+    ],
+  })
+  assertEquals(result.folders, [{ ...folder, kind: 'service', removed: true }])
+  assertEquals(parseEnvironmentStopResult({ projectName: 'p' }).folders, undefined)
+  assertEquals(parseEnvironmentStopResult({ projectName: 'p', folders: 'no' }).folders, undefined)
+  assertEquals(
+    parseEnvironmentStopResult({
+      projectName: 'p',
+      folders: [{ ...folder, scope: 'home', kind: 'service', removed: false }],
+    }).folders,
+    []
   )
 })

@@ -42,6 +42,7 @@ import type {
   EnvironmentDeployServiceHook,
   EnvironmentDeploySecretPlanEntry,
   EnvironmentDeploySource,
+  EnvironmentDeployServiceFolder,
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployTlsMaterial,
   EnvironmentDeploySite,
@@ -81,6 +82,7 @@ import { lockEnvironmentRow } from '../../features/folders/records.ts'
 import {
   servicesNeedingFolders,
   volumesNeedingFolders,
+  serviceFoldersFor,
   withVolumeFolders,
 } from './deploy-folders.ts'
 import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
@@ -538,6 +540,8 @@ type DeployCommandCreateParams = DeployActor & {
   tlsMaterial: EnvironmentDeployTlsMaterial[]
   variableMaterial: EnvironmentDeployVariableMaterial[]
   storageMaterial: EnvironmentDeployStorageMaterial[]
+  /** The planned folder of each host-run service; absent when none was planned. */
+  serviceFolders?: EnvironmentDeployServiceFolder[]
   principalMaterial: EnvironmentDeployPrincipalMaterial[]
   /** Non-secret Compose project `.env` the daemon writes next to compose.yaml. */
   envFile?: string
@@ -727,6 +731,7 @@ async function createDeployCommand(
         tlsMaterial: params.tlsMaterial,
         variableMaterial: params.variableMaterial,
         storageMaterial: params.storageMaterial,
+        serviceFolders: params.serviceFolders,
         principalMaterial: params.principalMaterial,
         envFile: params.envFile || undefined,
         secretPlan: params.secretPlan,
@@ -845,6 +850,7 @@ function createParamsForPreparedServer(
   // them separately could hand the same port to a site and an app. It starts
   // from the ports other environments hold on this server.
   const usedListenPorts = new Set<number>(params.reservedListenPorts)
+  const serviceFolders = serviceFoldersFor(params.plannedFolders)
   return {
     serverId: row.serverId,
     actorType: params.actorType,
@@ -878,6 +884,7 @@ function createParamsForPreparedServer(
     tlsMaterial: row.prepared.tlsMaterial,
     variableMaterial: row.prepared.variableMaterial,
     storageMaterial: withVolumeFolders(row.prepared.storageMaterial, params.plannedFolders),
+    ...(serviceFolders.length > 0 ? { serviceFolders } : {}),
     principalMaterial: row.prepared.principalMaterial,
     envFile: row.prepared.envFile,
     secretPlan: row.prepared.secretPlan,

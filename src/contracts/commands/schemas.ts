@@ -1651,6 +1651,12 @@ export type EnvironmentDeployStorageMount = {
   readOnly?: boolean
 }
 
+/** One service's folder under its site owner's tree. */
+export type EnvironmentDeployServiceFolder = {
+  serviceId: string
+  folder: FolderRefParts
+}
+
 export type EnvironmentDeployStorageMaterial = {
   storageId: string
   locationId: string
@@ -2423,6 +2429,13 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
   /** File-only secret mounts (paths/names, no plaintext). */
   secretPlan?: EnvironmentDeploySecretPlanEntry[]
   storageMaterial?: EnvironmentDeployStorageMaterial[]
+  /**
+   * The folder of every service this deploy runs on the host (a site, a native
+   * app or a Git-backed source), as components. The service id is the same
+   * value the release tree, units and hosting use. A service with no entry
+   * keeps the older per-service tree.
+   */
+  serviceFolders?: EnvironmentDeployServiceFolder[]
   principalMaterial?: EnvironmentDeployPrincipalMaterial[]
   serviceHooks?: EnvironmentDeployServiceHook[]
   /**
@@ -3072,6 +3085,19 @@ function parseDeployStorageMaterial(
 ): EnvironmentDeployStorageMaterial[] | undefined {
   if (!Array.isArray(value)) return undefined
   return value.map(parseDeployStorageMaterialEntry)
+}
+
+function parseDeployServiceFolders(value: unknown): EnvironmentDeployServiceFolder[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.map((entry): EnvironmentDeployServiceFolder => {
+    if (!isRecord(entry) || !isString(entry.serviceId) || entry.serviceId.length === 0) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    return {
+      serviceId: entry.serviceId,
+      folder: folderRefParts(parseFolderRefParts(entry.folder, 'service')),
+    }
+  })
 }
 
 function parseDeployServiceHookEntry(entry: unknown): EnvironmentDeployServiceHook {
@@ -4324,6 +4350,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       envFile: parseDeployEnvFile(value.envFile),
       secretPlan: parseDeploySecretPlan(value.secretPlan),
       storageMaterial: parseDeployStorageMaterial(value.storageMaterial),
+      serviceFolders: parseDeployServiceFolders(value.serviceFolders),
       principalMaterial: parseDeployPrincipalMaterial(value.principalMaterial),
       serviceHooks: parseDeployServiceHooks(value.serviceHooks),
       listenerPorts:
@@ -4486,6 +4513,38 @@ export type EnvironmentStopCommandResult = {
   summary?: string
   /** Authoritative report — stop always returns `[]` on success so Postgres clears pins. */
   containers?: EnvironmentDeployContainer[]
+  /**
+   * What the host did with each service folder the stop was told to reclaim.
+   * Only present when the payload carried `siteReleases` with a `folder`.
+   */
+  folders?: EnvironmentStopFolderState[]
+}
+
+/** One reclaimed (or not) service folder, by its components. */
+export type EnvironmentStopFolderState = {
+  owner: string
+  scope: string
+  kind: 'service'
+  slug: string
+  removed: boolean
+}
+
+function parseStopFolderStates(value: unknown): EnvironmentStopFolderState[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const states: EnvironmentStopFolderState[] = []
+  for (const entry of value) {
+    if (!isRecord(entry) || entry.kind !== 'service' || typeof entry.removed !== 'boolean') continue
+    try {
+      const ref = parseFolderRefParts(
+        { owner: entry.owner, scope: entry.scope, slug: entry.slug },
+        'service'
+      )
+      states.push({ ...folderRefParts(ref), kind: 'service', removed: entry.removed })
+    } catch {
+      // A result is a report; one entry that fails the folder rules is left out.
+    }
+  }
+  return states
 }
 
 function parseStopIngressServices(value: unknown): Array<{ serviceId: string }> | undefined {
@@ -4618,6 +4677,8 @@ export function parseEnvironmentStopResult(value: unknown): EnvironmentStopComma
   if (isString(value.summary)) result.summary = value.summary
   const containers = parseDeployContainers(value.containers)
   if (containers !== undefined) result.containers = containers
+  const folders = parseStopFolderStates(value.folders)
+  if (folders !== undefined) result.folders = folders
   return result
 }
 
