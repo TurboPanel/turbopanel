@@ -20,6 +20,7 @@ import {
   isValidEnvironmentName,
 } from '../../contracts/directory-names.ts'
 import type { Db } from '../../db/connection.ts'
+import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import {
   environment,
   folder,
@@ -464,12 +465,7 @@ async function collectServiceTargets(
           label: row.name ?? row.composeServiceName,
         })
       ).slug
-    if (row.slug === null) {
-      await tx
-        .update(service)
-        .set({ slug })
-        .where(and(eq(service.id, row.id), isNull(service.slug)))
-    }
+    if (row.slug === null) await writeServiceFolderName(tx, row.id, { slug }, true)
     targets.push({
       kind: 'service',
       assetId: row.id,
@@ -577,6 +573,31 @@ async function upsertFolderRow(tx: Db, serverId: string, target: FolderTarget): 
   const owner = target.kind === 'service' ? row?.serviceId : row?.storageId
   if (!row || owner !== target.assetId) throw new FolderPlanError('directory_name_taken')
   return row.id
+}
+
+/**
+ * Store a service's folder name (and scope). Two services of one environment
+ * cannot share a name; the unique index is the guard when the clash check could
+ * not see the other service (it has no site owner yet), and it answers in plain
+ * words like the check does.
+ */
+export async function writeServiceFolderName(
+  tx: Pick<Db, 'update'>,
+  serviceId: string,
+  values: { slug: string; isCommon?: boolean },
+  onlyIfUnset = false
+): Promise<void> {
+  try {
+    await tx
+      .update(service)
+      .set(values)
+      .where(and(eq(service.id, serviceId), onlyIfUnset ? isNull(service.slug) : undefined))
+  } catch (err) {
+    if (isUniqueViolationOn(err, 'uniq_service_environment_slug')) {
+      throw new FolderPlanError('directory_name_taken')
+    }
+    throw err
+  }
 }
 
 /**

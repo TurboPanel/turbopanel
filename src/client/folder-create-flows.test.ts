@@ -270,6 +270,25 @@ test('a typed service folder name that another service of the owner uses is refu
   })
 })
 
+test('two services of one environment cannot take one folder name, owner or not', async () => {
+  await withFixtures(async (ctx) => {
+    const { envId } = await createProject(ctx, 'Service Same Env')
+    const insert = async (name: string) => {
+      const [row] = await ctx.db
+        .insert(service)
+        .values({ environmentId: envId, composeServiceName: name, name })
+        .returning({ id: service.id })
+      return row!.id
+    }
+    const a = await insert('one')
+    const b = await insert('two')
+    assertEquals((await send(ctx, 'PATCH', `/services/${a}`, { slug: 'dup' })).status, 200)
+    const clash = await send(ctx, 'PATCH', `/services/${b}`, { slug: 'dup' })
+    assertEquals(clash.status, 409)
+    assertEquals(clash.json.error, 'directory_name_taken')
+  })
+})
+
 test('deleting a service keeps its folder row as removing', async () => {
   await withFixtures(async (ctx) => {
     const { envId } = await createProject(ctx, 'Service Delete')

@@ -12,11 +12,16 @@
  * With no folder name set when the first folder is planned, the deploy picks
  * one (see `planDeployFolders`).
  */
-import { and, eq } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { environment, service, tenancy } from '../../db/schema.ts'
 import type { FolderOptions } from './options.ts'
-import { readDirectoryNameMode, scopeFor, settleFolderName } from './allocate.ts'
+import {
+  readDirectoryNameMode,
+  scopeFor,
+  settleFolderName,
+  writeServiceFolderName,
+} from './allocate.ts'
 import { lockEnvironmentRow, serviceHasFolder } from './records.ts'
 import { listUsesOfAssets } from './shares.ts'
 
@@ -86,9 +91,6 @@ export async function applyServiceFolderSettings(
     },
     label: row.name ?? row.composeServiceName,
   })
-  await tx
-    .update(service)
-    .set({ slug: settled.slug, isCommon })
-    .where(and(eq(service.id, input.serviceId)))
+  await writeServiceFolderName(tx, input.serviceId, { slug: settled.slug, isCommon })
   return { ok: true }
 }
