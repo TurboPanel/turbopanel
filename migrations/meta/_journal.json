@@ -260,6 +260,13 @@
       "when": 1792267808717,
       "tag": "0036_share_table",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1792276025071,
+      "tag": "0037_rename_grant_and_2fa_tables",
+      "breakpoints": true
     }
   ]
 }

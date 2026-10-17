@@ -224,6 +224,12 @@
       "tag": "0036_share_table",
       "when": 1792267808717,
       "sha256": "ab30c30aa9aa007b440b668afae9583ccb73190717f3e72806bdb6e2c1aba214"
+    },
+    {
+      "idx": 37,
+      "tag": "0037_rename_grant_and_2fa_tables",
+      "when": 1792276025071,
+      "sha256": "5bb2e3d2aa0e810e9bf233fc2133acb83e460766150889a24cad33d947def366"
     }
   ]
 }

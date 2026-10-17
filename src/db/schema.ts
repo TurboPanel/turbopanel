@@ -5358,7 +5358,7 @@ export const webhookDelivery = pgTable(
   ]
 )
 export const grant = pgTable(
-  'grant',
+  'permission',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -5378,20 +5378,20 @@ export const grant = pgTable(
     permission: text().notNull(),
   },
   (table) => [
-    unique('grant_unique').on(
+    unique('permission_unique').on(
       table.entityType,
       table.entityId,
       table.actorType,
       table.actorId,
       table.permission
     ),
-    index('idx_grant_entity').on(table.entityType, table.entityId),
-    index('idx_grant_actor').on(table.actorType, table.actorId),
+    index('idx_permission_entity').on(table.entityType, table.entityId),
+    index('idx_permission_actor').on(table.actorType, table.actorId),
     // Mirror `SUBJECT_TYPES` / `GRANT_ENTITY_TYPES` (src/client/authz/catalog.ts) —
     // pinned by enum-checks.test.ts.
-    check('grant_actor_type_check', sql`actor_type IN ('user', 'team', 'organization')`),
+    check('permission_actor_type_check', sql`actor_type IN ('user', 'team', 'organization')`),
     check(
-      'grant_entity_type_check',
+      'permission_entity_type_check',
       sql`entity_type IN ('organization', 'workspace', 'environment', 'project', 'service', 'server', 'hosting', 'variable', 'managed', 'container', 'tls', 'team')`
     ),
   ]
@@ -5857,7 +5857,7 @@ export const user = pgTable(
   ]
 )
 export const twoFactor = pgTable(
-  '2fa',
+  'totp',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -5885,12 +5885,12 @@ export const twoFactor = pgTable(
     backupCodes: text('backup_codes').notNull(),
   },
   (table) => [
-    index('idx_2fa_user_id').using('btree', table.userId.asc().nullsLast().op('uuid_ops')),
-    unique('uniq_2fa_user_id').on(table.userId),
+    index('idx_totp_user_id').using('btree', table.userId.asc().nullsLast().op('uuid_ops')),
+    unique('uniq_totp_user_id').on(table.userId),
     foreignKey({
       columns: [table.userId],
       foreignColumns: [user.id],
-      name: '2fa_user_id_user_id_fk',
+      name: 'totp_user_id_user_id_fk',
     }).onDelete('cascade'),
   ]
 )
