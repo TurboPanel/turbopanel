@@ -14,6 +14,8 @@
  *   - UPDATE_CHANNELS vocabulary
  *   - ServerReportedIp field set
  *   - slot-mapping constants (MAX_NIC_SLOTS + FILESYSTEM_ROLE_PRIORITY)
+ *   - folder name rules and vectors (src/contracts/layout-vectors.json, byte-equal;
+ *     each repo's test proves its directory-names.ts matches that file)
  *   - expand-only field snapshot (scripts/contract-field-snapshot.json):
  *     each pinned field stores a normalized type signature. A committed
  *     field may not be removed or narrowed (requiredness or type). A wider
@@ -224,6 +226,18 @@ function checkHostname(tp, td) {
     extractConst(hostnameRight, 'HOSTNAME_MAX_LENGTH'),
     'HOSTNAME_MAX_LENGTH drifted'
   )
+}
+
+function checkLayoutVectors(tp, td) {
+  const left = requireText(
+    readRel(tp, 'src/contracts/layout-vectors.json'),
+    'layout-vectors.json missing on the instance'
+  )
+  const right = requireText(
+    readRel(td, 'src/contracts/layout-vectors.json'),
+    'layout-vectors.json missing on the daemon'
+  )
+  if (left !== right) fail('layout-vectors.json drifted between checkouts')
 }
 
 function checkMachineKey(tp, td) {
@@ -960,10 +974,11 @@ function main() {
   checkUpdateChannels(tp, td)
   checkReportedIp(tp, td)
   checkSlotMapping(tp, td)
+  checkLayoutVectors(tp, td)
   checkExpandOnly(tp, td)
 
   console.log(
-    'check-contract-drift: metrics, hostname, machine-key, channels, ServerReportedIp, slot-mapping, expand-only fields agree.'
+    'check-contract-drift: metrics, hostname, machine-key, channels, ServerReportedIp, slot-mapping, folder name vectors, expand-only fields agree.'
   )
 }
 
