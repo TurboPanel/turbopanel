@@ -122,13 +122,14 @@ export const principalSchemas = {
       usedBy: {
         type: 'object',
         description: 'What still uses the principal, counted per kind.',
-        required: ['tenancies', 'bindings', 'storages', 'secrets', 'logins'],
+        required: ['tenancies', 'bindings', 'storages', 'secrets', 'logins', 'folders'],
         properties: {
           tenancies: { type: 'integer' },
           bindings: { type: 'integer' },
           storages: { type: 'integer' },
           secrets: { type: 'integer' },
           logins: { type: 'integer' },
+          folders: { type: 'integer' },
         },
       },
       state: {
