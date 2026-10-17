@@ -1,3 +1,4 @@
+import { type FolderRefParts, folderRefParts, parseFolderRefParts } from '../directory-names.ts'
 import {
   type HostingWwwMode,
   HOSTNAME_MAX_LENGTH,
@@ -1658,6 +1659,12 @@ export type EnvironmentDeployStorageMaterial = {
   provider: 'docker' | 'path'
   sourcePath?: string
   /**
+   * The volume's folder under its site owner's tree, as components. Replaces
+   * `sourcePath` for owned volumes once the daemon resolves folders itself;
+   * until then both may be present and `sourcePath` stays authoritative.
+   */
+  folder?: FolderRefParts
+  /**
    * On-host Docker volume name. Required when `provider` is `docker`.
    */
   volumeName?: string
@@ -2908,6 +2915,9 @@ function parseDeployStorageMaterialEntry(entry: unknown): EnvironmentDeployStora
     material.volumeName = entry.volumeName
   }
   if (isString(entry.sourcePath)) material.sourcePath = entry.sourcePath
+  if (entry.folder !== undefined) {
+    material.folder = folderRefParts(parseFolderRefParts(entry.folder, 'volume'))
+  }
   if (isString(entry.principalId)) material.principalId = entry.principalId
   if (isString(entry.contentEnvelope)) {
     material.contentEnvelope = entry.contentEnvelope
@@ -4459,7 +4469,7 @@ export type EnvironmentStopCommandPayload = {
    * Captured while the `service` / `tenancy` / `principal` rows still exist,
    * because by the time the daemon runs the stop they may be gone.
    */
-  siteReleases?: Array<{ serviceId: string; username: string }>
+  siteReleases?: StopSiteRelease[]
   /**
    * Principals (applied Linux logins) that no project, site or app on this
    * server uses once the delete commits. The daemon retires each after the
@@ -4493,18 +4503,23 @@ function parseStopIngressServices(value: unknown): Array<{ serviceId: string }> 
   return out
 }
 
+/**
+ * One service release tree to reclaim on stop. `folder` names the service's folder as
+ * components; it is optional until the daemon resolves folders itself, and `username` stays
+ * until then.
+ */
+export type StopSiteRelease = { serviceId: string; username: string; folder?: FolderRefParts }
+
 /** Same charset the daemon's release layout enforces before any path join. */
 const STOP_SITE_RELEASE_SERVICE_ID_RE = /^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$/
 const STOP_SITE_RELEASE_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,27}$/
 
-function parseStopSiteReleases(
-  value: unknown
-): Array<{ serviceId: string; username: string }> | undefined {
+function parseStopSiteReleases(value: unknown): StopSiteRelease[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
     throw new TypeError('siteReleases must be an array')
   }
-  const out: Array<{ serviceId: string; username: string }> = []
+  const out: StopSiteRelease[] = []
   for (const entry of value) {
     if (
       !isRecord(entry) ||
@@ -4515,7 +4530,11 @@ function parseStopSiteReleases(
     ) {
       throw new Error('Invalid environment.stop siteReleases entry')
     }
-    out.push({ serviceId: entry.serviceId, username: entry.username })
+    const release: StopSiteRelease = { serviceId: entry.serviceId, username: entry.username }
+    if (entry.folder !== undefined) {
+      release.folder = folderRefParts(parseFolderRefParts(entry.folder, 'service'))
+    }
+    out.push(release)
   }
   return out
 }
