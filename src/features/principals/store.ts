@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm'
 import {
   isReservedPrincipalUsername,
   MAX_PRINCIPAL_USERNAME_LENGTH,
@@ -10,11 +10,7 @@ import {
   shellForAccessLevel,
 } from '../../features/principals/principal-access.ts'
 import { loadPrincipalNamePolicy } from '../../features/managed/load-org-defaults.ts'
-import {
-  insertLogin,
-  isManagedLoginNameTaken,
-  loginRoleFromMetadata,
-} from '../../features/managed/logins.ts'
+import { isManagedLoginNameTaken } from '../../features/managed/logins.ts'
 import type { PrincipalNameScheme } from '../../lib/principal-name-scheme.ts'
 import { deriveFreeSystemName } from './system-name.ts'
 import { encryptSecret, generateSealedSecret } from '../../lib/secrets/data-encryption.ts'
@@ -29,7 +25,6 @@ import {
   managed,
   organization,
   principal,
-  PRINCIPAL_NAME_POOL_WHERE,
   project,
   replica,
   secret,
@@ -39,8 +34,6 @@ import {
   workspace,
 } from '../../db/schema.ts'
 
-export const PRINCIPAL_PROVIDERS = new Set(['server', 'postgres', 'mysql', 'redis', 'clickhouse'])
-export const SERVER_PRINCIPAL_PROVIDER = 'server'
 export const USERNAME_IN_USE_ERROR = 'username_in_use'
 export const PRINCIPAL_IN_USE_ERROR = 'principal_in_use'
 export const USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
@@ -53,30 +46,17 @@ export function isUuid(value: string): boolean {
 /**
  * True when a principal owned by one of `organizationIds` already holds `key`
  * (lower-cased) as its typed `username` or its applied login. One pool per
- * organization across system users and database logins; managed root and
- * replication logins are outside it. Mirrors the partial unique indexes
- * `uniq_principal_organization_*` so a collision answers 409 before the index
- * refuses the insert.
+ * organization; mirrors the unique indexes `uniq_principal_organization_*` so
+ * a collision answers 409 before the index refuses the insert.
  */
 async function isPoolNameTaken(
   db: Db,
   organizationIds: readonly string[],
   key: string,
-  excludePrincipalId?: string,
-  opts: {
-    /**
-     * Also count managed root and replication logins. An engine login must not
-     * collide with the cluster's own `postgres` / `root` / `tp_repl`, even
-     * though those names sit outside the organization pool.
-     */
-    includeManagedSystemLogins?: boolean
-  } = {}
+  excludePrincipalId?: string
 ): Promise<boolean> {
-  // Pool plus root/replication logins is every principal of the org, so the
-  // managed probe simply drops the pool predicate.
   const conditions = [
     inArray(principal.organizationId, [...organizationIds]),
-    ...(opts.includeManagedSystemLogins ? [] : [PRINCIPAL_NAME_POOL_WHERE]),
     sql`(lower(${principal.username}) = ${key} OR lower(${principal.appliedUsername}) = ${key})`,
   ]
   if (excludePrincipalId) {
@@ -93,11 +73,45 @@ async function isPoolNameTaken(
 }
 
 /**
+ * True when a database login the customer made on a cluster of one of the
+ * organizations already uses this name (typed or applied). A login that
+ * shares its site owner's Linux user name (`principal_id` set) is the one
+ * allowed overlap; the cluster's own root and replication logins sit outside
+ * the pool.
+ */
+async function isLoginPoolNameTaken(
+  db: Db,
+  organizationIds: readonly string[],
+  key: string,
+  excludePrincipalId?: string
+): Promise<boolean> {
+  const conditions = [
+    inArray(workspace.organizationId, [...organizationIds]),
+    eq(login.role, 'user'),
+    sql`(lower(${login.username}) = ${key} OR lower(${login.appliedUsername}) = ${key})`,
+  ]
+  if (excludePrincipalId) {
+    conditions.push(sql`${login.principalId} IS DISTINCT FROM ${excludePrincipalId}::uuid`)
+  }
+  const rows = await db
+    .select({ id: login.id })
+    .from(login)
+    .innerJoin(managed, eq(managed.id, login.managedId))
+    .innerJoin(environment, eq(environment.id, managed.environmentId))
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+    .where(and(...conditions))
+    .limit(1)
+  return rows.length > 0
+}
+
+/**
  * True when another principal in the organization already uses this username
  * (trimmed, case-insensitive) — as either its short `username` or its
  * `applied_username` (the name that lands on the host). Keyed on
- * `principal.organization_id`, so a row with no project (tenancy-only, or a
- * database login) counts too.
+ * `principal.organization_id`, so a row with no project (tenancy-only) counts
+ * too. A database login the organization made with that name counts as well
+ * (one name pool across both forms), unless it belongs to `excludePrincipalId`.
  */
 export async function isServerPrincipalUsernameTaken(
   db: Db,
@@ -107,7 +121,10 @@ export async function isServerPrincipalUsernameTaken(
 ): Promise<boolean> {
   const key = username.trim().toLowerCase()
   if (!key) return false
-  return await isPoolNameTaken(db, [organizationId], key, excludePrincipalId)
+  return (
+    (await isPoolNameTaken(db, [organizationId], key, excludePrincipalId)) ||
+    (await isLoginPoolNameTaken(db, [organizationId], key, excludePrincipalId))
+  )
 }
 
 export type PrincipalReferences = {
@@ -148,13 +165,7 @@ export async function countPrincipalReferences(
   principalId: string
 ): Promise<PrincipalReferences> {
   const count = async (
-    table:
-      | typeof tenancy
-      | typeof binding
-      | typeof storage
-      | typeof secret
-      | typeof login
-      | typeof folder
+    table: typeof tenancy | typeof storage | typeof secret | typeof login | typeof folder
   ) => {
     const [row] = await db
       .select({ total: sql<number>`count(*)::int` })
@@ -162,9 +173,14 @@ export async function countPrincipalReferences(
       .where(eq(table.principalId, principalId))
     return row?.total ?? 0
   }
+  const [bound] = await db
+    .select({ total: sql<number>`count(*)::int` })
+    .from(binding)
+    .innerJoin(login, eq(login.id, binding.loginId))
+    .where(eq(login.principalId, principalId))
   return {
     services: await count(tenancy),
-    bindings: await count(binding),
+    bindings: bound?.total ?? 0,
     storage: await count(storage),
     secrets: await count(secret),
     logins: await count(login),
@@ -206,8 +222,6 @@ export async function replaceTenancies(
 
 export type CreatePrincipalFields = {
   organizationId: string
-  kind: string
-  provider: string
   username: string
   /** Applied login (short name + optional random suffix); defaults to `username`. */
   appliedUsername?: string
@@ -229,8 +243,6 @@ export async function createPrincipal(
       .insert(principal)
       .values({
         organizationId: fields.organizationId,
-        kind: fields.kind,
-        provider: fields.provider,
         username: fields.username,
         appliedUsername: fields.appliedUsername ?? fields.username,
         ...(fields.metadata != null ? { metadata: fields.metadata } : {}),
@@ -369,8 +381,6 @@ export async function ensureComposePrincipal(
       .insert(principal)
       .values({
         organizationId: input.organizationId,
-        kind: 'system',
-        provider: SERVER_PRINCIPAL_PROVIDER,
         username,
         appliedUsername,
         projectId: input.projectId,
@@ -401,7 +411,6 @@ async function findComposePrincipal(
     .where(
       and(
         eq(principal.projectId, projectId),
-        eq(principal.provider, SERVER_PRINCIPAL_PROVIDER),
         sql`${principal.metadata} ->> ${COMPOSE_ALIAS_METADATA_KEY} = ${alias}`
       )
     )
@@ -554,24 +563,6 @@ export async function passwordEnabledByPrincipalIds(
   return enabled
 }
 
-export type CreateManagedPrincipalInput = {
-  managedId: string
-  provider: string
-  username: string
-  /** Applied engine login (short name + optional random suffix); defaults to `username`. */
-  appliedUsername?: string
-  kind?: string
-  metadata?: Record<string, unknown> | null
-  /** Scheme `appliedUsername` was derived with; stored on `options.nameScheme`. */
-  nameScheme?: PrincipalNameScheme
-  /**
-   * Override the generated password length. Replication principals use
-   * {@link REPLICATION_PASSWORD_LENGTH} — MySQL caps `SOURCE_PASSWORD` in
-   * `CHANGE REPLICATION SOURCE` at 32 chars (error 3056).
-   */
-  passwordLength?: number
-}
-
 /** MySQL rejects replication passwords longer than 32 chars (error 3056). */
 export const REPLICATION_PASSWORD_LENGTH = 32
 
@@ -596,67 +587,6 @@ export async function resolveManagedHomeOrganizationId(db: Db, managedId: string
 }
 
 /**
- * Insert a managed-engine principal with a freshly generated sealed password,
- * plus its `login` row (expand step of the login split: the principal row is
- * the identity, the login row is the engine role; a root or replication login
- * has no principal and names the legacy row in `metadata.legacyPrincipalId`).
- * Returns the show-once plaintext; no subsequent code path returns a stored
- * password.
- */
-export async function createManagedPrincipal(
-  db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig,
-  input: CreateManagedPrincipalInput
-): Promise<{ principalId: string; loginId: string; password: string }> {
-  if (!USERNAME_RE.test(input.username)) {
-    throw new TypeError('invalid username')
-  }
-  const appliedUsername = input.appliedUsername ?? input.username
-  if (!USERNAME_RE.test(appliedUsername)) {
-    throw new TypeError('invalid applied username')
-  }
-  if (!PRINCIPAL_PROVIDERS.has(input.provider)) {
-    throw new TypeError('invalid provider')
-  }
-
-  const organizationId = await resolveManagedHomeOrganizationId(db, input.managedId)
-  const { plaintext, sealed } = await generateSealedSecret(
-    dataEncryptionSecrets,
-    input.passwordLength !== undefined ? { length: input.passwordLength } : undefined
-  )
-  const [inserted] = await db
-    .insert(principal)
-    .values({
-      organizationId,
-      kind: input.kind ?? 'database',
-      provider: input.provider,
-      username: input.username,
-      appliedUsername,
-      managedId: input.managedId,
-      password: sealed,
-      ...(input.metadata != null ? { metadata: input.metadata } : {}),
-      ...(input.nameScheme ? { options: { nameScheme: input.nameScheme } } : {}),
-    })
-    .returning({ id: principal.id })
-
-  const role = loginRoleFromMetadata(input.metadata)
-  const loginId = await insertLogin(db, {
-    managedId: input.managedId,
-    principalId: role === 'user' ? inserted.id : null,
-    role,
-    appliedUsername,
-    password: sealed,
-    metadata:
-      role === 'user'
-        ? (input.metadata ?? null)
-        : { ...input.metadata, legacyPrincipalId: inserted.id },
-    nameScheme: input.nameScheme,
-  })
-
-  return { principalId: inserted.id, loginId, password: plaintext }
-}
-
-/**
  * Rotate a principal password (generate + seal). Returns show-once plaintext.
  * Propagates `Principal not found` from {@link setPrincipalPassword}.
  */
@@ -672,42 +602,6 @@ export async function rotatePrincipalPassword(
     throw new TypeError('expected generated plaintext')
   }
   return { plaintext: result.plaintext }
-}
-
-/** Managed principals for listing — never selects `password`. */
-export type ManagedPrincipalListRow = {
-  id: string
-  kind: string
-  provider: string
-  username: string
-  appliedUsername: string
-  managedId: string | null
-  metadata: unknown
-  options: unknown
-  createdAt: string
-  updatedAt: string
-}
-
-export async function listManagedPrincipals(
-  db: Db,
-  managedId: string
-): Promise<ManagedPrincipalListRow[]> {
-  return await db
-    .select({
-      id: principal.id,
-      kind: principal.kind,
-      provider: principal.provider,
-      username: principal.username,
-      appliedUsername: principal.appliedUsername,
-      managedId: principal.managedId,
-      metadata: principal.metadata,
-      options: principal.options,
-      createdAt: principal.createdAt,
-      updatedAt: principal.updatedAt,
-    })
-    .from(principal)
-    .where(eq(principal.managedId, managedId))
-    .orderBy(asc(principal.username))
 }
 
 /**
@@ -751,12 +645,10 @@ export async function resolveManagedOwningOrganizationIds(
 }
 
 /**
- * True when a principal owned by one of the given organizations already uses
- * this username, short or applied (trimmed, case-insensitive): the same
- * organization pool {@link isServerPrincipalUsernameTaken} consults, plus the
- * managed root and replication logins of those organizations' clusters, so an
- * engine login can never be named after one. Callers pass the cluster's home
- * organization alongside the owning ones.
+ * True when a site owner's Linux user of one of the given organizations
+ * already uses this username, short or applied (trimmed, case-insensitive):
+ * the same organization pool {@link isServerPrincipalUsernameTaken} consults.
+ * Callers pass the cluster's home organization alongside the owning ones.
  */
 export async function isManagedUsernameTaken(
   db: Db,
@@ -766,9 +658,7 @@ export async function isManagedUsernameTaken(
 ): Promise<boolean> {
   const key = username.trim().toLowerCase()
   if (!key || owningOrganizationIds.length === 0) return false
-  return await isPoolNameTaken(db, owningOrganizationIds, key, excludePrincipalId, {
-    includeManagedSystemLogins: true,
-  })
+  return await isPoolNameTaken(db, owningOrganizationIds, key, excludePrincipalId)
 }
 
 /**
@@ -801,8 +691,7 @@ export async function resolveManagedAppliedUsername(
     throw new TypeError(`invalid managed short username: ${shortUsername}`)
   }
 
-  // Both forms of the name pool: legacy principal rows and login rows that
-  // belong to a principal of another form.
+  // Both forms of the name pool: Linux users and database logins.
   const isTaken = async (candidate: string) =>
     (await isManagedUsernameTaken(db, owningOrganizationIds, candidate)) ||
     (await isManagedLoginNameTaken(db, owningOrganizationIds, candidate))
@@ -825,80 +714,6 @@ export async function resolveManagedAppliedUsername(
     )
   }
   return candidate
-}
-
-/**
- * Ensure a cluster replication principal exists (`metadata.managedReplication`).
- * Not a client login — excluded from ProxySQL frontend users and managed-users
- * list routes. The applied login resolves under the same org-wide FOR UPDATE
- * probe as root (random `_<11>` suffix per `randomizeSuffix`), persisted on
- * `managed.metadata.replicationUsername`.
- */
-export async function ensureManagedReplicationPrincipal(
-  db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig,
-  params: {
-    managedId: string
-    preferredUsername?: string
-    provider: string
-    identifier: { pattern: RegExp; maxLength: number }
-    /** Org default name scheme (`loadPrincipalNamePolicy`). */
-    nameScheme: PrincipalNameScheme
-  }
-): Promise<{ principalId: string; appliedUsername: string; created: boolean }> {
-  const rows = await listManagedPrincipals(db, params.managedId)
-  for (const row of rows) {
-    if (isRecord(row.metadata) && row.metadata.managedReplication === true) {
-      return {
-        principalId: row.id,
-        appliedUsername: row.appliedUsername,
-        created: false,
-      }
-    }
-  }
-
-  const preferred = params.preferredUsername ?? 'tp_repl'
-  const owningOrgIds = await resolveManagedOwningOrganizationIds(
-    db,
-    params.managedId,
-    [],
-    await resolveManagedHomeOrganizationId(db, params.managedId)
-  )
-  await lockOrganizationsForUpdate(db, owningOrgIds)
-  const appliedUsername = await resolveManagedAppliedUsername(
-    db,
-    owningOrgIds,
-    preferred,
-    params.identifier,
-    { scheme: params.nameScheme }
-  )
-  const created = await createManagedPrincipal(db, dataEncryptionSecrets, {
-    managedId: params.managedId,
-    provider: params.provider,
-    username: preferred,
-    appliedUsername,
-    nameScheme: storedSchemeAfterFallback(params.nameScheme, appliedUsername, preferred),
-    passwordLength: REPLICATION_PASSWORD_LENGTH,
-    metadata: { managedReplication: true },
-  })
-  return {
-    principalId: created.principalId,
-    appliedUsername,
-    created: true,
-  }
-}
-
-/** A `plain` request that collided and got a suffix is stored as `partial`. */
-function storedSchemeAfterFallback(
-  requested: PrincipalNameScheme,
-  applied: string,
-  typed: string
-): PrincipalNameScheme {
-  return requested === 'plain' && applied !== typed ? 'partial' : requested
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**

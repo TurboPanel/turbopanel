@@ -41,6 +41,7 @@ import {
   ip,
   login,
   managed,
+  managedDatabase,
   network,
   organization,
   principal,
@@ -217,6 +218,19 @@ async function sessionCookie(
   const { token } = await createSession(db, userId, {})
   const signed = await buildSignedCookie(token, secrets)
   return `${HTTP_SESSION_COOKIE_NAME}=${signed}`
+}
+
+async function databaseIdByName(
+  db: ReturnType<typeof createDenoDb>,
+  managedId: string,
+  name: string
+): Promise<string> {
+  const [row] = await db
+    .select({ id: managedDatabase.id })
+    .from(managedDatabase)
+    .where(and(eq(managedDatabase.managedId, managedId), eq(managedDatabase.name, name)))
+    .limit(1)
+  return row!.id
 }
 
 async function withManagedFixtures(
@@ -416,13 +430,6 @@ async function withManagedFixturesBody(
       serverId,
     })
   } finally {
-    const managedRows = await db
-      .select({ id: managed.id })
-      .from(managed)
-      .where(eq(managed.environmentId, environmentId))
-    for (const row of managedRows) {
-      await db.delete(principal).where(eq(principal.managedId, row.id))
-    }
     await db.delete(managed).where(eq(managed.environmentId, environmentId))
     await db.delete(principal).where(eq(principal.projectId, projectId))
     const envServices = await db
@@ -646,22 +653,21 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
         .from(managed)
         .where(eq(managed.environmentId, environmentId))
         .limit(1)
-      const options = managedRow?.options as {
-        settings?: unknown
-        databases?: string[]
-      }
-      assertEquals(Array.isArray(options.databases), true)
+      const options = managedRow?.options as { settings?: unknown }
       assertEquals(options.settings !== undefined, true)
+      const databaseRows = await db
+        .select({ name: managedDatabase.name })
+        .from(managedDatabase)
+        .where(eq(managedDatabase.managedId, managedRow!.id))
+      assertEquals(databaseRows.length, 1)
 
-      const principals = await db
-        .select({
-          password: principal.password,
-          managedId: principal.managedId,
-        })
-        .from(principal)
-        .where(eq(principal.managedId, managedRow!.id))
-      assertEquals(principals.length, 1)
-      assertEquals(principals[0]!.password?.startsWith('tpsecret.'), true)
+      const logins = await db
+        .select({ password: login.password, role: login.role })
+        .from(login)
+        .where(eq(login.managedId, managedRow!.id))
+      assertEquals(logins.length, 1)
+      assertEquals(logins[0]!.role, 'root')
+      assertEquals(logins[0]!.password?.startsWith('tpsecret.'), true)
 
       // Every new managed database gets one automatic daily policy, keep 7.
       const policies = await db
@@ -925,7 +931,7 @@ test('GET /environments/:id/managed/status returns status host port containers',
         .set({
           status: 'ready',
           metadata: {
-            rootPrincipalId: '00000000-0000-4000-8000-000000000099',
+            rootLoginId: '00000000-0000-4000-8000-000000000099',
             host: '203.0.113.50',
             port: 5432,
           },
@@ -1053,7 +1059,7 @@ test('POST /environments/:id/managed does not seed provisional host/port', async
       const meta = row?.metadata as Record<string, unknown>
       assertEquals(meta.host, undefined)
       assertEquals(meta.port, undefined)
-      assertEquals(typeof meta.rootPrincipalId, 'string')
+      assertEquals(typeof meta.rootLoginId, 'string')
     }
   )
 })
@@ -2153,16 +2159,17 @@ test('POST root-password includes redeployRequired when bindings exist; DELETE u
       const consumerServiceId = consumer!.id
 
       const [rootRow] = await db
-        .select({ id: principal.id })
-        .from(principal)
-        .where(eq(principal.managedId, created.managed.id))
+        .select({ id: login.id })
+        .from(login)
+        .where(and(eq(login.managedId, created.managed.id), eq(login.role, 'root')))
         .limit(1)
-      const rootPrincipalId = rootRow!.id
+      const rootLoginId = rootRow!.id
+      const defaultDatabaseId = await databaseIdByName(db, created.managed.id, 'defaultdb')
 
       await db.insert(binding).values({
-        principalId: rootPrincipalId,
+        loginId: rootLoginId,
         serviceId: consumerServiceId,
-        databaseName: 'postgres',
+        databaseId: defaultDatabaseId,
         keyPrefix: 'DATABASE',
         isEmitEngineDefaults: true,
       })
@@ -2205,9 +2212,9 @@ test('POST root-password includes redeployRequired when bindings exist; DELETE u
       const boundUserId = userBody.user.id
 
       await db.insert(binding).values({
-        principalId: boundUserId,
+        loginId: boundUserId,
         serviceId: consumerServiceId,
-        databaseName: 'postgres',
+        databaseId: defaultDatabaseId,
         keyPrefix: 'APP',
         isEmitEngineDefaults: false,
       })
@@ -2239,9 +2246,9 @@ test('POST root-password includes redeployRequired when bindings exist; DELETE u
       if (createDb.status === 200) {
         await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
         await db.insert(binding).values({
-          principalId: boundUserId,
+          loginId: boundUserId,
           serviceId: consumerServiceId,
-          databaseName: 'app_extra',
+          databaseId: await databaseIdByName(db, created.managed.id, 'app_extra'),
           keyPrefix: 'EXTRA',
           isEmitEngineDefaults: false,
         })
@@ -2633,11 +2640,11 @@ test('POST managed user honours name schemes, the org lock, and the root login s
       await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
       const [root] = await db
         .select({
-          username: principal.username,
-          appliedUsername: principal.appliedUsername,
+          username: login.username,
+          appliedUsername: login.appliedUsername,
         })
-        .from(principal)
-        .where(and(eq(principal.managedId, created.managed.id), eq(principal.username, 'postgres')))
+        .from(login)
+        .where(and(eq(login.managedId, created.managed.id), eq(login.username, 'postgres')))
       assertMatch(root?.appliedUsername ?? '', /^[a-z][a-z0-9]{11}$/)
 
       const createUser = async (body: Record<string, unknown>) => {
@@ -2705,22 +2712,22 @@ test('POST managed user honours name schemes, the org lock, and the root login s
       assertEquals(refused.status, 409)
       assertEquals(await refused.json(), { error: 'principal_scheme_locked' })
       const none = await db
-        .select({ id: principal.id })
-        .from(principal)
-        .where(and(eq(principal.managedId, created.managed.id), eq(principal.username, 'dblocked')))
+        .select({ id: login.id })
+        .from(login)
+        .where(and(eq(login.managedId, created.managed.id), eq(login.username, 'dblocked')))
       assertEquals(none.length, 0)
       assertEquals((await createUser({ username: 'dbok', nameScheme: 'random' })).status, 200)
 
       // Existing users keep their stored system name and scheme.
       const [existing] = await db
         .select({
-          appliedUsername: principal.appliedUsername,
-          options: principal.options,
+          appliedUsername: login.appliedUsername,
+          nameScheme: login.nameScheme,
         })
-        .from(principal)
-        .where(and(eq(principal.managedId, created.managed.id), eq(principal.username, 'dbplain')))
+        .from(login)
+        .where(and(eq(login.managedId, created.managed.id), eq(login.username, 'dbplain')))
       assertEquals(existing?.appliedUsername, 'dbplain')
-      assertEquals(existing?.options, { nameScheme: 'plain' })
+      assertEquals(existing?.nameScheme, 'plain')
     }
   )
 })
@@ -2751,8 +2758,6 @@ test('POST managed user for an existing principal reuses its name, lists it with
         .insert(principal)
         .values({
           organizationId,
-          kind: 'system',
-          provider: 'server',
           username: 'siteowner',
           appliedUsername: 'siteowner',
           options: { nameScheme: 'plain' },
@@ -2777,7 +2782,7 @@ test('POST managed user for an existing principal reuses its name, lists it with
         }
         password: string
       }
-      assertEquals(forOwnerBody.user.id, ownerId)
+      assertEquals(forOwnerBody.user.id, forOwnerBody.user.loginId)
       assertEquals(forOwnerBody.user.principalId, ownerId)
       assertEquals(forOwnerBody.user.username, 'siteowner')
       assertEquals(forOwnerBody.user.appliedUsername, 'siteowner')
@@ -2817,8 +2822,6 @@ test('POST managed user for an existing principal reuses its name, lists it with
         .insert(principal)
         .values({
           organizationId: otherOrg!.id,
-          kind: 'system',
-          provider: 'server',
           username: 'stranger',
           appliedUsername: 'stranger',
         })
@@ -2839,12 +2842,12 @@ test('POST managed user for an existing principal reuses its name, lists it with
       }
       assertEquals(
         listBody.users.map((entry) => [entry.username, entry.id, entry.principalId, entry.loginId]),
-        [['siteowner', ownerId, ownerId, loginId]]
+        [['siteowner', loginId, ownerId, loginId]]
       )
 
       // Removing the login drops the engine role, keeps the Linux user's identity.
       await ready()
-      const removed = await app.request(`/environments/${environmentId}/managed/users/${ownerId}`, {
+      const removed = await app.request(`/environments/${environmentId}/managed/users/${loginId}`, {
         method: 'DELETE',
         headers,
       })

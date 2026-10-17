@@ -119,8 +119,6 @@ export async function withFolderFixtures(fn: (ctx: Ctx) => Promise<void>): Promi
     .insert(principal)
     .values({
       organizationId,
-      kind: 'system',
-      provider: 'server',
       username,
       appliedUsername: username,
     })

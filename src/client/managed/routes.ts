@@ -33,7 +33,6 @@ import {
 } from '../../features/managed/external-access-tls.ts'
 import { parseResourceLimits } from '../../features/organizations/resource-limits.ts'
 import {
-  createManagedPrincipal,
   isManagedUsernameTaken,
   lockOrganizationsForUpdate,
   resolveManagedAppliedUsername,
@@ -51,7 +50,6 @@ import {
   ownersAfterCreate,
   ownerChoiceConflict,
   ownersWithoutDatabase,
-  ownersWithoutLogin,
   resolveChosenOwnerLogin,
   restoringOnFailure,
   unlistLoginFromDatabase,
@@ -65,21 +63,23 @@ import {
   daemonHonoursOwnerRole,
   refuseLoginCreateIfDaemonCannot,
   daemonOwnerSupport,
-  loginLimitMetadata,
+  loginLimitSettings,
   parseGatedLoginLimits,
   parseLoginPatchRequest,
   refuseLoginPatchIfDaemonCannot,
 } from '../../features/managed/login-limit-fields.ts'
 import {
   createLoginForPrincipal,
+  applySettingsPatch,
+  createManagedLogin,
   findManagedLogin,
   findManagedLoginByRole,
   isManagedLoginNameTaken,
   isManagedLoginNameTakenInFamily,
-  legacyPrincipalIdOf,
   listManagedLogins,
+  type LoginSettingsPatch,
   type ManagedLoginRow,
-  patchLoginMetadata,
+  patchLogin,
   removeManagedLogin,
   restoreManagedLogin,
   rotateLoginPassword,
@@ -168,9 +168,11 @@ import {
   updateManagedMemberReplicaClass,
 } from '../../features/managed/members.ts'
 import {
+  loadManagedOptions,
   type ManagedRowOptions,
-  parseManagedRowOptions,
-  writeManagedRowOptions,
+  saveManagedDatabases,
+  saveManagedOptions,
+  writeManagedSettings,
 } from '../../features/managed/options.ts'
 import { findManagedBackupById, listManagedBackups } from '../../features/backups/backup-records.ts'
 import {
@@ -212,8 +214,6 @@ import {
   evaluatePromoteReplicaClass,
   evaluateReplicaClassConversion,
   evaluateReplicaPlacementPrechecks,
-  isManagedReplicationPrincipal,
-  isManagedRootPrincipal,
   isPlainObject,
   listUsersReferencingDatabase,
   loadManagedStatusSnapshot,
@@ -709,7 +709,7 @@ async function resolveManagedCreatePlan(
       name: string
       settings: ManagedSettings
       initialDatabase: string
-      rowOptions: ReturnType<typeof writeManagedRowOptions>
+      rowOptions: ManagedRowOptions
     }
   | Response
 > {
@@ -757,13 +757,13 @@ async function resolveManagedCreatePlan(
     name: displayName ?? ctx.envDisplayName ?? ctx.spec.displayName,
     settings,
     initialDatabase,
-    rowOptions: writeManagedRowOptions({
+    rowOptions: {
       settings,
       databases: [initialDatabase],
       ...(firstOwnerRole.ok && firstOwnerRole.ownerRole
         ? { ownerRoleDatabases: [initialDatabase] }
         : {}),
-    }),
+    },
   }
 }
 
@@ -775,7 +775,7 @@ async function insertManagedCreateTransaction(
     ctx: ManagedContext
     serverId: string
     name: string
-    rowOptions: ReturnType<typeof writeManagedRowOptions>
+    rowOptions: ManagedRowOptions
     initialDatabase: string
     dataEncryptionSecrets: DerivedSecretsConfig
   }
@@ -797,7 +797,7 @@ async function insertManagedCreateTransaction(
       engine: ctx.spec.engine,
       status: 'provisioning',
       metadata: {},
-      options: rowOptions,
+      options: writeManagedSettings(rowOptions.settings),
     })
     .returning(MANAGED_RETURNING)
 
@@ -805,6 +805,7 @@ async function insertManagedCreateTransaction(
   if (!managedId) {
     throw new TypeError('Failed to create managed row')
   }
+  await saveManagedDatabases(tx, managedId, rowOptions)
 
   await ensureManagedPrimaryMember(tx, { managedId, serverId })
 
@@ -831,24 +832,20 @@ async function insertManagedCreateTransaction(
     { scheme: rootScheme }
   )
 
-  const { principalId, password } = await createManagedPrincipal(tx, dataEncryptionSecrets, {
+  const { loginId: rootLoginId, password } = await createManagedLogin(tx, dataEncryptionSecrets, {
     managedId,
-    provider: ctx.spec.principalProvider,
+    role: 'root',
     username: ctx.spec.rootUsername,
     appliedUsername: rootUsername,
     nameScheme: rootScheme,
-    metadata: {
-      managedRoot: true,
-      engine: ctx.spec.engine,
-      databases: [initialDatabase],
-    },
+    databases: [initialDatabase],
   })
 
   const [updated] = await tx
     .update(managed)
     .set({
       metadata: {
-        rootPrincipalId: principalId,
+        rootLoginId,
         rootUsername,
       },
       updatedAt: new Date().toISOString(),
@@ -857,7 +854,7 @@ async function insertManagedCreateTransaction(
     .returning(MANAGED_RETURNING)
 
   const row = updated ?? insertedManaged
-  const parsedOptions = parseManagedRowOptions(ctx.spec, row.options)
+  const parsedOptions = await loadManagedOptions(tx, ctx.spec, row)
   if (!parsedOptions) {
     throw new TypeError('Invalid managed options after create')
   }
@@ -1030,7 +1027,7 @@ async function createManagedAndEnqueueApply(
     userId: string
     plan: {
       name: string
-      rowOptions: ReturnType<typeof writeManagedRowOptions>
+      rowOptions: ManagedRowOptions
       initialDatabase: string
     }
     dataEncryptionSecrets: DerivedSecretsConfig
@@ -1256,7 +1253,7 @@ async function hasManagedUsernameNamespaceConflict(
       if (entry.role !== 'user') continue
       // The applied login is what lands on the shared ProxySQL frontend —
       // that's the name that must be free in the new owner's namespace.
-      const ownPrincipalId = entry.principalId ?? legacyPrincipalIdOf(entry.metadata) ?? undefined
+      const ownPrincipalId = entry.principalId ?? undefined
       if (
         (await isManagedUsernameTaken(tx, owningOrgIds, entry.appliedUsername, ownPrincipalId)) ||
         (await isManagedLoginNameTaken(
@@ -1310,7 +1307,7 @@ type ManagedLoginGrants = Exclude<ReturnType<typeof parseManagedLoginGrantFields
 
 type ManagedLoginCreateRequest =
   | {
-      kind: 'new-principal'
+      kind: 'new-name'
       username: string
       nameScheme: PrincipalNameScheme
       grants: ManagedLoginGrants
@@ -1330,37 +1327,9 @@ type ExistingPrincipalForLogin = {
 
 /**
  * `POST /environments/:id/managed/users` takes either a new name (`username`
- * plus an optional `nameScheme`, a new principal is created for it) or
- * `principalId`, an existing principal of the organization whose applied
- * name becomes the login's engine role name.
+ * plus an optional `nameScheme`) or `principalId`, a site owner's Linux user
+ * of the organization whose applied name becomes the login's engine role name.
  */
-/**
- * Drop one login's owner entries from the cluster options. The row is read
- * again here, so a database created or dropped while the request ran is not
- * overwritten.
- */
-async function forgetLoginOwners(
-  db: Db,
-  spec: ManagedContext['spec'],
-  environmentId: string,
-  managedId: string,
-  loginId: string
-): Promise<void> {
-  const fresh = await findManagedForEnvironment(db, environmentId)
-  const options = fresh ? parseManagedRowOptions(spec, fresh.options) : null
-  if (!options) return
-  await db
-    .update(managed)
-    .set({
-      options: writeManagedRowOptions({
-        ...options,
-        databaseOwners: ownersWithoutLogin(options.databaseOwners, loginId),
-      }),
-      updatedAt: new Date().toISOString(),
-    })
-    .where(eq(managed.id, managedId))
-}
-
 /** Restore only when no member's apply reached the queue (it would carry the new settings). */
 async function restoreUnlessQueued(
   db: Db,
@@ -1388,8 +1357,8 @@ async function gateLoginPatchOwnership(
   db: Db,
   engine: string,
   options: ManagedRowOptions,
-  target: { id: string; metadata: unknown },
-  plan: { metadata: Record<string, unknown>; grantMode: string },
+  target: Parameters<typeof loginPatchOwnerChecks>[2],
+  plan: { patch: LoginSettingsPatch; grantMode: string },
   serverId: string
 ): Promise<Response | { notes: string[] }> {
   const checks = loginPatchOwnerChecks(
@@ -1421,7 +1390,6 @@ async function parseManagedLoginCreateRequest(
         username: principal.username,
         appliedUsername: principal.appliedUsername,
         options: principal.options,
-        metadata: principal.metadata,
       })
       .from(principal)
       .where(
@@ -1431,11 +1399,7 @@ async function parseManagedLoginCreateRequest(
         )
       )
       .limit(1)
-    if (
-      !found ||
-      isManagedRootPrincipal(found.metadata) ||
-      isManagedReplicationPrincipal(found.metadata)
-    ) {
+    if (!found) {
       return c.json({ error: 'principal_not_found' }, 404)
     }
     const nameError = evaluateExistingPrincipalLoginName(
@@ -1467,13 +1431,13 @@ async function parseManagedLoginCreateRequest(
   )
   if (fields instanceof Response) return fields
   const { username, ...grants } = fields
-  return { kind: 'new-principal', username, nameScheme, grants }
+  return { kind: 'new-name', username, nameScheme, grants }
 }
 
 type LoginCreateOutcome =
   | {
       ok: true
-      principalId: string
+      principalId: string | null
       loginId: string
       password: string
       username: string
@@ -1487,11 +1451,11 @@ type LoginCreateShared = {
   managedId: string
   existingLogins: ManagedLoginRow[]
   owningOrgIds: string[]
-  metadata: Record<string, unknown>
+  settings: LoginSettingsPatch
 }
 
-/** A login with a new name: a new principal (the identity) plus its login row. */
-async function createLoginWithNewPrincipal(
+/** A login with a new name of its own (no site owner's Linux user behind it). */
+async function createLoginWithNewName(
   tx: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   params: LoginCreateShared & {
@@ -1499,14 +1463,13 @@ async function createLoginWithNewPrincipal(
     nameScheme: PrincipalNameScheme
   }
 ): Promise<LoginCreateOutcome> {
-  const { ctx, managedId, existingLogins, owningOrgIds, metadata, username, nameScheme } = params
+  const { ctx, managedId, existingLogins, owningOrgIds, settings, username, nameScheme } = params
   if (existingLogins.some((entry) => entry.username === username)) {
     return { ok: false, error: 'managed_user_exists', status: 409 }
   }
-  // The typed name must be free in the organization pool under every scheme:
-  // it is stored as `username`, which `uniq_principal_organization_username`
-  // keeps unique per org next to the applied login. Under `partial` / `random`
-  // the server then derives a collision-free login from it.
+  // The typed name must be free in the organization pool under every scheme.
+  // Under `partial` / `random` the server then derives a collision-free login
+  // from it.
   if (
     (await isManagedUsernameTaken(tx, owningOrgIds, username)) ||
     (await isManagedLoginNameTaken(tx, owningOrgIds, username))
@@ -1520,29 +1483,28 @@ async function createLoginWithNewPrincipal(
     ctx.spec.userOperations.identifier,
     { scheme: nameScheme }
   )
-  const created = await createManagedPrincipal(tx, dataEncryptionSecrets, {
+  const created = await createManagedLogin(tx, dataEncryptionSecrets, {
+    ...settings,
     managedId,
-    provider: ctx.spec.principalProvider,
     username,
     appliedUsername,
     nameScheme,
-    metadata,
   })
-  return { ok: true, ...created, username, appliedUsername, nameScheme }
+  return { ok: true, principalId: null, ...created, username, appliedUsername, nameScheme }
 }
 
 /**
  * A login for an existing principal: the engine role takes the principal's
  * applied name (the one allowed overlap in the organization's name pool), so
  * only the cluster itself and the shared frontend of other organizations'
- * clusters are checked for that name. No principal row is created.
+ * clusters are checked for that name.
  */
 async function createLoginForExistingPrincipal(
   tx: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   params: LoginCreateShared & { principal: ExistingPrincipalForLogin }
 ): Promise<LoginCreateOutcome> {
-  const { managedId, existingLogins, owningOrgIds, metadata, principal: target } = params
+  const { managedId, existingLogins, owningOrgIds, settings, principal: target } = params
   if (existingLogins.some((entry) => entry.principalId === target.id)) {
     return { ok: false, error: 'managed_login_exists', status: 409 }
   }
@@ -1578,8 +1540,9 @@ async function createLoginForExistingPrincipal(
   const created = await createLoginForPrincipal(tx, dataEncryptionSecrets, {
     managedId,
     principalId: target.id,
+    username: target.username,
     appliedUsername: target.appliedUsername,
-    metadata,
+    ...settings,
     nameScheme,
   })
   return {
@@ -1672,7 +1635,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     }
 
     const serverId = resolveManagedServerId(row, ctx.serverId)
-    const parsed = parseManagedRowOptions(ctx.spec, row.options)
+    const parsed = await loadManagedOptions(db, ctx.spec, row)
     if (!parsed) {
       return c.json({ error: 'Invalid managed options' }, 400)
     }
@@ -1772,7 +1735,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const current = parseManagedRowOptions(ctx.spec, row.options)
+    const current = await loadManagedOptions(db, ctx.spec, row)
     if (!current) return c.json({ error: 'Invalid managed options' }, 400)
 
     const body = await parseJsonBody(c)
@@ -1805,12 +1768,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     const clamped = clampManagedResources(mergedSettings, orgLimits, serverLimits)
 
-    const nextOptions = writeManagedRowOptions({
-      settings: clamped,
-      databases: current.databases,
-      ownerRoleDatabases: current.ownerRoleDatabases,
-      databaseOwners: current.databaseOwners,
-    })
+    const nextOptions = writeManagedSettings(clamped)
 
     const save = (tx: Db) =>
       tx
@@ -1864,7 +1822,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
-    const options = parseManagedRowOptions(ctx.spec, row.options)
+    const options = await loadManagedOptions(db, ctx.spec, row)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
@@ -2002,7 +1960,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'Encryption unavailable' }, 503)
     }
 
-    const options = parseManagedRowOptions(ctx.spec, row.options)
+    const options = await loadManagedOptions(db, ctx.spec, row)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const rootLogin = await findManagedLoginByRole(db, row.id, 'root')
@@ -2087,7 +2045,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const options = parseManagedRowOptions(ctx.spec, row.options)
+    const options = await loadManagedOptions(db, ctx.spec, row)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const residual = parseManagedResidual(row.metadata)
@@ -2137,17 +2095,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // share one txn so the organization FOR UPDATE lock covers the insert —
     // otherwise concurrent creates can pass the check before either inserts.
     // `targetServerId` goes in so the primary member exists before the insert.
-    const metadata = {
-      engine: ctx.spec.engine,
+    const settings: LoginSettingsPatch = {
       databases,
       privileges,
-      // Stored only for read-only: an absent key is the read-write default.
-      ...(connectionRole === 'read-only' ? { connectionRole } : {}),
+      connectionRole,
       grantMode,
-      ...(tool ? { tool } : {}),
+      tool,
       // Absent = anywhere / no cap, which is today's behaviour.
-      ...loginLimitMetadata(limits),
-      origin: 'panel',
+      ...loginLimitSettings(limits),
     }
     const userCreate = await db.transaction(async (tx) => {
       const existingLogins = await listManagedLogins(tx, row.id)
@@ -2167,14 +2122,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         managedId: row.id,
         existingLogins,
         owningOrgIds,
-        metadata,
+        settings,
       }
       return request.kind === 'existing-principal'
         ? createLoginForExistingPrincipal(tx, dataEncryptionSecrets, {
             ...shared,
             principal: request.principal,
           })
-        : createLoginWithNewPrincipal(tx, dataEncryptionSecrets, {
+        : createLoginWithNewName(tx, dataEncryptionSecrets, {
             ...shared,
             username: request.username,
             nameScheme: request.nameScheme,
@@ -2218,7 +2173,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     return c.json({
       ok: true,
       user: {
-        id: principalId,
+        id: loginId,
         principalId,
         loginId,
         username: userCreate.username,
@@ -2241,17 +2196,17 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     })
   })
 
-  router.patch('/environments/:id/managed/users/:principalId', async (c) => {
+  router.patch('/environments/:id/managed/users/:loginId', async (c) => {
     const scope = await loadManagedRowScope(c)
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
-    const options = parseManagedRowOptions(ctx.spec, row.options)
+    const options = await loadManagedOptions(db, ctx.spec, row)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
-    const target = await findManagedLogin(db, row.id, c.req.param('principalId'))
+    const target = await findManagedLogin(db, row.id, c.req.param('loginId'))
     if (!target) return c.json({ error: 'Not found' }, 404)
 
     const parsed = await parseLoginPatchRequest(c, db, ctx, body, options, target)
@@ -2292,17 +2247,17 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         limits,
         engine: ctx.spec.engine,
         readWrite: {
-          before: readWriteGrantState(target.metadata),
-          after: readWriteGrantState({ ...(target.metadata as object), ...plan.metadata }),
+          before: readWriteGrantState(target),
+          after: readWriteGrantState(applySettingsPatch(target, plan.patch)),
         },
       },
       targetServerId
     )
     if (daemonRefused) return daemonRefused
-    const previous = target.metadata
-    await patchLoginMetadata(db, target.id, plan.metadata)
+    const previous = target
+    await patchLogin(db, target.id, plan.patch)
     const restore = async () => {
-      await patchLoginMetadata(db, target.id, loginPatchUndo(previous))
+      await patchLogin(db, target.id, loginPatchUndo(previous))
     }
 
     // A thrown error (not just an error Response) must not leave the new
@@ -2351,12 +2306,12 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     })
   })
 
-  router.post('/environments/:id/managed/users/:principalId/password', async (c) => {
+  router.post('/environments/:id/managed/users/:loginId/password', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
     const environmentId = c.req.param('id')
-    const principalId = c.req.param('principalId')
+    const loginId = c.req.param('loginId')
     const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
     if (auth instanceof Response) return auth
 
@@ -2366,14 +2321,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const target = await findManagedLogin(db, row.id, principalId)
+    const target = await findManagedLogin(db, row.id, loginId)
     if (!target) return c.json({ error: 'Not found' }, 404)
     const rotateGuard = evaluateManagedLoginRotateGuard(target.role)
     if (rotateGuard) {
       return c.json({ error: rotateGuard.error }, rotateGuard.status)
     }
 
-    const options = parseManagedRowOptions(ctx.spec, row.options)
+    const options = await loadManagedOptions(db, ctx.spec, row)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
@@ -2448,12 +2403,12 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     })
   })
 
-  router.delete('/environments/:id/managed/users/:principalId', async (c) => {
+  router.delete('/environments/:id/managed/users/:loginId', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
     const environmentId = c.req.param('id')
-    const principalId = c.req.param('principalId')
+    const loginId = c.req.param('loginId')
     const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
     if (auth instanceof Response) return auth
 
@@ -2463,7 +2418,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const target = await findManagedLogin(db, row.id, principalId)
+    const target = await findManagedLogin(db, row.id, loginId)
     if (!target) return c.json({ error: 'Not found' }, 404)
 
     const dropGuard = evaluateManagedLoginDropGuard(target.role)
@@ -2482,7 +2437,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       )
     }
 
-    const options = parseManagedRowOptions(ctx.spec, row.options)
+    const options = await loadManagedOptions(db, ctx.spec, row)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
@@ -2494,8 +2449,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     })
     if (prepared instanceof Response) return prepared
 
-    // The login row goes now; the principal row goes with it only when it
-    // existed for this login alone (see `removeManagedLogin`).
+    // The login row goes now (its scope rows and bindings with it).
     const removed = await removeManagedLogin(db, target.id)
 
     const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
@@ -2512,9 +2466,6 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // server (the apply above hands it back before dropping the login), and
     // the panel records that.
     const handedBack = databasesOwnedByLogin(options.databaseOwners, target.id)
-    if (handedBack.length > 0) {
-      await forgetLoginOwners(db, ctx.spec, environmentId, row.id, target.id)
-    }
 
     const primaryFanout = pickPrimaryCommandResult(enqueued)
     return c.json({
@@ -2534,7 +2485,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ databases: [] })
 
-    const options = parseManagedRowOptions(ctx.spec, row.options)
+    const options = await loadManagedOptions(db, ctx.spec, row)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
     return c.json({
       databases: options.databases,
@@ -2549,8 +2500,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   router.patch('/environments/:id/managed/databases/:databaseName', async (c) => {
     const scope = await loadManagedRowScope(c)
     if (scope instanceof Response) return scope
-    const { ctx, row } = scope
-    const options = parseManagedRowOptions(ctx.spec, row.options)
+    const { db, ctx, row } = scope
+    const options = await loadManagedOptions(db, ctx.spec, row)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
     const databaseName = decodeURIComponent(c.req.param('databaseName'))
     if (!options.databases.includes(databaseName)) {
@@ -2580,7 +2531,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const name = requireStringField(c, body, 'name')
     if (name instanceof Response) return name
 
-    const options = parseManagedRowOptions(ctx.spec, row.options)
+    const options = await loadManagedOptions(db, ctx.spec, row)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const { pattern, maxLength } = ctx.spec.userOperations.identifier
@@ -2646,17 +2597,26 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       ? nextDatabasesAfterCreate(options.ownerRoleDatabases ?? [], name)
       : options.ownerRoleDatabases
     const nextDatabaseOwners = ownersAfterCreate(options.databaseOwners, name, chosen)
-    const nextOptions = writeManagedRowOptions({
+    const nextOptions: ManagedRowOptions = {
       settings: options.settings,
       databases: nextDatabases,
       ownerRoleDatabases: nextOwnerRoleDatabases,
       databaseOwners: nextDatabaseOwners,
-    })
+    }
 
-    // The owner login is listed on the new database before the apply is built
-    // (the apply reads its list), and put back if the apply cannot be queued.
-    const listing = await listLoginOnDatabase(db, chosen?.login, name)
-    const restoreOwnerLogin = listing.restore
+    // The database row is made first (a login can only be listed on a database
+    // that exists); both it and the owner login's listing are put back if the
+    // apply cannot be queued.
+    await saveManagedOptions(db, row.id, nextOptions)
+    const held: { restore?: () => Promise<void> } = {}
+    const restoreOwnerLogin = async () => {
+      await held.restore?.()
+      await saveManagedOptions(db, row.id, options)
+    }
+    const listing = await restoringOnFailure(restoreOwnerLogin, () =>
+      listLoginOnDatabase(db, chosen?.login, name)
+    )
+    held.restore = listing.restore
 
     const prepared = await restoringOnFailure(restoreOwnerLogin, () =>
       prepareApplyForManaged(
@@ -2675,25 +2635,12 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     if (prepared instanceof Response) return prepared
 
-    const previousOptions = row.options
-    await db
-      .update(managed)
-      .set({ options: nextOptions, updatedAt: new Date().toISOString() })
-      .where(eq(managed.id, row.id))
-
     const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
       userId: auth.userId,
       managedId: row.id,
       members: prepared.members,
     })
     if (enqueued instanceof Response) {
-      await db
-        .update(managed)
-        .set({
-          options: previousOptions,
-          updatedAt: new Date().toISOString(),
-        })
-        .where(eq(managed.id, row.id))
       await restoreOwnerLogin()
       return enqueued
     }
@@ -2737,7 +2684,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const options = parseManagedRowOptions(ctx.spec, row.options)
+    const options = await loadManagedOptions(db, ctx.spec, row)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const initialDatabase = readInitialDatabase(ctx.spec)
@@ -2770,12 +2717,12 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       databaseName
     )
     const nextDatabaseOwners = ownersWithoutDatabase(options.databaseOwners, databaseName)
-    const nextOptions = writeManagedRowOptions({
+    const nextOptions: ManagedRowOptions = {
       settings: options.settings,
       databases: nextDatabases,
       ownerRoleDatabases: nextOwnerRoleDatabases,
       databaseOwners: nextDatabaseOwners,
-    })
+    }
 
     // The owner login stops listing the database it owned (its listing was
     // what the owner choice added), and gets it back if the apply is not queued.
@@ -2810,11 +2757,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     if (prepared instanceof Response) return prepared
 
-    const previousOptions = row.options
-    await db
-      .update(managed)
-      .set({ options: nextOptions, updatedAt: new Date().toISOString() })
-      .where(eq(managed.id, row.id))
+    await saveManagedOptions(db, row.id, nextOptions)
 
     const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
       userId: auth.userId,
@@ -2822,13 +2765,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       members: prepared.members,
     })
     if (enqueued instanceof Response) {
-      await db
-        .update(managed)
-        .set({
-          options: previousOptions,
-          updatedAt: new Date().toISOString(),
-        })
-        .where(eq(managed.id, row.id))
+      // The database row first (the owner login can only be listed on it again
+      // once it exists), then the owner login's listing.
+      await saveManagedOptions(db, row.id, options)
       await restoreOwnerLogin()
       return enqueued
     }
@@ -2878,7 +2817,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const serverDenied = await assertCanManageOr403(c, 'server', serverId)
     if (serverDenied) return serverDenied
 
-    const options = parseManagedRowOptions(ctx.spec, row.options)
+    const options = await loadManagedOptions(db, ctx.spec, row)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const failover = managedImageFailoverSupport(
@@ -2991,7 +2930,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: patchParsed.error }, patchParsed.status)
     }
 
-    const patchOptions = parseManagedRowOptions(ctx.spec, row.options)
+    const patchOptions = await loadManagedOptions(db, ctx.spec, row)
     if (!patchOptions) return c.json({ error: 'Invalid managed options' }, 400)
     if (patchParsed.replicaClass === 'failover') {
       const failover = managedImageFailoverSupport(
@@ -3085,7 +3024,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const primaryServerId = resolveManagedTargetServerId(c, row.serverId)
     if (primaryServerId instanceof Response) return primaryServerId
 
-    const options = parseManagedRowOptions(ctx.spec, row.options)
+    const options = await loadManagedOptions(db, ctx.spec, row)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     // Prepare primary re-apply payload for post-destroy slot cleanup (consumer).
@@ -3166,7 +3105,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const offline = await assertTargetServerOnline(c, db, member.serverId)
     if (offline) return offline
 
-    const options = parseManagedRowOptions(ctx.spec, row.options)
+    const options = await loadManagedOptions(db, ctx.spec, row)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const primaryServerId = resolveManagedTargetServerId(c, row.serverId)
@@ -3431,7 +3370,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
-    const options = parseManagedRowOptions(ctx.spec, row.options)
+    const options = await loadManagedOptions(db, ctx.spec, row)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     // Backup artifacts live on the host that actually ran the engine —

@@ -12,7 +12,6 @@ import {
   binding,
   environment,
   login,
-  principal,
   project,
   service,
   slot,
@@ -20,7 +19,6 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import { HOST_RUN_LOOPBACK_HOST } from '../../lib/naming.ts'
-import { bindingLoginJoin, bindingManagedId } from './logins.ts'
 import {
   parseProjectOptions,
   resolveEffectivePlacementServerId,
@@ -41,7 +39,7 @@ export async function loadBoundManagedIdsForServer(
 ): Promise<string[]> {
   const rows = await db
     .select({
-      managedId: bindingManagedId,
+      managedId: login.managedId,
       environmentServerId: environment.serverId,
       projectOptions: project.options,
       taskServerId: slot.serverId,
@@ -51,8 +49,7 @@ export async function loadBoundManagedIdsForServer(
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
     .innerJoin(workspace, eq(project.workspaceId, workspace.id))
-    .leftJoin(login, bindingLoginJoin())
-    .leftJoin(principal, eq(principal.id, binding.principalId))
+    .innerJoin(login, eq(login.id, binding.loginId))
     .leftJoin(slot, eq(slot.serviceId, service.id))
     .where(
       and(

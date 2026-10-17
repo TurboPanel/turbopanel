@@ -1,7 +1,7 @@
 /**
  * Pure rules for changing an existing database login (PATCH
- * /managed/users/:principalId): which transitions are allowed, the metadata
- * that results, and a plain-words list of what the next apply will do.
+ * /managed/users/:loginId): which transitions are allowed, the settings
+ * change that results, and a plain-words list of what the next apply will do.
  *
  * The SQL itself is built by the daemon, so a dry run describes the
  * statements by kind instead of printing them.
@@ -16,8 +16,8 @@ import {
   type DatabaseLoginRole,
   isLoginGrantMode,
   type LoginGrantMode,
-  loginGrantMode,
-  loginIsTool,
+  type LoginSettings,
+  type LoginSettingsPatch,
 } from './logins.ts'
 import { describePatchedLimits } from './login-sources.ts'
 
@@ -42,21 +42,16 @@ export type LoginPatchInput = {
   maxConnections?: number | null
 }
 
-export type LoginPatchCurrent = {
+export type LoginPatchCurrent = LoginSettings & {
   role: DatabaseLoginRole
-  metadata: unknown
 }
 
 export type LoginPatchResult = {
   ok: true
-  metadata: Record<string, unknown>
+  /** The columns to change; `null` clears a limit. */
+  patch: LoginSettingsPatch
   grantMode: LoginGrantMode
   summary: string[]
-}
-
-export function storedConnectionRole(metadata: unknown): 'read-only' | 'read-write' {
-  const role = (metadata as Record<string, unknown> | null)?.connectionRole
-  return role === 'read-only' ? 'read-only' : 'read-write'
 }
 
 const fail = (
@@ -91,38 +86,27 @@ function resolveGrantMode(
   return input.grantMode
 }
 
-function patchMetadata(after: LoginGrantMode, input: LoginPatchInput): Record<string, unknown> {
-  const metadata: Record<string, unknown> = {}
-  if (input.grantMode !== undefined) metadata.grantMode = after
-  if (input.tool !== undefined) metadata.tool = input.tool
-  if (input.databases !== undefined) metadata.databases = input.databases
-  if (input.privileges !== undefined) metadata.privileges = input.privileges
-  if (input.connectionRole !== undefined) {
-    // Stored only for read-only: an absent key is the read-write default.
-    metadata.connectionRole = input.connectionRole === 'read-only' ? 'read-only' : undefined
-  }
-  // `undefined` removes the key: absent means anywhere / no cap.
-  if (input.allowedSources !== undefined) {
-    metadata.allowedSources = input.allowedSources ?? undefined
-  }
-  if (input.maxConnections !== undefined) {
-    metadata.maxConnections = input.maxConnections ?? undefined
-  }
-  return metadata
-}
-
-export function storedStrings(metadata: unknown, key: 'databases' | 'privileges'): string[] {
-  const value = (metadata as Record<string, unknown> | null)?.[key]
-  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : []
+function patchSettings(after: LoginGrantMode, input: LoginPatchInput): LoginSettingsPatch {
+  const patch: LoginSettingsPatch = {}
+  if (input.grantMode !== undefined) patch.grantMode = after
+  if (input.tool !== undefined) patch.tool = input.tool as boolean
+  if (input.databases !== undefined) patch.databases = input.databases
+  if (input.privileges !== undefined) patch.privileges = input.privileges
+  if (input.connectionRole !== undefined) patch.connectionRole = input.connectionRole
+  // `null` clears: NULL means anywhere / no cap.
+  if (input.allowedSources !== undefined) patch.allowedSources = input.allowedSources
+  if (input.maxConnections !== undefined) patch.maxConnections = input.maxConnections
+  return patch
 }
 
 /** A login's stored mode and levels, for the daemon rule on the read/write level. */
-export function readWriteGrantState(metadata: unknown): ReadWriteGrantState {
-  const mode = (metadata as Record<string, unknown> | null)?.grantMode
+export function readWriteGrantState(
+  settings: Pick<LoginSettings, 'grantMode' | 'privileges' | 'databases'>
+): ReadWriteGrantState {
   return {
-    grantMode: typeof mode === 'string' ? mode : 'preset',
-    privileges: storedStrings(metadata, 'privileges'),
-    databases: storedStrings(metadata, 'databases'),
+    grantMode: settings.grantMode,
+    privileges: settings.privileges,
+    databases: settings.databases,
   }
 }
 
@@ -138,7 +122,7 @@ export function planLoginPatch(
       'Only logins you created can be changed. The cluster administrator and replication logins are managed by TurboPanel.'
     )
   }
-  const after = resolveGrantMode(loginGrantMode(current.metadata), input)
+  const after = resolveGrantMode(current.grantMode, input)
   if (typeof after !== 'string') return after
 
   // connectionRole is routing (read replicas vs primary), not privileges, so a
@@ -150,9 +134,8 @@ export function planLoginPatch(
       'A manage-myself login has no panel-set permissions to change. Grant or revoke in SQL, or switch it back to panel-set permissions first.'
     )
   }
-  const before = loginGrantMode(current.metadata)
-  const readOnlyAfter =
-    (input.connectionRole ?? storedConnectionRole(current.metadata)) === 'read-only'
+  const before = current.grantMode
+  const readOnlyAfter = (input.connectionRole ?? current.connectionRole) === 'read-only'
   if (
     engine === 'postgres' &&
     after === 'self' &&
@@ -172,31 +155,31 @@ export function planLoginPatch(
 
   // The Database admin login has one rule (never read-only), checked on the
   // state after the change. Owner-role setup never refuses it.
-  const privilegesAfter = input.privileges ?? storedStrings(current.metadata, 'privileges')
+  const privilegesAfter = input.privileges ?? current.privileges
   const becomesAdmin = privilegesAfter.includes(DATABASE_ADMIN_PRIVILEGE)
   const adminRefusal = evaluateDatabaseAdminGrant(engine, {
     privileges: privilegesAfter,
-    connectionRole: input.connectionRole ?? storedConnectionRole(current.metadata),
+    connectionRole: input.connectionRole ?? current.connectionRole,
   })
   if (adminRefusal) {
     return fail(adminRefusal.status, adminRefusal.error, adminRefusal.message)
   }
 
-  const metadata = patchMetadata(after, input)
+  const patch = patchSettings(after, input)
   if (input.privileges !== undefined && becomesAdmin) {
     // Admin is exclusive, and a tool login by default.
-    metadata.privileges = [DATABASE_ADMIN_PRIVILEGE]
-    if (input.tool === undefined && !loginIsTool(current.metadata)) {
-      metadata.tool = true
+    patch.privileges = [DATABASE_ADMIN_PRIVILEGE]
+    if (input.tool === undefined && !current.tool) {
+      patch.tool = true
     }
   }
-  if (Object.keys(metadata).length === 0) {
+  if (Object.keys(patch).length === 0) {
     return fail(400, 'Invalid request', 'Nothing to change.')
   }
-  const tool = (metadata.tool as boolean | undefined) ?? loginIsTool(current.metadata)
+  const tool = patch.tool ?? current.tool
   const summary = describeApply(engine, after, tool, becomesAdmin)
-  summary.push(...describePatchedLimits(current.metadata, input))
-  return { ok: true, metadata, grantMode: after, summary }
+  summary.push(...describePatchedLimits(current, input))
+  return { ok: true, patch, grantMode: after, summary }
 }
 
 /** Plain-words statement kinds the next apply runs for this login. */
@@ -240,17 +223,15 @@ export function describeApply(
   return lines
 }
 
-/** The metadata keys a PATCH can change, as they were: writing this back undoes the PATCH. */
-export function loginPatchUndo(previous: unknown): Record<string, unknown> {
-  const before = (previous ?? {}) as Record<string, unknown>
-  const mode = loginGrantMode(previous)
+/** The settings a PATCH can change, as they were: writing this back undoes the PATCH. */
+export function loginPatchUndo(previous: LoginSettings): LoginSettingsPatch {
   return {
-    grantMode: mode === 'preset' ? undefined : mode,
-    tool: before.tool,
-    databases: before.databases,
-    privileges: before.privileges,
-    connectionRole: before.connectionRole,
-    allowedSources: before.allowedSources,
-    maxConnections: before.maxConnections,
+    grantMode: previous.grantMode,
+    tool: previous.tool,
+    databases: previous.databases,
+    privileges: previous.privileges,
+    connectionRole: previous.connectionRole,
+    allowedSources: previous.allowedSources ?? null,
+    maxConnections: previous.maxConnections ?? null,
   }
 }

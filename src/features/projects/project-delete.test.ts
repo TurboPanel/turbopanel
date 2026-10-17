@@ -421,8 +421,6 @@ test('deleteProjectCascade removes tenancy edges before services', async () => {
     .insert(principal)
     .values({
       organizationId,
-      kind: 'system',
-      provider: 'server',
       username: 'app',
       appliedUsername: 'app',
       projectId,

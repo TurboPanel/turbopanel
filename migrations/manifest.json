@@ -230,6 +230,12 @@
       "tag": "0037_rename_grant_and_2fa_tables",
       "when": 1792276025071,
       "sha256": "5bb2e3d2aa0e810e9bf233fc2133acb83e460766150889a24cad33d947def366"
+    },
+    {
+      "idx": 38,
+      "tag": "0038_database_login_split",
+      "when": 1792279495308,
+      "sha256": "957f483d18454501deccea6fc2db83b1f31178475066a12924ff47ad6934bee7"
     }
   ]
 }

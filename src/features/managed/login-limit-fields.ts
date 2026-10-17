@@ -81,8 +81,11 @@ export function loginLimitsRequested(fields: LoginLimitFields): boolean {
   )
 }
 
-/** What the new limits add to a login's stored metadata (nothing for anywhere / no cap). */
-export function loginLimitMetadata(fields: LoginLimitFields): Record<string, unknown> {
+/** What the new limits set on a new login (nothing for anywhere / no cap). */
+export function loginLimitSettings(fields: LoginLimitFields): {
+  allowedSources?: string[]
+  maxConnections?: number
+} {
   return {
     ...(fields.allowedSources ? { allowedSources: fields.allowedSources } : {}),
     ...(fields.maxConnections ? { maxConnections: fields.maxConnections } : {}),

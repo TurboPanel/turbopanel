@@ -16,7 +16,7 @@ import {
   managed,
   organization,
   login,
-  principal,
+  managedDatabase,
   project,
   service,
   variable,
@@ -29,8 +29,7 @@ import { parseOrganizationOptions } from '../organizations/organization-options.
 import { bindingPrefixedKeys } from '../../lib/naming.ts'
 import type { ResolvedVariableEntry, ResolvedVariableMap } from '../variables/resolve-inherited.ts'
 import { ensureActiveOrganizationCa } from '../managed/apply-prepare.ts'
-import { parseManagedRowOptions } from '../managed/options.ts'
-import { bindingLoginJoin, bindingManagedId, syncLegacyLogins } from '../managed/logins.ts'
+import { loadManagedOptions } from '../managed/options.ts'
 import {
   type BindingDelivery,
   HOST_RUN_LOOPBACK_HOST,
@@ -273,13 +272,11 @@ export async function materializeBinding(
   bindingId: string,
   delivery?: BindingDelivery
 ): Promise<{ ok: true } | MaterializeBindingError> {
-  await ensureBindingLogin(db, bindingId)
   const [row] = await db
     .select({
       id: binding.id,
-      principalId: binding.principalId,
       serviceId: binding.serviceId,
-      databaseName: binding.databaseName,
+      databaseName: managedDatabase.name,
       keyPrefix: binding.keyPrefix,
       emitEngineDefaults: binding.isEmitEngineDefaults,
       loginId: login.id,
@@ -294,7 +291,8 @@ export async function materializeBinding(
       organizationOptions: organization.options,
     })
     .from(binding)
-    .innerJoin(login, bindingLoginJoin())
+    .innerJoin(login, eq(login.id, binding.loginId))
+    .innerJoin(managedDatabase, eq(managedDatabase.id, binding.databaseId))
     .innerJoin(managed, eq(login.managedId, managed.id))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
@@ -315,7 +313,10 @@ export async function materializeBinding(
   const spec = getManagedEngineSpec(row.managedEngine)
   if (!spec?.binding) return { kind: 'binding_engine_unsupported' }
 
-  const options = parseManagedRowOptions(spec, row.managedOptions)
+  const options = await loadManagedOptions(db, spec, {
+    id: row.managedId,
+    options: row.managedOptions,
+  })
   if (!options) return { kind: 'binding_cluster_invalid' }
 
   if (
@@ -416,19 +417,7 @@ export async function materializeBindingsForServices(
   return { ok: true }
 }
 
-export async function materializeBindingsForPrincipal(
-  db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig,
-  principalId: string
-): Promise<{ ok: true } | MaterializeBindingError> {
-  const rows = await db
-    .select({ id: binding.id })
-    .from(binding)
-    .where(eq(binding.principalId, principalId))
-  return materializeEach(db, dataEncryptionSecrets, rows)
-}
-
-/** Every binding of one login (a legacy binding without `login_id` counts by its principal). */
+/** Every binding of one login. */
 export async function materializeBindingsForLogin(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
@@ -437,7 +426,7 @@ export async function materializeBindingsForLogin(
   const rows = await db
     .select({ id: binding.id })
     .from(binding)
-    .innerJoin(login, bindingLoginJoin())
+    .innerJoin(login, eq(login.id, binding.loginId))
     .where(eq(login.id, loginId))
   return materializeEach(db, dataEncryptionSecrets, rows)
 }
@@ -451,27 +440,9 @@ export async function materializeBindingsForManaged(
   const rows = await db
     .select({ id: binding.id })
     .from(binding)
-    .leftJoin(login, bindingLoginJoin())
-    .leftJoin(principal, eq(principal.id, binding.principalId))
-    .where(eq(bindingManagedId, managedId))
+    .innerJoin(login, eq(login.id, binding.loginId))
+    .where(eq(login.managedId, managedId))
   return materializeEach(db, dataEncryptionSecrets, rows)
-}
-
-/**
- * A binding the previous release wrote during the deploy window names a
- * principal whose login row may not exist yet; sync that cluster first so
- * the credential read below finds it.
- */
-async function ensureBindingLogin(db: Db, bindingId: string): Promise<void> {
-  const [row] = await db
-    .select({ loginId: binding.loginId, principalManagedId: principal.managedId })
-    .from(binding)
-    .leftJoin(principal, eq(principal.id, binding.principalId))
-    .where(eq(binding.id, bindingId))
-    .limit(1)
-  if (row && !row.loginId && row.principalManagedId) {
-    await syncLegacyLogins(db, row.principalManagedId)
-  }
 }
 
 async function materializeEach(

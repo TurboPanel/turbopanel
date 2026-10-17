@@ -86,6 +86,7 @@ export function noAllowance() {
   return {
     droppedTables: new Set(),
     droppedColumns: new Set(),
+    addedColumns: new Set(),
     tables: new Map(),
     columns: new Map(),
   }
@@ -95,6 +96,8 @@ export function noAllowance() {
  * Tables and columns a `-- breaking-ok` migration drops or renames, merged
  * into `allowance` (`droppedColumns` holds `table.column`; `tables` maps old
  * to new table name; `columns` maps `table.old` to the new column name).
+ * `addedColumns` holds the bare names of the columns it adds: a seed written
+ * for the previous release cannot name them.
  * Files without the marker add nothing.
  */
 export function addBreakingOkAllowance(sql, allowance = noAllowance()) {
@@ -127,6 +130,10 @@ export function addBreakingOkAllowance(sql, allowance = noAllowance()) {
     const dropColumn = new RegExp(String.raw`DROP\s+COLUMN\s+(?:IF\s+EXISTS\s+)?${IDENT}`, 'gi')
     for (const match of actions.matchAll(dropColumn)) {
       allowance.droppedColumns.add(`${table}.${identName(match[1])}`)
+    }
+    const addColumn = new RegExp(String.raw`ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?${IDENT}`, 'gi')
+    for (const match of actions.matchAll(addColumn)) {
+      allowance.addedColumns.add(identName(match[1]))
     }
     const renameColumn = actions.match(
       new RegExp(
@@ -186,11 +193,17 @@ export function diffRows(before, after, allowance = noAllowance(), tablesAfter =
   return problems
 }
 
-/** True when a seed error names an old table or column a pending rename moved away. */
+/**
+ * True when a seed error names an old table or column a pending rename or drop
+ * moved away, or a column a pending migration added (a required one the seed
+ * cannot fill for the previous release).
+ */
 export function seedErrorFromRename(message, allowance) {
   const oldNames = [
     ...allowance.tables.keys(),
     ...[...allowance.columns.keys()].map((name) => name.slice(name.indexOf('.') + 1)),
+    ...[...allowance.droppedColumns].map((name) => name.slice(name.indexOf('.') + 1)),
+    ...allowance.addedColumns,
   ]
   return oldNames.some((name) => message.includes(`"${name}"`))
 }

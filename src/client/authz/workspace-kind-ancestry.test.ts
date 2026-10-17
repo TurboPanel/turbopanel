@@ -6,7 +6,6 @@ import { createDenoDb } from '../../db/connection.ts'
 import {
   environment,
   hosting,
-  managed,
   organization,
   principal,
   project,
@@ -76,70 +75,36 @@ async function withAncestryFixtures(
   }
 }
 
-test('resolveWorkspaceKindForEntity returns kind for managed-scoped principals', async () => {
+test('resolveWorkspaceKindForEntity returns kind for project-scoped principals', async () => {
   await withAncestryFixtures(async ({ db, organizationId, userWorkspaceId, systemWorkspaceId }) => {
     const [userProject] = await db
       .insert(project)
-      .values({ name: 'User Managed Project', workspaceId: userWorkspaceId, organizationId })
+      .values({ name: 'User Principal Project', workspaceId: userWorkspaceId, organizationId })
       .returning({ id: project.id })
     const userProjectId = userProject!.id
-
-    const [userEnv] = await db
-      .insert(environment)
-      .values({ name: 'User Managed Env', projectId: userProjectId })
-      .returning({ id: environment.id })
-    const userEnvironmentId = userEnv!.id
-
-    const [userManaged] = await db
-      .insert(managed)
-      .values({ environmentId: userEnvironmentId, engine: 'postgres' })
-      .returning({ id: managed.id })
-    const userManagedId = userManaged!.id
+    const [systemProject] = await db
+      .insert(project)
+      .values({ name: 'System Principal Project', workspaceId: systemWorkspaceId, organizationId })
+      .returning({ id: project.id })
+    const systemProjectId = systemProject!.id
 
     const [userPrincipal] = await db
       .insert(principal)
       .values({
         organizationId,
-        kind: 'database',
-        provider: 'postgres',
-        username: 'managed_user_kind',
-        appliedUsername: 'managed_user_kind',
-        managedId: userManagedId,
+        username: 'project_user_kind',
+        appliedUsername: 'project_user_kind',
+        projectId: userProjectId,
       })
       .returning({ id: principal.id })
     const userPrincipalId = userPrincipal!.id
-
-    const [systemProject] = await db
-      .insert(project)
-      .values({
-        name: 'System Managed Project',
-        workspaceId: systemWorkspaceId,
-        organizationId,
-      })
-      .returning({ id: project.id })
-    const systemProjectId = systemProject!.id
-
-    const [systemEnv] = await db
-      .insert(environment)
-      .values({ name: 'System Managed Env', projectId: systemProjectId })
-      .returning({ id: environment.id })
-    const systemEnvironmentId = systemEnv!.id
-
-    const [systemManaged] = await db
-      .insert(managed)
-      .values({ environmentId: systemEnvironmentId, engine: 'postgres' })
-      .returning({ id: managed.id })
-    const systemManagedId = systemManaged!.id
-
     const [systemPrincipal] = await db
       .insert(principal)
       .values({
         organizationId,
-        kind: 'database',
-        provider: 'postgres',
-        username: 'managed_system_kind',
-        appliedUsername: 'managed_system_kind',
-        managedId: systemManagedId,
+        username: 'project_system_kind',
+        appliedUsername: 'project_system_kind',
+        projectId: systemProjectId,
       })
       .returning({ id: principal.id })
     const systemPrincipalId = systemPrincipal!.id
@@ -156,10 +121,6 @@ test('resolveWorkspaceKindForEntity returns kind for managed-scoped principals',
     } finally {
       await db.delete(principal).where(eq(principal.id, userPrincipalId))
       await db.delete(principal).where(eq(principal.id, systemPrincipalId))
-      await db.delete(managed).where(eq(managed.id, userManagedId))
-      await db.delete(managed).where(eq(managed.id, systemManagedId))
-      await db.delete(environment).where(eq(environment.id, userEnvironmentId))
-      await db.delete(environment).where(eq(environment.id, systemEnvironmentId))
       await db.delete(project).where(eq(project.id, userProjectId))
       await db.delete(project).where(eq(project.id, systemProjectId))
     }

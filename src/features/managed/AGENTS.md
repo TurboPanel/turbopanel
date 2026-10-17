@@ -341,7 +341,7 @@ list is read on each reconcile; a server added to the organization reaches the
 other servers' root allow-list at their next ingress reconcile.
 
 **App logins can be limited by source address and connection count.**
-`login.metadata.allowedSources` (absent = anywhere) lists places: `internal`
+`login.allowed_sources` (NULL = anywhere) lists places: `internal`
 (this server: loopback + its Docker networks), `server:<id>` (an organization
 server, resolved to its public/private/mesh addresses on every reconcile,
 `login-sources-load.ts`) and `address:<ip | prefix% | cidr>` (a CIDR is turned
@@ -382,8 +382,8 @@ Out of scope (future hardening idea): per-login host restrictions via the admin 
 
 `ManagedConnectionRole` (`read-write` | `read-only`, canonical in
 `../commands/schemas.ts`) is chosen per **managed login** at create time (and changed with
-`PATCH /managed/users/:principalId`) and persisted on `login.metadata.connectionRole`
-(an absent key is `read-write`). It decides that login's
+`PATCH /managed/users/:loginId`) and persisted on `login.access`
+(default `read-write`). It decides that login's
 ProxySQL `default_hostgroup`, so a read-only credential reaches replicas without
 rewriting any application's consistency semantics:
 
@@ -407,23 +407,27 @@ a blanket `^SELECT` query rule, and it applies to `read-write` logins only
 unless an operator asks: a regex read-split silently breaks read-after-write and
 locking reads. `readEligible` alone must never turn it on.
 
-## Login grant mode (`login.metadata`)
+## Login settings (`login` columns)
 
-`login.metadata` carries `grantMode` (`preset` when absent: today's behaviour;
-`recipe`: new logins' default; `self`: the owner manages permissions by hand),
-`tool` (database-tool login: everything to the primary) and `origin`. Typed
-readers: `loginGrantMode`, `loginIsTool`, `loginOrigin` in `logins.ts`. The
+The `login` row carries `grant_mode` (`preset`: today's behaviour, the default
+for a row made before modes; `recipe`: new logins' default; `self`: the owner
+manages permissions by hand), `is_tool` (database-tool login: everything to
+the primary), `allowed_sources`, `max_connections`, `access` and `privileges`;
+the databases a login may use are `scope` rows pointing at `database` rows.
+`ManagedLoginRow` in `logins.ts` reads them as `grantMode`, `tool`,
+`allowedSources`, `maxConnections`, `connectionRole`, `privileges` and
+`databases` (the API names). A login is not a principal: `principal_id` is only
+set when the login shares a site owner's Linux user name. The
 apply credential carries `grantMode` only when it is not `preset`, so payloads
 for old logins are unchanged. For `self` the daemon skips every grant reset
 and keeps password, LOGIN, NOSUPERUSER, connection limit and CONNECT on the
-listed databases. `PATCH /managed/users/:principalId` (`login-patch.ts`) plans
+listed databases. `PATCH /managed/users/:loginId` (`login-patch.ts`) plans
 the change; `dryRun` returns plain-words statement kinds because the SQL is
-built by the daemon. No migration: new jsonb keys only.
+built by the daemon.
 
 ## Postgres owner role per database and the Database admin login
 
-`managed.options.ownerRoleDatabases` (optional string list, a subset of
-`databases`; no migration, an absent key reads as none) names the Postgres
+`database.is_role_owned` (a database row; false reads as none) marks the Postgres
 databases made with an owner role: the daemon creates `tp_<db>_owner`, `_rw`
 and `_ro` (NOLOGIN) and the database belongs to the owner role. Only a new
 database gets it (`POST /managed/databases`: on Postgres every new database
@@ -460,10 +464,9 @@ roles, nor for ones a daemon without `managed-owner-role-v1` made) has an owner 
 never the root login or the platform admin: the cluster's
 first database too (made by the engine's first start for the platform admin; the
 daemon moves it onto `tp_<db>_owner` while it is empty, and cluster create records
-it in `ownerRoleDatabases` only when the primary's daemon lists
-`managed-database-owner-v1`). `managed.options.databaseOwners`
-(`{ [database]: { loginId, username } }`, optional, a subset of
-`ownerRoleDatabases`, no migration) records a login the customer picked with
+it as having an owner role only when the primary's daemon lists
+`managed-database-owner-v1`). `database.owner_login_id` (set null when the login
+is deleted, only on a database with an owner role) records a login the customer picked with
 `ownerLoginId` on `POST /managed/databases` (`database-owners.ts`,
 `evaluateOwnerLogin`: a migration or read/write login the panel manages; the
 database is added to its list in the same request and put back if the apply is
@@ -776,7 +779,7 @@ the listener is queued (not before, so a failed enqueue cannot desync the
 database from the host).
 Create/apply call `ensureManagedPrimaryMember` so pre-member rows self-heal
 without a data migration. Multi-member apply also ensures a platform
-`managedReplication` principal (not listed as a client user), builds
+replication login (`login.role = 'replication'`, not listed as a client user), builds
 **per-member** `postgresql.conf` + `pg_hba.conf` (platform-owned HBA), and ships
 an org-CA engine leaf for `sslmode=verify-full` on both the ProxySQL backend leg
 and `primary_conninfo`. Both roles carry `replication.peerAddresses` (standbys
@@ -1232,7 +1235,7 @@ name) and an `applied_username` — the actual engine login, the system name. A
 org default and optional lock live on `organization.options`
 (`principalNameScheme`, `principalNameSchemeLocked`; the legacy boolean
 `randomizedPrincipalUsernames` is the fallback: true = partial, false = plain);
-the chosen scheme is stored on `principal.options.nameScheme`. The server always
+the chosen scheme is stored on `login.name_scheme`. The server always
 derives the system name. Root is **never** plain
 (`postgres_<11 rand>` / `root_<11 rand>`, or random under the `random` scheme;
 persisted on `managed.metadata.rootUsername` — spec `rootUsername` is only the

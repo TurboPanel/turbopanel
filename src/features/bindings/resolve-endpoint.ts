@@ -16,7 +16,6 @@
  */
 
 import { and, asc, eq, sql } from 'drizzle-orm'
-import { bindingLoginJoin, bindingManagedId } from '../managed/logins.ts'
 import type { Db } from '../../db/connection.ts'
 import {
   binding,
@@ -25,7 +24,6 @@ import {
   replica,
   organization,
   login,
-  principal,
   project,
   server,
   service,
@@ -253,13 +251,12 @@ export async function consumerServerIdsForManaged(db: Db, managedId: string): Pr
       taskServerId: slot.serverId,
     })
     .from(binding)
-    .leftJoin(login, bindingLoginJoin())
-    .leftJoin(principal, eq(principal.id, binding.principalId))
+    .innerJoin(login, eq(login.id, binding.loginId))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
     .leftJoin(slot, eq(slot.serviceId, service.id))
-    .where(eq(bindingManagedId, managedId))
+    .where(eq(login.managedId, managedId))
 
   const ids = new Set<string>()
   for (const row of rows) {

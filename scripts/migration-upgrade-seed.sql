@@ -74,11 +74,10 @@ INSERT INTO replica (id, managed_id, server_id, role, ordinal, status) VALUES
   ('00000000-0000-7000-8000-000000000b12', '00000000-0000-7000-8000-000000000b01', '00000000-0000-7000-8000-000000000502', 'replica', 2, 'provisioning');
 
 INSERT INTO principal (id, organization_id, project_id, managed_id, kind, provider, username, applied_username) VALUES
-  ('00000000-0000-7000-8000-000000000c01', '00000000-0000-7000-8000-000000000101', '00000000-0000-7000-8000-000000000301', NULL, 'system', 'server', 'siteowner', 'siteowner'),
-  ('00000000-0000-7000-8000-000000000c02', '00000000-0000-7000-8000-000000000101', '00000000-0000-7000-8000-000000000301', '00000000-0000-7000-8000-000000000b01', 'database', 'postgres', 'appuser', 'appuser');
+  ('00000000-0000-7000-8000-000000000c01', '00000000-0000-7000-8000-000000000101', '00000000-0000-7000-8000-000000000301', NULL, 'system', 'server', 'siteowner', 'siteowner');
 
 INSERT INTO placement (id, principal_id, server_id, state, home, source) VALUES
   ('00000000-0000-7000-8000-000000000c11', '00000000-0000-7000-8000-000000000c01', '00000000-0000-7000-8000-000000000501', 'present', '/home/siteowner', 'manual');
 
 INSERT INTO login (id, managed_id, principal_id, role, applied_username) VALUES
-  ('00000000-0000-7000-8000-000000000c21', '00000000-0000-7000-8000-000000000b01', '00000000-0000-7000-8000-000000000c02', 'user', 'appuser');
+  ('00000000-0000-7000-8000-000000000c21', '00000000-0000-7000-8000-000000000b01', '00000000-0000-7000-8000-000000000c01', 'user', 'siteowner');

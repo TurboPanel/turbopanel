@@ -22,7 +22,7 @@ import {
   prepareManagedApplyPayloads,
 } from '../../features/managed/apply-prepare.ts'
 import { getManagedEngineSpec } from '../../features/managed/index.ts'
-import { parseManagedRowOptions } from '../../features/managed/options.ts'
+import { loadManagedOptions } from '../../features/managed/options.ts'
 import { parseManagedResidual } from '../../features/managed/serialize.ts'
 import type {
   CaRotationResultRow,
@@ -412,7 +412,7 @@ async function enqueueRotationApplyMembers(
       error: 'managed_apply_unavailable',
     }))
   }
-  const parsed = parseManagedRowOptions(spec, managedRow.options)
+  const parsed = await loadManagedOptions(db, spec, managedRow)
   if (!parsed) {
     return params.serverIds.map((serverId) => ({
       serverId,

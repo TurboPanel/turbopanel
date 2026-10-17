@@ -3408,25 +3408,12 @@ export const container = pgTable(
   ]
 )
 /**
- * Rows in the organization-wide name pool: every principal except a managed
- * cluster's root and replication logins (each cluster has one of both, so they
- * can never be unique per organization). NULL-safe on purpose: a partial
- * index only covers rows where the predicate is TRUE, so a bare `NOT (…)` over
- * a NULL `metadata` would quietly exclude the row.
- *
- * Column names are bare so the same text works as the index predicate and as
- * a single-table WHERE in `features/principals/store.ts`.
- */
-export const PRINCIPAL_NAME_POOL_WHERE = sql`coalesce(metadata ->> 'managedRoot', '') <> 'true' AND coalesce(metadata ->> 'managedReplication', '') <> 'true'`
-
-/**
- * A principal is an account identity that can be attached to services — a
- * Linux (server) host account or a database engine user. `organization_id` is
- * the owning org (set on every insert, see the column note). Names are one
- * pool per organization across both forms: `uniq_principal_organization_*`
- * keep the typed `username` and the applied login unique per org,
- * case-insensitively, outside managed root/replication logins
- * ({@link PRINCIPAL_NAME_POOL_WHERE}).
+ * A principal is a site owner's Linux user: the host account that runs sites
+ * and owns their tree. `organization_id` is the owning org (set on every
+ * insert, see the column note). Names are one pool per organization:
+ * `uniq_principal_organization_*` keep the typed `username` and the applied
+ * login unique per org, case-insensitively. Database logins are not
+ * principals; they live in `login`.
  */
 export const principal = pgTable(
   'principal',
@@ -3457,10 +3444,6 @@ export const principal = pgTable(
     metadata: jsonb(),
     options: jsonb(),
 
-    /** `system` (Linux/server host account) | `database` (engine account) */
-    kind: text().notNull(),
-    /** `server` | `postgres` | `mysql` | `redis` | `clickhouse` */
-    provider: text().notNull(),
     /**
      * Account name. Allowlist mirrors POSIX/database account naming: starts
      * with a letter or underscore, then letters/digits/underscore/hyphen
@@ -3502,8 +3485,6 @@ export const principal = pgTable(
      * the project and is removed only by its own explicit delete.
      */
     projectId: uuid('project_id'),
-    /** Optional managed-engine scope (cascade-deletes with the managed row). */
-    managedId: uuid('managed_id'),
   },
   (table) => [
     index('idx_principal_organization_id').using(
@@ -3513,10 +3494,6 @@ export const principal = pgTable(
     index('idx_principal_project_id').using(
       'btree',
       table.projectId.asc().nullsLast().op('uuid_ops')
-    ),
-    index('idx_principal_managed_id').using(
-      'btree',
-      table.managedId.asc().nullsLast().op('uuid_ops')
     ),
     foreignKey({
       columns: [table.organizationId],
@@ -3528,16 +3505,6 @@ export const principal = pgTable(
       foreignColumns: [project.id],
       name: 'principal_project_id_project_id_fk',
     }).onDelete('set null'),
-    foreignKey({
-      columns: [table.managedId],
-      foreignColumns: [managed.id],
-      name: 'principal_managed_id_managed_id_fk',
-    }).onDelete('cascade'),
-    check('principal_kind_check', sql`kind IN ('system', 'database')`),
-    check(
-      'principal_provider_check',
-      sql`provider IN ('server', 'postgres', 'mysql', 'redis', 'clickhouse')`
-    ),
     check(
       'principal_username_format_check',
       sql`(char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255) AND ((username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)`
@@ -3546,16 +3513,18 @@ export const principal = pgTable(
       'principal_applied_username_format_check',
       sql`(char_length((applied_username)::text) >= 1) AND (char_length((applied_username)::text) <= 255) AND ((applied_username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)`
     ),
-    // One name pool per organization across system users and database logins
-    // (owner decision 2026-10-13). No global unique: the same name legitimately
-    // recurs across organizations. The app checks (`isServerPrincipalUsernameTaken`,
-    // `isManagedUsernameTaken`) answer 409 first; these indexes are the backstop.
-    uniqueIndex('uniq_principal_organization_username')
-      .on(table.organizationId, sql`lower(${table.username})`)
-      .where(PRINCIPAL_NAME_POOL_WHERE),
-    uniqueIndex('uniq_principal_organization_applied_username')
-      .on(table.organizationId, sql`lower(${table.appliedUsername})`)
-      .where(PRINCIPAL_NAME_POOL_WHERE),
+    // One name pool per organization. No global unique: the same name
+    // legitimately recurs across organizations. The app check
+    // (`isServerPrincipalUsernameTaken`) answers 409 first; these indexes are
+    // the backstop.
+    uniqueIndex('uniq_principal_organization_username').on(
+      table.organizationId,
+      sql`lower(${table.username})`
+    ),
+    uniqueIndex('uniq_principal_organization_applied_username').on(
+      table.organizationId,
+      sql`lower(${table.appliedUsername})`
+    ),
   ]
 )
 /**
@@ -4000,16 +3969,15 @@ export const tenancy = pgTable(
   ]
 )
 /**
- * A database login: one engine role on one managed cluster. The second form
- * a principal can take (the first is a system user on a server).
+ * A database login: one engine role on one managed cluster. It is not a
+ * principal: a principal is only a site owner's Linux user.
  *
- * `principal_id` names the identity the login belongs to and is NULL only for
- * the cluster's own `root` and `replication` logins, which are not in the
- * organization's name pool. A `user` login copies its `applied_username` from
- * the principal, so the same name reaches every cluster the principal has a
- * login on. Added 2026-10-13 (expand step): the legacy `principal` rows with
- * `kind = 'database'` stay and are written in step with these rows until the
- * contract migration retires them.
+ * `principal_id` names the site owner's Linux user the login shares its name
+ * with (the one allowed overlap in the organization's name pool); it is NULL
+ * for every login made on its own and for the cluster's own `root` and
+ * `replication` logins. The permission settings are real columns:
+ * `grant_mode`, `is_tool`, `allowed_sources`, `max_connections`, `access` and
+ * `privileges`; the databases a login may use are `scope` rows.
  */
 export const login = pgTable(
   'login',
@@ -4033,28 +4001,41 @@ export const login = pgTable(
       .defaultNow()
       .$onUpdate(() => sql`now()`)
       .notNull(),
-    /**
-     * `engine`, `databases`, `privileges`, optional `connectionRole`
-     * (`read-only`), `managedRoot` / `managedReplication` on the cluster's own
-     * logins, and `legacyPrincipalId` for a root or replication login whose
-     * old `principal` row is still kept in step.
-     */
-    metadata: jsonb(),
-    /** `nameScheme` the applied name was derived with. */
-    options: jsonb(),
     /** Cluster the role exists on; cascade-deletes with it. */
     managedId: uuid('managed_id').notNull(),
-    /** Identity this login belongs to; NULL for root and replication logins. */
+    /** Site owner's Linux user this login shares its name with; NULL otherwise. */
     principalId: uuid('principal_id'),
     /** `root` | `replication` | `user` */
     role: text().notNull(),
+    /** Name the customer typed (equals `applied_username` for `plain` names and cluster logins). */
+    username: varchar({ length: 255 }).notNull(),
     /** Engine role name actually created on the cluster. */
     appliedUsername: varchar('applied_username', { length: 255 }).notNull(),
+    /** How `applied_username` was derived from `username`: `plain` | `partial` | `random` */
+    nameScheme: text('name_scheme').default('plain').notNull(),
     /** Write-only credential, a `tpsecret` envelope; never returned on GET. */
     password: text(),
+    /**
+     * Who sets the permissions on reconcile: `preset` (logins from before
+     * modes; the panel resets them), `recipe` (the panel sets them) or `self`
+     * (the owner sets them by hand and the panel never resets them).
+     */
+    grantMode: text('grant_mode').default('preset').notNull(),
+    /** A database-tool login routes everything to the primary (no read/write split). */
+    isTool: boolean('is_tool').default(false).notNull(),
+    /** Places the login may connect from; NULL means anywhere. */
+    allowedSources: text('allowed_sources').array(),
+    /** Per-login connection cap; NULL means no cap. */
+    maxConnections: integer('max_connections'),
+    /** Routing: `read-write` to the primary, `read-only` to read replicas. */
+    access: text().default('read-write').notNull(),
+    /** What the login may do in each database it can use (`owner`, `read-write`, `read-only`, `admin`). */
+    privileges: text()
+      .array()
+      .default(sql`'{}'::text[]`)
+      .notNull(),
   },
   (table) => [
-    index('idx_login_managed_id').using('btree', table.managedId.asc().nullsLast().op('uuid_ops')),
     index('idx_login_principal_id').using(
       'btree',
       table.principalId.asc().nullsLast().op('uuid_ops')
@@ -4069,8 +4050,7 @@ export const login = pgTable(
       foreignColumns: [principal.id],
       name: 'login_principal_id_principal_id_fk',
     }).onDelete('cascade'),
-    // One login per principal per cluster; a second login on the same cluster
-    // is a second principal.
+    // One login per site owner's Linux user per cluster.
     uniqueIndex('uniq_login_managed_principal')
       .on(table.managedId, table.principalId)
       .where(sql`${table.principalId} IS NOT NULL`),
@@ -4080,6 +4060,10 @@ export const login = pgTable(
       sql`lower(btrim((${table.appliedUsername})::text))`
     ),
     check('login_role_check', sql`role IN ('root', 'replication', 'user')`),
+    check('login_name_scheme_check', sql`name_scheme IN ('plain', 'partial', 'random')`),
+    check('login_grant_mode_check', sql`grant_mode IN ('preset', 'recipe', 'self')`),
+    check('login_access_check', sql`access IN ('read-write', 'read-only')`),
+    check('login_max_connections_check', sql`max_connections IS NULL OR max_connections >= 1`),
     check(
       'login_applied_username_format_check',
       sql`(char_length((applied_username)::text) >= 1) AND (char_length((applied_username)::text) <= 255) AND ((applied_username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)`
@@ -4087,11 +4071,115 @@ export const login = pgTable(
   ]
 )
 /**
- * Join edge: managed-database principal ↔ consuming compose service.
+ * One database inside a managed cluster. The row holds what the old
+ * `managed.options` lists said: the name, whether it was made with an owner
+ * role (Postgres), and the login the customer chose as its owner.
+ */
+export const managedDatabase = pgTable(
+  'database',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    /** Cluster the database lives on; cascade-deletes with it. */
+    managedId: uuid('managed_id').notNull(),
+    /** Name on the engine, as typed (unique per cluster, case-insensitively). */
+    name: varchar({ length: 255 }).notNull(),
+    /** Postgres: made with an owner role (`tp_<db>_owner`, `_rw`, `_ro`). */
+    isRoleOwned: boolean('is_role_owned').default(false).notNull(),
+    /** Postgres: the login the customer chose as owner; NULL means the default no-login owner role. */
+    ownerLoginId: uuid('owner_login_id'),
+  },
+  (table) => [
+    uniqueIndex('uniq_database_managed_name').on(table.managedId, sql`lower(${table.name})`),
+    index('idx_database_owner_login_id').using(
+      'btree',
+      table.ownerLoginId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.managedId],
+      foreignColumns: [managed.id],
+      name: 'database_managed_id_managed_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.ownerLoginId],
+      foreignColumns: [login.id],
+      name: 'database_owner_login_id_login_id_fk',
+    }).onDelete('set null'),
+    check('database_name_check', sql`char_length(name) >= 1`),
+    check('database_owner_role_check', sql`owner_login_id IS NULL OR is_role_owned`),
+  ]
+)
+/**
+ * Which databases a login may use: one row per login and database. What the
+ * login may do in them is `login.privileges`.
+ */
+export const scope = pgTable(
+  'scope',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    loginId: uuid('login_id').notNull(),
+    databaseId: uuid('database_id').notNull(),
+  },
+  (table) => [
+    unique('uniq_scope_login_database').on(table.loginId, table.databaseId),
+    index('idx_scope_database_id').using(
+      'btree',
+      table.databaseId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.loginId],
+      foreignColumns: [login.id],
+      name: 'scope_login_id_login_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.databaseId],
+      foreignColumns: [managedDatabase.id],
+      name: 'scope_database_id_database_id_fk',
+    }).onDelete('cascade'),
+  ]
+)
+/**
+ * Join edge: database login ↔ consuming compose service.
  * Materializes system-owned `variable` rows (marked via `variable.binding_id`)
  * so DB credentials ride the existing deploy injection rail.
  *
- * FK direction: principal CASCADE (user/db gone → drop bindings); service
+ * FK direction: login CASCADE (login gone → drop bindings); database
+ * RESTRICT (a database in use cannot be dropped); service
  * RESTRICT (a service still referenced by bindings cannot be deleted).
  */
 export const binding = pgTable(
@@ -4118,23 +4206,19 @@ export const binding = pgTable(
       .notNull(),
     metadata: jsonb(),
     options: jsonb(),
-    principalId: uuid('principal_id').notNull(),
-    /**
-     * The login whose credentials are injected (expand step of the login
-     * split; nullable until the contract migration). Filled beside
-     * `principalId` on every insert; backfilled from it.
-     */
-    loginId: uuid('login_id'),
+    /** The login whose credentials are injected. */
+    loginId: uuid('login_id').notNull(),
     serviceId: uuid('service_id').notNull(),
-    databaseName: varchar('database_name', { length: 255 }).notNull(),
+    /** The database the credentials point at. */
+    databaseId: uuid('database_id').notNull(),
     keyPrefix: varchar('key_prefix', { length: 64 }).default('DATABASE').notNull(),
     /** When true, also emit the unprefixed conventional engine keys (PG* / MYSQL_*). API JSON still serializes as `emitEngineDefaults`. */
     isEmitEngineDefaults: boolean('is_emit_engine_defaults').default(true).notNull(),
   },
   (table) => [
-    index('idx_binding_principal_id').using(
+    index('idx_binding_database_id').using(
       'btree',
-      table.principalId.asc().nullsLast().op('uuid_ops')
+      table.databaseId.asc().nullsLast().op('uuid_ops')
     ),
     index('idx_binding_service_id').using(
       'btree',
@@ -4142,15 +4226,15 @@ export const binding = pgTable(
     ),
     index('idx_binding_login_id').using('btree', table.loginId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
-      columns: [table.principalId],
-      foreignColumns: [principal.id],
-      name: 'binding_principal_id_principal_id_fk',
-    }).onDelete('cascade'),
-    foreignKey({
       columns: [table.loginId],
       foreignColumns: [login.id],
       name: 'binding_login_id_login_id_fk',
     }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.databaseId],
+      foreignColumns: [managedDatabase.id],
+      name: 'binding_database_id_database_id_fk',
+    }).onDelete('restrict'),
     foreignKey({
       columns: [table.serviceId],
       foreignColumns: [service.id],
@@ -4163,10 +4247,6 @@ export const binding = pgTable(
     check(
       'binding_key_prefix_format_check',
       sql`(char_length((key_prefix)::text) >= 1) AND (char_length((key_prefix)::text) <= 64) AND ((key_prefix)::text ~ '^[A-Za-z_][A-Za-z0-9_]*$'::text)`
-    ),
-    check(
-      'binding_database_name_format_check',
-      sql`(char_length((database_name)::text) >= 1) AND (char_length((database_name)::text) <= 63) AND ((database_name)::text ~ '^[A-Za-z_][A-Za-z0-9_]*$'::text)`
     ),
   ]
 )

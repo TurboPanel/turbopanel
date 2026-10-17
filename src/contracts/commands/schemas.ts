@@ -5365,7 +5365,7 @@ export type ManagedDestroyCommandPayload = {
    * Instance-only marker (never read by the daemon) distinguishing an API
    * hard-delete request from a future "destroy runtime only" action. When
    * true, `applyManagedDestroySideEffect` deletes the `managed` row after a
-   * successful destroy so `principal.managed_id` cascades. Stamped only on the
+   * successful destroy so the cluster's logins and databases cascade. Stamped only on the
    * primary member's destroy command so the row is deleted exactly once.
    */
   deleteAfterDestroy?: boolean

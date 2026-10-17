@@ -13,7 +13,7 @@ import {
   listBindingEmittedKeys,
   loadBindingOwnedKeysForService,
   materializeBinding,
-  materializeBindingsForPrincipal,
+  materializeBindingsForLogin,
   materializeBindingsForServices,
   reapplyBindingOwnedVariables,
   upsertBindingOwnedVariables,
@@ -41,16 +41,20 @@ async function dataSecrets() {
  * "innerJoin is not a function" in ten unrelated tests.
  */
 function materializeJoinDb(limitRows: unknown[]): Db {
-  // Answers both the login pre-check (from.leftJoin.where.limit) and the
-  // credential join (from.innerJoin….where.limit) with the same rows.
+  // Answers both the credential join (from.innerJoin….where.limit) with the
+  // given rows and the cluster's database rows (from.leftJoin.where.orderBy)
+  // with none.
   const chain: {
     innerJoin: () => typeof chain
     leftJoin: () => typeof chain
-    where: () => { limit: () => Promise<unknown[]> }
+    where: () => { limit: () => Promise<unknown[]>; orderBy: () => Promise<unknown[]> }
   } = {
     innerJoin: () => chain,
     leftJoin: () => chain,
-    where: () => ({ limit: () => Promise.resolve(limitRows) }),
+    where: () => ({
+      limit: () => Promise.resolve(limitRows),
+      orderBy: () => Promise.resolve([]),
+    }),
   }
   return {
     select: () => ({
@@ -60,8 +64,8 @@ function materializeJoinDb(limitRows: unknown[]): Db {
 }
 
 /**
- * Queued select responses after the login pre-check and the materialize
- * join (the first two selects). Supports `.limit()` / `.orderBy()` /
+ * Queued select responses after the materialize join and the cluster's
+ * database rows (the first two selects). Supports `.limit()` / `.orderBy()` /
  * thenable `.where()` chains used by CA + endpoint.
  */
 function materializeFlowDb(joinRows: unknown[], followUps: unknown[][]): Db {
@@ -104,6 +108,7 @@ function selectThenInnerThenMaterialize(): Db {
         return {
           from: () => ({
             where: () => Promise.resolve([{ id: 'b1' }]),
+            innerJoin: () => ({ where: () => Promise.resolve([{ id: 'b1' }]) }),
           }),
         }
       }
@@ -282,7 +287,7 @@ test('materializeBinding returns binding_endpoint_unavailable when cluster has n
   )
 })
 
-test('materializeBindingsForServices / Principal propagate first error', async () => {
+test('materializeBindingsForServices / Login propagate first error', async () => {
   const secrets = await dataSecrets()
   assertEquals(
     await materializeBindingsForServices(selectThenInnerThenMaterialize(), secrets, ['svc']),
@@ -290,20 +295,22 @@ test('materializeBindingsForServices / Principal propagate first error', async (
   )
 
   assertEquals(
-    await materializeBindingsForPrincipal(selectThenInnerThenMaterialize(), secrets, 'principal'),
+    await materializeBindingsForLogin(selectThenInnerThenMaterialize(), secrets, 'login'),
     { kind: 'binding_not_found' }
   )
 })
 
-test('materializeBindingsForPrincipal returns ok when principal has no bindings', async () => {
+test('materializeBindingsForLogin returns ok when the login has no bindings', async () => {
   const db = {
     select: () => ({
       from: () => ({
-        where: () => Promise.resolve([]),
+        innerJoin: () => ({
+          where: () => Promise.resolve([]),
+        }),
       }),
     }),
   } as unknown as Db
-  assertEquals(await materializeBindingsForPrincipal(db, await dataSecrets(), 'p1'), { ok: true })
+  assertEquals(await materializeBindingsForLogin(db, await dataSecrets(), 'l1'), { ok: true })
 })
 
 test('upsertBindingOwnedVariables inserts updates and deletes stale keys', async () => {

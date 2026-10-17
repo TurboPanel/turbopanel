@@ -1,5 +1,4 @@
 import { and, count, eq, inArray, max, sql } from 'drizzle-orm'
-import { bindingLoginJoin, bindingManagedId } from '../../features/managed/logins.ts'
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import {
@@ -13,7 +12,7 @@ import {
   managed,
   network,
   login,
-  principal,
+  managedDatabase,
   project,
   replica,
   service,
@@ -603,7 +602,7 @@ async function loadDatabaseUserRows(
       serviceId: binding.serviceId,
       serviceName: service.name,
       composeServiceName: service.composeServiceName,
-      databaseName: binding.databaseName,
+      databaseName: managedDatabase.name,
     })
     .from(binding)
     .innerJoin(service, eq(service.id, binding.serviceId))
@@ -611,9 +610,9 @@ async function loadDatabaseUserRows(
     .innerJoin(environment, eq(environment.id, service.environmentId))
     .innerJoin(project, eq(project.id, environment.projectId))
     .innerJoin(workspace, eq(workspace.id, project.workspaceId))
-    .leftJoin(login, bindingLoginJoin())
-    .leftJoin(principal, eq(principal.id, binding.principalId))
-    .innerJoin(managed, eq(managed.id, bindingManagedId))
+    .innerJoin(login, eq(login.id, binding.loginId))
+    .innerJoin(managedDatabase, eq(managedDatabase.id, binding.databaseId))
+    .innerJoin(managed, eq(managed.id, login.managedId))
     .where(and(eq(container.serverId, serverId), notSystemWorkspace()))
   return groupDatabaseUsers(rows)
 }

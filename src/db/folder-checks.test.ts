@@ -60,8 +60,6 @@ test('folder rows are held to the name rules and to one row per location', async
     .insert(principal)
     .values({
       organizationId,
-      kind: 'system',
-      provider: 'server',
       username,
       appliedUsername: username,
     })

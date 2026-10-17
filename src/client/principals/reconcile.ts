@@ -85,8 +85,7 @@ export async function principalIdsOnServer(db: Db, serverId: string): Promise<st
     .where(
       and(
         eq(principalPlacement.serverId, serverId),
-        inArray(principalPlacement.state, LIVE_PLACEMENT_STATES),
-        eq(principal.kind, 'system')
+        inArray(principalPlacement.state, LIVE_PLACEMENT_STATES)
       )
     )
   return [

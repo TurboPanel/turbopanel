@@ -28,6 +28,8 @@ import {
   managed,
   network,
   organization,
+  login,
+  managedDatabase,
   principal,
   project,
   replica,
@@ -39,7 +41,7 @@ import {
   variable,
   workspace,
 } from '../../db/schema.ts'
-import { createManagedPrincipal } from '../principals/store.ts'
+import { createManagedLogin } from '../managed/logins.ts'
 import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 import {
   COMMAND_DISPATCH_FAILURE_RETENTION_MS,
@@ -831,7 +833,7 @@ async function withManagedDestroyFixtures(
     db: ReturnType<typeof createDenoDb>
     serverId: string
     managedId: string
-    rootPrincipalId: string
+    rootLoginId: string
   }) => Promise<void>
 ): Promise<void> {
   await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
@@ -867,32 +869,29 @@ async function withManagedDestroyFixtures(
         engine: 'postgres',
         status: 'ready',
         metadata: {},
-        options: { settings: {}, databases: ['postgres'] },
+        options: { settings: {} },
       })
       .returning({ id: managed.id })
     const managedId = managedRow!.id
-    const [principalRow] = await db
-      .insert(principal)
+    const [rootLoginRow] = await db
+      .insert(login)
       .values({
-        organizationId,
-        kind: 'database',
-        provider: 'postgres',
+        managedId,
+        role: 'root',
         username: 'postgres',
         appliedUsername: 'postgres',
-        managedId,
-        metadata: { managedRoot: true },
       })
-      .returning({ id: principal.id })
+      .returning({ id: login.id })
 
     try {
       await fn({
         db,
         serverId,
         managedId,
-        rootPrincipalId: principalRow!.id,
+        rootLoginId: rootLoginRow!.id,
       })
     } finally {
-      await db.delete(principal).where(eq(principal.managedId, managedId))
+      await db.delete(login).where(eq(login.managedId, managedId))
       await db.delete(managed).where(eq(managed.id, managedId))
       await db.delete(environment).where(eq(environment.id, environmentRow!.id))
       await db.delete(project).where(eq(project.id, projectRow!.id))
@@ -930,8 +929,8 @@ test('processCommandEnvelope releases an applying managed row when the daemon is
   })
 })
 
-test('processCommandEnvelope deletes the managed row and cascades principals when deleteAfterDestroy succeeds', async () => {
-  await withManagedDestroyFixtures(async ({ db, serverId, managedId, rootPrincipalId }) => {
+test('processCommandEnvelope deletes the managed row and cascades logins when deleteAfterDestroy succeeds', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId, rootLoginId }) => {
     const record = await createCommandRecord(db, {
       serverId,
       ...TEST_COMMAND_ACTOR,
@@ -958,8 +957,8 @@ test('processCommandEnvelope deletes the managed row and cascades principals whe
     assertEquals(updated?.status, 'succeeded')
 
     // Single-click delete: a successful destroy with the deleteAfterDestroy
-    // marker removes the managed row, which cascades to its principals via
-    // `principal.managed_id ON DELETE CASCADE`.
+    // marker removes the managed row, which cascades to its logins via
+    // `login.managed_id ON DELETE CASCADE`.
     const [managedAfter] = await db
       .select({ id: managed.id })
       .from(managed)
@@ -968,16 +967,16 @@ test('processCommandEnvelope deletes the managed row and cascades principals whe
     assertEquals(managedAfter, undefined)
 
     const [principalAfter] = await db
-      .select({ id: principal.id })
-      .from(principal)
-      .where(eq(principal.id, rootPrincipalId))
+      .select({ id: login.id })
+      .from(login)
+      .where(eq(login.id, rootLoginId))
       .limit(1)
     assertEquals(principalAfter, undefined)
   })
 })
 
-test('processCommandEnvelope leaves the managed row and principals in place without deleteAfterDestroy', async () => {
-  await withManagedDestroyFixtures(async ({ db, serverId, managedId, rootPrincipalId }) => {
+test('processCommandEnvelope leaves the managed row and logins in place without deleteAfterDestroy', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId, rootLoginId }) => {
     const record = await createCommandRecord(db, {
       serverId,
       ...TEST_COMMAND_ACTOR,
@@ -1015,11 +1014,11 @@ test('processCommandEnvelope leaves the managed row and principals in place with
     assertEquals(managedAfter?.status, 'stopped')
 
     const [principalAfter] = await db
-      .select({ id: principal.id })
-      .from(principal)
-      .where(eq(principal.id, rootPrincipalId))
+      .select({ id: login.id })
+      .from(login)
+      .where(eq(login.id, rootLoginId))
       .limit(1)
-    assertEquals(principalAfter?.id, rootPrincipalId)
+    assertEquals(principalAfter?.id, rootLoginId)
   })
 })
 
@@ -2642,8 +2641,6 @@ test('processCommandEnvelope marks the folders a deploy planned as present, and 
         .insert(principal)
         .values({
           organizationId,
-          kind: 'system',
-          provider: 'server',
           username,
           appliedUsername: username,
         })
@@ -3499,7 +3496,7 @@ test('processCommandEnvelope appends managed.backup metadata on create success',
     await db
       .update(managed)
       .set({
-        options: { settings: {}, databases: ['postgres'] },
+        options: { settings: {} },
       })
       .where(eq(managed.id, managedId))
 
@@ -3988,7 +3985,7 @@ test('processCommandEnvelope removes backup metadata on managed.backup delete su
     await db
       .update(managed)
       .set({
-        options: { settings: {}, databases: ['postgres'] },
+        options: { settings: {} },
       })
       .where(eq(managed.id, managedId))
     await db.insert(backup).values({
@@ -4557,7 +4554,7 @@ test('processCommandEnvelope enqueues the deferred primary destroy only after ev
 })
 
 test('processCommandEnvelope leaves the primary intact when a gated replica destroy fails', async () => {
-  await withManagedDestroyFixtures(async ({ db, serverId, managedId, rootPrincipalId }) => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId, rootLoginId }) => {
     const gateId = crypto.randomUUID()
     const gate = {
       gateId,
@@ -4638,7 +4635,7 @@ test('processCommandEnvelope leaves the primary intact when a gated replica dest
     )
 
     // A failed replica never opens the gate: no primary command, and the
-    // managed row (with its principals) survives for a retry or force-delete.
+    // managed row (with its logins) survives for a retry or force-delete.
     assertEquals(
       queue.envelopes.filter((envelope) => envelope.type === 'managed.destroy').length,
       0
@@ -4650,11 +4647,11 @@ test('processCommandEnvelope leaves the primary intact when a gated replica dest
       .limit(1)
     assertEquals(managedAfter?.id, managedId)
     const [principalAfter] = await db
-      .select({ id: principal.id })
-      .from(principal)
-      .where(eq(principal.id, rootPrincipalId))
+      .select({ id: login.id })
+      .from(login)
+      .where(eq(login.id, rootLoginId))
       .limit(1)
-    assertEquals(principalAfter?.id, rootPrincipalId)
+    assertEquals(principalAfter?.id, rootLoginId)
   })
 })
 
@@ -4957,7 +4954,6 @@ async function sweepPromoteFixtureOrganization(
   }
   if (managedIds.length > 0) {
     await db.delete(replica).where(inArray(replica.managedId, managedIds))
-    await db.delete(principal).where(inArray(principal.managedId, managedIds))
   }
   // Ingress hierarchy self-heal allocates containers on every reconciled
   // server, including the outer fixture's server — sweep by organization so
@@ -5088,7 +5084,7 @@ async function withPromoteConsumerFixtures(
           engine: 'postgres',
           status: 'ready',
           metadata: {},
-          options: { settings: {}, databases: ['postgres'] },
+          options: { settings: {} },
         })
         .returning({ id: managed.id })
       const managedId = managedRow!.id
@@ -5143,11 +5139,14 @@ async function withPromoteConsumerFixtures(
         })
       }
 
-      const rootPrincipal = await createManagedPrincipal(db, dataEncryptionSecrets, {
+      const [pgDatabase] = await db
+        .insert(managedDatabase)
+        .values({ managedId, name: 'postgres' })
+        .returning({ id: managedDatabase.id })
+      const rootLogin = await createManagedLogin(db, dataEncryptionSecrets, {
         managedId,
-        provider: 'postgres',
+        role: 'root',
         username: 'postgres',
-        metadata: { managedRoot: true, databases: ['postgres'] },
       })
 
       // Consumer app on the third server, bound to the cluster.
@@ -5179,9 +5178,9 @@ async function withPromoteConsumerFixtures(
       const [bindingRow] = await db
         .insert(binding)
         .values({
-          principalId: rootPrincipal.principalId,
+          loginId: rootLogin.loginId,
           serviceId: consumerServiceRow!.id,
-          databaseName: 'postgres',
+          databaseId: pgDatabase!.id,
           keyPrefix: 'DB',
         })
         .returning({ id: binding.id })

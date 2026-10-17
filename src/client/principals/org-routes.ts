@@ -28,7 +28,6 @@ import {
   countPrincipalReferences,
   isPrincipalReferenced,
   PRINCIPAL_IN_USE_ERROR,
-  SERVER_PRINCIPAL_PROVIDER,
 } from '../../features/principals/store.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
 import { isUuid } from '../access/routes-helpers.ts'
@@ -42,9 +41,6 @@ import { retireDeletedPrincipal, serversForPrincipal } from './reconcile.ts'
 export const PRINCIPAL_HAS_PROJECT_CODE = 'principal_has_project'
 export const PRINCIPAL_HAS_PROJECT_ERROR =
   'This principal still belongs to a project; remove it from the project instead'
-export const PRINCIPAL_NOT_SYSTEM_USER_CODE = 'principal_not_system_user'
-export const PRINCIPAL_NOT_SYSTEM_USER_ERROR =
-  'Only a system user can be removed here; database logins are removed with their database'
 
 type OrgScope = { db: Db; session: SessionData; organizationId: string }
 
@@ -102,7 +98,6 @@ export function registerOrganizationPrincipalRoutes(router: Hono<AppEnv>, opts: 
         .for('update')
       if (!row) return { status: 404 as const }
       if (row.projectId !== null) return { status: 'has_project' as const }
-      if (row.provider !== SERVER_PRINCIPAL_PROVIDER) return { status: 'not_system' as const }
 
       const usedBy = await countPrincipalReferences(tx, principalId)
       if (isPrincipalReferenced(usedBy)) return { status: 'in_use' as const, usedBy }
@@ -116,12 +111,6 @@ export function registerOrganizationPrincipalRoutes(router: Hono<AppEnv>, opts: 
     if (outcome.status === 404) return c.json({ error: 'Not found' }, 404)
     if (outcome.status === 'has_project') {
       return c.json({ error: PRINCIPAL_HAS_PROJECT_ERROR, code: PRINCIPAL_HAS_PROJECT_CODE }, 409)
-    }
-    if (outcome.status === 'not_system') {
-      return c.json(
-        { error: PRINCIPAL_NOT_SYSTEM_USER_ERROR, code: PRINCIPAL_NOT_SYSTEM_USER_CODE },
-        409
-      )
     }
     if (outcome.status === 'in_use') {
       return c.json(

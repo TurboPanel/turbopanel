@@ -4442,16 +4442,12 @@ async function withPlacedPrincipals(
       {
         organizationId,
         projectId: proj!.id,
-        kind: 'system',
-        provider: 'server',
         username: 'pl_free',
         appliedUsername: 'pl_free',
       },
       {
         organizationId,
         projectId: proj!.id,
-        kind: 'system',
-        provider: 'server',
         username: 'pl_busy',
         appliedUsername: 'pl_busy',
       },
@@ -4650,6 +4646,7 @@ test('DELETE /servers/:id refuses an outright delete while the principal has a d
           managedId: cluster!.id,
           principalId: freeId,
           role: 'user',
+          username: 'pl_free',
           appliedUsername: 'pl_free',
         })
         const cookie = await sessionCookie(db, secrets, userId)

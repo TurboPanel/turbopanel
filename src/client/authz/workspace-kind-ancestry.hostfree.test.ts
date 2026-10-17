@@ -4,10 +4,7 @@
 
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
-import {
-  WORKSPACE_KIND_SYSTEM,
-  WORKSPACE_KIND_USER,
-} from '../../db/workspace-kind.ts'
+import { WORKSPACE_KIND_SYSTEM, WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
 import { resolveWorkspaceKindForEntity } from './workspace-kind-ancestry.ts'
 
 /**
@@ -28,11 +25,7 @@ function kindDb(opts: {
       from: () => ({
         where: () => ({
           limit: () =>
-            Promise.resolve(
-              opts.selectKind === undefined
-                ? []
-                : [{ kind: opts.selectKind }],
-            ),
+            Promise.resolve(opts.selectKind === undefined ? [] : [{ kind: opts.selectKind }]),
         }),
       }),
     }),
@@ -40,22 +33,14 @@ function kindDb(opts: {
       const kinds = opts.executeKinds ?? []
       const kind = kinds[executeCalls]
       executeCalls += 1
-      return Promise.resolve(
-        kind === undefined || kind === null ? [] : [{ kind }],
-      )
+      return Promise.resolve(kind === undefined || kind === null ? [] : [{ kind }])
     },
   } as unknown as Db
 }
 
 test('resolveWorkspaceKindForEntity returns null for unknown entity types', async () => {
-  assertEquals(
-    await resolveWorkspaceKindForEntity(kindDb({}), 'organization', 'x'),
-    null,
-  )
-  assertEquals(
-    await resolveWorkspaceKindForEntity(kindDb({}), 'server', 'x'),
-    null,
-  )
+  assertEquals(await resolveWorkspaceKindForEntity(kindDb({}), 'organization', 'x'), null)
+  assertEquals(await resolveWorkspaceKindForEntity(kindDb({}), 'server', 'x'), null)
 })
 
 test('resolveWorkspaceKindForEntity resolves workspace rows via select()', async () => {
@@ -63,22 +48,15 @@ test('resolveWorkspaceKindForEntity resolves workspace rows via select()', async
     await resolveWorkspaceKindForEntity(
       kindDb({ selectKind: WORKSPACE_KIND_SYSTEM }),
       'workspace',
-      'w1',
+      'w1'
     ),
-    WORKSPACE_KIND_SYSTEM,
+    WORKSPACE_KIND_SYSTEM
   )
   assertEquals(
-    await resolveWorkspaceKindForEntity(
-      kindDb({ selectKind: null }),
-      'workspace',
-      'w1',
-    ),
-    null,
+    await resolveWorkspaceKindForEntity(kindDb({ selectKind: null }), 'workspace', 'w1'),
+    null
   )
-  assertEquals(
-    await resolveWorkspaceKindForEntity(kindDb({}), 'workspace', 'missing'),
-    null,
-  )
+  assertEquals(await resolveWorkspaceKindForEntity(kindDb({}), 'workspace', 'missing'), null)
 })
 
 test('resolveWorkspaceKindForEntity walks execute() ancestries for tree entities', async () => {
@@ -96,40 +74,36 @@ test('resolveWorkspaceKindForEntity walks execute() ancestries for tree entities
       await resolveWorkspaceKindForEntity(
         kindDb({ executeKinds: [WORKSPACE_KIND_USER] }),
         entityType,
-        'id-1',
+        'id-1'
       ),
-      WORKSPACE_KIND_USER,
+      WORKSPACE_KIND_USER
     )
   }
 })
 
-test('resolveWorkspaceKindForEntity tries principal project managed and steward paths', async () => {
-  // First execute empty, second managed hits.
+test('resolveWorkspaceKindForEntity tries principal project and tenancy paths', async () => {
+  // First execute empty, second (tenancy) hits.
   assertEquals(
     await resolveWorkspaceKindForEntity(
       kindDb({ executeKinds: [null, WORKSPACE_KIND_SYSTEM] }),
       'principal',
-      'p1',
+      'p1'
     ),
-    WORKSPACE_KIND_SYSTEM,
+    WORKSPACE_KIND_SYSTEM
   )
 
-  // Project + managed empty, steward hits.
+  // The project path hits first.
   assertEquals(
     await resolveWorkspaceKindForEntity(
-      kindDb({ executeKinds: [null, null, WORKSPACE_KIND_USER] }),
+      kindDb({ executeKinds: [WORKSPACE_KIND_USER] }),
       'principal',
-      'p1',
+      'p1'
     ),
-    WORKSPACE_KIND_USER,
+    WORKSPACE_KIND_USER
   )
 
   assertEquals(
-    await resolveWorkspaceKindForEntity(
-      kindDb({ executeKinds: [null, null, null] }),
-      'principal',
-      'p1',
-    ),
-    null,
+    await resolveWorkspaceKindForEntity(kindDb({ executeKinds: [null, null] }), 'principal', 'p1'),
+    null
   )
 })

@@ -5,14 +5,10 @@
 
 import { and, eq, inArray, isNotNull, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { binding, hosting, login, managed, principal, variable } from '../../db/schema.ts'
+import { binding, hosting, login, managed, variable } from '../../db/schema.ts'
 import { getManagedEngineSpec } from '../../features/managed/index.ts'
 import { assertSafeBindingKeyPrefix, DEFAULT_BINDING_KEY_PREFIX } from '../../lib/naming.ts'
-import { parseManagedRowOptions } from '../../features/managed/options.ts'
-import {
-  isManagedReplicationPrincipal,
-  isManagedRootPrincipal,
-} from '../../features/managed/routes-helpers.ts'
+import { parseManagedSettings } from '../../features/managed/options.ts'
 import { listBindingEmittedKeys } from '../../features/bindings/materialize.ts'
 import {
   isBindingEndpointError,
@@ -34,9 +30,7 @@ export const BINDING_ENDPOINT_UNAVAILABLE_ERROR = 'binding_endpoint_unavailable'
 
 export type BindingRow = {
   id: string
-  principalId: string
-  /** Null only on a row the previous release wrote before the login split. */
-  loginId: string | null
+  loginId: string
   serviceId: string
   databaseName: string
   keyPrefix: string
@@ -71,7 +65,7 @@ export function bindingMaterializeHttpPayload(materializeResult: Readonly<{ kind
  * message string, or `null` when the target is acceptable.
  */
 export function checkBindingDatabaseTarget(
-  managedRow: Readonly<{ engine: string | null; options: unknown }>,
+  managedRow: Readonly<{ engine: string | null; options: unknown; databases: readonly string[] }>,
   databaseName: string
 ): string | null {
   if (!managedRow.engine) {
@@ -81,9 +75,8 @@ export function checkBindingDatabaseTarget(
   if (!spec?.binding) {
     return 'binding_engine_unsupported'
   }
-  const options = parseManagedRowOptions(spec, managedRow.options)
-  if (!options) return 'Invalid managed options'
-  if (!options.databases.includes(databaseName)) {
+  if (parseManagedSettings(spec, managedRow.options) === null) return 'Invalid managed options'
+  if (!managedRow.databases.includes(databaseName)) {
     return 'database_not_found'
   }
   const { pattern, maxLength } = spec.userOperations.identifier
@@ -187,28 +180,11 @@ export async function detectBindingUpdateConflicts(
   return null
 }
 
-export async function resolveBindingPrincipalManagedId(
-  db: Db,
-  principalId: string
-): Promise<string | null> {
-  const [principalRow] = await db
-    .select({ managedId: principal.managedId })
-    .from(principal)
-    .where(eq(principal.id, principalId))
-    .limit(1)
-  return principalRow?.managedId ?? null
-}
-
-/**
- * The cluster a binding points at: through its login, or through the legacy
- * principal row while a binding written by the previous release still has no
- * `login_id`.
- */
+/** The cluster a binding points at, through its login. */
 export async function resolveBindingManagedId(
   db: Db,
-  row: Readonly<{ loginId: string | null; principalId: string }>
+  row: Readonly<{ loginId: string }>
 ): Promise<string | null> {
-  if (!row.loginId) return resolveBindingPrincipalManagedId(db, row.principalId)
   const [loginRow] = await db
     .select({ managedId: login.managedId })
     .from(login)
@@ -218,17 +194,9 @@ export async function resolveBindingManagedId(
 }
 
 /** Resolve the engine code (default `postgres`) driving a binding's key set. */
-export async function resolveBindingPrincipalEngine(
-  db: Db,
-  principalId: string
-): Promise<{ managedId: string | null; engineCode: string }> {
-  return resolveBindingEngine(db, { loginId: null, principalId })
-}
-
-/** {@link resolveBindingPrincipalEngine} through the binding's login when it has one. */
 export async function resolveBindingEngine(
   db: Db,
-  row: Readonly<{ loginId: string | null; principalId: string }>
+  row: Readonly<{ loginId: string }>
 ): Promise<{ managedId: string | null; engineCode: string }> {
   const managedId = await resolveBindingManagedId(db, row)
   if (!managedId) return { managedId: null, engineCode: 'postgres' }
@@ -272,8 +240,7 @@ export async function serializeBindingRow(db: Db, row: BindingRow) {
           engineCode: mrow.engine,
         }) ?? []
       if (spec) {
-        const options = parseManagedRowOptions(spec, mrow.options)
-        if (options) {
+        if (parseManagedSettings(spec, mrow.options) !== null) {
           const resolved = await resolveBindingEndpoint(db, {
             serviceId: row.serviceId,
             managedId: mrow.id,
@@ -291,7 +258,6 @@ export async function serializeBindingRow(db: Db, row: BindingRow) {
 
   return {
     id: row.id,
-    principalId: row.principalId,
     loginId: row.loginId,
     serviceId: row.serviceId,
     databaseName: row.databaseName,
@@ -310,8 +276,7 @@ export async function serializeBindingRow(db: Db, row: BindingRow) {
 
 export type BindingListRow = {
   id: string
-  principalId: string
-  loginId: string | null
+  loginId: string
   serviceId: string
   databaseName: string
   keyPrefix: string
@@ -583,15 +548,4 @@ export function mapBindingUniqueViolation(
     return { error: BINDING_KEY_PREFIX_IN_USE_ERROR, status: 409 }
   }
   return null
-}
-
-export function isBindableDatabasePrincipal(row: {
-  kind: string | null | undefined
-  managedId: string | null | undefined
-  metadata: unknown
-}): boolean {
-  if (row.kind !== 'database' || !row.managedId) return false
-  if (isManagedRootPrincipal(row.metadata)) return false
-  if (isManagedReplicationPrincipal(row.metadata)) return false
-  return true
 }

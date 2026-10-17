@@ -127,9 +127,18 @@ function managedRowDb(): Db {
                 serverId: DB_SERVER_ID,
                 engine: 'postgres',
                 metadata: {},
-                options: { settings, databases: ['postgres'] },
+                options: { settings },
               },
             ]),
+        }),
+        // The cluster's `database` rows (loadManagedOptions).
+        leftJoin: () => ({
+          where: () => ({
+            orderBy: () =>
+              Promise.resolve([
+                { name: 'postgres', isRoleOwned: false, ownerLoginId: null, ownerUsername: null },
+              ]),
+          }),
         }),
       }),
     }),

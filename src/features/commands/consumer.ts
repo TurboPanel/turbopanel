@@ -2098,7 +2098,7 @@ async function applyManagedDestroySideEffect(
     // `applyManagedDestroySideEffect` only runs from `applySucceededSideEffects`
     // (the command already reported `succeeded`), so a `deleteAfterDestroy`
     // marker here always means the daemon actually tore down the runtime.
-    // Delete the `managed` row so `principal.managed_id` cascades — this is
+    // Delete the `managed` row so the cluster's logins and databases cascade — this is
     // the API-delete completion, distinct from any future "destroy runtime
     // only" action that would omit the marker and leave the row in place.
     if (payload.deleteAfterDestroy) {
