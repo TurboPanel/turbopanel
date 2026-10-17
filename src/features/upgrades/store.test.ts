@@ -305,7 +305,7 @@ test('Postgres upgrades: an unknown or malformed build time counts as behind', a
   })
 })
 
-test('Postgres upgrades: a server offline past the deadline ends the run', async () => {
+test('Postgres upgrades: a fleet server offline past the deadline is skipped', async () => {
   await withFixture('offline-deadline', async (fx) => {
     const offline = await addServer(fx, {
       connected: false,
@@ -330,18 +330,18 @@ test('Postgres upgrades: a server offline past the deadline ends the run', async
     await coordinator.tick({ resolveManifests: false })
     assertEquals((await stepById(fx, runId, stepId))?.status, 'waiting')
 
-    clock.now = minutesAfter(T0, 120)
+    clock.now = minutesAfter(T0, 100)
     await coordinator.tick({ resolveManifests: false })
     assertEquals((await stepById(fx, runId, stepId))?.status, 'waiting')
 
-    clock.now = minutesAfter(T0, 151)
+    clock.now = minutesAfter(T0, 107)
     await coordinator.tick({ resolveManifests: false })
     const gaveUp = await stepById(fx, runId, stepId)
-    assertEquals(gaveUp?.status, 'needs_attention')
+    assertEquals(gaveUp?.status, 'skipped')
     assertEquals(gaveUp?.errorCode, 'server_offline')
     const store = createDrizzleUpgradeStore(fx.db, null)
     assertEquals(await store.activeRun(), null)
-    assertEquals((await store.runById(runId))?.status, 'failed')
+    assertEquals((await store.runById(runId))?.status, 'succeeded')
     assertEquals(enqueued.length, 0)
   })
 })
