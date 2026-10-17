@@ -28,7 +28,10 @@ test('PG_OPTS_WORKERS turns fetch_types off (no pg_type lookup per request)', as
 
 test('createWorkersDb wraps the cached client with the statement guard', async () => {
   const source = await Deno.readTextFile(new URL('./connection.ts', import.meta.url))
-  assertEquals(/options\.preparedStatements\s*\?\s*withCacheableUnsafe\(/.test(source), true)
+  assertEquals(
+    /if \(options\.preparedStatements\) \{\s*wrapped = withCacheableUnsafe\(/.test(source),
+    true
+  )
 })
 
 test('resolveWorkersCachedDb asks for prepared statements; the primary does not', async () => {
