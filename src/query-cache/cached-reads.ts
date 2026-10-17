@@ -1,3 +1,10 @@
+import {
+  environmentDetailCachedRead,
+  environmentsListCachedRead,
+  projectDetailCachedRead,
+  projectsListCachedRead,
+  workspacesListCachedRead,
+} from './read-models/hierarchy-reads.ts'
 import { serverDetailCachedRead } from './read-models/server-detail.ts'
 import { serversListCachedRead } from './read-models/servers-list.ts'
 
@@ -6,4 +13,12 @@ import { serversListCachedRead } from './read-models/servers-list.ts'
  * here fails the "registry matches definitions" test, so none can be added or
  * left out quietly.
  */
-export const ALL_CACHED_READS = [serversListCachedRead, serverDetailCachedRead] as const
+export const ALL_CACHED_READS = [
+  serversListCachedRead,
+  serverDetailCachedRead,
+  projectsListCachedRead,
+  projectDetailCachedRead,
+  environmentsListCachedRead,
+  environmentDetailCachedRead,
+  workspacesListCachedRead,
+] as const

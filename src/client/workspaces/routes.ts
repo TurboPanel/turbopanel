@@ -1,9 +1,10 @@
-import { asc, eq, inArray } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import type { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { assertCanOr403, listVisible } from '../authz/index.ts'
+import { assertCanOr403, listVisibleVersions } from '../authz/index.ts'
+import { cachedWorkspacesList } from '../../query-cache/read-models/hierarchy-reads.ts'
 import { getDb } from '../../db/connection.ts'
 import { workspace } from '../../db/schema.ts'
 import { applyStorageRetentionOnParentDelete } from '../../features/storage/storage-records.ts'
@@ -42,31 +43,19 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
     if (orgResult instanceof Response) return orgResult
     const organizationId = orgResult
 
-    const visibleIds = await listVisible(db, {
+    // Who may see which workspace is decided here, on the primary connection;
+    // the visible ids (with when each last changed) go into the cached read.
+    const visible = await listVisibleVersions(db, {
       kind: 'workspace',
       userId: session.userId,
       organizationId,
     })
 
-    if (visibleIds.length === 0) {
+    if (visible.length === 0) {
       return c.json({ workspaces: [] })
     }
 
-    const rows = await db
-      .select({
-        id: workspace.id,
-        name: workspace.name,
-        description: workspace.description,
-        kind: workspace.kind,
-        organizationId: workspace.organizationId,
-        createdAt: workspace.createdAt,
-        updatedAt: workspace.updatedAt,
-      })
-      .from(workspace)
-      .where(inArray(workspace.id, visibleIds))
-      // Secondary `id` break ties when same-transaction inserts share `created_at`
-      // (defaultNow() = transaction time) so System precedes Default Workspace.
-      .orderBy(asc(workspace.createdAt), asc(workspace.id))
+    const rows = await cachedWorkspacesList(c, { organizationId, visible })
 
     return c.json({ workspaces: rows })
   })
