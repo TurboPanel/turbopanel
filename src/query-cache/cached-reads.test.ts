@@ -47,11 +47,23 @@ test('different inputs give different keys', () => {
     assertEquals(new Set(keys).size, keys.length, read.definition.id)
   }
   const [list] = ALL_CACHED_READS
-  const a = inspectCachedRead(list.definition, { organizationId: 'org-1', ids: ['srv-1'] })
-  const b = inspectCachedRead(list.definition, { organizationId: 'org-1', ids: ['srv-2'] })
+  const a = inspectCachedRead(list.definition, {
+    organizationId: 'org-1',
+    ids: ['srv-1'],
+    stamp: 's',
+  })
+  const b = inspectCachedRead(list.definition, {
+    organizationId: 'org-1',
+    ids: ['srv-2'],
+    stamp: 's',
+  })
   assertNotEquals(a.key, b.key)
   // Same statement and parameters in another organization is another key.
-  const other = inspectCachedRead(list.definition, { organizationId: 'org-2', ids: ['srv-1'] })
+  const other = inspectCachedRead(list.definition, {
+    organizationId: 'org-2',
+    ids: ['srv-1'],
+    stamp: 's',
+  })
   assertEquals(other.keyHash, a.keyHash)
   assertNotEquals(other.key, a.key)
   assertEquals(a.fingerprint, b.fingerprint)
@@ -82,4 +94,35 @@ test('the boundary check passes on the tree and catches a leak', async () => {
     GUARDED
   )
   assertEquals(leak.length, 4)
+})
+
+test('a version stamp rides in the select list and never reaches a WHERE clause', () => {
+  for (const read of ALL_CACHED_READS) {
+    const def = read.definition
+    if (!CACHED_READ_REGISTRY[def.id].versionStamp) continue
+    const [sample] = def.samples
+    const withStamp = inspectCachedRead(def as never, sample as never)
+    const other = inspectCachedRead(
+      def as never,
+      { ...(sample as object), stamp: 'another' } as never
+    )
+
+    // Only the stamp parameter differs, so the key changes and the statement does not.
+    assertEquals(other.sql, withStamp.sql, def.id)
+    assertNotEquals(other.key, withStamp.key, def.id)
+    assertEquals(other.params.length, withStamp.params.length)
+    assertEquals(
+      withStamp.params.filter((value, i) => value !== other.params[i]),
+      ['stamp-a']
+    )
+
+    const selectList = withStamp.sql.slice(0, withStamp.sql.indexOf(' from '))
+    const rest = withStamp.sql.slice(withStamp.sql.indexOf(' from '))
+    assert(selectList.includes('$1::text as "_v"'), `${def.id} selects the stamp`)
+    assert(!/\$1\b/.test(rest), `${def.id} must not filter on the stamp`)
+    assert(
+      !rest.includes('"_v"'),
+      `${def.id} must not mention the stamp column after the select list`
+    )
+  }
 })

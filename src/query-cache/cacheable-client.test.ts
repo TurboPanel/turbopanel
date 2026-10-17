@@ -1,6 +1,8 @@
 import { assertEquals, assertThrows } from '@std/assert'
 import { CACHED_READ_REGISTRY } from './approved-read-models.ts'
 import { withCacheableUnsafe } from './cacheable-client.ts'
+import { inspectCachedRead } from './cached-read.ts'
+import { serversListCachedRead } from './read-models/servers-list.ts'
 import { createDbUsage } from './db-usage.ts'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import * as schema from '../db/schema.ts'
@@ -8,10 +10,12 @@ import { UncacheableStatementError, findUncacheableStatementError } from './stat
 
 const test = Deno.test.bind(Deno)
 
-const REGISTERED_SQL: Record<string, string> = {
-  'servers-list':
-    'select "server"."id", "server"."name", "server"."organization_id", "license"."id", "server"."machine_class", "server"."options", "server"."created_at" from "server" left join "license" on "license"."server_id" = "server"."id" where "server"."id" in ($1, $2) order by "server"."created_at"',
-}
+/** The reviewed list statement, built the way the cached read builds it. */
+const LIST_SQL = inspectCachedRead(serversListCachedRead.definition, {
+  organizationId: 'org-1',
+  ids: ['a', 'b'],
+  stamp: 's',
+}).sql
 
 function fakeClient() {
   const calls: Array<{ query: string; args: unknown; opts: unknown }> = []
@@ -37,10 +41,10 @@ test('a registered select goes out as a named prepared statement', async () => {
     unsafe: (q: string, a?: unknown[], o?: Record<string, unknown>) => Promise<unknown>
   }
   // Caller options cannot turn prepared statements off.
-  await guarded.unsafe(REGISTERED_SQL['servers-list'], ['a', 'b'], { prepare: false })
+  await guarded.unsafe(LIST_SQL, ['s', 'a', 'b'], { prepare: false })
   assertEquals(calls.length, 1)
   assertEquals(calls[0]!.opts, { prepare: true, simple: false })
-  assertEquals(calls[0]!.args, ['a', 'b'])
+  assertEquals(calls[0]!.args, ['s', 'a', 'b'])
   assertEquals(usage.cached, 1)
 })
 

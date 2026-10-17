@@ -1,4 +1,5 @@
 import type { Context } from 'hono'
+import { sql } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import { getDb, getQueryCache, type Db } from '../db/connection.ts'
 import * as schema from '../db/schema.ts'
@@ -7,7 +8,12 @@ import { CACHED_READ_REGISTRY, type ApprovedReadModelId } from './approved-read-
 import { DEFAULT_QUERY_CACHE_TTL_SECONDS } from './contracts.ts'
 import { runApprovedCachedReadModel } from './cached-query.ts'
 import { queryCacheKey } from './keys.ts'
-import { statementFingerprint, statementKeyHash, uncacheableReason } from './statement-guard.ts'
+import {
+  stampHash,
+  statementFingerprint,
+  statementKeyHash,
+  uncacheableReason,
+} from './statement-guard.ts'
 
 /**
  * The only database surface a cached read can build with: `select()`. There is
@@ -110,4 +116,31 @@ export function defineCachedRead<Input, Row, Out>(
     )
   }
   return Object.assign(run, { definition: def })
+}
+
+/** Name of the selected column that carries the version stamp. */
+export const VERSION_STAMP_COLUMN = '_v'
+
+/**
+ * The version stamp as a selected column. It is a bound parameter that only
+ * rides along in the select list: it never appears in a WHERE clause, so it
+ * cannot hide a row. Its job is to change the statement's parameters (and so
+ * the cache key) when the rows it describes have changed.
+ */
+export function versionStampColumn(stamp: string) {
+  return sql<string>`${stamp}::text`.as(VERSION_STAMP_COLUMN)
+}
+
+/**
+ * Build a stamp from values the primary connection already returned for the
+ * same rows in this request (for example `id` and `updated_at`).
+ */
+export function versionStamp(parts: readonly string[]): string {
+  return stampHash(parts)
+}
+
+/** Remove the stamp column from a row before it is returned or cached. */
+export function withoutVersionStamp<Row extends { _v?: unknown }>(row: Row): Omit<Row, '_v'> {
+  const { _v: _stamp, ...rest } = row
+  return rest
 }

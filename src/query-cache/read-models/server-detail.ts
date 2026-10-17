@@ -6,11 +6,18 @@ import type { ServerFleetPresence } from '../../daemon/cell/server-status.ts'
 import {
   buildProjectionsFromDaemonRows,
   loadServerRowsForFleetPresence,
+  type ServerFleetPresenceRow,
 } from '../../daemon/cell/postgres-projection.ts'
 import { license, server } from '../../db/schema.ts'
 import { redactServerOptions } from '../../features/servers/server-metadata.ts'
 import { resolveColocatedServerIdSet } from '../../client/servers/colocated.ts'
-import { defineCachedRead, type CachedReadDb } from '../cached-read.ts'
+import {
+  defineCachedRead,
+  versionStamp,
+  versionStampColumn,
+  withoutVersionStamp,
+  type CachedReadDb,
+} from '../cached-read.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 
 export type ServerDetailRow = {
@@ -69,6 +76,7 @@ function buildDetailRowQuery(readDb: CachedReadDb, input: DetailInput) {
       machineClass: server.machineClass,
       options: server.options,
       createdAt: server.createdAt,
+      _v: versionStampColumn(input.stamp),
     })
     .from(server)
     .leftJoin(license, eq(license.serverId, server.id))
@@ -76,7 +84,7 @@ function buildDetailRowQuery(readDb: CachedReadDb, input: DetailInput) {
     .limit(1)
 }
 
-type DetailInput = { organizationId: string; serverId: string }
+type DetailInput = { organizationId: string; serverId: string; stamp: string }
 
 /**
  * Registered cached read: statement #1 above. Redaction runs on the result, so
@@ -86,18 +94,20 @@ export const serverDetailCachedRead = defineCachedRead({
   id: 'server-detail',
   build: (readDb: CachedReadDb, input: DetailInput) => buildDetailRowQuery(readDb, input),
   transform: (rows, _input: DetailInput): ServerDetailRow | null => {
-    const detail = rows[0] as ServerDetailRow | undefined
-    return detail ? { ...detail, options: redactServerOptions(detail.options) } : null
+    const first = rows[0] as (ServerDetailRow & { _v?: string }) | undefined
+    if (!first) return null
+    const detail = withoutVersionStamp(first)
+    return { ...detail, options: redactServerOptions(detail.options) }
   },
-  samples: [{ organizationId: 'org-1', serverId: 'srv-1' }],
+  samples: [{ organizationId: 'org-1', serverId: 'srv-1', stamp: 'stamp-a' }],
 })
 
 async function resolveServerDetailEnrichment(
   db: Db,
   registry: DaemonCellRegistry | undefined,
-  serverId: string
+  serverId: string,
+  rows: ServerFleetPresenceRow[]
 ): Promise<Pick<ServerDetailDisplayPayload, 'presence' | 'colocatedWithInstance'>> {
-  const rows = await loadServerRowsForFleetPresence(db, [serverId])
   const preloaded = {
     rows,
     projections: buildProjectionsFromDaemonRows(rows),
@@ -131,11 +141,18 @@ export async function cachedServerDetailReadModel(
 
   const { organizationId, serverId } = opts
   const registry = getDaemonCellRegistry(c)
-  const row = await serverDetailCachedRead(c, { organizationId, serverId })
+
+  // Primary connection first: the row's last change is the version stamp, so
+  // an edit changes the cache key at once. A server that is gone ends here.
+  const loaded = await loadServerRowsForFleetPresence(db, [serverId])
+  const current = loaded[0]
+  if (!current) return null
+  const stamp = versionStamp([current.id, current.updatedAt])
+  const row = await serverDetailCachedRead(c, { organizationId, serverId, stamp })
 
   if (!row) return null
 
-  const enrichment = await resolveServerDetailEnrichment(db, registry, serverId)
+  const enrichment = await resolveServerDetailEnrichment(db, registry, serverId, loaded)
 
   return {
     row,

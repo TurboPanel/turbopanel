@@ -6,11 +6,18 @@ import type { ServerFleetPresence } from '../../daemon/cell/server-status.ts'
 import {
   buildProjectionsFromDaemonRows,
   loadServerRowsForFleetPresence,
+  type ServerFleetPresenceRow,
 } from '../../daemon/cell/postgres-projection.ts'
 import { license, server } from '../../db/schema.ts'
 import { redactServerOptions } from '../../features/servers/server-metadata.ts'
 import { resolveColocatedServerIdSet } from '../../client/servers/colocated.ts'
-import { defineCachedRead, type CachedReadDb } from '../cached-read.ts'
+import {
+  defineCachedRead,
+  versionStamp,
+  versionStampColumn,
+  withoutVersionStamp,
+  type CachedReadDb,
+} from '../cached-read.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 
 export type ServersListRow = {
@@ -59,7 +66,7 @@ export type ServersListDisplayPayload = {
  * before it is returned (and therefore before it is cached), so a secret-bearing
  * key left on the jsonb by an older control plane never reaches Redis.
  */
-type ListInput = { organizationId: string; ids: string[] }
+type ListInput = { organizationId: string; ids: string[]; stamp: string }
 
 function buildListRowsQuery(readDb: CachedReadDb, input: ListInput) {
   return readDb
@@ -71,6 +78,7 @@ function buildListRowsQuery(readDb: CachedReadDb, input: ListInput) {
       machineClass: server.machineClass,
       options: server.options,
       createdAt: server.createdAt,
+      _v: versionStampColumn(input.stamp),
     })
     .from(server)
     .leftJoin(license, eq(license.serverId, server.id))
@@ -88,22 +96,31 @@ export const serversListCachedRead = defineCachedRead({
   scope: (input: ListInput) => [input.organizationId],
   build: (readDb: CachedReadDb, input: ListInput) => buildListRowsQuery(readDb, input),
   transform: (rows, _input: ListInput): ServersListRow[] =>
-    (rows as ServersListRow[]).map((row) => ({
-      ...row,
-      options: redactServerOptions(row.options),
-    })),
+    (rows as Array<ServersListRow & { _v?: string }>).map((row) => {
+      const plain = withoutVersionStamp(row)
+      return { ...plain, options: redactServerOptions(plain.options) }
+    }),
   samples: [
-    { organizationId: 'org-1', ids: ['srv-1'] },
-    { organizationId: 'org-1', ids: ['srv-1', 'srv-2', 'srv-3'] },
+    { organizationId: 'org-1', ids: ['srv-1'], stamp: 'stamp-a' },
+    { organizationId: 'org-1', ids: ['srv-1', 'srv-2', 'srv-3'], stamp: 'stamp-b' },
   ],
 })
 
 async function resolveServersListEnrichment(
   db: Db,
   registry: DaemonCellRegistry | undefined,
-  serverIds: string[]
+  serverIds: string[],
+  loaded: ServerFleetPresenceRow[]
 ): Promise<Pick<ServersListDisplayPayload, 'presence' | 'colocatedIds'>> {
-  const rows = await loadServerRowsForFleetPresence(db, serverIds)
+  // The rows were read on the primary connection to make the version stamp;
+  // reuse them. Only if the cached rows name a server they lack (one created
+  // in between) is the statement run again.
+  const wanted = new Set(serverIds)
+  const kept = loaded.filter((row) => wanted.has(row.id))
+  const rows =
+    kept.length === new Set(serverIds).size
+      ? kept
+      : await loadServerRowsForFleetPresence(db, serverIds)
   const preloaded = {
     rows,
     projections: buildProjectionsFromDaemonRows(rows),
@@ -139,18 +156,25 @@ export async function cachedServersListReadModel(
   const { organizationId, visibleIds } = opts
   // Canonical order so the same set of ids always builds the same statement.
   const sortedVisibleIds = [...visibleIds].sort((a, b) => a.localeCompare(b))
+  if (sortedVisibleIds.length === 0) {
+    return { rows: [], presence: [], colocatedIds: [] }
+  }
   const registry = getDaemonCellRegistry(c)
-  const rows =
-    sortedVisibleIds.length === 0
-      ? []
-      : await serversListCachedRead(c, { organizationId, ids: sortedVisibleIds })
+
+  // Primary connection first: it gives the version stamp (id + last change of
+  // each row), so an edit changes the cache key at once.
+  const loaded = await loadServerRowsForFleetPresence(db, sortedVisibleIds)
+  const stamp = versionStamp(
+    [...loaded].sort((a, b) => a.id.localeCompare(b.id)).flatMap((row) => [row.id, row.updatedAt])
+  )
+  const rows = await serversListCachedRead(c, { organizationId, ids: sortedVisibleIds, stamp })
 
   if (rows.length === 0) {
     return { rows: [], presence: [], colocatedIds: [] }
   }
 
   const serverIds = rows.map((row) => row.id)
-  const enrichment = await resolveServersListEnrichment(db, registry, serverIds)
+  const enrichment = await resolveServersListEnrichment(db, registry, serverIds, loaded)
 
   return {
     rows,

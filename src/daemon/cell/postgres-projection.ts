@@ -952,6 +952,8 @@ export type ServerFleetPresenceRow = {
   ntpLastSyncedAt: string | null
   connected: boolean
   statusChangedAt: string | null
+  /** Last change to the row; the version stamp for cached reads of the same rows. */
+  updatedAt: string
 }
 
 /** Single SELECT for fleet presence + colocated enrichment on a fixed server id set. */
@@ -980,6 +982,7 @@ export function loadServerRowsForFleetPresence(
       ntpLastSyncedAt: server.ntpLastSyncedAt,
       connected: server.isConnected,
       statusChangedAt: server.statusChangedAt,
+      updatedAt: server.updatedAt,
     })
     .from(server)
     .where(inArray(server.id, serverIds))
