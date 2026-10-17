@@ -19,43 +19,24 @@ export type CachedReadRegistration = {
   readonly versionStamp: boolean
 }
 
+/** A read whose statement carries the version stamp (see `cached-read.ts`). */
+function stamped(fingerprint: string): CachedReadRegistration {
+  return {
+    fingerprint,
+    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
+    versionStamp: true,
+  }
+}
+
 export const CACHED_READ_REGISTRY = {
-  'servers-list': {
-    fingerprint: 'ce2766c84e1e7439',
-    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
-    versionStamp: true,
-  },
-  'server-detail': {
-    fingerprint: '38a4113cda59ba1c',
-    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
-    versionStamp: true,
-  },
-  'projects-list': {
-    fingerprint: 'a5f6360b56562fef',
-    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
-    versionStamp: true,
-  },
-  'project-detail': {
-    fingerprint: '41c6ed8973e54ec2',
-    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
-    versionStamp: true,
-  },
-  'environments-list': {
-    fingerprint: 'd458aba4df4f21c9',
-    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
-    versionStamp: true,
-  },
-  'environment-detail': {
-    fingerprint: '2035011bf1a6bcf4',
-    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
-    versionStamp: true,
-  },
-  'workspaces-list': {
-    fingerprint: 'abd2761821e1adfd',
-    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
-    versionStamp: true,
-  },
-} as const satisfies Record<string, CachedReadRegistration>
+  'servers-list': stamped('ce2766c84e1e7439'),
+  'server-detail': stamped('38a4113cda59ba1c'),
+  'projects-list': stamped('a5f6360b56562fef'),
+  'project-detail': stamped('41c6ed8973e54ec2'),
+  'environments-list': stamped('d458aba4df4f21c9'),
+  'environment-detail': stamped('2035011bf1a6bcf4'),
+  'workspaces-list': stamped('abd2761821e1adfd'),
+} satisfies Record<string, CachedReadRegistration>
 
 export type ApprovedReadModelId = keyof typeof CACHED_READ_REGISTRY
 
