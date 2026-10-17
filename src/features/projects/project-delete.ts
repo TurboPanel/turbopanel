@@ -6,6 +6,7 @@ import {
   container,
   deployment,
   environment,
+  folder,
   hosting,
   leaf,
   managed,
@@ -47,7 +48,7 @@ export type ProjectDeleteResult =
   | { ok: true; warning?: string }
   | {
       ok: false
-      error: 'project_has_running_services' | 'managed_runtime_present'
+      error: 'project_has_running_services' | 'managed_runtime_present' | 'project_has_folders'
     }
 
 /**
@@ -269,6 +270,14 @@ export async function deleteProjectCascade(
     return { ok: false, error: 'project_has_running_services' }
   }
 
+  // A folder on a server holds its environment's name (and the project's slug)
+  // until the host confirms it is gone; the delete waits for that.
+  const folderRows = await db
+    .select({ id: folder.id })
+    .from(folder)
+    .where(inArray(folder.environmentId, environmentIds))
+  if (folderRows.length > 0) return { ok: false, error: 'project_has_folders' }
+
   const bindingTargets = await loadBindingListenerTargets(db, children.serviceIds)
   await db.transaction(async (tx) => {
     // The principals outlive the project (`project_id` SET NULL); their
@@ -327,6 +336,8 @@ export async function dropEnvironmentSubtreeInTx(
   if (opts?.serverId) {
     await purgeEnvironmentServerPlacementArtifacts(tx, ids, opts.serverId)
   }
+  // The host is gone, so nothing will ever confirm these folders removed.
+  await tx.delete(folder).where(inArray(folder.environmentId, ids))
   const children = await loadEnvironmentChildren(tx, ids)
   await dropEnvironmentRows(tx, {
     environmentIds: ids,

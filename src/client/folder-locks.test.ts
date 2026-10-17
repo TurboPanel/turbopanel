@@ -414,3 +414,13 @@ test('the folder naming setting defaults to slug, changes freely, then locks wit
     assertEquals((await send(ctx, 'PUT', path, { names: 'uuid' })).status, 200)
   })
 })
+
+test('a project with a folder under it cannot be deleted', async () => {
+  await withFixtures(async (ctx) => {
+    const { projectId, envId } = await createProject(ctx, 'Delete Locked')
+    await addServiceFolder(ctx, envId, 'example.com', 'present')
+    const refused = await send(ctx, 'DELETE', `/projects/${projectId}`)
+    assertEquals(refused.status, 409)
+    assertEquals(refused.json.error, 'project_has_folders')
+  })
+})
