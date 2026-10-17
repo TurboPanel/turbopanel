@@ -334,6 +334,7 @@ async function createServerRoutesTestApp(
 }
 
 const SERVERS_LIST_SELECT_KEYS = new Set([
+  '_v',
   'id',
   'name',
   'organizationId',
@@ -491,6 +492,7 @@ function createRecordingQueryCache(readDb: ReturnType<typeof createDenoDb>): Que
 }
 
 const SERVER_DETAIL_SELECT_KEYS = new Set([
+  '_v',
   'id',
   'name',
   'organizationId',
@@ -3550,8 +3552,51 @@ test('GET /servers — presence reflects live data, not cached value', async () 
     assertEquals(second.status, 200)
     const secondBody = await readJson<ServersListJson>(second)
     assertEquals(secondBody.servers[0].connected, true)
-    assertEquals(recordingCache.store.size, 1)
+    // The row changed, so its last-change time moved: the cached rows were read again
+    // under a new key. Presence itself always comes from the primary connection.
+    assertEquals(recordingCache.store.size, 2)
+    assertEquals(recordingCache.loadCallCount, 2)
+
+    // Nothing changed since: the same key answers from the cache.
+    const third = await app.request('/servers', { headers })
+    assertEquals(third.status, 200)
+    assertEquals(recordingCache.loadCallCount, 2)
+  })
+})
+
+test('GET /servers shows a rename at once and serves an unchanged list from the cache', async () => {
+  await withServerDeleteFixtures(async ({ db, secrets, userId, organizationId, serverId }) => {
+    const registry = createTrackingRegistry({
+      getCellThrows: true,
+      getSnapshotsThrows: true,
+      listOnlineServerIdsThrows: true,
+    })
+    const readDb = createListRowsOnlyReadDb(db)
+    const recordingCache = createRecordingQueryCache(readDb)
+    const { app } = await createServerRoutesTestApp(db, registry, recordingCache)
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+    }
+
+    const first = await readJson<ServersListJson>(await app.request('/servers', { headers }))
+    const nameOf = (body: ServersListJson) => (body.servers[0] as { name?: string }).name
+    const before = nameOf(first)
+
+    const again = await readJson<ServersListJson>(await app.request('/servers', { headers }))
+    assertEquals(nameOf(again), before)
     assertEquals(recordingCache.loadCallCount, 1)
+
+    await db
+      .update(server)
+      .set({ name: 'Renamed Once', updatedAt: new Date().toISOString() })
+      .where(eq(server.id, serverId))
+
+    const after = await readJson<ServersListJson>(await app.request('/servers', { headers }))
+    assertEquals(nameOf(after), 'Renamed Once')
+    assertEquals(recordingCache.loadCallCount, 2)
   })
 })
 
