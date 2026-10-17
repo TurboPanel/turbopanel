@@ -1,11 +1,6 @@
 import type { Context } from 'hono'
 import { eq, inArray } from 'drizzle-orm'
-import {
-  getDb,
-  getDaemonCellRegistry,
-  getQueryCache,
-  type Db,
-} from '../../db/connection.ts'
+import { getDb, getDaemonCellRegistry, type Db } from '../../db/connection.ts'
 import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
 import type { ServerFleetPresence } from '../../daemon/cell/server-status.ts'
 import {
@@ -15,7 +10,7 @@ import {
 import { license, server } from '../../db/schema.ts'
 import { redactServerOptions } from '../../features/servers/server-metadata.ts'
 import { resolveColocatedServerIdSet } from '../../client/servers/colocated.ts'
-import { runApprovedCachedReadModel } from '../cached-query.ts'
+import { defineCachedRead, type CachedReadDb } from '../cached-read.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 
 export type ServersListRow = {
@@ -39,7 +34,7 @@ export type ServersListDisplayPayload = {
  * Approved cached read model: servers tab list display/projection data.
  *
  * **Cached connection (`readDb` / `HYPERDRIVE_CACHED` / Redis):** only statement #1
- * — the list-rows `SELECT` — runs here via `loadCachedListRows`. Do not move
+ * — the list-rows `SELECT` — runs here via `serversListCachedRead`. Do not move
  * presence, colocated, or authorization queries onto `readDb`.
  *
  * **Primary connection (`db` / `HYPERDRIVE`):** statement #2 — one shared
@@ -64,15 +59,10 @@ export type ServersListDisplayPayload = {
  * before it is returned (and therefore before it is cached), so a secret-bearing
  * key left on the jsonb by an older control plane never reaches Redis.
  */
-async function loadCachedListRows(
-  readDb: Db,
-  visibleIds: string[],
-): Promise<ServersListRow[]> {
-  if (visibleIds.length === 0) {
-    return []
-  }
+type ListInput = { organizationId: string; ids: string[] }
 
-  const rows = await readDb
+function buildListRowsQuery(readDb: CachedReadDb, input: ListInput) {
+  return readDb
     .select({
       id: server.id,
       name: server.name,
@@ -84,22 +74,34 @@ async function loadCachedListRows(
     })
     .from(server)
     .leftJoin(license, eq(license.serverId, server.id))
-    .where(inArray(server.id, visibleIds))
+    .where(inArray(server.id, input.ids))
     .orderBy(server.createdAt)
-
-  // Redact before returning, so the cache stores the redacted rows: what goes
-  // into Redis is what goes to the client, and neither ever holds a
-  // secret-bearing `options` key (see `REDACTED_SERVER_OPTION_KEYS`).
-  return (rows as ServersListRow[]).map((row) => ({
-    ...row,
-    options: redactServerOptions(row.options),
-  }))
 }
+
+/**
+ * Registered cached read: statement #1 above. Redaction runs on the result, so
+ * the self-hosted copy stores the redacted rows (what goes into Redis is what
+ * goes to the client).
+ */
+export const serversListCachedRead = defineCachedRead({
+  id: 'servers-list',
+  scope: (input: ListInput) => [input.organizationId],
+  build: (readDb: CachedReadDb, input: ListInput) => buildListRowsQuery(readDb, input),
+  transform: (rows, _input: ListInput): ServersListRow[] =>
+    (rows as ServersListRow[]).map((row) => ({
+      ...row,
+      options: redactServerOptions(row.options),
+    })),
+  samples: [
+    { organizationId: 'org-1', ids: ['srv-1'] },
+    { organizationId: 'org-1', ids: ['srv-1', 'srv-2', 'srv-3'] },
+  ],
+})
 
 async function resolveServersListEnrichment(
   db: Db,
   registry: DaemonCellRegistry | undefined,
-  serverIds: string[],
+  serverIds: string[]
 ): Promise<Pick<ServersListDisplayPayload, 'presence' | 'colocatedIds'>> {
   const rows = await loadServerRowsForFleetPresence(db, serverIds)
   const preloaded = {
@@ -127,7 +129,7 @@ export async function cachedServersListReadModel(
     userId: string
     organizationId: string
     visibleIds: string[]
-  },
+  }
 ): Promise<ServersListDisplayPayload> {
   const db = getDb(c)
   if (!db) {
@@ -135,19 +137,13 @@ export async function cachedServersListReadModel(
   }
 
   const { organizationId, visibleIds } = opts
-  // Canonical order for both the cache key and the cached IN (...) query.
+  // Canonical order so the same set of ids always builds the same statement.
   const sortedVisibleIds = [...visibleIds].sort((a, b) => a.localeCompare(b))
-  const visibleIdsKey = sortedVisibleIds.join(',')
   const registry = getDaemonCellRegistry(c)
-  const cache = getQueryCache(c)
-
-  const rows = await runApprovedCachedReadModel(
-    cache,
-    db,
-    'servers-list',
-    [organizationId, visibleIdsKey],
-    (readDb) => loadCachedListRows(readDb, sortedVisibleIds),
-  )
+  const rows =
+    sortedVisibleIds.length === 0
+      ? []
+      : await serversListCachedRead(c, { organizationId, ids: sortedVisibleIds })
 
   if (rows.length === 0) {
     return { rows: [], presence: [], colocatedIds: [] }

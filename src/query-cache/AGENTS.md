@@ -6,6 +6,10 @@ Read-through cache for **reviewed, read-only** Postgres read models. Permission 
 
 ## Rules
 
+- A cached read is declared with `defineCachedRead` in `read-models/`. Its `build` receives `CachedReadDb` (only `select()`), so it cannot write; the helper reads the statement text and parameters with `toSQL()` before anything is sent and derives the cache key from them, so an input that changes the answer cannot be left out of the key.
+- Each read model has an entry in `approved-read-models.ts` with the fingerprint of its one reviewed statement (`statementFingerprint`: whitespace collapsed, `IN (...)` lists reduced to one placeholder, parameters renumbered). Changing a statement changes the fingerprint; `cached-reads.test.ts` fails until the new text is reviewed and the fingerprint updated on purpose. A read whose statement does not match runs on the primary connection and is never cached.
+- The cached client (`withCacheableUnsafe`) refuses, before sending, anything that is not a single read-only `SELECT` without a volatile function or locking clause (`statement-guard.ts`), anything not in the registry, transactions, listeners and the tagged-template form. The Hyperdrive backend then re-runs the same `SELECT` once on the primary connection; so does a closed cached connection. A closed primary connection is not swallowed.
+- `scripts/check-query-cache-boundaries.mjs` (`pnpm check:query-cache-boundaries`) fails the build if routes, cron, the queue consumer, Durable Objects or the daemon mention the cached binding, the cached client or `runApprovedCachedReadModel`.
 - Only loaders registered in `approved-read-models.ts` and implemented under `read-models/` may call the cached database.
 - Loaders must use **read-only `SELECT` statements** only: no transactions, mutations, `INSERT`/`UPDATE`/`DELETE`, or cache-bypass predicates.
 - Do not use PostgreSQL **stable** or **volatile** functions (`now()`, `random()`, `nextval()`, `clock_timestamp()`, etc.) in cached SQL — they make Hyperdrive results uncacheable or stale.
@@ -22,7 +26,7 @@ Read-through cache for **reviewed, read-only** Postgres read models. Permission 
 
 Workers must **not** fall back to the primary Hyperdrive binding as the cached connection. `resolveWorkersCachedDb()` returns a database only when `HYPERDRIVE_CACHED` is present; otherwise `resolveWorkersQueryCache` uses passthrough (no Hyperdrive caching).
 
-On Workers, Hyperdrive only caches **named prepared statements**. Drizzle sends every query through postgres.js `unsafe()`, which defaults to `prepare: false` regardless of the client-level `prepare: true`, so the cached client is built with `preparedStatements: true` (`withPreparedUnsafe` in `src/db/connection.ts`, wired in `resolveWorkersCachedDb`), which passes `{ prepare: true }` per query. The primary `HYPERDRIVE` client stays unprepared. `PG_OPTS_WORKERS` also sets `fetch_types: false` so postgres.js does not run a `pg_type` lookup on every new connection. Source-scan and wrapper tests in `src/db/connection.test.ts` pin all three. See **Workers Hyperdrive** in `../../AGENTS.md`. Expect one distinct statement per `IN (...)` list length in `servers-list`.
+On Workers, Hyperdrive only caches **named prepared statements**. Drizzle sends every query through postgres.js `unsafe()`, which defaults to `prepare: false` regardless of the client-level `prepare: true`, so the cached client is built with `preparedStatements: true` (`withCacheableUnsafe` in `cacheable-client.ts`, wired in `resolveWorkersCachedDb`), which passes `{ prepare: true }` per query. The primary `HYPERDRIVE` client stays unprepared. `PG_OPTS_WORKERS` also sets `fetch_types: false` so postgres.js does not run a `pg_type` lookup on every new connection. Source-scan and wrapper tests in `src/db/connection.test.ts` pin all three. See **Workers Hyperdrive** in `../../AGENTS.md`. Expect one distinct statement per `IN (...)` list length in `servers-list`.
 
 ### Hyperdrive binding ids
 
@@ -31,6 +35,10 @@ On Workers, Hyperdrive only caches **named prepared statements**. Drizzle sends 
 | `live` | real id (`536236e3…d61391`, `prod-cached`) | Caching enabled against prod Postgres |
 | `testing` | real id (dedicated `testing-cached` config) | Must point at the testing Postgres origin with caching enabled — **not** the placeholder (`0000…dev0`) and **not** the primary `HYPERDRIVE` id. Create or resolve via `CLOUDFLARE_API_TOKEN=… ./scripts/ensure-testing-hyperdrive-cached.sh --write-wrangler` when missing. |
 | top-level / `wrangler dev` / vitest | placeholder (`0000…dev0`) | Local dev/tests use passthrough when the binding is absent or placeholder. |
+
+## Counters and the request log line
+
+Each Workers request has a `DbUsage` (`db-usage.ts`) fed by a behaviour-neutral count on the primary client and the cached client. When a request that touched the database ends, `workers.ts` writes one `db-usage` line: route, each read model with how it was served (`cached`, `primary`, `fallback`), statements on the cached and primary connections, how many primary statements the cached connection would have accepted (`primaryCacheable`; a fallback re-run is not counted), and the fallback count. Requests that used a cached read model and every fallback are always logged; other requests 1 in 20. Self-hosted (Deno) has no per-request counts.
 
 ## Cache backends (no read-model logic)
 
