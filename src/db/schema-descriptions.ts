@@ -876,8 +876,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     columns: {
       environment_id:
         'The environment that uses the common asset; it may belong to any project of the organization.',
-      service_id:
-        'The common service being used; exactly one of service_id and storage_id is set.',
+      service_id: 'The common service being used; exactly one of service_id and storage_id is set.',
       storage_id: 'The common volume being used; exactly one of service_id and storage_id is set.',
     },
   },

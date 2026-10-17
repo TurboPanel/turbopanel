@@ -86,7 +86,7 @@ export type SerializedStorage = Omit<StorageSelectRow, 'principalUsername' | 'is
 function resolveCopyPath(
   copy: CopySelectRow,
   storageId: string,
-  principalUsername: string | null,
+  principalUsername: string | null
 ): string | null {
   if (typeof copy.path === 'string' && copy.path.length > 0) {
     return copy.path
@@ -104,7 +104,7 @@ function resolveCopyPath(
 export function serializeCopy(
   copy: CopySelectRow,
   storageId: string,
-  principalUsername: string | null,
+  principalUsername: string | null
 ): SerializedCopy {
   return {
     ...copy,
@@ -119,11 +119,9 @@ export function serializeMount(row: MountSelectRow): SerializedMount {
 export function serializeStorage(
   row: StorageSelectRow,
   copies: CopySelectRow[] = [],
-  mounts: MountSelectRow[] = [],
+  mounts: MountSelectRow[] = []
 ): SerializedStorage {
-  const serializedCopies = copies.map((copy) =>
-    serializeCopy(copy, row.id, row.principalUsername),
-  )
+  const serializedCopies = copies.map((copy) => serializeCopy(copy, row.id, row.principalUsername))
   return {
     id: row.id,
     organizationId: row.organizationId,

@@ -34,6 +34,8 @@ export function parseFolderOptions(body: Record<string, unknown>): FolderOptions
 /** True when the body names any of the folder fields. */
 export function hasFolderOptions(options: FolderOptions): boolean {
   return (
-    options.slug !== undefined || options.directoryName !== undefined || options.common !== undefined
+    options.slug !== undefined ||
+    options.directoryName !== undefined ||
+    options.common !== undefined
   )
 }

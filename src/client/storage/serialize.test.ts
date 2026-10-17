@@ -80,7 +80,7 @@ test('serializeCopy derives principal volume path for path copies', () => {
   const loc = pathLocation({ storageId, path: null })
   assertEquals(
     serializeCopy(loc, storageId, 'app').resolvedSourcePath,
-    principalVolumePath('app', storageId),
+    principalVolumePath('app', storageId)
   )
 })
 
@@ -91,10 +91,7 @@ test('serializeCopy returns null when path location lacks principal username', (
 
 test('serializeCopy returns null for docker copies without path', () => {
   const loc = pathLocation({ provider: 'docker', path: null })
-  assertEquals(
-    serializeCopy(loc, loc.storageId, 'app').resolvedSourcePath,
-    null,
-  )
+  assertEquals(serializeCopy(loc, loc.storageId, 'app').resolvedSourcePath, null)
 })
 
 test('serializeStorage exposes the folder name and whether the volume is shared', () => {

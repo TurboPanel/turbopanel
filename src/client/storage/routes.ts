@@ -8,7 +8,15 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db/connection.ts'
-import { environment, service, storageCopy, mount, principal, secret, storage } from '../../db/schema.ts'
+import {
+  environment,
+  service,
+  storageCopy,
+  mount,
+  principal,
+  secret,
+  storage,
+} from '../../db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanManageOr403,
@@ -528,7 +536,8 @@ async function createStorageRecord(
     return c.json(
       {
         error: 'folder_options_not_supported',
-        message: 'Only volumes and directories have a folder. Remove slug, directoryName and common.',
+        message:
+          'Only volumes and directories have a folder. Remove slug, directoryName and common.',
       },
       400
     )

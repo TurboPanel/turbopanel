@@ -29,7 +29,8 @@ function firstHostname(
     if (hosting.protocol === 'tcp' || hosting.protocol === 'udp') continue
     const matches =
       (key.serviceId !== undefined && hosting.serviceId === key.serviceId) ||
-      (key.composeServiceName !== undefined && hosting.composeServiceName === key.composeServiceName)
+      (key.composeServiceName !== undefined &&
+        hosting.composeServiceName === key.composeServiceName)
     if (!matches) continue
     const name = hosting.hostnames.find((entry) => entry.length > 0)
     if (name !== undefined) return name
@@ -40,53 +41,43 @@ function firstHostname(
 /** The services of one server's deploy that run on the host, each once. */
 export function servicesNeedingFolders(prepared: PreparedFolderInputs): PlanServiceInput[] {
   const byKey = new Map<string, PlanServiceInput>()
-  const add = (entry: PlanServiceInput, key: string) => {
+  // The same service shows up as a site, a native app and a source; one entry keeps what each knows.
+  const add = (key: string, entry: PlanServiceInput) => {
     const known = byKey.get(key)
-    byKey.set(key, { ...known, ...entry, principalId: entry.principalId ?? known?.principalId })
+    const principalId = entry.principalId ?? known?.principalId
+    const domain = entry.domain ?? known?.domain
+    byKey.set(key, {
+      ...known,
+      ...entry,
+      ...(principalId === undefined ? {} : { principalId }),
+      ...(domain == null ? {} : { domain }),
+    })
   }
   for (const site of prepared.sites) {
-    add(
-      {
-        composeServiceName: site.composeServiceName,
-        ...(site.principal ? { principalId: site.principal.principalId } : {}),
-        domain: firstHostname(prepared.hostings, { composeServiceName: site.composeServiceName }),
-      },
-      site.composeServiceName
-    )
+    add(site.composeServiceName, {
+      composeServiceName: site.composeServiceName,
+      ...(site.principal ? { principalId: site.principal.principalId } : {}),
+      domain: firstHostname(prepared.hostings, { composeServiceName: site.composeServiceName }),
+    })
   }
   for (const app of prepared.nativeAppServices) {
-    add(
-      {
-        composeServiceName: app.composeServiceName,
+    add(app.composeServiceName, {
+      composeServiceName: app.composeServiceName,
+      serviceId: app.serviceId,
+      domain: firstHostname(prepared.hostings, {
         serviceId: app.serviceId,
-        domain: firstHostname(prepared.hostings, {
-          serviceId: app.serviceId,
-          composeServiceName: app.composeServiceName,
-        }),
-      },
-      app.composeServiceName
-    )
+        composeServiceName: app.composeServiceName,
+      }),
+    })
   }
   for (const source of prepared.sourceMaterial) {
-    add(
-      {
-        composeServiceName: source.composeServiceName,
-        ...(source.releaseServiceId ? { serviceId: source.releaseServiceId } : {}),
-        domain: firstHostname(prepared.hostings, {
-          composeServiceName: source.composeServiceName,
-        }),
-      },
-      source.composeServiceName
-    )
+    add(source.composeServiceName, {
+      composeServiceName: source.composeServiceName,
+      ...(source.releaseServiceId ? { serviceId: source.releaseServiceId } : {}),
+      domain: firstHostname(prepared.hostings, { composeServiceName: source.composeServiceName }),
+    })
   }
-  return [...byKey.values()].map((entry) =>
-    entry.principalId === undefined ? stripPrincipal(entry) : entry
-  )
-}
-
-function stripPrincipal(entry: PlanServiceInput): PlanServiceInput {
-  const { principalId: _unused, ...rest } = entry
-  return rest
+  return [...byKey.values()]
 }
 
 /** Volumes of one server's deploy that live in a site owner's tree. */

@@ -90,7 +90,12 @@ export async function updateEnvironmentChecked(
       const { total } = await listEnvironmentFolders(tx, environmentId, 0)
       if (total > 0) {
         return c.json(
-          await blockedBody(tx, environmentId, ENVIRONMENT_SERVER_LOCKED_ERROR, SERVER_LOCKED_MESSAGE),
+          await blockedBody(
+            tx,
+            environmentId,
+            ENVIRONMENT_SERVER_LOCKED_ERROR,
+            SERVER_LOCKED_MESSAGE
+          ),
           409
         )
       }

@@ -24,10 +24,7 @@ import {
   requireStringField,
 } from '../shared.ts'
 import { respondAfterHierarchyDelete } from '../hierarchy-delete.ts'
-import {
-  FolderPlanError,
-  markAssetFoldersRemoving,
-} from '../../features/folders/allocate.ts'
+import { FolderPlanError, markAssetFoldersRemoving } from '../../features/folders/allocate.ts'
 import { parseFolderOptions } from '../../features/folders/options.ts'
 import { SCOPE_LOCKED_ERROR, SERVICE_SLUG_LOCKED_ERROR } from '../../features/folders/records.ts'
 import { applyServiceFolderSettings } from '../../features/folders/service-settings.ts'

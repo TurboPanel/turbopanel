@@ -19,7 +19,7 @@ type RetentionTx = Pick<Db, 'delete' | 'select' | 'update'>
  */
 export async function applyStorageRetentionOnParentDelete(
   tx: RetentionTx,
-  scope: StorageRetentionScope,
+  scope: StorageRetentionScope
 ): Promise<void> {
   const serviceIds = scope.serviceIds ?? []
   if (serviceIds.length > 0) {
@@ -37,7 +37,7 @@ export async function applyStorageRetentionOnParentDelete(
 /** Ids of the `retention = 'delete'` volumes that go when these parents are deleted. */
 export async function listStorageIdsDeletedWith(
   tx: Pick<Db, 'select'>,
-  scope: StorageRetentionScope,
+  scope: StorageRetentionScope
 ): Promise<string[]> {
   const serviceIds = scope.serviceIds ?? []
   const predicates = []

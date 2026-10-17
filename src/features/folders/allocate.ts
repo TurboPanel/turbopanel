@@ -14,7 +14,11 @@
  * kind and name is the final guard (`uniq_folder_location`).
  */
 import { and, eq, inArray, isNull, like, ne, or, sql } from 'drizzle-orm'
-import { COMMON_SCOPE, type FolderRefParts, isValidEnvironmentName } from '../../contracts/directory-names.ts'
+import {
+  COMMON_SCOPE,
+  type FolderRefParts,
+  isValidEnvironmentName,
+} from '../../contracts/directory-names.ts'
 import type { Db } from '../../db/connection.ts'
 import {
   environment,
@@ -25,7 +29,10 @@ import {
   storage,
   tenancy,
 } from '../../db/schema.ts'
-import { parseOrganizationOptions, resolveDirectoryNames } from '../organizations/organization-options.ts'
+import {
+  parseOrganizationOptions,
+  resolveDirectoryNames,
+} from '../organizations/organization-options.ts'
 import { defaultFolderBase, resolveDirectoryNameChoice, resolveFolderName } from './names.ts'
 import { lockEnvironmentRow, type Reader } from './records.ts'
 import type { DirectoryNameChoice } from './names.ts'
@@ -60,7 +67,8 @@ export class FolderPlanError extends Error {
     super(PLAN_ERROR_MESSAGES[code])
     this.name = 'FolderPlanError'
     this.code = code
-    this.status = code === 'invalid_directory_name' || code === 'directory_name_mode_forbidden' ? 400 : 409
+    this.status =
+      code === 'invalid_directory_name' || code === 'directory_name_mode_forbidden' ? 400 : 409
   }
 
   body(): { error: FolderPlanErrorCode; message: string } {
@@ -107,7 +115,10 @@ async function readDirectoryNameModeLocked(
 }
 
 /** Set `directoryNamesLocked` on the organization (idempotent, one atomic jsonb write). */
-export async function lockDirectoryNames(tx: Pick<Db, 'update'>, organizationId: string): Promise<void> {
+export async function lockDirectoryNames(
+  tx: Pick<Db, 'update'>,
+  organizationId: string
+): Promise<void> {
   await tx
     .update(organization)
     .set({
@@ -232,8 +243,7 @@ export async function settleFolderName(
     label: input.label ?? null,
     assetId: input.assetId,
   })
-  const probe =
-    resolution.choice === 'uuid' ? input.assetId : (input.request.typed ?? base)
+  const probe = resolution.choice === 'uuid' ? input.assetId : (input.request.typed ?? base)
   const taken =
     input.principalId === null
       ? new Set<string>()
@@ -288,7 +298,10 @@ export type PlanDeployFoldersInput = {
 
 type OwnerRow = { id: string; username: string }
 
-async function loadOwners(tx: Reader, principalIds: readonly string[]): Promise<Map<string, OwnerRow>> {
+async function loadOwners(
+  tx: Reader,
+  principalIds: readonly string[]
+): Promise<Map<string, OwnerRow>> {
   const ids = [...new Set(principalIds)]
   if (ids.length === 0) return new Map()
   const rows = await tx
@@ -424,7 +437,10 @@ async function collectServiceTargets(
     return row ? [{ entry, row }] : []
   })
   const needOwner = resolved.filter(({ entry }) => entry.principalId === undefined)
-  const sole = await soleTenancyOwners(tx, needOwner.map(({ row }) => row.id))
+  const sole = await soleTenancyOwners(
+    tx,
+    needOwner.map(({ row }) => row.id)
+  )
   const owners = await loadOwners(tx, [
     ...resolved.flatMap(({ entry }) => (entry.principalId ? [entry.principalId] : [])),
     ...sole.values(),
@@ -449,7 +465,10 @@ async function collectServiceTargets(
         })
       ).slug
     if (row.slug === null) {
-      await tx.update(service).set({ slug }).where(and(eq(service.id, row.id), isNull(service.slug)))
+      await tx
+        .update(service)
+        .set({ slug })
+        .where(and(eq(service.id, row.id), isNull(service.slug)))
     }
     targets.push({
       kind: 'service',
@@ -507,7 +526,10 @@ async function collectVolumeTargets(
         })
       ).slug
     if (row.slug === null) {
-      await tx.update(storage).set({ slug }).where(and(eq(storage.id, row.id), isNull(storage.slug)))
+      await tx
+        .update(storage)
+        .set({ slug })
+        .where(and(eq(storage.id, row.id), isNull(storage.slug)))
     }
     targets.push({
       kind: 'volume',
@@ -575,7 +597,9 @@ export async function planVolumeFolder(
       slug: storage.slug,
       isCommon: storage.isCommon,
       principalId: storage.principalId,
-      environmentId: sql<string | null>`COALESCE(${storage.environmentId}, ${service.environmentId})`,
+      environmentId: sql<
+        string | null
+      >`COALESCE(${storage.environmentId}, ${service.environmentId})`,
     })
     .from(storage)
     .leftJoin(service, eq(service.id, storage.serviceId))
@@ -612,7 +636,10 @@ export async function planVolumeFolder(
 // -- Moving rows along their states ------------------------------------------
 
 /** A deploy succeeded: the rows it planned are on the host. */
-export async function markFoldersPresent(db: Pick<Db, 'update'>, folderIds: readonly string[]): Promise<void> {
+export async function markFoldersPresent(
+  db: Pick<Db, 'update'>,
+  folderIds: readonly string[]
+): Promise<void> {
   if (folderIds.length === 0) return
   await db
     .update(folder)
@@ -688,7 +715,13 @@ export async function markServerServiceFoldersRemoving(
  */
 export async function confirmFolderRemoved(
   db: Pick<Db, 'delete'>,
-  where: { serverId: string; principalId: string; scope: string; kind: FolderKindValue; slug: string }
+  where: {
+    serverId: string
+    principalId: string
+    scope: string
+    kind: FolderKindValue
+    slug: string
+  }
 ): Promise<boolean> {
   const deleted = await db
     .delete(folder)

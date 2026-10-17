@@ -43,15 +43,7 @@ export const storageSchemas = {
   },
   CopyRow: {
     type: 'object',
-    required: [
-      'id',
-      'storageId',
-      'provider',
-      'role',
-      'state',
-      'createdAt',
-      'updatedAt',
-    ],
+    required: ['id', 'storageId', 'provider', 'role', 'state', 'createdAt', 'updatedAt'],
     properties: {
       id: { type: 'string' },
       storageId: { type: 'string' },
@@ -65,8 +57,7 @@ export const storageSchemas = {
       generation: { type: 'integer' },
       resolvedSourcePath: {
         type: ['string', 'null'],
-        description:
-          'Explicit path, else principal volume path for path copies, else null',
+        description: 'Explicit path, else principal volume path for path copies, else null',
       },
       metadata: { type: 'object', nullable: true },
       options: { type: 'object', nullable: true },
@@ -114,6 +105,18 @@ export const storageSchemas = {
       retention: { $ref: '#/components/schemas/StorageRetention' },
       generation: { type: 'integer' },
       principalId: { type: ['string', 'null'] },
+      slug: {
+        type: ['string', 'null'],
+        description:
+          "Folder name under the site owner's tree (`<scope>/volumes/<slug>`) for volumes and " +
+          'directories. Locked once a folder exists for it.',
+      },
+      common: {
+        type: 'boolean',
+        description:
+          'True when the volume is in the `common` scope shared by environments of any project ' +
+          'that use the same site owner. Chosen at creation; never changes.',
+      },
       metadata: { type: 'object', nullable: true },
       options: { type: 'object', nullable: true },
       copies: {
@@ -229,6 +232,25 @@ export const storageSchemas = {
       accessMode: { $ref: '#/components/schemas/StorageAccessMode' },
       retention: { $ref: '#/components/schemas/StorageRetention' },
       principalId: { type: 'string' },
+      slug: {
+        type: 'string',
+        description:
+          'Folder name for a volume or directory; defaults to one made from `name`. A typed name ' +
+          'is never suffixed: **400** `invalid_directory_name`; **409** `directory_name_taken`.',
+      },
+      directoryName: {
+        type: 'string',
+        enum: ['slug', 'uuid'],
+        description:
+          'Which kind of name; only accepted when the organization allows both ' +
+          '(**400** `directory_name_mode_forbidden` otherwise).',
+      },
+      common: {
+        type: 'boolean',
+        description:
+          'Place the volume in the shared `common` scope. Decided here and locked. A volume ' +
+          'whose parent is not an environment (organization, workspace, project) is always shared.',
+      },
       content: {
         type: 'string',
         description: 'Optional file bytes (max 256 KiB); sealed at rest',
@@ -245,7 +267,11 @@ export const storageSchemas = {
       name: { type: 'string' },
       accessMode: { $ref: '#/components/schemas/StorageAccessMode' },
       retention: { $ref: '#/components/schemas/StorageRetention' },
-      principalId: { type: ['string', 'null'] },
+      principalId: {
+        type: ['string', 'null'],
+        description:
+          'The site owner. **409** `storage_slug_locked` once the volume has a folder on a server.',
+      },
       content: { type: 'string' },
       metadata: { type: 'object' },
       options: { type: 'object' },

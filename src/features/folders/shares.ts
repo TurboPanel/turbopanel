@@ -85,7 +85,10 @@ function baseSelect(db: Reader) {
 }
 
 /** The common assets an environment uses, oldest first. */
-export async function listEnvironmentShares(db: Reader, environmentId: string): Promise<SharedUse[]> {
+export async function listEnvironmentShares(
+  db: Reader,
+  environmentId: string
+): Promise<SharedUse[]> {
   const rows = await baseSelect(db)
     .where(eq(share.environmentId, environmentId))
     .orderBy(share.createdAt, share.id)

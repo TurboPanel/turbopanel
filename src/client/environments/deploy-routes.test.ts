@@ -44,7 +44,13 @@ import {
   variable,
   workspace,
 } from '../../db/schema.ts'
-import { getCommandMetadata, transitionCommand } from '../../features/commands/command-records.ts'
+import {
+  getCommandDispatchPayload,
+  getCommandMetadata,
+  transitionCommand,
+} from '../../features/commands/command-records.ts'
+import { upsertDeploymentTargets } from '../../features/deploy/deployment-records.ts'
+import { resolveEnvironmentSiteReleases } from './site-releases.ts'
 import {
   enableOrganizationFabric,
   getOrganizationFabric,
@@ -931,6 +937,17 @@ test('POST /environments/:id/deploy records a pending placement for each compose
       assertEquals(planned, [
         { state: 'planned', scope: 'production', kind: 'service', slug: 'site', environmentId },
       ])
+
+      // The command remembers which rows it planned, so its success can mark them present.
+      const metadata = await getCommandMetadata(db, commandQueue.envelopes[0]!.commandId)
+      const folderRows = await db
+        .select({ id: folder.id })
+        .from(folder)
+        .where(eq(folder.serverId, serverId))
+      assertEquals(
+        metadata?.folderIds,
+        folderRows.map((row) => row.id)
+      )
 
       // The deploy created the principal and its tenancy; the fixture only
       // knows the rows it made itself, and `tenancy.service_id` is RESTRICT.
@@ -2536,6 +2553,48 @@ test('POST /environments/:id/deploy: a first-batch server that cannot be reached
         )
       }
     )
+  })
+})
+
+test('an explicit stop names no release tree, so every folder stays, and delete teardown still does', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const recorded = [
+      {
+        serviceId: crypto.randomUUID(),
+        username: 'appuser',
+        folder: { owner: 'appuser', scope: 'production', slug: 'example.com' },
+      },
+    ]
+    await ctx.db
+      .update(environment)
+      .set({ serverId: ctx.serverId })
+      .where(eq(environment.id, ctx.environmentId))
+    await upsertDeploymentTargets(ctx.db, {
+      environmentId: ctx.environmentId,
+      targets: [
+        {
+          serverId: ctx.serverId,
+          desiredGeneration: 1,
+          status: 'applied',
+          options: { secretPlan: [], siteReleases: recorded },
+        },
+      ],
+    })
+
+    const stopped = await postEnvironment(ctx as unknown as TwoServerCtx, 'stop')
+    assertEquals(stopped.status, 200)
+    const stopCommand = ctx.commandQueue.envelopes.find(
+      (envelope) => envelope.type === 'environment.stop'
+    )
+    const payload = (await getCommandDispatchPayload(ctx.db, stopCommand!.commandId)) as Record<
+      string,
+      unknown
+    >
+    assertEquals('siteReleases' in payload, false)
+
+    // The same record is what a delete reclaims, with the folder components.
+    assertEquals(await resolveEnvironmentSiteReleases(ctx.db, ctx.environmentId), recorded)
+    await ctx.db.delete(deployment).where(eq(deployment.environmentId, ctx.environmentId))
   })
 })
 

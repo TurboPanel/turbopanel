@@ -21,7 +21,11 @@ import {
   tenancy,
 } from '../../db/schema.ts'
 import { markAssetFoldersRemoving } from '../folders/allocate.ts'
-import { COMMON_ASSET_IN_USE_ERROR, inUseBody, listUsesOfAssets } from '../folders/shares.ts'
+import {
+  type COMMON_ASSET_IN_USE_ERROR,
+  inUseBody,
+  listUsesOfAssets,
+} from '../folders/shares.ts'
 import {
   applyStorageRetentionOnParentDelete,
   listStorageIdsDeletedWith,
@@ -198,13 +202,15 @@ async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<voi
   // using an asset that goes with them (a delete that got this far has been checked;
   // a forget has no one to ask), so no asset meets a row that names it.
   const goneStorageIds = await listStorageIdsDeletedWith(tx, retentionScope)
-  await tx.delete(share).where(
-    or(
-      inArray(share.environmentId, [...environmentIds]),
-      serviceIds.length > 0 ? inArray(share.serviceId, serviceIds) : undefined,
-      goneStorageIds.length > 0 ? inArray(share.storageId, goneStorageIds) : undefined
+  await tx
+    .delete(share)
+    .where(
+      or(
+        inArray(share.environmentId, [...environmentIds]),
+        serviceIds.length > 0 ? inArray(share.serviceId, serviceIds) : undefined,
+        goneStorageIds.length > 0 ? inArray(share.storageId, goneStorageIds) : undefined
+      )
     )
-  )
   await applyStorageRetentionOnParentDelete(tx, retentionScope)
   // `network.environment_id` has no FK, so compose rows are not covered by cascade.
   await purgeEnvironmentsComposeNetworks(tx, environmentIds)
@@ -268,7 +274,11 @@ async function loadEnvironmentChildren(
  */
 async function sharedAssetsStillUsed(
   db: Db,
-  scope: { projectIds?: readonly string[]; environmentIds: readonly string[]; serviceIds: readonly string[] }
+  scope: {
+    projectIds?: readonly string[]
+    environmentIds: readonly string[]
+    serviceIds: readonly string[]
+  }
 ): Promise<{ error: typeof COMMON_ASSET_IN_USE_ERROR; detail: Record<string, unknown> } | null> {
   const storageIds = await listStorageIdsDeletedWith(db, scope)
   const uses = await listUsesOfAssets(

@@ -15,7 +15,7 @@
 import { and, eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { environment, service, tenancy } from '../../db/schema.ts'
-import { type FolderOptions } from './options.ts'
+import type { FolderOptions } from './options.ts'
 import { readDirectoryNameMode, scopeFor, settleFolderName } from './allocate.ts'
 import { lockEnvironmentRow, serviceHasFolder } from './records.ts'
 import { listUsesOfAssets } from './shares.ts'
@@ -82,9 +82,7 @@ export async function applyServiceFolderSettings(
     scope,
     request: {
       ...(typed === undefined ? {} : { typed }),
-      ...(input.options.directoryName === undefined
-        ? {}
-        : { choice: input.options.directoryName }),
+      ...(input.options.directoryName === undefined ? {} : { choice: input.options.directoryName }),
     },
     label: row.name ?? row.composeServiceName,
   })

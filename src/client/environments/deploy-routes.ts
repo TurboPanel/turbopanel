@@ -78,7 +78,11 @@ import {
   planDeployFolders,
 } from '../../features/folders/allocate.ts'
 import { lockEnvironmentRow } from '../../features/folders/records.ts'
-import { servicesNeedingFolders, volumesNeedingFolders, withVolumeFolders } from './deploy-folders.ts'
+import {
+  servicesNeedingFolders,
+  volumesNeedingFolders,
+  withVolumeFolders,
+} from './deploy-folders.ts'
 import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
 import {
   type CommandContextRelease,
