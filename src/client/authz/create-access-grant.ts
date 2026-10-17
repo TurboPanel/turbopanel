@@ -33,8 +33,7 @@ import {
   type SubjectType,
 } from './catalog.ts'
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export type CreateAccessGrantInput = {
   actorType: SubjectType
@@ -55,14 +54,14 @@ function isUuid(value: string): boolean {
 const ACCESS_GRANT_ENTITY_TYPES = ['organization', 'team'] as const
 
 export function isAccessGrantEntityType(
-  entityType: string,
+  entityType: string
 ): entityType is (typeof ACCESS_GRANT_ENTITY_TYPES)[number] {
   return entityType === 'organization' || entityType === 'team'
 }
 
 export function validatePermissionEntityCompatibility(
   permissionKey: PermissionKey,
-  entityType: string,
+  entityType: string
 ): { ok: true } | { ok: false; error: string } {
   if (!isGrantablePermissionKey(permissionKey)) {
     return {
@@ -88,10 +87,7 @@ export function validatePermissionEntityCompatibility(
     }
   }
 
-  if (
-    (permissionKey === 'team:own' || permissionKey === 'team:manage') &&
-    entityType !== 'team'
-  ) {
+  if ((permissionKey === 'team:own' || permissionKey === 'team:manage') && entityType !== 'team') {
     return {
       ok: false,
       error: `${permissionKey} may only be granted on team entities`,
@@ -104,7 +100,7 @@ export function validatePermissionEntityCompatibility(
 export async function verifyEntityExists(
   db: Db,
   entityType: string,
-  entityId: string,
+  entityId: string
 ): Promise<boolean> {
   switch (entityType) {
     case 'organization': {
@@ -116,11 +112,7 @@ export async function verifyEntityExists(
       return rows.length > 0
     }
     case 'team': {
-      const rows = await db
-        .select({ id: team.id })
-        .from(team)
-        .where(eq(team.id, entityId))
-        .limit(1)
+      const rows = await db.select({ id: team.id }).from(team).where(eq(team.id, entityId)).limit(1)
       return rows.length > 0
     }
     case 'workspace': {
@@ -180,11 +172,7 @@ export async function verifyEntityExists(
       return rows.length > 0
     }
     case 'tls': {
-      const rows = await db
-        .select({ id: tls.id })
-        .from(tls)
-        .where(eq(tls.id, entityId))
-        .limit(1)
+      const rows = await db.select({ id: tls.id }).from(tls).where(eq(tls.id, entityId)).limit(1)
       return rows.length > 0
     }
     case 'managed': {
@@ -252,11 +240,7 @@ export async function verifyEntityExists(
       return rows.length > 0
     }
     case 'ip': {
-      const rows = await db
-        .select({ id: ip.id })
-        .from(ip)
-        .where(eq(ip.id, entityId))
-        .limit(1)
+      const rows = await db.select({ id: ip.id }).from(ip).where(eq(ip.id, entityId)).limit(1)
       return rows.length > 0
     }
     default:
@@ -265,15 +249,14 @@ export async function verifyEntityExists(
 }
 
 export type ValidateGrantEntityTargetResult =
-  | { ok: true; organizationId: string }
-  | { ok: false; status: 400 | 404; error: string }
+  { ok: true; organizationId: string } | { ok: false; status: 400 | 404; error: string }
 
 /** Confirm the entity exists and optionally belongs to the expected organization. */
 export async function validateGrantEntityTarget(
   db: Db,
   entityType: string,
   entityId: string,
-  expectedOrganizationId?: string,
+  expectedOrganizationId?: string
 ): Promise<ValidateGrantEntityTargetResult> {
   if (!isGrantEntityType(entityType)) {
     return { ok: false, status: 404, error: 'Entity not found' }
@@ -293,10 +276,7 @@ export async function validateGrantEntityTarget(
     return { ok: false, status: 404, error: 'Entity not found' }
   }
 
-  if (
-    expectedOrganizationId !== undefined &&
-    organizationId !== expectedOrganizationId
-  ) {
+  if (expectedOrganizationId !== undefined && organizationId !== expectedOrganizationId) {
     return {
       ok: false,
       status: 400,
@@ -310,7 +290,7 @@ export async function validateGrantEntityTarget(
 export async function resolveEntityOrganizationId(
   db: Db,
   entityType: string,
-  entityId: string,
+  entityId: string
 ): Promise<string | null> {
   if (!isUuid(entityId)) return null
   switch (entityType) {
@@ -534,14 +514,10 @@ async function resolveActor(
   db: Db,
   actorType: CreateAccessGrantInput['actorType'],
   actorId: string,
-  entityOrganizationId: string,
+  entityOrganizationId: string
 ): Promise<{ ok: true } | { ok: false; status: 400 | 404; error: string }> {
   if (actorType === 'user') {
-    const rows = await db
-      .select({ id: user.id })
-      .from(user)
-      .where(eq(user.id, actorId))
-      .limit(1)
+    const rows = await db.select({ id: user.id }).from(user).where(eq(user.id, actorId)).limit(1)
     if (rows.length === 0) {
       return { ok: false, status: 404, error: 'User not found' }
     }
@@ -588,7 +564,7 @@ async function resolveActor(
 
 export async function createAccessGrant(
   db: Db,
-  input: CreateAccessGrantInput,
+  input: CreateAccessGrantInput
 ): Promise<CreateAccessGrantResult> {
   if (!isAccessGrantEntityType(input.entityType)) {
     return {
@@ -617,31 +593,19 @@ export async function createAccessGrant(
   }
 
   const permission = input.permissionKey as PermissionKey
-  const permissionCompat = validatePermissionEntityCompatibility(
-    permission,
-    input.entityType,
-  )
+  const permissionCompat = validatePermissionEntityCompatibility(permission, input.entityType)
   if (!permissionCompat.ok) {
     return { ok: false, status: 400, error: permissionCompat.error }
   }
 
-  const entityResult = await validateGrantEntityTarget(
-    db,
-    input.entityType,
-    input.entityId,
-  )
+  const entityResult = await validateGrantEntityTarget(db, input.entityType, input.entityId)
   if (!entityResult.ok) {
     return entityResult
   }
 
   const entityOrganizationId = entityResult.organizationId
 
-  const actorResult = await resolveActor(
-    db,
-    input.actorType,
-    input.actorId,
-    entityOrganizationId,
-  )
+  const actorResult = await resolveActor(db, input.actorType, input.actorId, entityOrganizationId)
   if (!actorResult.ok) {
     return actorResult
   }
@@ -656,13 +620,7 @@ export async function createAccessGrant(
       permission,
     })
     .onConflictDoNothing({
-      target: [
-        grant.entityType,
-        grant.entityId,
-        grant.actorType,
-        grant.actorId,
-        grant.permission,
-      ],
+      target: [grant.entityType, grant.entityId, grant.actorType, grant.actorId, grant.permission],
     })
     .returning({ id: grant.id })
 
@@ -680,8 +638,8 @@ export async function createAccessGrant(
         eq(grant.entityId, input.entityId),
         eq(grant.actorType, input.actorType),
         eq(grant.actorId, input.actorId),
-        eq(grant.permission, permission),
-      ),
+        eq(grant.permission, permission)
+      )
     )
     .limit(1)
 
