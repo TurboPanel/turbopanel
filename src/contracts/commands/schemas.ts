@@ -4534,11 +4534,15 @@ function parseStopFolderStates(value: unknown): EnvironmentStopFolderState[] | u
   const states: EnvironmentStopFolderState[] = []
   for (const entry of value) {
     if (!isRecord(entry) || entry.kind !== 'service' || typeof entry.removed !== 'boolean') continue
-    const ref = parseFolderRefParts(
-      { owner: entry.owner, scope: entry.scope, slug: entry.slug },
-      'service'
-    )
-    states.push({ ...folderRefParts(ref), kind: 'service', removed: entry.removed })
+    try {
+      const ref = parseFolderRefParts(
+        { owner: entry.owner, scope: entry.scope, slug: entry.slug },
+        'service'
+      )
+      states.push({ ...folderRefParts(ref), kind: 'service', removed: entry.removed })
+    } catch {
+      // A result is a report; one entry that fails the folder rules is left out.
+    }
   }
   return states
 }
