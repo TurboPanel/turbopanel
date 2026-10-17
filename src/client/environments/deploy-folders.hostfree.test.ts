@@ -5,6 +5,7 @@ import type {
 } from '../../contracts/commands/schemas.ts'
 import type { PlannedFolders } from '../../features/folders/allocate.ts'
 import {
+  serviceFoldersFor,
   servicesNeedingFolders,
   volumesNeedingFolders,
   withVolumeFolders,
@@ -114,4 +115,23 @@ test('the planned folder is added beside the old fields, and only to the volume 
     other,
   ])
   assertEquals(withVolumeFolders([owned], undefined), [owned])
+})
+
+test('each planned service folder goes on the payload by service id, and none when nothing was planned', () => {
+  const planned: PlannedFolders = {
+    folderIds: ['f1', 'f2'],
+    services: new Map([
+      [SERVICE_ID, { owner: 'appuser', scope: 'production', slug: 'example.com' }],
+      ['svc-2', { owner: 'appuser', scope: 'common', slug: 'api' }],
+    ]),
+    volumes: new Map(),
+  }
+  assertEquals(serviceFoldersFor(planned), [
+    {
+      serviceId: SERVICE_ID,
+      folder: { owner: 'appuser', scope: 'production', slug: 'example.com' },
+    },
+    { serviceId: 'svc-2', folder: { owner: 'appuser', scope: 'common', slug: 'api' } },
+  ])
+  assertEquals(serviceFoldersFor(undefined), [])
 })

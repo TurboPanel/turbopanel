@@ -11,6 +11,7 @@
  */
 import type {
   EnvironmentDeployHosting,
+  EnvironmentDeployServiceFolder,
   EnvironmentDeployStorageMaterial,
 } from '../../contracts/commands/schemas.ts'
 import type { PlanServiceInput, PlannedFolders } from '../../features/folders/allocate.ts'
@@ -97,4 +98,12 @@ export function withVolumeFolders(
     const folder = planned.volumes.get(entry.storageId)
     return folder === undefined ? entry : { ...entry, folder }
   })
+}
+
+/** The planned folder of each host-run service, by service id, for the deploy payload. */
+export function serviceFoldersFor(
+  planned: PlannedFolders | undefined
+): EnvironmentDeployServiceFolder[] {
+  if (planned === undefined) return []
+  return [...planned.services].map(([serviceId, folder]) => ({ serviceId, folder }))
 }
