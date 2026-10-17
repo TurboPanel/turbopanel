@@ -17,6 +17,7 @@ import {
 } from './environments/deploy-routes.ts'
 import { registerEnvironmentConfigViewRoutes } from './environments/config-view-routes.ts'
 import { registerEnvironmentDeploymentHistoryRoutes } from './environments/deployment-history-routes.ts'
+import { registerEnvironmentFolderRoutes } from './environments/folder-routes.ts'
 import { registerEnvironmentReleaseRoutes } from './environments/release-routes.ts'
 import { registerManagedRoutes } from './managed/routes.ts'
 import { registerEnvironmentRoutes } from './environments/routes.ts'
@@ -55,6 +56,7 @@ import { registerOrganizationActivityRoutes } from './organizations/activity-rou
 import { registerOrganizationMemberRoutes } from './organizations/members.ts'
 import { registerOrganizationPrincipalRoutes } from './principals/org-routes.ts'
 import { registerOrganizationPrincipalDefaultsRoutes } from './organizations/principal-defaults-routes.ts'
+import { registerOrganizationDirectoryDefaultsRoutes } from './organizations/directory-defaults-routes.ts'
 import { registerPhpModeRoutes } from './hostings/php-mode-routes.ts'
 import { registerOrganizationRoutes } from './organizations/routes.ts'
 import { registerOrganizationSessionGuards } from './organizations/session-guards.ts'
@@ -125,6 +127,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerLicenseRoutes(client, opts)
   opts.registerBilling?.(client, opts)
   registerOrganizationPrincipalDefaultsRoutes(client, opts)
+  registerOrganizationDirectoryDefaultsRoutes(client, opts)
   if (opts.secrets) registerOrganizationSessionGuards(client, opts.secrets)
   registerOrganizationRoutes(client, opts)
   registerComposeRemoteBuildSourcesRoutes(client)
@@ -139,6 +142,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerNotificationRoutes(client, opts)
   registerWorkspaceRoutes(client, opts)
   registerEnvironmentRoutes(client, opts)
+  registerEnvironmentFolderRoutes(client, opts)
   registerEnvironmentDeployPreviewRoutes(client, opts)
   registerEnvironmentConfigViewRoutes(client, opts)
   registerEnvironmentDeployRoutes(client, opts)

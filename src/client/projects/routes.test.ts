@@ -409,7 +409,7 @@ test('POST /projects empty uses org defaultEnvironmentName when set', async () =
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db
       .update(organization)
-      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .set({ options: { defaultEnvironmentName: 'staging' } })
       .where(eq(organization.id, organizationId))
 
     const cookie = await sessionCookie(db, secrets, userId)
@@ -436,7 +436,7 @@ test('POST /projects empty uses org defaultEnvironmentName when set', async () =
       .from(environment)
       .where(eq(environment.projectId, body.id))
     assertEquals(envs.length, 1)
-    assertEquals(envs[0]!.name, 'Staging')
+    assertEquals(envs[0]!.name, 'staging')
   })
 })
 
@@ -444,7 +444,7 @@ test('POST /projects environmentName overrides the org default for the first env
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db
       .update(organization)
-      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .set({ options: { defaultEnvironmentName: 'staging' } })
       .where(eq(organization.id, organizationId))
 
     const cookie = await sessionCookie(db, secrets, userId)
@@ -480,7 +480,7 @@ test('POST /projects managed and empty honour environmentName, and null or absen
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db
       .update(organization)
-      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .set({ options: { defaultEnvironmentName: 'staging' } })
       .where(eq(organization.id, organizationId))
 
     const cookie = await sessionCookie(db, secrets, userId)
@@ -509,17 +509,17 @@ test('POST /projects managed and empty honour environmentName, and null or absen
       await create({ type: 'managed', code: 'postgres', name: 'Env M1', environmentName: 'Edge' }),
       ['Edge']
     )
-    assertEquals(await create({ type: 'managed', code: 'postgres', name: 'Env M2' }), ['Staging'])
+    assertEquals(await create({ type: 'managed', code: 'postgres', name: 'Env M2' }), ['staging'])
     assertEquals(
       await create({ type: 'managed', code: 'postgres', name: 'Env M3', environmentName: null }),
-      ['Staging']
+      ['staging']
     )
 
     assertEquals(await create({ type: 'empty', name: 'Env E1', environmentName: 'Edge' }), ['Edge'])
     assertEquals(await create({ type: 'empty', name: 'Env E2', environmentName: null }), [
-      'Staging',
+      'staging',
     ])
-    assertEquals(await create({ type: 'empty', name: 'Env E3' }), ['Staging'])
+    assertEquals(await create({ type: 'empty', name: 'Env E3' }), ['staging'])
   })
 })
 
@@ -527,7 +527,7 @@ test('POST /projects docker-compose uses org defaultEnvironmentName when set', a
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db
       .update(organization)
-      .set({ options: { defaultEnvironmentName: 'Live' } })
+      .set({ options: { defaultEnvironmentName: 'live' } })
       .where(eq(organization.id, organizationId))
 
     const cookie = await sessionCookie(db, secrets, userId)
@@ -553,7 +553,7 @@ test('POST /projects docker-compose uses org defaultEnvironmentName when set', a
       .from(environment)
       .where(eq(environment.projectId, body.id))
     assertEquals(envs.length, 1)
-    assertEquals(envs[0]!.name, 'Live')
+    assertEquals(envs[0]!.name, 'live')
   })
 })
 
@@ -621,7 +621,7 @@ test('POST /projects/:id/configure reuses custom-named default environment', asy
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db
       .update(organization)
-      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .set({ options: { defaultEnvironmentName: 'staging' } })
       .where(eq(organization.id, organizationId))
 
     const cookie = await sessionCookie(db, secrets, userId)
@@ -657,7 +657,7 @@ test('POST /projects/:id/configure reuses custom-named default environment', asy
       .from(environment)
       .where(eq(environment.projectId, id))
     assertEquals(envs.length, 1)
-    assertEquals(envs[0]!.name, 'Staging')
+    assertEquals(envs[0]!.name, 'staging')
   })
 })
 
@@ -665,7 +665,7 @@ test('POST /projects/:id/configure reuses scaffolded env when org default change
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db
       .update(organization)
-      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .set({ options: { defaultEnvironmentName: 'staging' } })
       .where(eq(organization.id, organizationId))
 
     const cookie = await sessionCookie(db, secrets, userId)
@@ -692,11 +692,11 @@ test('POST /projects/:id/configure reuses scaffolded env when org default change
       })
       .from(environment)
       .where(eq(environment.projectId, id))
-    assertEquals(scaffolded?.name, 'Staging')
+    assertEquals(scaffolded?.name, 'staging')
 
     await db
       .update(organization)
-      .set({ options: { defaultEnvironmentName: 'Live' } })
+      .set({ options: { defaultEnvironmentName: 'live' } })
       .where(eq(organization.id, organizationId))
 
     const configureRes = await app.request(`/projects/${id}/configure`, {
@@ -719,7 +719,7 @@ test('POST /projects/:id/configure reuses scaffolded env when org default change
       .where(eq(environment.projectId, id))
     assertEquals(envs.length, 1)
     assertEquals(envs[0]!.id, scaffolded!.id)
-    assertEquals(envs[0]!.name, 'Staging')
+    assertEquals(envs[0]!.name, 'staging')
 
     const [projectRow] = await db
       .select({ metadata: project.metadata })
@@ -760,13 +760,13 @@ test('POST /projects/:id/configure prefers literal production over org default m
 
     await db.insert(environment).values({
       projectId: id,
-      name: 'Staging',
+      name: 'staging',
       description: 'Custom default sibling',
     })
 
     await db
       .update(organization)
-      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .set({ options: { defaultEnvironmentName: 'staging' } })
       .where(eq(organization.id, organizationId))
 
     const configureRes = await app.request(`/projects/${id}/configure`, {
@@ -791,7 +791,7 @@ test('POST /projects/:id/configure prefers literal production over org default m
     assertEquals(envs.length, 2)
 
     const production = envs.find((row) => row.name === 'production')
-    const staging = envs.find((row) => row.name === 'Staging')
+    const staging = envs.find((row) => row.name === 'staging')
     assertEquals(production != null, true)
     assertEquals(staging != null, true)
     assertEquals(staging!.description, 'Custom default sibling')

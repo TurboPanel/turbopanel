@@ -22,6 +22,7 @@ import { isConfiguredProjectType, isProductionEnvironmentName } from './empty-se
 import { isValidDisplayName, normalizeDisplayName } from '../../lib/display-name-format.ts'
 import { PROJECT_NAME_IN_USE_ERROR } from '../display-name-uniqueness.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
+import { PROJECT_SLUG_IN_USE_ERROR } from '../../features/folders/records.ts'
 
 export type ProjectRouteValidationError = {
   ok: false
@@ -79,12 +80,20 @@ export function isProjectNameUniqueViolation(err: unknown): boolean {
   return isUniqueViolationOn(err, 'uniq_project_organization_name')
 }
 
+/** The per-organization project slug lock firing under a racer. */
+export function isProjectSlugUniqueViolation(err: unknown): boolean {
+  return isUniqueViolationOn(err, 'uniq_project_organization_slug')
+}
+
 export function mapCreateProjectError(err: unknown): {
   error: string
   status: 409 | 503
 } | null {
   if (isProjectNameUniqueViolation(err)) {
     return { error: PROJECT_NAME_IN_USE_ERROR, status: 409 }
+  }
+  if (isProjectSlugUniqueViolation(err)) {
+    return { error: PROJECT_SLUG_IN_USE_ERROR, status: 409 }
   }
   if (!(err instanceof Error)) return null
   if (err.message === 'encryption unavailable') {

@@ -85,6 +85,21 @@ for every kind but `email`, `signing_secret` always is, and both are a stage of
 the re-encrypt sweep; every fixed-value column carries a CHECK pinned by
 `enum-checks.test.ts` to the catalogue in `events.ts`.
 
+**The `folder` table** (`0035_folder_table_and_slugs`) holds one row per service
+or volume directory per server. It carries no `metadata` / `options` pair: every
+column is a fact the locks read. `service_id` and `storage_id` are `ON DELETE SET
+NULL` because a `removing` row must outlive the asset it came from (a server that
+was offline when the asset was deleted), and `folder_asset_present_check` lets
+only `removing`, `orphan` and `missing` rows have neither. `server_id`,
+`principal_id` and `environment_id` are `RESTRICT`: a server, site owner or
+environment with folders cannot be deleted until the rows are gone, so the
+server-delete and environment-delete flows remove or settle them first. The new
+`slug` columns on `project`, `service` and `storage` are nullable (a partial
+unique where set) until the single baseline makes them `NOT NULL`. Boolean
+columns follow the `is_` rule, so the spec's `common` is `is_common`. The CHECK
+patterns are built from `contracts/directory-names.ts`, so a rule cannot drift
+from the database.
+
 **Shipped migration files are immutable, and the guard for that is
 `migrations/manifest.json`** (`scripts/check-migration-freeze.mjs`,
 enforced by `src/db/migration-manifest.test.ts`). It pins every journal
@@ -458,7 +473,7 @@ item.
 | **Organizations** | `organization`, `team`, `teammate` (org membership SoT), `invitation` (no `organization_id`; `team_id NOT NULL`), `tls`, `changeover`, `leaf`                                                                                                                                                                                                                                                                                                                                        |
 | **Billing**       | `tier` (platform-global priced offerings), `license`, `payer`, `subscription`, `seat` (export `subscriptionItem`)                                                                                                                                                                                                                                                                                                                                                                    |
 | **Networking**    | `datacenter` (logical routing domain, not a building — a server may belong to several; `options.priority` / `options.trusted`), `network` (kinds `datacenter` / `docker` / `compose` / `managed` / `reserved` — `reserved` is an org-only, CIDR-required operator hole every CIDR write and fabric allocator routes around via `src/features/net/cidr-collisions.ts`), `ip` (scopes `public` / `datacenter`), `fabric` (0–1 per org; TurboFabric on when present), `relay`, `subnet`, `address` (addresses clients use: per-server public + per-datacenter name and address overrides) |
-| **Resource tree** | `workspace`, `project`, `environment`, `service`, `hosting`, `container`, `managed`, `replica`, `recovery`, `variable`, `principal`, `placement`, `tenancy`, `binding`                                                                                                                                                                                                                                                                                                               |
+| **Resource tree** | `workspace`, `project`, `environment`, `service`, `folder` (one service or volume directory per server), `hosting`, `container`, `managed`, `replica`, `recovery`, `variable`, `principal`, `placement`, `tenancy`, `binding`                                                                                                                                                                                                                                                                                                               |
 | **Storage**       | `storage`, `copy` (export `storageCopy`), `mount`, `secret`                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **Git**           | `forge`, `connection`, `repository`; `delivery` is the webhook ledger for every kind (git _and_ Stripe)                                                                                                                                                                                                                                                                                                                                                                              |
 | **Authorization** | `grant`                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |

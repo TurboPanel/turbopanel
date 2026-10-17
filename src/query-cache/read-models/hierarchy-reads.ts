@@ -38,6 +38,7 @@ import {
 export type ProjectRow = {
   id: string
   name: string | null
+  slug: string | null
   description: string | null
   workspaceId: string
   repositoryId: string | null
@@ -75,6 +76,7 @@ type DetailInput = { organizationId: string; id: string; stamp: string }
 const projectColumns = {
   id: project.id,
   name: project.name,
+  slug: project.slug,
   description: project.description,
   workspaceId: project.workspaceId,
   repositoryId: project.repositoryId,

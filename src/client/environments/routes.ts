@@ -21,6 +21,7 @@ import {
 import { verifyServerInOrg } from './deploy-prepare.ts'
 import { loadRepinNeedsRedeployForEnvironment } from './repin-needs-redeploy.ts'
 import { reconcileServicesForEnvironment } from './reconcile-after-compose-save.ts'
+import { refuseDeleteWhileFolders, updateEnvironmentChecked } from './rename-lock.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -274,6 +275,20 @@ function environmentDeleteRefusal(c: Context<AppEnv>, error: EnvironmentDeleteRe
   return c.json({ error }, 409)
 }
 
+/** After a saved `options` patch: adopt the repository the compose names and refresh the service rows. */
+async function settleAfterOptionsPatch(
+  db: Db,
+  environmentId: string,
+  parent: { projectId: string; repositoryId: string | null } | null | undefined,
+  patchFields: EnvironmentPatchFields
+): Promise<void> {
+  if (patchFields.options === undefined) return
+  if (parent) {
+    await adoptProjectRepository(db, parent.projectId, patchFields.options, parent.repositoryId)
+  }
+  await reconcileServicesForEnvironment(db, environmentId)
+}
+
 export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for environment routes')
@@ -443,14 +458,10 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     if (optionsError) return optionsError
     await keepStoredDeployOptions(db, id, patchFields)
 
-    await db.update(environment).set(patchFields).where(eq(environment.id, id))
+    const refused = await updateEnvironmentChecked(c, db, id, patchFields)
+    if (refused) return refused
 
-    if (patchFields.options !== undefined) {
-      if (parent) {
-        await adoptProjectRepository(db, parent.projectId, patchFields.options, parent.repositoryId)
-      }
-      await reconcileServicesForEnvironment(db, id)
-    }
+    await settleAfterOptionsPatch(db, id, parent, patchFields)
 
     return c.json({ ok: true as const })
   })
@@ -480,6 +491,10 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
 
     const stepUp = await requireStepUpIfConfigured(c, organizationId, 'environment.delete')
     if (stepUp) return stepUp
+
+    // The name is a folder on the servers: an environment with folders cannot go.
+    const foldersBlock = await refuseDeleteWhileFolders(c, db, id)
+    if (foldersBlock) return foldersBlock
 
     // Planned before the delete: the payload is built from rows the delete
     // removes. Dispatched after it commits.

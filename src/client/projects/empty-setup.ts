@@ -28,6 +28,7 @@ import {
   settleDeployOptions,
   stampNewEnvironmentDeployOptions,
 } from '../../features/deploy/deploy-options.ts'
+import { allocateProjectSlug } from '../../features/folders/records.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 
 export const DEFAULT_PRODUCTION_ENVIRONMENT_NAME = DEFAULT_ENVIRONMENT_NAME
@@ -91,6 +92,7 @@ export async function insertEmptyProject(
   const [inserted] = await tx
     .insert(project)
     .values({
+      slug: await allocateProjectSlug(tx, fields.organizationId, fields.name),
       name: fields.name,
       description: fields.description,
       workspaceId: fields.workspaceId,

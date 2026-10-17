@@ -56,6 +56,7 @@ import {
   assertDefaultServerIdShape,
   catalogProjectOptions,
   isProjectNameUniqueViolation,
+  isProjectSlugUniqueViolation,
   mapCreateProjectError,
   normalizeProjectPatchOptions,
   parseConfigureProjectBody,
@@ -75,6 +76,13 @@ import {
   stampNewEnvironmentDeployOptions,
 } from '../../features/deploy/deploy-options.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import {
+  allocateProjectSlug,
+  PROJECT_SLUG_IN_USE_ERROR,
+  PROJECT_SLUG_LOCKED_ERROR,
+  projectSlugIsLocked,
+} from '../../features/folders/records.ts'
+import { isValidProjectSlug } from '../../contracts/directory-names.ts'
 
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -435,11 +443,62 @@ function parseProjectPatchOptions(
 
 type ProjectPatchFields = {
   name?: string | null
+  slug?: string
   description?: string | null
   repositoryId?: string | null
   options?: Record<string, unknown> | null
   workspaceId?: string
   updatedAt: string
+}
+
+/** The name and slug a PATCH asks for must be free (and the slug unlocked). */
+async function checkProjectPatchConflicts(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  projectId: string,
+  body: Record<string, unknown>,
+  patchFields: ProjectPatchFields
+): Promise<Response | null> {
+  if (
+    patchFields.name !== undefined &&
+    (isReservedSystemProjectName(patchFields.name) ||
+      (await isProjectDisplayNameTaken(db, organizationId, patchFields.name, projectId)))
+  ) {
+    return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
+  }
+  return await checkProjectSlugPatch(c, db, projectId, body, patchFields)
+}
+
+/**
+ * A `slug` in the PATCH body changes the project slug: it has to match the
+ * rule, and it is refused once any folder exists under the project or a site
+ * owner directory exists for it. Writing the slug the project already has is a
+ * no-op. Sets `patchFields.slug` when the slug changes.
+ */
+async function checkProjectSlugPatch(
+  c: Context<AppEnv>,
+  db: Db,
+  projectId: string,
+  body: Record<string, unknown>,
+  patchFields: ProjectPatchFields
+): Promise<Response | null> {
+  if (body.slug === undefined) return null
+  if (!isValidProjectSlug(body.slug)) {
+    return c.json({ error: 'invalid_project_slug' }, 400)
+  }
+  const slug = body.slug as string
+  const [current] = await db
+    .select({ slug: project.slug })
+    .from(project)
+    .where(eq(project.id, projectId))
+    .limit(1)
+  if (current?.slug === slug) return null
+  if (await projectSlugIsLocked(db, projectId)) {
+    return c.json({ error: PROJECT_SLUG_LOCKED_ERROR }, 409)
+  }
+  patchFields.slug = slug
+  return null
 }
 
 function buildProjectPatchFields(
@@ -598,6 +657,7 @@ async function insertDockerComposeProject(
   const [inserted] = await tx
     .insert(project)
     .values({
+      slug: await allocateProjectSlug(tx, fields.organizationId, fields.name),
       name: fields.name,
       description: fields.description,
       workspaceId: fields.workspaceId,
@@ -639,6 +699,7 @@ async function insertCatalogProject(
   const [inserted] = await tx
     .insert(project)
     .values({
+      slug: await allocateProjectSlug(tx, fields.organizationId, fields.name),
       name: fields.name,
       description: fields.description,
       workspaceId: fields.workspaceId,
@@ -859,13 +920,8 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (patchFields instanceof Response) return patchFields
     if (rebind !== undefined) patchFields.repositoryId = rebind
 
-    if (
-      patchFields.name !== undefined &&
-      (isReservedSystemProjectName(patchFields.name) ||
-        (await isProjectDisplayNameTaken(db, organizationId, patchFields.name, id)))
-    ) {
-      return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
-    }
+    const conflict = await checkProjectPatchConflicts(c, db, organizationId, id, body, patchFields)
+    if (conflict) return conflict
 
     const defaultServerError = await assertDefaultServerIdInOrg(
       c,
@@ -881,6 +937,9 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     } catch (err) {
       if (isProjectNameUniqueViolation(err)) {
         return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
+      }
+      if (isProjectSlugUniqueViolation(err)) {
+        return c.json({ error: PROJECT_SLUG_IN_USE_ERROR }, 409)
       }
       throw err
     }

@@ -31,8 +31,8 @@ function stamped(fingerprint: string): CachedReadRegistration {
 export const CACHED_READ_REGISTRY = {
   'servers-list': stamped('ce2766c84e1e7439'),
   'server-detail': stamped('38a4113cda59ba1c'),
-  'projects-list': stamped('a5f6360b56562fef'),
-  'project-detail': stamped('41c6ed8973e54ec2'),
+  'projects-list': stamped('8cfa9b11b2f4ce72'),
+  'project-detail': stamped('91843181f2ba2e30'),
   'environments-list': stamped('d458aba4df4f21c9'),
   'environment-detail': stamped('2035011bf1a6bcf4'),
   'workspaces-list': stamped('abd2761821e1adfd'),
