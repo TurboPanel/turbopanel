@@ -60,7 +60,7 @@ export function uncacheableReason(text: string): string | null {
   if (!/^\s*select\b/i.test(text)) return 'not a SELECT'
   // The cache matches the text as written, and comments or alternative quoting
   // can hide a second statement from a quote-stripping check, so none is allowed.
-  if (/--|\/\*|\$[A-Za-z_]*\$|\be'/i.test(text)) return 'comment or alternative quoting'
+  if (/--|\/\*|\$[a-z_]*\$|\be'/i.test(text)) return 'comment or alternative quoting'
   const bare = stripQuoted(text)
   if (/;\s*\S/.test(bare)) return 'more than one statement'
   if (/\bfor\s+(no\s+key\s+update|update|key\s+share|share)\b/i.test(bare)) {

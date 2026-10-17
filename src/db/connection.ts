@@ -107,11 +107,12 @@ export function createWorkersDb(hyperdrive: HyperdriveBinding, options: WorkersD
       statement_timeout: options.statementTimeoutMs ?? DEFAULT_WORKERS_STATEMENT_TIMEOUT_MS,
     },
   })
-  const wrapped = options.preparedStatements
-    ? withCacheableUnsafe(client, { usage: options.usage })
-    : options.usage
-      ? withPrimaryStatementCount(client, options.usage)
-      : client
+  let wrapped = client
+  if (options.preparedStatements) {
+    wrapped = withCacheableUnsafe(client, { usage: options.usage })
+  } else if (options.usage) {
+    wrapped = withPrimaryStatementCount(client, options.usage)
+  }
   return drizzle(wrapped, { schema })
 }
 
