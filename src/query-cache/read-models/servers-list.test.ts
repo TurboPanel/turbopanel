@@ -3,7 +3,7 @@ import type { Context } from 'hono'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
 import type { RedisCellClient } from '../../daemon/cell/redis/client.ts'
-import { inspectCachedRead } from '../cached-read.ts'
+import { inspectCachedRead, versionStamp } from '../cached-read.ts'
 import { createHyperdriveQueryCache } from '../hyperdrive-query-cache.ts'
 import { createPassthroughQueryCache } from '../passthrough-query-cache.ts'
 import { createRedisQueryCache } from '../redis-query-cache.ts'
@@ -57,6 +57,7 @@ function thenableRows(rows: unknown[]) {
 
 /** Documented cached SELECT #1 column set (see `servers-list.ts` module comment). */
 const CACHED_LIST_SELECT_KEYS = [
+  '_v',
   'createdAt',
   'id',
   'licenseId',
@@ -65,6 +66,20 @@ const CACHED_LIST_SELECT_KEYS = [
   'options',
   'organizationId',
 ]
+
+/** The row the primary connection returns for a server (also the source of the version stamp). */
+function bareServerRow(id: string, updatedAt = 'u1') {
+  return {
+    id,
+    daemon: null,
+    metadata: null,
+    hostname: null,
+    machineKey: null,
+    connected: false,
+    statusChangedAt: null,
+    updatedAt,
+  }
+}
 
 function createStubDb(opts: {
   listRows?: ServersListRow[]
@@ -76,6 +91,7 @@ function createStubDb(opts: {
     machineKey: string | null
     connected: boolean
     statusChangedAt: string | null
+    updatedAt?: string
   }>
   selectKinds?: string[]
   cachedSelectKeys?: string[][]
@@ -311,7 +327,7 @@ test('cachedServersListReadModel derives its redis cache key from the statement 
       machineClass: null,
     },
   ]
-  const db = createStubDb({ listRows, presenceRows: [] })
+  const db = createStubDb({ listRows, presenceRows: [bareServerRow('srv-a')] })
   const store = new Map<string, string>()
   const cache = createRedisQueryCache({
     client: {
@@ -339,6 +355,7 @@ test('cachedServersListReadModel derives its redis cache key from the statement 
       inspectCachedRead(serversListCachedRead.definition, {
         organizationId: 'org-1',
         ids: ['srv-a', 'srv-b'],
+        stamp: versionStamp(['srv-a', 'u1']),
       }).key
     ),
     true
@@ -402,7 +419,7 @@ test('cachedServersListReadModel never caches a managedMonitor secret in redis',
       machineClass: null,
     },
   ]
-  const db = createStubDb({ listRows, presenceRows: [] })
+  const db = createStubDb({ listRows, presenceRows: [bareServerRow('srv-a')] })
   const store = new Map<string, string>()
   const cache = createRedisQueryCache({
     client: {
@@ -505,4 +522,80 @@ test('cachedServersListReadModel runs cached SELECT on Hyperdrive db only', asyn
   assertEquals(payload.rows, listRows)
   assertEquals(cachedKinds, ['cached-row'])
   assertEquals(primaryKinds, ['presence'])
+})
+
+function memoryRedis(store: Map<string, string>, db: Db) {
+  return createRedisQueryCache({
+    client: {
+      get: (key: string) => Promise.resolve(store.get(key) ?? null),
+      set: (key: string, value: string) => {
+        store.set(key, value)
+        return Promise.resolve()
+      },
+    } as unknown as RedisCellClient,
+    db,
+  })
+}
+
+function listRow(id: string, name: string, organizationId = 'org-1'): ServersListRow {
+  return {
+    id,
+    name,
+    organizationId,
+    licenseId: null,
+    options: null,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    machineClass: null,
+  }
+}
+
+test('cachedServersListReadModel shows a person their own edit at once, and caches until then', async () => {
+  const listRows = [listRow('srv-a', 'Before')]
+  const presenceRows = [bareServerRow('srv-a', 'u1')]
+  const db = createStubDb({ listRows, presenceRows })
+  const ctx = fakeContext({ db, queryCache: memoryRedis(new Map(), db) })
+  const opts = { userId: 'user-1', organizationId: 'org-1', visibleIds: ['srv-a'] }
+
+  assertEquals((await cachedServersListReadModel(ctx, opts)).rows[0]?.name, 'Before')
+
+  listRows[0] = listRow('srv-a', 'Hidden')
+  assertEquals((await cachedServersListReadModel(ctx, opts)).rows[0]?.name, 'Before')
+
+  presenceRows[0] = bareServerRow('srv-a', 'u2')
+  listRows[0] = listRow('srv-a', 'After')
+  assertEquals((await cachedServersListReadModel(ctx, opts)).rows[0]?.name, 'After')
+})
+
+test('cachedServersListReadModel never serves one person the list of another', async () => {
+  const store = new Map<string, string>()
+  const dbOne = createStubDb({
+    listRows: [listRow('srv-a', 'Seen by one')],
+    presenceRows: [bareServerRow('srv-a')],
+  })
+  const dbTwo = createStubDb({
+    listRows: [listRow('srv-b', 'Seen by two', 'org-2')],
+    presenceRows: [bareServerRow('srv-b')],
+  })
+  const one = fakeContext({ db: dbOne, queryCache: memoryRedis(store, dbOne) })
+  const two = fakeContext({ db: dbTwo, queryCache: memoryRedis(store, dbTwo) })
+  const optsOne = { userId: 'user-1', organizationId: 'org-1', visibleIds: ['srv-a'] }
+  const optsTwo = { userId: 'user-2', organizationId: 'org-2', visibleIds: ['srv-b'] }
+
+  assertEquals(
+    (await cachedServersListReadModel(one, optsOne)).rows.map((r) => r.id),
+    ['srv-a']
+  )
+  assertEquals(
+    (await cachedServersListReadModel(two, optsTwo)).rows.map((r) => r.id),
+    ['srv-b']
+  )
+  assertEquals(store.size, 2)
+  assertEquals(
+    (await cachedServersListReadModel(one, optsOne)).rows.map((r) => r.id),
+    ['srv-a']
+  )
+  // A narrower set of ids for the same organization is another key too.
+  const narrower = { ...optsOne, visibleIds: ['srv-a', 'srv-c'] }
+  await cachedServersListReadModel(one, narrower)
+  assertEquals(store.size, 3)
 })

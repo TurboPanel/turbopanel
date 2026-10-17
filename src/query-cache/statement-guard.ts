@@ -106,6 +106,11 @@ export function statementKeyHash(text: string, params: readonly unknown[]): stri
     .slice(0, 32)
 }
 
+/** Short hash of ordered stamp parts (ids and update times of the rows a read describes). */
+export function stampHash(parts: readonly string[]): string {
+  return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 24)
+}
+
 /** The guard's error itself, or the one a query driver wrapped as its `cause`. */
 export function findUncacheableStatementError(err: unknown): UncacheableStatementError | null {
   let current: unknown = err

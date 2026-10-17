@@ -15,16 +15,20 @@ export type CachedReadRegistration = {
   readonly fingerprint: string
   /** What the screen accepts, in plain words. */
   readonly tolerates: string
+  /** True when the statement carries a version stamp parameter that never filters rows. */
+  readonly versionStamp: boolean
 }
 
 export const CACHED_READ_REGISTRY = {
   'servers-list': {
-    fingerprint: '37d1ad25c14196c4',
-    tolerates: 'up to 75 seconds old; presence and permissions are read live',
+    fingerprint: 'ce2766c84e1e7439',
+    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
+    versionStamp: true,
   },
   'server-detail': {
-    fingerprint: 'dde4d8f3b9ec6a45',
-    tolerates: 'up to 75 seconds old; presence and permissions are read live',
+    fingerprint: '38a4113cda59ba1c',
+    tolerates: 'an edit shows at once (version stamp); other changes up to 75 seconds late',
+    versionStamp: true,
   },
 } as const satisfies Record<string, CachedReadRegistration>
 
