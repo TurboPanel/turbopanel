@@ -569,6 +569,23 @@ async function addCreatedChildren(
   if (fields.mount) await insertMountRow(tx, id, fields.mount)
 }
 
+/** The copy and mount named in a create body must belong to the organization and the site owner. */
+async function validateCreateChildren(
+  c: Context<AppEnv>,
+  db: StorageDb,
+  orgId: string,
+  fields: Exclude<ReturnType<typeof parseCreateStorageFields>, Response>
+): Promise<Response | null> {
+  if (fields.copy) {
+    const copyRefError = await validateCopyRefsInOrg(c, db, orgId, fields.copy)
+    if (copyRefError) return copyRefError
+    const ownershipError = await validateCopyOwnership(c, db, fields.principalId, fields.copy)
+    if (ownershipError) return ownershipError
+  }
+  if (fields.mount) return await validateServiceInOrg(c, db, orgId, fields.mount.serviceId)
+  return null
+}
+
 async function createStorageRecord(
   c: Context<AppEnv>,
   db: StorageDb,
@@ -597,16 +614,8 @@ async function createStorageRecord(
   )
   if (principalError) return principalError
 
-  if (fields.copy) {
-    const copyRefError = await validateCopyRefsInOrg(c, db, orgId, fields.copy)
-    if (copyRefError) return copyRefError
-    const ownershipError = await validateCopyOwnership(c, db, fields.principalId, fields.copy)
-    if (ownershipError) return ownershipError
-  }
-  if (fields.mount) {
-    const serviceError = await validateServiceInOrg(c, db, orgId, fields.mount.serviceId)
-    if (serviceError) return serviceError
-  }
+  const childError = await validateCreateChildren(c, db, orgId, fields)
+  if (childError) return childError
 
   const sealedContent = await resolveSealedStorageContent(c, body.content)
   if (sealedContent instanceof Response) return sealedContent
