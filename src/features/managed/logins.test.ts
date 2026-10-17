@@ -155,7 +155,7 @@ test('a new login keeps its settings as columns and lists its databases as scope
     assertEquals(found?.username, 'app')
     assertEquals(found?.appliedUsername, 'app_abcdefghijk')
     assertEquals(found?.nameScheme, 'partial')
-    assertEquals(found?.databases, ['postgres', 'shop'])
+    assertEquals(found?.databases, ['shop', 'postgres'])
     assertEquals(found?.privileges, ['read-write'])
     assertEquals(found?.connectionRole, 'read-only')
     assertEquals(found?.grantMode, 'recipe')

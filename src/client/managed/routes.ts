@@ -2608,11 +2608,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // that exists); both it and the owner login's listing are put back if the
     // apply cannot be queued.
     await saveManagedOptions(db, row.id, nextOptions)
-    const listing = await listLoginOnDatabase(db, chosen?.login, name)
+    let listing: Awaited<ReturnType<typeof listLoginOnDatabase>> | undefined
     const restoreOwnerLogin = async () => {
-      await listing.restore()
+      await listing?.restore()
       await saveManagedOptions(db, row.id, options)
     }
+    listing = await restoringOnFailure(restoreOwnerLogin, () =>
+      listLoginOnDatabase(db, chosen?.login, name)
+    )
 
     const prepared = await restoringOnFailure(restoreOwnerLogin, () =>
       prepareApplyForManaged(

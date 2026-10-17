@@ -938,7 +938,7 @@ export function validateManagedDatabaseCreateName(
   if (isReservedDatabaseName(engine, name)) {
     return { ok: false, error: 'reserved_database_name', status: 400 }
   }
-  if (databases.includes(name)) {
+  if (databases.some((entry) => entry.toLowerCase() === name.toLowerCase())) {
     return { ok: false, error: 'database_exists', status: 409 }
   }
   return null

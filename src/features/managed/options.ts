@@ -1,5 +1,6 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import { login, managed, managedDatabase } from '../../db/schema.ts'
 import type { ManagedEngineSpec } from './index.ts'
 import type { ManagedSettings } from './settings.ts'
@@ -144,17 +145,29 @@ export async function saveManagedDatabases(
   }
   const byName = new Map(existing.map((row) => [row.name, row]))
   const ownerRole = new Set(next.ownerRoleDatabases ?? [])
-  for (const name of next.databases) {
+  const fields = (name: string) => {
     const isRoleOwned = ownerRole.has(name)
-    const ownerLoginId = isRoleOwned ? (next.databaseOwners?.[name]?.loginId ?? null) : null
-    const current = byName.get(name)
-    if (!current) {
-      await db.insert(managedDatabase).values({ managedId, name, isRoleOwned, ownerLoginId })
-    } else if (current.isRoleOwned !== isRoleOwned || current.ownerLoginId !== ownerLoginId) {
-      await db
-        .update(managedDatabase)
-        .set({ isRoleOwned, ownerLoginId, updatedAt: sql`now()` })
-        .where(eq(managedDatabase.id, current.id))
+    return {
+      isRoleOwned,
+      ownerLoginId: isRoleOwned ? (next.databaseOwners?.[name]?.loginId ?? null) : null,
     }
   }
+  const added = next.databases.filter((name) => !byName.has(name))
+  if (added.length > 0) {
+    // One statement, so the rows get their ids in the order given.
+    await db
+      .insert(managedDatabase)
+      .values(added.map((name) => ({ managedId, name, ...fields(name) })))
+  }
+  const changed = existing.filter((row) => {
+    if (!wanted.has(row.name)) return false
+    const want = fields(row.name)
+    return row.isRoleOwned !== want.isRoleOwned || row.ownerLoginId !== want.ownerLoginId
+  })
+  await forEachSequential(changed, async (row) => {
+    await db
+      .update(managedDatabase)
+      .set({ ...fields(row.name), updatedAt: sql`now()` })
+      .where(eq(managedDatabase.id, row.id))
+  })
 }

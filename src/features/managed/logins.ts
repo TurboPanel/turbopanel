@@ -84,7 +84,7 @@ export type ManagedLoginCredentialRow = ManagedLoginRow & {
 /** SQL for the names of the databases a login may use, for a select over `login`. */
 export const loginDatabaseNames = sql<
   string[]
->`ARRAY(SELECT d."name" FROM ${scope} s JOIN ${managedDatabase} d ON d."id" = s."database_id" WHERE s."login_id" = "login"."id" ORDER BY lower(d."name"), d."name")`
+>`ARRAY(SELECT d."name" FROM ${scope} s JOIN ${managedDatabase} d ON d."id" = s."database_id" WHERE s."login_id" = "login"."id" ORDER BY s."id")`
 
 const LOGIN_SELECT = {
   id: login.id,
@@ -214,7 +214,7 @@ export function withoutPassword(row: ManagedLoginCredentialRow): ManagedLoginRow
   return rest
 }
 
-/** Point a login's `scope` rows at exactly these databases of its cluster (order kept). */
+/** Point a login's `scope` rows at exactly these databases of its cluster (the order given is kept for new rows). */
 export async function setLoginDatabases(
   db: Db,
   target: { id: string; managedId: string },

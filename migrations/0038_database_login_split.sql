@@ -1,4 +1,4 @@
--- breaking-ok: every database is wiped before the baseline release, so no old Worker reads the dropped columns
+-- breaking-ok: the old columns and lists are converted in this migration, so an old Worker cannot read the new shape
 -- Finishes the login split: principal is only a site owner's Linux user, binding points at a login and a database,
 -- login settings are real columns, and databases and the logins that can use them are rows.
 CREATE TABLE "database" (
@@ -46,13 +46,13 @@ ALTER TABLE "login" ADD COLUMN "privileges" text[] DEFAULT '{}'::text[] NOT NULL
 -- Carry the data over (a database that is not wiped keeps working until the wipe).
 -- The databases of each cluster were string lists in managed.options.
 INSERT INTO "database" ("managed_id", "name", "is_role_owned")
-SELECT m."id", d."name",
+SELECT DISTINCT ON (m."id", lower(d."name")) m."id", d."name",
   COALESCE(m."options" -> 'ownerRoleDatabases' ? d."name", false)
 FROM "managed" m
 CROSS JOIN LATERAL jsonb_array_elements_text(
   CASE WHEN jsonb_typeof(m."options" -> 'databases') = 'array' THEN m."options" -> 'databases' ELSE '[]'::jsonb END
 ) AS d("name")
-ON CONFLICT DO NOTHING;--> statement-breakpoint
+ORDER BY m."id", lower(d."name"), d."name";--> statement-breakpoint
 -- The login rows the old binding rows pointed at by principal only.
 UPDATE "binding" b SET "login_id" = l."id"
 FROM "login" l
@@ -71,13 +71,15 @@ UPDATE "login" l SET
     THEN ARRAY(SELECT jsonb_array_elements_text(l."metadata" -> 'privileges')) ELSE '{}'::text[] END;--> statement-breakpoint
 -- Which databases each login may use.
 INSERT INTO "scope" ("login_id", "database_id")
-SELECT l."id", d."id"
-FROM "login" l
-CROSS JOIN LATERAL jsonb_array_elements_text(
-  CASE WHEN jsonb_typeof(l."metadata" -> 'databases') = 'array' THEN l."metadata" -> 'databases' ELSE '[]'::jsonb END
-) AS n("name")
-JOIN "database" d ON d."managed_id" = l."managed_id" AND d."name" = n."name"
-ON CONFLICT DO NOTHING;--> statement-breakpoint
+SELECT x."login_id", x."database_id" FROM (
+  SELECT DISTINCT ON (l."id", d."id") l."id" AS "login_id", d."id" AS "database_id", n."ord"
+  FROM "login" l
+  CROSS JOIN LATERAL jsonb_array_elements_text(
+    CASE WHEN jsonb_typeof(l."metadata" -> 'databases') = 'array' THEN l."metadata" -> 'databases' ELSE '[]'::jsonb END
+  ) WITH ORDINALITY AS n("name", "ord")
+  JOIN "database" d ON d."managed_id" = l."managed_id" AND lower(d."name") = lower(n."name")
+  ORDER BY l."id", d."id", n."ord"
+) x ORDER BY x."login_id", x."ord";--> statement-breakpoint
 -- The login each database owner was recorded as (it must still exist).
 UPDATE "database" d SET "owner_login_id" = (m."options" -> 'databaseOwners' -> d."name" ->> 'loginId')::uuid
 FROM "managed" m
@@ -99,7 +101,7 @@ ALTER TABLE "login" ALTER COLUMN "username" SET NOT NULL;--> statement-breakpoin
 ALTER TABLE "binding" ALTER COLUMN "database_id" SET NOT NULL;--> statement-breakpoint
 ALTER TABLE "binding" ALTER COLUMN "login_id" SET NOT NULL;--> statement-breakpoint
 -- managed.options keeps only the settings.
-UPDATE "managed" SET "options" = jsonb_build_object('settings', "options" -> 'settings') WHERE "options" ? 'settings';--> statement-breakpoint
+UPDATE "managed" SET "options" = "options" - 'databases' - 'ownerRoleDatabases' - 'databaseOwners' WHERE "options" IS NOT NULL;--> statement-breakpoint
 ALTER TABLE "database" ADD CONSTRAINT "database_managed_id_managed_id_fk" FOREIGN KEY ("managed_id") REFERENCES "public"."managed"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "database" ADD CONSTRAINT "database_owner_login_id_login_id_fk" FOREIGN KEY ("owner_login_id") REFERENCES "public"."login"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "scope" ADD CONSTRAINT "scope_login_id_login_id_fk" FOREIGN KEY ("login_id") REFERENCES "public"."login"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint

@@ -1235,7 +1235,7 @@ name) and an `applied_username` — the actual engine login, the system name. A
 org default and optional lock live on `organization.options`
 (`principalNameScheme`, `principalNameSchemeLocked`; the legacy boolean
 `randomizedPrincipalUsernames` is the fallback: true = partial, false = plain);
-the chosen scheme is stored on `principal.options.nameScheme`. The server always
+the chosen scheme is stored on `login.name_scheme`. The server always
 derives the system name. Root is **never** plain
 (`postgres_<11 rand>` / `root_<11 rand>`, or random under the `random` scheme;
 persisted on `managed.metadata.rootUsername` — spec `rootUsername` is only the
