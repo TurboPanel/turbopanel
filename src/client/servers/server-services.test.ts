@@ -17,7 +17,8 @@ import {
   managed,
   network,
   organization,
-  principal,
+  login,
+  managedDatabase,
   project,
   replica,
   server,
@@ -169,7 +170,6 @@ async function withServicesFixtures(
       const managedIds = managedRows.map((row) => row.id)
       if (managedIds.length > 0) {
         await db.delete(backup).where(inArray(backup.managedId, managedIds))
-        await db.delete(principal).where(inArray(principal.managedId, managedIds))
         await db.delete(managed).where(inArray(managed.id, managedIds))
       }
       await db.delete(environment).where(inArray(environment.id, envIds))
@@ -536,39 +536,42 @@ test('GET /servers/:id/services groups two database bindings on one app', async 
       })
       .returning({ id: managed.id })
     const suffix = crypto.randomUUID().slice(0, 8)
+    const [appdb, orders] = await ctx.db
+      .insert(managedDatabase)
+      .values([
+        { managedId: cluster!.id, name: 'appdb' },
+        { managedId: cluster!.id, name: 'orders' },
+      ])
+      .returning({ id: managedDatabase.id })
     const [shopUser] = await ctx.db
-      .insert(principal)
+      .insert(login)
       .values({
-        organizationId: ctx.organizationId,
-        kind: 'database',
-        provider: 'postgres',
+        managedId: cluster!.id,
+        role: 'user',
         username: `shop_${suffix}`,
         appliedUsername: `shop_${suffix}`,
-        managedId: cluster!.id,
       })
-      .returning({ id: principal.id })
+      .returning({ id: login.id })
     const [ordersUser] = await ctx.db
-      .insert(principal)
+      .insert(login)
       .values({
-        organizationId: ctx.organizationId,
-        kind: 'database',
-        provider: 'postgres',
+        managedId: cluster!.id,
+        role: 'user',
         username: `orders_${suffix}`,
         appliedUsername: `orders_${suffix}`,
-        managedId: cluster!.id,
       })
-      .returning({ id: principal.id })
+      .returning({ id: login.id })
     await ctx.db.insert(binding).values({
-      principalId: shopUser!.id,
+      loginId: shopUser!.id,
       serviceId: web!.id,
-      databaseName: 'appdb',
+      databaseId: appdb!.id,
       keyPrefix: 'DATABASE',
       isEmitEngineDefaults: true,
     })
     await ctx.db.insert(binding).values({
-      principalId: ordersUser!.id,
+      loginId: ordersUser!.id,
       serviceId: web!.id,
-      databaseName: 'orders',
+      databaseId: orders!.id,
       keyPrefix: 'ORDERS',
       isEmitEngineDefaults: false,
     })

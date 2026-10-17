@@ -19,8 +19,8 @@ import {
   buildStatusMemberView,
   canHardDeleteManaged,
   evaluateManagedDatabaseDelete,
-  evaluateManagedUserDropGuard,
-  evaluateManagedUserRotateGuard,
+  evaluateManagedLoginDropGuard,
+  evaluateManagedLoginRotateGuard,
   evaluateOperatorPromoteGate,
   evaluatePromoteLagHttpGate,
   evaluatePromoteMemberRole,
@@ -48,7 +48,7 @@ import {
 } from './routes-helpers.ts'
 import { postgresEngineSpec } from './postgres.ts'
 import { privateEndpointErrorResponse } from '../net/private-endpoint.ts'
-import { writeManagedRowOptions } from './options.ts'
+import { writeManagedSettings } from './options.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -331,24 +331,24 @@ test('evaluatePromoteMemberRole requires replica', () => {
 })
 
 test('user rotate/drop guards', () => {
-  assertEquals(evaluateManagedUserRotateGuard({ managedRoot: true }), {
+  assertEquals(evaluateManagedLoginRotateGuard('root'), {
     ok: false,
     error: 'use_root_password_route',
     status: 400,
   })
-  assertEquals(evaluateManagedUserRotateGuard({ managedReplication: true }), {
+  assertEquals(evaluateManagedLoginRotateGuard('replication'), {
     ok: false,
     error: 'cannot_rotate_replication_user',
     status: 400,
   })
-  assertEquals(evaluateManagedUserRotateGuard({}), null)
+  assertEquals(evaluateManagedLoginRotateGuard('user'), null)
 
-  assertEquals(evaluateManagedUserDropGuard({ managedRoot: true }), {
+  assertEquals(evaluateManagedLoginDropGuard('root'), {
     ok: false,
     error: 'cannot_drop_root_user',
     status: 400,
   })
-  assertEquals(evaluateManagedUserDropGuard({}), null)
+  assertEquals(evaluateManagedLoginDropGuard('user'), null)
 })
 
 test('evaluatePromoteLagHttpGate honors force bypass', () => {
@@ -609,10 +609,7 @@ test('managedStatusListenerParams skips unplaced, uncatalogued, and unreadable r
   if (!settings) {
     throw new TypeError('failed to parse default postgres settings')
   }
-  const options = writeManagedRowOptions({
-    settings,
-    databases: ['postgres'],
-  })
+  const options = writeManagedSettings(settings)
 
   assertEquals(managedStatusListenerParams(null), null)
   assertEquals(

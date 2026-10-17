@@ -242,7 +242,6 @@ test('POST /projects/:projectId/principals persists default shell when options o
     const [row] = await db
       .select({
         options: principal.options,
-        provider: principal.provider,
         metadata: principal.metadata,
         username: principal.username,
         appliedUsername: principal.appliedUsername,
@@ -251,7 +250,6 @@ test('POST /projects/:projectId/principals persists default shell when options o
       .where(eq(principal.id, body.id))
       .limit(1)
     assertEquals(row?.options, { shell: DEFAULT_PRINCIPAL_SHELL, nameScheme: 'partial' })
-    assertEquals(row?.provider, 'server')
     assertEquals(row?.username, 'appuser')
     assertEquals(row?.appliedUsername, body.appliedUsername)
     // Home follows the applied login — that's the account on the host.

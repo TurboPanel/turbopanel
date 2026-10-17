@@ -7,8 +7,6 @@ import { assertEquals } from '@std/assert'
 import { planLoginPatch } from './login-patch.ts'
 import {
   cidrToSourcePrefix,
-  loginAllowedSources,
-  loginMaxConnections,
   loginWireLimits,
   parseLoginAllowedSources,
   parseLoginMaxConnections,
@@ -101,15 +99,6 @@ test('maxConnections: whole numbers in range, null clears', () => {
   }
 })
 
-test('typed readers read absent, empty and junk metadata as no limit', () => {
-  assertEquals(loginAllowedSources({}), undefined)
-  assertEquals(loginAllowedSources(null), undefined)
-  assertEquals(loginAllowedSources({ allowedSources: [] }), undefined)
-  assertEquals(loginAllowedSources({ allowedSources: ['internal', 7] }), ['internal'])
-  assertEquals(loginMaxConnections({ maxConnections: 0 }), undefined)
-  assertEquals(loginMaxConnections({ maxConnections: 4 }), 4)
-})
-
 test('wire limits resolve servers, keep prefixes, and fail closed on an old daemon', () => {
   const metadata = {
     allowedSources: ['internal', `server:${SERVER}`, 'address:203.0.113.%'],
@@ -136,7 +125,7 @@ test('wire limits resolve servers, keep prefixes, and fail closed on an old daem
   // Naming the server the payload is for lets its own programs in (they arrive as the gateway).
   assertEquals(
     loginWireLimits(
-      { allowedSources: [`server:${SERVER}`] },
+      { allowedSources: [`server:${SERVER}`], maxConnections: undefined },
       { daemonSupportsLimits: true, serverAddresses: new Map(), serverId: SERVER }
     ),
     { omit: false, fields: { allowedSources: [], allowLocalSources: true } }
@@ -144,19 +133,25 @@ test('wire limits resolve servers, keep prefixes, and fail closed on an old daem
   // No source limit: nothing sent to an old daemon, so version skew changes nothing.
   assertEquals(
     loginWireLimits(
-      { maxConnections: 3 },
+      { allowedSources: undefined, maxConnections: 3 },
       { daemonSupportsLimits: false, serverAddresses: addresses }
     ),
     { omit: false, fields: {} }
   )
-  assertEquals(loginWireLimits({}, { daemonSupportsLimits: true, serverAddresses: addresses }), {
-    omit: false,
-    fields: {},
-  })
+  assertEquals(
+    loginWireLimits(
+      { allowedSources: undefined, maxConnections: undefined },
+      { daemonSupportsLimits: true, serverAddresses: addresses }
+    ),
+    {
+      omit: false,
+      fields: {},
+    }
+  )
   // A server with no known address still limits the login (nothing but local passes).
   assertEquals(
     loginWireLimits(
-      { allowedSources: [`server:${SERVER}`] },
+      { allowedSources: [`server:${SERVER}`], maxConnections: undefined },
       { daemonSupportsLimits: true, serverAddresses: new Map() }
     ),
     { omit: false, fields: { allowedSources: [] } }
@@ -164,14 +159,24 @@ test('wire limits resolve servers, keep prefixes, and fail closed on an old daem
 })
 
 test('PATCH plans store, clear and describe limits in plain words', () => {
-  const current = { role: 'user' as const, metadata: { grantMode: 'recipe' } }
+  const base = {
+    role: 'user' as const,
+    grantMode: 'recipe' as const,
+    tool: false,
+    databases: [],
+    privileges: [],
+    connectionRole: 'read-write' as const,
+    allowedSources: undefined,
+    maxConnections: undefined,
+  }
+  const current = base
   const set = planLoginPatch('postgres', current, {
     allowedSources: ['internal', 'address:198.51.100.7'],
     maxConnections: 2,
   })
   if (!set.ok) throw new Error('expected ok')
-  assertEquals(set.metadata.allowedSources, ['internal', 'address:198.51.100.7'])
-  assertEquals(set.metadata.maxConnections, 2)
+  assertEquals(set.patch.allowedSources, ['internal', 'address:198.51.100.7'])
+  assertEquals(set.patch.maxConnections, 2)
   assertEquals(
     set.summary.some((line) => line.includes('refuses every query from other addresses')),
     true
@@ -183,12 +188,12 @@ test('PATCH plans store, clear and describe limits in plain words', () => {
 
   const cleared = planLoginPatch(
     'mysql',
-    { role: 'user' as const, metadata: { allowedSources: ['internal'], maxConnections: 2 } },
+    { ...base, allowedSources: ['internal'], maxConnections: 2 },
     { allowedSources: null, maxConnections: null }
   )
   if (!cleared.ok) throw new Error('expected ok')
-  assertEquals('allowedSources' in cleared.metadata, true)
-  assertEquals(cleared.metadata.allowedSources, undefined)
+  assertEquals(cleared.patch.allowedSources, null)
+  assertEquals(cleared.patch.maxConnections, null)
   assertEquals(
     cleared.summary.some((line) => line.includes('from anywhere')),
     true

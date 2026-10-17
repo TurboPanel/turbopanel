@@ -267,6 +267,13 @@
       "when": 1792276025071,
       "tag": "0037_rename_grant_and_2fa_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1792277367441,
+      "tag": "0038_database_login_split",
+      "breakpoints": true
     }
   ]
 }

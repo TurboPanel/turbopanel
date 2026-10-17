@@ -43,7 +43,6 @@ import {
   resolveEffectivePlacementServerId,
 } from '../../features/projects/project-options.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
-import { SERVER_PRINCIPAL_PROVIDER } from '../../features/principals/store.ts'
 import { markPlacementsRetiring } from '../../features/principals/placement-records.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import { retireHostingIngressIfIdle } from '../../features/system/reconcile.ts'
@@ -88,13 +87,7 @@ async function loadProjectPrincipalUsernames(db: Db, projectId: string): Promise
   const rows = await db
     .select({ username: principal.appliedUsername })
     .from(principal)
-    .where(
-      and(
-        eq(principal.projectId, projectId),
-        eq(principal.provider, SERVER_PRINCIPAL_PROVIDER),
-        eq(principal.kind, 'system')
-      )
-    )
+    .where(eq(principal.projectId, projectId))
   return [...new Set(rows.map((row) => row.username))].sort((a, b) => a.localeCompare(b))
 }
 
@@ -207,7 +200,6 @@ export async function principalsStillOnServer(
     .leftJoin(deployment, eq(deployment.environmentId, environment.id))
     .where(
       and(
-        eq(principal.provider, SERVER_PRINCIPAL_PROVIDER),
         inArray(principal.appliedUsername, [...usernames]),
         or(eq(environment.serverId, serverId), eq(deployment.serverId, serverId))
       )

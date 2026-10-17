@@ -19,8 +19,10 @@ import {
   environment,
   grant,
   key,
+  login,
+  managed,
+  managedDatabase,
   organization,
-  principal,
   project,
   server,
   service,
@@ -685,7 +687,7 @@ test('PATCH /variables/:id preserves empty-string when toggling to secret', asyn
 
 test('binding-owned variables reject PATCH/DELETE and conflict on POST', async () => {
   await withVariableFixtures(
-    async ({ db, app, secrets, userId, organizationId, projectId, serviceId }) => {
+    async ({ db, app, secrets, userId, organizationId, environmentId, serviceId }) => {
       // Requires applied schema with binding + variable.binding_id.
       try {
         await db.select({ id: binding.id }).from(binding).limit(1)
@@ -701,26 +703,32 @@ test('binding-owned variables reject PATCH/DELETE and conflict on POST', async (
         'Content-Type': 'application/json',
       }
 
-      // Binding FKs need a principal (project-scoped host/db kind is enough for tests).
-      const [insertedPrincipal] = await db
-        .insert(principal)
+      // Binding FKs need a managed cluster with a database and a login.
+      const [insertedManaged] = await db
+        .insert(managed)
+        .values({ environmentId, engine: 'postgres' })
+        .returning({ id: managed.id })
+      const [insertedDatabase] = await db
+        .insert(managedDatabase)
+        .values({ managedId: insertedManaged!.id, name: 'appdb' })
+        .returning({ id: managedDatabase.id })
+      const bindTest = `bind_test_${crypto.randomUUID().slice(0, 8)}`
+      const [insertedLogin] = await db
+        .insert(login)
         .values({
-          organizationId,
-          projectId,
-          kind: 'database',
-          provider: 'postgres',
-          username: `bind_test_${crypto.randomUUID().slice(0, 8)}`,
-          appliedUsername: `bind_test_${crypto.randomUUID().slice(0, 8)}`,
+          managedId: insertedManaged!.id,
+          role: 'user',
+          username: bindTest,
+          appliedUsername: bindTest,
         })
-        .returning({ id: principal.id })
-      const principalId = insertedPrincipal!.id
+        .returning({ id: login.id })
 
       const [insertedBinding] = await db
         .insert(binding)
         .values({
-          principalId,
+          loginId: insertedLogin!.id,
           serviceId,
-          databaseName: 'appdb',
+          databaseId: insertedDatabase!.id,
           keyPrefix: 'DATABASE',
           isEmitEngineDefaults: false,
         })
@@ -770,7 +778,7 @@ test('binding-owned variables reject PATCH/DELETE and conflict on POST', async (
 
       await db.delete(variable).where(eq(variable.id, owned!.id))
       await db.delete(binding).where(eq(binding.id, bindingId))
-      await db.delete(principal).where(eq(principal.id, principalId))
+      await db.delete(managed).where(eq(managed.id, insertedManaged!.id))
     }
   )
 })

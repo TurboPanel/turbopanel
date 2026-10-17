@@ -36,7 +36,7 @@ import {
 } from './external-access.ts'
 import { getManagedEngineSpec } from './index.ts'
 import { loadManagedOrgDefaults } from './load-org-defaults.ts'
-import { parseManagedRowOptions } from './options.ts'
+import { parseManagedSettings } from './options.ts'
 import {
   isWeakManagedSslMode,
   type ManagedSslMode,
@@ -134,12 +134,12 @@ async function loadClusterSslRows(
     )
   return rows.map((row) => {
     const spec = getManagedEngineSpec((row.engine ?? 'postgres') as ManagedEngineCode)
-    const parsed = spec ? parseManagedRowOptions(spec, row.options) : null
+    const settings = spec ? parseManagedSettings(spec, row.options) : null
     return {
       managedId: row.managedId,
       name: row.name?.trim() || row.projectName || row.managedId,
       organizationId: row.organizationId,
-      configured: parsed?.settings.ssl.mode,
+      configured: settings?.ssl.mode,
     }
   })
 }

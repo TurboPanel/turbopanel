@@ -11,7 +11,6 @@ import {
   leaf,
   managed,
   login,
-  principal,
   project,
   service,
   share,
@@ -32,7 +31,6 @@ import {
   type BindingListenerSync,
 } from '../bindings/enqueue-change.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
-import { bindingLoginJoin, bindingManagedId } from '../managed/logins.ts'
 
 /** Docker Compose states that are considered fully stopped (safe to cascade-delete). */
 const STOPPED_CONTAINER_STATUSES = new Set(['exited', 'dead', 'removing'])
@@ -109,12 +107,11 @@ async function loadBindingListenerTargets(
   if (serviceIds.length === 0) return []
   const rows = await db
     .select({
-      managedId: bindingManagedId,
+      managedId: login.managedId,
       serviceId: binding.serviceId,
     })
     .from(binding)
-    .leftJoin(login, bindingLoginJoin())
-    .leftJoin(principal, eq(principal.id, binding.principalId))
+    .innerJoin(login, eq(login.id, binding.loginId))
     .where(inArray(binding.serviceId, [...serviceIds]))
   return rows.filter((row): row is { managedId: string; serviceId: string } =>
     Boolean(row.managedId)

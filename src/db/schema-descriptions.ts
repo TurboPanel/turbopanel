@@ -700,36 +700,64 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   login: {
     group: 'resources',
     summary:
-      'One engine role on one managed cluster, the database form of a principal; written by the managed users API in step with the legacy `principal` rows.',
+      'One engine role on one managed cluster; not a principal, which is only a site owner Linux user; written by the managed users API.',
     columns: {
-      metadata:
-        'Jsonb: `engine`, `databases`, `privileges`, optional `connectionRole`; cluster logins add `managedRoot` or `managedReplication` and `legacyPrincipalId`.',
-      options:
-        'Jsonb: `nameScheme` the applied name was derived with (`plain`, `partial`, `random`).',
       principal_id:
-        'Identity the login belongs to, cascade-deleted with it; NULL only for the cluster root and replication logins, which are outside the organization name pool.',
+        'Site owner Linux user the login shares its name with, cascade-deleted with it; NULL for a login made on its own and for the root and replication logins.',
+      role: '`root` for the cluster admin login, `replication` for the member-to-member login, `user` for an operator-created login.',
+      username:
+        'Name the customer typed; equals `applied_username` for `plain` names and for the root and replication logins.',
+      applied_username:
+        'Engine role name created on the cluster; unique per cluster after trim and case-fold, and equal to the principal name when `principal_id` is set.',
+      name_scheme:
+        'How `applied_username` was derived from `username`: `plain` (same), `partial` (plus a random suffix) or `random` (no trace of it).',
       password:
         'Write-only credential sealed as a `tpsecret` envelope, never returned on GET and resealed to `tpdaemon` for delivery.',
-      role: '`root` for the cluster admin login, `replication` for the member-to-member login, `user` for an operator-created login.',
-      applied_username:
-        'Engine role name created on the cluster, copied from the principal for a `user` login; unique per cluster after trim and case-fold.',
+      grant_mode:
+        'Who sets the permissions on reconcile: `preset` (logins from before modes), `recipe` (the panel) or `self` (the owner by hand, never reset).',
+      is_tool:
+        'True for a database-tool login: the daemon sends all of its traffic to the primary and adds no read/write split rules (API field `tool`).',
+      allowed_sources:
+        'Places the login may connect from (`internal`, `server:` plus an id, `address:` plus a value); NULL means anywhere (API field `allowedSources`).',
+      max_connections:
+        'Per-login cap on open connections, at least 1; NULL means no cap (API field `maxConnections`).',
+      access:
+        'Routing: `read-write` sends the login to the primary, `read-only` to read replicas or the primary when there are none (API field `connectionRole`).',
+      privileges:
+        'What the login may do in each database it can use: `owner`, `read-write`, `read-only` or `admin`; empty for the root and replication logins.',
     },
+  },
+  database: {
+    group: 'managed',
+    summary:
+      'One database inside a managed cluster: its name, whether it has an owner role and the login chosen as its owner; written by the managed databases API.',
+    columns: {
+      name: 'Name on the engine as typed (1-255 chars); unique per cluster after case-fold.',
+      is_role_owned:
+        'Postgres only: true when the database is owned by an owner role (`tp_NAME_owner`, `_rw`, `_ro`).',
+      owner_login_id:
+        'Postgres only: the login the customer chose as owner; NULL means the default no-login owner role. Cleared when that login is deleted.',
+    },
+  },
+  scope: {
+    group: 'managed',
+    summary:
+      'Which databases a login may use: one row per login and database; what it may do in them is `login.privileges`.',
+    columns: {},
   },
   binding: {
     group: 'resources',
     summary:
-      'Join edge attaching a managed-database principal to a consuming compose service; materializes system-owned `variable` rows for deploy credential injection.',
+      'Join edge attaching a database login to a consuming compose service; materializes system-owned `variable` rows for deploy credential injection.',
     columns: {
       metadata: 'Reserved jsonb; no current code path writes it.',
       options: 'Reserved jsonb; no current code path writes it.',
-      principal_id:
-        'Managed database user whose credentials are injected; cascade-deleted with the principal (user gone, binding gone).',
       login_id:
-        'The `login` row whose credentials are injected; set beside `principal_id` on every insert and backfilled from it, nullable until the contract migration.',
+        'The `login` row whose credentials are injected; cascade-deleted with it (login gone, binding gone).',
       service_id:
         'Consuming compose service; ON DELETE RESTRICT so a service with bindings cannot be deleted.',
-      database_name:
-        "Database inside the cluster the credentials point at (1-63 chars, identifier charset); must be one of the cluster's `options.databases`.",
+      database_id:
+        'The `database` the credentials point at; ON DELETE RESTRICT so a database in use cannot be dropped.',
       key_prefix:
         'Environment variable prefix for the emitted credential keys (default `DATABASE`), unique per service; identifier charset, 1-64 chars.',
       is_emit_engine_defaults:
@@ -833,27 +861,21 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   principal: {
     group: 'resources',
     summary:
-      'Account identity attachable to services: a Linux host account (`system`) or a managed database user (`database`); written by principal store and managed API.',
+      'A site owner Linux user: the host account that runs sites and owns their tree; written by the principals API and the compose deploy.',
     columns: {
       metadata:
-        'System principals: `home` (under `/srv/users`), optional `uid`/`gid` mirror, `composeAlias`; managed users: `managedRoot`, `engine`, `databases`.',
+        'Holds `home` (under `/srv/users`), an optional `uid`/`gid` mirror and `composeAlias`.',
       options:
         'Host-account settings: `shell` (closed allowlist, default `/usr/sbin/nologin`) and optional operator `uid`/`gid` override; parsed by `parsePrincipalOptions`.',
-      kind: '`system` for a Linux server host account or `database` for a managed engine user.',
-      provider:
-        'System that owns the account: `server` for host accounts, or the engine (`postgres`, `mysql`, `redis`, `clickhouse`) for database users.',
       username:
         'Short internal account name (letter or underscore first, then letters, digits, underscore, hyphen); server accounts get a shorter API-layer cap.',
       applied_username:
         'Login actually created on the host or engine: `username`, or `username` plus an underscore and 11 random chars when the org randomizes names; fixed at create.',
       password:
         'Write-only credential sealed as a `tpsecret` envelope, never returned on GET and resealed to `tpdaemon` for delivery; null when no engine password exists.',
-      organization_id:
-        "Home organization set on every insert, not derived; for a managed user it is the cluster's home org via its environment, not the hosting servers' orgs.",
+      organization_id: 'Home organization set on every insert, not derived.',
       project_id:
         'Optional project scope for compose-declared hosting principals; set to NULL when the project is deleted, the principal stays.',
-      managed_id:
-        'Optional managed-engine scope for database users (root and per-user rows); cascade-deleted with the cluster.',
     },
   },
   folder: {
@@ -1115,9 +1137,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       'One managed database cluster per environment (1:1 via unique environment_id); created by the managed create route, status projected by the command consumer.',
     columns: {
       metadata:
-        'Residual cluster facts: `rootPrincipalId` and `rootUsername` set at create, plus `host`, `port` and `error` written by the command consumer from daemon results.',
+        'Residual cluster facts: `rootLoginId` and `rootUsername` set at create, plus `host`, `port` and `error` written by the command consumer from daemon results.',
       options:
-        'Operator settings jsonb with keys `settings` (engine ManagedSettings) and `databases` (string array), written by the managed routes and parsed per engine spec.',
+        'Operator settings jsonb with the key `settings` (engine ManagedSettings), written by the managed routes; the databases are `database` rows.',
       environment_id:
         'Owning environment; exactly one managed row per environment (unique index), cascade-deleted with it.',
       server_id:

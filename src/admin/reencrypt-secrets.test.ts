@@ -146,13 +146,10 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       created_at timestamptz(3) DEFAULT now() NOT NULL,
       updated_at timestamptz(3) DEFAULT now() NOT NULL,
       organization_id uuid NOT NULL,
-      kind text NOT NULL,
-      provider text NOT NULL,
       username varchar(255) NOT NULL,
       applied_username varchar(255) NOT NULL,
       password text,
       project_id uuid,
-      managed_id uuid,
       metadata jsonb,
       options jsonb
     )
@@ -450,8 +447,6 @@ test('reencryptAtRestSecrets reseals old enc, skips denc/current, fails plaintex
       .insert(principal)
       .values({
         organizationId,
-        kind: 'database',
-        provider: 'postgres',
         username: `reencrypt_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`,
         appliedUsername: `reencrypt_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`,
         password: v1PrincipalEnvelope,
@@ -462,8 +457,6 @@ test('reencryptAtRestSecrets reseals old enc, skips denc/current, fails plaintex
       .insert(principal)
       .values({
         organizationId,
-        kind: 'database',
-        provider: 'postgres',
         username: `reencrypt_p_${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`,
         appliedUsername: `reencrypt_p_${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`,
         password: plaintextPrincipal,

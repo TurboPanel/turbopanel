@@ -29,11 +29,7 @@ import { BadRequestError, parseName, requireStringField } from '../../lib/http/r
 
 /** Keep aligned with `src/features/principals/store.ts`. */
 const USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
-import {
-  maxTypedNameLength,
-  type PrincipalNameScheme,
-  principalNameSchemeOf,
-} from '../../lib/principal-name-scheme.ts'
+import { maxTypedNameLength, type PrincipalNameScheme } from '../../lib/principal-name-scheme.ts'
 import { LOOPBACK_BIND } from './access-address.ts'
 import { loadServerClientAddresses } from '../net/client-addresses.ts'
 import {
@@ -43,14 +39,13 @@ import {
 } from '../net/client-addresses-pure.ts'
 import { loadManagedExternalAccess } from './external-access.ts'
 import type { ManagedContext } from './managed-context.ts'
-import { type ManagedRowOptions, parseManagedRowOptions } from './options.ts'
+import { type ManagedRowOptions, parseManagedSettings } from './options.ts'
 import { evaluateManagedPromoteLagGate } from './promote-lag.ts'
 import { isMysqlFamilyEngine, MAX_REPLAY_DELTA_BYTES, parsePgLsn } from './ha-fresh-standby.ts'
 import { loadManagedStatusError } from './last-error.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import { type ManagedResidualMetadata, serializeManagedRow } from './serialize.ts'
 import type { LoginPatchInput } from './login-patch.ts'
-import { loginAllowedSources, loginMaxConnections } from './login-sources.ts'
 import { DATABASE_ADMIN_PRIVILEGE, evaluateDatabaseAdminGrant } from './owner-role.ts'
 
 export {
@@ -58,13 +53,7 @@ export {
   evaluateDatabaseAdminGrant,
   resolveDatabaseOwnerRole,
 } from './owner-role.ts'
-import {
-  type DatabaseLoginRole,
-  loginGrantMode,
-  loginIsTool,
-  loginRoleFromMetadata,
-  type ManagedLoginRow,
-} from './logins.ts'
+import type { DatabaseLoginRole, ManagedLoginRow } from './logins.ts'
 
 export { evaluateManagedPromoteLagGate }
 
@@ -230,8 +219,7 @@ export function managedStatusListenerParams(
   if (!row.engine || !isManagedEngineCode(row.engine)) return null
   const spec = getManagedEngineSpec(row.engine)
   if (!spec) return null
-  const parsed = parseManagedRowOptions(spec, row.options)
-  if (!parsed) return null
+  if (parseManagedSettings(spec, row.options) === null) return null
   return {
     serverId: row.serverId,
     engineCode: spec.engine,
@@ -286,9 +274,9 @@ export function managedSessionPaths(): string[] {
     '/environments/:id/managed/lifecycle',
     '/environments/:id/managed/root-password',
     '/environments/:id/managed/users',
-    '/environments/:id/managed/users/:principalId',
-    '/environments/:id/managed/users/:principalId/password',
-    '/environments/:id/managed/users/:principalId/effective-permissions',
+    '/environments/:id/managed/users/:loginId',
+    '/environments/:id/managed/users/:loginId/password',
+    '/environments/:id/managed/users/:loginId/effective-permissions',
     '/environments/:id/managed/databases',
     '/environments/:id/managed/databases/:databaseName',
     '/environments/:id/managed/privilege-catalogue',
@@ -490,67 +478,26 @@ export function resolveManagedServerId(
   return managedRow.serverId ?? fallbackServerId
 }
 
-export function principalMetadata(metadata: unknown): Record<string, unknown> {
-  if (typeof metadata === 'object' && metadata !== null && !Array.isArray(metadata)) {
-    return metadata as Record<string, unknown>
-  }
-  return {}
-}
-
-export function isManagedRootPrincipal(metadata: unknown): boolean {
-  return principalMetadata(metadata).managedRoot === true
-}
-
-/** Replication principal is platform-managed — never listed as a client login. */
-export function isManagedReplicationPrincipal(metadata: unknown): boolean {
-  return principalMetadata(metadata).managedReplication === true
-}
-
-function principalDatabaseNames(metadata: unknown): string[] {
-  const { databases } = principalMetadata(metadata)
-  return Array.isArray(databases)
-    ? databases.filter((entry): entry is string => typeof entry === 'string')
-    : []
-}
-
-export function serializeManagedUser(row: {
-  id: string
-  username: string
-  appliedUsername: string
-  metadata: unknown
-  options?: unknown
-  createdAt: string
-}) {
-  const meta = principalMetadata(row.metadata)
-  const databases = principalDatabaseNames(row.metadata)
-  const privileges = Array.isArray(meta.privileges)
-    ? meta.privileges.filter((entry): entry is string => typeof entry === 'string')
-    : []
+/**
+ * A login in the managed users API shape. `id` is the login id (what the
+ * users routes are addressed by); `loginId` repeats it, and `principalId` is
+ * the site owner's Linux user the login shares its name with, or `null`.
+ */
+export function serializeManagedLogin(row: ManagedLoginRow) {
   return {
     id: row.id,
     username: row.username,
     appliedUsername: row.appliedUsername,
-    nameScheme: principalNameSchemeOf(row),
-    databases,
-    privileges,
-    connectionRole:
-      meta.connectionRole === 'read-only' ? ('read-only' as const) : ('read-write' as const),
-    grantMode: loginGrantMode(row.metadata),
-    tool: loginIsTool(row.metadata),
+    nameScheme: row.nameScheme,
+    databases: row.databases,
+    privileges: row.privileges,
+    connectionRole: row.connectionRole,
+    grantMode: row.grantMode,
+    tool: row.tool,
     // 'any' when unrestricted; otherwise the places the login may connect from.
-    allowedSources: loginAllowedSources(row.metadata) ?? ['any'],
-    maxConnections: loginMaxConnections(row.metadata) ?? null,
+    allowedSources: row.allowedSources ?? ['any'],
+    maxConnections: row.maxConnections ?? null,
     createdAt: row.createdAt,
-  }
-}
-
-/**
- * A login row in the managed users API shape: `id` stays the principal id
- * (what the routes are addressed by), plus `principalId` and `loginId`.
- */
-export function serializeManagedLogin(row: ManagedLoginRow) {
-  return {
-    ...serializeManagedUser({ ...row, id: row.principalId ?? row.id }),
     principalId: row.principalId,
     loginId: row.id,
   }
@@ -1017,21 +964,16 @@ export function evaluateManagedDatabaseDelete(
 }
 
 /**
- * Typed usernames of the SQL users (never the root or replication principal)
+ * Typed usernames of the SQL users (never the root or replication login)
  * whose `databases` list still names `databaseName`. Dropping the database
  * while any remain would leave the next apply granting on a missing database.
  */
 export function listUsersReferencingDatabase(
-  principals: ReadonlyArray<{ username: string; metadata: unknown }>,
+  logins: ReadonlyArray<{ username: string; role: string; databases: readonly string[] }>,
   databaseName: string
 ): string[] {
-  return principals
-    .filter(
-      (entry) =>
-        !isManagedRootPrincipal(entry.metadata) &&
-        !isManagedReplicationPrincipal(entry.metadata) &&
-        principalDatabaseNames(entry.metadata).includes(databaseName)
-    )
+  return logins
+    .filter((entry) => entry.role === 'user' && entry.databases.includes(databaseName))
     .map((entry) => entry.username)
 }
 
@@ -1246,12 +1188,6 @@ export type ManagedUserRotateGuardError =
   | { ok: false; error: 'use_root_password_route'; status: 400 }
   | { ok: false; error: 'cannot_rotate_replication_user'; status: 400 }
 
-export function evaluateManagedUserRotateGuard(
-  metadata: unknown
-): ManagedUserRotateGuardError | null {
-  return evaluateManagedLoginRotateGuard(loginRoleFromMetadata(metadata))
-}
-
 /** The cluster's own logins rotate elsewhere (root) or never (replication). */
 export function evaluateManagedLoginRotateGuard(
   role: DatabaseLoginRole
@@ -1263,12 +1199,6 @@ export function evaluateManagedLoginRotateGuard(
     return { ok: false, error: 'cannot_rotate_replication_user', status: 400 }
   }
   return null
-}
-
-export function evaluateManagedUserDropGuard(
-  metadata: unknown
-): { ok: false; error: 'cannot_drop_root_user'; status: 400 } | null {
-  return evaluateManagedLoginDropGuard(loginRoleFromMetadata(metadata))
 }
 
 export function evaluateManagedLoginDropGuard(

@@ -61,10 +61,10 @@ import { hasRemoteConsumerServers } from '../bindings/remote-consumers.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
 import { loadManagedExternalAccess } from './external-access.ts'
 import { loadOrganizationRootAllowedSources } from './root-login-sources.ts'
-import { loginAllowedSources, loginSourceServerIds, loginWireLimits } from './login-sources.ts'
+import { loginSourceServerIds, loginWireLimits } from './login-sources.ts'
 import { loadServerAddressMap } from './login-sources-load.ts'
 import { materializeBindingsForManaged } from '../bindings/materialize.ts'
-import { syncLegacyLogins } from './logins.ts'
+import { loginDatabaseNames } from './logins.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { loadManagedIngressPorts, loadManagedOrgDefaults } from './load-org-defaults.ts'
 import {
@@ -112,7 +112,7 @@ import {
   shouldSkipIngressFrontendUser,
   sortManagedIds,
 } from './ingress-desired-pure.ts'
-import { parseManagedRowOptions } from './options.ts'
+import { parseManagedSettings } from './options.ts'
 
 export const MANAGED_INGRESS_RECONCILE_TTL_MS = 300_000
 
@@ -242,7 +242,6 @@ async function loadClusterUsersForManagedIds(
     return { kind: 'daemon_key_unavailable', serverId: params.serverId }
   }
 
-  await forEachSequential(managedIds, (managedId) => syncLegacyLogins(db, managedId))
   const rows = await db
     .select({
       managedId: login.managedId,
@@ -250,7 +249,11 @@ async function loadClusterUsersForManagedIds(
       role: login.role,
       // Applied login — ProxySQL frontend usernames are what clients type.
       username: login.appliedUsername,
-      metadata: login.metadata,
+      databases: loginDatabaseNames,
+      isTool: login.isTool,
+      access: login.access,
+      allowedSources: login.allowedSources,
+      maxConnections: login.maxConnections,
       password: login.password,
     })
     .from(login)
@@ -261,11 +264,11 @@ async function loadClusterUsersForManagedIds(
   )
   const serverAddresses = await loadServerAddressMap(
     db,
-    rows.flatMap((row) => loginSourceServerIds(loginAllowedSources(row.metadata)))
+    rows.flatMap((row) => loginSourceServerIds(row.allowedSources ?? undefined))
   )
 
   const failure = await firstSequential(rows, async (row) => {
-    if (row.role === 'replication' || shouldSkipIngressFrontendUser(row.username, row.metadata)) {
+    if (row.role === 'replication' || shouldSkipIngressFrontendUser(row.username, row.role)) {
       return undefined
     }
     const sealed = row.password
@@ -280,24 +283,30 @@ async function loadClusterUsersForManagedIds(
     )
     const user: ManagedIngressReconcileUser = {
       username: row.username,
-      role: buildIngressUserRole(row.metadata),
+      role: buildIngressUserRole(row.role),
       password: resealed,
     }
-    const defaultDatabase = principalDefaultDatabase(row.metadata)
+    const defaultDatabase = principalDefaultDatabase(row.databases)
     if (defaultDatabase !== undefined) user.defaultDatabase = defaultDatabase
-    const connectionRole = principalConnectionRole(row.metadata)
+    const connectionRole = principalConnectionRole(row.access)
     if (connectionRole !== undefined) user.connectionRole = connectionRole
-    if (principalIsTool(row.metadata)) user.tool = true
+    if (principalIsTool(row.isTool)) user.tool = true
     // Root: always limited to this server, its containers and the organization's
     // servers (sent even when empty). App logins: limited only when their owner
     // chose places (below).
     if (user.role === 'root') user.allowedSources = [...params.rootAllowedSources]
     else {
-      const limits = loginWireLimits(row.metadata, {
-        daemonSupportsLimits,
-        serverAddresses,
-        serverId: params.serverId,
-      })
+      const limits = loginWireLimits(
+        {
+          allowedSources: row.allowedSources?.length ? row.allowedSources : undefined,
+          maxConnections: row.maxConnections ?? undefined,
+        },
+        {
+          daemonSupportsLimits,
+          serverAddresses,
+          serverId: params.serverId,
+        }
+      )
       // Fail closed: a source-limited login never goes to a daemon that cannot enforce it.
       if (limits.omit) return undefined
       Object.assign(user, limits.fields)
@@ -445,8 +454,9 @@ function buildIngressClusterFromLoaded(
   const spec = getManagedEngineSpec(engineCode)
   if (!spec) return null
 
-  const parsed = parseManagedRowOptions(spec, sample.options)
-  const settings: ManagedSettings = parsed?.settings ?? { ...spec.defaultSettings }
+  const settings: ManagedSettings = parseManagedSettings(spec, sample.options) ?? {
+    ...spec.defaultSettings,
+  }
 
   const hostgroups = hostgroupsForClusterIndex(index)
   const listener = protocolListenerForEngine(

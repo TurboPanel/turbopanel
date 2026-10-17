@@ -1,13 +1,24 @@
 import { assertEquals } from '@std/assert'
-import { planLoginPatch } from './login-patch.ts'
+import { type LoginPatchCurrent, planLoginPatch } from './login-patch.ts'
 
 const test = Deno.test.bind(Deno)
-const user = (metadata: unknown) => ({ role: 'user' as const, metadata })
+const settings = (overrides: Partial<LoginPatchCurrent> = {}): LoginPatchCurrent => ({
+  role: 'user',
+  grantMode: 'preset',
+  tool: false,
+  databases: [],
+  privileges: [],
+  connectionRole: 'read-write',
+  allowedSources: undefined,
+  maxConnections: undefined,
+  ...overrides,
+})
+const user = (overrides: Partial<LoginPatchCurrent> = {}) => settings(overrides)
 
 test('a preset login can move to self and the preview keeps grants alone', () => {
-  const plan = planLoginPatch('postgres', user({}), { grantMode: 'self' })
+  const plan = planLoginPatch('postgres', user(), { grantMode: 'self' })
   if (!plan.ok) throw new Error('expected ok')
-  assertEquals(plan.metadata, { grantMode: 'self' })
+  assertEquals(plan.patch, { grantMode: 'self' })
   assertEquals(
     plan.summary.some((line) => line.includes('left exactly as they are')),
     true
@@ -34,19 +45,15 @@ test('recipe logins preview the permission reset', () => {
 })
 
 test('invalid transitions are refused in plain words', () => {
-  const root = planLoginPatch(
-    'postgres',
-    { role: 'root', metadata: {} },
-    {
-      tool: true,
-    }
-  )
+  const root = planLoginPatch('postgres', settings({ role: 'root' }), {
+    tool: true,
+  })
   assertEquals(root.ok, false)
   const preset = planLoginPatch('postgres', user({ grantMode: 'recipe' }), {
     grantMode: 'preset',
   })
   assertEquals(!preset.ok && preset.error, 'managed_grant_mode_invalid_transition')
-  const bogus = planLoginPatch('postgres', user({}), { grantMode: 'x' })
+  const bogus = planLoginPatch('postgres', user(), { grantMode: 'x' })
   assertEquals(!bogus.ok && bogus.error, 'managed_grant_mode_invalid')
   const noConfirm = planLoginPatch('postgres', user({ grantMode: 'self' }), {
     grantMode: 'recipe',
@@ -65,17 +72,16 @@ test('invalid transitions are refused in plain words', () => {
     privileges: ['owner'],
   })
   assertEquals(!priv.ok && priv.error, 'managed_self_login_has_no_privileges')
-  const empty = planLoginPatch('postgres', user({}), {})
+  const empty = planLoginPatch('postgres', user(), {})
   assertEquals(empty.ok, false)
 })
 
-test('read-only is stored only as read-only; read-write clears it', () => {
+test('the routing role is written as given, read-write included', () => {
   const plan = planLoginPatch('postgres', user({ connectionRole: 'read-only' }), {
     connectionRole: 'read-write',
   })
   if (!plan.ok) throw new Error('expected ok')
-  assertEquals('connectionRole' in plan.metadata, true)
-  assertEquals(plan.metadata.connectionRole, undefined)
+  assertEquals(plan.patch.connectionRole, 'read-write')
 })
 
 test('moving a read-only postgres login to self needs confirmReset', () => {
@@ -85,7 +91,7 @@ test('moving a read-only postgres login to self needs confirmReset', () => {
   assertEquals(!refused.ok && refused.status, 409)
   assertEquals(!refused.ok && refused.error, 'managed_grant_reset_needs_confirm')
   assertEquals(!refused.ok && refused.message.includes('stays on'), true)
-  const sameRequest = planLoginPatch('postgres', user({}), {
+  const sameRequest = planLoginPatch('postgres', user(), {
     grantMode: 'self',
     connectionRole: 'read-only',
   })
@@ -118,8 +124,8 @@ test('moving a login to admin is never refused over owner roles and makes it a t
     { privileges: ['admin'] }
   )
   if (!plan.ok) throw new Error('expected ok')
-  assertEquals(plan.metadata.privileges, ['admin'])
-  assertEquals(plan.metadata.tool, true)
+  assertEquals(plan.patch.privileges, ['admin'])
+  assertEquals(plan.patch.tool, true)
   assertEquals(
     plan.summary.some((line) => line.includes('owner role')),
     true
@@ -130,7 +136,7 @@ test('moving a login to admin is never refused over owner roles and makes it a t
     tool: false,
   })
   if (!off.ok) throw new Error('expected ok')
-  assertEquals(off.metadata.tool, false)
+  assertEquals(off.patch.tool, false)
 })
 
 test('an admin login cannot become read-only, and MySQL admin needs no owner role', () => {
@@ -140,7 +146,7 @@ test('an admin login cannot become read-only, and MySQL admin needs no owner rol
   assertEquals(!ro.ok && ro.error, 'managed_admin_login_not_read_only')
   const my = planLoginPatch('mysql', user({ databases: ['shop'] }), { privileges: ['admin'] })
   if (!my.ok) throw new Error('expected ok')
-  assertEquals(my.metadata.privileges, ['admin'])
+  assertEquals(my.patch.privileges, ['admin'])
   assertEquals(
     my.summary.some((line) => line.includes('all rights on each listed database')),
     true

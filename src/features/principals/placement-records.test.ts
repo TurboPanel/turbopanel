@@ -96,8 +96,6 @@ async function withFixtures(fn: (ctx: Fixtures) => Promise<void>): Promise<void>
       {
         organizationId,
         projectId,
-        kind: 'system',
-        provider: 'server',
         username: `pl_compose_${suffix}`,
         appliedUsername: `pl_compose_${suffix}`,
         metadata: { composeAlias: 'web', home: `/srv/users/pl_compose_${suffix}` },
@@ -105,8 +103,6 @@ async function withFixtures(fn: (ctx: Fixtures) => Promise<void>): Promise<void>
       {
         organizationId,
         projectId,
-        kind: 'system',
-        provider: 'server',
         username: `pl_manual_${suffix}`,
         appliedUsername: `pl_manual_${suffix}`,
         metadata: { home: `/srv/users/pl_manual_${suffix}` },
@@ -271,6 +267,7 @@ test("loadPrincipalUsage counts the principal's database logins", async () => {
         managedId: cluster!.id,
         principalId: composePrincipalId,
         role: 'user',
+        username: 'pl_login_user',
         appliedUsername: 'pl_login_user',
       })
       const usage = await loadPrincipalUsage(db, [composePrincipalId], serverIds[0])
@@ -303,7 +300,7 @@ test('ensureProjectPlacements covers pinned and deployed servers, promotes pendi
         .select({ workspaceId: project.workspaceId })
         .from(project)
         .where(eq(project.id, projectId))
-      // Another project's principal and a database principal must not be touched.
+      // Another project's principal must not be touched.
       const [otherProject] = await db
         .insert(project)
         .values({
@@ -318,21 +315,8 @@ test('ensureProjectPlacements covers pinned and deployed servers, promotes pendi
         .values({
           organizationId,
           projectId: otherProject!.id,
-          kind: 'system',
-          provider: 'server',
           username: `pl_other_${tag}`,
           appliedUsername: `pl_other_${tag}`,
-        })
-        .returning({ id: principal.id })
-      const [dbPrincipal] = await db
-        .insert(principal)
-        .values({
-          organizationId,
-          projectId,
-          kind: 'database',
-          provider: 'postgres',
-          username: `pl_db_${tag}`,
-          appliedUsername: `pl_db_${tag}`,
         })
         .returning({ id: principal.id })
       // A stop already queued for the manual principal on server B: not ours to undo.
@@ -365,13 +349,11 @@ test('ensureProjectPlacements covers pinned and deployed servers, promotes pendi
         const strays = await db
           .select({ id: principalPlacement.id })
           .from(principalPlacement)
-          .where(inArray(principalPlacement.principalId, [otherPrincipal!.id, dbPrincipal!.id]))
+          .where(inArray(principalPlacement.principalId, [otherPrincipal!.id]))
         assertEquals(strays.length, 0)
       } finally {
         await db.delete(deployment).where(eq(deployment.environmentId, environmentId))
-        await db
-          .delete(principal)
-          .where(inArray(principal.id, [otherPrincipal!.id, dbPrincipal!.id]))
+        await db.delete(principal).where(inArray(principal.id, [otherPrincipal!.id]))
         await db.delete(project).where(eq(project.id, otherProject!.id))
       }
     }

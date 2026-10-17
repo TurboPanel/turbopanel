@@ -34,7 +34,7 @@ import { enqueueManagedIngressReconcile } from './ingress-desired.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
 import { managedIngressPortForEngine } from './ingress-ports.ts'
 import { loadManagedIngressPorts } from './load-org-defaults.ts'
-import { parseManagedRowOptions } from './options.ts'
+import { parseManagedSettings } from './options.ts'
 import {
   MANAGED_EXTERNAL_ACCESS_KEY,
   type ManagedExternalAccess,
@@ -218,7 +218,7 @@ export async function loadHostIngressListeners(
   for (const row of rows) {
     const engine = (row.engine ?? 'postgres') as ManagedEngineCode
     const spec = getManagedEngineSpec(engine)
-    if (!spec || !parseManagedRowOptions(spec, row.options)) continue
+    if (!spec || parseManagedSettings(spec, row.options) === null) continue
     ports.add(managedIngressPortForEngine(engine, spec.defaultPort, ingressPorts))
   }
   return { external: true, ports: [...ports].toSorted((a, b) => a - b) }

@@ -53,8 +53,6 @@ async function withFixtures(fn: (ctx: Fixtures) => Promise<void>): Promise<void>
     .values(
       ['one', 'two', 'three'].map((name) => ({
         organizationId,
-        kind: 'system',
-        provider: 'server',
         username: `pi_${name}_${suffix}`,
         appliedUsername: `pi_${name}_${suffix}`,
       }))

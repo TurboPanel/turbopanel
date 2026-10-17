@@ -6,9 +6,9 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import {
   hasBindingsForDatabase,
-  hasBindingsForPrincipal,
+  hasBindingsForLogin,
   listBindingImpactForDatabase,
-  listBindingImpactForPrincipal,
+  listBindingImpactForLogin,
 } from './impact.ts'
 
 /**
@@ -54,8 +54,8 @@ function joinChain(rows: unknown[]): Db {
   return chain as unknown as Db
 }
 
-test('listBindingImpactForPrincipal sorts by keyPrefix and sets count', async () => {
-  const result = await listBindingImpactForPrincipal(
+test('listBindingImpactForLogin sorts by keyPrefix and sets count', async () => {
+  const result = await listBindingImpactForLogin(
     joinChain([
       {
         serviceId: 's2',
@@ -72,7 +72,7 @@ test('listBindingImpactForPrincipal sorts by keyPrefix and sets count', async ()
         keyPrefix: 'AAA',
       },
     ]),
-    'principal-1'
+    'login-1'
   )
   assertEquals(result.count, 2)
   assertEquals(
@@ -90,9 +90,9 @@ test('listBindingImpactForDatabase returns empty impact shape', async () => {
   assertEquals(result, { count: 0, services: [] })
 })
 
-test('hasBindingsForPrincipal is true only when a row exists', async () => {
-  assertEquals(await hasBindingsForPrincipal(joinChain([{ id: 'b1' }]), 'principal-1'), true)
-  assertEquals(await hasBindingsForPrincipal(joinChain([]), 'principal-1'), false)
+test('hasBindingsForLogin is true only when a row exists', async () => {
+  assertEquals(await hasBindingsForLogin(joinChain([{ id: 'b1' }]), 'login-1'), true)
+  assertEquals(await hasBindingsForLogin(joinChain([]), 'login-1'), false)
 })
 
 test('hasBindingsForDatabase delegates to impact count', async () => {

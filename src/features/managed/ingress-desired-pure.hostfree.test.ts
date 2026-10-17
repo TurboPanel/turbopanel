@@ -19,8 +19,6 @@ import {
   ingressEngineVersionFromOptions,
   isAtRestSealedPassword,
   isIngressRecord,
-  isManagedReplicationPrincipal,
-  isManagedRootPrincipal,
   looksLikeIpLiteral,
   managedIngressFamilyForEngine,
   managedIngressPortForEngine,
@@ -126,12 +124,9 @@ test('ingressEngineVersionFromOptions reads the stored image, not the parsed set
   )
 })
 
-test('principalIsTool is true only for an explicit tool flag', () => {
-  assertEquals(principalIsTool({ tool: true }), true)
-  assertEquals(principalIsTool({ tool: false }), undefined)
-  assertEquals(principalIsTool({ tool: 'true' }), undefined)
-  assertEquals(principalIsTool({}), undefined)
-  assertEquals(principalIsTool(null), undefined)
+test('principalIsTool is true only for a tool login', () => {
+  assertEquals(principalIsTool(true), true)
+  assertEquals(principalIsTool(false), undefined)
 })
 
 test('protocolListenerForEngine returns the platform default port and family', () => {
@@ -181,28 +176,20 @@ test('managedIngressFamilyForEngine falls back to the native backend port', () =
   assertEquals(managedIngressFamilyForEngine('percona', 5432), 'pgsql')
 })
 
-test('principal metadata helpers', () => {
+test('login helpers', () => {
   assertEquals(isIngressRecord(null), false)
   assertEquals(isIngressRecord([]), false)
   assertEquals(isIngressRecord({ a: 1 }), true)
-  assertEquals(isManagedRootPrincipal({ managedRoot: true }), true)
-  assertEquals(isManagedRootPrincipal('x'), false)
-  assertEquals(isManagedReplicationPrincipal({ managedReplication: true }), true)
-  assertEquals(isManagedReplicationPrincipal({}), false)
-  assertEquals(principalDefaultDatabase(null), undefined)
-  assertEquals(principalDefaultDatabase({ databases: [] }), undefined)
-  assertEquals(principalDefaultDatabase({ databases: ['', 1, 'app'] }), 'app')
-  assertEquals(buildIngressUserRole({ managedRoot: true }), 'root')
-  assertEquals(buildIngressUserRole({}), 'user')
+  assertEquals(principalDefaultDatabase([]), undefined)
+  assertEquals(principalDefaultDatabase(['', 'app']), 'app')
+  assertEquals(buildIngressUserRole('root'), 'root')
+  assertEquals(buildIngressUserRole('user'), 'user')
+  assertEquals(buildIngressUserRole('replication'), 'user')
 })
 
 test('principalConnectionRole only recognizes an explicit read-only login', () => {
-  assertEquals(principalConnectionRole({ connectionRole: 'read-only' }), 'read-only')
-  assertEquals(principalConnectionRole({ connectionRole: 'read-write' }), undefined)
-  assertEquals(principalConnectionRole({}), undefined)
-  assertEquals(principalConnectionRole(null), undefined)
-  assertEquals(principalConnectionRole('read-only'), undefined)
-  assertEquals(principalConnectionRole({ connectionRole: true }), undefined)
+  assertEquals(principalConnectionRole('read-only'), 'read-only')
+  assertEquals(principalConnectionRole('read-write'), undefined)
 })
 
 test('clusterAutoReadSplit defaults off unless the operator opts in', () => {
@@ -475,10 +462,10 @@ test('buildLocalOrMissingPortBackend local and remote paths', () => {
 })
 
 test('frontend user skip + sealed password checks', () => {
-  assertEquals(shouldSkipIngressFrontendUser('', {}), true)
-  assertEquals(shouldSkipIngressFrontendUser(null, {}), true)
-  assertEquals(shouldSkipIngressFrontendUser('repl', { managedReplication: true }), true)
-  assertEquals(shouldSkipIngressFrontendUser('app', {}), false)
+  assertEquals(shouldSkipIngressFrontendUser('', 'user'), true)
+  assertEquals(shouldSkipIngressFrontendUser(null, 'user'), true)
+  assertEquals(shouldSkipIngressFrontendUser('repl', 'replication'), true)
+  assertEquals(shouldSkipIngressFrontendUser('app', 'user'), false)
 
   assertEquals(isAtRestSealedPassword('tp1.abc', 'tp1.'), true)
   assertEquals(isAtRestSealedPassword('plain', 'tp1.'), false)

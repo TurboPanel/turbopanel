@@ -14,7 +14,8 @@ import {
   hosting,
   managed,
   organization,
-  principal,
+  login,
+  managedDatabase,
   project,
   server,
   service,
@@ -674,22 +675,24 @@ async function withConsumerOnlyManagedFixtures(
     })
     .returning({ id: managed.id })
   const [account] = await db
-    .insert(principal)
+    .insert(login)
     .values({
-      organizationId,
-      kind: 'database',
-      provider: 'postgres',
+      managedId: cluster!.id,
+      role: 'user',
       username: 'appuser',
       appliedUsername: 'appuser',
-      managedId: cluster!.id,
     })
-    .returning({ id: principal.id })
+    .returning({ id: login.id })
+  const [appDb] = await db
+    .insert(managedDatabase)
+    .values({ managedId: cluster!.id, name: 'appdb' })
+    .returning({ id: managedDatabase.id })
   const [bound] = await db
     .insert(binding)
     .values({
-      principalId: account!.id,
+      loginId: account!.id,
       serviceId: consumerSvc!.id,
-      databaseName: 'appdb',
+      databaseId: appDb!.id,
     })
     .returning({ id: binding.id })
 
@@ -698,7 +701,6 @@ async function withConsumerOnlyManagedFixtures(
     await fn({ db, serverId, queue })
   } finally {
     await db.delete(binding).where(eq(binding.id, bound!.id))
-    await db.delete(principal).where(eq(principal.id, account!.id))
     await db.delete(managed).where(eq(managed.id, cluster!.id))
     await cleanupOrg(db, organizationId, serverId)
   }

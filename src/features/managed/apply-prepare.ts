@@ -51,18 +51,9 @@ import {
   splitTlsMetadata,
 } from '../../lib/tls/index.ts'
 import type { Db } from '../../db/connection.ts'
-import {
-  ensureManagedReplicationPrincipal,
-  REPLICATION_PASSWORD_LENGTH,
-} from '../principals/store.ts'
-import {
-  findManagedLoginByRole,
-  legacyPrincipalIdOf,
-  listManagedLoginCredentials,
-  loginGrantMode,
-  type ManagedLoginCredentialRow,
-  setLoginPassword,
-} from './logins.ts'
+import { REPLICATION_PASSWORD_LENGTH } from '../principals/store.ts'
+import { findManagedLoginByRole, listManagedLoginCredentials, setLoginPassword } from './logins.ts'
+import { ensureManagedReplicationLogin } from './cluster-logins.ts'
 import { loadPrincipalNamePolicy } from './load-org-defaults.ts'
 import { generatePassword } from '../../lib/secrets/generate-secret.ts'
 import {
@@ -346,25 +337,6 @@ export function mapManagedApplyPrepareError(c: Context, error: ManagedApplyPrepa
   return prepareErrorResponse(c, error)
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function principalDatabases(metadata: unknown): string[] {
-  if (!isRecord(metadata)) return []
-  if (!Array.isArray(metadata.databases)) return []
-  return metadata.databases.filter((entry): entry is string => typeof entry === 'string')
-}
-
-function principalPrivileges(metadata: unknown): string[] | undefined {
-  if (!isRecord(metadata)) return undefined
-  if (!Array.isArray(metadata.privileges)) return undefined
-  const privileges = metadata.privileges.filter(
-    (entry): entry is string => typeof entry === 'string'
-  )
-  return privileges.length > 0 ? privileges : undefined
-}
-
 /** Org-CA engine TLS when there are peers, or a private listener for remote consumers. */
 export function resolveManagedApplyUseOrgTls(
   multiMember: boolean,
@@ -460,21 +432,21 @@ async function buildCredentials(
     )
 
     const credential: ManagedApplyCommandPayload['credentials'][number] = {
-      principalId: credentialPrincipalId(row),
+      principalId: row.id,
       // Applied login — the engine role name, not the internal short name.
       username: row.appliedUsername,
       role: row.role,
-      databases: principalDatabases(row.metadata),
+      databases: row.databases,
       password: resealed,
     }
-    const privileges = principalPrivileges(row.metadata)
-    if (privileges !== undefined) {
+    const privileges = row.privileges
+    if (privileges.length > 0) {
       credential.privileges =
         !daemonKnowsAdmin && privileges.includes('admin') ? ['read-write'] : privileges
     }
     // Only a non-default mode goes on the wire, so payloads for logins made
     // before modes existed stay exactly as they were.
-    const grantMode = loginGrantMode(row.metadata)
+    const grantMode = row.grantMode
     if (grantMode !== 'preset') credential.grantMode = grantMode
     credentials.push(credential)
     return undefined
@@ -482,16 +454,6 @@ async function buildCredentials(
   if (failure) return failure
 
   return credentials
-}
-
-/**
- * The daemon only needs username, password and role; `principalId` is kept
- * on the wire unchanged. A user login names its principal; the cluster's own
- * root and replication logins name the legacy principal row while it exists,
- * then themselves.
- */
-function credentialPrincipalId(row: ManagedLoginCredentialRow): string {
-  return row.principalId ?? legacyPrincipalIdOf(row.metadata) ?? row.id
 }
 
 function organizationCaSetOrSealedError(
@@ -985,7 +947,7 @@ async function attachReplicationCredential(
     sealed
   )
   credentials.push({
-    principalId: credentialPrincipalId(repl),
+    principalId: repl.id,
     username: repl.appliedUsername,
     role: 'replication',
     databases: [],
@@ -1586,7 +1548,7 @@ export async function prepareManagedApplyPayloads(
   return { members: prepared }
 }
 
-/** Mint (or reuse) the cluster's replication principal and persist its username. */
+/** Mint (or reuse) the cluster's replication login and persist its username. */
 async function ensureClusterReplicationUsername(
   c: Context,
   db: Db,
@@ -1597,10 +1559,9 @@ async function ensureClusterReplicationUsername(
     return { kind: 'daemon_key_unavailable', serverId: input.serverId }
   }
 
-  const repl = await ensureManagedReplicationPrincipal(db, dataEncryptionSecrets, {
+  const repl = await ensureManagedReplicationLogin(db, dataEncryptionSecrets, {
     managedId: input.managedRow.id,
     preferredUsername: 'tp_repl',
-    provider: input.spec.principalProvider,
     identifier: input.spec.userOperations.identifier,
     nameScheme: (await loadPrincipalNamePolicy(db, input.organizationId)).defaultScheme,
   })

@@ -304,17 +304,16 @@ async function validatePrincipalRef(
 ): Promise<Response | null> {
   if (!principalId) return null
   const [principalRow] = await db
-    .select({ projectId: principal.projectId, kind: principal.kind })
+    .select({ projectId: principal.projectId })
     .from(principal)
     // Another organization's principal reads as missing: its credentials would
     // otherwise ship with this storage at deploy.
     .where(and(eq(principal.id, principalId), eq(principal.organizationId, orgId)))
     .limit(1)
-  // A system principal whose project was deleted (`project_id` NULL) is still
-  // the organization's own and keeps serving the storage it owns; only a
-  // storage scoped to a project cannot name it.
-  const orphanedSystem = principalRow?.projectId === null && principalRow.kind === 'system'
-  if (!principalRow || (!principalRow.projectId && !orphanedSystem)) {
+  // A principal whose project was deleted (`project_id` NULL) is still the
+  // organization's own and keeps serving the storage it owns; only a storage
+  // scoped to a project cannot name it.
+  if (!principalRow) {
     return c.json({ error: 'Not found' }, 404)
   }
   if (projectId && principalProjectMismatch(principalRow.projectId ?? '', projectId)) {

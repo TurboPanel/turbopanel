@@ -107,23 +107,9 @@ export function ingressEngineVersionFromOptions(
   return typeof image === 'string' ? ingressEngineVersion(spec, image) : undefined
 }
 
-export function isManagedRootPrincipal(metadata: unknown): boolean {
-  if (!isIngressRecord(metadata)) return false
-  return metadata.managedRoot === true
-}
-
-export function isManagedReplicationPrincipal(metadata: unknown): boolean {
-  if (!isIngressRecord(metadata)) return false
-  return metadata.managedReplication === true
-}
-
-export function principalDefaultDatabase(metadata: unknown): string | undefined {
-  if (!isIngressRecord(metadata)) return undefined
-  if (!Array.isArray(metadata.databases)) return undefined
-  const first = metadata.databases.find(
-    (entry): entry is string => typeof entry === 'string' && entry.length > 0
-  )
-  return first
+/** The login's first listed database, the default the proxy sends it to. */
+export function principalDefaultDatabase(databases: readonly string[]): string | undefined {
+  return databases.find((entry) => entry.length > 0)
 }
 
 export function looksLikeIpLiteral(value: string): boolean {
@@ -344,30 +330,28 @@ export function sortManagedIds(ids: Iterable<string>): string[] {
 }
 
 /**
- * A database-tool login (`metadata.tool === true`): the daemon sends all of
- * its traffic to the primary and adds no read/write split rules. Only an
+ * A database-tool login (`login.is_tool`): the daemon sends all of its
+ * traffic to the primary and adds no read/write split rules. Only an
  * explicit `true` is emitted, so the payload for other logins stays minimal.
  */
-export function principalIsTool(metadata: unknown): true | undefined {
-  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) return undefined
-  return (metadata as Record<string, unknown>).tool === true ? true : undefined
+export function principalIsTool(isTool: boolean): true | undefined {
+  return isTool ? true : undefined
 }
 
-export function buildIngressUserRole(metadata: unknown): 'root' | 'user' {
-  return isManagedRootPrincipal(metadata) ? 'root' : 'user'
+export function buildIngressUserRole(role: string): 'root' | 'user' {
+  return role === 'root' ? 'root' : 'user'
 }
 
 /**
  * Frontend hostgroup default for a managed login.
  *
  * Returns `undefined` for the implicit `read-write` default so the wire payload
- * stays minimal. Only an explicit `connectionRole: 'read-only'` on the
- * principal metadata moves a login to the reader hostgroup — read eligibility
- * of a member never rewrites where an existing login sends its traffic.
+ * stays minimal. Only an explicit `read-only` access on the login moves it to
+ * the reader hostgroup — read eligibility of a member never rewrites where an
+ * existing login sends its traffic.
  */
-export function principalConnectionRole(metadata: unknown): 'read-only' | undefined {
-  if (!isIngressRecord(metadata)) return undefined
-  return metadata.connectionRole === 'read-only' ? 'read-only' : undefined
+export function principalConnectionRole(access: string): 'read-only' | undefined {
+  return access === 'read-only' ? 'read-only' : undefined
 }
 
 /** Cluster-level `^SELECT` split policy; absent/false keeps reads on the primary. */
@@ -399,10 +383,10 @@ export function clusterRequireTls(
   )
 }
 
-export function shouldSkipIngressFrontendUser(username: unknown, metadata: unknown): boolean {
+export function shouldSkipIngressFrontendUser(username: unknown, role: string): boolean {
   if (typeof username !== 'string' || username.length === 0) return true
-  // Replication principal is not a client login — never a ProxySQL frontend user.
-  if (isManagedReplicationPrincipal(metadata)) return true
+  // The replication login is not a client login — never a ProxySQL frontend user.
+  if (role === 'replication') return true
   return false
 }
 

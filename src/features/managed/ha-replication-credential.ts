@@ -99,7 +99,7 @@ export async function resolveReplicationCredentialForHa(
   if (resealed) return resealed
 
   // Replication credentials are created on primary `managed.apply`
-  // (`ensureManagedReplicationPrincipal`). Never mint a Postgres-only password
+  // (`ensureManagedReplicationLogin`). Never mint a Postgres-only password
   // here — Orchestrator must not receive a credential the engine does not hold.
   return null
 }

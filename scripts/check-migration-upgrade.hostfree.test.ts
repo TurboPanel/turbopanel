@@ -157,6 +157,24 @@ test('a pending rename only excuses seed errors that name the old names', () => 
   )
 })
 
+test('a pending drop or added column excuses seed errors that name it', () => {
+  const allowance = addBreakingOkAllowance(`-- breaking-ok: split a column
+ALTER TABLE "login" ADD COLUMN "username" varchar(255);--> statement-breakpoint
+ALTER TABLE "principal" DROP COLUMN "managed_id";`)
+  assertEquals(
+    seedErrorFromRename('column "managed_id" of relation "principal" does not exist', allowance),
+    true
+  )
+  assertEquals(
+    seedErrorFromRename('null value in column "username" of relation "login"', allowance),
+    true
+  )
+  assertEquals(
+    seedErrorFromRename('null value in column "role" of relation "login"', allowance),
+    false
+  )
+})
+
 test('schema diff reports objects on either side only', () => {
   const fresh = { indexes: ['a', 'b'], history: ['h1'] }
   assertEquals(diffSchemas({ indexes: ['a', 'b'], history: ['h1'] }, fresh), [])
