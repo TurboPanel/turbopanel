@@ -453,6 +453,7 @@ test('createListRowsOnlyReadDb rejects partial servers-list select columns', asy
     machineClass: server.machineClass,
     options: server.options,
     createdAt: server.createdAt,
+    _v: sql<string>`${'stamp'}::text`.as('_v'),
   })
   assertEquals(allowedReadDb.selectCallCount, 1)
 })
