@@ -172,6 +172,61 @@ export const MAX_ORPHANS_PER_RECONCILE = 500
 const keyOf = (owner: string, scope: string, kind: string, slug: string): string =>
   `${owner}\u0000${scope}\u0000${kind}\u0000${slug}`
 
+type ReconcileRow = {
+  id: string
+  state: string
+  scope: string
+  kind: string
+  slug: string
+  updatedAt: string
+  login: string
+}
+
+/** Which rows a complete listing moves: back to present, to missing, or away. */
+function planReconcile(
+  rows: readonly ReconcileRow[],
+  onHost: ReadonlySet<string>,
+  listedAfter: number | null
+): { known: Set<string>; toMissing: string[]; toPresent: string[]; toDelete: string[] } {
+  const plan = {
+    known: new Set<string>(),
+    toMissing: [] as string[],
+    toPresent: [] as string[],
+    toDelete: [] as string[],
+  }
+  for (const row of rows) {
+    const key = keyOf(row.login, row.scope, row.kind, row.slug)
+    plan.known.add(key)
+    // The listing was taken after the command was built: a row changed since
+    // (planned again, deployed) may not be in it yet, so it is left for the next one.
+    const changedAt = Date.parse(row.updatedAt)
+    if (listedAfter !== null && (Number.isNaN(changedAt) || changedAt >= listedAfter)) continue
+    const found = onHost.has(key)
+    if (found && row.state === 'missing') plan.toPresent.push(row.id)
+    else if (!found && row.state === 'present') plan.toMissing.push(row.id)
+    else if (!found && (row.state === 'removing' || row.state === 'orphan')) {
+      plan.toDelete.push(row.id)
+    }
+  }
+  return plan
+}
+
+/** Move rows from one state to another, only those still in the first when the write lands. */
+async function moveFolderRows(
+  db: Pick<Db, 'update'>,
+  ids: readonly string[],
+  from: string,
+  to: string
+): Promise<number> {
+  if (ids.length === 0) return 0
+  const done = await db
+    .update(folder)
+    .set({ state: to })
+    .where(and(inArray(folder.id, [...ids]), eq(folder.state, from)))
+    .returning({ id: folder.id })
+  return done.length
+}
+
 /**
  * Compare a complete listing of the host's folders with this server's rows.
  * Call only with a list the host completed (`folders` present in the result).
@@ -212,49 +267,16 @@ export async function reconcileReportedFolders(
     .from(folder)
     .innerJoin(principal, eq(principal.id, folder.principalId))
     .where(eq(folder.serverId, serverId))
-  const known = new Set<string>()
-  const toMissing: string[] = []
-  const toPresent: string[] = []
-  const toDelete: string[] = []
-  for (const row of rows) {
-    const key = keyOf(row.login, row.scope, row.kind, row.slug)
-    known.add(key)
-    // The listing was taken after the command was built: a row changed since
-    // (planned again, deployed) may not be in it yet, so it is left for the next one.
-    if (listedAfter !== null) {
-      const changedAt = Date.parse(row.updatedAt)
-      if (Number.isNaN(changedAt) || changedAt >= listedAfter) continue
-    }
-    const found = onHost.has(key)
-    if (found && row.state === 'missing') toPresent.push(row.id)
-    else if (!found && row.state === 'present') toMissing.push(row.id)
-    else if (!found && (row.state === 'removing' || row.state === 'orphan')) {
-      toDelete.push(row.id)
-    }
-  }
-  if (toMissing.length > 0) {
-    const done = await db
-      .update(folder)
-      .set({ state: 'missing' })
-      .where(and(inArray(folder.id, toMissing), eq(folder.state, 'present')))
-      .returning({ id: folder.id })
-    summary.markedMissing = done.length
-  }
-  if (toPresent.length > 0) {
-    const done = await db
-      .update(folder)
-      .set({ state: 'present' })
-      .where(and(inArray(folder.id, toPresent), eq(folder.state, 'missing')))
-      .returning({ id: folder.id })
-    summary.markedPresent = done.length
-  }
-  if (toDelete.length > 0) {
+  const plan = planReconcile(rows, onHost, listedAfter)
+  summary.markedMissing = await moveFolderRows(db, plan.toMissing, 'present', 'missing')
+  summary.markedPresent = await moveFolderRows(db, plan.toPresent, 'missing', 'present')
+  if (plan.toDelete.length > 0) {
     // `removing` and `orphan` rows whose folder is no longer on the host have
     // nothing left to wait for; the state check keeps a row that changed since
     // the read (planned again, say) from being deleted.
     const done = await db
       .delete(folder)
-      .where(and(inArray(folder.id, toDelete), inArray(folder.state, ['removing', 'orphan'])))
+      .where(and(inArray(folder.id, plan.toDelete), inArray(folder.state, ['removing', 'orphan'])))
       .returning({ id: folder.id })
     summary.cleared = done.length
   }
@@ -263,7 +285,7 @@ export async function reconcileReportedFolders(
     serverId,
     reported.filter(
       (entry) =>
-        entry.present && !known.has(keyOf(entry.owner, entry.scope, entry.kind, entry.slug))
+        entry.present && !plan.known.has(keyOf(entry.owner, entry.scope, entry.kind, entry.slug))
     )
   )
   return summary
