@@ -199,7 +199,7 @@ export async function recordTopologyGeneration(
     const now = new Date()
     const nowIso = now.toISOString()
 
-    if (current && current.generation === report.generation) {
+    if (current?.generation === report.generation) {
       const sinceWrite = now.getTime() - Date.parse(current.updatedAt)
       if (sinceWrite < TOPOLOGY_REWRITE_COOLDOWN_SECONDS * 1000) return 'unchanged'
       const same =

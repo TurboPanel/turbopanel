@@ -346,6 +346,28 @@ function parseEnrollFields(body: Record<string, unknown>): FieldResult<EnrollFie
  * Resolves the server row, guards against a fingerprint collision, and attaches
  * the daemon key — the final leg of `POST /enroll` once the signature is verified.
  */
+function enrollFailureBody(failure: { error: string; message?: string }) {
+  return {
+    ok: false,
+    error: failure.error,
+    ...(failure.message ? { message: failure.message } : {}),
+  }
+}
+
+/** `resolveServerId`, with a host that is already registered answered as a conflict marker. */
+async function resolveServerIdOrConflict(
+  db: Db,
+  identity: Parameters<typeof resolveServerId>[1],
+  fabricDeps: Parameters<typeof resolveServerId>[2]
+): Promise<string | null | 'machine_key_in_use'> {
+  try {
+    return await resolveServerId(db, identity, fabricDeps)
+  } catch (err) {
+    if (isMachineKeyInUse(err)) return 'machine_key_in_use'
+    throw err
+  }
+}
+
 async function finalizeDaemonEnrollment(
   db: Db,
   params: {
@@ -402,13 +424,9 @@ async function finalizeDaemonEnrollment(
     }
   }
 
-  let serverId: string | null
-  try {
-    serverId = await resolveServerId(db, identity, fabricDeps)
-  } catch (err) {
-    if (isMachineKeyInUse(err)) return MACHINE_KEY_IN_USE_RESULT
-    throw err
-  }
+  const resolved = await resolveServerIdOrConflict(db, identity, fabricDeps)
+  if (resolved === 'machine_key_in_use') return MACHINE_KEY_IN_USE_RESULT
+  const serverId = resolved
   if (!serverId) {
     return {
       ok: false,
@@ -1341,14 +1359,7 @@ export function registerDaemonApiRoutes<E extends Env>(
       ...(fabricDeps ? { fabricDeps } : {}),
     })
     if (!enrolled.ok) {
-      return c.json(
-        {
-          ok: false,
-          error: enrolled.error,
-          ...(enrolled.message ? { message: enrolled.message } : {}),
-        },
-        enrolled.status
-      )
+      return c.json(enrollFailureBody(enrolled), enrolled.status)
     }
     // Bound now: `license.server_id` carries it from here.
     await clearLicenseEnrollAttempt(db, licenseId).catch(() => {})
