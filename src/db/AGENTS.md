@@ -31,38 +31,36 @@ provider change never becomes a refused write. A daemon-reported vocabulary
 way in for the same reason.
 
 The baseline has been regenerated while pre-MVP (no installed instances, no
-production data) — first for the `gitapp` table and `installation.app_id`, then
-the schema-cutover squash, then to fold the `monitor` table into `0000_init.sql`
-(replacing `0001_add_monitor_credential_table`), then again to fold org-level
-repository uniqueness into `0000_init.sql` (replacing
-`0001_repository_org_level_dedupe`, which also dropped the leftover
-`repository.service_id` / `environment_id` parent columns), then again to fold
-repository inspection columns into `0000_init.sql` (replacing
-`0001_add_repository_inspection_columns`), then again to fold the `generation`
-(server topology) and `capability` (metrics capability-plan) tables into
-`0000_init.sql` (replacing `0001_add_server_topology_generation` and
-`0002_add_capability_plan_generation`), then again to fold the product-tier
-reshape into `0000_init.sql` (replacing `0001_product_tiers`: no `tier_id` on
-`license`, derived `server.assigned_tier_id`, provider product + display
-currency on `tier`, entitlements in code), then again to fold dropping
-`project_name_format_check` into `0000_init.sql` (replacing
-`0001_drop_project_name_format_check`), and finally — the ninth and last,
-2026-09-17, the pre-0.1.0 schema freeze — to fold `0001`–`0020` (the Stripe
-projection hand-off, the reserved network kind, the auth constraints, the
-whole schema-freeze batch, the forge unique and the pre-fold CHECKs/drops/
-indexes) into one `0000_init.sql`, proven schema-identical to the twenty-one
-file chain by diffing `pg_dump -s` of both (749 constraints, 289 indexes, 698
-columns; only column order differs). Each of those was a deliberate pre-MVP
-exception, **not** a precedent.
+production data): nine times up to 2026-09-17 (the pre-0.1.0 schema freeze
+folded `0001`–`0020` into one `0000_init.sql`, generation 9), and a tenth and
+last time on 2026-10-17 — the **fresh-start baseline**. The owner wipes the panel
+database and every server right before the release that ships it, so nothing
+had to be carried over: migrations `0000`–`0039` (the single-word table names
+`permission` and `totp`, the login split with the `database` and `scope`
+tables, and the final-shape pass) were replaced by one `0000_init.sql`
+generated from `schema.ts` (manifest generation 10, still `frozen: true`). Each
+of those folds was a deliberate pre-MVP exception, **not** a precedent.
 
-**From the ninth fold on, this is the rule, not a policy:** `0000_init.sql` is
-the baseline and every later migration is additive and immutable. The freeze
-manifest is `frozen: true` at generation 9, so `scripts/check-migration-additions.mjs`
+**From the tenth fold on, this is the rule, not a policy:** `0000_init.sql` is
+the baseline and every later migration is additive and immutable, tested as an
+upgrade from the previous release with a backup taken first. The freeze
+manifest is `frozen: true` at generation 10, so `scripts/check-migration-additions.mjs`
 (in `build.yml`, `verify-ci.sh`) refuses any commit that modifies or deletes a
 shipped `NNNN_*.sql` or snapshot, and `migration-manifest.test.ts` refuses a
 working tree whose files no longer hash to the manifest. Restructuring an
 existing table is a forward migration that moves data, never an edit to the
 file that created it. Regenerating the baseline is not an option any more.
+
+The tenth fold got past the freeze guards through one named, owner-approved
+exception (`BASELINE_EXCEPTION`, `baseline-2026-10-owner-approved`, in
+`check-migration-additions.mjs`): it passed only a base manifest at generation 9
+and a head manifest at generation 10, frozen, with a one-entry journal tagged
+`0000_init`. It was removed in the change right after the fold. The upgrade
+check (`check-migration-upgrade.mjs`) has a lasting rule beside it, not a
+bypass: when the previous release tag's manifest has a lower generation than
+the checkout's, there is nothing to upgrade from, so it only builds a fresh
+database and proves the seed fits; once a release is tagged from the baseline
+the generations match and the full comparison resumes by itself.
 
 **The `audit` table is append-only.** Nothing updates or deletes a row, which
 is why it has no `updated_at` — a trail an operator can edit after the fact is
@@ -93,9 +91,8 @@ was offline when the asset was deleted), and `folder_asset_present_check` lets
 only `removing`, `orphan` and `missing` rows have neither. `server_id`,
 `principal_id` and `environment_id` are `RESTRICT`: a server, site owner or
 environment with folders cannot be deleted until the rows are gone, so the
-server-delete and environment-delete flows remove or settle them first. The new
-`slug` columns on `project`, `service` and `storage` are nullable (a partial
-unique where set) until the single baseline makes them `NOT NULL`. Boolean
+server-delete and environment-delete flows remove or settle them first. `project.slug` is `NOT NULL`; `service.slug` and `storage.slug` stay nullable
+because the folder allocator picks them when it plans a folder. Boolean
 columns follow the `is_` rule, so the spec's `common` is `is_common`. The CHECK
 patterns are built from `contracts/directory-names.ts`, so a rule cannot drift
 from the database.
@@ -109,8 +106,7 @@ environment of any project in the organization can use it. It carries no
 DELETE CASCADE` (deleting the environment detaches it); `service_id` and
 `storage_id` are `RESTRICT`, so an asset cannot be deleted while a row names it
 and the routes refuse first, in plain words, listing who uses it. The asset's own
-environment (the service row still needs one) uses it without a row. The
-single-word name is pending the owner's nod, like `folder`.
+environment (the service row still needs one) uses it without a row. 
 
 **Shipped migration files are immutable, and the guard for that is
 `migrations/manifest.json`** (`scripts/check-migration-freeze.mjs`,
@@ -125,13 +121,13 @@ skipped on every instance that already ran it. After `pnpm generate`, run
 changed or removed entry) and commit the manifest with the migration. The
 test also checks the journal is contiguous and strictly increasing, every
 `NNNN_*.sql` on disk is journaled, and the `meta/NNNN_snapshot.json` `prevId`
-chain is intact. `--rebaseline` rewrites the manifest and bumps `generation` — it was the one
-carve-out, used exactly once by the 2026-09-17 fold (generation 8 → 9, which
-also set `frozen: true`). With the manifest frozen, layer two
+chain is intact. `--rebaseline` rewrote the manifest and bumped `generation`; it was the one
+carve-out, used by the 2026-09-17 fold (8 → 9) and the 2026-10-17 fold (9 → 10)
+and removed afterwards. With the manifest frozen, layer two
 (`scripts/check-migration-additions.mjs`, `pnpm check:migration-additions
 [base-ref]`) diffs `migrations/` against the base ref in CI and accepts
 additions only; it reads the _base's_ `frozen` flag, so a commit cannot
-un-freeze its own way past it. Do not run `--rebaseline` again.
+un-freeze its own way past it.
 
 **New migrations must be forward-compatible with the previous Worker.** A
 deploy migrates first and ships the Worker second, and a rollback leaves the old

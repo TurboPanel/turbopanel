@@ -33,10 +33,13 @@ for (const name of fs.readdirSync(migrations)) {
   if (/^\d{4}_.+\.sql$/.test(name)) fs.rmSync(path.join(migrations, name))
 }
 for (const name of fs.readdirSync(meta)) {
-  if (/^\d{4}_snapshot\.json$/.test(name) || name === '_journal.json') {
-    fs.rmSync(path.join(meta, name))
-  }
+  if (/^\d{4}_snapshot\.json$/.test(name)) fs.rmSync(path.join(meta, name))
 }
+// drizzle-kit wants a journal to append to: an empty one means "diff against nothing".
+fs.writeFileSync(
+  path.join(meta, '_journal.json'),
+  `${JSON.stringify({ version: '7', dialect: 'postgresql', entries: [] }, null, 2)}\n`
+)
 
 run(
   'pnpm',
@@ -51,7 +54,11 @@ run(
 )
 
 const file = path.join(migrations, '0000_init.sql')
-const comments = run('node', ['scripts/schema-comments.mjs'])
+// The one comment `schema-descriptions.ts` does not carry (sequences have no
+// column to describe): the uid/gid sequence.
+const SEQUENCE_COMMENT =
+  'COMMENT ON SEQUENCE "public"."principal_id_seq" IS \'Installation-wide uid/gid source for new site owner Linux users: one value per principal, the same on every server it is placed on. Starts above the band floor because older hosts picked ids from the bottom.\';'
+const comments = `${run('node', ['scripts/schema-comments.mjs'])}--> statement-breakpoint\n${SEQUENCE_COMMENT}\n`
 fs.writeFileSync(
   file,
   `${fs.readFileSync(file, 'utf8').trimEnd()}\n--> statement-breakpoint\n${comments}`
