@@ -316,6 +316,30 @@ async function announceStoppedServices(
   }
 }
 
+/**
+ * Write the hello's changes. When another server already owns the reported
+ * machine key (a duplicate the baseline cleared, say) the rest of the hello
+ * still has to land, so it is written without the key and said once.
+ */
+async function updateServerKeepingMachineKey(
+  db: Db,
+  serverId: string,
+  update: Record<string, unknown>,
+  machineKeyChanged: boolean
+): Promise<void> {
+  try {
+    await db.update(server).set(update).where(eq(server.id, serverId))
+  } catch (err) {
+    if (!machineKeyChanged || !isMachineKeyInUse(err)) throw err
+    compatLogWarn(
+      'servers',
+      `server ${serverId} reported a machine key another server already holds; keeping the stored key`
+    )
+    delete update.machineKey
+    await db.update(server).set(update).where(eq(server.id, serverId))
+  }
+}
+
 export async function touchServerMetadata(
   db: Db,
   serverId: string,
@@ -401,20 +425,7 @@ export async function touchServerMetadata(
     update.daemon = daemonFeaturesColumnPatch(incomingFeatures)
   }
 
-  try {
-    await db.update(server).set(update).where(eq(server.id, serverId))
-  } catch (err) {
-    // Another server already owns this machine key (a duplicate the baseline
-    // cleared, say). The rest of the hello still has to land, so write it
-    // without the key and say so once.
-    if (!machineKeyChanged || !isMachineKeyInUse(err)) throw err
-    compatLogWarn(
-      'servers',
-      `server ${serverId} reported a machine key another server already holds; keeping the stored key`
-    )
-    delete update.machineKey
-    await db.update(server).set(update).where(eq(server.id, serverId))
-  }
+  await updateServerKeepingMachineKey(db, serverId, update, machineKeyChanged)
 
   await reconcileAfterHardwareReport(db, serverId, base, delta)
   await announceStoppedServices(

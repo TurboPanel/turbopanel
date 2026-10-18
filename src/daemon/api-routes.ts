@@ -359,11 +359,11 @@ async function resolveServerIdOrConflict(
   db: Db,
   identity: Parameters<typeof resolveServerId>[1],
   fabricDeps: Parameters<typeof resolveServerId>[2]
-): Promise<string | null | 'machine_key_in_use'> {
+): Promise<{ serverId: string | null } | { conflict: true }> {
   try {
-    return await resolveServerId(db, identity, fabricDeps)
+    return { serverId: await resolveServerId(db, identity, fabricDeps) }
   } catch (err) {
-    if (isMachineKeyInUse(err)) return 'machine_key_in_use'
+    if (isMachineKeyInUse(err)) return { conflict: true }
     throw err
   }
 }
@@ -425,8 +425,8 @@ async function finalizeDaemonEnrollment(
   }
 
   const resolved = await resolveServerIdOrConflict(db, identity, fabricDeps)
-  if (resolved === 'machine_key_in_use') return MACHINE_KEY_IN_USE_RESULT
-  const serverId = resolved
+  if ('conflict' in resolved) return MACHINE_KEY_IN_USE_RESULT
+  const serverId = resolved.serverId
   if (!serverId) {
     return {
       ok: false,
@@ -454,13 +454,18 @@ async function finalizeDaemonEnrollment(
     })
     return { ok: true, serverId, keyId: result.keyId }
   } catch (err) {
-    if (err instanceof DaemonKeyRevokedError) {
-      return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR }
-    }
-    if (isMachineKeyInUse(err)) return MACHINE_KEY_IN_USE_RESULT
-    const message = err instanceof Error ? err.message : String(err)
-    return { ok: false, status: 500, error: message }
+    return enrollAttachFailure(err)
   }
+}
+
+/** The answer for a failed key attach: revoked, host already registered, or a plain error. */
+function enrollAttachFailure(err: unknown) {
+  if (err instanceof DaemonKeyRevokedError) {
+    return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR } as const
+  }
+  if (isMachineKeyInUse(err)) return MACHINE_KEY_IN_USE_RESULT
+  const message = err instanceof Error ? err.message : String(err)
+  return { ok: false, status: 500, error: message } as const
 }
 
 function enrollFabricDepsFromContext(c: Context): FabricMembershipDeps | undefined {
