@@ -5,7 +5,20 @@
  */
 import { assertEquals, assertMatch } from '@std/assert'
 import { eq } from 'drizzle-orm'
-import { environment, folder, organization, service, storage, tenancy } from '../db/schema.ts'
+import {
+  environment,
+  folder,
+  organization,
+  principal,
+  server,
+  service,
+  storage,
+  tenancy,
+} from '../db/schema.ts'
+import { parseFoldersRemovePayload } from '../contracts/commands/schemas.ts'
+import { getCommandDispatchPayload } from '../features/commands/command-records.ts'
+import type { CommandEnvelope } from '../features/commands/envelope.ts'
+import type { CommandQueue } from '../features/commands/queue.ts'
 import {
   type Ctx,
   createProject,
@@ -410,5 +423,126 @@ test('an environment name must be a folder name when it is created', async () =>
     })
     assertEquals(project.status, 400)
     assertEquals(project.json.error, 'invalid_environment_name')
+  })
+})
+
+/** A queue that remembers what it was given, standing in for the real one. */
+function recordingQueue(): { queue: CommandQueue; sent: CommandEnvelope[] } {
+  const sent: CommandEnvelope[] = []
+  return {
+    sent,
+    queue: {
+      enqueue: (envelope) => {
+        sent.push(envelope)
+        return Promise.resolve()
+      },
+    },
+  }
+}
+
+test('deleting a volume asks its server to remove the folder, naming it by its parts', async () => {
+  const { queue, sent } = recordingQueue()
+  await withFixtures(
+    async (ctx) => {
+      const { envId } = await createProject(ctx, 'Volume Removal Ask')
+      const created = await createVolume(ctx, envId, {}, true)
+      const deleted = await send(ctx, 'DELETE', `/storage/${created.json.id}`)
+      assertEquals(deleted.status, 200)
+      const removals = sent.filter((envelope) => envelope.type === 'server.folders.remove')
+      assertEquals(removals.length, 1)
+      assertEquals(removals[0]!.serverId, ctx.serverId)
+      const [owner] = await ctx.db
+        .select({ login: principal.appliedUsername })
+        .from(principal)
+        .where(eq(principal.id, ctx.principalId))
+      const payload = await getCommandDispatchPayload(ctx.db, removals[0]!.commandId)
+      assertEquals(parseFoldersRemovePayload(payload).folders, [
+        {
+          kind: 'volume',
+          folder: { owner: owner!.login, scope: 'production', slug: 'uploads' },
+        },
+      ])
+    },
+    { commandQueue: queue }
+  )
+})
+
+test('removing a volume copy asks that server, and deleting a service asks its server', async () => {
+  const { queue, sent } = recordingQueue()
+  await withFixtures(
+    async (ctx) => {
+      const { envId } = await createProject(ctx, 'Service Removal Ask')
+      const created = await createVolume(ctx, envId, {}, true)
+      const id = created.json.id as string
+      const copies = await send(ctx, 'GET', `/storage/${id}/copies`)
+      const copyId = (copies.json.copies as Array<{ id: string }>)[0]!.id
+      assertEquals((await send(ctx, 'DELETE', `/storage/${id}/copies/${copyId}`)).status, 200)
+      assertEquals(sent.filter((e) => e.type === 'server.folders.remove').length, 1)
+
+      const web = await addService(ctx, envId, 'web')
+      await ctx.db.insert(folder).values({
+        serverId: ctx.serverId,
+        principalId: ctx.principalId,
+        environmentId: envId,
+        scope: 'production',
+        kind: 'service',
+        slug: 'web',
+        serviceId: web,
+        state: 'present',
+      })
+      await ctx.db.delete(tenancy).where(eq(tenancy.serviceId, web))
+      assertEquals((await send(ctx, 'DELETE', `/services/${web}`)).status, 200)
+      // One command per server carries every removing folder on it, the volume's too.
+      const removals = sent.filter((envelope) => envelope.type === 'server.folders.remove')
+      assertEquals(removals.length, 2)
+      const payload = parseFoldersRemovePayload(
+        await getCommandDispatchPayload(ctx.db, removals[1]!.commandId)
+      )
+      assertEquals(payload.folders.map((entry) => `${entry.kind}:${entry.folder.slug}`).sort(), [
+        'service:web',
+        'volume:uploads',
+      ])
+    },
+    { commandQueue: queue }
+  )
+})
+
+test('a delete that is refused asks no one to remove anything', async () => {
+  const { queue, sent } = recordingQueue()
+  await withFixtures(
+    async (ctx) => {
+      const { envId } = await createProject(ctx, 'Refused Delete')
+      const created = await createVolume(ctx, envId, {}, true)
+      const missing = await send(ctx, 'DELETE', `/storage/${crypto.randomUUID()}`)
+      assertEquals(missing.status, 404)
+      assertEquals(sent, [])
+      assertEquals(
+        (await ctx.db.select().from(folder).where(eq(folder.serverId, ctx.serverId))).length,
+        1
+      )
+      assertEquals(created.status, 200)
+    },
+    { commandQueue: queue }
+  )
+})
+
+test('a removing folder says in plain words that it waits for its server', async () => {
+  await withFixtures(async (ctx) => {
+    const { envId } = await createProject(ctx, 'Waiting Words')
+    const created = await createVolume(ctx, envId, {}, true)
+    assertEquals((await send(ctx, 'DELETE', `/storage/${created.json.id}`)).status, 200)
+    // The server is offline (a fresh server is not connected).
+    const offline = await send(ctx, 'PATCH', `/environments/${envId}`, { name: 'staging' })
+    assertEquals(offline.status, 409)
+    assertEquals(
+      (offline.json.folders as Array<{ reason: string }>)[0]!.reason,
+      'being removed, waiting for server Alpha to come back'
+    )
+    await ctx.db.update(server).set({ isConnected: true }).where(eq(server.id, ctx.serverId))
+    const online = await send(ctx, 'PATCH', `/environments/${envId}`, { name: 'staging' })
+    assertEquals(
+      (online.json.folders as Array<{ reason: string }>)[0]!.reason,
+      'being removed from server Alpha'
+    )
   })
 })

@@ -93,6 +93,7 @@ import {
 import type { CommandQueue } from './queue.ts'
 import {
   type EnvironmentDeployResultSite,
+  type KeptFolder,
   type ManagedDestroyCommandPayload,
   parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
@@ -103,6 +104,7 @@ import {
   parseEnvironmentStopResult,
   parseFabricReconcilePayload,
   parseFabricReconcileResult,
+  parseFoldersRemoveResult,
   parseHostnameSetResult,
   parseManagedApplyPayload,
   parseManagedApplyResult,
@@ -127,9 +129,16 @@ import {
   parseSystemReconcilePayload,
   parseSystemReconcileResult,
   parseTimezoneSetResult,
+  type ReportedFolder,
 } from '../../contracts/commands/schemas.ts'
 import { updateManagedMemberObservedReplication } from '../managed/members.ts'
 import { markFoldersPresent } from '../folders/allocate.ts'
+import {
+  applyFolderRemovalReports,
+  type FolderRemovalReport,
+  markKeptFoldersOrphan,
+  reconcileReportedFolders,
+} from '../folders/reports.ts'
 import { markPlacementsAbsent, markPlacementsPresent } from '../principals/placement-records.ts'
 import {
   recordReportedPrincipalIds,
@@ -208,6 +217,8 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.firewall.confirm': 60_000,
   // Writes a few unit files, one daemon-reload, enables what moved. No dump runs here.
   'server.backups.reconcile': 120_000,
+  // One `rm -rf` through the root helper per folder, up to 100 folders; a big volume takes minutes.
+  'server.folders.remove': 600_000,
   'environment.deploy': 600_000,
   'environment.lifecycle': 120_000,
   'environment.stop': 120_000,
@@ -251,6 +262,7 @@ export function commandTimeoutMs(type: string): number {
     type === 'server.firewall.reconcile' ||
     type === 'server.firewall.confirm' ||
     type === 'server.backups.reconcile' ||
+    type === 'server.folders.remove' ||
     type === 'environment.deploy' ||
     type === 'environment.lifecycle' ||
     type === 'environment.stop' ||
@@ -1093,6 +1105,7 @@ async function applyEnvironmentDeploySideEffect(
       (payload.principalMaterial ?? []).map((entry) => entry.principalId)
     )
     await recordSiteAppsSafely(db, record, payload.environmentId, deployResult.sites)
+    await markKeptFoldersOrphanSafely(db, record, envelope.serverId, deployResult.keptFolders)
     // Only reconcile when the daemon included an authoritative containers
     // report (including `[]`). Omitting the field means collection failed.
     if (deployResult.containers === undefined) return
@@ -1175,6 +1188,78 @@ async function recordReportedIdsSafely(
   }
 }
 
+/** Folders a deploy left in place become orphans; a miss is logged, never fatal. */
+async function markKeptFoldersOrphanSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  serverId: string,
+  kept: readonly KeptFolder[] | undefined
+): Promise<void> {
+  if (kept === undefined || kept.length === 0) return
+  try {
+    await markKeptFoldersOrphan(db, serverId, kept, { updatedBefore: record.createdAt })
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `kept folders not marked for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+/** A host's word on removed folders settles their rows; a miss is logged, never fatal. */
+async function applyFolderRemovalReportsSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  serverId: string,
+  reports: readonly FolderRemovalReport[] | undefined,
+  options: { updatedBefore?: string } = {}
+): Promise<void> {
+  if (reports === undefined || reports.length === 0) return
+  try {
+    await applyFolderRemovalReports(db, serverId, reports, options)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `folder removal report not applied for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+async function applyFoldersRemoveSideEffect(
+  db: Db,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown
+): Promise<void> {
+  if (record.type !== 'server.folders.remove') return
+  await applyFolderRemovalReportsSafely(
+    db,
+    record,
+    envelope.serverId,
+    parseFoldersRemoveResult(result).folders,
+    // The rows were marked before the command was built, so a row changed after it was is in use again.
+    { updatedBefore: record.createdAt }
+  )
+}
+
+/** A complete listing of the host's folders is compared with the rows; a miss is logged, never fatal. */
+async function reconcileReportedFoldersSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  serverId: string,
+  folders: readonly ReportedFolder[] | undefined
+): Promise<void> {
+  if (folders === undefined) return
+  try {
+    await reconcileReportedFolders(db, serverId, folders, { listedAfter: record.createdAt })
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `reported folders not compared for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
 async function applyPrincipalsReconcileSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
@@ -1185,6 +1270,7 @@ async function applyPrincipalsReconcileSideEffect(
   try {
     const parsed = parsePrincipalsReconcileResult(result)
     await recordReportedIdsSafely(db, record, envelope.serverId, parsed.principals)
+    await reconcileReportedFoldersSafely(db, record, envelope.serverId, parsed.folders)
   } catch (err) {
     compatLogWarn(
       'command-consumer',
@@ -1241,6 +1327,7 @@ async function applyEnvironmentStopSideEffect(
   try {
     const { environmentId, retirePrincipals } = parseEnvironmentStopPayload(record.payload)
     const stopResult = parseEnvironmentStopResult(result)
+    await applyFolderRemovalReportsSafely(db, record, envelope.serverId, stopResult.folders)
     if (retirePrincipals !== undefined && retirePrincipals.length > 0) {
       await markPlacementsAbsentSafely(
         db,
@@ -2459,6 +2546,7 @@ async function applySucceededSideEffects(
   await applyFabricSideEffect(db, record, envelope, result, deps)
   await applyEnvironmentDeploySideEffect(db, record, envelope, result, deps)
   await applyEnvironmentStopSideEffect(db, record, envelope, result)
+  await applyFoldersRemoveSideEffect(db, record, envelope, result)
   await applyPrincipalsReconcileSideEffect(db, record, envelope, result)
   await applyEnvironmentLifecycleSideEffect(db, record, envelope, result)
   await applySystemReconcileSideEffect(db, record, envelope, result)

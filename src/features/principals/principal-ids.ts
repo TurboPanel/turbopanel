@@ -26,6 +26,7 @@
 import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm'
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { Db } from '../../db/connection.ts'
+import { isReportedHome } from '../../contracts/commands/schemas.ts'
 import { principal, principalPlacement } from '../../db/schema.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import type { PlacementState } from './placement-vocabulary.ts'
@@ -244,6 +245,8 @@ export type ReportedPrincipalId = {
   principalId: string
   uid: number
   gid: number
+  /** The account's directory on the host, when the host reports it (the daemon owns the root). */
+  home?: string
 }
 
 function isReportableId(value: number): boolean {
@@ -266,6 +269,20 @@ export async function recordReportedPrincipalIds(
   await forEachSequential(reports, async (report) => {
     if (!isReportableId(report.uid) || !isReportableId(report.gid)) return
     try {
+      // The home is the host's to say: it is never computed here. A row that
+      // does not exist is not created, as for the ids below.
+      if (report.home !== undefined && isReportedHome(report.home)) {
+        await db
+          .update(principalPlacement)
+          .set({ home: report.home })
+          .where(
+            and(
+              eq(principalPlacement.serverId, serverId),
+              eq(principalPlacement.principalId, report.principalId),
+              ne(principalPlacement.home, report.home)
+            )
+          )
+      }
       const [row] = await db
         .select({
           id: principalPlacement.id,

@@ -20,18 +20,20 @@ type RetentionTx = Pick<Db, 'delete' | 'select' | 'update'>
 export async function applyStorageRetentionOnParentDelete(
   tx: RetentionTx,
   scope: StorageRetentionScope
-): Promise<void> {
+): Promise<string[]> {
   const serviceIds = scope.serviceIds ?? []
   if (serviceIds.length > 0) {
     await tx.delete(mount).where(inArray(mount.serviceId, serviceIds))
   }
 
   const doomedIds = await listStorageIdsDeletedWith(tx, scope)
-  if (doomedIds.length === 0) return
+  if (doomedIds.length === 0) return []
   // The folder rows of a deleted volume stay, locked, until the host confirms
-  // the folder is gone; they must be marked before the volume row goes.
-  await markAssetFoldersRemoving(tx, { storageIds: doomedIds })
+  // the folder is gone; they must be marked before the volume row goes. The
+  // servers holding them are returned so the caller can tell them.
+  const serverIds = await markAssetFoldersRemoving(tx, { storageIds: doomedIds })
   await tx.delete(storage).where(inArray(storage.id, doomedIds))
+  return serverIds
 }
 
 /** Ids of the `retention = 'delete'` volumes that go when these parents are deleted. */

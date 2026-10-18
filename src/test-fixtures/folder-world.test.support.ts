@@ -40,6 +40,7 @@ import {
 } from '../db/schema.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from './secrets.ts'
+import type { CommandQueue } from '../features/commands/queue.ts'
 import { skipWithoutDatabase } from './require-service.test.support.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -57,7 +58,10 @@ export type Ctx = {
   principalId: string
 }
 
-export async function withFolderFixtures(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
+export async function withFolderFixtures(
+  fn: (ctx: Ctx) => Promise<void>,
+  options: { commandQueue?: CommandQueue } = {}
+): Promise<void> {
   if (!dbUrl) {
     skipWithoutDatabase('folder rule tests')
     return
@@ -73,6 +77,7 @@ export async function withFolderFixtures(fn: (ctx: Ctx) => Promise<void>): Promi
   app.use('*', (c, next) => {
     c.set('db', db)
     c.set('dataEncryptionSecrets', dataEncryptionSecrets)
+    if (options.commandQueue) c.set('commandQueue', options.commandQueue)
     return next()
   })
   const opts = { secrets, runtime: 'deno', signupEnvOverride: undefined } as const

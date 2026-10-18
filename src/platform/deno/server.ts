@@ -53,6 +53,7 @@ import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fa
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runHostLossTick } from '../../daemon/cell/host-loss-tick.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
+import { runFolderRemovalSweep } from '../../features/folders/removal.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { firewallApplyGateFromEnv } from '../../features/firewall/enforcement.ts'
 import {
@@ -687,6 +688,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     // Backup policy sets once after each reconnect (hello must not enqueue).
     void runBackupsReconcileSweep(db, commandQueue).catch((err) => {
       logWarn('daemon-cell', `backups reconcile sweep error: ${String(err)}`)
+    })
+    // Folders of deleted assets whose host has not confirmed them gone: asked
+    // again once the server is connected, and every few minutes while stuck.
+    void runFolderRemovalSweep(db, commandQueue).catch((err) => {
+      logWarn('daemon-cell', `folder removal sweep error: ${String(err)}`)
     })
     // Firewall previews once after each reconnect. Applies only for a server
     // both keys of features/firewall/enforcement.ts allow, and never re-applies
