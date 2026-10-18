@@ -181,6 +181,7 @@ test('a running deploy holds the environment name', async () => {
         actorId: crypto.randomUUID(),
         name: 'environment.deploy',
         status: 'running',
+        environmentId: envId,
         context: { environmentId: envId },
       })
       .returning({ id: command.id })

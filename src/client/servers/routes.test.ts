@@ -4123,6 +4123,36 @@ test('PATCH /servers/:id updates name', async () => {
   })
 })
 
+test('PATCH /servers/:id records who set the machine class: pin or clear is the operator', async () => {
+  await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const patch = (machineClass: string | null) =>
+      app.request(`/servers/${serverId}`, {
+        method: 'PATCH',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ machineClass }),
+      })
+    const read = async () => {
+      const [row] = await db
+        .select({ machineClass: server.machineClass, source: server.machineClassSource })
+        .from(server)
+        .where(eq(server.id, serverId))
+        .limit(1)
+      return row
+    }
+
+    assertEquals((await patch('virtual')).status, 200)
+    assertEquals(await read(), { machineClass: 'virtual', source: 'operator' })
+    // Clearing the pin hands the class back to detection: both go NULL.
+    assertEquals((await patch(null)).status, 200)
+    assertEquals(await read(), { machineClass: null, source: null })
+  })
+})
+
 test('GET /servers/:id/update returns idle status for a disconnected server', async () => {
   await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
@@ -4430,7 +4460,7 @@ async function withPlacedPrincipals(
     .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ name: 'Placement Env', projectId: proj!.id })
+    .values({ name: 'placement-env', projectId: proj!.id })
     .returning({ id: environment.id })
   const [svc] = await db
     .insert(service)

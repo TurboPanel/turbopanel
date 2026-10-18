@@ -144,16 +144,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         '`credential` for the local password account, or the OAuth provider id `github` or `google` for a linked identity.',
       provider_user_id:
         "Provider-side subject: the user's own uuid on `credential` rows, else the GitHub/Google account id; unique together with `provider_id`.",
-      access_token:
-        'Reserved OAuth column; the provider flow deliberately writes null and never persists provider tokens.',
-      refresh_token:
-        'Reserved OAuth column; the provider flow deliberately writes null and never persists provider tokens.',
-      id_token:
-        'Reserved OAuth column; the provider flow deliberately writes null and never persists provider tokens.',
-      access_token_expires_at: 'Reserved OAuth column; never written by any first-party code path.',
-      refresh_token_expires_at:
-        'Reserved OAuth column; never written by any first-party code path.',
-      scope: 'Reserved OAuth column; never written by any first-party code path.',
       password:
         'Argon2id PHC-format hash (`$argon2id$v=19$m=N,t=N,p=N$salt$digest`) on `credential` rows, set at sign-up, install and password reset; null on OAuth rows.',
     },
@@ -200,8 +190,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'One row per person who can sign in to the instance, keyed by unique `email`; created by password sign-up, OTP sign-in, OAuth sign-up or the install wizard.',
     columns: {
-      metadata: 'Reserved pairing jsonb with no first-party reader or writer today; stays null.',
-      options: 'Reserved pairing jsonb with no first-party reader or writer today; stays null.',
       time_zone:
         'IANA zone (from the supported list) in which quiet hours on the personal channels of this user are read; NULL means UTC.',
       name: 'Optional display name copied at creation from the OAuth profile or the OTP sign-in form (1-255 chars); absent on password sign-up and never edited later.',
@@ -237,7 +225,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     columns: {
       metadata:
         'Fan-out resume state written between passes: `resumeAfterManagedId` keyset cursor and `needsRedeploy` server/environment pairs.',
-      options: 'Pairing jsonb; never written by the changeover code, stays null.',
       organization_id:
         'Owning org; the partial unique index allows one `in_progress` row per org, which is what makes the row act as the rotation lease.',
       from_ca_generation:
@@ -300,7 +287,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'Tenant organization; one is created by the install wizard and by every sign-up, its members come through teams, and `options` holds org-wide defaults.',
     columns: {
-      metadata: 'Reserved pairing jsonb with no first-party reader or writer today; stays null.',
       options:
         'Org-wide settings merged key-by-key by the organization routes (`defaultServerTimezone`, `maxServers`, `acmeEnabled`, `managedDatabase`, `phpModes` and more).',
       name: "Display name; sign-up uses `you@example.com's organization` from email, else `My Organization` if missing, blank, or label invalid; install Root Organization.",
@@ -311,8 +297,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'Team within an organization; every org gets a `Default Team` at creation, and membership in any of its teams is what makes a user an org member.',
     columns: {
-      metadata: 'Reserved pairing jsonb with no first-party reader or writer today; stays null.',
-      options: 'Reserved pairing jsonb with no first-party reader or writer today; stays null.',
       name: 'Display label of 1-255 chars, `Default Team` for the team created with the organization; no route creates or renames teams today.',
     },
   },
@@ -465,7 +449,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       organization_id:
         'Organization the action belongs to, which the org-scoped read filters on; null for an instance-wide action such as a superadmin editing an org-less forge.',
       actor_user_id:
-        "User who acted, SET NULL when the account is deleted; null only for an action the platform took on nobody's behalf, never for an operator action.",
+        "User who acted, a plain id with no FK so it survives the account's deletion; null only for an action the platform took on nobody's behalf.",
       actor_email:
         "Actor's email denormalised at write time so the trail still names who acted after the account is deleted.",
       action:
@@ -583,7 +567,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'An address clients use to reach a server, set by an operator: one `public` entry per server and one per datacenter the server belongs to.',
     columns: {
-      metadata: 'Reserved for the last DNS check of `hostname`; nothing writes it yet.',
       organization_id:
         'Organization that owns the server, copied from it on save; entries cascade away with the organization.',
       server_id:
@@ -637,7 +620,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       'Org-owned network registry row of `kind` datacenter, docker, compose, managed or reserved; which scope FKs and `cidr` may be set is fixed per kind by a CHECK.',
     columns: {
       metadata:
-        'Free-form jsonb; the only reader is a legacy fallback that accepts `metadata.dockerNetworkName` when `options` lacks it, and nothing writes it today.',
+        'Free-form client jsonb that the networks API accepts; also read as a legacy fallback for `metadata.dockerNetworkName` when `options` lacks it.',
       options:
         'Kind-specific jsonb: `dockerNetworkName` plus optional `subnet`, `ipRange`, `gateway`, `mtu` on docker rows; `dockerNetworkName` (row UUID) on compose/managed.',
       datacenter_id:
@@ -687,8 +670,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       "Per-server realization of a `kind = 'compose'` spanning network, one row per network and server, written by `ensureNetworkSubnet` when spanning networks build.",
     columns: {
       metadata: 'Free-form jsonb; no control-plane code path writes or reads it today.',
-      options:
-        'Optional segment extras read by `parseSegmentNetworkExtras` when rendering the Docker bridge: `mtu` (1280..9000) and an IPv4 `gateway`; no writer found today.',
       network_id:
         "Spanning network (`kind = 'compose'` row) this per-server subnet realizes, unique together with `server_id`; rows cascade away with the network.",
       server_id:
@@ -750,8 +731,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'Join edge attaching a database login to a consuming compose service; materializes system-owned `variable` rows for deploy credential injection.',
     columns: {
-      metadata: 'Reserved jsonb; no current code path writes it.',
-      options: 'Reserved jsonb; no current code path writes it.',
       login_id:
         'The `login` row whose credentials are injected; cascade-deleted with it (login gone, binding gone).',
       service_id:
@@ -801,7 +780,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Desired whole-server placement pin and single source of truth; NULL inherits `project.options.defaultServerId` at deploy, lifecycle and stop.',
       generation:
         'Monotonic desired generation, incremented once per deploy plan by `bumpEnvironmentGeneration` and fanned into `deployment.desired_generation`.',
-      name: 'Display label under `environment_name_format_check` (letters, digits, space, `._/-`, 1-255 chars); the first environment takes the organization default name.',
+      name: 'Scope folder name on every server, under `environment_name_check` (lowercase letters, digits, `_` and `-`, up to 32 chars, not reserved); unique per project.',
       description:
         "Optional free-text description written by the client API; the first environment is created with 'Default environment'.",
     },
@@ -815,6 +794,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Compose provenance markers `composeOwned`, `composeServiceName`, `composeRoute`, `composeTlsMode`, `composeAdopted` set by reconcile; other keys are client-set.',
       options:
         'Validated routing jsonb: `hostnames`, `pathPrefix`, `targetPort`, `protocol`, `ports`, `bind` (`public`, `datacenter`, `local`), `proxy` toggles, `web` hints.',
+      pending_at:
+        "When a waiting Let's Encrypt request was made because DNS did not point here yet; NULL when none is waiting, and the sweep retries every row with a value.",
       tls_id:
         'Optional pin into the organization TLS library; NULL means Caddy `tls internal` (self-signed), and the pin is cleared when the certificate row is deleted.',
       ip_id:
@@ -922,6 +903,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       'One application or stack described by one compose document, owned by a workspace; user projects come from the API, system projects from the platform hierarchy.',
     columns: {
       slug: 'Short name taken from the project name, unique per organization and never part of a path; editable until any folder exists under the project, then locked.',
+      default_server_id:
+        'Default placement server: an environment with no `server_id` of its own inherits it; set null when the server is deleted (API field `options.defaultServerId`).',
       metadata:
         'Client jsonb: `type` is `docker-compose`, `managed`, `template` or platform-only `system` (absent means setup not chosen yet), plus optional catalog `code`.',
       options:
@@ -946,10 +929,10 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       is_common:
         'True when the folder is in the `common` scope shared by every environment; chosen at creation and never changed.',
       metadata:
-        'Client jsonb reserved for non-indexed facts; promoted identity keys are stripped on write and the compose name never lives here.',
+        'Client jsonb for non-indexed facts plus the daemon-detected `app` fact; promoted identity keys are stripped on write and the compose name never lives here.',
       options:
         'Validated per-service settings jsonb: `instances`, `build`, `operations`, `healthCheck`, `resources`, plus deploy hooks when the organization enables them.',
-      name: 'User-facing label (formerly `display_name`) under `service_name_format_check`, nullable and not unique; reconcile defaults it to the compose service key.',
+      name: 'User-facing label (formerly `display_name`), nullable and not unique; reconcile defaults it to the compose service key.',
       description: 'Optional free-text description written by the client API.',
       compose_service_name:
         'Compose service key, derived only: written by compose reconcile, managed allocation and daemon-report reconcile, never by a client; unique per environment.',
@@ -960,10 +943,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'Organization-owned tag definition written by the tags routes; names are labels unique per organization after lower-casing and trimming.',
     columns: {
-      metadata:
-        'Sparse jsonb bag reserved by the repo-wide column convention; no code path writes it for tag rows today.',
-      options:
-        'Sparse jsonb bag reserved by the repo-wide column convention; no code path writes it for tag rows today.',
       name: 'Operator-chosen label, unique per organization on `lower(btrim(name))`; no format CHECK in the database.',
       description:
         'Optional free-text description normalized like a display name; NULL when empty.',
@@ -1039,8 +1018,11 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Artifact size in bytes as reported by the daemon after writing the dump; re-checked before a restore.',
       checksum:
         'Lowercase SHA-256 hex digest of the artifact computed by the daemon; a restore refuses on mismatch.',
-      database: 'Database name for a single-database backup; null for an instance-scope backup.',
-      path: 'Absolute artifact path on the filesystem of the host that made it, as reported by the daemon.',
+      database:
+        'Database name for a single-database backup, kept as history; null for an instance-scope backup.',
+      database_id:
+        'The `database` row the dump was of, set null if that database is dropped; null for an instance-scope backup.',
+      path: 'Artifact path relative to the backup root of the host that made it (`managed/` plus the cluster id, then the file).',
       retention_id:
         'The `retention` whose scheduled run made this artifact; null for a manual backup or once that retention is deleted.',
       server_id:
@@ -1106,6 +1088,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'The sha256 hex the host last reported for its rendered rulesets; the drift key.',
       last_result:
         'What the host last answered: applied or refused, the rule count and any warnings; null before any report.',
+      last_kind:
+        'Which kind of record `last_result` holds: `preview`, `apply` or `remove`; the firewall sweep filters on it, and it is null before any record.',
       state:
         '`idle`, `pending` (awaiting confirmation), `confirmed` or `rolled_back` (undone by the host guard).',
       deadline_at:
@@ -1158,12 +1142,11 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     columns: {
       metadata:
         'Fencing and progress facts: `fencingEpoch`, `fenceCommandIds`, `promoteCommandId`, `haPresent`, `fenced`, `drainApplied`, `lagBytes`, `blockedReason`.',
-      options: 'Reserved jsonb; no current code path writes it.',
       kind: '`automatic-failover`, `switchover` (planned promotion of a failover replica) or `disaster-recovery` (promotion of a remote read replica).',
       source_primary_member_id:
-        '`replica.id` of the primary being replaced, stored without an FK so deleting the member cannot block the journal.',
+        '`replica.id` of the primary being replaced, stored without an FK on purpose so the journal outlives the member.',
       target_member_id:
-        '`replica.id` of the member being promoted, stored without an FK; null when an automatic failover was `blocked` with no eligible candidate.',
+        '`replica.id` of the member being promoted, set null if that member is removed; null when an automatic failover was `blocked` with no eligible candidate.',
       state:
         'Journal phase: `detecting`, `fencing`, `promoting`, `repointing`, `reconciling-ingress`, `verifying`, then terminal `completed`, `failed` or `blocked`.',
       started_at:
@@ -1178,7 +1161,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     columns: {
       metadata:
         'Daemon-observed `replication` health (`state`, `observedAt`, optional `lagBytes`, `lagSeconds`) written by the consumer after apply and lifecycle commands.',
-      options: 'Reserved jsonb; no current code path writes it.',
       server_id:
         'Host running this member; one member per server per cluster and a private port is unique per server; deleting the server is restricted.',
       role: '`primary` or `replica`; a partial unique index allows one primary per cluster and the consumer swaps roles on promote and failover.',
@@ -1218,7 +1200,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       path: "Host filesystem path for a `path` copy; null means the platform layout or the principal's volumes directory is resolved at deploy and never persisted.",
       endpoint:
         'Remote endpoint for network providers; API passthrough, unused by `docker` and `path` copies.',
-      generation: 'Reserved generation counter, default 0; no current code path increments it.',
     },
   },
   mount: {
@@ -1245,7 +1226,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     columns: {
       metadata:
         'Non-secret descriptors; for `git_deploy_key` rows: `publicKey`, `fingerprint` and `keyType` (`ed25519`).',
-      options: 'Reserved jsonb; no current code path writes it.',
       principal_id:
         'Optional association with a principal (SET NULL on delete so a principal delete never fails on an org secret); no current writer sets it.',
       provider:
@@ -1283,7 +1263,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         "`single_writer` (default), `multi_reader` or `multi_writer`; single_writer refuses a deploy scheduled on a server other than the primary copy's.",
       retention:
         '`retain` (default) keeps the row as org-owned when its scope parent is deleted; `delete` removes it with the parent.',
-      generation: 'Reserved generation counter, default 0; no current code path increments it.',
       principal_id:
         "Optional owning system principal; path copies without an explicit `path` resolve under that principal's volumes directory; SET NULL on delete.",
       content_envelope:
@@ -1305,24 +1284,10 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Artifact size in bytes as reported by the daemon after writing the archive; re-checked before a restore.',
       checksum:
         'Lowercase SHA-256 hex digest of the artifact computed by the daemon; a restore refuses on mismatch.',
-      path: "Absolute artifact path on the copy's server as reported by the daemon.",
+      path: "Artifact path relative to the backup root of the copy's server (`volumes/` plus the copy id, then the file).",
     },
   },
   // ── runtime ───────────────────────────────────────────────────────────
-  capability: {
-    group: 'runtime',
-    summary:
-      'Append-only history of resolved v5 metrics capability plans per server (one row per server and generation), inserted only when the resolved plan hash changes.',
-    columns: {
-      generation:
-        'Control-plane counter starting at 0 and incremented by one each time the resolved plan hash differs from the latest recorded row; unique per server.',
-      plan_hash:
-        'SHA-256 hex of the canonical field-ordered plan, domain-separated with the prefix `turbopanel:metrics-capability-plan:`; the cheap did-it-change comparison key.',
-      plan: 'Full resolved `MetricsCapabilityPlan` snapshot stored for audit and debugging; jsonb so the plan shape needs no migration.',
-      applied_at:
-        'Control-plane timestamp taken when this generation row was written during metrics ingest plan resolution, not a daemon-reported time.',
-    },
-  },
   command: {
     group: 'runtime',
     summary:
@@ -1330,7 +1295,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     columns: {
       metadata:
         'Follow-up-chain blob only (`pendingStandbyApplies`, `managedDestroyGate`, `followUpPromote`, `pendingTlsLeaf`, `desiredHash`) and one-shot claim flags.',
-      options: 'Unused today; kept only for the schema rule that pairs `metadata` with `options`.',
       actor_type:
         "`user` for an operator request or `system` for the control plane's own reconcilers, sweeps and webhooks (mirrors `COMMAND_ACTOR_TYPES`); no FK.",
       actor_id:
@@ -1358,6 +1322,12 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       finished_at: 'Set when the command reaches any terminal status.',
       expires_at:
         'Optional deadline: once passed, the consumer marks the command `timed_out` instead of dispatching it; consumer-made follow-ups set 10 minutes, NULL means none.',
+      organization_id:
+        'Organization of the server, copied at insert so the activity feed and org-wide lists filter without a join; set null if the organization row goes.',
+      environment_id:
+        'Environment a deploy, lifecycle or stop command was issued for (also kept in `context`); set null when the environment is deleted.',
+      managed_id:
+        'Managed cluster the command acts on (also kept in `context`); set null when the cluster is deleted.',
       managed_destroy_gate_id:
         '`metadata.managedDestroyGate.gateId` promoted to an indexed column so gated replica-destroy completions can be filtered; `memberIds` stays in jsonb.',
     },
@@ -1380,7 +1350,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       status:
         '`pending`, `applying` (deploy command created), `applied`, `failed`, or `draining` (server dropped from the plan, awaiting cleanup); set by deploy-routes.',
       last_command_id:
-        'Id of the `command` row for the most recent apply attempt on this pair; no FK, it is the join key from current state into the append-only command history.',
+        'Id of the `command` row for the most recent apply attempt on this pair, set null when that command is pruned; the join key into the command history.',
       finished_at:
         'When the last apply attempt reached a terminal state; summarizes only the latest attempt.',
       duration_ms:
@@ -1400,21 +1370,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Typed, bounded daemon command input (may carry compose YAML, credential envelopes or TLS material); read once by the consumer just before dispatch.',
       expires_at:
         'Failure-retention deadline: NULL until a terminal failure, then now plus 24h (`failed`, `timed_out`, `cancelled`); the maintenance sweep deletes expired rows.',
-    },
-  },
-  generation: {
-    group: 'runtime',
-    summary:
-      "Append-only history of every topology generation a server's daemon reported (one row per server and generation), inserted verbatim from `topology-report`.",
-    columns: {
-      generation:
-        'Daemon-maintained topology generation counter, bumped only when the enumerated NIC, GPU, filesystem, disk or signal identity set or slot mapping changes.',
-      boot_generation:
-        'Daemon boot counter, incremented when `/proc/sys/kernel/random/boot_id` differs from the value persisted in its state directory; sent with the snapshot.',
-      snapshot:
-        'Full daemon-reported topology object stored verbatim: networks, filesystems, blockDevices, gpus, hardwareSignals, cpu, numaNodes, capacities, machineClass.',
-      applied_at:
-        "Daemon's own report timestamp (`topology-report.at`) for when this generation took effect, never the control-plane receipt time.",
     },
   },
   key: {
@@ -1505,6 +1460,20 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Sparse jsonb with an optional `projection` (hostname, machineKey, remoteAddress, keyId, daemonBuild) written by the cell; the key lives in `key`.',
       is_hosting_enabled:
         'Boolean mirror of validated `options.hosting.enabled`, written by the same PATCH route so system/reconcile.ts can filter hosting in SQL; NULL means not set.',
+      machine_class_source:
+        'Who set `machine_class`: `detected` (ingest wrote it back from the topology) or `operator` (a PATCH pinned or cleared it); NULL while the class is NULL.',
+      hardware:
+        'Latest hardware layout the daemon reported (generation, boot generation, snapshot, times); overwritten in place, no history, never read by list screens.',
+      capability:
+        'Latest resolved metrics capability plan (generation, hash, plan, applied time); overwritten in place and recomputable from the box size and hardware.',
+      offline_reason:
+        'Why the host is offline: `disconnect` (socket closed) or `sweep_stale` (no heartbeat, likely power loss); NULL while online.',
+      daemon_commit: 'Commit of the daemon build running on the host, from its hello or heartbeat.',
+      daemon_built_at: 'Build time of the daemon build running on the host.',
+      daemon_update_status:
+        'Daemon self-update state: `idle`, `updating`, `done`, `failed` or `expired`; NULL until the host reports one.',
+      external_access_pending_at:
+        'When the host was last asked to change database external access and has not confirmed; a sweep re-sends it while set.',
     },
   },
   slot: {
@@ -1512,8 +1481,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'One scheduled replica instance of a service on a server; derived scheduling state the planner writes through `replaceEnvironmentSlots` on each deploy.',
     columns: {
-      metadata: 'Reserved; never written by the slot re-plan today.',
-      options: 'Reserved; never written by the slot re-plan today.',
       server_id:
         'Server the planner placed this replica on; sticky across re-plans (only `generation` is rewritten) unless the planner moves it; ON DELETE RESTRICT.',
       address:
@@ -1553,10 +1520,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'One Git provider grant to one organization, a GitHub App installation or a GitLab OAuth account connection, made through a `forge` row.',
     columns: {
-      metadata:
-        'Sparse jsonb bag reserved by the repo-wide column convention; no code path writes it for connection rows today.',
-      options:
-        'Sparse jsonb bag reserved by the repo-wide column convention; no code path writes it for connection rows today.',
       forge_id:
         'Application the grant was made through; with `external_installation_id` it resolves a webhook delivery to exactly one row (cascades on forge delete).',
       provider: '`github` or `gitlab`, denormalized from the forge as a filter column.',
@@ -1595,10 +1558,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'A registered Git provider application (GitHub App or GitLab OAuth app) that connections are granted through; `organization_id` NULL means instance-wide.',
     columns: {
-      metadata:
-        'Sparse jsonb bag reserved by the repo-wide column convention; no code path writes it for forge rows today.',
-      options:
-        'Sparse jsonb bag reserved by the repo-wide column convention; no code path writes it for forge rows today.',
       organization_id:
         'NULL means instance-wide (any organization may connect through it); set means the app belongs to that organization alone.',
       provider:
@@ -1632,6 +1591,17 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         "Opaque unguessable routing token that ends this app's webhook URL (`/webhook/github/` plus the token); it routes a delivery to its app, not a credential.",
       webhook_token_hash:
         'GitLab only: HMAC of the webhook token so a delivery on the unscoped path resolves in one indexed lookup; NULL for GitHub apps.',
+    },
+  },
+  watch: {
+    group: 'git',
+    summary:
+      'Which environment or project follows which repository, derived from the compose document that names it; a project row reaches every environment of the project.',
+    columns: {
+      environment_id:
+        'Set when the environment own compose names the repository; exactly one of this and `project_id` is set.',
+      project_id:
+        'Set when the project compose names the repository; exactly one of this and `environment_id` is set.',
     },
   },
   repository: {
@@ -1811,6 +1781,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       'One `daemon` or `instance` install on one server inside an upgrade run, advanced by the orchestrator until a terminal outcome.',
     columns: {
       unit: '`daemon` or `instance`: the package this step installs on its server.',
+      phase:
+        'Which part of the run the step belongs to: `colocated_daemon` first, then `control_plane`, then `fleet`; checked against the run order.',
       batch_index:
         'Zero-based wave index within the run; steps that share an index are dispatched together.',
       status:

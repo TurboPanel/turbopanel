@@ -101,7 +101,7 @@ test('PATCH /hostings rejects public bind with non-public ip scope', async () =>
     .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ projectId: proj!.id, name: 'E', createdAt: now, updatedAt: now })
+    .values({ projectId: proj!.id, name: 'e', createdAt: now, updatedAt: now })
     .returning({ id: environment.id })
   const [svc] = await db
     .insert(service)
@@ -266,7 +266,7 @@ test('PATCH /hostings returns 404 when ipId belongs to another org', async () =>
     .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ projectId: proj!.id, name: 'E', createdAt: now, updatedAt: now })
+    .values({ projectId: proj!.id, name: 'e', createdAt: now, updatedAt: now })
     .returning({ id: environment.id })
   const [svc] = await db
     .insert(service)
@@ -392,7 +392,7 @@ async function withHostingFixtures(
     .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ projectId: proj!.id, name: 'E', createdAt: now, updatedAt: now })
+    .values({ projectId: proj!.id, name: 'e', createdAt: now, updatedAt: now })
     .returning({ id: environment.id })
   const [svc] = await db
     .insert(service)
@@ -783,7 +783,7 @@ test('POST /hostings returns 404 when service belongs to another org', async () 
       .insert(environment)
       .values({
         projectId: foreignProj!.id,
-        name: 'FE',
+        name: 'fe',
         createdAt: now,
         updatedAt: now,
       })
@@ -854,7 +854,7 @@ test('GET /hostings/:id returns 404 for a hosting in another org', async () => {
       .insert(environment)
       .values({
         projectId: foreignProj!.id,
-        name: 'FE',
+        name: 'fe',
         createdAt: now,
         updatedAt: now,
       })

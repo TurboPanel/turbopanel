@@ -42,7 +42,6 @@ function memberRow(serverId: string, role: 'primary' | 'replica' = 'primary'): M
     privatePort: 45_001,
     status: 'ready',
     metadata: {},
-    options: {},
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
   }

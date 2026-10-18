@@ -1905,7 +1905,7 @@ async function loadServiceIdsWithBindings(
     .select({
       serviceId: binding.serviceId,
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
     })
     .from(binding)
     .innerJoin(service, eq(binding.serviceId, service.id))
@@ -1916,7 +1916,7 @@ async function loadServiceIdsWithBindings(
     bound.add(row.serviceId)
     const listener = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions)
+      row.projectDefaultServerId
     )
     if (listener === serverId) coResident.add(row.serviceId)
   }

@@ -13,7 +13,7 @@
  * gets `-2` to `-99` on a clash. A row at the same server, site owner, scope,
  * kind and name is the final guard (`uniq_folder_location`).
  */
-import { and, eq, inArray, isNull, like, ne, or, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, like, lt, ne, or, sql } from 'drizzle-orm'
 import {
   COMMON_SCOPE,
   type FolderRefParts,
@@ -576,7 +576,8 @@ async function upsertFolderRow(tx: Db, serverId: string, target: FolderTarget): 
   if (!row || owner !== target.assetId) throw new FolderPlanError('directory_name_taken')
   // The asset is back on this server (a server re-added, a copy re-added) before the host
   // confirmed the removal: the folder is in use again, so it must not be confirmed away.
-  if (row.state === 'removing') {
+  // An orphan kept when its service left the compose file is in use again too.
+  if (row.state === 'removing' || row.state === 'orphan') {
     await tx.update(folder).set({ state: 'planned' }).where(eq(folder.id, row.id))
   }
   return row.id
@@ -683,26 +684,32 @@ export async function markFoldersPresent(
 export async function markAssetFoldersRemoving(
   db: Pick<Db, 'update'>,
   assets: { serviceIds?: readonly string[]; storageIds?: readonly string[] }
-): Promise<void> {
+): Promise<string[]> {
   const serviceIds = assets.serviceIds ?? []
   const storageIds = assets.storageIds ?? []
-  if (serviceIds.length === 0 && storageIds.length === 0) return
+  if (serviceIds.length === 0 && storageIds.length === 0) return []
   const match = or(
     serviceIds.length > 0 ? inArray(folder.serviceId, [...serviceIds]) : undefined,
     storageIds.length > 0 ? inArray(folder.storageId, [...storageIds]) : undefined
   )
-  await db
+  const rows = await db
     .update(folder)
     .set({ state: 'removing' })
-    .where(and(match, inArray(folder.state, ['planned', 'present'])))
+    // An orphan (kept when its service left the compose file) goes with an explicit delete.
+    .where(and(match, inArray(folder.state, ['planned', 'present', 'orphan'])))
+    .returning({ serverId: folder.serverId })
+  return [...new Set(rows.map((row) => row.serverId))]
 }
 
-/** A volume's copy on one server is being removed: that server's folder waits, locked, for the host. */
+/**
+ * A volume's copy on one server is being removed: that server's folder waits,
+ * locked, for the host. Returns the servers to tell (the one, when a row moved).
+ */
 export async function markVolumeFolderRemoving(
   db: Pick<Db, 'update'>,
   where: { storageId: string; serverId: string }
-): Promise<void> {
-  await db
+): Promise<string[]> {
+  const rows = await db
     .update(folder)
     .set({ state: 'removing' })
     .where(
@@ -712,6 +719,8 @@ export async function markVolumeFolderRemoving(
         inArray(folder.state, ['planned', 'present'])
       )
     )
+    .returning({ serverId: folder.serverId })
+  return [...new Set(rows.map((row) => row.serverId))]
 }
 
 /**
@@ -749,6 +758,11 @@ export async function confirmFolderRemoved(
     scope: string
     kind: FolderKindValue
     slug: string
+    /**
+     * Only a row last changed before this time is deleted: a report about a
+     * command built earlier must not clear a row that was planned again since.
+     */
+    updatedBefore?: string
   }
 ): Promise<boolean> {
   const deleted = await db
@@ -760,7 +774,8 @@ export async function confirmFolderRemoved(
         eq(folder.scope, where.scope),
         eq(folder.kind, where.kind),
         eq(folder.slug, where.slug),
-        eq(folder.state, 'removing')
+        eq(folder.state, 'removing'),
+        where.updatedBefore === undefined ? undefined : lt(folder.updatedAt, where.updatedBefore)
       )
     )
     .returning({ id: folder.id })

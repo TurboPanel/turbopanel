@@ -155,11 +155,11 @@ async function withFixtures(
     return row!.id
   }
   const ids = {
-    production: await makeEnvironment('Production', null),
-    staging: await makeEnvironment('Staging', { compose: yamlToComposeDocument(STAGING_COMPOSE) }),
-    solo: await makeEnvironment('Solo', { compose: yamlToComposeDocument(SOLO_COMPOSE) }),
-    empty: await makeEnvironment('Empty', {}),
-    broken: await makeEnvironment('Broken', { compose: { version: 2, data: 'nope' } }),
+    production: await makeEnvironment('production', null),
+    staging: await makeEnvironment('staging', { compose: yamlToComposeDocument(STAGING_COMPOSE) }),
+    solo: await makeEnvironment('solo', { compose: yamlToComposeDocument(SOLO_COMPOSE) }),
+    empty: await makeEnvironment('empty', {}),
+    broken: await makeEnvironment('broken', { compose: { version: 2, data: 'nope' } }),
   }
   await db.insert(service).values({ environmentId: ids.staging, composeServiceName: 'web' })
   await db.insert(variable).values([

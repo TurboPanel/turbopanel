@@ -1,6 +1,7 @@
 import type { Context } from 'hono'
 import { asc, eq, inArray } from 'drizzle-orm'
 import { environment, project, workspace } from '../../db/schema.ts'
+import { mergeProjectDefaultServer } from '../../features/projects/project-options.ts'
 import {
   defineCachedRead,
   versionStamp,
@@ -82,6 +83,7 @@ const projectColumns = {
   repositoryId: project.repositoryId,
   metadata: project.metadata,
   options: project.options,
+  defaultServerId: project.defaultServerId,
   createdAt: project.createdAt,
   updatedAt: project.updatedAt,
 }
@@ -108,6 +110,14 @@ const workspaceColumns = {
   updatedAt: workspace.updatedAt,
 }
 
+/** The API carries the default placement server inside `options`; it is stored in its own column. */
+function withDefaultServerInOptions(
+  row: ProjectRow & { defaultServerId: string | null }
+): ProjectRow {
+  const { defaultServerId, ...rest } = row
+  return { ...rest, options: mergeProjectDefaultServer(rest.options, defaultServerId) }
+}
+
 function dropStamp<Row extends { _v?: unknown }>(rows: Row[]): Array<Omit<Row, '_v'>> {
   return rows.map((row) => withoutVersionStamp(row))
 }
@@ -121,7 +131,7 @@ export const projectsListCachedRead = defineCachedRead({
       .from(project)
       .where(inArray(project.id, input.ids))
       .orderBy(project.createdAt),
-  transform: (rows): ProjectRow[] => dropStamp(rows) as ProjectRow[],
+  transform: (rows): ProjectRow[] => dropStamp(rows).map(withDefaultServerInOptions),
   samples: [
     { organizationId: 'org-1', ids: ['p-1'], stamp: 'stamp-a' },
     { organizationId: 'org-1', ids: ['p-1', 'p-2', 'p-3'], stamp: 'stamp-b' },
@@ -137,7 +147,10 @@ export const projectDetailCachedRead = defineCachedRead({
       .from(project)
       .where(eq(project.id, input.id))
       .limit(1),
-  transform: (rows): ProjectRow | null => (dropStamp(rows)[0] as ProjectRow | undefined) ?? null,
+  transform: (rows): ProjectRow | null => {
+    const [first] = dropStamp(rows)
+    return first ? withDefaultServerInOptions(first) : null
+  },
   samples: [{ organizationId: 'org-1', id: 'p-1', stamp: 'stamp-a' }],
 })
 

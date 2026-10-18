@@ -18,7 +18,6 @@ export type StorageSelectRow = Pick<
   | 'name'
   | 'accessMode'
   | 'retention'
-  | 'generation'
   | 'principalId'
   | 'slug'
   | 'isCommon'
@@ -42,7 +41,6 @@ export type CopySelectRow = Pick<
   | 'state'
   | 'path'
   | 'endpoint'
-  | 'generation'
   | 'metadata'
   | 'options'
   | 'createdAt'
@@ -133,7 +131,6 @@ export function serializeStorage(
     name: row.name,
     accessMode: row.accessMode,
     retention: row.retention,
-    generation: row.generation,
     principalId: row.principalId,
     slug: row.slug,
     common: row.isCommon,

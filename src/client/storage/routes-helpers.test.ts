@@ -66,7 +66,6 @@ function baseRow(overrides?: Partial<StorageRow>): StorageRow {
     name: 'data',
     accessMode: 'single_writer',
     retention: 'retain',
-    generation: 0,
     principalId: null,
     metadata: {},
     options: null,

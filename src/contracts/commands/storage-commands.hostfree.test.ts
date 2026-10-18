@@ -57,14 +57,14 @@ test('storage.backup results keep only well-formed fields', () => {
   assertEquals(
     parseCommandResult('storage.backup', {
       backupId: 'bk_0123abcd',
-      path: '/var/lib/turbopanel/backups/copies/x/bk_0123abcd.tar.gz',
+      path: 'volumes/x/bk_0123abcd.tar.gz',
       sizeBytes: 12,
       checksum: 'a'.repeat(64),
       completedAt: '2026-09-30T04:00:00.000Z',
     }),
     {
       backupId: 'bk_0123abcd',
-      path: '/var/lib/turbopanel/backups/copies/x/bk_0123abcd.tar.gz',
+      path: 'volumes/x/bk_0123abcd.tar.gz',
       sizeBytes: 12,
       checksum: 'a'.repeat(64),
       completedAt: '2026-09-30T04:00:00.000Z',

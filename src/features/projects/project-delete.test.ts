@@ -85,7 +85,7 @@ test('deleteProjectCascade rejects when containers are still active', async () =
 
   const [env] = await db
     .insert(environment)
-    .values({ name: 'Production', projectId })
+    .values({ name: 'production', projectId })
     .returning({ id: environment.id })
   const environmentId = env!.id
 
@@ -168,7 +168,7 @@ test('deleteProjectCascade ignores a running ingress container', async () => {
 
   const [env] = await db
     .insert(environment)
-    .values({ name: 'Production', projectId })
+    .values({ name: 'production', projectId })
     .returning({ id: environment.id })
   const environmentId = env!.id
 
@@ -313,7 +313,7 @@ test('deleteProjectCascade removes children when containers are stopped', async 
 
   const [env] = await db
     .insert(environment)
-    .values({ name: 'Production', projectId })
+    .values({ name: 'production', projectId })
     .returning({ id: environment.id })
   const environmentId = env!.id
 
@@ -407,7 +407,7 @@ test('deleteProjectCascade removes tenancy edges before services', async () => {
 
   const [env] = await db
     .insert(environment)
-    .values({ name: 'Production', projectId })
+    .values({ name: 'production', projectId })
     .returning({ id: environment.id })
   const environmentId = env!.id
 

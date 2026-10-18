@@ -59,6 +59,31 @@ export type BlockingFolder = {
   /** The service or volume it belongs to; null once that row is gone. */
   assetId: string | null
   assetName: string | null
+  /** Plain words for a folder that is leaving or has no owner; null when nothing needs saying. */
+  reason: string | null
+}
+
+/**
+ * Why a folder still blocks, in plain words. A `removing` folder waits for its
+ * server: on one that is connected the removal is under way, on one that is
+ * offline it waits until the server is back. An `orphan` is on the server with
+ * no service or volume that owns it.
+ */
+export function blockingReason(
+  state: string,
+  serverName: string | null,
+  serverConnected: boolean | null
+): string | null {
+  const where = serverName ? `server ${serverName}` : 'its server'
+  if (state === 'removing') {
+    return serverConnected === false
+      ? `being removed, waiting for ${where} to come back`
+      : `being removed from ${where}`
+  }
+  if (state === 'orphan') {
+    return `no service or volume owns this folder on ${where}`
+  }
+  return null
 }
 
 /** Anything that can run a select: the connection or an open transaction. */
@@ -74,6 +99,7 @@ const FOLDER_COLUMNS = {
   slug: folder.slug,
   serverId: folder.serverId,
   serverName: server.name,
+  serverConnected: server.isConnected,
   serviceId: folder.serviceId,
   serviceName: service.name,
   storageId: folder.storageId,
@@ -115,6 +141,7 @@ export async function listEnvironmentFolders(
       serverName: row.serverName,
       assetId: row.serviceId ?? row.storageId,
       assetName: row.serviceName ?? row.storageName,
+      reason: blockingReason(row.state, row.serverName, row.serverConnected),
     })),
     total: counted?.total ?? rows.length,
   }
@@ -142,7 +169,7 @@ export async function environmentHasRunningCommand(
       and(
         inArray(command.name, ['environment.deploy', 'environment.lifecycle', 'environment.stop']),
         notInArray(command.status, [...TERMINAL_COMMAND_STATUSES]),
-        sql`${command.context} ->> 'environmentId' = ${environmentId}`
+        eq(command.environmentId, environmentId)
       )
     )
     .limit(1)

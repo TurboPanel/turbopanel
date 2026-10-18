@@ -583,7 +583,7 @@ async function withDeployFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Deploy Route Env',
+      name: 'deploy-route-env',
       projectId,
       options: { compose: emptyComposeDocument() },
     })
@@ -1390,10 +1390,8 @@ test('POST /environments/:id/deploy uses project defaultServerId when env pin is
       await db
         .update(project)
         .set({
-          options: {
-            compose: composeWithWebService(),
-            defaultServerId: serverId,
-          },
+          options: { compose: composeWithWebService() },
+          defaultServerId: serverId,
           updatedAt: new Date().toISOString(),
         })
         .where(eq(project.id, projectId))
@@ -1920,7 +1918,7 @@ test('POST /environments/:id/lifecycle returns 404 for cross-org environment', a
       const [foreignEnvironment] = await db
         .insert(environment)
         .values({
-          name: 'Foreign Env',
+          name: 'foreign-env',
           projectId: foreignProject!.id,
           serverId,
           options: { compose: emptyComposeDocument() },

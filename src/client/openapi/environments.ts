@@ -184,7 +184,11 @@ export const environmentSchemas = {
     type: 'object',
     required: ['projectId'],
     properties: {
-      name: { type: 'string' },
+      name: {
+        type: 'string',
+        description:
+          'Unique within the project: **409** `environment_name_in_use` when another environment of the project has it.',
+      },
       description: { type: 'string' },
       projectId: { type: 'string' },
       serverId: {
@@ -206,7 +210,11 @@ export const environmentSchemas = {
   UpdateEnvironmentRequest: {
     type: 'object',
     properties: {
-      name: { type: 'string' },
+      name: {
+        type: 'string',
+        description:
+          'Unique within the project: **409** `environment_name_in_use` when another environment of the project has it.',
+      },
       description: { type: 'string' },
       serverId: {
         type: ['string', 'null'],
@@ -311,6 +319,12 @@ export const environmentPaths = {
                         serverName: { type: 'string', nullable: true },
                         assetId: { type: 'string', format: 'uuid', nullable: true },
                         assetName: { type: 'string', nullable: true },
+                        reason: {
+                          type: 'string',
+                          nullable: true,
+                          description:
+                            "Plain words for a removing or orphan folder, such as 'being removed, waiting for server Beta to come back'; null for any other state.",
+                        },
                       },
                     },
                   },

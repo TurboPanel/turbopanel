@@ -118,6 +118,7 @@ export const SERVER_RESTRICT_FOREIGN_KEY_HANDLERS: Readonly<
 export const ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS: Readonly<
   Record<string, 'drop-subtree' | 'cascade-on-environment' | 'set-null-on-environment'>
 > = {
+  command: 'set-null-on-environment',
   deployment: 'drop-subtree',
   folder: 'drop-subtree',
   managed: 'cascade-on-environment',
@@ -128,6 +129,7 @@ export const ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS: Readonly<
   slot: 'drop-subtree',
   storage: 'set-null-on-environment',
   variable: 'cascade-on-environment',
+  watch: 'cascade-on-environment',
 }
 
 function assertForeignKeyHandlerCoverage(

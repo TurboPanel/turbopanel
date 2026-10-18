@@ -16,7 +16,7 @@ import {
 } from '../settings/upgrade-settings.ts'
 import { getLatestAvailableBuild, setLatestAvailableBuild } from './target-resolve.ts'
 import type { UpgradeTarget } from './target.ts'
-import { detailWithPhase, isUpgradeRunId, phaseFromDetail } from './decisions.ts'
+import { isUpgradeRunId, stepDetail } from './decisions.ts'
 import type {
   UpgradePhase,
   UpgradeSource,
@@ -267,6 +267,7 @@ type StepDbRow = {
   upgradeId: string
   serverId: string
   unit: string
+  phase: string
   batchIndex: number
   status: string
   requestId: string | null
@@ -282,13 +283,17 @@ type StepDbRow = {
   detail: unknown
 }
 
+function asStepPhase(value: string): UpgradePhase {
+  return value === 'colocated_daemon' || value === 'control_plane' ? value : 'fleet'
+}
+
 function toStep(row: StepDbRow): UpgradeStepRow {
   return {
     id: row.id,
     upgradeId: row.upgradeId,
     serverId: row.serverId,
     unit: row.unit === 'instance' ? 'instance' : 'daemon',
-    phase: phaseFromDetail(row.detail),
+    phase: asStepPhase(row.phase),
     batchIndex: row.batchIndex,
     status: row.status as UpgradeStepStatus,
     requestId: row.requestId,
@@ -311,6 +316,7 @@ function stepInsert(step: UpgradeStepRow) {
     upgradeId: step.upgradeId,
     serverId: step.serverId,
     unit: step.unit,
+    phase: step.phase,
     batchIndex: step.batchIndex,
     status: step.status,
     requestId: step.requestId,
@@ -323,7 +329,7 @@ function stepInsert(step: UpgradeStepRow) {
     statusChangedAt: step.lastStageAt,
     errorCode: step.errorCode,
     errorMessage: step.errorMessage,
-    detail: detailWithPhase(step.phase, step.detail),
+    detail: stepDetail(step.detail),
   }
 }
 
@@ -560,7 +566,7 @@ export function createDrizzleUpgradeStore(
         .from(stage)
         .where(eq(stage.upgradeId, upgradeId))
         .orderBy(
-          sql`case coalesce(${stage.detail}->>'phase', 'fleet') when 'colocated_daemon' then 0 when 'control_plane' then 1 else 2 end`,
+          sql`case ${stage.phase} when 'colocated_daemon' then 0 when 'control_plane' then 1 else 2 end`,
           asc(stage.batchIndex),
           asc(stage.id)
         )
@@ -583,7 +589,7 @@ export function createDrizzleUpgradeStore(
           statusChangedAt: step.lastStageAt,
           errorCode: step.errorCode,
           errorMessage: step.errorMessage,
-          detail: detailWithPhase(step.phase, step.detail),
+          detail: stepDetail(step.detail),
         })
         .where(
           expectedStatus !== undefined
@@ -697,7 +703,7 @@ const FLEET_ROW = {
 }
 
 function fleetStatusWhere(status: string, targetCommit: string | null) {
-  const commit = sql`${server.daemon}->'projection'->'daemonBuild'->>'commit'`
+  const commit = sql`${server.daemonCommit}`
   if (!status) return sql`true`
   if (status === 'done') {
     if (!targetCommit) return sql`false`
@@ -984,36 +990,34 @@ async function loadTickWindow(
     countUpgradeSteps(db, upgradeId),
     db
       .select({
-        phase: sql<string>`coalesce(${stage.detail}->>'phase', 'fleet')`,
+        phase: sql<string>`${stage.phase}`,
       })
       .from(stage)
       .where(
         and(
           eq(stage.upgradeId, upgradeId),
-          inArray(sql`coalesce(${stage.detail}->>'phase', 'fleet')`, [...PLATFORM_PHASES]),
+          inArray(sql`${stage.phase}`, [...PLATFORM_PHASES]),
           inArray(stage.status, ['failed', 'needs_attention'])
         )
       )
-      .orderBy(
-        sql`case coalesce(${stage.detail}->>'phase', 'fleet') when 'colocated_daemon' then 0 else 1 end`
-      )
+      .orderBy(sql`case ${stage.phase} when 'colocated_daemon' then 0 else 1 end`)
       .limit(1),
     db
       .select({
-        phase: sql<string>`coalesce(${stage.detail}->>'phase', 'fleet')`,
+        phase: sql<string>`${stage.phase}`,
         batchIndex: stage.batchIndex,
       })
       .from(stage)
       .leftJoin(server, eq(server.id, stage.serverId))
       .where(and(eq(stage.upgradeId, upgradeId), notInArray(stage.status, [...TERMINAL_STEP_SQL])))
       .orderBy(
-        sql`case coalesce(${stage.detail}->>'phase', 'fleet') when 'colocated_daemon' then 0 when 'control_plane' then 1 else 2 end`,
+        sql`case ${stage.phase} when 'colocated_daemon' then 0 when 'control_plane' then 1 else 2 end`,
         sql`case
-          when coalesce(${stage.detail}->>'phase', 'fleet') <> 'fleet' then 0
+          when ${stage.phase} <> 'fleet' then 0
           when exists (
             select 1 from stage pinned
             where pinned.upgrade_id = ${stage.upgradeId}
-              and coalesce(pinned.detail->>'phase', 'fleet') = coalesce(${stage.detail}->>'phase', 'fleet')
+              and pinned.phase = ${stage.phase}
               and pinned.status in ${BATCH_PIN_STEP_SQL}
           ) then case when ${stage.status} in ${BATCH_PIN_STEP_SQL} then 0 else 1 end
           else case when coalesce(${server.isConnected}, false) then 0 else 1 end
@@ -1040,7 +1044,7 @@ async function loadTickWindow(
   const afterId = cursorAfterId(cursor, phase, batchIndex)
   const filters = [
     eq(stage.upgradeId, upgradeId),
-    sql`coalesce(${stage.detail}->>'phase', 'fleet') = ${phase}`,
+    sql`${stage.phase} = ${phase}`,
     eq(stage.batchIndex, batchIndex),
     notInArray(stage.status, [...TERMINAL_STEP_SQL]),
   ]
@@ -1125,24 +1129,19 @@ async function anyDaemonBehind(
 ): Promise<boolean> {
   if (!commit) return false
   const target = normalizedBuiltAt(builtAt)
-  const installedBuiltAt = sql`${server.daemon}->'projection'->'daemonBuild'->>'builtAt'`
   // A host whose build time is known and later than the target's is ahead,
-  // not behind. Only an ISO-shaped value is cast, so a malformed one counts
-  // as unknown (behind) rather than failing the query.
+  // not behind; an unknown build time counts as behind.
   const notAhead =
     target === null
       ? undefined
-      : sql`not coalesce(
-    case when ${installedBuiltAt} ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}'
-      then (${installedBuiltAt})::timestamptz > ${new Date(target).toISOString()}::timestamptz
-    end, false)`
+      : sql`not coalesce(${server.daemonBuiltAt} > ${new Date(target).toISOString()}::timestamptz, false)`
   const rows = await db
     .select({ id: server.id })
     .from(server)
     .where(
       and(
         eq(server.isConnected, true),
-        sql`${server.daemon}->'projection'->'daemonBuild'->>'commit' is distinct from ${commit}`,
+        sql`${server.daemonCommit} is distinct from ${commit}`,
         notAhead
       )
     )

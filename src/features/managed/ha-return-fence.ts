@@ -232,7 +232,6 @@ export async function listDemotedOnConnectedServers(
       privatePort: replica.privatePort,
       status: replica.status,
       metadata: replica.metadata,
-      options: replica.options,
       createdAt: replica.createdAt,
       updatedAt: replica.updatedAt,
       engine: managed.engine,

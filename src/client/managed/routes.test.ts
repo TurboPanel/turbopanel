@@ -406,7 +406,7 @@ async function withManagedFixturesBody(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Production',
+      name: 'production',
       projectId,
       serverId: withPlacement ? serverId : null,
       options: {
@@ -844,7 +844,7 @@ test('GET /organizations/:id/managed returns joined rows', async () => {
       assertEquals(row?.engine, 'postgres')
       assertEquals(row?.engineDisplayName, 'PostgreSQL')
       assertEquals(row?.projectName, 'Managed Postgres Project')
-      assertEquals(row?.environmentName, 'Production')
+      assertEquals(row?.environmentName, 'production')
       assertEquals(row?.serverName, 'Managed Route Server')
       assertEquals(row?.host, '127.0.0.1')
       assertEquals(row?.port, 15432)
@@ -3303,7 +3303,7 @@ test("backup policy list shows the daemon's own report: last status and next run
         backupId: 'bk_visible',
         sizeBytes: 2048,
         checksum: 'b'.repeat(64),
-        path: `/backup/${policy.managedId}/policy-${policy.id}/bk_visible.dump`,
+        path: `/backup/managed/${policy.managedId}/policy-${policy.id}/bk_visible.dump`,
         nextRunAt: '2026-10-01T03:00:00.000Z',
         at: '2026-09-30T03:00:06.000Z',
         ...overrides,

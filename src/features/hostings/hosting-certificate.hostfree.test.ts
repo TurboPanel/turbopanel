@@ -7,7 +7,7 @@ import {
   letsEncryptRefusal,
   readPendingLetsEncrypt,
   uploadedExpiryWarning,
-  withPendingLetsEncrypt,
+  pendingLetsEncryptPatch,
   wwwRedirectConflict,
   wwwRedirectConflictMessage,
 } from './hosting-certificate.ts'
@@ -210,12 +210,14 @@ test('the refusal checks every name the www choice adds, not only the typed ones
 
 test('pending request round-trips through hosting metadata and expires after a week', () => {
   const pending = { requestedAt: iso(-8), dns: null }
-  const metadata = withPendingLetsEncrypt({ keep: 1 }, pending)
+  const stored = pendingLetsEncryptPatch({ keep: 1 }, pending)
+  const { metadata } = stored
   assertEquals(metadata.keep, 1)
-  assertEquals(readPendingLetsEncrypt(metadata), pending)
+  assertEquals(stored.pendingAt, pending.requestedAt)
+  assertEquals(readPendingLetsEncrypt(stored), pending)
   assertEquals(isPendingExpired(pending, NOW), true)
   assertEquals(isPendingExpired({ ...pending, requestedAt: iso(-6) }, NOW), false)
-  assertEquals(readPendingLetsEncrypt(withPendingLetsEncrypt(metadata, null)), null)
+  assertEquals(readPendingLetsEncrypt(pendingLetsEncryptPatch(metadata, null)), null)
 })
 
 test('wwwRedirectConflict finds a twin already served here or elsewhere in the environment', () => {

@@ -8,10 +8,9 @@
  * names point at the server. Pinning does not deploy: the owner redeploys, and
  * the panel says so.
  */
-import { asc, sql } from 'drizzle-orm'
+import { asc, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { hosting } from '../../db/schema.ts'
-import { HOSTING_LETS_ENCRYPT_PENDING_KEY } from '../../features/hostings/hosting-certificate.ts'
 import { type DnsLookup, runtimeDnsLookup } from '../../features/hostings/hosting-dns-check.ts'
 import { retryPendingLetsEncrypt } from '../../features/hostings/use-letsencrypt.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
@@ -40,9 +39,10 @@ export async function runHostingLetsEncryptSweepTick(
       tlsId: hosting.tlsId,
       options: hosting.options,
       metadata: hosting.metadata,
+      pendingAt: hosting.pendingAt,
     })
     .from(hosting)
-    .where(sql`jsonb_exists(${hosting.metadata}, ${HOSTING_LETS_ENCRYPT_PENDING_KEY})`)
+    .where(isNotNull(hosting.pendingAt))
     .orderBy(asc(hosting.updatedAt))
     .limit(HOSTING_LETS_ENCRYPT_SWEEP_BATCH)
 

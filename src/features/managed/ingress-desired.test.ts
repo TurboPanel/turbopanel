@@ -153,7 +153,7 @@ async function withSingleClusterIngressFixture(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Production',
+      name: 'production',
       projectId,
       serverId,
     })
@@ -711,13 +711,13 @@ async function insertBoundConsumer(
       name: params.projectName,
       workspaceId: params.workspaceId,
       organizationId: params.organizationId,
-      options: { defaultServerId: params.defaultServerId },
+      defaultServerId: params.defaultServerId,
     })
     .returning({ id: project.id })
   const [environmentRow] = await db
     .insert(environment)
     .values({
-      name: 'Production',
+      name: 'production',
       projectId: projectRow!.id,
       serverId: params.environmentServerId,
     })
@@ -1048,7 +1048,7 @@ test('binding variables raise a stored mode without SSL to require while the ser
         .returning({ id: project.id })
       const [envRow] = await db
         .insert(environment)
-        .values({ name: 'Production', projectId: projectRow!.id, serverId })
+        .values({ name: 'production', projectId: projectRow!.id, serverId })
         .returning({ id: environment.id })
       const [serviceRow] = await db
         .insert(service)
@@ -1113,12 +1113,12 @@ test('materializing a binding writes the form the deploy asks for and keeps it o
           name: 'Materialize Form Project',
           workspaceId: ws!.id,
           organizationId,
-          options: { defaultServerId: serverId },
+          defaultServerId: serverId,
         })
         .returning({ id: project.id })
       const [envRow] = await db
         .insert(environment)
-        .values({ name: 'Production', projectId: projectRow!.id, serverId })
+        .values({ name: 'production', projectId: projectRow!.id, serverId })
         .returning({ id: environment.id })
       const [serviceRow] = await db
         .insert(service)

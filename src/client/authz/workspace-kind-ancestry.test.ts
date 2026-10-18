@@ -137,7 +137,7 @@ test('resolveWorkspaceKindForEntity walks workspace, project, and environment an
 
     const [userEnv] = await db
       .insert(environment)
-      .values({ name: 'User Env', projectId: userProjectId })
+      .values({ name: 'user-env', projectId: userProjectId })
       .returning({ id: environment.id })
     const userEnvironmentId = userEnv!.id
 
@@ -193,7 +193,7 @@ test('resolveWorkspaceKindForEntity resolves service and hosting descendants', a
 
     const [systemEnv] = await db
       .insert(environment)
-      .values({ name: 'System Service Env', projectId: systemProjectId })
+      .values({ name: 'system-service-env', projectId: systemProjectId })
       .returning({ id: environment.id })
     const systemEnvironmentId = systemEnv!.id
 
@@ -244,7 +244,7 @@ test('resolveWorkspaceKindForEntity resolves environment-scoped variables', asyn
 
     const [userEnv] = await db
       .insert(environment)
-      .values({ name: 'Variable Env', projectId: userProjectId })
+      .values({ name: 'variable-env', projectId: userProjectId })
       .returning({ id: environment.id })
     const userEnvironmentId = userEnv!.id
 

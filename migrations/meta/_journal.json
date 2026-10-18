@@ -274,6 +274,13 @@
       "when": 1792279495308,
       "tag": "0038_database_login_split",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1792285713001,
+      "tag": "0039_schema_final_shape",
+      "breakpoints": true
     }
   ]
 }

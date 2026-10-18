@@ -63,7 +63,7 @@ function buildRecord(overrides?: Partial<ManagedBackupRecord>): ManagedBackupRec
     sizeBytes: 1024,
     checksum: 'a'.repeat(64),
     database: 'app',
-    path: '/var/lib/turbopanel/managed/m1/backups/bk_abc123.dump',
+    path: 'managed/m1/bk_abc123.dump',
     ...overrides,
   }
 }

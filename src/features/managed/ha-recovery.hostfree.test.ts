@@ -125,7 +125,6 @@ function member(overrides: Partial<ManagedMemberRow> = {}): ManagedMemberRow {
     privatePort: 5432,
     status: 'ready',
     metadata: null,
-    options: null,
     createdAt: NOW,
     updatedAt: NOW,
     ...overrides,

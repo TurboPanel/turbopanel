@@ -941,3 +941,26 @@ test('POST /environments accepts changes to a Base service and refuses a new bar
     await assertComposeRefused(refused, 'worker')
   })
 })
+
+test('a duplicate environment name in a project answers 409 environment_name_in_use on create and rename', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const first = await createEnvironmentWith(ctx, cookie, { name: 'blue' })
+    const second = await createEnvironmentWith(ctx, cookie, { name: 'green' })
+
+    const dupCreate = await sendJson(ctx, cookie, 'POST', '/environments', {
+      projectId: ctx.projectId,
+      name: 'blue',
+    })
+    assertEquals(dupCreate.status, 409)
+    assertEquals(((await dupCreate.json()) as { error: string }).error, 'environment_name_in_use')
+
+    const dupRename = await sendJson(ctx, cookie, 'PATCH', `/environments/${second}`, {
+      name: 'blue',
+    })
+    assertEquals(dupRename.status, 409)
+    assertEquals(((await dupRename.json()) as { error: string }).error, 'environment_name_in_use')
+    assertEquals((await environmentRow(ctx, second))?.name, 'green')
+    assertEquals((await environmentRow(ctx, first))?.name, 'blue')
+  })
+})

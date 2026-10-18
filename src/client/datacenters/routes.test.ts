@@ -2090,7 +2090,7 @@ async function withManagedPolicyFixtures(
   const projectId = proj!.id
   const [env] = await db
     .insert(environment)
-    .values({ name: 'Production', projectId, serverId: primaryServerId })
+    .values({ name: 'production', projectId, serverId: primaryServerId })
     .returning({ id: environment.id })
   const environmentId = env!.id
 

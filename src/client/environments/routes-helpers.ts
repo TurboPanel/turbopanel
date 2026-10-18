@@ -87,11 +87,11 @@ export function parseJsonbField(
 
 export function parseCreateEnvironmentNames(
   body: Record<string, unknown>
-): { ok: true; name: string | null; description: string | null } | EnvironmentRouteValidationError {
+): { ok: true; name: string; description: string | null } | EnvironmentRouteValidationError {
   try {
     const name = parseName(body)
     // The name is the scope folder on every server, so it must be a folder name.
-    if (!isValidEnvironmentName(name)) {
+    if (name === null || !isValidEnvironmentName(name)) {
       return {
         ok: false,
         error: ENVIRONMENT_NAME_INVALID_ERROR,

@@ -63,6 +63,7 @@ import {
   scopeFor,
   settleFolderName,
 } from '../../features/folders/allocate.ts'
+import { sendFolderRemovalsAfterDelete } from '../../features/folders/removal.ts'
 import {
   type FolderOptions,
   hasFolderOptions,
@@ -109,7 +110,6 @@ const STORAGE_SELECT = {
   name: storage.name,
   accessMode: storage.accessMode,
   retention: storage.retention,
-  generation: storage.generation,
   principalId: storage.principalId,
   // Applied login — storage paths live under /srv/users/<applied>/volumes.
   principalUsername: principal.appliedUsername,
@@ -131,7 +131,6 @@ const COPY_SELECT = {
   state: storageCopy.state,
   path: storageCopy.path,
   endpoint: storageCopy.endpoint,
-  generation: storageCopy.generation,
   metadata: storageCopy.metadata,
   options: storageCopy.options,
   createdAt: storageCopy.createdAt,
@@ -247,7 +246,6 @@ async function loadStorageChildren(db: StorageDb, storageIds: string[]) {
       state: string
       path: string | null
       endpoint: string | null
-      generation: number
       metadata: unknown
       options: unknown
       createdAt: string
@@ -965,10 +963,17 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       storageId: id,
     })
     // The folder rows stay, locked, until the host confirms the folder is gone.
-    await ctx.db.transaction(async (tx) => {
-      await markAssetFoldersRemoving(tx, { storageIds: [id] })
+    const removing = await ctx.db.transaction(async (tx) => {
+      const serverIds = await markAssetFoldersRemoving(tx, { storageIds: [id] })
       await tx.delete(storage).where(eq(storage.id, id))
+      return serverIds
     })
+    await sendFolderRemovalsAfterDelete(
+      ctx.db,
+      c.get('commandQueue'),
+      c.get('session')?.userId,
+      removing
+    )
     await repushCopyBackups(c, ctx.db, [], backupHosts)
     return c.json({ ok: true as const })
   })
@@ -1088,6 +1093,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const backupHosts = await captureCopyBackupHosts(ctx.db, c.get('commandQueue'), {
       copyIds: [copyId],
     })
+    const removing: string[] = []
     const deleted = await ctx.db.transaction(async (tx) => {
       const removed = await tx
         .delete(storageCopy)
@@ -1095,10 +1101,18 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         .returning({ id: storageCopy.id, serverId: storageCopy.serverId })
       // The copy's folder on that server waits, locked, for the host to confirm.
       const serverId = removed[0]?.serverId
-      if (serverId) await markVolumeFolderRemoving(tx, { storageId, serverId })
+      if (serverId) {
+        removing.push(...(await markVolumeFolderRemoving(tx, { storageId, serverId })))
+      }
       return removed
     })
     if (deleted.length === 0) return c.json({ error: 'Not found' }, 404)
+    await sendFolderRemovalsAfterDelete(
+      ctx.db,
+      c.get('commandQueue'),
+      c.get('session')?.userId,
+      removing
+    )
     // Its policies cascaded away; the host drops their timers.
     await repushCopyBackups(c, ctx.db, [], backupHosts)
     return c.json({ ok: true as const })

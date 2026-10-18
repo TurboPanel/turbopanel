@@ -19,10 +19,7 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import { HOST_RUN_LOOPBACK_HOST } from '../../lib/naming.ts'
-import {
-  parseProjectOptions,
-  resolveEffectivePlacementServerId,
-} from '../projects/project-options.ts'
+import { resolveEffectivePlacementServerId } from '../projects/project-options.ts'
 
 /**
  * Managed clusters whose consumers (compose services) place on `serverId`.
@@ -41,7 +38,7 @@ export async function loadBoundManagedIdsForServer(
     .select({
       managedId: login.managedId,
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
       taskServerId: slot.serverId,
     })
     .from(binding)
@@ -57,10 +54,7 @@ export async function loadBoundManagedIdsForServer(
         or(
           eq(environment.serverId, serverId),
           eq(slot.serverId, serverId),
-          and(
-            isNull(environment.serverId),
-            sql`${project.options}->>'defaultServerId' = ${serverId}`
-          )
+          and(isNull(environment.serverId), sql`${project.defaultServerId} = ${serverId}`)
         )
       )
     )
@@ -70,7 +64,7 @@ export async function loadBoundManagedIdsForServer(
     if (!row.managedId) continue
     const placement = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions)
+      row.projectDefaultServerId
     )
     if (placement === serverId || row.taskServerId === serverId) {
       ids.add(row.managedId)
@@ -98,7 +92,7 @@ export async function serverHasHostRunBinding(
   const rows = await db
     .select({
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
       taskServerId: slot.serverId,
     })
     .from(binding)
@@ -121,18 +115,13 @@ export async function serverHasHostRunBinding(
         or(
           eq(environment.serverId, serverId),
           eq(slot.serverId, serverId),
-          and(
-            isNull(environment.serverId),
-            sql`${project.options}->>'defaultServerId' = ${serverId}`
-          )
+          and(isNull(environment.serverId), sql`${project.defaultServerId} = ${serverId}`)
         )
       )
     )
   return rows.some(
     (row) =>
-      resolveEffectivePlacementServerId(
-        row.environmentServerId,
-        parseProjectOptions(row.projectOptions)
-      ) === serverId || row.taskServerId === serverId
+      resolveEffectivePlacementServerId(row.environmentServerId, row.projectDefaultServerId) ===
+        serverId || row.taskServerId === serverId
   )
 }

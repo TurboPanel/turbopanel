@@ -71,6 +71,7 @@ function createTxStub(opts: {
   insertedProjectId?: string
   onUpdate?: (patch: Record<string, unknown>) => void
   onInsertVariable?: (values: Record<string, unknown>) => void
+  onWatchSync?: () => void
 }): DbTx {
   const envRows = opts.envRows ?? []
   const existingVarKeys = opts.existingVarKeys ?? []
@@ -127,6 +128,11 @@ function createTxStub(opts: {
         }
       },
     }),
+    // The watch sync after an options write (`syncEnvironmentWatch` / `syncProjectWatch`).
+    execute: () => {
+      opts.onWatchSync?.()
+      return Promise.resolve([])
+    },
   } as unknown as DbTx
 }
 
@@ -593,8 +599,24 @@ test('configureProjectType rejects catalog kind mismatch', async () => {
 })
 
 test('configureProjectType configures docker-compose via transaction', async () => {
+  let watchSyncs = 0
   const result = await configureProjectType(
-    createProjectSelectDb([{ id: 'p1', metadata: null, options: null }]),
+    createProjectSelectDb(
+      [{ id: 'p1', metadata: null, options: null }],
+      createTxStub({
+        envRows: [
+          {
+            id: 'env-1',
+            name: 'production',
+            description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+            serverId: null,
+          },
+        ],
+        onWatchSync: () => {
+          watchSyncs += 1
+        },
+      })
+    ),
     {
       projectId: 'p1',
       projectType: 'docker-compose',
@@ -603,6 +625,9 @@ test('configureProjectType configures docker-compose via transaction', async () 
     }
   )
   assertEquals(result, { ok: true, alreadyConfigured: false })
+  // The project options were rewritten, so its watch rows are brought in step
+  // (one sync is a delete and an insert).
+  assertEquals(watchSyncs, 2)
 })
 
 const TUNING = { drainSeconds: 45, healthTimeoutSeconds: 200, rollbackWindowMinutes: 10 }

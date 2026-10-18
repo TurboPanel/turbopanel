@@ -312,6 +312,23 @@ function buildDaemonJsonbPatch(nextProjection: ServerDaemonProjection | undefine
   }
 }
 
+/** The `server` columns that mirror projection keys sweeps and pages filter on. */
+export function projectionColumnValues(projection: ServerDaemonProjection | undefined): {
+  offlineReason: 'disconnect' | 'sweep_stale' | null
+  daemonCommit: string | null
+  daemonBuiltAt: string | null
+  daemonUpdateStatus: string | null
+} {
+  const builtAt = projection?.daemonBuild?.builtAt
+  return {
+    offlineReason: projection?.offlineReason ?? null,
+    daemonCommit: projection?.daemonBuild?.commit ?? null,
+    daemonBuiltAt:
+      builtAt && Number.isFinite(Date.parse(builtAt)) ? new Date(builtAt).toISOString() : null,
+    daemonUpdateStatus: projection?.update?.status ?? null,
+  }
+}
+
 function statusColumnPatch(status: ServerDaemonStatus): {
   isConnected: boolean
   statusChangedAt: string | null
@@ -678,6 +695,12 @@ function buildDaemonAndStatusColumnPatch(
     patch.daemon = daemonProjectionColumnPatch(
       buildDaemonJsonbPatch(writeProjection ? nextProjection : existing.projection)
     )
+  }
+
+  if (writeProjection) {
+    // The filtered and swept values (offline reason, build identity, update
+    // state) live in columns so sweeps and the upgrade pages never scan jsonb.
+    Object.assign(patch, projectionColumnValues(nextProjection))
   }
 
   if (writeStatus) {
@@ -1051,7 +1074,7 @@ export async function listServerIdsWithUpdatingProjection(db: Db): Promise<strin
   const rows = await db
     .select({ id: server.id })
     .from(server)
-    .where(sql`${server.daemon}->'projection'->'update'->>'status' = 'updating'`)
+    .where(sql`${server.daemonUpdateStatus} = 'updating'`)
 
   return rows.map((row) => row.id)
 }

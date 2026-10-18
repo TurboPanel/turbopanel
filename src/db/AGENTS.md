@@ -69,8 +69,8 @@ is why it has no `updated_at` — a trail an operator can edit after the fact is
 not one. `organization_id` is nullable so an instance-wide action (a superadmin
 editing a forge that belongs to no organization) is still recorded, even though
 the organization-scoped read cannot show it; `actor_email` is denormalized so
-the trail survives the account's deletion (`actor_user_id` is
-`ON DELETE SET NULL`). `context` is a small jsonb bag of non-secret facts —
+the trail survives the account's deletion (`actor_user_id` is a plain
+id with no foreign key, so history outlives the user). `context` is a small jsonb bag of non-secret facts —
 the same rule `setting` rows follow. Written from `recordAudit`
 (`audit-records.ts`) at the security-relevant routes: daemon-key revoke,
 server delete, grant create/delete, forge create/update/delete, and the three
@@ -422,7 +422,7 @@ pages any more.
 `<referenced table>_id`. Those **need** no database comment (an authored
 sentence on one is still emitted). A foreign key under any other name
 (`server.assigned_tier_id`, `audit.actor_user_id`) must be described — the
-name signals a rule. `metadata` / `options` always need a sentence saying
+name signals a rule. `metadata` / `options` (only on tables that really use them) always need a sentence saying
 what keys they hold and who writes them.
 
 **Writing rules** (enforced by the test): one sentence, ≤ 160 characters, no
@@ -462,8 +462,10 @@ tables, no auth runtime yet). Grouped by concern — see **Table groupings** bel
 
 **Column order:** tables that carry `metadata` / `options` declare them
 immediately after timestamps — `id` → `created_at` → `updated_at` → `metadata` →
-`options` → remaining columns. If a table has one of those JSONB columns, it
-must have both, and both are always nullable.
+`options` → remaining columns, both always nullable. A table carries one of
+them only while something writes it (owner decision 2026-10-17: the empty pairs
+were dropped in the baseline); add the column back, with its description, in the
+change that first writes it.
 
 ## Schema cutover (executed — see ledger archive)
 
@@ -947,8 +949,8 @@ Canonical column order: `id`, `created_at`, `updated_at`, `metadata`, `options`,
 `status_changed_at`, `daemon` (shared `metadata`/`options` pair immediately
 after timestamps — remaining columns follow). **No `datacenter_id`** —
 membership is via `ip` pins only. Indexes: `idx_server_organization_id`,
-`idx_server_machine_key`, `idx_server_hostname`, and partial
-`idx_server_connected` on `(id) WHERE is_connected`. There is no `daemon_status`
+unique `uniq_server_machine_key` (one machine belongs to exactly one organization), and partial
+`idx_server_connected` on `(id) WHERE is_connected`, `idx_server_offline` and `idx_server_updating`. Latest hardware and the latest metrics plan are the jsonb columns `hardware` and `capability` (latest only: older generations are not kept); `machine_class_source` says whether `machine_class` was `detected` or set by an `operator`; `offline_reason`, `daemon_commit`, `daemon_built_at`, `daemon_update_status` and `external_access_pending_at` are the columns the sweeps filter on. There is no `daemon_status`
 column or CHECK constraint — liveness is a single boolean plus a transition
 timestamp (see "Fleet status columns" below). `organization_id` FK uses
 `ON DELETE RESTRICT`. `network.server_id` → `server.id` is `ON DELETE RESTRICT`
@@ -1099,30 +1101,32 @@ Canonical command/job history — source of truth for UI status and history. Do
 not read command history from the Daemon Cell — the cell holds only hot
 pending-request correlation state. The `command` table is the canonical record.
 
-| Column                | Type                            | Notes                                                                                     |
-| --------------------- | ------------------------------- | ----------------------------------------------------------------------------------------- |
-| `id`                  | uuid (uuidv7)                   | Primary key                                                                               |
-| `created_at`          | timestamptz(3) NOT NULL `now()` | Real column; index/order source                                                           |
-| `updated_at`          | timestamptz(3) NOT NULL `now()` | Bumped by `transitionCommand`                                                             |
-| `metadata`            | jsonb nullable                  | Follow-up-chain blob only (`getCommandMetadata`)                                          |
-| `options`             | jsonb nullable                  | Reserved (pair with `metadata`; unused today)                                             |
-| `server_id`           | uuid NOT NULL                   | FK → `server.id`, `ON DELETE CASCADE` (org derived from server)                           |
-| `actor_type`          | text NOT NULL                   | `'user'` \| `'system'` (`command_actor_type_check`, mirrors `COMMAND_ACTOR_TYPES`); no FK |
-| `actor_id`            | uuid NOT NULL                   | ID of the acting entity; no FK                                                            |
-| `name`                | text NOT NULL                   | Command type (e.g. `daemon.ping`)                                                         |
-| `status`              | text NOT NULL `'queued'`        | `command_status_check` — exactly `COMMAND_STATUSES`                                       |
-| `attempts`            | integer NOT NULL `0`            | Dispatch retry count                                                                      |
-| `context`             | jsonb nullable                  | Small non-secret identifier bag (`managedId`, `environmentId`, `generation`, …)           |
-| `result_summary`      | jsonb nullable                  | Typed command output (small, bounded)                                                     |
-| `error_code`          | text nullable                   | Machine-readable terminal error code                                                      |
-| `error_message`       | text nullable                   | Terminal error message                                                                    |
-| `queued_at`           | timestamptz(3) nullable         | Set when status → `queued`                                                                |
-| `dispatch_started_at` | timestamptz(3) nullable         | Set when status → `dispatching`                                                           |
-| `sent_at`             | timestamptz(3) nullable         | Set when status → `sent`                                                                  |
-| `acked_at`            | timestamptz(3) nullable         | Set when status → `acked`                                                                 |
-| `started_at`          | timestamptz(3) nullable         | Set when status → `running`                                                               |
-| `finished_at`         | timestamptz(3) nullable         | Set when status → terminal                                                                |
-| `expires_at`          | timestamptz(3) nullable         | Optional command TTL                                                                      |
+| Column                | Type                            | Notes                                                                                          |
+| --------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `id`                  | uuid (uuidv7)                   | Primary key                                                                                    |
+| `created_at`          | timestamptz(3) NOT NULL `now()` | Real column; index/order source                                                                |
+| `updated_at`          | timestamptz(3) NOT NULL `now()` | Bumped by `transitionCommand`                                                                  |
+| `metadata`            | jsonb nullable                  | Follow-up-chain blob only (`getCommandMetadata`)                                               |
+| `server_id`           | uuid NOT NULL                   | FK → `server.id`, `ON DELETE CASCADE`                                                          |
+| `organization_id`     | uuid nullable                   | FK → `organization.id`, `ON DELETE SET NULL`; copied from the server at insert (activity feed) |
+| `environment_id`      | uuid nullable                   | FK → `environment.id`, `ON DELETE SET NULL` (deploy history)                                   |
+| `managed_id`          | uuid nullable                   | FK → `managed.id`, `ON DELETE SET NULL` (managed follow-up lookups)                            |
+| `actor_type`          | text NOT NULL                   | `'user'` \| `'system'` (`command_actor_type_check`, mirrors `COMMAND_ACTOR_TYPES`); no FK      |
+| `actor_id`            | uuid NOT NULL                   | ID of the acting entity; no FK                                                                 |
+| `name`                | text NOT NULL                   | Command type (e.g. `daemon.ping`)                                                              |
+| `status`              | text NOT NULL `'queued'`        | `command_status_check` — exactly `COMMAND_STATUSES`                                            |
+| `attempts`            | integer NOT NULL `0`            | Dispatch retry count                                                                           |
+| `context`             | jsonb nullable                  | Small non-secret identifier bag (`generation`, …); ids that are filtered on are columns        |
+| `result_summary`      | jsonb nullable                  | Typed command output (small, bounded)                                                          |
+| `error_code`          | text nullable                   | Machine-readable terminal error code                                                           |
+| `error_message`       | text nullable                   | Terminal error message                                                                         |
+| `queued_at`           | timestamptz(3) nullable         | Set when status → `queued`                                                                     |
+| `dispatch_started_at` | timestamptz(3) nullable         | Set when status → `dispatching`                                                                |
+| `sent_at`             | timestamptz(3) nullable         | Set when status → `sent`                                                                       |
+| `acked_at`            | timestamptz(3) nullable         | Set when status → `acked`                                                                      |
+| `started_at`          | timestamptz(3) nullable         | Set when status → `running`                                                                    |
+| `finished_at`         | timestamptz(3) nullable         | Set when status → terminal                                                                     |
+| `expires_at`          | timestamptz(3) nullable         | Optional command TTL                                                                           |
 
 There is **no `payload` column on `command`** — the daemon execution payload
 lives in the `dispatch` side table (below) and is deleted shortly after the
@@ -1136,9 +1140,7 @@ envelopes, or TLS material); `result_summary` stores typed command output.
 read through `getCommandMetadata`. It is also where a fan-out takes a one-shot
 claim: `claimCommandMetadataFlag` merges a key with a conditional UPDATE, so
 sibling commands finishing at once elect exactly one follow-up enqueuer.
-**`options` is unused today** and is kept solely for the schema
-`metadata`/`options` pairing rule (see the cutover ledger, Step 3, in the
-[TurboPanel Schema Archive](https://claude.ai/artifact/EKjs2tdF2C9zLy3GdfPdfC)).
+`command` has no `options` column.
 **Never store logs, streaming output, or large blobs in these columns.**
 
 **Status values:**
@@ -1157,12 +1159,21 @@ sibling commands finishing at once elect exactly one follow-up enqueuer.
 
 **Indexes:**
 
-- `idx_command_server_id_created_at` — btree on `(server_id, created_at DESC)` —
-  backs `listServerCommands` ordering
-- `idx_command_status` — btree on `status` — supports status-filtered queries
+- `idx_command_server_recent` — `(server_id, created_at DESC, id DESC)` — backs
+  `listServerCommands` ordering without a sort
+- `idx_command_open` — `(status, updated_at)` partial on the five open statuses —
+  the stale-command sweep
+- `idx_command_deploy` — `(environment_id, created_at DESC, id DESC)` partial on
+  `name = 'environment.deploy'` — deploy history
+- `idx_command_managed` — `(managed_id)` partial on open rows with a managed id
+- `idx_command_feed` — `(organization_id, created_at DESC, id DESC)` partial on
+  the three deploy-family names and the open or failed statuses — the activity feed
+- `idx_command_server_id_name_created_at` — reconcile "was one sent since X" probes
+- `idx_command_managed_destroy_gate_id` — partial on rows with a gate id
 
-Only FK is `server_id → server.id` (`ON DELETE CASCADE`). Organization is
-derived from the server — no `organization_id` column on `command`.
+A partial index only helps when the SQL repeats its predicate literally: write
+the status lists as literals (`commandIsOpen()` in `features/commands/open-statuses.ts`).
+`server_id` cascades; `organization_id`, `environment_id` and `managed_id` set null.
 
 **Lifecycle timestamps are real columns.** `status`, `created_at`, `updated_at`,
 `attempts`, `name`, `result_summary`, every granular timestamp

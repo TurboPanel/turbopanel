@@ -11,6 +11,7 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { Db } from '../../db/connection.ts'
 import { environment, organization, project, variable } from '../../db/schema.ts'
 import { emptyComposeDocument } from '../../features/compose/index.ts'
+import { syncEnvironmentWatch, syncProjectWatch } from '../../features/git/watch-records.ts'
 import {
   DEFAULT_ENVIRONMENT_NAME,
   parseOrganizationOptions,
@@ -295,6 +296,7 @@ async function applyCatalogEnvCompose(
       updatedAt: new Date().toISOString(),
     })
     .where(eq(environment.id, productionId))
+  await syncEnvironmentWatch(tx, productionId)
 }
 
 async function insertCatalogEnvVariables(
@@ -345,6 +347,7 @@ async function insertExtraCatalogEnvironments(
         options: stampNewEnvironmentDeployOptions(env.compose ? { compose: env.compose } : null),
       })
       .returning({ id: environment.id })
+    if (env.compose) await syncEnvironmentWatch(tx, insertedEnv.id)
     if (!env.variables?.length) return
     await insertCatalogEnvVariables(tx, insertedEnv.id, env.variables, input.dataEncryptionSecrets)
   })
@@ -409,6 +412,7 @@ async function configureCatalogProject(
           updatedAt: new Date().toISOString(),
         })
         .where(eq(project.id, input.projectId))
+      await syncProjectWatch(tx, input.projectId)
     })
   } catch (err) {
     if (err instanceof Error && err.message === 'encryption unavailable') {
@@ -441,6 +445,7 @@ async function configureDockerComposeProject(
         updatedAt: new Date().toISOString(),
       })
       .where(eq(project.id, projectId))
+    await syncProjectWatch(tx, projectId)
   })
   return { ok: true, alreadyConfigured: false }
 }
