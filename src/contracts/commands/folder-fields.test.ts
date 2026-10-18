@@ -1,9 +1,20 @@
 import { assertEquals, assertThrows } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import {
+  FOLDERS_REMOVE_MAX,
+  type FoldersRemoveCommandPayload,
+  isReportedHome,
+  parseCommandPayload,
+  parseCommandResult,
   parseEnvironmentDeployPayload,
+  parseEnvironmentDeployResult,
   parseEnvironmentStopPayload,
   parseEnvironmentStopResult,
+  parseFoldersRemovePayload,
+  parseFoldersRemoveResult,
+  parsePrincipalIdReports,
+  parsePrincipalsReconcileResult,
+  parseReportedFolders,
 } from './schemas.ts'
 
 // The optional `folder` fields sit beside the fields they will replace. They
@@ -127,5 +138,164 @@ it('keeps the folders a stop reports and drops entries that are not valid', () =
       folders: [{ ...folder, scope: 'home', kind: 'service', removed: false }],
     }).folders,
     []
+  )
+})
+
+it('keeps the reason a stop gives for a folder that stayed, and only then', () => {
+  const folder = { owner: 'alice', scope: 'production', slug: 'example.com', kind: 'service' }
+  const result = parseEnvironmentStopResult({
+    projectName: 'p',
+    folders: [
+      { ...folder, removed: false, reason: 'The folder was not removed: device busy' },
+      { ...folder, slug: 'other', removed: true, reason: 'ignored' },
+      { ...folder, slug: 'long', removed: false, reason: 'x'.repeat(1000) },
+    ],
+  })
+  assertEquals(result.folders?.[0]?.reason, 'The folder was not removed: device busy')
+  assertEquals(result.folders?.[1]?.reason, undefined)
+  assertEquals(result.folders?.[2]?.reason?.length, 300)
+})
+
+const REMOVE_FOLDER = { owner: 'alice', scope: 'production', slug: 'uploads' }
+const REMOVE_ID = '0192a8f4-3c1e-7a52-9b0d-4e6f1a2b3c99'
+
+it('server.folders.remove carries folder parts and an optional id, never a path', () => {
+  const payload: FoldersRemoveCommandPayload = {
+    folders: [
+      { kind: 'volume', folder: REMOVE_FOLDER },
+      { kind: 'volume', assetId: REMOVE_ID, folder: REMOVE_FOLDER },
+      { kind: 'service', folder: { ...REMOVE_FOLDER, slug: 'example.com' } },
+    ],
+  }
+  assertEquals(parseFoldersRemovePayload(payload), payload)
+  assertEquals(parseCommandPayload('server.folders.remove', payload), payload)
+  for (const bad of [
+    null,
+    {},
+    { folders: [] },
+    { folders: 'x' },
+    { folders: [{ kind: 'other', folder: REMOVE_FOLDER }] },
+    { folders: [{ kind: 'volume' }] },
+    { folders: [{ kind: 'volume', folder: { ...REMOVE_FOLDER, path: '/etc' } }] },
+    { folders: [{ kind: 'volume', folder: { ...REMOVE_FOLDER, scope: 'volumes' } }] },
+    { folders: [{ kind: 'volume', folder: { ...REMOVE_FOLDER, slug: '../x' } }] },
+    { folders: [{ kind: 'volume', assetId: '../x', folder: REMOVE_FOLDER }] },
+    { folders: [{ kind: 'volume', assetId: 7, folder: REMOVE_FOLDER }] },
+  ]) {
+    assertThrows(() => parseFoldersRemovePayload(bad), TypeError, undefined, JSON.stringify(bad))
+  }
+  assertThrows(
+    () =>
+      parseFoldersRemovePayload({
+        folders: Array.from({ length: FOLDERS_REMOVE_MAX + 1 }, () => ({
+          kind: 'volume',
+          folder: REMOVE_FOLDER,
+        })),
+      }),
+    TypeError,
+    '1 to 100'
+  )
+})
+
+it('reads a server.folders.remove result leniently and keeps the reason of a folder that stayed', () => {
+  const result = parseFoldersRemoveResult({
+    summary: 'Removed 1 of 2 folder(s)',
+    folders: [
+      { ...REMOVE_FOLDER, kind: 'volume', removed: true },
+      { ...REMOVE_FOLDER, slug: 'two', kind: 'volume', removed: false, reason: 'device busy' },
+      { ...REMOVE_FOLDER, scope: 'home', kind: 'volume', removed: true },
+      { ...REMOVE_FOLDER, kind: 'volume' },
+      'x',
+    ],
+  })
+  assertEquals(result, {
+    summary: 'Removed 1 of 2 folder(s)',
+    folders: [
+      { ...REMOVE_FOLDER, kind: 'volume', removed: true },
+      { ...REMOVE_FOLDER, slug: 'two', kind: 'volume', removed: false, reason: 'device busy' },
+    ],
+  })
+  assertEquals(parseFoldersRemoveResult(null), { folders: [] })
+  assertEquals(parseCommandResult('server.folders.remove', { folders: 'no' }), { folders: [] })
+})
+
+it('reads the folders a reconcile lists, or nothing when the list cannot be trusted whole', () => {
+  const listed = { ...REMOVE_FOLDER, kind: 'volume', present: true }
+  assertEquals(parseReportedFolders([listed]), [listed])
+  assertEquals(parseReportedFolders([]), [])
+  assertEquals(parseReportedFolders(undefined), undefined)
+  assertEquals(parseReportedFolders('x'), undefined)
+  // One entry that breaks the folder rules or the shape is left out of a complete list.
+  assertEquals(
+    parseReportedFolders([
+      listed,
+      { ...listed, scope: 'volumes' },
+      { ...listed, present: 'yes' },
+      3,
+    ]),
+    [listed]
+  )
+  const reconcile = parsePrincipalsReconcileResult({
+    principalsApplied: 0,
+    keysChanged: [],
+    keysRemoved: [],
+    sshdReloaded: false,
+    warnings: [],
+    folders: [listed],
+  })
+  assertEquals(reconcile.folders, [listed])
+  assertEquals(
+    'folders' in
+      parsePrincipalsReconcileResult({
+        principalsApplied: 0,
+        keysChanged: [],
+        keysRemoved: [],
+        sshdReloaded: false,
+        warnings: [],
+      }),
+    false
+  )
+})
+
+it('reads the home a host reports for an account, and refuses one that is not a plain absolute path', () => {
+  assertEquals(
+    parsePrincipalIdReports([
+      { principalId: 'p1', uid: 15001, gid: 15001, home: '/srv/users/alice' },
+      { principalId: 'p2', uid: 15002, gid: 15002, home: '../etc' },
+      { principalId: 'p3', uid: 15003, gid: 15003 },
+    ]),
+    [
+      { principalId: 'p1', uid: 15001, gid: 15001, home: '/srv/users/alice' },
+      { principalId: 'p2', uid: 15002, gid: 15002 },
+      { principalId: 'p3', uid: 15003, gid: 15003 },
+    ]
+  )
+  for (const bad of [
+    '',
+    '/',
+    'srv/users/a',
+    '/srv/users/',
+    '/srv//users',
+    '/srv/../etc',
+    '/srv/./x',
+    '/srv/a\nb',
+    5,
+  ]) {
+    assertEquals(isReportedHome(bad), false, String(bad))
+  }
+  assertEquals(isReportedHome('/srv/users/alice'), true)
+})
+
+it('keeps the service folders a deploy left in place, and drops entries that are not valid', () => {
+  const kept = { owner: 'alice', scope: 'production', slug: 'old.example.com', kind: 'service' }
+  const result = parseEnvironmentDeployResult({
+    projectName: 'p',
+    keptFolders: [kept, { ...kept, kind: 'volume' }, { ...kept, scope: 'home' }, 'x'],
+  })
+  assertEquals(result.keptFolders, [kept])
+  assertEquals(parseEnvironmentDeployResult({ projectName: 'p' }).keptFolders, undefined)
+  assertEquals(
+    parseEnvironmentDeployResult({ projectName: 'p', keptFolders: [] }).keptFolders,
+    undefined
   )
 })

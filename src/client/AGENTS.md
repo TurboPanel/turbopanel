@@ -261,9 +261,16 @@ changes.
     (`-2` to `-99`) follow `features/folders/names.ts`.
   - **Delete and stop:** deleting a service or volume (and a volume copy) flips
     its rows to `removing` first and keeps them, with their locks, until the host
-    confirms (`confirmFolderRemoved`). An explicit environment stop sends no
-    `siteReleases`, so every folder stays; delete teardown and a server leaving
-    the environment still do. Wire: `siteReleases[].folder` and
+    confirms (`confirmFolderRemoved`, from the `server.folders.remove` result or
+    a stop result's `folders[]`; see `features/folders/removal.ts` and
+    `reports.ts`). The delete sends `server.folders.remove` once it commits; a
+    server that is offline keeps the rows `removing` ("being removed, waiting
+    for server X to come back" in the blocking list) and a sweep asks again once
+    it is connected. An explicit environment stop sends no `siteReleases`, so
+    every folder stays; delete teardown and a server leaving the environment
+    still do. A service that leaves the compose file keeps its folder (the deploy
+    result's `keptFolders` marks it an `orphan`); only an explicit delete removes
+    files. Wire: `siteReleases[].folder` and
     `storageMaterial[].folder` ride beside the old fields, which stay
     authoritative until the daemon resolves folders itself.
 - **Common assets (`share` table):** a common service or volume belongs to the

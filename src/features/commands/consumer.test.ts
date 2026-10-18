@@ -31,6 +31,7 @@ import {
   login,
   managedDatabase,
   principal,
+  principalPlacement,
   project,
   replica,
   server,
@@ -54,6 +55,7 @@ import {
   transitionCommand,
 } from './command-records.ts'
 import { enableOrganizationFabric, listFabricRelays } from '../fabric/fabric-records.ts'
+import { environmentHasFolders, listEnvironmentFolders } from '../folders/records.ts'
 import { isTransientError, processCommandEnvelope } from './consumer.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { parseManagedResidual } from '../managed/serialize.ts'
@@ -3215,6 +3217,423 @@ test('processCommandEnvelope: a rollout server whose dispatch payload is gone fa
     } finally {
       await removeRolloutServers(db, rollout.serverIds)
     }
+  })
+})
+
+/** Run one succeeded command of `type` through the consumer with the host's `result`. */
+async function runSucceededCommand(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string,
+  type:
+    | 'environment.stop'
+    | 'environment.deploy'
+    | 'server.folders.remove'
+    | 'server.principals.reconcile',
+  payload: unknown,
+  result: unknown
+): Promise<void> {
+  const record = await createCommandRecord(db, { serverId, ...TEST_COMMAND_ACTOR, type, payload })
+  const registry = createDispatchMockRegistry(serverId, {
+    waitForRequestResult: {
+      serverId,
+      requestId: record.id,
+      requestKind: 'command-dispatch',
+      status: 'done',
+      createdAt: record.createdAt,
+      expiresAt: record.createdAt,
+      finishedAt: new Date().toISOString(),
+      result,
+    },
+  })
+  await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+}
+
+/** Two site owners and folder rows for them, removed after the callback. */
+async function withOwnerFolders(
+  ctx: {
+    db: ReturnType<typeof createDenoDb>
+    organizationId: string
+    serverId: string
+    environmentId: string
+  },
+  rows: Array<{
+    owner: 'one' | 'two'
+    kind: 'service' | 'volume'
+    slug: string
+    state: string
+    scope?: string
+  }>,
+  fn: (owners: {
+    one: { id: string; login: string }
+    two: { id: string; login: string }
+  }) => Promise<void>
+): Promise<void> {
+  const make = async () => {
+    const login = `fo_${crypto.randomUUID().slice(0, 8).replaceAll('-', '')}`
+    const [row] = await ctx.db
+      .insert(principal)
+      .values({ organizationId: ctx.organizationId, username: login, appliedUsername: login })
+      .returning({ id: principal.id })
+    return { id: row!.id, login }
+  }
+  const one = await make()
+  const two = await make()
+  try {
+    if (rows.length > 0) {
+      await ctx.db.insert(folder).values(
+        rows.map((row) => ({
+          serverId: ctx.serverId,
+          principalId: (row.owner === 'one' ? one : two).id,
+          environmentId: row.scope === 'common' ? null : ctx.environmentId,
+          scope: row.scope ?? 'production',
+          kind: row.kind,
+          slug: row.slug,
+          state: row.state,
+        }))
+      )
+    }
+    await fn({ one, two })
+  } finally {
+    await ctx.db.delete(folder).where(eq(folder.serverId, ctx.serverId))
+    await ctx.db.delete(principalPlacement).where(eq(principalPlacement.serverId, ctx.serverId))
+    await ctx.db.delete(principal).where(inArray(principal.id, [one.id, two.id]))
+  }
+}
+
+async function folderStates(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string
+): Promise<Record<string, string>> {
+  const rows = await db
+    .select({ kind: folder.kind, slug: folder.slug, state: folder.state })
+    .from(folder)
+    .where(eq(folder.serverId, serverId))
+  return Object.fromEntries(rows.map((row) => [`${row.kind}:${row.slug}`, row.state]))
+}
+
+test('processCommandEnvelope clears the removing folder rows an environment.stop reports gone, and keeps the others', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [
+        { owner: 'one', kind: 'service', slug: 'gone', state: 'removing' },
+        { owner: 'one', kind: 'service', slug: 'stuck', state: 'removing' },
+        // The same names under another owner, and a folder in use, are not the report's to touch.
+        { owner: 'two', kind: 'service', slug: 'gone', state: 'removing' },
+        { owner: 'one', kind: 'service', slug: 'live', state: 'present' },
+      ],
+      async ({ one }) => {
+        await runSucceededCommand(
+          ctx.db,
+          ctx.serverId,
+          'environment.stop',
+          {
+            environmentId: ctx.environmentId,
+            projectId: ctx.projectId,
+            projectName: 'tp-stop-test',
+          },
+          {
+            projectName: 'tp-stop-test',
+            summary: 'stopped',
+            containers: [],
+            folders: [
+              {
+                owner: one.login,
+                scope: 'production',
+                kind: 'service',
+                slug: 'gone',
+                removed: true,
+              },
+              {
+                owner: one.login,
+                scope: 'production',
+                kind: 'service',
+                slug: 'stuck',
+                removed: false,
+                reason: 'The folder was not removed: device busy',
+              },
+              {
+                owner: one.login,
+                scope: 'production',
+                kind: 'service',
+                slug: 'live',
+                removed: true,
+              },
+            ],
+          }
+        )
+        const rows = await ctx.db
+          .select({ slug: folder.slug, state: folder.state, principalId: folder.principalId })
+          .from(folder)
+          .where(eq(folder.serverId, ctx.serverId))
+        assertEquals(
+          rows
+            .map((row) => `${row.principalId === one.id ? 'one' : 'two'}:${row.slug}:${row.state}`)
+            .sort(),
+          ['one:live:present', 'one:stuck:removing', 'two:gone:removing']
+        )
+        // The environment's last folder rows are the ones left; the locks follow the rows.
+        assertEquals((await listEnvironmentFolders(ctx.db, ctx.environmentId)).total, 3)
+      }
+    )
+  })
+})
+
+test('processCommandEnvelope clears a removed volume and lifts the environment lock once its last folder is gone', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [{ owner: 'one', kind: 'volume', slug: 'uploads', state: 'removing' }],
+      async ({ one }) => {
+        assertEquals((await listEnvironmentFolders(ctx.db, ctx.environmentId)).total, 1)
+        await runSucceededCommand(
+          ctx.db,
+          ctx.serverId,
+          'server.folders.remove',
+          {
+            folders: [
+              {
+                kind: 'volume',
+                folder: { owner: one.login, scope: 'production', slug: 'uploads' },
+              },
+            ],
+          },
+          {
+            summary: 'Removed 1 of 1 folder(s)',
+            folders: [
+              {
+                owner: one.login,
+                scope: 'production',
+                kind: 'volume',
+                slug: 'uploads',
+                removed: true,
+              },
+            ],
+          }
+        )
+        assertEquals(await folderStates(ctx.db, ctx.serverId), {})
+        assertEquals(await environmentHasFolders(ctx.db, ctx.environmentId), false)
+      }
+    )
+  })
+})
+
+test('processCommandEnvelope leaves a volume row removing when the host says the folder stayed', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [{ owner: 'one', kind: 'volume', slug: 'uploads', state: 'removing' }],
+      async ({ one }) => {
+        await runSucceededCommand(
+          ctx.db,
+          ctx.serverId,
+          'server.folders.remove',
+          {
+            folders: [
+              {
+                kind: 'volume',
+                folder: { owner: one.login, scope: 'production', slug: 'uploads' },
+              },
+            ],
+          },
+          {
+            summary: 'Removed 0 of 1 folder(s)',
+            folders: [
+              {
+                owner: one.login,
+                scope: 'production',
+                kind: 'volume',
+                slug: 'uploads',
+                removed: false,
+                reason: 'The folder was not removed: device busy',
+              },
+            ],
+          }
+        )
+        assertEquals(await folderStates(ctx.db, ctx.serverId), { 'volume:uploads': 'removing' })
+        assertEquals(await environmentHasFolders(ctx.db, ctx.environmentId), true)
+      }
+    )
+  })
+})
+
+test('processCommandEnvelope marks the folders a deploy kept as orphans', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [
+        { owner: 'one', kind: 'service', slug: 'old', state: 'present' },
+        { owner: 'one', kind: 'service', slug: 'deleted', state: 'removing' },
+        { owner: 'one', kind: 'service', slug: 'web', state: 'present' },
+      ],
+      async ({ one }) => {
+        await runSucceededCommand(
+          ctx.db,
+          ctx.serverId,
+          'environment.deploy',
+          {
+            environmentId: ctx.environmentId,
+            projectId: ctx.projectId,
+            organizationId: ctx.organizationId,
+            projectName: 'tp-deploy-test',
+            composeFiles: [
+              {
+                filename: 'compose.yaml',
+                role: 'runtime',
+                source: 'inline',
+                content: 'services:\n  web:\n    image: nginx\n',
+              },
+            ],
+            hostings: [],
+          },
+          {
+            projectName: 'tp-deploy-test',
+            summary: 'deployed',
+            keptFolders: [
+              { owner: one.login, scope: 'production', kind: 'service', slug: 'old' },
+              // An explicit delete finishes its own way; a kept report does not undo it.
+              { owner: one.login, scope: 'production', kind: 'service', slug: 'deleted' },
+            ],
+          }
+        )
+        assertEquals(await folderStates(ctx.db, ctx.serverId), {
+          'service:old': 'orphan',
+          'service:deleted': 'removing',
+          'service:web': 'present',
+        })
+        // An orphan still locks the environment until someone removes it.
+        assertEquals(await environmentHasFolders(ctx.db, ctx.environmentId), true)
+      }
+    )
+  })
+})
+
+test('processCommandEnvelope compares a reconcile listing with the folder rows and records the host home', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [
+        { owner: 'one', kind: 'service', slug: 'here', state: 'present' },
+        { owner: 'one', kind: 'volume', slug: 'lost', state: 'present' },
+        { owner: 'one', kind: 'volume', slug: 'back', state: 'missing' },
+        { owner: 'one', kind: 'volume', slug: 'leaving', state: 'removing' },
+        { owner: 'one', kind: 'service', slug: 'planned', state: 'planned' },
+        { owner: 'one', kind: 'service', slug: 'kept', state: 'orphan' },
+      ],
+      async ({ one }) => {
+        // The owner belongs to the project, and its environment is named like the scope,
+        // so a folder found with no row can be tied to the environment it sits under.
+        await ctx.db
+          .update(principal)
+          .set({ projectId: ctx.projectId })
+          .where(eq(principal.id, one.id))
+        await ctx.db
+          .update(environment)
+          .set({ name: 'production' })
+          .where(eq(environment.id, ctx.environmentId))
+        await ctx.db.insert(principalPlacement).values({
+          principalId: one.id,
+          serverId: ctx.serverId,
+          state: 'present',
+          home: '/srv/users/old',
+          source: 'manual',
+        })
+        const listed = (kind: 'service' | 'volume', slug: string, scope = 'production') => ({
+          owner: one.login,
+          scope,
+          kind,
+          slug,
+          present: true,
+        })
+        await runSucceededCommand(
+          ctx.db,
+          ctx.serverId,
+          'server.principals.reconcile',
+          { principals: [] },
+          {
+            principalsApplied: 1,
+            keysChanged: [],
+            keysRemoved: [],
+            sshdReloaded: false,
+            sftpChroot: false,
+            principals: [
+              { principalId: one.id, uid: 15001, gid: 15001, home: `/srv/users/${one.login}` },
+            ],
+            folders: [
+              listed('service', 'here'),
+              listed('volume', 'back'),
+              // A folder no row names: recorded, not touched.
+              listed('volume', 'stranger'),
+            ],
+            warnings: [],
+          }
+        )
+        assertEquals(await folderStates(ctx.db, ctx.serverId), {
+          'service:here': 'present',
+          'volume:lost': 'missing',
+          'volume:back': 'present',
+          // Not on the host yet: planned rows wait for their deploy. A removing row and an
+          // orphan the host no longer has are gone.
+          'service:planned': 'planned',
+          'volume:stranger': 'orphan',
+        })
+        const [placement] = await ctx.db
+          .select({ home: principalPlacement.home })
+          .from(principalPlacement)
+          .where(eq(principalPlacement.serverId, ctx.serverId))
+        assertEquals(placement?.home, `/srv/users/${one.login}`)
+        // A missing folder no longer blocks; the orphan does, and says why.
+        const blocking = await listEnvironmentFolders(ctx.db, ctx.environmentId)
+        assertEquals(blocking.folders.map((row) => `${row.slug}:${row.state}`).sort(), [
+          'back:present',
+          'here:present',
+          'planned:planned',
+          'stranger:orphan',
+        ])
+        assertEquals(
+          blocking.folders.find((row) => row.slug === 'stranger')?.reason,
+          'no service or volume owns this folder on server Consumer Test Server'
+        )
+      }
+    )
+  })
+})
+
+test('processCommandEnvelope concludes nothing about folders from a reconcile that sent no listing', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [
+        { owner: 'one', kind: 'volume', slug: 'a', state: 'present' },
+        { owner: 'one', kind: 'volume', slug: 'b', state: 'removing' },
+      ],
+      async () => {
+        await runSucceededCommand(
+          ctx.db,
+          ctx.serverId,
+          'server.principals.reconcile',
+          { principals: [] },
+          {
+            principalsApplied: 0,
+            keysChanged: [],
+            keysRemoved: [],
+            sshdReloaded: false,
+            sftpChroot: false,
+            warnings: ['the folders on this server could not be listed this time'],
+          }
+        )
+        assertEquals(await folderStates(ctx.db, ctx.serverId), {
+          'volume:a': 'present',
+          'volume:b': 'removing',
+        })
+      }
+    )
   })
 })
 

@@ -38,7 +38,10 @@ function createRetentionTx(
     set: (values: unknown) => ({
       where: () => {
         updates.push(values)
-        return Promise.resolve()
+        // `.returning()` hands back the servers whose rows moved.
+        return Object.assign(Promise.resolve(), {
+          returning: () => Promise.resolve([{ serverId: 'srv-1' }, { serverId: 'srv-1' }]),
+        })
       },
     }),
   })) as unknown as RetentionTx['update']
@@ -73,9 +76,10 @@ test('applyStorageRetentionOnParentDelete skips mount delete without serviceIds'
   assertEquals(tx.deletes.length, 1)
 })
 
-test('applyStorageRetentionOnParentDelete marks folders removing before the volumes go', async () => {
+test('applyStorageRetentionOnParentDelete marks folders removing before the volumes go, and names the servers to tell', async () => {
   const tx = createRetentionTx(['vol-1', 'vol-2'])
-  await applyStorageRetentionOnParentDelete(tx, { projectIds: ['proj-1'] })
+  const servers = await applyStorageRetentionOnParentDelete(tx, { projectIds: ['proj-1'] })
+  assertEquals(servers, ['srv-1'])
   assertEquals(tx.updates, [{ state: 'removing' }])
   assertEquals(tx.deletes.length, 1)
 })

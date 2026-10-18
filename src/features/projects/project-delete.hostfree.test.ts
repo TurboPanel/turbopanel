@@ -78,7 +78,10 @@ function createCascadeMockDb(scenario: {
       set: () => ({
         where: () => {
           deletes.push({ table: 'tx-folders-removing', ids: ['tx-batch'] })
-          return Promise.resolve(undefined)
+          // `.returning()` hands back the servers whose rows moved.
+          return Object.assign(Promise.resolve(undefined), {
+            returning: () => Promise.resolve([]),
+          })
         },
       }),
     }),

@@ -28,6 +28,7 @@ import {
 } from '../shared.ts'
 import { respondAfterHierarchyDelete } from '../hierarchy-delete.ts'
 import { FolderPlanError, markAssetFoldersRemoving } from '../../features/folders/allocate.ts'
+import { sendFolderRemovalsAfterDelete } from '../../features/folders/removal.ts'
 import { parseFolderOptions } from '../../features/folders/options.ts'
 import { SCOPE_LOCKED_ERROR, SERVICE_SLUG_LOCKED_ERROR } from '../../features/folders/records.ts'
 import { applyServiceFolderSettings } from '../../features/folders/service-settings.ts'
@@ -314,11 +315,22 @@ export function registerServiceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const uses = await listUsesOfAssets(db, { serviceIds: [id], storageIds })
     if (uses.length > 0) return c.json(inUseBody(uses), 409)
 
-    return respondAfterHierarchyDelete(c, db, async (tx) => {
+    const removing: string[] = []
+    const response = await respondAfterHierarchyDelete(c, db, async (tx) => {
       // The folder rows stay, locked, until the host confirms the folder is gone.
-      await markAssetFoldersRemoving(tx, { serviceIds: [id] })
-      await applyStorageRetentionOnParentDelete(tx, { serviceIds: [id] })
+      removing.push(...(await markAssetFoldersRemoving(tx, { serviceIds: [id] })))
+      removing.push(...(await applyStorageRetentionOnParentDelete(tx, { serviceIds: [id] })))
       await tx.delete(service).where(eq(service.id, id))
     })
+    // Only a delete that went through asks the hosts to remove the files.
+    if (response.ok) {
+      await sendFolderRemovalsAfterDelete(
+        db,
+        c.get('commandQueue'),
+        c.get('session')?.userId,
+        removing
+      )
+    }
+    return response
   })
 }

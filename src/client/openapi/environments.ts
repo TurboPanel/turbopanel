@@ -311,6 +311,12 @@ export const environmentPaths = {
                         serverName: { type: 'string', nullable: true },
                         assetId: { type: 'string', format: 'uuid', nullable: true },
                         assetName: { type: 'string', nullable: true },
+                        reason: {
+                          type: 'string',
+                          nullable: true,
+                          description:
+                            "Plain words for a removing or orphan folder, such as 'being removed, waiting for server Beta to come back'; null for any other state.",
+                        },
                       },
                     },
                   },
