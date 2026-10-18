@@ -221,7 +221,10 @@ export async function reconcileReportedFolders(
     known.add(key)
     // The listing was taken after the command was built: a row changed since
     // (planned again, deployed) may not be in it yet, so it is left for the next one.
-    if (listedAfter !== null && !(Date.parse(row.updatedAt) < listedAfter)) continue
+    if (listedAfter !== null) {
+      const changedAt = Date.parse(row.updatedAt)
+      if (Number.isNaN(changedAt) || changedAt >= listedAfter) continue
+    }
     const found = onHost.has(key)
     if (found && row.state === 'missing') toPresent.push(row.id)
     else if (!found && row.state === 'present') toMissing.push(row.id)

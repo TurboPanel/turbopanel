@@ -318,8 +318,9 @@ export function registerServiceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const removing: string[] = []
     const response = await respondAfterHierarchyDelete(c, db, async (tx) => {
       // The folder rows stay, locked, until the host confirms the folder is gone.
-      removing.push(...(await markAssetFoldersRemoving(tx, { serviceIds: [id] })))
-      removing.push(...(await applyStorageRetentionOnParentDelete(tx, { serviceIds: [id] })))
+      const own = await markAssetFoldersRemoving(tx, { serviceIds: [id] })
+      const volumes = await applyStorageRetentionOnParentDelete(tx, { serviceIds: [id] })
+      removing.push(...own, ...volumes)
       await tx.delete(service).where(eq(service.id, id))
     })
     // Only a delete that went through asks the hosts to remove the files.
