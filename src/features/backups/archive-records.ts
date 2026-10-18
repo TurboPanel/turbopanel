@@ -8,6 +8,7 @@
 import { and, desc, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { archive } from '../../db/schema.ts'
+import { backupRelativePath } from './vocabulary.ts'
 
 export type ArchiveRecord = {
   id: string
@@ -57,7 +58,7 @@ export async function insertArchive(
       copyId: params.copyId,
       sizeBytes: params.sizeBytes,
       checksum: params.checksum,
-      path: params.path,
+      path: backupRelativePath(params.path, 'copy', params.copyId),
       retentionId: params.retentionId ?? null,
       ...(params.createdAt === undefined ? {} : { createdAt: params.createdAt }),
     })

@@ -184,7 +184,11 @@ export const environmentSchemas = {
     type: 'object',
     required: ['projectId'],
     properties: {
-      name: { type: 'string' },
+      name: {
+        type: 'string',
+        description:
+          'Unique within the project: **409** `environment_name_in_use` when another environment of the project has it.',
+      },
       description: { type: 'string' },
       projectId: { type: 'string' },
       serverId: {
@@ -206,7 +210,11 @@ export const environmentSchemas = {
   UpdateEnvironmentRequest: {
     type: 'object',
     properties: {
-      name: { type: 'string' },
+      name: {
+        type: 'string',
+        description:
+          'Unique within the project: **409** `environment_name_in_use` when another environment of the project has it.',
+      },
       description: { type: 'string' },
       serverId: {
         type: ['string', 'null'],

@@ -29,8 +29,8 @@
  * promoting a release means promoting it everywhere, so a release that failed on
  * one of three servers is not a release the operator may be offered.
  *
- * Environment scoping goes through `context->>'environmentId'`, backed by the
- * same partial expression index `idx_command_deploy_environment_created`.
+ * Environment scoping goes through `command.environment_id`, backed by the
+ * same partial index `idx_command_deploy`.
  */
 
 import { and, desc, eq, sql } from 'drizzle-orm'
@@ -136,9 +136,9 @@ function clampLimit(limit: number | undefined): number {
   return Math.min(Math.max(limit ?? SERVICE_RELEASES_DEFAULT_LIMIT, 1), SERVICE_RELEASES_MAX_LIMIT)
 }
 
-/** `context->>'environmentId' = :id` — matches the partial expression index. */
+/** `command.environment_id = :id` — matches the partial index `idx_command_deploy`. */
 function environmentContextFilter(environmentId: string) {
-  return sql`${command.context} ->> 'environmentId' = ${environmentId}`
+  return sql`${command.environmentId} = ${environmentId}`
 }
 
 function contextBag(value: unknown): Record<string, unknown> {

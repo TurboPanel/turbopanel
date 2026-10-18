@@ -6,8 +6,9 @@ import {
   parseDefaultServerIdInput,
   parseProjectOptions,
   resolveContainerNaming,
-  resolveDefaultServerId,
+  mergeProjectDefaultServer,
   resolveEffectivePlacementServerId,
+  splitProjectDefaultServer,
 } from './project-options.ts'
 
 /**
@@ -21,22 +22,17 @@ const test = Deno.test.bind(Deno)
 const SERVER_A = '11111111-1111-4111-8111-111111111111'
 const SERVER_B = '22222222-2222-4222-8222-222222222222'
 
-test('parseProjectOptions reads containerNaming and defaultServerId', () => {
+test('parseProjectOptions reads containerNaming and leaves the default server to its column', () => {
   const options = parseProjectOptions({
     containerNaming: 'custom',
     defaultServerId: SERVER_A,
     compose: { services: {} },
   })
-  assertEquals(options, {
-    containerNaming: 'custom',
-    defaultServerId: SERVER_A,
-  })
+  assertEquals(options, { containerNaming: 'custom' })
 })
 
-test('parseProjectOptions drops invalid containerNaming and defaultServerId', () => {
+test('parseProjectOptions drops invalid containerNaming', () => {
   assertEquals(parseProjectOptions({ containerNaming: 'random' }), {})
-  assertEquals(parseProjectOptions({ defaultServerId: 'not-a-uuid' }), {})
-  assertEquals(parseProjectOptions({ defaultServerId: null }), {})
   assertEquals(parseProjectOptions(null), {})
 })
 
@@ -74,18 +70,29 @@ test('resolveContainerNaming defaults to uuid', () => {
   assertEquals(resolveContainerNaming({ containerNaming: 'custom' }), 'custom')
 })
 
-test('resolveDefaultServerId and effective placement inherit project default', () => {
-  assertEquals(resolveDefaultServerId(undefined), null)
-  assertEquals(resolveDefaultServerId({ defaultServerId: SERVER_A }), SERVER_A)
-  assertEquals(
-    resolveEffectivePlacementServerId(null, { defaultServerId: SERVER_A }),
-    SERVER_A,
-  )
-  assertEquals(
-    resolveEffectivePlacementServerId(SERVER_B, { defaultServerId: SERVER_A }),
-    SERVER_B,
-  )
-  assertEquals(resolveEffectivePlacementServerId(null, {}), null)
+test('effective placement inherits the project default server', () => {
+  assertEquals(resolveEffectivePlacementServerId(null, SERVER_A), SERVER_A)
+  assertEquals(resolveEffectivePlacementServerId(SERVER_B, SERVER_A), SERVER_B)
+  assertEquals(resolveEffectivePlacementServerId(null, null), null)
+  assertEquals(resolveEffectivePlacementServerId(null, undefined), null)
+})
+
+test('the default server moves between options and its column', () => {
+  assertEquals(splitProjectDefaultServer({ compose: 1, defaultServerId: SERVER_A }), {
+    options: { compose: 1 },
+    defaultServerId: SERVER_A,
+  })
+  assertEquals(splitProjectDefaultServer({ compose: 1 }), {
+    options: { compose: 1 },
+    defaultServerId: null,
+  })
+  assertEquals(splitProjectDefaultServer(null), { options: null, defaultServerId: null })
+  assertEquals(mergeProjectDefaultServer({ compose: 1 }, SERVER_A), {
+    compose: 1,
+    defaultServerId: SERVER_A,
+  })
+  assertEquals(mergeProjectDefaultServer({ compose: 1 }, null), { compose: 1 })
+  assertEquals(mergeProjectDefaultServer(null, SERVER_A), { defaultServerId: SERVER_A })
 })
 
 test('parseComposeSourceInput rejects rather than silently dropping', async () => {

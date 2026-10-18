@@ -52,7 +52,7 @@ test('a daemon services report is stored on the server and served per service', 
     .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ name: 'Run State Env', projectId: proj!.id })
+    .values({ name: 'run-state-env', projectId: proj!.id })
     .returning({ id: environment.id })
   const environmentId = env!.id
   const [web] = await db

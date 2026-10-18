@@ -102,7 +102,7 @@ async function withManagedAllocationFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Managed Allocate Env',
+      name: 'managed-allocate-env',
       projectId,
     })
     .returning({ id: environment.id })
@@ -190,7 +190,7 @@ async function withManagedApplyPrepareFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Production',
+      name: 'production',
       projectId,
       serverId,
     })

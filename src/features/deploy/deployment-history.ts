@@ -9,10 +9,8 @@
  * `queued_at…finished_at`, `status`, actor attribution, and the non-secret
  * `context` bag (`environmentId`, `generation`, `desiredHash`, `replicaCounts`).
  *
- * Environment scoping therefore goes through `context->>'environmentId'`,
- * backed by the partial expression index `idx_command_deploy_environment_created`
- * — deliberately not a denormalized `command.environment_id` column, which
- * would duplicate state the context allowlist already carries.
+ * Environment scoping therefore goes through `command.environment_id`, backed
+ * by the partial index `idx_command_deploy`.
  */
 
 import { and, desc, eq, lt, sql } from 'drizzle-orm'
@@ -257,9 +255,9 @@ function clampLimit(limit: number | undefined): number {
   )
 }
 
-/** `context->>'environmentId' = :id` — matches the partial expression index. */
+/** `command.environment_id = :id` — matches the partial index `idx_command_deploy`. */
 function environmentContextFilter(environmentId: string) {
-  return sql`${command.context} ->> 'environmentId' = ${environmentId}`
+  return sql`${command.environmentId} = ${environmentId}`
 }
 
 /**

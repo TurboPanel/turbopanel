@@ -448,7 +448,7 @@ async function makeStoppedEnvironment(db: Db, organizationId: string, label: str
     .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ projectId: proj!.id, name: `Step-up Environment ${label}` })
+    .values({ projectId: proj!.id, name: `step-up-${label}` })
     .returning({ id: environment.id })
   return { workspaceId: ws!.id, projectId: proj!.id, environmentId: env!.id }
 }

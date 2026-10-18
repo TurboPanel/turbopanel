@@ -93,7 +93,7 @@ async function withManagedFixture(
     .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ name: 'Production', projectId: proj!.id, serverId: srv!.id })
+    .values({ name: 'production', projectId: proj!.id, serverId: srv!.id })
     .returning({ id: environment.id })
   const [svc] = await db
     .insert(service)

@@ -382,7 +382,7 @@ test('listVisible returns variable ids for org owner', async () => {
 
     const [insertedEnvironment] = await db
       .insert(environment)
-      .values({ name: 'Evaluator Variables Env', projectId })
+      .values({ name: 'evaluator-variables-env', projectId })
       .returning({ id: environment.id })
 
     const environmentId = insertedEnvironment!.id
@@ -431,7 +431,7 @@ test('organization grant allows can() on managed and variable entities', async (
 
     const [insertedEnvironment] = await db
       .insert(environment)
-      .values({ name: 'Evaluator Test Env', projectId })
+      .values({ name: 'evaluator-test-env', projectId })
       .returning({ id: environment.id })
 
     const environmentId = insertedEnvironment!.id

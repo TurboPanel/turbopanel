@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -76,6 +76,8 @@ import {
   stampNewEnvironmentDeployOptions,
 } from '../../features/deploy/deploy-options.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { splitProjectDefaultServer } from '../../features/projects/project-options.ts'
+import { syncProjectWatch } from '../../features/git/watch-records.ts'
 import {
   allocateProjectSlug,
   PROJECT_SLUG_IN_USE_ERROR,
@@ -452,6 +454,8 @@ type ProjectPatchFields = {
   description?: string | null
   repositoryId?: string | null
   options?: Record<string, unknown> | null
+  /** The default placement server, kept in its own column (the API carries it in `options`). */
+  defaultServerId?: string | null
   workspaceId?: string
   updatedAt: string
 }
@@ -659,6 +663,7 @@ async function insertDockerComposeProject(
 ): Promise<string> {
   const compose =
     fields.options && 'compose' in fields.options ? fields.options.compose : emptyComposeDocument()
+  const stored = splitProjectDefaultServer(fields.options ?? { compose })
   const [inserted] = await tx
     .insert(project)
     .values({
@@ -670,9 +675,11 @@ async function insertDockerComposeProject(
       metadata: stampCreateProjectMetadata(fields.metadata, {
         type: 'docker-compose',
       }),
-      options: fields.options ?? { compose },
+      options: stored.options,
+      defaultServerId: stored.defaultServerId,
     })
     .returning({ id: project.id })
+  await syncProjectWatch(tx, inserted.id)
   await tx.insert(environment).values({
     projectId: inserted.id,
     name: fields.defaultEnvironmentName,
@@ -700,6 +707,7 @@ async function insertCatalogProject(
   }
 ): Promise<string> {
   const isEngine = fields.projectType === 'managed' && isManagedEngineCatalogEntry(fields.entry)
+  const stored = splitProjectDefaultServer(catalogProjectOptions(fields, isEngine))
 
   const [inserted] = await tx
     .insert(project)
@@ -713,7 +721,8 @@ async function insertCatalogProject(
         type: fields.projectType,
         ...(isEngine ? { code: fields.entry.code } : {}),
       }),
-      options: catalogProjectOptions(fields, isEngine),
+      options: stored.options,
+      defaultServerId: stored.defaultServerId,
     })
     .returning({ id: project.id })
 
@@ -936,9 +945,22 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     if (defaultServerError) return defaultServerError
     await keepStoredProjectDeployOptions(db, id, patchFields)
+    if (patchFields.options !== undefined) {
+      const stored = splitProjectDefaultServer(patchFields.options)
+      patchFields.options = stored.options
+      patchFields.defaultServerId = stored.defaultServerId
+    }
 
     try {
-      await db.update(project).set(patchFields).where(eq(project.id, id))
+      // The options write and the watch rows it implies commit together, under
+      // the project row lock.
+      await db.transaction(async (tx) => {
+        if (patchFields.options !== undefined) {
+          await tx.execute(sql`SELECT 1 FROM "project" WHERE "id" = ${id}::uuid FOR UPDATE`)
+        }
+        await tx.update(project).set(patchFields).where(eq(project.id, id))
+        if (patchFields.options !== undefined) await syncProjectWatch(tx, id)
+      })
     } catch (err) {
       if (isProjectNameUniqueViolation(err)) {
         return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)

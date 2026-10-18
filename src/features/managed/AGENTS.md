@@ -287,7 +287,7 @@ Who can connect from outside the server is **not** a cluster setting. One
 ProxySQL runs per server and fronts every cluster on it with one listener pair
 and no per-user source rule, so "allow external access to the databases on this
 server" is one yes/no on the server, default **no**
-(`server.options.managedExternalAccess = { enabled, pendingSince? }`, parsed by
+(`server.options.managedExternalAccess = { enabled }` plus the column `server.external_access_pending_at`, parsed by
 `external-access-setting.ts`, used through `external-access.ts`). A leftover
 per-cluster `exposure` key in an old stored row is ignored. The old four-way
 scope menu (`local | datacenter | turbofabric | public`) is gone; address detail
@@ -364,10 +364,10 @@ cluster to front still takes the `not_needed` / teardown path). The wire
 contract is unchanged; the IPv6 publish lands on the server's next ingress
 reconcile after its daemon updates. Changes go through `PUT /servers/:id/managed-external-access`
 (`client/managed/external-access-routes.ts`, org owners and managers): it saves
-the setting, marks `pendingSince`, and queues the ingress reconcile at once; a
+the setting, sets `external_access_pending_at`, and queues the ingress reconcile at once; a
 push that cannot be queued answers 502 `ingress_reconcile_failed` (saved, not
 applied). Every PUT is audited as `server.managed_external_access.update` with
-`{ enabled }` only. `pendingSince` clears (one conditional UPDATE that never writes `enabled`, so a
+`{ enabled }` only. `external_access_pending_at` clears (one conditional UPDATE that never writes `enabled`, so a
 newer PUT is never reverted) when the server confirms a reconcile created
 after the ask (`consumer.ts` → `confirmManagedExternalAccessForServer`), and
 `runManagedExternalAccessPendingSweep` re-sends it to connected servers that

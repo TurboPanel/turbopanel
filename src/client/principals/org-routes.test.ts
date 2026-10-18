@@ -114,7 +114,7 @@ async function withFixtures(
     .insert(environment)
     .values({
       projectId: proj!.id,
-      name: 'Production',
+      name: 'production',
       serverId: servers[0]!.id,
       createdAt: now,
       updatedAt: now,

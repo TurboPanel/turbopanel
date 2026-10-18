@@ -41,6 +41,15 @@ const activeKey: ServerDaemonKey = {
   lastUsedAt: null,
 }
 
+/** The promoted projection columns are reset together with `daemon`. */
+function assertClearedProjectionColumns(updates: Array<Record<string, unknown>>): void {
+  const patch = updates.find((entry) => 'daemon' in entry)
+  assertEquals(patch?.offlineReason, null)
+  assertEquals(patch?.daemonCommit, null)
+  assertEquals(patch?.daemonBuiltAt, null)
+  assertEquals(patch?.daemonUpdateStatus, null)
+}
+
 function limitResult<T>(rows: T[]) {
   return { limit: () => Promise.resolve(rows) }
 }
@@ -62,12 +71,8 @@ type IdentityFake = {
 }
 
 /** `null` simulates a server with no key row (not enrolled). */
-function createIdentityFakeDb(
-  initialKey: ServerDaemonKey | null = activeKey,
-): IdentityFake {
-  let key: ServerDaemonKey | null = initialKey
-    ? structuredClone(initialKey)
-    : null
+function createIdentityFakeDb(initialKey: ServerDaemonKey | null = activeKey): IdentityFake {
+  let key: ServerDaemonKey | null = initialKey ? structuredClone(initialKey) : null
   const serverRow: ServerRow = {
     daemon: null,
     hostname: 'host-1',
@@ -80,17 +85,19 @@ function createIdentityFakeDb(
 
   function joinedRow() {
     if (!key) return []
-    return [{
-      id: key.id,
-      algorithm: key.algorithm,
-      publicJwk: key.publicJwk,
-      fingerprint: key.fingerprint,
-      createdAt: key.createdAt,
-      revokedAt: key.revokedAt ?? null,
-      lastUsedAt: key.lastUsedAt ?? null,
-      serverId: SERVER_ID,
-      ...serverRow,
-    }]
+    return [
+      {
+        id: key.id,
+        algorithm: key.algorithm,
+        publicJwk: key.publicJwk,
+        fingerprint: key.fingerprint,
+        createdAt: key.createdAt,
+        revokedAt: key.revokedAt ?? null,
+        lastUsedAt: key.lastUsedAt ?? null,
+        serverId: SERVER_ID,
+        ...serverRow,
+      },
+    ]
   }
 
   const db = {
@@ -108,9 +115,10 @@ function createIdentityFakeDb(
             // The real `set.id` is a `sql\`uuidv7()\`` fragment, always
             // present — re-enrollment always mints a new id, never an edit
             // of the old row.
-            const createdAt = typeof opts.set.createdAt === 'string'
-              ? opts.set.createdAt
-              : key?.createdAt ?? '2020-01-01T00:00:00.000Z'
+            const createdAt =
+              typeof opts.set.createdAt === 'string'
+                ? opts.set.createdAt
+                : (key?.createdAt ?? '2020-01-01T00:00:00.000Z')
             key = {
               id: `key-${crypto.randomUUID()}`,
               algorithm: (opts.set.algorithm ?? values.algorithm) as 'Ed25519',
@@ -217,6 +225,7 @@ test('attachDaemonStateToServer inserts the key row and writes default status co
   assertEquals(fake.getServerRow().connected, false)
   // Re-enrollment always clears projection too — a full replace, not a merge.
   assertEquals(fake.getServerRow().daemon, null)
+  assertClearedProjectionColumns(fake.getUpdates())
 })
 
 test('attachDaemonStateToServer mints a new key id and clears revocation on re-enroll', async () => {
@@ -260,7 +269,7 @@ test('attachDaemonStateToServer throws when the server row is missing', async ()
         fingerprint: 'fp',
       }),
     Error,
-    'server row missing for enroll attach',
+    'server row missing for enroll attach'
   )
 })
 
@@ -285,4 +294,5 @@ test('clearServerDaemonState deletes the key row and resets server status column
   assertEquals(fake.getKey(), null)
   assertEquals(fake.getServerRow().daemon, null)
   assertEquals(fake.getServerRow().connected, false)
+  assertClearedProjectionColumns(fake.getUpdates())
 })

@@ -59,7 +59,7 @@ type PlanDeployDbOpts = {
     options: unknown
     name: string | null
   } | null
-  project?: { id: string; options: unknown } | null
+  project?: { id: string; options: unknown; defaultServerId?: string | null } | null
   services?: Array<{ id: string; composeServiceName: string; options: unknown }>
   fabric?: { id: string } | null
   servers?: Array<{
@@ -369,10 +369,8 @@ test('planEnvironmentDeploy registers volumes/mounts and plans with pin + fabric
       },
       project: {
         id: PROJECT_ID,
-        options: {
-          compose,
-          defaultServerId: SERVER_B,
-        },
+        options: { compose },
+        defaultServerId: SERVER_B,
       },
       services: [{ id: SERVICE_WEB, composeServiceName: 'web', options: null }],
       fabric: { id: FABRIC_ID },
@@ -468,10 +466,8 @@ test('planEnvironmentDeploy uses project defaultServerId for register when env h
       },
       project: {
         id: PROJECT_ID,
-        options: {
-          compose: emptyComposeDocument(),
-          defaultServerId: SERVER_B,
-        },
+        options: { compose: emptyComposeDocument() },
+        defaultServerId: SERVER_B,
       },
       services: [],
       servers: [{ id: SERVER_B, connected: true }],

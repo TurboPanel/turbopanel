@@ -859,7 +859,7 @@ async function withManagedDestroyFixtures(
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Production',
+        name: 'production',
       })
       .returning({ id: environment.id })
     const [managedRow] = await db
@@ -1084,7 +1084,7 @@ test('processCommandEnvelope reconciles containers on environment.lifecycle succ
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Production',
+        name: 'production',
       })
       .returning({ id: environment.id })
     const environmentId = environmentRow!.id
@@ -1191,7 +1191,7 @@ test('processCommandEnvelope skips reconcile when environment.lifecycle omits co
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Production',
+        name: 'production',
       })
       .returning({ id: environment.id })
     const environmentId = environmentRow!.id
@@ -1290,7 +1290,7 @@ test('processCommandEnvelope reconciles containers on system.reconcile success',
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Hosting Ingress',
+        name: 'hosting-ingress',
         metadata: { component: 'hosting-ingress' },
       })
       .returning({ id: environment.id })
@@ -1416,7 +1416,7 @@ test('processCommandEnvelope skips reconcile when system.reconcile omits contain
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Hosting Ingress',
+        name: 'hosting-ingress',
         metadata: { component: 'hosting-ingress' },
       })
       .returning({ id: environment.id })
@@ -1521,7 +1521,7 @@ test('processCommandEnvelope clears pins when system.reconcile reports empty con
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Hosting Ingress',
+        name: 'hosting-ingress',
         metadata: { component: 'hosting-ingress' },
       })
       .returning({ id: environment.id })
@@ -1636,7 +1636,7 @@ test('processCommandEnvelope reconciles containers on managed.ingress.reconcile 
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Managed Ingress',
+        name: 'managed-ingress',
       })
       .returning({ id: environment.id })
     const environmentId = environmentRow!.id
@@ -1759,7 +1759,7 @@ test('processCommandEnvelope clears pins when managed.ingress.reconcile reports 
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Managed Ingress',
+        name: 'managed-ingress',
       })
       .returning({ id: environment.id })
     const environmentId = environmentRow!.id
@@ -1869,7 +1869,7 @@ test('processCommandEnvelope maps a labelled self-host system.reconcile report o
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Production',
+        name: 'production',
         metadata: { component: 'turbopanel' },
       })
       .returning({ id: environment.id })
@@ -2001,7 +2001,7 @@ test('processCommandEnvelope leaves a missing self-host system container exited 
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Production',
+        name: 'production',
         metadata: { component: 'turbopanel' },
       })
       .returning({ id: environment.id })
@@ -2117,7 +2117,7 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Production',
+        name: 'production',
       })
       .returning({ id: environment.id })
     const environmentId = environmentRow!.id
@@ -2351,7 +2351,7 @@ async function withDeployFixtures(
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Production',
+        name: 'production',
       })
       .returning({ id: environment.id })
     const environmentId = environmentRow!.id
@@ -5491,7 +5491,7 @@ async function withPromoteConsumerFixtures(
         .values({
           projectId: managedProjectRow!.id,
           serverId,
-          name: 'Production',
+          name: 'production',
         })
         .returning({ id: environment.id })
       const [managedRow] = await db
@@ -5583,7 +5583,7 @@ async function withPromoteConsumerFixtures(
         .values({
           projectId: consumerProjectRow!.id,
           serverId: consumerServerId,
-          name: 'Production',
+          name: 'production',
         })
         .returning({ id: environment.id })
       const [consumerServiceRow] = await db

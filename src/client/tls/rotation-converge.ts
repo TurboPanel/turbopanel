@@ -222,7 +222,7 @@ async function findRotationApplyCommand(
       and(
         eq(command.name, 'managed.apply'),
         eq(command.serverId, params.serverId),
-        sql`${command.context}->>'managedId' = ${params.managedId}`,
+        eq(command.managedId, params.managedId),
         sql`${command.createdAt} >= ${params.rotationStartedAt}`
       )
     )

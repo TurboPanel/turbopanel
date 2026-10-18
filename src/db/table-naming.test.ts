@@ -119,6 +119,7 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'user',
   'variable',
   'verification',
+  'watch',
   'workspace',
 ])
 

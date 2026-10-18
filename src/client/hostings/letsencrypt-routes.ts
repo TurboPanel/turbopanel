@@ -7,7 +7,7 @@
  *   the certificate, so a pinned answer carries `needsDeploy: true`.
  * - `GET /hostings/:id/dns-check` - the same DNS check, read-only.
  */
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import type { Context, Hono, MiddlewareHandler } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -80,7 +80,26 @@ function enrichHostingReads(now: () => Date): MiddlewareHandler<AppEnv> {
     const single = body.hosting
     const list = body.hostings
     const rows = (Array.isArray(list) ? list : [single]).filter(isHostingReadRow)
-    const certificates = await loadHostingCertificates(db, orgResult, rows, now())
+    // The hosting reads do not carry `pending_at`; the waiting request is read here.
+    const pendingRows =
+      rows.length === 0
+        ? []
+        : await db
+            .select({ id: hosting.id, pendingAt: hosting.pendingAt })
+            .from(hosting)
+            .where(
+              inArray(
+                hosting.id,
+                rows.map((row) => row.id)
+              )
+            )
+    const pendingById = new Map(pendingRows.map((row) => [row.id, row.pendingAt]))
+    const certificates = await loadHostingCertificates(
+      db,
+      orgResult,
+      rows.map((row) => ({ ...row, pendingAt: pendingById.get(row.id) ?? null })),
+      now()
+    )
     const withCertificate = (row: HostingReadRow) => ({
       ...row,
       certificate: certificates.get(row.id) ?? null,
@@ -150,6 +169,7 @@ export function registerHostingLetsEncryptRoutes(
         tlsId: hosting.tlsId,
         options: hosting.options,
         metadata: hosting.metadata,
+        pendingAt: hosting.pendingAt,
       })
       .from(hosting)
       .where(eq(hosting.id, id))
@@ -192,6 +212,7 @@ export function registerHostingLetsEncryptRoutes(
         tlsId: hosting.tlsId,
         options: hosting.options,
         metadata: hosting.metadata,
+        pendingAt: hosting.pendingAt,
         updatedAt: hosting.updatedAt,
       })
       .from(hosting)
@@ -228,6 +249,7 @@ export function registerHostingLetsEncryptRoutes(
         options: hosting.options,
         tlsId: hosting.tlsId,
         metadata: hosting.metadata,
+        pendingAt: hosting.pendingAt,
       })
       .from(hosting)
       .where(eq(hosting.id, id))

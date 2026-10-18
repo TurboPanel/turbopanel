@@ -36,7 +36,7 @@ function report(overrides: Record<string, unknown> = {}): Record<string, unknown
     backupId: 'bk_0123456789abcdef',
     sizeBytes: 1024,
     checksum: 'f'.repeat(64),
-    path: '/backup/x/policy-y/bk_0123456789abcdef.dump',
+    path: 'managed/x/policy-y/bk_0123456789abcdef.dump',
     pruned: ['bk_old'],
     nextRunAt: '2026-10-01T03:00:00.000Z',
     at: '2026-09-30T03:00:06.000Z',

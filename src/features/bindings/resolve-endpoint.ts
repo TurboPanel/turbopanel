@@ -35,10 +35,7 @@ import {
 } from '../managed/ingress-ports.ts'
 import type { PrivateEndpointError } from '../net/private-endpoint.ts'
 import { parseOrganizationOptions } from '../organizations/organization-options.ts'
-import {
-  parseProjectOptions,
-  resolveEffectivePlacementServerId,
-} from '../projects/project-options.ts'
+import { resolveEffectivePlacementServerId } from '../projects/project-options.ts'
 import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 import { isPrivateEndpointError } from '../net/private-endpoint.ts'
 
@@ -74,7 +71,7 @@ export async function loadServicePlacementServerId(
   const [row] = await db
     .select({
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
     })
     .from(service)
     .innerJoin(environment, eq(service.environmentId, environment.id))
@@ -82,10 +79,7 @@ export async function loadServicePlacementServerId(
     .where(eq(service.id, serviceId))
     .limit(1)
   if (!row) return null
-  return resolveEffectivePlacementServerId(
-    row.environmentServerId,
-    parseProjectOptions(row.projectOptions)
-  )
+  return resolveEffectivePlacementServerId(row.environmentServerId, row.projectDefaultServerId)
 }
 
 async function loadClusterMembers(
@@ -247,7 +241,7 @@ export async function consumerServerIdsForManaged(db: Db, managedId: string): Pr
   const rows = await db
     .select({
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
       taskServerId: slot.serverId,
     })
     .from(binding)
@@ -262,7 +256,7 @@ export async function consumerServerIdsForManaged(db: Db, managedId: string): Pr
   for (const row of rows) {
     const placement = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions)
+      row.projectDefaultServerId
     )
     if (placement) ids.add(placement)
     if (row.taskServerId) ids.add(row.taskServerId)

@@ -259,7 +259,7 @@ test('GET /servers/:id/services lists a container app and a database replica', a
     const [appEnv] = await ctx.db
       .insert(environment)
       .values({
-        name: 'Production',
+        name: 'production',
         projectId: appProject!.id,
         serverId: ctx.serverId,
       })
@@ -293,7 +293,7 @@ test('GET /servers/:id/services lists a container app and a database replica', a
     const [dbEnv] = await ctx.db
       .insert(environment)
       .values({
-        name: 'Production',
+        name: 'production',
         projectId: dbProject!.id,
         serverId: ctx.serverId,
       })
@@ -342,7 +342,7 @@ test('GET /servers/:id/services lists a container app and a database replica', a
           kind: 'environment',
           count: 2,
           message:
-            'App environments "Data / Production" and "Shop / Production" are still placed on this server.',
+            'App environments "Data / production" and "Shop / production" are still placed on this server.',
         },
         {
           kind: 'managed',
@@ -360,8 +360,8 @@ test('GET /servers/:id/services lists a container app and a database replica', a
         hasDatabase: 'hasDatabase' in row ? row.hasDatabase : null,
       })),
       [
-        { name: 'Production', projectName: 'Data', hasDatabase: true },
-        { name: 'Production', projectName: 'Shop', hasDatabase: false },
+        { name: 'production', projectName: 'Data', hasDatabase: true },
+        { name: 'production', projectName: 'Shop', hasDatabase: false },
       ]
     )
     assertEquals(body.apps, {
@@ -370,7 +370,7 @@ test('GET /servers/:id/services lists a container app and a database replica', a
           serviceId: web!.id,
           name: 'web',
           project: 'Shop',
-          environment: 'Production',
+          environment: 'production',
           containers: {
             items: [{ name: 'shop-web-1', status: 'running', role: 'service' }],
             more: 0,
@@ -418,7 +418,7 @@ test('GET /servers/:id/services omits system-workspace apps and databases', asyn
     const [sysEnv] = await ctx.db
       .insert(environment)
       .values({
-        name: 'Production',
+        name: 'production',
         projectId: sysProject!.id,
         serverId: ctx.serverId,
       })
@@ -487,7 +487,7 @@ test('GET /servers/:id/services groups two database bindings on one app', async 
     const [appEnv] = await ctx.db
       .insert(environment)
       .values({
-        name: 'Production',
+        name: 'production',
         projectId: appProject!.id,
         serverId: ctx.serverId,
       })
@@ -520,7 +520,7 @@ test('GET /servers/:id/services groups two database bindings on one app', async 
     const [dbEnv] = await ctx.db
       .insert(environment)
       .values({
-        name: 'Production',
+        name: 'production',
         projectId: dbProject!.id,
         serverId: ctx.serverId,
       })
@@ -611,7 +611,7 @@ test('GET /servers/:id/services caps networks and offers Host is gone when the h
     const [appEnv] = await ctx.db
       .insert(environment)
       .values({
-        name: 'Production',
+        name: 'production',
         projectId: appProject!.id,
       })
       .returning({ id: environment.id })

@@ -169,7 +169,7 @@ export async function environmentHasRunningCommand(
       and(
         inArray(command.name, ['environment.deploy', 'environment.lifecycle', 'environment.stop']),
         notInArray(command.status, [...TERMINAL_COMMAND_STATUSES]),
-        sql`${command.context} ->> 'environmentId' = ${environmentId}`
+        eq(command.environmentId, environmentId)
       )
     )
     .limit(1)

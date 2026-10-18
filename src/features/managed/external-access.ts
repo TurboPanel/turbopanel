@@ -24,7 +24,7 @@
  * Out of scope here, on purpose: per-login source restrictions.
  */
 
-import { and, eq, gte, inArray, sql } from 'drizzle-orm'
+import { and, eq, gte, inArray, isNotNull, lte, sql } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
 import { command, managed, replica, server } from '../../db/schema.ts'
@@ -54,20 +54,20 @@ export {
   readManagedExternalAccess,
 } from './external-access-setting.ts'
 
-async function loadServerOptions(db: Db, serverId: string): Promise<unknown> {
+async function loadServerSetting(db: Db, serverId: string): Promise<ManagedExternalAccess> {
   const [row] = await db
-    .select({ options: server.options })
+    .select({ options: server.options, pendingAt: server.externalAccessPendingAt })
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1)
-  return row?.options
+  return readManagedExternalAccess(row?.options, row?.pendingAt)
 }
 
 export async function loadManagedExternalAccess(
   db: Db,
   serverId: string
 ): Promise<ManagedExternalAccess> {
-  return readManagedExternalAccess(await loadServerOptions(db, serverId))
+  return await loadServerSetting(db, serverId)
 }
 
 async function writeManagedExternalAccess(
@@ -79,8 +79,9 @@ async function writeManagedExternalAccess(
     .update(server)
     .set({
       options: sql`COALESCE(${server.options}, '{}'::jsonb) || ${JSON.stringify({
-        [MANAGED_EXTERNAL_ACCESS_KEY]: setting,
+        [MANAGED_EXTERNAL_ACCESS_KEY]: { enabled: setting.enabled },
       })}::jsonb`,
+      externalAccessPendingAt: setting.pendingSince ?? null,
       updatedAt: new Date().toISOString(),
     })
     .where(eq(server.id, serverId))
@@ -112,17 +113,14 @@ export async function clearManagedExternalAccessPendingThrough(
   serverId: string,
   through: string
 ): Promise<void> {
-  const setting = sql`${server.options} -> ${MANAGED_EXTERNAL_ACCESS_KEY}`
   await db
     .update(server)
-    .set({
-      options: sql`jsonb_set(${server.options}, ARRAY[${MANAGED_EXTERNAL_ACCESS_KEY}]::text[], (${setting}) - 'pendingSince')`,
-    })
+    .set({ externalAccessPendingAt: null })
     .where(
       and(
         eq(server.id, serverId),
-        sql`(${setting} ->> 'pendingSince') IS NOT NULL`,
-        sql`((${setting} ->> 'pendingSince')::timestamptz) <= ${through}::timestamptz`
+        isNotNull(server.externalAccessPendingAt),
+        lte(server.externalAccessPendingAt, through)
       )
     )
 }
@@ -247,13 +245,14 @@ export async function loadFrontendServerSettings(
       name: server.name,
       hostname: server.hostname,
       options: server.options,
+      pendingAt: server.externalAccessPendingAt,
     })
     .from(server)
     .where(inArray(server.id, serverIds))
   return rows.map((row) => ({
     id: row.id,
     name: row.name || row.hostname || row.id,
-    setting: readManagedExternalAccess(row.options),
+    setting: readManagedExternalAccess(row.options, row.pendingAt),
   }))
 }
 
@@ -320,15 +319,10 @@ export async function runManagedExternalAccessPendingSweep(
   const connected = await db
     .select({
       id: server.id,
-      pendingSince: sql<string>`${server.options} -> ${MANAGED_EXTERNAL_ACCESS_KEY} ->> 'pendingSince'`,
+      pendingSince: server.externalAccessPendingAt,
     })
     .from(server)
-    .where(
-      and(
-        eq(server.isConnected, true),
-        sql`${server.options} -> ${MANAGED_EXTERNAL_ACCESS_KEY} -> 'pendingSince' IS NOT NULL`
-      )
-    )
+    .where(and(eq(server.isConnected, true), isNotNull(server.externalAccessPendingAt)))
   if (connected.length === 0) return { enqueued: 0 }
 
   const cutoff = new Date(Date.now() - INGRESS_RECONCILE_VALID_MS).toISOString()
@@ -351,6 +345,7 @@ export async function runManagedExternalAccessPendingSweep(
   await forEachSequential(
     connected.filter((row) => !busy.has(row.id)),
     async ({ id, pendingSince }) => {
+      if (!pendingSince) return
       const result = await enqueueManagedIngressReconcile(db, commandQueue, {
         serverId: id,
         actorType: 'system',

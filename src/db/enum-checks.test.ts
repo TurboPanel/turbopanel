@@ -32,6 +32,11 @@ import {
   LOGIN_GRANT_MODES,
 } from '../features/managed/logins.ts'
 import { PRINCIPAL_NAME_SCHEMES } from '../lib/principal-name-scheme.ts'
+import { SERVER_MACHINE_CLASS_SOURCES } from '../contracts/capability-plan.ts'
+import {
+  SERVER_DAEMON_UPDATE_STATUSES,
+  SERVER_OFFLINE_REASONS,
+} from '../features/servers/daemon-state.ts'
 import {
   FIREWALL_MODES,
   FIREWALL_RULE_ACTIONS,
@@ -104,6 +109,7 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['upgrade_status_check', UPGRADE_STATUSES],
   ['upgrade_phase_check', UPGRADE_PHASES],
   ['stage_unit_check', UPGRADE_STEP_UNITS],
+  ['stage_phase_check', UPGRADE_PHASES],
   ['retention_target_kind_check', BACKUP_TARGET_KINDS],
   ['snapshot_status_check', BACKUP_RUN_STATUSES],
   ['edict_scope_check', FIREWALL_RULE_SCOPES],
@@ -114,6 +120,9 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['bulwark_state_check', FIREWALL_STATES],
   ['stage_status_check', UPGRADE_STEP_STATUSES],
   ['login_role_check', DATABASE_LOGIN_ROLES],
+  ['server_machine_class_source_check', SERVER_MACHINE_CLASS_SOURCES],
+  ['server_offline_reason_check', SERVER_OFFLINE_REASONS],
+  ['server_daemon_update_status_check', SERVER_DAEMON_UPDATE_STATUSES],
   ['login_grant_mode_check', LOGIN_GRANT_MODES],
   ['login_access_check', LOGIN_CONNECTION_ROLES],
   ['login_name_scheme_check', PRINCIPAL_NAME_SCHEMES],

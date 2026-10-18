@@ -110,7 +110,6 @@ const STORAGE_SELECT = {
   name: storage.name,
   accessMode: storage.accessMode,
   retention: storage.retention,
-  generation: storage.generation,
   principalId: storage.principalId,
   // Applied login — storage paths live under /srv/users/<applied>/volumes.
   principalUsername: principal.appliedUsername,
@@ -132,7 +131,6 @@ const COPY_SELECT = {
   state: storageCopy.state,
   path: storageCopy.path,
   endpoint: storageCopy.endpoint,
-  generation: storageCopy.generation,
   metadata: storageCopy.metadata,
   options: storageCopy.options,
   createdAt: storageCopy.createdAt,
@@ -248,7 +246,6 @@ async function loadStorageChildren(db: StorageDb, storageIds: string[]) {
       state: string
       path: string | null
       endpoint: string | null
-      generation: number
       metadata: unknown
       options: unknown
       createdAt: string

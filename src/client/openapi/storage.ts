@@ -54,7 +54,6 @@ export const storageSchemas = {
       state: { $ref: '#/components/schemas/CopyState' },
       path: { type: ['string', 'null'] },
       endpoint: { type: ['string', 'null'] },
-      generation: { type: 'integer' },
       resolvedSourcePath: {
         type: ['string', 'null'],
         description: 'Explicit path, else principal volume path for path copies, else null',
@@ -103,7 +102,6 @@ export const storageSchemas = {
       name: { type: 'string' },
       accessMode: { $ref: '#/components/schemas/StorageAccessMode' },
       retention: { $ref: '#/components/schemas/StorageRetention' },
-      generation: { type: 'integer' },
       principalId: { type: ['string', 'null'] },
       slug: {
         type: ['string', 'null'],

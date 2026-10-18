@@ -26,7 +26,6 @@ import {
   mergeComposeLayers,
   validateComposeForDeploy,
 } from '../compose/index.ts'
-import { parseProjectOptions } from '../projects/project-options.ts'
 import {
   parseOrganizationOptions,
   resolveComposeGatedFieldsEnabled,
@@ -358,6 +357,7 @@ export async function planEnvironmentDeploy(
     .select({
       id: project.id,
       options: project.options,
+      defaultServerId: project.defaultServerId,
     })
     .from(project)
     .where(eq(project.id, envRow.projectId))
@@ -425,9 +425,8 @@ export async function planEnvironmentDeploy(
 
   const existingTasks = await listTasks(db, params.environmentId)
   const fleet = await loadFleet(db, params.organizationId, listLabels)
-  const projectOptions = parseProjectOptions(projectRow.options)
   const pinServerId = envRow.serverId
-  const defaultServerId = projectOptions.defaultServerId ?? null
+  const defaultServerId = projectRow.defaultServerId ?? null
   const registerServerId = pinServerId ?? defaultServerId
   if (registerServerId) {
     await registerVolumes(db, {

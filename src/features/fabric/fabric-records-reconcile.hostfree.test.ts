@@ -208,7 +208,6 @@ type SegmentRow = {
   networkId: string
   serverId: string
   cidr: string
-  options: unknown
 }
 type IpRow = {
   ipId?: string
@@ -515,7 +514,6 @@ test('loadFabricReconcileSnapshot batches relays PSK envelopes segments and cach
         networkId: 'net-compose-a',
         serverId: 'srv-1',
         cidr: '10.192.10.0/24',
-        options: { gateway: '10.192.10.1' },
       },
     ],
   })
@@ -528,7 +526,6 @@ test('loadFabricReconcileSnapshot batches relays PSK envelopes segments and cach
   assertEquals(snapshot.sealedPresharedKeyByRelayId.get('r2'), null)
   assertEquals(snapshot.segmentsByServer.get('srv-1')?.length, 1)
   assertEquals(snapshot.segmentsByServer.get('srv-1')?.[0]?.name, 'tpn_net-compose-a')
-  assertEquals(snapshot.segmentsByServer.get('srv-1')?.[0]?.gateway, '10.192.10.1')
   assertEquals(snapshot.segmentsByServer.get('srv-2')?.length, 0)
   assertEquals(snapshot.caches.publicAddressByServer.get('srv-2'), '203.0.113.99')
   assertEquals(snapshot.caches.datacenterMembershipsByServer.size, 0)
@@ -1685,14 +1682,12 @@ test('deleteServerFabricMembership removes relay and segments for one server', a
         networkId: 'net-a',
         serverId: 'srv-1',
         cidr: '10.192.0.0/24',
-        options: null,
       },
       {
         id: 'seg-2',
         networkId: 'net-a',
         serverId: 'srv-2',
         cidr: '10.192.1.0/24',
-        options: null,
       },
     ],
   })
@@ -1743,14 +1738,12 @@ test('purgeOrganizationComposeNetworks removes compose rows and segments only fo
         networkId: 'net-compose-org',
         serverId: 'srv-1',
         cidr: '10.192.0.0/24',
-        options: null,
       },
       {
         id: 'seg-2',
         networkId: 'net-compose-other',
         serverId: 'srv-9',
         cidr: '10.193.0.0/24',
-        options: null,
       },
     ],
   })
@@ -1801,7 +1794,6 @@ test('listEnvironmentComposeNetworks sorts by hostName and includes segmentless 
         networkId: 'net-a',
         serverId: 'srv-1',
         cidr: '10.192.0.0/24',
-        options: null,
       },
     ],
   })

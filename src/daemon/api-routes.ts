@@ -109,10 +109,18 @@ import {
   type FabricMembershipDeps,
   findServerIdForIdentity,
   getServerLicenseBinding,
+  isMachineKeyInUse,
   resolveServerId,
   touchServerMetadata,
 } from '../features/servers/server-registry.ts'
 import { getCommandQueue } from '../features/commands/queue.ts'
+
+const MACHINE_KEY_IN_USE_RESULT = {
+  ok: false,
+  status: 409,
+  error: 'machine_key_in_use',
+  message: 'This host is already registered as another server. Remove that server first.',
+} as const
 import {
   loadExecutionLogCommandTarget,
   MAX_EXECUTION_LOG_CHUNK_BODY_BYTES,
@@ -338,6 +346,28 @@ function parseEnrollFields(body: Record<string, unknown>): FieldResult<EnrollFie
  * Resolves the server row, guards against a fingerprint collision, and attaches
  * the daemon key — the final leg of `POST /enroll` once the signature is verified.
  */
+function enrollFailureBody(failure: { error: string; message?: string }) {
+  return {
+    ok: false,
+    error: failure.error,
+    ...(failure.message ? { message: failure.message } : {}),
+  }
+}
+
+/** `resolveServerId`, with a host that is already registered answered as a conflict marker. */
+async function resolveServerIdOrConflict(
+  db: Db,
+  identity: Parameters<typeof resolveServerId>[1],
+  fabricDeps: Parameters<typeof resolveServerId>[2]
+): Promise<{ serverId: string | null } | { conflict: true }> {
+  try {
+    return { serverId: await resolveServerId(db, identity, fabricDeps) }
+  } catch (err) {
+    if (isMachineKeyInUse(err)) return { conflict: true }
+    throw err
+  }
+}
+
 async function finalizeDaemonEnrollment(
   db: Db,
   params: {
@@ -352,7 +382,7 @@ async function finalizeDaemonEnrollment(
   }
 ): Promise<
   | { ok: true; serverId: string; keyId: string }
-  | { ok: false; status: 400 | 403 | 409 | 500; error: string }
+  | { ok: false; status: 400 | 403 | 409 | 500; error: string; message?: string }
 > {
   const {
     serverIdBody,
@@ -394,7 +424,9 @@ async function finalizeDaemonEnrollment(
     }
   }
 
-  const serverId = await resolveServerId(db, identity, fabricDeps)
+  const resolved = await resolveServerIdOrConflict(db, identity, fabricDeps)
+  if ('conflict' in resolved) return MACHINE_KEY_IN_USE_RESULT
+  const serverId = resolved.serverId
   if (!serverId) {
     return {
       ok: false,
@@ -422,12 +454,18 @@ async function finalizeDaemonEnrollment(
     })
     return { ok: true, serverId, keyId: result.keyId }
   } catch (err) {
-    if (err instanceof DaemonKeyRevokedError) {
-      return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR }
-    }
-    const message = err instanceof Error ? err.message : String(err)
-    return { ok: false, status: 500, error: message }
+    return enrollAttachFailure(err)
   }
+}
+
+/** The answer for a failed key attach: revoked, host already registered, or a plain error. */
+function enrollAttachFailure(err: unknown) {
+  if (err instanceof DaemonKeyRevokedError) {
+    return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR } as const
+  }
+  if (isMachineKeyInUse(err)) return MACHINE_KEY_IN_USE_RESULT
+  const message = err instanceof Error ? err.message : String(err)
+  return { ok: false, status: 500, error: message } as const
 }
 
 function enrollFabricDepsFromContext(c: Context): FabricMembershipDeps | undefined {
@@ -765,7 +803,7 @@ async function resolveIngestPlanAndReconcileTopology(
       // topology generation from promoting the host. Fire-and-forget, like
       // `markTopologyResyncRequested` above.
       db.update(server)
-        .set({ machineClass: 'physical' })
+        .set({ machineClass: 'physical', machineClassSource: 'detected' })
         .where(and(eq(server.id, serverId), isNull(server.machineClass)))
         .catch((err) => {
           rateLimitedMetricsLog(serverId, 'machine_class_record_failed', () => {
@@ -1326,7 +1364,7 @@ export function registerDaemonApiRoutes<E extends Env>(
       ...(fabricDeps ? { fabricDeps } : {}),
     })
     if (!enrolled.ok) {
-      return c.json({ ok: false, error: enrolled.error }, enrolled.status)
+      return c.json(enrollFailureBody(enrolled), enrolled.status)
     }
     // Bound now: `license.server_id` carries it from here.
     await clearLicenseEnrollAttempt(db, licenseId).catch(() => {})

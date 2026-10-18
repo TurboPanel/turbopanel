@@ -4,15 +4,7 @@
  */
 import { assertEquals, assertRejects } from '@std/assert'
 import { eq } from 'drizzle-orm'
-import {
-  environment,
-  folder,
-  organization,
-  principal,
-  service,
-  storage,
-  tenancy,
-} from '../../db/schema.ts'
+import { folder, organization, principal, service, storage, tenancy } from '../../db/schema.ts'
 import {
   type Ctx,
   createProject,
@@ -187,24 +179,6 @@ test('a service in the common scope gets a folder with no environment that does 
     const [row] = await ctx.db.select().from(folder).where(eq(folder.serviceId, shared))
     assertEquals(row!.environmentId, null)
     assertEquals((await listEnvironmentFolders(ctx.db, envId)).total, 0)
-  })
-})
-
-test('an environment whose name is not a folder name is refused in plain words', async () => {
-  await withFixtures(async (ctx) => {
-    const { envId } = await createProject(ctx, 'Old Name')
-    await ctx.db.update(environment).set({ name: 'Old Name' }).where(eq(environment.id, envId))
-    const web = await addService(ctx, envId, 'web')
-    const error = await assertRejects(
-      () => plan(ctx, envId, { services: [{ serviceId: web }] }),
-      FolderPlanError
-    )
-    assertEquals(error.code, 'invalid_environment_name')
-    assertEquals(error.status, 409)
-    assertEquals(
-      (await ctx.db.select().from(folder).where(eq(folder.serverId, ctx.serverId))).length,
-      0
-    )
   })
 })
 
