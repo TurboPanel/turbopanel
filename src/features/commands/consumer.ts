@@ -1197,7 +1197,7 @@ async function markKeptFoldersOrphanSafely(
 ): Promise<void> {
   if (kept === undefined || kept.length === 0) return
   try {
-    await markKeptFoldersOrphan(db, serverId, kept)
+    await markKeptFoldersOrphan(db, serverId, kept, { updatedBefore: record.createdAt })
   } catch (err) {
     compatLogWarn(
       'command-consumer',

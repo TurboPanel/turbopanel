@@ -25,7 +25,7 @@
  * and a stale report cannot lift a lock on a folder that is in use again
  * (`confirmFolderRemoved` only deletes a `removing` row).
  */
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, lt } from 'drizzle-orm'
 import { COMMON_SCOPE } from '../../contracts/directory-names.ts'
 import type { Db } from '../../db/connection.ts'
 import { environment, folder, principal, principalPlacement } from '../../db/schema.ts'
@@ -125,7 +125,8 @@ export async function applyFolderRemovalReports(
 export async function markKeptFoldersOrphan(
   db: Pick<Db, 'update' | 'select'>,
   serverId: string,
-  kept: readonly KeptFolder[]
+  kept: readonly KeptFolder[],
+  options: { updatedBefore?: string } = {}
 ): Promise<number> {
   if (kept.length === 0) return 0
   const owners = await principalIdsByLogin(
@@ -146,7 +147,10 @@ export async function markKeptFoldersOrphan(
           eq(folder.scope, entry.scope),
           eq(folder.kind, 'service'),
           eq(folder.slug, entry.slug),
-          inArray(folder.state, ['planned', 'present'])
+          inArray(folder.state, ['planned', 'present']),
+          options.updatedBefore === undefined
+            ? undefined
+            : lt(folder.updatedAt, options.updatedBefore)
         )
       )
       .returning({ id: folder.id })
@@ -217,7 +221,7 @@ export async function reconcileReportedFolders(
     known.add(key)
     // The listing was taken after the command was built: a row changed since
     // (planned again, deployed) may not be in it yet, so it is left for the next one.
-    if (listedAfter !== null && Date.parse(row.updatedAt) >= listedAfter) continue
+    if (listedAfter !== null && !(Date.parse(row.updatedAt) < listedAfter)) continue
     const found = onHost.has(key)
     if (found && row.state === 'missing') toPresent.push(row.id)
     else if (!found && row.state === 'present') toMissing.push(row.id)
