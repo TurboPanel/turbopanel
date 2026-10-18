@@ -170,18 +170,12 @@ test('Postgres OAuth signup, login, link, unlink, and unique conflict', async ()
 
     const [signupAccount] = await db
       .select({
-        accessToken: account.accessToken,
-        refreshToken: account.refreshToken,
-        idToken: account.idToken,
         providerId: account.providerId,
       })
       .from(account)
       .where(eq(account.userId, signupUserId!))
       .limit(1)
     assertEquals(signupAccount?.providerId, 'github')
-    assertEquals(signupAccount?.accessToken, null)
-    assertEquals(signupAccount?.refreshToken, null)
-    assertEquals(signupAccount?.idToken, null)
 
     const { token: signupToken } = await createSession(db, signupUserId!, {})
     const signupCookie = `${HTTPS_SESSION_COOKIE_NAME}=${await buildSignedCookie(

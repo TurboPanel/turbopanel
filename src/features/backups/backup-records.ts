@@ -6,7 +6,8 @@
 
 import { and, desc, eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { backup } from '../../db/schema.ts'
+import { backup, managedDatabase } from '../../db/schema.ts'
+import { backupRelativePath } from './vocabulary.ts'
 
 const CHECKSUM_SHA256_RE = /^[a-f0-9]{64}$/
 /** Mirrors the daemon `SAFE_MANAGED_ID_RE` (the id becomes a filename). */
@@ -69,6 +70,20 @@ export async function insertManagedBackup(
     serverId?: string
   }
 ): Promise<ManagedBackupRecord> {
+  // The database the dump was of, when the cluster still lists it; the name stays in `database`.
+  const [databaseRow] =
+    params.database === undefined
+      ? []
+      : await db
+          .select({ id: managedDatabase.id })
+          .from(managedDatabase)
+          .where(
+            and(
+              eq(managedDatabase.managedId, params.managedId),
+              eq(managedDatabase.name, params.database)
+            )
+          )
+          .limit(1)
   const [row] = await db
     .insert(backup)
     .values({
@@ -77,7 +92,8 @@ export async function insertManagedBackup(
       sizeBytes: params.sizeBytes,
       checksum: params.checksum,
       database: params.database ?? null,
-      path: params.path,
+      databaseId: databaseRow?.id ?? null,
+      path: backupRelativePath(params.path, 'managed', params.managedId),
       retentionId: params.retentionId ?? null,
       serverId: params.serverId ?? null,
       ...(params.createdAt !== undefined ? { createdAt: params.createdAt } : {}),

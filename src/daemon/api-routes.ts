@@ -109,10 +109,18 @@ import {
   type FabricMembershipDeps,
   findServerIdForIdentity,
   getServerLicenseBinding,
+  isMachineKeyInUse,
   resolveServerId,
   touchServerMetadata,
 } from '../features/servers/server-registry.ts'
 import { getCommandQueue } from '../features/commands/queue.ts'
+
+const MACHINE_KEY_IN_USE_RESULT = {
+  ok: false,
+  status: 409,
+  error: 'machine_key_in_use',
+  message: 'This host is already registered as another server. Remove that server first.',
+} as const
 import {
   loadExecutionLogCommandTarget,
   MAX_EXECUTION_LOG_CHUNK_BODY_BYTES,
@@ -352,7 +360,7 @@ async function finalizeDaemonEnrollment(
   }
 ): Promise<
   | { ok: true; serverId: string; keyId: string }
-  | { ok: false; status: 400 | 403 | 409 | 500; error: string }
+  | { ok: false; status: 400 | 403 | 409 | 500; error: string; message?: string }
 > {
   const {
     serverIdBody,
@@ -394,7 +402,13 @@ async function finalizeDaemonEnrollment(
     }
   }
 
-  const serverId = await resolveServerId(db, identity, fabricDeps)
+  let serverId: string | null
+  try {
+    serverId = await resolveServerId(db, identity, fabricDeps)
+  } catch (err) {
+    if (isMachineKeyInUse(err)) return MACHINE_KEY_IN_USE_RESULT
+    throw err
+  }
   if (!serverId) {
     return {
       ok: false,
@@ -425,6 +439,7 @@ async function finalizeDaemonEnrollment(
     if (err instanceof DaemonKeyRevokedError) {
       return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR }
     }
+    if (isMachineKeyInUse(err)) return MACHINE_KEY_IN_USE_RESULT
     const message = err instanceof Error ? err.message : String(err)
     return { ok: false, status: 500, error: message }
   }
@@ -765,7 +780,7 @@ async function resolveIngestPlanAndReconcileTopology(
       // topology generation from promoting the host. Fire-and-forget, like
       // `markTopologyResyncRequested` above.
       db.update(server)
-        .set({ machineClass: 'physical' })
+        .set({ machineClass: 'physical', machineClassSource: 'detected' })
         .where(and(eq(server.id, serverId), isNull(server.machineClass)))
         .catch((err) => {
           rateLimitedMetricsLog(serverId, 'machine_class_record_failed', () => {
@@ -1326,7 +1341,14 @@ export function registerDaemonApiRoutes<E extends Env>(
       ...(fabricDeps ? { fabricDeps } : {}),
     })
     if (!enrolled.ok) {
-      return c.json({ ok: false, error: enrolled.error }, enrolled.status)
+      return c.json(
+        {
+          ok: false,
+          error: enrolled.error,
+          ...(enrolled.message ? { message: enrolled.message } : {}),
+        },
+        enrolled.status
+      )
     }
     // Bound now: `license.server_id` carries it from here.
     await clearLicenseEnrollAttempt(db, licenseId).catch(() => {})

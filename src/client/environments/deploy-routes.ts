@@ -158,7 +158,6 @@ import {
   parseJsonBody,
 } from '../shared.ts'
 import {
-  parseProjectOptions,
   resolveEffectivePlacementServerId,
 } from '../../features/projects/project-options.ts'
 
@@ -2226,7 +2225,7 @@ async function loadLifecycleTargets(
   const [projectRow] = await db
     .select({
       id: project.id,
-      options: project.options,
+      defaultServerId: project.defaultServerId,
     })
     .from(project)
     .where(eq(project.id, envRow.projectId))
@@ -2247,10 +2246,7 @@ async function loadLifecycleTargets(
     }
   }
 
-  const pin = resolveEffectivePlacementServerId(
-    envRow.serverId,
-    parseProjectOptions(projectRow.options)
-  )
+  const pin = resolveEffectivePlacementServerId(envRow.serverId, projectRow.defaultServerId)
   if (!pin) {
     return Response.json(
       { error: 'server_placement_required' },

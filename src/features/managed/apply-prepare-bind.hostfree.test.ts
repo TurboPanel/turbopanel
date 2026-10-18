@@ -146,7 +146,6 @@ function memberRow(
     privatePort: 45_001,
     status: 'ready',
     metadata: null,
-    options: null,
     createdAt: now,
     updatedAt: now,
     ...overrides,

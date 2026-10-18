@@ -22,6 +22,7 @@ import { verifyServerInOrg } from './deploy-prepare.ts'
 import { loadRepinNeedsRedeployForEnvironment } from './repin-needs-redeploy.ts'
 import { reconcileServicesForEnvironment } from './reconcile-after-compose-save.ts'
 import { refuseDeleteWhileFolders, updateEnvironmentChecked } from './rename-lock.ts'
+import { syncEnvironmentWatch } from '../../features/git/watch-records.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -67,7 +68,7 @@ type CreateEnvironmentInput = {
   projectId: string
   /** The parent project's binding, already resolved for the lint above. */
   projectRepositoryId: string | null
-  name: string | null
+  name: string
   description: string | null
   serverId?: string | null
   metadata: Record<string, unknown> | null
@@ -404,6 +405,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     })
 
     await adoptProjectRepository(db, input.projectId, input.options, input.projectRepositoryId)
+    if (input.options !== null) await syncEnvironmentWatch(db, id)
     await reconcileServicesForEnvironment(db, id)
 
     return c.json({ ok: true as const, id })
@@ -469,6 +471,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
 
     const refused = await updateEnvironmentChecked(c, db, id, patchFields)
     if (refused) return refused
+    if (patchFields.options !== undefined) await syncEnvironmentWatch(db, id)
 
     await settleAfterOptionsPatch(db, id, parent, patchFields)
 

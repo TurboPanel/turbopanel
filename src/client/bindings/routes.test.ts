@@ -244,7 +244,7 @@ async function withBindingFixtures(
   const [managedEnv] = await db
     .insert(environment)
     .values({
-      name: 'Production',
+      name: 'production',
       projectId: managedProject!.id,
       serverId,
     })
@@ -304,7 +304,7 @@ async function withBindingFixtures(
   const [consumerEnv] = await db
     .insert(environment)
     .values({
-      name: 'Consumer',
+      name: 'consumer',
       projectId: consumerProject!.id,
       serverId,
     })
@@ -766,7 +766,7 @@ test('GET /bindings managedEnvironmentId returns empty when cluster has no princ
     const [lonelyEnv] = await db
       .insert(environment)
       .values({
-        name: 'Lonely',
+        name: 'lonely',
         projectId: lonelyProject!.id,
         serverId,
       })

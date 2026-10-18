@@ -183,7 +183,7 @@ async function withReconcileFixtures(
       .values({
         projectId: proj!.id,
         serverId,
-        name: 'Production',
+        name: 'production',
       })
       .returning({ id: environment.id })
     const [svc] = await db
@@ -648,7 +648,7 @@ async function withConsumerOnlyManagedFixtures(
   // Consumer environment pinned to this server; the cluster lives elsewhere.
   const [consumerEnv] = await db
     .insert(environment)
-    .values({ projectId: proj!.id, serverId, name: 'Production' })
+    .values({ projectId: proj!.id, serverId, name: 'production' })
     .returning({ id: environment.id })
   const [consumerSvc] = await db
     .insert(service)
@@ -662,7 +662,7 @@ async function withConsumerOnlyManagedFixtures(
   // Managed cluster with no `replica` row on this server (no members at all).
   const [clusterEnv] = await db
     .insert(environment)
-    .values({ projectId: proj!.id, serverId: null, name: 'Managed' })
+    .values({ projectId: proj!.id, serverId: null, name: 'managed' })
     .returning({ id: environment.id })
   const [cluster] = await db
     .insert(managed)

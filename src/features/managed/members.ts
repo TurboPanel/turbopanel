@@ -46,7 +46,6 @@ export type ManagedMemberRow = {
   privatePort: number | null
   status: string | null
   metadata: unknown
-  options: unknown
   createdAt: string
   updatedAt: string
 }
@@ -92,7 +91,6 @@ const MEMBER_RETURNING = {
   privatePort: replica.privatePort,
   status: replica.status,
   metadata: replica.metadata,
-  options: replica.options,
   createdAt: replica.createdAt,
   updatedAt: replica.updatedAt,
 } as const

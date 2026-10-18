@@ -49,7 +49,18 @@ import type { CommandQueue } from '../commands/queue.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import { reconcileFabricMembership } from '../fabric/enqueue.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
-import { isPostgresUniqueViolation as isUniqueViolation } from '../../db/unique-violation.ts'
+import {
+  isPostgresUniqueViolation as isUniqueViolation,
+  isUniqueViolationOn,
+} from '../../db/unique-violation.ts'
+
+/** Constraint that keeps one registration per host machine. */
+export const MACHINE_KEY_UNIQUE_CONSTRAINT = 'uniq_server_machine_key'
+
+/** True when the error is another server row already holding this machine key. */
+export function isMachineKeyInUse(err: unknown): boolean {
+  return isUniqueViolationOn(err, MACHINE_KEY_UNIQUE_CONSTRAINT)
+}
 
 export type FabricMembershipDeps = {
   commandQueue: CommandQueue
@@ -716,7 +727,7 @@ async function resolveLicensedServerId(
     await reconcileFabricMembershipBestEffort(db, verified.organizationId, serverId, fabricDeps)
     return serverId
   } catch (err) {
-    if (!isUniqueViolation(err)) throw err
+    if (!isUniqueViolation(err) || isMachineKeyInUse(err)) throw err
     // Concurrent first enroll: the winner owns the license; only that server
     // may continue, and only when this caller presents the matching serverId.
     const raced = await findReusableLicensedServerId(db, identity, licenseId)

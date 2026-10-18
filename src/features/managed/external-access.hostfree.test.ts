@@ -20,16 +20,23 @@ test('external access reads as no unless the server says yes', () => {
   assertEquals(parseManagedExternalAccess({ enabled: true }), { enabled: true })
 })
 
-test('external access keeps a valid pendingSince and drops a malformed one', () => {
+test('external access takes pendingSince from the column and drops a malformed one', () => {
   const since = '2026-10-08T10:00:00.000Z'
-  assertEquals(parseManagedExternalAccess({ enabled: false, pendingSince: since }), {
+  assertEquals(readManagedExternalAccess({ managedExternalAccess: { enabled: false } }, since), {
     enabled: false,
     pendingSince: since,
   })
-  assertEquals(parseManagedExternalAccess({ enabled: true, pendingSince: 'not a date' }), {
+  assertEquals(
+    readManagedExternalAccess({ managedExternalAccess: { enabled: true } }, 'not a date'),
+    { enabled: true }
+  )
+  assertEquals(readManagedExternalAccess({ managedExternalAccess: { enabled: true } }, null), {
     enabled: true,
   })
-  assertEquals(parseManagedExternalAccess({ enabled: true, pendingSince: 5 }), { enabled: true })
+  // A pendingSince left inside the stored options (older data) is not the source.
+  assertEquals(parseManagedExternalAccess({ enabled: true, pendingSince: since }), {
+    enabled: true,
+  })
 })
 
 test('external access is read from server.options and defaults to no', () => {

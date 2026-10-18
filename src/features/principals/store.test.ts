@@ -99,7 +99,7 @@ async function withPrincipalFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Principal Store Env',
+      name: 'principal-store-env',
       projectId,
     })
     .returning({ id: environment.id })

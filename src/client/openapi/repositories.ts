@@ -262,8 +262,6 @@ export const repositorySchemas = {
       accountType: { type: ['string', 'null'] },
       suspendedAt: { type: ['string', 'null'], format: 'date-time' },
       suspended: { type: 'boolean' },
-      metadata: { type: ['object', 'null'] },
-      options: { type: ['object', 'null'] },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
     },

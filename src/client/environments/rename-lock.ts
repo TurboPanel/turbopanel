@@ -36,6 +36,7 @@ import {
 } from '../../features/folders/records.ts'
 
 export type EnvironmentRenameFields = {
+  /** The new name; a name cannot be cleared (a null is ignored). */
   name?: string | null
   description?: string | null
   serverId?: string | null
@@ -68,8 +69,10 @@ export async function updateEnvironmentChecked(
   environmentId: string,
   fields: EnvironmentRenameFields
 ): Promise<Response | null> {
+  const { name: requestedName, ...others } = fields
+  const values = { ...others, ...(requestedName == null ? {} : { name: requestedName }) }
   if (fields.name === undefined && fields.serverId === undefined) {
-    await db.update(environment).set(fields).where(eq(environment.id, environmentId))
+    await db.update(environment).set(values).where(eq(environment.id, environmentId))
     return null
   }
   return await db.transaction(async (tx) => {
@@ -100,7 +103,7 @@ export async function updateEnvironmentChecked(
         )
       }
     }
-    await tx.update(environment).set(fields).where(eq(environment.id, environmentId))
+    await tx.update(environment).set(values).where(eq(environment.id, environmentId))
     return null
   })
 }

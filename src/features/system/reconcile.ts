@@ -189,7 +189,7 @@ export function boundManagedConsumersExists(serverIdExpr: SQL, organizationIdExp
             OR sl.server_id = ${serverIdExpr}
             OR (
               be.server_id IS NULL
-              AND bp.options->>'defaultServerId' = (${serverIdExpr})::text
+              AND bp.default_server_id::text = (${serverIdExpr})::text
             )
           )
       )`

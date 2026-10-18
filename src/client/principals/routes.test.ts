@@ -166,7 +166,7 @@ async function withPrincipalFixtures(
     .insert(environment)
     .values({
       projectId,
-      name: 'Production',
+      name: 'production',
       serverId,
       createdAt: now,
       updatedAt: now,

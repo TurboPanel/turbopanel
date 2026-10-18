@@ -27,7 +27,6 @@ import {
   slot,
 } from "../../db/schema.ts";
 import {
-  parseProjectOptions,
   resolveEffectivePlacementServerId,
 } from "../projects/project-options.ts";
 
@@ -78,7 +77,7 @@ export async function loadManagedIngressPlatformAttachments(
       id: service.id,
       composeServiceName: service.composeServiceName,
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
     })
     .from(service)
     .innerJoin(environment, eq(service.environmentId, environment.id))
@@ -100,7 +99,7 @@ export async function loadManagedIngressPlatformAttachments(
   for (const row of placed) {
     const listener = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions),
+      row.projectDefaultServerId,
     );
     if (!listener) continue;
     const consumerServers = slotsByService.get(row.id) ?? [];
@@ -146,7 +145,7 @@ export async function loadListenerAttachedSubnetNames(
     .select({
       serviceId: binding.serviceId,
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
     })
     .from(binding)
     .innerJoin(service, eq(binding.serviceId, service.id))
@@ -157,7 +156,7 @@ export async function loadListenerAttachedSubnetNames(
   for (const row of bindingRows) {
     const placement = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions),
+      row.projectDefaultServerId,
     );
     if (placement !== listenerServerId) continue;
     serviceIds.push(row.serviceId);

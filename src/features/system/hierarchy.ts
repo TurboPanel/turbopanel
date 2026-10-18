@@ -356,6 +356,22 @@ async function ensureHostingIngressProject(tx: Db, workspaceId: string): Promise
 }
 
 /**
+ * The environment name for a server's system environment: its display name
+ * reduced to the environment name rule, with the front of the server id so two
+ * servers with the same name cannot collide.
+ */
+export function systemEnvironmentName(displayName: string, serverId: string): string {
+  const suffix = serverId.replaceAll('-', '').slice(-8)
+  const base = displayName
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9_-]+/g, '-')
+    .replaceAll(/^[-_]+|[-_]+$/g, '')
+    .slice(0, 23)
+    .replaceAll(/[-_]+$/g, '')
+  return base === '' ? `server-${suffix}` : `${base}-${suffix}`
+}
+
+/**
  * Per-server system environment under a known system project.
  *
  * Identity is `(project_id, server_id)` — never `environment.metadata.component`.
@@ -385,7 +401,7 @@ async function ensureServerEnvironment(
     .values({
       projectId,
       serverId,
-      name: displayName,
+      name: systemEnvironmentName(displayName, serverId),
     })
     .returning({ id: environment.id })
 

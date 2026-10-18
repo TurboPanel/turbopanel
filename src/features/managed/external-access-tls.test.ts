@@ -98,7 +98,7 @@ function fixture(db: Db) {
     made.projects.push(projectRow!.id)
     const [envRow] = await db
       .insert(environment)
-      .values({ name: 'Production', projectId: projectRow!.id, serverId })
+      .values({ name: 'production', projectId: projectRow!.id, serverId })
       .returning({ id: environment.id })
     made.environments.push(envRow!.id)
     return envRow!.id

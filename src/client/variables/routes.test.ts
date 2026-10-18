@@ -166,7 +166,7 @@ async function withVariableFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Variable Route Env',
+      name: 'variable-route-env',
       projectId,
     })
     .returning({ id: environment.id })
@@ -501,7 +501,7 @@ test('PATCH /variables/:id rejects environmentId change', async () => {
     async ({ db, app, secrets, userId, organizationId, environmentId, projectId }) => {
       const [otherEnvironment] = await db
         .insert(environment)
-        .values({ name: 'Other Env', projectId })
+        .values({ name: 'other-env', projectId })
         .returning({ id: environment.id })
 
       const [insertedVariable] = await db

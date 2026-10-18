@@ -30,7 +30,6 @@ import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secr
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { getManagedEngineSpec } from '../../features/managed/index.ts'
 import {
-  parseProjectOptions,
   resolveEffectivePlacementServerId,
 } from '../../features/projects/project-options.ts'
 import {
@@ -225,7 +224,7 @@ async function collectConsumerServers(
     .select({
       managedId: login.managedId,
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
       taskServerId: slot.serverId,
       workspaceOrganizationId: workspace.organizationId,
     })
@@ -248,7 +247,7 @@ async function collectConsumerServers(
     if (!row.managedId || !ownedManagedIds.includes(row.managedId)) continue
     const placement = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions)
+      row.projectDefaultServerId
     )
     if (placement) addMember(members, placement, row.managedId)
     if (row.taskServerId) addMember(members, row.taskServerId, row.managedId)
@@ -383,7 +382,7 @@ async function loadNeedsRedeployForManaged(
     .select({
       environmentId: environment.id,
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
     })
     .from(binding)
     .innerJoin(login, eq(login.id, binding.loginId))
@@ -397,7 +396,7 @@ async function loadNeedsRedeployForManaged(
   for (const row of rows) {
     const serverId = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions)
+      row.projectDefaultServerId
     )
     if (!serverId) continue
     const key = `${serverId}:${row.environmentId}`

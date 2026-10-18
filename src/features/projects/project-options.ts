@@ -11,11 +11,6 @@ export type ContainerNamingMode = 'uuid' | 'custom'
 export type ProjectOptions = {
   containerNaming?: ContainerNamingMode
   /**
-   * Optional default placement server. Environments without their own
-   * `server_id` inherit this at deploy / lifecycle / stop time.
-   */
-  defaultServerId?: string
-  /**
    * Where this project's compose came from, and where it can be re-read.
    *
    * **Seed, not tracking.** The repository's `docker-compose.yml` is read once
@@ -63,7 +58,7 @@ function isContainerNamingMode(value: unknown): value is ContainerNamingMode {
  * a valid mode, or `{ ok: false }` for invalid input.
  */
 export function parseContainerNamingInput(
-  value: unknown,
+  value: unknown
 ): { ok: true; value: ContainerNamingMode } | { ok: false } {
   if (!isContainerNamingMode(value)) return { ok: false }
   return { ok: true, value }
@@ -75,7 +70,7 @@ export function parseContainerNamingInput(
  * Invalid → `{ ok: false }`.
  */
 export function parseDefaultServerIdInput(
-  value: unknown,
+  value: unknown
 ): { ok: true; value: string | null } | { ok: false } {
   if (value === null) return { ok: true, value: null }
   if (typeof value !== 'string' || !isPlacementServerId(value)) {
@@ -93,7 +88,7 @@ const SAFE_COMPOSE_PATH_RE = /^[A-Za-z0-9._/-]{1,200}$/
  */
 export function parseComposeSourceInput(
   value: unknown,
-  knownSourceIds?: ReadonlySet<string>,
+  knownSourceIds?: ReadonlySet<string>
 ): { ok: true; value: ProjectComposeSource | null } | { ok: false; reason: string } {
   if (value === null) return { ok: true, value: null }
   if (!isRecord(value)) return { ok: false, reason: 'composeSource must be an object' }
@@ -144,9 +139,7 @@ export function parseComposeSourceInput(
 export async function composeSourceDigest(content: string): Promise<string> {
   const bytes = new TextEncoder().encode(content)
   const hash = await crypto.subtle.digest('SHA-256', bytes)
-  return [...new Uint8Array(hash)]
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
+  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
 /** Parse project.options jsonb (missing/invalid keys → omitted). */
@@ -161,27 +154,40 @@ export function parseProjectOptions(value: unknown): ProjectOptions {
     const parsed = parseComposeSourceInput(value.composeSource)
     if (parsed.ok && parsed.value !== null) options.composeSource = parsed.value
   }
-  if ('defaultServerId' in value) {
-    const parsed = parseDefaultServerIdInput(value.defaultServerId)
-    if (parsed.ok && parsed.value !== null) {
-      options.defaultServerId = parsed.value
-    }
-  }
   return options
+}
+
+/**
+ * The default placement server lives in `project.default_server_id`, but the
+ * API still carries it as `options.defaultServerId`. Takes it out of an
+ * options object a client sent: `options` without the key, and the column
+ * value (`null` clears it). Options sent as `null` clear it too.
+ */
+export function splitProjectDefaultServer(options: Record<string, unknown> | null): {
+  options: Record<string, unknown> | null
+  defaultServerId: string | null
+} {
+  if (options === null) return { options, defaultServerId: null }
+  const { defaultServerId, ...rest } = options
+  const parsed = parseDefaultServerIdInput(defaultServerId ?? null)
+  return { options: rest, defaultServerId: parsed.ok ? parsed.value : null }
+}
+
+/** The options an API response shows: the stored options plus `defaultServerId` from its column. */
+export function mergeProjectDefaultServer<T>(
+  options: T,
+  defaultServerId: string | null | undefined
+): T | (Record<string, unknown> & { defaultServerId: string }) {
+  if (!defaultServerId) return options
+  const base = isRecord(options) ? options : {}
+  return { ...base, defaultServerId }
 }
 
 /** Default container naming mode when unset. */
 export function resolveContainerNaming(
-  options: ProjectOptions | null | undefined,
+  options: ProjectOptions | null | undefined
 ): ContainerNamingMode {
   return options?.containerNaming ?? 'uuid'
-}
-
-/** Project-level default placement when set. */
-export function resolveDefaultServerId(
-  options: ProjectOptions | null | undefined,
-): string | null {
-  return options?.defaultServerId ?? null
 }
 
 /**
@@ -190,8 +196,8 @@ export function resolveDefaultServerId(
  */
 export function resolveEffectivePlacementServerId(
   environmentServerId: string | null | undefined,
-  projectOptions: ProjectOptions | null | undefined,
+  projectDefaultServerId: string | null | undefined
 ): string | null {
   if (environmentServerId) return environmentServerId
-  return resolveDefaultServerId(projectOptions)
+  return projectDefaultServerId ?? null
 }

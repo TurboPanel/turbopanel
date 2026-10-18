@@ -38,10 +38,7 @@ import {
   listEnvironmentComposeNetworks,
 } from '../../features/fabric/fabric-records.ts'
 import { listEnvironmentDeploymentTargets } from '../../features/deploy/deployment-records.ts'
-import {
-  parseProjectOptions,
-  resolveEffectivePlacementServerId,
-} from '../../features/projects/project-options.ts'
+import { resolveEffectivePlacementServerId } from '../../features/projects/project-options.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { markPlacementsRetiring } from '../../features/principals/placement-records.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
@@ -96,7 +93,7 @@ async function resolveTeardownServerIds(
   db: Db,
   environmentId: string,
   environmentServerId: string | null,
-  projectOptions: unknown
+  projectDefaultServerId: string | null
 ): Promise<string[]> {
   const deployments = await listEnvironmentDeploymentTargets(db, environmentId)
   const fromDeployments = [...new Set(deployments.map((row) => row.serverId))].sort((a, b) =>
@@ -104,10 +101,7 @@ async function resolveTeardownServerIds(
   )
   if (fromDeployments.length > 0) return fromDeployments
 
-  const pin = resolveEffectivePlacementServerId(
-    environmentServerId,
-    parseProjectOptions(projectOptions)
-  )
+  const pin = resolveEffectivePlacementServerId(environmentServerId, projectDefaultServerId)
   return pin ? [pin] : []
 }
 
@@ -133,7 +127,7 @@ export async function planEnvironmentTeardown(
   if (!envRow) return null
 
   const [projectRow] = await db
-    .select({ id: project.id, options: project.options })
+    .select({ id: project.id, defaultServerId: project.defaultServerId })
     .from(project)
     .where(eq(project.id, envRow.projectId))
     .limit(1)
@@ -143,7 +137,7 @@ export async function planEnvironmentTeardown(
     db,
     environmentId,
     envRow.serverId,
-    projectRow.options
+    projectRow.defaultServerId
   )
   if (serverIds.length === 0) return null
 

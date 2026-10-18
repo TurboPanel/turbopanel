@@ -20,7 +20,6 @@ import {
 } from '../../db/schema.ts'
 import { HOST_RUN_LOOPBACK_HOST } from '../../lib/naming.ts'
 import {
-  parseProjectOptions,
   resolveEffectivePlacementServerId,
 } from '../projects/project-options.ts'
 
@@ -41,7 +40,7 @@ export async function loadBoundManagedIdsForServer(
     .select({
       managedId: login.managedId,
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
       taskServerId: slot.serverId,
     })
     .from(binding)
@@ -59,7 +58,7 @@ export async function loadBoundManagedIdsForServer(
           eq(slot.serverId, serverId),
           and(
             isNull(environment.serverId),
-            sql`${project.options}->>'defaultServerId' = ${serverId}`
+            sql`${project.defaultServerId} = ${serverId}`
           )
         )
       )
@@ -70,7 +69,7 @@ export async function loadBoundManagedIdsForServer(
     if (!row.managedId) continue
     const placement = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions)
+      row.projectDefaultServerId
     )
     if (placement === serverId || row.taskServerId === serverId) {
       ids.add(row.managedId)
@@ -98,7 +97,7 @@ export async function serverHasHostRunBinding(
   const rows = await db
     .select({
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
       taskServerId: slot.serverId,
     })
     .from(binding)
@@ -123,7 +122,7 @@ export async function serverHasHostRunBinding(
           eq(slot.serverId, serverId),
           and(
             isNull(environment.serverId),
-            sql`${project.options}->>'defaultServerId' = ${serverId}`
+            sql`${project.defaultServerId} = ${serverId}`
           )
         )
       )
@@ -132,7 +131,7 @@ export async function serverHasHostRunBinding(
     (row) =>
       resolveEffectivePlacementServerId(
         row.environmentServerId,
-        parseProjectOptions(row.projectOptions)
+        row.projectDefaultServerId
       ) === serverId || row.taskServerId === serverId
   )
 }

@@ -7296,9 +7296,9 @@ export const COPY_BACKUP_ARTIFACT_EXTENSION = 'tar.gz'
  * Must stay in sync with the daemon `storage.backup` shape.
  *
  * `create` archives the copy (live, no pause) into
- * `<backupDir>/copies/<copyId>/<backupId>.tar.gz`. `delete` removes an
+ * `<backupDir>/volumes/<copyId>/<backupId>.tar.gz`. `delete` removes an
  * artifact; `policyId` locates one a scheduled run made
- * (`<backupDir>/copies/<copyId>/policy-<policyId>/…`).
+ * (`<backupDir>/volumes/<copyId>/policy-<policyId>/…`).
  */
 export type StorageBackupCommandPayload = CopyBackupSource & {
   action: 'create' | 'delete'

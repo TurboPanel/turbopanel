@@ -203,9 +203,6 @@ async function linkProviderAccount(
       userId,
       providerId: provider,
       providerUserId: identity.providerUserId,
-      accessToken: null,
-      refreshToken: null,
-      idToken: null,
     });
     return "ok";
   } catch (err) {
@@ -240,9 +237,6 @@ export async function signUpFromIdentity(
         userId,
         providerId: provider,
         providerUserId: identity.providerUserId,
-        accessToken: null,
-        refreshToken: null,
-        idToken: null,
       });
       await createOrganizationForUserInTx(tx, userId);
       return { userId };

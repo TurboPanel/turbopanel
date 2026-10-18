@@ -115,7 +115,7 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
     const [env] = await db
       .insert(environment)
       .values({
-        name: 'Cancel Route Env',
+        name: 'cancel-route-env',
         projectId: proj!.id,
         options: { compose: emptyComposeDocument() },
       })
@@ -172,7 +172,7 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
     await db.delete(audit).where(inArray(audit.organizationId, [orgA, orgB]))
     if (serverId) await db.delete(command).where(eq(command.serverId, serverId))
     await db.delete(deployment).where(eq(deployment.serverId, serverId ?? crypto.randomUUID()))
-    await db.delete(environment).where(eq(environment.name, 'Cancel Route Env'))
+    await db.delete(environment).where(eq(environment.name, 'cancel-route-env'))
     await db.delete(project).where(eq(project.name, 'Cancel Route Project'))
     await db.delete(workspace).where(eq(workspace.name, 'Cancel Route Workspace'))
     await db.delete(server).where(inArray(server.organizationId, [orgA, orgB]))

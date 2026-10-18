@@ -57,7 +57,6 @@ function member(
     privatePort: role === 'replica' ? 45001 : null,
     status: 'ready',
     metadata: {},
-    options: {},
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,

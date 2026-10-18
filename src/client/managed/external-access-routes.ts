@@ -43,7 +43,12 @@ async function loadServer(c: Context<AppEnv>) {
   if (scope instanceof Response) return scope
   const id = c.req.param('id') ?? ''
   const [row] = await scope.db
-    .select({ options: server.options, name: server.name, hostname: server.hostname })
+    .select({
+      options: server.options,
+      pendingAt: server.externalAccessPendingAt,
+      name: server.name,
+      hostname: server.hostname,
+    })
     .from(server)
     .where(and(eq(server.id, id), eq(server.organizationId, scope.organizationId)))
     .limit(1)
@@ -57,7 +62,7 @@ export function registerManagedExternalAccessRoutes(router: Hono<AppEnv>) {
   router.get('/servers/:id/managed-external-access', async (c) => {
     const loaded = await loadServer(c)
     if (loaded instanceof Response) return loaded
-    const setting = readManagedExternalAccess(loaded.row.options)
+    const setting = readManagedExternalAccess(loaded.row.options, loaded.row.pendingAt)
     return c.json({
       enabled: setting.enabled,
       pending: setting.pendingSince !== undefined,

@@ -77,7 +77,7 @@ async function withReconcileFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Container Reconcile Env',
+      name: 'container-reconcile-env',
       projectId,
     })
     .returning({ id: environment.id })
@@ -369,7 +369,7 @@ test('reconcileEnvironmentContainers creates missing services from the report', 
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Container Reconcile Env',
+      name: 'container-reconcile-env',
       projectId,
     })
     .returning({ id: environment.id })

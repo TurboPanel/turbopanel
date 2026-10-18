@@ -71,7 +71,7 @@ async function insertManaged(
     .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ name: 'Production', projectId: proj!.id, serverId })
+    .values({ name: 'production', projectId: proj!.id, serverId })
     .returning({ id: environment.id })
   const [row] = await db
     .insert(managed)
@@ -165,7 +165,7 @@ function succeededReport(
     backupId,
     sizeBytes: 2048,
     checksum: 'b'.repeat(64),
-    path: `/backup/${fixture.managedId}/policy-${fixture.policyId}/${backupId}.dump`,
+    path: `managed/${fixture.managedId}/policy-${fixture.policyId}/${backupId}.dump`,
     nextRunAt: '2026-10-01T03:00:00.000Z',
     at: '2026-09-30T03:00:06.000Z',
     ...overrides,
@@ -180,7 +180,7 @@ function insertBackupRow(
     ...values,
     sizeBytes: 1,
     checksum: 'c'.repeat(64),
-    path: `/backup/${values.backupId}.dump`,
+    path: `managed/${values.backupId}.dump`,
   })
 }
 
@@ -318,7 +318,7 @@ function insertArchiveRow(
     ...values,
     sizeBytes: 1,
     checksum: 'c'.repeat(64),
-    path: `/backup/copies/${values.copyId}/${values.backupId}.tar.gz`,
+    path: `volumes/${values.copyId}/${values.backupId}.tar.gz`,
   })
 }
 
@@ -332,7 +332,7 @@ test('a storage-copy report records an archive and prunes only that policy’s r
       createBackupRunReportStore(fixture.db),
       succeededReport(fixture, {
         policyId,
-        path: `/backup/copies/${copyId}/policy-${policyId}/bk_new.tar.gz`,
+        path: `volumes/${copyId}/policy-${policyId}/bk_new.tar.gz`,
         pruned: ['bk_old', 'bk_manual'],
       }),
       { reporterServerId: fixture.serverA }
@@ -363,7 +363,7 @@ test('a storage-copy report from a server the copy is not on writes nothing', as
       createBackupRunReportStore(fixture.db),
       succeededReport(fixture, {
         policyId,
-        path: `/backup/copies/${copyId}/policy-${policyId}/bk_new.tar.gz`,
+        path: `volumes/${copyId}/policy-${policyId}/bk_new.tar.gz`,
       }),
       { reporterServerId: fixture.serverB }
     )

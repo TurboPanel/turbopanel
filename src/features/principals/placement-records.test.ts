@@ -82,7 +82,7 @@ async function withFixtures(fn: (ctx: Fixtures) => Promise<void>): Promise<void>
   const serverIds: [string, string] = [servers[0]!.id, servers[1]!.id]
   const [env] = await db
     .insert(environment)
-    .values({ name: 'Placement Env', projectId, serverId: serverIds[0] })
+    .values({ name: 'placement-env', projectId, serverId: serverIds[0] })
     .returning({ id: environment.id })
   const environmentId = env!.id
   const [svc] = await db

@@ -236,6 +236,12 @@
       "tag": "0038_database_login_split",
       "when": 1792279495308,
       "sha256": "957f483d18454501deccea6fc2db83b1f31178475066a12924ff47ad6934bee7"
+    },
+    {
+      "idx": 39,
+      "tag": "0039_schema_final_shape",
+      "when": 1792283361222,
+      "sha256": "8081507dc25c021a71063aa37b74a70c83117139955ef37b1b225b18c9978d1f"
     }
   ]
 }

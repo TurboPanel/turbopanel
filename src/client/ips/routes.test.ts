@@ -96,7 +96,7 @@ test('DELETE /ips returns 409 when hosting references ipId', async () => {
     .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ projectId: proj!.id, name: 'E', createdAt: now, updatedAt: now })
+    .values({ projectId: proj!.id, name: 'e', createdAt: now, updatedAt: now })
     .returning({ id: environment.id })
   const [svc] = await db
     .insert(service)
