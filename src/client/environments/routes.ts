@@ -21,7 +21,12 @@ import {
 import { verifyServerInOrg } from './deploy-prepare.ts'
 import { loadRepinNeedsRedeployForEnvironment } from './repin-needs-redeploy.ts'
 import { reconcileServicesForEnvironment } from './reconcile-after-compose-save.ts'
-import { refuseDeleteWhileFolders, updateEnvironmentChecked } from './rename-lock.ts'
+import {
+  environmentNameInUse,
+  isEnvironmentNameUniqueViolation,
+  refuseDeleteWhileFolders,
+  updateEnvironmentChecked,
+} from './rename-lock.ts'
 import { syncEnvironmentWatch } from '../../features/git/watch-records.ts'
 import {
   assertCanCreateOr403,
@@ -389,23 +394,29 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     const input = await parseCreateEnvironmentInput(c, db, orgResult)
     if (input instanceof Response) return input
 
-    const id = await db.transaction(async (tx) => {
-      const [inserted] = await tx
-        .insert(environment)
-        .values({
-          name: input.name,
-          description: input.description,
-          projectId: input.projectId,
-          ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
-          ...(input.metadata !== null ? { metadata: input.metadata } : {}),
-          ...(input.options !== null ? { options: input.options } : {}),
-        })
-        .returning({ id: environment.id })
-      return inserted.id
-    })
+    let id: string
+    try {
+      id = await db.transaction(async (tx) => {
+        const [inserted] = await tx
+          .insert(environment)
+          .values({
+            name: input.name,
+            description: input.description,
+            projectId: input.projectId,
+            ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
+            ...(input.metadata !== null ? { metadata: input.metadata } : {}),
+            ...(input.options !== null ? { options: input.options } : {}),
+          })
+          .returning({ id: environment.id })
+        if (input.options !== null) await syncEnvironmentWatch(tx, inserted.id)
+        return inserted.id
+      })
+    } catch (err) {
+      if (isEnvironmentNameUniqueViolation(err)) return environmentNameInUse(c)
+      throw err
+    }
 
     await adoptProjectRepository(db, input.projectId, input.options, input.projectRepositoryId)
-    if (input.options !== null) await syncEnvironmentWatch(db, id)
     await reconcileServicesForEnvironment(db, id)
 
     return c.json({ ok: true as const, id })
@@ -469,9 +480,10 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     if (optionsError) return optionsError
     await keepStoredDeployOptions(db, id, patchFields)
 
-    const refused = await updateEnvironmentChecked(c, db, id, patchFields)
+    const refused = await updateEnvironmentChecked(c, db, id, patchFields, {
+      syncWatch: patchFields.options !== undefined,
+    })
     if (refused) return refused
-    if (patchFields.options !== undefined) await syncEnvironmentWatch(db, id)
 
     await settleAfterOptionsPatch(db, id, parent, patchFields)
 

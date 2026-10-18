@@ -81,3 +81,43 @@ test('watch rows follow the compose that names a repository', async () => {
     assertEquals(await listWatchingEnvironmentIds(ctx.db, ctx.organizationId, repositoryId), [])
   })
 })
+
+test('overlapping syncs leave exactly the wanted rows and never refuse each other', async () => {
+  await withFixtures(async (ctx) => {
+    const { projectId, envId } = await createProject(ctx, 'Raced')
+    const repos = await ctx.db
+      .insert(repository)
+      .values(
+        [0, 1].map((n) => ({
+          organizationId: ctx.organizationId,
+          provider: 'github' as const,
+          repositoryUrl: `https://github.com/example/${n}-${crypto.randomUUID()}`,
+        }))
+      )
+      .returning({ id: repository.id })
+    const [first, second] = repos.map((row) => row.id)
+    await ctx.db
+      .update(environment)
+      .set({ options: composeNaming(first!) })
+      .where(eq(environment.id, envId))
+    await syncEnvironmentWatch(ctx.db, envId)
+
+    // The compose now names the other repository; four syncs run at once.
+    await ctx.db
+      .update(environment)
+      .set({ options: composeNaming(second!) })
+      .where(eq(environment.id, envId))
+    await Promise.all([1, 2, 3, 4].map(() => syncEnvironmentWatch(ctx.db, envId)))
+    const rows = await ctx.db
+      .select({ repositoryId: watch.repositoryId })
+      .from(watch)
+      .where(eq(watch.environmentId, envId))
+    assertEquals(
+      rows.map((row) => row.repositoryId),
+      [second]
+    )
+
+    await Promise.all([1, 2, 3].map(() => syncProjectWatch(ctx.db, projectId)))
+    assertEquals(await repositoryIsWatched(ctx.db, first!), false)
+  })
+})

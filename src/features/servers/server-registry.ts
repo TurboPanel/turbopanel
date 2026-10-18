@@ -401,7 +401,20 @@ export async function touchServerMetadata(
     update.daemon = daemonFeaturesColumnPatch(incomingFeatures)
   }
 
-  await db.update(server).set(update).where(eq(server.id, serverId))
+  try {
+    await db.update(server).set(update).where(eq(server.id, serverId))
+  } catch (err) {
+    // Another server already owns this machine key (a duplicate the baseline
+    // cleared, say). The rest of the hello still has to land, so write it
+    // without the key and say so once.
+    if (!machineKeyChanged || !isMachineKeyInUse(err)) throw err
+    compatLogWarn(
+      'servers',
+      `server ${serverId} reported a machine key another server already holds; keeping the stored key`
+    )
+    delete update.machineKey
+    await db.update(server).set(update).where(eq(server.id, serverId))
+  }
 
   await reconcileAfterHardwareReport(db, serverId, base, delta)
   await announceStoppedServices(

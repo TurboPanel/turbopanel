@@ -22,6 +22,8 @@ import type { AppEnv } from '../../app/app.ts'
 import { isValidEnvironmentName } from '../../contracts/directory-names.ts'
 import type { Db } from '../../db/connection.ts'
 import { environment } from '../../db/schema.ts'
+import { isUniqueViolationOn } from '../../db/unique-violation.ts'
+import { syncEnvironmentWatch } from '../../features/git/watch-records.ts'
 import {
   ENVIRONMENT_DEPLOY_RUNNING_ERROR,
   ENVIRONMENT_HAS_FOLDERS_ERROR,
@@ -34,6 +36,25 @@ import {
   lockEnvironmentRow,
   type Reader,
 } from '../../features/folders/records.ts'
+
+export const ENVIRONMENT_NAME_IN_USE_ERROR = 'environment_name_in_use'
+
+/** The per-project environment name lock (`uniq_environment_project_name`) firing. */
+export function isEnvironmentNameUniqueViolation(err: unknown): boolean {
+  return isUniqueViolationOn(err, 'uniq_environment_project_name')
+}
+
+/** The 409 answer for a name another environment of the project already has. */
+export function environmentNameInUse(c: Context<AppEnv>): Response {
+  return c.json(
+    {
+      error: ENVIRONMENT_NAME_IN_USE_ERROR,
+      message:
+        'Another environment of this project already has that name. Environment names are unique within a project.',
+    },
+    409
+  )
+}
 
 export type EnvironmentRenameFields = {
   /** The new name; a name cannot be cleared (a null is ignored). */
@@ -67,13 +88,41 @@ export async function updateEnvironmentChecked(
   c: Context<AppEnv>,
   db: Db,
   environmentId: string,
-  fields: EnvironmentRenameFields
+  fields: EnvironmentRenameFields,
+  extras: { syncWatch?: boolean } = {}
+): Promise<Response | null> {
+  try {
+    return await updateEnvironmentCheckedInTx(c, db, environmentId, fields, extras)
+  } catch (err) {
+    if (isEnvironmentNameUniqueViolation(err)) return environmentNameInUse(c)
+    throw err
+  }
+}
+
+async function updateEnvironmentCheckedInTx(
+  c: Context<AppEnv>,
+  db: Db,
+  environmentId: string,
+  fields: EnvironmentRenameFields,
+  extras: { syncWatch?: boolean }
 ): Promise<Response | null> {
   const { name: requestedName, ...others } = fields
   const values = { ...others, ...(requestedName == null ? {} : { name: requestedName }) }
+  // The options write and the watch rows it implies commit together, under the
+  // environment row lock.
   if (fields.name === undefined && fields.serverId === undefined) {
-    await db.update(environment).set(values).where(eq(environment.id, environmentId))
-    return null
+    if (!extras.syncWatch) {
+      await db.update(environment).set(values).where(eq(environment.id, environmentId))
+      return null
+    }
+    return await db.transaction(async (tx) => {
+      if (!(await lockEnvironmentRow(tx, environmentId))) {
+        return c.json({ error: 'Not found' }, 404)
+      }
+      await tx.update(environment).set(values).where(eq(environment.id, environmentId))
+      await syncEnvironmentWatch(tx, environmentId)
+      return null
+    })
   }
   return await db.transaction(async (tx) => {
     if (!(await lockEnvironmentRow(tx, environmentId))) {
@@ -104,6 +153,7 @@ export async function updateEnvironmentChecked(
       }
     }
     await tx.update(environment).set(values).where(eq(environment.id, environmentId))
+    if (extras.syncWatch) await syncEnvironmentWatch(tx, environmentId)
     return null
   })
 }
@@ -115,8 +165,6 @@ async function refuseRename(
   environmentId: string,
   nextName: string | null
 ): Promise<Response | null> {
-  // A name that is not changing is accepted as is, so an environment named
-  // before names became folder names can still be edited.
   if (!isValidEnvironmentName(nextName)) {
     return c.json(
       { error: ENVIRONMENT_NAME_INVALID_ERROR, message: ENVIRONMENT_NAME_RULE_MESSAGE },

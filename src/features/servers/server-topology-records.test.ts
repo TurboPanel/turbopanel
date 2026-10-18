@@ -15,7 +15,7 @@ import {
   recordTopologyGeneration,
   resetTopologyChurnLogForTests,
 } from './server-topology-records.ts'
-import { isMachineKeyInUse } from './server-registry.ts'
+import { isMachineKeyInUse, touchServerMetadata } from './server-registry.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -491,5 +491,19 @@ test('a machine key belongs to one server: a second row with it is refused with 
     assert(isMachineKeyInUse(caught), 'the unique violation names the machine key constraint')
     // Servers without a machine key never clash with each other.
     await db.update(server).set({ machineKey: null }).where(eq(server.id, serverIdA))
+  })
+})
+
+test('a hello that reports a machine key another server holds still lands its other facts', async () => {
+  await withTwoServerFixture(async ({ db, serverIdA, serverIdB }) => {
+    const machineKey = `mk-${crypto.randomUUID()}`
+    await db.update(server).set({ machineKey }).where(eq(server.id, serverIdA))
+    await touchServerMetadata(db, serverIdB, { hostname: 'moved-host', machineKey })
+    const [row] = await db
+      .select({ hostname: server.hostname, machineKey: server.machineKey })
+      .from(server)
+      .where(eq(server.id, serverIdB))
+    assertEquals(row?.hostname, 'moved-host')
+    assertEquals(row?.machineKey, null)
   })
 })

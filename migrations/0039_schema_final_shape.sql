@@ -146,8 +146,8 @@ WHERE jsonb_path_exists(p."options", '$."compose"."data"."services".**."x-turbop
 UPDATE "project" p SET "slug" = x."slug"
 FROM (
   SELECT q."id",
-    CASE WHEN q."base" = '' THEN 'project-' || substr(replace(q."id"::text, '-', ''), 1, 8)
-         ELSE q."base" || '-' || substr(replace(q."id"::text, '-', ''), 1, 8) END AS "slug"
+    CASE WHEN q."base" = '' THEN 'project-' || right(replace(q."id"::text, '-', ''), 8)
+         ELSE q."base" || '-' || right(replace(q."id"::text, '-', ''), 8) END AS "slug"
   FROM (
     SELECT "id", trim(both '-' from left(regexp_replace(lower(coalesce("name", '')), '[^a-z0-9]+', '-', 'g'), 30)) AS "base"
     FROM "project" WHERE "slug" IS NULL
@@ -158,11 +158,11 @@ WHERE p."id" = x."id";--> statement-breakpoint
 UPDATE "environment" e SET "name" = x."name"
 FROM (
   SELECT q."id",
-    CASE WHEN q."base" = '' THEN 'env-' || substr(replace(q."id"::text, '-', ''), 1, 8)
-         ELSE q."base" || '-' || substr(replace(q."id"::text, '-', ''), 1, 8) END AS "name"
+    CASE WHEN q."base" = '' THEN 'env-' || right(replace(q."id"::text, '-', ''), 8)
+         ELSE q."base" || '-' || right(replace(q."id"::text, '-', ''), 8) END AS "name"
   FROM (
     SELECT "id",
-      trim(both '-' from left(regexp_replace(lower(coalesce("name", '')), '[^a-z0-9_]+', '-', 'g'), 23)) AS "base"
+      trim(both '-' from left(regexp_replace(lower(coalesce("name", '')), '[^a-z0-9]+', '-', 'g'), 23)) AS "base"
     FROM "environment"
     WHERE "name" IS NULL
       OR "name" !~ '^[a-z0-9][a-z0-9_-]{0,31}$'
@@ -171,7 +171,7 @@ FROM (
 ) x
 WHERE e."id" = x."id";--> statement-breakpoint
 -- environment: two environments of one project may not share a name; later ones take a suffix.
-UPDATE "environment" e SET "name" = left(e."name", 23) || '-' || substr(replace(e."id"::text, '-', ''), 1, 8)
+UPDATE "environment" e SET "name" = left(e."name", 23) || '-' || right(replace(e."id"::text, '-', ''), 8)
 FROM (
   SELECT "id", row_number() OVER (PARTITION BY "project_id", "name" ORDER BY "created_at", "id") AS "n" FROM "environment"
 ) d

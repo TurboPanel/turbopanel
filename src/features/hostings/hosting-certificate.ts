@@ -20,7 +20,6 @@ import type { HostingBindScope, HostingProtocol } from './hosting-options.ts'
 
 const MS_PER_DAY = 86_400_000
 
-/** Key on `hosting.metadata` holding a not-yet-satisfiable Let's Encrypt request. */
 /** `hosting.metadata` key holding the DNS report of a waiting request (the request time is `hosting.pending_at`). */
 export const HOSTING_LETS_ENCRYPT_DNS_KEY = 'letsEncryptDns'
 

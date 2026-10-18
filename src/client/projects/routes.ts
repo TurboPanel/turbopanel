@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -952,7 +952,15 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     }
 
     try {
-      await db.update(project).set(patchFields).where(eq(project.id, id))
+      // The options write and the watch rows it implies commit together, under
+      // the project row lock.
+      await db.transaction(async (tx) => {
+        if (patchFields.options !== undefined) {
+          await tx.execute(sql`SELECT 1 FROM "project" WHERE "id" = ${id}::uuid FOR UPDATE`)
+        }
+        await tx.update(project).set(patchFields).where(eq(project.id, id))
+        if (patchFields.options !== undefined) await syncProjectWatch(tx, id)
+      })
     } catch (err) {
       if (isProjectNameUniqueViolation(err)) {
         return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
@@ -965,7 +973,6 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     if (patchFields.options !== undefined) {
       await adoptProjectRepository(db, id, patchFields.options, projectRepositoryId)
-      await syncProjectWatch(db, id)
       await reconcileServicesForProject(db, id)
     }
 
