@@ -126,7 +126,11 @@ function targetId(target: BackupRunTarget): string {
 function checkArtifactPath(report: BackupRunReportMessage, target: BackupRunTarget): string | null {
   const path = report.path ?? ''
   if (!ARTIFACT_PATH_RE.test(path)) return 'invalid artifact path'
-  if (path.split('/').some((part, index) => part === '..' || part === '.' || (part === '' && index > 0))) {
+  if (
+    path
+      .split('/')
+      .some((part, index) => part === '..' || part === '.' || (part === '' && index > 0))
+  ) {
     return 'invalid artifact path'
   }
   const relative = backupRelativePath(path, target.kind, targetId(target))

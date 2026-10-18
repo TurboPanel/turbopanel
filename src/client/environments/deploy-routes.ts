@@ -157,9 +157,7 @@ import {
   getOrgId,
   parseJsonBody,
 } from '../shared.ts'
-import {
-  resolveEffectivePlacementServerId,
-} from '../../features/projects/project-options.ts'
+import { resolveEffectivePlacementServerId } from '../../features/projects/project-options.ts'
 
 type DeployHostingPayload = EnvironmentDeployHosting
 

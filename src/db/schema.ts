@@ -716,10 +716,7 @@ export const server = pgTable(
       'server_machine_class_source_check',
       sql`machine_class_source IN ('detected', 'operator')`
     ),
-    check(
-      'server_offline_reason_check',
-      sql`offline_reason IN ('disconnect', 'sweep_stale')`
-    ),
+    check('server_offline_reason_check', sql`offline_reason IN ('disconnect', 'sweep_stale')`),
     check(
       'server_daemon_update_status_check',
       sql`daemon_update_status IN ('idle', 'updating', 'done', 'failed', 'expired')`
@@ -2275,7 +2272,9 @@ export const environment = pgTable(
      * without a name valid (32 hex characters, never a reserved name); every
      * create flow sends the typed name.
      */
-    name: text().default(sql`replace(uuidv7()::text, '-', '')`).notNull(),
+    name: text()
+      .default(sql`replace(uuidv7()::text, '-', '')`)
+      .notNull(),
     description: text('description'),
   },
   (table) => [
@@ -6159,7 +6158,6 @@ export const verification = pgTable(
   (table) => [unique('verification_identifier_unique').on(table.identifier)]
 )
 
-
 /**
  * Notifications — the tables behind "an event happened and someone should
  * hear about it". Four tables, added after the freeze (migration 0002, renamed to
@@ -6609,7 +6607,10 @@ export const bulwark = pgTable(
     check('bulwark_mode_check', sql`mode IN ('observe', 'managed', 'off')`),
     check('bulwark_state_check', sql`state IN ('idle', 'pending', 'confirmed', 'rolled_back')`),
     check('bulwark_generation_check', sql`generation >= 0`),
-    check('bulwark_last_kind_check', sql`last_kind IS NULL OR last_kind IN ('preview', 'apply', 'remove')`),
+    check(
+      'bulwark_last_kind_check',
+      sql`last_kind IS NULL OR last_kind IN ('preview', 'apply', 'remove')`
+    ),
     check(
       'bulwark_digest_format_check',
       sql`last_digest IS NULL OR last_digest ~ '^[a-f0-9]{64}$'`

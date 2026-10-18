@@ -1691,7 +1691,7 @@ export async function listSubnetsForServers(
     list.push({
       name: composeNetworkHostName(row.networkId),
       subnet: typeof row.cidr === 'string' ? row.cidr : String(row.cidr),
-      })
+    })
     byServer.set(row.serverId, list)
   }
   return byServer

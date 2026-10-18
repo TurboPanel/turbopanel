@@ -4,14 +4,7 @@
  */
 import { assertEquals, assertRejects } from '@std/assert'
 import { eq } from 'drizzle-orm'
-import {
-  folder,
-  organization,
-  principal,
-  service,
-  storage,
-  tenancy,
-} from '../../db/schema.ts'
+import { folder, organization, principal, service, storage, tenancy } from '../../db/schema.ts'
 import {
   type Ctx,
   createProject,

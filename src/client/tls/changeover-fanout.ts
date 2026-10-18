@@ -29,9 +29,7 @@ import { parseManagedResidual } from '../../features/managed/serialize.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { getManagedEngineSpec } from '../../features/managed/index.ts'
-import {
-  resolveEffectivePlacementServerId,
-} from '../../features/projects/project-options.ts'
+import { resolveEffectivePlacementServerId } from '../../features/projects/project-options.ts'
 import {
   binding,
   environment,

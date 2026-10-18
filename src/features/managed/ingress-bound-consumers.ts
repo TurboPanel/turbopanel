@@ -19,9 +19,7 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import { HOST_RUN_LOOPBACK_HOST } from '../../lib/naming.ts'
-import {
-  resolveEffectivePlacementServerId,
-} from '../projects/project-options.ts'
+import { resolveEffectivePlacementServerId } from '../projects/project-options.ts'
 
 /**
  * Managed clusters whose consumers (compose services) place on `serverId`.
@@ -56,10 +54,7 @@ export async function loadBoundManagedIdsForServer(
         or(
           eq(environment.serverId, serverId),
           eq(slot.serverId, serverId),
-          and(
-            isNull(environment.serverId),
-            sql`${project.defaultServerId} = ${serverId}`
-          )
+          and(isNull(environment.serverId), sql`${project.defaultServerId} = ${serverId}`)
         )
       )
     )
@@ -120,18 +115,13 @@ export async function serverHasHostRunBinding(
         or(
           eq(environment.serverId, serverId),
           eq(slot.serverId, serverId),
-          and(
-            isNull(environment.serverId),
-            sql`${project.defaultServerId} = ${serverId}`
-          )
+          and(isNull(environment.serverId), sql`${project.defaultServerId} = ${serverId}`)
         )
       )
     )
   return rows.some(
     (row) =>
-      resolveEffectivePlacementServerId(
-        row.environmentServerId,
-        row.projectDefaultServerId
-      ) === serverId || row.taskServerId === serverId
+      resolveEffectivePlacementServerId(row.environmentServerId, row.projectDefaultServerId) ===
+        serverId || row.taskServerId === serverId
   )
 }

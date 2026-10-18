@@ -35,9 +35,7 @@ import {
 } from '../managed/ingress-ports.ts'
 import type { PrivateEndpointError } from '../net/private-endpoint.ts'
 import { parseOrganizationOptions } from '../organizations/organization-options.ts'
-import {
-  resolveEffectivePlacementServerId,
-} from '../projects/project-options.ts'
+import { resolveEffectivePlacementServerId } from '../projects/project-options.ts'
 import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 import { isPrivateEndpointError } from '../net/private-endpoint.ts'
 
@@ -81,10 +79,7 @@ export async function loadServicePlacementServerId(
     .where(eq(service.id, serviceId))
     .limit(1)
   if (!row) return null
-  return resolveEffectivePlacementServerId(
-    row.environmentServerId,
-    row.projectDefaultServerId
-  )
+  return resolveEffectivePlacementServerId(row.environmentServerId, row.projectDefaultServerId)
 }
 
 async function loadClusterMembers(

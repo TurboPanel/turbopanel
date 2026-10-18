@@ -1598,8 +1598,10 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'Which environment or project follows which repository, derived from the compose document that names it; a project row reaches every environment of the project.',
     columns: {
-      environment_id: 'Set when the environment own compose names the repository; exactly one of this and `project_id` is set.',
-      project_id: 'Set when the project compose names the repository; exactly one of this and `environment_id` is set.',
+      environment_id:
+        'Set when the environment own compose names the repository; exactly one of this and `project_id` is set.',
+      project_id:
+        'Set when the project compose names the repository; exactly one of this and `environment_id` is set.',
     },
   },
   repository: {

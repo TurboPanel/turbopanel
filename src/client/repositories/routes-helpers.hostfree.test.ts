@@ -44,7 +44,7 @@ function mockContext(query: Record<string, string> = {}): Context<AppEnv> {
 async function expectErrorResponse(
   response: Response | Record<string, unknown>,
   status: number,
-  error: string,
+  error: string
 ): Promise<void> {
   if (!(response instanceof Response)) {
     throw new TypeError('expected error response')
@@ -54,96 +54,82 @@ async function expectErrorResponse(
 }
 
 test('assertProviderAuthShape enforces mutually exclusive clone lanes', () => {
-  assertEquals(
-    assertProviderAuthShape('github', null, null),
-    'source_installation_required',
-  )
+  assertEquals(assertProviderAuthShape('github', null, null), 'source_installation_required')
   assertEquals(
     assertProviderAuthShape('github', CONNECTION_ID, CREDENTIAL_ID),
-    'source_credential_not_supported',
+    'source_credential_not_supported'
   )
   assertEquals(assertProviderAuthShape('github', CONNECTION_ID, null), null)
 
-  assertEquals(
-    assertProviderAuthShape('gitlab', null, null),
-    'source_installation_required',
-  )
+  assertEquals(assertProviderAuthShape('gitlab', null, null), 'source_installation_required')
   assertEquals(
     assertProviderAuthShape('gitlab', CONNECTION_ID, CREDENTIAL_ID),
-    'source_auth_ambiguous',
+    'source_auth_ambiguous'
   )
   assertEquals(assertProviderAuthShape('gitlab', CONNECTION_ID, null), null)
   assertEquals(assertProviderAuthShape('gitlab', null, CREDENTIAL_ID), null)
 
   assertEquals(
     assertProviderAuthShape('git', CONNECTION_ID, null),
-    'source_installation_not_supported',
+    'source_installation_not_supported'
   )
   assertEquals(assertProviderAuthShape('git', null, CREDENTIAL_ID), null)
   assertEquals(assertProviderAuthShape('git', null, null), null)
 })
 
 test('validateRepositoryUrl accepts https and SSH only on credential lanes', () => {
+  assertEquals(validateRepositoryUrl('github', 'https://github.com/org/repo.git', null), {
+    ok: true,
+    url: 'https://github.com/org/repo.git',
+  })
+  assertEquals(validateRepositoryUrl('github', 'git@github.com:org/repo.git', null), {
+    ok: false,
+    error: 'source_repository_url_must_be_https',
+  })
+  assertEquals(validateRepositoryUrl('github', 'https://user@github.com/org/repo.git', null), {
+    ok: false,
+    error: 'source_repository_url_invalid',
+  })
+  assertEquals(validateRepositoryUrl('git', 'git@git.example:org/repo.git', null), {
+    ok: false,
+    error: 'source_ssh_requires_credential',
+  })
+  assertEquals(validateRepositoryUrl('git', 'git@git.example:org/repo.git', CREDENTIAL_ID), {
+    ok: true,
+    url: 'git@git.example:org/repo.git',
+  })
   assertEquals(
-    validateRepositoryUrl('github', 'https://github.com/org/repo.git', null),
-    { ok: true, url: 'https://github.com/org/repo.git' },
+    validateRepositoryUrl('gitlab', 'ssh://git@gitlab.example/org/repo.git', CREDENTIAL_ID),
+    { ok: true, url: 'ssh://git@gitlab.example/org/repo.git' }
   )
-  assertEquals(
-    validateRepositoryUrl('github', 'git@github.com:org/repo.git', null),
-    { ok: false, error: 'source_repository_url_must_be_https' },
-  )
-  assertEquals(
-    validateRepositoryUrl('github', 'https://user@github.com/org/repo.git', null),
-    { ok: false, error: 'source_repository_url_invalid' },
-  )
-  assertEquals(
-    validateRepositoryUrl('git', 'git@git.example:org/repo.git', null),
-    { ok: false, error: 'source_ssh_requires_credential' },
-  )
-  assertEquals(
-    validateRepositoryUrl('git', 'git@git.example:org/repo.git', CREDENTIAL_ID),
-    { ok: true, url: 'git@git.example:org/repo.git' },
-  )
-  assertEquals(
-    validateRepositoryUrl(
-      'gitlab',
-      'ssh://git@gitlab.example/org/repo.git',
-      CREDENTIAL_ID,
-    ),
-    { ok: true, url: 'ssh://git@gitlab.example/org/repo.git' },
-  )
-  assertEquals(
-    validateRepositoryUrl('git', 'not-a-url', CREDENTIAL_ID),
-    { ok: false, error: 'source_repository_url_invalid' },
-  )
-  assertEquals(
-    validateRepositoryUrl('github', '', null),
-    { ok: false, error: 'source_repository_url_invalid' },
-  )
+  assertEquals(validateRepositoryUrl('git', 'not-a-url', CREDENTIAL_ID), {
+    ok: false,
+    error: 'source_repository_url_invalid',
+  })
+  assertEquals(validateRepositoryUrl('github', '', null), {
+    ok: false,
+    error: 'source_repository_url_invalid',
+  })
 })
 
 test('validateRepositoryUrl returns the canonical .git spelling', () => {
   // The accepted URL is what the per-organization unique index dedupes on, so
   // every spelling of one repository must leave here identical.
+  assertEquals(validateRepositoryUrl('github', 'https://GitHub.com/org/repo', null), {
+    ok: true,
+    url: 'https://github.com/org/repo.git',
+  })
+  assertEquals(validateRepositoryUrl('github', 'https://github.com/org/repo/', null), {
+    ok: true,
+    url: 'https://github.com/org/repo.git',
+  })
+  assertEquals(validateRepositoryUrl('git', 'git@Git.Example:org/repo', CREDENTIAL_ID), {
+    ok: true,
+    url: 'git@git.example:org/repo.git',
+  })
   assertEquals(
-    validateRepositoryUrl('github', 'https://GitHub.com/org/repo', null),
-    { ok: true, url: 'https://github.com/org/repo.git' },
-  )
-  assertEquals(
-    validateRepositoryUrl('github', 'https://github.com/org/repo/', null),
-    { ok: true, url: 'https://github.com/org/repo.git' },
-  )
-  assertEquals(
-    validateRepositoryUrl('git', 'git@Git.Example:org/repo', CREDENTIAL_ID),
-    { ok: true, url: 'git@git.example:org/repo.git' },
-  )
-  assertEquals(
-    validateRepositoryUrl(
-      'gitlab',
-      'ssh://git@gitlab.example/org/repo',
-      CREDENTIAL_ID,
-    ),
-    { ok: true, url: 'ssh://git@gitlab.example/org/repo.git' },
+    validateRepositoryUrl('gitlab', 'ssh://git@gitlab.example/org/repo', CREDENTIAL_ID),
+    { ok: true, url: 'ssh://git@gitlab.example/org/repo.git' }
   )
 })
 
@@ -167,7 +153,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
       repositoryUrl: 'https://github.com/org/repo.git',
     }),
     400,
-    'Invalid request',
+    'Invalid request'
   )
   // The parent-scope columns are gone; a caller still naming them learns at
   // the write boundary instead of being silently ignored.
@@ -179,7 +165,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
       repositoryUrl: 'https://github.com/org/repo.git',
     }),
     400,
-    'source_scope_not_supported',
+    'source_scope_not_supported'
   )
   await expectErrorResponse(
     parseSourceCreateBody(c, {
@@ -189,7 +175,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
       repositoryUrl: 'https://github.com/org/repo.git',
     }),
     400,
-    'source_scope_not_supported',
+    'source_scope_not_supported'
   )
   await expectErrorResponse(
     parseSourceCreateBody(c, {
@@ -197,7 +183,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
       repositoryUrl: 'https://github.com/org/repo.git',
     }),
     400,
-    'source_installation_required',
+    'source_installation_required'
   )
   await expectErrorResponse(
     parseSourceCreateBody(c, {
@@ -206,7 +192,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
       repositoryUrl: 12,
     }),
     400,
-    'Invalid request',
+    'Invalid request'
   )
   await expectErrorResponse(
     parseSourceCreateBody(c, {
@@ -215,7 +201,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
       repositoryUrl: 'https://github.com/org/repo.git',
     }),
     400,
-    'Invalid request',
+    'Invalid request'
   )
   await expectErrorResponse(
     parseSourceCreateBody(c, {
@@ -225,7 +211,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
       subdirectory: '../escape',
     }),
     400,
-    'Invalid request',
+    'Invalid request'
   )
   await expectErrorResponse(
     parseSourceCreateBody(c, {
@@ -235,7 +221,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
       autoDeploy: 'whenever',
     }),
     400,
-    'Invalid request',
+    'Invalid request'
   )
   await expectErrorResponse(
     parseSourceCreateBody(c, {
@@ -245,7 +231,7 @@ test('parseSourceCreateBody defaults github + disabled and rejects bad pairs', a
       metadata: ['not-jsonb'],
     }),
     400,
-    'Invalid request',
+    'Invalid request'
   )
 
   const withKey = parseSourceCreateBody(c, {
@@ -280,42 +266,38 @@ test('parseSourcePatchBody rejects immutable scope and rechecks auth + URL', asy
   await expectErrorResponse(
     parseSourcePatchBody(c, { provider: 'gitlab' }, existing),
     400,
-    'source_scope_immutable',
+    'source_scope_immutable'
   )
   await expectErrorResponse(
     parseSourcePatchBody(c, { serviceId: SERVICE_ID }, existing),
     400,
-    'source_scope_immutable',
+    'source_scope_immutable'
   )
   await expectErrorResponse(
     parseSourcePatchBody(c, { connectionId: 'bad' }, existing),
     400,
-    'Invalid request',
+    'Invalid request'
   )
   await expectErrorResponse(
     parseSourcePatchBody(c, { connectionId: null }, existing),
     400,
-    'source_installation_required',
+    'source_installation_required'
   )
   await expectErrorResponse(
-    parseSourcePatchBody(
-      c,
-      { repositoryUrl: 'git@github.com:org/repo.git' },
-      existing,
-    ),
+    parseSourcePatchBody(c, { repositoryUrl: 'git@github.com:org/repo.git' }, existing),
     400,
-    'source_repository_url_must_be_https',
+    'source_repository_url_must_be_https'
   )
   await expectErrorResponse(
     parseSourcePatchBody(c, { autoDeploy: 'nope' }, existing),
     400,
-    'Invalid request',
+    'Invalid request'
   )
 
   const patched = parseSourcePatchBody(
     c,
     { autoDeploy: 'checks_passed', defaultBranch: 'main' },
-    existing,
+    existing
   )
   if (patched instanceof Response) {
     throw new TypeError('expected patch fields')
@@ -333,18 +315,18 @@ test('parseSourcePatchBody rejects immutable scope and rechecks auth + URL', asy
   await expectErrorResponse(
     parseSourcePatchBody(c, { secretId: null }, gitExisting),
     400,
-    'source_ssh_requires_credential',
+    'source_ssh_requires_credential'
   )
   await expectErrorResponse(
     parseSourcePatchBody(c, { repositoryUrl: 9 }, gitExisting),
     400,
-    'Invalid request',
+    'Invalid request'
   )
 
   const urlPatched = parseSourcePatchBody(
     c,
     { repositoryUrl: 'https://git.example/org/repo.git' },
-    gitExisting,
+    gitExisting
   )
   if (urlPatched instanceof Response) {
     throw new TypeError('expected url patch fields')
@@ -397,14 +379,17 @@ test('serializeSourceRow and serializeConnectionRow fold optional facts', () => 
     lastInspectedCommitSha: null,
   })
   assertEquals(
-    serializeSourceRow({ ...row, detectedDefaultBranch: 'trunk', defaultBranchCheckedAt: '2026-01-04T00:00:00.000Z' })
-      .metadata,
+    serializeSourceRow({
+      ...row,
+      detectedDefaultBranch: 'trunk',
+      defaultBranchCheckedAt: '2026-01-04T00:00:00.000Z',
+    }).metadata,
     {
       detectedDefaultBranch: 'trunk',
       defaultBranchCheckedAt: '2026-01-04T00:00:00.000Z',
       lastInspectedAt: null,
       lastInspectedCommitSha: null,
-    },
+    }
   )
   assertEquals(serializeSourceRow(row).options, null)
   assertEquals(
@@ -413,7 +398,7 @@ test('serializeSourceRow and serializeConnectionRow fold optional facts', () => 
       webhookReachable: false,
       reachabilityNote: 'LAN-only',
     }).reachabilityNote,
-    'LAN-only',
+    'LAN-only'
   )
   assertEquals(SOURCE_REFERENCED_BY_COMPOSE_ERROR, 'source_referenced_by_compose')
 
@@ -430,7 +415,7 @@ test('serializeSourceRow and serializeConnectionRow fold optional facts', () => 
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-02T00:00:00.000Z',
     }).suspended,
-    true,
+    true
   )
   assertEquals(
     serializeConnectionRow({
@@ -445,7 +430,7 @@ test('serializeSourceRow and serializeConnectionRow fold optional facts', () => 
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-02T00:00:00.000Z',
     }).suspended,
-    false,
+    false
   )
 })
 
@@ -471,7 +456,7 @@ test('attach accepts only what a repository pick can name', () => {
       repositoryExternalId: '99',
       repositoryUrl: 'https://GitHub.com/acme/app/',
     })?.repositoryUrl,
-    'https://github.com/acme/app.git',
+    'https://github.com/acme/app.git'
   )
 
   // An omitted or blank branch means "the repository's own default", which is
@@ -482,7 +467,7 @@ test('attach accepts only what a repository pick can name', () => {
       repositoryExternalId: '99',
       repositoryUrl: 'https://github.com/acme/app.git',
     })?.defaultBranch,
-    null,
+    null
   )
   assertEquals(
     parseSourceAttachBody({
@@ -491,7 +476,7 @@ test('attach accepts only what a repository pick can name', () => {
       repositoryUrl: 'https://github.com/acme/app.git',
       defaultBranch: '   ',
     })?.defaultBranch,
-    null,
+    null
   )
 })
 
@@ -524,7 +509,7 @@ test('attach rejects a malformed body', () => {
       repositoryExternalId: '99',
       repositoryUrl: 'https://github.com/acme/app.git',
     }),
-    null,
+    null
   )
   // The provider-side id is what webhook matching keys on, so a blank one
   // would make the row unroutable.
@@ -534,7 +519,7 @@ test('attach rejects a malformed body', () => {
       repositoryExternalId: '   ',
       repositoryUrl: 'https://github.com/acme/app.git',
     }),
-    null,
+    null
   )
   assertEquals(
     parseSourceAttachBody({
@@ -542,7 +527,7 @@ test('attach rejects a malformed body', () => {
       repositoryExternalId: '99',
       repositoryUrl: '',
     }),
-    null,
+    null
   )
   assertEquals(
     parseSourceAttachBody({
@@ -551,6 +536,6 @@ test('attach rejects a malformed body', () => {
       repositoryUrl: 'https://github.com/acme/app.git',
       defaultBranch: 42,
     }),
-    null,
+    null
   )
 })
