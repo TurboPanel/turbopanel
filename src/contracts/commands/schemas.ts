@@ -738,9 +738,10 @@ export const MAX_REPORTED_FOLDERS = 20000
 /**
  * The folders list of a reconcile result. A list is a complete picture of the
  * host or it is nothing: a list longer than the cap is dropped whole (never
- * truncated, which would read as folders gone), and an entry that fails the
- * folder rules is left out of an otherwise complete list. `undefined` means
- * "no list", so nothing is concluded from it.
+ * truncated, which would read as folders gone), and so is a list with an entry
+ * that fails the folder rules (that entry may be a real folder, and the rest
+ * would then read as the whole host). `undefined` means "no list", so nothing
+ * is concluded from it.
  */
 export function parseReportedFolders(value: unknown): ReportedFolder[] | undefined {
   if (!Array.isArray(value) || value.length > MAX_REPORTED_FOLDERS) {
@@ -748,8 +749,8 @@ export function parseReportedFolders(value: unknown): ReportedFolder[] | undefin
   }
   const out: ReportedFolder[] = []
   for (const entry of value) {
-    if (!isRecord(entry) || (entry.kind !== 'service' && entry.kind !== 'volume')) continue
-    if (typeof entry.present !== 'boolean') continue
+    if (!isRecord(entry) || (entry.kind !== 'service' && entry.kind !== 'volume')) return undefined
+    if (typeof entry.present !== 'boolean') return undefined
     try {
       const ref = parseFolderRefParts(
         { owner: entry.owner, scope: entry.scope, slug: entry.slug },
@@ -757,7 +758,7 @@ export function parseReportedFolders(value: unknown): ReportedFolder[] | undefin
       )
       out.push({ ...folderRefParts(ref), kind: entry.kind, present: entry.present })
     } catch {
-      // One entry that fails the folder rules is left out.
+      return undefined
     }
   }
   return out

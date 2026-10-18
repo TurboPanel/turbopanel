@@ -201,6 +201,7 @@ export async function runFolderRemovalSweep(
         FROM command cmd
         WHERE cmd.server_id = srv.id
           AND cmd.name = ${FOLDERS_REMOVE_COMMAND}
+          AND cmd.status <> 'failed'
           AND cmd.created_at >= GREATEST(
             COALESCE(srv.status_changed_at, '-infinity'::timestamptz),
             now() - make_interval(mins => ${FOLDER_REMOVAL_RETRY_MINUTES})

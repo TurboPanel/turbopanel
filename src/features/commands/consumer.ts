@@ -1211,11 +1211,12 @@ async function applyFolderRemovalReportsSafely(
   db: Db,
   record: DispatchableCommandRecord,
   serverId: string,
-  reports: readonly FolderRemovalReport[] | undefined
+  reports: readonly FolderRemovalReport[] | undefined,
+  options: { updatedBefore?: string } = {}
 ): Promise<void> {
   if (reports === undefined || reports.length === 0) return
   try {
-    await applyFolderRemovalReports(db, serverId, reports)
+    await applyFolderRemovalReports(db, serverId, reports, options)
   } catch (err) {
     compatLogWarn(
       'command-consumer',
@@ -1235,7 +1236,9 @@ async function applyFoldersRemoveSideEffect(
     db,
     record,
     envelope.serverId,
-    parseFoldersRemoveResult(result).folders
+    parseFoldersRemoveResult(result).folders,
+    // The rows were marked before the command was built, so a row changed after it was is in use again.
+    { updatedBefore: record.createdAt }
   )
 }
 
@@ -1248,7 +1251,7 @@ async function reconcileReportedFoldersSafely(
 ): Promise<void> {
   if (folders === undefined) return
   try {
-    await reconcileReportedFolders(db, serverId, folders)
+    await reconcileReportedFolders(db, serverId, folders, { listedAfter: record.createdAt })
   } catch (err) {
     compatLogWarn(
       'command-consumer',

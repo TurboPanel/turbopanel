@@ -5,6 +5,7 @@
 import { assertEquals } from '@std/assert'
 import { eq, sql } from 'drizzle-orm'
 import { folder, principal, server } from '../../db/schema.ts'
+import { applyFolderRemovalReports } from './reports.ts'
 import { withFolderFixtures as withFixtures } from '../../test-fixtures/folder-world.test.support.ts'
 import { getCommandDispatchPayload } from '../commands/command-records.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
@@ -36,7 +37,7 @@ type Ctx = Parameters<Parameters<typeof withFixtures>[0]>[0]
 
 async function addRow(
   ctx: Ctx,
-  fields: { kind: 'service' | 'volume'; slug: string; state: string; assetId?: string }
+  fields: { kind: 'service' | 'volume'; slug: string; state: string }
 ): Promise<void> {
   await ctx.db.insert(folder).values({
     serverId: ctx.serverId,
@@ -119,7 +120,7 @@ test('the sweep asks a connected server once, again after it reconnects, and nev
     const asked = () => sent.filter((envelope) => envelope.serverId === ctx.serverId).length
 
     // Offline: the rows keep waiting.
-    assertEquals((await runFolderRemovalSweep(ctx.db, queue)).enqueued >= 0, true)
+    await runFolderRemovalSweep(ctx.db, queue)
     assertEquals(asked(), 0)
 
     await ctx.db
@@ -167,5 +168,33 @@ test('the sweep asks again after the retry window even without a reconnect', asy
     )
     await runFolderRemovalSweep(ctx.db, queue)
     assertEquals(sent.length, 2)
+  })
+})
+
+test('a removal report does not clear a row that changed after the command was built', async () => {
+  await withFixtures(async (ctx) => {
+    await addRow(ctx, { kind: 'volume', slug: 'gone', state: 'removing' })
+    const login = await owner(ctx)
+    const report = [
+      { owner: login, scope: 'common', kind: 'volume' as const, slug: 'gone', removed: true },
+    ]
+    // Built before the row's last change: the folder may be in use again.
+    const before = new Date(Date.now() - 60_000).toISOString()
+    assertEquals(
+      (await applyFolderRemovalReports(ctx.db, ctx.serverId, report, { updatedBefore: before }))
+        .cleared,
+      0
+    )
+    assertEquals(
+      (await ctx.db.select().from(folder).where(eq(folder.serverId, ctx.serverId))).length,
+      1
+    )
+    // Built after it: the host's word stands.
+    const after = new Date(Date.now() + 60_000).toISOString()
+    assertEquals(
+      (await applyFolderRemovalReports(ctx.db, ctx.serverId, report, { updatedBefore: after }))
+        .cleared,
+      1
+    )
   })
 })

@@ -13,7 +13,7 @@
  * gets `-2` to `-99` on a clash. A row at the same server, site owner, scope,
  * kind and name is the final guard (`uniq_folder_location`).
  */
-import { and, eq, inArray, isNull, like, ne, or, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, like, lt, ne, or, sql } from 'drizzle-orm'
 import {
   COMMON_SCOPE,
   type FolderRefParts,
@@ -758,6 +758,11 @@ export async function confirmFolderRemoved(
     scope: string
     kind: FolderKindValue
     slug: string
+    /**
+     * Only a row last changed before this time is deleted: a report about a
+     * command built earlier must not clear a row that was planned again since.
+     */
+    updatedBefore?: string
   }
 ): Promise<boolean> {
   const deleted = await db
@@ -769,7 +774,8 @@ export async function confirmFolderRemoved(
         eq(folder.scope, where.scope),
         eq(folder.kind, where.kind),
         eq(folder.slug, where.slug),
-        eq(folder.state, 'removing')
+        eq(folder.state, 'removing'),
+        where.updatedBefore === undefined ? undefined : lt(folder.updatedAt, where.updatedBefore)
       )
     )
     .returning({ id: folder.id })

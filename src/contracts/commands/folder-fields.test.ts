@@ -225,16 +225,11 @@ it('reads the folders a reconcile lists, or nothing when the list cannot be trus
   assertEquals(parseReportedFolders([]), [])
   assertEquals(parseReportedFolders(undefined), undefined)
   assertEquals(parseReportedFolders('x'), undefined)
-  // One entry that breaks the folder rules or the shape is left out of a complete list.
-  assertEquals(
-    parseReportedFolders([
-      listed,
-      { ...listed, scope: 'volumes' },
-      { ...listed, present: 'yes' },
-      3,
-    ]),
-    [listed]
-  )
+  // One entry that breaks the folder rules or the shape voids the list: it may be a
+  // real folder, and the rest would then read as the whole host.
+  assertEquals(parseReportedFolders([listed, { ...listed, scope: 'volumes' }]), undefined)
+  assertEquals(parseReportedFolders([listed, { ...listed, present: 'yes' }]), undefined)
+  assertEquals(parseReportedFolders([listed, 3]), undefined)
   const reconcile = parsePrincipalsReconcileResult({
     principalsApplied: 0,
     keysChanged: [],

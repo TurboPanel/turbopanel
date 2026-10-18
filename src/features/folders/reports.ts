@@ -1,7 +1,8 @@
 /**
  * What a host says about folders, written onto the `folder` rows.
  *
- * Four reports reach here, none of which deletes a file:
+ * Reports reach here, and none of them deletes a file on a host (only a
+ * removal command does that):
  *
  * - a removal result (`server.folders.remove`, and the folders an
  *   `environment.stop` was told to reclaim): a folder the host says is gone
@@ -15,14 +16,16 @@
  *   does not have becomes `missing` (which no longer locks), a `missing` row
  *   that came back is `present` again, a `removing` or `orphan` row the host no
  *   longer has is deleted, and a folder with no row at all gets an `orphan` row;
- * - the owner is always the applied Linux login the host reports, matched to
- *   the principal rows that carry it.
+ *
+ * The owner is always the applied Linux login the host reports, matched to the
+ * principal rows that carry it; an unknown folder of a login with no placement
+ * on the server is logged, not recorded.
  *
  * A report only moves a row it names, never creates a folder the panel plans,
  * and a stale report cannot lift a lock on a folder that is in use again
  * (`confirmFolderRemoved` only deletes a `removing` row).
  */
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { COMMON_SCOPE } from '../../contracts/directory-names.ts'
 import type { Db } from '../../db/connection.ts'
 import { environment, folder, principal, principalPlacement } from '../../db/schema.ts'
@@ -76,7 +79,8 @@ async function principalIdsByLogin(
 export async function applyFolderRemovalReports(
   db: Pick<Db, 'delete' | 'select'>,
   serverId: string,
-  reports: readonly FolderRemovalReport[]
+  reports: readonly FolderRemovalReport[],
+  options: { updatedBefore?: string } = {}
 ): Promise<RemovalSummary> {
   const summary: RemovalSummary = { cleared: 0, stayed: 0 }
   if (reports.length === 0) return summary
@@ -104,6 +108,7 @@ export async function applyFolderRemovalReports(
         scope: report.scope,
         kind: report.kind,
         slug: report.slug,
+        ...(options.updatedBefore === undefined ? {} : { updatedBefore: options.updatedBefore }),
       })
       if (cleared) summary.cleared += 1
     })
@@ -172,7 +177,8 @@ const keyOf = (owner: string, scope: string, kind: string, slug: string): string
 export async function reconcileReportedFolders(
   db: Db,
   serverId: string,
-  reported: readonly ReportedFolder[]
+  reported: readonly ReportedFolder[],
+  options: { listedAfter?: string } = {}
 ): Promise<ReconcileSummary> {
   const summary: ReconcileSummary = {
     markedMissing: 0,
@@ -193,6 +199,7 @@ export async function reconcileReportedFolders(
       kind: folder.kind,
       slug: folder.slug,
       principalId: folder.principalId,
+      updatedAt: folder.updatedAt,
       login: principal.appliedUsername,
     })
     .from(folder)
@@ -205,6 +212,9 @@ export async function reconcileReportedFolders(
   for (const row of rows) {
     const key = keyOf(row.login, row.scope, row.kind, row.slug)
     known.add(key)
+    // The listing was taken after the command was built: a row changed since
+    // (planned again, deployed) may not be in it yet, so it is left for the next one.
+    if (options.listedAfter !== undefined && row.updatedAt >= options.listedAfter) continue
     const found = onHost.has(key)
     if (found && row.state === 'missing') toPresent.push(row.id)
     else if (!found && row.state === 'present') toMissing.push(row.id)
@@ -347,7 +357,7 @@ async function environmentNamed(
   const rows = await db
     .select({ id: environment.id })
     .from(environment)
-    .where(and(eq(environment.projectId, projectId), sql`${environment.name} = ${name}`))
+    .where(and(eq(environment.projectId, projectId), eq(environment.name, name)))
     .limit(2)
   return rows.length === 1 ? rows[0]!.id : null
 }
