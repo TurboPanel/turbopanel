@@ -5767,3 +5767,50 @@ test('processCommandEnvelope keeps member row failed/retryable when destroy fail
     }
   })
 })
+
+test('processCommandEnvelope leaves a folder row alone when it changed after the reconcile command was built', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [{ owner: 'one', kind: 'volume', slug: 'busy', state: 'present' }],
+      async ({ one }) => {
+        const record = await createCommandRecord(ctx.db, {
+          serverId: ctx.serverId,
+          ...TEST_COMMAND_ACTOR,
+          type: 'server.principals.reconcile',
+          payload: { principals: [] },
+        })
+        // A deploy touched the row after the command was built, so a listing taken
+        // for that command cannot be trusted about it.
+        await ctx.db
+          .update(folder)
+          .set({ state: 'present' })
+          .where(eq(folder.serverId, ctx.serverId))
+        const registry = createDispatchMockRegistry(ctx.serverId, {
+          waitForRequestResult: {
+            serverId: ctx.serverId,
+            requestId: record.id,
+            requestKind: 'command-dispatch',
+            status: 'done',
+            createdAt: record.createdAt,
+            expiresAt: record.createdAt,
+            finishedAt: new Date().toISOString(),
+            result: {
+              principalsApplied: 0,
+              keysChanged: [],
+              keysRemoved: [],
+              sshdReloaded: false,
+              sftpChroot: false,
+              folders: [],
+              warnings: [],
+            },
+          },
+        })
+        await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId))
+        assertEquals(await folderStates(ctx.db, ctx.serverId), { 'volume:busy': 'present' })
+        assertEquals(one.login.length > 0, true)
+      }
+    )
+  })
+})

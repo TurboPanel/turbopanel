@@ -186,6 +186,9 @@ export async function reconcileReportedFolders(
     cleared: 0,
     orphansFound: 0,
   }
+  // Timestamps come back from the database and from the command record in different
+  // text forms, so compare them as times, never as strings.
+  const listedAfter = options.listedAfter === undefined ? null : Date.parse(options.listedAfter)
   const onHost = new Set(
     reported
       .filter((entry) => entry.present)
@@ -214,7 +217,7 @@ export async function reconcileReportedFolders(
     known.add(key)
     // The listing was taken after the command was built: a row changed since
     // (planned again, deployed) may not be in it yet, so it is left for the next one.
-    if (options.listedAfter !== undefined && row.updatedAt >= options.listedAfter) continue
+    if (listedAfter !== null && Date.parse(row.updatedAt) >= listedAfter) continue
     const found = onHost.has(key)
     if (found && row.state === 'missing') toPresent.push(row.id)
     else if (!found && row.state === 'present') toMissing.push(row.id)

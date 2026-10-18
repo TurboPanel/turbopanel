@@ -242,10 +242,7 @@ export async function sendFolderRemovalsAfterDelete(
   await enqueueFolderRemovals(
     db,
     queue,
-    {
-      actorType: 'user',
-      actorId: userId ?? 'unknown',
-    },
+    userId === undefined ? null : { actorType: 'user', actorId: userId },
     serverIds
   )
 }
