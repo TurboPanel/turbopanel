@@ -28,8 +28,8 @@ INSERT INTO teammate (id, team_id, user_id) VALUES
 INSERT INTO workspace (id, organization_id, name, kind) VALUES
   ('00000000-0000-7000-8000-000000000201', '00000000-0000-7000-8000-000000000101', 'Main', 'user');
 
-INSERT INTO project (id, workspace_id, organization_id, name, slug) VALUES
-  ('00000000-0000-7000-8000-000000000301', '00000000-0000-7000-8000-000000000201', '00000000-0000-7000-8000-000000000101', 'Upgrade Project', 'upgrade-project');
+INSERT INTO project (id, workspace_id, organization_id, name) VALUES
+  ('00000000-0000-7000-8000-000000000301', '00000000-0000-7000-8000-000000000201', '00000000-0000-7000-8000-000000000101', 'Upgrade Project');
 
 INSERT INTO datacenter (id, organization_id, name) VALUES
   ('00000000-0000-7000-8000-000000000401', '00000000-0000-7000-8000-000000000101', 'Rack One');
