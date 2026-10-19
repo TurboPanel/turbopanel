@@ -100,7 +100,10 @@ export function assertTpSecretPrivateKey(sealed: string): void {
 }
 
 export type CaRotationConflictReason =
-  'ca_rotation_in_progress' | 'no_pending_rotation' | 'ca_rotation_not_converged'
+  | 'ca_rotation_in_progress'
+  | 'no_pending_rotation'
+  | 'ca_rotation_not_converged'
+  | 'ca_leaves_outstanding'
 
 export type CaRotationApiResult = {
   serverId: string
@@ -120,6 +123,8 @@ export type CaRotationStatusBody = {
   state: string
   results: CaRotationApiResult[]
   retiredCaStillRequired: boolean
+  /** When the previous generation is retired by itself; null before fan-out finishes. */
+  retireBy: string | null
 }
 
 export function rotationConflictResponse(reason: CaRotationConflictReason): {
@@ -156,6 +161,7 @@ export function rotationStatusResponse(params: {
   toGeneration: number
   state: string
   results: readonly CaRotationApiResult[]
+  retireBy?: string | null
 }): CaRotationStatusBody {
   return {
     rotationId: params.rotationId,
@@ -164,6 +170,7 @@ export function rotationStatusResponse(params: {
     state: params.state,
     results: [...params.results],
     retiredCaStillRequired: params.state !== 'completed',
+    retireBy: params.state === 'awaiting_retire' ? (params.retireBy ?? null) : null,
   }
 }
 

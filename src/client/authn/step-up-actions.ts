@@ -41,6 +41,8 @@ export const STEP_UP_ACTIONS = {
   'managed.disaster_recovery.promote': 'Promote a disaster-recovery replica of a managed database',
   'tls.ca.rotate': "Rotate the organization's certificate authority",
   'tls.ca.retire': 'Retire the previous certificate authority after a rotation',
+  'tls.leaf.stale': 'Mark a certificate as not needing renewal',
+  'tls.leaf.delete': 'Delete the record of a certificate signed by the organization CA',
   'organization.reauth_settings.update': 'Change the re-authentication setting',
 } as const
 

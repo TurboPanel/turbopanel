@@ -32,6 +32,7 @@ import { registerHostingDeleteStepUp } from './hostings/delete-step-up.ts'
 import { registerHostingRoutes } from './hostings/routes.ts'
 import { registerHostingLetsEncryptRoutes } from './hostings/letsencrypt-routes.ts'
 import { registerTlsCaStepUp } from './tls/ca-step-up.ts'
+import { registerTlsLeafRoutes } from './tls/leaf-routes.ts'
 import { registerTlsRoutes } from './tls/routes.ts'
 import { registerLicenseRoutes } from './licenses/routes.ts'
 import {
@@ -175,6 +176,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerServerLimitsRoutes(client, opts)
   registerTlsCaStepUp(client, opts)
   registerTlsRoutes(client, opts)
+  registerTlsLeafRoutes(client, opts)
   registerTeamRoutes(client, opts)
 
   client.get('/openapi.json', (c) => {

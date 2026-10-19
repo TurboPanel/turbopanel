@@ -62,6 +62,7 @@ function leaseDb(store: StoredRow[]): Db {
               createdAt: now,
               updatedAt: now,
               options: null,
+              retireBy: null,
             }
             store.push(row)
             return Promise.resolve([row])
@@ -116,6 +117,7 @@ test('tryBeginCaRotation resumes while awaiting_retire', async () => {
       createdAt: now,
       updatedAt: now,
       options: null,
+      retireBy: null,
     },
   ]
   const row = await tryBeginCaRotation(leaseDb(store), ORG_ID)
@@ -140,6 +142,7 @@ test('tryBeginCaRotation returns null for a fresh in_progress lease', async () =
       createdAt: startedAt,
       updatedAt: startedAt,
       options: null,
+      retireBy: null,
     },
   ]
   const row = await tryBeginCaRotation(leaseDb(store), ORG_ID, nowMs)
@@ -165,6 +168,7 @@ test('tryBeginCaRotation resumes a minted in_progress journal without clearing p
       createdAt: startedAt,
       updatedAt: startedAt,
       options: null,
+      retireBy: null,
     },
   ]
   const row = await tryBeginCaRotation(leaseDb(store), ORG_ID, nowMs)
@@ -194,6 +198,7 @@ test('tryBeginCaRotation steals a stale in_progress journal that never minted', 
       createdAt: startedAt,
       updatedAt: startedAt,
       options: null,
+      retireBy: null,
     },
   ]
   const row = await tryBeginCaRotation(leaseDb(store), ORG_ID, nowMs)
@@ -223,6 +228,7 @@ test('loadLatestCaRotation and updateCaRotationJournal round-trip state', async 
       createdAt: now,
       updatedAt: now,
       options: null,
+      retireBy: null,
     },
   ]
   const db = leaseDb(store)

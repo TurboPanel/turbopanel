@@ -11,17 +11,27 @@
  * alongside `owner` / `expiresAt` — a concurrent cursor save between this
  * tick's read and its steal attempt must be caught, not silently missed.
  */
-import { and, asc, count, eq, gt, isNull, lt, or, sql } from 'drizzle-orm'
+import { and, asc, eq, gt, isNull, lt, or, sql } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
-import { leaf, lease, tls } from '../../db/schema.ts'
+import { leaf, lease, server, tls } from '../../db/schema.ts'
 import { ORGANIZATION_CA_LEAF_VALID_DAYS } from '../../lib/tls/self-signed.ts'
 import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
 import { enqueueApplyForManagedCluster } from './changeover-fanout.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { systemRotationContext } from './system-context.ts'
+import { retireOverdueRotations } from './rotation-retire.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
+import {
+  clipLeafText,
+  LEAF_STALE_NOT_NEEDED,
+  leafStaleOfflineReason,
+  type LeafStaleCause,
+  serverOfflineTooLong,
+} from '../../features/tls/leaf-vocabulary.ts'
 
 const MS_PER_DAY = 86_400_000
 
@@ -58,6 +68,8 @@ export type LeafRenewalSweepResult = {
   scanned: number
   enqueued: number
   failed: number
+  /** Leaves marked stale by this pass (offline for weeks, or nothing uses them). */
+  stale: number
   cursor: LeafRenewalCursor | null
   completed: boolean
 }
@@ -71,6 +83,9 @@ export type DueTlsLeafRow = {
   replicaId: string | null
   caGeneration: number
   notAfter: string
+  attempts: number
+  serverConnected: boolean | null
+  serverStatusChangedAt: string | null
 }
 
 export type LeafRenewalSweepDeps = Readonly<{
@@ -269,6 +284,15 @@ function leafRenewalKeysetCondition(cursor: LeafRenewalCursor) {
   )
 }
 
+/**
+ * A leaf tried before waits `30 minutes * 2^attempts` (at most a day) before
+ * the sweep tries it again, so an unreachable server is not asked every tick.
+ */
+function leafRetryReadyPredicate(nowMs: number) {
+  const nowIso = new Date(nowMs).toISOString()
+  return sql`(${leaf.attemptedAt} IS NULL OR ${leaf.attemptedAt} < ${nowIso}::timestamptz - least(interval '24 hours', interval '30 minutes' * power(2, least(${leaf.attempts}, 10))))`
+}
+
 function dueLeafPredicate(deadlineIso: string) {
   return or(
     lt(leaf.notAfter, deadlineIso),
@@ -278,7 +302,8 @@ function dueLeafPredicate(deadlineIso: string) {
 
 /**
  * Org-agnostic due-leaf page. Ordered by `notAfter` then `id`; keyset only —
- * never OFFSET. Independent of organization count.
+ * never OFFSET. Independent of organization count. Stale leaves are not
+ * listed, and a leaf tried recently waits out its back-off.
  */
 export async function loadDueTlsLeaves(
   db: Db,
@@ -286,11 +311,18 @@ export async function loadDueTlsLeaves(
     nowMs?: number
     cursor?: LeafRenewalCursor | null
     limit?: number
+    /** Ignore the retry back-off (an owner asked for the renewal now). */
+    ignoreBackoff?: boolean
   } = {}
 ): Promise<DueTlsLeafRow[]> {
-  const deadlineIso = leafRenewalDeadlineIso(params.nowMs)
+  const nowMs = params.nowMs ?? Date.now()
+  const deadlineIso = leafRenewalDeadlineIso(nowMs)
   const limit = params.limit ?? LEAF_RENEWAL_BATCH_SIZE
-  const due = dueLeafPredicate(deadlineIso)
+  const due = and(
+    eq(leaf.state, 'active'),
+    dueLeafPredicate(deadlineIso),
+    params.ignoreBackoff ? undefined : leafRetryReadyPredicate(nowMs)
+  )
   const whereClause = params.cursor ? and(due, leafRenewalKeysetCondition(params.cursor)) : due
 
   return await db
@@ -303,6 +335,9 @@ export async function loadDueTlsLeaves(
       replicaId: leaf.replicaId,
       caGeneration: leaf.caGeneration,
       notAfter: leaf.notAfter,
+      attempts: leaf.attempts,
+      serverConnected: server.isConnected,
+      serverStatusChangedAt: server.statusChangedAt,
     })
     .from(leaf)
     .leftJoin(
@@ -313,12 +348,37 @@ export async function loadDueTlsLeaves(
         eq(tls.caState, 'active')
       )
     )
+    .leftJoin(server, eq(server.id, leaf.serverId))
     .where(whereClause)
     .orderBy(asc(leaf.notAfter), asc(leaf.id))
     .limit(limit)
 }
 
-/** Single indexed per-org COUNT for `GET /tls/ca` `leafHealth.dueCount`. */
+/**
+ * One indexed per-org pass for `GET /tls/ca` `leafHealth`: leaves that are due
+ * (on an older CA generation, or close to expiry) and leaves marked stale.
+ */
+export async function countLeafHealthForOrganization(
+  db: Db,
+  organizationId: string,
+  params: {
+    activeCaGeneration: number
+    nowMs?: number
+  }
+): Promise<{ dueCount: number; staleCount: number }> {
+  const deadlineIso = leafRenewalDeadlineIso(params.nowMs)
+  const dueSql = sql`${leaf.state} = 'active' AND (${leaf.notAfter} < ${deadlineIso}::timestamptz OR ${leaf.caGeneration} IS DISTINCT FROM ${params.activeCaGeneration})`
+  const [row] = await db
+    .select({
+      dueCount: sql<number>`count(*) FILTER (WHERE ${dueSql})`,
+      staleCount: sql<number>`count(*) FILTER (WHERE ${leaf.state} = 'stale')`,
+    })
+    .from(leaf)
+    .where(eq(leaf.organizationId, organizationId))
+  return { dueCount: Number(row?.dueCount ?? 0), staleCount: Number(row?.staleCount ?? 0) }
+}
+
+/** Single indexed per-org COUNT of leaves that still need renewal (stale ones excluded). */
 export async function countDueTlsLeavesForOrganization(
   db: Db,
   organizationId: string,
@@ -327,48 +387,25 @@ export async function countDueTlsLeavesForOrganization(
     nowMs?: number
   }
 ): Promise<number> {
-  const deadlineIso = leafRenewalDeadlineIso(params.nowMs)
-  const [row] = await db
-    .select({ dueCount: count() })
-    .from(leaf)
-    .where(
-      and(
-        eq(leaf.organizationId, organizationId),
-        or(
-          lt(leaf.notAfter, deadlineIso),
-          sql`${leaf.caGeneration} IS DISTINCT FROM ${params.activeCaGeneration}`
-        )
-      )
-    )
-  return Number(row?.dueCount ?? 0)
-}
-
-function leafRenewalContext(deps: LeafRenewalSweepDeps): Context<AppEnv> {
-  return {
-    get(key: string) {
-      if (key === 'secretsConfig') return deps.secretsConfig
-      if (key === 'dataEncryptionSecrets') return deps.dataEncryptionSecrets
-      return undefined
-    },
-    json(body: unknown, status?: number) {
-      return new Response(JSON.stringify(body), {
-        status: status ?? 200,
-        headers: { 'content-type': 'application/json' },
-      })
-    },
-  } as Context<AppEnv>
+  return (await countLeafHealthForOrganization(db, organizationId, params)).dueCount
 }
 
 function cursorFromRow(row: DueTlsLeafRow): LeafRenewalCursor {
   return { notAfter: row.notAfter, id: row.id }
 }
 
+type DueLeafOutcome =
+  | { status: 'enqueued' }
+  | { status: 'failed'; reason: string }
+  | { status: 'skipped' }
+  | { status: 'not_needed' }
+
 async function enqueueDueIngress(
   db: Db,
   commandQueue: CommandQueue,
   deps: LeafRenewalSweepDeps,
   row: DueTlsLeafRow
-): Promise<'enqueued' | 'failed' | 'skipped'> {
+): Promise<DueLeafOutcome> {
   const result = await enqueueManagedIngressReconcile(db, commandQueue, {
     serverId: row.serverId,
     actorType: 'system',
@@ -376,9 +413,15 @@ async function enqueueDueIngress(
     secretsConfig: deps.secretsConfig,
     dataEncryptionSecrets: deps.dataEncryptionSecrets,
   })
-  if (result.ok) return 'enqueued'
-  if (result.reason === 'not_needed') return 'skipped'
-  return 'failed'
+  if (result.ok) return { status: 'enqueued' }
+  if (result.reason === 'not_needed') return { status: 'not_needed' }
+  return {
+    status: 'failed',
+    reason:
+      result.reason === 'prepare_failed'
+        ? 'The certificate settings for this server could not be prepared.'
+        : 'The renewal could not be sent to the server.',
+  }
 }
 
 async function enqueueDueEngine(
@@ -386,15 +429,194 @@ async function enqueueDueEngine(
   db: Db,
   commandQueue: CommandQueue,
   row: DueTlsLeafRow
-): Promise<'enqueued' | 'failed'> {
-  if (!row.managedId) return 'failed'
+): Promise<DueLeafOutcome> {
+  if (!row.managedId) {
+    return { status: 'failed', reason: 'The leaf does not name its database cluster.' }
+  }
   const applyRows = await enqueueApplyForManagedCluster(c, db, commandQueue, {
     actorId: row.serverId,
     organizationId: row.organizationId,
     managedId: row.managedId,
   })
-  if (applyRows.some((entry) => entry.status === 'failed')) return 'failed'
-  return 'enqueued'
+  const failed = applyRows.find((entry) => entry.status === 'failed')
+  if (failed) {
+    const detail = failed.error ? ` (${failed.error})` : ''
+    return { status: 'failed', reason: `The renewal could not be queued${detail}.` }
+  }
+  return { status: 'enqueued' }
+}
+
+async function enqueueOneDueLeaf(
+  c: Context<AppEnv>,
+  db: Db,
+  commandQueue: CommandQueue,
+  deps: LeafRenewalSweepDeps,
+  row: DueTlsLeafRow,
+  seenIngress: Set<string>,
+  seenManaged: Set<string>
+): Promise<DueLeafOutcome> {
+  if (row.kind === 'ingress') {
+    if (seenIngress.has(row.serverId)) return { status: 'skipped' }
+    seenIngress.add(row.serverId)
+    return await enqueueDueIngress(db, commandQueue, deps, row)
+  }
+  if (row.kind === 'engine') {
+    if (!row.managedId) {
+      return { status: 'failed', reason: 'The leaf does not name its database cluster.' }
+    }
+    if (seenManaged.has(row.managedId)) return { status: 'skipped' }
+    seenManaged.add(row.managedId)
+    return await enqueueDueEngine(c, db, commandQueue, row)
+  }
+  return { status: 'failed', reason: 'Unknown leaf kind.' }
+}
+
+/**
+ * Mark one leaf stale so nothing waits on it: it is no longer counted or
+ * renewed. `expectedAttempts` is the try count the caller saw; an owner who
+ * asked for a renewal in the meantime has bumped it, and then the mark is
+ * dropped instead of overriding that renewal.
+ */
+export async function markTlsLeafStale(
+  db: Db,
+  leafId: string,
+  reason: string,
+  cause: LeafStaleCause,
+  nowMs = Date.now(),
+  expectedAttempts?: number
+): Promise<boolean> {
+  const stamp = nowIso(nowMs)
+  const rows = await db
+    .update(leaf)
+    .set({
+      state: 'stale',
+      staleAt: stamp,
+      staleReason: clipLeafText(reason),
+      staleCause: cause,
+      updatedAt: stamp,
+    })
+    .where(
+      and(
+        eq(leaf.id, leafId),
+        eq(leaf.state, 'active'),
+        expectedAttempts === undefined ? undefined : eq(leaf.attempts, expectedAttempts)
+      )
+    )
+    .returning({ id: leaf.id })
+  return rows.length > 0
+}
+
+/**
+ * A server that was offline for weeks and is connected again gets its stale
+ * leaves back: they are active (and due, if the previous Organization CA was
+ * retired meanwhile) so this tick renews them. Without it a returning server
+ * would keep a certificate nothing trusts any more. Only `offline` marks come
+ * back this way; `unused` and `owner` marks stay until a deploy or an owner
+ * says otherwise.
+ */
+export async function reactivateLeavesOfReturnedServers(db: Db): Promise<number> {
+  const rows = await db
+    .update(leaf)
+    .set({
+      state: 'active',
+      staleAt: null,
+      staleReason: null,
+      staleCause: null,
+      attempts: 0,
+      attemptedAt: null,
+      lastError: null,
+    })
+    .where(
+      and(
+        eq(leaf.state, 'stale'),
+        eq(leaf.staleCause, 'offline'),
+        sql`${leaf.serverId} IN (SELECT id FROM server WHERE is_connected)`
+      )
+    )
+    .returning({ id: leaf.id })
+  return rows.length
+}
+
+/**
+ * Remember that a renewal was queued (or why it could not be). An engine leaf
+ * shares one apply with its siblings on the cluster, so they all wait together.
+ */
+async function recordLeafAttempt(
+  db: Db,
+  row: DueTlsLeafRow,
+  lastError: string | null,
+  nowMs: number
+): Promise<void> {
+  const stamp = nowIso(nowMs)
+  const scope =
+    row.kind === 'engine' && row.managedId
+      ? and(eq(leaf.managedId, row.managedId), eq(leaf.organizationId, row.organizationId))
+      : eq(leaf.id, row.id)
+  await db
+    .update(leaf)
+    .set({
+      attempts: sql`${leaf.attempts} + 1`,
+      attemptedAt: stamp,
+      lastError: lastError === null ? null : clipLeafText(lastError),
+    })
+    .where(and(scope, eq(leaf.state, 'active')))
+}
+
+/**
+ * Renew one due leaf: stale it when its server has been gone for weeks or
+ * nothing uses it, otherwise queue the existing apply / ingress reconcile and
+ * remember the try.
+ */
+export async function renewOneTlsLeaf(
+  c: Context<AppEnv>,
+  db: Db,
+  commandQueue: CommandQueue,
+  deps: LeafRenewalSweepDeps,
+  row: DueTlsLeafRow,
+  seen: { ingress: Set<string>; managed: Set<string> },
+  options: { nowMs?: number; skipOfflineCheck?: boolean } = {}
+): Promise<'enqueued' | 'failed' | 'skipped' | 'stale'> {
+  const nowMs = options.nowMs ?? Date.now()
+  if (
+    !options.skipOfflineCheck &&
+    serverOfflineTooLong({
+      isConnected: row.serverConnected ?? false,
+      statusChangedAt: row.serverStatusChangedAt,
+      nowMs,
+    })
+  ) {
+    await markTlsLeafStale(
+      db,
+      row.id,
+      leafStaleOfflineReason(row.serverStatusChangedAt),
+      'offline',
+      nowMs,
+      row.attempts
+    )
+    return 'stale'
+  }
+  const outcome = await enqueueOneDueLeaf(
+    c,
+    db,
+    commandQueue,
+    deps,
+    row,
+    seen.ingress,
+    seen.managed
+  )
+  if (outcome.status === 'not_needed') {
+    await markTlsLeafStale(db, row.id, LEAF_STALE_NOT_NEEDED, 'unused', nowMs, row.attempts)
+    return 'stale'
+  }
+  if (outcome.status === 'enqueued') {
+    await recordLeafAttempt(db, row, null, nowMs)
+    return 'enqueued'
+  }
+  if (outcome.status === 'failed') {
+    await recordLeafAttempt(db, row, outcome.reason, nowMs)
+    return 'failed'
+  }
+  return 'skipped'
 }
 
 /**
@@ -411,6 +633,7 @@ export async function renewDueTlsLeaves(
   } = {}
 ): Promise<LeafRenewalSweepResult> {
   const limit = options.limit ?? LEAF_RENEWAL_BATCH_SIZE
+  await reactivateLeavesOfReturnedServers(db)
   const rows = await loadDueTlsLeaves(db, {
     nowMs: options.nowMs,
     cursor: options.cursor,
@@ -420,50 +643,47 @@ export async function renewDueTlsLeaves(
     scanned: rows.length,
     enqueued: 0,
     failed: 0,
+    stale: 0,
     cursor: rows.length > 0 ? cursorFromRow(rows.at(-1)!) : null,
     completed: rows.length < limit,
   }
-  const seenIngress = new Set<string>()
-  const seenManaged = new Set<string>()
-  const context = leafRenewalContext(deps)
+  const seen = { ingress: new Set<string>(), managed: new Set<string>() }
+  const context = systemRotationContext(deps)
 
   await forEachSequential(rows, async (row) => {
-    const outcome = await enqueueOneDueLeaf(
-      context,
-      db,
-      commandQueue,
-      deps,
-      row,
-      seenIngress,
-      seenManaged
-    )
+    const outcome = await renewOneTlsLeaf(context, db, commandQueue, deps, row, seen, {
+      nowMs: options.nowMs,
+    })
     if (outcome === 'enqueued') summary.enqueued += 1
     if (outcome === 'failed') summary.failed += 1
+    if (outcome === 'stale') summary.stale += 1
   })
   return summary
 }
 
-async function enqueueOneDueLeaf(
-  c: Context<AppEnv>,
+/** An overdue rotation is retired on the same lease; a failure here never fails the renewals. */
+async function retireOverdueRotationsQuietly(
   db: Db,
   commandQueue: CommandQueue,
   deps: LeafRenewalSweepDeps,
-  row: DueTlsLeafRow,
-  seenIngress: Set<string>,
-  seenManaged: Set<string>
-): Promise<'enqueued' | 'failed' | 'skipped'> {
-  if (row.kind === 'ingress') {
-    if (seenIngress.has(row.serverId)) return 'skipped'
-    seenIngress.add(row.serverId)
-    return await enqueueDueIngress(db, commandQueue, deps, row)
+  nowMs?: number
+): Promise<void> {
+  try {
+    await retireOverdueRotations(
+      db,
+      {
+        commandQueue,
+        secretsConfig: deps.secretsConfig,
+        dataEncryptionSecrets: deps.dataEncryptionSecrets,
+      },
+      nowMs
+    )
+  } catch (err) {
+    compatLogWarn(
+      'tls-rotation',
+      `overdue rotation retire failed: ${err instanceof Error ? err.message : String(err)}`
+    )
   }
-  if (row.kind === 'engine') {
-    if (!row.managedId) return 'failed'
-    if (seenManaged.has(row.managedId)) return 'skipped'
-    seenManaged.add(row.managedId)
-    return await enqueueDueEngine(c, db, commandQueue, row)
-  }
-  return 'failed'
 }
 
 export type LeafRenewalSweepTickOutcome = LeafRenewalSweepResult | { skipped: 'lease_held' }
@@ -495,6 +715,7 @@ export async function runLeafRenewalSweepTick(
     })
     persistedCursor = persistedCursorFromResult(result)
     await saveLeafRenewalSweepCursor(db, lock, persistedCursor, options.nowMs)
+    await retireOverdueRotationsQuietly(db, commandQueue, deps, options.nowMs)
     return result
   } finally {
     await endLeafRenewalSweep(

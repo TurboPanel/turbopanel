@@ -15,6 +15,13 @@
       "when": 1792420688430,
       "tag": "0001_folder_removal_note",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792428032666,
+      "tag": "0002_leaf_attention",
+      "breakpoints": true
     }
   ]
 }
