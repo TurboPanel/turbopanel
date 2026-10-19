@@ -16,6 +16,7 @@ import { and, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { folder, principal, server } from '../../db/schema.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { type EmitDeps, emitNotification } from './emit.ts'
 
@@ -117,8 +118,8 @@ async function claimNewOrphans(db: Db): Promise<string[]> {
  * has no organization to tell, so it is dropped here and stays stamped (it can
  * never be alerted, and the foreign keys keep that from happening in practice).
  */
-async function describeClaimed(db: Db, ids: readonly string[]): Promise<ClaimedFolder[]> {
-  if (ids.length === 0) return []
+function describeClaimed(db: Db, ids: readonly string[]): Promise<ClaimedFolder[]> {
+  if (ids.length === 0) return Promise.resolve([])
   return db
     .select({
       id: folder.id,
@@ -156,7 +157,7 @@ export async function alertNewOrphanFolders(
       groups.set(key, [...(groups.get(key) ?? []), entry])
     }
     const { emit = emitNotification, trace, ...emitDeps } = deps
-    for (const entries of groups.values()) {
+    await forEachSequential(groups.values(), async (entries) => {
       const first = entries[0]!
       // `emitNotification` never throws: it logs, reports `notification-emit-failed`
       // to the trace and returns an all-zero result. That is also what it returns
@@ -198,11 +199,11 @@ export async function alertNewOrphanFolders(
           db,
           entries.map((entry) => entry.id)
         )
-        continue
+        return
       }
       result.alerts += 1
       result.folders += entries.length
-    }
+    })
   } catch (err) {
     compatLogWarn('orphan-alerts', `orphan folder alert sweep failed: ${messageOf(err)}`)
   }
