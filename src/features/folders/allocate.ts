@@ -536,7 +536,6 @@ async function collectVolumeTargets(
   })
 }
 
-/** Insert the planned row, or find the one that is already there for this very asset. */
 /** The columns that make a folder row name this asset (an orphan nothing owned is taken over). */
 function ownerColumns(target: FolderTarget): { serviceId: string } | { storageId: string } {
   return target.kind === 'service' ? { serviceId: target.assetId } : { storageId: target.assetId }
@@ -580,6 +579,7 @@ function isUnownedOrphan(row: {
   return row.state === 'orphan' && row.serviceId === null && row.storageId === null
 }
 
+/** Insert the planned row, or find the one that is already there for this very asset. */
 async function upsertFolderRow(tx: Db, serverId: string, target: FolderTarget): Promise<string> {
   await tx
     .insert(folder)

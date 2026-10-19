@@ -137,7 +137,8 @@ export function registerOrganizationFolderAdminRoutes(router: Hono<AppEnv>, opts
     }
 
     const outcome = await settleFolder(db, c.get('commandQueue'), session.userId, row)
-    if (outcome === null) return c.json({ error: 'Not found' }, 404)
+    // The row moved first: a plan took the orphan over, or it was settled already.
+    if (outcome === null) return c.json(IN_USE_BODY, 409)
 
     await recordAudit(db, {
       organizationId,
