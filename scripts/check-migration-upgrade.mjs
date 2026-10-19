@@ -443,7 +443,7 @@ async function runBaselineRelease(baseUrl, tag, tagGeneration, currentGeneration
   } finally {
     await runCleanups(cleanups)
   }
-  return { tag, problems }
+  return { tag, problems, skipped: true }
 }
 
 async function run(baseUrl, from) {
@@ -540,14 +540,16 @@ async function main() {
     process.exit(1)
   }
   try {
-    const { tag, problems } = await run(url, parseFrom(process.argv.slice(2)))
+    const { tag, problems, skipped } = await run(url, parseFrom(process.argv.slice(2)))
     if (problems.length > 0) {
       for (const problem of problems) console.error(`migration-upgrade: ${problem}`)
       console.error(`migration-upgrade: upgrade from ${tag} FAILED (${problems.length} problems)`)
       process.exit(1)
     }
     console.log(
-      `migration-upgrade: upgrade from ${tag} kept every seeded row and matches a fresh apply`
+      skipped
+        ? `migration-upgrade: ${tag} predates the baseline; a fresh apply and the seed are fine (the upgrade comparison resumes from the first release cut from the baseline)`
+        : `migration-upgrade: upgrade from ${tag} kept every seeded row and matches a fresh apply`
     )
   } catch (err) {
     console.error(`migration-upgrade: ${err instanceof Error ? err.message : String(err)}`)
