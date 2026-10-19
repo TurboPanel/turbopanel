@@ -90,7 +90,8 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       name varchar(255),
       slug varchar(255),
       metadata jsonb,
-      options jsonb
+      options jsonb,
+      next_linux_id integer DEFAULT 30001 NOT NULL
     )
   `)
   )
