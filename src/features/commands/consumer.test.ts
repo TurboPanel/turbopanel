@@ -4,7 +4,7 @@ import { assertEquals } from '@std/assert'
 import { projectServerDaemon } from '../../daemon/cell/postgres-projection.ts'
 import { eq, inArray } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { createDenoDb, endDbConnection } from '../../db/connection.ts'
+import { createDenoDb, type Db, endDbConnection } from '../../db/connection.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
 import { attachDaemonStateToServer } from '../servers/server-identity-db.ts'
 import {
@@ -56,7 +56,12 @@ import {
 } from './command-records.ts'
 import { enableOrganizationFabric, listFabricRelays } from '../fabric/fabric-records.ts'
 import { environmentHasFolders, listEnvironmentFolders } from '../folders/records.ts'
-import { isTransientError, processCommandEnvelope } from './consumer.ts'
+import {
+  type DispatchableCommandRecord,
+  isTransientError,
+  markPlannedFoldersPresentSafely,
+  processCommandEnvelope,
+} from './consumer.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { parseManagedResidual } from '../managed/serialize.ts'
 import { resolveFleetPresence } from '../../daemon/cell/server-status.ts'
@@ -3471,6 +3476,8 @@ test('processCommandEnvelope marks the folders a deploy kept as orphans', async 
         { owner: 'one', kind: 'service', slug: 'web', state: 'present' },
       ],
       async ({ one }) => {
+        // The report only moves rows older than the command; keep the rows clearly before it.
+        await new Promise((resolve) => setTimeout(resolve, 5))
         await runSucceededCommand(
           ctx.db,
           ctx.serverId,
@@ -3500,17 +3507,93 @@ test('processCommandEnvelope marks the folders a deploy kept as orphans', async 
             ],
           }
         )
-        // The deploy planned no folder for `web` either, so the control plane marks it too.
+        // This command carries no generation, so it cannot be placed among the deploys and
+        // decides nothing about `web`, which the deploy did not plan.
         assertEquals(await folderStates(ctx.db, ctx.serverId), {
           'service:old': 'orphan',
           'service:deleted': 'removing',
-          'service:web': 'orphan',
+          'service:web': 'present',
         })
         // An orphan still locks the environment until someone removes it.
         assertEquals(await environmentHasFolders(ctx.db, ctx.environmentId), true)
       }
     )
   })
+})
+
+test('processCommandEnvelope marks a present service folder the newest deploy did not plan as an orphan', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [
+        { owner: 'one', kind: 'service', slug: 'gone', state: 'present' },
+        { owner: 'one', kind: 'service', slug: 'gone-too', state: 'planned' },
+      ],
+      async () => {
+        await ctx.db.delete(deployment).where(eq(deployment.serverId, ctx.serverId))
+        const record = await createCommandRecord(ctx.db, {
+          serverId: ctx.serverId,
+          ...TEST_COMMAND_ACTOR,
+          type: 'environment.deploy',
+          payload: {
+            environmentId: ctx.environmentId,
+            projectId: ctx.projectId,
+            organizationId: ctx.organizationId,
+            projectName: 'tp-deploy-test',
+            composeFiles: [
+              {
+                filename: 'compose.yaml',
+                role: 'runtime',
+                source: 'inline',
+                content: 'services:\n  web:\n    image: nginx\n',
+              },
+            ],
+            hostings: [],
+            generation: 2,
+          },
+        })
+        await ctx.db.insert(deployment).values({
+          environmentId: ctx.environmentId,
+          serverId: ctx.serverId,
+          desiredGeneration: 2,
+          appliedGeneration: 1,
+          status: 'applying',
+          commandId: record.id,
+        })
+        const registry = createDispatchMockRegistry(ctx.serverId, {
+          waitForRequestResult: {
+            serverId: ctx.serverId,
+            requestId: record.id,
+            requestKind: 'command-dispatch',
+            status: 'done',
+            createdAt: record.createdAt,
+            expiresAt: record.createdAt,
+            finishedAt: new Date().toISOString(),
+            result: { projectName: 'tp-deploy-test', summary: 'deployed' },
+          },
+        })
+        await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId))
+        // A planned row is another deploy's business; a present one the deploy did not plan is kept as an orphan.
+        assertEquals(await folderStates(ctx.db, ctx.serverId), {
+          'service:gone': 'orphan',
+          'service:gone-too': 'planned',
+        })
+      }
+    )
+  })
+})
+
+test('a deploy whose planned folders cannot be read concludes nothing about the rest', async () => {
+  const failing = {
+    select() {
+      throw new Error('database unavailable')
+    },
+  } as unknown as Db
+  const planned = await markPlannedFoldersPresentSafely(failing, {
+    id: crypto.randomUUID(),
+  } as unknown as DispatchableCommandRecord)
+  assertEquals(planned, null)
 })
 
 test('processCommandEnvelope compares a reconcile listing with the folder rows and records the host home', async () => {

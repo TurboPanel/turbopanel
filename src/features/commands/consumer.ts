@@ -1071,8 +1071,9 @@ async function applyEnvironmentDeploySideEffect(
   if (record.type !== 'environment.deploy') return
   try {
     const payload = parseEnvironmentDeployPayload(record.payload)
-    // Only the newest deploy of the environment decides which folders are still in use.
-    let current = payload.generation === undefined
+    // Only the newest deploy of the environment decides which folders are still in use. A
+    // command with no generation cannot be placed among the deploys, so it decides nothing.
+    let current = false
     if (payload.generation !== undefined) {
       const finishedAt = nowIso()
       const marked = await markDeploymentApplied(db, {
@@ -1096,7 +1097,8 @@ async function applyEnvironmentDeploySideEffect(
     }
     await markEnvironmentCopiesReady(db, payload.environmentId, envelope.serverId)
     const plannedFolderIds = await markPlannedFoldersPresentSafely(db, record)
-    if (current) {
+    // Without a list that was read, nothing is known about which folders are in use.
+    if (current && plannedFolderIds !== null) {
       await markUnplannedFoldersOrphanSafely(db, record, {
         environmentId: payload.environmentId,
         serverId: envelope.serverId,
@@ -1144,10 +1146,15 @@ async function applyEnvironmentDeploySideEffect(
 }
 
 /** The folder rows a deploy planned are on the host now; a miss is logged, never fatal. */
-async function markPlannedFoldersPresentSafely(
+/**
+ * The folders the deploy planned, now marked present; `null` when they could not
+ * be read, so the caller concludes nothing from the miss. A deploy that planned
+ * no folder has none and returns an empty list.
+ */
+export async function markPlannedFoldersPresentSafely(
   db: Db,
   record: DispatchableCommandRecord
-): Promise<string[]> {
+): Promise<string[] | null> {
   try {
     const metadata = await getCommandMetadata(db, record.id)
     const ids = metadata?.folderIds
@@ -1160,7 +1167,7 @@ async function markPlannedFoldersPresentSafely(
       'command-consumer',
       `folder present mark failed for command ${record.id}: ${errorMessage(err)}`
     )
-    return []
+    return null
   }
 }
 
