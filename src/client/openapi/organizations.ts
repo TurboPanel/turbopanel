@@ -1996,4 +1996,137 @@ export const organizationPaths: Record<string, unknown> = {
       },
     },
   },
+  '/api/client/v1/organizations/{id}/folders': {
+    get: {
+      tags: ['Organizations'],
+      summary: 'Folders on servers that need a person',
+      description:
+        "Manage-gated. Lists the organization's folder rows that a person can act on or is waiting for: orphan (on a server with no service or volume that owns it), removing (asked to go, the host has not confirmed) and missing (the host no longer has it). Filter with state (comma separated), page with limit (1 to 100, default 50) and offset. reason is plain words, including what the host said the last time it kept a removing folder. action says what POST /folders/{id}/remove would do: remove (an orphan), retry (ask again now) or forget (a missing row); null for a folder in use.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        {
+          name: 'state',
+          in: 'query',
+          required: false,
+          schema: { type: 'string', example: 'orphan,removing' },
+        },
+        { name: 'limit', in: 'query', required: false, schema: { type: 'integer' } },
+        { name: 'offset', in: 'query', required: false, schema: { type: 'integer' } },
+      ],
+      responses: {
+        '200': {
+          description: 'Folders that need attention',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'folders', 'total'],
+                properties: {
+                  ok: { type: 'boolean' },
+                  total: { type: 'integer' },
+                  folders: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      required: ['id', 'kind', 'state', 'scope', 'slug', 'serverId', 'owner'],
+                      properties: {
+                        id: { type: 'string', format: 'uuid' },
+                        kind: { type: 'string', enum: ['service', 'volume'] },
+                        state: { type: 'string', enum: ['orphan', 'removing', 'missing'] },
+                        scope: { type: 'string' },
+                        slug: { type: 'string' },
+                        owner: { type: 'string' },
+                        serverId: { type: 'string', format: 'uuid' },
+                        serverName: { type: 'string', nullable: true },
+                        assetId: { type: 'string', format: 'uuid', nullable: true },
+                        assetName: { type: 'string', nullable: true },
+                        hasAsset: { type: 'boolean' },
+                        reason: { type: 'string', nullable: true },
+                        action: {
+                          type: 'string',
+                          enum: ['remove', 'retry', 'forget'],
+                          nullable: true,
+                        },
+                        updatedAt: { type: 'string', format: 'date-time' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid state, limit or offset',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/folders/{id}/remove': {
+    post: {
+      tags: ['Organizations'],
+      summary: 'Remove, retry or forget a folder',
+      description:
+        'Manage-gated. An orphan folder is moved to removing and its server is asked to delete it (permanent; asks for step-up re-authentication when the organization requires it); a folder already removing is asked again now; a missing row is forgotten, since the host has no folder. A folder a service or volume is using (planned or present), or an orphan a service or volume row still names, is refused with 409 folder_in_use: delete that service or volume instead. Recorded in the audit trail as folder.remove.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        '200': {
+          description: 'Done',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'outcome'],
+                properties: {
+                  ok: { type: 'boolean' },
+                  outcome: { type: 'string', enum: ['removing', 'forgotten'] },
+                },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden, or step-up re-authentication is required (reauth_required)',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Folder not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '409': {
+          description: 'folder_in_use: a service or volume is using the folder',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
 }

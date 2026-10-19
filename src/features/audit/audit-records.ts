@@ -57,6 +57,7 @@ export const AUDIT_ACTIONS = [
   'binding.create',
   'binding.update',
   'binding.delete',
+  'folder.remove',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
