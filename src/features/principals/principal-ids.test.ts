@@ -73,7 +73,7 @@ async function withFixtures(fn: (ctx: Fixtures) => Promise<void>): Promise<void>
 
 const homeOf = (id: string) => `/srv/users/${id.slice(0, 8)}`
 
-test('a new principal gets one id from the sequence and every server gets the same one', async () => {
+test('a new principal gets one id from the counter and every server gets the same one', async () => {
   await withFixtures(async ({ db, serverIds: [a, b], principalIds: [p1, p2] }) => {
     const first = await resolvePrincipalIds(
       db,
@@ -89,6 +89,8 @@ test('a new principal gets one id from the sequence and every server gets the sa
     assert(ids1.uid >= PRINCIPAL_ID_BAND_MIN && ids1.uid <= PRINCIPAL_ID_BAND_MAX)
     assertEquals(ids1.uid, ids1.gid)
     assertNotEquals(ids1.uid, ids2.uid)
+    // A fresh organization counts from 30001, one step per new account.
+    assertEquals([ids1.uid, ids2.uid], [30001, 30002])
 
     // Recorded on a pending placement, so the second server sees it.
     const second = await resolvePrincipalIds(
@@ -440,7 +442,7 @@ test('a row holding only the control plane pick is corrected by the host report;
   })
 })
 
-test('a number pinned by an operator on a principal is skipped by the sequence', async () => {
+test('a number pinned by an operator on a principal is skipped by the counter', async () => {
   await withFixtures(async ({ db, serverIds: [a], principalIds: [p1, p2, p3] }) => {
     const first = (
       await resolvePrincipalIds(db, a, [{ principalId: p1, home: homeOf(p1) }], { allocate: true })
@@ -454,5 +456,69 @@ test('a number pinned by an operator on a principal is skipped by the sequence',
       await resolvePrincipalIds(db, a, [{ principalId: p3, home: homeOf(p3) }], { allocate: true })
     ).get(p3)!
     assert(got.uid > pinned)
+  })
+})
+
+test('ids are counted per host organization, whoever owns the principal', async () => {
+  await withFixtures(async ({ db, serverIds: [a], principalIds: [p1] }) => {
+    const suffix = crypto.randomUUID().slice(0, 8)
+    const [other] = await db
+      .insert(organization)
+      .values({ name: `Other Host Org ${suffix}` })
+      .returning({ id: organization.id })
+    const [otherServer] = await db
+      .insert(server)
+      .values({ organizationId: other!.id, name: `ids-o-${suffix}` })
+      .returning({ id: server.id })
+    const [foreign] = await db
+      .insert(principal)
+      .values({
+        organizationId: other!.id,
+        username: `pi_f_${suffix}`,
+        appliedUsername: `pi_f_${suffix}`,
+      })
+      .returning({ id: principal.id })
+    try {
+      // The other organization's principal placed on the first organization's server
+      // takes the next number of the first organization's counter.
+      const mine = (
+        await resolvePrincipalIds(db, a, [{ principalId: p1, home: homeOf(p1) }], {
+          allocate: true,
+        })
+      ).get(p1)!
+      const theirs = (
+        await resolvePrincipalIds(
+          db,
+          a,
+          [{ principalId: foreign!.id, home: homeOf(foreign!.id) }],
+          {
+            allocate: true,
+          }
+        )
+      ).get(foreign!.id)!
+      assertEquals([mine.uid, theirs.uid], [30001, 30002])
+      // A principal on the other organization's server starts that counter at 30001.
+      const [p2] = await db
+        .insert(principal)
+        .values({
+          organizationId: other!.id,
+          username: `pi_g_${suffix}`,
+          appliedUsername: `pi_g_${suffix}`,
+        })
+        .returning({ id: principal.id })
+      const there = (
+        await resolvePrincipalIds(
+          db,
+          otherServer!.id,
+          [{ principalId: p2!.id, home: homeOf(p2!.id) }],
+          { allocate: true }
+        )
+      ).get(p2!.id)!
+      assertEquals(there.uid, 30001)
+    } finally {
+      await db.delete(principal).where(eq(principal.organizationId, other!.id))
+      await db.delete(server).where(eq(server.organizationId, other!.id))
+      await db.delete(organization).where(eq(organization.id, other!.id))
+    }
   })
 })

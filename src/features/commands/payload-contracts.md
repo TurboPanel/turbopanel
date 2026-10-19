@@ -432,7 +432,7 @@ retire there) and the daemon prunes no key file on an empty set without the
 explicit `allowEmpty: true`, which nothing sets today.
 
 **Account ids are allocated centrally and reported back.** A principal that has
-no uid/gid on any server yet takes one number from `principal_id_seq` when it is
+no uid/gid on any server yet takes one number from the counter of the organization that owns the server (`organization.next_linux_id`, from 30001, never reused) when it is
 first placed (deploy prepare or a reconcile), recorded on its `placement` row;
 every later server gets the same number in `principalMaterial[]` /
 `principals[]`. An operator override on the principal wins; an account that
