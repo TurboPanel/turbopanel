@@ -391,6 +391,8 @@ type LocationFixtureRow = {
 type MountFixtureRow = {
   storageId: string
   serviceId: string
+  /** The environment of the mounting service; the deploy's own environment when left out. */
+  serviceEnvironmentId?: string
   composeServiceName: string
   destinationPath: string
   subpath: string | null
@@ -439,7 +441,9 @@ function createStorageMaterialDb(opts: {
               // 1: the shared volumes the environment uses (none here), 2: locations, 3: mounts.
               if (calls === 1) return Promise.resolve([])
               if (calls === 2) return Promise.resolve(opts.locations)
-              return Promise.resolve(opts.mounts ?? [])
+              return Promise.resolve(
+                (opts.mounts ?? []).map((row) => ({ serviceEnvironmentId: 'env-1', ...row }))
+              )
             },
           }
           return chain
