@@ -3,11 +3,7 @@
  * migrations and snapshots fail; journal and manifest may change.
  */
 import { assertEquals, assertStringIncludes } from '@std/assert'
-import {
-  findViolations,
-  parseChanges,
-  resolveBase,
-} from './check-migration-additions.mjs'
+import { findViolations, parseChanges, resolveBase } from './check-migration-additions.mjs'
 
 /** Alias so Sonar recognizes the suite (see check-deploy-env.test.ts). */
 const test = Deno.test.bind(Deno)
