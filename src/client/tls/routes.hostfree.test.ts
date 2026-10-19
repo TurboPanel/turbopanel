@@ -923,6 +923,7 @@ test('GET /tls/ca/rotation and POST /tls/ca/retire cover missing journals', asyn
     state: 'awaiting_retire',
     results: [],
     retiredCaStillRequired: true,
+    retireBy: null,
   })
 
   const notConverged = await buildTlsApp({

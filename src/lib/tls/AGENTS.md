@@ -94,10 +94,10 @@ Read-only reference — no behavior claims beyond today:
   `managed.apply` / `managed.ingress.reconcile` commands and rematerializes
   bindings — see `../../features/commands/AGENTS.md`. Repeat POST while `in_progress`
   resumes the stored cursor without minting another generation. `GET /tls/ca`
-  also returns `leafHealth: { dueCount,
+  also returns `leafHealth: { dueCount, staleCount,
   caGeneration, caNotAfter }` (one
-  indexed COUNT on `leaf` for this org plus the active Organization CA
-  generation and expiry). `TlsPublicRow` includes `caGeneration`.
+  indexed pass over `leaf` for this org plus the active Organization CA
+  generation and expiry; stale leaves are counted apart and never as due). `TlsPublicRow` includes `caGeneration`.
   `POST /tls/ca/retire` advances `retired` → `revoked` only after every live
   fan-out row converged (`rotation-converge.ts`: backfill deferred
   `managed.apply` command ids, `POST /tls/ca/rotate` resumes from
@@ -198,8 +198,27 @@ progress when earlier rows keep failing.
 | Deno    | `startDenoServer` (`src/platform/deno/server.ts`, covers `deno.ts` / `deno-dev.ts`) — first Deno-side scheduled surface besides cell maintain; `LEAF_RENEWAL_SWEEP_INTERVAL_MS` (5 min), overlap-guarded | **fresh** `createDenoDb()` per tick, always `endDbConnection` in `finally` |
 
 Module: `src/client/tls/leaf-renewal-sweep.ts`. `GET /tls/ca` exposes
-`leafHealth: { dueCount, caGeneration, caNotAfter }` via one org-scoped COUNT
+`leafHealth: { dueCount, staleCount, caGeneration, caNotAfter }` via one org-scoped pass
 plus the active Organization CA generation and expiry.
+
+**A leaf never sticks forever.** `leaf.state` is `active` or `stale`. The sweep
+marks a leaf stale (and stops counting and renewing it) when its server has been
+offline for 14 days (`LEAF_STALE_OFFLINE_DAYS`) or an ingress reconcile finds nothing
+on the server that needs the certificate; an owner can also mark one stale or delete
+its record (`/tls/ca/leaves`, `leaf-routes.ts`). Every try is remembered
+(`attempts`, `attempted_at`, `last_error`, filled from the sweep and from the failed
+`managed.apply` / `managed.ingress.reconcile` command) and waits `30 min × 2^attempts`
+(at most a day) before the next one. A successful deploy clears all of it
+(`DEPLOYED_LEAF_RESET` in `features/tls/leaf-tracking.ts`).
+
+**Retiring is guarded and has a deadline.** `POST /tls/ca/retire` also refuses with
+409 `ca_leaves_outstanding` while an *active* leaf is still signed by an older
+generation. When fan-out finishes the rotation gets `retire_by` (30 days,
+`CA_RETIRE_GRACE_DAYS`); once it has passed, the sweep tick retires the previous
+generation by itself, but only if every live target converged and no active leaf is
+left on an older generation (`rotation-retire.ts`, `retireOverdueRotations`).
+Anything else stays `awaiting_retire` and the Organization CA card says what it
+waits on.
 
 ## Naming
 

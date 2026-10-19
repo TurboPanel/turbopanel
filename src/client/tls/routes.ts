@@ -68,18 +68,18 @@ import {
   updateCaRotationJournal,
   type CaRotationJournalRow,
 } from './changeover-lease.ts'
-import { countDueTlsLeavesForOrganization } from './leaf-renewal-sweep.ts'
+import { countLeafHealthForOrganization } from './leaf-renewal-sweep.ts'
+import { retireAwaitingRotation } from './rotation-retire.ts'
+import { caRetireByIso } from '../../features/tls/leaf-vocabulary.ts'
 import {
   type CaRotationResultRow,
   enumerateOrganizationRotationTargets,
   parseCaRotationResults,
   parseNeedsRedeploy,
   parseResumeAfterManagedId,
-  reconcileOrganizationOrchestratorTrust,
   runOrganizationCaRotationFanout,
 } from './changeover-fanout.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
-import { compatLogWarn } from '../../lib/log-compat.ts'
 import { listCommandRecordsByIds } from '../../features/commands/command-records.ts'
 import {
   loadReconciledRotationWithCommandRecords,
@@ -185,14 +185,19 @@ async function organizationCaRowResponse(
     trustBundlePem: set.trustBundlePem,
   })
   if (!publicRow) return c.json({ error: 'Invalid request' }, 500)
-  const dueCount = await countDueTlsLeavesForOrganization(db, set.tls.organizationId, {
-    activeCaGeneration: set.signer.caGeneration,
-  })
+  const { dueCount, staleCount } = await countLeafHealthForOrganization(
+    db,
+    set.tls.organizationId,
+    {
+      activeCaGeneration: set.signer.caGeneration,
+    }
+  )
   return c.json({
     tls: publicRow,
     trustBundlePem: set.trustBundlePem,
     leafHealth: {
       dueCount,
+      staleCount,
       caGeneration: set.signer.caGeneration,
       caNotAfter: set.tls.notAfter,
     },
@@ -464,6 +469,7 @@ async function runRotationFanoutStep(
   if (!rotationNeedsCommands(targets)) {
     await updateCaRotationJournal(db, params.rotationId, {
       state: 'awaiting_retire',
+      retireBy: caRetireByIso(),
     })
     return {
       results: params.priorResults ?? [],
@@ -504,6 +510,7 @@ async function runRotationFanoutStep(
     if (outcome.complete) {
       await updateCaRotationJournal(db, params.rotationId, {
         state: 'awaiting_retire',
+        retireBy: caRetireByIso(),
       })
     }
     return { results: outcome.results, needsRedeploy: outcome.needsRedeploy }
@@ -511,51 +518,6 @@ async function runRotationFanoutStep(
     await markRotationFailed(db, params.rotationId)
     throw err
   }
-}
-
-/**
- * After retire the trust bundle holds only the active generation: send it to
- * every Orchestrator host so none keeps trusting the retired CA. Skipped (and
- * logged) when this context has no command queue or secrets; never fails the
- * retire, which has already completed.
- */
-async function reconcileOrchestratorTrustAfterRetire(
-  c: Context<AppEnv>,
-  db: TlsDb,
-  organizationId: string,
-  actorId: string
-): Promise<void> {
-  const commandQueue = assertDispatchInfrastructure(c)
-  const secretsConfig = c.get('secretsConfig')
-  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
-  if (commandQueue instanceof Response || !secretsConfig || !dataEncryptionSecrets) {
-    compatLogWarn(
-      'tls-rotation',
-      `orchestrator trust reconcile skipped after retire organizationId=${organizationId}: no command queue or secrets`
-    )
-    return
-  }
-  await reconcileOrganizationOrchestratorTrust(db, commandQueue, {
-    organizationId,
-    actorType: 'user',
-    actorId,
-    secretsConfig,
-    dataEncryptionSecrets,
-  })
-}
-
-async function revokeRetiredOrganizationCas(db: TlsDb, organizationId: string): Promise<void> {
-  const now = new Date().toISOString()
-  await db
-    .update(tls)
-    .set({ caState: 'revoked', status: 'revoked', updatedAt: now })
-    .where(
-      and(
-        eq(tls.organizationId, organizationId),
-        eq(tls.source, 'organization_ca'),
-        eq(tls.caState, 'retired')
-      )
-    )
 }
 
 type TlsRowPatch = {
@@ -789,6 +751,7 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
         toGeneration: journal.toCaGeneration,
         state: journal.state,
         results: overlayRotationResults(rows, records),
+        retireBy: journal.retireBy,
       })
     )
   })
@@ -801,33 +764,28 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     const denied = await assertCanOr403(c, 'organization:manage', 'organization', organizationId)
     if (denied) return denied
 
-    const journal = await loadLatestCaRotation(db, organizationId)
-    if (journal?.state !== 'awaiting_retire') {
-      return conflictJson(c, 'no_pending_rotation')
-    }
-
-    const synced = await persistSyncedRotationResults(c, db, {
+    const queue = assertDispatchInfrastructure(c)
+    const outcome = await retireAwaitingRotation(c, db, {
       organizationId,
-      rotationId: journal.id,
+      actorType: 'user',
       actorId: session.userId,
-      startedAt: journal.startedAt,
-      rows: parseCaRotationResults(journal.results),
       enqueueGaps: true,
+      deps: {
+        commandQueue: queue instanceof Response ? null : queue,
+        secretsConfig: c.get('secretsConfig') ?? null,
+        dataEncryptionSecrets: c.get('dataEncryptionSecrets') ?? null,
+      },
     })
-    const commandIds = synced.flatMap((row) => (row.commandId ? [row.commandId] : []))
-    const records = await listCommandRecordsByIds(db, commandIds)
-    const targets = await enumerateOrganizationRotationTargets(db, organizationId)
-    if (!rotationConvergedForRetire(synced, records, targets.members)) {
-      return conflictJson(c, 'ca_rotation_not_converged')
+    if (!outcome.ok) {
+      const payload = rotationConflictResponse(outcome.reason)
+      return c.json(
+        outcome.outstanding === undefined
+          ? payload.body
+          : { ...payload.body, outstandingLeaves: outcome.outstanding },
+        payload.status
+      )
     }
-
-    await revokeRetiredOrganizationCas(db, organizationId)
-    await updateCaRotationJournal(db, journal.id, {
-      state: 'completed',
-      completedAt: new Date().toISOString(),
-    })
-    await reconcileOrchestratorTrustAfterRetire(c, db, organizationId, session.userId)
-    return c.json({ ok: true as const, rotationId: journal.id })
+    return c.json({ ok: true as const, rotationId: outcome.rotationId })
   })
 
   router.get('/tls/ca/download', async (c) => {

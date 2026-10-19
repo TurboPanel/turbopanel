@@ -148,6 +148,7 @@ import { orchestratorManagesEngine } from '../managed/ha-policy.ts'
 import { findManagedHaHierarchy, findManagedIngressHierarchy } from '../system/hierarchy.ts'
 import {
   commitPendingTlsLeafTracking,
+  recordPendingTlsLeafFailure,
   parsePendingTlsLeafValue,
   pendingTlsLeafMetadata,
 } from '../tls/leaf-tracking.ts'
@@ -2488,6 +2489,7 @@ async function applyManagedFailedSideEffect(
   // from `needs_resync` to `failed` or mark the whole cluster failed; the
   // sweep retries it a few times.
   if (meta?.returnFence === true) return
+  await recordLeafRenewalFailure(db, record, meta, error)
   if (isManagedHaFailoverRepoint(record)) {
     await handleFollowPrimaryFailure(
       db,
@@ -2513,6 +2515,30 @@ async function applyManagedFailedSideEffect(
     record,
     error ?? fromMeta ?? record.errorMessage ?? undefined
   )
+}
+
+/** A failed apply / ingress reconcile keeps the reason on the leaf it was renewing. */
+async function recordLeafRenewalFailure(
+  db: Db,
+  record: DispatchableCommandRecord,
+  meta: unknown,
+  error?: string
+): Promise<void> {
+  if (record.type !== 'managed.apply' && record.type !== 'managed.ingress.reconcile') {
+    return
+  }
+  try {
+    await recordPendingTlsLeafFailure(
+      db,
+      meta,
+      error ?? record.errorMessage ?? 'The command failed on the server.'
+    )
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `leaf failure note failed for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
 }
 
 async function applyPendingTlsLeafSideEffect(

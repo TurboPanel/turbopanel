@@ -47,6 +47,7 @@ import {
 } from '../features/firewall/vocabulary.ts'
 import { PLACEMENT_SOURCES, PLACEMENT_STATES } from '../features/principals/placement-vocabulary.ts'
 import { FOLDER_KINDS, FOLDER_STATES } from '../features/folders/vocabulary.ts'
+import { LEAF_STATES } from '../features/tls/leaf-vocabulary.ts'
 import { CLIENT_ADDRESS_SCOPES } from '../features/net/client-addresses-pure.ts'
 
 /**
@@ -94,6 +95,7 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['placement_source_check', PLACEMENT_SOURCES],
   ['folder_kind_check', FOLDER_KINDS],
   ['folder_state_check', FOLDER_STATES],
+  ['leaf_state_check', LEAF_STATES],
   ['address_scope_check', CLIENT_ADDRESS_SCOPES],
   ['channel_scope_check', NOTIFICATION_CHANNEL_SCOPES],
   ['channel_kind_check', NOTIFICATION_CHANNEL_KINDS],
