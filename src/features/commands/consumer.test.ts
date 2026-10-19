@@ -3500,10 +3500,11 @@ test('processCommandEnvelope marks the folders a deploy kept as orphans', async 
             ],
           }
         )
+        // The deploy planned no folder for `web` either, so the control plane marks it too.
         assertEquals(await folderStates(ctx.db, ctx.serverId), {
           'service:old': 'orphan',
           'service:deleted': 'removing',
-          'service:web': 'present',
+          'service:web': 'orphan',
         })
         // An orphan still locks the environment until someone removes it.
         assertEquals(await environmentHasFolders(ctx.db, ctx.environmentId), true)
