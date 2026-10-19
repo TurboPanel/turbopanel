@@ -29,6 +29,13 @@
       "when": 1792432015378,
       "tag": "0003_notification_orphan_and_certificate_events",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792434360851,
+      "tag": "0004_tls_issued_by_server",
+      "breakpoints": true
     }
   ]
 }

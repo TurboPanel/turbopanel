@@ -134,6 +134,7 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       fingerprint_sha256 text,
       ca_state text,
       ca_generation integer,
+      issued_by_server_id uuid,
       metadata jsonb NOT NULL,
       options jsonb
     )

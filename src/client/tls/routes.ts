@@ -89,7 +89,7 @@ import {
   rotationResultReason,
 } from './rotation-converge.ts'
 
-const TLS_PUBLIC_SELECT = {
+export const TLS_PUBLIC_SELECT = {
   id: tls.id,
   name: tls.name,
   source: tls.source,
@@ -525,6 +525,13 @@ type TlsRowPatch = {
   name?: string | null
   options?: TlsOptions | null
   status?: string
+  /** Set to null when a Let's Encrypt row is revoked: the stored pair is no longer needed. */
+  certificatePem?: null
+  privateKeyPem?: null
+  issuedByServerId?: null
+  fingerprintSha256?: null
+  notAfter?: string
+  metadata?: Record<string, unknown>
   updatedAt: string
 }
 
@@ -577,6 +584,18 @@ export function buildTlsRowPatch(
       return { ok: false, error: 'Invalid request', status: 500 }
     }
     patch.status = 'revoked'
+    if (existing.source === 'lets_encrypt') {
+      patch.certificatePem = null
+      patch.privateKeyPem = null
+      patch.issuedByServerId = null
+      patch.fingerprintSha256 = null
+      patch.notAfter = new Date(0).toISOString()
+      const residual = existing.metadata as { acme?: Record<string, unknown> }
+      const acme = { ...residual.acme }
+      delete acme.storedNames
+      delete acme.issuedByServerId
+      patch.metadata = { ...residual, acme }
+    }
   }
 
   return { ok: true, patch }

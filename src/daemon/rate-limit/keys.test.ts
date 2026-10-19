@@ -35,6 +35,7 @@ test('daemon rate-limit keys are stable and id-scoped', () => {
     daemonRestRateLimitKey('srv-2', 'secrets-decrypt'),
     'daemon:rest:secrets-decrypt:srv-2'
   )
+  assertEquals(daemonRestRateLimitKey('srv-2', 'tls-issued'), 'daemon:rest:tls-issued:srv-2')
   assertEquals(
     daemonRestRateLimitKey('srv-2', 'secrets-rehydrate'),
     'daemon:rest:secrets-rehydrate:srv-2'
