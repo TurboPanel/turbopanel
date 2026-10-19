@@ -91,7 +91,8 @@ was offline when the asset was deleted), and `folder_asset_present_check` lets
 only `removing`, `orphan` and `missing` rows have neither. `server_id`,
 `principal_id` and `environment_id` are `RESTRICT`: a server, site owner or
 environment with folders cannot be deleted until the rows are gone, so the
-server-delete and environment-delete flows remove or settle them first. `project.slug` is `NOT NULL`; `service.slug` and `storage.slug` stay nullable
+server-delete and environment-delete flows remove or settle them first.
+`project.slug` is `NOT NULL`; `service.slug` and `storage.slug` stay nullable
 because the folder allocator picks them when it plans a folder. Boolean
 columns follow the `is_` rule, so the spec's `common` is `is_common`. The CHECK
 patterns are built from `contracts/directory-names.ts`, so a rule cannot drift
@@ -106,7 +107,7 @@ environment of any project in the organization can use it. It carries no
 DELETE CASCADE` (deleting the environment detaches it); `service_id` and
 `storage_id` are `RESTRICT`, so an asset cannot be deleted while a row names it
 and the routes refuse first, in plain words, listing who uses it. The asset's own
-environment (the service row still needs one) uses it without a row. 
+environment (the service row still needs one) uses it without a row.
 
 **Shipped migration files are immutable, and the guard for that is
 `migrations/manifest.json`** (`scripts/check-migration-freeze.mjs`,
