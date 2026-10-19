@@ -221,6 +221,24 @@ export function parseServerMetricsLiveSettingsBody(body: unknown): ServerMetrics
   return { ok: true, maxMinutes }
 }
 
+export type AuditRetentionSettingsParse =
+  { ok: true; months: number } | { ok: false; error: string }
+
+/**
+ * Shape-only parse of `PUT /settings/audit-retention` — the 0-or-3–120 range
+ * is enforced by the settings helper at write time.
+ */
+export function parseAuditRetentionSettingsBody(body: unknown): AuditRetentionSettingsParse {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'expected { months: number }' }
+  }
+  const months = (body as { months?: unknown }).months
+  if (typeof months !== 'number' || !Number.isInteger(months)) {
+    return { ok: false, error: 'expected { months: number }' }
+  }
+  return { ok: true, months }
+}
+
 const HOSTNAME_SOURCES = new Set<string>(INSTANCE_HOSTNAME_SOURCES)
 
 export type ParsedInstanceHostname = {

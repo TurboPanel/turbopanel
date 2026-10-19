@@ -88,6 +88,7 @@ import {
   parseEmailSettingsUpdates,
   parsePayloadBody,
   parseReencryptRequestBody,
+  parseAuditRetentionSettingsBody,
   parseServerMetricsLiveSettingsBody,
   parseSignupEnabledBody,
   publicUrlsApplyErrorResponse,
@@ -100,6 +101,11 @@ import {
   waitForPublicUrlsApply,
 } from './routes-helpers.ts'
 import { enqueuePlatformCaTrustReconcileBestEffort } from './tls-trust-reconcile.ts'
+import {
+  getAuditRetentionMonths,
+  isValidAuditRetentionMonths,
+  setAuditRetentionMonths,
+} from '../features/settings/audit-retention-settings.ts'
 import {
   getServerMetricsLiveMaxMinutes,
   isValidServerMetricsLiveMaxMinutes,
@@ -544,6 +550,32 @@ export function registerAdminRoutes(
     await setServerMetricsLiveMaxMinutes(db, parsed.maxMinutes)
     const maxMinutes = await getServerMetricsLiveMaxMinutes(db)
     return c.json({ maxMinutes })
+  })
+
+  admin.get('/settings/audit-retention', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const months = await getAuditRetentionMonths(db)
+    return c.json({ months })
+  })
+
+  admin.put('/settings/audit-retention', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const body = await c.req.json().catch(() => null)
+    const parsed = parseAuditRetentionSettingsBody(body)
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, 400)
+    }
+    if (!isValidAuditRetentionMonths(parsed.months)) {
+      return c.json({ error: 'months must be 0 or a whole number between 3 and 120' }, 400)
+    }
+
+    await setAuditRetentionMonths(db, parsed.months)
+    const months = await getAuditRetentionMonths(db)
+    return c.json({ months })
   })
 
   // The operator's alert webhook. The URL is never returned in full: the path

@@ -1,3 +1,4 @@
+import { AUDIT_RETENTION_MONTHS_KEY } from '../features/settings/audit-retention-settings.ts'
 import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
@@ -1186,6 +1187,62 @@ test('GET and PUT /api/admin/v1/settings/server-metrics-live round-trip the cap'
   })
 })
 
+
+test('GET and PUT /api/admin/v1/settings/audit-retention round-trip the window', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const db = createDenoDb()
+    const previous = await db
+      .select({ value: setting.value })
+      .from(setting)
+      .where(eq(setting.key, AUDIT_RETENTION_MONTHS_KEY))
+      .limit(1)
+    const url = `${ADMIN_API_PREFIX}/settings/audit-retention`
+    const put = (months: unknown) =>
+      app.request(url, {
+        method: 'PUT',
+        headers: { Cookie: cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ months }),
+      })
+
+    try {
+      await db.delete(setting).where(eq(setting.key, AUDIT_RETENTION_MONTHS_KEY))
+
+      const initial = await app.request(url, { headers: { Cookie: cookie } })
+      assertEquals(initial.status, 200)
+      assertEquals((await jsonBody<{ months: number }>(initial)).months, 13)
+
+      const twenty = await put(24)
+      assertEquals(twenty.status, 200)
+      assertEquals((await jsonBody<{ months: number }>(twenty)).months, 24)
+      const readBack = await app.request(url, { headers: { Cookie: cookie } })
+      assertEquals((await jsonBody<{ months: number }>(readBack)).months, 24)
+
+      // 0 keeps everything; the window ends are valid.
+      assertEquals((await put(0)).status, 200)
+      assertEquals((await put(3)).status, 200)
+      assertEquals((await put(120)).status, 200)
+
+      // Out-of-window and malformed values are rejected.
+      for (const bad of [1, 2, 121, -1, 12.5, '13']) {
+        assertEquals((await put(bad)).status, 400, String(bad))
+      }
+      const missing = await app.request(url, {
+        method: 'PUT',
+        headers: { Cookie: cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      assertEquals(missing.status, 400)
+    } finally {
+      await db.delete(setting).where(eq(setting.key, AUDIT_RETENTION_MONTHS_KEY))
+      if (previous.length > 0) {
+        await db.insert(setting).values({
+          key: AUDIT_RETENTION_MONTHS_KEY,
+          value: previous[0]!.value,
+        })
+      }
+    }
+  })
+})
 test('GET and PUT /api/admin/v1/settings/alert-webhook never hand the URL back', async () => {
   await withRoleUser('superadmin', async ({ app, cookie }) => {
     const db = createDenoDb()
