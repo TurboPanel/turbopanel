@@ -72,13 +72,17 @@ export type BlockingFolder = {
 export function blockingReason(
   state: string,
   serverName: string | null,
-  serverConnected: boolean | null
+  serverConnected: boolean | null,
+  removalNote: string | null = null
 ): string | null {
   const where = serverName ? `server ${serverName}` : 'its server'
   if (state === 'removing') {
-    return serverConnected === false
-      ? `being removed, waiting for ${where} to come back`
-      : `being removed from ${where}`
+    const base =
+      serverConnected === false
+        ? `being removed, waiting for ${where} to come back`
+        : `being removed from ${where}`
+    // What the host said the last time it kept the folder, so the person is not left guessing.
+    return removalNote ? `${base}; the server could not remove it yet: ${removalNote}` : base
   }
   if (state === 'orphan') {
     return `no service or volume owns this folder on ${where}`
@@ -104,6 +108,7 @@ const FOLDER_COLUMNS = {
   serviceName: service.name,
   storageId: folder.storageId,
   storageName: storage.name,
+  removalNote: folder.removalNote,
 }
 
 /**
@@ -141,7 +146,7 @@ export async function listEnvironmentFolders(
       serverName: row.serverName,
       assetId: row.serviceId ?? row.storageId,
       assetName: row.serviceName ?? row.storageName,
-      reason: blockingReason(row.state, row.serverName, row.serverConnected),
+      reason: blockingReason(row.state, row.serverName, row.serverConnected, row.removalNote),
     })),
     total: counted?.total ?? rows.length,
   }

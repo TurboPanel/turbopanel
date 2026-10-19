@@ -8,6 +8,12 @@
       "tag": "0000_init",
       "when": 1792289698729,
       "sha256": "c80ef826c9d3c74c56063681d0c9d9541074ee63dbb7d60f378f69a47baf26cb"
+    },
+    {
+      "idx": 1,
+      "tag": "0001_folder_removal_note",
+      "when": 1792420688430,
+      "sha256": "5b343c5eb2355022b09c7327aad2ea3ce6e6c6b240ea7c05da20b77549dd5875"
     }
   ]
 }

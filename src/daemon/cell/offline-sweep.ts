@@ -64,6 +64,7 @@ import { runHostLossTick } from './host-loss-tick.ts'
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
+import { runFolderReconcileSweep } from './folder-reconcile-sweep.ts'
 import { runFolderRemovalSweep } from '../../features/folders/removal.ts'
 import type { FirewallApplyGate } from '../../features/firewall/enforcement.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
@@ -1095,6 +1096,13 @@ async function runQueuedCronSweeps(
       await runFolderRemovalSweep(db, commandQueue)
     } catch (err) {
       sweepTrace('folder-removal-sweep-failed', { error: sweepErrorMessage(err) })
+    }
+    // A fresh folder listing from servers that have folders, every few hours, so
+    // a folder removed or added by hand is noticed; isolated too.
+    try {
+      await runFolderReconcileSweep(db, commandQueue)
+    } catch (err) {
+      sweepTrace('folder-reconcile-sweep-failed', { error: sweepErrorMessage(err) })
     }
     // Firewall previews after a reconnect; isolated too. The gate is the
     // deploy-time apply key: without it an opted-in host that applied would be

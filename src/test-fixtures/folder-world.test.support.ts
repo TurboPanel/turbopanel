@@ -15,6 +15,7 @@ import { registerEnvironmentFolderRoutes } from '../client/environments/folder-r
 import { registerEnvironmentRoutes } from '../client/environments/routes.ts'
 import { registerEnvironmentShareRoutes } from '../client/environments/share-routes.ts'
 import { registerOrganizationDirectoryDefaultsRoutes } from '../client/organizations/directory-defaults-routes.ts'
+import { registerOrganizationFolderAdminRoutes } from '../client/organizations/folder-admin-routes.ts'
 import { registerProjectRoutes } from '../client/projects/routes.ts'
 import { registerServiceRoutes } from '../client/services/routes.ts'
 import { registerStorageRoutes } from '../client/storage/routes.ts'
@@ -82,6 +83,7 @@ export async function withFolderFixtures(
   })
   const opts = { secrets, runtime: 'deno', signupEnvOverride: undefined } as const
   registerOrganizationDirectoryDefaultsRoutes(app, opts)
+  registerOrganizationFolderAdminRoutes(app, opts)
   registerEnvironmentRoutes(app, opts)
   registerEnvironmentFolderRoutes(app, opts)
   registerProjectRoutes(app, opts)

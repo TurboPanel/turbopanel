@@ -77,7 +77,7 @@ async function principalIdsByLogin(
  * reason. Never throws for one bad entry.
  */
 export async function applyFolderRemovalReports(
-  db: Pick<Db, 'delete' | 'select'>,
+  db: Pick<Db, 'delete' | 'select' | 'update'>,
   serverId: string,
   reports: readonly FolderRemovalReport[],
   options: { updatedBefore?: string } = {}
@@ -97,6 +97,25 @@ export async function applyFolderRemovalReports(
           report.reason ?? 'no reason given'
         }`
       )
+      // Keep the host's words on the row, so the panel can say why it is still there.
+      await forEachSequential(owners.get(report.owner) ?? [], async (principalId) => {
+        await db
+          .update(folder)
+          .set({ removalNote: (report.reason ?? 'the server gave no reason').slice(0, 300) })
+          .where(
+            and(
+              eq(folder.serverId, serverId),
+              eq(folder.principalId, principalId),
+              eq(folder.scope, report.scope),
+              eq(folder.kind, report.kind),
+              eq(folder.slug, report.slug),
+              eq(folder.state, 'removing'),
+              options.updatedBefore === undefined
+                ? undefined
+                : lt(folder.updatedAt, options.updatedBefore)
+            )
+          )
+      })
       return
     }
     // Only a `removing` row of the principal that carries this login is

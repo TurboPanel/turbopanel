@@ -14,6 +14,7 @@ import {
   confirmFolderRemoved,
   FolderPlanError,
   markAssetFoldersRemoving,
+  markOrphanFolderRemoving,
   markFoldersPresent,
   markServerServiceFoldersRemoving,
   markVolumeFolderRemoving,
@@ -347,5 +348,53 @@ test('planning a folder again while the host has not confirmed its removal makes
     assertEquals(again.folderIds, first.folderIds)
     const [row] = await ctx.db.select().from(folder).where(eq(folder.id, first.folderIds[0]!))
     assertEquals(row!.state, 'planned')
+  })
+})
+
+test('a new service takes over an orphan folder nothing owns', async () => {
+  await withFixtures(async (ctx) => {
+    const { envId } = await createProject(ctx, 'Adopt')
+    const web = await addService(ctx, envId, 'web')
+    const first = await plan(ctx, envId, { services: [{ serviceId: web }] })
+    await markFoldersPresent(ctx.db, first.folderIds)
+    // The service left the compose file and was deleted: its folder stays, nobody owns it.
+    await ctx.db.update(folder).set({ state: 'orphan' }).where(eq(folder.id, first.folderIds[0]!))
+    await ctx.db.delete(tenancy).where(eq(tenancy.serviceId, web))
+    await ctx.db.delete(service).where(eq(service.id, web))
+    const [orphan] = await ctx.db.select().from(folder).where(eq(folder.id, first.folderIds[0]!))
+    assertEquals([orphan!.serviceId, orphan!.state], [null, 'orphan'])
+
+    // A new service with the same name takes the folder over; its contents stay with it.
+    const again = await addService(ctx, envId, 'web', { slug: 'web' })
+    const planned = await plan(ctx, envId, { services: [{ serviceId: again }] })
+    assertEquals(planned.folderIds, first.folderIds)
+    const [adopted] = await ctx.db.select().from(folder).where(eq(folder.id, first.folderIds[0]!))
+    assertEquals(
+      [adopted!.serviceId, adopted!.state, adopted!.removalNote],
+      [again, 'planned', null]
+    )
+  })
+})
+
+test('only an orphan is moved to removing by an admin, and the note from an earlier refusal is cleared', async () => {
+  await withFixtures(async (ctx) => {
+    const { envId } = await createProject(ctx, 'Admin Remove')
+    const web = await addService(ctx, envId, 'web')
+    const first = await plan(ctx, envId, { services: [{ serviceId: web }] })
+    const id = first.folderIds[0]!
+    // Planned and present folders are in use: nothing moves.
+    assertEquals(await markOrphanFolderRemoving(ctx.db, id), null)
+    await markFoldersPresent(ctx.db, first.folderIds)
+    assertEquals(await markOrphanFolderRemoving(ctx.db, id), null)
+
+    await ctx.db
+      .update(folder)
+      .set({ state: 'orphan', removalNote: 'old refusal' })
+      .where(eq(folder.id, id))
+    assertEquals(await markOrphanFolderRemoving(ctx.db, id), ctx.serverId)
+    const [row] = await ctx.db.select().from(folder).where(eq(folder.id, id))
+    assertEquals([row!.state, row!.removalNote], ['removing', null])
+    // A second ask changes nothing: it is no longer an orphan.
+    assertEquals(await markOrphanFolderRemoving(ctx.db, id), null)
   })
 })

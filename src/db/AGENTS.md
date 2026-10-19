@@ -97,6 +97,13 @@ columns follow the `is_` rule, so the spec's `common` is `is_common`. The CHECK
 patterns are built from `contracts/directory-names.ts`, so a rule cannot drift
 from the database.
 
+`removal_note` (`0001_folder_removal_note`, the first migration after the baseline) keeps
+the host's own words when it kept a `removing` folder, so the panel can say why; it is
+cleared whenever the row moves to `removing` or back to `planned`. An `orphan` that no
+service or volume row names is taken over by the next asset planned under the same
+site owner, scope, kind and name; `POST /folders/:id/remove` moves an orphan to
+`removing`, asks the server again for one already `removing`, and forgets a `missing` row.
+
 **The `share` table** (`0036_share_table`) records that an environment uses a
 common (shared) service or volume: an asset of a site owner that lives in the
 owner's `common` folder scope and belongs to no one environment, so an
