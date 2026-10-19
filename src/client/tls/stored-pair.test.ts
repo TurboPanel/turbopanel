@@ -49,7 +49,13 @@ async function setup(pin: boolean) {
       status: 'managed',
       certificatePem: 'CHAIN',
       privateKeyPem: 'tpsecret.v1.sealed',
-      metadata: { dnsNames: ['a.example.com'] },
+      notAfter: '2030-01-01T00:00:00.000Z',
+      fingerprintSha256: `fp-${crypto.randomUUID()}`,
+      metadata: {
+        dnsNames: ['a.example.com'],
+        extra: 'kept',
+        acme: { storedNames: ['a.example.com'], notAfter: '2030-01-01T00:00:00.000Z' },
+      },
     })
     .returning({ id: tls.id })
   const [ws] = await db
@@ -119,6 +125,11 @@ test('eraseStoredPairs clears the key and chain but keeps the row', async () => 
     assertEquals(row?.privateKeyPem, null)
     assertEquals(row?.certificatePem, null)
     assertEquals(row?.status, 'managed')
+    assertEquals(row?.fingerprintSha256, null)
+    assertEquals(new Date(row!.notAfter!).getTime(), 0)
+    const acme = (row?.metadata as { acme: Record<string, unknown>; extra: string }).acme
+    assertEquals('storedNames' in acme, false)
+    assertEquals((row?.metadata as { extra: string }).extra, 'kept')
     assertEquals(await eraseStoredPairs(f.db, f.organizationId), [])
     const trail = await f.db.select().from(audit).where(eq(audit.organizationId, f.organizationId))
     assertEquals(
@@ -183,6 +194,20 @@ test('pinning the row again before the 30 days are up cancels the removal', asyn
     })
     assertEquals(again.deleted, 0, 'the 30 days start over')
     assertEquals(again.stamped, 1)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('stamping an unpinned row keeps every other metadata key', async () => {
+  if (!dbUrl) return skipWithoutDatabase('stored pair lifecycle tests')
+  const f = await setup(false)
+  try {
+    await runStoredPairSweepTick(f.db, { now: () => new Date() })
+    const metadata = (await f.read())?.metadata as Record<string, unknown>
+    assertEquals(metadata.extra, 'kept')
+    assertEquals(typeof metadata.unpinnedAt, 'string')
+    assertEquals(Array.isArray(metadata.dnsNames), true)
   } finally {
     await f.cleanup()
   }

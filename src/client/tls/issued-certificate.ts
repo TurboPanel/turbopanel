@@ -169,26 +169,32 @@ async function checkPair(
 
 /**
  * Whether the pair should replace what the row holds. A row with nothing yet
- * takes it. A renewal (same names) replaces the old pair. A certificate for a
- * different name of a multi-name row (Caddy issues one per name) does not
- * overwrite a still-valid pair for another name.
+ * takes it. After that a pair replaces the stored one only when it expires
+ * later (a renewal): an older valid pair sent again, or one with the very same
+ * expiry, never overwrites a newer one. A certificate for a different name of
+ * a multi-name row (Caddy issues one per name) does not overwrite a
+ * still-valid pair for another name.
  */
-function replaces(
-  previous: TlsAcmeMetadata | undefined,
+export function replaces(
+  stored: { names: string[] | undefined; notAfter: string | null },
   hasStoredPair: boolean,
   parsed: ParsedCertificate,
   now: Date
 ): boolean {
   if (!hasStoredPair) return true
-  const storedNames = previous?.storedNames
-  if (storedNames === undefined) return true
+  const storedNotAfter = stored.notAfter === null ? Number.NaN : Date.parse(stored.notAfter)
+  if (Number.isNaN(storedNotAfter)) return true
   const sameNames =
-    storedNames.length === parsed.dnsNames.length &&
-    storedNames.every((name) => parsed.dnsNames.includes(name))
-  if (sameNames) return true
-  const storedNotAfter = previous?.notAfter === undefined ? 0 : Date.parse(previous.notAfter)
-  return !(storedNotAfter > now.getTime())
+    stored.names === undefined ||
+    (stored.names.length === parsed.dnsNames.length &&
+      stored.names.every((name) => parsed.dnsNames.includes(name)))
+  if (sameNames) return parsed.notAfter.getTime() > storedNotAfter
+  return storedNotAfter <= now.getTime()
 }
+
+type StoreOutcome = { refusal: IssuedCertificateRefusal } | { stored: StoredRow[] }
+
+type StoredRow = { id: string; hostname: string }
 
 export async function storeIssuedCertificate(
   db: Db,
@@ -210,33 +216,80 @@ export async function storeIssuedCertificate(
     .limit(1)
   const organizationId = serverRow?.organizationId
   if (!organizationId) return refuse('server_not_in_organization')
-  if (!(await loadAcmeEnabled(db, organizationId))) {
-    return refuse('acme_disabled')
-  }
 
+  const sealedKey = await encryptSecret(deps.dataEncryptionSecrets, input.privateKeyPem)
+  assertTpSecretPrivateKey(sealedKey)
+
+  // One transaction under the organization row lock, the same lock the
+  // Let's Encrypt setting takes: turning Let's Encrypt off and storing a pair
+  // cannot interleave and leave a key behind. The matching rows are locked
+  // too, so their metadata is read and rewritten without a concurrent change
+  // slipping in between.
+  const outcome: StoreOutcome = await db.transaction(async (tx0) => {
+    const tx = tx0 as unknown as Db
+    await tx.execute(sql`select id from organization where id = ${organizationId} for update`)
+    if (!(await loadAcmeEnabled(tx, organizationId))) {
+      return { refusal: 'acme_disabled' as const }
+    }
+    return await writePair(tx, { organizationId, hostname, sealedKey, parsed, now, input })
+  })
+  if ('refusal' in outcome) return refuse(outcome.refusal)
+
+  await forEachSequential(outcome.stored, (row) =>
+    recordAudit(db, {
+      organizationId,
+      actorUserId: null,
+      action: 'tls.certificate.store',
+      targetType: 'tls',
+      targetId: row.id,
+      context: {
+        hostname,
+        serverId: input.serverId,
+        fingerprintSha256: parsed.fingerprintSha256,
+        notAfter: parsed.notAfter.toISOString(),
+      },
+    })
+  )
+  return { ok: true, stored: outcome.stored.length > 0, tlsIds: outcome.stored.map((r) => r.id) }
+}
+
+async function writePair(
+  tx: Db,
+  params: {
+    organizationId: string
+    hostname: string
+    sealedKey: string
+    parsed: ParsedCertificate
+    now: Date
+    input: IssuedCertificateInput
+  }
+): Promise<StoreOutcome> {
+  const { organizationId, hostname, sealedKey, parsed, now, input } = params
   const candidates = (
-    await db
+    await tx
       .select({
         id: tls.id,
         status: tls.status,
         metadata: tls.metadata,
+        notAfter: tls.notAfter,
         fingerprintSha256: tls.fingerprintSha256,
         // Only whether a key is already stored; the sealed value is never read here.
         hasKey: sql<boolean>`${tls.privateKeyPem} is not null`,
       })
       .from(tls)
       .where(and(eq(tls.source, 'lets_encrypt'), eq(tls.organizationId, organizationId)))
+      .for('update')
   ).filter(
     (row) =>
       row.status === 'managed' &&
       isManagedRowMetadata(row.metadata) &&
       coversHostname(row.metadata.dnsNames, hostname)
   )
-  if (candidates.length === 0) return refuse('no_matching_certificate')
+  if (candidates.length === 0) return { refusal: 'no_matching_certificate' }
 
   // A daemon may only supply the certificate of a hosting placed on its own
   // server; a pin on any other server's hosting is none of its business.
-  const pinned = await db
+  const pinned = await tx
     .select({ tlsId: hosting.tlsId })
     .from(hosting)
     .innerJoin(service, eq(service.id, hosting.serviceId))
@@ -252,24 +305,22 @@ export async function storeIssuedCertificate(
     )
   const pinnedIds = new Set(pinned.map((row) => row.tlsId))
   const rows = candidates.filter((row) => pinnedIds.has(row.id))
-  if (rows.length === 0) return refuse('no_matching_certificate')
+  if (rows.length === 0) return { refusal: 'no_matching_certificate' }
 
-  const sealedKey = await encryptSecret(deps.dataEncryptionSecrets, input.privateKeyPem)
-  assertTpSecretPrivateKey(sealedKey)
-
-  const storedIds: string[] = []
+  const stored: StoredRow[] = []
   await forEachSequential(rows, async (row) => {
     const metadata = row.metadata as ManagedRowMetadata
     const hasStoredPair = row.hasKey === true
-    if (hasStoredPair && row.fingerprintSha256 === parsed.fingerprintSha256) {
+    if (hasStoredPair && row.fingerprintSha256 === parsed.fingerprintSha256) return
+    const storedNames = hasStoredPair ? metadata.acme?.storedNames : undefined
+    if (!replaces({ names: storedNames, notAfter: row.notAfter }, hasStoredPair, parsed, now)) {
       return
     }
-    if (!replaces(metadata.acme, hasStoredPair, parsed, now)) return
 
     // The fingerprint is unique within an organization: the same certificate
     // already held by another row is not an error, the column is just left
     // empty here.
-    const [duplicate] = await db
+    const [duplicate] = await tx
       .select({ id: tls.id })
       .from(tls)
       .where(
@@ -289,7 +340,7 @@ export async function storeIssuedCertificate(
       issuedByServerId: input.serverId,
     }
     delete acme.lastError
-    await db
+    await tx
       .update(tls)
       .set({
         certificatePem: input.certificatePem,
@@ -308,20 +359,7 @@ export async function storeIssuedCertificate(
         updatedAt: now.toISOString(),
       })
       .where(and(eq(tls.id, row.id), eq(tls.organizationId, organizationId)))
-    storedIds.push(row.id)
-    await recordAudit(db, {
-      organizationId,
-      actorUserId: null,
-      action: 'tls.certificate.store',
-      targetType: 'tls',
-      targetId: row.id,
-      context: {
-        hostname,
-        serverId: input.serverId,
-        fingerprintSha256: parsed.fingerprintSha256,
-        notAfter: parsed.notAfter.toISOString(),
-      },
-    })
+    stored.push({ id: row.id, hostname })
   })
-  return { ok: true, stored: storedIds.length > 0, tlsIds: storedIds }
+  return { stored }
 }

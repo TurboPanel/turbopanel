@@ -1,4 +1,3 @@
-import { eraseStoredPairs } from '../tls/stored-pair.ts'
 import { eq } from 'drizzle-orm'
 import type { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -37,6 +36,7 @@ import { assertCidrAvailable } from '../../features/net/cidr-collisions.ts'
 import { alignedNetworkCidr } from '../../lib/ip-address.ts'
 import { findDockerBridgePoolOverlap } from '../../features/deploy/docker-address-pools.ts'
 import { cidrCollisionResponse } from '../networks/network-scope.ts'
+import { eraseStoredPairs } from '../tls/stored-pair.ts'
 import {
   applyManagedDefaultsPatch,
   composeDefaultResourceLimitsGetResponse,

@@ -134,9 +134,14 @@ export function orgOptionsPatchRoute<P extends Record<string, unknown>>(
     if (!(await loadOrgOptionsRow(scope.db, scope.id))) {
       return c.json({ error: 'Not found' }, 404)
     }
-    await writeOrgOptions(scope.db, scope.id, mergeOrgOptionsSql(parsed.patch))
-    const options = parseOrganizationOptions((await loadOrgOptionsRow(scope.db, scope.id))?.options)
-    await params.afterWrite?.(scope.db, scope.id, parsed.patch)
+    // The write and its follow-up commit together: a failed follow-up (such
+    // as erasing stored certificate keys) rolls the setting back too.
+    const options = await scope.db.transaction(async (tx0) => {
+      const tx = tx0 as unknown as Db
+      await writeOrgOptions(tx, scope.id, mergeOrgOptionsSql(parsed.patch))
+      await params.afterWrite?.(tx, scope.id, parsed.patch)
+      return parseOrganizationOptions((await loadOrgOptionsRow(tx, scope.id))?.options)
+    })
 
     if (params.audit) {
       const { action, context } = params.audit(parsed.patch)

@@ -16,8 +16,8 @@ import { retryPendingLetsEncrypt } from '../../features/hostings/use-letsencrypt
 import { logWarn } from '../../lib/logger.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { createLetsEncryptStore, loadAcmeEnabled } from './letsencrypt-store.ts'
 import { runStoredPairSweepTick } from '../tls/stored-pair.ts'
+import { createLetsEncryptStore, loadAcmeEnabled } from './letsencrypt-store.ts'
 
 /** Waiting hostings looked at per tick (each one costs a DNS lookup or two). */
 export const HOSTING_LETS_ENCRYPT_SWEEP_BATCH = 10

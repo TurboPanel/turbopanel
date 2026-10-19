@@ -529,6 +529,9 @@ type TlsRowPatch = {
   certificatePem?: null
   privateKeyPem?: null
   issuedByServerId?: null
+  fingerprintSha256?: null
+  notAfter?: string
+  metadata?: Record<string, unknown>
   updatedAt: string
 }
 
@@ -585,6 +588,13 @@ export function buildTlsRowPatch(
       patch.certificatePem = null
       patch.privateKeyPem = null
       patch.issuedByServerId = null
+      patch.fingerprintSha256 = null
+      patch.notAfter = new Date(0).toISOString()
+      const residual = existing.metadata as { acme?: Record<string, unknown> }
+      const acme = { ...residual.acme }
+      delete acme.storedNames
+      delete acme.issuedByServerId
+      patch.metadata = { ...residual, acme }
     }
   }
 

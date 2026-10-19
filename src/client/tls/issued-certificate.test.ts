@@ -26,7 +26,7 @@ import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.
 import { deriveEncryptionSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
 import { issueLeafCertificate, mintOrganizationCa } from '../../lib/tls/self-signed.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
-import { storeIssuedCertificate } from './issued-certificate.ts'
+import { replaces, storeIssuedCertificate } from './issued-certificate.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -251,7 +251,7 @@ test('the same pair again changes nothing; a renewal replaces the pair', async (
       stored: false,
       tlsIds: [],
     })
-    const renewed = await issuedPair([HOST])
+    const renewed = await issuedPair([HOST], 120)
     assertEquals(await send(renewed), {
       ok: true,
       stored: true,
@@ -448,4 +448,49 @@ test('the sealed key is the same kind of envelope as an uploaded key', async () 
   const deps = await makeDeps()
   const sealed = await encryptSecret(deps.dataEncryptionSecrets, 'x')
   assertEquals(sealed.startsWith('tpsecret.'), true)
+})
+
+test('an older valid pair never replaces a newer one; a later expiry does; the same expiry does not', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup()
+  try {
+    const send = (pair: { certificatePem: string; privateKeyPem: string }) =>
+      storeIssuedCertificate(
+        f.db,
+        {
+          serverId: f.serverId,
+          hostname: HOST,
+          certificatePem: pair.certificatePem,
+          privateKeyPem: pair.privateKeyPem,
+        },
+        f.deps
+      )
+    const middle = await issuedPair([HOST], 60)
+    const older = await issuedPair([HOST], 30)
+    const newer = await issuedPair([HOST], 90)
+    assertEquals((await send(middle)).ok && (await send(middle)), {
+      ok: true,
+      stored: false,
+      tlsIds: [],
+    })
+    assertEquals(await send(older), { ok: true, stored: false, tlsIds: [] })
+    assertEquals((await readRow(f)).fingerprintSha256, middle.parsed.fingerprintSha256)
+    assertEquals(await send(newer), { ok: true, stored: true, tlsIds: [f.tlsId] })
+    assertEquals((await readRow(f)).fingerprintSha256, newer.parsed.fingerprintSha256)
+    assertEquals(await send(middle), { ok: true, stored: false, tlsIds: [] })
+    assertEquals((await readRow(f)).fingerprintSha256, newer.parsed.fingerprintSha256)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('replaces(): equal expiry is rejected, later accepted, earlier rejected', async () => {
+  const pair = await issuedPair([HOST], 60)
+  const now = new Date()
+  const stored = (notAfter: Date) => ({ names: [HOST], notAfter: notAfter.toISOString() })
+  const at = pair.parsed.notAfter.getTime()
+  assertEquals(replaces(stored(new Date(at)), true, pair.parsed, now), false)
+  assertEquals(replaces(stored(new Date(at - 1000)), true, pair.parsed, now), true)
+  assertEquals(replaces(stored(new Date(at + 1000)), true, pair.parsed, now), false)
+  assertEquals(replaces(stored(new Date(at + 1000)), false, pair.parsed, now), true)
 })

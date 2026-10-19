@@ -41,6 +41,11 @@ export async function eraseStoredPairs(
       privateKeyPem: null,
       certificatePem: null,
       issuedByServerId: null,
+      // Back to the managed row's placeholders: no stored pair, so no stored
+      // expiry or fingerprint either.
+      notAfter: new Date(0).toISOString(),
+      fingerprintSha256: null,
+      metadata: sql`jsonb_set(coalesce(${tls.metadata}, '{}'::jsonb), '{acme}', (coalesce(${tls.metadata} -> 'acme', '{}'::jsonb) - 'storedNames' - 'issuedByServerId'))`,
       updatedAt: now.toISOString(),
     })
     .where(scope)
@@ -92,11 +97,18 @@ export async function runStoredPairSweepTick(
     const metadata = (row.metadata ?? {}) as Record<string, unknown>
     const since = typeof metadata.unpinnedAt === 'string' ? Date.parse(metadata.unpinnedAt) : NaN
     if (!Number.isFinite(since)) {
-      await db
+      // One statement that adds only the stamp to whatever the metadata holds
+      // now, so a change made since the read above is not lost.
+      const stamped = await db
         .update(tls)
-        .set({ metadata: { ...metadata, unpinnedAt: now.toISOString() } })
-        .where(eq(tls.id, row.id))
-      result.stamped += 1
+        .set({
+          metadata: sql`coalesce(${tls.metadata}, '{}'::jsonb) || jsonb_build_object('unpinnedAt', ${now.toISOString()}::text)`,
+        })
+        .where(
+          and(eq(tls.id, row.id), sql`not (coalesce(${tls.metadata}, '{}'::jsonb) ? 'unpinnedAt')`)
+        )
+        .returning({ id: tls.id })
+      result.stamped += stamped.length
       return
     }
     if (now.getTime() - since < STORED_PAIR_KEEP_DAYS * DAY_MS) return
