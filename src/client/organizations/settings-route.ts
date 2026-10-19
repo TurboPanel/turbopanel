@@ -117,6 +117,8 @@ export function orgOptionsPatchRoute<P extends Record<string, unknown>>(
     parse: (body: Record<string, unknown>) => ParsedPatch<P>
     respond: (options: OrganizationOptions) => object
     audit?: (patch: P) => { action: AuditAction; context: Record<string, unknown> }
+    /** Runs after the options are written (before the audit row). */
+    afterWrite?: (db: Db, organizationId: string, patch: P) => Promise<void>
   }>
 ) {
   return async (c: Context<AppEnv>) => {
@@ -134,6 +136,7 @@ export function orgOptionsPatchRoute<P extends Record<string, unknown>>(
     }
     await writeOrgOptions(scope.db, scope.id, mergeOrgOptionsSql(parsed.patch))
     const options = parseOrganizationOptions((await loadOrgOptionsRow(scope.db, scope.id))?.options)
+    await params.afterWrite?.(scope.db, scope.id, parsed.patch)
 
     if (params.audit) {
       const { action, context } = params.audit(parsed.patch)

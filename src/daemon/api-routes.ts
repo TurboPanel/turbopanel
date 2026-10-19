@@ -25,6 +25,7 @@ import {
 } from '../lib/secrets/data-encryption.ts'
 import type { Db } from '../db/connection.ts'
 import { describeError } from '../lib/describe-error.ts'
+import { storeIssuedCertificate } from '../client/tls/issued-certificate.ts'
 import { logWarn } from '../lib/logger.ts'
 import {
   getDaemonCellRegistry,
@@ -201,6 +202,12 @@ export const MAX_SECRETS_DECRYPT_CIPHERTEXT_CHARS = 16 * 1024
  * the batch cap × per-ciphertext cap plus JSON array/quoting overhead.
  */
 export const MAX_SECRETS_DECRYPT_BODY_BYTES = 2 * 1024 * 1024
+
+/**
+ * `POST /tls/issued` — hostname plus one certificate chain and one private key
+ * (32 KiB chain + 8 KiB key at most) with JSON quoting overhead.
+ */
+export const MAX_TLS_ISSUED_BODY_BYTES = 64 * 1024
 
 /** `POST /auth/challenge` — optional serverId/keyId only. */
 export const MAX_AUTH_CHALLENGE_BODY_BYTES = 4 * 1024
@@ -909,6 +916,8 @@ type DaemonApiEnv = {
     daemonServerId: string
     daemonKeyId: string
     daemonTokenId: string
+    /** Bound by the app (`bindContextValue`); absent when no secrets are configured. */
+    dataEncryptionSecrets?: DerivedSecretsConfig
   }
 }
 
@@ -1745,6 +1754,65 @@ export function registerDaemonApiRoutes<E extends Env>(
       )
 
       return c.json({ plaintexts }, 200)
+    }
+  )
+
+  /**
+   * The certificate and private key Caddy issued on the calling server for one
+   * hostname. Stored sealed next to the other certificates (see
+   * `client/tls/issued-certificate.ts` for every check). The body is never
+   * logged and nothing from it comes back in the answer.
+   */
+  daemon.post(
+    '/tls/issued',
+    requireDaemonJwt,
+    enforceJwtRestLimit('tls-issued'),
+    requireActiveDaemonKey,
+    async (c) => {
+      const bodyRead = await readBoundedJsonBody(c, MAX_TLS_ISSUED_BODY_BYTES)
+      if (!bodyRead.ok) return bodyRead.response
+      let body: {
+        hostname?: unknown
+        certificatePem?: unknown
+        privateKeyPem?: unknown
+      }
+      try {
+        body = JSON.parse(bodyRead.text) as typeof body
+      } catch {
+        return c.json({ ok: false, error: 'invalid json' }, 400)
+      }
+      if (
+        typeof body.hostname !== 'string' ||
+        typeof body.certificatePem !== 'string' ||
+        typeof body.privateKeyPem !== 'string'
+      ) {
+        return c.json(
+          {
+            ok: false,
+            error: 'hostname, certificatePem and privateKeyPem are required',
+          },
+          400
+        )
+      }
+      const db = getDb(c)
+      const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+      if (!db || !dataEncryptionSecrets) {
+        return c.json({ ok: false, error: 'storage unavailable' }, 503)
+      }
+      const result = await storeIssuedCertificate(
+        db,
+        {
+          serverId: c.get('daemonServerId'),
+          hostname: body.hostname,
+          certificatePem: body.certificatePem,
+          privateKeyPem: body.privateKeyPem,
+        },
+        { dataEncryptionSecrets }
+      )
+      if (!result.ok) {
+        return c.json({ ok: false, error: result.error }, result.status)
+      }
+      return c.json({ ok: true, stored: result.stored }, 200)
     }
   )
 

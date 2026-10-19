@@ -39,6 +39,16 @@ test('every registered statement is a plain, cacheable select that matches its f
   }
 })
 
+test('no cached statement reads the tls table (certificate keys must never reach a query cache)', () => {
+  for (const read of ALL_CACHED_READS) {
+    for (const sample of read.definition.samples) {
+      const { sql } = inspectCachedRead(read.definition as never, sample as never)
+      assert(!/"tls"/i.test(sql), `${read.definition.id} reads the tls table`)
+      assert(!sql.includes('private_key_pem'), `${read.definition.id} selects a certificate key`)
+    }
+  }
+})
+
 test('different inputs give different keys', () => {
   for (const read of ALL_CACHED_READS) {
     const keys = read.definition.samples.map(

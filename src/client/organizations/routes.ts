@@ -1,3 +1,4 @@
+import { eraseStoredPairs } from '../tls/stored-pair.ts'
 import { eq } from 'drizzle-orm'
 import type { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -231,6 +232,12 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
       gate: 'manage',
       parse: parseTlsSettingsPatch,
       respond: tlsSettingsPutResponse,
+      // Turning Let's Encrypt off: the stored keys are no longer needed.
+      afterWrite: async (db, organizationId, patch) => {
+        if (patch.acmeEnabled === false) {
+          await eraseStoredPairs(db, organizationId)
+        }
+      },
       audit: (patch) => ({
         action: 'organization.acme.set',
         context: { acmeEnabled: patch.acmeEnabled },

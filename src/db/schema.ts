@@ -180,8 +180,19 @@ export const tls = pgTable(
     caState: text('ca_state'),
     /** Monotonic per-org counter on Organization CA rows; null on non-CA rows. */
     caGeneration: integer('ca_generation'),
+    /** Server whose Caddy issued the stored Let's Encrypt pair; null when none is stored. */
+    issuedByServerId: uuid('issued_by_server_id'),
   },
   (table) => [
+    index('idx_tls_issued_by_server_id').using(
+      'btree',
+      table.issuedByServerId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.issuedByServerId],
+      foreignColumns: [server.id],
+      name: 'tls_issued_by_server_id_server_id_fk',
+    }).onDelete('set null'),
     index('idx_tls_organization_id').using(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops')
