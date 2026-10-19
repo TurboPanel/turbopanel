@@ -69,6 +69,7 @@ import {
   type CaRotationJournalRow,
 } from './changeover-lease.ts'
 import { countLeafHealthForOrganization } from './leaf-renewal-sweep.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { retireAwaitingRotation } from './rotation-retire.ts'
 import { caRetireByIso } from '../../features/tls/leaf-vocabulary.ts'
 import {
@@ -785,6 +786,15 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
         payload.status
       )
     }
+    await recordAudit(db, {
+      organizationId,
+      actorUserId: session.userId,
+      actorEmail: session.email ?? null,
+      action: 'tls.ca.retire',
+      targetType: 'organization',
+      targetId: organizationId,
+      context: { rotationId: outcome.rotationId, by: 'owner' },
+    })
     return c.json({ ok: true as const, rotationId: outcome.rotationId })
   })
 

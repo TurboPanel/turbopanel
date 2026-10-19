@@ -205,7 +205,7 @@ plus the active Organization CA generation and expiry.
 marks a leaf stale (and stops counting and renewing it) when its server has been
 offline for 14 days (`LEAF_STALE_OFFLINE_DAYS`) or an ingress reconcile finds nothing
 on the server that needs the certificate; an owner can also mark one stale or delete
-its record (`/tls/ca/leaves`, `leaf-routes.ts`). Every try is remembered
+its record (`/tls/ca/leaves`, `leaf-routes.ts`). `leaf.stale_cause` says which: `offline` marks come back by themselves when the server reconnects (`reactivateLeavesOfReturnedServers`, run at the start of every sweep pass, so a server that returns after the previous generation was retired is renewed at once); `unused` marks come back when a later deploy needs the certificate (`clearLeafAttentionAfterDeploy` in `features/tls/leaf-state.ts`, called by the command consumer right after `commitPendingTlsLeafTracking`); `owner` marks stay until an owner or a deploy says otherwise. The sweep's stale mark is dropped if an owner asked for a renewal after the sweep read the row (it compares the try count). Every try is remembered
 (`attempts`, `attempted_at`, `last_error`, filled from the sweep and from the failed
 `managed.apply` / `managed.ingress.reconcile` command) and waits `30 min × 2^attempts`
 (at most a day) before the next one. A successful deploy clears all of it
@@ -213,7 +213,7 @@ its record (`/tls/ca/leaves`, `leaf-routes.ts`). Every try is remembered
 
 **Retiring is guarded and has a deadline.** `POST /tls/ca/retire` also refuses with
 409 `ca_leaves_outstanding` while an *active* leaf is still signed by an older
-generation. When fan-out finishes the rotation gets `retire_by` (30 days,
+generation, or a leaf marked stale because its server was offline has a connected server again (the sweep is about to renew it). Rotations already waiting to be retired when `retire_by` was added got a 30 day deadline from the migration. When fan-out finishes the rotation gets `retire_by` (30 days,
 `CA_RETIRE_GRACE_DAYS`); once it has passed, the sweep tick retires the previous
 generation by itself, but only if every live target converged and no active leaf is
 left on an older generation (`rotation-retire.ts`, `retireOverdueRotations`).

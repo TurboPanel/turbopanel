@@ -1,5 +1,5 @@
 {
-  "id": "26da72f8-370e-47d3-aef8-3660a3b9827b",
+  "id": "225dd133-3ce5-4936-8d12-b95faa45ce53",
   "prevId": "a94a5032-b628-4dab-95a8-279d509fcc96",
   "version": "7",
   "dialect": "postgresql",
@@ -4882,6 +4882,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "stale_cause": {
+          "name": "stale_cause",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "attempts": {
           "name": "attempts",
           "type": "integer",
@@ -5110,9 +5116,13 @@
           "name": "leaf_state_check",
           "value": "state IN ('active','stale')"
         },
+        "leaf_stale_cause_check": {
+          "name": "leaf_stale_cause_check",
+          "value": "stale_cause IS NULL OR stale_cause IN ('offline','unused','owner')"
+        },
         "leaf_stale_check": {
           "name": "leaf_stale_check",
-          "value": "(\"leaf\".\"state\" = 'stale') = (\"leaf\".\"stale_at\" IS NOT NULL)"
+          "value": "(\"leaf\".\"state\" = 'stale') = (\"leaf\".\"stale_at\" IS NOT NULL) AND (\"leaf\".\"state\" = 'stale') = (\"leaf\".\"stale_cause\" IS NOT NULL)"
         },
         "leaf_attempts_check": {
           "name": "leaf_attempts_check",

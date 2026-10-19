@@ -5,20 +5,28 @@
  */
 import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
-import { audit, changeover, leaf, tls } from '../../db/schema.ts'
+import { audit, changeover, leaf, server, tls } from '../../db/schema.ts'
+import { commitPendingTlsLeafTracking } from '../../features/tls/leaf-tracking.ts'
 import {
+  clearLeafAttentionAfterDeploy,
   recordPendingTlsLeafFailure,
-  upsertTlsLeafTracking,
-} from '../../features/tls/leaf-tracking.ts'
+} from '../../features/tls/leaf-state.ts'
 import { LEAF_STALE_NOT_NEEDED, LEAF_TEXT_MAX } from '../../features/tls/leaf-vocabulary.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { withLeafWorld, type LeafWorld } from '../../test-fixtures/tls-leaf-world.test.support.ts'
 import {
   countLeafHealthForOrganization,
   loadDueTlsLeaves,
+  markTlsLeafStale,
+  reactivateLeavesOfReturnedServers,
   renewOneTlsLeaf,
 } from './leaf-renewal-sweep.ts'
-import { retireAwaitingRotation, retireOverdueRotations } from './rotation-retire.ts'
+import {
+  countLeavesOnOlderGeneration,
+  retireAwaitingRotation,
+  retireOverdueRotations,
+} from './rotation-retire.ts'
+import { markLeafStaleByOwner } from './leaf-attention.ts'
 import { systemRotationContext } from './system-context.ts'
 
 const test = Deno.test.bind(Deno)
@@ -60,7 +68,12 @@ test('a leaf on the previous generation is due, and a stale one is counted apart
     const stale = await world.addIngressLeaf(await world.addServer(), { generation: 1 })
     await world.db
       .update(leaf)
-      .set({ state: 'stale', staleAt: new Date().toISOString(), staleReason: 'x' })
+      .set({
+        state: 'stale',
+        staleAt: new Date().toISOString(),
+        staleReason: 'x',
+        staleCause: 'owner',
+      })
       .where(eq(leaf.id, stale))
 
     const health = await countLeafHealthForOrganization(world.db, world.organizationId, {
@@ -118,7 +131,7 @@ test('a server offline for weeks has its leaf marked stale with the day it went 
 
     assertEquals(await renew(world, id), 'stale')
     const row = await leafRow(world, id)
-    assertEquals(row.state, 'stale')
+    assertEquals([row.state, row.staleCause], ['stale', 'offline'])
     assertEquals(row.staleReason, `The server has been offline since ${wentOff.slice(0, 10)}.`)
     assertEquals(row.staleAt !== null, true)
     assertEquals(
@@ -135,12 +148,12 @@ test('an ingress leaf nothing on the server uses is marked stale instead of rene
     const id = await world.addIngressLeaf(await world.addServer(), { generation: 1 })
     assertEquals(await renew(world, id), 'stale')
     const row = await leafRow(world, id)
-    assertEquals(row.state, 'stale')
+    assertEquals([row.state, row.staleCause], ['stale', 'unused'])
     assertEquals(row.staleReason, LEAF_STALE_NOT_NEEDED)
   })
 })
 
-test('a deploy clears the stale mark, the retry count and the last failure', async () => {
+test('a later deploy brings back a leaf that was marked stale, and clears its retry count and last failure', async () => {
   await withLeafWorld(async (world) => {
     const serverId = await world.addServer()
     const id = await world.addIngressLeaf(serverId, { generation: 1 })
@@ -150,24 +163,37 @@ test('a deploy clears the stale mark, the retry count and the last failure', asy
         state: 'stale',
         staleAt: new Date().toISOString(),
         staleReason: 'x',
+        staleCause: 'unused',
         attempts: 4,
         attemptedAt: new Date().toISOString(),
         lastError: 'boom',
       })
       .where(eq(leaf.id, id))
 
-    await upsertTlsLeafTracking(world.db, {
-      kind: 'ingress',
-      organizationId: world.organizationId,
-      serverId,
-      caId: world.activeCaId,
-      caGeneration: 2,
-      notAfter: new Date(Date.now() + 90 * DAY).toISOString(),
-    })
+    const metadata = {
+      pendingTlsLeaf: {
+        kind: 'ingress',
+        organizationId: world.organizationId,
+        serverId,
+        caId: world.activeCaId,
+        caGeneration: 2,
+        notAfter: new Date(Date.now() + 90 * DAY).toISOString(),
+      },
+    }
+    assertEquals(await commitPendingTlsLeafTracking(world.db, metadata), true)
+    assertEquals(await clearLeafAttentionAfterDeploy(world.db, metadata), true)
     const row = await leafRow(world, id)
     assertEquals(
-      [row.state, row.staleAt, row.staleReason, row.attempts, row.attemptedAt, row.lastError],
-      ['active', null, null, 0, null, null]
+      [
+        row.state,
+        row.staleAt,
+        row.staleReason,
+        row.staleCause,
+        row.attempts,
+        row.attemptedAt,
+        row.lastError,
+      ],
+      ['active', null, null, null, 0, null, null]
     )
     assertEquals(row.caGeneration, 2)
   })
@@ -197,6 +223,7 @@ test('a failed command keeps its reason on the deployed leaf, cut to 300 charact
     assertEquals((await leafRow(world, id)).lastError!.length, LEAF_TEXT_MAX)
 
     assertEquals(await recordPendingTlsLeafFailure(world.db, { nothing: true }, 'ignored'), false)
+    assertEquals(await clearLeafAttentionAfterDeploy(world.db, { nothing: true }), false)
   })
 })
 
@@ -219,7 +246,12 @@ test('the previous generation is not retired while an active leaf still needs it
 
     await world.db
       .update(leaf)
-      .set({ state: 'stale', staleAt: new Date().toISOString(), staleReason: 'owner said so' })
+      .set({
+        state: 'stale',
+        staleAt: new Date().toISOString(),
+        staleReason: 'owner said so',
+        staleCause: 'owner',
+      })
       .where(eq(leaf.id, id))
     const done = await run()
     assertEquals(done.ok, true)
@@ -285,7 +317,12 @@ test('GET /tls/ca/leaves lists due and stale leaves with their server and reason
     await world.addIngressLeaf(await world.addServer({ name: 'Healthy' }), { generation: 2 })
     await world.db
       .update(leaf)
-      .set({ state: 'stale', staleAt: new Date().toISOString(), staleReason: 'Gone for weeks.' })
+      .set({
+        state: 'stale',
+        staleAt: new Date().toISOString(),
+        staleReason: 'Gone for weeks.',
+        staleCause: 'offline',
+      })
       .where(eq(leaf.id, stale))
 
     const res = await world.request('GET', '/tls/ca/leaves')
@@ -326,7 +363,10 @@ test('an owner can mark a leaf stale and delete its record, and each is recorded
     const marked = await world.request('POST', `/tls/ca/leaves/${id}/stale`)
     assertEquals(marked.status, 200)
     const row = await leafRow(world, id)
-    assertEquals([row.state, row.staleReason], ['stale', 'Marked stale by an owner.'])
+    assertEquals(
+      [row.state, row.staleReason, row.staleCause],
+      ['stale', 'Marked stale by an owner.', 'owner']
+    )
 
     const removed = await world.request('DELETE', `/tls/ca/leaves/${id}`)
     assertEquals(removed.status, 200)
@@ -365,5 +405,161 @@ test('renewing a leaf says so plainly when no command queue is available', async
     const res = await world.request('POST', `/tls/ca/leaves/${id}/renew`)
     assertEquals(res.status, 503)
     assertEquals((await leafRow(world, id)).state, 'active')
+  })
+})
+
+async function retireOnce(world: LeafWorld) {
+  return await retireAwaitingRotation(systemRotationContext(world.deps), world.db, {
+    organizationId: world.organizationId,
+    actorType: 'system',
+    actorId: world.organizationId,
+    enqueueGaps: false,
+    deps: { commandQueue: null, ...world.deps },
+  })
+}
+
+async function goneForWeeks(world: LeafWorld) {
+  const serverId = await world.addServer({
+    connected: false,
+    statusChangedAt: new Date(Date.now() - 20 * DAY).toISOString(),
+  })
+  const id = await world.addIngressLeaf(serverId, { generation: 1 })
+  assertEquals(await renew(world, id), 'stale')
+  return { serverId, id }
+}
+
+test('a server that comes back before the retire holds the retire back until its leaf is renewed', async () => {
+  await withLeafWorld(async (world) => {
+    await world.addRotation('awaiting_retire')
+    const { serverId, id } = await goneForWeeks(world)
+
+    // Still offline: the stale leaf does not hold the retire back.
+    assertEquals(await countLeavesOnOlderGeneration(world.db, world.organizationId, 2), 0)
+
+    // The server reconnects: retiring now would strand it, so it waits.
+    await world.db.update(server).set({ isConnected: true }).where(eq(server.id, serverId))
+    assertEquals(await retireOnce(world), {
+      ok: false,
+      reason: 'ca_leaves_outstanding',
+      outstanding: 1,
+    })
+    const [ca] = await world.db.select().from(tls).where(eq(tls.id, world.retiredCaId))
+    assertEquals(ca!.caState, 'retired')
+
+    // The sweep brings the leaf back; once it is renewed the retire goes through.
+    assertEquals(await reactivateLeavesOfReturnedServers(world.db), 1)
+    assertEquals((await leafRow(world, id)).state, 'active')
+    await world.db
+      .update(leaf)
+      .set({ caGeneration: 2, caId: world.activeCaId })
+      .where(eq(leaf.id, id))
+    assertEquals((await retireOnce(world)).ok, true)
+  })
+})
+
+test('a server that comes back after the retire gets its leaf back and renewed', async () => {
+  await withLeafWorld(async (world) => {
+    await world.addRotation('awaiting_retire')
+    const { serverId, id } = await goneForWeeks(world)
+    assertEquals((await retireOnce(world)).ok, true)
+    const [revoked] = await world.db.select().from(tls).where(eq(tls.id, world.retiredCaId))
+    assertEquals(revoked!.caState, 'revoked')
+
+    // It returns holding a certificate from the revoked generation.
+    await world.db.update(server).set({ isConnected: true }).where(eq(server.id, serverId))
+    assertEquals(await reactivateLeavesOfReturnedServers(world.db), 1)
+    const row = await leafRow(world, id)
+    assertEquals([row.state, row.staleCause, row.staleAt, row.attempts], ['active', null, null, 0])
+    // On the older generation, so it is due again and the sweep renews it.
+    assertEquals((await dueIds(world)).includes(id), true)
+  })
+})
+
+test('only a leaf marked stale for an offline server comes back by itself', async () => {
+  await withLeafWorld(async (world) => {
+    const serverId = await world.addServer()
+    const byOwner = await world.addIngressLeaf(serverId, { generation: 1 })
+    await markLeafStaleByOwner(world.db, world.organizationId, byOwner)
+    const unusedServer = await world.addServer()
+    const unused = await world.addIngressLeaf(unusedServer, { generation: 1 })
+    assertEquals(await markTlsLeafStale(world.db, unused, 'no use', 'unused'), true)
+
+    assertEquals(await reactivateLeavesOfReturnedServers(world.db), 0)
+    assertEquals((await leafRow(world, byOwner)).state, 'stale')
+    assertEquals((await leafRow(world, unused)).state, 'stale')
+  })
+})
+
+test('a sweep that saw an old try count does not override a renewal asked for in between', async () => {
+  await withLeafWorld(async (world) => {
+    const serverId = await world.addServer({
+      connected: false,
+      statusChangedAt: new Date(Date.now() - 20 * DAY).toISOString(),
+    })
+    const id = await world.addIngressLeaf(serverId, { generation: 1 })
+    const [seen] = (await loadDueTlsLeaves(world.db, { limit: 500, ignoreBackoff: true })).filter(
+      (row) => row.id === id
+    )
+
+    // An owner asks for a renewal after the sweep read the row.
+    await world.db
+      .update(leaf)
+      .set({ attempts: 1, attemptedAt: new Date().toISOString() })
+      .where(eq(leaf.id, id))
+
+    assertEquals(
+      await markTlsLeafStale(world.db, id, 'offline', 'offline', Date.now(), seen!.attempts),
+      false
+    )
+    assertEquals((await leafRow(world, id)).state, 'active')
+    // With the current count the mark applies.
+    assertEquals(await markTlsLeafStale(world.db, id, 'offline', 'offline', Date.now(), 1), true)
+  })
+})
+
+test('two renewals of the same leaf at once both finish and leave one consistent row', async () => {
+  await withLeafWorld(async (world) => {
+    const id = await world.addIngressLeaf(await world.addServer(), { generation: 1 })
+    const [row] = (await loadDueTlsLeaves(world.db, { limit: 500, ignoreBackoff: true })).filter(
+      (candidate) => candidate.id === id
+    )
+    const once = () =>
+      renewOneTlsLeaf(
+        systemRotationContext(world.deps),
+        world.db,
+        queue,
+        world.deps,
+        row!,
+        { ingress: new Set<string>(), managed: new Set<string>() },
+        Date.now()
+      )
+    // Both read the row while it was active; nothing on the server uses it, so both mark it stale.
+    assertEquals(await Promise.all([once(), once()]), ['stale', 'stale'])
+    const after = await leafRow(world, id)
+    assertEquals([after.state, after.staleCause], ['stale', 'unused'])
+  })
+})
+
+test('an owner retiring the previous CA is recorded in the audit trail like the deadline retire', async () => {
+  await withLeafWorld(async (world) => {
+    const rotationId = await world.addRotation('awaiting_retire')
+    const res = await world.request('POST', '/tls/ca/retire')
+    assertEquals(res.status, 200)
+    const [note] = await world.db
+      .select()
+      .from(audit)
+      .where(and(eq(audit.organizationId, world.organizationId), eq(audit.action, 'tls.ca.retire')))
+    assertEquals(note?.actorUserId, world.userId)
+    assertEquals(note?.context, { rotationId, by: 'owner' })
+  })
+})
+
+test('retiring over HTTP says which certificates are still on the previous CA', async () => {
+  await withLeafWorld(async (world) => {
+    await world.addRotation('awaiting_retire')
+    await world.addIngressLeaf(await world.addServer(), { generation: 1 })
+    const res = await world.request('POST', '/tls/ca/retire')
+    assertEquals(res.status, 409)
+    assertEquals(await res.json(), { error: 'ca_leaves_outstanding', outstandingLeaves: 1 })
   })
 })

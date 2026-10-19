@@ -8,7 +8,7 @@
  * older generation. A leaf an owner marked stale (or the sweep did, for a
  * server gone for weeks) no longer holds the retire back.
  */
-import { and, asc, eq, isNotNull, lte, sql } from 'drizzle-orm'
+import { and, asc, eq, isNotNull, lte, or, sql } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
@@ -40,7 +40,13 @@ export type RetireDeps = Readonly<{
   dataEncryptionSecrets: DerivedSecretsConfig | null
 }>
 
-/** Active leaves still signed by a generation other than the active one. */
+/**
+ * Leaves that still need the previous generation: active ones still signed by
+ * an older generation, and ones marked stale because their server was offline
+ * whose server is connected again (the sweep brings those back and renews them;
+ * retiring first would leave a connected server with a certificate nothing
+ * trusts). Leaves an owner marked stale, or that nothing uses, do not count.
+ */
 export async function countLeavesOnOlderGeneration(
   db: Db,
   organizationId: string,
@@ -52,8 +58,14 @@ export async function countLeavesOnOlderGeneration(
     .where(
       and(
         eq(leaf.organizationId, organizationId),
-        eq(leaf.state, 'active'),
-        sql`${leaf.caGeneration} IS DISTINCT FROM ${activeGeneration}`
+        sql`${leaf.caGeneration} IS DISTINCT FROM ${activeGeneration}`,
+        or(
+          eq(leaf.state, 'active'),
+          and(
+            eq(leaf.staleCause, 'offline'),
+            sql`${leaf.serverId} IN (SELECT id FROM server WHERE is_connected)`
+          )
+        )
       )
     )
   return Number(row?.n ?? 0)

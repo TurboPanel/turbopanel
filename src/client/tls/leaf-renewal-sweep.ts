@@ -29,6 +29,7 @@ import {
   clipLeafText,
   LEAF_STALE_NOT_NEEDED,
   leafStaleOfflineReason,
+  type LeafStaleCause,
   serverOfflineTooLong,
 } from '../../features/tls/leaf-vocabulary.ts'
 
@@ -472,20 +473,70 @@ async function enqueueOneDueLeaf(
   return { status: 'failed', reason: 'Unknown leaf kind.' }
 }
 
-/** Mark one leaf stale so nothing waits on it: it is no longer counted or renewed. */
+/**
+ * Mark one leaf stale so nothing waits on it: it is no longer counted or
+ * renewed. `expectedAttempts` is the try count the caller saw; an owner who
+ * asked for a renewal in the meantime has bumped it, and then the mark is
+ * dropped instead of overriding that renewal.
+ */
 export async function markTlsLeafStale(
   db: Db,
   leafId: string,
   reason: string,
-  nowMs = Date.now()
+  cause: LeafStaleCause,
+  nowMs = Date.now(),
+  expectedAttempts?: number
 ): Promise<boolean> {
   const stamp = nowIso(nowMs)
   const rows = await db
     .update(leaf)
-    .set({ state: 'stale', staleAt: stamp, staleReason: clipLeafText(reason), updatedAt: stamp })
-    .where(and(eq(leaf.id, leafId), eq(leaf.state, 'active')))
+    .set({
+      state: 'stale',
+      staleAt: stamp,
+      staleReason: clipLeafText(reason),
+      staleCause: cause,
+      updatedAt: stamp,
+    })
+    .where(
+      and(
+        eq(leaf.id, leafId),
+        eq(leaf.state, 'active'),
+        expectedAttempts === undefined ? undefined : eq(leaf.attempts, expectedAttempts)
+      )
+    )
     .returning({ id: leaf.id })
   return rows.length > 0
+}
+
+/**
+ * A server that was offline for weeks and is connected again gets its stale
+ * leaves back: they are active (and due, if the previous Organization CA was
+ * retired meanwhile) so this tick renews them. Without it a returning server
+ * would keep a certificate nothing trusts any more. Only `offline` marks come
+ * back this way; `unused` and `owner` marks stay until a deploy or an owner
+ * says otherwise.
+ */
+export async function reactivateLeavesOfReturnedServers(db: Db): Promise<number> {
+  const rows = await db
+    .update(leaf)
+    .set({
+      state: 'active',
+      staleAt: null,
+      staleReason: null,
+      staleCause: null,
+      attempts: 0,
+      attemptedAt: null,
+      lastError: null,
+    })
+    .where(
+      and(
+        eq(leaf.state, 'stale'),
+        eq(leaf.staleCause, 'offline'),
+        sql`${leaf.serverId} IN (SELECT id FROM server WHERE is_connected)`
+      )
+    )
+    .returning({ id: leaf.id })
+  return rows.length
 }
 
 /**
@@ -536,7 +587,14 @@ export async function renewOneTlsLeaf(
       nowMs,
     })
   ) {
-    await markTlsLeafStale(db, row.id, leafStaleOfflineReason(row.serverStatusChangedAt), nowMs)
+    await markTlsLeafStale(
+      db,
+      row.id,
+      leafStaleOfflineReason(row.serverStatusChangedAt),
+      'offline',
+      nowMs,
+      row.attempts
+    )
     return 'stale'
   }
   const outcome = await enqueueOneDueLeaf(
@@ -549,7 +607,7 @@ export async function renewOneTlsLeaf(
     seen.managed
   )
   if (outcome.status === 'not_needed') {
-    await markTlsLeafStale(db, row.id, LEAF_STALE_NOT_NEEDED, nowMs)
+    await markTlsLeafStale(db, row.id, LEAF_STALE_NOT_NEEDED, 'unused', nowMs, row.attempts)
     return 'stale'
   }
   if (outcome.status === 'enqueued') {
@@ -577,6 +635,7 @@ export async function renewDueTlsLeaves(
   } = {}
 ): Promise<LeafRenewalSweepResult> {
   const limit = options.limit ?? LEAF_RENEWAL_BATCH_SIZE
+  await reactivateLeavesOfReturnedServers(db)
   const rows = await loadDueTlsLeaves(db, {
     nowMs: options.nowMs,
     cursor: options.cursor,

@@ -397,7 +397,7 @@ export const tlsPaths = {
         },
         409: {
           description:
-            'no_pending_rotation (no awaiting_retire journal), ca_rotation_not_converged (a tracked command is missing, non-terminal, or not succeeded, or binding rematerialize failed) or ca_leaves_outstanding (an active leaf is still signed by an older generation; the body adds outstandingLeaves). Renew it, mark it stale or delete its record from /tls/ca/leaves first. The sweep also retires an awaiting_retire rotation once its retireBy deadline has passed and nothing blocks it.',
+            'no_pending_rotation (no awaiting_retire journal), ca_rotation_not_converged (a tracked command is missing, non-terminal, or not succeeded, or binding rematerialize failed) or ca_leaves_outstanding (an active leaf, or a leaf marked stale for an offline server that is connected again, is still signed by an older generation; the body adds outstandingLeaves). Renew it, mark it stale or delete its record from /tls/ca/leaves first. The sweep also retires an awaiting_retire rotation once its retireBy deadline has passed and nothing blocks it.',
         },
       },
     },

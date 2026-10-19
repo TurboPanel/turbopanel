@@ -189,6 +189,7 @@ export async function markLeafStaleByOwner(
       state: 'stale',
       staleAt: stamp,
       staleReason: clipLeafText(reason?.trim() ? reason : LEAF_STALE_BY_OWNER),
+      staleCause: 'owner',
       updatedAt: stamp,
     })
     .where(
@@ -219,6 +220,13 @@ export async function reactivateLeaf(
 ): Promise<void> {
   await db
     .update(leaf)
-    .set({ state: 'active', staleAt: null, staleReason: null, attempts: 0, attemptedAt: null })
+    .set({
+      state: 'active',
+      staleAt: null,
+      staleReason: null,
+      staleCause: null,
+      attempts: 0,
+      attemptedAt: null,
+    })
     .where(and(eq(leaf.id, leafId), eq(leaf.organizationId, organizationId)))
 }

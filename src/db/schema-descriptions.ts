@@ -287,6 +287,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       stale_at: 'When the row was marked stale; set exactly when `state` is `stale`.',
       stale_reason:
         'Plain-words reason shown on the Organization CA card for a stale row (at most 300 characters).',
+      stale_cause:
+        '`offline` (server gone for weeks; comes back when it reconnects), `unused` (nothing needed it) or `owner`; set exactly when `state` is `stale`.',
       attempts:
         'Renewals tried since the leaf was last deployed; drives the retry back-off and resets on a successful deploy.',
       attempted_at: 'When a renewal was last queued for this leaf; null before the first try.',

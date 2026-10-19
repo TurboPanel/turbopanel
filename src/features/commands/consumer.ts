@@ -145,10 +145,10 @@ import {
   releaseRefusedPrincipalIds,
 } from '../principals/principal-ids.ts'
 import { orchestratorManagesEngine } from '../managed/ha-policy.ts'
+import { clearLeafAttentionAfterDeploy, recordPendingTlsLeafFailure } from '../tls/leaf-state.ts'
 import { findManagedHaHierarchy, findManagedIngressHierarchy } from '../system/hierarchy.ts'
 import {
   commitPendingTlsLeafTracking,
-  recordPendingTlsLeafFailure,
   parsePendingTlsLeafValue,
   pendingTlsLeafMetadata,
 } from '../tls/leaf-tracking.ts'
@@ -2550,7 +2550,9 @@ async function applyPendingTlsLeafSideEffect(
   }
   try {
     const meta = await getCommandMetadata(db, record.id)
-    await commitPendingTlsLeafTracking(db, meta)
+    if (await commitPendingTlsLeafTracking(db, meta)) {
+      await clearLeafAttentionAfterDeploy(db, meta)
+    }
   } catch (err) {
     const message = errorMessage(err)
     compatLogWarn(

@@ -2627,6 +2627,8 @@ export const leaf = pgTable(
       mode: 'string',
     }),
     staleReason: text('stale_reason'),
+    /** `offline` | `unused` | `owner` */
+    staleCause: text('stale_cause'),
     attempts: integer().default(0).notNull(),
     attemptedAt: timestamp('attempted_at', {
       precision: 3,
@@ -2684,7 +2686,14 @@ export const leaf = pgTable(
     }).onDelete('cascade'),
     check('leaf_kind_check', sql`${table.kind} IN ('ingress','engine')`),
     check('leaf_state_check', sql`state IN ('active','stale')`),
-    check('leaf_stale_check', sql`(${table.state} = 'stale') = (${table.staleAt} IS NOT NULL)`),
+    check(
+      'leaf_stale_cause_check',
+      sql`stale_cause IS NULL OR stale_cause IN ('offline','unused','owner')`
+    ),
+    check(
+      'leaf_stale_check',
+      sql`(${table.state} = 'stale') = (${table.staleAt} IS NOT NULL) AND (${table.state} = 'stale') = (${table.staleCause} IS NOT NULL)`
+    ),
     check('leaf_attempts_check', sql`${table.attempts} >= 0`),
     check(
       'leaf_text_length_check',

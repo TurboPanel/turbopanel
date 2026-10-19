@@ -11,6 +11,7 @@ import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../client/authn/cry
 import { createSession } from '../client/authn/session-store.ts'
 import { ORG_ID_HEADER } from '../client/org-context.ts'
 import { registerTlsLeafRoutes } from '../client/tls/leaf-routes.ts'
+import { registerTlsRoutes } from '../client/tls/routes.ts'
 import type { LeafRenewalSweepDeps } from '../client/tls/leaf-renewal-sweep.ts'
 import { createDenoDb } from '../db/connection.ts'
 import { getDatabaseUrl } from '../db/url.ts'
@@ -89,7 +90,9 @@ export async function withLeafWorld(fn: (world: LeafWorld) => Promise<void>): Pr
     c.set('dataEncryptionSecrets', dataEncryptionSecrets)
     return next()
   })
-  registerTlsLeafRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
+  const routeOptions = { secrets, runtime: 'deno', signupEnvOverride: undefined } as const
+  registerTlsRoutes(app, routeOptions)
+  registerTlsLeafRoutes(app, routeOptions)
 
   const [org] = await db
     .insert(organization)

@@ -10,6 +10,15 @@ export const LEAF_STATES = ['active', 'stale'] as const
 
 export type LeafState = (typeof LEAF_STATES)[number]
 
+/**
+ * Why a leaf was marked stale: its server was offline for weeks, nothing on the
+ * server used the certificate, or an owner said so. Only `offline` comes back
+ * by itself, when the server does.
+ */
+export const LEAF_STALE_CAUSES = ['offline', 'unused', 'owner'] as const
+
+export type LeafStaleCause = (typeof LEAF_STALE_CAUSES)[number]
+
 /** A server offline longer than this stops holding back renewals (days). */
 export const LEAF_STALE_OFFLINE_DAYS = 14
 
