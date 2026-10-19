@@ -714,7 +714,11 @@ export async function planVolumeFolder(
 
 // -- Moving rows along their states ------------------------------------------
 
-/** A deploy succeeded: the rows it planned are on the host. */
+/**
+ * A deploy succeeded: the rows it planned are on the host. A row an older deploy
+ * marked an orphan after this one planned it (that deploy did not name the
+ * service, this one does) is in use again and becomes present too.
+ */
 export async function markFoldersPresent(
   db: Pick<Db, 'update'>,
   folderIds: readonly string[]
@@ -723,7 +727,7 @@ export async function markFoldersPresent(
   await db
     .update(folder)
     .set({ state: 'present' })
-    .where(and(inArray(folder.id, [...folderIds]), eq(folder.state, 'planned')))
+    .where(and(inArray(folder.id, [...folderIds]), inArray(folder.state, ['planned', 'orphan'])))
 }
 
 /**

@@ -137,6 +137,7 @@ import {
   applyFolderRemovalReports,
   type FolderRemovalReport,
   markKeptFoldersOrphan,
+  markUnplannedServiceFoldersOrphan,
   reconcileReportedFolders,
 } from '../folders/reports.ts'
 import { markPlacementsAbsent, markPlacementsPresent } from '../principals/placement-records.ts'
@@ -1071,6 +1072,9 @@ async function applyEnvironmentDeploySideEffect(
   if (record.type !== 'environment.deploy') return
   try {
     const payload = parseEnvironmentDeployPayload(record.payload)
+    // Only the newest deploy of the environment decides which folders are still in use. A
+    // command with no generation cannot be placed among the deploys, so it decides nothing.
+    let current = false
     if (payload.generation !== undefined) {
       const finishedAt = nowIso()
       const marked = await markDeploymentApplied(db, {
@@ -1090,9 +1094,18 @@ async function applyEnvironmentDeploySideEffect(
       if (marked !== null) {
         await advanceRolloutSafely(db, deps, payload.environmentId, payload.generation)
       }
+      current = marked !== null
     }
     await markEnvironmentCopiesReady(db, payload.environmentId, envelope.serverId)
-    await markPlannedFoldersPresentSafely(db, record)
+    const plannedFolderIds = await markPlannedFoldersPresentSafely(db, record)
+    // Without a list that was read, nothing is known about which folders are in use.
+    if (current && plannedFolderIds !== null) {
+      await markUnplannedFoldersOrphanSafely(db, record, {
+        environmentId: payload.environmentId,
+        serverId: envelope.serverId,
+        plannedFolderIds,
+      })
+    }
     // What the host says each account has is recorded first, while a row the
     // control plane only chose ids for is still not `present`; then the
     // accounts this deploy carried are marked present, whether or not a newer
@@ -1134,22 +1147,46 @@ async function applyEnvironmentDeploySideEffect(
 }
 
 /** The folder rows a deploy planned are on the host now; a miss is logged, never fatal. */
-async function markPlannedFoldersPresentSafely(
+/**
+ * The folders the deploy planned, now marked present; `null` when they could not
+ * be read, so the caller concludes nothing from the miss. A deploy that planned
+ * no folder has none and returns an empty list.
+ */
+export async function markPlannedFoldersPresentSafely(
   db: Db,
   record: DispatchableCommandRecord
-): Promise<void> {
+): Promise<string[] | null> {
   try {
     const metadata = await getCommandMetadata(db, record.id)
     const ids = metadata?.folderIds
-    if (!Array.isArray(ids)) return
-    await markFoldersPresent(
-      db,
-      ids.filter((id): id is string => typeof id === 'string')
-    )
+    if (!Array.isArray(ids)) return []
+    const folderIds = ids.filter((id): id is string => typeof id === 'string')
+    await markFoldersPresent(db, folderIds)
+    return folderIds
   } catch (err) {
     compatLogWarn(
       'command-consumer',
       `folder present mark failed for command ${record.id}: ${errorMessage(err)}`
+    )
+    return null
+  }
+}
+
+/**
+ * A deploy that no longer plans a service folder on this server leaves its files
+ * in place; the row becomes an orphan. A miss is logged, never fatal.
+ */
+async function markUnplannedFoldersOrphanSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  input: { environmentId: string; serverId: string; plannedFolderIds: readonly string[] }
+): Promise<void> {
+  try {
+    await markUnplannedServiceFoldersOrphan(db, input)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `unplanned folders not marked for command ${record.id}: ${errorMessage(err)}`
     )
   }
 }

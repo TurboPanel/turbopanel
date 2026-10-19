@@ -338,9 +338,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       source:
         '`upload`, `lets_encrypt` (Caddy-managed ACME on the host), `self_signed` or `organization_ca`; decides which other columns are meaningful.',
       certificate_pem:
-        'Leaf plus intermediate chain PEM; null on `lets_encrypt` rows because Caddy issues and holds the certificate on the serving host.',
+        "Leaf plus intermediate chain PEM; on `lets_encrypt` rows it is null until the serving host's Caddy has issued the certificate and its daemon has sent a copy.",
       private_key_pem:
-        'Private key PEM sealed as a `tpsecret` envelope, never returned by the client API; null on `lets_encrypt` rows.',
+        "Private key PEM sealed as a `tpsecret` envelope, never returned by the client API; Let's Encrypt rows get it from the daemon report and lose it on revoke.",
       status:
         'Row health `ready`, `pending`, `expired`, `failed`, `revoked` or `managed` (Caddy ACME intent); `expired` is derived at read from `not_after`, others stored.',
       not_after:
@@ -351,6 +351,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Organization CA lifecycle `active` (one per org), `retired` (still in the trust bundle) or `revoked`; null on non-CA rows.',
       ca_generation:
         'Monotonic per-org counter (max + 1) assigned when a CA is minted; leaves record which generation signed them; null on non-CA rows.',
+      issued_by_server_id:
+        "Server whose Caddy issued the stored Let's Encrypt pair (the daemon that reported it); null when no pair is stored or that server was deleted.",
     },
   },
   // ── billing ───────────────────────────────────────────────────────────

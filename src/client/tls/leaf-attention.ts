@@ -151,6 +151,7 @@ export async function loadOrganizationLeaf(
   state: string
   serverConnected: boolean | null
   serverStatusChangedAt: string | null
+  issuedAt: string | null
 } | null> {
   const [row] = await db
     .select({
@@ -166,6 +167,7 @@ export async function loadOrganizationLeaf(
       state: leaf.state,
       serverConnected: server.isConnected,
       serverStatusChangedAt: server.statusChangedAt,
+      issuedAt: leaf.issuedAt,
     })
     .from(leaf)
     .leftJoin(server, eq(server.id, leaf.serverId))
@@ -210,6 +212,21 @@ export async function deleteLeafRecord(
     .where(and(eq(leaf.id, leafId), eq(leaf.organizationId, organizationId)))
     .returning({ id: leaf.id })
   return rows.length > 0
+}
+
+/**
+ * Reactivate a stale leaf for an owner's renewal and hand back the row as it now
+ * stands: the reset try count, not the old one, so a later "unused" mark matches.
+ */
+export async function reactivateLeafForRenewal<T extends { state: string; attempts: number }>(
+  db: Db,
+  organizationId: string,
+  leafId: string,
+  row: T
+): Promise<T> {
+  if (row.state !== 'stale') return row
+  await reactivateLeaf(db, organizationId, leafId)
+  return { ...row, state: 'active', attempts: 0 }
 }
 
 /** Put a stale leaf back in the renewal queue (an owner asked to renew it). */
