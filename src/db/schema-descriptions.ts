@@ -886,6 +886,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         '`planned` before the host has it, `present`, `removing` until the host confirms a delete, `orphan` found with no asset, `missing` gone from the host.',
       removal_note:
         'Why the host kept a `removing` folder, in plain words, from its last answer; NULL when it has not refused.',
+      orphan_alerted_at:
+        'When the organization was told this folder is an orphan, so one orphan sends one alert; NULL until then and again after it stops being one.',
     },
   },
   share: {
@@ -1735,7 +1737,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       organization_id:
         'Organization the event belongs to; NULL for an instance-scoped event such as `fleet.mass_disconnect`.',
       event:
-        'Catalogue code (`NOTIFICATION_EVENTS`): `server.offline`, `fleet.mass_disconnect`, `server.deleted`, `server.daemon_key_revoked`, `access.grant_*`.',
+        'Catalogue code (`NOTIFICATION_EVENTS`), such as `server.offline`, `access.grant_*`, `certificate.renewal_failed` or `folder.orphans_found`.',
       severity: "`info`, `warning` or `critical`, copied from the event's catalogue definition.",
       title:
         "One-line sentence rendered from the catalogue's title template at emit time; also the email subject.",

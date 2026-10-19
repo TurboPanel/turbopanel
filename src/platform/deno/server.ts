@@ -30,6 +30,7 @@ import { pruneCommandHistory } from '../../features/commands/prune.ts'
 import { getAuditRetentionMonths } from '../../features/settings/audit-retention-settings.ts'
 import { retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
+import { alertNewOrphanFolders } from '../../features/notifications/folder-alerts.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from '../../contracts/cell-protocol.ts'
 import {
   COMMAND_DISPATCH_SWEEP_LIMIT,
@@ -757,6 +758,17 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       await runCleanupPhase('webhook delivery sweep', () =>
         sweepExpiredWebhookDeliveries(db, {
           limit: WEBHOOK_DELIVERY_SWEEP_LIMIT,
+        })
+      )
+      // Workers parity (offline-sweep cron): tell each organization about the
+      // folders that became orphans since the last tick, once per orphan.
+      await runCleanupPhase('orphan folder alert sweep', () =>
+        alertNewOrphanFolders(db, dataEncryptionSecrets, {
+          email: {
+            queue: emailQueue,
+            from: emailSettings.from,
+            consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
+          },
         })
       )
       // Workers parity (offline-sweep cron): resend notification deliveries

@@ -20,6 +20,12 @@
       "tag": "0002_leaf_attention",
       "when": 1792428032666,
       "sha256": "eb32ae6cac7c303cb3fe9aeadd27f67b948446bfac6e01331aeb612404aed159"
+    },
+    {
+      "idx": 3,
+      "tag": "0003_notification_orphan_and_certificate_events",
+      "when": 1792432015378,
+      "sha256": "9e85432b55f805ce6e9c12352ab4e3b7a4dbaf01f13697037090962875f5445b"
     }
   ]
 }

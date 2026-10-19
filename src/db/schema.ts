@@ -3949,6 +3949,12 @@ export const folder = pgTable(
      * `removing`.
      */
     removalNote: text('removal_note'),
+    /** When the owners were told this folder is an orphan; NULL until then and again once it stops being one. */
+    orphanAlertedAt: timestamp('orphan_alerted_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
   },
   (table) => [
     uniqueIndex('uniq_folder_location').on(
@@ -3968,6 +3974,14 @@ export const folder = pgTable(
     ),
     index('idx_folder_service_id').using('btree', table.serviceId.asc().nullsLast().op('uuid_ops')),
     index('idx_folder_storage_id').using('btree', table.storageId.asc().nullsLast().op('uuid_ops')),
+    // The orphan alert reads only the orphans nobody has been told about, and
+    // the rows it must clear once they stop being orphans: both stay tiny.
+    index('idx_folder_orphan_unalerted')
+      .using('btree', table.serverId.asc().nullsLast().op('uuid_ops'))
+      .where(sql`${table.state} = 'orphan' AND ${table.orphanAlertedAt} IS NULL`),
+    index('idx_folder_orphan_alerted')
+      .using('btree', table.state.asc().nullsLast().op('text_ops'))
+      .where(sql`${table.orphanAlertedAt} IS NOT NULL`),
     foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
@@ -6344,7 +6358,7 @@ export const notificationRule = pgTable(
   (table) => [
     check(
       'rule_event_check',
-      sql`event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')`
+      sql`event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found')`
     ),
     check('rule_min_severity_check', sql`min_severity IN ('info', 'warning', 'critical')`),
     uniqueIndex('uniq_rule_channel_event').on(table.channelId, table.event),
@@ -6399,7 +6413,7 @@ export const notification = pgTable(
   (table) => [
     check(
       'notification_event_check',
-      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')`
+      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found')`
     ),
     check('notification_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
     index('idx_notification_user_created').on(table.userId, table.createdAt.desc()),
@@ -6471,7 +6485,7 @@ export const notificationDelivery = pgTable(
   (table) => [
     check(
       'attempt_event_check',
-      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')`
+      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found')`
     ),
     check('attempt_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
     check(
