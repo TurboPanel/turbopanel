@@ -195,10 +195,15 @@ export async function alertNewOrphanFolders(
       }
       if (emitFailed) {
         // Give the rows back so the next tick tells the owners instead of losing the alert.
-        await releaseClaim(
-          db,
-          entries.map((entry) => entry.id)
-        )
+        // A failed release must not end the loop: the groups after this one still need sending.
+        try {
+          await releaseClaim(
+            db,
+            entries.map((entry) => entry.id)
+          )
+        } catch (err) {
+          compatLogWarn('orphan-alerts', `orphan folder claim not released: ${messageOf(err)}`)
+        }
         return
       }
       result.alerts += 1
