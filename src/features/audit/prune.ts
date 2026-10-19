@@ -51,10 +51,7 @@ export function auditCutoff(now: string, months: number): Date {
  * Delete up to `limit` audit rows older than the retention window; returns how
  * many went. A database error propagates to the caller (the sweep traces it).
  */
-export async function pruneAuditHistory(
-  db: Db,
-  opts: PruneAuditHistoryOpts = {}
-): Promise<number> {
+export async function pruneAuditHistory(db: Db, opts: PruneAuditHistoryOpts = {}): Promise<number> {
   const months = opts.months ?? AUDIT_RETENTION_MONTHS_DEFAULT
   if (!Number.isInteger(months) || months < 0) {
     throw new TypeError('months must be 0 or a positive whole number')

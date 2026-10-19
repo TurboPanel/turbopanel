@@ -45,9 +45,12 @@ test('old audit rows are removed oldest first in batches and young rows stay', a
     row(now - 30 * DAY, 10, 'test.audit_prune.young'),
     row(now - 12 * 30 * DAY, 11, 'test.audit_prune.young'),
   ]
-  const ids = [...old, ...young].map((r) => r.id)
+  // Rows of realistic age: 14 months old (past the window) and 12 months old (inside it).
+  const aged = [row(now - 14 * 30 * DAY, 30, 'test.audit_prune.aged')]
+  const recent = [row(now - 12 * 30 * DAY, 31, 'test.audit_prune.recent')]
+  const ids = [...old, ...young, ...aged, ...recent].map((r) => r.id)
   try {
-    await db.insert(audit).values([...young, ...old])
+    await db.insert(audit).values([...young, ...old, ...aged, ...recent])
 
     // Two at a time: a batch never exceeds its limit and the oldest go first.
     assertEquals(await pruneAuditHistory(db, { now: NOW, limit: 2 }), 2)
@@ -57,14 +60,15 @@ test('old audit rows are removed oldest first in batches and young rows stay', a
     assertEquals(new Set(afterFirst.map((r) => r.id)).has(old[2]!.id), true)
 
     // The rest of the old rows go; the young ones are never touched.
-    assertEquals(await pruneAuditHistory(db, { now: NOW, limit: 50 }) >= 1, true)
+    assertEquals((await pruneAuditHistory(db, { now: NOW, limit: 50 })) >= 1, true)
     const left = await db.select({ id: audit.id }).from(audit).where(inArray(audit.id, ids))
-    assertEquals(new Set(left.map((r) => r.id)), new Set(young.map((r) => r.id)))
+    // The 14 month old row went with the 2001 ones; the 12 month old row and the young ones stay.
+    assertEquals(new Set(left.map((r) => r.id)), new Set([...young, ...recent].map((r) => r.id)))
 
     // Nothing old is left (of ours): the same call deletes nothing more of these rows.
     await pruneAuditHistory(db, { now: NOW, limit: 50 })
     const again = await db.select({ id: audit.id }).from(audit).where(inArray(audit.id, ids))
-    assertEquals(again.length, young.length)
+    assertEquals(again.length, young.length + recent.length)
 
     // Zero months keeps everything, however old.
     await db.insert(audit).values(row(longAgo, 20, 'test.audit_prune.keep'))

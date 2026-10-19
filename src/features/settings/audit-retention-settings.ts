@@ -21,8 +21,7 @@ export const AUDIT_RETENTION_MAX_MONTHS = 120
 export function isValidAuditRetentionMonths(value: number): boolean {
   return (
     Number.isInteger(value) &&
-    (value === 0 ||
-      (value >= AUDIT_RETENTION_MIN_MONTHS && value <= AUDIT_RETENTION_MAX_MONTHS))
+    (value === 0 || (value >= AUDIT_RETENTION_MIN_MONTHS && value <= AUDIT_RETENTION_MAX_MONTHS))
   )
 }
 

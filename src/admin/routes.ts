@@ -552,7 +552,7 @@ export function registerAdminRoutes(
     return c.json({ maxMinutes })
   })
 
-  admin.get('/settings/audit-retention', async (c) => {
+  admin.get('/settings/audit-retention', createRootOnlyMiddleware(opts.secrets), async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
@@ -560,7 +560,7 @@ export function registerAdminRoutes(
     return c.json({ months })
   })
 
-  admin.put('/settings/audit-retention', async (c) => {
+  admin.put('/settings/audit-retention', createRootOnlyMiddleware(opts.secrets), async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 

@@ -1187,6 +1187,19 @@ test('GET and PUT /api/admin/v1/settings/server-metrics-live round-trip the cap'
   })
 })
 
+test('GET and PUT /api/admin/v1/settings/audit-retention return 403 for the admin role', async () => {
+  await withRoleUser('admin', async ({ app, cookie }) => {
+    const url = `${ADMIN_API_PREFIX}/settings/audit-retention`
+    const read = await app.request(url, { headers: { Cookie: cookie } })
+    assertEquals(read.status, 403)
+    const write = await app.request(url, {
+      method: 'PUT',
+      headers: { Cookie: cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ months: 24 }),
+    })
+    assertEquals(write.status, 403)
+  })
+})
 
 test('GET and PUT /api/admin/v1/settings/audit-retention round-trip the window', async () => {
   await withRoleUser('superadmin', async ({ app, cookie }) => {
