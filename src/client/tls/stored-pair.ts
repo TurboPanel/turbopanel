@@ -95,7 +95,8 @@ export async function runStoredPairSweepTick(
 
   await forEachSequential(loose, async (row) => {
     const metadata = (row.metadata ?? {}) as Record<string, unknown>
-    const since = typeof metadata.unpinnedAt === 'string' ? Date.parse(metadata.unpinnedAt) : NaN
+    const since =
+      typeof metadata.unpinnedAt === 'string' ? Date.parse(metadata.unpinnedAt) : Number.NaN
     if (!Number.isFinite(since)) {
       // One statement that adds only the stamp to whatever the metadata holds
       // now, so a change made since the read above is not lost.
