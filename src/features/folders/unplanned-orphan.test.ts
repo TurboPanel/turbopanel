@@ -9,6 +9,7 @@ import {
   createProject,
   withFolderFixtures as withFixtures,
 } from '../../test-fixtures/folder-world.test.support.ts'
+import { markFoldersPresent } from './allocate.ts'
 import { markUnplannedServiceFoldersOrphan } from './reports.ts'
 
 const test = Deno.test.bind(Deno)
@@ -83,5 +84,28 @@ test('a deploy that plans no folder orphans every present service folder of the 
 
     assertEquals(changed, 1)
     assertEquals(await states(ctx), { 'service/www': 'orphan', 'volume/data': 'present' })
+  })
+})
+
+test('a newer deploy that plans the service again lifts the orphan an older deploy left', async () => {
+  await withFixtures(async (ctx) => {
+    const mine = await createProject(ctx, 'Unplanned Four')
+    // Deploy B planned the folder while it was present; older deploy A, which did not name the
+    // service, finished first and marked it an orphan.
+    const folderId = await addRow(ctx, mine.envId, {
+      kind: 'service',
+      slug: 'www',
+      state: 'present',
+    })
+    await markUnplannedServiceFoldersOrphan(ctx.db, {
+      environmentId: mine.envId,
+      serverId: ctx.serverId,
+      plannedFolderIds: [],
+    })
+    assertEquals(await states(ctx), { 'service/www': 'orphan' })
+
+    // Deploy B finishes: the folder it planned is in use, not an orphan.
+    await markFoldersPresent(ctx.db, [folderId])
+    assertEquals(await states(ctx), { 'service/www': 'present' })
   })
 })
