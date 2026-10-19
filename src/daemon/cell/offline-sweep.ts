@@ -74,6 +74,7 @@ import { cachedForEnv } from './notification-email-cache.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { type EmitEmail, retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
+import { alertNewOrphanFolders } from '../../features/notifications/folder-alerts.ts'
 import {
   ALERT_DELIVERY_BUDGET_MS,
   notifyDemotions,
@@ -1465,6 +1466,25 @@ async function runOptionalCronPhases(
       opts.scheduledTime,
       phasesSkipped,
       () => runWithDbTimeout(db, sweepExpiredWebhookDeliveriesSafely, capDbTimeout(deadlineMs))
+    ))
+  ) {
+    return
+  }
+
+  // Tell each organization about the folders that became orphans since the
+  // last tick, once per orphan (see features/notifications/folder-alerts.ts).
+  // The sweep itself never throws.
+  if (
+    !(await runOptionalPhase(
+      deadlineMs,
+      'orphan-folder-alerts',
+      opts.scheduledTime,
+      phasesSkipped,
+      async () => {
+        await alertNewOrphanFolders(db, tlsRenewal?.dataEncryptionSecrets, {
+          email: await workersNotificationEmail(env, db, tlsRenewal),
+        })
+      }
     ))
   ) {
     return

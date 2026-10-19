@@ -8,6 +8,12 @@
       "tag": "0000_init",
       "when": 1792289698729,
       "sha256": "c80ef826c9d3c74c56063681d0c9d9541074ee63dbb7d60f378f69a47baf26cb"
+    },
+    {
+      "idx": 1,
+      "tag": "0001_notification_orphan_and_certificate_events",
+      "when": 1792427631277,
+      "sha256": "e5fd8b9e2d382e05f24fbbeca88afdd20ec1e65c9f7350ba5e5a40f27e642727"
     }
   ]
 }
