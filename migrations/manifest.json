@@ -11,8 +11,14 @@
     },
     {
       "idx": 1,
-      "tag": "0001_leaf_attention",
-      "when": 1792426777089,
+      "tag": "0001_folder_removal_note",
+      "when": 1792420688430,
+      "sha256": "5b343c5eb2355022b09c7327aad2ea3ce6e6c6b240ea7c05da20b77549dd5875"
+    },
+    {
+      "idx": 2,
+      "tag": "0002_leaf_attention",
+      "when": 1792428032666,
       "sha256": "eb32ae6cac7c303cb3fe9aeadd27f67b948446bfac6e01331aeb612404aed159"
     }
   ]

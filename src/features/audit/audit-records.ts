@@ -61,6 +61,7 @@ export const AUDIT_ACTIONS = [
   'tls.leaf.renew',
   'tls.leaf.stale',
   'tls.leaf.delete',
+  'folder.remove',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

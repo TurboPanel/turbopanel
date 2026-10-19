@@ -30,6 +30,7 @@ export const STEP_UP_ACTIONS = {
   'binding.delete': 'Remove the link between an app and a managed database',
   'member.remove': 'Remove a member from the organization',
   'storage.delete': 'Delete a storage volume',
+  'folder.remove': 'Remove a leftover folder and its files from a server',
   'storage.copy.delete': 'Delete a copy of a storage volume',
   'storage.backup.delete': 'Delete a storage backup',
   'storage.restore': 'Restore a storage backup over its volume',

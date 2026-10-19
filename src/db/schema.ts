@@ -3943,6 +3943,12 @@ export const folder = pgTable(
     storageId: uuid('storage_id'),
     /** `planned` | `present` | `removing` | `orphan` | `missing` */
     state: text().notNull(),
+    /**
+     * Why the host kept a `removing` folder, in plain words, from its last
+     * answer; NULL when it has not refused. Cleared when the row leaves
+     * `removing`.
+     */
+    removalNote: text('removal_note'),
   },
   (table) => [
     uniqueIndex('uniq_folder_location').on(
@@ -3991,6 +3997,10 @@ export const folder = pgTable(
     check(
       'folder_state_check',
       sql`state IN ('planned', 'present', 'removing', 'orphan', 'missing')`
+    ),
+    check(
+      'folder_removal_note_check',
+      sql`removal_note IS NULL OR char_length(removal_note) <= 300`
     ),
     check('folder_slug_check', sql.raw(String.raw`slug ~ '${FOLDER_NAME_SQL}' AND slug !~ '\.\.'`)),
     check(

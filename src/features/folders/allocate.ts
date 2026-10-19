@@ -536,6 +536,49 @@ async function collectVolumeTargets(
   })
 }
 
+/** The columns that make a folder row name this asset (an orphan nothing owned is taken over). */
+function ownerColumns(target: FolderTarget): { serviceId: string } | { storageId: string } {
+  return target.kind === 'service' ? { serviceId: target.assetId } : { storageId: target.assetId }
+}
+
+/**
+ * The asset is back on this server (a server re-added, a copy re-added) before the host
+ * confirmed the removal: the folder is in use again, so it must not be confirmed away.
+ * An orphan kept when its service left the compose file is in use again too, and an
+ * unowned orphan is taken over by the asset that now has its name. The update names the
+ * state it read (and, for a takeover, that nothing owns the row), so a row an admin moved
+ * to `removing` in the meantime is refused, never taken over.
+ */
+async function useFolderAgain(
+  tx: Db,
+  row: { id: string; state: string },
+  target: FolderTarget,
+  adoptable: boolean
+): Promise<void> {
+  const updated = await tx
+    .update(folder)
+    .set({ state: 'planned', removalNote: null, ...(adoptable ? ownerColumns(target) : {}) })
+    .where(
+      and(
+        eq(folder.id, row.id),
+        eq(folder.state, row.state),
+        adoptable ? isNull(folder.serviceId) : undefined,
+        adoptable ? isNull(folder.storageId) : undefined
+      )
+    )
+    .returning({ id: folder.id })
+  if (updated.length === 0) throw new FolderPlanError('directory_name_taken')
+}
+
+/** An orphan no service or volume row names. */
+function isUnownedOrphan(row: {
+  state: string
+  serviceId: string | null
+  storageId: string | null
+}): boolean {
+  return row.state === 'orphan' && row.serviceId === null && row.storageId === null
+}
+
 /** Insert the planned row, or find the one that is already there for this very asset. */
 async function upsertFolderRow(tx: Db, serverId: string, target: FolderTarget): Promise<string> {
   await tx
@@ -572,13 +615,20 @@ async function upsertFolderRow(tx: Db, serverId: string, target: FolderTarget): 
       )
     )
     .limit(1)
+    // Lock the row: an admin asking for this orphan to be removed and a plan taking it over
+    // cannot both succeed, whichever commits first decides.
+    .for('update')
   const owner = target.kind === 'service' ? row?.serviceId : row?.storageId
-  if (!row || owner !== target.assetId) throw new FolderPlanError('directory_name_taken')
-  // The asset is back on this server (a server re-added, a copy re-added) before the host
-  // confirmed the removal: the folder is in use again, so it must not be confirmed away.
-  // An orphan kept when its service left the compose file is in use again too.
+  // An orphan nothing owns any more (its service left the compose file and was
+  // deleted, or the host had a folder no record named) is taken over by the
+  // asset that now has its name: the same site owner, scope, kind and name, so
+  // whatever the folder holds stays with it.
+  const adoptable = row !== undefined && isUnownedOrphan(row)
+  if (!row || (owner !== target.assetId && !adoptable)) {
+    throw new FolderPlanError('directory_name_taken')
+  }
   if (row.state === 'removing' || row.state === 'orphan') {
-    await tx.update(folder).set({ state: 'planned' }).where(eq(folder.id, row.id))
+    await useFolderAgain(tx, { id: row.id, state: row.state }, target, adoptable)
   }
   return row.id
 }
@@ -694,7 +744,7 @@ export async function markAssetFoldersRemoving(
   )
   const rows = await db
     .update(folder)
-    .set({ state: 'removing' })
+    .set({ state: 'removing', removalNote: null })
     // An orphan (kept when its service left the compose file) goes with an explicit delete.
     .where(and(match, inArray(folder.state, ['planned', 'present', 'orphan'])))
     .returning({ serverId: folder.serverId })
@@ -711,7 +761,7 @@ export async function markVolumeFolderRemoving(
 ): Promise<string[]> {
   const rows = await db
     .update(folder)
-    .set({ state: 'removing' })
+    .set({ state: 'removing', removalNote: null })
     .where(
       and(
         eq(folder.storageId, where.storageId),
@@ -734,7 +784,7 @@ export async function markServerServiceFoldersRemoving(
 ): Promise<void> {
   await db
     .update(folder)
-    .set({ state: 'removing' })
+    .set({ state: 'removing', removalNote: null })
     .where(
       and(
         eq(folder.environmentId, where.environmentId),
@@ -743,6 +793,31 @@ export async function markServerServiceFoldersRemoving(
         inArray(folder.state, ['planned', 'present'])
       )
     )
+}
+
+/**
+ * An admin asked for an orphan folder to be removed from its server: the row
+ * moves to `removing` (still locking) until the host confirms. Only an `orphan`
+ * moves, and only while no service or volume row still names it; a `planned` or
+ * `present` folder, or an orphan with an asset, goes with that service or volume. Returns the server to tell, or null when nothing moved.
+ */
+export async function markOrphanFolderRemoving(
+  db: Pick<Db, 'update'>,
+  folderId: string
+): Promise<string | null> {
+  const rows = await db
+    .update(folder)
+    .set({ state: 'removing', removalNote: null })
+    .where(
+      and(
+        eq(folder.id, folderId),
+        eq(folder.state, 'orphan'),
+        isNull(folder.serviceId),
+        isNull(folder.storageId)
+      )
+    )
+    .returning({ serverId: folder.serverId })
+  return rows[0]?.serverId ?? null
 }
 
 /**

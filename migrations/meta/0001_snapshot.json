@@ -1,5 +1,5 @@
 {
-  "id": "225dd133-3ce5-4936-8d12-b95faa45ce53",
+  "id": "6bf5a1d2-0b14-4deb-82a2-55f34869fa00",
   "prevId": "a94a5032-b628-4dab-95a8-279d509fcc96",
   "version": "7",
   "dialect": "postgresql",
@@ -1117,12 +1117,6 @@
           "primaryKey": false,
           "notNull": false,
           "default": "'[]'::jsonb"
-        },
-        "retire_by": {
-          "name": "retire_by",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -2982,6 +2976,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "removal_note": {
+          "name": "removal_note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -3167,6 +3167,10 @@
         "folder_state_check": {
           "name": "folder_state_check",
           "value": "state IN ('planned', 'present', 'removing', 'orphan', 'missing')"
+        },
+        "folder_removal_note_check": {
+          "name": "folder_removal_note_check",
+          "value": "removal_note IS NULL OR char_length(removal_note) <= 300"
         },
         "folder_slug_check": {
           "name": "folder_slug_check",
@@ -4862,50 +4866,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'active'"
-        },
-        "stale_at": {
-          "name": "stale_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "stale_reason": {
-          "name": "stale_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "stale_cause": {
-          "name": "stale_cause",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "attempts": {
-          "name": "attempts",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "attempted_at": {
-          "name": "attempted_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_error": {
-          "name": "last_error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -5111,26 +5071,6 @@
         "leaf_kind_check": {
           "name": "leaf_kind_check",
           "value": "\"leaf\".\"kind\" IN ('ingress','engine')"
-        },
-        "leaf_state_check": {
-          "name": "leaf_state_check",
-          "value": "state IN ('active','stale')"
-        },
-        "leaf_stale_cause_check": {
-          "name": "leaf_stale_cause_check",
-          "value": "stale_cause IS NULL OR stale_cause IN ('offline','unused','owner')"
-        },
-        "leaf_stale_check": {
-          "name": "leaf_stale_check",
-          "value": "(\"leaf\".\"state\" = 'stale') = (\"leaf\".\"stale_at\" IS NOT NULL) AND (\"leaf\".\"state\" = 'stale') = (\"leaf\".\"stale_cause\" IS NOT NULL)"
-        },
-        "leaf_attempts_check": {
-          "name": "leaf_attempts_check",
-          "value": "\"leaf\".\"attempts\" >= 0"
-        },
-        "leaf_text_length_check": {
-          "name": "leaf_text_length_check",
-          "value": "(\"leaf\".\"stale_reason\" IS NULL OR length(\"leaf\".\"stale_reason\") <= 300) AND (\"leaf\".\"last_error\" IS NULL OR length(\"leaf\".\"last_error\") <= 300)"
         },
         "leaf_kind_keys_check": {
           "name": "leaf_kind_keys_check",

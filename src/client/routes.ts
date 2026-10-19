@@ -59,6 +59,7 @@ import { registerOrganizationMemberRoutes } from './organizations/members.ts'
 import { registerOrganizationPrincipalRoutes } from './principals/org-routes.ts'
 import { registerOrganizationPrincipalDefaultsRoutes } from './organizations/principal-defaults-routes.ts'
 import { registerOrganizationDirectoryDefaultsRoutes } from './organizations/directory-defaults-routes.ts'
+import { registerOrganizationFolderAdminRoutes } from './organizations/folder-admin-routes.ts'
 import { registerPhpModeRoutes } from './hostings/php-mode-routes.ts'
 import { registerOrganizationRoutes } from './organizations/routes.ts'
 import { registerOrganizationSessionGuards } from './organizations/session-guards.ts'
@@ -130,6 +131,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   opts.registerBilling?.(client, opts)
   registerOrganizationPrincipalDefaultsRoutes(client, opts)
   registerOrganizationDirectoryDefaultsRoutes(client, opts)
+  registerOrganizationFolderAdminRoutes(client, opts)
   if (opts.secrets) registerOrganizationSessionGuards(client, opts.secrets)
   registerOrganizationRoutes(client, opts)
   registerComposeRemoteBuildSourcesRoutes(client)

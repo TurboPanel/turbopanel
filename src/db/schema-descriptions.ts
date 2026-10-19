@@ -884,6 +884,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       slug: 'Folder name of the asset, copied from its slug when the folder was planned.',
       state:
         '`planned` before the host has it, `present`, `removing` until the host confirms a delete, `orphan` found with no asset, `missing` gone from the host.',
+      removal_note:
+        'Why the host kept a `removing` folder, in plain words, from its last answer; NULL when it has not refused.',
     },
   },
   share: {
