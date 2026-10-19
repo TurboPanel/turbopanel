@@ -98,7 +98,9 @@ import {
   parseUpgradeStepRetentionDays,
   pruneUpgradeHistory,
 } from '../../features/upgrades/prune.ts'
+import { pruneAuditHistory } from '../../features/audit/prune.ts'
 import { pruneCommandHistory } from '../../features/commands/prune.ts'
+import { getAuditRetentionMonths } from '../../features/settings/audit-retention-settings.ts'
 import { resolveInstanceRevision } from '../../app/build-info.ts'
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveColocatedServerId } from '../../client/authn/install-state.ts'
@@ -973,6 +975,24 @@ export async function sweepUpgradeHistorySafely(db: Db, doneRetentionDays?: numb
 }
 
 /**
+ * Retention prune of audit rows older than the instance's window (see
+ * features/audit/prune.ts). Same 15-minute window and the same isolation.
+ */
+export async function sweepAuditHistorySafely(db: Db): Promise<void> {
+  try {
+    const months = await getAuditRetentionMonths(db)
+    const deleted = await pruneAuditHistory(db, { months })
+    if (deleted > 0) {
+      sweepTrace('audit-history-swept', { deleted })
+    }
+  } catch (err) {
+    sweepTrace('audit-history-sweep-failed', {
+      error: sweepErrorMessage(err),
+    })
+  }
+}
+
+/**
  * Retention prune of aged terminal `command` rows (see features/commands/prune.ts).
  * Rides the same 15-minute window and is isolated so a failure never aborts the
  * other sweeps.
@@ -1292,6 +1312,7 @@ async function upgradePhaseWork(
       capDbTimeout(deadlineMs)
     )
     await runWithDbTimeout(db, sweepCommandHistorySafely, capDbTimeout(deadlineMs))
+    await runWithDbTimeout(db, sweepAuditHistorySafely, capDbTimeout(deadlineMs))
   }
   if (shouldRunUpgradeTick(scheduledTime, upgradeTickMinutes)) {
     await runUpgradeMaintenanceSafely(db, env)

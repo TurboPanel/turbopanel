@@ -25,7 +25,9 @@ import { sweepStalePresence } from '../../daemon/cell/control-plane-monitor.ts'
 import { createDenoMaintenanceScheduler } from '../../daemon/cell/deno-maintenance.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { ALERT_WEBHOOK_POLICY } from '../../features/alerts/alert-webhook-settings.ts'
+import { pruneAuditHistory } from '../../features/audit/prune.ts'
 import { pruneCommandHistory } from '../../features/commands/prune.ts'
+import { getAuditRetentionMonths } from '../../features/settings/audit-retention-settings.ts'
 import { retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from '../../contracts/cell-protocol.ts'
@@ -796,6 +798,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       if (Date.now() - lastCommandPruneMs >= COMMAND_PRUNE_INTERVAL_MS) {
         lastCommandPruneMs = Date.now()
         await runCleanupPhase('command history prune', () => pruneCommandHistory(db))
+        await runCleanupPhase('audit history prune', async () =>
+          pruneAuditHistory(db, { months: await getAuditRetentionMonths(db) })
+        )
       }
       await runCleanupPhase('upgrade tick', async () => {
         const env = Deno.env.toObject()
