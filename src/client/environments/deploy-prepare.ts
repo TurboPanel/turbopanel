@@ -1202,8 +1202,9 @@ export async function loadStorageMaterial(
 
   const mountsByStorage = new Map<string, MountJoinRow[]>()
   for (const row of mountRows) {
-    // A shared volume is mounted by many environments; this deploy carries only its own.
-    if (sharedIds.has(row.storageId) && row.serviceEnvironmentId !== params.environmentId) continue
+    // A common volume is mounted by many environments, whether this one owns it or
+    // only uses it; this deploy carries the mounts of its own services only.
+    if (row.serviceEnvironmentId !== params.environmentId) continue
     const list = mountsByStorage.get(row.storageId) ?? []
     list.push(row)
     mountsByStorage.set(row.storageId, list)
