@@ -125,7 +125,9 @@ test('a path copy is inside its own site owner volumes, the principal volume, or
   })
   // Once the volume's folder is on the server it rides beside the old fields.
   assertEquals(
-    resolveCopyBackupSource(row({ ...directory, folderScope: 'production', folderSlug: 'uploads' })),
+    resolveCopyBackupSource(
+      row({ ...directory, folderScope: 'production', folderSlug: 'uploads' })
+    ),
     {
       ok: true,
       source: {

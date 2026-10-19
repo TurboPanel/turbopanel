@@ -7251,6 +7251,22 @@ const COPY_SOURCE_FIELDS = [
 const COPY_OWNER_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
 const MAX_COPY_OWNER_USERNAME_LENGTH = 64
 
+/** The `folder` of a path copy source: valid parts, its own owner, and no other way of naming the source beside it. */
+function parseCopySourceFolder(raw: Record<string, unknown>, source: CopyBackupSource): void {
+  const ref = folderRefParts(parseFolderRefParts(raw.folder, 'volume'))
+  if (raw.ownerUsername !== undefined && raw.ownerUsername !== ref.owner) {
+    throw new Error('A path copy source folder must belong to its ownerUsername')
+  }
+  if (
+    raw.organizationId !== undefined ||
+    raw.storageId !== undefined ||
+    raw.composeProject !== undefined
+  ) {
+    throw new Error('Invalid path copy source folder')
+  }
+  source.folder = ref
+}
+
 function parsePathCopySource(raw: Record<string, unknown>, source: CopyBackupSource): void {
   if (raw.volumeName !== undefined) {
     throw new Error('A path copy source cannot name a volume')
@@ -7259,18 +7275,7 @@ function parsePathCopySource(raw: Record<string, unknown>, source: CopyBackupSou
     throw new Error('A path copy source cannot name a compose project')
   }
   if (raw.folder !== undefined) {
-    const ref = folderRefParts(parseFolderRefParts(raw.folder, 'volume'))
-    if (raw.ownerUsername !== undefined && raw.ownerUsername !== ref.owner) {
-      throw new Error('A path copy source folder must belong to its ownerUsername')
-    }
-    if (
-      raw.organizationId !== undefined ||
-      raw.storageId !== undefined ||
-      raw.composeProject !== undefined
-    ) {
-      throw new Error('Invalid path copy source folder')
-    }
-    source.folder = ref
+    parseCopySourceFolder(raw, source)
     if (raw.hostPath === undefined) return
   }
   if (raw.hostPath !== undefined) {

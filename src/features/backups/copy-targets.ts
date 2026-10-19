@@ -257,12 +257,14 @@ export const COPY_TARGET_SELECT = {
 
 /**
  * Join condition for the volume's folder on the copy's server (one row per
- * server and location); only a folder that is on the host counts.
+ * server, site owner, scope, kind and name, and the join also names the volume's own
+ * site owner, so at most one row can match); only a folder that is on the host counts.
  */
 export function copyFolderJoin(): SQL {
   return and(
     eq(folder.storageId, storage.id),
     eq(folder.serverId, storageCopy.serverId),
+    eq(folder.principalId, storage.principalId),
     eq(folder.kind, 'volume'),
     eq(folder.state, 'present')
   ) as SQL
