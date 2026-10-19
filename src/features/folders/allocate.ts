@@ -572,6 +572,9 @@ async function upsertFolderRow(tx: Db, serverId: string, target: FolderTarget): 
       )
     )
     .limit(1)
+    // Lock the row: an admin asking for this orphan to be removed and a plan taking it over
+    // cannot both succeed, whichever commits first decides.
+    .for('update')
   const owner = target.kind === 'service' ? row?.serviceId : row?.storageId
   // An orphan nothing owns any more (its service left the compose file and was
   // deleted, or the host had a folder no record named) is taken over by the
@@ -586,7 +589,7 @@ async function upsertFolderRow(tx: Db, serverId: string, target: FolderTarget): 
   // confirmed the removal: the folder is in use again, so it must not be confirmed away.
   // An orphan kept when its service left the compose file is in use again too.
   if (row.state === 'removing' || row.state === 'orphan') {
-    await tx
+    const updated = await tx
       .update(folder)
       .set({
         state: 'planned',
@@ -597,7 +600,17 @@ async function upsertFolderRow(tx: Db, serverId: string, target: FolderTarget): 
             : { storageId: target.assetId }
           : {}),
       })
-      .where(eq(folder.id, row.id))
+      .where(
+        and(
+          eq(folder.id, row.id),
+          // A row that moved since the read (an admin started its removal) is not taken over.
+          eq(folder.state, row.state),
+          adoptable ? isNull(folder.serviceId) : undefined,
+          adoptable ? isNull(folder.storageId) : undefined
+        )
+      )
+      .returning({ id: folder.id })
+    if (updated.length === 0) throw new FolderPlanError('directory_name_taken')
   }
   return row.id
 }
@@ -767,8 +780,8 @@ export async function markServerServiceFoldersRemoving(
 /**
  * An admin asked for an orphan folder to be removed from its server: the row
  * moves to `removing` (still locking) until the host confirms. Only an `orphan`
- * moves; a `planned` or `present` folder is in use and goes with its service or
- * volume. Returns the server to tell, or null when nothing moved.
+ * moves, and only while no service or volume row still names it; a `planned` or
+ * `present` folder, or an orphan with an asset, goes with that service or volume. Returns the server to tell, or null when nothing moved.
  */
 export async function markOrphanFolderRemoving(
   db: Pick<Db, 'update'>,
@@ -777,7 +790,14 @@ export async function markOrphanFolderRemoving(
   const rows = await db
     .update(folder)
     .set({ state: 'removing', removalNote: null })
-    .where(and(eq(folder.id, folderId), eq(folder.state, 'orphan')))
+    .where(
+      and(
+        eq(folder.id, folderId),
+        eq(folder.state, 'orphan'),
+        isNull(folder.serviceId),
+        isNull(folder.storageId)
+      )
+    )
     .returning({ serverId: folder.serverId })
   return rows[0]?.serverId ?? null
 }

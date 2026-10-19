@@ -2081,7 +2081,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Remove, retry or forget a folder',
       description:
-        'Manage-gated. An orphan folder is moved to removing and its server is asked to delete it (permanent; asks for step-up re-authentication when the organization requires it); a folder already removing is asked again now; a missing row is forgotten, since the host has no folder. A folder a service or volume is using (planned or present) is refused with 409 folder_in_use: delete that service or volume instead. Recorded in the audit trail as folder.remove.',
+        'Manage-gated. An orphan folder is moved to removing and its server is asked to delete it (permanent; asks for step-up re-authentication when the organization requires it); a folder already removing is asked again now; a missing row is forgotten, since the host has no folder. A folder a service or volume is using (planned or present), or an orphan a service or volume row still names, is refused with 409 folder_in_use: delete that service or volume instead. Recorded in the audit trail as folder.remove.',
       security: [{ cookieAuth: [] }],
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },

@@ -27,8 +27,9 @@ export type AdminFolder = BlockingFolder & {
   updatedAt: string
 }
 
-function actionFor(state: string): AdminFolder['action'] {
-  if (state === 'orphan') return 'remove'
+function actionFor(state: string, hasAsset: boolean): AdminFolder['action'] {
+  // An orphan that a service or volume row still names goes with that row.
+  if (state === 'orphan') return hasAsset ? null : 'remove'
   if (state === 'removing') return 'retry'
   if (state === 'missing') return 'forget'
   return null
@@ -95,7 +96,7 @@ export async function listOrganizationFolders(
         reason: blockingReason(row.state, row.serverName, row.serverConnected, row.removalNote),
         owner: row.owner,
         hasAsset,
-        action: actionFor(row.state),
+        action: actionFor(row.state, hasAsset),
         updatedAt: row.updatedAt,
       }
     }),

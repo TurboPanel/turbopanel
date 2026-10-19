@@ -95,7 +95,11 @@ export function registerOrganizationFolderAdminRoutes(router: Hono<AppEnv>, opts
     const row = await loadFolderForAction(db, folderId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    if (row.state === 'planned' || row.state === 'present') {
+    if (
+      row.state === 'planned' ||
+      row.state === 'present' ||
+      (row.state === 'orphan' && row.hasAsset)
+    ) {
       return c.json(
         {
           error: FOLDER_IN_USE_ERROR,

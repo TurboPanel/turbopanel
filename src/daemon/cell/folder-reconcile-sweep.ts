@@ -10,7 +10,6 @@
  * folder rows for a fresh reconcile when its last one is older than
  * {@link FOLDER_RECONCILE_INTERVAL_HOURS}.
  *
-
  * Runs from the Workers cron and the Deno maintenance timer, never from hello
  * or a Durable Object handler (those must not enqueue). It is a full-state
  * reconcile, the same command a key change sends, so a repeat changes nothing.

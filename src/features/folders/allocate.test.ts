@@ -391,10 +391,67 @@ test('only an orphan is moved to removing by an admin, and the note from an earl
       .update(folder)
       .set({ state: 'orphan', removalNote: 'old refusal' })
       .where(eq(folder.id, id))
+    // Still named by its service: it goes with that service, not by this route.
+    assertEquals(await markOrphanFolderRemoving(ctx.db, id), null)
+    await ctx.db.update(folder).set({ serviceId: null }).where(eq(folder.id, id))
     assertEquals(await markOrphanFolderRemoving(ctx.db, id), ctx.serverId)
     const [row] = await ctx.db.select().from(folder).where(eq(folder.id, id))
     assertEquals([row!.state, row!.removalNote], ['removing', null])
     // A second ask changes nothing: it is no longer an orphan.
     assertEquals(await markOrphanFolderRemoving(ctx.db, id), null)
+  })
+})
+
+test('a plan that adopts an orphan and an admin removing it cannot both win', async () => {
+  await withFixtures(async (ctx) => {
+    const { envId } = await createProject(ctx, 'Adopt Race')
+    const first = await addService(ctx, envId, 'web', { slug: 'web' })
+    const planned = await plan(ctx, envId, { services: [{ serviceId: first }] })
+    const id = planned.folderIds[0]!
+    await markFoldersPresent(ctx.db, planned.folderIds)
+    await ctx.db.update(folder).set({ state: 'orphan' }).where(eq(folder.id, id))
+    await ctx.db.delete(tenancy).where(eq(tenancy.serviceId, first))
+    await ctx.db.delete(service).where(eq(service.id, first))
+    const again = await addService(ctx, envId, 'web', { slug: 'web' })
+
+    // The plan holds the row inside its transaction; the admin's removal waits for it,
+    // then finds the row taken and moves nothing.
+    let removal: Promise<string | null> | undefined
+    await ctx.db.transaction(async (tx) => {
+      await planDeployFolders(tx, {
+        organizationId: ctx.organizationId,
+        environmentId: envId,
+        serverId: ctx.serverId,
+        services: [{ serviceId: again }],
+        volumeIds: [],
+      })
+      removal = markOrphanFolderRemoving(ctx.db, id)
+      await new Promise((resolve) => setTimeout(resolve, 150))
+    })
+    assertEquals(await removal, null)
+    const [row] = await ctx.db.select().from(folder).where(eq(folder.id, id))
+    assertEquals([row!.state, row!.serviceId], ['planned', again])
+  })
+})
+
+test('once an admin has started the removal, a plan with the same name is refused and the row stays removing', async () => {
+  await withFixtures(async (ctx) => {
+    const { envId } = await createProject(ctx, 'Adopt After Remove')
+    const first = await addService(ctx, envId, 'web', { slug: 'web' })
+    const planned = await plan(ctx, envId, { services: [{ serviceId: first }] })
+    const id = planned.folderIds[0]!
+    await markFoldersPresent(ctx.db, planned.folderIds)
+    await ctx.db.update(folder).set({ state: 'orphan' }).where(eq(folder.id, id))
+    await ctx.db.delete(tenancy).where(eq(tenancy.serviceId, first))
+    await ctx.db.delete(service).where(eq(service.id, first))
+    assertEquals(await markOrphanFolderRemoving(ctx.db, id), ctx.serverId)
+
+    const again = await addService(ctx, envId, 'web', { slug: 'web' })
+    await assertRejects(
+      () => plan(ctx, envId, { services: [{ serviceId: again }] }),
+      FolderPlanError
+    )
+    const [row] = await ctx.db.select().from(folder).where(eq(folder.id, id))
+    assertEquals([row!.state, row!.serviceId], ['removing', null])
   })
 })

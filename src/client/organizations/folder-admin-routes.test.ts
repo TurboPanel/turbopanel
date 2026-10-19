@@ -5,12 +5,13 @@
  */
 import { assertEquals, assertStringIncludes } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
-import { audit, folder, principal, server } from '../../db/schema.ts'
+import { audit, folder, principal, server, service } from '../../db/schema.ts'
 import { applyFolderRemovalReports } from '../../features/folders/reports.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   type Ctx,
+  createProject,
   send,
   withFolderFixtures as withFixtures,
 } from '../../test-fixtures/folder-world.test.support.ts'
@@ -216,5 +217,46 @@ test('what the host said about a kept folder shows as the reason, and clears whe
       String((offline.json.folders as Array<Record<string, unknown>>)[0]!.reason),
       'waiting for server Alpha to come back'
     )
+  })
+})
+
+test('an orphan that a service row still names is not removed from here', async () => {
+  await withFixtures(async (ctx) => {
+    const { envId } = await createProject(ctx, 'Orphan With Asset')
+    const [svc] = await ctx.db
+      .insert(service)
+      .values({ environmentId: envId, composeServiceName: 'web', name: 'web' })
+      .returning({ id: service.id })
+    const [row] = await ctx.db
+      .insert(folder)
+      .values({
+        serverId: ctx.serverId,
+        principalId: ctx.principalId,
+        environmentId: envId,
+        scope: 'orphan-with-asset',
+        kind: 'service',
+        slug: 'web',
+        serviceId: svc!.id,
+        state: 'orphan',
+      })
+      .returning({ id: folder.id })
+
+    const refused = await send(ctx, 'POST', `/folders/${row!.id}/remove`)
+    assertEquals(refused.status, 409)
+    assertEquals(refused.json.error, 'folder_in_use')
+    const [after] = await ctx.db.select().from(folder).where(eq(folder.id, row!.id))
+    assertEquals(after!.state, 'orphan')
+
+    // The list offers no action for it: it goes with the service.
+    const listed = await send(
+      ctx,
+      'GET',
+      `/organizations/${ctx.organizationId}/folders?state=orphan`
+    )
+    const entry = (listed.json.folders as Array<Record<string, unknown>>).find(
+      (item) => item.id === row!.id
+    )
+    assertEquals(entry?.action, null)
+    assertEquals(entry?.hasAsset, true)
   })
 })
