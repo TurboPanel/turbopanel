@@ -18,6 +18,7 @@ import { and, eq, inArray, isNotNull, type SQL, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   environment,
+  folder,
   retention,
   managed,
   principal,
@@ -39,7 +40,12 @@ import { defaultBackupDatabase } from '../managed/default-backup-database.ts'
 import { managedDatabaseNames, parseManagedSettings } from '../managed/options.ts'
 import { managedHasBackupPolicies } from './policy-records.ts'
 import { translateBackupSchedule } from './schedules.ts'
-import { COPY_TARGET_SELECT, type CopyTargetRow, resolveCopyBackupSource } from './copy-targets.ts'
+import {
+  COPY_TARGET_SELECT,
+  type CopyTargetRow,
+  copyFolderJoin,
+  resolveCopyBackupSource,
+} from './copy-targets.ts'
 
 export const BACKUPS_RECONCILE_COMMAND = 'server.backups.reconcile'
 
@@ -176,6 +182,7 @@ async function loadCopyPolicyRows(db: Db, serverId: string): Promise<CopyPolicyR
     .innerJoin(storage, eq(storage.id, storageCopy.storageId))
     .leftJoin(principal, eq(principal.id, storage.principalId))
     .leftJoin(environment, eq(environment.id, storage.environmentId))
+    .leftJoin(folder, copyFolderJoin())
     .where(and(eq(storageCopy.serverId, serverId), eq(retention.targetKind, 'copy')))
 }
 
