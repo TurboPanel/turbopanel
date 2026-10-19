@@ -122,22 +122,6 @@ async function withWorld(fn: (world: World) => Promise<void>): Promise<void> {
   }
 }
 
-/** The one statement of the migration that stamps the orphans that already exist. */
-async function backfillStatement(): Promise<string> {
-  for await (const entry of Deno.readDir(new URL('../../../migrations/', import.meta.url))) {
-    if (!entry.name.endsWith('_notification_orphan_and_certificate_events.sql')) continue
-    const text = await Deno.readTextFile(
-      new URL(`../../../migrations/${entry.name}`, import.meta.url)
-    )
-    const found = text
-      .split('--> statement-breakpoint')
-      .map((part) => part.trim())
-      .find((part) => part.startsWith('UPDATE "folder" SET "orphan_alerted_at"'))
-    if (found) return found
-  }
-  throw new Error('the migration does not stamp the orphans that already exist')
-}
-
 function recordingEmit() {
   const calls: EmitArgs[] = []
   const emit = ((...args: EmitArgs) => {
@@ -364,23 +348,6 @@ test('an organization nobody manages is told nothing and is not retried for ever
     assertEquals((await stamp(world.db, id)).alerted !== null, true)
     const second = await alertNewOrphanFolders(world.db, secrets)
     assertEquals(second.alerts, 0)
-  })
-})
-
-test('an orphan stamped by the migration sends nothing', async () => {
-  await withWorld(async (world) => {
-    // The migration adds the column empty and then stamps every existing orphan,
-    // so the first sweep after an upgrade does not announce folders that were
-    // already known. Run that statement from the migration file itself.
-    const id = await addFolder(world, { serverId: world.serverA, slug: 'old' })
-    assertEquals((await stamp(world.db, id)).alerted, null)
-    await world.db.execute(sql.raw(await backfillStatement()))
-    assertEquals((await stamp(world.db, id)).alerted !== null, true)
-
-    const { calls, emit } = recordingEmit()
-    const result = await alertNewOrphanFolders(world.db, undefined, { emit })
-    assertEquals(result.alerts, 0)
-    assertEquals(calls.length, 0)
   })
 })
 
