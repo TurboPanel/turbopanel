@@ -2,7 +2,9 @@
 --
 -- Runs against the PREVIOUS release's schema (the newest stable tag on
 -- `live`), before this branch's migrations are applied on top, so every
--- column named here must exist in that release. Columns the release fills
+-- column named here must exist in that release. While the previous release
+-- predates the baseline, it is applied to a fresh apply of this checkout
+-- instead, so it must also fit the current schema. Columns the release fills
 -- with a default are left out on purpose: a later migration that tightens or
 -- backfills them is exactly what the upgrade check is for.
 --
@@ -73,11 +75,32 @@ INSERT INTO replica (id, managed_id, server_id, role, ordinal, status) VALUES
   ('00000000-0000-7000-8000-000000000b11', '00000000-0000-7000-8000-000000000b01', '00000000-0000-7000-8000-000000000501', 'primary', 1, 'ready'),
   ('00000000-0000-7000-8000-000000000b12', '00000000-0000-7000-8000-000000000b01', '00000000-0000-7000-8000-000000000502', 'replica', 2, 'provisioning');
 
-INSERT INTO principal (id, organization_id, project_id, managed_id, kind, provider, username, applied_username) VALUES
-  ('00000000-0000-7000-8000-000000000c01', '00000000-0000-7000-8000-000000000101', '00000000-0000-7000-8000-000000000301', NULL, 'system', 'server', 'siteowner', 'siteowner');
+INSERT INTO principal (id, organization_id, project_id, username, applied_username) VALUES
+  ('00000000-0000-7000-8000-000000000c01', '00000000-0000-7000-8000-000000000101', '00000000-0000-7000-8000-000000000301', 'siteowner', 'siteowner');
 
 INSERT INTO placement (id, principal_id, server_id, state, home, source) VALUES
-  ('00000000-0000-7000-8000-000000000c11', '00000000-0000-7000-8000-000000000c01', '00000000-0000-7000-8000-000000000501', 'present', '/home/siteowner', 'manual');
+  ('00000000-0000-7000-8000-000000000c11', '00000000-0000-7000-8000-000000000c01', '00000000-0000-7000-8000-000000000501', 'present', '/srv/users/siteowner', 'manual');
 
-INSERT INTO login (id, managed_id, principal_id, role, applied_username) VALUES
-  ('00000000-0000-7000-8000-000000000c21', '00000000-0000-7000-8000-000000000b01', '00000000-0000-7000-8000-000000000c01', 'user', 'siteowner');
+-- A login that stands on its own, one that shares the site owner's name, and
+-- the databases they may use.
+INSERT INTO login (id, managed_id, principal_id, role, username, applied_username, privileges, grant_mode) VALUES
+  ('00000000-0000-7000-8000-000000000c21', '00000000-0000-7000-8000-000000000b01', '00000000-0000-7000-8000-000000000c01', 'user', 'siteowner', 'siteowner', '{read-write}', 'recipe'),
+  ('00000000-0000-7000-8000-000000000c22', '00000000-0000-7000-8000-000000000b01', NULL, 'user', 'reporting', 'reporting', '{read-only}', 'recipe');
+
+INSERT INTO database (id, managed_id, name, is_role_owned) VALUES
+  ('00000000-0000-7000-8000-000000000c31', '00000000-0000-7000-8000-000000000b01', 'app', false);
+
+INSERT INTO scope (id, login_id, database_id) VALUES
+  ('00000000-0000-7000-8000-000000000c41', '00000000-0000-7000-8000-000000000c21', '00000000-0000-7000-8000-000000000c31'),
+  ('00000000-0000-7000-8000-000000000c42', '00000000-0000-7000-8000-000000000c22', '00000000-0000-7000-8000-000000000c31');
+
+INSERT INTO binding (id, login_id, service_id, database_id) VALUES
+  ('00000000-0000-7000-8000-000000000c51', '00000000-0000-7000-8000-000000000c21', '00000000-0000-7000-8000-000000000701', '00000000-0000-7000-8000-000000000c31');
+
+-- The two big append-only tables: a command carrying its own organization,
+-- environment and database columns, and an audit row with a plain user id.
+INSERT INTO command (id, server_id, actor_type, actor_id, name, status, organization_id, environment_id, managed_id) VALUES
+  ('00000000-0000-7000-8000-000000000c61', '00000000-0000-7000-8000-000000000501', 'user', '00000000-0000-7000-8000-000000000001', 'environment.deploy', 'succeeded', '00000000-0000-7000-8000-000000000101', '00000000-0000-7000-8000-000000000601', '00000000-0000-7000-8000-000000000b01');
+
+INSERT INTO audit (id, organization_id, actor_user_id, actor_email, action, target_type, target_id) VALUES
+  ('00000000-0000-7000-8000-000000000c71', '00000000-0000-7000-8000-000000000101', '00000000-0000-7000-8000-000000000001', 'upgrade-owner@example.test', 'server.delete', 'server', '00000000-0000-7000-8000-000000000502');

@@ -39,7 +39,6 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'backup',
   'binding',
   'bulwark',
-  'capability',
   'certificate',
   'changeover',
   'channel',
@@ -53,14 +52,11 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'deployment',
   'dispatch',
   'edict',
-  // Created by 0000_init and dropped by 0020; still named in the history.
-  'entitlement',
   'environment',
   'fabric',
   // One service or volume directory per server under a site owner's tree.
   'folder',
   'forge',
-  'generation',
   'hosting',
   'hostname',
   'invitation',

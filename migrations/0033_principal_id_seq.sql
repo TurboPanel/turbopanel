@@ -1,2 +1,0 @@
-CREATE SEQUENCE "public"."principal_id_seq" INCREMENT BY 1 MINVALUE 15001 MAXVALUE 60000 START WITH 30001 CACHE 1;--> statement-breakpoint
-COMMENT ON SEQUENCE "public"."principal_id_seq" IS 'Installation-wide uid/gid source for new site owner Linux users: one value per principal, the same on every server it is placed on. Starts above the band floor because older hosts picked ids from the bottom.';
