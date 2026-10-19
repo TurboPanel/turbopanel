@@ -2286,9 +2286,9 @@ export type EnvironmentDeployNativeAppVariable = {
  * `credential` — **never** embedded in `cloneUrl`, which stays credential-free
  * so it can be logged verbatim.
  *
- * `releaseId` becomes a directory name under
- * `<principalHome>/sites/<serviceId>/releases/`, so it is validated as a safe
- * id (no path separators) on both sides of the wire.
+ * `releaseId` becomes a directory name under the service's `releases/` folder
+ * (`<principalHome>/<scope>/services/<name>/releases/`), so it is validated as
+ * a safe id (no path separators) on both sides of the wire.
  */
 /** Auth shape of a clone credential — see `EnvironmentDeploySource.credentialKind`. */
 export type EnvironmentDeploySourceCredentialKind = 'token' | 'ssh_key'
@@ -4702,7 +4702,7 @@ export type EnvironmentStopCommandPayload = {
    */
   fabricNetworks?: string[]
   /**
-   * Per-service release trees (`<principalHome>/sites/<serviceId>`) to reclaim.
+   * Per-service folders (`<principalHome>/<scope>/services/<name>`) to reclaim.
    *
    * Generic on purpose — the same tree the Git release engine publishes into
    * and the native-runtime phase will run out of, not a site detail.
