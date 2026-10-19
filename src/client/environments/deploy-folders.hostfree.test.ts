@@ -1,4 +1,4 @@
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertThrows } from '@std/assert'
 import type {
   EnvironmentDeployHosting,
   EnvironmentDeployStorageMaterial,
@@ -114,10 +114,18 @@ test('the planned folder is added beside the old fields, and only to the volume 
     { ...owned, folder: { owner: 'appuser', scope: 'production', slug: 'data' } },
     other,
   ])
-  assertEquals(withVolumeFolders([owned], undefined), [owned])
 })
 
-test('each planned service folder goes on the payload by service id, and none when nothing was planned', () => {
+test('an owned path volume with no planned folder is refused', () => {
+  const planned: PlannedFolders = { folderIds: [], services: new Map(), volumes: new Map() }
+  assertThrows(
+    () => withVolumeFolders([material({ storageId: 'owned', principalId: PRINCIPAL_ID })], planned),
+    Error,
+    'owned'
+  )
+})
+
+test('each planned service folder goes on the payload by service id, and an empty list when nothing was planned', () => {
   const planned: PlannedFolders = {
     folderIds: ['f1', 'f2'],
     services: new Map([
@@ -133,5 +141,5 @@ test('each planned service folder goes on the payload by service id, and none wh
     },
     { serviceId: 'svc-2', folder: { owner: 'appuser', scope: 'common', slug: 'api' } },
   ])
-  assertEquals(serviceFoldersFor(undefined), [])
+  assertEquals(serviceFoldersFor({ folderIds: [], services: new Map(), volumes: new Map() }), [])
 })

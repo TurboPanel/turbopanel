@@ -9,7 +9,6 @@ import { assertComposeDocument, type SiteSpec } from '../../features/compose/ind
 import {
   dockerVolumeNameFromStorageId,
   principalHomeDir,
-  principalVolumePath,
   resolveDockerVolumeName,
 } from '../../lib/naming.ts'
 import { DEFAULT_PRINCIPAL_SHELL } from '../../features/principals/principal-options.ts'
@@ -509,7 +508,7 @@ describe('loadStorageMaterial principal path locations', () => {
     registeredVolumes: [] as const,
   }
 
-  it('derives principal volume path when location path is empty', async () => {
+  it('sends no source path for an owned volume with an empty location path', async () => {
     const db = createStorageMaterialDb({
       locations: [
         pathLocation({
@@ -522,7 +521,7 @@ describe('loadStorageMaterial principal path locations', () => {
     })
     const material = await loadStorageMaterial(db, baseParams)
     assertEquals(material.length, 1)
-    assertEquals(material[0]?.sourcePath, principalVolumePath(username, storageId))
+    assertEquals(material[0]?.sourcePath, undefined)
     assertEquals(material[0]?.locationId, locationId)
     assertEquals(material[0]?.provider, 'path')
   })
@@ -1057,7 +1056,7 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
       ],
     })
     const material = await loadStorageMaterial(db, baseParams)
-    assertEquals(material[0]?.sourcePath, principalVolumePath(username, storageId))
+    assertEquals(material[0]?.sourcePath, undefined)
     assertEquals(material[0]?.contentEnvelope, 'tp1.sealed.example')
     assertEquals(material[0]?.principalId, principalId)
   })

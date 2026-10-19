@@ -537,8 +537,8 @@ type DeployCommandCreateParams = DeployActor & {
   tlsMaterial: EnvironmentDeployTlsMaterial[]
   variableMaterial: EnvironmentDeployVariableMaterial[]
   storageMaterial: EnvironmentDeployStorageMaterial[]
-  /** The planned folder of each host-run service; absent when none was planned. */
-  serviceFolders?: EnvironmentDeployServiceFolder[]
+  /** The planned folder of each host-run service; empty when the deploy runs none on the host. */
+  serviceFolders: EnvironmentDeployServiceFolder[]
   principalMaterial: EnvironmentDeployPrincipalMaterial[]
   /** Non-secret Compose project `.env` the daemon writes next to compose.yaml. */
   envFile?: string
@@ -716,7 +716,9 @@ async function createDeployCommand(
       serverId: params.serverId,
       replicaCounts: params.replicaCounts,
       hostings: params.hostings,
-      // Every list below is omitted when empty — the daemon reads an absent
+      // The daemon refuses a deploy whose host-run services lack an entry here.
+      serviceFolders: params.serviceFolders,
+      // Every other list below is omitted when empty — the daemon reads an absent
       // key and an empty array the same way, and the queued row is smaller.
       ...presentFields({
         sites: params.sites,
@@ -728,7 +730,6 @@ async function createDeployCommand(
         tlsMaterial: params.tlsMaterial,
         variableMaterial: params.variableMaterial,
         storageMaterial: params.storageMaterial,
-        serviceFolders: params.serviceFolders,
         principalMaterial: params.principalMaterial,
         envFile: params.envFile || undefined,
         secretPlan: params.secretPlan,
@@ -839,7 +840,7 @@ function createParamsForPreparedServer(
     /** Ports other environments already hold on this server; allocation probes past them. */
     reservedListenPorts?: ReadonlySet<number>
     /** The folders planned for this server's deploy; their references ride on the payload. */
-    plannedFolders?: PlannedFolders
+    plannedFolders: PlannedFolders
   }
 ): DeployCommandCreateParams {
   // One loopback-port ledger for both host-native lanes: site vhosts
@@ -881,7 +882,7 @@ function createParamsForPreparedServer(
     tlsMaterial: row.prepared.tlsMaterial,
     variableMaterial: row.prepared.variableMaterial,
     storageMaterial: withVolumeFolders(row.prepared.storageMaterial, params.plannedFolders),
-    ...(serviceFolders.length > 0 ? { serviceFolders } : {}),
+    serviceFolders,
     principalMaterial: row.prepared.principalMaterial,
     envFile: row.prepared.envFile,
     secretPlan: row.prepared.secretPlan,
@@ -901,7 +902,7 @@ function createParamsForPreparedServer(
     desiredHash: row.prepared.desiredHash,
     replicaCounts: row.prepared.replicaCounts,
     listenerPorts: row.prepared.listenerPorts,
-    ...(params.plannedFolders && params.plannedFolders.folderIds.length > 0
+    ...(params.plannedFolders.folderIds.length > 0
       ? { folderIds: params.plannedFolders.folderIds }
       : {}),
   }

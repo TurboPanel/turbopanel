@@ -87,7 +87,7 @@ import {
   pruneUnreferencedComposeNetworks,
 } from '../../features/compose/docker-external-networks.ts'
 import { sharedVolumeIds } from '../../features/folders/shares.ts'
-import { principalHomeDir, principalVolumePath, resolveDockerVolumeName } from '../../lib/naming.ts'
+import { principalHomeDir, resolveDockerVolumeName } from '../../lib/naming.ts'
 import { accessGroupsFor } from '../../features/principals/principal-access.ts'
 import { resolvePrincipalIds } from '../../features/principals/principal-ids.ts'
 import { SHA512_CRYPT_HASH_RE } from '../../lib/sha512-crypt.ts'
@@ -1039,15 +1039,7 @@ function isDeployStorageProvider(
 function resolvePathLocationSource(row: LocationJoinRow): string | undefined {
   if (row.provider !== 'path') return undefined
   if (typeof row.path === 'string' && row.path.length > 0) return row.path
-  if (
-    typeof row.principalId !== 'string' ||
-    row.principalId.length === 0 ||
-    typeof row.principalUsername !== 'string' ||
-    row.principalUsername.length === 0
-  ) {
-    return undefined
-  }
-  return principalVolumePath(row.principalUsername, row.storageId)
+  return undefined
 }
 
 function expandMountsForClones(
