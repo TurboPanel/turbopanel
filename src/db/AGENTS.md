@@ -55,7 +55,7 @@ The tenth fold got past the freeze guards through one named, owner-approved
 exception (`BASELINE_EXCEPTION`, `baseline-2026-10-owner-approved`, in
 `check-migration-additions.mjs`): it passed only a base manifest at generation 9
 and a head manifest at generation 10, frozen, with a one-entry journal tagged
-`0000_init`. It was removed in the change right after the fold. The upgrade
+`0000_init`. It is removed in the change right after the fold. The upgrade
 check (`check-migration-upgrade.mjs`) has a lasting rule beside it, not a
 bypass: when the previous release tag's manifest has a lower generation than
 the checkout's, there is nothing to upgrade from, so it only builds a fresh
@@ -122,9 +122,9 @@ skipped on every instance that already ran it. After `pnpm generate`, run
 changed or removed entry) and commit the manifest with the migration. The
 test also checks the journal is contiguous and strictly increasing, every
 `NNNN_*.sql` on disk is journaled, and the `meta/NNNN_snapshot.json` `prevId`
-chain is intact. `--rebaseline` rewrote the manifest and bumped `generation`; it was the one
+chain is intact. `--rebaseline` rewrites the manifest and bumps `generation`; it is the one
 carve-out, used by the 2026-09-17 fold (8 → 9) and the 2026-10-17 fold (9 → 10)
-and removed afterwards. With the manifest frozen, layer two
+and removed in the change right after the latter. With the manifest frozen, layer two
 (`scripts/check-migration-additions.mjs`, `pnpm check:migration-additions
 [base-ref]`) diffs `migrations/` against the base ref in CI and accepts
 additions only; it reads the _base's_ `frozen` flag, so a commit cannot

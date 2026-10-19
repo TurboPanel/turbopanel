@@ -2,7 +2,9 @@
 --
 -- Runs against the PREVIOUS release's schema (the newest stable tag on
 -- `live`), before this branch's migrations are applied on top, so every
--- column named here must exist in that release. Columns the release fills
+-- column named here must exist in that release. While the previous release
+-- predates the baseline, it is applied to a fresh apply of this checkout
+-- instead, so it must also fit the current schema. Columns the release fills
 -- with a default are left out on purpose: a later migration that tightens or
 -- backfills them is exactly what the upgrade check is for.
 --
