@@ -6,7 +6,7 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db/connection.ts'
-import { organization, service } from '../../db/schema.ts'
+import { organization, service, tenancy } from '../../db/schema.ts'
 import {
   parseOrganizationOptions,
   resolveDeployHooksEnabled,
@@ -321,6 +321,8 @@ export function registerServiceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       const own = await markAssetFoldersRemoving(tx, { serviceIds: [id] })
       const volumes = await applyStorageRetentionOnParentDelete(tx, { serviceIds: [id] })
       removing.push(...own, ...volumes)
+      // The site owner the service runs as is only a link to it; the link goes with the service.
+      await tx.delete(tenancy).where(eq(tenancy.serviceId, id))
       await tx.delete(service).where(eq(service.id, id))
     })
     // Only a delete that went through asks the hosts to remove the files.
