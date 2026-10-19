@@ -57,6 +57,11 @@ export const AUDIT_ACTIONS = [
   'binding.create',
   'binding.update',
   'binding.delete',
+  'tls.ca.retire',
+  'tls.leaf.renew',
+  'tls.leaf.stale',
+  'tls.leaf.delete',
+  'folder.remove',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

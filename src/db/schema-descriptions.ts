@@ -237,6 +237,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'When the lease was taken; reset when a stale in-progress row (older than 15 min) is stolen by another isolate.',
       completed_at:
         'Set by the retire step together with `state` = `completed`; null otherwise and cleared when a stale row is stolen.',
+      retire_by:
+        'Set when fan-out finishes: after it the sweep retires the previous CA generation once every live target converged; null before.',
       results:
         'Array of per-server fan-out rows with `serverId`, `kind` (`ingress`, `apply` or `binding`), `managedId`, `commandId`, `status` and `error`.',
     },
@@ -280,6 +282,18 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       not_after:
         'Leaf expiry (90-day lifetime); the renewal sweep treats a leaf as due when less than a third of its lifetime remains.',
       issued_at: 'When the leaf was minted; refreshed on every re-issue upsert.',
+      state:
+        '`active` (counted and renewed when due) or `stale` (nothing waits on it: not counted, not renewed, never holds back retiring the old CA).',
+      stale_at: 'When the row was marked stale; set exactly when `state` is `stale`.',
+      stale_reason:
+        'Plain-words reason shown on the Organization CA card for a stale row (at most 300 characters).',
+      stale_cause:
+        '`offline` (server gone for weeks; comes back when it reconnects), `unused` (nothing needed it) or `owner`; set exactly when `state` is `stale`.',
+      attempts:
+        'Renewals tried since the leaf was last deployed; drives the retry back-off and resets on a successful deploy.',
+      attempted_at: 'When a renewal was last queued for this leaf; null before the first try.',
+      last_error:
+        'Plain-words reason the last renewal failed or could not be queued (at most 300 characters); cleared on a successful deploy.',
     },
   },
   organization: {
@@ -870,6 +884,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       slug: 'Folder name of the asset, copied from its slug when the folder was planned.',
       state:
         '`planned` before the host has it, `present`, `removing` until the host confirms a delete, `orphan` found with no asset, `missing` gone from the host.',
+      removal_note:
+        'Why the host kept a `removing` folder, in plain words, from its last answer; NULL when it has not refused.',
       orphan_alerted_at:
         'When the organization was told this folder is an orphan, so one orphan sends one alert; NULL until then, and cleared again once the folder stops being an orphan.',
     },

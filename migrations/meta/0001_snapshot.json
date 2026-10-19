@@ -1,5 +1,5 @@
 {
-  "id": "d7cd3cf7-6453-45ca-964a-b9473e29c6c3",
+  "id": "6bf5a1d2-0b14-4deb-82a2-55f34869fa00",
   "prevId": "a94a5032-b628-4dab-95a8-279d509fcc96",
   "version": "7",
   "dialect": "postgresql",
@@ -2977,9 +2977,9 @@
           "primaryKey": false,
           "notNull": true
         },
-        "orphan_alerted_at": {
-          "name": "orphan_alerted_at",
-          "type": "timestamp(3) with time zone",
+        "removal_note": {
+          "name": "removal_note",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         }
@@ -3087,40 +3087,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "idx_folder_orphan_unalerted": {
-          "name": "idx_folder_orphan_unalerted",
-          "columns": [
-            {
-              "expression": "server_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"folder\".\"state\" = 'orphan' AND \"folder\".\"orphan_alerted_at\" IS NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_folder_orphan_alerted": {
-          "name": "idx_folder_orphan_alerted",
-          "columns": [
-            {
-              "expression": "state",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "text_ops"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"folder\".\"orphan_alerted_at\" IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -3201,6 +3167,10 @@
         "folder_state_check": {
           "name": "folder_state_check",
           "value": "state IN ('planned', 'present', 'removing', 'orphan', 'missing')"
+        },
+        "folder_removal_note_check": {
+          "name": "folder_removal_note_check",
+          "value": "removal_note IS NULL OR char_length(removal_note) <= 300"
         },
         "folder_slug_check": {
           "name": "folder_slug_check",
@@ -7023,7 +6993,7 @@
       "checkConstraints": {
         "notification_event_check": {
           "name": "notification_event_check",
-          "value": "event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found')"
+          "value": "event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')"
         },
         "notification_severity_check": {
           "name": "notification_severity_check",
@@ -7454,7 +7424,7 @@
       "checkConstraints": {
         "attempt_event_check": {
           "name": "attempt_event_check",
-          "value": "event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found')"
+          "value": "event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')"
         },
         "attempt_severity_check": {
           "name": "attempt_severity_check",
@@ -7549,7 +7519,7 @@
       "checkConstraints": {
         "rule_event_check": {
           "name": "rule_event_check",
-          "value": "event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found')"
+          "value": "event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')"
         },
         "rule_min_severity_check": {
           "name": "rule_min_severity_check",

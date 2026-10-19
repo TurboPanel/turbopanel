@@ -80,7 +80,7 @@ test('applyStorageRetentionOnParentDelete marks folders removing before the volu
   const tx = createRetentionTx(['vol-1', 'vol-2'])
   const servers = await applyStorageRetentionOnParentDelete(tx, { projectIds: ['proj-1'] })
   assertEquals(servers, ['srv-1'])
-  assertEquals(tx.updates, [{ state: 'removing' }])
+  assertEquals(tx.updates, [{ state: 'removing', removalNote: null }])
   assertEquals(tx.deletes.length, 1)
 })
 

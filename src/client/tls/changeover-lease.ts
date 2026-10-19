@@ -29,6 +29,7 @@ export type CaRotationJournalRow = {
   state: CaRotationState
   startedAt: string
   completedAt: string | null
+  retireBy: string | null
   results: unknown
   metadata: unknown
   createdAt: string
@@ -53,6 +54,7 @@ function serializeJournalRow(row: typeof changeover.$inferSelect): CaRotationJou
     state: row.state,
     startedAt: row.startedAt,
     completedAt: row.completedAt,
+    retireBy: row.retireBy,
     results: row.results,
     metadata: row.metadata,
     createdAt: row.createdAt,
@@ -195,6 +197,7 @@ export async function updateCaRotationJournal(
     results?: unknown
     metadata?: unknown
     completedAt?: string | null
+    retireBy?: string | null
   }
 ): Promise<CaRotationJournalRow | null> {
   const updatedAt = nowIso()
@@ -208,6 +211,7 @@ export async function updateCaRotationJournal(
       ...(patch.results === undefined ? {} : { results: patch.results }),
       ...(patch.metadata === undefined ? {} : { metadata: patch.metadata }),
       ...(patch.completedAt === undefined ? {} : { completedAt: patch.completedAt }),
+      ...(patch.retireBy === undefined ? {} : { retireBy: patch.retireBy }),
     })
     .where(eq(changeover.id, rotationId))
     .returning()

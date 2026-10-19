@@ -280,6 +280,12 @@ export const changeover = pgTable(
     }),
     /** Per-server / per-cluster fan-out rows (`ingress` | `apply`). */
     results: jsonb().default([]),
+    /** Set when fan-out finishes (`awaiting_retire`); the sweep retires the old generation after it. */
+    retireBy: timestamp('retire_by', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
   },
   (table) => [
     index('idx_changeover_organization_id').using(
@@ -2613,6 +2619,23 @@ export const leaf = pgTable(
       .defaultNow()
       .$onUpdate(() => sql`now()`)
       .notNull(),
+    /** `active` | `stale` */
+    state: text().default('active').notNull(),
+    staleAt: timestamp('stale_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    staleReason: text('stale_reason'),
+    /** `offline` | `unused` | `owner` */
+    staleCause: text('stale_cause'),
+    attempts: integer().default(0).notNull(),
+    attemptedAt: timestamp('attempted_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    lastError: text('last_error'),
   },
   (table) => [
     index('idx_leaf_not_after').using(
@@ -2662,6 +2685,20 @@ export const leaf = pgTable(
       name: 'leaf_ca_id_tls_id_fk',
     }).onDelete('cascade'),
     check('leaf_kind_check', sql`${table.kind} IN ('ingress','engine')`),
+    check('leaf_state_check', sql`state IN ('active','stale')`),
+    check(
+      'leaf_stale_cause_check',
+      sql`stale_cause IS NULL OR stale_cause IN ('offline','unused','owner')`
+    ),
+    check(
+      'leaf_stale_check',
+      sql`(${table.state} = 'stale') = (${table.staleAt} IS NOT NULL) AND (${table.state} = 'stale') = (${table.staleCause} IS NOT NULL)`
+    ),
+    check('leaf_attempts_check', sql`${table.attempts} >= 0`),
+    check(
+      'leaf_text_length_check',
+      sql`(${table.staleReason} IS NULL OR length(${table.staleReason}) <= 300) AND (${table.lastError} IS NULL OR length(${table.lastError}) <= 300)`
+    ),
     check(
       'leaf_kind_keys_check',
       sql`(
@@ -3906,6 +3943,12 @@ export const folder = pgTable(
     storageId: uuid('storage_id'),
     /** `planned` | `present` | `removing` | `orphan` | `missing` */
     state: text().notNull(),
+    /**
+     * Why the host kept a `removing` folder, in plain words, from its last
+     * answer; NULL when it has not refused. Cleared when the row leaves
+     * `removing`.
+     */
+    removalNote: text('removal_note'),
     /** When the owners were told this folder is an orphan; NULL until then and again once it stops being one. */
     orphanAlertedAt: timestamp('orphan_alerted_at', {
       precision: 3,
@@ -3968,6 +4011,10 @@ export const folder = pgTable(
     check(
       'folder_state_check',
       sql`state IN ('planned', 'present', 'removing', 'orphan', 'missing')`
+    ),
+    check(
+      'folder_removal_note_check',
+      sql`removal_note IS NULL OR char_length(removal_note) <= 300`
     ),
     check('folder_slug_check', sql.raw(String.raw`slug ~ '${FOLDER_NAME_SQL}' AND slug !~ '\.\.'`)),
     check(

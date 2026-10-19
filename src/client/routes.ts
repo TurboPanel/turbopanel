@@ -32,6 +32,7 @@ import { registerHostingDeleteStepUp } from './hostings/delete-step-up.ts'
 import { registerHostingRoutes } from './hostings/routes.ts'
 import { registerHostingLetsEncryptRoutes } from './hostings/letsencrypt-routes.ts'
 import { registerTlsCaStepUp } from './tls/ca-step-up.ts'
+import { registerTlsLeafRoutes } from './tls/leaf-routes.ts'
 import { registerTlsRoutes } from './tls/routes.ts'
 import { registerLicenseRoutes } from './licenses/routes.ts'
 import {
@@ -58,6 +59,7 @@ import { registerOrganizationMemberRoutes } from './organizations/members.ts'
 import { registerOrganizationPrincipalRoutes } from './principals/org-routes.ts'
 import { registerOrganizationPrincipalDefaultsRoutes } from './organizations/principal-defaults-routes.ts'
 import { registerOrganizationDirectoryDefaultsRoutes } from './organizations/directory-defaults-routes.ts'
+import { registerOrganizationFolderAdminRoutes } from './organizations/folder-admin-routes.ts'
 import { registerPhpModeRoutes } from './hostings/php-mode-routes.ts'
 import { registerOrganizationRoutes } from './organizations/routes.ts'
 import { registerOrganizationSessionGuards } from './organizations/session-guards.ts'
@@ -129,6 +131,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   opts.registerBilling?.(client, opts)
   registerOrganizationPrincipalDefaultsRoutes(client, opts)
   registerOrganizationDirectoryDefaultsRoutes(client, opts)
+  registerOrganizationFolderAdminRoutes(client, opts)
   if (opts.secrets) registerOrganizationSessionGuards(client, opts.secrets)
   registerOrganizationRoutes(client, opts)
   registerComposeRemoteBuildSourcesRoutes(client)
@@ -173,6 +176,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerServerLimitsRoutes(client, opts)
   registerTlsCaStepUp(client, opts)
   registerTlsRoutes(client, opts)
+  registerTlsLeafRoutes(client, opts)
   registerTeamRoutes(client, opts)
 
   client.get('/openapi.json', (c) => {
