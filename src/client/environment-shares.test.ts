@@ -239,6 +239,15 @@ test('a deploy of an environment carries the common volumes it uses, with its ow
         registeredVolumes: [],
       })
 
+    // The project that owns the volume carries its own mount only, even while an
+    // environment of another project mounts the same volume.
+    const ownerMaterial = await load(home.envId, home.projectId, [homeWeb])
+    assertEquals(ownerMaterial.length, 1)
+    assertEquals(
+      ownerMaterial[0]!.mounts.map((entry) => [entry.composeServiceName, entry.destinationPath]),
+      [['web', '/media']]
+    )
+
     // Before the environment uses the volume, only its own project's scope sees it.
     assertEquals((await load(other.envId, other.projectId, [otherWeb])).length, 0)
     await send(ctx, 'POST', `/environments/${other.envId}/shares`, { storageId: volume })
