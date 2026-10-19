@@ -152,8 +152,12 @@ test('a common service cannot be deleted while another environment uses it', asy
     assertEquals(proj.json.error, 'common_asset_in_use')
 
     await send(ctx, 'DELETE', `/environments/${other.envId}/shares/${added.json.id}`)
-    await ctx.db.delete(tenancy).where(eq(tenancy.serviceId, shared))
+    // The site owner it runs as goes with it: no link is left to block the delete.
     assertEquals((await send(ctx, 'DELETE', `/services/${shared}`)).status, 200)
+    assertEquals(
+      (await ctx.db.select().from(tenancy).where(eq(tenancy.serviceId, shared))).length,
+      0
+    )
   })
 })
 
