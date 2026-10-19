@@ -1,4 +1,3 @@
-CREATE SEQUENCE "public"."principal_id_seq" INCREMENT BY 1 MINVALUE 15001 MAXVALUE 60000 START WITH 30001 CACHE 1;--> statement-breakpoint
 CREATE TABLE "account" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
@@ -109,6 +108,7 @@ CREATE TABLE "changeover" (
 	"started_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"completed_at" timestamp(3) with time zone,
 	"results" jsonb DEFAULT '[]'::jsonb,
+	"retire_by" timestamp(3) with time zone,
 	CONSTRAINT "changeover_state_check" CHECK ("changeover"."state" IN ('in_progress','awaiting_retire','completed','failed'))
 );
 --> statement-breakpoint
@@ -288,8 +288,11 @@ CREATE TABLE "folder" (
 	"service_id" uuid,
 	"storage_id" uuid,
 	"state" text NOT NULL,
+	"removal_note" text,
+	"orphan_alerted_at" timestamp(3) with time zone,
 	CONSTRAINT "folder_kind_check" CHECK (kind IN ('service', 'volume')),
 	CONSTRAINT "folder_state_check" CHECK (state IN ('planned', 'present', 'removing', 'orphan', 'missing')),
+	CONSTRAINT "folder_removal_note_check" CHECK (removal_note IS NULL OR char_length(removal_note) <= 300),
 	CONSTRAINT "folder_slug_check" CHECK (slug ~ '^[a-z0-9]([a-z0-9._-]{0,61}[a-z0-9])?$' AND slug !~ '\.\.'),
 	CONSTRAINT "folder_scope_check" CHECK (scope = 'common' OR (scope ~ '^[a-z0-9][a-z0-9_-]{0,31}$' AND scope NOT IN ('common', 'home', 'tmp', 'services', 'volumes', 'data', 'sites', 'backup', 'backups', 'logs', 'cache', 'run', 'var', 'etc', 'bin', 'root', 'public', 'releases', 'current', 'shared', 'lost-found', 'tmp-staging'))),
 	CONSTRAINT "folder_common_scope_check" CHECK ((scope = 'common' AND environment_id IS NULL) OR (scope <> 'common' AND (environment_id IS NOT NULL OR state = 'orphan'))),
@@ -483,7 +486,19 @@ CREATE TABLE "leaf" (
 	"not_after" timestamp(3) with time zone NOT NULL,
 	"issued_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
+	"state" text DEFAULT 'active' NOT NULL,
+	"stale_at" timestamp(3) with time zone,
+	"stale_reason" text,
+	"stale_cause" text,
+	"attempts" integer DEFAULT 0 NOT NULL,
+	"attempted_at" timestamp(3) with time zone,
+	"last_error" text,
 	CONSTRAINT "leaf_kind_check" CHECK ("leaf"."kind" IN ('ingress','engine')),
+	CONSTRAINT "leaf_state_check" CHECK (state IN ('active','stale')),
+	CONSTRAINT "leaf_stale_cause_check" CHECK (stale_cause IS NULL OR stale_cause IN ('offline','unused','owner')),
+	CONSTRAINT "leaf_stale_check" CHECK (("leaf"."state" = 'stale') = ("leaf"."stale_at" IS NOT NULL) AND ("leaf"."state" = 'stale') = ("leaf"."stale_cause" IS NOT NULL)),
+	CONSTRAINT "leaf_attempts_check" CHECK ("leaf"."attempts" >= 0),
+	CONSTRAINT "leaf_text_length_check" CHECK (("leaf"."stale_reason" IS NULL OR length("leaf"."stale_reason") <= 300) AND ("leaf"."last_error" IS NULL OR length("leaf"."last_error") <= 300)),
 	CONSTRAINT "leaf_kind_keys_check" CHECK ((
         ("leaf"."kind" = 'ingress' AND "leaf"."replica_id" IS NULL AND "leaf"."managed_id" IS NULL)
         OR
@@ -650,7 +665,7 @@ CREATE TABLE "notification" (
 	"context" jsonb,
 	"read_at" timestamp(3) with time zone,
 	"dismissed_at" timestamp(3) with time zone,
-	CONSTRAINT "notification_event_check" CHECK (event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')),
+	CONSTRAINT "notification_event_check" CHECK (event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found')),
 	CONSTRAINT "notification_severity_check" CHECK (severity IN ('info', 'warning', 'critical'))
 );
 --> statement-breakpoint
@@ -692,7 +707,7 @@ CREATE TABLE "attempt" (
 	"next_attempt_at" timestamp(3) with time zone,
 	"sent_at" timestamp(3) with time zone,
 	"last_error" text,
-	CONSTRAINT "attempt_event_check" CHECK (event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')),
+	CONSTRAINT "attempt_event_check" CHECK (event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found')),
 	CONSTRAINT "attempt_severity_check" CHECK (severity IN ('info', 'warning', 'critical')),
 	CONSTRAINT "attempt_status_check" CHECK (status IN ('pending', 'sent', 'failed', 'abandoned', 'held'))
 );
@@ -703,7 +718,7 @@ CREATE TABLE "rule" (
 	"channel_id" uuid NOT NULL,
 	"event" text NOT NULL,
 	"min_severity" text DEFAULT 'info' NOT NULL,
-	CONSTRAINT "rule_event_check" CHECK (event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')),
+	CONSTRAINT "rule_event_check" CHECK (event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found')),
 	CONSTRAINT "rule_min_severity_check" CHECK (min_severity IN ('info', 'warning', 'critical'))
 );
 --> statement-breakpoint
@@ -712,7 +727,9 @@ CREATE TABLE "organization" (
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"options" jsonb,
-	"name" text
+	"name" text,
+	"next_linux_id" integer DEFAULT 30001 NOT NULL,
+	CONSTRAINT "organization_next_linux_id_check" CHECK ("organization"."next_linux_id" >= 30001 AND "organization"."next_linux_id" <= 60001)
 );
 --> statement-breakpoint
 CREATE TABLE "passkey" (
@@ -1259,6 +1276,7 @@ CREATE TABLE "tls" (
 	"fingerprint_sha256" text,
 	"ca_state" text,
 	"ca_generation" integer,
+	"issued_by_server_id" uuid,
 	CONSTRAINT "tls_source_check" CHECK (source IN ('upload', 'lets_encrypt', 'self_signed', 'organization_ca')),
 	CONSTRAINT "tls_name_format_check" CHECK ((name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))),
 	CONSTRAINT "tls_ca_state_check" CHECK (ca_state IS NULL OR ca_state IN ('active', 'retired', 'revoked')),
@@ -1551,6 +1569,7 @@ ALTER TABLE "teammate" ADD CONSTRAINT "teammate_team_id_team_id_fk" FOREIGN KEY 
 ALTER TABLE "teammate" ADD CONSTRAINT "teammate_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tenancy" ADD CONSTRAINT "tenancy_principal_id_principal_id_fk" FOREIGN KEY ("principal_id") REFERENCES "public"."principal"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tenancy" ADD CONSTRAINT "tenancy_service_id_service_id_fk" FOREIGN KEY ("service_id") REFERENCES "public"."service"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tls" ADD CONSTRAINT "tls_issued_by_server_id_server_id_fk" FOREIGN KEY ("issued_by_server_id") REFERENCES "public"."server"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tls" ADD CONSTRAINT "tls_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "totp" ADD CONSTRAINT "totp_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "upgrade" ADD CONSTRAINT "upgrade_started_by_user_id_fk" FOREIGN KEY ("started_by") REFERENCES "public"."user"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -1616,6 +1635,8 @@ CREATE INDEX "idx_folder_principal_id" ON "folder" USING btree ("principal_id" u
 CREATE INDEX "idx_folder_environment_id" ON "folder" USING btree ("environment_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_folder_service_id" ON "folder" USING btree ("service_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_folder_storage_id" ON "folder" USING btree ("storage_id" uuid_ops);--> statement-breakpoint
+CREATE INDEX "idx_folder_orphan_unalerted" ON "folder" USING btree ("server_id" uuid_ops) WHERE "folder"."state" = 'orphan' AND "folder"."orphan_alerted_at" IS NULL;--> statement-breakpoint
+CREATE INDEX "idx_folder_orphan_alerted" ON "folder" USING btree ("state" text_ops) WHERE "folder"."orphan_alerted_at" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "idx_forge_organization_id" ON "forge" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_connection_forge_id" ON "connection" USING btree ("forge_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_connection_forge_external_github" ON "connection" USING btree ("forge_id","external_installation_id") WHERE "connection"."provider" = 'github';--> statement-breakpoint
@@ -1778,6 +1799,7 @@ CREATE INDEX "idx_tenancy_service_id" ON "tenancy" USING btree ("service_id" uui
 CREATE UNIQUE INDEX "uniq_tier_label" ON "tier" USING btree ("label");--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_tier_rank" ON "tier" USING btree ("rank");--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_tier_provider_product" ON "tier" USING btree ("provider","provider_product_id") WHERE "tier"."provider_product_id" IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "idx_tls_issued_by_server_id" ON "tls" USING btree ("issued_by_server_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_tls_organization_id" ON "tls" USING btree ("organization_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_tls_not_after" ON "tls" USING btree ("not_after" timestamptz_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_tls_organization_fingerprint_sha256" ON "tls" USING btree ("organization_id","fingerprint_sha256") WHERE "tls"."fingerprint_sha256" IS NOT NULL;--> statement-breakpoint
@@ -1866,6 +1888,7 @@ COMMENT ON COLUMN "changeover"."state" IS '`in_progress` (lease held), then `awa
 COMMENT ON COLUMN "changeover"."started_at" IS 'When the lease was taken; reset when a stale in-progress row (older than 15 min) is stolen by another isolate.';--> statement-breakpoint
 COMMENT ON COLUMN "changeover"."completed_at" IS 'Set by the retire step together with `state` = `completed`; null otherwise and cleared when a stale row is stolen.';--> statement-breakpoint
 COMMENT ON COLUMN "changeover"."results" IS 'Array of per-server fan-out rows with `serverId`, `kind` (`ingress`, `apply` or `binding`), `managedId`, `commandId`, `status` and `error`.';--> statement-breakpoint
+COMMENT ON COLUMN "changeover"."retire_by" IS 'Set when fan-out finishes: after it the sweep retires the previous CA generation once every live target converged; null before.';--> statement-breakpoint
 COMMENT ON TABLE "address" IS 'An address clients use to reach a server, set by an operator: one `public` entry per server and one per datacenter the server belongs to.';--> statement-breakpoint
 COMMENT ON COLUMN "address"."options" IS 'External port per listener under `ports` (`postgres`, `mysql`, `http`, `https`); absent = the listen port, null = not reachable here.';--> statement-breakpoint
 COMMENT ON COLUMN "address"."organization_id" IS 'Organization that owns the server, copied from it on save; entries cascade away with the organization.';--> statement-breakpoint
@@ -1958,6 +1981,8 @@ COMMENT ON COLUMN "folder"."scope" IS 'Scope folder name exactly as created on t
 COMMENT ON COLUMN "folder"."kind" IS '`service` or `volume`; decides which of `service_id` and `storage_id` can be set.';--> statement-breakpoint
 COMMENT ON COLUMN "folder"."slug" IS 'Folder name of the asset, copied from its slug when the folder was planned.';--> statement-breakpoint
 COMMENT ON COLUMN "folder"."state" IS '`planned` before the host has it, `present`, `removing` until the host confirms a delete, `orphan` found with no asset, `missing` gone from the host.';--> statement-breakpoint
+COMMENT ON COLUMN "folder"."removal_note" IS 'Why the host kept a `removing` folder, in plain words, from its last answer; NULL when it has not refused.';--> statement-breakpoint
+COMMENT ON COLUMN "folder"."orphan_alerted_at" IS 'When the organization was told this folder is an orphan, so one orphan sends one alert; NULL until then and again after it stops being one.';--> statement-breakpoint
 COMMENT ON TABLE "forge" IS 'A registered Git provider application (GitHub App or GitLab OAuth app) that connections are granted through; `organization_id` NULL means instance-wide.';--> statement-breakpoint
 COMMENT ON COLUMN "forge"."organization_id" IS 'NULL means instance-wide (any organization may connect through it); set means the app belongs to that organization alone.';--> statement-breakpoint
 COMMENT ON COLUMN "forge"."provider" IS 'Git provider kind, `github` or `gitlab`, chosen at registration and never changed.';--> statement-breakpoint
@@ -2053,6 +2078,13 @@ COMMENT ON COLUMN "leaf"."ca_id" IS 'The `tls` Organization CA row that signed t
 COMMENT ON COLUMN "leaf"."ca_generation" IS 'Generation of the signing CA at issue time; a mismatch with the active generation makes the leaf due for renewal.';--> statement-breakpoint
 COMMENT ON COLUMN "leaf"."not_after" IS 'Leaf expiry (90-day lifetime); the renewal sweep treats a leaf as due when less than a third of its lifetime remains.';--> statement-breakpoint
 COMMENT ON COLUMN "leaf"."issued_at" IS 'When the leaf was minted; refreshed on every re-issue upsert.';--> statement-breakpoint
+COMMENT ON COLUMN "leaf"."state" IS '`active` (counted and renewed when due) or `stale` (nothing waits on it: not counted, not renewed, never holds back retiring the old CA).';--> statement-breakpoint
+COMMENT ON COLUMN "leaf"."stale_at" IS 'When the row was marked stale; set exactly when `state` is `stale`.';--> statement-breakpoint
+COMMENT ON COLUMN "leaf"."stale_reason" IS 'Plain-words reason shown on the Organization CA card for a stale row (at most 300 characters).';--> statement-breakpoint
+COMMENT ON COLUMN "leaf"."stale_cause" IS '`offline` (server gone for weeks; comes back when it reconnects), `unused` (nothing needed it) or `owner`; set exactly when `state` is `stale`.';--> statement-breakpoint
+COMMENT ON COLUMN "leaf"."attempts" IS 'Renewals tried since the leaf was last deployed; drives the retry back-off and resets on a successful deploy.';--> statement-breakpoint
+COMMENT ON COLUMN "leaf"."attempted_at" IS 'When a renewal was last queued for this leaf; null before the first try.';--> statement-breakpoint
+COMMENT ON COLUMN "leaf"."last_error" IS 'Plain-words reason the last renewal failed or could not be queued (at most 300 characters); cleared on a successful deploy.';--> statement-breakpoint
 COMMENT ON TABLE "lease" IS 'Cross-isolate compare-and-swap lease: one row per `name` (plus organization for the billing lock) with an `owner` token and `expires_at`; four callers share it.';--> statement-breakpoint
 COMMENT ON COLUMN "lease"."name" IS 'Lease name: `OFFLINE_SWEEP_LOCK`, `LEAF_RENEWAL_SWEEP_LOCK` and `REENCRYPT_SWEEP_LOCK` are global, `BILLING_QUANTITY_LOCK` is per organization.';--> statement-breakpoint
 COMMENT ON COLUMN "lease"."organization_id" IS 'Null for the three global leases, set for the per-organization `BILLING_QUANTITY_LOCK`; unique with `name` under NULLS NOT DISTINCT so one global row per name.';--> statement-breakpoint
@@ -2121,7 +2153,7 @@ COMMENT ON COLUMN "network"."compose_key" IS 'Compose network key from the envir
 COMMENT ON TABLE "notification" IS 'One bell inbox row per event per recipient user, written by `emitNotification` for every member or manager the event''s audience names.';--> statement-breakpoint
 COMMENT ON COLUMN "notification"."user_id" IS 'Recipient of the inbox row; one row per person the event reached, chosen by the event''s audience (members or managers).';--> statement-breakpoint
 COMMENT ON COLUMN "notification"."organization_id" IS 'Organization the event belongs to; NULL for an instance-scoped event such as `fleet.mass_disconnect`.';--> statement-breakpoint
-COMMENT ON COLUMN "notification"."event" IS 'Catalogue code (`NOTIFICATION_EVENTS`): `server.offline`, `fleet.mass_disconnect`, `server.deleted`, `server.daemon_key_revoked`, `access.grant_*`.';--> statement-breakpoint
+COMMENT ON COLUMN "notification"."event" IS 'Catalogue code (`NOTIFICATION_EVENTS`), such as `server.offline`, `access.grant_*`, `certificate.renewal_failed` or `folder.orphans_found`.';--> statement-breakpoint
 COMMENT ON COLUMN "notification"."severity" IS '`info`, `warning` or `critical`, copied from the event''s catalogue definition.';--> statement-breakpoint
 COMMENT ON COLUMN "notification"."title" IS 'One-line sentence rendered from the catalogue''s title template at emit time; also the email subject.';--> statement-breakpoint
 COMMENT ON COLUMN "notification"."body" IS 'Fuller sentence rendered from the catalogue''s body template; NULL when the event defines none.';--> statement-breakpoint
@@ -2160,6 +2192,7 @@ COMMENT ON COLUMN "rule"."min_severity" IS 'Severity floor `info` (default), `wa
 COMMENT ON TABLE "organization" IS 'Tenant organization; one is created by the install wizard and by every sign-up, its members come through teams, and `options` holds org-wide defaults.';--> statement-breakpoint
 COMMENT ON COLUMN "organization"."options" IS 'Org-wide settings merged key-by-key by the organization routes (`defaultServerTimezone`, `maxServers`, `acmeEnabled`, `managedDatabase`, `phpModes` and more).';--> statement-breakpoint
 COMMENT ON COLUMN "organization"."name" IS 'Display name; sign-up uses `you@example.com''s organization` from email, else `My Organization` if missing, blank, or label invalid; install Root Organization.';--> statement-breakpoint
+COMMENT ON COLUMN "organization"."next_linux_id" IS 'Next uid/gid for a Hosting Account on servers this organization owns; starts at 30001, rises by one per new account, never reused.';--> statement-breakpoint
 COMMENT ON TABLE "passkey" IS 'One WebAuthn credential registered by a user (several per user allowed), unique by `credential_id`; inserted at registration, updated on each passkey sign-in.';--> statement-breakpoint
 COMMENT ON COLUMN "passkey"."aaguid" IS 'Authenticator model AAGUID decoded from the attestation as a dashed lowercase UUID string; identifies the make, not the individual key.';--> statement-breakpoint
 COMMENT ON COLUMN "passkey"."name" IS 'User-chosen label given at registration (the device or authenticator it lives on); shown in the Security screen, never used for matching.';--> statement-breakpoint
@@ -2431,13 +2464,14 @@ COMMENT ON COLUMN "tls"."metadata" IS 'Certificate facts not promoted to columns
 COMMENT ON COLUMN "tls"."options" IS 'Operator knobs: `prefer` (pin priority), `autoRenew`, and `requestedHostnames` asked for on Let''s Encrypt or self-signed create; null on Organization CA rows.';--> statement-breakpoint
 COMMENT ON COLUMN "tls"."name" IS 'Operator label of 1-255 letters, digits, space, dot, underscore or dash; fixed `Organization CA` on CA rows.';--> statement-breakpoint
 COMMENT ON COLUMN "tls"."source" IS '`upload`, `lets_encrypt` (Caddy-managed ACME on the host), `self_signed` or `organization_ca`; decides which other columns are meaningful.';--> statement-breakpoint
-COMMENT ON COLUMN "tls"."certificate_pem" IS 'Leaf plus intermediate chain PEM; null on `lets_encrypt` rows because Caddy issues and holds the certificate on the serving host.';--> statement-breakpoint
-COMMENT ON COLUMN "tls"."private_key_pem" IS 'Private key PEM sealed as a `tpsecret` envelope, never returned by the client API; null on `lets_encrypt` rows.';--> statement-breakpoint
+COMMENT ON COLUMN "tls"."certificate_pem" IS 'Leaf plus intermediate chain PEM; on `lets_encrypt` rows it is null until the serving host''s Caddy has issued the certificate and its daemon has sent a copy.';--> statement-breakpoint
+COMMENT ON COLUMN "tls"."private_key_pem" IS 'Private key PEM sealed as a `tpsecret` envelope, never returned by the client API; Let''s Encrypt rows get it from the daemon report and lose it on revoke.';--> statement-breakpoint
 COMMENT ON COLUMN "tls"."status" IS 'Row health `ready`, `pending`, `expired`, `failed`, `revoked` or `managed` (Caddy ACME intent); `expired` is derived at read from `not_after`, others stored.';--> statement-breakpoint
 COMMENT ON COLUMN "tls"."not_after" IS 'Certificate expiry parsed from the PEM at write; epoch-0 placeholder on `managed` rows; indexed for expiry checks.';--> statement-breakpoint
 COMMENT ON COLUMN "tls"."fingerprint_sha256" IS 'SHA-256 fingerprint of the leaf DER, unique per organization when set; null on `managed` rows that have no certificate yet.';--> statement-breakpoint
 COMMENT ON COLUMN "tls"."ca_state" IS 'Organization CA lifecycle `active` (one per org), `retired` (still in the trust bundle) or `revoked`; null on non-CA rows.';--> statement-breakpoint
 COMMENT ON COLUMN "tls"."ca_generation" IS 'Monotonic per-org counter (max + 1) assigned when a CA is minted; leaves record which generation signed them; null on non-CA rows.';--> statement-breakpoint
+COMMENT ON COLUMN "tls"."issued_by_server_id" IS 'Server whose Caddy issued the stored Let''s Encrypt pair (the daemon that reported it); null when no pair is stored or that server was deleted.';--> statement-breakpoint
 COMMENT ON TABLE "totp" IS 'TOTP enrolment for a user, at most one row per user (`uniq_totp_user_id`); inserted or reset on enable, verified once, and deleted when two-factor is disabled.';--> statement-breakpoint
 COMMENT ON COLUMN "totp"."user_id" IS 'Enrolled user; unique, so re-enabling resets the existing row instead of adding one, and disable deletes it.';--> statement-breakpoint
 COMMENT ON COLUMN "totp"."secret" IS 'TOTP shared secret sealed as a `tpsecret` envelope with the data-encryption key; never plaintext and never returned after enrolment.';--> statement-breakpoint
@@ -2499,4 +2533,3 @@ COMMENT ON COLUMN "workspace"."name" IS 'Display label under `workspace_name_for
 COMMENT ON COLUMN "workspace"."description" IS 'Optional free-text description written by the client API; no format CHECK, app-side length cap only.';--> statement-breakpoint
 COMMENT ON COLUMN "workspace"."kind" IS 'Workspace discriminator: `user` (default, operator-created) or `turbopanel` (the single machine workspace per organization, provisioned at install).';
 --> statement-breakpoint
-COMMENT ON SEQUENCE "public"."principal_id_seq" IS 'Installation-wide uid/gid source for new site owner Linux users: one value per principal, the same on every server it is placed on. Starts above the band floor because older hosts picked ids from the bottom.';
