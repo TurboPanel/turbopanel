@@ -7,7 +7,7 @@
  */
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { deriveEncryptionSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
@@ -120,6 +120,22 @@ async function withWorld(fn: (world: World) => Promise<void>): Promise<void> {
     await db.delete(organization).where(inArray(organization.id, [org!.id, other!.id]))
     await endDbConnection(db)
   }
+}
+
+/** The one statement of the migration that stamps the orphans that already exist. */
+async function backfillStatement(): Promise<string> {
+  for await (const entry of Deno.readDir(new URL('../../../migrations/', import.meta.url))) {
+    if (!entry.name.endsWith('_notification_orphan_and_certificate_events.sql')) continue
+    const text = await Deno.readTextFile(
+      new URL(`../../../migrations/${entry.name}`, import.meta.url)
+    )
+    const found = text
+      .split('--> statement-breakpoint')
+      .map((part) => part.trim())
+      .find((part) => part.startsWith('UPDATE "folder" SET "orphan_alerted_at"'))
+    if (found) return found
+  }
+  throw new Error('the migration does not stamp the orphans that already exist')
 }
 
 function recordingEmit() {
@@ -265,11 +281,18 @@ test('a folder that stops being an orphan is forgotten and alerts again when lef
   })
 })
 
+/** What the real emitter does when it fails: logs, reports to the trace, returns the zero result. */
+function failingEmit() {
+  return ((_db, _secrets, _input, deps) => {
+    deps?.trace?.('notification-emit-failed', { event: 'folder.orphans_found' })
+    return Promise.resolve({ inbox: 0, deliveries: 0, sent: 0, failed: 0, held: 0 })
+  }) as typeof emitNotification
+}
+
 test('a send that fails is logged, never thrown, and the next sweep tries again', async () => {
   await withWorld(async (world) => {
     const id = await addFolder(world, { serverId: world.serverA, slug: 'blog' })
-    const throwing = (() => Promise.reject(new Error('boom'))) as unknown as typeof emitNotification
-    const failed = await alertNewOrphanFolders(world.db, undefined, { emit: throwing })
+    const failed = await alertNewOrphanFolders(world.db, undefined, { emit: failingEmit() })
     assertEquals(failed.alerts, 0)
     assertEquals((await stamp(world.db, id)).alerted, null)
 
@@ -277,6 +300,55 @@ test('a send that fails is logged, never thrown, and the next sweep tries again'
     const retried = await alertNewOrphanFolders(world.db, undefined, { emit })
     assertEquals(retried.alerts, 1)
     assertEquals(calls.length, 1)
+  })
+})
+
+test('an emitter that throws is treated the same way', async () => {
+  await withWorld(async (world) => {
+    const id = await addFolder(world, { serverId: world.serverA, slug: 'blog' })
+    const throwing = (() => Promise.reject(new Error('boom'))) as unknown as typeof emitNotification
+    const failed = await alertNewOrphanFolders(world.db, undefined, { emit: throwing })
+    assertEquals(failed.alerts, 0)
+    assertEquals((await stamp(world.db, id)).alerted, null)
+  })
+})
+
+test('an organization nobody manages is told nothing and is not retried for ever', async () => {
+  await withWorld(async (world) => {
+    // The other organization has no member at all: the real emitter finds no
+    // one to tell, returns the zero result without a failure, and the stamp stays.
+    const id = await addFolder(world, {
+      serverId: world.otherServer,
+      principalId: world.otherPrincipalId,
+      slug: 'x',
+    })
+    const secrets = await deriveEncryptionSecretsConfig(
+      parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno'),
+      'data-encryption'
+    )
+
+    const first = await alertNewOrphanFolders(world.db, secrets)
+    assertEquals(first.alerts, 1)
+    assertEquals((await stamp(world.db, id)).alerted !== null, true)
+    const second = await alertNewOrphanFolders(world.db, secrets)
+    assertEquals(second.alerts, 0)
+  })
+})
+
+test('an orphan stamped by the migration sends nothing', async () => {
+  await withWorld(async (world) => {
+    // The migration adds the column empty and then stamps every existing orphan,
+    // so the first sweep after an upgrade does not announce folders that were
+    // already known. Run that statement from the migration file itself.
+    const id = await addFolder(world, { serverId: world.serverA, slug: 'old' })
+    assertEquals((await stamp(world.db, id)).alerted, null)
+    await world.db.execute(sql.raw(await backfillStatement()))
+    assertEquals((await stamp(world.db, id)).alerted !== null, true)
+
+    const { calls, emit } = recordingEmit()
+    const result = await alertNewOrphanFolders(world.db, undefined, { emit })
+    assertEquals(result.alerts, 0)
+    assertEquals(calls.length, 0)
   })
 })
 

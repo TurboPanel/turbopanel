@@ -111,6 +111,12 @@ async function claimNewOrphans(db: Db): Promise<string[]> {
   return rows.map((row) => row.id)
 }
 
+/**
+ * The claimed folders with the organization and server they belong to. The
+ * joins are inner on purpose: a folder whose site owner or server row is gone
+ * has no organization to tell, so it is dropped here and stays stamped (it can
+ * never be alerted, and the foreign keys keep that from happening in practice).
+ */
 async function describeClaimed(db: Db, ids: readonly string[]): Promise<ClaimedFolder[]> {
   if (ids.length === 0) return []
   return db
@@ -149,9 +155,15 @@ export async function alertNewOrphanFolders(
       const key = `${entry.organizationId}:${entry.serverId}`
       groups.set(key, [...(groups.get(key) ?? []), entry])
     }
-    const { emit = emitNotification, ...emitDeps } = deps
+    const { emit = emitNotification, trace, ...emitDeps } = deps
     for (const entries of groups.values()) {
       const first = entries[0]!
+      // `emitNotification` never throws: it logs, reports `notification-emit-failed`
+      // to the trace and returns an all-zero result. That is also what it returns
+      // when nobody could be told (no manager in the organization), so the trace
+      // is the only way to tell a failed send, which is retried, from an alert
+      // with no one to hear it, which is not (it would never stop retrying).
+      let emitFailed = false
       try {
         await emit(
           db,
@@ -167,19 +179,29 @@ export async function alertNewOrphanFolders(
             targetType: 'server',
             targetId: first.serverId,
           },
-          { allowPrivateTargets: true, ...emitDeps }
+          {
+            allowPrivateTargets: true,
+            ...emitDeps,
+            trace: (name, detail) => {
+              if (name === 'notification-emit-failed') emitFailed = true
+              trace?.(name, detail)
+            },
+          }
         )
-        result.alerts += 1
-        result.folders += entries.length
       } catch (err) {
-        // The emitter does not throw; if it does, give the rows back so the
-        // next tick tells the owners instead of dropping the alert.
+        emitFailed = true
+        compatLogWarn('orphan-alerts', `orphan folder alert not sent: ${messageOf(err)}`)
+      }
+      if (emitFailed) {
+        // Give the rows back so the next tick tells the owners instead of losing the alert.
         await releaseClaim(
           db,
           entries.map((entry) => entry.id)
         )
-        compatLogWarn('orphan-alerts', `orphan folder alert not sent: ${messageOf(err)}`)
+        continue
       }
+      result.alerts += 1
+      result.folders += entries.length
     }
   } catch (err) {
     compatLogWarn('orphan-alerts', `orphan folder alert sweep failed: ${messageOf(err)}`)
