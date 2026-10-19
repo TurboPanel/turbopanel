@@ -1,24 +1,21 @@
-import { assertEquals } from "@std/assert";
-import { Hono } from "hono";
-import type { AppEnv } from "../app/app.ts";
-import {
-  deriveEncryptionSecretsConfig,
-  deriveSecretsConfig,
-} from "../lib/secrets/secrets.ts";
-import type { Db } from "../db/connection.ts";
-import { parseTestSecretsConfig } from "../test-fixtures/secrets.ts";
-import { DAEMON_API_PREFIX } from "../app/surfaces.ts";
-import { deriveDaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
-import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
+import { assertEquals } from '@std/assert'
+import { Hono } from 'hono'
+import type { AppEnv } from '../app/app.ts'
+import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../lib/secrets/secrets.ts'
+import type { Db } from '../db/connection.ts'
+import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
+import { DAEMON_API_PREFIX } from '../app/surfaces.ts'
+import { deriveDaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
+import { issueDaemonJwt } from './authn/daemon-jwt.ts'
 import {
   MAX_AUTH_CHALLENGE_BODY_BYTES,
   MAX_AUTH_SESSION_BODY_BYTES,
   MAX_ENROLL_BODY_BYTES,
   MAX_TLS_ISSUED_BODY_BYTES,
   registerDaemonApiRoutes,
-} from "./api-routes.ts";
-import { MAX_METRICS_PAYLOAD_BYTES } from "./metrics/validation.ts";
-import { createFailClosedRateLimiter } from "./rate-limit/contracts.ts";
+} from './api-routes.ts'
+import { MAX_METRICS_PAYLOAD_BYTES } from './metrics/validation.ts'
+import { createFailClosedRateLimiter } from './rate-limit/contracts.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -26,505 +23,486 @@ import { createFailClosedRateLimiter } from "./rate-limit/contracts.ts";
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno);
+const test = Deno.test.bind(Deno)
 
 function daemonApp(
   options: Parameters<typeof registerDaemonApiRoutes>[1] = {},
-  db?: Db,
+  db?: Db
 ): Hono<AppEnv> {
-  const app = new Hono<AppEnv>();
+  const app = new Hono<AppEnv>()
   if (db) {
-    app.use("*", (c, next) => {
-      c.set("db", db);
-      return next();
-    });
+    app.use('*', (c, next) => {
+      c.set('db', db)
+      return next()
+    })
   }
-  registerDaemonApiRoutes(app, options);
-  return app;
+  registerDaemonApiRoutes(app, options)
+  return app
 }
 
-test("daemon docs and JWKS stay host-free", async () => {
-  const bare = daemonApp();
-  const missingJwks = await bare.request(`${DAEMON_API_PREFIX}/jwks.json`);
-  assertEquals(missingJwks.status, 503);
+test('daemon docs and JWKS stay host-free', async () => {
+  const bare = daemonApp()
+  const missingJwks = await bare.request(`${DAEMON_API_PREFIX}/jwks.json`)
+  assertEquals(missingJwks.status, 503)
 
-  const keyring = await deriveDaemonJwtKeyring(parseTestSecretsConfig());
-  const app = daemonApp({ secrets: keyring });
-  const jwks = await app.request(`${DAEMON_API_PREFIX}/jwks.json`);
-  assertEquals(jwks.status, 200);
-  const document = await jwks.json() as { keys: Array<{ kty: string }> };
-  if (!Array.isArray(document.keys)) throw new TypeError("expected JWKS keys");
-  assertEquals(document.keys.length > 0, true);
+  const keyring = await deriveDaemonJwtKeyring(parseTestSecretsConfig())
+  const app = daemonApp({ secrets: keyring })
+  const jwks = await app.request(`${DAEMON_API_PREFIX}/jwks.json`)
+  assertEquals(jwks.status, 200)
+  const document = (await jwks.json()) as { keys: Array<{ kty: string }> }
+  if (!Array.isArray(document.keys)) throw new TypeError('expected JWKS keys')
+  assertEquals(document.keys.length > 0, true)
 
-  const spec = await app.request(`${DAEMON_API_PREFIX}/openapi.json`);
-  assertEquals(spec.status, 200);
-  const reference = await app.request(`${DAEMON_API_PREFIX}/reference`);
-  assertEquals(reference.status, 200);
-  assertEquals((await reference.text()).includes("html"), true);
-});
+  const spec = await app.request(`${DAEMON_API_PREFIX}/openapi.json`)
+  assertEquals(spec.status, 200)
+  const reference = await app.request(`${DAEMON_API_PREFIX}/reference`)
+  assertEquals(reference.status, 200)
+  assertEquals((await reference.text()).includes('html'), true)
+})
 
-test("GET /instance/ca 404s when tlsPublic is set and no Platform CA hostname is presented", async () => {
-  const app = daemonApp({ tlsPublic: true });
-  const response = await app.request(`${DAEMON_API_PREFIX}/instance/ca`);
-  assertEquals(response.status, 404);
-  assertEquals(await response.json(), { error: "platform CA not configured" });
-});
+test('GET /instance/ca 404s when tlsPublic is set and no Platform CA hostname is presented', async () => {
+  const app = daemonApp({ tlsPublic: true })
+  const response = await app.request(`${DAEMON_API_PREFIX}/instance/ca`)
+  assertEquals(response.status, 404)
+  assertEquals(await response.json(), { error: 'platform CA not configured' })
+})
 
-test("GET /instance/ca serves the bundle when a Platform CA hostname remains", async () => {
-  const pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+test('GET /instance/ca serves the bundle when a Platform CA hostname remains', async () => {
+  const pem = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n'
   const app = daemonApp({
     tlsPublic: true,
     platformCaLeafPresented: () => Promise.resolve(true),
     readPlatformCaPem: () => Promise.resolve(pem),
-  });
-  const response = await app.request(`${DAEMON_API_PREFIX}/instance/ca`);
-  assertEquals(response.status, 200);
-  assertEquals(await response.text(), pem);
-});
+  })
+  const response = await app.request(`${DAEMON_API_PREFIX}/instance/ca`)
+  assertEquals(response.status, 200)
+  assertEquals(await response.text(), pem)
+})
 
-test("GET /instance/ca 404s on Deno when no reader is injected", async () => {
-  const app = daemonApp();
-  const response = await app.request(`${DAEMON_API_PREFIX}/instance/ca`);
-  assertEquals(response.status, 404);
-  assertEquals(await response.json(), { error: "platform CA not configured" });
-});
+test('GET /instance/ca 404s on Deno when no reader is injected', async () => {
+  const app = daemonApp()
+  const response = await app.request(`${DAEMON_API_PREFIX}/instance/ca`)
+  assertEquals(response.status, 404)
+  assertEquals(await response.json(), { error: 'platform CA not configured' })
+})
 
-test("GET /instance/ca serves the injected Platform CA PEM", async () => {
-  const pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+test('GET /instance/ca serves the injected Platform CA PEM', async () => {
+  const pem = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n'
   const app = daemonApp({
     readPlatformCaPem: () => Promise.resolve(pem),
-  });
-  const response = await app.request(`${DAEMON_API_PREFIX}/instance/ca`);
-  assertEquals(response.status, 200);
-  assertEquals(await response.text(), pem);
-  assertEquals(response.headers.get("content-type"), "application/x-pem-file");
-});
+  })
+  const response = await app.request(`${DAEMON_API_PREFIX}/instance/ca`)
+  assertEquals(response.status, 200)
+  assertEquals(await response.text(), pem)
+  assertEquals(response.headers.get('content-type'), 'application/x-pem-file')
+})
 
-test("readiness, enroll, and session fail closed without a database", async () => {
-  const app = daemonApp();
-  assertEquals((await app.request(`${DAEMON_API_PREFIX}/readiness`)).status, 503);
+test('readiness, enroll, and session fail closed without a database', async () => {
+  const app = daemonApp()
+  assertEquals((await app.request(`${DAEMON_API_PREFIX}/readiness`)).status, 503)
+  assertEquals((await app.request(`${DAEMON_API_PREFIX}/enroll`, { method: 'POST' })).status, 503)
   assertEquals(
-    (await app.request(`${DAEMON_API_PREFIX}/enroll`, { method: "POST" })).status,
-    503,
-  );
-  assertEquals(
-    (await app.request(`${DAEMON_API_PREFIX}/auth/session`, { method: "POST" }))
-      .status,
-    503,
-  );
-});
+    (await app.request(`${DAEMON_API_PREFIX}/auth/session`, { method: 'POST' })).status,
+    503
+  )
+})
 
-test("anonymous challenge is unavailable without a signing store", async () => {
-  const app = daemonApp();
+test('anonymous challenge is unavailable without a signing store', async () => {
+  const app = daemonApp()
   const response = await app.request(`${DAEMON_API_PREFIX}/auth/challenge`, {
-    method: "POST",
-    headers: { "content-length": "0" },
-  });
-  assertEquals(response.status, 503);
-});
+    method: 'POST',
+    headers: { 'content-length': '0' },
+  })
+  assertEquals(response.status, 503)
+})
 
-test("anonymous challenge is rate-limited before the store is consulted", async () => {
-  const app = daemonApp({ restLimiter: createFailClosedRateLimiter() });
+test('anonymous challenge is rate-limited before the store is consulted', async () => {
+  const app = daemonApp({ restLimiter: createFailClosedRateLimiter() })
   const response = await app.request(`${DAEMON_API_PREFIX}/auth/challenge`, {
-    method: "POST",
-    headers: { "content-length": "0" },
-  });
-  assertEquals(response.status, 429);
-});
+    method: 'POST',
+    headers: { 'content-length': '0' },
+  })
+  assertEquals(response.status, 429)
+})
 
-test("anonymous challenge issues a token from the stateless store", async () => {
+test('anonymous challenge issues a token from the stateless store', async () => {
   const challengeSigningSecrets = await deriveSecretsConfig(
     parseTestSecretsConfig(),
-    "daemon-challenge-signing",
-  );
-  const app = daemonApp({ challengeSigningSecrets });
+    'daemon-challenge-signing'
+  )
+  const app = daemonApp({ challengeSigningSecrets })
   const response = await app.request(`${DAEMON_API_PREFIX}/auth/challenge`, {
-    method: "POST",
-    headers: { "content-length": "0" },
-  });
-  assertEquals(response.status, 200);
-  const body = await response.json() as { challengeId?: unknown };
-  if (typeof body.challengeId !== "string") {
-    throw new TypeError("expected challengeId");
+    method: 'POST',
+    headers: { 'content-length': '0' },
+  })
+  assertEquals(response.status, 200)
+  const body = (await response.json()) as { challengeId?: unknown }
+  if (typeof body.challengeId !== 'string') {
+    throw new TypeError('expected challengeId')
   }
-});
+})
 
-test("auth challenge with only serverId does not query the database", async () => {
-  const app = daemonApp();
+test('auth challenge with only serverId does not query the database', async () => {
+  const app = daemonApp()
   const response = await app.request(`${DAEMON_API_PREFIX}/auth/challenge`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ serverId: "00000000-0000-4000-8000-000000000001" }),
-  });
-  assertEquals(response.status, 400);
-});
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ serverId: '00000000-0000-4000-8000-000000000001' }),
+  })
+  assertEquals(response.status, 400)
+})
 
-test("JWT-protected lease rejects a missing bearer and accepts a signed token", async () => {
-  const keyring = await deriveDaemonJwtKeyring(parseTestSecretsConfig());
-  const app = daemonApp({ secrets: keyring });
+test('JWT-protected lease rejects a missing bearer and accepts a signed token', async () => {
+  const keyring = await deriveDaemonJwtKeyring(parseTestSecretsConfig())
+  const app = daemonApp({ secrets: keyring })
   const unauthorized = await app.request(`${DAEMON_API_PREFIX}/commands/lease`, {
-    method: "POST",
-  });
-  assertEquals(unauthorized.status, 401);
+    method: 'POST',
+  })
+  assertEquals(unauthorized.status, 401)
 
   const issued = await issueDaemonJwt(
-    { sub: "00000000-0000-4000-8000-0000000000aa", kid: "key-1" },
-    keyring,
-  );
+    { sub: '00000000-0000-4000-8000-0000000000aa', kid: 'key-1' },
+    keyring
+  )
   const leased = await app.request(`${DAEMON_API_PREFIX}/commands/lease`, {
-    method: "POST",
+    method: 'POST',
     headers: { Authorization: `Bearer ${issued.token}` },
-  });
-  assertEquals(leased.status, 200);
-  const body = await leased.json() as { commands?: unknown };
-  assertEquals(body.commands, []);
-});
+  })
+  assertEquals(leased.status, 200)
+  const body = (await leased.json()) as { commands?: unknown }
+  assertEquals(body.commands, [])
+})
 
-test("enroll and session field parsers stay host-free with a stub db", async () => {
-  const db = {} as Db;
-  const keyring = await deriveDaemonJwtKeyring(parseTestSecretsConfig());
-  const app = daemonApp({ secrets: keyring }, db);
+test('enroll and session field parsers stay host-free with a stub db', async () => {
+  const db = {} as Db
+  const keyring = await deriveDaemonJwtKeyring(parseTestSecretsConfig())
+  const app = daemonApp({ secrets: keyring }, db)
 
   const missingLicense = await app.request(`${DAEMON_API_PREFIX}/enroll`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({}),
-  });
-  assertEquals(missingLicense.status, 401);
+  })
+  assertEquals(missingLicense.status, 401)
 
   const missingFields = await app.request(`${DAEMON_API_PREFIX}/enroll`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      licenseId: "lic-1",
-      licenseToken: "tok-1",
+      licenseId: 'lic-1',
+      licenseToken: 'tok-1',
     }),
-  });
-  assertEquals(missingFields.status, 400);
+  })
+  assertEquals(missingFields.status, 400)
 
   const invalidMachineKey = await app.request(`${DAEMON_API_PREFIX}/enroll`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      licenseId: "lic-1",
-      licenseToken: "tok-1",
-      hostname: "host-1",
-      challengeId: "chal-1",
-      signature: "sig-1",
-      publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
-      machineKey: "not-a-machine-key",
+      licenseId: 'lic-1',
+      licenseToken: 'tok-1',
+      hostname: 'host-1',
+      challengeId: 'chal-1',
+      signature: 'sig-1',
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+      machineKey: 'not-a-machine-key',
     }),
-  });
-  assertEquals(invalidMachineKey.status, 400);
+  })
+  assertEquals(invalidMachineKey.status, 400)
 
   const missingSession = await app.request(`${DAEMON_API_PREFIX}/auth/session`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({}),
-  });
-  assertEquals(missingSession.status, 400);
+  })
+  assertEquals(missingSession.status, 400)
 
-  const invalidSessionKey = await app.request(
-    `${DAEMON_API_PREFIX}/auth/session`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        serverId: "00000000-0000-4000-8000-0000000000aa",
-        keyId: "key-1",
-        challengeId: "chal-1",
-        signature: "sig-1",
-        hostname: "host-1",
-        machineKey: "not-a-machine-key",
-      }),
-    },
-  );
-  assertEquals(invalidSessionKey.status, 400);
-});
+  const invalidSessionKey = await app.request(`${DAEMON_API_PREFIX}/auth/session`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      serverId: '00000000-0000-4000-8000-0000000000aa',
+      keyId: 'key-1',
+      challengeId: 'chal-1',
+      signature: 'sig-1',
+      hostname: 'host-1',
+      machineKey: 'not-a-machine-key',
+    }),
+  })
+  assertEquals(invalidSessionKey.status, 400)
+})
 
-const VALID_MACHINE_KEY =
-  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const VALID_MACHINE_KEY = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 
 const FULL_ENROLL_BODY = {
-  licenseId: "lic-1",
-  licenseToken: "tok-1",
-  hostname: "host-1",
-  challengeId: "chal-1",
-  signature: "sig-1",
-  publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
+  licenseId: 'lic-1',
+  licenseToken: 'tok-1',
+  hostname: 'host-1',
+  challengeId: 'chal-1',
+  signature: 'sig-1',
+  publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
   machineKey: VALID_MACHINE_KEY,
-};
+}
 
 async function jwtDaemonApp(
   options: Parameters<typeof registerDaemonApiRoutes>[1] = {},
-  db?: Db,
+  db?: Db
 ): Promise<{
-  app: Hono<AppEnv>;
-  token: string;
-  serverId: string;
+  app: Hono<AppEnv>
+  token: string
+  serverId: string
 }> {
-  const keyring = await deriveDaemonJwtKeyring(parseTestSecretsConfig());
-  const serverId = "00000000-0000-4000-8000-0000000000aa";
-  const issued = await issueDaemonJwt(
-    { sub: serverId, kid: "key-1" },
-    keyring,
-  );
+  const keyring = await deriveDaemonJwtKeyring(parseTestSecretsConfig())
+  const serverId = '00000000-0000-4000-8000-0000000000aa'
+  const issued = await issueDaemonJwt({ sub: serverId, kid: 'key-1' }, keyring)
   return {
     app: daemonApp({ ...options, secrets: keyring }, db),
     token: issued.token,
     serverId,
-  };
+  }
 }
 
-test("POST /auth/session fails closed without a JWT keyring", async () => {
-  const app = daemonApp({}, {} as Db);
+test('POST /auth/session fails closed without a JWT keyring', async () => {
+  const app = daemonApp({}, {} as Db)
   const response = await app.request(`${DAEMON_API_PREFIX}/auth/session`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      serverId: "00000000-0000-4000-8000-0000000000aa",
-      keyId: "key-1",
-      challengeId: "chal-1",
-      signature: "sig-1",
-      hostname: "host-1",
+      serverId: '00000000-0000-4000-8000-0000000000aa',
+      keyId: 'key-1',
+      challengeId: 'chal-1',
+      signature: 'sig-1',
+      hostname: 'host-1',
       machineKey: VALID_MACHINE_KEY,
     }),
-  });
-  assertEquals(response.status, 503);
-  const body = await response.json() as { error?: unknown };
-  assertEquals(body.error, "Daemon auth unavailable");
-});
+  })
+  assertEquals(response.status, 503)
+  const body = (await response.json()) as { error?: unknown }
+  assertEquals(body.error, 'Daemon auth unavailable')
+})
 
-test("POST /enroll fails closed without a challenge store", async () => {
-  const app = daemonApp({}, {} as Db);
+test('POST /enroll fails closed without a challenge store', async () => {
+  const app = daemonApp({}, {} as Db)
   const response = await app.request(`${DAEMON_API_PREFIX}/enroll`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(FULL_ENROLL_BODY),
-  });
-  assertEquals(response.status, 503);
-  const body = await response.json() as { error?: unknown };
-  assertEquals(body.error, "Challenge unavailable");
-});
+  })
+  assertEquals(response.status, 503)
+  const body = (await response.json()) as { error?: unknown }
+  assertEquals(body.error, 'Challenge unavailable')
+})
 
-test("POST /enroll treats malformed JSON as an invalid license", async () => {
-  const app = daemonApp({}, {} as Db);
+test('POST /enroll treats malformed JSON as an invalid license', async () => {
+  const app = daemonApp({}, {} as Db)
   const response = await app.request(`${DAEMON_API_PREFIX}/enroll`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: "{not-json",
-  });
-  assertEquals(response.status, 401);
-  const body = await response.json() as { error?: unknown };
-  assertEquals(body.error, "Invalid license");
-});
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{not-json',
+  })
+  assertEquals(response.status, 401)
+  const body = (await response.json()) as { error?: unknown }
+  assertEquals(body.error, 'Invalid license')
+})
 
-test("JWT metrics ingest rejects invalid JSON without a database", async () => {
-  const { app, token } = await jwtDaemonApp();
+test('JWT metrics ingest rejects invalid JSON without a database', async () => {
+  const { app, token } = await jwtDaemonApp()
   const response = await app.request(`${DAEMON_API_PREFIX}/metrics`, {
-    method: "POST",
+    method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
-      "content-type": "application/json",
+      'content-type': 'application/json',
     },
-    body: "{not-json",
-  });
-  assertEquals(response.status, 400);
-  const body = await response.json() as { error?: unknown };
-  assertEquals(body.error, "invalid metrics payload");
-});
+    body: '{not-json',
+  })
+  assertEquals(response.status, 400)
+  const body = (await response.json()) as { error?: unknown }
+  assertEquals(body.error, 'invalid metrics payload')
+})
 
-test("JWT secrets decrypt fails closed without secretsConfig", async () => {
-  const { app, token } = await jwtDaemonApp();
+test('JWT secrets decrypt fails closed without secretsConfig', async () => {
+  const { app, token } = await jwtDaemonApp()
   const response = await app.request(`${DAEMON_API_PREFIX}/secrets/decrypt`, {
-    method: "POST",
+    method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
-      "content-type": "application/json",
+      'content-type': 'application/json',
     },
-    body: JSON.stringify({ ciphertexts: ["tpsecret.v1.x"] }),
-  });
-  assertEquals(response.status, 503);
-  const body = await response.json() as { error?: unknown };
-  assertEquals(body.error, "decryption unavailable");
-});
+    body: JSON.stringify({ ciphertexts: ['tpsecret.v1.x'] }),
+  })
+  assertEquals(response.status, 503)
+  const body = (await response.json()) as { error?: unknown }
+  assertEquals(body.error, 'decryption unavailable')
+})
 
-test("JWT secrets decrypt rejects malformed and empty ciphertext batches", async () => {
+test('JWT secrets decrypt rejects malformed and empty ciphertext batches', async () => {
   const { app, token } = await jwtDaemonApp({
     secretsConfig: parseTestSecretsConfig(),
-  });
+  })
   const headers = {
     Authorization: `Bearer ${token}`,
-    "content-type": "application/json",
-  };
+    'content-type': 'application/json',
+  }
 
   const invalidJson = await app.request(`${DAEMON_API_PREFIX}/secrets/decrypt`, {
-    method: "POST",
+    method: 'POST',
     headers,
-    body: "{not-json",
-  });
-  assertEquals(invalidJson.status, 400);
-  assertEquals(
-    (await invalidJson.json() as { error?: unknown }).error,
-    "invalid json",
-  );
+    body: '{not-json',
+  })
+  assertEquals(invalidJson.status, 400)
+  assertEquals(((await invalidJson.json()) as { error?: unknown }).error, 'invalid json')
 
   const notArray = await app.request(`${DAEMON_API_PREFIX}/secrets/decrypt`, {
-    method: "POST",
+    method: 'POST',
     headers,
-    body: JSON.stringify({ ciphertexts: "tpsecret.v1.x" }),
-  });
-  assertEquals(notArray.status, 400);
+    body: JSON.stringify({ ciphertexts: 'tpsecret.v1.x' }),
+  })
+  assertEquals(notArray.status, 400)
   assertEquals(
-    (await notArray.json() as { error?: unknown }).error,
-    "ciphertexts must be an array",
-  );
+    ((await notArray.json()) as { error?: unknown }).error,
+    'ciphertexts must be an array'
+  )
 
   const empty = await app.request(`${DAEMON_API_PREFIX}/secrets/decrypt`, {
-    method: "POST",
+    method: 'POST',
     headers,
     body: JSON.stringify({ ciphertexts: [] }),
-  });
-  assertEquals(empty.status, 400);
-  const emptyBody = await empty.json() as { error?: unknown };
-  if (typeof emptyBody.error !== "string") {
-    throw new TypeError("expected decrypt length error");
+  })
+  assertEquals(empty.status, 400)
+  const emptyBody = (await empty.json()) as { error?: unknown }
+  if (typeof emptyBody.error !== 'string') {
+    throw new TypeError('expected decrypt length error')
   }
-  assertEquals(emptyBody.error.includes("ciphertexts length must be"), true);
+  assertEquals(emptyBody.error.includes('ciphertexts length must be'), true)
 
   const notString = await app.request(`${DAEMON_API_PREFIX}/secrets/decrypt`, {
-    method: "POST",
+    method: 'POST',
     headers,
     body: JSON.stringify({ ciphertexts: [1] }),
-  });
-  assertEquals(notString.status, 400);
+  })
+  assertEquals(notString.status, 400)
   assertEquals(
-    (await notString.json() as { error?: unknown }).error,
-    "ciphertexts must be strings",
-  );
-});
+    ((await notString.json()) as { error?: unknown }).error,
+    'ciphertexts must be strings'
+  )
+})
 
-test("JWT secrets rehydrate fails closed without a database", async () => {
-  const { app, token } = await jwtDaemonApp();
-  const response = await app.request(
-    `${DAEMON_API_PREFIX}/deployments/secrets/rehydrate`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({}),
+test('JWT secrets rehydrate fails closed without a database', async () => {
+  const { app, token } = await jwtDaemonApp()
+  const response = await app.request(`${DAEMON_API_PREFIX}/deployments/secrets/rehydrate`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
     },
-  );
-  assertEquals(response.status, 503);
-  const body = await response.json() as { error?: unknown };
-  assertEquals(body.error, "database unavailable");
-});
+    body: JSON.stringify({}),
+  })
+  assertEquals(response.status, 503)
+  const body = (await response.json()) as { error?: unknown }
+  assertEquals(body.error, 'database unavailable')
+})
 
-test("JWT command log ingest fails closed without an execution log store", async () => {
-  const { app, token } = await jwtDaemonApp();
+test('JWT command log ingest fails closed without an execution log store', async () => {
+  const { app, token } = await jwtDaemonApp()
   const response = await app.request(
     `${DAEMON_API_PREFIX}/commands/00000000-0000-7000-8000-0000000000aa/log`,
     {
-      method: "POST",
+      method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
-        "content-type": "application/json",
+        'content-type': 'application/json',
       },
-      body: JSON.stringify({ seq: 0, bytes: btoa("output") }),
-    },
-  );
-  assertEquals(response.status, 503);
-  const body = await response.json() as { error?: unknown };
-  assertEquals(body.error, "execution logs unavailable");
-});
+      body: JSON.stringify({ seq: 0, bytes: btoa('output') }),
+    }
+  )
+  assertEquals(response.status, 503)
+  const body = (await response.json()) as { error?: unknown }
+  assertEquals(body.error, 'execution logs unavailable')
+})
 
 /** Chunked body so Fetch does not attach a truthful Content-Length. */
 function oversizedBodyStream(byteLength: number): ReadableStream<Uint8Array> {
-  const chunk = new Uint8Array(Math.min(byteLength, 8192));
-  chunk.fill(0x78);
-  let remaining = byteLength;
+  const chunk = new Uint8Array(Math.min(byteLength, 8192))
+  chunk.fill(0x78)
+  let remaining = byteLength
   return new ReadableStream({
     pull(controller) {
       if (remaining <= 0) {
-        controller.close();
-        return;
+        controller.close()
+        return
       }
-      const n = Math.min(remaining, chunk.byteLength);
-      controller.enqueue(chunk.subarray(0, n));
-      remaining -= n;
+      const n = Math.min(remaining, chunk.byteLength)
+      controller.enqueue(chunk.subarray(0, n))
+      remaining -= n
     },
-  });
+  })
 }
 
-async function assertStreaming413(
-  response: Response,
-): Promise<void> {
-  assertEquals(response.status, 413);
-  const body = await response.json() as { ok?: unknown; error?: unknown };
-  assertEquals(body.ok, false);
-  assertEquals(body.error, "request body too large");
+async function assertStreaming413(response: Response): Promise<void> {
+  assertEquals(response.status, 413)
+  const body = (await response.json()) as { ok?: unknown; error?: unknown }
+  assertEquals(body.ok, false)
+  assertEquals(body.error, 'request body too large')
 }
 
-test("POST /auth/challenge rejects an oversized body without Content-Length", async () => {
-  const app = daemonApp();
+test('POST /auth/challenge rejects an oversized body without Content-Length', async () => {
+  const app = daemonApp()
   const response = await app.request(`${DAEMON_API_PREFIX}/auth/challenge`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
     body: oversizedBodyStream(MAX_AUTH_CHALLENGE_BODY_BYTES + 1),
-  });
-  await assertStreaming413(response);
-});
+  })
+  await assertStreaming413(response)
+})
 
-test("POST /enroll rejects an oversized body without Content-Length", async () => {
-  const app = daemonApp({}, {} as Db);
+test('POST /enroll rejects an oversized body without Content-Length', async () => {
+  const app = daemonApp({}, {} as Db)
   const response = await app.request(`${DAEMON_API_PREFIX}/enroll`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
     body: oversizedBodyStream(MAX_ENROLL_BODY_BYTES + 1),
-  });
-  await assertStreaming413(response);
-});
+  })
+  await assertStreaming413(response)
+})
 
-test("POST /auth/session rejects an oversized body without Content-Length", async () => {
-  const keyring = await deriveDaemonJwtKeyring(parseTestSecretsConfig());
-  const app = daemonApp({ secrets: keyring }, {} as Db);
+test('POST /auth/session rejects an oversized body without Content-Length', async () => {
+  const keyring = await deriveDaemonJwtKeyring(parseTestSecretsConfig())
+  const app = daemonApp({ secrets: keyring }, {} as Db)
   const response = await app.request(`${DAEMON_API_PREFIX}/auth/session`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
     body: oversizedBodyStream(MAX_AUTH_SESSION_BODY_BYTES + 1),
-  });
-  await assertStreaming413(response);
-});
+  })
+  await assertStreaming413(response)
+})
 
-test("POST /metrics rejects an oversized body without Content-Length", async () => {
-  const { app, token } = await jwtDaemonApp();
+test('POST /metrics rejects an oversized body without Content-Length', async () => {
+  const { app, token } = await jwtDaemonApp()
   const response = await app.request(`${DAEMON_API_PREFIX}/metrics`, {
-    method: "POST",
+    method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
-      "content-type": "application/json",
+      'content-type': 'application/json',
     },
     body: oversizedBodyStream(MAX_METRICS_PAYLOAD_BYTES + 1),
-  });
-  await assertStreaming413(response);
-});
+  })
+  await assertStreaming413(response)
+})
 
-test("POST /auth/session treats malformed JSON as missing fields", async () => {
-  const keyring = await deriveDaemonJwtKeyring(parseTestSecretsConfig());
-  const app = daemonApp({ secrets: keyring }, {} as Db);
+test('POST /auth/session treats malformed JSON as missing fields', async () => {
+  const keyring = await deriveDaemonJwtKeyring(parseTestSecretsConfig())
+  const app = daemonApp({ secrets: keyring }, {} as Db)
   const response = await app.request(`${DAEMON_API_PREFIX}/auth/session`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: "{not-json",
-  });
-  assertEquals(response.status, 400);
-  const body = await response.json() as { error?: unknown };
-  assertEquals(body.error, "Missing required session fields");
-});
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{not-json',
+  })
+  assertEquals(response.status, 400)
+  const body = (await response.json()) as { error?: unknown }
+  assertEquals(body.error, 'Missing required session fields')
+})
 
-test("readiness answers 503, not 500, when the database is down", async () => {
+test('readiness answers 503, not 500, when the database is down', async () => {
   // A game day on 2026-09-18 killed the control-plane database and found
   // /api/health still answering 200 — it is a static identity payload. This
   // route is the one that reads the database, so it is the one a monitor
@@ -532,104 +510,96 @@ test("readiness answers 503, not 500, when the database is down", async () => {
   // than like a bug in the route.
   const failing = {
     select: () => {
-      throw new Error("Connection terminated unexpectedly");
+      throw new Error('Connection terminated unexpectedly')
     },
-  } as unknown as Db;
-  const app = daemonApp({}, failing);
-  const response = await app.request(`${DAEMON_API_PREFIX}/readiness`);
-  assertEquals(response.status, 503);
-  const body = await response.json() as {
-    ok: boolean;
-    ready: boolean;
-    error: string;
-  };
-  assertEquals(body.ok, false);
-  assertEquals(body.ready, false);
-  assertEquals(body.error, "database unavailable");
-});
+  } as unknown as Db
+  const app = daemonApp({}, failing)
+  const response = await app.request(`${DAEMON_API_PREFIX}/readiness`)
+  assertEquals(response.status, 503)
+  const body = (await response.json()) as {
+    ok: boolean
+    ready: boolean
+    error: string
+  }
+  assertEquals(body.ok, false)
+  assertEquals(body.ready, false)
+  assertEquals(body.error, 'database unavailable')
+})
 
 const TLS_ISSUED_BODY = JSON.stringify({
-  hostname: "shop.example.com",
-  certificatePem: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
-  privateKeyPem: "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n",
-});
+  hostname: 'shop.example.com',
+  certificatePem: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
+  privateKeyPem: '-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n',
+})
 
 async function tlsIssuedApp() {
-  const sealing = await deriveEncryptionSecretsConfig(
-    parseTestSecretsConfig(),
-    "data-encryption",
-  );
-  const keyring = await deriveDaemonJwtKeyring(parseTestSecretsConfig());
+  const sealing = await deriveEncryptionSecretsConfig(parseTestSecretsConfig(), 'data-encryption')
+  const keyring = await deriveDaemonJwtKeyring(parseTestSecretsConfig())
   const issued = await issueDaemonJwt(
-    { sub: "00000000-0000-4000-8000-0000000000aa", kid: "key-1" },
-    keyring,
-  );
-  const app = new Hono<AppEnv>();
-  app.use("*", (c, next) => {
-    c.set("dataEncryptionSecrets", sealing);
-    return next();
-  });
-  registerDaemonApiRoutes(app, { secrets: keyring });
-  return { app, token: issued.token };
+    { sub: '00000000-0000-4000-8000-0000000000aa', kid: 'key-1' },
+    keyring
+  )
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('dataEncryptionSecrets', sealing)
+    return next()
+  })
+  registerDaemonApiRoutes(app, { secrets: keyring })
+  return { app, token: issued.token }
 }
 
-test("POST /tls/issued needs a daemon token", async () => {
-  const { app } = await tlsIssuedApp();
+test('POST /tls/issued needs a daemon token', async () => {
+  const { app } = await tlsIssuedApp()
   const response = await app.request(`${DAEMON_API_PREFIX}/tls/issued`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
     body: TLS_ISSUED_BODY,
-  });
-  assertEquals(response.status, 401);
-});
+  })
+  assertEquals(response.status, 401)
+})
 
-test("POST /tls/issued fails closed without a database or sealing secrets", async () => {
-  const { app, token } = await jwtDaemonApp();
+test('POST /tls/issued fails closed without a database or sealing secrets', async () => {
+  const { app, token } = await jwtDaemonApp()
   const response = await app.request(`${DAEMON_API_PREFIX}/tls/issued`, {
-    method: "POST",
+    method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
-      "content-type": "application/json",
+      'content-type': 'application/json',
     },
     body: TLS_ISSUED_BODY,
-  });
-  assertEquals(response.status, 503);
-  const body = await response.json() as { error?: unknown };
-  assertEquals(body.error, "storage unavailable");
-});
+  })
+  assertEquals(response.status, 503)
+  const body = (await response.json()) as { error?: unknown }
+  assertEquals(body.error, 'storage unavailable')
+})
 
-test("POST /tls/issued rejects bad JSON, missing fields and an oversized body, and never echoes the body", async () => {
-  const { app, token } = await tlsIssuedApp();
+test('POST /tls/issued rejects bad JSON, missing fields and an oversized body, and never echoes the body', async () => {
+  const { app, token } = await tlsIssuedApp()
   const headers = {
     Authorization: `Bearer ${token}`,
-    "content-type": "application/json",
-  };
+    'content-type': 'application/json',
+  }
   const post = (body: string) =>
     app.request(`${DAEMON_API_PREFIX}/tls/issued`, {
-      method: "POST",
+      method: 'POST',
       headers,
       body,
-    });
+    })
 
-  const invalidJson = await post("{not-json");
-  assertEquals(invalidJson.status, 400);
-  assertEquals(
-    (await invalidJson.json() as { error?: unknown }).error,
-    "invalid json",
-  );
+  const invalidJson = await post('{not-json')
+  assertEquals(invalidJson.status, 400)
+  assertEquals(((await invalidJson.json()) as { error?: unknown }).error, 'invalid json')
 
-  const missing = await post(
-    JSON.stringify({ hostname: "shop.example.com", certificatePem: "x" }),
-  );
-  assertEquals(missing.status, 400);
-  assertEquals((await missing.text()).includes("PRIVATE KEY"), false);
+  const missing = await post(JSON.stringify({ hostname: 'shop.example.com', certificatePem: 'x' }))
+  assertEquals(missing.status, 400)
+  assertEquals((await missing.text()).includes('PRIVATE KEY'), false)
 
   const tooBig = await post(
     JSON.stringify({
-      hostname: "shop.example.com",
-      certificatePem: "x".repeat(MAX_TLS_ISSUED_BODY_BYTES),
-      privateKeyPem: "y",
-    }),
-  );
-  assertEquals(tooBig.status, 413);
-});
+      hostname: 'shop.example.com',
+      certificatePem: 'x'.repeat(MAX_TLS_ISSUED_BODY_BYTES),
+      privateKeyPem: 'y',
+    })
+  )
+  assertEquals(tooBig.status, 413)
+})
