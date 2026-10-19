@@ -17,13 +17,14 @@ import { recordAudit } from '../../features/audit/audit-records.ts'
 import { listCommandRecordsByIds } from '../../features/commands/command-records.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
-import { reconcileOrganizationOrchestratorTrust } from './changeover-fanout.ts'
 import { loadLatestCaRotation, updateCaRotationJournal } from './changeover-lease.ts'
 import { systemRotationContext } from './system-context.ts'
 import {
   enumerateOrganizationRotationTargets,
   parseCaRotationResults,
+  reconcileOrganizationOrchestratorTrust,
 } from './changeover-fanout.ts'
 import { persistSyncedRotationResults, rotationConvergedForRetire } from './rotation-converge.ts'
 
@@ -199,7 +200,7 @@ export async function retireOverdueRotations(
     .limit(OVERDUE_RETIRE_BATCH)
   const result: OverdueRetireResult = { checked: due.length, retired: 0 }
   const context = systemRotationContext(deps)
-  for (const row of due) {
+  await forEachSequential(due, async (row) => {
     try {
       const outcome = await retireAwaitingRotation(context, db, {
         organizationId: row.organizationId,
@@ -208,7 +209,7 @@ export async function retireOverdueRotations(
         enqueueGaps: false,
         deps,
       })
-      if (!outcome.ok) continue
+      if (!outcome.ok) return
       result.retired += 1
       await recordAudit(db, {
         organizationId: row.organizationId,
@@ -224,6 +225,6 @@ export async function retireOverdueRotations(
         `overdue retire failed organizationId=${row.organizationId}: ${err instanceof Error ? err.message : String(err)}`
       )
     }
-  }
+  })
   return result
 }

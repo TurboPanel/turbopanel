@@ -440,10 +440,8 @@ async function enqueueDueEngine(
   })
   const failed = applyRows.find((entry) => entry.status === 'failed')
   if (failed) {
-    return {
-      status: 'failed',
-      reason: `The renewal could not be queued${failed.error ? ` (${failed.error})` : ''}.`,
-    }
+    const detail = failed.error ? ` (${failed.error})` : ''
+    return { status: 'failed', reason: `The renewal could not be queued${detail}.` }
   }
   return { status: 'enqueued' }
 }
@@ -576,9 +574,9 @@ export async function renewOneTlsLeaf(
   deps: LeafRenewalSweepDeps,
   row: DueTlsLeafRow,
   seen: { ingress: Set<string>; managed: Set<string> },
-  nowMs = Date.now(),
-  options: { skipOfflineCheck?: boolean } = {}
+  options: { nowMs?: number; skipOfflineCheck?: boolean } = {}
 ): Promise<'enqueued' | 'failed' | 'skipped' | 'stale'> {
+  const nowMs = options.nowMs ?? Date.now()
   if (
     !options.skipOfflineCheck &&
     serverOfflineTooLong({
@@ -653,7 +651,9 @@ export async function renewDueTlsLeaves(
   const context = systemRotationContext(deps)
 
   await forEachSequential(rows, async (row) => {
-    const outcome = await renewOneTlsLeaf(context, db, commandQueue, deps, row, seen, options.nowMs)
+    const outcome = await renewOneTlsLeaf(context, db, commandQueue, deps, row, seen, {
+      nowMs: options.nowMs,
+    })
     if (outcome === 'enqueued') summary.enqueued += 1
     if (outcome === 'failed') summary.failed += 1
     if (outcome === 'stale') summary.stale += 1

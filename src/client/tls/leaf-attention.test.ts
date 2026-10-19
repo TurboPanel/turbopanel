@@ -57,7 +57,7 @@ async function renew(world: LeafWorld, id: string, nowMs?: number) {
     world.deps,
     row!,
     { ingress: new Set<string>(), managed: new Set<string>() },
-    nowMs
+    { nowMs }
   )
 }
 
@@ -531,7 +531,7 @@ test('two renewals of the same leaf at once both finish and leave one consistent
         world.deps,
         row!,
         { ingress: new Set<string>(), managed: new Set<string>() },
-        Date.now()
+        { nowMs: Date.now() }
       )
     // Both read the row while it was active; nothing on the server uses it, so both mark it stale.
     assertEquals(await Promise.all([once(), once()]), ['stale', 'stale'])

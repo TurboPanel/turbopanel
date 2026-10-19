@@ -138,7 +138,6 @@ export function registerTlsLeafRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         serverStatusChangedAt: row.serverStatusChangedAt,
       },
       { ingress: new Set<string>(), managed: new Set<string>() },
-      Date.now(),
       { skipOfflineCheck: true }
     )
     await audit(scope, 'tls.leaf.renew', { outcome })
