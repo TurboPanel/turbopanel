@@ -303,6 +303,38 @@ test('a send that fails is logged, never thrown, and the next sweep tries again'
   })
 })
 
+test('a claim that cannot be given back does not stop the groups after it', async () => {
+  await withWorld(async (world) => {
+    await addFolder(world, { serverId: world.serverA, slug: 'blog' })
+    await addFolder(world, { serverId: world.serverB, slug: 'shop' })
+    let broken = false
+    const flaky = new Proxy(world.db, {
+      get(target, prop, receiver) {
+        if (prop === 'update' && broken) {
+          return () => {
+            throw new Error('database went away')
+          }
+        }
+        return Reflect.get(target, prop, receiver)
+      },
+    })
+    const seen: string[] = []
+    const emit = ((...args: EmitArgs) => {
+      seen.push(args[2].targetId as string)
+      // The first group fails to send; from then on giving a claim back fails too.
+      if (seen.length === 1) {
+        broken = true
+        args[3]?.trace?.('notification-emit-failed', {})
+      }
+      return Promise.resolve({} as Awaited<ReturnType<typeof emitNotification>>)
+    }) as typeof emitNotification
+
+    const result = await alertNewOrphanFolders(flaky, undefined, { emit })
+    assertEquals(seen.length, 2)
+    assertEquals(result.alerts, 1)
+  })
+})
+
 test('an emitter that throws is treated the same way', async () => {
   await withWorld(async (world) => {
     const id = await addFolder(world, { serverId: world.serverA, slug: 'blog' })

@@ -26,7 +26,11 @@ import {
   retireAwaitingRotation,
   retireOverdueRotations,
 } from './rotation-retire.ts'
-import { markLeafStaleByOwner } from './leaf-attention.ts'
+import {
+  loadOrganizationLeaf,
+  markLeafStaleByOwner,
+  reactivateLeafForRenewal,
+} from './leaf-attention.ts'
 import { systemRotationContext } from './system-context.ts'
 
 const test = Deno.test.bind(Deno)
@@ -514,6 +518,53 @@ test('a sweep that saw an old try count does not override a renewal asked for in
     assertEquals((await leafRow(world, id)).state, 'active')
     // With the current count the mark applies.
     assertEquals(await markTlsLeafStale(world.db, id, 'offline', 'offline', Date.now(), 1), true)
+  })
+})
+
+test('renewing a stale leaf that turns out unused marks it stale again', async () => {
+  await withLeafWorld(async (world) => {
+    const id = await world.addIngressLeaf(await world.addServer(), { generation: 1 })
+    await world.db
+      .update(leaf)
+      .set({
+        state: 'stale',
+        staleAt: new Date().toISOString(),
+        staleReason: 'x',
+        staleCause: 'owner',
+        attempts: 3,
+      })
+      .where(eq(leaf.id, id))
+    const loaded = (await loadOrganizationLeaf(world.db, world.organizationId, id))!
+    const row = await reactivateLeafForRenewal(world.db, world.organizationId, id, loaded)
+    assertEquals(row.attempts, 0)
+    assertEquals((await leafRow(world, id)).attempts, 0)
+
+    const outcome = await renewOneTlsLeaf(
+      systemRotationContext(world.deps),
+      world.db,
+      queue,
+      world.deps,
+      { ...row, issuedAt: undefined },
+      { ingress: new Set<string>(), managed: new Set<string>() },
+      { skipOfflineCheck: true }
+    )
+    assertEquals(outcome, 'stale')
+    const after = await leafRow(world, id)
+    assertEquals([after.state, after.staleCause], ['stale', 'unused'])
+  })
+})
+
+test('a server that never connected has its old leaf marked stale', async () => {
+  await withLeafWorld(async (world) => {
+    const id = await world.addIngressLeaf(await world.addServer({ connected: false }), {
+      generation: 1,
+    })
+    await world.db
+      .update(leaf)
+      .set({ issuedAt: new Date(Date.now() - 20 * DAY).toISOString() })
+      .where(eq(leaf.id, id))
+    assertEquals(await renew(world, id), 'stale')
+    assertEquals((await leafRow(world, id)).staleCause, 'offline')
   })
 })
 

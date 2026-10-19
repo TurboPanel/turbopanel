@@ -50,11 +50,14 @@ export function leafStaleOfflineReason(offlineSinceIso: string | null): string {
 export function serverOfflineTooLong(params: {
   isConnected: boolean
   statusChangedAt: string | null
+  /** Used when the server was never seen going offline (it never connected). */
+  leafIssuedAt?: string | null
   nowMs?: number
 }): boolean {
   if (params.isConnected) return false
-  if (!params.statusChangedAt) return false
-  const changed = Date.parse(params.statusChangedAt)
+  const reference = params.statusChangedAt ?? params.leafIssuedAt
+  if (!reference) return false
+  const changed = Date.parse(reference)
   if (!Number.isFinite(changed)) return false
   const nowMs = params.nowMs ?? Date.now()
   return nowMs - changed >= LEAF_STALE_OFFLINE_DAYS * MS_PER_DAY
