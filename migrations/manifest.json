@@ -26,6 +26,12 @@
       "tag": "0003_notification_orphan_and_certificate_events",
       "when": 1792432015378,
       "sha256": "9e85432b55f805ce6e9c12352ab4e3b7a4dbaf01f13697037090962875f5445b"
+    },
+    {
+      "idx": 4,
+      "tag": "0004_organization_next_linux_id",
+      "when": 1792434382064,
+      "sha256": "204693fc551340bd5b11699df23e11d313736c6595df683d96ffb9826386914c"
     }
   ]
 }

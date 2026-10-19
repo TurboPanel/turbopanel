@@ -1,0 +1,5 @@
+ALTER TABLE "organization" ADD COLUMN "next_linux_id" integer DEFAULT 30001 NOT NULL;--> statement-breakpoint
+ALTER TABLE "organization" ADD CONSTRAINT "organization_next_linux_id_check" CHECK ("organization"."next_linux_id" >= 30001 AND "organization"."next_linux_id" <= 60001);--> statement-breakpoint
+COMMENT ON COLUMN "organization"."next_linux_id" IS 'Next uid/gid for a Hosting Account on servers this organization owns; starts at 30001, rises by one per new account, never reused.';--> statement-breakpoint
+COMMENT ON SEQUENCE "public"."principal_id_seq" IS 'No longer drawn from: new Linux user ids are counted per host organization in organization.next_linux_id. Kept for one release, dropped in a later migration.';--> statement-breakpoint
+UPDATE "organization" o SET "next_linux_id" = LEAST(60001, GREATEST(30001, 1 + COALESCE((SELECT max(GREATEST(pp."uid", pp."gid")) FROM "placement" pp JOIN "server" s ON s."id" = pp."server_id" WHERE s."organization_id" = o."id" AND pp."uid" BETWEEN 30001 AND 60000 AND pp."gid" BETWEEN 30001 AND 60000), 0)));

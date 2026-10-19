@@ -105,29 +105,39 @@ export const invitation = pgTable(
     check('invitation_status_check', sql`status IN ('pending', 'accepted', 'revoked')`),
   ]
 )
-export const organization = pgTable('organization', {
-  id: uuid()
-    .default(sql`uuidv7()`)
-    .primaryKey()
-    .notNull(),
-  createdAt: timestamp('created_at', {
-    precision: 3,
-    withTimezone: true,
-    mode: 'string',
-  })
-    .defaultNow()
-    .notNull(),
-  updatedAt: timestamp('updated_at', {
-    precision: 3,
-    withTimezone: true,
-    mode: 'string',
-  })
-    .defaultNow()
-    .$onUpdate(() => sql`now()`)
-    .notNull(),
-  options: jsonb(),
-  name: text(),
-})
+export const organization = pgTable(
+  'organization',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    options: jsonb(),
+    name: text(),
+    nextLinuxId: integer('next_linux_id').default(30001).notNull(),
+  },
+  (table) => [
+    check(
+      'organization_next_linux_id_check',
+      sql`${table.nextLinuxId} >= 30001 AND ${table.nextLinuxId} <= 60001`
+    ),
+  ]
+)
 /**
  * Organization TLS certificate library (upload / Let's Encrypt / self-signed).
  * Private keys are sealed `tpsecret` envelopes — never returned on client GET.
@@ -3800,13 +3810,9 @@ export const sshKey = pgTable(
 )
 
 /**
- * Installation-wide source of numeric ids for new site owner Linux users.
- * One `nextval` gives a principal its uid and gid; the same number is then
- * sent to every server the principal is placed on. Starts well above the
- * floor of the band (15001) because hosts that predate it picked their own
- * ids from the bottom of the band, one at a time; the daemon still refuses an
- * id that is taken. Gaps are fine. It does not cycle: at 60000 it errors
- * rather than hand out an id outside the band.
+ * No longer drawn from: new Linux user ids are counted per host organization
+ * in `organization.next_linux_id`. Kept for one release (expand now, drop in a
+ * later contract migration).
  */
 export const principalIdSeq = pgSequence('principal_id_seq', {
   startWith: 30001,
