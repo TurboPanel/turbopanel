@@ -30,7 +30,7 @@ import {
   listLeavesNeedingAttention,
   loadOrganizationLeaf,
   markLeafStaleByOwner,
-  reactivateLeaf,
+  reactivateLeafForRenewal,
 } from './leaf-attention.ts'
 import { countLeafHealthForOrganization, renewOneTlsLeaf } from './leaf-renewal-sweep.ts'
 import { isTlsUuid } from './routes-helpers.ts'
@@ -107,8 +107,8 @@ export function registerTlsLeafRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, organizationId, leafId } = scope
 
-    const row = await loadOrganizationLeaf(db, organizationId, leafId)
-    if (!row) return c.json({ error: 'Not found' }, 404)
+    const loaded = await loadOrganizationLeaf(db, organizationId, leafId)
+    if (!loaded) return c.json({ error: 'Not found' }, 404)
 
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
@@ -118,7 +118,7 @@ export function registerTlsLeafRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
     }
 
-    if (row.state === 'stale') await reactivateLeaf(db, organizationId, leafId)
+    const row = await reactivateLeafForRenewal(db, organizationId, leafId, loaded)
     const outcome = await renewOneTlsLeaf(
       c,
       db,
