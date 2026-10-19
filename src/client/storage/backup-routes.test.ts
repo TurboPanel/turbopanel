@@ -414,7 +414,7 @@ test('manual copy backups list their records and dispatch only to an online serv
       backupId: 'bk_manual',
       sizeBytes: 10,
       checksum: 'a'.repeat(64),
-      path: `/backup/copies/${fixture.copyId}/bk_manual.tar.gz`,
+      path: `/backup/volumes/${fixture.copyId}/bk_manual.tar.gz`,
     })
     const base = `/storage/${fixture.storageId}/copies/${fixture.copyId}/backups`
     const listed = (await (await request(fixture, base)).json()) as { backups: { id: string }[] }
@@ -442,7 +442,7 @@ test('a restore needs manage, an archive of this copy, and an online server', as
       backupId: 'bk_manual',
       sizeBytes: 10,
       checksum: 'a'.repeat(64),
-      path: `/backup/copies/${fixture.copyId}/bk_manual.tar.gz`,
+      path: `/backup/volumes/${fixture.copyId}/bk_manual.tar.gz`,
     })
     const base = `/storage/${fixture.storageId}/copies/${fixture.copyId}/backups`
     const restore = (backupId: string, cookie?: string) =>

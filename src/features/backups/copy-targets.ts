@@ -12,6 +12,11 @@
  *   `path`, else the principal's `/srv/users/<user>/volumes/<storageId>`, else
  *   the host's default `<stateDir>/storage/<org>/<storage>/<copy>/data`.
  *
+ * Once a deploy has put the volume's folder on the server, the source also carries
+ * `folder` (owner, scope and name from the folder table); a host that knows the field
+ * builds the directory from it, so a backup reads the scope tree and never a path
+ * the panel typed. The old fields stay beside it for hosts that do not.
+ *
  * Only the site owner's own directories are backed up: a path copy must be the storage's own directory `/srv/users/<its Linux user>/volumes/<storage id>`
  * (or the host's default root, which has no path), and a Docker volume must be the storage's
  * own (its id, as deploy names it) or an external one the project's compose
@@ -21,9 +26,9 @@
  * `file` / `object` storage and copies without a server are not targets.
  */
 
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { environment, principal, storage, storageCopy } from '../../db/schema.ts'
+import { environment, folder, principal, storage, storageCopy } from '../../db/schema.ts'
 import { type CopyBackupSource, isSafeCopyHostPath } from '../../contracts/commands/schemas.ts'
 import {
   isValidDockerResourceName,
@@ -44,6 +49,9 @@ export type CopyTargetRow = {
   storageKind: string
   storageMetadata: unknown
   principalUsername: string | null
+  /** The volume's folder on the copy's server, once a deploy made it (scope and name; the owner is `principalUsername`). */
+  folderScope?: string | null
+  folderSlug?: string | null
   /** The storage's project (its own, else its environment's): the compose project name. */
   projectId?: string | null
 }
@@ -208,8 +216,15 @@ function pathSource(row: CopyTargetRow): CopySourceResult {
       copyProvider: 'path',
       hostPath,
       ownerUsername: row.principalUsername,
+      ...volumeFolderOf(row),
     },
   }
+}
+
+/** The `folder` field of a path source: only once the volume's folder is on the server, and only for its own owner. */
+function volumeFolderOf(row: CopyTargetRow): Pick<CopyBackupSource, 'folder'> {
+  if (!row.principalUsername || !row.folderScope || !row.folderSlug) return {}
+  return { folder: { owner: row.principalUsername, scope: row.folderScope, slug: row.folderSlug } }
 }
 
 /** Whether (and from where) this copy can be backed up. */
@@ -235,7 +250,22 @@ export const COPY_TARGET_SELECT = {
   storageKind: storage.kind,
   storageMetadata: storage.metadata,
   principalUsername: principal.appliedUsername,
+  folderScope: folder.scope,
+  folderSlug: folder.slug,
   projectId: sql<string | null>`coalesce(${storage.projectId}, ${environment.projectId})`,
+}
+
+/**
+ * Join condition for the volume's folder on the copy's server (one row per
+ * server and location); only a folder that is on the host counts.
+ */
+export function copyFolderJoin(): SQL {
+  return and(
+    eq(folder.storageId, storage.id),
+    eq(folder.serverId, storageCopy.serverId),
+    eq(folder.kind, 'volume'),
+    eq(folder.state, 'present')
+  ) as SQL
 }
 
 export async function loadCopyTarget(db: Db, copyId: string): Promise<CopyTargetRow | null> {
@@ -245,6 +275,7 @@ export async function loadCopyTarget(db: Db, copyId: string): Promise<CopyTarget
     .innerJoin(storage, eq(storage.id, storageCopy.storageId))
     .leftJoin(principal, eq(principal.id, storage.principalId))
     .leftJoin(environment, eq(environment.id, storage.environmentId))
+    .leftJoin(folder, copyFolderJoin())
     .where(eq(storageCopy.id, copyId))
     .limit(1)
   return row ?? null

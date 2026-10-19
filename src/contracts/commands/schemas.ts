@@ -7230,9 +7230,15 @@ export type CopyBackupSource = {
   ownerUsername?: string
   /** A docker source: the compose project a non-storage-named volume must be labelled with. */
   composeProject?: string
+  /**
+   * A path source: the volume's folder by its parts. The host builds the directory from it and
+   * ignores `hostPath`, which stays beside it for hosts that do not know the field yet.
+   */
+  folder?: FolderRefParts
 }
 
 const COPY_SOURCE_FIELDS = [
+  'folder',
   'volumeName',
   'hostPath',
   'organizationId',
@@ -7251,6 +7257,21 @@ function parsePathCopySource(raw: Record<string, unknown>, source: CopyBackupSou
   }
   if (raw.composeProject !== undefined) {
     throw new Error('A path copy source cannot name a compose project')
+  }
+  if (raw.folder !== undefined) {
+    const ref = folderRefParts(parseFolderRefParts(raw.folder, 'volume'))
+    if (raw.ownerUsername !== undefined && raw.ownerUsername !== ref.owner) {
+      throw new Error('A path copy source folder must belong to its ownerUsername')
+    }
+    if (
+      raw.organizationId !== undefined ||
+      raw.storageId !== undefined ||
+      raw.composeProject !== undefined
+    ) {
+      throw new Error('Invalid path copy source folder')
+    }
+    source.folder = ref
+    if (raw.hostPath === undefined) return
   }
   if (raw.hostPath !== undefined) {
     if (
@@ -7304,7 +7325,8 @@ export function parseCopyBackupSource(raw: Record<string, unknown>): CopyBackupS
   if (
     raw.hostPath !== undefined ||
     raw.organizationId !== undefined ||
-    raw.ownerUsername !== undefined
+    raw.ownerUsername !== undefined ||
+    raw.folder !== undefined
   ) {
     throw new Error('A docker copy source cannot name a host path')
   }
@@ -7360,6 +7382,8 @@ export type BackupPolicyWireEntry = {
   storageId?: string
   ownerUsername?: string
   composeProject?: string
+  /** A path copy: the volume's folder by its parts (see {@link CopyBackupSource.folder}). */
+  folder?: FolderRefParts
   onCalendar: string
   retentionKeep: number
   enabled: boolean

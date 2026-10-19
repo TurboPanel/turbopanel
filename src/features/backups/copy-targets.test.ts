@@ -123,6 +123,25 @@ test('a path copy is inside its own site owner volumes, the principal volume, or
       ownerUsername: 'acme',
     },
   })
+  // Once the volume's folder is on the server it rides beside the old fields.
+  assertEquals(
+    resolveCopyBackupSource(row({ ...directory, folderScope: 'production', folderSlug: 'uploads' })),
+    {
+      ok: true,
+      source: {
+        copyId: COPY_ID,
+        copyProvider: 'path',
+        hostPath: `/srv/users/acme/volumes/${STORAGE_ID}`,
+        ownerUsername: 'acme',
+        folder: { owner: 'acme', scope: 'production', slug: 'uploads' },
+      },
+    }
+  )
+  // No folder row yet (or no owner): the old fields alone, as before.
+  assertEquals(
+    resolveCopyBackupSource(row({ ...directory, folderScope: null, folderSlug: null })),
+    resolveCopyBackupSource(row(directory))
+  )
   assertEquals(resolveCopyBackupSource(row({ provider: 'path', storageKind: 'directory' })), {
     ok: true,
     source: {
