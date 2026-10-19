@@ -537,6 +537,49 @@ async function collectVolumeTargets(
 }
 
 /** Insert the planned row, or find the one that is already there for this very asset. */
+/** The columns that make a folder row name this asset (an orphan nothing owned is taken over). */
+function ownerColumns(target: FolderTarget): { serviceId: string } | { storageId: string } {
+  return target.kind === 'service' ? { serviceId: target.assetId } : { storageId: target.assetId }
+}
+
+/**
+ * The asset is back on this server (a server re-added, a copy re-added) before the host
+ * confirmed the removal: the folder is in use again, so it must not be confirmed away.
+ * An orphan kept when its service left the compose file is in use again too, and an
+ * unowned orphan is taken over by the asset that now has its name. The update names the
+ * state it read (and, for a takeover, that nothing owns the row), so a row an admin moved
+ * to `removing` in the meantime is refused, never taken over.
+ */
+async function useFolderAgain(
+  tx: Db,
+  row: { id: string; state: string },
+  target: FolderTarget,
+  adoptable: boolean
+): Promise<void> {
+  const updated = await tx
+    .update(folder)
+    .set({ state: 'planned', removalNote: null, ...(adoptable ? ownerColumns(target) : {}) })
+    .where(
+      and(
+        eq(folder.id, row.id),
+        eq(folder.state, row.state),
+        adoptable ? isNull(folder.serviceId) : undefined,
+        adoptable ? isNull(folder.storageId) : undefined
+      )
+    )
+    .returning({ id: folder.id })
+  if (updated.length === 0) throw new FolderPlanError('directory_name_taken')
+}
+
+/** An orphan no service or volume row names. */
+function isUnownedOrphan(row: {
+  state: string
+  serviceId: string | null
+  storageId: string | null
+}): boolean {
+  return row.state === 'orphan' && row.serviceId === null && row.storageId === null
+}
+
 async function upsertFolderRow(tx: Db, serverId: string, target: FolderTarget): Promise<string> {
   await tx
     .insert(folder)
@@ -580,37 +623,12 @@ async function upsertFolderRow(tx: Db, serverId: string, target: FolderTarget): 
   // deleted, or the host had a folder no record named) is taken over by the
   // asset that now has its name: the same site owner, scope, kind and name, so
   // whatever the folder holds stays with it.
-  const adoptable =
-    row !== undefined && row.state === 'orphan' && row.serviceId === null && row.storageId === null
+  const adoptable = row !== undefined && isUnownedOrphan(row)
   if (!row || (owner !== target.assetId && !adoptable)) {
     throw new FolderPlanError('directory_name_taken')
   }
-  // The asset is back on this server (a server re-added, a copy re-added) before the host
-  // confirmed the removal: the folder is in use again, so it must not be confirmed away.
-  // An orphan kept when its service left the compose file is in use again too.
   if (row.state === 'removing' || row.state === 'orphan') {
-    const updated = await tx
-      .update(folder)
-      .set({
-        state: 'planned',
-        removalNote: null,
-        ...(adoptable
-          ? target.kind === 'service'
-            ? { serviceId: target.assetId }
-            : { storageId: target.assetId }
-          : {}),
-      })
-      .where(
-        and(
-          eq(folder.id, row.id),
-          // A row that moved since the read (an admin started its removal) is not taken over.
-          eq(folder.state, row.state),
-          adoptable ? isNull(folder.serviceId) : undefined,
-          adoptable ? isNull(folder.storageId) : undefined
-        )
-      )
-      .returning({ id: folder.id })
-    if (updated.length === 0) throw new FolderPlanError('directory_name_taken')
+    await useFolderAgain(tx, { id: row.id, state: row.state }, target, adoptable)
   }
   return row.id
 }

@@ -30,6 +30,7 @@ import {
   loadFolderForAction,
 } from '../../features/folders/admin.ts'
 import { enqueueFolderRemovals } from '../../features/folders/removal.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
 import { isUuid } from '../../features/principals/store.ts'
 
 export const FOLDER_IN_USE_ERROR = 'folder_in_use'
@@ -48,6 +49,39 @@ function parseStates(raw: string | undefined): AttentionFolderState[] | null {
 function parseCount(raw: string | undefined): number | null | undefined {
   if (raw === undefined) return undefined
   return /^\d{1,6}$/.test(raw) ? Number(raw) : null
+}
+
+const IN_USE_BODY = {
+  error: FOLDER_IN_USE_ERROR,
+  message:
+    'A service or volume is using this folder. Delete that service or volume to remove its folder.',
+}
+
+type ActionRow = NonNullable<Awaited<ReturnType<typeof loadFolderForAction>>>
+
+/** A folder that is planned or present, or an orphan a service or volume row still names, goes with that asset. */
+function isInUse(row: ActionRow): boolean {
+  return (
+    row.state === 'planned' || row.state === 'present' || (row.state === 'orphan' && row.hasAsset)
+  )
+}
+
+/**
+ * Do what the row's state calls for: forget a missing row, start an orphan's
+ * removal, or ask again for one already removing. Null when the row moved first.
+ */
+async function settleFolder(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  queue: CommandQueue | undefined,
+  userId: string,
+  row: ActionRow
+): Promise<'removing' | 'forgotten' | null> {
+  if (row.state === 'missing') {
+    return (await forgetMissingFolder(db, row.id)) ? 'forgotten' : null
+  }
+  if (row.state === 'orphan' && (await markOrphanFolderRemoving(db, row.id)) === null) return null
+  await enqueueFolderRemovals(db, queue, { actorType: 'user', actorId: userId }, [row.serverId])
+  return 'removing'
 }
 
 export function registerOrganizationFolderAdminRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -94,21 +128,7 @@ export function registerOrganizationFolderAdminRoutes(router: Hono<AppEnv>, opts
 
     const row = await loadFolderForAction(db, folderId)
     if (!row) return c.json({ error: 'Not found' }, 404)
-
-    if (
-      row.state === 'planned' ||
-      row.state === 'present' ||
-      (row.state === 'orphan' && row.hasAsset)
-    ) {
-      return c.json(
-        {
-          error: FOLDER_IN_USE_ERROR,
-          message:
-            'A service or volume is using this folder. Delete that service or volume to remove its folder.',
-        },
-        409
-      )
-    }
+    if (isInUse(row)) return c.json(IN_USE_BODY, 409)
 
     if (row.state === 'orphan') {
       // Deleting the files of a leftover folder is permanent, like deleting a volume.
@@ -116,24 +136,8 @@ export function registerOrganizationFolderAdminRoutes(router: Hono<AppEnv>, opts
       if (stepUp) return stepUp
     }
 
-    let outcome: 'removing' | 'forgotten'
-    if (row.state === 'missing') {
-      if (!(await forgetMissingFolder(db, folderId))) return c.json({ error: 'Not found' }, 404)
-      outcome = 'forgotten'
-    } else {
-      // An orphan starts its removal; a row already `removing` is asked again now.
-      if (row.state === 'orphan') {
-        const moved = await markOrphanFolderRemoving(db, folderId)
-        if (moved === null) return c.json({ error: 'Not found' }, 404)
-      }
-      await enqueueFolderRemovals(
-        db,
-        c.get('commandQueue'),
-        { actorType: 'user', actorId: session.userId },
-        [row.serverId]
-      )
-      outcome = 'removing'
-    }
+    const outcome = await settleFolder(db, c.get('commandQueue'), session.userId, row)
+    if (outcome === null) return c.json({ error: 'Not found' }, 404)
 
     await recordAudit(db, {
       organizationId,
