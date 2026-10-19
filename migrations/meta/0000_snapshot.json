@@ -1,5 +1,5 @@
 {
-  "id": "a94a5032-b628-4dab-95a8-279d509fcc96",
+  "id": "dcabdce1-fe74-4b83-8512-daaa31e72884",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -1117,6 +1117,12 @@
           "primaryKey": false,
           "notNull": false,
           "default": "'[]'::jsonb"
+        },
+        "retire_by": {
+          "name": "retire_by",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -2976,6 +2982,18 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "removal_note": {
+          "name": "removal_note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "orphan_alerted_at": {
+          "name": "orphan_alerted_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -3081,6 +3099,40 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_folder_orphan_unalerted": {
+          "name": "idx_folder_orphan_unalerted",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"folder\".\"state\" = 'orphan' AND \"folder\".\"orphan_alerted_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_folder_orphan_alerted": {
+          "name": "idx_folder_orphan_alerted",
+          "columns": [
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"folder\".\"orphan_alerted_at\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -3161,6 +3213,10 @@
         "folder_state_check": {
           "name": "folder_state_check",
           "value": "state IN ('planned', 'present', 'removing', 'orphan', 'missing')"
+        },
+        "folder_removal_note_check": {
+          "name": "folder_removal_note_check",
+          "value": "removal_note IS NULL OR char_length(removal_note) <= 300"
         },
         "folder_slug_check": {
           "name": "folder_slug_check",
@@ -4856,6 +4912,50 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "stale_at": {
+          "name": "stale_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stale_reason": {
+          "name": "stale_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stale_cause": {
+          "name": "stale_cause",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "attempted_at": {
+          "name": "attempted_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -5061,6 +5161,26 @@
         "leaf_kind_check": {
           "name": "leaf_kind_check",
           "value": "\"leaf\".\"kind\" IN ('ingress','engine')"
+        },
+        "leaf_state_check": {
+          "name": "leaf_state_check",
+          "value": "state IN ('active','stale')"
+        },
+        "leaf_stale_cause_check": {
+          "name": "leaf_stale_cause_check",
+          "value": "stale_cause IS NULL OR stale_cause IN ('offline','unused','owner')"
+        },
+        "leaf_stale_check": {
+          "name": "leaf_stale_check",
+          "value": "(\"leaf\".\"state\" = 'stale') = (\"leaf\".\"stale_at\" IS NOT NULL) AND (\"leaf\".\"state\" = 'stale') = (\"leaf\".\"stale_cause\" IS NOT NULL)"
+        },
+        "leaf_attempts_check": {
+          "name": "leaf_attempts_check",
+          "value": "\"leaf\".\"attempts\" >= 0"
+        },
+        "leaf_text_length_check": {
+          "name": "leaf_text_length_check",
+          "value": "(\"leaf\".\"stale_reason\" IS NULL OR length(\"leaf\".\"stale_reason\") <= 300) AND (\"leaf\".\"last_error\" IS NULL OR length(\"leaf\".\"last_error\") <= 300)"
         },
         "leaf_kind_keys_check": {
           "name": "leaf_kind_keys_check",
@@ -6983,7 +7103,7 @@
       "checkConstraints": {
         "notification_event_check": {
           "name": "notification_event_check",
-          "value": "event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')"
+          "value": "event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found')"
         },
         "notification_severity_check": {
           "name": "notification_severity_check",
@@ -7414,7 +7534,7 @@
       "checkConstraints": {
         "attempt_event_check": {
           "name": "attempt_event_check",
-          "value": "event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')"
+          "value": "event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found')"
         },
         "attempt_severity_check": {
           "name": "attempt_severity_check",
@@ -7509,7 +7629,7 @@
       "checkConstraints": {
         "rule_event_check": {
           "name": "rule_event_check",
-          "value": "event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')"
+          "value": "event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found')"
         },
         "rule_min_severity_check": {
           "name": "rule_min_severity_check",
@@ -7554,6 +7674,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "next_linux_id": {
+          "name": "next_linux_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 30001
         }
       },
       "indexes": {},
@@ -7561,7 +7688,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "organization_next_linux_id_check": {
+          "name": "organization_next_linux_id_check",
+          "value": "\"organization\".\"next_linux_id\" >= 30001 AND \"organization\".\"next_linux_id\" <= 60001"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.passkey": {
@@ -13135,9 +13267,31 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": false
+        },
+        "issued_by_server_id": {
+          "name": "issued_by_server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
+        "idx_tls_issued_by_server_id": {
+          "name": "idx_tls_issued_by_server_id",
+          "columns": [
+            {
+              "expression": "issued_by_server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "idx_tls_organization_id": {
           "name": "idx_tls_organization_id",
           "columns": [
@@ -13232,6 +13386,19 @@
         }
       },
       "foreignKeys": {
+        "tls_issued_by_server_id_server_id_fk": {
+          "name": "tls_issued_by_server_id_server_id_fk",
+          "tableFrom": "tls",
+          "tableTo": "server",
+          "columnsFrom": [
+            "issued_by_server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
         "tls_organization_id_organization_id_fk": {
           "name": "tls_organization_id_organization_id_fk",
           "tableFrom": "tls",
@@ -14619,18 +14786,7 @@
   },
   "enums": {},
   "schemas": {},
-  "sequences": {
-    "public.principal_id_seq": {
-      "name": "principal_id_seq",
-      "schema": "public",
-      "increment": "1",
-      "startWith": "30001",
-      "minValue": "15001",
-      "maxValue": "60000",
-      "cache": "1",
-      "cycle": false
-    }
-  },
+  "sequences": {},
   "roles": {},
   "policies": {},
   "views": {},

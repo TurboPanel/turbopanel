@@ -25,7 +25,6 @@ import {
   index,
   integer,
   jsonb,
-  pgSequence,
   pgTable,
   smallint,
   text,
@@ -3819,20 +3818,6 @@ export const sshKey = pgTable(
     check('ssh_name_check', sql`char_length(${table.name}) >= 1`),
   ]
 )
-
-/**
- * No longer drawn from: new Linux user ids are counted per host organization
- * in `organization.next_linux_id`. Kept for one release (expand now, drop in a
- * later contract migration).
- */
-export const principalIdSeq = pgSequence('principal_id_seq', {
-  startWith: 30001,
-  minValue: 15001,
-  maxValue: 60000,
-  increment: 1,
-  cache: 1,
-  cycle: false,
-})
 
 /**
  * One principal on one server: where a `system` principal exists (or is about
