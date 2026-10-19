@@ -3559,7 +3559,7 @@ test('processCommandEnvelope marks a present service folder the newest deploy di
           desiredGeneration: 2,
           appliedGeneration: 1,
           status: 'applying',
-          commandId: record.id,
+          lastCommandId: record.id,
         })
         const registry = createDispatchMockRegistry(ctx.serverId, {
           waitForRequestResult: {
