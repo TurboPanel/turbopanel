@@ -86,6 +86,8 @@ export type DueTlsLeafRow = {
   attempts: number
   serverConnected: boolean | null
   serverStatusChangedAt: string | null
+  /** When the leaf was first issued; stands in for the offline date of a server that never connected. */
+  issuedAt?: string | null
 }
 
 export type LeafRenewalSweepDeps = Readonly<{
@@ -338,6 +340,7 @@ export async function loadDueTlsLeaves(
       attempts: leaf.attempts,
       serverConnected: server.isConnected,
       serverStatusChangedAt: server.statusChangedAt,
+      issuedAt: leaf.issuedAt,
     })
     .from(leaf)
     .leftJoin(
@@ -582,6 +585,7 @@ export async function renewOneTlsLeaf(
     serverOfflineTooLong({
       isConnected: row.serverConnected ?? false,
       statusChangedAt: row.serverStatusChangedAt,
+      leafIssuedAt: row.issuedAt,
       nowMs,
     })
   ) {

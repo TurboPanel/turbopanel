@@ -51,6 +51,17 @@ test('a server counts as gone only after it has been offline for the whole windo
   )
 })
 
+test('a server that never connected counts as gone once its leaf is old enough', () => {
+  const at = (days: number) => new Date(NOW - days * DAY).toISOString()
+  const never = { isConnected: false, statusChangedAt: null, nowMs: NOW }
+  assertEquals(serverOfflineTooLong({ ...never, leafIssuedAt: at(1) }), false)
+  assertEquals(serverOfflineTooLong({ ...never, leafIssuedAt: at(LEAF_STALE_OFFLINE_DAYS) }), true)
+  assertEquals(
+    serverOfflineTooLong({ isConnected: true, statusChangedAt: null, leafIssuedAt: at(90) }),
+    false
+  )
+})
+
 test('the offline reason names the day the server went offline', () => {
   assertEquals(
     leafStaleOfflineReason('2026-09-01T08:30:00.000Z'),

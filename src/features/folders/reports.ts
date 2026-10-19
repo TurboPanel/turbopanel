@@ -12,6 +12,10 @@
  * - a deploy result's kept folders (a service left the compose file and its
  *   files stayed): the row becomes an `orphan`, which still counts toward the
  *   locks until an admin removes it;
+ * - a deploy that no longer names a service folder (a site or app that left the
+ *   compose file, or no longer runs on this server) and for which the host
+ *   reported nothing, because it keeps no record of a service that never had a
+ *   source release: the control plane marks the row `orphan` itself;
  * - a reconcile listing (every folder the host found): a `present` row the host
  *   does not have becomes `missing` (which no longer locks), a `missing` row
  *   that came back is `present` again, a `removing` or `orphan` row the host no
@@ -25,7 +29,7 @@
  * and a stale report cannot lift a lock on a folder that is in use again
  * (`confirmFolderRemoved` only deletes a `removing` row).
  */
-import { and, eq, inArray, lt } from 'drizzle-orm'
+import { and, eq, inArray, lt, notInArray } from 'drizzle-orm'
 import { COMMON_SCOPE } from '../../contracts/directory-names.ts'
 import type { Db } from '../../db/connection.ts'
 import { environment, folder, principal, principalPlacement } from '../../db/schema.ts'
@@ -308,6 +312,36 @@ export async function reconcileReportedFolders(
     )
   )
   return summary
+}
+
+/**
+ * A finished deploy planned these folders for the environment on this server.
+ * Any other `present` service folder of the environment on the server belongs
+ * to a service the deploy no longer runs there: its files stay, and the row
+ * becomes `orphan` until an admin removes it or the service comes back (a later
+ * plan puts an `orphan` row back to `present`). Rows that are `planned`,
+ * `removing`, `missing` or already `orphan` are left alone.
+ */
+export async function markUnplannedServiceFoldersOrphan(
+  db: Pick<Db, 'update'>,
+  input: { environmentId: string; serverId: string; plannedFolderIds: readonly string[] }
+): Promise<number> {
+  const rows = await db
+    .update(folder)
+    .set({ state: 'orphan' })
+    .where(
+      and(
+        eq(folder.environmentId, input.environmentId),
+        eq(folder.serverId, input.serverId),
+        eq(folder.kind, 'service'),
+        eq(folder.state, 'present'),
+        input.plannedFolderIds.length === 0
+          ? undefined
+          : notInArray(folder.id, [...input.plannedFolderIds])
+      )
+    )
+    .returning({ id: folder.id })
+  return rows.length
 }
 
 /** Insert an `orphan` row for each folder the host has that no row names. */
