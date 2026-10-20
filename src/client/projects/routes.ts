@@ -775,6 +775,61 @@ async function insertCatalogProject(
   return inserted.id
 }
 
+/**
+ * Sends a compose edit to its target. Returns the body the project patch
+ * continues with (without `options` when the edit went to an environment), or
+ * the refusal.
+ */
+async function routeComposeEdit(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  projectId: string,
+  requestBody: Record<string, unknown>
+): Promise<Record<string, unknown> | Response> {
+  const editTarget = await resolveEditTarget(db, projectId, requestBody)
+  if (!editTarget.ok) {
+    return c.json({ error: editTarget.error, message: editTarget.message }, 400)
+  }
+  if (editTarget.kind !== 'environment') return requestBody
+  const refused = await applyEnvironmentPatch(c, db, organizationId, editTarget.environmentId, {
+    options: requestBody.options,
+  })
+  if (refused) return refused
+  const { options: _options, ...rest } = requestBody
+  return rest
+}
+
+/**
+ * The options write and the watch rows it implies commit together, under the
+ * project row lock. Returns a response for a name or slug collision.
+ */
+async function writeProjectPatch(
+  c: Context<AppEnv>,
+  db: Db,
+  id: string,
+  patchFields: ProjectPatchFields
+): Promise<Response | null> {
+  try {
+    await db.transaction(async (tx) => {
+      if (patchFields.options !== undefined) {
+        await tx.execute(sql`SELECT 1 FROM "project" WHERE "id" = ${id}::uuid FOR UPDATE`)
+      }
+      await tx.update(project).set(patchFields).where(eq(project.id, id))
+      if (patchFields.options !== undefined) await syncProjectWatch(tx, id)
+    })
+  } catch (err) {
+    if (isProjectNameUniqueViolation(err)) {
+      return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
+    }
+    if (isProjectSlugUniqueViolation(err)) {
+      return c.json({ error: PROJECT_SLUG_IN_USE_ERROR }, 409)
+    }
+    throw err
+  }
+  return null
+}
+
 export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for project routes')
@@ -951,21 +1006,10 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const requestBody = await parseJsonBody(c)
     if (requestBody instanceof Response) return requestBody
 
-    // Compose edits name where they land: the Base, or one environment. With a
-    // single environment and no target the edit goes to that environment.
-    const editTarget = await resolveEditTarget(db, id, requestBody)
-    if (!editTarget.ok) {
-      return c.json({ error: editTarget.error, message: editTarget.message }, 400)
-    }
-    let body = requestBody
-    if (editTarget.kind === 'environment') {
-      const refused = await applyEnvironmentPatch(c, db, organizationId, editTarget.environmentId, {
-        options: requestBody.options,
-      })
-      if (refused) return refused
-      const { options: _options, ...rest } = requestBody
-      body = rest
-    }
+    // Compose edits name where they land: the Base, or one environment.
+    const routed = await routeComposeEdit(c, db, organizationId, id, requestBody)
+    if (routed instanceof Response) return routed
+    const body = routed
 
     const moveTarget = await parseProjectMoveTarget(c, db, body, organizationId)
     if (moveTarget instanceof Response) return moveTarget
@@ -1003,25 +1047,8 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       patchFields.defaultServerId = stored.defaultServerId
     }
 
-    try {
-      // The options write and the watch rows it implies commit together, under
-      // the project row lock.
-      await db.transaction(async (tx) => {
-        if (patchFields.options !== undefined) {
-          await tx.execute(sql`SELECT 1 FROM "project" WHERE "id" = ${id}::uuid FOR UPDATE`)
-        }
-        await tx.update(project).set(patchFields).where(eq(project.id, id))
-        if (patchFields.options !== undefined) await syncProjectWatch(tx, id)
-      })
-    } catch (err) {
-      if (isProjectNameUniqueViolation(err)) {
-        return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
-      }
-      if (isProjectSlugUniqueViolation(err)) {
-        return c.json({ error: PROJECT_SLUG_IN_USE_ERROR }, 409)
-      }
-      throw err
-    }
+    const writeRefused = await writeProjectPatch(c, db, id, patchFields)
+    if (writeRefused) return writeRefused
 
     if (patchFields.options !== undefined) {
       await adoptProjectRepository(db, id, patchFields.options, projectRepositoryId)

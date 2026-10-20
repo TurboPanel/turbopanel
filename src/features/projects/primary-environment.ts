@@ -11,7 +11,7 @@ import type { Db } from '../../db/connection.ts'
 import { environment } from '../../db/schema.ts'
 
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
-type Reader = Db | DbTx
+type Reader = Db
 
 export const PRIMARY_ENVIRONMENT_DELETE_ERROR = 'primary_environment_cannot_be_deleted'
 
@@ -93,7 +93,11 @@ export async function setPrimaryEnvironment(
 export function sortEnvironmentsForDisplay<
   T extends { projectId: string; isPrimary: boolean; isPinned: boolean; createdAt: string },
 >(rows: readonly T[]): T[] {
-  const rank = (row: T) => (row.isPrimary ? 0 : row.isPinned ? 1 : 2)
+  const rank = (row: T): number => {
+    if (row.isPrimary) return 0
+    return row.isPinned ? 1 : 2
+  }
+  const byAge = (a: T, b: T): number => a.createdAt.localeCompare(b.createdAt)
   const byProject = new Map<string, T[]>()
   for (const row of rows) {
     const group = byProject.get(row.projectId)
@@ -101,9 +105,6 @@ export function sortEnvironmentsForDisplay<
     else byProject.set(row.projectId, [row])
   }
   return [...byProject.values()].flatMap((group) =>
-    group.sort(
-      (a, b) =>
-        rank(a) - rank(b) || (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0)
-    )
+    group.toSorted((a, b) => rank(a) - rank(b) || byAge(a, b))
   )
 }
