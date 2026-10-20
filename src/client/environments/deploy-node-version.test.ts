@@ -922,3 +922,37 @@ test('the wizard suggestion names a matched hint, an unavailable one, or none', 
   )
   assertEquals(nodeVersionSuggestion([missing('.nvmrc')], OFFERED).hint, undefined)
 })
+
+test('latest never reaches the wire: every resolve path turns it into a concrete series', async () => {
+  const { read } = reader([])
+  const variants: Array<{
+    mode: 'deploy' | 'preview'
+    sources: EnvironmentDeploySource[]
+    rollbackPins?: Record<string, { nodeVersion?: string }>
+    expected: string
+  }> = [
+    { mode: 'deploy', sources: [source()], expected: NEWEST_NATIVE_APP_NODE_SERIES },
+    { mode: 'preview', sources: [source()], expected: NEWEST_NATIVE_APP_NODE_SERIES },
+    { mode: 'deploy', sources: [], expected: NEWEST_NATIVE_APP_NODE_SERIES },
+    {
+      mode: 'deploy',
+      sources: [{ ...source(), rollbackToReleaseId: 'rel-0' } as EnvironmentDeploySource],
+      rollbackPins: { web: { nodeVersion: '24' } },
+      expected: '24',
+    },
+  ]
+  for (const variant of variants) {
+    const result = await resolveSourceNodeVersions([app('latest')], variant.sources, {
+      mode: variant.mode,
+      read,
+      warnings: [],
+      offered: OFFERED,
+      ...(variant.rollbackPins ? { rollbackPins: variant.rollbackPins } : {}),
+    })
+    if ('kind' in result) throw new TypeError('expected apps')
+    assertEquals(
+      result.nodeVersions.apps.map((a) => a.nodeVersion),
+      [variant.expected]
+    )
+  }
+})
