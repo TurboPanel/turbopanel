@@ -138,6 +138,8 @@ test('what the Base still gives the copy is overridden in the copy, using the me
   const web = (mergeComposeLayers(layers).data.services as Record<string, Loose>).web!
   assertEquals(web.container_name, undefined)
   assertEquals(web.ports, ['3000'])
+  // The container ports stay declared once nothing is published.
+  assertEquals(web.expose, ['80', '53/udp'])
   const extension = web['x-turbopanel'] as Loose
   assertEquals(extension.hosting, undefined)
   assertEquals(extension.source, { sourceId: SOURCE_ID, branch: 'main', deployOnPush: false })
@@ -171,4 +173,16 @@ test('a Base with nothing unique adds no overrides, and a udp port keeps its pro
     null
   )
   assertEquals(servicesOf(options).dns!.expose, ['53/udp', '67/udp'])
+})
+
+test('an expose list that is tagged keeps the dropped container ports', () => {
+  const { options } = copyOfPrimaryOptions(
+    {
+      compose: document({
+        web: { image: 'n', ports: ['8080:80'], expose: makeComposeTag('override', ['1']) },
+      }),
+    },
+    null
+  )
+  assertEquals(servicesOf(options).web!.expose, makeComposeTag('override', ['1', '80']))
 })

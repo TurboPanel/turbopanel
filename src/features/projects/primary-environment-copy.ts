@@ -95,11 +95,16 @@ function stripPorts(service: Record<string, unknown>, omitted: Set<CopyOmission>
   else service.ports = rewritten
   if (dropped.length === 0) return
   const expose = service.expose
-  if (expose === undefined) service.expose = [...new Set(dropped)]
-  else if (Array.isArray(expose)) {
-    const have = new Set(expose.map(String))
-    service.expose = [...expose, ...dropped.filter((port) => !have.has(port))]
-  }
+  service.expose =
+    expose === undefined
+      ? [...new Set(dropped)]
+      : throughTag(expose, (list) => (Array.isArray(list) ? withExposed(list, dropped) : list))
+}
+
+/** The list with the container ports added that it does not already declare (protocol kept). */
+function withExposed(list: readonly unknown[], ports: readonly string[]): unknown[] {
+  const have = new Set(list.map(String))
+  return [...list, ...new Set(ports.filter((port) => !have.has(port)))]
 }
 
 function stripExtension(service: Record<string, unknown>, omitted: Set<CopyOmission>): void {
@@ -164,7 +169,16 @@ function portFixes(service: Plain, omitted: Set<CopyOmission>): Plain {
   const kept = service.ports.filter((entry) => publishedTarget(entry) === undefined)
   if (kept.length === service.ports.length) return {}
   omitted.add('ports')
-  return { ports: makeComposeTag('override', kept) }
+  // The container ports stay declared, as `expose`, now that nothing is published.
+  const dropped = service.ports
+    .map(publishedTarget)
+    .filter((target): target is string => typeof target === 'string')
+  const have = Array.isArray(service.expose) ? service.expose : []
+  const added = withExposed(have, dropped).slice(have.length)
+  return {
+    ports: makeComposeTag('override', kept),
+    ...(added.length > 0 ? { expose: added } : {}),
+  }
 }
 
 function extensionFixes(service: Plain, omitted: Set<CopyOmission>): Plain {
@@ -198,6 +212,10 @@ function mergeFixes(target: Plain, fixes: Plain): Plain {
   const out: Plain = { ...target }
   for (const [key, value] of Object.entries(fixes)) {
     const current = out[key]
+    if (Array.isArray(value) && Array.isArray(current)) {
+      out[key] = withExposed(current, value.map(String))
+      continue
+    }
     out[key] =
       isRecord(value) &&
       !isComposeTaggedValue(value) &&

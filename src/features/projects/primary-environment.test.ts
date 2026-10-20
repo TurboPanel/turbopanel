@@ -3,8 +3,13 @@ import { assertEquals } from '@std/assert'
 import { eq, sql } from 'drizzle-orm'
 import { createDenoDb } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { environment, organization, project, workspace } from '../../db/schema.ts'
-import { deleteEnvironmentCascade, deleteProjectCascade } from './project-delete.ts'
+import { environment, organization, project, server, workspace } from '../../db/schema.ts'
+import { forgetServerOwnedResources } from '../../client/servers/delete-guards.ts'
+import {
+  deleteEnvironmentCascade,
+  deleteProjectCascade,
+  dropEnvironmentSubtreeInTx,
+} from './project-delete.ts'
 import {
   isFirstEnvironmentOf,
   loadPrimaryEnvironment,
@@ -148,6 +153,98 @@ test('deleting an environment and its project at the same time never deadlocks',
       )
       const left = await db
         .select({ id: environment.id, isPrimary: environment.isPrimary })
+        .from(environment)
+        .where(eq(environment.projectId, projectId))
+      assertEquals(left.length === 0 || left.filter((row) => row.isPrimary).length === 1, true)
+    })
+  }
+})
+
+/** A project with a primary environment on an offline server and a second one off it. */
+async function withServerProject(
+  fn: (ctx: {
+    db: ReturnType<typeof createDenoDb>
+    organizationId: string
+    projectId: string
+    serverId: string
+    placedId: string
+    otherId: string
+  }) => Promise<void>
+) {
+  await withProject(async (db, projectId) => {
+    const [proj] = await db
+      .select({ organizationId: project.organizationId })
+      .from(project)
+      .where(eq(project.id, projectId))
+    const now = new Date().toISOString()
+    const [srv] = await db
+      .insert(server)
+      .values({
+        organizationId: proj!.organizationId,
+        name: `Primary Env Server ${crypto.randomUUID().slice(0, 8)}`,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: server.id })
+    try {
+      const [placed] = await db
+        .insert(environment)
+        .values({
+          projectId,
+          name: 'placed',
+          serverId: srv!.id,
+          isPrimary: true,
+          createdAt: '2026-01-01T00:00:00Z',
+        })
+        .returning({ id: environment.id })
+      const [other] = await db
+        .insert(environment)
+        .values({ projectId, name: 'other', createdAt: '2026-01-02T00:00:00Z' })
+        .returning({ id: environment.id })
+      await fn({
+        db,
+        organizationId: proj!.organizationId,
+        projectId,
+        serverId: srv!.id,
+        placedId: placed!.id,
+        otherId: other!.id,
+      })
+    } finally {
+      await db.delete(environment).where(eq(environment.projectId, projectId))
+      await db.delete(server).where(eq(server.id, srv!.id))
+    }
+  })
+}
+
+test('the oldest remaining environment becomes primary after a bulk drop and after a server forget', async () => {
+  await withServerProject(async ({ db, projectId, serverId, placedId, otherId }) => {
+    // Bulk path: the host is gone, the primary's rows are dropped.
+    await db.transaction((tx) => dropEnvironmentSubtreeInTx(tx, [placedId], { serverId }))
+    assertEquals((await loadPrimaryEnvironment(db, projectId))?.id, otherId)
+  })
+  await withServerProject(async ({ db, projectId, serverId, organizationId, otherId }) => {
+    // Forget path: the environment placed on the server goes, the other takes over.
+    await db.transaction((tx) => forgetServerOwnedResources(tx, serverId, organizationId))
+    assertEquals((await loadPrimaryEnvironment(db, projectId))?.id, otherId)
+  })
+})
+
+test('server forget, project delete and make primary running together never deadlock', async () => {
+  for (let round = 0; round < 6; round += 1) {
+    await withServerProject(async ({ db, projectId, serverId, organizationId, otherId }) => {
+      const settled = await Promise.allSettled([
+        db.transaction((tx) => forgetServerOwnedResources(tx, serverId, organizationId)),
+        round % 2 === 0
+          ? deleteProjectCascade(db, projectId)
+          : db.transaction((tx) => setPrimaryEnvironment(tx, projectId, otherId)),
+      ])
+      for (const result of settled) {
+        if (result.status === 'rejected') {
+          assertEquals(String(result.reason).includes('deadlock'), false, String(result.reason))
+        }
+      }
+      const left = await db
+        .select({ isPrimary: environment.isPrimary })
         .from(environment)
         .where(eq(environment.projectId, projectId))
       assertEquals(left.length === 0 || left.filter((row) => row.isPrimary).length === 1, true)
