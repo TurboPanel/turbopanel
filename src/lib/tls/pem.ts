@@ -81,6 +81,9 @@ export function decodePrivateKeyToPkcs8(pem: string): {
   algorithm: 'rsa' | 'ec' | 'okp'
 } {
   const normalized = normalizePem(pem)
+  if (/ENCRYPTED|Proc-Type:/.test(normalized)) {
+    throw new PemError('encrypted private keys are not supported; use an unencrypted key')
+  }
   if (normalized.includes('BEGIN PRIVATE KEY')) {
     const pkcs8 = decodePemBlock(normalized, 'PRIVATE KEY')
     return { pkcs8, algorithm: detectPkcs8Algorithm(pkcs8) }
@@ -166,6 +169,9 @@ function wrapEcSec1AsPkcs8(sec1Der: Uint8Array): Uint8Array {
     const item = readTlv(body, offset)
     if (item.tag === 0xa0) {
       const oid = readTlv(item.content, 0)
+      if (oid.tag === 0x30) {
+        throw new PemError('explicit EC curve parameters are not supported; use a named curve')
+      }
       if (oid.tag !== 0x06) throw new PemError('malformed EC private key')
       curve = oid.content
     } else if (item.tag === 0xa1) {
@@ -176,6 +182,12 @@ function wrapEcSec1AsPkcs8(sec1Der: Uint8Array): Uint8Array {
   curve ??= curveFromPrivateKeyLength(scalar.content.length)
   if (curve === null || ![CURVE_P256, CURVE_P384, CURVE_P521].some((c) => sameBytes(c, curve))) {
     throw new PemError('EC private key uses a curve that is not supported (P-256, P-384, P-521)')
+  }
+  if (
+    curveFromPrivateKeyLength(scalar.content.length) === null ||
+    !sameBytes(curveFromPrivateKeyLength(scalar.content.length)!, curve)
+  ) {
+    throw new PemError('EC private key does not match its stated curve')
   }
   const inner = encodeSequence(
     concat(

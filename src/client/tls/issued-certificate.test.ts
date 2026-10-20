@@ -592,3 +592,32 @@ test('a refused pair says in plain words which part was rejected and never echoe
     await f.cleanup()
   }
 })
+
+test('a key of another kind or curve than the certificate is a key mismatch, in plain words', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup()
+  try {
+    const ec = await makeCaddyPair('ec-p256', [HOST])
+    const rsa = await makeCaddyPair('rsa-pkcs1', [HOST])
+    const p384 = await makeCaddyPair('ec-p384', [HOST])
+    const send = (certificatePem: string, privateKeyPem: string) =>
+      storeIssuedCertificate(
+        f.db,
+        { serverId: f.serverId, hostname: HOST, certificatePem, privateKeyPem },
+        f.deps
+      )
+    for (const result of [
+      await send(ec.certificatePem, rsa.privateKeyPem),
+      await send(rsa.certificatePem, ec.privateKeyPem),
+      await send(ec.certificatePem, p384.privateKeyPem),
+    ]) {
+      if (result.ok) throw new Error('expected a refusal')
+      assertEquals(result.error, 'key_mismatch')
+      assertEquals(result.status, 400)
+      assertEquals(JSON.stringify(result).includes('PRIVATE'), false)
+    }
+    assertEquals((await readRow(f)).privateKeyPem, null)
+  } finally {
+    await f.cleanup()
+  }
+})

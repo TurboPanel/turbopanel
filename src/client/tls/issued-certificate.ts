@@ -85,7 +85,8 @@ export const REFUSAL_MESSAGE: Record<IssuedCertificateRefusal, string> = {
     'The certificate chain could not be read, has no certificate, or is longer than allowed.',
   invalid_private_key:
     'The private key could not be read: it is not an RSA (PKCS#1 or PKCS#8), EC (SEC1 or PKCS#8, curve P-256, P-384 or P-521) or Ed25519 (PKCS#8) key, or it is too large.',
-  key_mismatch: 'The private key does not belong to the first certificate in the chain.',
+  key_mismatch:
+    'The private key does not belong to the first certificate in the chain (a different key or a different kind of key).',
   certificate_expired: 'The certificate has already expired.',
   certificate_not_for_hostname: 'The certificate does not cover the hostname.',
   self_signed_certificate: 'The certificate is self-signed.',
@@ -190,8 +191,10 @@ async function checkPair(
       return { ok: false, error: 'key_mismatch' }
     }
   } catch (err) {
+    // The key was read fine above, so a failure here means it is a different
+    // kind of key (or curve) from the one the certificate carries.
     if (err instanceof TlsKeyError) {
-      return { ok: false, error: 'invalid_private_key' }
+      return { ok: false, error: 'key_mismatch' }
     }
     throw err
   }

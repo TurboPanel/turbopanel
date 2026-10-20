@@ -74,3 +74,117 @@ test('a damaged SEC1 key is refused without a crash', async () => {
   const cut = [lines[0], lines[1]!.slice(0, 20), lines.at(-1)].join('\n')
   assertThrows(() => normalizePrivateKeyPem(cut), PemError)
 })
+
+// --- hand-shaped SEC1 keys: shapes other writers produce or attackers could send ---
+
+function derOf(pem: string): Uint8Array {
+  const body = pem.split('\n').filter((line) => line.length > 0 && !line.startsWith('-----'))
+  return Uint8Array.from(atob(body.join('')), (c) => c.codePointAt(0)!)
+}
+
+/** The private scalar of a short (single-byte length) SEC1 key. */
+function scalarOf(pem: string): Uint8Array {
+  const der = derOf(pem)
+  // 30 len | 02 01 01 | 04 slen scalar ...
+  const at = 2 + (der[1]! >= 0x80 ? der[1]! & 0x7f : 0) + 3
+  const length = der[at + 1]!
+  return der.subarray(at + 2, at + 2 + length)
+}
+
+function sec1Pem(parts: number[][]): string {
+  const body = parts.flat()
+  const der = Uint8Array.of(0x30, body.length, ...body)
+  return `-----BEGIN EC PRIVATE KEY-----\n${btoa(String.fromCharCode(...der))}\n-----END EC PRIVATE KEY-----\n`
+}
+
+const OID_P256 = [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]
+const OID_P384 = [0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22]
+
+test('a SEC1 key without curve parameters is placed by the length of its private scalar', async () => {
+  for (const [kind, bytes] of [
+    ['ec-p256', 32],
+    ['ec-p384', 48],
+    ['ec-p521', 66],
+  ] as const) {
+    const pair = await makeCaddyPair(kind, ['shop.example.com'])
+    const scalar = scalarOf(pair.privateKeyPem)
+    assertEquals(scalar.length, bytes)
+    const bare = sec1Pem([
+      [0x02, 0x01, 0x01],
+      [0x04, scalar.length, ...scalar],
+    ])
+    const leaf = await parseCertificatePem(pair.certificatePem)
+    assertEquals(await privateKeyMatchesCertificate(normalizePrivateKeyPem(bare), leaf), true, kind)
+  }
+})
+
+test('a scalar whose length does not match the stated curve is refused', async () => {
+  const pair = await makeCaddyPair('ec-p256', ['shop.example.com'])
+  const scalar = scalarOf(pair.privateKeyPem)
+  const wrong = sec1Pem([
+    [0x02, 0x01, 0x01],
+    [0x04, scalar.length, ...scalar],
+    [0xa0, OID_P384.length, ...OID_P384],
+  ])
+  assertThrows(() => normalizePrivateKeyPem(wrong), PemError, 'does not match its stated curve')
+  const odd = sec1Pem([
+    [0x02, 0x01, 0x01],
+    [0x04, 10, ...new Array(10).fill(7)],
+  ])
+  assertThrows(() => normalizePrivateKeyPem(odd), PemError, 'not supported')
+})
+
+test('explicit curve parameters are refused in plain words', async () => {
+  const pem = await new Deno.Command('openssl', {
+    args: ['ecparam', '-name', 'prime256v1', '-param_enc', 'explicit', '-genkey', '-noout'],
+    stdout: 'piped',
+  }).output()
+  const text = new TextDecoder().decode(pem.stdout)
+  assertEquals(text.includes('BEGIN EC PRIVATE KEY'), true)
+  assertThrows(() => normalizePrivateKeyPem(text), PemError, 'explicit EC curve parameters')
+  // Hand-shaped: [0] holds a SEQUENCE instead of an OID.
+  const scalar = new Array(32).fill(1)
+  const handmade = sec1Pem([
+    [0x02, 0x01, 0x01],
+    [0x04, 32, ...scalar],
+    [0xa0, 2, 0x30, 0x00],
+  ])
+  assertThrows(() => normalizePrivateKeyPem(handmade), PemError, 'explicit EC curve parameters')
+})
+
+test('encrypted private keys are refused, in the old and the PKCS#8 forms', async () => {
+  const pair = await makeCaddyPair('ec-p256', ['shop.example.com'])
+  const lines = pair.privateKeyPem.trim().split('\n')
+  const oldStyle = [
+    lines[0],
+    'Proc-Type: 4,ENCRYPTED',
+    'DEK-Info: AES-256-CBC,00112233445566778899AABBCCDDEEFF',
+    '',
+    ...lines.slice(1),
+  ].join('\n')
+  assertThrows(() => normalizePrivateKeyPem(oldStyle), PemError, 'encrypted private keys')
+
+  const dir = await Deno.makeTempDir({ prefix: 'enc-key-' })
+  try {
+    await Deno.writeTextFile(`${dir}/k.pem`, pair.privateKeyPem)
+    const enc = await new Deno.Command('openssl', {
+      args: [
+        'pkcs8',
+        '-topk8',
+        '-v2',
+        'aes-256-cbc',
+        '-passout',
+        'pass:test',
+        '-in',
+        `${dir}/k.pem`,
+      ],
+      stdout: 'piped',
+      stderr: 'null',
+    }).output()
+    const encrypted = new TextDecoder().decode(enc.stdout)
+    assertEquals(encrypted.includes('BEGIN ENCRYPTED PRIVATE KEY'), true)
+    assertThrows(() => normalizePrivateKeyPem(encrypted), PemError, 'encrypted private keys')
+  } finally {
+    await Deno.remove(dir, { recursive: true })
+  }
+})
