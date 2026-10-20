@@ -3,6 +3,7 @@ import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { login, managed, managedDatabase } from '../../db/schema.ts'
 import type { ManagedEngineSpec } from './index.ts'
+import { nameListSql } from './sql-name-list.ts'
 import type { ManagedSettings } from './settings.ts'
 
 /** A login the customer chose as a Postgres database's owner. */
@@ -57,9 +58,9 @@ export function writeManagedSettings(settings: ManagedSettings): Record<string, 
 export function managedDatabaseNames() {
   // Qualified by hand: drizzle drops the table name from a column in a
   // single-table select, and an unqualified `id` would bind to the subquery.
-  return sql<
-    string[]
-  >`ARRAY(SELECT d."name" FROM ${managedDatabase} d WHERE d."managed_id" = "managed"."id" ORDER BY lower(d."name"), d."name")`
+  return nameListSql(
+    sql`ARRAY(SELECT d."name" FROM ${managedDatabase} d WHERE d."managed_id" = "managed"."id" ORDER BY lower(d."name"), d."name")`
+  )
 }
 
 /** The cluster's `database` rows in name order, as the lists the code reads. */
