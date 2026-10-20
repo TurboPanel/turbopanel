@@ -13,7 +13,7 @@ contract — keep them current when adding or changing routes.
 | `POST`   | `/api/client/v1/invitations`                                    | Create a pending invitation (`canInviteToTeam`); optional `grants` require `organization:own`; emails the accept link (`/accept-invitation?token=<secret>`; the secret is stored only as `token_hash` and never returned); **409** `invitation_pending`, **503** `email_unavailable` |
 | `GET`    | `/api/client/v1/invitations`                                    | List pending, unexpired invitations across the org's teams (`organization:manage`); `{ invitations: [{ id, email, teamId, teamName, expiresAt, createdAt, invitedBy }] }`                                                                                                            |
 | `DELETE` | `/api/client/v1/invitations/{id}`                               | Revoke a pending invitation (`canInviteToTeam`); atomic `pending` → `revoked`; **404** if missing or not pending                                                                                                                                                                     |
-| `POST`   | `/api/client/v1/invitations/{id}/accept`                        | Accept a pending invitation; atomically claims the row, adds team membership, materializes `invitation.grants` into `permission` rows when present (null/omitted grants confer none), updates session `organizationId`                                                                    |
+| `POST`   | `/api/client/v1/invitations/{id}/accept`                        | Accept a pending invitation; atomically claims the row, adds team membership, materializes `invitation.grants` into `permission` rows when present (null/omitted grants confer none), updates session `organizationId`                                                               |
 | `GET`    | `/api/client/v1/permissions`                                    | Permission catalog — static, no DB query (any authenticated user)                                                                                                                                                                                                                    |
 | `GET`    | `/api/client/v1/access?resourceId=<uuid>`                       | List access grants for a resource; returns `{ access: AccessRecord[] }` with `subjectKind`, `subjectId`, `resourceId`, `effect`, and `permissionKey`                                                                                                                                 |
 | `GET`    | `/api/client/v1/access/check?resourceId=<uuid>&permissionKey=…` | Check a single permission for the signed-in user; returns `{ allowed: boolean }`                                                                                                                                                                                                     |
@@ -231,10 +231,42 @@ changes.
   effective mode is resolved per read (`resolveManagedSslMode`) rather than
   stored. Canonical detail: `src/features/managed/AGENTS.md` → **Client TLS (SSL
   mode)**.
-- **Org default environment name:**
-  `organization.options.defaultEnvironmentName` (unset = `production`).
+- **Primary environment (`environment.is_primary`, `is_pinned`):** a project has
+  exactly one primary environment, a column on the environment row with a
+  partial unique index (`uniq_environment_project_primary`). The first
+  environment created is primary; `POST /environments/:id/primary` moves it
+  (`features/projects/primary-environment.ts`, one transaction under the project
+  row lock); the primary cannot be deleted while the project has others (409
+  `primary_environment_cannot_be_deleted`). Nothing guesses the primary from a
+  name: `ensurePrimaryEnvironment` (configure) reads the marker. Catalog
+  `displayName` checks only choose which scaffolded environment is created
+  primary. `pinned` (PATCH) lists an environment right after the primary one;
+  `GET /environments` returns primary, pinned, then oldest first per project.
+- **New project content goes to the primary environment:** `POST /projects` and
+  configure leave the Base (project `options.compose`) empty and put the
+  compose (a catalog entry's shared compose merged with each environment's own,
+  `catalog-compose.ts`) into the environment's own changes, so a deploy sees the
+  same merged compose as before. A compose that names a repository
+  (`composeSource`) or has project overlays stays in the Base for now.
+- **A new environment is a copy of the primary one:** `POST /environments`
+  without `options` copies the primary's `compose` and `composeOverlays`
+  (`start: 'copy'`, the default; `features/projects/primary-environment-copy.ts`)
+  minus what must be unique: `x-turbopanel.hosting`, published host ports (moved
+  to `expose`), `container_name`, and the git `branch` (with `deployOnPush: false`
+  so a push never deploys the copy). Variables, secrets and the server pin are not
+  copied; what the Base still gives the copy (hostnames, published ports, container name,
+  auto-deploying source) is overridden in the copy's own layer with `!reset` / `!override`;
+  the response lists the omissions in `notCopied`. `start: 'empty'` stands alone. The name follows
+  the environment name rule on every path.
+- **Edit target:** `PATCH /projects/:id` with `options.compose` or
+  `options.composeOverlays` needs `target` (`base` or an environment id); with
+  one environment the default is that environment, with several 400
+  `edit_target_required` (`projects/edit-target.ts`).
+- **Org primary environment name:**
+  `organization.options.defaultEnvironmentName` (unset = `production`; the
+  stored key and route keep the old name).
   `GET`/`PUT /organizations/:id/default-environment` (manage-gated) names the
-  environment scaffolded by project create / configure. Matching for existing
+  primary environment scaffolded by project create / configure. Matching for existing
   literal "production" catalog environments is unchanged. The name is also the
   scope folder on every server, so the PUT only takes a valid environment name
   (`isValidEnvironmentName`) and a saved value that is not one is ignored.
@@ -290,9 +322,12 @@ changes.
   derived, read-only answer for the editor: the effective config (project Base
   merged with the environment compose by `mergeComposeLayers`, the same merge a
   deploy uses), the changes from the Base per service/field with their sources
-  (`base` / `project` / `environment`), and `followsBase`. `followsBase` is
-  **derived, never stored**: the environment compose (or an extra environment
-  layer) setting `services: !override` / `!reset` means it stands alone. It runs
+  (`base` / `project` / `environment`), `inheritedFromBase` on every service,
+  field, Linux user and variable row, `isPrimary` and `standsAlone`. There is no
+  "follows the Base" flag: every environment inherits from the Base.
+  `standsAlone` is **derived, never stored**: the environment compose (or an
+  extra environment layer) setting `services: !override` / `!reset` means it
+  drops the Base's services. It runs
   no deploy preparation (nothing is allocated). Secret variables carry no value
   (the stored ciphertext is not even selected) and credential-looking compose
   values are masked; the raw `x-turbopanel` block is never returned. A client

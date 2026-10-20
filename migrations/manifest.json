@@ -8,6 +8,12 @@
       "tag": "0000_init",
       "when": 1792448457740,
       "sha256": "83a3ef27f6d86ece6436f660cb5bbd83ff87208886b14ca66648832b32e16af7"
+    },
+    {
+      "idx": 1,
+      "tag": "0001_primary_environment",
+      "when": 1792458663675,
+      "sha256": "2fb459e6da668e7f74fd970fe1cb48f9335623908694cd986aee302e955c03d1"
     }
   ]
 }

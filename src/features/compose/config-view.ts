@@ -49,6 +49,8 @@ export type ConfigFieldRow = {
   value: string | null
   masked: boolean
   source: ConfigViewSource
+  /** True when the value comes from the Base (not set or overridden by the environment). */
+  inheritedFromBase: boolean
 }
 
 export type ConfigServiceView = {
@@ -58,6 +60,8 @@ export type ConfigServiceView = {
   kind: ConfigServiceKind
   /** Where the service itself is defined: `base`, or `environment` (added here or standing alone). */
   source: ConfigViewSource
+  /** True when the service itself is defined in the Base. */
+  inheritedFromBase: boolean
   rows: ConfigFieldRow[]
 }
 
@@ -67,6 +71,8 @@ export type ConfigLinuxUserView = {
   access: ConfigLinuxUserAccess
   description: string | null
   source: ConfigViewSource
+  /** True when the Linux user is defined in the Base. */
+  inheritedFromBase: boolean
   /** Services that run as this user. */
   usedBy: string[]
 }
@@ -82,6 +88,8 @@ export type ConfigVariableView = {
   forBuild: boolean
   forRuntime: boolean
   source: 'project' | 'environment'
+  /** True when the variable is set at project level (the Base) and not overridden here. */
+  inheritedFromBase: boolean
 }
 
 export type ConfigChange = {
@@ -111,7 +119,11 @@ export type ConfigSide = {
 }
 
 export type EnvironmentConfigView = {
-  followsBase: boolean
+  /**
+   * True when the environment's own compose throws the Base's services away
+   * (`services: !override` or `!reset`). Everything else always inherits from the Base.
+   */
+  standsAlone: boolean
   base: ConfigSide
   effective: ConfigSide
   changes: ConfigChange[]
@@ -354,6 +366,7 @@ function entryView(
     value: entry.masked ? null : entry.raw,
     masked: entry.masked,
     source: fromBase ? 'base' : 'environment',
+    inheritedFromBase: fromBase,
   }
 }
 
@@ -373,6 +386,7 @@ function servicesView(flat: FlatConfig, context: SideContext): ConfigServiceView
       serviceId: context.base === null ? null : (context.serviceIds.get(service.name) ?? null),
       kind: service.kind,
       source: inherited ? 'base' : 'environment',
+      inheritedFromBase: inherited,
       rows: [...service.entries.values()].map((entry) =>
         context.base === null
           ? entryView(entry, entry, false)
@@ -398,6 +412,7 @@ function usersView(flat: FlatConfig, context: SideContext): ConfigLinuxUserView[
       access: user.access,
       description: user.description,
       source: same ? 'base' : 'environment',
+      inheritedFromBase: same,
       usedBy,
     }
   })
@@ -550,6 +565,7 @@ function variableView(
     forBuild: input.forBuild,
     forRuntime: input.forRuntime,
     source,
+    inheritedFromBase: source === 'project',
   }
 }
 
@@ -626,7 +642,7 @@ export function buildEnvironmentConfigView(
   const context: SideContext = { base: baseFlat, standsAlone, serviceIds: input.serviceIds }
   const baseContext: SideContext = { base: null, standsAlone: false, serviceIds: input.serviceIds }
   return {
-    followsBase: !standsAlone,
+    standsAlone,
     base: {
       services: servicesView(baseFlat, baseContext),
       variables: variables.base,

@@ -223,7 +223,7 @@ test('GET /environments/:id/config-view shows what a following environment chang
     const body = JSON.parse(text)
     assertEquals(body.ok, true)
     assertEquals(body.environmentId, ids.staging)
-    assertEquals(body.followsBase, true)
+    assertEquals(body.standsAlone, false)
     assertEquals(
       body.effective.services.map((s: { name: string }) => s.name),
       ['web', 'blog']
@@ -266,7 +266,7 @@ test('GET /environments/:id/config-view: no compose of its own means no changes'
       const res = await get(app, id, { cookie, organizationId })
       assertEquals(res.status, 200)
       const body = await res.json()
-      assertEquals(body.followsBase, true)
+      assertEquals(body.standsAlone, false)
       assertEquals(body.changes, [])
       assertEquals(body.effective.services.length, 2)
     }
@@ -278,7 +278,7 @@ test('GET /environments/:id/config-view: services: !override stands alone', asyn
     const res = await get(app, ids.solo, { cookie, organizationId })
     assertEquals(res.status, 200)
     const body = await res.json()
-    assertEquals(body.followsBase, false)
+    assertEquals(body.standsAlone, true)
     assertEquals(
       body.effective.services.map((s: { name: string; source: string }) => [s.name, s.source]),
       [['api', 'environment']]

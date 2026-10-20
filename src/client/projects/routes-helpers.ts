@@ -18,6 +18,7 @@ import {
   type CatalogEntry,
   type CreateProjectType,
 } from './catalog/index.ts'
+import { emptyComposeDocument } from '../../features/compose/index.ts'
 import { isConfiguredProjectType, isProductionEnvironmentName } from './empty-setup.ts'
 import { isValidEnvironmentName } from '../../contracts/directory-names.ts'
 import { normalizeDisplayName } from '../../lib/display-name-format.ts'
@@ -117,10 +118,12 @@ export function catalogProjectOptions(
   includeEngineOptions: boolean
 ): Record<string, unknown> {
   if (fields.options) return fields.options
+  // The Base starts empty: the entry's compose is merged into its environments.
+  const base = emptyComposeDocument()
   if (includeEngineOptions && fields.entry.options) {
-    return { compose: fields.entry.compose, ...fields.entry.options }
+    return { compose: base, ...fields.entry.options }
   }
-  return { compose: fields.entry.compose }
+  return { compose: base }
 }
 
 export function parseJsonbField(

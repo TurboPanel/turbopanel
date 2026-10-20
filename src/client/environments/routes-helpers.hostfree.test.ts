@@ -35,6 +35,8 @@ test('serializeEnvironment maps row fields', () => {
       serverId: null,
       metadata: null,
       options: null,
+      isPrimary: true,
+      isPinned: false,
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     }).name,

@@ -1,5 +1,6 @@
 import {
   applyValidatedComposeOption,
+  makeComposeTag,
   type ComposeValidateOptions,
   type ComposeValidationIssue,
   isPlacementServerId,
@@ -53,6 +54,8 @@ export type EnvironmentRow = {
   serverId: string | null
   metadata: unknown
   options: unknown
+  isPrimary: boolean
+  isPinned: boolean
   createdAt: string
   updatedAt: string
 }
@@ -66,6 +69,8 @@ export function serializeEnvironment(row: EnvironmentRow) {
     serverId: row.serverId,
     metadata: row.metadata,
     options: row.options,
+    isPrimary: row.isPrimary,
+    pinned: row.isPinned,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }
@@ -246,4 +251,45 @@ export function parseEnvironmentPatchOptions(
   const deployOptions = validateDeployOptions(optionsResult, 'environment')
   if (!deployOptions.ok) return deployOptionsError(deployOptions.reason)
   return { ok: true, options: optionsResult }
+}
+
+export const ENVIRONMENT_START_INVALID_ERROR = 'environment_start_invalid'
+export const ENVIRONMENT_START_CONFLICT_ERROR = 'environment_start_conflict'
+
+/** How a new environment starts: a copy of the primary one's changes, or empty and standing alone. */
+export type EnvironmentStart = 'copy' | 'empty'
+
+export function parseCreateEnvironmentStart(
+  body: Record<string, unknown>
+): { ok: true; start: EnvironmentStart | null } | EnvironmentRouteValidationError {
+  const raw = body.start
+  if (raw === undefined) return { ok: true, start: null }
+  if (raw !== 'copy' && raw !== 'empty') {
+    return {
+      ok: false,
+      error: ENVIRONMENT_START_INVALID_ERROR,
+      message: "start must be 'copy' (a copy of the primary environment) or 'empty'.",
+      status: 400,
+    }
+  }
+  if (body.options !== undefined && body.options !== null) {
+    return {
+      ok: false,
+      error: ENVIRONMENT_START_CONFLICT_ERROR,
+      message: 'Send either start or options, not both.',
+      status: 400,
+    }
+  }
+  return { ok: true, start: raw }
+}
+
+/** The "empty, stands alone" start: the environment drops the Base's services and defines its own. */
+export function standAloneEnvironmentOptions(): Record<string, unknown> {
+  return {
+    compose: {
+      version: 1,
+      data: { services: makeComposeTag('override', {}) },
+      presentation: { keyOrder: ['services'], comments: {} },
+    },
+  }
 }

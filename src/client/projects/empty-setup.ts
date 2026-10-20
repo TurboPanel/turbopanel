@@ -11,6 +11,12 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { Db } from '../../db/connection.ts'
 import { environment, organization, project, variable } from '../../db/schema.ts'
 import { emptyComposeDocument } from '../../features/compose/index.ts'
+import {
+  loadPrimaryEnvironment,
+  lockProjectForEnvironmentChange,
+} from '../../features/projects/primary-environment.ts'
+import { uniqueViolationMessage } from '../../db/unique-violation.ts'
+import { catalogEnvironmentCompose } from './catalog-compose.ts'
 import { syncEnvironmentWatch, syncProjectWatch } from '../../features/git/watch-records.ts'
 import {
   DEFAULT_ENVIRONMENT_NAME,
@@ -107,6 +113,7 @@ export async function insertEmptyProject(
     projectId: inserted.id,
     name: envName,
     description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+    isPrimary: true,
     ...(fields.serverId ? { serverId: fields.serverId } : {}),
     options: stampNewEnvironmentDeployOptions({ compose: emptyComposeDocument() }),
   })
@@ -114,75 +121,25 @@ export async function insertEmptyProject(
   return inserted.id
 }
 
-async function findProductionEnvironment(
-  tx: DbTx,
-  projectId: string,
-  defaultEnvironmentName: string
-): Promise<{ id: string; name: string | null; serverId: string | null } | null> {
-  const rows = await tx
-    .select({
-      id: environment.id,
-      name: environment.name,
-      description: environment.description,
-      serverId: environment.serverId,
-    })
-    .from(environment)
-    .where(eq(environment.projectId, projectId))
-
-  // Prefer a literal Production row so catalog production config never lands
-  // on a non-production environment that merely matches the org default.
-  const production = rows.find((row) => isProductionEnvironmentName(row.name))
-  if (production) return production
-
-  const normalizedDefault = normalizeEnvName(defaultEnvironmentName)
-  const exactDefault = rows.find((row) => normalizeEnvName(row.name) === normalizedDefault)
-  if (exactDefault) return exactDefault
-
-  // Empty projects scaffold one default environment under the then-current
-  // org default. If that name later changes, still reuse the scaffold rather
-  // than inserting a second default during configure.
-  if (rows.length === 1) {
-    return rows[0] ?? null
-  }
-
-  const scaffolded = rows.find(
-    (row) => row.description === DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION
-  )
-  return scaffolded ?? null
-}
-
 /**
- * Ensure exactly one Production (or org-default-named) environment exists.
- * Returns its id. Idempotent — prefers a literal "production" name, then
- * the resolved org default, then a sole existing row / scaffold description
- * match (so empty-project setup survives an org-default rename); only
- * rewrites casing for case variants of the effective name. When reusing an
- * existing row, applies a non-null `serverId` pin if the stored value differs.
+ * The project's primary environment, created as the primary one when the
+ * project has none yet. Idempotent. Looks the environment up by its marker,
+ * never by name. When reusing the row, applies a non-null `serverId` pin if
+ * the stored value differs.
  */
-export async function ensureProductionEnvironment(
+export async function ensurePrimaryEnvironment(
   tx: DbTx,
   projectId: string,
   serverId?: string | null,
   defaultEnvironmentName?: string
 ): Promise<string> {
-  const effectiveName = defaultEnvironmentName ?? DEFAULT_PRODUCTION_ENVIRONMENT_NAME
-  const existing = await findProductionEnvironment(tx, projectId, effectiveName)
+  await lockProjectForEnvironmentChange(tx, projectId)
+  const existing = await loadPrimaryEnvironment(tx, projectId)
   if (existing) {
-    // Normalize casing only when the existing name is a case variant of the
-    // effective name — never clobber a custom default or a pre-existing
-    // Production under a renamed org default.
-    const shouldNormalizeName =
-      existing.name !== effectiveName &&
-      normalizeEnvName(existing.name) === normalizeEnvName(effectiveName)
-    const shouldPinServer = serverId != null && existing.serverId !== serverId
-    if (shouldNormalizeName || shouldPinServer) {
+    if (serverId != null && existing.serverId !== serverId) {
       await tx
         .update(environment)
-        .set({
-          ...(shouldNormalizeName ? { name: effectiveName } : {}),
-          ...(shouldPinServer ? { serverId } : {}),
-          updatedAt: new Date().toISOString(),
-        })
+        .set({ serverId, updatedAt: new Date().toISOString() })
         .where(eq(environment.id, existing.id))
     }
     return existing.id
@@ -192,8 +149,9 @@ export async function ensureProductionEnvironment(
     .insert(environment)
     .values({
       projectId,
-      name: effectiveName,
+      name: defaultEnvironmentName ?? DEFAULT_PRODUCTION_ENVIRONMENT_NAME,
       description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+      isPrimary: true,
       ...(serverId ? { serverId } : {}),
       options: stampNewEnvironmentDeployOptions({ compose: emptyComposeDocument() }),
     })
@@ -239,11 +197,13 @@ async function applyCatalogVariablesToEnvironment(
   })
 }
 
+/** Project options for a catalog project: the Base stays empty, the content sits in the environments. */
 function catalogConfigureOptions(entry: CatalogEntry): Record<string, unknown> {
+  const base = emptyComposeDocument()
   if (entry.options) {
-    return { compose: entry.compose, ...entry.options }
+    return { compose: base, ...entry.options }
   }
-  return { compose: entry.compose }
+  return { compose: base }
 }
 
 export type ConfigureProjectResult =
@@ -273,30 +233,31 @@ function alreadyConfiguredResult(
 
 async function applyCatalogEnvCompose(
   tx: DbTx,
-  productionId: string,
+  primaryId: string,
   entry: CatalogEntry
 ): Promise<void> {
   const catalogEnv = resolveCatalogProductionEnv(entry)
-  if (!catalogEnv?.compose) return
+  const compose = catalogEnvironmentCompose(entry, catalogEnv)
+  if (!compose) return
   // Replaces the compose overlay but keeps (or, for a first configure, stamps)
   // the deploy settings the environment already carries.
   const [existing] = await tx
     .select({ options: environment.options })
     .from(environment)
-    .where(eq(environment.id, productionId))
+    .where(eq(environment.id, primaryId))
     .limit(1)
   const options = stampNewEnvironmentDeployOptions(
-    settleDeployOptions(existing?.options, { compose: catalogEnv.compose }, 'environment')
+    settleDeployOptions(existing?.options, { compose }, 'environment')
   )
   await tx
     .update(environment)
     .set({
       options,
-      description: catalogEnv.description ?? DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+      description: catalogEnv?.description ?? DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
       updatedAt: new Date().toISOString(),
     })
-    .where(eq(environment.id, productionId))
-  await syncEnvironmentWatch(tx, productionId)
+    .where(eq(environment.id, primaryId))
+  await syncEnvironmentWatch(tx, primaryId)
 }
 
 async function insertCatalogEnvVariables(
@@ -337,6 +298,7 @@ async function insertExtraCatalogEnvironments(
       .where(and(eq(environment.projectId, input.projectId), eq(environment.name, env.displayName)))
       .limit(1)
     if (existingExtra[0]) return
+    const extraCompose = catalogEnvironmentCompose(input.entry, env)
     const [insertedEnv] = await tx
       .insert(environment)
       .values({
@@ -344,10 +306,10 @@ async function insertExtraCatalogEnvironments(
         name: env.displayName,
         description: env.description ?? null,
         ...(input.serverId ? { serverId: input.serverId } : {}),
-        options: stampNewEnvironmentDeployOptions(env.compose ? { compose: env.compose } : null),
+        options: stampNewEnvironmentDeployOptions(extraCompose ? { compose: extraCompose } : null),
       })
       .returning({ id: environment.id })
-    if (env.compose) await syncEnvironmentWatch(tx, insertedEnv.id)
+    if (extraCompose) await syncEnvironmentWatch(tx, insertedEnv.id)
     if (!env.variables?.length) return
     await insertCatalogEnvVariables(tx, insertedEnv.id, env.variables, input.dataEncryptionSecrets)
   })
@@ -386,14 +348,14 @@ async function configureCatalogProject(
 
   try {
     await db.transaction(async (tx) => {
-      const productionId = await ensureProductionEnvironment(
+      const primaryId = await ensurePrimaryEnvironment(
         tx,
         input.projectId,
         input.serverId,
         input.defaultEnvironmentName
       )
-      await applyCatalogEnvCompose(tx, productionId, entry)
-      await applyCatalogVariablesToEnvironment(tx, productionId, entry, input.dataEncryptionSecrets)
+      await applyCatalogEnvCompose(tx, primaryId, entry)
+      await applyCatalogVariablesToEnvironment(tx, primaryId, entry, input.dataEncryptionSecrets)
       await insertExtraCatalogEnvironments(tx, {
         projectId: input.projectId,
         serverId: input.serverId,
@@ -418,10 +380,18 @@ async function configureCatalogProject(
     if (err instanceof Error && err.message === 'encryption unavailable') {
       return { ok: false, error: 'Encryption unavailable', status: 503 }
     }
+    const raced = primaryRaceResult(err)
+    if (raced) return raced
     throw err
   }
 
   return { ok: true, alreadyConfigured: false }
+}
+
+/** A lost race on the primary-environment index is a conflict the caller can retry, not a 500. */
+function primaryRaceResult(err: unknown): ConfigureProjectResult | null {
+  if (!uniqueViolationMessage(err)?.includes('uniq_environment_project_primary')) return null
+  return { ok: false, error: 'primary_environment_conflict', status: 409 }
 }
 
 async function configureDockerComposeProject(
@@ -431,22 +401,28 @@ async function configureDockerComposeProject(
   defaultEnvironmentName?: string,
   existingOptions?: unknown
 ): Promise<ConfigureProjectResult> {
-  await db.transaction(async (tx) => {
-    await ensureProductionEnvironment(tx, projectId, serverId, defaultEnvironmentName)
-    await tx
-      .update(project)
-      .set({
-        metadata: { type: 'docker-compose' },
-        options: settleDeployOptions(
-          existingOptions,
-          { compose: emptyComposeDocument() },
-          'project'
-        ),
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(project.id, projectId))
-    await syncProjectWatch(tx, projectId)
-  })
+  try {
+    await db.transaction(async (tx) => {
+      await ensurePrimaryEnvironment(tx, projectId, serverId, defaultEnvironmentName)
+      await tx
+        .update(project)
+        .set({
+          metadata: { type: 'docker-compose' },
+          options: settleDeployOptions(
+            existingOptions,
+            { compose: emptyComposeDocument() },
+            'project'
+          ),
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(project.id, projectId))
+      await syncProjectWatch(tx, projectId)
+    })
+  } catch (err) {
+    const raced = primaryRaceResult(err)
+    if (raced) return raced
+    throw err
+  }
   return { ok: true, alreadyConfigured: false }
 }
 
