@@ -25,14 +25,14 @@
     "bindings": [
       {
         "name": "DAEMON_CELL",
-        "class_name": "DaemonCellObject"
+        "class_name": "ServerDaemonCell"
       }
     ]
   },
   "migrations": [
     {
       "tag": "v1-daemon-cell",
-      "new_sqlite_classes": ["DaemonCellObject"]
+      "new_sqlite_classes": ["ServerDaemonCell"]
     }
   ],
   "vars": {

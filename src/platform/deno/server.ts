@@ -717,7 +717,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   // Deno process timer (not a Durable Object) — cost-safe. Both backends demote
   // stale presence at DAEMON_OFFLINE_SWEEP_MS; Redis uses this timer-driven
   // maintain() + sweepStalePresence loop. Workers is disconnect-first (no periodic
-  // DO stale-sweep alarm) — see DaemonCellObject alarm-path comments in do.ts.
+  // DO stale-sweep alarm) — see ServerDaemonCell alarm-path comments in do.ts.
   // Liveness and cleanup use separate in-flight flags so a hung dispatch /
   // webhook / execution-log / reconcile sweep cannot suppress stale-presence.
   const maintenance = createDenoMaintenanceScheduler({

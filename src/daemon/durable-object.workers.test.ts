@@ -19,7 +19,7 @@ import {
 } from '../features/servers/daemon-state.ts'
 import {
   CELL_SCHEMA_VERSION,
-  DaemonCellObject,
+  ServerDaemonCell,
   setDaemonCellProjectionDbFactoryForTests,
   setDaemonJwtKeyringFactoryForTests,
   setForceAlarmErrorForTests,
@@ -382,7 +382,7 @@ function statusFromPatch(
   return result
 }
 
-describe('DaemonCellObject diagnostics', () => {
+describe('ServerDaemonCell diagnostics', () => {
   it('exposes in-memory counters via /rpc/diagnostics', async () => {
     const serverId = 'test-srv-diagnostics'
     const stub = env.DAEMON_CELL.getByName(serverId)
@@ -558,7 +558,7 @@ describe('DaemonCellObject diagnostics', () => {
     const stub = env.DAEMON_CELL.getByName(serverId)
     const { ws } = await openDaemonWebSocket(stub, serverId)
 
-    await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
+    await runInDurableObject(stub, async (instance: ServerDaemonCell, state) => {
       await instance.alarm()
 
       const alarm = await state.storage.getAlarm()
@@ -573,7 +573,7 @@ describe('DaemonCellObject diagnostics', () => {
     const stub = env.DAEMON_CELL.getByName(serverId)
     const { ws } = await openDaemonWebSocket(stub, serverId)
 
-    await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
+    await runInDurableObject(stub, async (instance: ServerDaemonCell, state) => {
       await instance.alarm()
       expect(await state.storage.getAlarm()).toBeNull()
       await instance.alarm()
@@ -601,7 +601,7 @@ describe('DaemonCellObject diagnostics', () => {
       }
       const writesBefore = diagBefore.storageByCallSite['schedule-alarm']?.writes ?? 0
 
-      await runInDurableObject(stub, async (instance: DaemonCellObject) => {
+      await runInDurableObject(stub, async (instance: ServerDaemonCell) => {
         await instance.alarm()
         await instance.alarm()
       })
@@ -741,7 +741,7 @@ describe('DaemonCellObject diagnostics', () => {
       // version only — no CREATE / INSERT under the ensure-schema call site.
       // Diagnostics alone must not touch schema (in-memory counters only).
       const ensureCold = await runInDurableObject(stub, async (_instance, state) => {
-        const cold = new DaemonCellObject(state, env)
+        const cold = new ServerDaemonCell(state, env)
         const snapshotResp = await cold.fetch(
           new Request('https://do.internal/rpc/snapshot', {
             method: 'GET',
@@ -827,7 +827,7 @@ describe('DaemonCellObject diagnostics', () => {
       // Cold reconstruct with no restored socket: constructor must not SELECT
       // from `cell`. Liveness resolves serverId from the header only.
       const coldCounts = await runInDurableObject(stub, async (_instance, state) => {
-        const cold = new DaemonCellObject(state, env)
+        const cold = new ServerDaemonCell(state, env)
         const response = await cold.fetch(
           new Request('https://do.internal/rpc/liveness', {
             method: 'GET',
@@ -875,7 +875,7 @@ describe('DaemonCellObject diagnostics', () => {
 
 // Global projectionDbFactoryForTests is process-wide; parallel tests that
 // count factory invocations race with other tests' attach/disconnect waitUntil.
-describe.sequential('DaemonCellObject', () => {
+describe.sequential('ServerDaemonCell', () => {
   it('projects connect to Postgres after websocket attach', async () => {
     const serverId = 'test-srv-proj-connect'
     const { db, updateCalls } = createProjectionRecordingDb({
@@ -1209,7 +1209,7 @@ describe.sequential('DaemonCellObject', () => {
 
     const factoryAfterConnect = factoryCalls
 
-    await runInDurableObject(stub, async (instance: DaemonCellObject) => {
+    await runInDurableObject(stub, async (instance: ServerDaemonCell) => {
       await instance.alarm()
     })
 
@@ -1253,7 +1253,7 @@ describe.sequential('DaemonCellObject', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 1100))
 
-    await runInDurableObject(stub, async (instance: DaemonCellObject) => {
+    await runInDurableObject(stub, async (instance: ServerDaemonCell) => {
       await instance.alarm()
     })
 
@@ -1348,7 +1348,7 @@ describe.sequential('DaemonCellObject', () => {
     const wsClosedBefore = diagBefore.wsClosed
     const cleanupBefore = diagBefore.cleanupCount
 
-    await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
+    await runInDurableObject(stub, async (instance: ServerDaemonCell, state) => {
       const sockets = state.getWebSockets()
       expect(sockets.length).toBeGreaterThan(0)
       const serverSocket = sockets[0]!
@@ -1383,7 +1383,7 @@ describe.sequential('DaemonCellObject', () => {
     const serverId = 'test-srv-ws-error-no-attachment'
     const stub = env.DAEMON_CELL.getByName(serverId)
 
-    await runInDurableObject(stub, async (instance: DaemonCellObject) => {
+    await runInDurableObject(stub, async (instance: ServerDaemonCell) => {
       const pair = new WebSocketPair()
       const orphan = Object.values(pair)[1]!
       // Accepted without serializeAttachment — cleanup must early-return.
@@ -1558,7 +1558,7 @@ describe.sequential('DaemonCellObject', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 1100))
 
-    await runInDurableObject(stub, async (instance: DaemonCellObject) => {
+    await runInDurableObject(stub, async (instance: ServerDaemonCell) => {
       await instance.alarm()
     })
 
@@ -1611,7 +1611,7 @@ describe.sequential('DaemonCellObject', () => {
 
     // Original TTL elapsed — generic expires_at cleanup must not drop the row.
     await new Promise((resolve) => setTimeout(resolve, 1100))
-    await runInDurableObject(stub, async (instance: DaemonCellObject) => {
+    await runInDurableObject(stub, async (instance: ServerDaemonCell) => {
       await instance.alarm()
     })
 
@@ -1629,7 +1629,7 @@ describe.sequential('DaemonCellObject', () => {
     const staleFinishedAt = new Date(
       Date.now() - TERMINAL_REQUEST_RETENTION_MS - 1_000
     ).toISOString()
-    await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
+    await runInDurableObject(stub, async (instance: ServerDaemonCell, state) => {
       state.storage.sql.exec(
         `UPDATE request SET finished_at = ? WHERE request_id = ?`,
         staleFinishedAt,
@@ -1996,7 +1996,7 @@ describe.sequential('DaemonCellObject', () => {
     first.ws.close(4000, 'simulate delivery failure')
     await enqueueResponse
 
-    await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
+    await runInDurableObject(stub, async (instance: ServerDaemonCell, state) => {
       const cursor = state.storage.sql.exec(
         'SELECT delivery_status FROM request WHERE delivery_id = ?',
         deliveryId
@@ -2116,7 +2116,7 @@ describe.sequential('DaemonCellObject', () => {
     ws.send(DAEMON_CELL_PING)
     await waitForWebSocketMessage(ws, 2000)
 
-    await runInDurableObject(stub, async (instance: DaemonCellObject) => {
+    await runInDurableObject(stub, async (instance: ServerDaemonCell) => {
       await instance.alarm()
     })
 
@@ -2137,7 +2137,7 @@ describe.sequential('DaemonCellObject', () => {
     const stub = env.DAEMON_CELL.getByName(serverId)
     const { ws } = await openDaemonWebSocket(stub, serverId)
 
-    await runInDurableObject(stub, async (instance: DaemonCellObject) => {
+    await runInDurableObject(stub, async (instance: ServerDaemonCell) => {
       await instance.alarm()
     })
 
@@ -2166,7 +2166,7 @@ describe.sequential('DaemonCellObject', () => {
     const stub = env.DAEMON_CELL.getByName(serverId)
     const { ws } = await openDaemonWebSocket(stub, serverId)
 
-    await runInDurableObject(stub, async (instance: DaemonCellObject) => {
+    await runInDurableObject(stub, async (instance: ServerDaemonCell) => {
       await instance.alarm()
     })
 
@@ -2688,7 +2688,7 @@ describe('command-dispatch correlation', () => {
       }),
     })
 
-    await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
+    await runInDurableObject(stub, async (instance: ServerDaemonCell, state) => {
       for (let attempt = 0; attempt < 10; attempt++) {
         state.storage.sql.exec(
           `UPDATE request
@@ -3205,7 +3205,7 @@ async function readDiagnostics(
   }
 }
 
-describe('DaemonCellObject storageByCallSite attribution', () => {
+describe('ServerDaemonCell storageByCallSite attribution', () => {
   it('attributes SQL ops across enqueue, outbound pump, inbound, list, expire, clear-update, purge', async () => {
     const serverId = 'test-srv-storage-attrib-lifecycle'
     const stub = env.DAEMON_CELL.getByName(serverId)
@@ -3372,7 +3372,7 @@ describe('DaemonCellObject storageByCallSite attribution', () => {
     })
 
     const ensureCounts = await runInDurableObject(stub, async (_instance, state) => {
-      const upgraded = new DaemonCellObject(state, env)
+      const upgraded = new ServerDaemonCell(state, env)
       const snapshotResp = await upgraded.fetch(
         new Request('https://do.internal/rpc/snapshot', {
           method: 'GET',
@@ -3446,7 +3446,7 @@ describe('DaemonCellObject storageByCallSite attribution', () => {
     const alarmWritesBefore = diagBefore.storageByCallSite['alarm']?.writes ?? 0
     const alarmReadsBefore = diagBefore.storageByCallSite['alarm']?.reads ?? 0
 
-    await runInDurableObject(stub, async (instance: DaemonCellObject) => {
+    await runInDurableObject(stub, async (instance: ServerDaemonCell) => {
       await instance.alarm()
     })
 
@@ -3571,14 +3571,14 @@ describe('DaemonCellObject storageByCallSite attribution', () => {
   }, 10_000)
 })
 
-describe('DaemonCellObject alarm / outbox / RPC branch coverage', () => {
+describe('ServerDaemonCell alarm / outbox / RPC branch coverage', () => {
   it('alarm logs and rethrows when forced error is set', async () => {
     const serverId = 'test-srv-alarm-error-path'
     const stub = env.DAEMON_CELL.getByName(serverId)
     setForceAlarmErrorForTests(new Error('forced alarm failure'))
 
     await expect(
-      runInDurableObject(stub, async (instance: DaemonCellObject) => {
+      runInDurableObject(stub, async (instance: ServerDaemonCell) => {
         await instance.alarm()
       })
     ).rejects.toThrow('forced alarm failure')
@@ -3597,7 +3597,7 @@ describe('DaemonCellObject alarm / outbox / RPC branch coverage', () => {
 
     setForceAutoResponseAgeMsForTests(DAEMON_OFFLINE_SWEEP_MS + 5_000)
 
-    await runInDurableObject(stub, async (instance: DaemonCellObject) => {
+    await runInDurableObject(stub, async (instance: ServerDaemonCell) => {
       await instance.alarm()
     })
 
@@ -3629,7 +3629,7 @@ describe('DaemonCellObject alarm / outbox / RPC branch coverage', () => {
       const { ws } = await openDaemonWebSocket(stub, serverId)
 
       setForceAutoResponseAgeMsForTests(DAEMON_OFFLINE_SWEEP_MS + 5_000)
-      await runInDurableObject(stub, async (instance: DaemonCellObject) => {
+      await runInDurableObject(stub, async (instance: ServerDaemonCell) => {
         await instance.alarm()
       })
       await waitFor(() => {

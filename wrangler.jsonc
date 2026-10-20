@@ -58,7 +58,7 @@
     "bindings": [
       {
         "name": "DAEMON_CELL",
-        "class_name": "DaemonCellObject"
+        "class_name": "ServerDaemonCell"
       }
     ]
   },
@@ -175,10 +175,19 @@
     // TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS env var.
     "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90"
   },
+  // Fresh-start release: the old mailbox class is tombstoned (Cloudflare destroys
+  // every object and its storage in that namespace) and a new class name takes
+  // over with an empty namespace. The dev environment (this top level) also gets
+  // the tombstone, which is fine: it clears the dev namespace. Never reuse the
+  // old class name; drop the tombstone entry in a later release.
   "exports": {
-    "DaemonCellObject": {
+    "ServerDaemonCell": {
       "type": "durable-object",
       "storage": "sqlite"
+    },
+    "DaemonCellObject": {
+      "type": "durable-object",
+      "state": "deleted"
     }
   },
   "env": {
@@ -202,7 +211,7 @@
         "bindings": [
           {
             "name": "DAEMON_CELL",
-            "class_name": "DaemonCellObject"
+            "class_name": "ServerDaemonCell"
           }
         ]
       },
@@ -363,7 +372,7 @@
         "bindings": [
           {
             "name": "DAEMON_CELL",
-            "class_name": "DaemonCellObject"
+            "class_name": "ServerDaemonCell"
           }
         ]
       },
@@ -496,7 +505,7 @@
         "bindings": [
           {
             "name": "DAEMON_CELL",
-            "class_name": "DaemonCellObject"
+            "class_name": "ServerDaemonCell"
           }
         ]
       },

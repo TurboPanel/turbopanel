@@ -2,7 +2,7 @@
  * Server status read model — Postgres-backed, no Durable Object reads on the default path.
  *
  * Vocabulary:
- *   daemon cell     = live connection owner (DaemonCell / DaemonCellObject / RedisDaemonCell)
+ *   daemon cell     = live connection owner (DaemonCell / ServerDaemonCell / RedisDaemonCell)
  *   server status   = DB-projected read model (this module)
  *   projection      = daemon cell writing meaningful state to Postgres (postgres-projection.ts)
  */

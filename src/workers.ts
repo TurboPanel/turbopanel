@@ -96,7 +96,7 @@ import {
   TWO_FACTOR_CHALLENGE_PURPOSE,
 } from './client/authn/two-factor.ts'
 
-export { DaemonCellObject } from './daemon/cell/do.ts'
+export { ServerDaemonCell } from './daemon/cell/do.ts'
 
 let initPromise: Promise<void> | null = null
 let cachedApp: ReturnType<typeof createApp> | null = null

@@ -1,4 +1,4 @@
-export { DaemonCellObject } from './daemon/cell/do.ts'
+export { ServerDaemonCell } from './daemon/cell/do.ts'
 
 export default {
   fetch(): Response {

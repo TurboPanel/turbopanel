@@ -34,7 +34,7 @@ delivery, presence, and request correlation only.
 > **Cost / hibernation:** the command consumer enqueues a `command-dispatch`
 > envelope into the cell outbox, then **polls** `waitForRequest` from the
 > worker/Deno process — it never blocks inside the Durable Object. Do not add
-> timers, polling loops, or long-lived promises inside `DaemonCellObject`; do
+> timers, polling loops, or long-lived promises inside `ServerDaemonCell`; do
 > not hold Hyperdrive connections open across handler returns. Never build
 > general command queues inside Durable Objects — Cloudflare Queues / RabbitMQ
 > own durable transport; the cell owns only the live WS outbox + pending-request

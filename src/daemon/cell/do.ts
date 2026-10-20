@@ -400,7 +400,7 @@ function parsePositiveIntEnv(raw: string | undefined, fallback: number): number 
  * ║  8. Workers (DO) and self-hosted (Redis) must stay in parity    ║
  * ╚══════════════════════════════════════════════════════════════════╝
  */
-export class DaemonCellObject {
+export class ServerDaemonCell {
   readonly #ctx: DurableObjectState
   readonly #env: CloudflareBindings
   #schemaReady = false

@@ -124,7 +124,7 @@ export type ClearUpdateStatusOptions = {
  *   DaemonCell         = live connection owner (one per serverId)
  *   DaemonCellRegistry = factory/registry for DaemonCell instances
  *   Implementations:
- *     Workers → DaemonCellObject (SQLite-backed Durable Object, do.ts)
+ *     Workers → ServerDaemonCell (SQLite-backed Durable Object, do.ts)
  *     Deno    → RedisDaemonCell (Redis-backed, redis/cell.ts)
  *
  * Requests vs delivery (both instance→daemon; DO schema v2 merges them):
