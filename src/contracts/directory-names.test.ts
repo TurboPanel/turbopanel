@@ -125,6 +125,15 @@ it('keeps common out of the environment names but in the scopes', () => {
   }
 })
 
+it('refuses base as an environment or scope name, in any case', () => {
+  assertEquals(isReservedScopeName('base'), true)
+  assertEquals(isValidEnvironmentName('base'), false)
+  assertEquals(isValidScope('base'), false)
+  assertEquals(isValidEnvironmentName('Base'), false)
+  assertEquals(isValidScope('Base'), false)
+  assertEquals(isValidEnvironmentName('base-2'), true)
+})
+
 it('rejects values that are not strings', () => {
   for (const value of [undefined, null, 1, {}, []]) {
     assertEquals(isValidOwnerName(value), false)

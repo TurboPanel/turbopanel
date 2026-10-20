@@ -14,6 +14,12 @@
       "tag": "0001_primary_environment",
       "when": 1792458663675,
       "sha256": "2fb459e6da668e7f74fd970fe1cb48f9335623908694cd986aee302e955c03d1"
+    },
+    {
+      "idx": 2,
+      "tag": "0002_reserve_base_name",
+      "when": 1792470724714,
+      "sha256": "1306e7738eebfb32bdd50cd704165e84341382697da88ad3871037e8b0c05dba"
     }
   ]
 }
