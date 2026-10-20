@@ -36,6 +36,7 @@ import {
   listComposeServiceKeys,
   listContainerComposeNames,
   loadPrincipalMaterial,
+  detachMountsOfRemovedServices,
   loadStorageMaterial,
   localManagedNetworkServiceNames,
   mergeProjectEnvironmentCompose,
@@ -2518,5 +2519,59 @@ describe('fabricNetworksFromSchedule', () => {
       }),
       fabricNetworks
     )
+  })
+})
+
+describe('detachMountsOfRemovedServices', () => {
+  const entry = (mounts: { composeServiceName: string; destinationPath: string }[]) => ({
+    storageId: 'st-1',
+    locationId: 'loc-1',
+    kind: 'volume' as const,
+    name: 'uploads',
+    provider: 'docker' as const,
+    serverId: 'srv-1',
+    volumeName: 'vol-1',
+    mounts: mounts.map((m) => ({ serviceId: 'svc', ...m })),
+  })
+
+  it('keeps the storage and drops the mount of a service the compose no longer has, with a warning', () => {
+    const kept = entry([
+      { composeServiceName: 'web', destinationPath: '/data' },
+      { composeServiceName: 'worker', destinationPath: '/work' },
+    ])
+    const { material, warnings } = detachMountsOfRemovedServices([kept], new Set(['web']))
+    assertEquals(material.length, 1)
+    assertEquals(material[0]!.storageId, 'st-1')
+    assertEquals(
+      material[0]!.mounts.map((m) => m.composeServiceName),
+      ['web']
+    )
+    assertEquals(warnings.length, 1)
+    assertEquals(warnings[0]!.code, 'storage_service_removed')
+    assertEquals(warnings[0]!.message.includes('"uploads"'), true)
+    assertEquals(warnings[0]!.message.includes('"worker"'), true)
+    // The input is not changed, so the storage can be attached again later.
+    assertEquals(kept.mounts.length, 2)
+  })
+
+  it('leaves a storage whose services are all still declared alone, and keeps one with no mounts', () => {
+    const attached = entry([{ composeServiceName: 'web', destinationPath: '/data' }])
+    const loose = entry([])
+    const { material, warnings } = detachMountsOfRemovedServices(
+      [attached, loose],
+      new Set(['web'])
+    )
+    assertEquals(material[0], attached)
+    assertEquals(material[1], loose)
+    assertEquals(warnings, [])
+  })
+
+  it('leaves an unmounted storage when its only service is gone', () => {
+    const { material } = detachMountsOfRemovedServices(
+      [entry([{ composeServiceName: 'worker', destinationPath: '/work' }])],
+      new Set(['web'])
+    )
+    assertEquals(material.length, 1)
+    assertEquals(material[0]!.mounts, [])
   })
 })
