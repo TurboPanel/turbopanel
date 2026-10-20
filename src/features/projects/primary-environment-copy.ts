@@ -49,17 +49,18 @@ function publishedShortPortTarget(entry: string | number): string | null {
   if (typeof entry === 'number') return null
   const spec = entry.split('/')[0]!
   const segments = spec.split(':')
-  return segments.length > 1 ? segments[segments.length - 1]! : null
+  return segments.length > 1 ? (segments.at(-1) ?? null) : null
 }
 
 /** The container port a published entry exposed, or `undefined` when it is not published. */
 function publishedTarget(entry: unknown): string | null | undefined {
   if (typeof entry === 'string' || typeof entry === 'number') {
     const target = publishedShortPortTarget(entry)
-    return target === null ? undefined : target
+    return target ?? undefined
   }
   if (isRecord(entry) && !isComposeTaggedValue(entry) && entry.published != null) {
-    return entry.target == null ? null : String(entry.target)
+    const target = entry.target
+    return typeof target === 'string' || typeof target === 'number' ? String(target) : null
   }
   return undefined
 }
