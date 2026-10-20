@@ -45,11 +45,6 @@ import {
   runPendingStripeProjections,
   type StripeProjectionOutcome,
 } from './stripe-projection.ts'
-import {
-  newPendingCheckoutRecord,
-  readPendingCheckout,
-  writePendingCheckout,
-} from '../../features/billing/pending-checkout.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -695,19 +690,6 @@ test('T7 · checkout.session.completed reads the session first, then projects th
     },
   ]) {
     const db = emptyDb()
-    await writePendingCheckout(
-      db,
-      ORG,
-      newPendingCheckoutRecord({
-        sessionId: 'cs_1',
-        url: 'https://checkout.stripe.com/c/pay/cs_1',
-        tierId: S1,
-        quantity: 2,
-        idempotencyKey: 'checkout-key',
-        nowMs: Date.parse(NOW),
-      }),
-      Date.parse(NOW)
-    )
     const client = routedClient({
       'GET /v1/checkout/sessions/cs_1': () => ({
         id: 'cs_1',
@@ -736,7 +718,6 @@ test('T7 · checkout.session.completed reads the session first, then projects th
       db.rows(subscriptionItem).map((row) => row.quantity),
       [2]
     )
-    assertEquals(await readPendingCheckout(db, ORG, Date.parse(NOW)), null)
   }
 })
 

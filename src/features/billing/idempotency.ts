@@ -16,8 +16,8 @@
  * has closed is a new request, and a saved refusal stops being replayed.
  *
  * The window is the second line of defence, not the first. Checkout already
- * serialises on the quantity lease and reuses the stored pending-checkout
- * record, and the customer is looked up from `payer` before it is ever
+ * serialises on the quantity lease and expires or reuses the customer's open
+ * Checkout sessions as Stripe lists them, and the customer is looked up from `payer` before it is ever
  * created. The key only covers the gap where Stripe applied a call whose
  * response we never recorded; a retry of that gap more than a window later
  * can create a duplicate (an orphan customer, or a second open Checkout

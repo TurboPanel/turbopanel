@@ -8,9 +8,13 @@
 import { assertEquals, assertRejects } from '@std/assert'
 import { payer } from '../../db/schema.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
+import { StripeApiError } from './errors.ts'
 import { createStripeClientDouble, type StripeCall } from '../../test-fixtures/stripe-client.ts'
 import {
   CHECKOUT_SESSION_ID_PLACEHOLDER,
+  CHECKOUT_SESSION_LIFETIME_MS,
+  checkoutSessionExpiresAtMs,
+  expireCheckoutSession,
   checkoutIdempotencyKey,
   checkoutReturnUrls,
   createCheckoutSession,
@@ -50,6 +54,8 @@ test('T4 · the Checkout session form, key by key: subscription mode, the custom
     cancelUrl: urls.cancelUrl,
     idempotencyKey: 'checkout-key-1',
     organizationId: ORG,
+    tierId: 'tier-1',
+    nowMs: Date.parse(NOW),
   })
   assertEquals(out, {
     sessionId: 'cs_1',
@@ -71,6 +77,8 @@ test('T4 · the Checkout session form, key by key: subscription mode, the custom
     ['customer_update[address]', 'auto'],
     ['customer_update[name]', 'auto'],
     [`metadata[${STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY}]`, ORG],
+    ['metadata[turbopanel_tier_id]', 'tier-1'],
+    ['metadata[turbopanel_quantity]', '2'],
     ['subscription_data[billing_mode][type]', 'flexible'],
     ['subscription_data[billing_cycle_anchor_config][day_of_month]', '1'],
     ['subscription_data[billing_cycle_anchor_config][hour]', '0'],
@@ -82,6 +90,7 @@ test('T4 · the Checkout session form, key by key: subscription mode, the custom
       `https://panel.example.com/${ORG}/billing?checkout=success&session_id=${CHECKOUT_SESSION_ID_PLACEHOLDER}`,
     ],
     ['cancel_url', `https://panel.example.com/${ORG}/billing?checkout=cancel`],
+    ['expires_at', String(Math.floor(checkoutSessionExpiresAtMs(Date.parse(NOW)) / 1000))],
   ])
 })
 
@@ -94,6 +103,7 @@ test('T4 · the promotion-code field is sent only when coupons are allowed', asy
   const base = {
     providerCustomerId: 'cus_1',
     providerPriceId: 'price_S3',
+    tierId: 'tier-1',
     quantity: 1,
     successUrl: 'https://panel.example.com/ok',
     cancelUrl: 'https://panel.example.com/cancel',
@@ -151,6 +161,7 @@ test('T4 · a non-positive or fractional quantity is refused before any Stripe c
     cancelUrl: 'c',
     idempotencyKey: 'k',
     organizationId: ORG,
+    tierId: 'tier-1',
   }
   for (const quantity of [0, -1, 1.5, Number.NaN]) {
     await assertRejects(() => createCheckoutSession(client, { ...base, quantity }), RangeError)
@@ -200,4 +211,63 @@ test('T4 · ensureCustomerForOrganization reuses the projected payer, else creat
   assertEquals(second, { providerCustomerId: 'cus_new', created: false })
   assertEquals(client.calls.length, 1)
   assertEquals(db.rows(payer).length, 1)
+})
+
+test('the checkout key is windowed and carries the sessions it replaces, in a stable order', () => {
+  const now = Date.parse('2026-10-20T12:00:00.000Z')
+  const plain = checkoutIdempotencyKey('org', 'tier', 2, now)
+  assertEquals(plain, windowedIdempotencyKey('checkout:org:tier:2', now))
+  const after = checkoutIdempotencyKey('org', 'tier', 2, now, ['cs_b', 'cs_a'])
+  assertEquals(after, windowedIdempotencyKey('checkout:org:tier:2:replaces:cs_a,cs_b', now))
+  assertEquals(plain === after, false)
+})
+
+test('a session lives between 60 and 65 minutes, and every moment of one idempotency window asks for the same expiry', () => {
+  const start =
+    Math.floor(Date.parse('2026-10-20T12:00:00.000Z') / IDEMPOTENCY_WINDOW_MS) *
+    IDEMPOTENCY_WINDOW_MS
+  const expiry = checkoutSessionExpiresAtMs(start)
+  assertEquals(checkoutSessionExpiresAtMs(start + IDEMPOTENCY_WINDOW_MS - 1), expiry)
+  assertEquals(expiry - start, IDEMPOTENCY_WINDOW_MS + CHECKOUT_SESSION_LIFETIME_MS)
+  assertEquals(
+    checkoutSessionExpiresAtMs(start + IDEMPOTENCY_WINDOW_MS) - expiry,
+    IDEMPOTENCY_WINDOW_MS
+  )
+})
+
+test('expireCheckoutSession: expired is done, a refusal reads back expired or complete, anything else rethrows', async () => {
+  const refusal = () =>
+    new StripeApiError({ status: 400, type: 'invalid_request_error', message: 'not open' })
+  const run = (status: string | null, expireError: StripeApiError | null) => {
+    const client = createStripeClientDouble((call) => {
+      if (call.method === 'POST') {
+        if (expireError) throw expireError
+        return { id: 'cs_1', status: 'expired' }
+      }
+      if (status === null) throw new Error('read failed')
+      return { id: 'cs_1', status }
+    })
+    return { client, result: expireCheckoutSession(client, 'cs_1') }
+  }
+  const ok = run(null, null)
+  assertEquals(await ok.result, 'expired')
+  assertEquals(ok.client.calls[0]!.idempotencyKey, 'checkout-expire:cs_1')
+  assertEquals(await run('expired', refusal()).result, 'expired')
+  assertEquals(await run('complete', refusal()).result, 'complete')
+  await assertRejects(() => run('open', refusal()).result, StripeApiError)
+  await assertRejects(() => run(null, refusal()).result, StripeApiError)
+  const transient = new StripeApiError({ status: 503, type: 'api_error', message: 'down' })
+  const t = run('expired', transient)
+  await assertRejects(() => t.result, StripeApiError)
+  assertEquals(t.client.calls.length, 1)
+  await assertRejects(
+    () =>
+      expireCheckoutSession(
+        createStripeClientDouble(() => {
+          throw new TypeError('x')
+        }),
+        'cs_1'
+      ),
+    TypeError
+  )
 })
