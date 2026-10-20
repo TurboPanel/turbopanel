@@ -81,7 +81,7 @@ import {
 } from '../../features/deploy/deploy-options.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { splitProjectDefaultServer } from '../../features/projects/project-options.ts'
-import { syncProjectWatch } from '../../features/git/watch-records.ts'
+import { syncEnvironmentWatch, syncProjectWatch } from '../../features/git/watch-records.ts'
 import {
   allocateProjectSlug,
   PROJECT_SLUG_IN_USE_ERROR,
@@ -125,6 +125,7 @@ export async function scaffoldCatalogEnvironments(
       })
       .returning({ id: environment.id })
 
+    if (compose) await syncEnvironmentWatch(tx, insertedEnv.id)
     if (!env.variables) return
 
     // One map per environment so sharedCredentialId only aliases within that env.
@@ -711,17 +712,25 @@ async function insertDockerComposeProject(
     })
     .returning({ id: project.id })
   await syncProjectWatch(tx, inserted.id)
-  await tx.insert(environment).values({
-    projectId: inserted.id,
-    name: fields.defaultEnvironmentName,
-    description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
-    isPrimary: true,
-    ...(fields.serverId ? { serverId: fields.serverId } : {}),
-    options: stampNewEnvironmentDeployOptions({
-      compose:
-        suppliedCompose !== null && !composeStaysInBase ? suppliedCompose : emptyComposeDocument(),
-    }),
-  })
+  const [primary] = await tx
+    .insert(environment)
+    .values({
+      projectId: inserted.id,
+      name: fields.defaultEnvironmentName,
+      description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+      isPrimary: true,
+      ...(fields.serverId ? { serverId: fields.serverId } : {}),
+      options: stampNewEnvironmentDeployOptions({
+        compose:
+          suppliedCompose !== null && !composeStaysInBase
+            ? suppliedCompose
+            : emptyComposeDocument(),
+      }),
+    })
+    .returning({ id: environment.id })
+  // The compose now lives in the environment, so its watch rows (deploy on push)
+  // are derived there, not from the empty Base.
+  await syncEnvironmentWatch(tx, primary!.id)
   return inserted.id
 }
 

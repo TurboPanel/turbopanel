@@ -1,4 +1,4 @@
-import { and, eq, ne } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
@@ -51,16 +51,17 @@ import {
   loadOrganizationRepositoryIds,
   loadProjectRepositoryId,
 } from '../../features/git/repository-records.ts'
+import { copyOfPrimaryOptions } from '../../features/projects/primary-environment-copy.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import {
   isFirstEnvironmentOf,
+  PrimaryEnvironmentConflictError,
   loadPrimaryEnvironment,
   lockProjectForEnvironmentChange,
-  PRIMARY_ENVIRONMENT_DELETE_ERROR,
   setPrimaryEnvironment,
   sortEnvironmentsForDisplay,
 } from '../../features/projects/primary-environment.ts'
 import {
-  copyOfPrimaryOptions,
   parseCreateEnvironmentJsonb,
   parseCreateEnvironmentNames,
   parseCreateEnvironmentStart,
@@ -90,6 +91,8 @@ type CreateEnvironmentInput = {
   serverId?: string | null
   metadata: Record<string, unknown> | null
   options: Record<string, unknown> | null
+  /** Plain-words list of what a copy left behind (empty unless the environment is a copy). */
+  notCopied: string[]
 }
 
 function buildEnvironmentPatchFields(
@@ -249,7 +252,12 @@ async function parseCreateEnvironmentInput(
   // A new environment starts as a copy of the primary one's own changes unless
   // the caller asks for an empty one or sends its own options. The copy goes
   // through the same checks as options a caller typed.
-  const sourceBody = await resolveCreateStartBody(db, projectId, body, startResult.start)
+  const { body: sourceBody, notCopied } = await resolveCreateStartBody(
+    db,
+    projectId,
+    body,
+    startResult.start
+  )
 
   const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
   // An overlay is part of its project's compose, so it answers to the same
@@ -288,6 +296,7 @@ async function parseCreateEnvironmentInput(
     ...(serverId !== undefined ? { serverId } : {}),
     metadata: jsonb.metadata,
     options: jsonb.options,
+    notCopied,
   }
 }
 
@@ -297,39 +306,20 @@ async function resolveCreateStartBody(
   projectId: string,
   body: Record<string, unknown>,
   start: 'copy' | 'empty' | null
-): Promise<Record<string, unknown>> {
-  if (start === 'empty') return { ...body, options: standAloneEnvironmentOptions() }
-  if (start === null && body.options !== undefined && body.options !== null) return body
+): Promise<{ body: Record<string, unknown>; notCopied: string[] }> {
+  if (start === 'empty') {
+    return { body: { ...body, options: standAloneEnvironmentOptions() }, notCopied: [] }
+  }
+  if (start === null && body.options !== undefined && body.options !== null) {
+    return { body, notCopied: [] }
+  }
   const primary = await loadPrimaryEnvironment(db, projectId)
-  const copied = primary ? copyOfPrimaryOptions(primary.options) : null
-  return copied ? { ...body, options: copied } : body
-}
-
-async function refuseDeletePrimary(
-  c: Context<AppEnv>,
-  db: Db,
-  environmentId: string
-): Promise<Response | null> {
-  const [row] = await db
-    .select({ projectId: environment.projectId, isPrimary: environment.isPrimary })
-    .from(environment)
-    .where(eq(environment.id, environmentId))
-    .limit(1)
-  if (!row?.isPrimary) return null
-  const others = await db
-    .select({ id: environment.id })
-    .from(environment)
-    .where(and(eq(environment.projectId, row.projectId), ne(environment.id, environmentId)))
-    .limit(1)
-  if (others.length === 0) return null
-  return c.json(
-    {
-      error: PRIMARY_ENVIRONMENT_DELETE_ERROR,
-      message:
-        'This is the primary environment. Make another environment primary first, then delete this one.',
-    },
-    409
-  )
+  if (!primary) return { body, notCopied: [] }
+  const copied = copyOfPrimaryOptions(primary.options)
+  return {
+    body: copied.options ? { ...body, options: copied.options } : body,
+    notCopied: copied.notCopied,
+  }
 }
 
 /** A row created while the delete ran trips an FK: report it as "has children". */
@@ -541,7 +531,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     await adoptProjectRepository(db, input.projectId, input.options, input.projectRepositoryId)
     await reconcileServicesForEnvironment(db, id)
 
-    return c.json({ ok: true as const, id })
+    return c.json({ ok: true as const, id, notCopied: input.notCopied })
   })
 
   router.patch('/environments/:id', async (c) => {
@@ -601,14 +591,37 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     if (immutable) return immutable
 
     const [row] = await db
-      .select({ projectId: environment.projectId })
+      .select({ projectId: environment.projectId, wasPrimary: environment.isPrimary })
       .from(environment)
       .where(eq(environment.id, id))
       .limit(1)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const changed = await db.transaction((tx) => setPrimaryEnvironment(tx, row.projectId, id))
+    let changed: boolean
+    try {
+      changed = await db.transaction((tx) => setPrimaryEnvironment(tx, row.projectId, id))
+    } catch (err) {
+      if (!(err instanceof PrimaryEnvironmentConflictError)) throw err
+      return c.json(
+        {
+          error: 'primary_environment_conflict',
+          message: 'The primary environment changed at the same time. Reload and try again.',
+        },
+        409
+      )
+    }
     if (!changed) return c.json({ error: 'Not found' }, 404)
+    // Making the primary environment primary again changed nothing: no audit row.
+    if (!row.wasPrimary)
+      await recordAudit(db, {
+        organizationId,
+        actorUserId: session.userId,
+        actorEmail: session.email ?? null,
+        action: 'environment.primary.set',
+        targetType: 'environment',
+        targetId: id,
+        context: { projectId: row.projectId },
+      })
     return c.json({ ok: true as const, id, projectId: row.projectId })
   })
 
@@ -637,11 +650,6 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
 
     const stepUp = await requireStepUpIfConfigured(c, organizationId, 'environment.delete')
     if (stepUp) return stepUp
-
-    // The primary environment cannot go while the project has others: make
-    // another one primary first, so a project always has exactly one.
-    const primaryBlock = await refuseDeletePrimary(c, db, id)
-    if (primaryBlock) return primaryBlock
 
     // The name is a folder on the servers: an environment with folders cannot go.
     const foldersBlock = await refuseDeleteWhileFolders(c, db, id)

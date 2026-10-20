@@ -6,7 +6,7 @@
  * it can be changed with "make primary", and it is what the landing, the status
  * and "start a new environment as a copy" use. Nothing guesses it from a name.
  */
-import { and, asc, eq, sql, type SQL } from 'drizzle-orm'
+import { and, asc, eq, ne, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { environment } from '../../db/schema.ts'
 
@@ -56,9 +56,19 @@ export async function listProjectEnvironmentIds(db: Reader, projectId: string): 
   return rows.map((row) => row.id)
 }
 
+/** The marker could not be moved the way the project lock says it should. */
+export class PrimaryEnvironmentConflictError extends Error {
+  constructor() {
+    super('primary environment marker did not change exactly one row')
+    this.name = 'PrimaryEnvironmentConflictError'
+  }
+}
+
 /**
  * Move the marker to `environmentId`. Two statements on purpose: the unique
- * index is checked row by row, so one swapping UPDATE could trip it.
+ * index is checked row by row, so one swapping UPDATE could trip it. The second
+ * must change exactly one row, otherwise the caller's transaction rolls back
+ * (throws {@link PrimaryEnvironmentConflictError}).
  * @returns false when the environment is not in the project
  */
 export async function setPrimaryEnvironment(
@@ -79,11 +89,40 @@ export async function setPrimaryEnvironment(
     .update(environment)
     .set({ isPrimary: false, updatedAt: now })
     .where(and(eq(environment.projectId, projectId), eq(environment.isPrimary, true)))
-  await tx
+  const set = await tx
     .update(environment)
     .set({ isPrimary: true, updatedAt: now })
     .where(eq(environment.id, environmentId))
+    .returning({ id: environment.id })
+  if (set.length !== 1) throw new PrimaryEnvironmentConflictError()
   return true
+}
+
+/**
+ * True when deleting the environment would leave its project without a primary
+ * while other environments remain. Takes the project lock first and reads the
+ * marker under it, so a "make primary" racing the delete is seen.
+ */
+export async function deleteWouldOrphanPrimary(tx: DbTx, environmentId: string): Promise<boolean> {
+  const [row] = await tx
+    .select({ projectId: environment.projectId })
+    .from(environment)
+    .where(eq(environment.id, environmentId))
+    .limit(1)
+  if (!row) return false
+  await lockProjectForEnvironmentChange(tx, row.projectId)
+  const [current] = await tx
+    .select({ isPrimary: environment.isPrimary })
+    .from(environment)
+    .where(eq(environment.id, environmentId))
+    .limit(1)
+  if (!current?.isPrimary) return false
+  const others = await tx
+    .select({ id: environment.id })
+    .from(environment)
+    .where(and(eq(environment.projectId, row.projectId), ne(environment.id, environmentId)))
+    .limit(1)
+  return others.length > 0
 }
 
 /**

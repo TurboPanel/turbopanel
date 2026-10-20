@@ -250,7 +250,11 @@ changes.
   (`composeSource`) or has project overlays stays in the Base for now.
 - **A new environment is a copy of the primary one:** `POST /environments`
   without `options` copies the primary's `compose` and `composeOverlays`
-  (`start: 'copy'`, the default); `start: 'empty'` stands alone. The name follows
+  (`start: 'copy'`, the default; `features/projects/primary-environment-copy.ts`)
+  minus what must be unique: `x-turbopanel.hosting`, published host ports (moved
+  to `expose`), `container_name`, and the git `branch` (with `deployOnPush: false`
+  so a push never deploys the copy). Variables, secrets and the server pin are not
+  copied; the response lists the omissions in `notCopied`. `start: 'empty'` stands alone. The name follows
   the environment name rule on every path.
 - **Edit target:** `PATCH /projects/:id` with `options.compose` or
   `options.composeOverlays` needs `target` (`base` or an environment id); with

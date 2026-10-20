@@ -65,6 +65,7 @@ export const AUDIT_ACTIONS = [
   'tls.leaf.stale',
   'tls.leaf.delete',
   'folder.remove',
+  'environment.primary.set',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

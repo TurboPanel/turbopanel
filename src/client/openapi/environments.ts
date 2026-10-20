@@ -236,7 +236,7 @@ export const environmentSchemas = {
         type: 'string',
         enum: ['copy', 'empty'],
         description:
-          "How the environment starts when `options` is not sent. `copy` (the default) copies the primary environment's own compose changes (and extra layers); it still inherits the Base like every environment. `empty` stands alone: it drops the Base's services (`services: !override {}`) and starts with nothing. The first environment of a project becomes its primary one. **400** `environment_start_invalid` for another value, **400** `environment_start_conflict` when `options` is also sent. The name follows the environment name rule on every path: **400** `invalid_environment_name`.",
+          "How the environment starts when `options` is not sent. `copy` (the default) copies the primary environment's services and settings (its own compose changes and extra layers); it still inherits the Base like every environment. A copy does NOT take what must be unique per environment: domains and routes, published host ports (the container's own ports stay, as `expose`), fixed `container_name`s, and the git branch (the source is kept but `deployOnPush` is set to false, so a push never deploys the copy until a branch is chosen and push deploys are turned on). Variables, secrets and the server pin are never copied. The create response lists what was left out in `notCopied`, in plain words. `empty` stands alone: it drops the Base's services (`services: !override {}`) and starts with nothing. The first environment of a project becomes its primary one. **400** `environment_start_invalid` for another value, **400** `environment_start_conflict` when `options` is also sent. The name follows the environment name rule on every path: **400** `invalid_environment_name`.",
       },
       serverId: {
         type: ['string', 'null'],
@@ -482,7 +482,7 @@ export const environmentPaths = {
       tags: ['Environments'],
       summary: "Make this environment the project's primary one",
       description:
-        'A project has exactly one primary environment. This moves the marker here (the previous primary stops being primary in the same transaction). Idempotent. The primary environment is the landing, the status and the source a new environment copies. It cannot be deleted while the project has other environments: **409** `primary_environment_cannot_be_deleted`.',
+        'A project has exactly one primary environment. This moves the marker here (the previous primary stops being primary in the same transaction). Idempotent. **409** `primary_environment_conflict` when the marker changed at the same time (nothing is changed). Recorded in the audit trail as `environment.primary.set` when it moves. The primary environment is the landing, the status and the source a new environment copies. It cannot be deleted while the project has other environments: **409** `primary_environment_cannot_be_deleted`.',
       parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
       responses: {
         200: {

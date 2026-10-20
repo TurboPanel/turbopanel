@@ -1,5 +1,9 @@
 import { and, eq, inArray, ne, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
+import {
+  deleteWouldOrphanPrimary,
+  PRIMARY_ENVIRONMENT_DELETE_ERROR,
+} from './primary-environment.ts'
 import { ensureProjectPlacements } from '../principals/placement-records.ts'
 import {
   binding,
@@ -390,7 +394,13 @@ export async function deleteProjectCascade(
   return listenerWarning ? { ok: true, warning: listenerWarning } : { ok: true }
 }
 
+const PRIMARY_DELETE_DETAIL = {
+  message:
+    'This is the primary environment. Make another environment primary first, then delete this one.',
+}
+
 export type EnvironmentDeleteRefusal =
+  | typeof PRIMARY_ENVIRONMENT_DELETE_ERROR
   | typeof ENVIRONMENT_RUNNING_ERROR
   | typeof MANAGED_RUNTIME_PRESENT_ERROR
   | typeof COMMON_ASSET_IN_USE_ERROR
@@ -480,14 +490,19 @@ export async function deleteEnvironmentCascade(
   if (sharedInUse) return { ok: false, error: sharedInUse.error, detail: sharedInUse.detail }
 
   const bindingTargets = await loadBindingListenerTargets(db, children.serviceIds)
-  await db.transaction((tx) =>
-    dropEnvironmentRows(tx, {
+  const refused = await db.transaction(async (tx) => {
+    // Under the project lock: a "make primary" racing this delete is seen.
+    if (await deleteWouldOrphanPrimary(tx, environmentId)) return true
+    await dropEnvironmentRows(tx, {
       environmentIds: [environmentId],
       serviceIds: children.serviceIds,
       containerIds: children.containerRows.map((row) => row.id),
       hostingIds: children.hostingIds,
     })
-  )
+    return false
+  })
+  if (refused)
+    return { ok: false, error: PRIMARY_ENVIRONMENT_DELETE_ERROR, detail: PRIMARY_DELETE_DETAIL }
   const listenerWarning = await syncRemovedBindingListeners(db, bindingTargets, listenerSync)
   return listenerWarning ? { ok: true, warning: listenerWarning } : { ok: true }
 }

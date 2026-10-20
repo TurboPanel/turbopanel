@@ -5,7 +5,7 @@ import {
 } from '../../features/compose/layer-chain.ts'
 import { mergeComposeLayers, type ComposeLayer } from '../../features/compose/index.ts'
 import { assertEquals } from '@std/assert'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -20,6 +20,7 @@ import {
   managed,
   organization,
   project,
+  repository,
   server,
   service,
   user,
@@ -2068,5 +2069,76 @@ test('PATCH /projects/:id refuses project settings mixed into an environment edi
     })
     assertEquals(res.status, 400)
     assertEquals(((await res.json()) as { error: string }).error, 'edit_target_mixed')
+  })
+})
+
+test('POST /projects docker-compose naming a repository watches the environment that now holds the compose', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const [repo] = await ctx.db
+      .insert(repository)
+      .values({
+        organizationId: ctx.organizationId,
+        provider: 'github',
+        repositoryUrl: `https://github.com/example/${crypto.randomUUID()}`,
+      })
+      .returning({ id: repository.id })
+    try {
+      const compose = {
+        version: 1,
+        data: {
+          services: {
+            web: {
+              image: 'nginx:1',
+              'x-turbopanel': { source: { sourceId: repo!.id, branch: 'main' } },
+            },
+          },
+        },
+        presentation: { keyOrder: ['services'], comments: {} },
+      }
+      const res = await sendProjectJson(ctx, cookie, 'POST', '/projects', {
+        type: 'docker-compose',
+        workspaceId: ctx.workspaceId,
+        name: 'Watched Compose',
+        options: { compose },
+      })
+      assertEquals(res.status, 200)
+      const { id } = (await res.json()) as { id: string }
+      const stored = await storedCompose(ctx, id)
+      assertEquals(stored.base, {})
+      const watched = (await ctx.db.execute(
+        sql`SELECT environment_id::text AS env, project_id::text AS proj FROM watch WHERE repository_id = ${repo!.id}::uuid`
+      )) as unknown as { env: string | null; proj: string | null }[]
+      assertEquals(
+        watched.map((row) => row.env),
+        [stored.envs[0]!.id]
+      )
+    } finally {
+      await ctx.db.execute(sql`DELETE FROM watch WHERE repository_id = ${repo!.id}::uuid`)
+      await ctx.db
+        .update(project)
+        .set({ repositoryId: null })
+        .where(eq(project.organizationId, ctx.organizationId))
+      await ctx.db.delete(repository).where(eq(repository.id, repo!.id))
+    }
+  })
+})
+
+test('PATCH /projects/:id without a target is refused when the Base already holds content', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEmptyProject(ctx, cookie, 'Edit Target Base Content')
+    const seeded = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      target: 'base',
+      options: { compose: WEB_COMPOSE },
+    })
+    assertEquals(seeded.status, 200)
+
+    const refused = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: { compose: WEB_COMPOSE_V2 },
+    })
+    assertEquals(refused.status, 400)
+    assertEquals(((await refused.json()) as { error: string }).error, 'edit_target_required')
+    assertEquals((await storedCompose(ctx, id)).base, WEB_COMPOSE.data)
   })
 })

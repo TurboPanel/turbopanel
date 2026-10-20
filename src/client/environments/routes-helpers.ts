@@ -293,21 +293,3 @@ export function standAloneEnvironmentOptions(): Record<string, unknown> {
     },
   }
 }
-
-/**
- * What a new environment copies from the primary one: its own compose changes
- * and extra layers, nothing else (no deploy settings, server pin or metadata).
- * Returns null when the primary has no changes of its own.
- */
-export function copyOfPrimaryOptions(primaryOptions: unknown): Record<string, unknown> | null {
-  if (typeof primaryOptions !== 'object' || primaryOptions === null) return null
-  const source = primaryOptions as Record<string, unknown>
-  const copy: Record<string, unknown> = {}
-  if (source.compose !== undefined && source.compose !== null) {
-    copy.compose = structuredClone(source.compose)
-  }
-  if (Array.isArray(source.composeOverlays) && source.composeOverlays.length > 0) {
-    copy.composeOverlays = structuredClone(source.composeOverlays)
-  }
-  return Object.keys(copy).length === 0 ? null : copy
-}

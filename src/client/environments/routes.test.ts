@@ -1,6 +1,6 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -13,16 +13,22 @@ import {
   container,
   deployment,
   environment,
+  audit,
   grant,
   hosting,
   organization,
   project,
+  repository,
   server,
   service,
   user,
   variable,
   workspace,
 } from '../../db/schema.ts'
+import {
+  decideEnvironmentPush,
+  environmentBranchBindings,
+} from '../../features/git/environment-branch-tracking.ts'
 import { makeComposeTag } from '../../features/compose/index.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerEnvironmentRoutes } from './routes.ts'
@@ -1236,5 +1242,190 @@ test('the database allows one primary environment per project', async () => {
       refused = true
     }
     assertEquals(refused, true)
+  })
+})
+
+const PROD_SERVICE_COMPOSE = (sourceId: string) => ({
+  version: 1,
+  data: {
+    services: {
+      web: {
+        image: 'nginx:1',
+        container_name: 'prod-web',
+        ports: ['8080:80', '3000'],
+        'x-turbopanel': {
+          hosting: [{ hostname: 'app.example.com' }],
+          source: { sourceId, branch: 'main' },
+        },
+      },
+    },
+  },
+  presentation: { keyOrder: ['services'], comments: {} },
+})
+
+test('a copy leaves out what must be unique, lists it, and has no push deploys', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const [repo] = await ctx.db
+      .insert(repository)
+      .values({
+        organizationId: ctx.organizationId,
+        provider: 'github',
+        repositoryUrl: `https://github.com/example/${crypto.randomUUID()}`,
+      })
+      .returning({ id: repository.id })
+    try {
+      const primary = await createNamedEnvironment(ctx, cookie, {
+        name: 'live',
+        options: { compose: PROD_SERVICE_COMPOSE(repo!.id) },
+      })
+      assertEquals(primary.status, 200)
+      assertEquals(primary.json.notCopied, [])
+      const copy = await createNamedEnvironment(ctx, cookie, { name: 'staging' })
+      assertEquals(copy.status, 200)
+      const notCopied = copy.json.notCopied as string[]
+      assertEquals(notCopied.length, 6)
+
+      const rows = await ctx.db
+        .select({ id: environment.id, options: environment.options })
+        .from(environment)
+        .where(eq(environment.projectId, ctx.projectId))
+      const stored = new Map(rows.map((row) => [row.id, row.options]))
+      const web = (stored.get(copy.id) as StoredOptions).compose.data.services as Record<
+        string,
+        Record<string, unknown>
+      >
+      const webCopy = web.web!
+      assertEquals(webCopy.container_name, undefined)
+      assertEquals(webCopy.ports, ['3000'])
+      assertEquals(webCopy.expose, ['80'])
+      assertEquals((webCopy['x-turbopanel'] as Record<string, unknown>).hosting, undefined)
+
+      // The production environment is untouched.
+      assertEquals(
+        (stored.get(primary.id) as StoredOptions).compose.data,
+        PROD_SERVICE_COMPOSE(repo!.id).data
+      )
+
+      // The copy keeps the source, so it is watched, but a push never deploys it.
+      const bindings = environmentBranchBindings({
+        projectOptions: {
+          compose: { version: 1, data: {}, presentation: { keyOrder: [], comments: {} } },
+        },
+        environmentOptions: stored.get(copy.id),
+        sourceId: repo!.id,
+        repositoryDefaultBranch: 'main',
+      })
+      assertEquals(decideEnvironmentPush(bindings, 'main'), 'push_deploys_off')
+      const watches = await ctx.db.execute(
+        sql`SELECT environment_id::text AS id FROM watch WHERE repository_id = ${repo!.id}::uuid`
+      )
+      assertEquals(
+        (watches as unknown as { id: string }[]).map((row) => row.id).sort(),
+        [primary.id, copy.id].sort()
+      )
+    } finally {
+      await ctx.db.execute(sql`DELETE FROM watch WHERE repository_id = ${repo!.id}::uuid`)
+      await ctx.db.update(project).set({ repositoryId: null }).where(eq(project.id, ctx.projectId))
+      await ctx.db.delete(repository).where(eq(repository.id, repo!.id))
+    }
+  })
+})
+
+test('make primary is audited once, and a member without manage access gets 403', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    await createNamedEnvironment(ctx, cookie, { name: 'live' })
+    const second = await createNamedEnvironment(ctx, cookie, { name: 'staging' })
+    const [reader] = await ctx.db
+      .insert(user)
+      .values({
+        email: `reader-${crypto.randomUUID()}@example.com`,
+        isEmailVerified: true,
+        role: 'user',
+      })
+      .returning({ id: user.id })
+    try {
+      await ctx.db.insert(grant).values({
+        entityType: 'organization',
+        entityId: ctx.organizationId,
+        actorType: 'user',
+        actorId: reader!.id,
+        permission: 'organization:read',
+      })
+      const readerCookie = await sessionCookie(ctx.db, ctx.secrets, reader!.id)
+      const denied = await sendEnvironmentJson(
+        ctx,
+        readerCookie,
+        'POST',
+        `/environments/${second.id}/primary`
+      )
+      assertEquals(denied.status, 403)
+      assertEquals((await projectEnvironmentFlags(ctx)).get('staging')?.isPrimary, false)
+
+      const done = await sendEnvironmentJson(
+        ctx,
+        cookie,
+        'POST',
+        `/environments/${second.id}/primary`
+      )
+      assertEquals(done.status, 200)
+      await sendEnvironmentJson(ctx, cookie, 'POST', `/environments/${second.id}/primary`)
+      const rows = await ctx.db
+        .select({ actorUserId: audit.actorUserId, context: audit.context })
+        .from(audit)
+        .where(and(eq(audit.action, 'environment.primary.set'), eq(audit.targetId, second.id)))
+      assertEquals(rows.length, 1)
+      assertEquals(rows[0]?.actorUserId, ctx.userId)
+    } finally {
+      await ctx.db.delete(audit).where(eq(audit.targetId, second.id))
+      await ctx.db.delete(grant).where(eq(grant.actorId, reader!.id))
+      await ctx.db.delete(user).where(eq(user.id, reader!.id))
+    }
+  })
+})
+
+test('concurrent creates, swaps and deletes keep exactly one primary', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    // Three creates at once on an empty project: one of them is first.
+    const created = await Promise.all(
+      ['a', 'b', 'c'].map((name) => createNamedEnvironment(ctx, cookie, { name }))
+    )
+    assertEquals(
+      created.map((row) => row.status),
+      [200, 200, 200]
+    )
+    const primaries = async () =>
+      [...(await projectEnvironmentFlags(ctx)).values()].filter((row) => row.isPrimary).length
+    assertEquals(await primaries(), 1)
+
+    // Competing swaps leave one primary.
+    const swaps = await Promise.all(
+      created.map((row) =>
+        sendEnvironmentJson(ctx, cookie, 'POST', `/environments/${row.id}/primary`)
+      )
+    )
+    assertEquals(
+      swaps.map((res) => res.status),
+      [200, 200, 200]
+    )
+    assertEquals(await primaries(), 1)
+
+    // A delete racing a swap: the delete is refused or the swap wins first;
+    // either way one primary remains.
+    const flags = await ctx.db
+      .select({ id: environment.id, isPrimary: environment.isPrimary })
+      .from(environment)
+      .where(eq(environment.projectId, ctx.projectId))
+    const current = flags.find((row) => row.isPrimary)!
+    const other = flags.find((row) => !row.isPrimary)!
+    const [del, swap] = await Promise.all([
+      sendEnvironmentJson(ctx, cookie, 'DELETE', `/environments/${current.id}`),
+      sendEnvironmentJson(ctx, cookie, 'POST', `/environments/${other.id}/primary`),
+    ])
+    assertEquals(swap.status, 200)
+    assertEquals([200, 409].includes(del.status), true)
+    assertEquals(await primaries(), 1)
   })
 })

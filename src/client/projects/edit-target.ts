@@ -10,7 +10,8 @@
  */
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { environment } from '../../db/schema.ts'
+import { environment, project } from '../../db/schema.ts'
+import { isBlankComposeData } from '../../features/compose/index.ts'
 import { UUID_RE } from '../repositories/routes-helpers.ts'
 
 export const EDIT_TARGET_REQUIRED_ERROR = 'edit_target_required'
@@ -37,6 +38,21 @@ export function carriesConfiguration(body: Record<string, unknown>): boolean {
   )
 }
 
+/** True when the project's own (Base) compose or its extra project layers hold anything. */
+async function baseHasContent(db: Db, projectId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ options: project.options })
+    .from(project)
+    .where(eq(project.id, projectId))
+    .limit(1)
+  const options = row?.options
+  if (!isRecord(options)) return false
+  const compose = options.compose
+  const data = isRecord(compose) && isRecord(compose.data) ? compose.data : {}
+  const overlays = Array.isArray(options.composeOverlays) ? options.composeOverlays : []
+  return !isBlankComposeData(data) || overlays.length > 0
+}
+
 export async function resolveEditTarget(
   db: Db,
   projectId: string,
@@ -61,6 +77,14 @@ export async function resolveEditTarget(
         error: EDIT_TARGET_REQUIRED_ERROR,
         message:
           "This project has more than one environment. Send target: an environment id, or 'base' to change what every environment inherits.",
+      }
+    }
+    if (await baseHasContent(db, projectId)) {
+      return {
+        ok: false,
+        error: EDIT_TARGET_REQUIRED_ERROR,
+        message:
+          "This project's content still lives in the Base, so a compose edit would be layered on top of it. Send target: 'base' to edit the Base, or an environment id to add changes to that environment.",
       }
     }
     environmentId = rows[0]!.id
