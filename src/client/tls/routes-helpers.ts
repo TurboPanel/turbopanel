@@ -10,6 +10,7 @@ import {
   metadataFromParsed,
   mintOrganizationCa,
   mintSelfSignedCertificate,
+  normalizePrivateKeyPem,
   parseCertificatePem,
   parseTlsOptions,
   privateKeyMatchesCertificate,
@@ -361,11 +362,13 @@ export async function materialFromUpload(
     // Normalize chain ordering (leaf first).
     const certificatePem = splitCertificateChain(body.certificatePem).join('')
     const parsed = await parseCertificatePem(certificatePem)
-    const matches = await privateKeyMatchesCertificate(body.privateKeyPem, parsed)
+    // Every stored key is PKCS#8, whatever form was uploaded (SEC1 EC, PKCS#1 RSA, PKCS#8).
+    const privateKeyPem = normalizePrivateKeyPem(body.privateKeyPem)
+    const matches = await privateKeyMatchesCertificate(privateKeyPem, parsed)
     if (!matches) {
       return createFailure('certificate_key_mismatch')
     }
-    const privateKeyPemSealed = await encryptSecret(secrets, body.privateKeyPem.trim())
+    const privateKeyPemSealed = await encryptSecret(secrets, privateKeyPem.trim())
     assertTpSecretPrivateKey(privateKeyPemSealed)
     return {
       certificatePem,

@@ -175,7 +175,8 @@ export const hostingSchemas = {
       hostnames: {
         type: 'array',
         items: { type: 'string' },
-        description: 'HTTP ingress hostnames (ignored for tcp/udp)',
+        description:
+          'HTTP ingress hostnames (ignored for tcp/udp). A name the control panel itself serves (the instance hostnames) is refused with `409 hostname_is_panel_hostname` on create and update (and `409 hosting_hostname_is_panel_hostname` at deploy); wildcard names are not refused. Another hosting already using a name is `409 hostname_in_use`.',
       },
       pathPrefix: {
         type: 'string',

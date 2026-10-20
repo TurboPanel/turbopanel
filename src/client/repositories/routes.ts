@@ -77,6 +77,7 @@ import { fetchGitlabAccount } from '../../features/git/gitlab-provider.ts'
 import { GitlabApiError } from '../../features/git/gitlab-api.ts'
 import { generateSshDeployKeypair } from '../../features/git/ssh-keypair.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
+import { nodeVersionSuggestion } from '../environments/deploy-node-version.ts'
 import { canAccessOrganization } from '../org-context.ts'
 import {
   assertCanCreateOr403,
@@ -1500,6 +1501,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       via: outcome.via,
       files: outcome.files,
       entries: outcome.entries,
+      nodeVersion: nodeVersionSuggestion(outcome.files),
     })
   })
 

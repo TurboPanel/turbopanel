@@ -78,6 +78,7 @@ import { registerInstanceAccessAdminRoutes } from './instance-access-routes.ts'
 import { registerInstanceUpdatesAdminRoutes } from './instance-updates-routes.ts'
 import { registerInstanceHostnameAdminRoutes } from './instance-hostname-routes.ts'
 import {
+  publicUrlsSiteConflict,
   recordInstanceAcmeApplyTimeout,
   recordInstanceAcmePreflightFailure,
 } from '../features/install/instance-hostnames.ts'
@@ -298,6 +299,8 @@ export function registerAdminRoutes(
       return c.json(parsed, 422)
     }
 
+    const siteConflict = await publicUrlsSiteConflict(db, parsed.urls)
+    if (siteConflict) return c.json(siteConflict, 422)
     await setPublicUrls(db, parsed.urls)
     return c.json({ ok: true, urls: parsed.urls, applied: false })
   })

@@ -2,6 +2,7 @@ import { assertEquals } from '@std/assert'
 import type { EnvironmentDeploySource } from '../../contracts/commands/schemas.ts'
 import type { PreparedNativeAppService } from '../../features/compose/ir.ts'
 import type { RepositoryFileEntry } from '../../features/git/git-provider.ts'
+import { NEWEST_NATIVE_APP_NODE_SERIES } from '../../contracts/runtime-registry.ts'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
@@ -14,6 +15,7 @@ import {
   type NodeVersionWarning,
   nodeVersionFilePaths,
   nodeVersionFromFiles,
+  nodeVersionSuggestion,
   repositoryNodeVersionReader,
   withNativeAppNodeVersions,
 } from './deploy-node-version.ts'
@@ -96,14 +98,21 @@ function reader(files: RepositoryFileEntry[]): {
 }
 
 test('reads the subdirectory first, then the repository root', () => {
-  assertEquals(nodeVersionFilePaths(undefined), ['package.json', '.nvmrc', '.node-version'])
+  assertEquals(nodeVersionFilePaths(undefined), [
+    'package.json',
+    '.nvmrc',
+    '.node-version',
+    '.tool-versions',
+  ])
   assertEquals(nodeVersionFilePaths('apps/web/'), [
     'apps/web/package.json',
     'apps/web/.nvmrc',
     'apps/web/.node-version',
+    'apps/web/.tool-versions',
     'package.json',
     '.nvmrc',
     '.node-version',
+    '.tool-versions',
   ])
 })
 
@@ -202,7 +211,9 @@ test('sends the series read at the deployed commit and says where it came from',
       path: 'package.json',
     },
   ])
-  assertEquals(calls, [{ ref: COMMIT, paths: ['package.json', '.nvmrc', '.node-version'] }])
+  assertEquals(calls, [
+    { ref: COMMIT, paths: ['package.json', '.nvmrc', '.node-version', '.tool-versions'] },
+  ])
   assertEquals(warnings, [])
   assertEquals([...result.readCommitShas], [['web', COMMIT]])
 })
@@ -822,4 +833,126 @@ test('a Deno app is never read for a Node series, and keeps its place among the 
     ],
     [['web', '26']]
   )
+})
+
+test('volta.node comes after engines.node and before .nvmrc', () => {
+  const paths = nodeVersionFilePaths(undefined)
+  const volta = JSON.stringify({ volta: { node: '22.4.1' }, engines: { node: '>=22' } })
+  assertEquals(
+    nodeVersionFromFiles([file('package.json', volta), file('.nvmrc', '24')], paths, OFFERED),
+    {
+      series: '26',
+      request: { requested: '>=22', path: 'package.json', source: 'package.json' },
+    }
+  )
+  const voltaOnly = JSON.stringify({ volta: { node: '22.4.1' } })
+  assertEquals(
+    nodeVersionFromFiles([file('package.json', voltaOnly), file('.nvmrc', '24')], paths, OFFERED),
+    { series: '22', request: { requested: '22.4.1', path: 'package.json', source: 'volta' } }
+  )
+})
+
+test('.tool-versions is read last, from its nodejs line', () => {
+  const paths = nodeVersionFilePaths(undefined)
+  const tool = 'python 3.12.1\n# runtimes\nnodejs 24.1.0 22.9.0 # first wins\n'
+  assertEquals(nodeVersionFromFiles([file('.tool-versions', tool)], paths, OFFERED), {
+    series: '24',
+    request: { requested: '24.1.0', path: '.tool-versions', source: '.tool-versions' },
+  })
+  assertEquals(
+    nodeVersionFromFiles(
+      [file('.tool-versions', 'nodejs lts\n'), file('.node-version', '22')],
+      paths,
+      OFFERED
+    ),
+    { series: '22', request: { requested: '22', path: '.node-version', source: '.node-version' } }
+  )
+  assertEquals(nodeVersionFromFiles([file('.tool-versions', 'ruby 3.3.0\n')], paths, OFFERED), null)
+  assertEquals(
+    nodeVersionFromFiles(
+      [file('.tool-versions', 'nodejs 22.1.0\n'), file('.nvmrc', '24')],
+      paths,
+      OFFERED
+    ),
+    { series: '24', request: { requested: '24', path: '.nvmrc', source: '.nvmrc' } }
+  )
+})
+
+test('ranges pick the highest offered series that satisfies them', () => {
+  const paths = ['package.json']
+  const pick = (range: string) =>
+    nodeVersionFromFiles([file('package.json', packageJson(range))], paths, OFFERED)
+  assertEquals((pick('^22') as { series: string }).series, '22')
+  assertEquals((pick('>=22') as { series: string }).series, '26')
+  assertEquals((pick('22 || 24') as { series: string }).series, '24')
+  assertEquals((pick('>=22.5 <24') as { series: string }).series, '22')
+  assertEquals('unsupported' in (pick('^18') as object), true)
+})
+
+test('latest is the deliberate follow-the-server choice and ignores the repository files', async () => {
+  const { read, calls } = reader([file('package.json', packageJson('^22'))])
+  const result = await withNativeAppNodeVersions([app('latest')], [source()], {
+    mode: 'deploy',
+    read,
+    warnings: [],
+    offered: OFFERED,
+  })
+  if ('kind' in result) throw new TypeError('expected apps')
+  assertEquals(result.apps[0]?.nodeVersion, NEWEST_NATIVE_APP_NODE_SERIES)
+  assertEquals(result.views[0]?.source, 'compose')
+  assertEquals(calls, [])
+})
+
+test('the wizard suggestion names a matched hint, an unavailable one, or none', () => {
+  const matched = nodeVersionSuggestion([file('.nvmrc', 'v22.11.0')], OFFERED)
+  assertEquals(matched.hint, {
+    source: '.nvmrc',
+    requested: 'v22.11.0',
+    path: '.nvmrc',
+    status: 'matched',
+    series: '22',
+  })
+  assertEquals(matched.newest, NEWEST_NATIVE_APP_NODE_SERIES)
+  const unsupported = nodeVersionSuggestion([file('.nvmrc', '16')], OFFERED)
+  assertEquals(unsupported.hint?.status, 'unsupported')
+  assertEquals(unsupported.hint?.series, undefined)
+  assertEquals(
+    nodeVersionSuggestion([file('package.json', packageJson('nope'))], OFFERED).hint?.status,
+    'invalid'
+  )
+  assertEquals(nodeVersionSuggestion([missing('.nvmrc')], OFFERED).hint, undefined)
+})
+
+test('latest never reaches the wire: every resolve path turns it into a concrete series', async () => {
+  const { read } = reader([])
+  const variants: Array<{
+    mode: 'deploy' | 'preview'
+    sources: EnvironmentDeploySource[]
+    rollbackPins?: Record<string, { nodeVersion?: string }>
+    expected: string
+  }> = [
+    { mode: 'deploy', sources: [source()], expected: NEWEST_NATIVE_APP_NODE_SERIES },
+    { mode: 'preview', sources: [source()], expected: NEWEST_NATIVE_APP_NODE_SERIES },
+    { mode: 'deploy', sources: [], expected: NEWEST_NATIVE_APP_NODE_SERIES },
+    {
+      mode: 'deploy',
+      sources: [{ ...source(), rollbackToReleaseId: 'rel-0' } as EnvironmentDeploySource],
+      rollbackPins: { web: { nodeVersion: '24' } },
+      expected: '24',
+    },
+  ]
+  for (const variant of variants) {
+    const result = await resolveSourceNodeVersions([app('latest')], variant.sources, {
+      mode: variant.mode,
+      read,
+      warnings: [],
+      offered: OFFERED,
+      ...(variant.rollbackPins ? { rollbackPins: variant.rollbackPins } : {}),
+    })
+    if ('kind' in result) throw new TypeError('expected apps')
+    assertEquals(
+      result.nodeVersions.apps.map((a) => a.nodeVersion),
+      [variant.expected]
+    )
+  }
 })
