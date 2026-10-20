@@ -8,6 +8,7 @@
  */
 
 import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm'
+import { nameListSql } from './sql-name-list.ts'
 import type { Db } from '../../db/connection.ts'
 import { login, managed, managedDatabase, replica, scope, server } from '../../db/schema.ts'
 import { generateSealedSecret } from '../../lib/secrets/data-encryption.ts'
@@ -82,9 +83,9 @@ export type ManagedLoginCredentialRow = ManagedLoginRow & {
 }
 
 /** SQL for the names of the databases a login may use, for a select over `login`. */
-export const loginDatabaseNames = sql<
-  string[]
->`ARRAY(SELECT d."name" FROM ${scope} s JOIN ${managedDatabase} d ON d."id" = s."database_id" WHERE s."login_id" = "login"."id" ORDER BY s."id")`
+export const loginDatabaseNames = nameListSql(
+  sql`ARRAY(SELECT d."name" FROM ${scope} s JOIN ${managedDatabase} d ON d."id" = s."database_id" WHERE s."login_id" = "login"."id" ORDER BY s."id")`
+)
 
 const LOGIN_SELECT = {
   id: login.id,
