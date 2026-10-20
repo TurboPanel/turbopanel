@@ -1,5 +1,5 @@
 {
-  "id": "dcabdce1-fe74-4b83-8512-daaa31e72884",
+  "id": "3d484b4b-e04a-4cbd-9797-54c5bff0cbbc",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -2721,9 +2721,40 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "is_primary": {
+          "name": "is_primary",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "is_pinned": {
+          "name": "is_pinned",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         }
       },
       "indexes": {
+        "uniq_environment_project_primary": {
+          "name": "uniq_environment_project_primary",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "uuid_ops"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"environment\".\"is_primary\"",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "idx_environment_project_id": {
           "name": "idx_environment_project_id",
           "columns": [
@@ -2800,7 +2831,7 @@
       "checkConstraints": {
         "environment_name_check": {
           "name": "environment_name_check",
-          "value": "name ~ '^[a-z0-9][a-z0-9_-]{0,31}$' AND name NOT IN ('common', 'home', 'tmp', 'services', 'volumes', 'data', 'sites', 'backup', 'backups', 'logs', 'cache', 'run', 'var', 'etc', 'bin', 'root', 'public', 'releases', 'current', 'shared', 'lost-found', 'tmp-staging')"
+          "value": "name ~ '^[a-z0-9][a-z0-9_-]{0,31}$' AND name NOT IN ('common', 'home', 'tmp', 'services', 'volumes', 'data', 'sites', 'backup', 'backups', 'logs', 'cache', 'run', 'var', 'etc', 'bin', 'root', 'public', 'releases', 'current', 'shared', 'lost-found', 'tmp-staging', 'base')"
         }
       },
       "isRLSEnabled": false
@@ -3224,7 +3255,7 @@
         },
         "folder_scope_check": {
           "name": "folder_scope_check",
-          "value": "scope = 'common' OR (scope ~ '^[a-z0-9][a-z0-9_-]{0,31}$' AND scope NOT IN ('common', 'home', 'tmp', 'services', 'volumes', 'data', 'sites', 'backup', 'backups', 'logs', 'cache', 'run', 'var', 'etc', 'bin', 'root', 'public', 'releases', 'current', 'shared', 'lost-found', 'tmp-staging'))"
+          "value": "scope = 'common' OR (scope ~ '^[a-z0-9][a-z0-9_-]{0,31}$' AND scope NOT IN ('common', 'home', 'tmp', 'services', 'volumes', 'data', 'sites', 'backup', 'backups', 'logs', 'cache', 'run', 'var', 'etc', 'bin', 'root', 'public', 'releases', 'current', 'shared', 'lost-found', 'tmp-staging', 'base'))"
         },
         "folder_common_scope_check": {
           "name": "folder_common_scope_check",

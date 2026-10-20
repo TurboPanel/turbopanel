@@ -259,8 +259,10 @@ CREATE TABLE "environment" (
 	"generation" integer DEFAULT 0 NOT NULL,
 	"name" text DEFAULT replace(uuidv7()::text, '-', '') NOT NULL,
 	"description" text,
+	"is_primary" boolean DEFAULT false NOT NULL,
+	"is_pinned" boolean DEFAULT false NOT NULL,
 	CONSTRAINT "uniq_environment_project_name" UNIQUE("project_id","name"),
-	CONSTRAINT "environment_name_check" CHECK (name ~ '^[a-z0-9][a-z0-9_-]{0,31}$' AND name NOT IN ('common', 'home', 'tmp', 'services', 'volumes', 'data', 'sites', 'backup', 'backups', 'logs', 'cache', 'run', 'var', 'etc', 'bin', 'root', 'public', 'releases', 'current', 'shared', 'lost-found', 'tmp-staging'))
+	CONSTRAINT "environment_name_check" CHECK (name ~ '^[a-z0-9][a-z0-9_-]{0,31}$' AND name NOT IN ('common', 'home', 'tmp', 'services', 'volumes', 'data', 'sites', 'backup', 'backups', 'logs', 'cache', 'run', 'var', 'etc', 'bin', 'root', 'public', 'releases', 'current', 'shared', 'lost-found', 'tmp-staging', 'base'))
 );
 --> statement-breakpoint
 CREATE TABLE "fabric" (
@@ -294,7 +296,7 @@ CREATE TABLE "folder" (
 	CONSTRAINT "folder_state_check" CHECK (state IN ('planned', 'present', 'removing', 'orphan', 'missing')),
 	CONSTRAINT "folder_removal_note_check" CHECK (removal_note IS NULL OR char_length(removal_note) <= 300),
 	CONSTRAINT "folder_slug_check" CHECK (slug ~ '^[a-z0-9]([a-z0-9._-]{0,61}[a-z0-9])?$' AND slug !~ '\.\.'),
-	CONSTRAINT "folder_scope_check" CHECK (scope = 'common' OR (scope ~ '^[a-z0-9][a-z0-9_-]{0,31}$' AND scope NOT IN ('common', 'home', 'tmp', 'services', 'volumes', 'data', 'sites', 'backup', 'backups', 'logs', 'cache', 'run', 'var', 'etc', 'bin', 'root', 'public', 'releases', 'current', 'shared', 'lost-found', 'tmp-staging'))),
+	CONSTRAINT "folder_scope_check" CHECK (scope = 'common' OR (scope ~ '^[a-z0-9][a-z0-9_-]{0,31}$' AND scope NOT IN ('common', 'home', 'tmp', 'services', 'volumes', 'data', 'sites', 'backup', 'backups', 'logs', 'cache', 'run', 'var', 'etc', 'bin', 'root', 'public', 'releases', 'current', 'shared', 'lost-found', 'tmp-staging', 'base'))),
 	CONSTRAINT "folder_common_scope_check" CHECK ((scope = 'common' AND environment_id IS NULL) OR (scope <> 'common' AND (environment_id IS NOT NULL OR state = 'orphan'))),
 	CONSTRAINT "folder_asset_kind_check" CHECK ((kind = 'service' AND storage_id IS NULL) OR (kind = 'volume' AND service_id IS NULL))
 );
@@ -1627,6 +1629,7 @@ CREATE INDEX "idx_dispatch_expires_at" ON "dispatch" USING btree ("expires_at");
 CREATE INDEX "idx_edict_organization_id" ON "edict" USING btree ("organization_id");--> statement-breakpoint
 CREATE INDEX "idx_edict_server_id" ON "edict" USING btree ("server_id");--> statement-breakpoint
 CREATE INDEX "idx_edict_created_by" ON "edict" USING btree ("created_by");--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_environment_project_primary" ON "environment" USING btree ("project_id" uuid_ops) WHERE "environment"."is_primary";--> statement-breakpoint
 CREATE INDEX "idx_environment_project_id" ON "environment" USING btree ("project_id" uuid_ops);--> statement-breakpoint
 CREATE INDEX "idx_environment_server_id" ON "environment" USING btree ("server_id" uuid_ops);--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_fabric_organization_id" ON "fabric" USING btree ("organization_id");--> statement-breakpoint
@@ -1971,6 +1974,8 @@ COMMENT ON COLUMN "environment"."server_id" IS 'Desired whole-server placement p
 COMMENT ON COLUMN "environment"."generation" IS 'Monotonic desired generation, incremented once per deploy plan by `bumpEnvironmentGeneration` and fanned into `deployment.desired_generation`.';--> statement-breakpoint
 COMMENT ON COLUMN "environment"."name" IS 'Scope folder name on every server, under `environment_name_check` (lowercase letters, digits, `_` and `-`, up to 32 chars, not reserved); unique per project.';--> statement-breakpoint
 COMMENT ON COLUMN "environment"."description" IS 'Optional free-text description written by the client API; the first environment is created with ''Default environment''.';--> statement-breakpoint
+COMMENT ON COLUMN "environment"."is_primary" IS 'True for the project''s one primary environment: the landing, the status and the source a new environment copies. Unique per project.';--> statement-breakpoint
+COMMENT ON COLUMN "environment"."is_pinned" IS 'True when the owner pinned the environment; pinned environments are listed right after the primary one.';--> statement-breakpoint
 COMMENT ON TABLE "fabric" IS 'Org TurboFabric WireGuard mesh (host interface `tp0`), at most one row per organization; absence means TurboFabric is off and private keys are never stored.';--> statement-breakpoint
 COMMENT ON COLUMN "fabric"."metadata" IS 'Free-form jsonb; no control-plane code path writes or reads it today.';--> statement-breakpoint
 COMMENT ON COLUMN "fabric"."options" IS 'Mesh policy jsonb: `containerPool` (relay prefix pool, default `10.192.0.0/12`), `listenPort` (default 51821), `mtu` (1280..9000, default 1420), `allowRelay`.';--> statement-breakpoint
@@ -2532,4 +2537,3 @@ COMMENT ON TABLE "workspace" IS 'Grouping of projects inside one organization; o
 COMMENT ON COLUMN "workspace"."name" IS 'Display label under `workspace_name_format_check` (letters, digits, space, `._-`), unique per organization at the API; ''TurboPanel'' is reserved from first boot.';--> statement-breakpoint
 COMMENT ON COLUMN "workspace"."description" IS 'Optional free-text description written by the client API; no format CHECK, app-side length cap only.';--> statement-breakpoint
 COMMENT ON COLUMN "workspace"."kind" IS 'Workspace discriminator: `user` (default, operator-created) or `turbopanel` (the single machine workspace per organization, provisioned at install).';
---> statement-breakpoint

@@ -34,8 +34,9 @@ The baseline has been regenerated while pre-MVP (no installed instances, no
 production data): nine times up to 2026-09-17 (the pre-0.1.0 schema freeze
 folded `0001`–`0020` into one `0000_init.sql`, generation 9), a tenth time on
 2026-10-17 (the fresh-start baseline, generation 10: migrations `0000`–`0039`
-replaced by one `0000_init.sql`), and an eleventh and **last** time on
-2026-10-19, right before the fresh-start release. The owner wipes the panel
+replaced by one `0000_init.sql`), an eleventh time on
+2026-10-19, and a twelfth and **last** time on 2026-10-20, right before the
+fresh-start release. The owner wipes the panel
 database and every server before that release, so nothing had to be carried
 over: the baseline and the five migrations added after it (`0001`–`0005`: the
 folder removal note, leaf attention, notification orphan and certificate
@@ -46,19 +47,31 @@ events, the certificate issued by the server, and the per-organization
 (default 30001, checked 30001 to 60001) is the only uid/gid counter. Each of
 these folds was a deliberate pre-MVP exception, **not** a precedent.
 
-**From the eleventh fold on, this is the rule, not a policy:** `0000_init.sql` is
+The twelfth fold replaced `0000_init` and the two migrations after it (`0001`
+the primary and pinned environment flags with the one-primary-per-project
+index, `0002` the word `base` joining the reserved environment and folder scope
+names) by one `0000_init.sql` written by `pnpm generate --name init` from
+`schema.ts`, plus the `COMMENT ON` statements from `scripts/schema-comments.mjs`
+(manifest generation 12, still `frozen: true`). The `base` checks are ordinary
+valid checks in it.
+
+**From the twelfth fold on, this is the rule, not a policy:** `0000_init.sql` is
 the baseline and every later migration is additive and immutable, tested as an
 upgrade from the previous release with a backup taken first. The freeze
-manifest is `frozen: true` at generation 11, so `scripts/check-migration-additions.mjs`
+manifest is `frozen: true` at generation 12, so `scripts/check-migration-additions.mjs`
 (in `build.yml`, `verify-ci.sh`) refuses any commit that modifies or deletes a
 shipped `NNNN_*.sql` or snapshot, and `migration-manifest.test.ts` refuses a
 working tree whose files no longer hash to the manifest. Restructuring an
 existing table is a forward migration that moves data, never an edit to the
 file that created it. Regenerating the baseline is not an option any more.
 
-The eleventh fold got past the freeze guards through one named, owner-approved
-exception in `check-migration-additions.mjs`, written by a throwaway script
-rather than a `--rebaseline` mode. The exception is deleted: re-baselining is closed
+The twelfth fold gets past the freeze guards through one named, owner-approved
+exception in `check-migration-additions.mjs` (`BASELINE_EXCEPTION`): it passes
+only a base manifest at generation 11 and a head manifest at generation 12,
+frozen, with a one-entry journal tagged `0000_init`. The manifest was written by
+a throwaway script, not a `--rebaseline` mode. Once the fold is the base the
+generation is 12 and the exception can never match again; the first change
+after it deletes the dead constant and its tests. After that re-baselining is closed
 for good, and no mode, flag or constant lets a shipped migration be edited,
 removed or regenerated. Every change from the release on is a forward
 migration. The upgrade check (`check-migration-upgrade.mjs`) keeps a lasting rule, not a
@@ -134,8 +147,8 @@ skipped on every instance that already ran it. After `pnpm generate`, run
 changed or removed entry) and commit the manifest with the migration. The
 test also checks the journal is contiguous and strictly increasing, every
 `NNNN_*.sql` on disk is journaled, and the `meta/NNNN_snapshot.json` `prevId`
-chain is intact. The manifest is frozen (generation 11); the folds of
-2026-09-17 (8 → 9), 2026-10-17 (9 → 10) and 2026-10-19 (10 → 11) were the last. With the manifest frozen, layer two
+chain is intact. The manifest is frozen (generation 12); the folds of
+2026-09-17 (8 → 9), 2026-10-17 (9 → 10), 2026-10-19 (10 → 11) and 2026-10-20 (11 → 12) were the last. With the manifest frozen, layer two
 (`scripts/check-migration-additions.mjs`, `pnpm check:migration-additions
 [base-ref]`) diffs `migrations/` against the base ref in CI and accepts
 additions only; it reads the _base's_ `frozen` flag, so a commit cannot

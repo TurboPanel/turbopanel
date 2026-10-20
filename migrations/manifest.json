@@ -1,25 +1,13 @@
 {
   "version": 1,
   "frozen": true,
-  "generation": 11,
+  "generation": 12,
   "entries": [
     {
       "idx": 0,
       "tag": "0000_init",
-      "when": 1792448457740,
-      "sha256": "83a3ef27f6d86ece6436f660cb5bbd83ff87208886b14ca66648832b32e16af7"
-    },
-    {
-      "idx": 1,
-      "tag": "0001_primary_environment",
-      "when": 1792458663675,
-      "sha256": "2fb459e6da668e7f74fd970fe1cb48f9335623908694cd986aee302e955c03d1"
-    },
-    {
-      "idx": 2,
-      "tag": "0002_reserve_base_name",
-      "when": 1792470724714,
-      "sha256": "1306e7738eebfb32bdd50cd704165e84341382697da88ad3871037e8b0c05dba"
+      "when": 1792498533036,
+      "sha256": "42fc7e4cabe14ee2a290e9265a2070691c59d73bcf8d0bf7fcd34ccc29dd1d2e"
     }
   ]
 }
