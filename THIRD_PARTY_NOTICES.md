@@ -74,7 +74,7 @@ pnpm-lock.yaml sha256:1ed04c21aca44d4fdb173ddd6d1d387431b446a569578062bce17b6845
 - Copyright: Drizzle Team
 - Homepage: https://orm.drizzle.team
 
-### hono@4.13.7
+### hono@4.13.11
 
 - License: MIT
 - Copyright: Yusuke Wada
@@ -866,7 +866,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Andrey Sitnik
 - Homepage: https://github.com/browserslist/update-db#readme
 
-### vite@6.4.3
+### vite@6.4.4
 
 - License: MIT
 - Copyright: Evan You
