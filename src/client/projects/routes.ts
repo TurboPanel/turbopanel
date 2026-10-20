@@ -41,8 +41,12 @@ import {
   configureProjectType,
   DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
   insertEmptyProject,
+  isProductionEnvironmentName,
   loadDefaultEnvironmentName,
 } from './empty-setup.ts'
+import { catalogEnvironmentCompose } from './catalog-compose.ts'
+import { resolveEditTarget } from './edit-target.ts'
+import { applyEnvironmentPatch } from '../environments/routes.ts'
 import { isProjectDisplayNameTaken, PROJECT_NAME_IN_USE_ERROR } from '../display-name-uniqueness.ts'
 import { isReservedSystemProjectName } from '../../features/system/hierarchy.ts'
 import { UUID_RE } from '../repositories/routes-helpers.ts'
@@ -94,19 +98,30 @@ export async function scaffoldCatalogEnvironments(
   entry: CatalogEntry,
   dataEncryptionSecrets: DerivedSecretsConfig,
   serverId?: string | null,
-  defaultEnvironmentName?: string
+  defaultEnvironmentName?: string,
+  /** False when the caller supplied the project's own compose: it stays the Base and is not merged in. */
+  baseMovesIntoEnvironments = true
 ) {
   const displayNames = scaffoldEnvironmentNames(entry.environments, defaultEnvironmentName)
+  // The production-like environment of the entry (else the first) is the primary one.
+  const primaryIndex = Math.max(
+    0,
+    entry.environments.findIndex((env) => isProductionEnvironmentName(env.displayName))
+  )
   await forEachSequential(entry.environments, async (env, index) => {
     const displayName = displayNames[index]!
+    const compose = baseMovesIntoEnvironments
+      ? catalogEnvironmentCompose(entry, env)
+      : (env.compose ?? null)
     const [insertedEnv] = await tx
       .insert(environment)
       .values({
         projectId,
         name: displayName,
         description: env.description ?? null,
+        isPrimary: index === primaryIndex,
         ...(serverId ? { serverId } : {}),
-        options: stampNewEnvironmentDeployOptions(env.compose ? { compose: env.compose } : null),
+        options: stampNewEnvironmentDeployOptions(compose ? { compose } : null),
       })
       .returning({ id: environment.id })
 
@@ -661,9 +676,25 @@ async function insertDockerComposeProject(
     defaultEnvironmentName: string
   }
 ): Promise<string> {
-  const compose =
-    fields.options && 'compose' in fields.options ? fields.options.compose : emptyComposeDocument()
-  const stored = splitProjectDefaultServer(fields.options ?? { compose })
+  const suppliedCompose =
+    fields.options && 'compose' in fields.options ? fields.options.compose : null
+  // A compose that names a repository stays in the Base with its source, so a
+  // later pull refreshes the file it came from; so does one with project
+  // overlays, which would otherwise merge before it instead of after. Any other
+  // compose is the primary environment's own content and the Base starts empty.
+  const composeStaysInBase =
+    suppliedCompose !== null &&
+    fields.options !== null &&
+    ('composeSource' in fields.options ||
+      (Array.isArray(fields.options.composeOverlays) && fields.options.composeOverlays.length > 0))
+  const stored = splitProjectDefaultServer(
+    fields.options
+      ? {
+          ...fields.options,
+          compose: composeStaysInBase ? suppliedCompose : emptyComposeDocument(),
+        }
+      : { compose: emptyComposeDocument() }
+  )
   const [inserted] = await tx
     .insert(project)
     .values({
@@ -684,8 +715,12 @@ async function insertDockerComposeProject(
     projectId: inserted.id,
     name: fields.defaultEnvironmentName,
     description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+    isPrimary: true,
     ...(fields.serverId ? { serverId: fields.serverId } : {}),
-    options: stampNewEnvironmentDeployOptions({ compose: emptyComposeDocument() }),
+    options: stampNewEnvironmentDeployOptions({
+      compose:
+        suppliedCompose !== null && !composeStaysInBase ? suppliedCompose : emptyComposeDocument(),
+    }),
   })
   return inserted.id
 }
@@ -734,7 +769,8 @@ async function insertCatalogProject(
     fields.entry,
     fields.dataEncryptionSecrets,
     fields.serverId,
-    fields.defaultEnvironmentName
+    fields.defaultEnvironmentName,
+    fields.options === null
   )
   return inserted.id
 }
@@ -912,8 +948,24 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, organizationId } = scope
 
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
+    const requestBody = await parseJsonBody(c)
+    if (requestBody instanceof Response) return requestBody
+
+    // Compose edits name where they land: the Base, or one environment. With a
+    // single environment and no target the edit goes to that environment.
+    const editTarget = await resolveEditTarget(db, id, requestBody)
+    if (!editTarget.ok) {
+      return c.json({ error: editTarget.error, message: editTarget.message }, 400)
+    }
+    let body = requestBody
+    if (editTarget.kind === 'environment') {
+      const refused = await applyEnvironmentPatch(c, db, organizationId, editTarget.environmentId, {
+        options: requestBody.options,
+      })
+      if (refused) return refused
+      const { options: _options, ...rest } = requestBody
+      body = rest
+    }
 
     const moveTarget = await parseProjectMoveTarget(c, db, body, organizationId)
     if (moveTarget instanceof Response) return moveTarget

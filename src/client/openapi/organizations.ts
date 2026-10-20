@@ -165,7 +165,7 @@ export const organizationSchemas = {
       defaultEnvironmentName: {
         type: ['string', 'null'],
         description:
-          'Org-wide name for the environment scaffolded with every new project. null/unset falls back to Production.',
+          'Org-wide primary environment name: the name of the primary environment every new project starts with. null/unset falls back to production. Existing projects keep their primary environment as it is.',
       },
     },
   },
@@ -176,7 +176,7 @@ export const organizationSchemas = {
       defaultEnvironmentName: {
         type: ['string', 'null'],
         description:
-          'Non-empty display name (any characters except control characters; ≤255), or null to reset to the platform default (Production).',
+          'Primary environment name, or null to reset to the platform default (production). It is a folder name on the servers, so it follows the environment name rule: at most 32 characters, lowercase letters, digits, hyphens and underscores, not a reserved word. **400** otherwise.',
       },
     },
   },
@@ -1027,7 +1027,7 @@ export const organizationPaths: Record<string, unknown> = {
   '/api/client/v1/organizations/{id}/default-environment': {
     get: {
       tags: ['Organizations'],
-      summary: 'Get organization default environment name',
+      summary: 'Get organization primary environment name',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1039,7 +1039,7 @@ export const organizationPaths: Record<string, unknown> = {
       ],
       responses: {
         '200': {
-          description: 'Org default environment name',
+          description: 'Org primary environment name',
           content: {
             'application/json': {
               schema: {
@@ -1068,7 +1068,7 @@ export const organizationPaths: Record<string, unknown> = {
     },
     put: {
       tags: ['Organizations'],
-      summary: 'Update organization default environment name',
+      summary: 'Update organization primary environment name',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1090,7 +1090,7 @@ export const organizationPaths: Record<string, unknown> = {
       },
       responses: {
         '200': {
-          description: 'Updated org default environment name',
+          description: 'Updated org primary environment name',
           content: {
             'application/json': {
               schema: {

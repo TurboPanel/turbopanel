@@ -57,6 +57,8 @@ export type EnvironmentRow = {
   serverId: string | null
   metadata: typeof environment.$inferSelect.metadata
   options: typeof environment.$inferSelect.options
+  isPrimary: boolean
+  isPinned: boolean
   createdAt: string
   updatedAt: string
 }
@@ -96,6 +98,8 @@ const environmentColumns = {
   serverId: environment.serverId,
   metadata: environment.metadata,
   options: environment.options,
+  isPrimary: environment.isPrimary,
+  isPinned: environment.isPinned,
   createdAt: environment.createdAt,
   updatedAt: environment.updatedAt,
 }

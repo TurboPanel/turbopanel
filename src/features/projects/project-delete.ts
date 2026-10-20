@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne, or } from 'drizzle-orm'
+import { and, eq, inArray, ne, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { ensureProjectPlacements } from '../principals/placement-records.ts'
 import {
@@ -225,7 +225,39 @@ async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<voi
   await tx
     .delete(folder)
     .where(and(inArray(folder.environmentId, environmentIds), eq(folder.state, 'missing')))
+  // Deleting a whole project removes every environment with it; nothing is left to promote.
+  const survivors = rows.projectId ? [] : await primaryLessProjects(tx, environmentIds)
   await tx.delete(environment).where(inArray(environment.id, environmentIds))
+  if (survivors.length > 0) await promoteOldestAsPrimary(tx, survivors)
+}
+
+async function primaryLessProjects(tx: Db, environmentIds: readonly string[]): Promise<string[]> {
+  const rows = await tx
+    .select({ projectId: environment.projectId })
+    .from(environment)
+    .where(inArray(environment.id, [...environmentIds]))
+  return [...new Set(rows.map((row) => row.projectId))]
+}
+
+/**
+ * A project that lost its primary environment but still has others gets the
+ * oldest one as primary, so the marker never goes missing. Run after the delete.
+ */
+async function promoteOldestAsPrimary(tx: Db, projectIds: readonly string[]): Promise<void> {
+  await tx.execute(sql`
+    UPDATE "environment" SET "is_primary" = true, "updated_at" = now()
+    WHERE "id" IN (
+      SELECT DISTINCT ON ("e"."project_id") "e"."id" FROM "environment" AS "e"
+      WHERE "e"."project_id" IN (${sql.join(
+        projectIds.map((id) => sql`${id}::uuid`),
+        sql`, `
+      )})
+        AND NOT EXISTS (
+          SELECT 1 FROM "environment" AS "p" WHERE "p"."project_id" = "e"."project_id" AND "p"."is_primary"
+        )
+      ORDER BY "e"."project_id", "e"."created_at", "e"."id"
+    )
+  `)
 }
 
 type EnvironmentChildren = {

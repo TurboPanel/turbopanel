@@ -23,6 +23,7 @@ import {
   variable,
   workspace,
 } from '../../db/schema.ts'
+import { makeComposeTag } from '../../features/compose/index.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerEnvironmentRoutes } from './routes.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
@@ -620,8 +621,9 @@ test('an environment with a deploy in progress is refused with environment_runni
 test('a stopped environment is deleted with its services, containers, hostings, bindings and variables', async () => {
   await withEnvironmentFixtures(async (ctx) => {
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
-    const { id, serviceId } = await createEnvironmentWithWeb(ctx, cookie, 'stopped')
+    // The first environment is the primary one and cannot be deleted while others exist.
     const sibling = await createEnvironmentWithWeb(ctx, cookie, 'sibling')
+    const { id, serviceId } = await createEnvironmentWithWeb(ctx, cookie, 'stopped')
     await addContainer(ctx, serviceId, 'exited')
     await ctx.db.insert(hosting).values({ serviceId })
     await ctx.db
@@ -962,5 +964,277 @@ test('a duplicate environment name in a project answers 409 environment_name_in_
     assertEquals(((await dupRename.json()) as { error: string }).error, 'environment_name_in_use')
     assertEquals((await environmentRow(ctx, second))?.name, 'green')
     assertEquals((await environmentRow(ctx, first))?.name, 'blue')
+  })
+})
+
+async function sendEnvironmentJson(
+  ctx: EnvironmentTestContext,
+  cookie: string,
+  method: string,
+  path: string,
+  body?: unknown
+): Promise<Response> {
+  return await ctx.app.request(path, {
+    method,
+    headers: {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: ctx.organizationId,
+      'Content-Type': 'application/json',
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  })
+}
+
+async function createNamedEnvironment(
+  ctx: EnvironmentTestContext,
+  cookie: string,
+  body: Record<string, unknown>
+): Promise<{ status: number; id: string; json: Record<string, unknown> }> {
+  const res = await sendEnvironmentJson(ctx, cookie, 'POST', '/environments', {
+    projectId: ctx.projectId,
+    ...body,
+  })
+  const json = (await res.json()) as Record<string, unknown>
+  return { status: res.status, id: String(json.id ?? ''), json }
+}
+
+async function projectEnvironmentFlags(ctx: EnvironmentTestContext) {
+  const rows = await ctx.db
+    .select({
+      name: environment.name,
+      isPrimary: environment.isPrimary,
+      isPinned: environment.isPinned,
+    })
+    .from(environment)
+    .where(eq(environment.projectId, ctx.projectId))
+  return new Map(rows.map((row) => [row.name, row]))
+}
+
+type StoredOptions = { compose: { data: Record<string, unknown> & { services: unknown } } }
+
+const SERVICE_COMPOSE = {
+  version: 1,
+  data: { services: { web: { image: 'nginx:1' } } },
+  presentation: { keyOrder: ['services'], comments: {} },
+}
+
+test('the first environment is primary and later ones are not', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const first = await createNamedEnvironment(ctx, cookie, { name: 'live' })
+    const second = await createNamedEnvironment(ctx, cookie, { name: 'staging' })
+    assertEquals([first.status, second.status], [200, 200])
+    const flags = await projectEnvironmentFlags(ctx)
+    assertEquals(flags.get('live')?.isPrimary, true)
+    assertEquals(flags.get('staging')?.isPrimary, false)
+    assertEquals(flags.get('staging')?.isPinned, false)
+
+    const detail = await sendEnvironmentJson(ctx, cookie, 'GET', `/environments/${first.id}`)
+    const body = (await detail.json()) as { environment: { isPrimary: boolean; pinned: boolean } }
+    assertEquals([body.environment.isPrimary, body.environment.pinned], [true, false])
+  })
+})
+
+test('a new environment starts as a copy of the primary one, unless it is empty', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const primary = await createNamedEnvironment(ctx, cookie, {
+      name: 'live',
+      options: { compose: SERVICE_COMPOSE },
+    })
+    assertEquals(primary.status, 200)
+    const copy = await createNamedEnvironment(ctx, cookie, { name: 'copy-of-live' })
+    const empty = await createNamedEnvironment(ctx, cookie, { name: 'blank', start: 'empty' })
+    assertEquals([copy.status, empty.status], [200, 200])
+
+    const rows = await ctx.db
+      .select({ name: environment.name, options: environment.options })
+      .from(environment)
+      .where(eq(environment.projectId, ctx.projectId))
+    const byName = new Map(rows.map((row) => [row.name, row.options as StoredOptions]))
+    assertEquals(byName.get('copy-of-live')?.compose.data, SERVICE_COMPOSE.data)
+    assertEquals(byName.get('blank')?.compose.data.services, makeComposeTag('override', {}))
+
+    // A copy is a copy: later edits to the primary do not reach it.
+    const patched = await sendEnvironmentJson(ctx, cookie, 'PATCH', `/environments/${primary.id}`, {
+      options: {
+        compose: { ...SERVICE_COMPOSE, data: { services: { web: { image: 'nginx:2' } } } },
+      },
+    })
+    assertEquals(patched.status, 200)
+    const [copied] = await ctx.db
+      .select({ options: environment.options })
+      .from(environment)
+      .where(eq(environment.id, copy.id))
+    assertEquals((copied?.options as StoredOptions).compose.data, SERVICE_COMPOSE.data)
+  })
+})
+
+test('copy and empty starts keep every environment name rule', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    await createNamedEnvironment(ctx, cookie, {
+      name: 'live',
+      options: { compose: SERVICE_COMPOSE },
+    })
+    const before = (await projectEnvironmentFlags(ctx)).size
+    for (const start of [undefined, 'copy', 'empty']) {
+      for (const name of ['Upper', 'common', 'x'.repeat(33), 'has space', 'tmp']) {
+        const res = await createNamedEnvironment(ctx, cookie, {
+          name,
+          ...(start === undefined ? {} : { start }),
+        })
+        assertEquals(res.status, 400, `${start}/${name}`)
+        assertEquals(res.json.error, 'invalid_environment_name')
+      }
+    }
+    assertEquals((await projectEnvironmentFlags(ctx)).size, before)
+
+    // A duplicate name is still refused, and renaming a copy is checked as before.
+    const dup = await createNamedEnvironment(ctx, cookie, { name: 'live' })
+    assertEquals([dup.status, dup.json.error], [409, 'environment_name_in_use'])
+    const copy = await createNamedEnvironment(ctx, cookie, { name: 'copy-of-live' })
+    const bad = await sendEnvironmentJson(ctx, cookie, 'PATCH', `/environments/${copy.id}`, {
+      name: 'Bad Name',
+    })
+    assertEquals(bad.status, 400)
+  })
+})
+
+test('start must be copy or empty and cannot be combined with options', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const invalid = await createNamedEnvironment(ctx, cookie, { name: 'a', start: 'base' })
+    assertEquals([invalid.status, invalid.json.error], [400, 'environment_start_invalid'])
+    const both = await createNamedEnvironment(ctx, cookie, {
+      name: 'b',
+      start: 'copy',
+      options: { compose: SERVICE_COMPOSE },
+    })
+    assertEquals([both.status, both.json.error], [400, 'environment_start_conflict'])
+  })
+})
+
+test('make primary moves the marker, keeps exactly one and refreshes cached reads', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const first = await createNamedEnvironment(ctx, cookie, { name: 'live' })
+    const second = await createNamedEnvironment(ctx, cookie, { name: 'staging' })
+    // Prime the cached reads with the old state.
+    await sendEnvironmentJson(ctx, cookie, 'GET', `/environments/${first.id}`)
+    await sendEnvironmentJson(ctx, cookie, 'GET', '/environments')
+
+    const res = await sendEnvironmentJson(ctx, cookie, 'POST', `/environments/${second.id}/primary`)
+    assertEquals(res.status, 200)
+    const again = await sendEnvironmentJson(
+      ctx,
+      cookie,
+      'POST',
+      `/environments/${second.id}/primary`
+    )
+    assertEquals(again.status, 200)
+
+    const flags = await projectEnvironmentFlags(ctx)
+    assertEquals([flags.get('live')?.isPrimary, flags.get('staging')?.isPrimary], [false, true])
+
+    const detail = await sendEnvironmentJson(ctx, cookie, 'GET', `/environments/${first.id}`)
+    assertEquals(
+      ((await detail.json()) as { environment: { isPrimary: boolean } }).environment.isPrimary,
+      false
+    )
+    const list = await sendEnvironmentJson(
+      ctx,
+      cookie,
+      'GET',
+      `/environments?projectId=${ctx.projectId}`
+    )
+    const names = ((await list.json()) as { environments: { name: string }[] }).environments.map(
+      (row) => row.name
+    )
+    assertEquals(names, ['staging', 'live'])
+
+    const missing = await sendEnvironmentJson(
+      ctx,
+      cookie,
+      'POST',
+      `/environments/${crypto.randomUUID()}/primary`
+    )
+    assertEquals(missing.status, 404)
+  })
+})
+
+test('the primary environment cannot be deleted while others exist', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const first = await createNamedEnvironment(ctx, cookie, { name: 'live' })
+    const second = await createNamedEnvironment(ctx, cookie, { name: 'staging' })
+    const refused = await sendEnvironmentJson(ctx, cookie, 'DELETE', `/environments/${first.id}`)
+    assertEquals(refused.status, 409)
+    assertEquals(
+      ((await refused.json()) as { error: string }).error,
+      'primary_environment_cannot_be_deleted'
+    )
+    await sendEnvironmentJson(ctx, cookie, 'POST', `/environments/${second.id}/primary`)
+    const removed = await sendEnvironmentJson(ctx, cookie, 'DELETE', `/environments/${first.id}`)
+    assertEquals(removed.status, 200)
+    // The last one may go.
+    const last = await sendEnvironmentJson(ctx, cookie, 'DELETE', `/environments/${second.id}`)
+    assertEquals(last.status, 200)
+  })
+})
+
+test('pinned environments are listed after the primary one; the body cannot set isPrimary', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    await createNamedEnvironment(ctx, cookie, { name: 'live' })
+    const second = await createNamedEnvironment(ctx, cookie, { name: 'staging' })
+    const third = await createNamedEnvironment(ctx, cookie, { name: 'review' })
+    const pinned = await sendEnvironmentJson(ctx, cookie, 'PATCH', `/environments/${third.id}`, {
+      pinned: true,
+      isPrimary: true,
+    })
+    assertEquals(pinned.status, 200)
+    const flags = await projectEnvironmentFlags(ctx)
+    assertEquals([flags.get('review')?.isPinned, flags.get('review')?.isPrimary], [true, false])
+
+    const list = await sendEnvironmentJson(
+      ctx,
+      cookie,
+      'GET',
+      `/environments?projectId=${ctx.projectId}`
+    )
+    const rows = ((await list.json()) as { environments: { name: string; pinned: boolean }[] })
+      .environments
+    assertEquals(
+      rows.map((row) => row.name),
+      ['live', 'review', 'staging']
+    )
+
+    const bad = await sendEnvironmentJson(ctx, cookie, 'PATCH', `/environments/${second.id}`, {
+      pinned: 'yes',
+    })
+    assertEquals(bad.status, 400)
+    const unpinned = await sendEnvironmentJson(ctx, cookie, 'PATCH', `/environments/${third.id}`, {
+      pinned: false,
+    })
+    assertEquals(unpinned.status, 200)
+    assertEquals((await projectEnvironmentFlags(ctx)).get('review')?.isPinned, false)
+  })
+})
+
+test('the database allows one primary environment per project', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    await ctx.db
+      .insert(environment)
+      .values({ projectId: ctx.projectId, name: 'one', isPrimary: true })
+    let refused = false
+    try {
+      await ctx.db
+        .insert(environment)
+        .values({ projectId: ctx.projectId, name: 'two', isPrimary: true })
+    } catch {
+      refused = true
+    }
+    assertEquals(refused, true)
   })
 })

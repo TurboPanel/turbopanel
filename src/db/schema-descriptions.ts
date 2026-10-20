@@ -801,6 +801,10 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       name: 'Scope folder name on every server, under `environment_name_check` (lowercase letters, digits, `_` and `-`, up to 32 chars, not reserved); unique per project.',
       description:
         "Optional free-text description written by the client API; the first environment is created with 'Default environment'.",
+      is_primary:
+        "True for the project's one primary environment: the landing, the status and the source a new environment copies. Unique per project.",
+      is_pinned:
+        'True when the owner pinned the environment; pinned environments are listed right after the primary one.',
     },
   },
   hosting: {

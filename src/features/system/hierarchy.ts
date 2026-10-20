@@ -48,6 +48,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { container, environment, project, server, service, workspace } from '../../db/schema.ts'
+import { isFirstEnvironmentOf } from '../projects/primary-environment.ts'
 import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
 import { normalizeDisplayNameKey } from '../../lib/display-name-format.ts'
 import {
@@ -408,6 +409,8 @@ async function ensureServerEnvironment(
       projectId,
       serverId,
       name: systemEnvironmentName(displayName, serverId),
+      // The project row is locked above, so "first" cannot race another create.
+      isPrimary: isFirstEnvironmentOf(projectId),
     })
     .returning({ id: environment.id })
 

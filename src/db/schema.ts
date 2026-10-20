@@ -2302,9 +2302,16 @@ export const environment = pgTable(
       .default(sql`replace(uuidv7()::text, '-', '')`)
       .notNull(),
     description: text('description'),
+    /** The project's primary environment: landing, status, and the source a new environment copies. */
+    isPrimary: boolean('is_primary').default(false).notNull(),
+    /** Pinned environments are listed right after the primary one. */
+    isPinned: boolean('is_pinned').default(false).notNull(),
   },
   (table) => [
     unique('uniq_environment_project_name').on(table.projectId, table.name),
+    uniqueIndex('uniq_environment_project_primary')
+      .using('btree', table.projectId.asc().nullsLast().op('uuid_ops'))
+      .where(sql`${table.isPrimary}`),
     index('idx_environment_project_id').using(
       'btree',
       table.projectId.asc().nullsLast().op('uuid_ops')

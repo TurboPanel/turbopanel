@@ -42,8 +42,12 @@ INSERT INTO server (id, organization_id, name, hostname, machine_key, os_id, os_
   ('00000000-0000-7000-8000-000000000501', '00000000-0000-7000-8000-000000000101', 'server-a', 'server-a.example.test', 'upgrade-machine-key-a', 'ubuntu', 'debian', '24.04', 'amd64', 'virtual', 'UTC', true, true),
   ('00000000-0000-7000-8000-000000000502', '00000000-0000-7000-8000-000000000101', 'server-b', 'server-b.example.test', 'upgrade-machine-key-b', 'debian', 'debian', '13', 'arm64', 'physical', 'UTC', false, false);
 
-INSERT INTO environment (id, project_id, server_id, name) VALUES
-  ('00000000-0000-7000-8000-000000000601', '00000000-0000-7000-8000-000000000301', '00000000-0000-7000-8000-000000000501', 'production');
+INSERT INTO environment (id, project_id, server_id, name, created_at) VALUES
+  ('00000000-0000-7000-8000-000000000601', '00000000-0000-7000-8000-000000000301', '00000000-0000-7000-8000-000000000501', 'production', '2026-01-01T00:00:00Z');
+
+-- A second, newer environment: the upgrade must mark only the oldest one primary.
+INSERT INTO environment (id, project_id, server_id, name, created_at) VALUES
+  ('00000000-0000-7000-8000-000000000602', '00000000-0000-7000-8000-000000000301', NULL, 'staging', '2026-02-01T00:00:00Z');
 
 INSERT INTO service (id, environment_id, compose_service_name, name) VALUES
   ('00000000-0000-7000-8000-000000000701', '00000000-0000-7000-8000-000000000601', 'web', 'web');

@@ -33,8 +33,8 @@ export const CACHED_READ_REGISTRY = {
   'server-detail': stamped('38a4113cda59ba1c'),
   'projects-list': stamped('0a019f4e366886c9'),
   'project-detail': stamped('981d1e87d00f7756'),
-  'environments-list': stamped('d458aba4df4f21c9'),
-  'environment-detail': stamped('2035011bf1a6bcf4'),
+  'environments-list': stamped('b2bbbde9ee5550e0'),
+  'environment-detail': stamped('1cee068d52256e51'),
   'workspaces-list': stamped('abd2761821e1adfd'),
 } satisfies Record<string, CachedReadRegistration>
 
