@@ -5,8 +5,8 @@ This file is generated from the resolved dependency graph. Do not edit it by han
 Third-party components remain under their own copyright and license terms and are not relicensed by TurboPanel Control Plane's repository license (AGPL-3.0-only).
 
 <!-- lockfiles
-deno.lock sha256:567525770a55f3f24757fde7276f50f0c92d968d4b82e29b309c9cb68aadfb5d
-pnpm-lock.yaml sha256:1ed04c21aca44d4fdb173ddd6d1d387431b446a569578062bce17b684596e856
+deno.lock sha256:e077ab24ed3f601ada799a5ed3d2d720934cfedb6b4e8e2c57fed6ad05ce1fe7
+pnpm-lock.yaml sha256:c0273b087fd658f04c85548bb25ed5bbb569597334cb63d9560a37bb286960b6
 -->
 
 ## Production dependencies
@@ -74,7 +74,7 @@ pnpm-lock.yaml sha256:1ed04c21aca44d4fdb173ddd6d1d387431b446a569578062bce17b6845
 - Copyright: Drizzle Team
 - Homepage: https://orm.drizzle.team
 
-### hono@4.13.7
+### hono@4.13.11
 
 - License: MIT
 - Copyright: Yusuke Wada
@@ -243,7 +243,7 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Homepage: https://github.com/cloudflare/workers-sdk/tree/main/packages/vitest-pool-workers#readme
 
-### @cloudflare/workerd-linux-64@1.20260815.1
+### @cloudflare/workerd-darwin-arm64@1.20260815.1
 
 - License: Apache-2.0
 - Homepage: https://github.com/cloudflare/workerd#readme
@@ -265,7 +265,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Drizzle Team
 - Homepage: https://github.com/drizzle-team/brocli
 
-### @duckdb/node-bindings-linux-x64@1.5.5-r.4
+### @duckdb/node-bindings-darwin-arm64@1.5.5-r.4
 
 - License: MIT
 - Homepage: https://github.com/duckdb/duckdb-node-neo#readme
@@ -282,7 +282,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Hiroki Osame
 - Homepage: https://github.com/esbuild-kit/esm-loader#readme
 
-### @esbuild/linux-x64@0.25.12
+### @esbuild/darwin-arm64@0.25.12
 
 - License: MIT
 - Homepage: https://github.com/evanw/esbuild#readme
@@ -297,15 +297,15 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Homepage: https://github.com/lovell/colour#readme
 
-### @img/sharp-libvips-linux-x64@1.3.4
+### @img/sharp-darwin-arm64@0.35.5
 
-- License: LGPL-3.0-or-later
+- License: Apache-2.0
 - Copyright: Lovell Fuller
 - Homepage: https://sharp.pixelplumbing.com
 
-### @img/sharp-linux-x64@0.35.5
+### @img/sharp-libvips-darwin-arm64@1.3.4
 
-- License: Apache-2.0
+- License: LGPL-3.0-or-later
 - Copyright: Lovell Fuller
 - Homepage: https://sharp.pixelplumbing.com
 
@@ -369,7 +369,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Harminder Virk
 - Homepage: https://github.com/poppinss/exception#readme
 
-### @rollup/rollup-linux-x64-gnu@4.62.2
+### @rollup/rollup-darwin-arm64@4.62.2
 
 - License: MIT
 - Copyright: Lukas Taegert-Atkinson
@@ -587,6 +587,11 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Copyright: thecodrr
 - Homepage: https://github.com/thecodrr/fdir#readme
+
+### fsevents@2.3.3
+
+- License: MIT
+- Homepage: https://github.com/fsevents/fsevents
 
 ### gensync@1.0.0-beta.2
 
@@ -866,7 +871,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Andrey Sitnik
 - Homepage: https://github.com/browserslist/update-db#readme
 
-### vite@6.4.3
+### vite@6.4.4
 
 - License: MIT
 - Copyright: Evan You
