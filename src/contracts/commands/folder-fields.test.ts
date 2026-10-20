@@ -321,3 +321,29 @@ it('keeps the sites that left the compose file and refuses a malformed list', ()
     assertThrows(() => parseEnvironmentDeployPayload({ ...DEPLOY_BASE, removedSites: bad }))
   }
 })
+
+it('keeps the hostnames the host may take over with the environment that held each, and refuses a malformed list', () => {
+  const entries = [
+    { hostname: 'example.com', fromEnvironmentId: 'env_old-1' },
+    { hostname: '*.example.org', fromEnvironmentId: 'env-2' },
+  ]
+  assertEquals(
+    parseEnvironmentDeployPayload({ ...DEPLOY_BASE, takeoverHostnames: entries }).takeoverHostnames,
+    entries
+  )
+  assertEquals(parseEnvironmentDeployPayload(DEPLOY_BASE).takeoverHostnames, undefined)
+  const ok = { hostname: 'a.com', fromEnvironmentId: 'e' }
+  for (const bad of [
+    'example.com',
+    ['example.com'],
+    [{ hostname: 'Example.COM', fromEnvironmentId: 'e' }],
+    [{ hostname: 'a b', fromEnvironmentId: 'e' }],
+    [{ hostname: 'a.com' }],
+    [{ ...ok, fromEnvironmentId: '../x' }],
+    [{ ...ok, fromEnvironmentId: '' }],
+    [{ ...ok, fromEnvironmentId: 'x'.repeat(65) }],
+    [7],
+  ]) {
+    assertThrows(() => parseEnvironmentDeployPayload({ ...DEPLOY_BASE, takeoverHostnames: bad }))
+  }
+})
