@@ -65,15 +65,11 @@ working tree whose files no longer hash to the manifest. Restructuring an
 existing table is a forward migration that moves data, never an edit to the
 file that created it. Regenerating the baseline is not an option any more.
 
-The twelfth fold gets past the freeze guards through one named, owner-approved
-exception in `check-migration-additions.mjs` (`BASELINE_EXCEPTION`): it passes
-only a base manifest at generation 11 and a head manifest at generation 12,
-frozen, with a one-entry journal tagged `0000_init`. The manifest was written by
-a throwaway script, not a `--rebaseline` mode. Once the fold is the base the
-generation is 12 and the exception can never match again; the first change
-after it deletes the dead constant and its tests. After that re-baselining is closed
-for good, and no mode, flag or constant lets a shipped migration be edited,
-removed or regenerated. Every change from the release on is a forward
+The twelfth fold got past the freeze guards through one named, owner-approved
+exception in `check-migration-additions.mjs`, written with a throwaway manifest
+script rather than a `--rebaseline` mode. The exception is deleted: re-baselining
+is closed for good, and no mode, flag or constant lets a shipped migration be
+edited, removed or regenerated. Every change from the release on is a forward
 migration. The upgrade check (`check-migration-upgrade.mjs`) keeps a lasting rule, not a
 bypass: when the previous release tag's manifest has a lower generation than
 the checkout's, there is nothing to upgrade from, so it only builds a fresh
