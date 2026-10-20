@@ -315,6 +315,7 @@ export type DeployPrepareWarningCode =
   | 'compose_variable_unresolved'
   | 'php_mode_not_allowed'
   | 'node_version_unresolved'
+  | 'storage_service_removed'
 
 /**
  * Gate a deploy's PHP series against what the target host actually reports.
@@ -1121,6 +1122,38 @@ function appendUnseenRegisteredVolumes(
       mounts: [],
     })
   }
+}
+
+/**
+ * Take the mounts of services the compose no longer declares out of the storage
+ * material. A removed service leaves its storage row behind (the data and its
+ * folder stay, and the storage can be attached to another service), but the
+ * host has no such service to mount it into and would refuse the whole deploy.
+ * Each dropped mount is reported by storage name and service name.
+ */
+export function detachMountsOfRemovedServices(
+  material: readonly EnvironmentDeployStorageMaterial[],
+  deployedServiceNames: ReadonlySet<string>
+): { material: EnvironmentDeployStorageMaterial[]; warnings: DeployPrepareWarning[] } {
+  const warnings: DeployPrepareWarning[] = []
+  const kept = material.map((entry) => {
+    const mounts = entry.mounts.filter((mount) => {
+      if (!mount.composeServiceName || deployedServiceNames.has(mount.composeServiceName)) {
+        return true
+      }
+      warnings.push({
+        code: 'storage_service_removed',
+        message: `Storage "${entry.name}" was mounted by service "${mount.composeServiceName}", which is no longer in the compose file. It is left unmounted for this deploy; its data stays and it can be attached to a service again.`,
+        details: {
+          storageId: entry.storageId,
+          composeServiceName: mount.composeServiceName,
+        },
+      })
+      return false
+    })
+    return mounts.length === entry.mounts.length ? entry : { ...entry, mounts }
+  })
+  return { material: kept, warnings }
 }
 
 export async function loadStorageMaterial(
@@ -3516,7 +3549,7 @@ export async function prepareDeployCompose(
     }
   )
 
-  const storageMaterialRaw = await loadStorageMaterial(db, {
+  const storageMaterialAll = await loadStorageMaterial(db, {
     environmentId: params.environmentId,
     projectId: envRow.projectId,
     organizationId: params.organizationId,
@@ -3525,6 +3558,12 @@ export async function prepareDeployCompose(
     cloneNamesByServiceId: buildCloneNamesByServiceId(serviceRows, pipeline.expansion),
     registeredVolumes: pipeline.registeredVolumes,
   })
+  const attached = detachMountsOfRemovedServices(
+    storageMaterialAll,
+    new Set(pipeline.expandedServiceNames)
+  )
+  warnings.push(...attached.warnings)
+  const storageMaterialRaw = attached.material
   const sealed = await maybeSealDeployMaterials(
     mode,
     c,
