@@ -129,76 +129,86 @@ function isPlainHostname(hostname: string): boolean {
   )
 }
 
+type Refused = { ok: false; error: IssuedCertificateRefusal }
+
+const refused = (error: IssuedCertificateRefusal): Refused => ({ ok: false, error })
+
+/** The chain must read as PEM, hold 1 to 6 certificates and stay within the size cap. */
+function chainShapeProblem(certificatePem: string): Refused | null {
+  let chain: string[]
+  try {
+    chain = splitCertificateChain(certificatePem)
+  } catch (err) {
+    if (err instanceof PemError) return refused('invalid_certificate')
+    throw err
+  }
+  const tooLong = chain.length === 0 || chain.length > MAX_ISSUED_CHAIN_CERTIFICATES
+  return tooLong || certificatePem.length > MAX_ISSUED_CHAIN_CHARS
+    ? refused('invalid_certificate')
+    : null
+}
+
+/**
+ * Caddy writes ECDSA keys as SEC1 and RSA keys as PKCS#1; store every key as
+ * PKCS#8, the form the rest of the TLS library works with.
+ */
+function readPrivateKey(privateKeyPem: string): { ok: true; pem: string } | Refused {
+  try {
+    if (privateKeyPem.length > MAX_ISSUED_KEY_CHARS) throw new PemError('key too large')
+    return { ok: true, pem: normalizePrivateKeyPem(privateKeyPem) }
+  } catch (err) {
+    if (err instanceof PemError || err instanceof DOMException) {
+      return refused('invalid_private_key')
+    }
+    throw err
+  }
+}
+
+async function readLeaf(
+  certificatePem: string
+): Promise<{ ok: true; parsed: ParsedCertificate } | Refused> {
+  try {
+    return { ok: true, parsed: await parseCertificatePem(certificatePem) }
+  } catch (err) {
+    if (err instanceof CertificateParseError) return refused('invalid_certificate')
+    throw err
+  }
+}
+
+/** Name, expiry and self-signed checks on the leaf. */
+function leafProblem(parsed: ParsedCertificate, hostname: string, now: Date): Refused | null {
+  if (!coversHostname(parsed.dnsNames, hostname)) return refused('certificate_not_for_hostname')
+  if (parsed.notAfter.getTime() <= now.getTime()) return refused('certificate_expired')
+  if (parsed.subject === parsed.issuer) return refused('self_signed_certificate')
+  return null
+}
+
+async function keyMismatch(privateKeyPem: string, parsed: ParsedCertificate): Promise<boolean> {
+  try {
+    return !(await privateKeyMatchesCertificate(privateKeyPem, parsed))
+  } catch (err) {
+    // The key was read fine before, so a failure here means it is a different
+    // kind of key (or curve) from the one the certificate carries.
+    if (err instanceof TlsKeyError) return true
+    throw err
+  }
+}
+
 async function checkPair(
   input: IssuedCertificateInput,
   hostname: string,
   now: Date
-): Promise<
-  | { ok: true; parsed: ParsedCertificate; privateKeyPem: string }
-  | {
-      ok: false
-      error: IssuedCertificateRefusal
-    }
-> {
-  let chain: string[]
-  try {
-    chain = splitCertificateChain(input.certificatePem)
-  } catch (err) {
-    if (err instanceof PemError) {
-      return { ok: false, error: 'invalid_certificate' }
-    }
-    throw err
-  }
-  if (
-    chain.length === 0 ||
-    chain.length > MAX_ISSUED_CHAIN_CERTIFICATES ||
-    input.certificatePem.length > MAX_ISSUED_CHAIN_CHARS
-  ) {
-    return { ok: false, error: 'invalid_certificate' }
-  }
-  // Caddy writes ECDSA keys as SEC1 and RSA keys as PKCS#1; store every key
-  // as PKCS#8, the form the rest of the TLS library works with.
-  let privateKeyPem: string
-  try {
-    if (input.privateKeyPem.length > MAX_ISSUED_KEY_CHARS) throw new PemError('key too large')
-    privateKeyPem = normalizePrivateKeyPem(input.privateKeyPem)
-  } catch (err) {
-    if (err instanceof PemError || err instanceof DOMException) {
-      return { ok: false, error: 'invalid_private_key' }
-    }
-    throw err
-  }
-  let parsed: ParsedCertificate
-  try {
-    parsed = await parseCertificatePem(input.certificatePem)
-  } catch (err) {
-    if (err instanceof CertificateParseError) {
-      return { ok: false, error: 'invalid_certificate' }
-    }
-    throw err
-  }
-  if (!coversHostname(parsed.dnsNames, hostname)) {
-    return { ok: false, error: 'certificate_not_for_hostname' }
-  }
-  if (parsed.notAfter.getTime() <= now.getTime()) {
-    return { ok: false, error: 'certificate_expired' }
-  }
-  if (parsed.subject === parsed.issuer) {
-    return { ok: false, error: 'self_signed_certificate' }
-  }
-  try {
-    if (!(await privateKeyMatchesCertificate(privateKeyPem, parsed))) {
-      return { ok: false, error: 'key_mismatch' }
-    }
-  } catch (err) {
-    // The key was read fine above, so a failure here means it is a different
-    // kind of key (or curve) from the one the certificate carries.
-    if (err instanceof TlsKeyError) {
-      return { ok: false, error: 'key_mismatch' }
-    }
-    throw err
-  }
-  return { ok: true, parsed, privateKeyPem }
+): Promise<{ ok: true; parsed: ParsedCertificate; privateKeyPem: string } | Refused> {
+  const shape = chainShapeProblem(input.certificatePem)
+  if (shape) return shape
+  const key = readPrivateKey(input.privateKeyPem)
+  if (!key.ok) return key
+  const leaf = await readLeaf(input.certificatePem)
+  if (!leaf.ok) return leaf
+  const problem = leafProblem(leaf.parsed, hostname, now)
+  if (problem) return problem
+  if (await keyMismatch(key.pem, leaf.parsed)) return refused('key_mismatch')
+  return { ok: true, parsed: leaf.parsed, privateKeyPem: key.pem }
 }
 
 /**

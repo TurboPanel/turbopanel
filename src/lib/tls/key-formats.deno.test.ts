@@ -97,7 +97,6 @@ function sec1Pem(parts: number[][]): string {
   return `-----BEGIN EC PRIVATE KEY-----\n${btoa(String.fromCharCode(...der))}\n-----END EC PRIVATE KEY-----\n`
 }
 
-const OID_P256 = [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07]
 const OID_P384 = [0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22]
 
 test('a SEC1 key without curve parameters is placed by the length of its private scalar', async () => {
