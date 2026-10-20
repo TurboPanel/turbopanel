@@ -6,7 +6,7 @@
  */
 import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals } from '@std/assert'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { createDenoDb } from './connection.ts'
 import {
   folder,
@@ -18,6 +18,7 @@ import {
   project,
   workspace,
 } from './schema.ts'
+import { RESERVED_SCOPE_NAMES } from '../contracts/directory-names.ts'
 import { getDatabaseUrl } from './url.ts'
 import { isUniqueViolationOn } from './unique-violation.ts'
 
@@ -143,5 +144,78 @@ test('folder rows are held to the name rules and to one row per location', async
     await db.delete(server).where(eq(server.id, srv!.id))
     await db.delete(workspace).where(eq(workspace.id, ws!.id))
     await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
+test('the environment name check refuses base, and an old base row is held until renamed', async () => {
+  if (!getDatabaseUrl()) {
+    skipWithoutDatabase('environment name check tests')
+    return
+  }
+  const db = createDenoDb()
+  const rollback = new Error('rollback')
+  const constraintOf = (err: unknown) =>
+    String((err as { cause?: { constraint_name?: string } }).cause?.constraint_name ?? err)
+  try {
+    await db.transaction(async (tx) => {
+      const [org] = await tx
+        .insert(organization)
+        .values({ name: 'Base Name Org' })
+        .returning({ id: organization.id })
+      const organizationId = org!.id
+      const [ws] = await tx
+        .insert(workspace)
+        .values({ name: 'ws', organizationId })
+        .returning({ id: workspace.id })
+      const [proj] = await tx
+        .insert(project)
+        .values({ name: 'p', workspaceId: ws!.id, organizationId })
+        .returning({ id: project.id })
+      // Each attempt runs in its own savepoint so a refusal does not abort the transaction.
+      const attempt = async (run: () => Promise<unknown>): Promise<string> => {
+        try {
+          await tx.transaction(async () => {
+            await run()
+          })
+        } catch (err) {
+          return constraintOf(err)
+        }
+        return ''
+      }
+      const insertEnv = (name: string) =>
+        tx
+          .insert(environment)
+          .values({ projectId: proj!.id, name })
+          .returning({ id: environment.id })
+
+      // With the current check, a new environment called base is refused.
+      assert((await attempt(() => insertEnv('base'))).includes('environment_name_check'))
+      assert((await attempt(() => insertEnv('Base'))).includes('environment_name_check'))
+
+      // An old row from before the word was reserved: put the check back the way
+      // the upgrade adds it (not validated), after the row exists.
+      const list = RESERVED_SCOPE_NAMES.map((name) => `'${name}'`).join(', ')
+      await tx.execute(sql`ALTER TABLE "environment" DROP CONSTRAINT "environment_name_check"`)
+      const [old] = await insertEnv('base')
+      await tx.execute(
+        sql.raw(
+          `ALTER TABLE "environment" ADD CONSTRAINT "environment_name_check" CHECK (name ~ '^[a-z0-9][a-z0-9_-]{0,31}$' AND name NOT IN (${list})) NOT VALID`
+        )
+      )
+      // The old row cannot be changed in any column until it is renamed.
+      const unrelated = await attempt(() =>
+        tx.update(environment).set({ isPinned: true }).where(eq(environment.id, old!.id))
+      )
+      assert(unrelated.includes('environment_name_check'), unrelated)
+      // A rename to an allowed name works, and renaming back to base is refused.
+      await tx.update(environment).set({ name: 'main' }).where(eq(environment.id, old!.id))
+      const back = await attempt(() =>
+        tx.update(environment).set({ name: 'base' }).where(eq(environment.id, old!.id))
+      )
+      assert(back.includes('environment_name_check'), back)
+      throw rollback
+    })
+  } catch (err) {
+    if (err !== rollback) throw err
   }
 })
