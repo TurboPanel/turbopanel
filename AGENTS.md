@@ -408,6 +408,20 @@ guard; `pnpm test:do` alone does not.
   a wiped database. `/api/client/v1/status` answers **503**
   `{ code: "database_error" }` (not a bare 500) when the settings read fails
   — the symptom of an unmigrated or unreachable database.
+  **Database TLS for a non-production origin.** `scripts/migrate-locked.mjs`
+  hands the URL (query string included) to the `postgres` library, so
+  `?sslmode=require` encrypts without checking the certificate, and
+  `sslmode=verify-full` or `sslrootcert=system` checks only the system's
+  trusted authorities (there is no CA file path in the URL; an organization
+  CA would need `NODE_EXTRA_CA_CERTS`). Use `require` for the migrate URL. The
+  Hyperdrive configs take the CA themselves: upload the Organization CA with
+  `wrangler cert upload certificate-authority --ca-cert <file> --name <name>`,
+  then `wrangler hyperdrive update <id> --ca-certificate-id <uuid> --sslmode
+  verify-full`. The origin check compares host, port and database only (not
+  the user), and the strings must be identical, so the migrate URL and the
+  Hyperdrive origin use the same hostname, never one by name and one by IP.
+  A Cloudflare "Retry deploy" rebuilds the commit that build already used; to
+  build the current `trunk`, a new commit has to land on it.
   Do not commit `TURBOPANEL_REVISION` in `wrangler.jsonc` — that would freeze a
   SHA. Self-hosted instance-launch writes it into `runtime.env` /
   `runtime.dev-vars` from `git rev-parse HEAD` in the instance checkout.
