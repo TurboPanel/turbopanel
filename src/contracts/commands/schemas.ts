@@ -2622,6 +2622,13 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
    * host-run service with no entry.
    */
   serviceFolders?: EnvironmentDeployServiceFolder[]
+  /**
+   * Compose service names of sites that left the compose file. The host removes
+   * the vhost, php-fpm pool and per-site runtime of exactly these, in this
+   * environment, after the deploy has succeeded. Absent or empty removes
+   * nothing: a site missing from `sites` is never read as removed.
+   */
+  removedSites?: string[]
   principalMaterial?: EnvironmentDeployPrincipalMaterial[]
   serviceHooks?: EnvironmentDeployServiceHook[]
   /**
@@ -3302,6 +3309,17 @@ function parseDeployStorageMaterial(
 ): EnvironmentDeployStorageMaterial[] | undefined {
   if (!Array.isArray(value)) return undefined
   return value.map(parseDeployStorageMaterialEntry)
+}
+
+function parseDeployRemovedSites(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new Error('Invalid environment.deploy payload')
+  return value.map((name) => {
+    if (!isString(name) || name === '.' || name === '..' || !/^[A-Za-z0-9._-]+$/.test(name)) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    return name
+  })
 }
 
 function parseDeployServiceFolders(value: unknown): EnvironmentDeployServiceFolder[] | undefined {
@@ -4577,6 +4595,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       secretPlan: parseDeploySecretPlan(value.secretPlan),
       storageMaterial: parseDeployStorageMaterial(value.storageMaterial),
       serviceFolders: parseDeployServiceFolders(value.serviceFolders),
+      removedSites: parseDeployRemovedSites(value.removedSites),
       principalMaterial: parseDeployPrincipalMaterial(value.principalMaterial),
       serviceHooks: parseDeployServiceHooks(value.serviceHooks),
       listenerPorts:

@@ -5,6 +5,7 @@ import type {
 } from '../../contracts/commands/schemas.ts'
 import type { PlannedFolders } from '../../features/folders/allocate.ts'
 import {
+  removedServiceNames,
   serviceFoldersFor,
   servicesNeedingFolders,
   volumesNeedingFolders,
@@ -190,4 +191,16 @@ test('each planned service folder goes on the payload by service id, and an empt
     }),
     []
   )
+})
+
+test('the services that left the compose file are the service rows its document no longer names', () => {
+  assertEquals(removedServiceNames(['web', 'plain', 'old'], { web: {} }), ['old', 'plain'])
+  assertEquals(removedServiceNames(['web', 'web', 'old'], { web: {}, api: {} }), ['old'])
+  assertEquals(removedServiceNames(['web'], { web: {} }), [])
+})
+
+test('an unreadable or empty document never reads as every service having left', () => {
+  assertEquals(removedServiceNames(['web', 'plain'], undefined), [])
+  assertEquals(removedServiceNames(['web', 'plain'], {}), [])
+  assertEquals(removedServiceNames([], { web: {} }), [])
 })

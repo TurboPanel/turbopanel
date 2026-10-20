@@ -309,3 +309,15 @@ it('keeps the service folders a deploy left in place, and drops entries that are
     undefined
   )
 })
+
+it('keeps the sites that left the compose file and refuses a malformed list', () => {
+  assertEquals(
+    parseEnvironmentDeployPayload({ ...DEPLOY_BASE, removedSites: ['plain', 'old.site'] })
+      .removedSites,
+    ['plain', 'old.site']
+  )
+  assertEquals(parseEnvironmentDeployPayload(DEPLOY_BASE).removedSites, undefined)
+  for (const bad of ['plain', { 0: 'plain' }, ['a/b'], ['..'], [7], [''], ['ok', null]]) {
+    assertThrows(() => parseEnvironmentDeployPayload({ ...DEPLOY_BASE, removedSites: bad }))
+  }
+})

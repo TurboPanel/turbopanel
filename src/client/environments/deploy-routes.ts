@@ -80,6 +80,7 @@ import {
 } from '../../features/folders/allocate.ts'
 import { lockEnvironmentRow } from '../../features/folders/records.ts'
 import {
+  removedServiceNames,
   servicesNeedingFolders,
   volumesNeedingFolders,
   serviceFoldersFor,
@@ -130,6 +131,7 @@ import {
   planEnvironmentDeploy,
   type PlannedDeploy,
 } from '../../features/schedule/index.ts'
+import { servicesMapping } from '../../features/schedule/plan-deploy.ts'
 import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
 import { serverHasHostRunBinding } from '../../features/managed/ingress-bound-consumers.ts'
 import {
@@ -539,6 +541,8 @@ type DeployCommandCreateParams = DeployActor & {
   storageMaterial: EnvironmentDeployStorageMaterial[]
   /** The planned folder of each host-run service; empty when the deploy runs none on the host. */
   serviceFolders: EnvironmentDeployServiceFolder[]
+  /** Services that left the compose file; the host removes the sites among them. */
+  removedSites?: string[]
   principalMaterial: EnvironmentDeployPrincipalMaterial[]
   /** Non-secret Compose project `.env` the daemon writes next to compose.yaml. */
   envFile?: string
@@ -730,6 +734,7 @@ async function createDeployCommand(
         tlsMaterial: params.tlsMaterial,
         variableMaterial: params.variableMaterial,
         storageMaterial: params.storageMaterial,
+        removedSites: params.removedSites,
         principalMaterial: params.principalMaterial,
         envFile: params.envFile || undefined,
         secretPlan: params.secretPlan,
@@ -841,6 +846,8 @@ function createParamsForPreparedServer(
     reservedListenPorts?: ReadonlySet<number>
     /** The folders planned for this server's deploy; their references ride on the payload. */
     plannedFolders: PlannedFolders
+    /** Services that left the compose file. */
+    removedSites?: readonly string[]
   }
 ): DeployCommandCreateParams {
   // One loopback-port ledger for both host-native lanes: site vhosts
@@ -883,6 +890,9 @@ function createParamsForPreparedServer(
     variableMaterial: row.prepared.variableMaterial,
     storageMaterial: withVolumeFolders(row.prepared.storageMaterial, params.plannedFolders),
     serviceFolders,
+    ...(params.removedSites && params.removedSites.length > 0
+      ? { removedSites: [...params.removedSites] }
+      : {}),
     principalMaterial: row.prepared.principalMaterial,
     envFile: row.prepared.envFile,
     secretPlan: row.prepared.secretPlan,
@@ -1052,6 +1062,8 @@ async function persistDeployFanOut(
     hostLevelApproved: boolean
     remoteBuildSourcesApproved: boolean
     selection: DeploySourceSelection
+    /** Services that left the compose file. */
+    removedSites?: readonly string[]
   }
 ): Promise<CreatedDeployCommand[]> {
   const batches = planDeployBatches(
@@ -1088,6 +1100,7 @@ async function persistDeployFanOut(
         })
         const createParams = createParamsForPreparedServer(row, {
           plannedFolders,
+          removedSites: params.removedSites,
           actorType: params.actorType,
           actorId: params.actorId,
           environmentId: params.environmentId,
@@ -2074,6 +2087,10 @@ async function runEnvironmentDeploy(
       hostLevelApproved: planned.hostLevelApproved,
       remoteBuildSourcesApproved: planned.remoteBuildSourcesApproved,
       selection: auth.selection,
+      removedSites: removedServiceNames(
+        planned.serviceRows.map((row) => row.composeServiceName),
+        servicesMapping(planned.merged)
+      ),
     })
     if (persisted instanceof Response) return persisted
     const created = persisted
