@@ -149,7 +149,9 @@ export function checkoutIdempotencyKey(
 ): string {
   const base = `checkout:${organizationId}:${tierId}:${quantity}`
   return windowedIdempotencyKey(
-    replacing.length > 0 ? `${base}:replaces:${[...replacing].sort((a, b) => a.localeCompare(b)).join(',')}` : base,
+    replacing.length > 0
+      ? `${base}:replaces:${[...replacing].sort((a, b) => a.localeCompare(b)).join(',')}`
+      : base,
     nowMs
   )
 }
