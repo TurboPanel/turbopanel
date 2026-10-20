@@ -4,14 +4,7 @@
  */
 import { assertEquals } from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
-import {
-  deployment,
-  hosting,
-  hostname,
-  organization,
-  project,
-  service,
-} from '../../db/schema.ts'
+import { deployment, hosting, hostname, organization, project, service } from '../../db/schema.ts'
 import {
   type Ctx,
   createProject,
