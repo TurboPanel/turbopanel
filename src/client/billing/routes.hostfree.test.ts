@@ -41,6 +41,7 @@ import {
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { windowedIdempotencyKey } from '../../features/billing/idempotency.ts'
+import { checkoutSessionExpiresAtMs } from '../../features/billing/checkout.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { SERVER_SIZE_COMMAND } from '../../features/tiers/size-command.ts'
 import {
@@ -195,6 +196,8 @@ type HarnessOpts = {
   leaseHeld?: boolean
   /** Extra Stripe routes; the product catalogue is always answered. */
   routes?: Partial<Record<Route, (call: StripeCall) => unknown>>
+  /** A fallback for paths with ids in them; return `undefined` to fall through. */
+  stripe?: (call: StripeCall) => unknown
 }
 
 async function buildApp(opts: HarnessOpts = {}) {
@@ -248,6 +251,9 @@ async function buildApp(opts: HarnessOpts = {}) {
   const client = createStripeClientDouble((call) => {
     const handler = opts.routes?.[`${call.method} ${call.path}` as Route]
     if (handler) return handler(call)
+    const dynamic = opts.stripe?.(call)
+    if (dynamic !== undefined) return dynamic
+    if (call.method === 'GET' && call.path === '/v1/checkout/sessions') return { data: [] }
     if (call.method === 'GET' && call.path === '/v1/products/prod_s3') {
       return stripeProduct('S3')
     }
@@ -812,8 +818,19 @@ test("POST /billing/checkout sends the product's default price from the gateway 
     sessionId: 'cs_1',
   })
   // The product lookup precedes the session; the existing payer means no customer is created.
-  assertEquals(stripeCalls(), ['GET /v1/products/prod_s3', 'POST /v1/checkout/sessions'])
-  const session = client.calls[1]!
+  assertEquals(stripeCalls(), [
+    'GET /v1/products/prod_s3',
+    'GET /v1/checkout/sessions',
+    'GET /v1/checkout/sessions',
+    'POST /v1/checkout/sessions',
+  ])
+  const session = client.calls[3]!
+  assertEquals(
+    formOf(session, 'expires_at'),
+    String(Math.floor(checkoutSessionExpiresAtMs(Date.parse(NOW)) / 1000))
+  )
+  assertEquals(formOf(session, 'metadata[turbopanel_tier_id]'), S3)
+  assertEquals(formOf(session, 'metadata[turbopanel_quantity]'), '2')
   assertEquals(formOf(session, 'mode'), 'subscription')
   assertEquals(formOf(session, 'customer'), 'cus_1')
   assertEquals(formOf(session, 'line_items[0][price]'), 'price_s3_live')
@@ -875,54 +892,280 @@ test("a Stripe refusal answers 502 stripe_error with only the typed fields, and 
   assertEquals(line?.includes('"Stripe Tax has not been activated on your account."'), true)
 })
 
-test('POST /billing/checkout reuses an unexpired pending session instead of minting another, and refuses a different quantity while one is pending', async () => {
-  const { app, headers, stripeCalls } = await buildApp({
-    view: viewWith(stateWith(null, [])),
-    routes: {
-      'POST /v1/checkout/sessions': () => ({
-        id: 'cs_1',
-        object: 'checkout.session',
-        url: 'https://checkout.stripe.com/c/pay/cs_1',
-      }),
+type FakeSession = {
+  id: string
+  status: 'open' | 'complete' | 'expired'
+  tier: string
+  quantity: number
+  created: number
+}
+
+/** A Stripe that keeps Checkout sessions: list by status, expire, create. */
+function sessionStripe(
+  seed: FakeSession[] = [],
+  hooks: { onExpire?: (id: string, s: FakeSession) => void; listFails?: boolean } = {}
+) {
+  const sessions = [...seed]
+  const nowSec = Math.floor(Date.parse(NOW) / 1000)
+  const view = (s: FakeSession) => ({
+    id: s.id,
+    object: 'checkout.session',
+    status: s.status,
+    created: s.created,
+    url: `https://checkout.stripe.com/c/pay/${s.id}`,
+    metadata: {
+      turbopanel_tier_id: s.tier,
+      turbopanel_quantity: String(s.quantity),
     },
   })
-  const body = JSON.stringify({ tierId: S3, quantity: 2 })
-  const first = await app.request('/billing/checkout', {
-    method: 'POST',
-    headers,
-    body,
-  })
-  const second = await app.request('/billing/checkout', {
-    method: 'POST',
-    headers,
-    body,
-  })
-  assertEquals(first.status, 200)
-  assertEquals(await first.json(), {
-    url: 'https://checkout.stripe.com/c/pay/cs_1',
-    sessionId: 'cs_1',
-  })
-  assertEquals(second.status, 200)
-  assertEquals(await second.json(), {
-    url: 'https://checkout.stripe.com/c/pay/cs_1',
-    sessionId: 'cs_1',
-  })
-  assertEquals(
-    stripeCalls().filter((call) => call === 'POST /v1/checkout/sessions'),
-    ['POST /v1/checkout/sessions']
-  )
+  const stripe = (call: StripeCall): unknown => {
+    if (call.method === 'GET' && call.path === '/v1/checkout/sessions') {
+      if (hooks.listFails) {
+        throw new StripeApiError({ status: 500, type: 'api_error', code: null, message: 'boom' })
+      }
+      const status = formOf(call, 'status')
+      return { data: sessions.filter((s) => s.status === status).map(view) }
+    }
+    const one = /^\/v1\/checkout\/sessions\/(cs_\w+)$/.exec(call.path)
+    if (one && call.method === 'GET') return view(sessions.find((s) => s.id === one[1])!)
+    const expire = /^\/v1\/checkout\/sessions\/(cs_\w+)\/expire$/.exec(call.path)
+    if (expire && call.method === 'POST') {
+      const s = sessions.find((x) => x.id === expire[1])!
+      hooks.onExpire?.(s.id, s)
+      if (s.status !== 'open') {
+        throw new StripeApiError({
+          status: 400,
+          type: 'invalid_request_error',
+          code: null,
+          message: 'Only open sessions can be expired.',
+        })
+      }
+      s.status = 'expired'
+      return view(s)
+    }
+    if (call.method === 'POST' && call.path === '/v1/checkout/sessions') {
+      const made: FakeSession = {
+        id: `cs_${sessions.length + 1}`,
+        status: 'open',
+        tier: formOf(call, 'metadata[turbopanel_tier_id]')!,
+        quantity: Number(formOf(call, 'metadata[turbopanel_quantity]')),
+        created: nowSec,
+      }
+      sessions.push(made)
+      return view(made)
+    }
+    return undefined
+  }
+  return { sessions, stripe, nowSec }
+}
 
-  const other = await app.request('/billing/checkout', {
+async function postCheckout(
+  harness: Awaited<ReturnType<typeof buildApp>>,
+  tierId: string,
+  quantity: number
+) {
+  return await harness.app.request('/billing/checkout', {
     method: 'POST',
-    headers,
-    body: JSON.stringify({ tierId: S3, quantity: 3 }),
+    headers: harness.headers,
+    body: JSON.stringify({ tierId, quantity }),
   })
-  assertEquals(other.status, 409)
-  assertEquals(await other.json(), { error: 'checkout_pending' })
+}
+
+const livePosts = (h: Awaited<ReturnType<typeof buildApp>>) =>
+  h.stripeCalls().filter((c) => c === 'POST /v1/checkout/sessions')
+
+test('a different tier or quantity expires the open session and opens a new one in the same request', async () => {
+  const fake = sessionStripe()
+  const h = await buildApp({ view: viewWith(stateWith(null, [])), stripe: fake.stripe })
+  const first = await postCheckout(h, S3, 2)
+  assertEquals((await first.json()).sessionId, 'cs_1')
+  // Well past the quick-return window.
+  const later = await postCheckout(h, S5, 2)
+  assertEquals(later.status, 200)
+  assertEquals((await later.json()).sessionId, 'cs_2')
   assertEquals(
-    stripeCalls().filter((call) => call === 'POST /v1/checkout/sessions'),
-    ['POST /v1/checkout/sessions']
+    fake.sessions.map((s) => `${s.id}:${s.status}`),
+    ['cs_1:expired', 'cs_2:open']
   )
+  const quantity = await postCheckout(h, S5, 4)
+  assertEquals((await quantity.json()).sessionId, 'cs_3')
+  assertEquals(fake.sessions.filter((s) => s.status === 'open').length, 1)
+  // Each create presents its own key.
+  const keys = h.client.calls
+    .filter((c) => c.method === 'POST' && c.path === '/v1/checkout/sessions')
+    .map((c) => c.idempotencyKey)
+  assertEquals(new Set(keys).size, 3)
+})
+
+test('going back to an earlier choice is a new request, never the expired session its key once made', async () => {
+  const fake = sessionStripe()
+  const h = await buildApp({ view: viewWith(stateWith(null, [])), stripe: fake.stripe })
+  await postCheckout(h, S3, 2)
+  await postCheckout(h, S5, 2)
+  const back = await postCheckout(h, S3, 2)
+  assertEquals((await back.json()).sessionId, 'cs_3')
+  const keys = h.client.calls
+    .filter((c) => c.method === 'POST' && c.path === '/v1/checkout/sessions')
+    .map((c) => c.idempotencyKey)
+  assertEquals(new Set(keys).size, 3)
+  assertEquals(fake.sessions.filter((s) => s.status === 'open').map((s) => s.id), ['cs_3'])
+})
+
+test('a quick repeat of the same choice hands back the open session; an older one is replaced', async () => {
+  const fake = sessionStripe()
+  const h = await buildApp({ view: viewWith(stateWith(null, [])), stripe: fake.stripe })
+  const a = await (await postCheckout(h, S3, 2)).json()
+  const b = await (await postCheckout(h, S3, 2)).json()
+  assertEquals(b, a)
+  assertEquals(livePosts(h).length, 1)
+
+  // The same choice again, but the open session is an hour old.
+  fake.sessions[0]!.created -= 3600
+  const c = await (await postCheckout(h, S3, 2)).json()
+  assertEquals(c.sessionId, 'cs_2')
+  assertEquals(fake.sessions.map((s) => s.status), ['expired', 'open'])
+})
+
+test('other open sessions are expired even when one is handed back', async () => {
+  const nowSec = Math.floor(Date.parse(NOW) / 1000)
+  const fake = sessionStripe([
+    { id: 'cs_1', status: 'open', tier: S5, quantity: 1, created: nowSec - 3000 },
+    { id: 'cs_2', status: 'open', tier: S3, quantity: 2, created: nowSec - 10 },
+  ])
+  const h = await buildApp({ view: viewWith(stateWith(null, [])), stripe: fake.stripe })
+  const res = await (await postCheckout(h, S3, 2)).json()
+  assertEquals(res.sessionId, 'cs_2')
+  assertEquals(fake.sessions.map((s) => s.status), ['expired', 'open'])
+  assertEquals(livePosts(h).length, 0)
+})
+
+test('a session that completes before it can be expired stops the purchase: subscription_exists, nothing created', async () => {
+  const nowSec = Math.floor(Date.parse(NOW) / 1000)
+  const fake = sessionStripe(
+    [{ id: 'cs_1', status: 'open', tier: S3, quantity: 1, created: nowSec - 600 }],
+    { onExpire: (_id, s) => (s.status = 'complete') }
+  )
+  const h = await buildApp({ view: viewWith(stateWith(null, [])), stripe: fake.stripe })
+  const res = await postCheckout(h, S5, 1)
+  assertEquals(res.status, 409)
+  assertEquals(await res.json(), { error: 'subscription_exists' })
+  assertEquals(livePosts(h).length, 0)
+})
+
+test('a session paid a moment ago (webhook not yet projected) stops the purchase before anything is expired or created', async () => {
+  const nowSec = Math.floor(Date.parse(NOW) / 1000)
+  const fake = sessionStripe([
+    { id: 'cs_1', status: 'complete', tier: S3, quantity: 1, created: nowSec - 120 },
+    { id: 'cs_2', status: 'open', tier: S5, quantity: 1, created: nowSec - 60 },
+  ])
+  const h = await buildApp({ view: viewWith(stateWith(null, [])), stripe: fake.stripe })
+  const res = await postCheckout(h, S5, 3)
+  assertEquals(res.status, 409)
+  assertEquals(await res.json(), { error: 'subscription_exists' })
+  assertEquals(h.stripeCalls().some((c) => c.includes('expire')), false)
+  assertEquals(livePosts(h).length, 0)
+})
+
+test('an old completed session (a cancelled subscription) does not block a new purchase', async () => {
+  const nowSec = Math.floor(Date.parse(NOW) / 1000)
+  const fake = sessionStripe([
+    { id: 'cs_1', status: 'complete', tier: S3, quantity: 1, created: nowSec - 86_400 * 30 },
+  ])
+  const h = await buildApp({
+    view: viewWith(stateWith(null, [])),
+    stripe: (call) => {
+      // Stripe applies the created filter; mimic it.
+      if (call.path === '/v1/checkout/sessions' && formOf(call, 'status') === 'complete') {
+        const floor = Number(formOf(call, 'created[gte]'))
+        return { data: fake.sessions.filter((s) => s.status === 'complete' && s.created >= floor) }
+      }
+      return fake.stripe(call)
+    },
+  })
+  const res = await postCheckout(h, S5, 1)
+  assertEquals(res.status, 200)
+  assertEquals(livePosts(h).length, 1)
+})
+
+test('an already expired session that Stripe refuses to expire again is skipped, and the purchase goes on', async () => {
+  const nowSec = Math.floor(Date.parse(NOW) / 1000)
+  const fake = sessionStripe([
+    { id: 'cs_1', status: 'open', tier: S3, quantity: 1, created: nowSec - 600 },
+  ])
+  // It lapses on its own between the listing and the expire call.
+  const lapse = fake.stripe
+  const lapsing = await buildApp({
+    view: viewWith(stateWith(null, [])),
+    stripe: (call) => {
+      if (call.path.endsWith('/expire')) fake.sessions[0]!.status = 'expired'
+      return lapse(call)
+    },
+  })
+  const res = await postCheckout(lapsing, S5, 1)
+  assertEquals(res.status, 200)
+  assertEquals(livePosts(lapsing).length, 1)
+})
+
+test('a Stripe failure while listing or expiring answers a plain retryable error and creates nothing', async () => {
+  const nowSec = Math.floor(Date.parse(NOW) / 1000)
+  const listing = sessionStripe([], { listFails: true })
+  const a = await buildApp({ view: viewWith(stateWith(null, [])), stripe: listing.stripe })
+  const listed = await postCheckout(a, S3, 1)
+  assertEquals(listed.status, 503)
+  assertEquals((await listed.json()).error, 'stripe_error')
+  assertEquals(livePosts(a).length, 0)
+
+  const fake = sessionStripe([
+    { id: 'cs_1', status: 'open', tier: S3, quantity: 1, created: nowSec - 600 },
+  ])
+  const b = await buildApp({
+    view: viewWith(stateWith(null, [])),
+    stripe: (call) => {
+      if (call.path.endsWith('/expire')) {
+        throw new StripeApiError({ status: 500, type: 'api_error', code: null, message: 'down' })
+      }
+      return fake.stripe(call)
+    },
+  })
+  const expired = await postCheckout(b, S5, 1)
+  assertEquals(expired.status, 503)
+  assertEquals(livePosts(b).length, 0)
+  // Nothing was lost: the next try starts again and succeeds.
+  const retry = await buildApp({ view: viewWith(stateWith(null, [])), stripe: fake.stripe })
+  assertEquals((await postCheckout(retry, S5, 1)).status, 200)
+  assertEquals(fake.sessions.filter((s) => s.status === 'open').length, 1)
+})
+
+test('an expire refused for a session that is still open is an error, not a second live session', async () => {
+  const nowSec = Math.floor(Date.parse(NOW) / 1000)
+  const fake = sessionStripe([
+    { id: 'cs_1', status: 'open', tier: S3, quantity: 1, created: nowSec - 600 },
+  ])
+  const h = await buildApp({
+    view: viewWith(stateWith(null, [])),
+    stripe: (call) => {
+      if (call.path.endsWith('/expire')) {
+        throw new StripeApiError({
+          status: 400,
+          type: 'invalid_request_error',
+          code: 'parameter_invalid_empty',
+          message: 'refused',
+        })
+      }
+      return fake.stripe(call)
+    },
+  })
+  const res = await postCheckout(h, S5, 1)
+  assertEquals(res.status, 502)
+  assertEquals(livePosts(h).length, 0)
+})
+
+test('a live subscription is refused before Stripe is asked anything about Checkout', async () => {
+  const fake = sessionStripe()
+  const h = await buildApp({ stripe: fake.stripe })
+  const res = await postCheckout(h, S3, 1)
+  assertEquals(res.status, 409)
+  assertEquals(h.stripeCalls(), [])
 })
 
 test('checkout is refused 409 subscription_exists once a live subscription is projected, and 400 tier_not_purchasable for a retired tier', async () => {
