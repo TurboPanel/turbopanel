@@ -8,7 +8,14 @@ import { type SQL, sql } from 'drizzle-orm'
  * already a list passes through.
  */
 export function readNameList(value: unknown): string[] {
-  const parsed = typeof value === 'string' ? (JSON.parse(value) as unknown) : value
+  let parsed: unknown = value
+  if (typeof value === 'string') {
+    try {
+      parsed = JSON.parse(value) as unknown
+    } catch {
+      throw new Error('Expected a list of names from the database')
+    }
+  }
   if (parsed === null || parsed === undefined) return []
   if (!Array.isArray(parsed) || parsed.some((name) => typeof name !== 'string')) {
     throw new Error('Expected a list of names from the database')
