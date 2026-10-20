@@ -9,10 +9,14 @@
  *
  * 1. `x-turbopanel.nodeVersion` on the service wins (except on a rollback,
  *    below); nothing is read.
- * 2. `package.json` `engines.node` (a range such as `>=26.7.0`, `^22`,
- *    `20 || 22`) → the newest offered series it allows.
- * 3. `.nvmrc`, then `.node-version` (a version such as `26` or `v24.1.0`).
- * 4. Nothing usable → left unset, and the daemon runs the newest offered series.
+ * 2. `x-turbopanel.nodeVersion: latest` is the deliberate "follow the server"
+ *    choice: it becomes the newest offered series at each deploy, and no file is read.
+ * 3. `package.json` `engines.node` (a range such as `>=26.7.0`, `^22`,
+ *    `20 || 22`) → the newest offered series it allows (the highest one that
+ *    satisfies the range, so `>=22` picks the newest and `^22` picks 22).
+ * 4. `package.json` `volta.node`, then `.nvmrc`, `.node-version` (a version
+ *    such as `26` or `v24.1.0`), then `.tool-versions` (its `nodejs` line).
+ * 5. Nothing usable → left unset, and the daemon runs the newest offered series.
  *
  * Files are read from the service's `subdirectory` first and, when it has one,
  * from the repository root after that, so a monorepo that keeps `.nvmrc` at
@@ -49,6 +53,7 @@ import { type Db, getDaemonCellRegistry } from '../../db/connection.ts'
 import { repository } from '../../db/schema.ts'
 import type { EnvironmentDeploySource } from '../../contracts/commands/schemas.ts'
 import { NEWEST_NATIVE_APP_NODE_SERIES, runtimeSeries } from '../../contracts/runtime-registry.ts'
+import { FLOATING_NODE_VERSION } from '../../features/compose/service-kind.ts'
 import type { PreparedNativeAppService } from '../../features/compose/ir.ts'
 import type { GitProviderSourceRow, RepositoryFileEntry } from '../../features/git/git-provider.ts'
 import { newestAllowedSeries, parseNodeVersionRange } from '../../lib/node-version-range.ts'
@@ -56,7 +61,15 @@ import { inspectRepository, type InspectRepositoryParams } from '../repositories
 
 /** Where a native app's Node series came from. */
 export type NodeVersionOrigin =
-  'compose' | 'release' | 'package.json' | '.nvmrc' | '.node-version' | 'newest' | 'unresolved'
+  | 'compose'
+  | 'release'
+  | 'package.json'
+  | 'volta'
+  | '.nvmrc'
+  | '.node-version'
+  | '.tool-versions'
+  | 'newest'
+  | 'unresolved'
 
 /** One native app's Node series, for people (the deploy preview). */
 export type NativeAppNodeVersionView = {
@@ -102,9 +115,14 @@ export type NodeVersionFileReader = (
   paths: readonly string[]
 ) => Promise<NodeVersionFileRead>
 
-type FileKind = 'package.json' | '.nvmrc' | '.node-version'
+type FileKind = 'package.json' | '.nvmrc' | '.node-version' | '.tool-versions'
 
-const FILE_KINDS: readonly FileKind[] = ['package.json', '.nvmrc', '.node-version']
+const FILE_KINDS: readonly FileKind[] = [
+  'package.json',
+  '.nvmrc',
+  '.node-version',
+  '.tool-versions',
+]
 
 /** Longest file value echoed back in a view or an error. */
 const MAX_ECHOED_VALUE = 200
@@ -115,7 +133,9 @@ const MAX_ECHOED_VALUE = 200
  */
 const MAX_PARSED_VALUE = 4096
 
-type FoundRequest = { requested: string; path: string; source: FileKind }
+type RequestSource = Exclude<NodeVersionOrigin, 'compose' | 'release' | 'newest' | 'unresolved'>
+
+type FoundRequest = { requested: string; path: string; source: RequestSource }
 
 type FileDecision =
   | { series: string; request: FoundRequest }
@@ -139,18 +159,27 @@ function kindOf(path: string): FileKind | undefined {
   return FILE_KINDS.find((name) => path === name || path.endsWith(`/${name}`))
 }
 
-function enginesNode(content: string): string | undefined {
+/** `engines.node` and `volta.node` from a `package.json`, in that order. */
+function packageNodeRequests(content: string): { source: RequestSource; value: string }[] {
   let parsed: unknown
   try {
     parsed = JSON.parse(content)
   } catch {
-    return undefined
+    return []
   }
-  if (typeof parsed !== 'object' || parsed === null) return undefined
-  const engines = (parsed as { engines?: unknown }).engines
-  if (typeof engines !== 'object' || engines === null) return undefined
-  const node = (engines as { node?: unknown }).node
-  return typeof node === 'string' && node.trim().length > 0 ? node.trim() : undefined
+  if (typeof parsed !== 'object' || parsed === null) return []
+  const record = parsed as { engines?: unknown; volta?: unknown }
+  const out: { source: RequestSource; value: string }[] = []
+  const readNode = (holder: unknown, source: RequestSource) => {
+    if (typeof holder !== 'object' || holder === null) return
+    const node = (holder as { node?: unknown }).node
+    if (typeof node === 'string' && node.trim().length > 0) {
+      out.push({ source, value: node.trim() })
+    }
+  }
+  readNode(record.engines, 'package.json')
+  readNode(record.volta, 'volta')
+  return out
 }
 
 /** The first line that is not blank or a `#` comment. */
@@ -167,13 +196,27 @@ function shortened(value: string): string {
   return value.length > MAX_ECHOED_VALUE ? `${value.slice(0, MAX_ECHOED_VALUE)}…` : value
 }
 
-function requestIn(file: RepositoryFileEntry): FoundRequest | undefined {
-  if (!file.found) return undefined
-  const source = kindOf(file.path)
-  if (!source) return undefined
-  const requested =
-    source === 'package.json' ? enginesNode(file.content) : firstVersionLine(file.content)
-  return requested === undefined ? undefined : { requested, path: file.path, source }
+/** The `nodejs` (or `node`) line of an asdf-style `.tool-versions`: its first version. */
+function toolVersionsNode(content: string): string | undefined {
+  for (const line of content.split('\n')) {
+    const hash = line.indexOf('#')
+    const words = (hash === -1 ? line : line.slice(0, hash)).trim().split(/\s+/)
+    if (words[0] === 'nodejs' || words[0] === 'node') return words[1]
+  }
+  return undefined
+}
+
+function requestsIn(file: RepositoryFileEntry): FoundRequest[] {
+  if (!file.found) return []
+  const kind = kindOf(file.path)
+  if (!kind) return []
+  const make = (requested: string | undefined, source: RequestSource): FoundRequest[] =>
+    requested === undefined ? [] : [{ requested, path: file.path, source }]
+  if (kind === 'package.json') {
+    return packageNodeRequests(file.content).flatMap(({ source, value }) => make(value, source))
+  }
+  if (kind === '.tool-versions') return make(toolVersionsNode(file.content), kind)
+  return make(firstVersionLine(file.content), kind)
 }
 
 /** The request as echoed back to people: the value cut to a readable length. */
@@ -193,23 +236,70 @@ export function nodeVersionFromFiles(
   const byPath = new Map(files.map((file) => [file.path, file]))
   for (const path of paths) {
     const file = byPath.get(path)
-    const request = file ? requestIn(file) : undefined
-    if (!request) continue
-    // The full value is parsed; only what is shown to people is shortened.
-    const range =
-      request.requested.length > MAX_PARSED_VALUE ? null : parseNodeVersionRange(request.requested)
-    if (!range) {
-      // `engines.node` is meant to be a range, so one npm would not accept is a
-      // mistake to point out. A version file may hold an alias (`lts/*`).
-      if (request.source === 'package.json') return { invalid: forPeople(request) }
-      continue
+    for (const request of file ? requestsIn(file) : []) {
+      // The full value is parsed; only what is shown to people is shortened.
+      const range =
+        request.requested.length > MAX_PARSED_VALUE
+          ? null
+          : parseNodeVersionRange(request.requested)
+      if (!range) {
+        // `engines.node` is meant to be a range, so one npm would not accept is a
+        // mistake to point out. The other files may hold an alias (`lts/*`).
+        if (request.source === 'package.json') return { invalid: forPeople(request) }
+        continue
+      }
+      const series = newestAllowedSeries(range, offered)
+      return series === null
+        ? { unsupported: forPeople(request) }
+        : { series, request: forPeople(request) }
     }
-    const series = newestAllowedSeries(range, offered)
-    return series === null
-      ? { unsupported: forPeople(request) }
-      : { series, request: forPeople(request) }
   }
   return null
+}
+
+/** What the create wizard is told about a repository's Node hints. */
+export type NodeVersionHint = {
+  /** Where the hint was read: `package.json`, `volta`, `.nvmrc`, `.node-version`, `.tool-versions`. */
+  source: NodeVersionOrigin
+  /** The file's own value (`>=26.7.0`). */
+  requested: string
+  /** Repository path that was read. */
+  path: string
+  /** `matched` names `series`; `unsupported` and `invalid` leave the wizard on its default. */
+  status: 'matched' | 'unsupported' | 'invalid'
+  series?: string
+}
+
+export type NodeVersionSuggestion = {
+  /** The concrete series a new Node app is pinned to when no hint applies. */
+  newest: string
+  offered: string[]
+  hint?: NodeVersionHint
+}
+
+/** The wizard's view of {@link nodeVersionFromFiles}, from files read at the repository root. */
+export function nodeVersionSuggestion(
+  files: readonly RepositoryFileEntry[],
+  offered: readonly string[] = runtimeSeries('node')
+): NodeVersionSuggestion {
+  const decision = nodeVersionFromFiles(files, nodeVersionFilePaths(undefined), offered)
+  const base = { newest: NEWEST_NATIVE_APP_NODE_SERIES, offered: [...offered] }
+  if (decision === null) return base
+  const detail = (found: FoundRequest) => ({
+    source: found.source,
+    requested: found.requested,
+    path: found.path,
+  })
+  if ('series' in decision) {
+    return {
+      ...base,
+      hint: { ...detail(decision.request), status: 'matched', series: decision.series },
+    }
+  }
+  if ('unsupported' in decision) {
+    return { ...base, hint: { ...detail(decision.unsupported), status: 'unsupported' } }
+  }
+  return { ...base, hint: { ...detail(decision.invalid), status: 'invalid' } }
 }
 
 function newestView(composeServiceName: string, note?: string): NativeAppNodeVersionView {
@@ -329,6 +419,17 @@ function answerWithoutRead(
     }
   }
   const pinned = app.nodeVersion?.trim()
+  if (pinned === FLOATING_NODE_VERSION) {
+    return {
+      app: { ...app, nodeVersion: NEWEST_NATIVE_APP_NODE_SERIES },
+      view: {
+        composeServiceName: name,
+        nodeVersion: NEWEST_NATIVE_APP_NODE_SERIES,
+        source: 'compose',
+        note: `Set to "latest": follows the newest Node series the server offers, now ${NEWEST_NATIVE_APP_NODE_SERIES}.`,
+      },
+    }
+  }
   if (pinned) {
     return { app, view: { composeServiceName: name, nodeVersion: pinned, source: 'compose' } }
   }
