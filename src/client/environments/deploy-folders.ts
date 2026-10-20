@@ -129,5 +129,7 @@ export function removedServiceNames(
   const names = Object.keys(documentServices)
   if (names.length === 0) return []
   const current = new Set(names)
-  return [...new Set(serviceRowNames)].filter((name) => !current.has(name)).sort()
+  return [...new Set(serviceRowNames)]
+    .filter((name) => !current.has(name))
+    .sort((a, b) => a.localeCompare(b))
 }
