@@ -849,6 +849,71 @@ test('POST /environments/:id/deploy payload carries runtime composeFiles', async
   )
 })
 
+test('POST /environments/:id/deploy names the services that left the compose file, and nothing else', async () => {
+  await withDeployFixtures(
+    async ({
+      db,
+      app,
+      secrets,
+      userId,
+      organizationId,
+      projectId,
+      environmentId,
+      serverId,
+      commandQueue,
+    }) => {
+      await db
+        .update(environment)
+        .set({
+          serverId,
+          name: 'production',
+          options: { compose: emptyComposeDocument() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
+      await db
+        .update(project)
+        .set({
+          options: { compose: composeWithWebService() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(project.id, projectId))
+      const cookie = await sessionCookie(db, secrets, userId)
+      const deploy = async () => {
+        const res = await app.request(`/environments/${environmentId}/deploy`, {
+          method: 'POST',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: '{}',
+        })
+        assertEquals(res.status, 200)
+        const body = (await res.json()) as { commandId: string }
+        const [row] = await db
+          .select({ payload: dispatch.payload })
+          .from(dispatch)
+          .where(eq(dispatch.commandId, body.commandId))
+          .limit(1)
+        return row?.payload as { removedSites?: string[] }
+      }
+
+      // Nothing left: the field is absent, so the host removes nothing.
+      assertEquals((await deploy()).removedSites, undefined)
+
+      // A service row the compose file no longer names is listed by name.
+      await db.insert(service).values({
+        environmentId,
+        composeServiceName: 'gone',
+        name: 'gone',
+      })
+      assertEquals((await deploy()).removedSites, ['gone'])
+      assertEquals(commandQueue.envelopes.length, 2)
+    }
+  )
+})
+
 test('POST /environments/:id/deploy records a pending placement for each compose principal on the target server', async () => {
   await withDeployFixtures(
     async ({

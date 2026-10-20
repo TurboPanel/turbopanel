@@ -92,6 +92,26 @@ async function plan(
   )
 }
 
+test('a service known only by its compose name is planned, with its name on the plan and its owner from sole tenancy', async () => {
+  await withFixtures(async (ctx) => {
+    const { envId } = await createProject(ctx, 'Plan By Name')
+    const phpsite = await addService(ctx, envId, 'phpsite')
+    // No service id and no owner in the input: the row is found by name and the owner is the
+    // only site owner the service runs as.
+    const planned = await plan(ctx, envId, { services: [{ composeServiceName: 'phpsite' }] })
+    assertEquals([...planned.services.keys()], [phpsite])
+    assertEquals(planned.serviceNames.get(phpsite), 'phpsite')
+    assertEquals(planned.folderIds.length, 1)
+    // A service with two owners, or none, is not planned and so has no name entry either.
+    const unowned = await addService(ctx, envId, 'worker', { owned: false })
+    const again = await plan(ctx, envId, {
+      services: [{ composeServiceName: 'phpsite' }, { composeServiceName: 'worker' }],
+    })
+    assertEquals(again.serviceNames.has(unowned), false)
+    assertEquals([...again.serviceNames], [[phpsite, 'phpsite']])
+  })
+})
+
 test('a deploy plans the folder of a service after its name, in the environment scope, and locks the setting', async () => {
   await withFixtures(async (ctx) => {
     const { envId } = await createProject(ctx, 'Plan One')
@@ -108,6 +128,8 @@ test('a deploy plans the folder of a service after its name, in the environment 
       scope: 'production',
       slug: 'web',
     })
+    // The compose name rides along, so the host can tie a site with no hostname to its folder.
+    assertEquals(planned.serviceNames.get(web), 'web')
     const rows = await ctx.db.select().from(folder).where(eq(folder.serverId, ctx.serverId))
     assertEquals(rows.length, 1)
     assertEquals(rows[0]!.state, 'planned')

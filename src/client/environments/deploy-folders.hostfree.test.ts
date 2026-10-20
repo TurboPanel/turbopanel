@@ -5,6 +5,7 @@ import type {
 } from '../../contracts/commands/schemas.ts'
 import type { PlannedFolders } from '../../features/folders/allocate.ts'
 import {
+  removedServiceNames,
   serviceFoldersFor,
   servicesNeedingFolders,
   volumesNeedingFolders,
@@ -40,6 +41,37 @@ function material(
     ...fields,
   }
 }
+
+test('a site with no hostname, source or native app is listed by its compose name, and that name goes on the wire', () => {
+  const listed = servicesNeedingFolders({
+    sites: [
+      {
+        composeServiceName: 'phpsite',
+        principal: { principalId: PRINCIPAL_ID, username: 'appuser' },
+      },
+    ] as never,
+    nativeAppServices: [],
+    sourceMaterial: [],
+    hostings: [],
+    storageMaterial: [],
+  })
+  assertEquals(listed, [{ composeServiceName: 'phpsite', principalId: PRINCIPAL_ID, domain: null }])
+  // The planner returns the compose name of what it planned; the payload entry carries it, so the
+  // host can tie a site that appears in no other list to its folder.
+  const wire = serviceFoldersFor({
+    folderIds: ['f1'],
+    services: new Map([[SERVICE_ID, { owner: 'appuser', scope: 'production', slug: 'phpsite' }]]),
+    serviceNames: new Map([[SERVICE_ID, listed[0]!.composeServiceName!]]),
+    volumes: new Map(),
+  })
+  assertEquals(wire, [
+    {
+      serviceId: SERVICE_ID,
+      composeServiceName: 'phpsite',
+      folder: { owner: 'appuser', scope: 'production', slug: 'phpsite' },
+    },
+  ])
+})
 
 test('every service that runs on the host is listed once, with its owner and domain when known', () => {
   const listed = servicesNeedingFolders({
@@ -106,6 +138,7 @@ test('the planned folder is added beside the old fields, and only to the volume 
   const planned: PlannedFolders = {
     folderIds: ['f1'],
     services: new Map(),
+    serviceNames: new Map(),
     volumes: new Map([['owned', { owner: 'appuser', scope: 'production', slug: 'data' }]]),
   }
   const owned = material({ storageId: 'owned', sourcePath: '/srv/users/appuser/volumes/owned' })
@@ -117,7 +150,12 @@ test('the planned folder is added beside the old fields, and only to the volume 
 })
 
 test('an owned path volume with no planned folder is refused', () => {
-  const planned: PlannedFolders = { folderIds: [], services: new Map(), volumes: new Map() }
+  const planned: PlannedFolders = {
+    folderIds: [],
+    services: new Map(),
+    serviceNames: new Map(),
+    volumes: new Map(),
+  }
   assertThrows(
     () => withVolumeFolders([material({ storageId: 'owned', principalId: PRINCIPAL_ID })], planned),
     Error,
@@ -132,14 +170,37 @@ test('each planned service folder goes on the payload by service id, and an empt
       [SERVICE_ID, { owner: 'appuser', scope: 'production', slug: 'example.com' }],
       ['svc-2', { owner: 'appuser', scope: 'common', slug: 'api' }],
     ]),
+    serviceNames: new Map([[SERVICE_ID, 'phpsite']]),
     volumes: new Map(),
   }
+  // A service with a compose name carries it, so a site with no hostname can be found.
   assertEquals(serviceFoldersFor(planned), [
     {
       serviceId: SERVICE_ID,
+      composeServiceName: 'phpsite',
       folder: { owner: 'appuser', scope: 'production', slug: 'example.com' },
     },
     { serviceId: 'svc-2', folder: { owner: 'appuser', scope: 'common', slug: 'api' } },
   ])
-  assertEquals(serviceFoldersFor({ folderIds: [], services: new Map(), volumes: new Map() }), [])
+  assertEquals(
+    serviceFoldersFor({
+      folderIds: [],
+      services: new Map(),
+      serviceNames: new Map(),
+      volumes: new Map(),
+    }),
+    []
+  )
+})
+
+test('the services that left the compose file are the service rows its document no longer names', () => {
+  assertEquals(removedServiceNames(['web', 'plain', 'old'], { web: {} }), ['old', 'plain'])
+  assertEquals(removedServiceNames(['web', 'web', 'old'], { web: {}, api: {} }), ['old'])
+  assertEquals(removedServiceNames(['web'], { web: {} }), [])
+})
+
+test('an unreadable or empty document never reads as every service having left', () => {
+  assertEquals(removedServiceNames(['web', 'plain'], undefined), [])
+  assertEquals(removedServiceNames(['web', 'plain'], {}), [])
+  assertEquals(removedServiceNames([], { web: {} }), [])
 })
