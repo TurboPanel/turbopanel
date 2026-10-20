@@ -159,37 +159,37 @@ function stripDocument(document: unknown, omitted: Set<CopyOmission>): unknown {
 
 type Plain = Record<string, unknown>
 
-/** What the Base (merged with the copy's own layer) still gives a service that must be unique. */
-function inheritedOverrides(service: Plain, omitted: Set<CopyOmission>): Plain | null {
-  const fixes: Plain = {}
-  if (service.container_name !== undefined) {
-    fixes.container_name = makeComposeTag('reset', null)
-    omitted.add('containerNames')
-  }
-  if (Array.isArray(service.ports)) {
-    const kept = service.ports.filter((entry) => publishedTarget(entry) === undefined)
-    if (kept.length !== service.ports.length) {
-      fixes.ports = makeComposeTag('override', kept)
-      omitted.add('ports')
-    }
-  }
-  const extension: Plain = {}
+function portFixes(service: Plain, omitted: Set<CopyOmission>): Plain {
+  if (!Array.isArray(service.ports)) return {}
+  const kept = service.ports.filter((entry) => publishedTarget(entry) === undefined)
+  if (kept.length === service.ports.length) return {}
+  omitted.add('ports')
+  return { ports: makeComposeTag('override', kept) }
+}
+
+function extensionFixes(service: Plain, omitted: Set<CopyOmission>): Plain {
   const inherited = isRecord(service['x-turbopanel']) ? service['x-turbopanel'] : {}
+  const extension: Plain = {}
   if (inherited.hosting !== undefined) {
     extension.hosting = makeComposeTag('reset', null)
     omitted.add('routes')
   }
-  if (isRecord(inherited.source)) {
-    const source: Plain = {}
-    // The branch itself cannot be reset from a layer (a branch must be a string),
-    // so the copy keeps it and push deploys go off instead.
-    if (inherited.source.deployOnPush !== false) {
-      source.deployOnPush = false
-      omitted.add('pushDeploys')
-    }
-    if (Object.keys(source).length > 0) extension.source = source
+  // The branch itself cannot be reset from a layer (a branch must be a string),
+  // so the copy keeps it and push deploys go off instead.
+  if (isRecord(inherited.source) && inherited.source.deployOnPush !== false) {
+    extension.source = { deployOnPush: false }
+    omitted.add('pushDeploys')
   }
-  if (Object.keys(extension).length > 0) fixes['x-turbopanel'] = extension
+  return Object.keys(extension).length > 0 ? { 'x-turbopanel': extension } : {}
+}
+
+/** What the Base (merged with the copy's own layer) still gives a service that must be unique. */
+function inheritedOverrides(service: Plain, omitted: Set<CopyOmission>): Plain | null {
+  const fixes: Plain = { ...portFixes(service, omitted), ...extensionFixes(service, omitted) }
+  if (service.container_name !== undefined) {
+    fixes.container_name = makeComposeTag('reset', null)
+    omitted.add('containerNames')
+  }
   return Object.keys(fixes).length > 0 ? fixes : null
 }
 
@@ -209,29 +209,30 @@ function mergeFixes(target: Plain, fixes: Plain): Plain {
   return out
 }
 
-/**
- * Every environment inherits the Base, so the copy's own layer must also
- * override what the Base (plus the copy's layer) still gives: a hostname,
- * published ports, a fixed container name, or an auto-deploying source. The
- * overrides use the compose merge's own `!reset` / `!override`.
- */
-function overrideInherited(copy: Plain, projectOptions: unknown, omitted: Set<CopyOmission>): void {
+/** Overrides for every service the Base (plus the copy's layer) still gives something unique. */
+function inheritedFixesByService(
+  copy: Plain,
+  projectOptions: unknown,
+  omitted: Set<CopyOmission>
+): Map<string, Plain> {
+  const fixesByService = new Map<string, Plain>()
   const layers = resolveComposeLayerChain({
     projectOptions,
     environmentOptions: copy,
     environmentFilename: 'docker-compose.environment.yml',
   })
-  if (isComposeChainError(layers)) return
+  if (isComposeChainError(layers)) return fixesByService
   const effective = mergeComposeLayers(layers).data.services
-  if (!isRecord(effective)) return
-
-  const fixesByService = new Map<string, Plain>()
+  if (!isRecord(effective)) return fixesByService
   for (const [name, service] of Object.entries(effective)) {
     const fixes = isRecord(service) ? inheritedOverrides(service, omitted) : null
     if (fixes) fixesByService.set(name, fixes)
   }
-  if (fixesByService.size === 0) return
+  return fixesByService
+}
 
+/** Write the overrides into the copy's own compose layer, creating it when it has none. */
+function applyFixes(copy: Plain, fixesByService: ReadonlyMap<string, Plain>): void {
   const document = isRecord(copy.compose)
     ? (copy.compose as Plain)
     : { version: 1, data: {}, presentation: { keyOrder: [], comments: {} } }
@@ -239,12 +240,23 @@ function overrideInherited(copy: Plain, projectOptions: unknown, omitted: Set<Co
   const services: Plain = isRecord(data.services) ? { ...data.services } : {}
   for (const [name, fixes] of fixesByService) {
     const own = services[name]
-    if (own !== undefined && !isRecord(own)) continue
-    if (isComposeTaggedValue(own)) continue
+    // A service the layer replaces wholesale inherits nothing from the Base.
+    if (own !== undefined && (!isRecord(own) || isComposeTaggedValue(own))) continue
     services[name] = mergeFixes(isRecord(own) ? own : {}, fixes)
   }
   data.services = services
   copy.compose = { ...document, data }
+}
+
+/**
+ * Every environment inherits the Base, so the copy's own layer must also
+ * override what the Base (plus the copy's layer) still gives: a hostname,
+ * published ports, a fixed container name, or an auto-deploying source. The
+ * overrides use the compose merge's own `!reset` / `!override`.
+ */
+function overrideInherited(copy: Plain, projectOptions: unknown, omitted: Set<CopyOmission>): void {
+  const fixesByService = inheritedFixesByService(copy, projectOptions, omitted)
+  if (fixesByService.size > 0) applyFixes(copy, fixesByService)
 }
 
 /**

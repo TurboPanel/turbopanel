@@ -3,6 +3,7 @@ import type { Db } from '../../db/connection.ts'
 import {
   deleteWouldOrphanPrimary,
   lockProjectForEnvironmentChange,
+  lockProjectsForEnvironmentChange,
   PRIMARY_ENVIRONMENT_DELETE_ERROR,
 } from './primary-environment.ts'
 import { ensureProjectPlacements } from '../principals/placement-records.ts'
@@ -193,9 +194,7 @@ async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<voi
   const { environmentIds, serviceIds, containerIds, hostingIds } = rows
   // One lock order everywhere: the project row first, then the environment rows.
   const projectIds = rows.projectId ? [rows.projectId] : await projectIdsOf(tx, environmentIds)
-  for (const projectId of [...projectIds].sort()) {
-    await lockProjectForEnvironmentChange(tx, projectId)
-  }
+  await lockProjectsForEnvironmentChange(tx, projectIds)
   const retentionScope = {
     ...(rows.projectId ? { projectIds: [rows.projectId] } : {}),
     environmentIds,

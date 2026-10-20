@@ -29,7 +29,20 @@ export async function lockProjectForEnvironmentChange(
   tx: Reader,
   projectId: string
 ): Promise<void> {
-  await tx.execute(sql`SELECT 1 FROM "project" WHERE "id" = ${projectId}::uuid FOR UPDATE`)
+  await lockProjectsForEnvironmentChange(tx, [projectId])
+}
+
+/** Lock several projects in one statement, in id order, so concurrent callers cannot deadlock. */
+export async function lockProjectsForEnvironmentChange(
+  tx: Reader,
+  projectIds: readonly string[]
+): Promise<void> {
+  if (projectIds.length === 0) return
+  const ids = sql.join(
+    projectIds.map((id) => sql`${id}::uuid`),
+    sql`, `
+  )
+  await tx.execute(sql`SELECT 1 FROM "project" WHERE "id" IN (${ids}) ORDER BY "id" FOR UPDATE`)
 }
 
 export async function loadPrimaryEnvironment(
