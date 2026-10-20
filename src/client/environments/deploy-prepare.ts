@@ -3657,6 +3657,9 @@ export async function prepareDeployCompose(
   if (edge instanceof Response) return edge
   if ('kind' in edge) return edge
 
+  const sourceMaterial = withBuildEnv(localSourceMaterial, withVariables.buildAssignments)
+  if (!Array.isArray(sourceMaterial)) return toApplyVariablesPrepareError(sourceMaterial)
+
   return await toPreparedDeployResult(mode, {
     serverId: resolved.serverId,
     composeYaml,
@@ -3670,7 +3673,7 @@ export async function prepareDeployCompose(
     nativeAppVariables: nativeAppVariableViews(nodeVersions.apps, nativeVariables),
     nativeAppNodeVersions: nodeVersions.views,
     nativeAppDenoVersions: nativeAppDenoVersionViews(nodeVersions.apps),
-    sourceMaterial: withBuildEnv(localSourceMaterial, withVariables.buildAssignments),
+    sourceMaterial,
     dockerExternalNetworks,
     dockerNetworkAddressing: externalNetworks.addressing,
     fabricNetworks: fabricNetworksFromSchedule(params.schedule),

@@ -62,6 +62,8 @@ import { isSshCloneUrl } from '../../features/git/clone-url.ts'
 import { normalizeBranchName } from '../../features/git/environment-branch-tracking.ts'
 import { newCorrelationId } from '../../features/commands/ids.ts'
 import { definedFields } from '../../lib/optional-fields.ts'
+import type { ApplyVariablesError } from '../../features/compose/apply-variables.ts'
+import { buildEnvLimitError, isBuildEnvNameAllowed } from '../../features/compose/build-env.ts'
 import {
   type ComposeServiceKind,
   type ComposeServiceSourceExtension,
@@ -361,18 +363,36 @@ function resolveSourceBuild(
 export function withBuildEnv(
   sources: readonly EnvironmentDeploySource[],
   assignments: ReadonlyMap<string, ReadonlyArray<{ name: string; value: string }>>
-): EnvironmentDeploySource[] {
-  return sources.map((source) => {
-    if (source.rollbackToReleaseId !== undefined || source.build.kind === 'static') return source
-    const given = assignments.get(source.composeServiceName)
-    if (!given || given.length === 0) return source
-    const env: Record<string, string> = {}
-    for (const assignment of given) {
-      if (assignment.name.length > 0) env[assignment.name] = assignment.value
+): EnvironmentDeploySource[] | ApplyVariablesError {
+  const out: EnvironmentDeploySource[] = []
+  for (const source of sources) {
+    if (source.rollbackToReleaseId !== undefined || source.build.kind === 'static') {
+      out.push(source)
+      continue
     }
-    if (Object.keys(env).length === 0) return source
-    return { ...source, build: { ...source.build, env: { ...source.build.env, ...env } } }
-  })
+    const given = assignments.get(source.composeServiceName)
+    const env: Record<string, string> = {}
+    // A name the host would refuse (`PATH`, `LD_*`, one no shell can carry) is
+    // dropped here too, so no lane depends on the other's filter.
+    for (const assignment of given ?? []) {
+      if (isBuildEnvNameAllowed(assignment.name)) env[assignment.name] = assignment.value
+    }
+    if (Object.keys(env).length === 0) {
+      out.push(source)
+      continue
+    }
+    const merged = { ...source.build.env, ...env }
+    const tooBig = buildEnvLimitError(source.composeServiceName, merged)
+    if (tooBig !== null) {
+      return {
+        kind: 'variable_ref_invalid',
+        message: tooBig,
+        composeServiceName: source.composeServiceName,
+      }
+    }
+    out.push({ ...source, build: { ...source.build, env: merged } })
+  }
+  return out
 }
 
 type DaemonRecipient = { serverId: string; keyId: string }

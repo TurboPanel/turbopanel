@@ -2630,12 +2630,13 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
    */
   removedSites?: string[]
   /**
-   * The control plane holds every hostname in `hostings` unique (no other
-   * hosting it knows of has one). A host config of another environment that
-   * still names one is then a leftover of a hosting deleted or moved there, and
-   * the host takes the name over instead of refusing this deploy.
+   * Hostnames of this deploy's hostings for which the control plane found no
+   * other live hosting on this server (any organization, any environment) that
+   * still holds them. A host config of another environment that still names one
+   * is a leftover of a hosting deleted or moved there, and the host takes only
+   * these names over instead of refusing the deploy. Absent or empty: refuse.
    */
-  exclusiveHostnames?: boolean
+  takeoverHostnames?: string[]
   principalMaterial?: EnvironmentDeployPrincipalMaterial[]
   serviceHooks?: EnvironmentDeployServiceHook[]
   /**
@@ -3316,6 +3317,17 @@ function parseDeployStorageMaterial(
 ): EnvironmentDeployStorageMaterial[] | undefined {
   if (!Array.isArray(value)) return undefined
   return value.map(parseDeployStorageMaterialEntry)
+}
+
+function parseDeployTakeoverHostnames(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new Error('Invalid environment.deploy payload')
+  return value.map((name) => {
+    if (!isString(name) || name.length > 253 || !/^[a-z0-9*][a-z0-9.*-]*$/.test(name)) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    return name
+  })
 }
 
 function parseDeployRemovedSites(value: unknown): string[] | undefined {
@@ -4603,7 +4615,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       storageMaterial: parseDeployStorageMaterial(value.storageMaterial),
       serviceFolders: parseDeployServiceFolders(value.serviceFolders),
       removedSites: parseDeployRemovedSites(value.removedSites),
-      exclusiveHostnames: value.exclusiveHostnames === true ? true : undefined,
+      takeoverHostnames: parseDeployTakeoverHostnames(value.takeoverHostnames),
       principalMaterial: parseDeployPrincipalMaterial(value.principalMaterial),
       serviceHooks: parseDeployServiceHooks(value.serviceHooks),
       listenerPorts:

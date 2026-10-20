@@ -322,16 +322,16 @@ it('keeps the sites that left the compose file and refuses a malformed list', ()
   }
 })
 
-it('keeps exclusiveHostnames only when it is true', () => {
+it('keeps the hostnames the host may take over, and refuses a malformed list', () => {
   assertEquals(
-    parseEnvironmentDeployPayload({ ...DEPLOY_BASE, exclusiveHostnames: true }).exclusiveHostnames,
-    true
+    parseEnvironmentDeployPayload({
+      ...DEPLOY_BASE,
+      takeoverHostnames: ['example.com', 'www.example.com', '*.example.org'],
+    }).takeoverHostnames,
+    ['example.com', 'www.example.com', '*.example.org']
   )
-  for (const other of [false, 'true', 1, null, undefined]) {
-    assertEquals(
-      parseEnvironmentDeployPayload({ ...DEPLOY_BASE, exclusiveHostnames: other })
-        .exclusiveHostnames,
-      undefined
-    )
+  assertEquals(parseEnvironmentDeployPayload(DEPLOY_BASE).takeoverHostnames, undefined)
+  for (const bad of ['example.com', { 0: 'a.com' }, ['Example.COM'], ['a b'], [''], [7], ['a/b']]) {
+    assertThrows(() => parseEnvironmentDeployPayload({ ...DEPLOY_BASE, takeoverHostnames: bad }))
   }
 })

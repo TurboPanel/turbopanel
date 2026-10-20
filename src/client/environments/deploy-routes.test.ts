@@ -29,6 +29,7 @@ import {
   fabric,
   grant,
   hosting,
+  hostname,
   network,
   organization,
   principal,
@@ -839,7 +840,7 @@ test('POST /environments/:id/deploy payload carries runtime composeFiles', async
         .limit(1)
       const payload = row?.payload as {
         composeFiles: Array<{ filename: string; role: string; content: string }>
-        exclusiveHostnames?: boolean
+        takeoverHostnames?: string[]
       }
       assertEquals(Array.isArray(payload.composeFiles), true)
       assertEquals(payload.composeFiles.length, 1)
@@ -847,7 +848,7 @@ test('POST /environments/:id/deploy payload carries runtime composeFiles', async
       assertEquals(payload.composeFiles[0]!.filename, 'compose.yaml')
       assertEquals(payload.composeFiles[0]!.content.includes('web:'), true)
       // No hosting: nothing to take over.
-      assertEquals('exclusiveHostnames' in payload, false)
+      assertEquals('takeoverHostnames' in payload, false)
     }
   )
 })
@@ -1262,9 +1263,17 @@ test('POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames', a
           })
           .returning({ id: service.id })
         hostingServiceId = svc!.id
-        await db.insert(hosting).values({
-          serviceId: svc!.id,
-          options: { hostnames: ['adminer.example.test'] },
+        const [hostingRow] = await db
+          .insert(hosting)
+          .values({
+            serviceId: svc!.id,
+            options: { hostnames: ['adminer.example.test'] },
+          })
+          .returning({ id: hosting.id })
+        await db.insert(hostname).values({
+          hostingId: hostingRow!.id,
+          routingOrganizationId: organizationId,
+          hostname: 'adminer.example.test',
         })
 
         const cookie = await sessionCookie(db, secrets, userId)
@@ -1295,11 +1304,11 @@ test('POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames', a
             containerName: string
           }
           hostingIngressNetwork?: string
-          exclusiveHostnames?: boolean
+          takeoverHostnames?: string[]
         }
-        // The control plane holds the hostname unique, so a leftover host config
-        // of a deleted hosting in another environment may be taken over.
-        assertEquals(payload.exclusiveHostnames, true)
+        // No other live hosting holds the name, so a leftover host config of a deleted
+        // hosting in another environment may be taken over.
+        assertEquals(payload.takeoverHostnames, ['adminer.example.test'])
         assertEquals(payload.hostingIngress, {
           serviceId: traefikServiceId,
           composeServiceName: 'traefik',

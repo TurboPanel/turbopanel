@@ -403,14 +403,17 @@ marks the folder an orphan, so the name is not repeated on every later deploy
 (a deploy that fails leaves the folder as it was, and the next one asks again).
 A key the host would refuse (`.`, `..`) is never sent. The folder of a removed
 site stays, as an orphan.
-`exclusiveHostnames` (boolean, sent as `true` when the deploy has hostings)
-says every hostname in `hostings[]` is held by no other hosting the control
-plane knows of (hostnames are unique across hostings, `www` names included). A
-host config of another environment on the server that still names one is then a
-leftover of a hosting that was deleted or moved there without that environment
-being deployed since; the host takes the name over (it removes that site block,
-and only that, from the other environment's snippet, and reloads hosting Caddy)
-instead of refusing the deploy. Absent, the host refuses as before. The stop
+`takeoverHostnames[]` (lowercase hostnames, optional) lists hostnames of this
+deploy's hostings for which the control plane found no other live hosting on
+this server (any organization, any environment: hostname uniqueness is per
+organization, so another organization may hold the same name on a shared
+server, and such a name is never listed). A host config of another environment
+that still names a listed name is a leftover of a hosting deleted or moved
+there without that environment being deployed since; the host takes it over
+(it removes that name's site block, and only that, from the other environment's
+snippet, and reloads hosting Caddy) instead of refusing the deploy. A conflict
+on a name not in the list is refused as before, before anything is changed.
+An older host ignores the field and refuses as before. The stop
 result's `folders[]` (`{ owner, scope, kind: 'service',
 slug, removed, reason? }`) says which reclaimed folders are gone; `reason` (plain
 words) says why one stayed. The consumer deletes the `removing` row of every
