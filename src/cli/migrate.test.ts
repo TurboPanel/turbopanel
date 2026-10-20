@@ -36,6 +36,21 @@ test('the migrate subcommand uses the same lock key, table and schema as scripts
   assertMatch(config, new RegExp(`schema: '${MIGRATIONS_SCHEMA}'`))
 })
 
+test('scripts/migrate-locked.mjs lets only testing and staging skip the advisory lock', async () => {
+  const script = await Deno.readTextFile(join(ROOT, 'scripts', 'migrate-locked.mjs'))
+  assertMatch(script, /const NO_LOCK_ENVS = new Set\(\['testing', 'staging'\]\)/)
+  // Anything else that asks to skip it is refused before any connection opens.
+  assertMatch(script, /only allowed when CLOUDFLARE_ENV is testing or staging/)
+  // wrangler.jsonc sets the variable for those two environments and no other.
+  const { stripJsonc } = await import('../../scripts/check-deploy-env.mjs')
+  const config = JSON.parse(stripJsonc(await Deno.readTextFile(join(ROOT, 'wrangler.jsonc'))))
+  const withFlag = Object.keys(config.env ?? {}).filter(
+    (name) => config.env[name]?.vars?.TURBOPANEL_MIGRATE_NO_LOCK === '1'
+  )
+  assertEquals(withFlag.sort(), ['staging', 'testing'])
+  assertEquals(config.vars?.TURBOPANEL_MIGRATE_NO_LOCK, undefined)
+})
+
 test('the migrate subcommand refuses the same Postgres versions as scripts/check-postgres-compat.mjs', async () => {
   const script = await Deno.readTextFile(join(ROOT, 'scripts', 'check-postgres-compat.mjs'))
   assertEquals(
