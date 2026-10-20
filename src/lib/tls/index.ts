@@ -18,6 +18,7 @@ export {
   decodeFirstCertificate,
   decodePemBlock,
   decodePrivateKeyToPkcs8,
+  normalizePrivateKeyPem,
   encodePemBlock,
   PemError,
   splitCertificateChain,

@@ -26,7 +26,11 @@ import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.
 import { deriveEncryptionSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
 import { issueLeafCertificate, mintOrganizationCa } from '../../lib/tls/self-signed.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
-import { replaces, storeIssuedCertificate } from './issued-certificate.ts'
+import { REFUSAL_MESSAGE, replaces, storeIssuedCertificate } from './issued-certificate.ts'
+import {
+  type CaddyKeyKind,
+  makeCaddyPair,
+} from '../../test-fixtures/caddy-key-fixtures.test.support.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -284,17 +288,20 @@ test('refuses a key that does not match, a certificate for another name, an expi
     assertEquals(await send(good.certificatePem, other.privateKeyPem), {
       ok: false,
       error: 'key_mismatch',
+      message: REFUSAL_MESSAGE.key_mismatch,
       status: 400,
     })
     assertEquals(await send(wrongName.certificatePem, wrongName.privateKeyPem), {
       ok: false,
       error: 'certificate_not_for_hostname',
+      message: REFUSAL_MESSAGE.certificate_not_for_hostname,
       status: 400,
     })
     const farFuture = () => new Date(Date.now() + 400 * 86_400_000)
     assertEquals(await send(good.certificatePem, good.privateKeyPem, farFuture), {
       ok: false,
       error: 'certificate_expired',
+      message: REFUSAL_MESSAGE.certificate_expired,
       status: 400,
     })
     const ca = await mintOrganizationCa({
@@ -303,6 +310,7 @@ test('refuses a key that does not match, a certificate for another name, an expi
     assertEquals(await send(ca.certificatePem, ca.privateKeyPem), {
       ok: false,
       error: 'certificate_not_for_hostname',
+      message: REFUSAL_MESSAGE.certificate_not_for_hostname,
       status: 400,
     })
     assertEquals((await readRow(f)).privateKeyPem, null)
@@ -325,19 +333,22 @@ test('refuses garbage, an oversized chain and a hostname that is not plain', asy
     assertEquals((await send(HOST, 'nope', good.privateKeyPem)).ok, false)
     assertEquals(await send(HOST, good.certificatePem, 'not a key'), {
       ok: false,
-      error: 'invalid_certificate',
+      error: 'invalid_private_key',
+      message: REFUSAL_MESSAGE.invalid_private_key,
       status: 400,
     })
     const longChain = Array(7).fill(good.certificatePem).join('\n')
     assertEquals(await send(HOST, longChain, good.privateKeyPem), {
       ok: false,
       error: 'invalid_certificate',
+      message: REFUSAL_MESSAGE.invalid_certificate,
       status: 400,
     })
     for (const bad of ['*.example.com', '../x', 'a b', '', 'a..b']) {
       assertEquals(await send(bad, good.certificatePem, good.privateKeyPem), {
         ok: false,
         error: 'invalid_hostname',
+        message: REFUSAL_MESSAGE.invalid_hostname,
         status: 400,
       })
     }
@@ -364,6 +375,7 @@ test('a server may only supply a certificate for a hosting placed on it', async 
     assertEquals(result, {
       ok: false,
       error: 'no_matching_certificate',
+      message: REFUSAL_MESSAGE.no_matching_certificate,
       status: 404,
     })
     assertEquals((await readRow(f)).privateKeyPem, null)
@@ -396,6 +408,7 @@ test("refuses while the organization has not allowed Let's Encrypt and for a ser
     assertEquals(await storeIssuedCertificate(f.db, { serverId: f.serverId, ...input }, f.deps), {
       ok: false,
       error: 'acme_disabled',
+      message: REFUSAL_MESSAGE.acme_disabled,
       status: 409,
     })
     assertEquals(
@@ -407,7 +420,12 @@ test("refuses while the organization has not allowed Let's Encrypt and for a ser
         },
         f.deps
       ),
-      { ok: false, error: 'server_not_in_organization', status: 403 }
+      {
+        ok: false,
+        error: 'server_not_in_organization',
+        message: REFUSAL_MESSAGE.server_not_in_organization,
+        status: 403,
+      }
     )
   } finally {
     await f.cleanup()
@@ -493,4 +511,113 @@ test('replaces(): equal expiry is rejected, later accepted, earlier rejected', a
   assertEquals(replaces(stored(new Date(at - 1000)), true, pair.parsed, now), true)
   assertEquals(replaces(stored(new Date(at + 1000)), true, pair.parsed, now), false)
   assertEquals(replaces(stored(new Date(at + 1000)), false, pair.parsed, now), true)
+})
+
+for (const kind of [
+  'ec-p256',
+  'ec-p384',
+  'ec-p521',
+  'rsa-pkcs1',
+  'ec-p256-pkcs8',
+] as CaddyKeyKind[]) {
+  test(`stores the pair exactly as Caddy writes it (${kind}), sealed as PKCS#8`, async () => {
+    if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+    const f = await setup()
+    try {
+      const pair = await makeCaddyPair(kind, [HOST])
+      const result = await storeIssuedCertificate(
+        f.db,
+        {
+          serverId: f.serverId,
+          hostname: HOST,
+          certificatePem: pair.certificatePem,
+          privateKeyPem: pair.privateKeyPem,
+        },
+        f.deps
+      )
+      assertEquals(result, { ok: true, stored: true, tlsIds: [f.tlsId] })
+      const row = await readRow(f)
+      assertEquals(row.certificatePem, pair.certificatePem)
+      assertEquals(row.privateKeyPem?.startsWith('tpsecret.'), true)
+      const opened = await decryptSecret(f.deps.dataEncryptionSecrets, row.privateKeyPem!)
+      // The same form as an uploaded key, whatever form Caddy wrote.
+      assertEquals(opened.startsWith('-----BEGIN PRIVATE KEY-----'), true)
+      assertEquals(opened.includes('EC PRIVATE KEY') || opened.includes('RSA PRIVATE KEY'), false)
+      assertEquals(typeof row.fingerprintSha256, 'string')
+      assertEquals(new Date(row.notAfter!).getTime() > Date.now(), true)
+    } finally {
+      await f.cleanup()
+    }
+  })
+}
+
+test('a refused pair says in plain words which part was rejected and never echoes the key', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup()
+  try {
+    const good = await makeCaddyPair('ec-p256', [HOST])
+    const other = await makeCaddyPair('ec-p256', [HOST])
+    const wrongCurve = await makeCaddyPair('ec-secp256k1', [HOST])
+    const send = (certificatePem: string, privateKeyPem: string) =>
+      storeIssuedCertificate(
+        f.db,
+        { serverId: f.serverId, hostname: HOST, certificatePem, privateKeyPem },
+        f.deps
+      )
+    const unreadable = await send(good.certificatePem, 'not a key')
+    const mismatch = await send(good.certificatePem, other.privateKeyPem)
+    const curve = await send(wrongCurve.certificatePem, wrongCurve.privateKeyPem)
+    const badChain = await send('nope', good.privateKeyPem)
+    for (const [result, code] of [
+      [unreadable, 'invalid_private_key'],
+      [mismatch, 'key_mismatch'],
+      [curve, 'invalid_private_key'],
+      [badChain, 'invalid_certificate'],
+    ] as const) {
+      if (result.ok) throw new Error('expected a refusal')
+      assertEquals(result.error, code)
+      assertEquals(result.status, 400)
+      assertEquals(result.message.length > 20, true)
+      const body = JSON.stringify(result)
+      const keyBody = good.privateKeyPem.split('\n')[1]!
+      assertEquals(body.includes(keyBody), false)
+      assertEquals(body.includes('PRIVATE'), false)
+    }
+    if (unreadable.ok) throw new Error('expected a refusal')
+    assertEquals(unreadable.message.includes('private key'), true)
+    if (badChain.ok) throw new Error('expected a refusal')
+    assertEquals(badChain.message.includes('certificate'), true)
+    assertEquals((await readRow(f)).privateKeyPem, null)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('a key of another kind or curve than the certificate is a key mismatch, in plain words', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup()
+  try {
+    const ec = await makeCaddyPair('ec-p256', [HOST])
+    const rsa = await makeCaddyPair('rsa-pkcs1', [HOST])
+    const p384 = await makeCaddyPair('ec-p384', [HOST])
+    const send = (certificatePem: string, privateKeyPem: string) =>
+      storeIssuedCertificate(
+        f.db,
+        { serverId: f.serverId, hostname: HOST, certificatePem, privateKeyPem },
+        f.deps
+      )
+    for (const result of [
+      await send(ec.certificatePem, rsa.privateKeyPem),
+      await send(rsa.certificatePem, ec.privateKeyPem),
+      await send(ec.certificatePem, p384.privateKeyPem),
+    ]) {
+      if (result.ok) throw new Error('expected a refusal')
+      assertEquals(result.error, 'key_mismatch')
+      assertEquals(result.status, 400)
+      assertEquals(JSON.stringify(result).includes('PRIVATE'), false)
+    }
+    assertEquals((await readRow(f)).privateKeyPem, null)
+  } finally {
+    await f.cleanup()
+  }
 })
