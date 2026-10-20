@@ -224,6 +224,22 @@ function forPeople(request: FoundRequest): FoundRequest {
   return { ...request, requested: shortened(request.requested) }
 }
 
+/** What one request says; `null` when it says nothing and the next one should be tried. */
+function decideRequest(request: FoundRequest, offered: readonly string[]): FileDecision {
+  // The full value is parsed; only what is shown to people is shortened.
+  const range =
+    request.requested.length > MAX_PARSED_VALUE ? null : parseNodeVersionRange(request.requested)
+  if (!range) {
+    // `engines.node` is meant to be a range, so one npm would not accept is a
+    // mistake to point out. The other files may hold an alias (`lts/*`).
+    return request.source === 'package.json' ? { invalid: forPeople(request) } : null
+  }
+  const series = newestAllowedSeries(range, offered)
+  return series === null
+    ? { unsupported: forPeople(request) }
+    : { series, request: forPeople(request) }
+}
+
 /**
  * The series the files ask for, in `paths` order. Pure, so the precedence and
  * every range form are testable without a repository.
@@ -237,21 +253,8 @@ export function nodeVersionFromFiles(
   for (const path of paths) {
     const file = byPath.get(path)
     for (const request of file ? requestsIn(file) : []) {
-      // The full value is parsed; only what is shown to people is shortened.
-      const range =
-        request.requested.length > MAX_PARSED_VALUE
-          ? null
-          : parseNodeVersionRange(request.requested)
-      if (!range) {
-        // `engines.node` is meant to be a range, so one npm would not accept is a
-        // mistake to point out. The other files may hold an alias (`lts/*`).
-        if (request.source === 'package.json') return { invalid: forPeople(request) }
-        continue
-      }
-      const series = newestAllowedSeries(range, offered)
-      return series === null
-        ? { unsupported: forPeople(request) }
-        : { series, request: forPeople(request) }
+      const decision = decideRequest(request, offered)
+      if (decision) return decision
     }
   }
   return null
