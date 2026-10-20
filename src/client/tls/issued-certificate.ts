@@ -25,7 +25,7 @@ import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { coversHostname, normalizeHostname } from '../../lib/tls/match.ts'
-import { PemError, splitCertificateChain } from '../../lib/tls/pem.ts'
+import { normalizePrivateKeyPem, PemError, splitCertificateChain } from '../../lib/tls/pem.ts'
 import { privateKeyMatchesCertificate, TlsKeyError } from '../../lib/tls/keys.ts'
 import { CertificateParseError, parseCertificatePem } from '../../lib/tls/parse.ts'
 import type { ParsedCertificate, TlsAcmeMetadata } from '../../lib/tls/types.ts'
@@ -47,6 +47,7 @@ export type IssuedCertificateInput = {
 export type IssuedCertificateRefusal =
   | 'invalid_hostname'
   | 'invalid_certificate'
+  | 'invalid_private_key'
   | 'key_mismatch'
   | 'certificate_expired'
   | 'certificate_not_for_hostname'
@@ -60,12 +61,14 @@ export type IssuedCertificateResult =
   | {
       ok: false
       error: IssuedCertificateRefusal
+      message: string
       status: 400 | 403 | 404 | 409
     }
 
 const REFUSAL_STATUS: Record<IssuedCertificateRefusal, 400 | 403 | 404 | 409> = {
   invalid_hostname: 400,
   invalid_certificate: 400,
+  invalid_private_key: 400,
   key_mismatch: 400,
   certificate_expired: 400,
   certificate_not_for_hostname: 400,
@@ -75,8 +78,25 @@ const REFUSAL_STATUS: Record<IssuedCertificateRefusal, 400 | 403 | 404 | 409> = 
   no_matching_certificate: 404,
 }
 
+/** Plain words for each refusal, never carrying any part of the pair. */
+export const REFUSAL_MESSAGE: Record<IssuedCertificateRefusal, string> = {
+  invalid_hostname: 'The hostname is not a plain DNS name.',
+  invalid_certificate:
+    'The certificate chain could not be read, has no certificate, or is longer than allowed.',
+  invalid_private_key:
+    'The private key could not be read: it is not an RSA (PKCS#1 or PKCS#8), EC (SEC1 or PKCS#8, curve P-256, P-384 or P-521) or Ed25519 (PKCS#8) key, or it is too large.',
+  key_mismatch: 'The private key does not belong to the first certificate in the chain.',
+  certificate_expired: 'The certificate has already expired.',
+  certificate_not_for_hostname: 'The certificate does not cover the hostname.',
+  self_signed_certificate: 'The certificate is self-signed.',
+  server_not_in_organization: 'The sending server does not belong to an organization.',
+  acme_disabled: "Let's Encrypt is turned off for the organization.",
+  no_matching_certificate:
+    "No managed Let's Encrypt certificate for this hostname is pinned by a site on the sending server.",
+}
+
 function refuse(error: IssuedCertificateRefusal): IssuedCertificateResult {
-  return { ok: false, error, status: REFUSAL_STATUS[error] }
+  return { ok: false, error, message: REFUSAL_MESSAGE[error], status: REFUSAL_STATUS[error] }
 }
 
 export type IssuedCertificateDeps = {
@@ -113,7 +133,7 @@ async function checkPair(
   hostname: string,
   now: Date
 ): Promise<
-  | { ok: true; parsed: ParsedCertificate }
+  | { ok: true; parsed: ParsedCertificate; privateKeyPem: string }
   | {
       ok: false
       error: IssuedCertificateRefusal
@@ -131,10 +151,21 @@ async function checkPair(
   if (
     chain.length === 0 ||
     chain.length > MAX_ISSUED_CHAIN_CERTIFICATES ||
-    input.certificatePem.length > MAX_ISSUED_CHAIN_CHARS ||
-    input.privateKeyPem.length > MAX_ISSUED_KEY_CHARS
+    input.certificatePem.length > MAX_ISSUED_CHAIN_CHARS
   ) {
     return { ok: false, error: 'invalid_certificate' }
+  }
+  // Caddy writes ECDSA keys as SEC1 and RSA keys as PKCS#1; store every key
+  // as PKCS#8, the form the rest of the TLS library works with.
+  let privateKeyPem: string
+  try {
+    if (input.privateKeyPem.length > MAX_ISSUED_KEY_CHARS) throw new PemError('key too large')
+    privateKeyPem = normalizePrivateKeyPem(input.privateKeyPem)
+  } catch (err) {
+    if (err instanceof PemError || err instanceof DOMException) {
+      return { ok: false, error: 'invalid_private_key' }
+    }
+    throw err
   }
   let parsed: ParsedCertificate
   try {
@@ -155,16 +186,16 @@ async function checkPair(
     return { ok: false, error: 'self_signed_certificate' }
   }
   try {
-    if (!(await privateKeyMatchesCertificate(input.privateKeyPem, parsed))) {
+    if (!(await privateKeyMatchesCertificate(privateKeyPem, parsed))) {
       return { ok: false, error: 'key_mismatch' }
     }
   } catch (err) {
     if (err instanceof TlsKeyError) {
-      return { ok: false, error: 'invalid_certificate' }
+      return { ok: false, error: 'invalid_private_key' }
     }
     throw err
   }
-  return { ok: true, parsed }
+  return { ok: true, parsed, privateKeyPem }
 }
 
 /**
@@ -207,7 +238,7 @@ export async function storeIssuedCertificate(
 
   const checked = await checkPair(input, hostname, now)
   if (!checked.ok) return refuse(checked.error)
-  const { parsed } = checked
+  const { parsed, privateKeyPem } = checked
 
   const [serverRow] = await db
     .select({ organizationId: server.organizationId })
@@ -217,7 +248,7 @@ export async function storeIssuedCertificate(
   const organizationId = serverRow?.organizationId
   if (!organizationId) return refuse('server_not_in_organization')
 
-  const sealedKey = await encryptSecret(deps.dataEncryptionSecrets, input.privateKeyPem)
+  const sealedKey = await encryptSecret(deps.dataEncryptionSecrets, privateKeyPem)
   assertTpSecretPrivateKey(sealedKey)
 
   // One transaction under the organization row lock, the same lock the

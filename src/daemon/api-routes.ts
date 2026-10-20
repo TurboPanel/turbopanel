@@ -1810,7 +1810,7 @@ export function registerDaemonApiRoutes<E extends Env>(
         { dataEncryptionSecrets }
       )
       if (!result.ok) {
-        return c.json({ ok: false, error: result.error }, result.status)
+        return c.json({ ok: false, error: result.error, message: result.message }, result.status)
       }
       return c.json({ ok: true, stored: result.stored }, 200)
     }
