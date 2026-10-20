@@ -135,6 +135,15 @@ try {
   console.log('migrate-locked: migrations applied successfully')
 } catch (err) {
   console.error(`migrate-locked: ${err instanceof Error ? err.message : String(err)}`)
+  // The migrator wraps the database's own error as "Failed query: …"; print what
+  // the server (or the proxy in front of it) actually said.
+  const cause = err instanceof Error ? err.cause : undefined
+  if (cause) {
+    console.error(
+      `migrate-locked: cause: ${cause instanceof Error ? cause.message : String(cause)}`
+    )
+    if (cause.code) console.error(`migrate-locked: cause code: ${cause.code}`)
+  }
   process.exitCode = 1
 } finally {
   if (!skipLock) {
