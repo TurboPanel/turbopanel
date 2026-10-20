@@ -1008,7 +1008,10 @@ test('going back to an earlier choice is a new request, never the expired sessio
     .filter((c) => c.method === 'POST' && c.path === '/v1/checkout/sessions')
     .map((c) => c.idempotencyKey)
   assertEquals(new Set(keys).size, 3)
-  assertEquals(fake.sessions.filter((s) => s.status === 'open').map((s) => s.id), ['cs_3'])
+  assertEquals(
+    fake.sessions.filter((s) => s.status === 'open').map((s) => s.id),
+    ['cs_3']
+  )
 })
 
 test('a quick repeat of the same choice hands back the open session; an older one is replaced', async () => {
@@ -1023,7 +1026,10 @@ test('a quick repeat of the same choice hands back the open session; an older on
   fake.sessions[0]!.created -= 3600
   const c = await (await postCheckout(h, S3, 2)).json()
   assertEquals(c.sessionId, 'cs_2')
-  assertEquals(fake.sessions.map((s) => s.status), ['expired', 'open'])
+  assertEquals(
+    fake.sessions.map((s) => s.status),
+    ['expired', 'open']
+  )
 })
 
 test('other open sessions are expired even when one is handed back', async () => {
@@ -1035,7 +1041,10 @@ test('other open sessions are expired even when one is handed back', async () =>
   const h = await buildApp({ view: viewWith(stateWith(null, [])), stripe: fake.stripe })
   const res = await (await postCheckout(h, S3, 2)).json()
   assertEquals(res.sessionId, 'cs_2')
-  assertEquals(fake.sessions.map((s) => s.status), ['expired', 'open'])
+  assertEquals(
+    fake.sessions.map((s) => s.status),
+    ['expired', 'open']
+  )
   assertEquals(livePosts(h).length, 0)
 })
 
@@ -1062,7 +1071,10 @@ test('a session paid a moment ago (webhook not yet projected) stops the purchase
   const res = await postCheckout(h, S5, 3)
   assertEquals(res.status, 409)
   assertEquals(await res.json(), { error: 'subscription_exists' })
-  assertEquals(h.stripeCalls().some((c) => c.includes('expire')), false)
+  assertEquals(
+    h.stripeCalls().some((c) => c.includes('expire')),
+    false
+  )
   assertEquals(livePosts(h).length, 0)
 })
 

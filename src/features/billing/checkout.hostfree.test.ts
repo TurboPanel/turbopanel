@@ -223,7 +223,8 @@ test('the checkout key is windowed and carries the sessions it replaces, in a st
 })
 
 test('a session lives between 60 and 65 minutes, and every moment of one idempotency window asks for the same expiry', () => {
-  const start = Math.floor(Date.parse('2026-10-20T12:00:00.000Z') / IDEMPOTENCY_WINDOW_MS) *
+  const start =
+    Math.floor(Date.parse('2026-10-20T12:00:00.000Z') / IDEMPOTENCY_WINDOW_MS) *
     IDEMPOTENCY_WINDOW_MS
   const expiry = checkoutSessionExpiresAtMs(start)
   assertEquals(checkoutSessionExpiresAtMs(start + IDEMPOTENCY_WINDOW_MS - 1), expiry)
@@ -260,7 +261,13 @@ test('expireCheckoutSession: expired is done, a refusal reads back expired or co
   await assertRejects(() => t.result, StripeApiError)
   assertEquals(t.client.calls.length, 1)
   await assertRejects(
-    () => expireCheckoutSession(createStripeClientDouble(() => { throw new TypeError('x') }), 'cs_1'),
+    () =>
+      expireCheckoutSession(
+        createStripeClientDouble(() => {
+          throw new TypeError('x')
+        }),
+        'cs_1'
+      ),
     TypeError
   )
 })

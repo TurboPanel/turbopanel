@@ -283,7 +283,9 @@ export async function openCheckoutSession(
   const recentlyPaid = await client.listAll<StripeObject>('/v1/checkout/sessions', {
     ...listQuery,
     status: 'complete',
-    created: { gte: Math.floor((nowMs - CHECKOUT_SESSION_LIFETIME_MS - IDEMPOTENCY_WINDOW_MS) / 1000) },
+    created: {
+      gte: Math.floor((nowMs - CHECKOUT_SESSION_LIFETIME_MS - IDEMPOTENCY_WINDOW_MS) / 1000),
+    },
   })
   if (recentlyPaid.length > 0) return { kind: 'subscription_exists' }
 
