@@ -402,7 +402,15 @@ folder on that server is still `present` or `planned`; the deploy that succeeds
 marks the folder an orphan, so the name is not repeated on every later deploy
 (a deploy that fails leaves the folder as it was, and the next one asks again).
 A key the host would refuse (`.`, `..`) is never sent. The folder of a removed
-site stays, as an orphan. The stop
+site stays, as an orphan.
+`exclusiveHostnames` (boolean, sent as `true` when the deploy has hostings)
+says every hostname in `hostings[]` is held by no other hosting the control
+plane knows of (hostnames are unique across hostings, `www` names included). A
+host config of another environment on the server that still names one is then a
+leftover of a hosting that was deleted or moved there without that environment
+being deployed since; the host takes the name over (it removes that site block,
+and only that, from the other environment's snippet, and reloads hosting Caddy)
+instead of refusing the deploy. Absent, the host refuses as before. The stop
 result's `folders[]` (`{ owner, scope, kind: 'service',
 slug, removed, reason? }`) says which reclaimed folders are gone; `reason` (plain
 words) says why one stayed. The consumer deletes the `removing` row of every

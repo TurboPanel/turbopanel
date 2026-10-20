@@ -839,12 +839,15 @@ test('POST /environments/:id/deploy payload carries runtime composeFiles', async
         .limit(1)
       const payload = row?.payload as {
         composeFiles: Array<{ filename: string; role: string; content: string }>
+        exclusiveHostnames?: boolean
       }
       assertEquals(Array.isArray(payload.composeFiles), true)
       assertEquals(payload.composeFiles.length, 1)
       assertEquals(payload.composeFiles[0]!.role, 'runtime')
       assertEquals(payload.composeFiles[0]!.filename, 'compose.yaml')
       assertEquals(payload.composeFiles[0]!.content.includes('web:'), true)
+      // No hosting: nothing to take over.
+      assertEquals('exclusiveHostnames' in payload, false)
     }
   )
 })
@@ -1292,7 +1295,11 @@ test('POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames', a
             containerName: string
           }
           hostingIngressNetwork?: string
+          exclusiveHostnames?: boolean
         }
+        // The control plane holds the hostname unique, so a leftover host config
+        // of a deleted hosting in another environment may be taken over.
+        assertEquals(payload.exclusiveHostnames, true)
         assertEquals(payload.hostingIngress, {
           serviceId: traefikServiceId,
           composeServiceName: 'traefik',

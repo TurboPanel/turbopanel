@@ -321,3 +321,17 @@ it('keeps the sites that left the compose file and refuses a malformed list', ()
     assertThrows(() => parseEnvironmentDeployPayload({ ...DEPLOY_BASE, removedSites: bad }))
   }
 })
+
+it('keeps exclusiveHostnames only when it is true', () => {
+  assertEquals(
+    parseEnvironmentDeployPayload({ ...DEPLOY_BASE, exclusiveHostnames: true }).exclusiveHostnames,
+    true
+  )
+  for (const other of [false, 'true', 1, null, undefined]) {
+    assertEquals(
+      parseEnvironmentDeployPayload({ ...DEPLOY_BASE, exclusiveHostnames: other })
+        .exclusiveHostnames,
+      undefined
+    )
+  }
+})

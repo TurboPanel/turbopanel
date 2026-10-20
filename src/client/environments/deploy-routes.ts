@@ -736,6 +736,9 @@ async function createDeployCommand(
         variableMaterial: params.variableMaterial,
         storageMaterial: params.storageMaterial,
         removedSites: params.removedSites,
+        // Hostnames are unique across hostings (a database constraint), so any
+        // other host config that still names one is a leftover of a deleted hosting.
+        exclusiveHostnames: params.hostings.length > 0 ? true : undefined,
         principalMaterial: params.principalMaterial,
         envFile: params.envFile || undefined,
         secretPlan: params.secretPlan,

@@ -345,6 +345,36 @@ function resolveSourceBuild(
   return build
 }
 
+/**
+ * Hand each source release its service's build-time variables.
+ *
+ * `assignments` are the non-secret `forBuild` variables the variables module
+ * resolved for the compose service, already in the order the deploy uses for
+ * runtime variables (organization up to environment, then the service; a later
+ * scope overrides an earlier one) and including an explicit `{$KEY}` in the
+ * service's `build.args`. They become the build's environment, so a build
+ * command (`next build`, a bundler) sees them. A secret is never here: a build
+ * secret is a sealed file, and a variable that is not `forBuild` is not in
+ * `assignments` at all. A rollback builds nothing and gets none, and a `static`
+ * build has no command to give them to.
+ */
+export function withBuildEnv(
+  sources: readonly EnvironmentDeploySource[],
+  assignments: ReadonlyMap<string, ReadonlyArray<{ name: string; value: string }>>
+): EnvironmentDeploySource[] {
+  return sources.map((source) => {
+    if (source.rollbackToReleaseId !== undefined || source.build.kind === 'static') return source
+    const given = assignments.get(source.composeServiceName)
+    if (!given || given.length === 0) return source
+    const env: Record<string, string> = {}
+    for (const assignment of given) {
+      if (assignment.name.length > 0) env[assignment.name] = assignment.value
+    }
+    if (Object.keys(env).length === 0) return source
+    return { ...source, build: { ...source.build, env: { ...source.build.env, ...env } } }
+  })
+}
+
 type DaemonRecipient = { serverId: string; keyId: string }
 
 async function resolveDaemonRecipient(

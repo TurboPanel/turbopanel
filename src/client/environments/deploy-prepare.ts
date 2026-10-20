@@ -189,6 +189,7 @@ import {
   type DeploySourcePrepareError,
   type ReleaseIdAllocator,
   resolveDeploySourceMaterial,
+  withBuildEnv,
 } from './deploy-sources.ts'
 import {
   binding,
@@ -3669,7 +3670,7 @@ export async function prepareDeployCompose(
     nativeAppVariables: nativeAppVariableViews(nodeVersions.apps, nativeVariables),
     nativeAppNodeVersions: nodeVersions.views,
     nativeAppDenoVersions: nativeAppDenoVersionViews(nodeVersions.apps),
-    sourceMaterial: localSourceMaterial,
+    sourceMaterial: withBuildEnv(localSourceMaterial, withVariables.buildAssignments),
     dockerExternalNetworks,
     dockerNetworkAddressing: externalNetworks.addressing,
     fabricNetworks: fabricNetworksFromSchedule(params.schedule),
