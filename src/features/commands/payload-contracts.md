@@ -402,7 +402,26 @@ folder on that server is still `present` or `planned`; the deploy that succeeds
 marks the folder an orphan, so the name is not repeated on every later deploy
 (a deploy that fails leaves the folder as it was, and the next one asks again).
 A key the host would refuse (`.`, `..`) is never sent. The folder of a removed
-site stays, as an orphan. The stop
+site stays, as an orphan.
+`takeoverHostnames[]` (`{ hostname, fromEnvironmentId }`, optional) lists
+hostnames of this deploy's hostings (www redirect names a hosting owns
+included; lowercase, international names as punycode) together with the
+environment that held each one. The control plane lists a name only when it can
+show, from what it last sent that environment for this server, that an
+environment of the same organization served it, and that environment has no
+hosting for it any more (hostname uniqueness is per organization, so another
+organization's environment is never named, and a name nothing here ever
+served is never listed). The host takes a listed name only from the config of
+the environment named for it: it removes that name's site block, and only that,
+from that environment's snippet, and refuses if any other environment's
+snippet also holds the name or if that file has an address line it cannot read.
+Several files in one deploy are changed together: every file is written first,
+hosting Caddy reloads once, and all of them are put back if the reload is
+refused. A file left with no site block and nothing else is removed; a file
+that still has an import, a global block or a snippet definition is kept. A
+conflict on a name not in the list is refused as before, before anything is
+changed.
+An older host ignores the field and refuses as before. The stop
 result's `folders[]` (`{ owner, scope, kind: 'service',
 slug, removed, reason? }`) says which reclaimed folders are gone; `reason` (plain
 words) says why one stayed. The consumer deletes the `removing` row of every

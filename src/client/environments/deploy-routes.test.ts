@@ -29,6 +29,7 @@ import {
   fabric,
   grant,
   hosting,
+  hostname,
   network,
   organization,
   principal,
@@ -839,12 +840,15 @@ test('POST /environments/:id/deploy payload carries runtime composeFiles', async
         .limit(1)
       const payload = row?.payload as {
         composeFiles: Array<{ filename: string; role: string; content: string }>
+        takeoverHostnames?: string[]
       }
       assertEquals(Array.isArray(payload.composeFiles), true)
       assertEquals(payload.composeFiles.length, 1)
       assertEquals(payload.composeFiles[0]!.role, 'runtime')
       assertEquals(payload.composeFiles[0]!.filename, 'compose.yaml')
       assertEquals(payload.composeFiles[0]!.content.includes('web:'), true)
+      // No hosting: nothing to take over.
+      assertEquals('takeoverHostnames' in payload, false)
     }
   )
 })
@@ -1259,9 +1263,17 @@ test('POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames', a
           })
           .returning({ id: service.id })
         hostingServiceId = svc!.id
-        await db.insert(hosting).values({
-          serviceId: svc!.id,
-          options: { hostnames: ['adminer.example.test'] },
+        const [hostingRow] = await db
+          .insert(hosting)
+          .values({
+            serviceId: svc!.id,
+            options: { hostnames: ['adminer.example.test'] },
+          })
+          .returning({ id: hosting.id })
+        await db.insert(hostname).values({
+          hostingId: hostingRow!.id,
+          routingOrganizationId: organizationId,
+          hostname: 'adminer.example.test',
         })
 
         const cookie = await sessionCookie(db, secrets, userId)
@@ -1292,7 +1304,20 @@ test('POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames', a
             containerName: string
           }
           hostingIngressNetwork?: string
+          takeoverHostnames?: { hostname: string; fromEnvironmentId: string }[]
         }
+        // Nothing here was ever sent this name by another environment, so there is
+        // nothing to take over; the deploy records the names it sends for later.
+        assertEquals(payload.takeoverHostnames, undefined)
+        const [recorded] = await db
+          .select({ options: deployment.options })
+          .from(deployment)
+          .where(
+            and(eq(deployment.environmentId, environmentId), eq(deployment.serverId, serverId))
+          )
+        assertEquals((recorded?.options as { servedHostnames?: string[] }).servedHostnames, [
+          'adminer.example.test',
+        ])
         assertEquals(payload.hostingIngress, {
           serviceId: traefikServiceId,
           composeServiceName: 'traefik',

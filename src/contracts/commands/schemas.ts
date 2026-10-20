@@ -2629,6 +2629,16 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
    * nothing: a site missing from `sites` is never read as removed.
    */
   removedSites?: string[]
+  /**
+   * Hostnames of this deploy's hostings (www redirect names included) that the
+   * control plane can show another environment of the same organization held on
+   * this server, from what it last sent that environment, and that environment
+   * no longer has a hosting for. Each entry names that environment
+   * (`fromEnvironmentId`). The host takes a name only from that environment's
+   * own config, and refuses if any other config also holds it. Absent or
+   * empty: refuse.
+   */
+  takeoverHostnames?: EnvironmentDeployTakeover[]
   principalMaterial?: EnvironmentDeployPrincipalMaterial[]
   serviceHooks?: EnvironmentDeployServiceHook[]
   /**
@@ -2656,6 +2666,9 @@ export type EnvironmentDeployHostingWeb = {
   secretEnv?: Record<string, string>
   php?: EnvironmentDeployHostingPhp
 }
+
+/** A hostname the host may take over, and the environment that held it. */
+export type EnvironmentDeployTakeover = { hostname: string; fromEnvironmentId: string }
 
 export type EnvironmentDeployHosting = {
   hostingId: string
@@ -3309,6 +3322,25 @@ function parseDeployStorageMaterial(
 ): EnvironmentDeployStorageMaterial[] | undefined {
   if (!Array.isArray(value)) return undefined
   return value.map(parseDeployStorageMaterialEntry)
+}
+
+function parseDeployTakeoverHostnames(value: unknown): EnvironmentDeployTakeover[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new Error('Invalid environment.deploy payload')
+  return value.map((entry) => {
+    const name = isRecord(entry) ? entry.hostname : undefined
+    const from = isRecord(entry) ? entry.fromEnvironmentId : undefined
+    if (
+      !isString(name) ||
+      name.length > 253 ||
+      !/^[a-z0-9*][a-z0-9.*-]*$/.test(name) ||
+      !isString(from) ||
+      !/^[A-Za-z0-9_-]{1,64}$/.test(from)
+    ) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    return { hostname: name, fromEnvironmentId: from }
+  })
 }
 
 function parseDeployRemovedSites(value: unknown): string[] | undefined {
@@ -4596,6 +4628,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       storageMaterial: parseDeployStorageMaterial(value.storageMaterial),
       serviceFolders: parseDeployServiceFolders(value.serviceFolders),
       removedSites: parseDeployRemovedSites(value.removedSites),
+      takeoverHostnames: parseDeployTakeoverHostnames(value.takeoverHostnames),
       principalMaterial: parseDeployPrincipalMaterial(value.principalMaterial),
       serviceHooks: parseDeployServiceHooks(value.serviceHooks),
       listenerPorts:

@@ -79,6 +79,7 @@ import {
   planDeployFolders,
 } from '../../features/folders/allocate.ts'
 import { lockEnvironmentRow } from '../../features/folders/records.ts'
+import { type DeployTakeover, servedNamesOf, takeoverHostnamesFor } from './deploy-takeover.ts'
 import {
   removedServiceRows,
   removedSitesOnServer,
@@ -544,6 +545,8 @@ type DeployCommandCreateParams = DeployActor & {
   serviceFolders: EnvironmentDeployServiceFolder[]
   /** Services that left the compose file; the host removes the sites among them. */
   removedSites?: string[]
+  /** Hostnames the host may take over from a leftover host config of another environment. */
+  takeoverHostnames?: DeployTakeover[]
   principalMaterial: EnvironmentDeployPrincipalMaterial[]
   /** Non-secret Compose project `.env` the daemon writes next to compose.yaml. */
   envFile?: string
@@ -736,6 +739,7 @@ async function createDeployCommand(
         variableMaterial: params.variableMaterial,
         storageMaterial: params.storageMaterial,
         removedSites: params.removedSites,
+        takeoverHostnames: params.takeoverHostnames,
         principalMaterial: params.principalMaterial,
         envFile: params.envFile || undefined,
         secretPlan: params.secretPlan,
@@ -849,6 +853,8 @@ function createParamsForPreparedServer(
     plannedFolders: PlannedFolders
     /** Services that left the compose file. */
     removedSites?: readonly string[]
+    /** Hostnames the host may take over from a leftover host config. */
+    takeoverHostnames?: readonly DeployTakeover[]
   }
 ): DeployCommandCreateParams {
   // One loopback-port ledger for both host-native lanes: site vhosts
@@ -894,6 +900,9 @@ function createParamsForPreparedServer(
     ...(params.removedSites && params.removedSites.length > 0
       ? { removedSites: [...params.removedSites] }
       : {}),
+    ...(params.takeoverHostnames && params.takeoverHostnames.length > 0
+      ? { takeoverHostnames: [...params.takeoverHostnames] }
+      : {}),
     principalMaterial: row.prepared.principalMaterial,
     envFile: row.prepared.envFile,
     secretPlan: row.prepared.secretPlan,
@@ -937,6 +946,13 @@ function deployListenPorts(params: DeployCommandCreateParams): number[] {
   ]
 }
 
+/** The names and www choice of the http hostings a server's deploy sends. */
+function httpHostingNames(prepared: PreparedServerDeploy['prepared']) {
+  return prepared.hostings
+    .filter((hosting) => (hosting.protocol ?? 'http') === 'http')
+    .map((hosting) => ({ hostnames: hosting.hostnames, www: hosting.www }))
+}
+
 function deploymentTargetsForFanOut(params: {
   preparedByServer: readonly PreparedServerDeploy[]
   planServerIds: readonly string[]
@@ -971,6 +987,9 @@ function deploymentTargetsForFanOut(params: {
           // The PHP mode each site was given, so the next deploy keeps it.
           phpModes: recordSitePhpModes(prepared?.sites),
           listenPorts: params.listenPortsByServer.get(serverId) ?? [],
+          // What this server was last sent, so a later deploy of another environment
+          // can tell a name this one served and no longer holds.
+          servedHostnames: prepared ? servedNamesOf(httpHostingNames(prepared)) : [],
           ...(rollout === undefined ? {} : { rollout }),
         },
       }
@@ -1104,9 +1123,16 @@ async function persistDeployFanOut(
           serverId: row.serverId,
           removed: params.removedServices ?? [],
         })
+        const takeoverHostnames = await takeoverHostnamesFor(tx, {
+          environmentId: params.environmentId,
+          serverId: row.serverId,
+          organizationId: params.organizationId,
+          hostings: httpHostingNames(row.prepared),
+        })
         const createParams = createParamsForPreparedServer(row, {
           plannedFolders,
           removedSites,
+          takeoverHostnames,
           actorType: params.actorType,
           actorId: params.actorId,
           environmentId: params.environmentId,
