@@ -86,7 +86,7 @@ test('a created copy backup is recorded once; a delete removes it', async () => 
   await withCopy(async (db, copyId) => {
     const result = {
       backupId: 'bk_one',
-      path: `/backup/copies/${copyId}/bk_one.tar.gz`,
+      path: `volumes/${copyId}/bk_one.tar.gz`,
       sizeBytes: 512,
       checksum: 'd'.repeat(64),
       completedAt: '2026-09-30T04:00:00.000Z',
@@ -107,7 +107,7 @@ test('a result that names another backup, or lacks its artifact, writes nothing'
   await withCopy(async (db, copyId) => {
     await applyStorageBackupSideEffect(db, record(copyId, 'create'), {
       backupId: 'bk_other',
-      path: '/backup/x.tar.gz',
+      path: 'volumes/x/bk.tar.gz',
       sizeBytes: 1,
       checksum: 'd'.repeat(64),
     })
@@ -117,7 +117,7 @@ test('a result that names another backup, or lacks its artifact, writes nothing'
       { ...record(copyId, 'create'), type: 'managed.backup' },
       {
         backupId: 'bk_one',
-        path: '/backup/x.tar.gz',
+        path: 'volumes/x/bk.tar.gz',
         sizeBytes: 1,
         checksum: 'd'.repeat(64),
       }

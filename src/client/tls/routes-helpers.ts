@@ -10,6 +10,7 @@ import {
   metadataFromParsed,
   mintOrganizationCa,
   mintSelfSignedCertificate,
+  normalizePrivateKeyPem,
   parseCertificatePem,
   parseTlsOptions,
   privateKeyMatchesCertificate,
@@ -100,7 +101,10 @@ export function assertTpSecretPrivateKey(sealed: string): void {
 }
 
 export type CaRotationConflictReason =
-  'ca_rotation_in_progress' | 'no_pending_rotation' | 'ca_rotation_not_converged'
+  | 'ca_rotation_in_progress'
+  | 'no_pending_rotation'
+  | 'ca_rotation_not_converged'
+  | 'ca_leaves_outstanding'
 
 export type CaRotationApiResult = {
   serverId: string
@@ -120,6 +124,8 @@ export type CaRotationStatusBody = {
   state: string
   results: CaRotationApiResult[]
   retiredCaStillRequired: boolean
+  /** When the previous generation is retired by itself; null before fan-out finishes. */
+  retireBy: string | null
 }
 
 export function rotationConflictResponse(reason: CaRotationConflictReason): {
@@ -156,6 +162,7 @@ export function rotationStatusResponse(params: {
   toGeneration: number
   state: string
   results: readonly CaRotationApiResult[]
+  retireBy?: string | null
 }): CaRotationStatusBody {
   return {
     rotationId: params.rotationId,
@@ -164,6 +171,7 @@ export function rotationStatusResponse(params: {
     state: params.state,
     results: [...params.results],
     retiredCaStillRequired: params.state !== 'completed',
+    retireBy: params.state === 'awaiting_retire' ? (params.retireBy ?? null) : null,
   }
 }
 
@@ -354,11 +362,13 @@ export async function materialFromUpload(
     // Normalize chain ordering (leaf first).
     const certificatePem = splitCertificateChain(body.certificatePem).join('')
     const parsed = await parseCertificatePem(certificatePem)
-    const matches = await privateKeyMatchesCertificate(body.privateKeyPem, parsed)
+    // Every stored key is PKCS#8, whatever form was uploaded (SEC1 EC, PKCS#1 RSA, PKCS#8).
+    const privateKeyPem = normalizePrivateKeyPem(body.privateKeyPem)
+    const matches = await privateKeyMatchesCertificate(privateKeyPem, parsed)
     if (!matches) {
       return createFailure('certificate_key_mismatch')
     }
-    const privateKeyPemSealed = await encryptSecret(secrets, body.privateKeyPem.trim())
+    const privateKeyPemSealed = await encryptSecret(secrets, privateKeyPem.trim())
     assertTpSecretPrivateKey(privateKeyPemSealed)
     return {
       certificatePem,

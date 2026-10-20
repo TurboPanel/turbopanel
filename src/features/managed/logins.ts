@@ -1,19 +1,15 @@
 /**
  * Database logins: the `login` table, one engine role on one managed cluster.
  *
- * Expand step of the login split (migration `0030_login_table`). Every
- * cluster login lives here; the legacy `principal` rows with
- * `kind = 'database'` stay and are written in step (same password, same
- * applied name) until a later contract migration retires them. Readers use
- * this table; {@link syncLegacyLogins} re-runs the migration's backfill for
- * one cluster so a row written by the previous release during a deploy
- * window (a principal without a login, a binding without `login_id`) is
- * picked up instead of lost.
+ * A login is not a principal. A principal is only a site owner's Linux user;
+ * a login optionally shares that user's name (`principalId`). The permission
+ * settings are real columns and the databases a login may use are `scope`
+ * rows pointing at `database` rows.
  */
 
-import { and, asc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { binding, login, managed, principal, replica, server } from '../../db/schema.ts'
+import { login, managed, managedDatabase, replica, scope, server } from '../../db/schema.ts'
 import { generateSealedSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { PrincipalNameScheme } from '../../lib/principal-name-scheme.ts'
@@ -22,18 +18,61 @@ import type { PrincipalNameScheme } from '../../lib/principal-name-scheme.ts'
 export const DATABASE_LOGIN_ROLES = ['root', 'replication', 'user'] as const
 export type DatabaseLoginRole = (typeof DATABASE_LOGIN_ROLES)[number]
 
-export type ManagedLoginRow = {
-  /** The login row id. */
+/**
+ * How reconcile treats a login's permissions. `preset` is today's behaviour
+ * and is what a login made before modes reads as. `recipe` is the panel-built
+ * permission set (new logins start here). `self` means the owner manages
+ * permissions by hand and reconcile never resets them. Pinned to
+ * `login_grant_mode_check` by `src/db/enum-checks.test.ts`.
+ */
+export const LOGIN_GRANT_MODES = ['preset', 'recipe', 'self'] as const
+export type LoginGrantMode = (typeof LOGIN_GRANT_MODES)[number]
+
+/** Pinned to `login_access_check` by `src/db/enum-checks.test.ts`. */
+export const LOGIN_CONNECTION_ROLES = ['read-write', 'read-only'] as const
+export type LoginConnectionRole = (typeof LOGIN_CONNECTION_ROLES)[number]
+
+export function isLoginGrantMode(value: unknown): value is LoginGrantMode {
+  return typeof value === 'string' && (LOGIN_GRANT_MODES as readonly string[]).includes(value)
+}
+
+/** What a login may do and where it may connect from: the permission columns, API-named. */
+export type LoginSettings = {
+  grantMode: LoginGrantMode
+  /** A database-tool login routes everything to the primary (no read/write split). */
+  tool: boolean
+  /** Names of the databases the login may use (its `scope` rows). */
+  databases: string[]
+  privileges: string[]
+  connectionRole: LoginConnectionRole
+  /** Places the login may connect from; `undefined` means anywhere. */
+  allowedSources: string[] | undefined
+  /** Per-login connection cap; `undefined` means no cap. */
+  maxConnections: number | undefined
+}
+
+/** A change to {@link LoginSettings}; `null` clears `allowedSources` / `maxConnections`. */
+export type LoginSettingsPatch = {
+  grantMode?: LoginGrantMode
+  tool?: boolean
+  databases?: string[]
+  privileges?: string[]
+  connectionRole?: LoginConnectionRole
+  allowedSources?: string[] | null
+  maxConnections?: number | null
+}
+
+export type ManagedLoginRow = LoginSettings & {
+  /** The login row id; the users routes address a login by it. */
   id: string
-  /** Identity the login belongs to; `null` for the cluster's root and replication logins. */
+  /** Site owner's Linux user the login shares its name with; `null` otherwise. */
   principalId: string | null
   managedId: string
   role: DatabaseLoginRole
-  /** Display name: the principal's typed name, or the applied name for a cluster login. */
+  /** The name the customer typed (the applied name for a cluster login). */
   username: string
   appliedUsername: string
-  metadata: unknown
-  options: unknown
+  nameScheme: PrincipalNameScheme
   createdAt: string
   updatedAt: string
 }
@@ -42,85 +81,29 @@ export type ManagedLoginCredentialRow = ManagedLoginRow & {
   password: string | null
 }
 
+/** SQL for the names of the databases a login may use, for a select over `login`. */
+export const loginDatabaseNames = sql<
+  string[]
+>`ARRAY(SELECT d."name" FROM ${scope} s JOIN ${managedDatabase} d ON d."id" = s."database_id" WHERE s."login_id" = "login"."id" ORDER BY s."id")`
+
 const LOGIN_SELECT = {
   id: login.id,
   principalId: login.principalId,
   managedId: login.managedId,
   role: login.role,
-  username: sql<string>`coalesce(${principal.username}, ${login.appliedUsername})`,
+  username: login.username,
   appliedUsername: login.appliedUsername,
-  metadata: login.metadata,
-  options: login.options,
+  nameScheme: login.nameScheme,
+  grantMode: login.grantMode,
+  isTool: login.isTool,
+  databases: loginDatabaseNames,
+  privileges: login.privileges,
+  access: login.access,
+  allowedSources: login.allowedSources,
+  maxConnections: login.maxConnections,
   createdAt: login.createdAt,
   updatedAt: login.updatedAt,
   password: login.password,
-}
-
-/**
- * How reconcile treats a login's permissions. `preset` is today's behaviour
- * and is what a login with no key reads as. `recipe` is the panel-built
- * permission set (new logins start here). `self` means the owner manages
- * permissions by hand and reconcile never resets them.
- */
-export const LOGIN_GRANT_MODES = ['preset', 'recipe', 'self'] as const
-export type LoginGrantMode = (typeof LOGIN_GRANT_MODES)[number]
-
-export function isLoginGrantMode(value: unknown): value is LoginGrantMode {
-  return typeof value === 'string' && (LOGIN_GRANT_MODES as readonly string[]).includes(value)
-}
-
-/** Grant mode stored on `login.metadata`; absent or unknown reads as `preset`. */
-export function loginGrantMode(metadata: unknown): LoginGrantMode {
-  if (!isRecord(metadata)) return 'preset'
-  return isLoginGrantMode(metadata.grantMode) ? metadata.grantMode : 'preset'
-}
-
-/** A database-tool login routes everything to the primary (no read/write split). */
-export function loginIsTool(metadata: unknown): boolean {
-  return isRecord(metadata) && metadata.tool === true
-}
-
-/** Where a login came from (`panel` today); `null` when not recorded. */
-export function loginOrigin(metadata: unknown): string | null {
-  if (!isRecord(metadata)) return null
-  return typeof metadata.origin === 'string' && metadata.origin.length > 0 ? metadata.origin : null
-}
-
-/** Replace a user login's metadata (keys not in `patch` are kept). */
-export async function patchLoginMetadata(
-  db: Db,
-  loginId: string,
-  patch: Record<string, unknown>
-): Promise<void> {
-  const [row] = await db
-    .select({ metadata: login.metadata })
-    .from(login)
-    .where(eq(login.id, loginId))
-    .limit(1)
-  if (!row) throw new TypeError('Login not found')
-  const base = isRecord(row.metadata) ? row.metadata : {}
-  await db
-    .update(login)
-    .set({
-      metadata: { ...base, ...patch },
-      updatedAt: new Date().toISOString(),
-    })
-    .where(eq(login.id, loginId))
-}
-
-/** Role a legacy principal row's metadata implies. */
-export function loginRoleFromMetadata(metadata: unknown): DatabaseLoginRole {
-  if (!isRecord(metadata)) return 'user'
-  if (metadata.managedRoot === true) return 'root'
-  if (metadata.managedReplication === true) return 'replication'
-  return 'user'
-}
-
-/** Old `principal` row a root or replication login is kept in step with. */
-export function legacyPrincipalIdOf(metadata: unknown): string | null {
-  if (!isRecord(metadata)) return null
-  const id = metadata.legacyPrincipalId
-  return typeof id === 'string' && id.length > 0 ? id : null
 }
 
 function toRole(value: string): DatabaseLoginRole {
@@ -129,56 +112,50 @@ function toRole(value: string): DatabaseLoginRole {
     : 'user'
 }
 
-/**
- * The migration backfill, scoped to one cluster and idempotent: a login for
- * every `kind = 'database'` principal of the cluster that has none yet, then
- * `binding.login_id` for the cluster's bindings that still lack it. Cheap
- * when there is nothing to do (one indexed anti-join each).
- */
-export async function syncLegacyLogins(db: Db, managedId: string): Promise<void> {
-  await db.execute(sql`
-    INSERT INTO ${login} ("created_at", "updated_at", "metadata", "options", "managed_id", "principal_id", "role", "applied_username", "password")
-    SELECT
-      p."created_at",
-      p."updated_at",
-      CASE WHEN c.cluster_login THEN COALESCE(p."metadata", '{}'::jsonb) || jsonb_build_object('legacyPrincipalId', p."id") ELSE p."metadata" END,
-      p."options",
-      p."managed_id",
-      CASE WHEN c.cluster_login THEN NULL ELSE p."id" END,
-      CASE
-        WHEN COALESCE(p."metadata", '{}'::jsonb) ->> 'managedRoot' = 'true' THEN 'root'
-        WHEN COALESCE(p."metadata", '{}'::jsonb) ->> 'managedReplication' = 'true' THEN 'replication'
-        ELSE 'user'
-      END,
-      p."applied_username",
-      p."password"
-    FROM ${principal} p
-    CROSS JOIN LATERAL (
-      SELECT (COALESCE(p."metadata", '{}'::jsonb) ->> 'managedRoot' = 'true'
-        OR COALESCE(p."metadata", '{}'::jsonb) ->> 'managedReplication' = 'true') AS cluster_login
-    ) c
-    WHERE p."managed_id" = ${managedId}
-      AND p."kind" = 'database'
-      AND NOT EXISTS (
-        SELECT 1 FROM ${login} l
-        WHERE l."principal_id" = p."id"
-          OR (l."managed_id" = p."managed_id" AND l."metadata" ->> 'legacyPrincipalId' = p."id"::text)
-      )
-    ORDER BY p."created_at", p."id"
-    ON CONFLICT DO NOTHING
-  `)
-  await db.execute(sql`
-    UPDATE ${binding} b
-    SET "login_id" = l."id"
-    FROM ${login} l, ${principal} p
-    WHERE p."id" = b."principal_id"
-      AND l."managed_id" = ${managedId}
-      AND b."login_id" IS NULL
-      AND (
-        (l."principal_id" = p."id" AND l."managed_id" = p."managed_id")
-        OR (l."principal_id" IS NULL AND l."metadata" ->> 'legacyPrincipalId' = p."id"::text)
-      )
-  `)
+function toNameScheme(value: string): PrincipalNameScheme {
+  return value === 'partial' || value === 'random' ? value : 'plain'
+}
+
+/** The permission settings of a stored row (`allowed_sources` empty reads as anywhere). */
+function toLoginRow(row: {
+  id: string
+  principalId: string | null
+  managedId: string
+  role: string
+  username: string
+  appliedUsername: string
+  nameScheme: string
+  grantMode: string
+  isTool: boolean
+  databases: string[]
+  privileges: string[]
+  access: string
+  allowedSources: string[] | null
+  maxConnections: number | null
+  createdAt: string
+  updatedAt: string
+  password: string | null
+}): ManagedLoginCredentialRow {
+  return {
+    id: row.id,
+    principalId: row.principalId,
+    managedId: row.managedId,
+    role: toRole(row.role),
+    username: row.username,
+    appliedUsername: row.appliedUsername,
+    nameScheme: toNameScheme(row.nameScheme),
+    grantMode: isLoginGrantMode(row.grantMode) ? row.grantMode : 'preset',
+    tool: row.isTool,
+    databases: row.databases ?? [],
+    privileges: row.privileges ?? [],
+    connectionRole: row.access === 'read-only' ? 'read-only' : 'read-write',
+    allowedSources:
+      row.allowedSources && row.allowedSources.length > 0 ? row.allowedSources : undefined,
+    maxConnections: row.maxConnections ?? undefined,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    password: row.password,
+  }
 }
 
 async function selectLogins(
@@ -188,10 +165,9 @@ async function selectLogins(
   const rows = await db
     .select(LOGIN_SELECT)
     .from(login)
-    .leftJoin(principal, eq(principal.id, login.principalId))
     .where(where)
-    .orderBy(asc(sql`coalesce(${principal.username}, ${login.appliedUsername})`), asc(login.id))
-  return rows.map((row) => ({ ...row, role: toRole(row.role) }))
+    .orderBy(asc(sql`lower(${login.username})`), asc(login.id))
+  return rows.map(toLoginRow)
 }
 
 /** Every login of a cluster, passwords included — for credential delivery only. */
@@ -199,7 +175,6 @@ export async function listManagedLoginCredentials(
   db: Db,
   managedId: string
 ): Promise<ManagedLoginCredentialRow[]> {
-  await syncLegacyLogins(db, managedId)
   return selectLogins(db, eq(login.managedId, managedId))
 }
 
@@ -209,31 +184,19 @@ export async function listManagedLogins(db: Db, managedId: string): Promise<Mana
 }
 
 /**
- * One login of a cluster by its own id, by its principal's id (the API keeps
- * naming a user by its principal) or by the legacy principal id of a root or
- * replication login. Compared as text so a value that is not a uuid is simply
- * not found instead of a cast error.
+ * One login of a cluster by its own id. Compared as text so a value that is
+ * not a uuid is simply not found instead of a cast error.
  */
 export async function findManagedLogin(
   db: Db,
   managedId: string,
-  ref: string
+  loginId: string
 ): Promise<ManagedLoginCredentialRow | undefined> {
-  await syncLegacyLogins(db, managedId)
   const rows = await selectLogins(
     db,
-    and(
-      eq(login.managedId, managedId),
-      or(
-        sql`${login.id}::text = ${ref}`,
-        sql`${login.principalId}::text = ${ref}`,
-        sql`${login.metadata} ->> 'legacyPrincipalId' = ${ref}`
-      )
-    )
+    and(eq(login.managedId, managedId), sql`${login.id}::text = ${loginId}`)
   )
-  return rows.find(
-    (row) => row.id === ref || row.principalId === ref || legacyPrincipalIdOf(row.metadata) === ref
-  )
+  return rows.find((row) => row.id === loginId)
 }
 
 /** The cluster's login with a given role (root and replication exist at most once). */
@@ -242,7 +205,6 @@ export async function findManagedLoginByRole(
   managedId: string,
   role: DatabaseLoginRole
 ): Promise<ManagedLoginCredentialRow | undefined> {
-  await syncLegacyLogins(db, managedId)
   const rows = await selectLogins(db, and(eq(login.managedId, managedId), eq(login.role, role)))
   return rows.find((row) => row.role === role)
 }
@@ -252,18 +214,116 @@ export function withoutPassword(row: ManagedLoginCredentialRow): ManagedLoginRow
   return rest
 }
 
-export type InsertLoginInput = {
+/** Point a login's `scope` rows at exactly these databases of its cluster (the order given is kept for new rows). */
+export async function setLoginDatabases(
+  db: Db,
+  target: { id: string; managedId: string },
+  names: readonly string[]
+): Promise<void> {
+  const wanted = [...new Set(names)]
+  const found =
+    wanted.length === 0
+      ? []
+      : await db
+          .select({ id: managedDatabase.id, name: managedDatabase.name })
+          .from(managedDatabase)
+          .where(
+            and(
+              eq(managedDatabase.managedId, target.managedId),
+              inArray(
+                sql`lower(${managedDatabase.name})`,
+                wanted.map((name) => name.toLowerCase())
+              )
+            )
+          )
+  const idByName = new Map(found.map((row) => [row.name.toLowerCase(), row.id]))
+  const missing = wanted.filter((name) => !idByName.has(name.toLowerCase()))
+  if (missing.length > 0) {
+    throw new TypeError(`Database not found on this cluster: ${missing.join(', ')}`)
+  }
+  const wantedIds = wanted.map((name) => idByName.get(name.toLowerCase())!)
+  const current = await db
+    .select({ databaseId: scope.databaseId })
+    .from(scope)
+    .where(eq(scope.loginId, target.id))
+  const currentIds = new Set(current.map((row) => row.databaseId))
+  const stale = [...currentIds].filter((id) => !wantedIds.includes(id))
+  if (stale.length > 0) {
+    await db
+      .delete(scope)
+      .where(and(eq(scope.loginId, target.id), inArray(scope.databaseId, stale)))
+  }
+  const added = wantedIds.filter((id) => !currentIds.has(id))
+  if (added.length > 0) {
+    await db.insert(scope).values(added.map((databaseId) => ({ loginId: target.id, databaseId })))
+  }
+}
+
+/** A login's settings after a patch (what the row will read as). */
+export function applySettingsPatch(
+  settings: LoginSettings,
+  patch: LoginSettingsPatch
+): LoginSettings {
+  return {
+    grantMode: patch.grantMode ?? settings.grantMode,
+    tool: patch.tool ?? settings.tool,
+    databases: patch.databases ?? settings.databases,
+    privileges: patch.privileges ?? settings.privileges,
+    connectionRole: patch.connectionRole ?? settings.connectionRole,
+    allowedSources:
+      patch.allowedSources === undefined
+        ? settings.allowedSources
+        : (patch.allowedSources ?? undefined),
+    maxConnections:
+      patch.maxConnections === undefined
+        ? settings.maxConnections
+        : (patch.maxConnections ?? undefined),
+  }
+}
+
+function settingsColumns(patch: LoginSettingsPatch) {
+  return {
+    ...(patch.grantMode !== undefined ? { grantMode: patch.grantMode } : {}),
+    ...(patch.tool !== undefined ? { isTool: patch.tool } : {}),
+    ...(patch.privileges !== undefined ? { privileges: patch.privileges } : {}),
+    ...(patch.connectionRole !== undefined ? { access: patch.connectionRole } : {}),
+    ...(patch.allowedSources !== undefined ? { allowedSources: patch.allowedSources } : {}),
+    ...(patch.maxConnections !== undefined ? { maxConnections: patch.maxConnections } : {}),
+  }
+}
+
+/** Change a login's permission settings (keys not in `patch` are kept). */
+export async function patchLogin(
+  db: Db,
+  loginId: string,
+  patch: LoginSettingsPatch
+): Promise<void> {
+  const [row] = await db
+    .select({ id: login.id, managedId: login.managedId })
+    .from(login)
+    .where(eq(login.id, loginId))
+    .limit(1)
+  if (!row) throw new TypeError('Login not found')
+  await db
+    .update(login)
+    .set({ ...settingsColumns(patch), updatedAt: new Date().toISOString() })
+    .where(eq(login.id, loginId))
+  if (patch.databases !== undefined) await setLoginDatabases(db, row, patch.databases)
+}
+
+export type InsertLoginInput = LoginSettingsPatch & {
   managedId: string
   principalId: string | null
   role: DatabaseLoginRole
+  /** Name the customer typed; defaults to the applied name. */
+  username?: string
   appliedUsername: string
   /** Sealed `tpsecret` envelope. */
   password: string | null
-  metadata?: Record<string, unknown> | null
   nameScheme?: PrincipalNameScheme
 }
 
-/** Insert one login row; the caller owns the principal side. */
+/** Insert one login row (and its `scope` rows); the caller owns the principal side. */
 export async function insertLogin(db: Db, input: InsertLoginInput): Promise<string> {
   const [inserted] = await db
     .insert(login)
@@ -271,91 +331,103 @@ export async function insertLogin(db: Db, input: InsertLoginInput): Promise<stri
       managedId: input.managedId,
       principalId: input.principalId,
       role: input.role,
+      username: input.username ?? input.appliedUsername,
       appliedUsername: input.appliedUsername,
       password: input.password,
-      ...(input.metadata != null ? { metadata: input.metadata } : {}),
-      ...(input.nameScheme ? { options: { nameScheme: input.nameScheme } } : {}),
+      ...(input.nameScheme ? { nameScheme: input.nameScheme } : {}),
+      ...settingsColumns(input),
     })
     .returning({ id: login.id })
+  if (input.databases !== undefined && input.databases.length > 0) {
+    await setLoginDatabases(db, { id: inserted.id, managedId: input.managedId }, input.databases)
+  }
   return inserted.id
 }
 
+const LOGIN_NAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
+
 /**
- * A `user` login for an existing principal: the engine role takes the
- * principal's applied name (the one allowed overlap in the organization's
- * name pool) and a fresh sealed password. Returns the show-once plaintext.
+ * Insert a login with a freshly generated sealed password (a `user` login by
+ * default; the cluster's own root and replication logins pass their `role`).
+ * Returns the show-once plaintext; no later code path returns a stored
+ * password. `principalId` is set only for a login that shares a site owner's
+ * Linux user name.
  */
-export async function createLoginForPrincipal(
+export async function createManagedLogin(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  input: {
+  input: LoginSettingsPatch & {
     managedId: string
-    principalId: string
-    appliedUsername: string
-    metadata: Record<string, unknown>
+    role?: DatabaseLoginRole
+    /** The name the customer typed. */
+    username: string
+    /** Applied engine login (short name + optional random suffix); defaults to `username`. */
+    appliedUsername?: string
+    principalId?: string | null
     nameScheme?: PrincipalNameScheme
+    /**
+     * Override the generated password length. Replication logins use
+     * `REPLICATION_PASSWORD_LENGTH`: MySQL caps `SOURCE_PASSWORD` in
+     * `CHANGE REPLICATION SOURCE` at 32 chars (error 3056).
+     */
+    passwordLength?: number
   }
 ): Promise<{ loginId: string; password: string }> {
-  const { plaintext, sealed } = await generateSealedSecret(dataEncryptionSecrets)
+  if (!LOGIN_NAME_RE.test(input.username)) throw new TypeError('invalid username')
+  const appliedUsername = input.appliedUsername ?? input.username
+  if (!LOGIN_NAME_RE.test(appliedUsername)) throw new TypeError('invalid applied username')
+  const { plaintext, sealed } = await generateSealedSecret(
+    dataEncryptionSecrets,
+    input.passwordLength !== undefined ? { length: input.passwordLength } : undefined
+  )
+  const { role, passwordLength: _length, principalId, ...rest } = input
   const loginId = await insertLogin(db, {
+    ...rest,
     managedId: input.managedId,
-    principalId: input.principalId,
-    role: 'user',
-    appliedUsername: input.appliedUsername,
+    principalId: principalId ?? null,
+    role: role ?? 'user',
+    appliedUsername,
     password: sealed,
-    metadata: input.metadata,
-    nameScheme: input.nameScheme,
   })
   return { loginId, password: plaintext }
 }
 
 /**
- * The legacy principal row written in step with a login: the principal the
- * login was created with on this cluster, or the old root/replication row
- * named in `metadata.legacyPrincipalId`. `null` for a login attached to a
- * principal that lives elsewhere (a system user, a login on another cluster).
+ * A `user` login that shares a site owner's Linux user name: the engine role
+ * takes the principal's applied name (the one allowed overlap in the
+ * organization's name pool) and a fresh sealed password. Returns the
+ * show-once plaintext.
  */
-async function legacyTwinPrincipalId(
+export async function createLoginForPrincipal(
   db: Db,
-  row: { principalId: string | null; managedId: string; metadata: unknown }
-): Promise<string | null> {
-  if (row.principalId) {
-    const [twin] = await db
-      .select({ id: principal.id })
-      .from(principal)
-      .where(
-        and(
-          eq(principal.id, row.principalId),
-          eq(principal.kind, 'database'),
-          eq(principal.managedId, row.managedId)
-        )
-      )
-      .limit(1)
-    return twin?.id ?? null
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  input: LoginSettingsPatch & {
+    managedId: string
+    principalId: string
+    appliedUsername: string
+    username?: string
+    nameScheme?: PrincipalNameScheme
   }
-  return legacyPrincipalIdOf(row.metadata)
+): Promise<{ loginId: string; password: string }> {
+  const { plaintext, sealed } = await generateSealedSecret(dataEncryptionSecrets)
+  const { principalId, ...rest } = input
+  const loginId = await insertLogin(db, {
+    ...rest,
+    principalId,
+    role: 'user',
+    password: sealed,
+  })
+  return { loginId, password: plaintext }
 }
 
-/** Store a sealed password on the login and on its legacy twin, if any. */
+/** Store a sealed password on the login. */
 export async function setLoginPassword(db: Db, loginId: string, sealed: string): Promise<void> {
-  const now = new Date().toISOString()
   const [row] = await db
     .update(login)
-    .set({ password: sealed, updatedAt: now })
+    .set({ password: sealed, updatedAt: new Date().toISOString() })
     .where(eq(login.id, loginId))
-    .returning({
-      principalId: login.principalId,
-      managedId: login.managedId,
-      metadata: login.metadata,
-    })
+    .returning({ id: login.id })
   if (!row) throw new TypeError('Login not found')
-  const twinId = await legacyTwinPrincipalId(db, row)
-  if (twinId) {
-    await db
-      .update(principal)
-      .set({ password: sealed, updatedAt: now })
-      .where(eq(principal.id, twinId))
-  }
 }
 
 /** Rotate a login password; returns the show-once plaintext and the sealed value it replaced. */
@@ -376,79 +448,53 @@ export async function rotateLoginPassword(
 }
 
 type LoginRecord = typeof login.$inferSelect
-type PrincipalRecord = typeof principal.$inferSelect
 
 export type RemovedLogin = {
   login: LoginRecord
-  /** The kept principal row pointed at this cluster before it moved to another login's cluster. */
-  repointedPrincipal?: { id: string; managedId: string }
-  /** The principal row deleted with the login, when it existed only for it. */
-  principal: PrincipalRecord | null
+  /** The `scope` rows the login had, so a failed enqueue can put them back. */
+  databaseIds: string[]
+  /** Databases the login owned by choice (their owner is cleared with the login). */
+  ownedDatabaseIds: string[]
 }
 
-/**
- * Delete a login row. The principal goes too only when it was created for
- * this login (a `kind = 'database'` row on the same cluster) and nothing else
- * uses it: no other login and no binding. (Placements do not exist yet, and
- * a database principal has no tenancy.) An identity shared with another login
- * is kept and its legacy row follows the remaining login's cluster, so that
- * removing the last login finds the row and `syncLegacyLogins` never revives
- * the login that was just removed.
- */
+/** Delete a login row; its scope rows and bindings go with it. */
 export async function removeManagedLogin(db: Db, loginId: string): Promise<RemovedLogin | null> {
   const [row] = await db.select().from(login).where(eq(login.id, loginId)).limit(1)
   if (!row) return null
-  const twinId = row.principalId ? await legacyTwinPrincipalId(db, row) : null
-
+  const scopes = await db
+    .select({ databaseId: scope.databaseId })
+    .from(scope)
+    .where(eq(scope.loginId, loginId))
+    .orderBy(asc(scope.id))
+  const owned = await db
+    .select({ id: managedDatabase.id })
+    .from(managedDatabase)
+    .where(eq(managedDatabase.ownerLoginId, loginId))
   await db.delete(login).where(eq(login.id, loginId))
-  if (!twinId) return { login: row, principal: null }
-
-  const [otherLogin] = await db
-    .select({ id: login.id })
-    .from(login)
-    .where(and(eq(login.principalId, twinId), ne(login.id, loginId)))
-    .limit(1)
-  if (otherLogin) {
-    const [remaining] = await db
-      .select({ managedId: login.managedId })
-      .from(login)
-      .where(eq(login.id, otherLogin.id))
-      .limit(1)
-    if (!remaining) return { login: row, principal: null }
-    await db
-      .update(principal)
-      .set({ managedId: remaining.managedId })
-      .where(eq(principal.id, twinId))
-    return {
-      login: row,
-      principal: null,
-      repointedPrincipal: { id: twinId, managedId: row.managedId },
-    }
+  return {
+    login: row,
+    databaseIds: scopes.map((entry) => entry.databaseId),
+    ownedDatabaseIds: owned.map((entry) => entry.id),
   }
-  const [bound] = await db
-    .select({ id: binding.id })
-    .from(binding)
-    .where(eq(binding.principalId, twinId))
-    .limit(1)
-  if (bound) return { login: row, principal: null }
-
-  const [removedPrincipal] = await db.delete(principal).where(eq(principal.id, twinId)).returning()
-  return { login: row, principal: removedPrincipal ?? null }
 }
 
 /** Put back what {@link removeManagedLogin} deleted, same ids, after a failed enqueue. */
 export async function restoreManagedLogin(db: Db, removed: RemovedLogin): Promise<void> {
   await db.transaction(async (tx) => {
-    if (removed.principal) {
-      await tx.insert(principal).values(removed.principal)
-    }
-    if (removed.repointedPrincipal) {
-      await tx
-        .update(principal)
-        .set({ managedId: removed.repointedPrincipal.managedId })
-        .where(eq(principal.id, removed.repointedPrincipal.id))
-    }
     await tx.insert(login).values(removed.login)
+    if (removed.databaseIds.length > 0) {
+      await tx
+        .insert(scope)
+        .values(
+          removed.databaseIds.map((databaseId) => ({ loginId: removed.login.id, databaseId }))
+        )
+    }
+    if (removed.ownedDatabaseIds.length > 0) {
+      await tx
+        .update(managedDatabase)
+        .set({ ownerLoginId: removed.login.id })
+        .where(inArray(managedDatabase.id, removed.ownedDatabaseIds))
+    }
   })
 }
 
@@ -535,38 +581,4 @@ export async function isManagedLoginNameTakenInFamily(
     )
     .limit(1)
   return rows.length > 0
-}
-
-/**
- * Bindings join their login by `login_id`. A binding the previous release
- * wrote without one reaches the login of its principal on the principal's
- * own cluster, or the cluster login whose legacy row it names.
- */
-export function bindingLoginJoin() {
-  const principalCluster = sql`(SELECT "managed_id" FROM ${principal} WHERE "id" = ${binding.principalId})`
-  return or(
-    eq(binding.loginId, login.id),
-    and(
-      isNull(binding.loginId),
-      eq(login.principalId, binding.principalId),
-      eq(login.managedId, principalCluster)
-    ),
-    and(
-      isNull(binding.loginId),
-      isNull(login.principalId),
-      sql`${login.metadata} ->> 'legacyPrincipalId' = ${binding.principalId}::text`
-    )
-  )
-}
-
-/**
- * The cluster a binding reaches, for readers that left-join `login` through
- * {@link bindingLoginJoin} and `principal` on `binding.principal_id`: the
- * login's cluster, or the legacy principal's while its login row does not
- * exist yet (a row the previous release wrote during the deploy window).
- */
-export const bindingManagedId = sql<string>`coalesce(${login.managedId}, ${principal.managedId})`
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

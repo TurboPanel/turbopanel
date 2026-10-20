@@ -787,7 +787,7 @@ test('reencryptAtRestSecrets sweeps gitConnection.oauthEnvelope including a null
   assertEquals(batch.completed, true)
 })
 
-test('reencryptAtRestSecrets sweeps 2fa.secret (tpsecret only)', async () => {
+test('reencryptAtRestSecrets sweeps totp.secret (tpsecret only)', async () => {
   await resetReencryptSweepLockForTests()
   const v1Only = await deriveV1Only()
   const { secrets: rotated } = await deriveRotated()

@@ -93,6 +93,7 @@ import {
 import type { CommandQueue } from './queue.ts'
 import {
   type EnvironmentDeployResultSite,
+  type KeptFolder,
   type ManagedDestroyCommandPayload,
   parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
@@ -103,6 +104,7 @@ import {
   parseEnvironmentStopResult,
   parseFabricReconcilePayload,
   parseFabricReconcileResult,
+  parseFoldersRemoveResult,
   parseHostnameSetResult,
   parseManagedApplyPayload,
   parseManagedApplyResult,
@@ -127,14 +129,24 @@ import {
   parseSystemReconcilePayload,
   parseSystemReconcileResult,
   parseTimezoneSetResult,
+  type ReportedFolder,
 } from '../../contracts/commands/schemas.ts'
 import { updateManagedMemberObservedReplication } from '../managed/members.ts'
+import { markFoldersPresent } from '../folders/allocate.ts'
+import {
+  applyFolderRemovalReports,
+  type FolderRemovalReport,
+  markKeptFoldersOrphan,
+  markUnplannedServiceFoldersOrphan,
+  reconcileReportedFolders,
+} from '../folders/reports.ts'
 import { markPlacementsAbsent, markPlacementsPresent } from '../principals/placement-records.ts'
 import {
   recordReportedPrincipalIds,
   releaseRefusedPrincipalIds,
 } from '../principals/principal-ids.ts'
 import { orchestratorManagesEngine } from '../managed/ha-policy.ts'
+import { clearLeafAttentionAfterDeploy, recordPendingTlsLeafFailure } from '../tls/leaf-state.ts'
 import { findManagedHaHierarchy, findManagedIngressHierarchy } from '../system/hierarchy.ts'
 import {
   commitPendingTlsLeafTracking,
@@ -207,6 +219,8 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.firewall.confirm': 60_000,
   // Writes a few unit files, one daemon-reload, enables what moved. No dump runs here.
   'server.backups.reconcile': 120_000,
+  // One `rm -rf` through the root helper per folder, up to 100 folders; a big volume takes minutes.
+  'server.folders.remove': 600_000,
   'environment.deploy': 600_000,
   'environment.lifecycle': 120_000,
   'environment.stop': 120_000,
@@ -250,6 +264,7 @@ export function commandTimeoutMs(type: string): number {
     type === 'server.firewall.reconcile' ||
     type === 'server.firewall.confirm' ||
     type === 'server.backups.reconcile' ||
+    type === 'server.folders.remove' ||
     type === 'environment.deploy' ||
     type === 'environment.lifecycle' ||
     type === 'environment.stop' ||
@@ -1057,6 +1072,9 @@ async function applyEnvironmentDeploySideEffect(
   if (record.type !== 'environment.deploy') return
   try {
     const payload = parseEnvironmentDeployPayload(record.payload)
+    // Only the newest deploy of the environment decides which folders are still in use. A
+    // command with no generation cannot be placed among the deploys, so it decides nothing.
+    let current = false
     if (payload.generation !== undefined) {
       const finishedAt = nowIso()
       const marked = await markDeploymentApplied(db, {
@@ -1076,8 +1094,18 @@ async function applyEnvironmentDeploySideEffect(
       if (marked !== null) {
         await advanceRolloutSafely(db, deps, payload.environmentId, payload.generation)
       }
+      current = marked !== null
     }
     await markEnvironmentCopiesReady(db, payload.environmentId, envelope.serverId)
+    const plannedFolderIds = await markPlannedFoldersPresentSafely(db, record)
+    // Without a list that was read, nothing is known about which folders are in use.
+    if (current && plannedFolderIds !== null) {
+      await markUnplannedFoldersOrphanSafely(db, record, {
+        environmentId: payload.environmentId,
+        serverId: envelope.serverId,
+        plannedFolderIds,
+      })
+    }
     // What the host says each account has is recorded first, while a row the
     // control plane only chose ids for is still not `present`; then the
     // accounts this deploy carried are marked present, whether or not a newer
@@ -1091,6 +1119,7 @@ async function applyEnvironmentDeploySideEffect(
       (payload.principalMaterial ?? []).map((entry) => entry.principalId)
     )
     await recordSiteAppsSafely(db, record, payload.environmentId, deployResult.sites)
+    await markKeptFoldersOrphanSafely(db, record, envelope.serverId, deployResult.keptFolders)
     // Only reconcile when the daemon included an authoritative containers
     // report (including `[]`). Omitting the field means collection failed.
     if (deployResult.containers === undefined) return
@@ -1113,6 +1142,51 @@ async function applyEnvironmentDeploySideEffect(
     compatLogWarn(
       'command-consumer',
       `container reconcile failed for command ${record.id}: ${message}`
+    )
+  }
+}
+
+/** The folder rows a deploy planned are on the host now; a miss is logged, never fatal. */
+/**
+ * The folders the deploy planned, now marked present; `null` when they could not
+ * be read, so the caller concludes nothing from the miss. A deploy that planned
+ * no folder has none and returns an empty list.
+ */
+export async function markPlannedFoldersPresentSafely(
+  db: Db,
+  record: DispatchableCommandRecord
+): Promise<string[] | null> {
+  try {
+    const metadata = await getCommandMetadata(db, record.id)
+    const ids = metadata?.folderIds
+    if (!Array.isArray(ids)) return []
+    const folderIds = ids.filter((id): id is string => typeof id === 'string')
+    await markFoldersPresent(db, folderIds)
+    return folderIds
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `folder present mark failed for command ${record.id}: ${errorMessage(err)}`
+    )
+    return null
+  }
+}
+
+/**
+ * A deploy that no longer plans a service folder on this server leaves its files
+ * in place; the row becomes an orphan. A miss is logged, never fatal.
+ */
+async function markUnplannedFoldersOrphanSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  input: { environmentId: string; serverId: string; plannedFolderIds: readonly string[] }
+): Promise<void> {
+  try {
+    await markUnplannedServiceFoldersOrphan(db, input)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `unplanned folders not marked for command ${record.id}: ${errorMessage(err)}`
     )
   }
 }
@@ -1152,6 +1226,78 @@ async function recordReportedIdsSafely(
   }
 }
 
+/** Folders a deploy left in place become orphans; a miss is logged, never fatal. */
+async function markKeptFoldersOrphanSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  serverId: string,
+  kept: readonly KeptFolder[] | undefined
+): Promise<void> {
+  if (kept === undefined || kept.length === 0) return
+  try {
+    await markKeptFoldersOrphan(db, serverId, kept, { updatedBefore: record.createdAt })
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `kept folders not marked for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+/** A host's word on removed folders settles their rows; a miss is logged, never fatal. */
+async function applyFolderRemovalReportsSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  serverId: string,
+  reports: readonly FolderRemovalReport[] | undefined,
+  options: { updatedBefore?: string } = {}
+): Promise<void> {
+  if (reports === undefined || reports.length === 0) return
+  try {
+    await applyFolderRemovalReports(db, serverId, reports, options)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `folder removal report not applied for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+async function applyFoldersRemoveSideEffect(
+  db: Db,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown
+): Promise<void> {
+  if (record.type !== 'server.folders.remove') return
+  await applyFolderRemovalReportsSafely(
+    db,
+    record,
+    envelope.serverId,
+    parseFoldersRemoveResult(result).folders,
+    // The rows were marked before the command was built, so a row changed after it was is in use again.
+    { updatedBefore: record.createdAt }
+  )
+}
+
+/** A complete listing of the host's folders is compared with the rows; a miss is logged, never fatal. */
+async function reconcileReportedFoldersSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  serverId: string,
+  folders: readonly ReportedFolder[] | undefined
+): Promise<void> {
+  if (folders === undefined) return
+  try {
+    await reconcileReportedFolders(db, serverId, folders, { listedAfter: record.createdAt })
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `reported folders not compared for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
 async function applyPrincipalsReconcileSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
@@ -1162,6 +1308,7 @@ async function applyPrincipalsReconcileSideEffect(
   try {
     const parsed = parsePrincipalsReconcileResult(result)
     await recordReportedIdsSafely(db, record, envelope.serverId, parsed.principals)
+    await reconcileReportedFoldersSafely(db, record, envelope.serverId, parsed.folders)
   } catch (err) {
     compatLogWarn(
       'command-consumer',
@@ -1218,6 +1365,7 @@ async function applyEnvironmentStopSideEffect(
   try {
     const { environmentId, retirePrincipals } = parseEnvironmentStopPayload(record.payload)
     const stopResult = parseEnvironmentStopResult(result)
+    await applyFolderRemovalReportsSafely(db, record, envelope.serverId, stopResult.folders)
     if (retirePrincipals !== undefined && retirePrincipals.length > 0) {
       await markPlacementsAbsentSafely(
         db,
@@ -2075,7 +2223,7 @@ async function applyManagedDestroySideEffect(
     // `applyManagedDestroySideEffect` only runs from `applySucceededSideEffects`
     // (the command already reported `succeeded`), so a `deleteAfterDestroy`
     // marker here always means the daemon actually tore down the runtime.
-    // Delete the `managed` row so `principal.managed_id` cascades — this is
+    // Delete the `managed` row so the cluster's logins and databases cascade — this is
     // the API-delete completion, distinct from any future "destroy runtime
     // only" action that would omit the marker and leave the row in place.
     if (payload.deleteAfterDestroy) {
@@ -2378,6 +2526,7 @@ async function applyManagedFailedSideEffect(
   // from `needs_resync` to `failed` or mark the whole cluster failed; the
   // sweep retries it a few times.
   if (meta?.returnFence === true) return
+  await recordLeafRenewalFailure(db, record, meta, error)
   if (isManagedHaFailoverRepoint(record)) {
     await handleFollowPrimaryFailure(
       db,
@@ -2405,6 +2554,30 @@ async function applyManagedFailedSideEffect(
   )
 }
 
+/** A failed apply / ingress reconcile keeps the reason on the leaf it was renewing. */
+async function recordLeafRenewalFailure(
+  db: Db,
+  record: DispatchableCommandRecord,
+  meta: unknown,
+  error?: string
+): Promise<void> {
+  if (record.type !== 'managed.apply' && record.type !== 'managed.ingress.reconcile') {
+    return
+  }
+  try {
+    await recordPendingTlsLeafFailure(
+      db,
+      meta,
+      error ?? record.errorMessage ?? 'The command failed on the server.'
+    )
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `leaf failure note failed for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
 async function applyPendingTlsLeafSideEffect(
   db: Db,
   record: DispatchableCommandRecord
@@ -2414,7 +2587,9 @@ async function applyPendingTlsLeafSideEffect(
   }
   try {
     const meta = await getCommandMetadata(db, record.id)
-    await commitPendingTlsLeafTracking(db, meta)
+    if (await commitPendingTlsLeafTracking(db, meta)) {
+      await clearLeafAttentionAfterDeploy(db, meta)
+    }
   } catch (err) {
     const message = errorMessage(err)
     compatLogWarn(
@@ -2436,6 +2611,7 @@ async function applySucceededSideEffects(
   await applyFabricSideEffect(db, record, envelope, result, deps)
   await applyEnvironmentDeploySideEffect(db, record, envelope, result, deps)
   await applyEnvironmentStopSideEffect(db, record, envelope, result)
+  await applyFoldersRemoveSideEffect(db, record, envelope, result)
   await applyPrincipalsReconcileSideEffect(db, record, envelope, result)
   await applyEnvironmentLifecycleSideEffect(db, record, envelope, result)
   await applySystemReconcileSideEffect(db, record, envelope, result)

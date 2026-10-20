@@ -1294,6 +1294,36 @@ export async function assertServerOfflineForForget(tx: Db, serverId: string): Pr
   }
 }
 
+/**
+ * The one global lock order for anything that changes a project's environments
+ * (create, make primary, delete, project delete, bulk drop, server forget):
+ * the project rows first, in id order, in a single statement; then the
+ * environment rows, in id order. A forget locks every project it can touch (the
+ * planned environments' and the ones still placed on the server) before it
+ * locks any environment row, so it cannot wait on a project while holding an
+ * environment that a project-first path is waiting for.
+ */
+async function lockForgetProjects(
+  tx: Db,
+  serverId: string,
+  organizationId: string,
+  environmentIds: readonly string[]
+): Promise<void> {
+  const planned = environmentIds.length
+    ? sql`"e"."id" IN (${sql.join(
+        environmentIds.map((id) => sql`${id}::uuid`),
+        sql`, `
+      )}) OR `
+    : sql``
+  await tx.execute(sql`
+    SELECT 1 FROM "project" WHERE "id" IN (
+      SELECT "e"."project_id" FROM "environment" AS "e"
+      JOIN "project" AS "p" ON "p"."id" = "e"."project_id"
+      WHERE ${planned}("e"."server_id" = ${serverId}::uuid AND "p"."organization_id" = ${organizationId}::uuid)
+    ) ORDER BY "id" FOR UPDATE
+  `)
+}
+
 async function lockForgetCandidateEnvironmentsForUpdate(
   tx: Db,
   environmentIds: readonly string[]
@@ -1357,6 +1387,7 @@ async function purgeRemainingPlacedEnvironmentsInTx(
 async function dropForgetEnvironmentsInTx(
   tx: Db,
   serverId: string,
+  organizationId: string,
   environments: readonly ServerForgetEnvironment[],
   blockingBlockers: ServerDeleteBlocker[],
   blockedDatabases: readonly ServerForgetBlockedDatabase[]
@@ -1364,6 +1395,7 @@ async function dropForgetEnvironmentsInTx(
   const orderedEnvironmentIds = [...environments.map((row) => row.id)].sort((a, b) =>
     a.localeCompare(b)
   )
+  await lockForgetProjects(tx, serverId, organizationId, orderedEnvironmentIds)
   await lockForgetCandidateEnvironmentsForUpdate(tx, orderedEnvironmentIds)
 
   let droppedContainers = 0
@@ -1403,6 +1435,7 @@ export async function forgetServerOwnedResources(
   const dropped = await dropForgetEnvironmentsInTx(
     tx,
     serverId,
+    organizationId,
     plan.environments,
     plan.blockingBlockers,
     plan.blockedDatabases

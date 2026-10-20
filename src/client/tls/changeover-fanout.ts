@@ -16,7 +16,6 @@ import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
 import { materializeBindingsForManaged } from '../../features/bindings/materialize.ts'
-import { bindingLoginJoin, bindingManagedId } from '../../features/managed/logins.ts'
 import {
   enqueuePreparedManagedApply,
   isPrepareError,
@@ -25,22 +24,18 @@ import {
 import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
 import { fanOutOrganizationHaReconcile } from '../../features/managed/ha-desired.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
-import { parseManagedRowOptions } from '../../features/managed/options.ts'
+import { loadManagedOptions } from '../../features/managed/options.ts'
 import { parseManagedResidual } from '../../features/managed/serialize.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { getManagedEngineSpec } from '../../features/managed/index.ts'
-import {
-  parseProjectOptions,
-  resolveEffectivePlacementServerId,
-} from '../../features/projects/project-options.ts'
+import { resolveEffectivePlacementServerId } from '../../features/projects/project-options.ts'
 import {
   binding,
   environment,
   managed,
   replica,
   login,
-  principal,
   project,
   server,
   service,
@@ -225,15 +220,14 @@ async function collectConsumerServers(
   if (ownedManagedIds.length === 0) return
   const rows = await db
     .select({
-      managedId: bindingManagedId,
+      managedId: login.managedId,
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
       taskServerId: slot.serverId,
       workspaceOrganizationId: workspace.organizationId,
     })
     .from(binding)
-    .leftJoin(login, bindingLoginJoin())
-    .leftJoin(principal, eq(principal.id, binding.principalId))
+    .innerJoin(login, eq(login.id, binding.loginId))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
@@ -242,7 +236,7 @@ async function collectConsumerServers(
     .where(
       and(
         eq(workspace.organizationId, organizationId),
-        inArray(bindingManagedId, [...ownedManagedIds])
+        inArray(login.managedId, [...ownedManagedIds])
       )
     )
 
@@ -251,7 +245,7 @@ async function collectConsumerServers(
     if (!row.managedId || !ownedManagedIds.includes(row.managedId)) continue
     const placement = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions)
+      row.projectDefaultServerId
     )
     if (placement) addMember(members, placement, row.managedId)
     if (row.taskServerId) addMember(members, row.taskServerId, row.managedId)
@@ -386,22 +380,21 @@ async function loadNeedsRedeployForManaged(
     .select({
       environmentId: environment.id,
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
     })
     .from(binding)
-    .leftJoin(login, bindingLoginJoin())
-    .leftJoin(principal, eq(principal.id, binding.principalId))
+    .innerJoin(login, eq(login.id, binding.loginId))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
-    .where(eq(bindingManagedId, managedId))
+    .where(eq(login.managedId, managedId))
 
   const seen = new Set<string>()
   const needs: CaRotationNeedsRedeploy[] = []
   for (const row of rows) {
     const serverId = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions)
+      row.projectDefaultServerId
     )
     if (!serverId) continue
     const key = `${serverId}:${row.environmentId}`
@@ -434,7 +427,7 @@ export async function fanOutApplyForCluster(
       ),
     ]
   }
-  const parsed = parseManagedRowOptions(spec, params.row.options)
+  const parsed = await loadManagedOptions(db, spec, params.row)
   if (!parsed) {
     return [
       applyResultRow(

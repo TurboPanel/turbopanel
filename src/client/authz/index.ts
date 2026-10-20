@@ -4,6 +4,7 @@ export {
   ForbiddenError,
   getSubjects,
   listVisible,
+  listVisibleVersions,
 } from './evaluator.ts'
 export type {
   CanOptions,
@@ -11,6 +12,7 @@ export type {
   PermissionKey,
   Subject,
   SubjectKind,
+  VisibleVersion,
 } from './evaluator.ts'
 export {
   assertCanOr403,

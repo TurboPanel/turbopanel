@@ -18,6 +18,7 @@ import { and, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   binding,
+  folder,
   login,
   principal,
   principalPlacement,
@@ -26,7 +27,6 @@ import {
   storage,
   tenancy,
 } from '../../db/schema.ts'
-import { SERVER_PRINCIPAL_PROVIDER } from './store.ts'
 import type { PlacementSource, PlacementState } from './placement-vocabulary.ts'
 
 export type { PlacementSource, PlacementState } from './placement-vocabulary.ts'
@@ -73,7 +73,7 @@ export async function resolvePlacementInputs(
   const ids = [...new Set(params.principals.map((entry) => entry.principalId))]
   if (ids.length === 0) return []
   const rows = await db
-    .select({ id: principal.id, metadata: principal.metadata, kind: principal.kind })
+    .select({ id: principal.id, metadata: principal.metadata })
     .from(principal)
     .where(inArray(principal.id, ids))
   const tenancyRows = await db
@@ -84,7 +84,7 @@ export async function resolvePlacementInputs(
   const viaTenancy = new Set(tenancyRows.map((row) => row.principalId))
   const viaStorage = new Set(params.storagePrincipalIds)
   const composeById = new Map(rows.map((row) => [row.id, parseComposeAlias(row.metadata)]))
-  const systemIds = new Set(rows.filter((row) => row.kind === 'system').map((row) => row.id))
+  const systemIds = new Set(rows.map((row) => row.id))
 
   const inputs: PlacementInput[] = []
   const seen = new Set<string>()
@@ -167,7 +167,7 @@ export async function ensureProjectPlacements(db: Db, projectId: string): Promis
       JOIN "environment" e ON e."id" = d."environment_id"
       WHERE e."project_id" = ${projectId}
     ) reach ON reach."project_id" = p."project_id"
-    WHERE p."kind" = 'system' AND p."provider" = ${SERVER_PRINCIPAL_PROVIDER} AND p."project_id" = ${projectId}
+    WHERE p."project_id" = ${projectId}
     ON CONFLICT ("principal_id", "server_id") DO UPDATE
       SET "state" = 'present', "updated_at" = now()
       WHERE "placement"."state" = 'pending'
@@ -209,7 +209,6 @@ async function placementIdsByUsername(
     .where(
       and(
         eq(principalPlacement.serverId, serverId),
-        eq(principal.provider, SERVER_PRINCIPAL_PROVIDER),
         inArray(principal.appliedUsername, [...usernames])
       )
     )
@@ -318,6 +317,8 @@ export type PrincipalUsage = {
   storages: number
   secrets: number
   logins: number
+  /** Folder rows on servers other than `excludeServerId`. */
+  folders: number
   otherPlacements: number
 }
 
@@ -327,11 +328,20 @@ export const PRINCIPAL_USAGE_KINDS = [
   'storages',
   'secrets',
   'logins',
+  'folders',
   'otherPlacements',
 ] as const satisfies ReadonlyArray<keyof PrincipalUsage>
 
 export function emptyPrincipalUsage(): PrincipalUsage {
-  return { tenancies: 0, bindings: 0, storages: 0, secrets: 0, logins: 0, otherPlacements: 0 }
+  return {
+    tenancies: 0,
+    bindings: 0,
+    storages: 0,
+    secrets: 0,
+    logins: 0,
+    folders: 0,
+    otherPlacements: 0,
+  }
 }
 
 /** True when nothing but the placement under review still uses the principal. */
@@ -372,9 +382,10 @@ export async function loadPrincipalUsage(
   )
   await countByPrincipal(
     db
-      .select({ principalId: binding.principalId })
+      .select({ principalId: login.principalId })
       .from(binding)
-      .where(inArray(binding.principalId, ids)),
+      .innerJoin(login, eq(login.id, binding.loginId))
+      .where(inArray(login.principalId, ids)),
     usage,
     'bindings'
   )
@@ -401,6 +412,19 @@ export async function loadPrincipalUsage(
       .where(and(isNotNull(login.principalId), inArray(login.principalId, ids))),
     usage,
     'logins'
+  )
+  await countByPrincipal(
+    db
+      .select({ principalId: folder.principalId })
+      .from(folder)
+      .where(
+        and(
+          inArray(folder.principalId, ids),
+          ...(excludeServerId === undefined ? [] : [ne(folder.serverId, excludeServerId)])
+        )
+      ),
+    usage,
+    'folders'
   )
   await countByPrincipal(
     db

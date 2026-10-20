@@ -107,7 +107,6 @@ async function loadHaMembersOnServer(db: Db, serverId: string): Promise<HaMember
     privatePort: row.privatePort,
     status: row.status,
     metadata: row.metadata,
-    options: row.options,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     engine,

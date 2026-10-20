@@ -273,7 +273,7 @@ function createEnqueueGraphDb(
     // The compose-reference resolver is the one attachment model left, so the
     // raw-SQL lane answers it with the environment this repository deploys.
     execute: (query: unknown) => {
-      if (flattenSql(query).includes('jsonb_path_exists')) {
+      if (flattenSql(query).includes('"watch"')) {
         return Promise.resolve([{ environment_id: ENV_ID }])
       }
       return Promise.resolve([])

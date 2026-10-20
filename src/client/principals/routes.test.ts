@@ -166,7 +166,7 @@ async function withPrincipalFixtures(
     .insert(environment)
     .values({
       projectId,
-      name: 'Production',
+      name: 'production',
       serverId,
       createdAt: now,
       updatedAt: now,
@@ -242,7 +242,6 @@ test('POST /projects/:projectId/principals persists default shell when options o
     const [row] = await db
       .select({
         options: principal.options,
-        provider: principal.provider,
         metadata: principal.metadata,
         username: principal.username,
         appliedUsername: principal.appliedUsername,
@@ -251,7 +250,6 @@ test('POST /projects/:projectId/principals persists default shell when options o
       .where(eq(principal.id, body.id))
       .limit(1)
     assertEquals(row?.options, { shell: DEFAULT_PRINCIPAL_SHELL, nameScheme: 'partial' })
-    assertEquals(row?.provider, 'server')
     assertEquals(row?.username, 'appuser')
     assertEquals(row?.appliedUsername, body.appliedUsername)
     // Home follows the applied login — that's the account on the host.
@@ -792,7 +790,7 @@ test('DELETE /projects/:projectId/principals/:id refuses while a service still r
       assertEquals(del.status, 409)
       assertEquals(await del.json(), {
         error: 'principal_in_use',
-        usedBy: { services: 1, bindings: 0, storage: 0, secrets: 0, logins: 0 },
+        usedBy: { services: 1, bindings: 0, storage: 0, secrets: 0, logins: 0, folders: 0 },
       })
 
       const rows = await db

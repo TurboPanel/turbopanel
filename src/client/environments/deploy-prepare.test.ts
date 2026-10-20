@@ -9,7 +9,6 @@ import { assertComposeDocument, type SiteSpec } from '../../features/compose/ind
 import {
   dockerVolumeNameFromStorageId,
   principalHomeDir,
-  principalVolumePath,
   resolveDockerVolumeName,
 } from '../../lib/naming.ts'
 import { DEFAULT_PRINCIPAL_SHELL } from '../../features/principals/principal-options.ts'
@@ -37,6 +36,7 @@ import {
   listComposeServiceKeys,
   listContainerComposeNames,
   loadPrincipalMaterial,
+  detachMountsOfRemovedServices,
   loadStorageMaterial,
   localManagedNetworkServiceNames,
   mergeProjectEnvironmentCompose,
@@ -391,6 +391,8 @@ type LocationFixtureRow = {
 type MountFixtureRow = {
   storageId: string
   serviceId: string
+  /** The environment of the mounting service; the deploy's own environment when left out. */
+  serviceEnvironmentId?: string
   composeServiceName: string
   destinationPath: string
   subpath: string | null
@@ -436,8 +438,12 @@ function createStorageMaterialDb(opts: {
             },
             where() {
               calls += 1
-              if (calls === 1) return Promise.resolve(opts.locations)
-              return Promise.resolve(opts.mounts ?? [])
+              // 1: the shared volumes the environment uses (none here), 2: locations, 3: mounts.
+              if (calls === 1) return Promise.resolve([])
+              if (calls === 2) return Promise.resolve(opts.locations)
+              return Promise.resolve(
+                (opts.mounts ?? []).map((row) => ({ serviceEnvironmentId: 'env-1', ...row }))
+              )
             },
           }
           return chain
@@ -503,7 +509,7 @@ describe('loadStorageMaterial principal path locations', () => {
     registeredVolumes: [] as const,
   }
 
-  it('derives principal volume path when location path is empty', async () => {
+  it('sends no source path for an owned volume with an empty location path', async () => {
     const db = createStorageMaterialDb({
       locations: [
         pathLocation({
@@ -516,7 +522,7 @@ describe('loadStorageMaterial principal path locations', () => {
     })
     const material = await loadStorageMaterial(db, baseParams)
     assertEquals(material.length, 1)
-    assertEquals(material[0]?.sourcePath, principalVolumePath(username, storageId))
+    assertEquals(material[0]?.sourcePath, undefined)
     assertEquals(material[0]?.locationId, locationId)
     assertEquals(material[0]?.provider, 'path')
   })
@@ -1051,7 +1057,7 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
       ],
     })
     const material = await loadStorageMaterial(db, baseParams)
-    assertEquals(material[0]?.sourcePath, principalVolumePath(username, storageId))
+    assertEquals(material[0]?.sourcePath, undefined)
     assertEquals(material[0]?.contentEnvelope, 'tp1.sealed.example')
     assertEquals(material[0]?.principalId, principalId)
   })
@@ -2513,5 +2519,59 @@ describe('fabricNetworksFromSchedule', () => {
       }),
       fabricNetworks
     )
+  })
+})
+
+describe('detachMountsOfRemovedServices', () => {
+  const entry = (mounts: { composeServiceName: string; destinationPath: string }[]) => ({
+    storageId: 'st-1',
+    locationId: 'loc-1',
+    kind: 'volume' as const,
+    name: 'uploads',
+    provider: 'docker' as const,
+    serverId: 'srv-1',
+    volumeName: 'vol-1',
+    mounts: mounts.map((m) => ({ serviceId: 'svc', ...m })),
+  })
+
+  it('keeps the storage and drops the mount of a service the compose no longer has, with a warning', () => {
+    const kept = entry([
+      { composeServiceName: 'web', destinationPath: '/data' },
+      { composeServiceName: 'worker', destinationPath: '/work' },
+    ])
+    const { material, warnings } = detachMountsOfRemovedServices([kept], new Set(['web']))
+    assertEquals(material.length, 1)
+    assertEquals(material[0]!.storageId, 'st-1')
+    assertEquals(
+      material[0]!.mounts.map((m) => m.composeServiceName),
+      ['web']
+    )
+    assertEquals(warnings.length, 1)
+    assertEquals(warnings[0]!.code, 'storage_service_removed')
+    assertEquals(warnings[0]!.message.includes('"uploads"'), true)
+    assertEquals(warnings[0]!.message.includes('"worker"'), true)
+    // The input is not changed, so the storage can be attached again later.
+    assertEquals(kept.mounts.length, 2)
+  })
+
+  it('leaves a storage whose services are all still declared alone, and keeps one with no mounts', () => {
+    const attached = entry([{ composeServiceName: 'web', destinationPath: '/data' }])
+    const loose = entry([])
+    const { material, warnings } = detachMountsOfRemovedServices(
+      [attached, loose],
+      new Set(['web'])
+    )
+    assertEquals(material[0], attached)
+    assertEquals(material[1], loose)
+    assertEquals(warnings, [])
+  })
+
+  it('leaves an unmounted storage when its only service is gone', () => {
+    const { material } = detachMountsOfRemovedServices(
+      [entry([{ composeServiceName: 'worker', destinationPath: '/work' }])],
+      new Set(['web'])
+    )
+    assertEquals(material.length, 1)
+    assertEquals(material[0]!.mounts, [])
   })
 })

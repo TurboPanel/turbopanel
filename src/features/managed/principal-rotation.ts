@@ -9,8 +9,7 @@ type RestorePassword = typeof setLoginPassword
 
 /**
  * Undo a rotate-password request that could not be applied. The stored
- * credential goes back to its previous value (on the login and its legacy
- * principal twin) AND the bound projects' variables (already rewritten with
+ * credential goes back to its previous value AND the bound projects' variables (already rewritten with
  * the new password) are rewritten again from it, so the control plane, the
  * live engine and every project still agree on the old password. Without the
  * second step the next deploy of each bound project would try to log in with

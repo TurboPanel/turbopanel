@@ -6,7 +6,7 @@
 
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertStringIncludes } from '@std/assert'
-import { inArray } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import {
@@ -14,7 +14,8 @@ import {
   environment,
   managed,
   organization,
-  principal,
+  login,
+  managedDatabase,
   project,
   replica,
   server,
@@ -97,7 +98,7 @@ function fixture(db: Db) {
     made.projects.push(projectRow!.id)
     const [envRow] = await db
       .insert(environment)
-      .values({ name: 'Production', projectId: projectRow!.id, serverId })
+      .values({ name: 'production', projectId: projectRow!.id, serverId })
       .returning({ id: environment.id })
     made.environments.push(envRow!.id)
     return envRow!.id
@@ -119,10 +120,11 @@ function fixture(db: Db) {
         name,
         engine: 'postgres',
         status: 'ready',
-        options: { settings: { ssl: sslMode ? { mode: sslMode } : {} }, databases: ['postgres'] },
+        options: { settings: { ssl: sslMode ? { mode: sslMode } : {} } },
       })
       .returning({ id: managed.id })
     made.managed.push(row!.id)
+    await db.insert(managedDatabase).values({ managedId: row!.id, name: 'postgres' })
     for (const [index, serverId] of serverIds.entries()) {
       await db.insert(replica).values({
         managedId: row!.id,
@@ -148,21 +150,18 @@ function fixture(db: Db) {
       .returning({ id: service.id })
     made.services.push(serviceRow!.id)
     const username = `app_${crypto.randomUUID().slice(0, 8)}`
-    const [principalRow] = await db
-      .insert(principal)
-      .values({
-        organizationId: owner.organizationId,
-        kind: 'database',
-        provider: 'postgres',
-        username,
-        appliedUsername: username,
-        managedId,
-      })
-      .returning({ id: principal.id })
+    const [loginRow] = await db
+      .insert(login)
+      .values({ managedId, role: 'user', username, appliedUsername: username })
+      .returning({ id: login.id })
+    const [databaseRow] = await db
+      .select({ id: managedDatabase.id })
+      .from(managedDatabase)
+      .where(eq(managedDatabase.managedId, managedId))
     await db.insert(binding).values({
-      principalId: principalRow!.id,
+      loginId: loginRow!.id,
       serviceId: serviceRow!.id,
-      databaseName: 'postgres',
+      databaseId: databaseRow!.id,
       keyPrefix: 'DATABASE',
       isEmitEngineDefaults: false,
     })
@@ -174,7 +173,6 @@ function fixture(db: Db) {
       await db.delete(service).where(inArray(service.id, made.services))
     }
     if (made.managed.length > 0) {
-      await db.delete(principal).where(inArray(principal.managedId, made.managed))
       await db.delete(replica).where(inArray(replica.managedId, made.managed))
       await db.delete(managed).where(inArray(managed.id, made.managed))
     }

@@ -53,7 +53,7 @@ test('loadServicePlacementServerId prefers environment server over project defau
               thenableLimit([
                 {
                   environmentServerId: envServer,
-                  projectOptions: { defaultServerId: projectServer },
+                  projectDefaultServerId: projectServer,
                 },
               ]),
           }),
@@ -72,7 +72,7 @@ test('loadServicePlacementServerId prefers environment server over project defau
               thenableLimit([
                 {
                   environmentServerId: null,
-                  projectOptions: { defaultServerId: projectServer },
+                  projectDefaultServerId: projectServer,
                 },
               ]),
           }),
@@ -102,7 +102,7 @@ test('consumerServerIdsForManaged uses environment pin', async () => {
   const db = consumerServerQuery([
     {
       environmentServerId: envServer,
-      projectOptions: null,
+      projectDefaultServerId: null,
       taskServerId: null,
     },
   ])
@@ -114,7 +114,7 @@ test('consumerServerIdsForManaged uses project default when env is unpinned', as
   const db = consumerServerQuery([
     {
       environmentServerId: null,
-      projectOptions: { defaultServerId: projectServer },
+      projectDefaultServerId: projectServer,
       taskServerId: null,
     },
   ])
@@ -127,7 +127,7 @@ test('consumerServerIdsForManaged unions task pin with effective placement', asy
   const db = consumerServerQuery([
     {
       environmentServerId: envServer,
-      projectOptions: null,
+      projectDefaultServerId: null,
       taskServerId: taskServer,
     },
   ])
@@ -142,7 +142,7 @@ test('consumerServerIdsForManaged uses a slot-only remote host', async () => {
   const db = consumerServerQuery([
     {
       environmentServerId: null,
-      projectOptions: null,
+      projectDefaultServerId: null,
       taskServerId: taskServer,
     },
   ])

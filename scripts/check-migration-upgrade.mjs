@@ -86,6 +86,7 @@ export function noAllowance() {
   return {
     droppedTables: new Set(),
     droppedColumns: new Set(),
+    addedColumns: new Set(),
     tables: new Map(),
     columns: new Map(),
   }
@@ -95,6 +96,8 @@ export function noAllowance() {
  * Tables and columns a `-- breaking-ok` migration drops or renames, merged
  * into `allowance` (`droppedColumns` holds `table.column`; `tables` maps old
  * to new table name; `columns` maps `table.old` to the new column name).
+ * `addedColumns` holds the bare names of the columns it adds: a seed written
+ * for the previous release cannot name them.
  * Files without the marker add nothing.
  */
 export function addBreakingOkAllowance(sql, allowance = noAllowance()) {
@@ -127,6 +130,10 @@ export function addBreakingOkAllowance(sql, allowance = noAllowance()) {
     const dropColumn = new RegExp(String.raw`DROP\s+COLUMN\s+(?:IF\s+EXISTS\s+)?${IDENT}`, 'gi')
     for (const match of actions.matchAll(dropColumn)) {
       allowance.droppedColumns.add(`${table}.${identName(match[1])}`)
+    }
+    const addColumn = new RegExp(String.raw`ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?${IDENT}`, 'gi')
+    for (const match of actions.matchAll(addColumn)) {
+      allowance.addedColumns.add(identName(match[1]))
     }
     const renameColumn = actions.match(
       new RegExp(
@@ -186,11 +193,17 @@ export function diffRows(before, after, allowance = noAllowance(), tablesAfter =
   return problems
 }
 
-/** True when a seed error names an old table or column a pending rename moved away. */
+/**
+ * True when a seed error names an old table or column a pending rename or drop
+ * moved away, or a column a pending migration added (a required one the seed
+ * cannot fill for the previous release).
+ */
 export function seedErrorFromRename(message, allowance) {
   const oldNames = [
     ...allowance.tables.keys(),
     ...[...allowance.columns.keys()].map((name) => name.slice(name.indexOf('.') + 1)),
+    ...[...allowance.droppedColumns].map((name) => name.slice(name.indexOf('.') + 1)),
+    ...allowance.addedColumns,
   ]
   return oldNames.some((name) => message.includes(`"${name}"`))
 }
@@ -380,6 +393,59 @@ function parseFrom(argv) {
   return ref
 }
 
+/** The `generation` a migrations folder's manifest records (0 when there is none). */
+export function manifestGeneration(migrationsDir) {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(migrationsDir, 'manifest.json'), 'utf8'))
+    return Number.isInteger(manifest.generation) ? manifest.generation : 0
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * A release cut before this checkout's baseline cannot be upgraded in place
+ * (every database is wiped and rebuilt from the baseline), so there is nothing
+ * to compare. Not a bypass: once a release is tagged from the baseline the
+ * generations match and the full comparison resumes by itself.
+ */
+export function predatesBaseline(tagGeneration, currentGeneration) {
+  return tagGeneration < currentGeneration
+}
+
+/** Baseline release: build the current schema from scratch and prove the seed still fits it. */
+async function runBaselineRelease(baseUrl, tag, tagGeneration, currentGeneration) {
+  console.log(
+    `migration-upgrade: previous release ${tag} predates the baseline (generation ${tagGeneration} < ${currentGeneration}): upgrade-from-previous skipped; checking a fresh apply and the seed`
+  )
+  const problems = []
+  const cleanups = []
+  try {
+    const name = `${SCRATCH_PREFIX}${process.pid}_${Date.now()}_baseline`
+    const admin = connect(baseUrl)
+    cleanups.push(() => admin.end())
+    await admin.unsafe(`create database "${name}"`)
+    cleanups.push(() => admin.unsafe(`drop database if exists "${name}" with (force)`))
+    const url = withDatabase(baseUrl, name)
+    migrateCurrent(url, 'to an empty database')
+    const shipped = readShippedMigrationHashes(path.join(REPO_ROOT, 'migrations'))
+    await withClient(url, async (sql) => {
+      const state = compareSchemaState(await readAppliedMigrationHashes(sql), shipped)
+      if (state.status !== 'current') {
+        problems.push(`history after a fresh apply: ${describeSchemaState(state)}`)
+      }
+      try {
+        await applySeed(sql, "this checkout's schema (fresh apply)")
+      } catch (err) {
+        problems.push(err instanceof Error ? err.message : String(err))
+      }
+    })
+  } finally {
+    await runCleanups(cleanups)
+  }
+  return { tag, problems, skipped: true }
+}
+
 async function run(baseUrl, from) {
   const { tag, how } = from ? { tag: from, how: '--from' } : previousRelease()
   console.log(`migration-upgrade: previous release ${tag} (${how})`)
@@ -395,6 +461,11 @@ async function run(baseUrl, from) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tp-upgrade-check-'))
     cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }))
     const tagMigrations = extractMigrations(tag, dir)
+    const tagGeneration = manifestGeneration(tagMigrations)
+    const currentGeneration = manifestGeneration(path.join(REPO_ROOT, 'migrations'))
+    if (predatesBaseline(tagGeneration, currentGeneration)) {
+      return await runBaselineRelease(baseUrl, tag, tagGeneration, currentGeneration)
+    }
     const allowance = pendingAllowance(tagMigrations)
 
     const admin = connect(baseUrl)
@@ -469,14 +540,16 @@ async function main() {
     process.exit(1)
   }
   try {
-    const { tag, problems } = await run(url, parseFrom(process.argv.slice(2)))
+    const { tag, problems, skipped } = await run(url, parseFrom(process.argv.slice(2)))
     if (problems.length > 0) {
       for (const problem of problems) console.error(`migration-upgrade: ${problem}`)
       console.error(`migration-upgrade: upgrade from ${tag} FAILED (${problems.length} problems)`)
       process.exit(1)
     }
     console.log(
-      `migration-upgrade: upgrade from ${tag} kept every seeded row and matches a fresh apply`
+      skipped
+        ? `migration-upgrade: ${tag} predates the baseline; a fresh apply and the seed are fine (the upgrade comparison resumes from the first release cut from the baseline)`
+        : `migration-upgrade: upgrade from ${tag} kept every seeded row and matches a fresh apply`
     )
   } catch (err) {
     console.error(`migration-upgrade: ${err instanceof Error ? err.message : String(err)}`)

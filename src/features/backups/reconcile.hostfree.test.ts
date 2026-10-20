@@ -43,6 +43,7 @@ type PolicyRow = {
   isEnabled: boolean
   engine: string
   options?: unknown
+  databases: string[]
 }
 
 function policyRow(overrides: Partial<PolicyRow> = {}): PolicyRow {
@@ -54,6 +55,7 @@ function policyRow(overrides: Partial<PolicyRow> = {}): PolicyRow {
     retentionKeep: 7,
     isEnabled: true,
     engine: 'postgres',
+    databases: [],
     ...overrides,
   }
 }
@@ -247,9 +249,13 @@ test('the set holds every policy on the server, disabled ones as enabled:false',
   assertEquals(set[2]?.artifactExtension, 'sql')
 })
 
-function managedOptions(engine: 'mysql' | 'mariadb' | 'postgres', databases: string[]): unknown {
+/** The stored settings and the names of the cluster's databases, as the policy query returns them. */
+function managedOptions(
+  engine: 'mysql' | 'mariadb' | 'postgres',
+  databases: string[]
+): Pick<PolicyRow, 'options' | 'databases'> {
   const spec = getManagedEngineSpec(engine)
-  return { settings: spec?.defaultSettings, databases }
+  return { options: { settings: spec?.defaultSettings }, databases }
 }
 
 test('a managed entry carries the first non-system database, as a manual backup picks it', async () => {
@@ -257,17 +263,17 @@ test('a managed entry carries the first non-system database, as a manual backup 
     policyRows: [
       policyRow({
         engine: 'mariadb',
-        options: managedOptions('mariadb', ['mysql', 'sys', 'defaultdb', 'second']),
+        ...managedOptions('mariadb', ['mysql', 'sys', 'defaultdb', 'second']),
       }),
       policyRow({
         id: '0192d6a0-0000-7000-8000-0000000000a2',
         engine: 'mysql',
-        options: managedOptions('mysql', ['defaultdb']),
+        ...managedOptions('mysql', ['defaultdb']),
       }),
       policyRow({
         id: '0192d6a0-0000-7000-8000-0000000000a3',
         engine: 'postgres',
-        options: managedOptions('postgres', ['postgres', 'app']),
+        ...managedOptions('postgres', ['postgres', 'app']),
       }),
     ],
   })
@@ -281,7 +287,7 @@ test('a managed entry carries the first non-system database, as a manual backup 
 test('a managed entry names no database when the cluster has none to dump or its options are unreadable', async () => {
   const { db } = fakeDb({
     policyRows: [
-      policyRow({ engine: 'mariadb', options: managedOptions('mariadb', ['mysql']) }),
+      policyRow({ engine: 'mariadb', ...managedOptions('mariadb', ['mysql']) }),
       policyRow({ id: '0192d6a0-0000-7000-8000-0000000000a2', engine: 'mariadb', options: null }),
       policyRow({ id: '0192d6a0-0000-7000-8000-0000000000a3', engine: 'mariadb' }),
     ],

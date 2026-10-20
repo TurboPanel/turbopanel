@@ -114,7 +114,7 @@ async function withFixtures(
     .insert(environment)
     .values({
       projectId: proj!.id,
-      name: 'Production',
+      name: 'production',
       serverId: servers[0]!.id,
       createdAt: now,
       updatedAt: now,
@@ -166,8 +166,6 @@ async function addPrincipal(
     .values({
       organizationId,
       projectId,
-      kind: 'system',
-      provider: 'server',
       username: name,
       appliedUsername: name,
     })
@@ -219,26 +217,17 @@ test('GET /organizations/:id/principals lists forms, servers, project and orphan
           managedId: cluster!.id,
           principalId: loginOnly,
           role: 'user',
+          username: `dbonly_${tag}`,
           appliedUsername: `dbonly_${tag}`,
         },
         {
           managedId: cluster!.id,
           principalId: null,
           role: 'root',
+          username: `postgres_${tag}`,
           appliedUsername: `postgres_${tag}`,
         },
       ])
-      // A cluster's own root login row (legacy principal) is not part of the pool.
-      await db.insert(principal).values({
-        organizationId,
-        projectId: null,
-        kind: 'database',
-        provider: 'postgres',
-        username: `rootrow_${tag}`,
-        appliedUsername: `postgres_${tag}`,
-        metadata: { managedRoot: true },
-      })
-
       const res = await app.request(`/organizations/${organizationId}/principals`, {
         headers: { Cookie: cookie },
       })
@@ -350,6 +339,7 @@ test('DELETE /organizations/:id/principals/:principalId refuses a principal that
         managedId: cluster!.id,
         principalId: withLogin,
         role: 'user',
+        username: `login_${tag}`,
         appliedUsername: `login_${tag}`,
       })
 
@@ -368,29 +358,14 @@ test('DELETE /organizations/:id/principals/:principalId refuses a principal that
       assertEquals(await b.json(), {
         error: 'principal_in_use',
         code: 'principal_in_use',
-        usedBy: { services: 0, bindings: 0, storage: 0, secrets: 0, logins: 1 },
+        usedBy: { services: 0, bindings: 0, storage: 0, secrets: 0, logins: 1, folders: 0 },
       })
-
-      const [dbRow] = await db
-        .insert(principal)
-        .values({
-          organizationId,
-          projectId: null,
-          kind: 'database',
-          provider: 'postgres',
-          username: `engine_${tag}`,
-          appliedUsername: `engine_${tag}`,
-        })
-        .returning({ id: principal.id })
-      const c = await del(dbRow!.id)
-      assertEquals(c.status, 409)
-      assertEquals(((await c.json()) as { code: string }).code, 'principal_not_system_user')
 
       const rows = await db
         .select({ id: principal.id })
         .from(principal)
-        .where(inArray(principal.id, [inProject, withLogin, dbRow!.id]))
-      assertEquals(rows.length, 3)
+        .where(inArray(principal.id, [inProject, withLogin]))
+      assertEquals(rows.length, 2)
     }
   )
 })

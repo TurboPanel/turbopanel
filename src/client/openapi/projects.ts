@@ -133,7 +133,12 @@ export const projectSchemas = {
         type: 'object',
         nullable: true,
         description:
-          'Project options; options.compose must be a ComposeDocument (version 1 with data and presentation)',
+          'Project options; options.compose must be a ComposeDocument (version 1 with data and presentation). `compose` and `composeOverlays` are configuration: they need a `target`.',
+      },
+      target: {
+        type: 'string',
+        description:
+          "Where an `options.compose` / `options.composeOverlays` edit lands: `base` (the project's own compose, inherited by every environment) or an environment id of the project. With exactly one environment and no target the edit goes to that environment, never the Base. With several and no target: **400** `edit_target_required`. Anything else: **400** `edit_target_invalid`. For an environment target `options` may carry only `compose` and `composeOverlays`: **400** `edit_target_mixed` otherwise (send project settings separately with target `base`). Ignored when the request carries no compose. Compatibility: a project whose Base already holds content (older single-environment projects keep it there) cannot take a compose edit without a target, because layering a full document on top of the Base would double lists such as ports and volumes: that answers **400** `edit_target_required` even with one environment. Send `base` to edit the Base.",
       },
     },
   },

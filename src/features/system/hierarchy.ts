@@ -48,6 +48,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { container, environment, project, server, service, workspace } from '../../db/schema.ts'
+import { isFirstEnvironmentOf } from '../projects/primary-environment.ts'
 import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
 import { normalizeDisplayNameKey } from '../../lib/display-name-format.ts'
 import {
@@ -356,6 +357,28 @@ async function ensureHostingIngressProject(tx: Db, workspaceId: string): Promise
 }
 
 /**
+ * The environment name for a server's system environment: its display name
+ * reduced to the environment name rule, with the front of the server id so two
+ * servers with the same name cannot collide.
+ */
+/** Strips leading and trailing hyphens and underscores (a loop, so no backtracking). */
+function trimSeparators(value: string): string {
+  let start = 0
+  let end = value.length
+  while (start < end && (value[start] === '-' || value[start] === '_')) start += 1
+  while (end > start && (value[end - 1] === '-' || value[end - 1] === '_')) end -= 1
+  return value.slice(start, end)
+}
+
+export function systemEnvironmentName(displayName: string, serverId: string): string {
+  const suffix = serverId.replaceAll('-', '').slice(-8)
+  const base = trimSeparators(
+    trimSeparators(displayName.toLowerCase().replaceAll(/[^a-z0-9_-]+/g, '-')).slice(0, 23)
+  )
+  return base === '' ? `server-${suffix}` : `${base}-${suffix}`
+}
+
+/**
  * Per-server system environment under a known system project.
  *
  * Identity is `(project_id, server_id)` — never `environment.metadata.component`.
@@ -385,7 +408,9 @@ async function ensureServerEnvironment(
     .values({
       projectId,
       serverId,
-      name: displayName,
+      name: systemEnvironmentName(displayName, serverId),
+      // The project row is locked above, so "first" cannot race another create.
+      isPrimary: isFirstEnvironmentOf(projectId),
     })
     .returning({ id: environment.id })
 

@@ -4,7 +4,7 @@ import { assertEquals } from '@std/assert'
 import { projectServerDaemon } from '../../daemon/cell/postgres-projection.ts'
 import { eq, inArray } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { createDenoDb, endDbConnection } from '../../db/connection.ts'
+import { createDenoDb, type Db, endDbConnection } from '../../db/connection.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
 import { attachDaemonStateToServer } from '../servers/server-identity-db.ts'
 import {
@@ -23,11 +23,15 @@ import {
   dispatch,
   environment,
   fabric,
+  folder,
   ip,
   managed,
   network,
   organization,
+  login,
+  managedDatabase,
   principal,
+  principalPlacement,
   project,
   replica,
   server,
@@ -38,7 +42,7 @@ import {
   variable,
   workspace,
 } from '../../db/schema.ts'
-import { createManagedPrincipal } from '../principals/store.ts'
+import { createManagedLogin } from '../managed/logins.ts'
 import { ensureManagedIngressHierarchy } from '../system/hierarchy.ts'
 import {
   COMMAND_DISPATCH_FAILURE_RETENTION_MS,
@@ -51,7 +55,13 @@ import {
   transitionCommand,
 } from './command-records.ts'
 import { enableOrganizationFabric, listFabricRelays } from '../fabric/fabric-records.ts'
-import { isTransientError, processCommandEnvelope } from './consumer.ts'
+import { environmentHasFolders, listEnvironmentFolders } from '../folders/records.ts'
+import {
+  type DispatchableCommandRecord,
+  isTransientError,
+  markPlannedFoldersPresentSafely,
+  processCommandEnvelope,
+} from './consumer.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { parseManagedResidual } from '../managed/serialize.ts'
 import { resolveFleetPresence } from '../../daemon/cell/server-status.ts'
@@ -830,7 +840,7 @@ async function withManagedDestroyFixtures(
     db: ReturnType<typeof createDenoDb>
     serverId: string
     managedId: string
-    rootPrincipalId: string
+    rootLoginId: string
   }) => Promise<void>
 ): Promise<void> {
   await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
@@ -854,7 +864,7 @@ async function withManagedDestroyFixtures(
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Production',
+        name: 'production',
       })
       .returning({ id: environment.id })
     const [managedRow] = await db
@@ -866,32 +876,29 @@ async function withManagedDestroyFixtures(
         engine: 'postgres',
         status: 'ready',
         metadata: {},
-        options: { settings: {}, databases: ['postgres'] },
+        options: { settings: {} },
       })
       .returning({ id: managed.id })
     const managedId = managedRow!.id
-    const [principalRow] = await db
-      .insert(principal)
+    const [rootLoginRow] = await db
+      .insert(login)
       .values({
-        organizationId,
-        kind: 'database',
-        provider: 'postgres',
+        managedId,
+        role: 'root',
         username: 'postgres',
         appliedUsername: 'postgres',
-        managedId,
-        metadata: { managedRoot: true },
       })
-      .returning({ id: principal.id })
+      .returning({ id: login.id })
 
     try {
       await fn({
         db,
         serverId,
         managedId,
-        rootPrincipalId: principalRow!.id,
+        rootLoginId: rootLoginRow!.id,
       })
     } finally {
-      await db.delete(principal).where(eq(principal.managedId, managedId))
+      await db.delete(login).where(eq(login.managedId, managedId))
       await db.delete(managed).where(eq(managed.id, managedId))
       await db.delete(environment).where(eq(environment.id, environmentRow!.id))
       await db.delete(project).where(eq(project.id, projectRow!.id))
@@ -929,8 +936,8 @@ test('processCommandEnvelope releases an applying managed row when the daemon is
   })
 })
 
-test('processCommandEnvelope deletes the managed row and cascades principals when deleteAfterDestroy succeeds', async () => {
-  await withManagedDestroyFixtures(async ({ db, serverId, managedId, rootPrincipalId }) => {
+test('processCommandEnvelope deletes the managed row and cascades logins when deleteAfterDestroy succeeds', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId, rootLoginId }) => {
     const record = await createCommandRecord(db, {
       serverId,
       ...TEST_COMMAND_ACTOR,
@@ -957,8 +964,8 @@ test('processCommandEnvelope deletes the managed row and cascades principals whe
     assertEquals(updated?.status, 'succeeded')
 
     // Single-click delete: a successful destroy with the deleteAfterDestroy
-    // marker removes the managed row, which cascades to its principals via
-    // `principal.managed_id ON DELETE CASCADE`.
+    // marker removes the managed row, which cascades to its logins via
+    // `login.managed_id ON DELETE CASCADE`.
     const [managedAfter] = await db
       .select({ id: managed.id })
       .from(managed)
@@ -967,16 +974,16 @@ test('processCommandEnvelope deletes the managed row and cascades principals whe
     assertEquals(managedAfter, undefined)
 
     const [principalAfter] = await db
-      .select({ id: principal.id })
-      .from(principal)
-      .where(eq(principal.id, rootPrincipalId))
+      .select({ id: login.id })
+      .from(login)
+      .where(eq(login.id, rootLoginId))
       .limit(1)
     assertEquals(principalAfter, undefined)
   })
 })
 
-test('processCommandEnvelope leaves the managed row and principals in place without deleteAfterDestroy', async () => {
-  await withManagedDestroyFixtures(async ({ db, serverId, managedId, rootPrincipalId }) => {
+test('processCommandEnvelope leaves the managed row and logins in place without deleteAfterDestroy', async () => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId, rootLoginId }) => {
     const record = await createCommandRecord(db, {
       serverId,
       ...TEST_COMMAND_ACTOR,
@@ -1014,11 +1021,11 @@ test('processCommandEnvelope leaves the managed row and principals in place with
     assertEquals(managedAfter?.status, 'stopped')
 
     const [principalAfter] = await db
-      .select({ id: principal.id })
-      .from(principal)
-      .where(eq(principal.id, rootPrincipalId))
+      .select({ id: login.id })
+      .from(login)
+      .where(eq(login.id, rootLoginId))
       .limit(1)
-    assertEquals(principalAfter?.id, rootPrincipalId)
+    assertEquals(principalAfter?.id, rootLoginId)
   })
 })
 
@@ -1082,7 +1089,7 @@ test('processCommandEnvelope reconciles containers on environment.lifecycle succ
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Production',
+        name: 'production',
       })
       .returning({ id: environment.id })
     const environmentId = environmentRow!.id
@@ -1189,7 +1196,7 @@ test('processCommandEnvelope skips reconcile when environment.lifecycle omits co
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Production',
+        name: 'production',
       })
       .returning({ id: environment.id })
     const environmentId = environmentRow!.id
@@ -1288,7 +1295,7 @@ test('processCommandEnvelope reconciles containers on system.reconcile success',
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Hosting Ingress',
+        name: 'hosting-ingress',
         metadata: { component: 'hosting-ingress' },
       })
       .returning({ id: environment.id })
@@ -1414,7 +1421,7 @@ test('processCommandEnvelope skips reconcile when system.reconcile omits contain
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Hosting Ingress',
+        name: 'hosting-ingress',
         metadata: { component: 'hosting-ingress' },
       })
       .returning({ id: environment.id })
@@ -1519,7 +1526,7 @@ test('processCommandEnvelope clears pins when system.reconcile reports empty con
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Hosting Ingress',
+        name: 'hosting-ingress',
         metadata: { component: 'hosting-ingress' },
       })
       .returning({ id: environment.id })
@@ -1634,7 +1641,7 @@ test('processCommandEnvelope reconciles containers on managed.ingress.reconcile 
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Managed Ingress',
+        name: 'managed-ingress',
       })
       .returning({ id: environment.id })
     const environmentId = environmentRow!.id
@@ -1757,7 +1764,7 @@ test('processCommandEnvelope clears pins when managed.ingress.reconcile reports 
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Managed Ingress',
+        name: 'managed-ingress',
       })
       .returning({ id: environment.id })
     const environmentId = environmentRow!.id
@@ -1867,7 +1874,7 @@ test('processCommandEnvelope maps a labelled self-host system.reconcile report o
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Production',
+        name: 'production',
         metadata: { component: 'turbopanel' },
       })
       .returning({ id: environment.id })
@@ -1999,7 +2006,7 @@ test('processCommandEnvelope leaves a missing self-host system container exited 
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Production',
+        name: 'production',
         metadata: { component: 'turbopanel' },
       })
       .returning({ id: environment.id })
@@ -2115,7 +2122,7 @@ test('processCommandEnvelope keeps unmatched self-host expected rows on partial 
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Production',
+        name: 'production',
       })
       .returning({ id: environment.id })
     const environmentId = environmentRow!.id
@@ -2349,7 +2356,7 @@ async function withDeployFixtures(
       .values({
         projectId: projectRow!.id,
         serverId,
-        name: 'Production',
+        name: 'production',
       })
       .returning({ id: environment.id })
     const environmentId = environmentRow!.id
@@ -2628,6 +2635,85 @@ test('processCommandEnvelope reconciles containers on environment.deploy success
       assertEquals(copyRow?.state, 'ready')
       await db.delete(storageCopy).where(eq(storageCopy.id, copy!.id))
       await db.delete(storage).where(eq(storage.id, vol!.id))
+    }
+  )
+})
+
+test('processCommandEnvelope marks the folders a deploy planned as present, and only those', async () => {
+  await withDeployFixtures(
+    async ({ db, organizationId, serverId, environmentId, projectId, webServiceId }) => {
+      await attachConnectedDaemonStatus(db, serverId)
+      const username = `fp_${crypto.randomUUID().slice(0, 8).replaceAll('-', '')}`
+      const [owner] = await db
+        .insert(principal)
+        .values({
+          organizationId,
+          username,
+          appliedUsername: username,
+        })
+        .returning({ id: principal.id })
+      const base = {
+        serverId,
+        principalId: owner!.id,
+        environmentId,
+        scope: 'production',
+        kind: 'service',
+        state: 'planned',
+      }
+      const [planned, untouched] = await db
+        .insert(folder)
+        .values([
+          { ...base, slug: 'web', serviceId: webServiceId },
+          { ...base, slug: 'other' },
+        ])
+        .returning({ id: folder.id })
+      try {
+        const record = await createCommandRecord(db, {
+          serverId,
+          ...TEST_COMMAND_ACTOR,
+          type: 'environment.deploy',
+          metadata: { folderIds: [planned!.id] },
+          payload: {
+            environmentId,
+            projectId,
+            organizationId,
+            projectName: 'tp-deploy-test',
+            composeFiles: [
+              {
+                filename: 'compose.yaml',
+                role: 'runtime',
+                source: 'inline',
+                content: 'services:\n  web:\n    image: nginx\n',
+              },
+            ],
+            hostings: [],
+          },
+        })
+        const registry = createDispatchMockRegistry(serverId, {
+          waitForRequestResult: {
+            serverId,
+            requestId: record.id,
+            requestKind: 'command-dispatch',
+            status: 'done',
+            createdAt: record.createdAt,
+            expiresAt: record.createdAt,
+            finishedAt: new Date().toISOString(),
+            result: { projectName: 'tp-deploy-test', summary: 'deployed' },
+          },
+        })
+        await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+        const states = await db
+          .select({ id: folder.id, state: folder.state })
+          .from(folder)
+          .where(eq(folder.serverId, serverId))
+        assertEquals(Object.fromEntries(states.map((row) => [row.id, row.state])), {
+          [planned!.id]: 'present',
+          [untouched!.id]: 'planned',
+        })
+      } finally {
+        await db.delete(folder).where(eq(folder.serverId, serverId))
+        await db.delete(principal).where(eq(principal.id, owner!.id))
+      }
     }
   )
 })
@@ -3139,6 +3225,502 @@ test('processCommandEnvelope: a rollout server whose dispatch payload is gone fa
   })
 })
 
+/** Run one succeeded command of `type` through the consumer with the host's `result`. */
+async function runSucceededCommand(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string,
+  type:
+    | 'environment.stop'
+    | 'environment.deploy'
+    | 'server.folders.remove'
+    | 'server.principals.reconcile',
+  payload: unknown,
+  result: unknown
+): Promise<void> {
+  const record = await createCommandRecord(db, { serverId, ...TEST_COMMAND_ACTOR, type, payload })
+  const registry = createDispatchMockRegistry(serverId, {
+    waitForRequestResult: {
+      serverId,
+      requestId: record.id,
+      requestKind: 'command-dispatch',
+      status: 'done',
+      createdAt: record.createdAt,
+      expiresAt: record.createdAt,
+      finishedAt: new Date().toISOString(),
+      result,
+    },
+  })
+  await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+}
+
+/** Two site owners and folder rows for them, removed after the callback. */
+async function withOwnerFolders(
+  ctx: {
+    db: ReturnType<typeof createDenoDb>
+    organizationId: string
+    serverId: string
+    environmentId: string
+  },
+  rows: Array<{
+    owner: 'one' | 'two'
+    kind: 'service' | 'volume'
+    slug: string
+    state: string
+    scope?: string
+  }>,
+  fn: (owners: {
+    one: { id: string; login: string }
+    two: { id: string; login: string }
+  }) => Promise<void>
+): Promise<void> {
+  const make = async () => {
+    const login = `fo_${crypto.randomUUID().slice(0, 8).replaceAll('-', '')}`
+    const [row] = await ctx.db
+      .insert(principal)
+      .values({ organizationId: ctx.organizationId, username: login, appliedUsername: login })
+      .returning({ id: principal.id })
+    return { id: row!.id, login }
+  }
+  const one = await make()
+  const two = await make()
+  try {
+    if (rows.length > 0) {
+      await ctx.db.insert(folder).values(
+        rows.map((row) => ({
+          serverId: ctx.serverId,
+          principalId: (row.owner === 'one' ? one : two).id,
+          environmentId: row.scope === 'common' ? null : ctx.environmentId,
+          scope: row.scope ?? 'production',
+          kind: row.kind,
+          slug: row.slug,
+          state: row.state,
+        }))
+      )
+    }
+    await fn({ one, two })
+  } finally {
+    await ctx.db.delete(folder).where(eq(folder.serverId, ctx.serverId))
+    await ctx.db.delete(principalPlacement).where(eq(principalPlacement.serverId, ctx.serverId))
+    await ctx.db.delete(principal).where(inArray(principal.id, [one.id, two.id]))
+  }
+}
+
+async function folderStates(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string
+): Promise<Record<string, string>> {
+  const rows = await db
+    .select({ kind: folder.kind, slug: folder.slug, state: folder.state })
+    .from(folder)
+    .where(eq(folder.serverId, serverId))
+  return Object.fromEntries(rows.map((row) => [`${row.kind}:${row.slug}`, row.state]))
+}
+
+test('processCommandEnvelope clears the removing folder rows an environment.stop reports gone, and keeps the others', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [
+        { owner: 'one', kind: 'service', slug: 'gone', state: 'removing' },
+        { owner: 'one', kind: 'service', slug: 'stuck', state: 'removing' },
+        // The same names under another owner, and a folder in use, are not the report's to touch.
+        { owner: 'two', kind: 'service', slug: 'gone', state: 'removing' },
+        { owner: 'one', kind: 'service', slug: 'live', state: 'present' },
+      ],
+      async ({ one }) => {
+        await runSucceededCommand(
+          ctx.db,
+          ctx.serverId,
+          'environment.stop',
+          {
+            environmentId: ctx.environmentId,
+            projectId: ctx.projectId,
+            projectName: 'tp-stop-test',
+          },
+          {
+            projectName: 'tp-stop-test',
+            summary: 'stopped',
+            containers: [],
+            folders: [
+              {
+                owner: one.login,
+                scope: 'production',
+                kind: 'service',
+                slug: 'gone',
+                removed: true,
+              },
+              {
+                owner: one.login,
+                scope: 'production',
+                kind: 'service',
+                slug: 'stuck',
+                removed: false,
+                reason: 'The folder was not removed: device busy',
+              },
+              {
+                owner: one.login,
+                scope: 'production',
+                kind: 'service',
+                slug: 'live',
+                removed: true,
+              },
+            ],
+          }
+        )
+        const rows = await ctx.db
+          .select({ slug: folder.slug, state: folder.state, principalId: folder.principalId })
+          .from(folder)
+          .where(eq(folder.serverId, ctx.serverId))
+        assertEquals(
+          rows
+            .map((row) => `${row.principalId === one.id ? 'one' : 'two'}:${row.slug}:${row.state}`)
+            .sort(),
+          ['one:live:present', 'one:stuck:removing', 'two:gone:removing']
+        )
+        // The environment's last folder rows are the ones left; the locks follow the rows.
+        assertEquals((await listEnvironmentFolders(ctx.db, ctx.environmentId)).total, 3)
+      }
+    )
+  })
+})
+
+test('processCommandEnvelope clears a removed volume and lifts the environment lock once its last folder is gone', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [{ owner: 'one', kind: 'volume', slug: 'uploads', state: 'removing' }],
+      async ({ one }) => {
+        assertEquals((await listEnvironmentFolders(ctx.db, ctx.environmentId)).total, 1)
+        await runSucceededCommand(
+          ctx.db,
+          ctx.serverId,
+          'server.folders.remove',
+          {
+            folders: [
+              {
+                kind: 'volume',
+                folder: { owner: one.login, scope: 'production', slug: 'uploads' },
+              },
+            ],
+          },
+          {
+            summary: 'Removed 1 of 1 folder(s)',
+            folders: [
+              {
+                owner: one.login,
+                scope: 'production',
+                kind: 'volume',
+                slug: 'uploads',
+                removed: true,
+              },
+            ],
+          }
+        )
+        assertEquals(await folderStates(ctx.db, ctx.serverId), {})
+        assertEquals(await environmentHasFolders(ctx.db, ctx.environmentId), false)
+      }
+    )
+  })
+})
+
+test('processCommandEnvelope leaves a volume row removing when the host says the folder stayed', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [{ owner: 'one', kind: 'volume', slug: 'uploads', state: 'removing' }],
+      async ({ one }) => {
+        await runSucceededCommand(
+          ctx.db,
+          ctx.serverId,
+          'server.folders.remove',
+          {
+            folders: [
+              {
+                kind: 'volume',
+                folder: { owner: one.login, scope: 'production', slug: 'uploads' },
+              },
+            ],
+          },
+          {
+            summary: 'Removed 0 of 1 folder(s)',
+            folders: [
+              {
+                owner: one.login,
+                scope: 'production',
+                kind: 'volume',
+                slug: 'uploads',
+                removed: false,
+                reason: 'The folder was not removed: device busy',
+              },
+            ],
+          }
+        )
+        assertEquals(await folderStates(ctx.db, ctx.serverId), { 'volume:uploads': 'removing' })
+        assertEquals(await environmentHasFolders(ctx.db, ctx.environmentId), true)
+      }
+    )
+  })
+})
+
+test('processCommandEnvelope marks the folders a deploy kept as orphans', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [
+        { owner: 'one', kind: 'service', slug: 'old', state: 'present' },
+        { owner: 'one', kind: 'service', slug: 'deleted', state: 'removing' },
+        { owner: 'one', kind: 'service', slug: 'web', state: 'present' },
+      ],
+      async ({ one }) => {
+        // The report only moves rows older than the command; keep the rows clearly before it.
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        await runSucceededCommand(
+          ctx.db,
+          ctx.serverId,
+          'environment.deploy',
+          {
+            environmentId: ctx.environmentId,
+            projectId: ctx.projectId,
+            organizationId: ctx.organizationId,
+            projectName: 'tp-deploy-test',
+            composeFiles: [
+              {
+                filename: 'compose.yaml',
+                role: 'runtime',
+                source: 'inline',
+                content: 'services:\n  web:\n    image: nginx\n',
+              },
+            ],
+            hostings: [],
+          },
+          {
+            projectName: 'tp-deploy-test',
+            summary: 'deployed',
+            keptFolders: [
+              { owner: one.login, scope: 'production', kind: 'service', slug: 'old' },
+              // An explicit delete finishes its own way; a kept report does not undo it.
+              { owner: one.login, scope: 'production', kind: 'service', slug: 'deleted' },
+            ],
+          }
+        )
+        // This command carries no generation, so it cannot be placed among the deploys and
+        // decides nothing about `web`, which the deploy did not plan.
+        assertEquals(await folderStates(ctx.db, ctx.serverId), {
+          'service:old': 'orphan',
+          'service:deleted': 'removing',
+          'service:web': 'present',
+        })
+        // An orphan still locks the environment until someone removes it.
+        assertEquals(await environmentHasFolders(ctx.db, ctx.environmentId), true)
+      }
+    )
+  })
+})
+
+test('processCommandEnvelope marks a present service folder the newest deploy did not plan as an orphan', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [
+        { owner: 'one', kind: 'service', slug: 'gone', state: 'present' },
+        { owner: 'one', kind: 'service', slug: 'gone-too', state: 'planned' },
+      ],
+      async () => {
+        await ctx.db.delete(deployment).where(eq(deployment.serverId, ctx.serverId))
+        const record = await createCommandRecord(ctx.db, {
+          serverId: ctx.serverId,
+          ...TEST_COMMAND_ACTOR,
+          type: 'environment.deploy',
+          payload: {
+            environmentId: ctx.environmentId,
+            projectId: ctx.projectId,
+            organizationId: ctx.organizationId,
+            projectName: 'tp-deploy-test',
+            composeFiles: [
+              {
+                filename: 'compose.yaml',
+                role: 'runtime',
+                source: 'inline',
+                content: 'services:\n  web:\n    image: nginx\n',
+              },
+            ],
+            hostings: [],
+            generation: 2,
+          },
+        })
+        await ctx.db.insert(deployment).values({
+          environmentId: ctx.environmentId,
+          serverId: ctx.serverId,
+          desiredGeneration: 2,
+          appliedGeneration: 1,
+          status: 'applying',
+          lastCommandId: record.id,
+        })
+        const registry = createDispatchMockRegistry(ctx.serverId, {
+          waitForRequestResult: {
+            serverId: ctx.serverId,
+            requestId: record.id,
+            requestKind: 'command-dispatch',
+            status: 'done',
+            createdAt: record.createdAt,
+            expiresAt: record.createdAt,
+            finishedAt: new Date().toISOString(),
+            result: { projectName: 'tp-deploy-test', summary: 'deployed' },
+          },
+        })
+        await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId))
+        // A planned row is another deploy's business; a present one the deploy did not plan is kept as an orphan.
+        assertEquals(await folderStates(ctx.db, ctx.serverId), {
+          'service:gone': 'orphan',
+          'service:gone-too': 'planned',
+        })
+      }
+    )
+  })
+})
+
+test('a deploy whose planned folders cannot be read concludes nothing about the rest', async () => {
+  const failing = {
+    select() {
+      throw new Error('database unavailable')
+    },
+  } as unknown as Db
+  const planned = await markPlannedFoldersPresentSafely(failing, {
+    id: crypto.randomUUID(),
+  } as unknown as DispatchableCommandRecord)
+  assertEquals(planned, null)
+})
+
+test('processCommandEnvelope compares a reconcile listing with the folder rows and records the host home', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [
+        { owner: 'one', kind: 'service', slug: 'here', state: 'present' },
+        { owner: 'one', kind: 'volume', slug: 'lost', state: 'present' },
+        { owner: 'one', kind: 'volume', slug: 'back', state: 'missing' },
+        { owner: 'one', kind: 'volume', slug: 'leaving', state: 'removing' },
+        { owner: 'one', kind: 'service', slug: 'planned', state: 'planned' },
+        { owner: 'one', kind: 'service', slug: 'kept', state: 'orphan' },
+      ],
+      async ({ one }) => {
+        // The owner belongs to the project, and its environment is named like the scope,
+        // so a folder found with no row can be tied to the environment it sits under.
+        await ctx.db
+          .update(principal)
+          .set({ projectId: ctx.projectId })
+          .where(eq(principal.id, one.id))
+        await ctx.db
+          .update(environment)
+          .set({ name: 'production' })
+          .where(eq(environment.id, ctx.environmentId))
+        await ctx.db.insert(principalPlacement).values({
+          principalId: one.id,
+          serverId: ctx.serverId,
+          state: 'present',
+          home: '/srv/users/old',
+          source: 'manual',
+        })
+        const listed = (kind: 'service' | 'volume', slug: string, scope = 'production') => ({
+          owner: one.login,
+          scope,
+          kind,
+          slug,
+          present: true,
+        })
+        await runSucceededCommand(
+          ctx.db,
+          ctx.serverId,
+          'server.principals.reconcile',
+          { principals: [] },
+          {
+            principalsApplied: 1,
+            keysChanged: [],
+            keysRemoved: [],
+            sshdReloaded: false,
+            sftpChroot: false,
+            principals: [
+              { principalId: one.id, uid: 15001, gid: 15001, home: `/srv/users/${one.login}` },
+            ],
+            folders: [
+              listed('service', 'here'),
+              listed('volume', 'back'),
+              // A folder no row names: recorded, not touched.
+              listed('volume', 'stranger'),
+            ],
+            warnings: [],
+          }
+        )
+        assertEquals(await folderStates(ctx.db, ctx.serverId), {
+          'service:here': 'present',
+          'volume:lost': 'missing',
+          'volume:back': 'present',
+          // Not on the host yet: planned rows wait for their deploy. A removing row and an
+          // orphan the host no longer has are gone.
+          'service:planned': 'planned',
+          'volume:stranger': 'orphan',
+        })
+        const [placement] = await ctx.db
+          .select({ home: principalPlacement.home })
+          .from(principalPlacement)
+          .where(eq(principalPlacement.serverId, ctx.serverId))
+        assertEquals(placement?.home, `/srv/users/${one.login}`)
+        // A missing folder no longer blocks; the orphan does, and says why.
+        const blocking = await listEnvironmentFolders(ctx.db, ctx.environmentId)
+        assertEquals(blocking.folders.map((row) => `${row.slug}:${row.state}`).sort(), [
+          'back:present',
+          'here:present',
+          'planned:planned',
+          'stranger:orphan',
+        ])
+        assertEquals(
+          blocking.folders.find((row) => row.slug === 'stranger')?.reason,
+          'no service or volume owns this folder on server Consumer Test Server'
+        )
+      }
+    )
+  })
+})
+
+test('processCommandEnvelope concludes nothing about folders from a reconcile that sent no listing', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [
+        { owner: 'one', kind: 'volume', slug: 'a', state: 'present' },
+        { owner: 'one', kind: 'volume', slug: 'b', state: 'removing' },
+      ],
+      async () => {
+        await runSucceededCommand(
+          ctx.db,
+          ctx.serverId,
+          'server.principals.reconcile',
+          { principals: [] },
+          {
+            principalsApplied: 0,
+            keysChanged: [],
+            keysRemoved: [],
+            sshdReloaded: false,
+            sftpChroot: false,
+            warnings: ['the folders on this server could not be listed this time'],
+          }
+        )
+        assertEquals(await folderStates(ctx.db, ctx.serverId), {
+          'volume:a': 'present',
+          'volume:b': 'removing',
+        })
+      }
+    )
+  })
+})
+
 test('processCommandEnvelope clears pins on environment.stop success', async () => {
   await withDeployFixtures(async ({ db, serverId, environmentId, projectId, webServiceId }) => {
     await attachConnectedDaemonStatus(db, serverId)
@@ -3417,7 +3999,7 @@ test('processCommandEnvelope appends managed.backup metadata on create success',
     await db
       .update(managed)
       .set({
-        options: { settings: {}, databases: ['postgres'] },
+        options: { settings: {} },
       })
       .where(eq(managed.id, managedId))
 
@@ -3906,7 +4488,7 @@ test('processCommandEnvelope removes backup metadata on managed.backup delete su
     await db
       .update(managed)
       .set({
-        options: { settings: {}, databases: ['postgres'] },
+        options: { settings: {} },
       })
       .where(eq(managed.id, managedId))
     await db.insert(backup).values({
@@ -4475,7 +5057,7 @@ test('processCommandEnvelope enqueues the deferred primary destroy only after ev
 })
 
 test('processCommandEnvelope leaves the primary intact when a gated replica destroy fails', async () => {
-  await withManagedDestroyFixtures(async ({ db, serverId, managedId, rootPrincipalId }) => {
+  await withManagedDestroyFixtures(async ({ db, serverId, managedId, rootLoginId }) => {
     const gateId = crypto.randomUUID()
     const gate = {
       gateId,
@@ -4556,7 +5138,7 @@ test('processCommandEnvelope leaves the primary intact when a gated replica dest
     )
 
     // A failed replica never opens the gate: no primary command, and the
-    // managed row (with its principals) survives for a retry or force-delete.
+    // managed row (with its logins) survives for a retry or force-delete.
     assertEquals(
       queue.envelopes.filter((envelope) => envelope.type === 'managed.destroy').length,
       0
@@ -4568,11 +5150,11 @@ test('processCommandEnvelope leaves the primary intact when a gated replica dest
       .limit(1)
     assertEquals(managedAfter?.id, managedId)
     const [principalAfter] = await db
-      .select({ id: principal.id })
-      .from(principal)
-      .where(eq(principal.id, rootPrincipalId))
+      .select({ id: login.id })
+      .from(login)
+      .where(eq(login.id, rootLoginId))
       .limit(1)
-    assertEquals(principalAfter?.id, rootPrincipalId)
+    assertEquals(principalAfter?.id, rootLoginId)
   })
 })
 
@@ -4875,7 +5457,6 @@ async function sweepPromoteFixtureOrganization(
   }
   if (managedIds.length > 0) {
     await db.delete(replica).where(inArray(replica.managedId, managedIds))
-    await db.delete(principal).where(inArray(principal.managedId, managedIds))
   }
   // Ingress hierarchy self-heal allocates containers on every reconciled
   // server, including the outer fixture's server — sweep by organization so
@@ -4994,7 +5575,7 @@ async function withPromoteConsumerFixtures(
         .values({
           projectId: managedProjectRow!.id,
           serverId,
-          name: 'Production',
+          name: 'production',
         })
         .returning({ id: environment.id })
       const [managedRow] = await db
@@ -5006,7 +5587,7 @@ async function withPromoteConsumerFixtures(
           engine: 'postgres',
           status: 'ready',
           metadata: {},
-          options: { settings: {}, databases: ['postgres'] },
+          options: { settings: {} },
         })
         .returning({ id: managed.id })
       const managedId = managedRow!.id
@@ -5061,11 +5642,14 @@ async function withPromoteConsumerFixtures(
         })
       }
 
-      const rootPrincipal = await createManagedPrincipal(db, dataEncryptionSecrets, {
+      const [pgDatabase] = await db
+        .insert(managedDatabase)
+        .values({ managedId, name: 'postgres' })
+        .returning({ id: managedDatabase.id })
+      const rootLogin = await createManagedLogin(db, dataEncryptionSecrets, {
         managedId,
-        provider: 'postgres',
+        role: 'root',
         username: 'postgres',
-        metadata: { managedRoot: true, databases: ['postgres'] },
       })
 
       // Consumer app on the third server, bound to the cluster.
@@ -5083,7 +5667,7 @@ async function withPromoteConsumerFixtures(
         .values({
           projectId: consumerProjectRow!.id,
           serverId: consumerServerId,
-          name: 'Production',
+          name: 'production',
         })
         .returning({ id: environment.id })
       const [consumerServiceRow] = await db
@@ -5097,9 +5681,9 @@ async function withPromoteConsumerFixtures(
       const [bindingRow] = await db
         .insert(binding)
         .values({
-          principalId: rootPrincipal.principalId,
+          loginId: rootLogin.loginId,
           serviceId: consumerServiceRow!.id,
-          databaseName: 'postgres',
+          databaseId: pgDatabase!.id,
           keyPrefix: 'DB',
         })
         .returning({ id: binding.id })
@@ -5265,5 +5849,52 @@ test('processCommandEnvelope keeps member row failed/retryable when destroy fail
     } finally {
       await db.delete(replica).where(eq(replica.managedId, managedId))
     }
+  })
+})
+
+test('processCommandEnvelope leaves a folder row alone when it changed after the reconcile command was built', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await attachConnectedDaemonStatus(ctx.db, ctx.serverId)
+    await withOwnerFolders(
+      ctx,
+      [{ owner: 'one', kind: 'volume', slug: 'busy', state: 'present' }],
+      async ({ one }) => {
+        const record = await createCommandRecord(ctx.db, {
+          serverId: ctx.serverId,
+          ...TEST_COMMAND_ACTOR,
+          type: 'server.principals.reconcile',
+          payload: { principals: [] },
+        })
+        // A deploy touched the row after the command was built, so a listing taken
+        // for that command cannot be trusted about it.
+        await ctx.db
+          .update(folder)
+          .set({ state: 'present' })
+          .where(eq(folder.serverId, ctx.serverId))
+        const registry = createDispatchMockRegistry(ctx.serverId, {
+          waitForRequestResult: {
+            serverId: ctx.serverId,
+            requestId: record.id,
+            requestKind: 'command-dispatch',
+            status: 'done',
+            createdAt: record.createdAt,
+            expiresAt: record.createdAt,
+            finishedAt: new Date().toISOString(),
+            result: {
+              principalsApplied: 0,
+              keysChanged: [],
+              keysRemoved: [],
+              sshdReloaded: false,
+              sftpChroot: false,
+              folders: [],
+              warnings: [],
+            },
+          },
+        })
+        await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId))
+        assertEquals(await folderStates(ctx.db, ctx.serverId), { 'volume:busy': 'present' })
+        assertEquals(one.login.length > 0, true)
+      }
+    )
   })
 })

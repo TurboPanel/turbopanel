@@ -181,16 +181,15 @@ export function boundManagedConsumersExists(serverIdExpr: SQL, organizationIdExp
         JOIN environment be ON be.id = bs.environment_id
         JOIN project bp ON bp.id = be.project_id
         JOIN workspace bw ON bw.id = bp.workspace_id
-        JOIN principal pr ON pr.id = b.principal_id
+        JOIN login bl ON bl.id = b.login_id
         LEFT JOIN slot sl ON sl.service_id = bs.id
         WHERE bw.organization_id = ${organizationIdExpr}
-          AND pr.managed_id IS NOT NULL
           AND (
             be.server_id = ${serverIdExpr}
             OR sl.server_id = ${serverIdExpr}
             OR (
               be.server_id IS NULL
-              AND bp.options->>'defaultServerId' = (${serverIdExpr})::text
+              AND bp.default_server_id::text = (${serverIdExpr})::text
             )
           )
       )`

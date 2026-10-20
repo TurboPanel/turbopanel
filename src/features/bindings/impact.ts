@@ -1,12 +1,11 @@
 /**
- * List services affected by a principal/database binding change so the API
+ * List services affected by a login/database binding change so the API
  * can surface a `redeployRequired` hint. The API never restarts or redeploys.
  */
 
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { binding, environment, login, principal, service } from '../../db/schema.ts'
-import { bindingLoginJoin, bindingManagedId } from '../managed/logins.ts'
+import { binding, environment, login, managedDatabase, service } from '../../db/schema.ts'
 import { enqueueIngressForBindingChange, type BindingListenerSync } from './enqueue-change.ts'
 
 export type BindingImpactService = {
@@ -38,27 +37,6 @@ function toImpact(row: {
   }
 }
 
-export async function listBindingImpactForPrincipal(
-  db: Db,
-  principalId: string
-): Promise<BindingRedeployRequired> {
-  const rows = await db
-    .select({
-      serviceId: binding.serviceId,
-      name: service.name,
-      environmentId: service.environmentId,
-      projectId: environment.projectId,
-      keyPrefix: binding.keyPrefix,
-    })
-    .from(binding)
-    .innerJoin(service, eq(binding.serviceId, service.id))
-    .innerJoin(environment, eq(service.environmentId, environment.id))
-    .where(eq(binding.principalId, principalId))
-
-  const services = rows.map(toImpact).sort((a, b) => a.keyPrefix.localeCompare(b.keyPrefix))
-  return { count: services.length, services }
-}
-
 /**
  * Services bound to a login of one managed cluster, optionally narrowed to one
  * of its databases. Unsorted: each caller picks its own order.
@@ -77,14 +55,14 @@ async function listManagedBindingImpact(
       keyPrefix: binding.keyPrefix,
     })
     .from(binding)
-    .leftJoin(login, bindingLoginJoin())
-    .leftJoin(principal, eq(principal.id, binding.principalId))
+    .innerJoin(login, eq(login.id, binding.loginId))
+    .innerJoin(managedDatabase, eq(managedDatabase.id, binding.databaseId))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .where(
       databaseName === undefined
-        ? eq(bindingManagedId, managedId)
-        : and(eq(bindingManagedId, managedId), eq(binding.databaseName, databaseName))
+        ? eq(login.managedId, managedId)
+        : and(eq(login.managedId, managedId), eq(managedDatabase.name, databaseName))
     )
   return rows.map(toImpact)
 }
@@ -131,9 +109,8 @@ export async function detachBindingsForManaged(
         db
           .select({ id: binding.id })
           .from(binding)
-          .leftJoin(login, bindingLoginJoin())
-          .leftJoin(principal, eq(principal.id, binding.principalId))
-          .where(eq(bindingManagedId, managedId))
+          .innerJoin(login, eq(login.id, binding.loginId))
+          .where(eq(login.managedId, managedId))
       )
     )
   if (listenerSync && serviceIds.length > 0) {
@@ -146,16 +123,7 @@ export async function detachBindingsForManaged(
   }
 }
 
-export async function hasBindingsForPrincipal(db: Db, principalId: string): Promise<boolean> {
-  const [row] = await db
-    .select({ id: binding.id })
-    .from(binding)
-    .where(eq(binding.principalId, principalId))
-    .limit(1)
-  return Boolean(row)
-}
-
-/** Services bound to one login (a legacy binding without `login_id` counts by its principal). */
+/** Services bound to one login. */
 export async function listBindingImpactForLogin(
   db: Db,
   loginId: string
@@ -169,7 +137,7 @@ export async function listBindingImpactForLogin(
       keyPrefix: binding.keyPrefix,
     })
     .from(binding)
-    .innerJoin(login, bindingLoginJoin())
+    .innerJoin(login, eq(login.id, binding.loginId))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .where(eq(login.id, loginId))
@@ -182,7 +150,7 @@ export async function hasBindingsForLogin(db: Db, loginId: string): Promise<bool
   const [row] = await db
     .select({ id: binding.id })
     .from(binding)
-    .innerJoin(login, bindingLoginJoin())
+    .innerJoin(login, eq(login.id, binding.loginId))
     .where(eq(login.id, loginId))
     .limit(1)
   return Boolean(row)

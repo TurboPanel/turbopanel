@@ -40,17 +40,13 @@ import {
   recoveryIdFromCommandMetadata,
 } from '../managed/ha-recovery.ts'
 import { RECOVERY_STATES, TERMINAL_RECOVERY_STATES } from '../managed/recovery.ts'
-import { COMMAND_STATUSES, TERMINAL_COMMAND_STATUSES } from './types.ts'
+import { commandIsOpen } from './open-statuses.ts'
 
 /** Extra slack past the consumer budget before a row counts as stranded. */
 export const STALE_COMMAND_GRACE_MS = 5 * 60_000
 
 /** Bounded rows per tick — leftovers are picked up next tick. */
 export const STALE_COMMAND_SWEEP_LIMIT = 50
-
-const NON_TERMINAL_STATUSES = COMMAND_STATUSES.filter(
-  (status) => !TERMINAL_COMMAND_STATUSES.has(status)
-)
 
 export type StaleCommandCandidate = {
   id: string
@@ -185,7 +181,7 @@ export async function sweepStaleCommands(
     .from(command)
     .where(
       and(
-        inArray(command.status, NON_TERMINAL_STATUSES),
+        commandIsOpen(),
         lt(command.updatedAt, cutoff),
         // A rolling deploy's later batches wait undelivered (target `pending`);
         // that is not a stall, and the rollout starts their clock when it
@@ -269,12 +265,7 @@ export async function releaseStuckManagedApplying(
           db
             .select({ one: sql`1` })
             .from(command)
-            .where(
-              and(
-                inArray(command.status, NON_TERMINAL_STATUSES),
-                sql`${command.context}->>'managedId' = ${managed.id}::text`
-              )
-            )
+            .where(and(commandIsOpen(), eq(command.managedId, managed.id)))
         )
       )
     )

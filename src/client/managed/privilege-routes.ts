@@ -5,7 +5,7 @@
  *   cluster's exact engine series supports, in plain words, with whether a
  *   site owner's login may hold it. Nothing outside the supported series is
  *   ever listed.
- * - `GET /environments/:id/managed/users/:principalId/effective-permissions` —
+ * - `GET /environments/:id/managed/users/:loginId/effective-permissions` —
  *   what the engine says the login can do right now, read from the host over
  *   the cell and joined to the catalogue. Everything is `observed`: the panel
  *   keeps no ledger of its own grants yet.
@@ -21,7 +21,7 @@ import { getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import { managed } from '../../db/schema.ts'
 import { ingressEngineVersionFromOptions } from '../../features/managed/ingress-desired-pure.ts'
 import { findManagedLogin } from '../../features/managed/logins.ts'
-import { parseManagedRowOptions } from '../../features/managed/options.ts'
+import { loadManagedOptions } from '../../features/managed/options.ts'
 import { privilegeCatalogueFor } from '../../features/managed/privileges/catalogue.ts'
 import {
   buildEffectivePermissions,
@@ -43,16 +43,7 @@ const UNSUPPORTED_VERSION_BODY = {
     'Permissions cannot be shown for this database version. Only versions the panel supports are listed.',
 } as const
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 /** Databases a login is placed on, as recorded on the login. */
-function loginDatabases(metadata: unknown): string[] {
-  if (!isRecord(metadata) || !Array.isArray(metadata.databases)) return []
-  return metadata.databases.filter((entry): entry is string => typeof entry === 'string')
-}
-
 async function loadCatalogueScope(c: Context<AppEnv>, mode: 'read' | 'manage') {
   const db = getDb(c)
   if (!db) return c.json({ error: 'Database unavailable' }, 503)
@@ -83,26 +74,26 @@ export function registerManagedPrivilegeRoutes(router: Hono<AppEnv>) {
     return c.json(scope.catalogue)
   })
 
-  router.get('/environments/:id/managed/users/:principalId/effective-permissions', async (c) => {
+  router.get('/environments/:id/managed/users/:loginId/effective-permissions', async (c) => {
     const scope = await loadCatalogueScope(c, 'manage')
     if (scope instanceof Response) return scope
     const { db, ctx, row, catalogue } = scope
 
-    const target = await findManagedLogin(db, row.id, c.req.param('principalId') ?? '')
+    const target = await findManagedLogin(db, row.id, c.req.param('loginId') ?? '')
     if (target?.role !== 'user') return c.json({ error: 'Not found' }, 404)
 
     // Reads go to the primary: it is the host that holds the writable copy.
     const serverId = resolveManagedTargetServerId(c, row.serverId)
     if (serverId instanceof Response) return serverId
 
-    const placed = loginDatabases(target.metadata)
+    const placed = target.databases
     // Only Postgres reads per database; MySQL and MariaDB read every grant of the account.
     let wanted: string[] = []
     if (ctx.spec.engine === 'postgres') {
       wanted =
         placed.length > 0
           ? placed
-          : (parseManagedRowOptions(ctx.spec, row.options)?.databases ?? [])
+          : ((await loadManagedOptions(db, ctx.spec, row))?.databases ?? [])
     }
     const databases = wanted.slice(0, MAX_DAEMON_WS_PERMISSIONS_DATABASES)
     const outcome = await probeManagedPermissions(db, getDaemonCellRegistry(c), {

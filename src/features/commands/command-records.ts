@@ -5,7 +5,7 @@ import { lastErrorLine } from './error-line.ts'
 import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
 import { nowIso } from './ids.ts'
 import { type CommandStatus, TERMINAL_COMMAND_STATUSES } from './types.ts'
-import { command, dispatch } from '../../db/schema.ts'
+import { command, dispatch, environment, managed, server } from '../../db/schema.ts'
 import type { CommandProgress } from '../../contracts/cell-protocol.ts'
 import { finalizeStoredCommandProgress, parseStoredCommandProgress } from './command-progress.ts'
 import { sealExecutionLogOnTerminal } from '../execution-logs/seal-on-terminal.ts'
@@ -206,6 +206,18 @@ function managedDestroyGateIdFromMetadata(
   return typeof gateId === 'string' && gateId.length > 0 ? gateId : undefined
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * The id as a uuid, or `undefined` for anything else. The environment and
+ * managed columns are filled from the context bag, whose values are strings
+ * the payload carried, so a malformed one must not reach the uuid column.
+ */
+function contextUuid(context: object | undefined, key: string): string | undefined {
+  const value = (context as Record<string, unknown> | undefined)?.[key]
+  return typeof value === 'string' && UUID_PATTERN.test(value) ? value : undefined
+}
+
 /**
  * Insert the permanent `command` row and its `dispatch` payload row in
  * one transaction — a command never exists without its dispatch payload.
@@ -217,6 +229,12 @@ export async function createCommandRecord(
   const now = nowIso()
   const context = params.context ?? commandContextFromPayload(params.payload)
   const managedDestroyGateId = managedDestroyGateIdFromMetadata(params.metadata)
+  // The organization, environment and cluster the command is about get real
+  // columns (the activity feed, deploy history and the sweeps filter on them).
+  // Each is looked up, so an id the payload names but that no longer exists is
+  // left null instead of failing the insert.
+  const environmentId = contextUuid(context, 'environmentId')
+  const managedId = contextUuid(context, 'managedId')
 
   const row = await db.transaction(async (tx) => {
     const rows = await tx
@@ -229,6 +247,17 @@ export async function createCommandRecord(
         status: 'queued',
         attempts: 0,
         queuedAt: now,
+        organizationId: sql`(SELECT ${server.organizationId} FROM ${server} WHERE ${server.id} = ${params.serverId})`,
+        ...(environmentId === undefined
+          ? {}
+          : {
+              environmentId: sql`(SELECT ${environment.id} FROM ${environment} WHERE ${environment.id} = ${environmentId}::uuid)`,
+            }),
+        ...(managedId === undefined
+          ? {}
+          : {
+              managedId: sql`(SELECT ${managed.id} FROM ${managed} WHERE ${managed.id} = ${managedId}::uuid)`,
+            }),
         ...(context === undefined ? {} : { context }),
         ...(params.expiresAt === undefined ? {} : { expiresAt: params.expiresAt }),
         ...(params.metadata === undefined ? {} : { metadata: params.metadata }),

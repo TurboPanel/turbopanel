@@ -13,7 +13,10 @@ import {
 } from '../../lib/secrets/data-encryption.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
-import type { EnvironmentDeployPrincipalMaterial } from '../../contracts/commands/schemas.ts'
+import type {
+  EnvironmentDeployPrincipalMaterial,
+  EnvironmentDeploySource,
+} from '../../contracts/commands/schemas.ts'
 import {
   commitSubject,
   createReleaseIdAllocator,
@@ -21,6 +24,7 @@ import {
   parseGithubRepositoryPath,
   requestedCommitShaForSource,
   resolveDeploySourceMaterial,
+  withBuildEnv,
 } from './deploy-sources.ts'
 
 /**
@@ -853,4 +857,129 @@ test('a container source with no owner still resolves unowned', async () => {
     throw new TypeError('expected preview source material')
   }
   assertEquals(result[0]?.principal, undefined)
+})
+
+function source(overrides: Partial<EnvironmentDeploySource> = {}): EnvironmentDeploySource {
+  return {
+    sourceId: SOURCE_ID,
+    composeServiceName: 'web',
+    provider: 'github',
+    cloneUrl: 'https://github.com/example/site.git',
+    ref: 'main',
+    commitSha: SHA,
+    releaseId: 'rel-1',
+    build: { kind: 'native', buildCommand: 'next build' },
+    ...overrides,
+  }
+}
+
+/** `withBuildEnv` returns the sources, or a plain error; these tests expect the sources. */
+function builds(
+  sources: readonly EnvironmentDeploySource[],
+  assignments: Parameters<typeof withBuildEnv>[1]
+): EnvironmentDeploySource[] {
+  const out = withBuildEnv(sources, assignments)
+  if (!Array.isArray(out)) throw new TypeError(out.message)
+  return out
+}
+
+test('withBuildEnv gives the service build its build variables, and only that service', () => {
+  const [web, docs] = builds(
+    [source(), source({ composeServiceName: 'docs' })],
+    new Map([['web', [{ name: 'NEXT_PUBLIC_SITE_URL', value: 'https://example.test' }]]])
+  )
+  assertEquals(web!.build.env, { NEXT_PUBLIC_SITE_URL: 'https://example.test' })
+  assertEquals(web!.build.buildCommand, 'next build')
+  assertEquals(docs!.build.env, undefined)
+})
+
+test('withBuildEnv lets a later assignment of a name win, and keeps what the build already had', () => {
+  const [web] = builds(
+    [source({ build: { kind: 'native', env: { KEEP: '1', SITE_URL: 'old' } } })],
+    new Map([
+      [
+        'web',
+        [
+          { name: 'SITE_URL', value: 'project' },
+          { name: 'SITE_URL', value: 'environment' },
+        ],
+      ],
+    ])
+  )
+  assertEquals(web!.build.env, { KEEP: '1', SITE_URL: 'environment' })
+})
+
+test('withBuildEnv leaves a rollback, a static build and a service with nothing to give alone', () => {
+  const given = new Map([['web', [{ name: 'A', value: '1' }]]])
+  const rollback = source({ rollbackToReleaseId: 'rel-0' })
+  const staticBuild = source({ build: { kind: 'static' } })
+  const out = builds([rollback, staticBuild], given)
+  assertEquals(out[0], rollback)
+  assertEquals(out[1], staticBuild)
+  const bare = source()
+  assertEquals(builds([bare], new Map([['web', []]]))[0], bare)
+  assertEquals(builds([bare], new Map())[0], bare)
+})
+
+test('withBuildEnv covers the Railpack build too', () => {
+  const [web] = builds(
+    [source({ build: { kind: 'railpack' } })],
+    new Map([['web', [{ name: 'A', value: '1' }]]])
+  )
+  assertEquals(web!.build.env, { A: '1' })
+})
+
+test('withBuildEnv drops the names the host would refuse, so no lane depends on the other', () => {
+  const [web] = builds(
+    [source()],
+    new Map([
+      [
+        'web',
+        [
+          { name: 'LD_AUDIT', value: '/x.so' },
+          { name: 'LD_PRELOAD', value: '/x.so' },
+          { name: 'PATH', value: '/x' },
+          { name: 'HOME', value: '/x' },
+          { name: 'BASH_ENV', value: '/x' },
+          { name: 'BAD NAME', value: 'x' },
+          { name: '1BAD', value: 'x' },
+          { name: 'A-B', value: 'x' },
+          { name: '', value: 'x' },
+          { name: 'NODE_OPTIONS', value: '--max-old-space-size=512' },
+          { name: 'NEXT_PUBLIC_SITE_URL', value: 'https://example.test' },
+        ],
+      ],
+    ])
+  )
+  // NODE_OPTIONS is an ordinary build setting on the native lanes; the host
+  // decides per lane what else it refuses.
+  assertEquals(web!.build.env, {
+    NODE_OPTIONS: '--max-old-space-size=512',
+    NEXT_PUBLIC_SITE_URL: 'https://example.test',
+  })
+  // Nothing allowed left: the build is left as it was.
+  const bare = source()
+  assertEquals(builds([bare], new Map([['web', [{ name: 'LD_AUDIT', value: 'x' }]]]))[0], bare)
+})
+
+test('withBuildEnv refuses too many, too large or too long a set with a plain error', () => {
+  const many = Array.from({ length: 129 }, (_, i) => ({ name: `V_${i}`, value: '1' }))
+  const tooMany = withBuildEnv([source()], new Map([['web', many]]))
+  assertEquals(Array.isArray(tooMany), false)
+  assertEquals((tooMany as { message: string }).message.includes('at most 128'), true)
+
+  const bigValue = withBuildEnv(
+    [source()],
+    new Map([['web', [{ name: 'BIG', value: 'x'.repeat(8 * 1024 + 1) }]]])
+  )
+  assertEquals((bigValue as { message: string }).message.includes('BIG'), true)
+
+  const total = Array.from({ length: 9 }, (_, i) => ({ name: `T_${i}`, value: 'y'.repeat(8000) }))
+  const tooLarge = withBuildEnv([source()], new Map([['web', total]]))
+  assertEquals((tooLarge as { message: string }).message.includes('add up to'), true)
+  assertEquals((tooLarge as { composeServiceName?: string }).composeServiceName, 'web')
+
+  // Exactly at the limits is fine.
+  const edge = Array.from({ length: 128 }, (_, i) => ({ name: `E_${i}`, value: 'z' }))
+  assertEquals(Array.isArray(withBuildEnv([source()], new Map([['web', edge]]))), true)
 })

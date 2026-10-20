@@ -923,6 +923,7 @@ test('GET /tls/ca/rotation and POST /tls/ca/retire cover missing journals', asyn
     state: 'awaiting_retire',
     results: [],
     retiredCaStillRequired: true,
+    retireBy: null,
   })
 
   const notConverged = await buildTlsApp({
@@ -1025,4 +1026,49 @@ test('POST /tls/ca/retire sends the active-only bundle to every Orchestrator hos
   } finally {
     orchestratorTrustReconciler.fanOut = original
   }
+})
+
+test('the client TLS select never includes the private key or the issuing server', async () => {
+  const { TLS_PUBLIC_SELECT } = await import('./routes.ts')
+  const keys = Object.keys(TLS_PUBLIC_SELECT)
+  assertEquals(keys.includes('privateKeyPem'), false)
+  assertEquals(keys.includes('issuedByServerId'), false)
+})
+
+test('revoking a Lets Encrypt row clears its stored pair, revoking an upload keeps it', async () => {
+  const { buildTlsRowPatch } = await import('./routes.ts')
+  const existing = {
+    options: null,
+    status: 'managed',
+    notAfter: '2030-01-01T00:00:00.000Z',
+    fingerprintSha256: null,
+    metadata: {
+      dnsNames: ['a.example.com'],
+      hasWildcard: false,
+      notBefore: '2029-01-01T00:00:00.000Z',
+      subject: 'a',
+      issuer: 'b',
+    },
+  }
+  const le = buildTlsRowPatch(
+    { revoke: true },
+    {
+      ...existing,
+      source: 'lets_encrypt',
+    }
+  )
+  if (!le.ok) throw new Error('expected ok')
+  assertEquals(le.patch.status, 'revoked')
+  assertEquals(le.patch.privateKeyPem, null)
+  assertEquals(le.patch.certificatePem, null)
+  assertEquals(le.patch.issuedByServerId, null)
+  const up = buildTlsRowPatch(
+    { revoke: true },
+    {
+      ...existing,
+      source: 'upload',
+    }
+  )
+  if (!up.ok) throw new Error('expected ok')
+  assertEquals('privateKeyPem' in up.patch, false)
 })

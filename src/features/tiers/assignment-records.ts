@@ -36,7 +36,7 @@ import {
   type TierQuantity,
 } from './assignment.ts'
 import { resolveRequiredTier, totalPhysicalCores } from './tier-placement.ts'
-import { getLatestTopologyGenerations } from '../servers/server-topology-records.ts'
+import { topologyRecordFromColumn } from '../servers/server-topology-records.ts'
 import { parseTopologySnapshot, recommendedRankFromMetadata } from './topology-recommendation.ts'
 import { selfHostedGrantRank } from './self-hosted-grant.ts'
 
@@ -102,6 +102,7 @@ export async function loadAssignableServers(
       serverId: server.id,
       createdAt: server.createdAt,
       metadata: server.metadata,
+      hardware: server.hardware,
       assignedTierId: server.assignedTierId,
       preferredTierId: server.preferredTierId,
       preferredRank: tier.rank,
@@ -111,17 +112,13 @@ export async function loadAssignableServers(
     .innerJoin(license, and(eq(license.serverId, server.id), isNull(license.revokedAt)))
     .leftJoin(tier, eq(server.preferredTierId, tier.id))
     .where(eq(server.organizationId, organizationId))
-  const topology = await getLatestTopologyGenerations(
-    db,
-    rows.map((row) => row.serverId)
-  )
   return rows.map((row) => ({
     serverId: row.serverId,
     boundAt: row.createdAt,
     requiredRank: requiredRankFromMetadata(row.metadata),
     recommendedRank: recommendedRankFromMetadata(
       row.metadata,
-      parseTopologySnapshot(topology.get(row.serverId)?.snapshot)
+      parseTopologySnapshot(topologyRecordFromColumn(row.hardware)?.snapshot)
     ),
     assignedTierId: row.assignedTierId,
     preferredTierId: row.preferredTierId,

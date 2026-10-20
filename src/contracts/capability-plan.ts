@@ -117,6 +117,10 @@ const METRICS_CAPABILITY_PLAN_FIELD_ORDER = [
  */
 export type ServerMachineClass = 'physical' | 'virtual'
 
+/** Who set `server.machine_class`: ingest from the topology, or an operator. */
+export const SERVER_MACHINE_CLASS_SOURCES = ['detected', 'operator'] as const
+export type ServerMachineClassSource = (typeof SERVER_MACHINE_CLASS_SOURCES)[number]
+
 export function isServerMachineClass(value: unknown): value is ServerMachineClass {
   return value === 'physical' || value === 'virtual'
 }

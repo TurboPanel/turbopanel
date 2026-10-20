@@ -91,6 +91,13 @@ export const SOURCE_COMMAND_MAX_LENGTH = 1000
 const NODE_VERSION_RE = /^\d{1,3}(\.\d{1,3}){0,2}$/
 
 /**
+ * The deliberate "follow the server's newest Node series" value of
+ * `nodeVersion`. The deploy swaps it for the newest offered series before the
+ * host sees it. New apps are pinned to a concrete series instead.
+ */
+export const FLOATING_NODE_VERSION = 'latest'
+
+/**
  * Node series this control plane offers in pickers. Same contract as
  * {@link SUPPORTED_PHP_SERIES}: a static mirror of
  * `turbopaneld/orchestration/runtime-registry.json`, advisory only — the
@@ -588,6 +595,13 @@ function readNodeVersion(value: unknown): string | undefined {
   return NODE_VERSION_RE.test(trimmed) ? trimmed : undefined
 }
 
+/** A Node pin, or `latest` ({@link FLOATING_NODE_VERSION}). */
+function readNodeAppVersion(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() === FLOATING_NODE_VERSION
+    ? FLOATING_NODE_VERSION
+    : readNodeVersion(value)
+}
+
 function readNativeRuntime(value: unknown): NativeRuntime | undefined {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
@@ -705,7 +719,7 @@ function applyRuntimeExtensionFields(
   if (engine) extension.engine = engine
   const framework = readNativeRuntimeFramework(value.framework)
   if (framework) extension.framework = framework
-  const nodeVersion = readNodeVersion(value.nodeVersion)
+  const nodeVersion = readNodeAppVersion(value.nodeVersion)
   if (nodeVersion) extension.nodeVersion = nodeVersion
   const runtime = readNativeRuntime(value.runtime)
   if (runtime) extension.runtime = runtime
@@ -923,8 +937,8 @@ const SERVICE_EXTENSION_FIELDS: Readonly<Record<string, ServiceExtensionFieldRul
   },
   nodeVersion: {
     kinds: NODE_KIND_ONLY,
-    isValid: (value) => Boolean(readNodeVersion(value)),
-    typeMessage: 'nodeVersion must be a pinned version like "24" or "24.17.0"',
+    isValid: (value) => Boolean(readNodeAppVersion(value)),
+    typeMessage: 'nodeVersion must be a pinned version like "24" or "24.17.0", or "latest"',
   },
   runtime: {
     kinds: NODE_KIND_ONLY,

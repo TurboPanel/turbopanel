@@ -205,7 +205,7 @@ async function seedManagedClusters(
     const [environmentRow] = await db
       .insert(environment)
       .values({
-        name: `Cluster ${i + 1}`,
+        name: `cluster-${i + 1}`,
         projectId,
         serverId: params.serverId,
       })

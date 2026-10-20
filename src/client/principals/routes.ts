@@ -53,7 +53,6 @@ import {
   passwordEnabledByPrincipalIds,
   PRINCIPAL_IN_USE_ERROR,
   replaceTenancies,
-  SERVER_PRINCIPAL_PROVIDER,
   setServerPrincipalPasswordHash,
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
@@ -204,8 +203,6 @@ async function insertProjectPrincipal(
       .insert(principal)
       .values({
         organizationId,
-        kind: 'system',
-        provider: SERVER_PRINCIPAL_PROVIDER,
         username: input.username,
         appliedUsername,
         projectId,
@@ -257,12 +254,9 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const rows = await db
       .select({
         id: principal.id,
-        kind: principal.kind,
-        provider: principal.provider,
         username: principal.username,
         appliedUsername: principal.appliedUsername,
         projectId: principal.projectId,
-        managedId: principal.managedId,
         metadata: principal.metadata,
         options: principal.options,
         createdAt: principal.createdAt,
@@ -452,8 +446,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     }
 
     // Resolved before the delete: the reach is found through the row.
-    const serverIds =
-      row.provider === SERVER_PRINCIPAL_PROVIDER ? await serversForPrincipal(db, id) : []
+    const serverIds = await serversForPrincipal(db, id)
 
     await db.delete(principal).where(eq(principal.id, id))
 

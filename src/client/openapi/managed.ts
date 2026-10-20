@@ -27,8 +27,8 @@ const ORG_ID_PARAM = {
   schema: { type: 'string' },
 } as const
 
-const PRINCIPAL_ID_PARAM = {
-  name: 'principalId',
+const LOGIN_ID_PARAM = {
+  name: 'loginId',
   in: 'path',
   required: true,
   schema: { type: 'string' },
@@ -173,7 +173,7 @@ export const managedSchemas = {
         type: 'object',
         additionalProperties: true,
         description:
-          'Residual metadata only (`rootPrincipalId`, `error`). Engine/status/host/port are top-level.',
+          'Residual metadata only (`rootLoginId`, `error`). Engine/status/host/port are top-level.',
       },
       options: { type: 'object', additionalProperties: true, nullable: true },
       members: {
@@ -618,11 +618,12 @@ export const managedSchemas = {
     properties: {
       id: {
         type: 'string',
-        description: 'The principal id; the routes under /managed/users address a user by it.',
+        description: 'The login id; the routes under /managed/users address a user by it.',
       },
       principalId: {
         type: ['string', 'null'],
-        description: 'The principal (identity) the login belongs to.',
+        description:
+          "The site owner's Linux user the login shares its name with, or null for a login made on its own.",
       },
       loginId: { type: 'string', description: 'The database login on this cluster.' },
       username: { type: 'string' },
@@ -1006,12 +1007,12 @@ export const managedSchemas = {
       username: {
         type: 'string',
         description:
-          'Name for a new principal and login. Required unless `principalId` is given; ignored when it is.',
+          'Name for a new login. Required unless `principalId` is given; ignored when it is.',
       },
       principalId: {
         type: 'string',
         description:
-          "Create a login for an existing principal of the organization instead of a new one. The engine role takes the principal's own name, so it must be a valid role name for the engine (422 `principal_name_does_not_fit` or `principal_name_reserved` otherwise); 404 `principal_not_found` for an unknown principal; 409 `managed_login_exists` when it already has a login on this cluster.",
+          "Create a login for an existing site owner Linux user of the organization instead of a new name. The engine role takes the principal's own name, so it must be a valid role name for the engine (422 `principal_name_does_not_fit` or `principal_name_reserved` otherwise); 404 `principal_not_found` for an unknown principal; 409 `managed_login_exists` when it already has a login on this cluster.",
       },
       databases: { type: 'array', items: { type: 'string' } },
       privileges: {
@@ -1097,7 +1098,7 @@ export const managedSchemas = {
       ownerLoginId: {
         type: 'string',
         description:
-          "Postgres only. The id (login id or principal id) of a login to make the database's owner instead of leaving the default owner role as the only owner. It has to be a migration (`owner`) or read/write login that the panel manages (not read-only, not a Database admin login, not root or replication, not manage-myself): 400 `managed_owner_login_invalid`. The database is added to the login's list so it can connect. The three owner-role roles are still made and still own what is created; the login owns the database itself and works through the owner role, so the other logins can use what it creates. 400 `managed_owner_login_unsupported` on MySQL and MariaDB (they have no database owner; a login gets rights on a database), 409 `managed_database_owner_needs_daemon_update` when the server's daemon lacks `managed-database-owner-v1`. Leave it out for the default owner role. The owner is never the root login or the platform admin.",
+          "Postgres only. The id of a login to make the database's owner instead of leaving the default owner role as the only owner. It has to be a migration (`owner`) or read/write login that the panel manages (not read-only, not a Database admin login, not root or replication, not manage-myself): 400 `managed_owner_login_invalid`. The database is added to the login's list so it can connect. The three owner-role roles are still made and still own what is created; the login owns the database itself and works through the owner role, so the other logins can use what it creates. 400 `managed_owner_login_unsupported` on MySQL and MariaDB (they have no database owner; a login gets rights on a database), 409 `managed_database_owner_needs_daemon_update` when the server's daemon lacks `managed-database-owner-v1`. Leave it out for the default owner role. The owner is never the root login or the platform admin.",
       },
     },
   },
@@ -1995,7 +1996,7 @@ export const managedPaths = {
       parameters: [ENV_ID_PARAM],
       responses: {
         200: {
-          description: 'Non-root principals',
+          description: 'Non-root logins',
           ...jsonSchema('ManagedUsersResponse'),
         },
       },
@@ -2034,13 +2035,13 @@ export const managedPaths = {
       },
     },
   },
-  '/api/client/v1/environments/{id}/managed/users/{principalId}/effective-permissions': {
+  '/api/client/v1/environments/{id}/managed/users/{loginId}/effective-permissions': {
     get: {
       tags: ['Managed services'],
       summary: 'Effective permissions of a login, read from the engine',
       description:
         'Read only. Asks the host that runs the cluster what the engine says the login can do right now and joins it to the privilege catalogue. Everything is reported as observed; the panel keeps no ledger of its own grants yet. 409 `daemon_update_required` when the server runs a TurboPanel version that cannot answer; 409 `server_offline`; 502 or 504 `permissions_read_failed` when the host answers badly or too slowly.',
-      parameters: [ENV_ID_PARAM, PRINCIPAL_ID_PARAM],
+      parameters: [ENV_ID_PARAM, LOGIN_ID_PARAM],
       responses: {
         200: {
           description: "The login's permissions as the engine reports them",
@@ -2074,13 +2075,13 @@ export const managedPaths = {
       },
     },
   },
-  '/api/client/v1/environments/{id}/managed/users/{principalId}': {
+  '/api/client/v1/environments/{id}/managed/users/{loginId}': {
     patch: {
       tags: ['Managed services'],
       summary: 'Change a login (grant mode, databases, connection role, privileges, tool flag)',
       description:
         'Every field is optional. `dryRun: true` changes nothing and returns `statements`, a plain-words list of the kinds of SQL the next apply would run. Refusals: 422 `managed_login_not_editable` (root/replication logins), 422 `managed_grant_mode_invalid_transition` (back to `preset`), 409 `managed_grant_reset_needs_confirm` (self back to panel-set permissions, or a read-only Postgres login moving to self, needs `confirmReset: true`), 422 `managed_self_login_has_no_privileges`, 400 `managed_grant_mode_invalid`.',
-      parameters: [ENV_ID_PARAM, PRINCIPAL_ID_PARAM],
+      parameters: [ENV_ID_PARAM, LOGIN_ID_PARAM],
       requestBody: {
         required: true,
         content: {
@@ -2142,7 +2143,7 @@ export const managedPaths = {
     delete: {
       tags: ['Managed services'],
       summary: 'Delete managed user and enqueue apply with dropUsers',
-      parameters: [ENV_ID_PARAM, PRINCIPAL_ID_PARAM],
+      parameters: [ENV_ID_PARAM, LOGIN_ID_PARAM],
       responses: {
         200: {
           description: 'User deleted; apply enqueued',
@@ -2168,11 +2169,11 @@ export const managedPaths = {
       },
     },
   },
-  '/api/client/v1/environments/{id}/managed/users/{principalId}/password': {
+  '/api/client/v1/environments/{id}/managed/users/{loginId}/password': {
     post: {
       tags: ['Managed services'],
       summary: 'Rotate a managed user password (show-once), re-materialize bindings, enqueue apply',
-      parameters: [ENV_ID_PARAM, PRINCIPAL_ID_PARAM],
+      parameters: [ENV_ID_PARAM, LOGIN_ID_PARAM],
       responses: {
         200: {
           description: 'Rotated',

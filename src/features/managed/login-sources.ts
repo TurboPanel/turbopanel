@@ -2,10 +2,10 @@
  * Where an app database login may be used from, and how many connections it
  * may hold open.
  *
- * Stored on `login.metadata` (no migration: jsonb keys):
- *  - `allowedSources`: a list of places. Absent means "anywhere", today's
+ * Stored on the `login` row:
+ *  - `allowed_sources`: a list of places. NULL means "anywhere", today's
  *    behaviour, and no ProxySQL rules are made for the login.
- *  - `maxConnections`: a whole number; absent means no per-login cap.
+ *  - `max_connections`: a whole number; NULL means no per-login cap.
  *
  * A place is one of:
  *  - `internal`        this server (its loopback and its Docker networks)
@@ -42,23 +42,6 @@ const IPV6_PREFIX_RE = /^((?:[0-9a-f]{1,4}:){1,7})%$/i
 export type LoginSourcesError = { error: string; message: string }
 
 const fail = (error: string, message: string): LoginSourcesError => ({ error, message })
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value)
-
-/** Stored places of a login; `undefined` means unrestricted. */
-export function loginAllowedSources(metadata: unknown): string[] | undefined {
-  if (!isRecord(metadata) || !Array.isArray(metadata.allowedSources)) return undefined
-  const list = metadata.allowedSources.filter((entry): entry is string => typeof entry === 'string')
-  return list.length === 0 ? undefined : list
-}
-
-/** Stored connection cap of a login; `undefined` means no cap. */
-export function loginMaxConnections(metadata: unknown): number | undefined {
-  if (!isRecord(metadata)) return undefined
-  const value = metadata.maxConnections
-  return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? value : undefined
-}
 
 /** Server ids named by `server:<id>` places. */
 export function loginSourceServerIds(sources: readonly string[] | undefined): string[] {
@@ -254,14 +237,12 @@ function describePlace(place: string): string {
 
 /** Dry-run lines for a PATCH; empty when it touches neither limit. */
 export function describePatchedLimits(
-  current: unknown,
+  current: { allowedSources: string[] | undefined; maxConnections: number | undefined },
   input: { allowedSources?: string[] | null; maxConnections?: number | null }
 ): string[] {
   if (input.allowedSources === undefined && input.maxConnections === undefined) return []
-  const sources =
-    input.allowedSources === undefined ? loginAllowedSources(current) : input.allowedSources
-  const cap =
-    input.maxConnections === undefined ? loginMaxConnections(current) : input.maxConnections
+  const sources = input.allowedSources === undefined ? current.allowedSources : input.allowedSources
+  const cap = input.maxConnections === undefined ? current.maxConnections : input.maxConnections
   return describeLoginLimits(sources ?? undefined, cap ?? undefined)
 }
 
@@ -301,7 +282,7 @@ export type LoginWireLimits =
  * rather than sent unlimited. A bare connection cap is only dropped.
  */
 export function loginWireLimits(
-  metadata: unknown,
+  settings: { allowedSources: string[] | undefined; maxConnections: number | undefined },
   options: {
     daemonSupportsLimits: boolean
     serverAddresses: ReadonlyMap<string, readonly string[]>
@@ -309,8 +290,8 @@ export function loginWireLimits(
     serverId?: string
   }
 ): LoginWireLimits {
-  const sources = loginAllowedSources(metadata)
-  const cap = loginMaxConnections(metadata)
+  const sources = settings.allowedSources
+  const cap = settings.maxConnections
   if (!options.daemonSupportsLimits)
     return sources === undefined ? { omit: false, fields: {} } : { omit: true }
   const fields: {

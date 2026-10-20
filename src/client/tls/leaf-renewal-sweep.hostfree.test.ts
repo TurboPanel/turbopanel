@@ -314,25 +314,25 @@ function createResumableSweepMemoryDb(leaves: DueTlsLeafRow[]): {
     select: () => ({
       from: (table: unknown) => {
         if (table === leaf) {
-          return {
-            leftJoin: () => ({
-              where: () => ({
-                orderBy: () => ({
-                  limit: (n: number) => {
-                    const cursor =
-                      lock.current && typeof lock.current.cursor === 'object'
-                        ? (lock.current.cursor ?? null)
-                        : null
-                    const validCursor =
-                      cursor && typeof cursor.notAfter === 'string' && typeof cursor.id === 'string'
-                        ? cursor
-                        : null
-                    return Promise.resolve(afterCursor(leaves, validCursor).slice(0, n))
-                  },
-                }),
+          const joined = {
+            leftJoin: () => joined,
+            where: () => ({
+              orderBy: () => ({
+                limit: (n: number) => {
+                  const cursor =
+                    lock.current && typeof lock.current.cursor === 'object'
+                      ? (lock.current.cursor ?? null)
+                      : null
+                  const validCursor =
+                    cursor && typeof cursor.notAfter === 'string' && typeof cursor.id === 'string'
+                      ? cursor
+                      : null
+                  return Promise.resolve(afterCursor(leaves, validCursor).slice(0, n))
+                },
               }),
             }),
           }
+          return joined
         }
         return {
           where: () => ({
@@ -388,6 +388,9 @@ test('runLeafRenewalSweepTick resumes past permanently failing earliest rows', a
     replicaId: null,
     caGeneration: 1,
     notAfter: '2026-01-01T00:00:00.000Z',
+    attempts: 0,
+    serverConnected: true,
+    serverStatusChangedAt: null,
   }
   const later: DueTlsLeafRow = {
     id: '22222222-2222-4222-8222-222222222222',
@@ -398,6 +401,9 @@ test('runLeafRenewalSweepTick resumes past permanently failing earliest rows', a
     replicaId: null,
     caGeneration: 1,
     notAfter: '2026-01-02T00:00:00.000Z',
+    attempts: 0,
+    serverConnected: true,
+    serverStatusChangedAt: null,
   }
   const { db, currentCursor } = createResumableSweepMemoryDb([early, later])
   const commandQueue = {

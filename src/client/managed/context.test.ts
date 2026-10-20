@@ -181,8 +181,8 @@ test('every mutating managed route that can disturb a running cluster checks the
     'post /environments/:id/managed/apply',
     'post /environments/:id/managed/root-password',
     'post /environments/:id/managed/users',
-    'post /environments/:id/managed/users/:principalId/password',
-    'delete /environments/:id/managed/users/:principalId',
+    'post /environments/:id/managed/users/:loginId/password',
+    'delete /environments/:id/managed/users/:loginId',
     'post /environments/:id/managed/databases',
     'delete /environments/:id/managed/databases/:databaseName',
   ]

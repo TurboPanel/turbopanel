@@ -84,7 +84,7 @@ function variable(key: string, value: string, isSecret = false): ConfigVariableI
 
 test('an environment with no compose of its own follows the Base and has no changes', () => {
   const result = view(BASE, null)
-  assertEquals(result.followsBase, true)
+  assertEquals(result.standsAlone, false)
   assertEquals(result.changes, [])
   assertEquals(
     result.effective.services.map((s) => s.name),
@@ -95,6 +95,25 @@ test('an environment with no compose of its own follows the Base and has no chan
   assertEquals(result.effective.services[0]!.serviceId, 'svc-web-id')
   assertEquals(result.effective.services[1]!.serviceId, null)
   assertEquals(result.base.services[0]!.serviceId, null)
+})
+
+test('every row says whether it comes from the Base', () => {
+  const result = view(
+    BASE,
+    `
+services:
+  web:
+    image: nginx:1
+    command: serve --port 8080
+`
+  )
+  const web = result.effective.services.find((s) => s.name === 'web')!
+  assertEquals(web.inheritedFromBase, true)
+  const command = web.rows.find((r) => r.field === 'command')!
+  assertEquals([command.source, command.inheritedFromBase], ['environment', false])
+  const image = web.rows.find((r) => r.field === 'image')!
+  assertEquals([image.source, image.inheritedFromBase], ['base', true])
+  assert(result.base.services.every((s) => s.inheritedFromBase))
 })
 
 test('a changed field is reported with both values and where each comes from', () => {
@@ -109,7 +128,7 @@ services:
       EXTRA: "1"
 `
   )
-  assertEquals(result.followsBase, true)
+  assertEquals(result.standsAlone, false)
   const byKey = new Map(result.changes.map((c) => [c.key, c]))
   assertEquals(byKey.size, 2)
   const command = byKey.get('svc:web:command')!
@@ -176,7 +195,7 @@ services: !override
     ports: ["80:80"]
 `
   const result = view(BASE, env)
-  assertEquals(result.followsBase, false)
+  assertEquals(result.standsAlone, true)
   assert(result.effective.services.every((s) => s.source === 'environment'))
   assert(result.effective.services[0]!.rows.every((r) => r.source === 'environment'))
   const kinds = result.changes.filter((c) => c.serviceName === 'worker').map((c) => c.kind)
@@ -404,7 +423,7 @@ test('variables are part of the full view and follow the same rules', () => {
 
 test('an empty project and an empty environment give an empty view', () => {
   const result = view(null, null)
-  assertEquals(result.followsBase, true)
+  assertEquals(result.standsAlone, false)
   assertEquals(result.base, { services: [], variables: [], linuxUsers: [] })
   assertEquals(result.effective, { services: [], variables: [], linuxUsers: [] })
   assertEquals(result.changes, [])

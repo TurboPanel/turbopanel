@@ -13,15 +13,11 @@ test('summarizePlacementState shows the most pressing state, none when unplaced'
   assertEquals(summarizePlacementState(['present', 'retiring', 'pending']), 'retiring')
 })
 
-test('isOrphanDeletable needs no project, a system user and no use but placements', () => {
+test('isOrphanDeletable needs no project and no use but placements', () => {
   const unused = { ...emptyPrincipalUsage(), otherPlacements: 3 }
-  assertEquals(isOrphanDeletable({ projectId: null, provider: 'server' }, unused), true)
-  assertEquals(isOrphanDeletable({ projectId: 'p', provider: 'server' }, unused), false)
-  assertEquals(isOrphanDeletable({ projectId: null, provider: 'postgres' }, unused), false)
+  assertEquals(isOrphanDeletable({ projectId: null }, unused), true)
+  assertEquals(isOrphanDeletable({ projectId: 'p' }, unused), false)
   for (const kind of ['tenancies', 'bindings', 'storages', 'secrets', 'logins'] as const) {
-    assertEquals(
-      isOrphanDeletable({ projectId: null, provider: 'server' }, { ...unused, [kind]: 1 }),
-      false
-    )
+    assertEquals(isOrphanDeletable({ projectId: null }, { ...unused, [kind]: 1 }), false)
   }
 })

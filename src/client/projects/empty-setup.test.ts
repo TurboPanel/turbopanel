@@ -7,7 +7,7 @@ import {
   DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
   DEFAULT_PRODUCTION_ENVIRONMENT_NAME,
   configureProjectType,
-  ensureProductionEnvironment,
+  ensurePrimaryEnvironment,
   insertEmptyProject,
   isConfiguredProjectType,
   isProductionEnvironmentName,
@@ -71,6 +71,8 @@ function createTxStub(opts: {
   insertedProjectId?: string
   onUpdate?: (patch: Record<string, unknown>) => void
   onInsertVariable?: (values: Record<string, unknown>) => void
+  onInsertEnvironment?: (values: Record<string, unknown>) => void
+  onWatchSync?: () => void
 }): DbTx {
   const envRows = opts.envRows ?? []
   const existingVarKeys = opts.existingVarKeys ?? []
@@ -82,17 +84,19 @@ function createTxStub(opts: {
       from: () => ({
         where: () => {
           selectCalls += 1
-          // findProductionEnvironment: first select of environments (no limit)
-          if (selectCalls === 1 && envRows.length >= 0) {
+          // loadPrimaryEnvironment: first select of environments
+          if (selectCalls === 1) {
             return thenableRows(envRows)
           }
-          // applyCatalogVariablesToEnvironment: variable keys
-          if (existingVarKeys.length >= 0 && selectCalls === 2) {
-            return thenableRows(existingVarKeys.map((key) => ({ key })))
-          }
-          // insertExtraCatalogEnvironments: existing extra env lookup
+          // Later selects: the compose options of the primary row and the
+          // extra-environment lookup (both end in `.limit()`), and the variable
+          // keys (awaited directly).
+          const keys = Promise.resolve(existingVarKeys.map((key) => ({ key })))
           return {
             limit: () => Promise.resolve(existingExtraEnvIds.map((id) => ({ id }))),
+            then: keys.then.bind(keys),
+            catch: keys.catch.bind(keys),
+            finally: keys.finally.bind(keys),
           }
         },
       }),
@@ -103,13 +107,14 @@ function createTxStub(opts: {
           opts.onInsertVariable?.(values)
           return thenableValue(undefined)
         }
+        if ('projectId' in values && 'name' in values) opts.onInsertEnvironment?.(values)
         const insertedId =
           'workspaceId' in values
             ? (opts.insertedProjectId ?? 'proj-new')
             : (opts.insertedEnvId ?? 'env-new')
         const rows = Promise.resolve([{ id: insertedId }])
         // insertEmptyProject awaits values() without .returning() for the
-        // environment row; ensureProductionEnvironment / project insert use
+        // environment row; ensurePrimaryEnvironment / project insert use
         // .returning().
         return {
           returning: () => rows,
@@ -127,6 +132,11 @@ function createTxStub(opts: {
         }
       },
     }),
+    // The watch sync after an options write (`syncEnvironmentWatch` / `syncProjectWatch`).
+    execute: () => {
+      opts.onWatchSync?.()
+      return Promise.resolve([])
+    },
   } as unknown as DbTx
 }
 
@@ -216,10 +226,10 @@ test('loadDefaultEnvironmentName falls back when org is missing', async () => {
 
 test('loadDefaultEnvironmentName resolves org options', async () => {
   const name = await loadDefaultEnvironmentName(
-    createOrgSelectDb([{ options: { defaultEnvironmentName: ' Staging ' } }]),
+    createOrgSelectDb([{ options: { defaultEnvironmentName: ' staging ' } }]),
     'org-1'
   )
-  assertEquals(name, 'Staging')
+  assertEquals(name, 'staging')
 })
 
 test('loadDefaultEnvironmentName uses platform default when options omit name', async () => {
@@ -230,175 +240,53 @@ test('loadDefaultEnvironmentName uses platform default when options omit name', 
   assertEquals(name, DEFAULT_PRODUCTION_ENVIRONMENT_NAME)
 })
 
-test('ensureProductionEnvironment returns existing Production row', async () => {
+test('ensurePrimaryEnvironment returns the primary row whatever its name', async () => {
   const tx = createTxStub({
-    envRows: [
-      {
-        id: 'env-prod',
-        name: 'Production',
-        description: 'custom',
-        serverId: null,
-      },
-    ],
+    envRows: [{ id: 'env-main', name: 'live', description: 'custom', serverId: null }],
+    insertedEnvId: 'env-should-not-insert',
   })
-  const id = await ensureProductionEnvironment(tx, 'proj-1')
-  assertEquals(id, 'env-prod')
+  assertEquals(await ensurePrimaryEnvironment(tx, 'proj-1', null, 'staging'), 'env-main')
 })
 
-test('ensureProductionEnvironment prefers literal Production over org default', async () => {
+test('ensurePrimaryEnvironment creates the primary environment when the project has none', async () => {
+  const inserted: Record<string, unknown>[] = []
   const tx = createTxStub({
-    envRows: [
-      {
-        id: 'env-staging',
-        name: 'Staging',
-        description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
-        serverId: null,
-      },
-      {
-        id: 'env-prod',
-        name: 'production',
-        description: null,
-        serverId: null,
-      },
-    ],
-  })
-  const id = await ensureProductionEnvironment(tx, 'proj-1', null, 'Staging')
-  assertEquals(id, 'env-prod')
-})
-
-test('ensureProductionEnvironment matches org default name', async () => {
-  const tx = createTxStub({
-    envRows: [
-      {
-        id: 'env-staging',
-        name: 'Staging',
-        description: 'other',
-        serverId: null,
-      },
-    ],
-  })
-  const id = await ensureProductionEnvironment(tx, 'proj-1', null, 'Staging')
-  assertEquals(id, 'env-staging')
-})
-
-test('ensureProductionEnvironment reuses sole scaffold row', async () => {
-  const tx = createTxStub({
-    envRows: [
-      {
-        id: 'env-only',
-        name: 'Old Default',
-        description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
-        serverId: null,
-      },
-    ],
-  })
-  const id = await ensureProductionEnvironment(tx, 'proj-1', null, 'New Default')
-  assertEquals(id, 'env-only')
-})
-
-test('ensureProductionEnvironment matches scaffold description among many', async () => {
-  const tx = createTxStub({
-    envRows: [
-      {
-        id: 'env-a',
-        name: 'Alpha',
-        description: 'custom',
-        serverId: null,
-      },
-      {
-        id: 'env-scaffold',
-        name: 'Beta',
-        description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
-        serverId: null,
-      },
-    ],
-  })
-  const id = await ensureProductionEnvironment(tx, 'proj-1', null, 'Gamma')
-  assertEquals(id, 'env-scaffold')
-})
-
-test('ensureProductionEnvironment inserts when nothing matches', async () => {
-  const tx = createTxStub({
-    envRows: [
-      {
-        id: 'env-a',
-        name: 'Alpha',
-        description: 'custom',
-        serverId: null,
-      },
-      {
-        id: 'env-b',
-        name: 'Beta',
-        description: 'other',
-        serverId: null,
-      },
-    ],
+    envRows: [],
     insertedEnvId: 'env-inserted',
+    onInsertEnvironment: (values) => inserted.push(values),
   })
-  const id = await ensureProductionEnvironment(tx, 'proj-1', 'srv-1', 'Production')
-  assertEquals(id, 'env-inserted')
+  assertEquals(await ensurePrimaryEnvironment(tx, 'proj-1', 'srv-1', 'staging'), 'env-inserted')
+  assertEquals(inserted.length, 1)
+  assertEquals(inserted[0]?.name, 'staging')
+  assertEquals(inserted[0]?.isPrimary, true)
 })
 
-test('ensureProductionEnvironment normalizes casing and pins server', async () => {
+test('ensurePrimaryEnvironment pins the server on the primary row and never renames it', async () => {
   const patches: Record<string, unknown>[] = []
   const tx = createTxStub({
-    envRows: [
-      {
-        id: 'env-prod',
-        name: 'production',
-        description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
-        serverId: 'srv-old',
-      },
-    ],
-    onUpdate: (patch) => {
-      patches.push(patch)
-    },
+    envRows: [{ id: 'env-prod', name: 'production', serverId: 'srv-old' }],
+    onUpdate: (patch) => patches.push(patch),
   })
-  const id = await ensureProductionEnvironment(tx, 'proj-1', 'srv-new', 'Production')
-  assertEquals(id, 'env-prod')
+  assertEquals(await ensurePrimaryEnvironment(tx, 'proj-1', 'srv-new', 'Production'), 'env-prod')
   assertEquals(patches.length, 1)
-  assertEquals(patches[0]?.name, 'Production')
   assertEquals(patches[0]?.serverId, 'srv-new')
+  assertEquals('name' in (patches[0] ?? {}), false)
 })
 
-test('ensureProductionEnvironment skips update when already matching', async () => {
+test('ensurePrimaryEnvironment skips the update when the pin already matches', async () => {
   let updated = false
   const tx = createTxStub({
-    envRows: [
-      {
-        id: 'env-prod',
-        name: 'Production',
-        description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
-        serverId: 'srv-1',
-      },
-    ],
+    envRows: [{ id: 'env-prod', name: 'production', serverId: 'srv-1' }],
     onUpdate: () => {
       updated = true
     },
   })
-  const id = await ensureProductionEnvironment(tx, 'proj-1', 'srv-1', 'Production')
-  assertEquals(id, 'env-prod')
+  assertEquals(await ensurePrimaryEnvironment(tx, 'proj-1', 'srv-1'), 'env-prod')
   assertEquals(updated, false)
 })
 
 test('platform default environment name is lowercase production', () => {
   assertEquals(DEFAULT_PRODUCTION_ENVIRONMENT_NAME, 'production')
-})
-
-test('ensureProductionEnvironment reuses a legacy Production row under the default', async () => {
-  const tx = createTxStub({
-    envRows: [
-      {
-        id: 'env-legacy',
-        name: 'Production',
-        description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
-        serverId: 'srv-1',
-      },
-    ],
-    insertedEnvId: 'env-should-not-insert',
-  })
-  const id = await ensureProductionEnvironment(tx, 'proj-1', 'srv-1')
-  assertEquals(id, 'env-legacy')
 })
 
 test('insertEmptyProject inserts project and environment', async () => {
@@ -593,8 +481,24 @@ test('configureProjectType rejects catalog kind mismatch', async () => {
 })
 
 test('configureProjectType configures docker-compose via transaction', async () => {
+  let watchSyncs = 0
   const result = await configureProjectType(
-    createProjectSelectDb([{ id: 'p1', metadata: null, options: null }]),
+    createProjectSelectDb(
+      [{ id: 'p1', metadata: null, options: null }],
+      createTxStub({
+        envRows: [
+          {
+            id: 'env-1',
+            name: 'production',
+            description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+            serverId: null,
+          },
+        ],
+        onWatchSync: () => {
+          watchSyncs += 1
+        },
+      })
+    ),
     {
       projectId: 'p1',
       projectType: 'docker-compose',
@@ -603,6 +507,9 @@ test('configureProjectType configures docker-compose via transaction', async () 
     }
   )
   assertEquals(result, { ok: true, alreadyConfigured: false })
+  // The project options were rewritten, so its watch rows are brought in step
+  // (one sync is a delete and an insert), after the project row lock statement.
+  assertEquals(watchSyncs, 3)
 })
 
 const TUNING = { drainSeconds: 45, healthTimeoutSeconds: 200, rollbackWindowMinutes: 10 }

@@ -5,6 +5,8 @@ import type { DaemonCellRegistry } from '../contracts/cell.ts'
 import type { ServerMetricsStore } from '../daemon/metrics/types.ts'
 import type { ExecutionLogStore } from '../features/execution-logs/types.ts'
 import type { QueryCache } from '../query-cache/contracts.ts'
+import { withCacheableUnsafe } from '../query-cache/cacheable-client.ts'
+import { withPrimaryStatementCount, type DbUsage } from '../query-cache/db-usage.ts'
 import { getDatabaseUrl, resolvePostgresConnection } from './url.ts'
 import * as schema from './schema.ts'
 
@@ -25,7 +27,7 @@ export type HyperdriveBinding = {
  * `prepare: true` only affects queries sent through the postgres.js tagged template. Drizzle
  * runs every query through `client.unsafe()`, which defaults to `prepare: false`, so on its own
  * this flag does **not** make drizzle statements cacheable. The cached binding opts in per
- * query via {@link withPreparedUnsafe} (see `createWorkersDb`'s `preparedStatements`).
+ * query via {@link withCacheableUnsafe} (see `createWorkersDb`'s `preparedStatements`).
  */
 const PG_OPTS_WORKERS = { prepare: true as const, fetch_types: false as const, max: 1 }
 
@@ -50,9 +52,12 @@ export type WorkersDbOptions = {
    * Send every drizzle statement as a named prepared statement (`unsafe(..., { prepare: true })`).
    * Hyperdrive only caches named (extended-protocol) statements, so this is what makes the
    * `HYPERDRIVE_CACHED` binding able to cache anything. Set only for the cached client, which
-   * runs the approved read models.
+   * runs the approved read models. The client is wrapped by `withCacheableUnsafe`, which also
+   * refuses any statement that is not a registered read-only SELECT.
    */
   preparedStatements?: boolean
+  /** Per-request statement counts (see `query-cache/db-usage.ts`). */
+  usage?: DbUsage
 }
 
 /** `prepare` is intentionally a separate decision for the Deno/self-hosted path (direct Postgres, no Hyperdrive). */
@@ -102,24 +107,13 @@ export function createWorkersDb(hyperdrive: HyperdriveBinding, options: WorkersD
       statement_timeout: options.statementTimeoutMs ?? DEFAULT_WORKERS_STATEMENT_TIMEOUT_MS,
     },
   })
-  return drizzle(options.preparedStatements ? withPreparedUnsafe(client) : client, { schema })
-}
-
-/**
- * Wrap a postgres.js client so `unsafe()` (which drizzle uses for every query) sends named
- * prepared statements. postgres.js spreads caller options after its `prepare: false` default,
- * so passing `{ prepare: true }` is enough. Everything else is forwarded untouched.
- */
-export function withPreparedUnsafe<T extends ReturnType<typeof postgres>>(client: T): T {
-  return new Proxy(client, {
-    get(target, prop, receiver) {
-      if (prop === 'unsafe') {
-        return (query: string, args?: unknown[], opts?: Record<string, unknown>) =>
-          target.unsafe(query, (args ?? []) as never[], { prepare: true, ...opts })
-      }
-      return Reflect.get(target, prop, receiver)
-    },
-  })
+  let wrapped = client
+  if (options.preparedStatements) {
+    wrapped = withCacheableUnsafe(client, { usage: options.usage })
+  } else if (options.usage) {
+    wrapped = withPrimaryStatementCount(client, options.usage)
+  }
+  return drizzle(wrapped, { schema })
 }
 
 const DATABASE_URL_REQUIRED = 'TURBOPANEL_DATABASE_URL is required'

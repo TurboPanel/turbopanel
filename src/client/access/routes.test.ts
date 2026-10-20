@@ -513,7 +513,7 @@ test('GET /access/check returns boolean for variable and managed resource ids', 
 
     const [insertedEnvironment] = await db
       .insert(environment)
-      .values({ name: 'Access Route Env', projectId })
+      .values({ name: 'access-route-env', projectId })
       .returning({ id: environment.id })
 
     const environmentId = insertedEnvironment!.id

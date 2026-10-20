@@ -557,6 +557,8 @@ function buildServerUpdateFields(patch: ServerPatchFields): Record<string, unkno
   if (patch.name !== undefined) update.name = patch.name
   if (patch.machineClass !== undefined) {
     update.machineClass = patch.machineClass
+    // A pin or a clear is the operator's word; ingest never overwrites it.
+    update.machineClassSource = patch.machineClass === null ? null : 'operator'
   }
   if (patch.options !== undefined || patch.location !== undefined) {
     // Shallow jsonb merge, as before; a resolved `location` is written as one

@@ -4,6 +4,7 @@
 
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
+import { network } from '../../db/schema.ts'
 import {
   deleteProjectCascade,
   dropEnvironmentSubtreeInTx,
@@ -51,27 +52,55 @@ function createCascadeMockDb(scenario: {
   ]
   let selectIndex = 0
 
-  const selectFromWhere = (rows: unknown[]) => ({
-    from: () => ({
-      where: () => Promise.resolve(rows),
-    }),
+  // One select for the database and the transaction: the delete reads and writes
+  // under the project lock, in the transaction.
+  const select = () => ({
+    from: (table: unknown) => {
+      const next = () => {
+        const rows =
+          table === network
+            ? composeNetworkIds.map((id) => ({ id }))
+            : (selectQueue[selectIndex] ?? [])
+        if (table !== network) selectIndex += 1
+        // `where(...)` can be awaited, or continue into `orderBy(...).limit(...)`.
+        const result = Promise.resolve(rows) as Promise<unknown[]> & {
+          orderBy: () => { limit: () => Promise<unknown[]> }
+        }
+        result.orderBy = () => ({ limit: () => Promise.resolve(rows) })
+        return result
+      }
+      const join = {
+        innerJoin: () => join,
+        leftJoin: () => join,
+        where: next,
+      }
+      return {
+        where: next,
+        innerJoin: () => join,
+        leftJoin: () => join,
+      }
+    },
   })
 
   const tx = {
-    select: (fields: Record<string, unknown>) => {
-      const keys = Object.keys(fields).sort((a, b) => a.localeCompare(b))
-      const keySet = new Set(keys)
-      // purgeEnvironmentsComposeNetworks: { id }
-      if (keys.length === 1 && keySet.has('id')) {
-        return selectFromWhere(composeNetworkIds.map((id) => ({ id })))
-      }
-      throw new TypeError(`unexpected cascade tx select keys: ${keys.join(',')}`)
-    },
+    select,
     delete: (_table: unknown) => ({
       where: () => {
         deletes.push({ table: 'tx-delete', ids: ['tx-batch'] })
         return Promise.resolve(undefined)
       },
+    }),
+    // markAssetFoldersRemoving: the folder rows of a deleted service wait for the host.
+    update: (_table: unknown) => ({
+      set: () => ({
+        where: () => {
+          deletes.push({ table: 'tx-folders-removing', ids: ['tx-batch'] })
+          // `.returning()` hands back the servers whose rows moved.
+          return Object.assign(Promise.resolve(undefined), {
+            returning: () => Promise.resolve([]),
+          })
+        },
+      }),
     }),
     // ensureProjectPlacements: one raw upsert before the rows go.
     execute: () => {
@@ -81,34 +110,16 @@ function createCascadeMockDb(scenario: {
   } as unknown as Db
 
   const db = {
-    select: () => ({
-      from: () => {
-        const next = () => {
-          const rows = selectQueue[selectIndex] ?? []
-          selectIndex += 1
-          return Promise.resolve(rows)
-        }
-        const join = {
-          innerJoin: () => join,
-          leftJoin: () => join,
-          where: next,
-        }
-        return {
-          where: next,
-          innerJoin: () => join,
-          leftJoin: () => join,
-        }
-      },
-    }),
+    select,
     delete: (_table: unknown) => ({
       where: () => {
         deletes.push({ table: 'delete', ids: [projectId] })
         return Promise.resolve(undefined)
       },
     }),
-    transaction: async (fn: (inner: Db) => Promise<void>) => {
+    transaction: async <T>(fn: (inner: Db) => Promise<T>): Promise<T> => {
       stats.transactions += 1
-      await fn(tx)
+      return await fn(tx)
     },
   } as unknown as Db
 
@@ -132,8 +143,8 @@ test('deleteProjectCascade deletes bare project when no environments exist', asy
   const result = await deleteProjectCascade(db, 'proj-1')
   assertEquals(result, { ok: true })
   assertEquals(stats.transactions, 1)
-  // storage retention delete + project row
-  assertEquals(deletes.length, 2)
+  // No volume goes with the project, so only the project row is deleted.
+  assertEquals(deletes.filter((call) => call.table !== 'tx-placements').length, 1)
 })
 
 test('deleteProjectCascade removes environments when no services exist', async () => {
@@ -156,7 +167,7 @@ test('deleteProjectCascade rejects remaining managed runtime before transaction'
     ok: false,
     error: MANAGED_RUNTIME_PRESENT_ERROR,
   })
-  assertEquals(stats.transactions, 0)
+  assertEquals(stats.transactions, 1)
 })
 
 test('deleteProjectCascade rejects active containers before transaction', async () => {
@@ -173,7 +184,7 @@ test('deleteProjectCascade rejects active containers before transaction', async 
     ok: false,
     error: PROJECT_HAS_RUNNING_SERVICES_ERROR,
   })
-  assertEquals(stats.transactions, 0)
+  assertEquals(stats.transactions, 1)
 })
 
 test('deleteProjectCascade ignores running platform components (ingress/ha)', async () => {

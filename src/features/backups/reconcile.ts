@@ -18,6 +18,7 @@ import { and, eq, inArray, isNotNull, type SQL, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   environment,
+  folder,
   retention,
   managed,
   principal,
@@ -36,10 +37,15 @@ import type { CommandQueue } from '../commands/queue.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import { getManagedBackupDescriptor, getManagedEngineSpec } from '../managed/index.ts'
 import { defaultBackupDatabase } from '../managed/default-backup-database.ts'
-import { parseManagedRowOptions } from '../managed/options.ts'
+import { managedDatabaseNames, parseManagedSettings } from '../managed/options.ts'
 import { managedHasBackupPolicies } from './policy-records.ts'
 import { translateBackupSchedule } from './schedules.ts'
-import { COPY_TARGET_SELECT, type CopyTargetRow, resolveCopyBackupSource } from './copy-targets.ts'
+import {
+  COPY_TARGET_SELECT,
+  type CopyTargetRow,
+  copyFolderJoin,
+  resolveCopyBackupSource,
+} from './copy-targets.ts'
 
 export const BACKUPS_RECONCILE_COMMAND = 'server.backups.reconcile'
 
@@ -66,8 +72,10 @@ type ManagedPolicyRow = {
   retentionKeep: number
   isEnabled: boolean
   engine: string
-  /** `managed.options`, as stored: it lists the instance's databases. */
+  /** `managed.options`, as stored (the settings). */
   options?: unknown
+  /** The names of the cluster's databases. */
+  databases: string[]
 }
 
 /**
@@ -77,9 +85,8 @@ type ManagedPolicyRow = {
  */
 function scheduledBackupDatabase(row: ManagedPolicyRow): string | undefined {
   const spec = getManagedEngineSpec(row.engine)
-  const options = spec ? parseManagedRowOptions(spec, row.options) : null
-  if (!options) return undefined
-  return defaultBackupDatabase(options.databases, row.engine) ?? undefined
+  if (!spec || parseManagedSettings(spec, row.options) === null) return undefined
+  return defaultBackupDatabase(row.databases, row.engine) ?? undefined
 }
 
 function toWireEntry(row: ManagedPolicyRow): BackupPolicyWireEntry | null {
@@ -152,6 +159,7 @@ async function loadManagedPolicyRows(db: Db, serverId: string): Promise<ManagedP
       isEnabled: retention.isEnabled,
       engine: managed.engine,
       options: managed.options,
+      databases: managedDatabaseNames(),
     })
     .from(retention)
     .innerJoin(managed, eq(managed.id, retention.managedId))
@@ -174,6 +182,7 @@ async function loadCopyPolicyRows(db: Db, serverId: string): Promise<CopyPolicyR
     .innerJoin(storage, eq(storage.id, storageCopy.storageId))
     .leftJoin(principal, eq(principal.id, storage.principalId))
     .leftJoin(environment, eq(environment.id, storage.environmentId))
+    .leftJoin(folder, copyFolderJoin())
     .where(and(eq(storageCopy.serverId, serverId), eq(retention.targetKind, 'copy')))
 }
 

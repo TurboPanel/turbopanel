@@ -101,8 +101,6 @@ async function insertCopy(
       .insert(principal)
       .values({
         organizationId: values.organizationId,
-        kind: 'system',
-        provider: 'server',
         username: values.principalUsername,
         appliedUsername: values.principalUsername,
       })
