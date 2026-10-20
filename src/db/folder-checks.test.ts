@@ -103,6 +103,7 @@ test('folder rows are held to the name rules and to one row per location', async
     await refuses('folder_slug_check', { slug: '.example' })
     await refuses('folder_scope_check', { scope: 'Production' })
     await refuses('folder_scope_check', { scope: 'home' })
+    await refuses('folder_scope_check', { scope: 'base' })
     await refuses('folder_scope_check', { scope: 'my env' })
     await refuses('folder_common_scope_check', { scope: 'common' })
     // A kind outside the list also fails the kind-to-asset check; Postgres reports the first by name.

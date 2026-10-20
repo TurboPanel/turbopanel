@@ -15,6 +15,13 @@
       "when": 1792458663675,
       "tag": "0001_primary_environment",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792470724714,
+      "tag": "0002_reserve_base_name",
+      "breakpoints": true
     }
   ]
 }

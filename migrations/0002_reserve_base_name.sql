@@ -1,0 +1,4 @@
+ALTER TABLE "environment" DROP CONSTRAINT "environment_name_check";--> statement-breakpoint
+ALTER TABLE "folder" DROP CONSTRAINT "folder_scope_check";--> statement-breakpoint
+ALTER TABLE "environment" ADD CONSTRAINT "environment_name_check" CHECK (name ~ '^[a-z0-9][a-z0-9_-]{0,31}$' AND name NOT IN ('common', 'home', 'tmp', 'services', 'volumes', 'data', 'sites', 'backup', 'backups', 'logs', 'cache', 'run', 'var', 'etc', 'bin', 'root', 'public', 'releases', 'current', 'shared', 'lost-found', 'tmp-staging', 'base')) NOT VALID;--> statement-breakpoint
+ALTER TABLE "folder" ADD CONSTRAINT "folder_scope_check" CHECK (scope = 'common' OR (scope ~ '^[a-z0-9][a-z0-9_-]{0,31}$' AND scope NOT IN ('common', 'home', 'tmp', 'services', 'volumes', 'data', 'sites', 'backup', 'backups', 'logs', 'cache', 'run', 'var', 'etc', 'bin', 'root', 'public', 'releases', 'current', 'shared', 'lost-found', 'tmp-staging', 'base'))) NOT VALID;
