@@ -80,7 +80,8 @@ import {
 } from '../../features/folders/allocate.ts'
 import { lockEnvironmentRow } from '../../features/folders/records.ts'
 import {
-  removedServiceNames,
+  removedServiceRows,
+  removedSitesOnServer,
   servicesNeedingFolders,
   volumesNeedingFolders,
   serviceFoldersFor,
@@ -1062,8 +1063,8 @@ async function persistDeployFanOut(
     hostLevelApproved: boolean
     remoteBuildSourcesApproved: boolean
     selection: DeploySourceSelection
-    /** Services that left the compose file. */
-    removedSites?: readonly string[]
+    /** Service rows that left the compose file; each server is asked about its own sites. */
+    removedServices?: readonly { id: string; composeServiceName: string }[]
   }
 ): Promise<CreatedDeployCommand[]> {
   const batches = planDeployBatches(
@@ -1098,9 +1099,14 @@ async function persistDeployFanOut(
           services: servicesNeedingFolders(row.prepared),
           volumeIds: volumesNeedingFolders(row.prepared),
         })
+        const removedSites = await removedSitesOnServer(tx, {
+          environmentId: params.environmentId,
+          serverId: row.serverId,
+          removed: params.removedServices ?? [],
+        })
         const createParams = createParamsForPreparedServer(row, {
           plannedFolders,
-          removedSites: params.removedSites,
+          removedSites,
           actorType: params.actorType,
           actorId: params.actorId,
           environmentId: params.environmentId,
@@ -2087,10 +2093,7 @@ async function runEnvironmentDeploy(
       hostLevelApproved: planned.hostLevelApproved,
       remoteBuildSourcesApproved: planned.remoteBuildSourcesApproved,
       selection: auth.selection,
-      removedSites: removedServiceNames(
-        planned.serviceRows.map((row) => row.composeServiceName),
-        servicesMapping(planned.merged)
-      ),
+      removedServices: removedServiceRows(planned.serviceRows, servicesMapping(planned.merged)),
     })
     if (persisted instanceof Response) return persisted
     const created = persisted
