@@ -49,6 +49,16 @@ function fail(message) {
   process.exit(1)
 }
 
+// Testing and staging reach their databases through the managed database
+// listener, a pooling proxy that refuses a session advisory lock ("Feature not
+// supported"). They may skip the lock with TURBOPANEL_MIGRATE_NO_LOCK=1. Any
+// other environment (live, local) keeps the lock: skipping it there is refused.
+const NO_LOCK_ENVS = new Set(['testing', 'staging'])
+const skipLock = process.env.TURBOPANEL_MIGRATE_NO_LOCK?.trim() === '1'
+if (skipLock && !NO_LOCK_ENVS.has(process.env.CLOUDFLARE_ENV?.trim() ?? '')) {
+  fail('TURBOPANEL_MIGRATE_NO_LOCK=1 is only allowed when CLOUDFLARE_ENV is testing or staging')
+}
+
 const url = process.env.TURBOPANEL_DATABASE_URL?.trim()
 if (!url) {
   fail('TURBOPANEL_DATABASE_URL is required')
@@ -80,8 +90,14 @@ const client = parts.socketDir
 const db = drizzle(client)
 
 try {
-  console.log('migrate-locked: waiting for the migration advisory lock…')
-  await client`select pg_advisory_lock(${LOCK_KEY_1}, ${LOCK_KEY_2})`
+  if (skipLock) {
+    console.log(
+      `migrate-locked: advisory lock skipped (TURBOPANEL_MIGRATE_NO_LOCK=1, env ${process.env.CLOUDFLARE_ENV}); do not run two migrations at once`,
+    )
+  } else {
+    console.log('migrate-locked: waiting for the migration advisory lock…')
+    await client`select pg_advisory_lock(${LOCK_KEY_1}, ${LOCK_KEY_2})`
+  }
   // Refuse a database whose history this checkout does not ship (a newer
   // release, or the pre-freeze baseline) — see scripts/schema-state.mjs.
   // Read under the lock so a concurrent migrate cannot change the answer.
@@ -93,7 +109,7 @@ try {
     throw new Error(describeSchemaState(state))
   }
   console.log(`migrate-locked: ${describeSchemaState(state)}`)
-  console.log('migrate-locked: lock acquired, applying migrations…')
+  console.log(`migrate-locked: ${skipLock ? 'applying' : 'lock acquired, applying'} migrations…`)
   await migrate(db, {
     migrationsFolder: './migrations',
     migrationsTable: 'migration',
@@ -104,6 +120,8 @@ try {
   console.error(`migrate-locked: ${err instanceof Error ? err.message : String(err)}`)
   process.exitCode = 1
 } finally {
-  await client`select pg_advisory_unlock(${LOCK_KEY_1}, ${LOCK_KEY_2})`
+  if (!skipLock) {
+    await client`select pg_advisory_unlock(${LOCK_KEY_1}, ${LOCK_KEY_2})`
+  }
   await client.end()
 }
