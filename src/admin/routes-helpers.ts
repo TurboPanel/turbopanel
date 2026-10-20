@@ -14,6 +14,7 @@ import { InstanceSecretSealingError } from '../features/install/instance-secret-
 import {
   INSTANCE_HOSTNAME_SOURCES,
   type InstanceHostnameSource,
+  publicUrlsSiteConflict,
 } from '../features/install/instance-hostnames.ts'
 import {
   getPublicUrls,
@@ -100,6 +101,8 @@ export async function resolvePublicUrlsForApply(
     if (!parsed.ok) {
       return { ok: false, status: 422, body: parsed }
     }
+    const siteConflict = await publicUrlsSiteConflict(db, parsed.urls)
+    if (siteConflict) return { ok: false, status: 422, body: siteConflict }
     await setPublicUrls(db, parsed.urls)
     return { ok: true, urls: parsed.urls }
   }
