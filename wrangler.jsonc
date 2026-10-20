@@ -307,6 +307,9 @@
         "TURBOPANEL_IS_SIGNUP_ENABLED": "1",
         "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c",
         "TURBOPANEL_UPDATE_CHANNEL": "canary",
+        // Read by scripts/migrate-locked.mjs at build time (not by the Worker): this
+        // database is behind a pooling proxy that refuses the migration advisory lock.
+        "TURBOPANEL_MIGRATE_NO_LOCK": "1",
         // Which deployment this is; /api/health reports it and the UI labels
         // non-production builds with it (live shows no label).
         "TURBOPANEL_ENVIRONMENT": "testing",
@@ -467,6 +470,9 @@
         "TURBOPANEL_UI_CORS_ORIGINS": "https://staging.turbopanel.io",
         "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c",
         "TURBOPANEL_UPDATE_CHANNEL": "rc",
+        // Read by scripts/migrate-locked.mjs at build time (not by the Worker): this
+        // database is behind a pooling proxy that refuses the migration advisory lock.
+        "TURBOPANEL_MIGRATE_NO_LOCK": "1",
         // Which deployment this is; /api/health reports it and the UI labels
         // non-production builds with it (live shows no label).
         "TURBOPANEL_ENVIRONMENT": "staging",

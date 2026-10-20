@@ -411,7 +411,9 @@ guard; `pnpm test:do` alone does not.
   A testing or staging database that sits behind the managed database listener
   (a pooling proxy) refuses the session advisory lock the migrate script takes
   ("Feature not supported"); set the build variable
-  `TURBOPANEL_MIGRATE_NO_LOCK=1` there. The script refuses it for any other
+  `TURBOPANEL_MIGRATE_NO_LOCK=1` there (`wrangler.jsonc` sets it in the
+  `testing` and `staging` `vars`, which the script reads, so no dashboard build
+  variable is needed). The script refuses it for any other
   `CLOUDFLARE_ENV` (live keeps the lock), and with it set two migrations must
   not run at once.
   Do not commit `TURBOPANEL_REVISION` in `wrangler.jsonc` — that would freeze a
