@@ -26,6 +26,36 @@ import { pathToFileURL } from 'node:url'
 
 const NIL_SHA = '0000000000000000000000000000000000000000'
 
+/**
+ * THE ONE NAMED, OWNER-APPROVED EXCEPTION (decided 2026-10-20): the last
+ * fold, right before the fresh-start release, replaces `0000_init` and the
+ * migrations 0001-0002 after it with one fresh `0000_init`. It lets exactly one
+ * change through: the head manifest must be generation 12, frozen, with a
+ * one-entry journal tagged `0000_init`, on top of a base manifest at
+ * generation 11. Once the fold is the base, the generation is 12 and the
+ * exception can never match again; the constant and its tests are deleted by
+ * the first change after it lands. Do not extend it.
+ */
+export const BASELINE_EXCEPTION = Object.freeze({
+  name: 'baseline-2026-10-20-owner-approved',
+  fromGeneration: 11,
+  toGeneration: 12,
+  tag: '0000_init',
+})
+
+/** Whether the one-time baseline exception covers this base manifest and head manifest and journal. */
+export function baselineExceptionApplies(baseManifest, headManifest, headJournal) {
+  const entries = headJournal?.entries
+  return (
+    baseManifest?.generation === BASELINE_EXCEPTION.fromGeneration &&
+    headManifest?.generation === BASELINE_EXCEPTION.toGeneration &&
+    headManifest?.frozen === true &&
+    Array.isArray(entries) &&
+    entries.length === 1 &&
+    entries[0]?.tag === BASELINE_EXCEPTION.tag
+  )
+}
+
 const IMMUTABLE = /^migrations\/(\d{4}_.+\.sql|meta\/\d{4}_snapshot\.json)$/
 
 /** The base ref from argv: skips the literal `--` pnpm forwards, falls back to origin/trunk. */
@@ -77,6 +107,18 @@ function git(...args) {
   return execFileSync('git', args, { encoding: 'utf8' }).trim()
 }
 
+function headBaselineExceptionApplies(baseManifest) {
+  try {
+    return baselineExceptionApplies(
+      baseManifest,
+      JSON.parse(git('show', 'HEAD:migrations/manifest.json')),
+      JSON.parse(git('show', 'HEAD:migrations/meta/_journal.json'))
+    )
+  } catch {
+    return false
+  }
+}
+
 function fail(message) {
   console.error(`migration-additions: ${message}`)
   process.exit(1)
@@ -104,6 +146,12 @@ function main() {
   const changes = parseChanges(git(...diffArgs(base)))
 
   const violations = findViolations(changes)
+  if (violations.length > 0 && headBaselineExceptionApplies(baseManifest)) {
+    console.log(
+      `migration-additions: BASELINE EXCEPTION ${BASELINE_EXCEPTION.name} used: generation ${BASELINE_EXCEPTION.fromGeneration} to ${BASELINE_EXCEPTION.toGeneration}, ${violations.length} shipped file change(s) allowed once`
+    )
+    return
+  }
   if (violations.length > 0) {
     for (const violation of violations) {
       console.error(
