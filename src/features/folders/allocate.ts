@@ -276,6 +276,8 @@ export type PlannedFolders = {
   folderIds: string[]
   /** Folder reference per service id. */
   services: Map<string, FolderRefParts>
+  /** The compose service name of each service in `services`. */
+  serviceNames: Map<string, string>
   /** Folder reference per volume (storage) id. */
   volumes: Map<string, FolderRefParts>
 }
@@ -345,6 +347,8 @@ type FolderTarget = {
   username: string
   scope: string
   slug: string
+  /** For a service: its compose service name. */
+  composeServiceName?: string
 }
 
 /**
@@ -362,7 +366,12 @@ export async function planDeployFolders(
   tx: Db,
   input: PlanDeployFoldersInput
 ): Promise<PlannedFolders> {
-  const planned: PlannedFolders = { folderIds: [], services: new Map(), volumes: new Map() }
+  const planned: PlannedFolders = {
+    folderIds: [],
+    services: new Map(),
+    serviceNames: new Map(),
+    volumes: new Map(),
+  }
   if (input.services.length === 0 && input.volumeIds.length === 0) return planned
 
   await lockEnvironmentRow(tx, input.environmentId)
@@ -384,8 +393,11 @@ export async function planDeployFolders(
     const folderId = await upsertFolderRow(tx, input.serverId, target)
     planned.folderIds.push(folderId)
     const ref: FolderRefParts = { owner: target.username, scope: target.scope, slug: target.slug }
-    if (target.kind === 'service') planned.services.set(target.assetId, ref)
-    else planned.volumes.set(target.assetId, ref)
+    if (target.kind === 'service') {
+      planned.services.set(target.assetId, ref)
+      if (target.composeServiceName)
+        planned.serviceNames.set(target.assetId, target.composeServiceName)
+    } else planned.volumes.set(target.assetId, ref)
   })
   if (planned.folderIds.length > 0) await lockDirectoryNames(tx, input.organizationId)
   return planned
@@ -474,6 +486,7 @@ async function collectServiceTargets(
       username: owner.username,
       scope,
       slug: row.slug as string,
+      composeServiceName: row.composeServiceName,
     })
   })
 }

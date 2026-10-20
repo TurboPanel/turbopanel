@@ -108,6 +108,8 @@ test('a deploy plans the folder of a service after its name, in the environment 
       scope: 'production',
       slug: 'web',
     })
+    // The compose name rides along, so the host can tie a site with no hostname to its folder.
+    assertEquals(planned.serviceNames.get(web), 'web')
     const rows = await ctx.db.select().from(folder).where(eq(folder.serverId, ctx.serverId))
     assertEquals(rows.length, 1)
     assertEquals(rows[0]!.state, 'planned')

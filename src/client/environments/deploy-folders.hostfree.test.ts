@@ -41,6 +41,22 @@ function material(
   }
 }
 
+test('a site with no hostname, source or native app is still listed, by its compose name', () => {
+  const listed = servicesNeedingFolders({
+    sites: [
+      {
+        composeServiceName: 'phpsite',
+        principal: { principalId: PRINCIPAL_ID, username: 'appuser' },
+      },
+    ] as never,
+    nativeAppServices: [],
+    sourceMaterial: [],
+    hostings: [],
+    storageMaterial: [],
+  })
+  assertEquals(listed, [{ composeServiceName: 'phpsite', principalId: PRINCIPAL_ID, domain: null }])
+})
+
 test('every service that runs on the host is listed once, with its owner and domain when known', () => {
   const listed = servicesNeedingFolders({
     sites: [
@@ -106,6 +122,7 @@ test('the planned folder is added beside the old fields, and only to the volume 
   const planned: PlannedFolders = {
     folderIds: ['f1'],
     services: new Map(),
+    serviceNames: new Map(),
     volumes: new Map([['owned', { owner: 'appuser', scope: 'production', slug: 'data' }]]),
   }
   const owned = material({ storageId: 'owned', sourcePath: '/srv/users/appuser/volumes/owned' })
@@ -117,7 +134,12 @@ test('the planned folder is added beside the old fields, and only to the volume 
 })
 
 test('an owned path volume with no planned folder is refused', () => {
-  const planned: PlannedFolders = { folderIds: [], services: new Map(), volumes: new Map() }
+  const planned: PlannedFolders = {
+    folderIds: [],
+    services: new Map(),
+    serviceNames: new Map(),
+    volumes: new Map(),
+  }
   assertThrows(
     () => withVolumeFolders([material({ storageId: 'owned', principalId: PRINCIPAL_ID })], planned),
     Error,
@@ -132,14 +154,25 @@ test('each planned service folder goes on the payload by service id, and an empt
       [SERVICE_ID, { owner: 'appuser', scope: 'production', slug: 'example.com' }],
       ['svc-2', { owner: 'appuser', scope: 'common', slug: 'api' }],
     ]),
+    serviceNames: new Map([[SERVICE_ID, 'phpsite']]),
     volumes: new Map(),
   }
+  // A service with a compose name carries it, so a site with no hostname can be found.
   assertEquals(serviceFoldersFor(planned), [
     {
       serviceId: SERVICE_ID,
+      composeServiceName: 'phpsite',
       folder: { owner: 'appuser', scope: 'production', slug: 'example.com' },
     },
     { serviceId: 'svc-2', folder: { owner: 'appuser', scope: 'common', slug: 'api' } },
   ])
-  assertEquals(serviceFoldersFor({ folderIds: [], services: new Map(), volumes: new Map() }), [])
+  assertEquals(
+    serviceFoldersFor({
+      folderIds: [],
+      services: new Map(),
+      serviceNames: new Map(),
+      volumes: new Map(),
+    }),
+    []
+  )
 })

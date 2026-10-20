@@ -108,5 +108,8 @@ export function withVolumeFolders(
 
 /** The planned folder of each host-run service, by service id, for the deploy payload. */
 export function serviceFoldersFor(planned: PlannedFolders): EnvironmentDeployServiceFolder[] {
-  return [...planned.services].map(([serviceId, folder]) => ({ serviceId, folder }))
+  return [...planned.services].map(([serviceId, folder]) => {
+    const composeServiceName = planned.serviceNames.get(serviceId)
+    return { serviceId, ...(composeServiceName ? { composeServiceName } : {}), folder }
+  })
 }
