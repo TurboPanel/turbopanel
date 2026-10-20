@@ -849,7 +849,7 @@ test('POST /environments/:id/deploy payload carries runtime composeFiles', async
   )
 })
 
-test('POST /environments/:id/deploy names the services that left the compose file, and nothing else', async () => {
+test('POST /environments/:id/deploy names no removed site for a service that never had a folder on the server', async () => {
   await withDeployFixtures(
     async ({
       db,
@@ -902,13 +902,14 @@ test('POST /environments/:id/deploy names the services that left the compose fil
       // Nothing left: the field is absent, so the host removes nothing.
       assertEquals((await deploy()).removedSites, undefined)
 
-      // A service row the compose file no longer names is listed by name.
+      // A service row the compose file no longer names, with no folder on this
+      // server (a container, or a site with no owner), is never listed.
       await db.insert(service).values({
         environmentId,
         composeServiceName: 'gone',
         name: 'gone',
       })
-      assertEquals((await deploy()).removedSites, ['gone'])
+      assertEquals((await deploy()).removedSites, undefined)
       assertEquals(commandQueue.envelopes.length, 2)
     }
   )

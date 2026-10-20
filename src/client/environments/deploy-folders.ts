@@ -14,6 +14,9 @@ import type {
   EnvironmentDeployServiceFolder,
   EnvironmentDeployStorageMaterial,
 } from '../../contracts/commands/schemas.ts'
+import { and, eq, inArray } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import { folder } from '../../db/schema.ts'
 import type { PlanServiceInput, PlannedFolders } from '../../features/folders/allocate.ts'
 import type { PreparedDeployCompose } from './deploy-prepare.ts'
 
@@ -114,22 +117,73 @@ export function serviceFoldersFor(planned: PlannedFolders): EnvironmentDeploySer
   })
 }
 
+/** A compose service key the host can be asked to remove a site for. */
+const REMOVABLE_SERVICE_NAME_RE = /^[A-Za-z0-9._-]+$/
+
 /**
- * Compose service names the environment has a service row for that its compose
- * file no longer names: the services that left. The host removes the vhost of
- * the ones that were sites. A name is listed only when the document's services
- * are known; an unreadable or missing `services` mapping lists nothing, so a
- * partial document can never read as "everything left".
+ * The service rows of the environment that its compose document no longer
+ * names: the services that left. A row is listed only when the document's
+ * services are known; an unreadable or empty `services` mapping lists nothing,
+ * so a partial document can never read as "everything left". A key the host
+ * would refuse (`.`, `..` or one with characters outside a compose service
+ * name) is dropped, so one odd key never makes the host refuse the whole deploy.
  */
-export function removedServiceNames(
-  serviceRowNames: readonly string[],
+export function removedServiceRows<T extends { composeServiceName: string }>(
+  serviceRows: readonly T[],
   documentServices: Record<string, unknown> | undefined
-): string[] {
+): T[] {
   if (documentServices === undefined) return []
   const names = Object.keys(documentServices)
   if (names.length === 0) return []
   const current = new Set(names)
-  return [...new Set(serviceRowNames)]
-    .filter((name) => !current.has(name))
+  const seen = new Set<string>()
+  return serviceRows
+    .filter((row) => {
+      const name = row.composeServiceName
+      if (current.has(name) || seen.has(name)) return false
+      if (name === '.' || name === '..' || !REMOVABLE_SERVICE_NAME_RE.test(name)) return false
+      seen.add(name)
+      return true
+    })
+    .sort((a, b) => a.composeServiceName.localeCompare(b.composeServiceName))
+}
+
+/**
+ * Of the services that left the compose file, the ones whose site this server
+ * may still hold: a service folder row of the environment on this server that
+ * is still `present` or `planned`. The deploy that succeeds with the service
+ * gone marks that row an orphan, so the name is not sent again on every later
+ * deploy; a deploy that fails leaves it, and the next one asks again. A service
+ * that never had a folder here (a container, or a site with no owner) is never
+ * listed. Names come back sorted.
+ */
+export async function removedSitesOnServer(
+  db: Pick<Db, 'select'>,
+  params: {
+    environmentId: string
+    serverId: string
+    removed: readonly { id: string; composeServiceName: string }[]
+  }
+): Promise<string[]> {
+  if (params.removed.length === 0) return []
+  const held = await db
+    .select({ serviceId: folder.serviceId })
+    .from(folder)
+    .where(
+      and(
+        eq(folder.environmentId, params.environmentId),
+        eq(folder.serverId, params.serverId),
+        eq(folder.kind, 'service'),
+        inArray(folder.state, ['present', 'planned']),
+        inArray(
+          folder.serviceId,
+          params.removed.map((row) => row.id)
+        )
+      )
+    )
+  const ids = new Set(held.map((row) => row.serviceId))
+  return params.removed
+    .filter((row) => ids.has(row.id))
+    .map((row) => row.composeServiceName)
     .sort((a, b) => a.localeCompare(b))
 }
