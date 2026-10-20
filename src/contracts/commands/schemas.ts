@@ -2630,13 +2630,15 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
    */
   removedSites?: string[]
   /**
-   * Hostnames of this deploy's hostings for which the control plane found no
-   * other live hosting on this server (any organization, any environment) that
-   * still holds them. A host config of another environment that still names one
-   * is a leftover of a hosting deleted or moved there, and the host takes only
-   * these names over instead of refusing the deploy. Absent or empty: refuse.
+   * Hostnames of this deploy's hostings (www redirect names included) that the
+   * control plane can show another environment of the same organization held on
+   * this server, from what it last sent that environment, and that environment
+   * no longer has a hosting for. Each entry names that environment
+   * (`fromEnvironmentId`). The host takes a name only from that environment's
+   * own config, and refuses if any other config also holds it. Absent or
+   * empty: refuse.
    */
-  takeoverHostnames?: string[]
+  takeoverHostnames?: EnvironmentDeployTakeover[]
   principalMaterial?: EnvironmentDeployPrincipalMaterial[]
   serviceHooks?: EnvironmentDeployServiceHook[]
   /**
@@ -2664,6 +2666,9 @@ export type EnvironmentDeployHostingWeb = {
   secretEnv?: Record<string, string>
   php?: EnvironmentDeployHostingPhp
 }
+
+/** A hostname the host may take over, and the environment that held it. */
+export type EnvironmentDeployTakeover = { hostname: string; fromEnvironmentId: string }
 
 export type EnvironmentDeployHosting = {
   hostingId: string
@@ -3319,14 +3324,22 @@ function parseDeployStorageMaterial(
   return value.map(parseDeployStorageMaterialEntry)
 }
 
-function parseDeployTakeoverHostnames(value: unknown): string[] | undefined {
+function parseDeployTakeoverHostnames(value: unknown): EnvironmentDeployTakeover[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) throw new Error('Invalid environment.deploy payload')
-  return value.map((name) => {
-    if (!isString(name) || name.length > 253 || !/^[a-z0-9*][a-z0-9.*-]*$/.test(name)) {
+  return value.map((entry) => {
+    const name = isRecord(entry) ? entry.hostname : undefined
+    const from = isRecord(entry) ? entry.fromEnvironmentId : undefined
+    if (
+      !isString(name) ||
+      name.length > 253 ||
+      !/^[a-z0-9*][a-z0-9.*-]*$/.test(name) ||
+      !isString(from) ||
+      !/^[A-Za-z0-9_-]{1,64}$/.test(from)
+    ) {
       throw new Error('Invalid environment.deploy payload')
     }
-    return name
+    return { hostname: name, fromEnvironmentId: from }
   })
 }
 

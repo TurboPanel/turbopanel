@@ -1304,11 +1304,20 @@ test('POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames', a
             containerName: string
           }
           hostingIngressNetwork?: string
-          takeoverHostnames?: string[]
+          takeoverHostnames?: { hostname: string; fromEnvironmentId: string }[]
         }
-        // No other live hosting holds the name, so a leftover host config of a deleted
-        // hosting in another environment may be taken over.
-        assertEquals(payload.takeoverHostnames, ['adminer.example.test'])
+        // Nothing here was ever sent this name by another environment, so there is
+        // nothing to take over; the deploy records the names it sends for later.
+        assertEquals(payload.takeoverHostnames, undefined)
+        const [recorded] = await db
+          .select({ options: deployment.options })
+          .from(deployment)
+          .where(
+            and(eq(deployment.environmentId, environmentId), eq(deployment.serverId, serverId))
+          )
+        assertEquals((recorded?.options as { servedHostnames?: string[] }).servedHostnames, [
+          'adminer.example.test',
+        ])
         assertEquals(payload.hostingIngress, {
           serviceId: traefikServiceId,
           composeServiceName: 'traefik',

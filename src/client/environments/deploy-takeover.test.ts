@@ -1,15 +1,15 @@
 /**
- * Which hostnames a deploy lets the host take over from a leftover host config.
+ * Which hostnames a deploy lets the host take over, and from which environment.
  * Needs a database.
  */
 import { assertEquals } from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
 import {
   deployment,
-  environment,
   hosting,
   hostname,
   organization,
+  project,
   service,
 } from '../../db/schema.ts'
 import {
@@ -17,7 +17,7 @@ import {
   createProject,
   withFolderFixtures as withFixtures,
 } from '../../test-fixtures/folder-world.test.support.ts'
-import { takeoverHostnamesFor } from './deploy-takeover.ts'
+import { servedNamesOf, takeoverHostnamesFor } from './deploy-takeover.ts'
 
 const rawTest = Deno.test.bind(Deno)
 
@@ -73,31 +73,47 @@ async function addHosting(
   return row!.id
 }
 
-async function deployedOn(ctx: Ctx, envId: string): Promise<void> {
-  await ctx.db.insert(deployment).values({ environmentId: envId, serverId: ctx.serverId })
-}
-
-function names(ctx: Ctx, envId: string, hostingIds: string[]) {
-  return takeoverHostnamesFor(ctx.db, {
+/** The deploy row an environment has on the test server, with what the panel last sent it. */
+async function deployedOn(ctx: Ctx, envId: string, served?: string[]): Promise<void> {
+  await ctx.db.insert(deployment).values({
     environmentId: envId,
     serverId: ctx.serverId,
-    hostingIds,
+    options: served === undefined ? null : { servedHostnames: served },
   })
 }
 
-test('a name whose old hosting was deleted is listed: nothing else holds it', async (ctx) => {
+function entries(ctx: Ctx, envId: string, hostings: { hostnames: string[]; www?: 'both' }[]) {
+  return takeoverHostnamesFor(ctx.db, {
+    environmentId: envId,
+    organizationId: ctx.organizationId,
+    serverId: ctx.serverId,
+    hostings,
+  })
+}
+
+test('a name the old environment was last sent, and no longer has a hosting for, names that environment', async (ctx) => {
   const { envId } = await createProject(ctx, 'Takeover New')
   const old = await createProject(ctx, 'Takeover Old')
-  await deployedOn(ctx, old.envId)
-  const stale = await addHosting(ctx, old.envId, ['example.com'])
-  // The old hosting is deleted in the panel (its hostname rows go with it).
-  await ctx.db.delete(hosting).where(eq(hosting.id, stale))
+  await deployedOn(ctx, old.envId, ['example.com', 'kept.example.com'])
+  await addHosting(ctx, old.envId, ['kept.example.com'])
 
-  const fresh = await addHosting(ctx, envId, ['example.com', 'www.example.com'])
-  assertEquals(await names(ctx, envId, [fresh]), ['example.com', 'www.example.com'])
+  assertEquals(await entries(ctx, envId, [{ hostnames: ['example.com', 'kept.example.com'] }]), [
+    { hostname: 'example.com', fromEnvironmentId: old.envId },
+  ])
 })
 
-test("another organization's live hosting of the same name on this server is never listed", async (ctx) => {
+test('a name nothing here was ever sent is not listed, even when no hosting row holds it', async (ctx) => {
+  const { envId } = await createProject(ctx, 'Takeover First')
+  const old = await createProject(ctx, 'Takeover Unproven')
+  // Deployed here before names were recorded, or never sent this name.
+  await deployedOn(ctx, old.envId)
+  const other = await createProject(ctx, 'Takeover Other')
+  await deployedOn(ctx, other.envId, ['elsewhere.example.com'])
+
+  assertEquals(await entries(ctx, envId, [{ hostnames: ['example.com'] }]), [])
+})
+
+test("another organization's environment is never named", async (ctx) => {
   const { envId } = await createProject(ctx, 'Takeover Mine')
   const theirs = await createProject(ctx, 'Takeover Theirs')
   const [other] = await ctx.db
@@ -105,43 +121,70 @@ test("another organization's live hosting of the same name on this server is nev
     .values({ name: 'Other Organization' })
     .returning({ id: organization.id })
   made.organizations.push(other!.id)
-  await deployedOn(ctx, theirs.envId)
-  await addHosting(ctx, theirs.envId, ['shared.example.com'], other!.id)
-
-  const mine = await addHosting(ctx, envId, ['shared.example.com', 'mine.example.com'])
-  // Only the name nobody else holds on this server is listed.
-  assertEquals(await names(ctx, envId, [mine]), ['mine.example.com'])
-})
-
-test('a live hosting counts when its environment is pinned to the server, and not when it is elsewhere', async (ctx) => {
-  const { envId } = await createProject(ctx, 'Takeover Scope')
-  const pinned = await createProject(ctx, 'Takeover Pinned')
-  const away = await createProject(ctx, 'Takeover Away')
   await ctx.db
-    .update(environment)
-    .set({ serverId: ctx.serverId })
-    .where(eq(environment.id, pinned.envId))
-  // Another organization holds both names (the same organization could not hold a name twice).
-  const [other] = await ctx.db
-    .insert(organization)
-    .values({ name: 'Other Organization Two' })
-    .returning({ id: organization.id })
-  made.organizations.push(other!.id)
-  await addHosting(ctx, pinned.envId, ['pinned.example.com'], other!.id)
-  await addHosting(ctx, away.envId, ['away.example.com'], other!.id)
+    .update(project)
+    .set({ organizationId: other!.id })
+    .where(eq(project.id, theirs.projectId))
+  await deployedOn(ctx, theirs.envId, ['example.com'])
 
-  const mine = await addHosting(ctx, envId, ['pinned.example.com', 'away.example.com'])
-  // `away` is not on this server (never deployed here, not pinned): no snippet of it can be here.
-  assertEquals(await names(ctx, envId, [mine]), ['away.example.com'])
+  try {
+    assertEquals(await entries(ctx, envId, [{ hostnames: ['example.com'] }]), [])
+  } finally {
+    // Back to the fixture's organization, so the fixture can remove the other one.
+    await ctx.db
+      .update(project)
+      .set({ organizationId: ctx.organizationId })
+      .where(eq(project.id, theirs.projectId))
+  }
 })
 
-test('nothing to ask about lists nothing, and only the deploy hostings are the deploy own', async (ctx) => {
+test('the deploying environment never names itself', async (ctx) => {
+  const { envId } = await createProject(ctx, 'Takeover Self')
+  await deployedOn(ctx, envId, ['example.com'])
+  assertEquals(await entries(ctx, envId, [{ hostnames: ['example.com'] }]), [])
+})
+
+test('the www names a hosting owns are listed too, each from the environment that was sent it', async (ctx) => {
+  const { envId } = await createProject(ctx, 'Takeover Www')
+  const a = await createProject(ctx, 'Takeover A')
+  const b = await createProject(ctx, 'Takeover B')
+  await deployedOn(ctx, a.envId, ['example.com'])
+  await deployedOn(ctx, b.envId, ['www.example.com'])
+
+  assertEquals(await entries(ctx, envId, [{ hostnames: ['example.com'], www: 'both' }]), [
+    { hostname: 'example.com', fromEnvironmentId: a.envId },
+    { hostname: 'www.example.com', fromEnvironmentId: b.envId },
+  ])
+})
+
+test('an old environment that still serves the name through its www choice still holds it', async (ctx) => {
+  const { envId } = await createProject(ctx, 'Takeover Redirect')
+  const old = await createProject(ctx, 'Takeover Redirect Old')
+  await deployedOn(ctx, old.envId, ['example.com', 'www.example.com'])
+  const row = await addHosting(ctx, old.envId, ['example.com'])
+  await ctx.db
+    .update(hosting)
+    .set({ options: { hostnames: ['example.com'], www: 'both' } })
+    .where(eq(hosting.id, row))
+
+  assertEquals(await entries(ctx, envId, [{ hostnames: ['example.com'], www: 'both' }]), [])
+})
+
+test('names are compared folded: case and international spelling', async (ctx) => {
+  const { envId } = await createProject(ctx, 'Takeover Fold')
+  const old = await createProject(ctx, 'Takeover Fold Old')
+  await deployedOn(ctx, old.envId, ['Xn--Bcher-Kva.Example'])
+
+  assertEquals(await entries(ctx, envId, [{ hostnames: ['Bücher.Example'] }]), [
+    { hostname: 'xn--bcher-kva.example', fromEnvironmentId: old.envId },
+  ])
+  assertEquals(servedNamesOf([{ hostnames: ['B\u00fccher.Example'], www: 'both' }]), [
+    'www.xn--bcher-kva.example',
+    'xn--bcher-kva.example',
+  ])
+})
+
+test('nothing to ask about lists nothing', async (ctx) => {
   const { envId } = await createProject(ctx, 'Takeover Empty')
-  assertEquals(await names(ctx, envId, []), [])
-  const own = await addHosting(ctx, envId, ['own.example.com'])
-  const other = await addHosting(ctx, envId, ['other.example.com'])
-  await deployedOn(ctx, envId)
-  // Naming only `own`: `other` of the same environment is a different hosting, so it holds its name.
-  assertEquals(await names(ctx, envId, [own]), ['own.example.com'])
-  assertEquals(await names(ctx, envId, [own, other]), ['other.example.com', 'own.example.com'])
+  assertEquals(await entries(ctx, envId, []), [])
 })

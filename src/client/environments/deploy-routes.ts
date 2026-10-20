@@ -79,7 +79,7 @@ import {
   planDeployFolders,
 } from '../../features/folders/allocate.ts'
 import { lockEnvironmentRow } from '../../features/folders/records.ts'
-import { takeoverHostnamesFor } from './deploy-takeover.ts'
+import { type DeployTakeover, servedNamesOf, takeoverHostnamesFor } from './deploy-takeover.ts'
 import {
   removedServiceRows,
   removedSitesOnServer,
@@ -546,7 +546,7 @@ type DeployCommandCreateParams = DeployActor & {
   /** Services that left the compose file; the host removes the sites among them. */
   removedSites?: string[]
   /** Hostnames the host may take over from a leftover host config of another environment. */
-  takeoverHostnames?: string[]
+  takeoverHostnames?: DeployTakeover[]
   principalMaterial: EnvironmentDeployPrincipalMaterial[]
   /** Non-secret Compose project `.env` the daemon writes next to compose.yaml. */
   envFile?: string
@@ -854,7 +854,7 @@ function createParamsForPreparedServer(
     /** Services that left the compose file. */
     removedSites?: readonly string[]
     /** Hostnames the host may take over from a leftover host config. */
-    takeoverHostnames?: readonly string[]
+    takeoverHostnames?: readonly DeployTakeover[]
   }
 ): DeployCommandCreateParams {
   // One loopback-port ledger for both host-native lanes: site vhosts
@@ -946,6 +946,13 @@ function deployListenPorts(params: DeployCommandCreateParams): number[] {
   ]
 }
 
+/** The names and www choice of the http hostings a server's deploy sends. */
+function httpHostingNames(prepared: PreparedServerDeploy['prepared']) {
+  return prepared.hostings
+    .filter((hosting) => (hosting.protocol ?? 'http') === 'http')
+    .map((hosting) => ({ hostnames: hosting.hostnames, www: hosting.www }))
+}
+
 function deploymentTargetsForFanOut(params: {
   preparedByServer: readonly PreparedServerDeploy[]
   planServerIds: readonly string[]
@@ -980,6 +987,9 @@ function deploymentTargetsForFanOut(params: {
           // The PHP mode each site was given, so the next deploy keeps it.
           phpModes: recordSitePhpModes(prepared?.sites),
           listenPorts: params.listenPortsByServer.get(serverId) ?? [],
+          // What this server was last sent, so a later deploy of another environment
+          // can tell a name this one served and no longer holds.
+          servedHostnames: prepared ? servedNamesOf(httpHostingNames(prepared)) : [],
           ...(rollout === undefined ? {} : { rollout }),
         },
       }
@@ -1116,9 +1126,8 @@ async function persistDeployFanOut(
         const takeoverHostnames = await takeoverHostnamesFor(tx, {
           environmentId: params.environmentId,
           serverId: row.serverId,
-          hostingIds: row.prepared.hostings
-            .filter((hosting) => (hosting.protocol ?? 'http') === 'http')
-            .map((hosting) => hosting.hostingId),
+          organizationId: params.organizationId,
+          hostings: httpHostingNames(row.prepared),
         })
         const createParams = createParamsForPreparedServer(row, {
           plannedFolders,
