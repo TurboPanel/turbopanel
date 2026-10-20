@@ -108,5 +108,28 @@ export function withVolumeFolders(
 
 /** The planned folder of each host-run service, by service id, for the deploy payload. */
 export function serviceFoldersFor(planned: PlannedFolders): EnvironmentDeployServiceFolder[] {
-  return [...planned.services].map(([serviceId, folder]) => ({ serviceId, folder }))
+  return [...planned.services].map(([serviceId, folder]) => {
+    const composeServiceName = planned.serviceNames.get(serviceId)
+    return { serviceId, ...(composeServiceName ? { composeServiceName } : {}), folder }
+  })
+}
+
+/**
+ * Compose service names the environment has a service row for that its compose
+ * file no longer names: the services that left. The host removes the vhost of
+ * the ones that were sites. A name is listed only when the document's services
+ * are known; an unreadable or missing `services` mapping lists nothing, so a
+ * partial document can never read as "everything left".
+ */
+export function removedServiceNames(
+  serviceRowNames: readonly string[],
+  documentServices: Record<string, unknown> | undefined
+): string[] {
+  if (documentServices === undefined) return []
+  const names = Object.keys(documentServices)
+  if (names.length === 0) return []
+  const current = new Set(names)
+  return [...new Set(serviceRowNames)]
+    .filter((name) => !current.has(name))
+    .sort((a, b) => a.localeCompare(b))
 }

@@ -372,22 +372,33 @@ removed from the compose would vanish from the current document and leave its
 tree orphaned on the host. What each deploy _records_ stays current-only
 (`resolveSourcedEnvironmentSiteReleases`), so the record cannot grow without
 bound — a redeploy never removes a removed service's folder (see
-`keptFolders` below); only the older per-service tree is still reclaimed on
-the host itself, from `deployment.json` `releases[]`. The tree is root-owned, so the daemon removes it
-through its privileged runner; removal is best-effort per entry and never fails
-the stop. Idempotent when the compose file is already gone. Used as the teardown
+`keptFolders` below), and the host reclaims no other tree of its own accord
+(there is no older per-service tree any more). A delete teardown names the
+folders to remove; they are root-owned, so the daemon removes them through its
+privileged runner, best-effort per entry, and a failure never fails the stop.
+Idempotent when the compose file is already gone. Used as the teardown
 gate before project cascade delete. `folder` (`{ owner, scope, slug }`, the
-service folder as components) rides beside the old fields once the service has a
-folder name; the old fields stay authoritative until the daemon resolves folders
-itself. The explicit stop route sends **no** `siteReleases`: stopping keeps
+service folder as components) names the folder to remove; the daemon takes the
+path from the components and never from a path on the wire. The explicit stop route sends **no** `siteReleases`: stopping keeps
 every service and volume folder, uploads included, and only delete teardown or a
 server leaving the environment names trees to reclaim. A deploy's
 `storageMaterial[].folder` (`{ owner, scope, slug }`) carries the same for an
-owned volume, and `serviceFolders[]` (`{ serviceId, folder }`) names the folder of
-every host-run service (site, native app or Git-backed source) by service id.
-A host that gets a service folder serves, publishes and runs that service from
-`<owner>/<scope>/services/<name>`; a service with no entry keeps the older
-per-service tree. The stop result's `folders[]` (`{ owner, scope, kind: 'service',
+owned volume, and `serviceFolders[]` (`{ serviceId, composeServiceName?, folder }`) names the
+folder of every host-run service (site, native app or Git-backed source) by
+service id. `composeServiceName` is optional and lets the host tie an entry to
+a site or app that appears in none of the lists that carry its service id (no
+hostname, source or native unit): the host takes the service id from the entry
+that names the compose service, then looks the folder up as usual. A host that
+does not read the field ignores it. A host that gets a service folder serves,
+publishes and runs that service from `<owner>/<scope>/services/<name>`; a
+service with no entry is refused (there is no older per-service tree).
+`removedSites[]` (compose service names, optional) names the sites that left
+the compose file: after the rest of the deploy has succeeded the host removes
+exactly those sites' vhost, php-fpm pool and per-site runtime in this
+environment (never one that is still in `sites[]`), and nothing host-wide.
+Absent or empty removes nothing: a site missing from `sites[]` is never read as
+removed. The folder of a removed site stays, as an orphan. The stop
+result's `folders[]` (`{ owner, scope, kind: 'service',
 slug, removed, reason? }`) says which reclaimed folders are gone; `reason` (plain
 words) says why one stayed. The consumer deletes the `removing` row of every
 folder reported removed (`confirmFolderRemoved`, through

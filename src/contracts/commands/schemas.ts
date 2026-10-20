@@ -1833,6 +1833,12 @@ export type EnvironmentDeployStorageMount = {
 /** One service's folder under its site owner's tree. */
 export type EnvironmentDeployServiceFolder = {
   serviceId: string
+  /**
+   * The compose service the folder belongs to. It lets the host tie a site or
+   * app with no hostname, source or native app to its service id, which no
+   * other list carries for it.
+   */
+  composeServiceName?: string
   folder: FolderRefParts
 }
 
@@ -2616,6 +2622,13 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
    * host-run service with no entry.
    */
   serviceFolders?: EnvironmentDeployServiceFolder[]
+  /**
+   * Compose service names of sites that left the compose file. The host removes
+   * the vhost, php-fpm pool and per-site runtime of exactly these, in this
+   * environment, after the deploy has succeeded. Absent or empty removes
+   * nothing: a site missing from `sites` is never read as removed.
+   */
+  removedSites?: string[]
   principalMaterial?: EnvironmentDeployPrincipalMaterial[]
   serviceHooks?: EnvironmentDeployServiceHook[]
   /**
@@ -3298,14 +3311,34 @@ function parseDeployStorageMaterial(
   return value.map(parseDeployStorageMaterialEntry)
 }
 
+function parseDeployRemovedSites(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new Error('Invalid environment.deploy payload')
+  return value.map((name) => {
+    if (!isString(name) || name === '.' || name === '..' || !/^[A-Za-z0-9._-]+$/.test(name)) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    return name
+  })
+}
+
 function parseDeployServiceFolders(value: unknown): EnvironmentDeployServiceFolder[] | undefined {
   if (!Array.isArray(value)) return undefined
   return value.map((entry): EnvironmentDeployServiceFolder => {
     if (!isRecord(entry) || !isString(entry.serviceId) || entry.serviceId.length === 0) {
       throw new Error('Invalid environment.deploy payload')
     }
+    if (
+      entry.composeServiceName !== undefined &&
+      (!isString(entry.composeServiceName) || !/^[A-Za-z0-9._-]+$/.test(entry.composeServiceName))
+    ) {
+      throw new Error('Invalid environment.deploy payload')
+    }
     return {
       serviceId: entry.serviceId,
+      ...(entry.composeServiceName === undefined
+        ? {}
+        : { composeServiceName: entry.composeServiceName }),
       folder: folderRefParts(parseFolderRefParts(entry.folder, 'service')),
     }
   })
@@ -4562,6 +4595,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       secretPlan: parseDeploySecretPlan(value.secretPlan),
       storageMaterial: parseDeployStorageMaterial(value.storageMaterial),
       serviceFolders: parseDeployServiceFolders(value.serviceFolders),
+      removedSites: parseDeployRemovedSites(value.removedSites),
       principalMaterial: parseDeployPrincipalMaterial(value.principalMaterial),
       serviceHooks: parseDeployServiceHooks(value.serviceHooks),
       listenerPorts:
