@@ -70,7 +70,7 @@ const skipLock =
   String(
     process.env.TURBOPANEL_MIGRATE_NO_LOCK?.trim() ||
       wranglerVar(cloudflareEnv, 'TURBOPANEL_MIGRATE_NO_LOCK') ||
-      '',
+      ''
   ).trim() === '1'
 if (skipLock && !NO_LOCK_ENVS.has(cloudflareEnv)) {
   fail('TURBOPANEL_MIGRATE_NO_LOCK=1 is only allowed when CLOUDFLARE_ENV is testing or staging')
@@ -109,7 +109,7 @@ const db = drizzle(client)
 try {
   if (skipLock) {
     console.log(
-      `migrate-locked: advisory lock skipped (TURBOPANEL_MIGRATE_NO_LOCK=1, env ${cloudflareEnv}); do not run two migrations at once`,
+      `migrate-locked: advisory lock skipped (TURBOPANEL_MIGRATE_NO_LOCK=1, env ${cloudflareEnv}); do not run two migrations at once`
     )
   } else {
     console.log('migrate-locked: waiting for the migration advisory lock…')
@@ -120,7 +120,7 @@ try {
   // Read under the lock so a concurrent migrate cannot change the answer.
   const state = compareSchemaState(
     await readAppliedMigrationHashes(client),
-    readShippedMigrationHashes('./migrations'),
+    readShippedMigrationHashes('./migrations')
   )
   if (state.status === 'ahead' || state.status === 'diverged') {
     throw new Error(describeSchemaState(state))
