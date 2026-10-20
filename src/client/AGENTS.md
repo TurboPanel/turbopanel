@@ -254,7 +254,9 @@ changes.
   minus what must be unique: `x-turbopanel.hosting`, published host ports (moved
   to `expose`), `container_name`, and the git `branch` (with `deployOnPush: false`
   so a push never deploys the copy). Variables, secrets and the server pin are not
-  copied; the response lists the omissions in `notCopied`. `start: 'empty'` stands alone. The name follows
+  copied; what the Base still gives the copy (hostnames, published ports, container name,
+  auto-deploying source) is overridden in the copy's own layer with `!reset` / `!override`;
+  the response lists the omissions in `notCopied`. `start: 'empty'` stands alone. The name follows
   the environment name rule on every path.
 - **Edit target:** `PATCH /projects/:id` with `options.compose` or
   `options.composeOverlays` needs `target` (`base` or an environment id); with

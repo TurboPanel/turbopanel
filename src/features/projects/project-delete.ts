@@ -2,6 +2,7 @@ import { and, eq, inArray, ne, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   deleteWouldOrphanPrimary,
+  lockProjectForEnvironmentChange,
   PRIMARY_ENVIRONMENT_DELETE_ERROR,
 } from './primary-environment.ts'
 import { ensureProjectPlacements } from '../principals/placement-records.ts'
@@ -190,6 +191,11 @@ async function purgeEnvironmentServerPlacementArtifacts(
 
 async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<void> {
   const { environmentIds, serviceIds, containerIds, hostingIds } = rows
+  // One lock order everywhere: the project row first, then the environment rows.
+  const projectIds = rows.projectId ? [rows.projectId] : await projectIdsOf(tx, environmentIds)
+  for (const projectId of [...projectIds].sort()) {
+    await lockProjectForEnvironmentChange(tx, projectId)
+  }
   const retentionScope = {
     ...(rows.projectId ? { projectIds: [rows.projectId] } : {}),
     environmentIds,
@@ -229,13 +235,12 @@ async function dropEnvironmentRows(tx: Db, rows: EnvironmentRowSet): Promise<voi
   await tx
     .delete(folder)
     .where(and(inArray(folder.environmentId, environmentIds), eq(folder.state, 'missing')))
-  // Deleting a whole project removes every environment with it; nothing is left to promote.
-  const survivors = rows.projectId ? [] : await primaryLessProjects(tx, environmentIds)
   await tx.delete(environment).where(inArray(environment.id, environmentIds))
-  if (survivors.length > 0) await promoteOldestAsPrimary(tx, survivors)
+  // Deleting a whole project removes every environment with it; nothing is left to promote.
+  if (!rows.projectId && projectIds.length > 0) await promoteOldestAsPrimary(tx, projectIds)
 }
 
-async function primaryLessProjects(tx: Db, environmentIds: readonly string[]): Promise<string[]> {
+async function projectIdsOf(tx: Db, environmentIds: readonly string[]): Promise<string[]> {
   const rows = await tx
     .select({ projectId: environment.projectId })
     .from(environment)
@@ -380,6 +385,8 @@ export async function deleteProjectCascade(
     // The principals outlive the project (`project_id` SET NULL); their
     // placements become the only record of which servers they are on, so
     // write any that are missing while the environments still say where.
+    // The project row is locked before any environment row, as in every other delete.
+    await lockProjectForEnvironmentChange(tx, projectId)
     await ensureProjectPlacements(tx, projectId)
     await dropEnvironmentRows(tx, {
       projectId,

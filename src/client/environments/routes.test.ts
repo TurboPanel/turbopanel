@@ -29,6 +29,11 @@ import {
   decideEnvironmentPush,
   environmentBranchBindings,
 } from '../../features/git/environment-branch-tracking.ts'
+import {
+  isComposeChainError,
+  resolveComposeLayerChain,
+} from '../../features/compose/layer-chain.ts'
+import { mergeComposeLayers, type ComposeLayer } from '../../features/compose/index.ts'
 import { makeComposeTag } from '../../features/compose/index.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerEnvironmentRoutes } from './routes.ts'
@@ -1284,7 +1289,7 @@ test('a copy leaves out what must be unique, lists it, and has no push deploys',
       const copy = await createNamedEnvironment(ctx, cookie, { name: 'staging' })
       assertEquals(copy.status, 200)
       const notCopied = copy.json.notCopied as string[]
-      assertEquals(notCopied.length, 6)
+      assertEquals(notCopied.length, 7)
 
       const rows = await ctx.db
         .select({ id: environment.id, options: environment.options })
@@ -1427,5 +1432,60 @@ test('concurrent creates, swaps and deletes keep exactly one primary', async () 
     assertEquals(swap.status, 200)
     assertEquals([200, 409].includes(del.status), true)
     assertEquals(await primaries(), 1)
+  })
+})
+
+test('a copy also overrides what the Base still gives it', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const [repo] = await ctx.db
+      .insert(repository)
+      .values({
+        organizationId: ctx.organizationId,
+        provider: 'github',
+        repositoryUrl: `https://github.com/example/${crypto.randomUUID()}`,
+      })
+      .returning({ id: repository.id })
+    try {
+      // Older content lives in the Base: the primary has no changes of its own.
+      await ctx.db
+        .update(project)
+        .set({ options: { compose: PROD_SERVICE_COMPOSE(repo!.id) } })
+        .where(eq(project.id, ctx.projectId))
+      await createNamedEnvironment(ctx, cookie, { name: 'live' })
+      const copy = await createNamedEnvironment(ctx, cookie, { name: 'staging' })
+      assertEquals(copy.status, 200)
+      assertEquals((copy.json.notCopied as string[]).length >= 5, true)
+
+      const [project_] = await ctx.db
+        .select({ options: project.options })
+        .from(project)
+        .where(eq(project.id, ctx.projectId))
+      const [row] = await ctx.db
+        .select({ options: environment.options })
+        .from(environment)
+        .where(eq(environment.id, copy.id))
+      const chain = resolveComposeLayerChain({
+        projectOptions: project_?.options,
+        environmentOptions: row?.options,
+        environmentFilename: 'e.yml',
+      })
+      assertEquals(isComposeChainError(chain), false)
+      const web = (
+        mergeComposeLayers(chain as ComposeLayer[]).data.services as Record<
+          string,
+          Record<string, unknown>
+        >
+      ).web!
+      assertEquals(web.container_name, undefined)
+      assertEquals(web.ports, ['3000'])
+      const extension = web['x-turbopanel'] as Record<string, unknown>
+      assertEquals(extension.hosting, undefined)
+      assertEquals((extension.source as Record<string, unknown>).deployOnPush, false)
+    } finally {
+      await ctx.db.execute(sql`DELETE FROM watch WHERE repository_id = ${repo!.id}::uuid`)
+      await ctx.db.update(project).set({ repositoryId: null }).where(eq(project.id, ctx.projectId))
+      await ctx.db.delete(repository).where(eq(repository.id, repo!.id))
+    }
   })
 })

@@ -93,6 +93,8 @@ type CreateEnvironmentInput = {
   options: Record<string, unknown> | null
   /** Plain-words list of what a copy left behind (empty unless the environment is a copy). */
   notCopied: string[]
+  /** The copy the options were checked as, to be re-read under the project lock; null when not a copy. */
+  copySnapshot: string | null
 }
 
 function buildEnvironmentPatchFields(
@@ -252,12 +254,11 @@ async function parseCreateEnvironmentInput(
   // A new environment starts as a copy of the primary one's own changes unless
   // the caller asks for an empty one or sends its own options. The copy goes
   // through the same checks as options a caller typed.
-  const { body: sourceBody, notCopied } = await resolveCreateStartBody(
-    db,
-    projectId,
-    body,
-    startResult.start
-  )
+  const {
+    body: sourceBody,
+    notCopied,
+    copySnapshot,
+  } = await resolveCreateStartBody(db, projectId, body, startResult.start)
 
   const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
   // An overlay is part of its project's compose, so it answers to the same
@@ -297,7 +298,18 @@ async function parseCreateEnvironmentInput(
     metadata: jsonb.metadata,
     options: jsonb.options,
     notCopied,
+    copySnapshot,
   }
+}
+
+function primaryConflict(c: Context<AppEnv>): Response {
+  return c.json(
+    {
+      error: 'primary_environment_conflict',
+      message: 'The primary environment changed at the same time. Reload and try again.',
+    },
+    409
+  )
 }
 
 /** The body whose `options` the new environment is checked and stored with. */
@@ -306,20 +318,58 @@ async function resolveCreateStartBody(
   projectId: string,
   body: Record<string, unknown>,
   start: 'copy' | 'empty' | null
-): Promise<{ body: Record<string, unknown>; notCopied: string[] }> {
-  if (start === 'empty') {
-    return { body: { ...body, options: standAloneEnvironmentOptions() }, notCopied: [] }
-  }
-  if (start === null && body.options !== undefined && body.options !== null) {
-    return { body, notCopied: [] }
-  }
+): Promise<{ body: Record<string, unknown>; notCopied: string[]; copySnapshot: string | null }> {
+  const plain = (next: Record<string, unknown>) => ({
+    body: next,
+    notCopied: [],
+    copySnapshot: null,
+  })
+  if (start === 'empty') return plain({ ...body, options: standAloneEnvironmentOptions() })
+  if (start === null && body.options !== undefined && body.options !== null) return plain(body)
   const primary = await loadPrimaryEnvironment(db, projectId)
-  if (!primary) return { body, notCopied: [] }
-  const copied = copyOfPrimaryOptions(primary.options)
+  if (!primary) return plain(body)
+  const copied = copyOfPrimaryOptions(primary.options, await loadProjectOptions(db, projectId))
   return {
     body: copied.options ? { ...body, options: copied.options } : body,
     notCopied: copied.notCopied,
+    copySnapshot: JSON.stringify(copied.options),
   }
+}
+
+/**
+ * Insert the environment under the project lock. A copy is read again under
+ * that lock: if the primary (or the Base) changed since the options were
+ * checked, nothing is created and the caller gets a conflict.
+ */
+async function insertEnvironmentLocked(db: Db, input: CreateEnvironmentInput): Promise<string> {
+  return await db.transaction(async (tx) => {
+    // The first environment of a project is its primary one; the lock keeps
+    // two creates from both deciding they are first.
+    await lockProjectForEnvironmentChange(tx, input.projectId)
+    if (input.copySnapshot !== null) {
+      const primary = await loadPrimaryEnvironment(tx, input.projectId)
+      const again = primary
+        ? copyOfPrimaryOptions(primary.options, await loadProjectOptions(tx, input.projectId))
+        : null
+      if (JSON.stringify(again?.options ?? null) !== input.copySnapshot) {
+        throw new PrimaryEnvironmentConflictError()
+      }
+    }
+    const [inserted] = await tx
+      .insert(environment)
+      .values({
+        name: input.name,
+        description: input.description,
+        projectId: input.projectId,
+        isPrimary: isFirstEnvironmentOf(input.projectId),
+        ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
+        ...(input.metadata !== null ? { metadata: input.metadata } : {}),
+        ...(input.options !== null ? { options: input.options } : {}),
+      })
+      .returning({ id: environment.id })
+    if (input.options !== null) await syncEnvironmentWatch(tx, inserted.id)
+    return inserted.id
+  })
 }
 
 /** A row created while the delete ran trips an FK: report it as "has children". */
@@ -504,27 +554,10 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
 
     let id: string
     try {
-      id = await db.transaction(async (tx) => {
-        // The first environment of a project is its primary one; the lock keeps
-        // two creates from both deciding they are first.
-        await lockProjectForEnvironmentChange(tx, input.projectId)
-        const [inserted] = await tx
-          .insert(environment)
-          .values({
-            name: input.name,
-            description: input.description,
-            projectId: input.projectId,
-            isPrimary: isFirstEnvironmentOf(input.projectId),
-            ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
-            ...(input.metadata !== null ? { metadata: input.metadata } : {}),
-            ...(input.options !== null ? { options: input.options } : {}),
-          })
-          .returning({ id: environment.id })
-        if (input.options !== null) await syncEnvironmentWatch(tx, inserted.id)
-        return inserted.id
-      })
+      id = await insertEnvironmentLocked(db, input)
     } catch (err) {
       if (isEnvironmentNameUniqueViolation(err)) return environmentNameInUse(c)
+      if (err instanceof PrimaryEnvironmentConflictError) return primaryConflict(c)
       throw err
     }
 
@@ -602,13 +635,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
       changed = await db.transaction((tx) => setPrimaryEnvironment(tx, row.projectId, id))
     } catch (err) {
       if (!(err instanceof PrimaryEnvironmentConflictError)) throw err
-      return c.json(
-        {
-          error: 'primary_environment_conflict',
-          message: 'The primary environment changed at the same time. Reload and try again.',
-        },
-        409
-      )
+      return primaryConflict(c)
     }
     if (!changed) return c.json({ error: 'Not found' }, 404)
     // Making the primary environment primary again changed nothing: no audit row.

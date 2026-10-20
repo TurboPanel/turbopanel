@@ -4,6 +4,7 @@ import { eq, sql } from 'drizzle-orm'
 import { createDenoDb } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { environment, organization, project, workspace } from '../../db/schema.ts'
+import { deleteEnvironmentCascade, deleteProjectCascade } from './project-delete.ts'
 import {
   isFirstEnvironmentOf,
   loadPrimaryEnvironment,
@@ -123,4 +124,33 @@ test('setPrimaryEnvironment swaps the marker without tripping the unique index',
     )
     assertEquals((await loadPrimaryEnvironment(db, projectId))?.id, second!.id)
   })
+})
+
+test('deleting an environment and its project at the same time never deadlocks', async () => {
+  for (let round = 0; round < 5; round += 1) {
+    await withProject(async (db, projectId) => {
+      const [a] = await db
+        .insert(environment)
+        .values({ projectId, name: 'one', isPrimary: isFirstEnvironmentOf(projectId) })
+        .returning({ id: environment.id })
+      const [b] = await db
+        .insert(environment)
+        .values({ projectId, name: 'two', isPrimary: isFirstEnvironmentOf(projectId) })
+        .returning({ id: environment.id })
+      const settled = await Promise.allSettled([
+        deleteEnvironmentCascade(db, round % 2 === 0 ? a!.id : b!.id),
+        deleteProjectCascade(db, projectId),
+      ])
+      // Whatever order the locks fall in, both finish: no deadlock error.
+      assertEquals(
+        settled.map((result) => result.status),
+        ['fulfilled', 'fulfilled']
+      )
+      const left = await db
+        .select({ id: environment.id, isPrimary: environment.isPrimary })
+        .from(environment)
+        .where(eq(environment.projectId, projectId))
+      assertEquals(left.length === 0 || left.filter((row) => row.isPrimary).length === 1, true)
+    })
+  }
 })

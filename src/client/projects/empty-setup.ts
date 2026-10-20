@@ -11,7 +11,11 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { Db } from '../../db/connection.ts'
 import { environment, organization, project, variable } from '../../db/schema.ts'
 import { emptyComposeDocument } from '../../features/compose/index.ts'
-import { loadPrimaryEnvironment } from '../../features/projects/primary-environment.ts'
+import {
+  loadPrimaryEnvironment,
+  lockProjectForEnvironmentChange,
+} from '../../features/projects/primary-environment.ts'
+import { uniqueViolationMessage } from '../../db/unique-violation.ts'
 import { catalogEnvironmentCompose } from './catalog-compose.ts'
 import { syncEnvironmentWatch, syncProjectWatch } from '../../features/git/watch-records.ts'
 import {
@@ -129,6 +133,7 @@ export async function ensurePrimaryEnvironment(
   serverId?: string | null,
   defaultEnvironmentName?: string
 ): Promise<string> {
+  await lockProjectForEnvironmentChange(tx, projectId)
   const existing = await loadPrimaryEnvironment(tx, projectId)
   if (existing) {
     if (serverId != null && existing.serverId !== serverId) {
@@ -375,10 +380,18 @@ async function configureCatalogProject(
     if (err instanceof Error && err.message === 'encryption unavailable') {
       return { ok: false, error: 'Encryption unavailable', status: 503 }
     }
+    const raced = primaryRaceResult(err)
+    if (raced) return raced
     throw err
   }
 
   return { ok: true, alreadyConfigured: false }
+}
+
+/** A lost race on the primary-environment index is a conflict the caller can retry, not a 500. */
+function primaryRaceResult(err: unknown): ConfigureProjectResult | null {
+  if (!uniqueViolationMessage(err)?.includes('uniq_environment_project_primary')) return null
+  return { ok: false, error: 'primary_environment_conflict', status: 409 }
 }
 
 async function configureDockerComposeProject(
@@ -388,22 +401,28 @@ async function configureDockerComposeProject(
   defaultEnvironmentName?: string,
   existingOptions?: unknown
 ): Promise<ConfigureProjectResult> {
-  await db.transaction(async (tx) => {
-    await ensurePrimaryEnvironment(tx, projectId, serverId, defaultEnvironmentName)
-    await tx
-      .update(project)
-      .set({
-        metadata: { type: 'docker-compose' },
-        options: settleDeployOptions(
-          existingOptions,
-          { compose: emptyComposeDocument() },
-          'project'
-        ),
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(project.id, projectId))
-    await syncProjectWatch(tx, projectId)
-  })
+  try {
+    await db.transaction(async (tx) => {
+      await ensurePrimaryEnvironment(tx, projectId, serverId, defaultEnvironmentName)
+      await tx
+        .update(project)
+        .set({
+          metadata: { type: 'docker-compose' },
+          options: settleDeployOptions(
+            existingOptions,
+            { compose: emptyComposeDocument() },
+            'project'
+          ),
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(project.id, projectId))
+      await syncProjectWatch(tx, projectId)
+    })
+  } catch (err) {
+    const raced = primaryRaceResult(err)
+    if (raced) return raced
+    throw err
+  }
   return { ok: true, alreadyConfigured: false }
 }
 

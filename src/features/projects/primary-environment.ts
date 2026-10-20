@@ -25,7 +25,10 @@ export function isFirstEnvironmentOf(projectId: string): SQL<boolean> {
 }
 
 /** Serialises creates, deletes and "make primary" for one project. */
-export async function lockProjectForEnvironmentChange(tx: DbTx, projectId: string): Promise<void> {
+export async function lockProjectForEnvironmentChange(
+  tx: Reader,
+  projectId: string
+): Promise<void> {
   await tx.execute(sql`SELECT 1 FROM "project" WHERE "id" = ${projectId}::uuid FOR UPDATE`)
 }
 

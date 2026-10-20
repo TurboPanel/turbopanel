@@ -1,4 +1,6 @@
 import { assertEquals } from '@std/assert'
+import { isComposeChainError, resolveComposeLayerChain } from '../compose/layer-chain.ts'
+import { mergeComposeLayers } from '../compose/layers.ts'
 import { makeComposeTag } from '../compose/tags.ts'
 import {
   decideEnvironmentPush,
@@ -45,16 +47,16 @@ const WEB = {
 }
 
 test('a copy drops domains, published ports, container names and the branch, and keeps the rest', () => {
-  const { options, notCopied } = copyOfPrimaryOptions({ compose: document({ web: WEB }) })
+  const { options, notCopied } = copyOfPrimaryOptions({ compose: document({ web: WEB }) }, null)
   const web = servicesOf(options).web
   assertEquals(web.image, 'nginx:1')
   assertEquals(web.container_name, undefined)
   // Container-internal ports stay; published ones move to expose.
   assertEquals(web.ports, ['3000', { target: 22 }])
-  assertEquals(web.expose, ['80', '90', '443'])
+  assertEquals(web.expose, ['80', '90/tcp', '443'])
   assertEquals((web['x-turbopanel'] as Loose).hosting, undefined)
   assertEquals((web['x-turbopanel'] as Loose).source, { sourceId: SOURCE_ID, deployOnPush: false })
-  assertEquals(notCopied.length, 6)
+  assertEquals(notCopied.length, 7)
   assertEquals(
     notCopied.some((line) => line.startsWith('Domains')),
     true
@@ -62,7 +64,7 @@ test('a copy drops domains, published ports, container names and the branch, and
 })
 
 test('the source is kept but a push never deploys the copy', () => {
-  const { options } = copyOfPrimaryOptions({ compose: document({ web: WEB }) })
+  const { options } = copyOfPrimaryOptions({ compose: document({ web: WEB }) }, null)
   const bindings = environmentBranchBindings({
     projectOptions: { compose: document({}) },
     environmentOptions: options,
@@ -88,7 +90,7 @@ test('tags and extra layers are copied and cleaned too, and the original is unto
     ],
   }
   const before = structuredClone(primary)
-  const { options } = copyOfPrimaryOptions(primary)
+  const { options } = copyOfPrimaryOptions(primary, null)
   assertEquals(primary, before)
   assertEquals(
     servicesOf(options).web,
@@ -108,11 +110,65 @@ test('tags and extra layers are copied and cleaned too, and the original is unto
 })
 
 test('a primary with no changes of its own copies to nothing, and only the fixed notes remain', () => {
-  const none = copyOfPrimaryOptions(null)
+  const none = copyOfPrimaryOptions(null, null)
   assertEquals(none.options, null)
   assertEquals(none.notCopied.length, 2)
   assertEquals(
-    copyOfPrimaryOptions({ compose: document({ db: { image: 'pg' } }) }).notCopied.length,
+    copyOfPrimaryOptions({ compose: document({ db: { image: 'pg' } }) }, null).notCopied.length,
     2
   )
+})
+
+test('what the Base still gives the copy is overridden in the copy, using the merge rules', () => {
+  const base = {
+    compose: document({
+      web: {
+        ...WEB,
+        ports: ['8080:80', '53:53/udp', '3000'],
+      },
+    }),
+  }
+  const { options, notCopied } = copyOfPrimaryOptions(null, base)
+  const layers = resolveComposeLayerChain({
+    projectOptions: base,
+    environmentOptions: options,
+    environmentFilename: 'e.yml',
+  })
+  if (isComposeChainError(layers)) throw new TypeError('chain')
+  const web = (mergeComposeLayers(layers).data.services as Record<string, Loose>).web!
+  assertEquals(web.container_name, undefined)
+  assertEquals(web.ports, ['3000'])
+  const extension = web['x-turbopanel'] as Loose
+  assertEquals(extension.hosting, undefined)
+  assertEquals(extension.source, { sourceId: SOURCE_ID, branch: 'main', deployOnPush: false })
+  assertEquals(
+    ['Domains', 'Published', 'Fixed', 'Push deploys'].every((start) =>
+      notCopied.some((line) => line.startsWith(start))
+    ),
+    true
+  )
+  // A push to the Base's own branch does not deploy the copy.
+  const bindings = environmentBranchBindings({
+    projectOptions: base,
+    environmentOptions: options,
+    sourceId: SOURCE_ID,
+    repositoryDefaultBranch: 'main',
+  })
+  assertEquals(decideEnvironmentPush(bindings, 'main'), 'push_deploys_off')
+})
+
+test('a Base with nothing unique adds no overrides, and a udp port keeps its protocol', () => {
+  assertEquals(
+    copyOfPrimaryOptions(null, { compose: document({ db: { image: 'pg' } }) }).options,
+    null
+  )
+  const { options } = copyOfPrimaryOptions(
+    {
+      compose: document({
+        dns: { image: 'd', ports: ['53:53/udp', { target: 67, published: 67, protocol: 'udp' }] },
+      }),
+    },
+    null
+  )
+  assertEquals(servicesOf(options).dns!.expose, ['53/udp', '67/udp'])
 })

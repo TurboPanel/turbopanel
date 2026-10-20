@@ -508,8 +508,8 @@ test('configureProjectType configures docker-compose via transaction', async () 
   )
   assertEquals(result, { ok: true, alreadyConfigured: false })
   // The project options were rewritten, so its watch rows are brought in step
-  // (one sync is a delete and an insert).
-  assertEquals(watchSyncs, 2)
+  // (one sync is a delete and an insert), after the project row lock statement.
+  assertEquals(watchSyncs, 3)
 })
 
 const TUNING = { drainSeconds: 45, healthTimeoutSeconds: 200, rollbackWindowMinutes: 10 }
