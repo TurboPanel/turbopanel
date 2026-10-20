@@ -16,12 +16,9 @@ import {
 type PrincipalRow = Pick<
   typeof principal.$inferSelect,
   | 'id'
-  | 'kind'
-  | 'provider'
   | 'username'
   | 'appliedUsername'
   | 'projectId'
-  | 'managedId'
   | 'metadata'
   | 'options'
   | 'createdAt'
@@ -30,8 +27,6 @@ type PrincipalRow = Pick<
 
 export type SerializedProjectPrincipal = {
   id: string
-  kind: string
-  provider: string
   username: string
   /**
    * Login actually created on the host — the short `username` plus a random
@@ -46,7 +41,6 @@ export type SerializedProjectPrincipal = {
    */
   nameScheme: PrincipalNameScheme
   projectId: string | null
-  managedId: string | null
   metadata: unknown
   options: unknown
   /** Services this principal runs as / owns storage for (via `tenancy`). */
@@ -84,13 +78,10 @@ export function serializeProjectPrincipal(
 ): SerializedProjectPrincipal {
   return {
     id: row.id,
-    kind: row.kind,
-    provider: row.provider,
     username: row.username,
     appliedUsername: row.appliedUsername,
     nameScheme: principalNameSchemeOf(row),
     projectId: row.projectId,
-    managedId: row.managedId,
     metadata: row.metadata,
     options: row.options,
     serviceIds: [...serviceIds].sort((a, b) => a.localeCompare(b)),

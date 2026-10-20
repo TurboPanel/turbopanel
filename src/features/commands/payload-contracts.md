@@ -123,6 +123,45 @@ storage, placed on a server). Also enqueued when a copy is moved, re-pathed or
 deleted, and when its storage is edited or deleted (every host that held one of
 its copies' policies).
 
+`server.folders.remove` takes the files of a deleted service or volume off a
+host: `{ folders[] }` (1 to 100), each `{ kind: service | volume, assetId?,
+folder: { owner, scope, slug } }`. A folder is named by its parts, never by a
+path; `assetId` is the service or volume id while the panel still has it (a
+deleted asset's row has lost it, and the host then finds it from its own record
+of the folder, which also guards against a reference that belongs to another
+asset). The host removes each through the root helper (structural folders are
+refused, links are never followed, nothing inside is re-owned) and answers `{
+summary, folders[] }`, one `{ owner, scope, kind, slug, removed, reason? }` per
+requested folder, in order. The consumer deletes the `removing` row of each
+folder reported removed and logs the reason of one that stayed (its row keeps
+its locks). Sent by `features/folders/removal.ts` after a delete of a service,
+a volume or a volume copy commits, naming every `removing` folder of that
+server; and by `runFolderRemovalSweep` (Workers cron + Deno maintenance tick)
+for a connected server that has `removing` rows and was not asked since it
+reconnected or in the last 15 minutes, which is how a server that was offline at
+delete time catches up and how a folder the host could not remove is retried.
+Stopping an environment and a service leaving the compose file never send it.
+600s consumer timeout.
+
+`environment.deploy` result `keptFolders[]` (`{ owner, scope, kind: 'service',
+slug }`) lists service folders the host left in place because their service is
+no longer in the compose file: a removed service keeps its files, and only an
+explicit delete removes them. The consumer marks each folder row `orphan`
+(still counted by the locks, still shown with a plain reason) unless the row is
+already `removing`.
+
+`server.principals.reconcile` result `folders[]` (`{ owner, scope, kind, slug,
+present }`) is a complete listing of the asset folders the host found, and
+`principals[].home` is each account's directory as the host reports it (written
+to `placement.home`; the panel never computes it). Absent `folders` says nothing
+(the host could not finish the listing). Compared with the folder rows
+(`reconcileReportedFolders`): a `present` row the host lacks becomes `missing`
+(which no longer locks), a `missing` row that came back becomes `present`, a
+`removing` or `orphan` row the host no longer has is deleted, and a folder with
+no row gets an `orphan` row (tied to the environment of the same name in the
+owner's project when there is exactly one). Nothing on a host is deleted
+because of a difference.
+
 `storage.backup` (added 2026-09-30) is a manual backup of one storage copy:
 `{ copyId, copyProvider, volumeName? | hostPath? | organizationId? + storageId?,
 action: create | delete, backupId, policyId? }` — the same copy-source fields as
@@ -318,7 +357,7 @@ snippet, reclaims listed `siteReleases[]` trees, deletes the deployment dir, and
 `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets` tree
 (`turbopaneld/src/commands/stop-environment.ts`).
 
-**`siteReleases[]` (`{ serviceId, username }[]`) is generic host reclaim, not a
+**`siteReleases[]` (`{ serviceId, username, folder? }[]`) is generic host reclaim, not a
 site detail.** It names `<principalHome>/sites/<serviceId>` — the tree the Git
 release engine publishes into (`releases/`, `current`, `shared/`) and the one
 the native-runtime phase will run out of. Like `fabricNetworks[]`, it is
@@ -332,11 +371,65 @@ deploy that published them. Without the recorded half, a Git-backed service
 removed from the compose would vanish from the current document and leave its
 tree orphaned on the host. What each deploy _records_ stays current-only
 (`resolveSourcedEnvironmentSiteReleases`), so the record cannot grow without
-bound — a redeploy reclaims removed trees on the host itself, from
-`deployment.json` `releases[]`. The tree is root-owned, so the daemon removes it
-through its privileged runner; removal is best-effort per entry and never fails
-the stop. Idempotent when the compose file is already gone. Used as the teardown
-gate before project cascade delete. **Contrast with `environment.lifecycle`:**
+bound — a redeploy never removes a removed service's folder (see
+`keptFolders` below), and the host reclaims no other tree of its own accord
+(there is no older per-service tree any more). A delete teardown names the
+folders to remove; they are root-owned, so the daemon removes them through its
+privileged runner, best-effort per entry, and a failure never fails the stop.
+Idempotent when the compose file is already gone. Used as the teardown
+gate before project cascade delete. `folder` (`{ owner, scope, slug }`, the
+service folder as components) names the folder to remove; the daemon takes the
+path from the components and never from a path on the wire. The explicit stop route sends **no** `siteReleases`: stopping keeps
+every service and volume folder, uploads included, and only delete teardown or a
+server leaving the environment names trees to reclaim. A deploy's
+`storageMaterial[].folder` (`{ owner, scope, slug }`) carries the same for an
+owned volume, and `serviceFolders[]` (`{ serviceId, composeServiceName?, folder }`) names the
+folder of every host-run service (site, native app or Git-backed source) by
+service id. `composeServiceName` is optional and lets the host tie an entry to
+a site or app that appears in none of the lists that carry its service id (no
+hostname, source or native unit): the host takes the service id from the entry
+that names the compose service, then looks the folder up as usual. A host that
+does not read the field ignores it. A host that gets a service folder serves,
+publishes and runs that service from `<owner>/<scope>/services/<name>`; a
+service with no entry is refused (there is no older per-service tree).
+`removedSites[]` (compose service names, optional) names the sites that left
+the compose file: after the rest of the deploy has succeeded the host removes
+exactly those sites' vhost, php-fpm pool and per-site runtime in this
+environment (never one that is still in `sites[]`), and nothing host-wide.
+Absent or empty removes nothing: a site missing from `sites[]` is never read as
+removed. The control plane names a removed service only while its service
+folder on that server is still `present` or `planned`; the deploy that succeeds
+marks the folder an orphan, so the name is not repeated on every later deploy
+(a deploy that fails leaves the folder as it was, and the next one asks again).
+A key the host would refuse (`.`, `..`) is never sent. The folder of a removed
+site stays, as an orphan.
+`takeoverHostnames[]` (`{ hostname, fromEnvironmentId }`, optional) lists
+hostnames of this deploy's hostings (www redirect names a hosting owns
+included; lowercase, international names as punycode) together with the
+environment that held each one. The control plane lists a name only when it can
+show, from what it last sent that environment for this server, that an
+environment of the same organization served it, and that environment has no
+hosting for it any more (hostname uniqueness is per organization, so another
+organization's environment is never named, and a name nothing here ever
+served is never listed). The host takes a listed name only from the config of
+the environment named for it: it removes that name's site block, and only that,
+from that environment's snippet, and refuses if any other environment's
+snippet also holds the name or if that file has an address line it cannot read.
+Several files in one deploy are changed together: every file is written first,
+hosting Caddy reloads once, and all of them are put back if the reload is
+refused. A file left with no site block and nothing else is removed; a file
+that still has an import, a global block or a snippet definition is kept. A
+conflict on a name not in the list is refused as before, before anything is
+changed.
+An older host ignores the field and refuses as before. The stop
+result's `folders[]` (`{ owner, scope, kind: 'service',
+slug, removed, reason? }`) says which reclaimed folders are gone; `reason` (plain
+words) says why one stayed. The consumer deletes the `removing` row of every
+folder reported removed (`confirmFolderRemoved`, through
+`features/folders/reports.ts`), which lifts the locks on the environment, project
+and server once the last one is gone; a folder that stayed keeps its row. The
+deploy command keeps `metadata.folderIds`, the folder rows it planned, which its
+success marks present. **Contrast with `environment.lifecycle`:**
 stop is **destructive teardown** (`down --remove-orphans --volumes`, hosting
 site + deployment dir + `/run` secrets removed, `containers: []` clears pins);
 lifecycle is **non-destructive** (`compose start|stop|restart`,
@@ -374,7 +467,7 @@ retire there) and the daemon prunes no key file on an empty set without the
 explicit `allowEmpty: true`, which nothing sets today.
 
 **Account ids are allocated centrally and reported back.** A principal that has
-no uid/gid on any server yet takes one number from `principal_id_seq` when it is
+no uid/gid on any server yet takes one number from the counter of the organization that owns the server (`organization.next_linux_id`, from 30001, never reused) when it is
 first placed (deploy prepare or a reconcile), recorded on its `placement` row;
 every later server gets the same number in `principalMaterial[]` /
 `principals[]`. An operator override on the principal wins; an account that

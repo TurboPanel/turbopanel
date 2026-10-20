@@ -12,7 +12,6 @@ import {
   binding,
   environment,
   login,
-  principal,
   project,
   service,
   slot,
@@ -20,11 +19,7 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import { HOST_RUN_LOOPBACK_HOST } from '../../lib/naming.ts'
-import { bindingLoginJoin, bindingManagedId } from './logins.ts'
-import {
-  parseProjectOptions,
-  resolveEffectivePlacementServerId,
-} from '../projects/project-options.ts'
+import { resolveEffectivePlacementServerId } from '../projects/project-options.ts'
 
 /**
  * Managed clusters whose consumers (compose services) place on `serverId`.
@@ -41,9 +36,9 @@ export async function loadBoundManagedIdsForServer(
 ): Promise<string[]> {
   const rows = await db
     .select({
-      managedId: bindingManagedId,
+      managedId: login.managedId,
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
       taskServerId: slot.serverId,
     })
     .from(binding)
@@ -51,8 +46,7 @@ export async function loadBoundManagedIdsForServer(
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
     .innerJoin(workspace, eq(project.workspaceId, workspace.id))
-    .leftJoin(login, bindingLoginJoin())
-    .leftJoin(principal, eq(principal.id, binding.principalId))
+    .innerJoin(login, eq(login.id, binding.loginId))
     .leftJoin(slot, eq(slot.serviceId, service.id))
     .where(
       and(
@@ -60,10 +54,7 @@ export async function loadBoundManagedIdsForServer(
         or(
           eq(environment.serverId, serverId),
           eq(slot.serverId, serverId),
-          and(
-            isNull(environment.serverId),
-            sql`${project.options}->>'defaultServerId' = ${serverId}`
-          )
+          and(isNull(environment.serverId), sql`${project.defaultServerId} = ${serverId}`)
         )
       )
     )
@@ -73,7 +64,7 @@ export async function loadBoundManagedIdsForServer(
     if (!row.managedId) continue
     const placement = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions)
+      row.projectDefaultServerId
     )
     if (placement === serverId || row.taskServerId === serverId) {
       ids.add(row.managedId)
@@ -101,7 +92,7 @@ export async function serverHasHostRunBinding(
   const rows = await db
     .select({
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
       taskServerId: slot.serverId,
     })
     .from(binding)
@@ -124,18 +115,13 @@ export async function serverHasHostRunBinding(
         or(
           eq(environment.serverId, serverId),
           eq(slot.serverId, serverId),
-          and(
-            isNull(environment.serverId),
-            sql`${project.options}->>'defaultServerId' = ${serverId}`
-          )
+          and(isNull(environment.serverId), sql`${project.defaultServerId} = ${serverId}`)
         )
       )
     )
   return rows.some(
     (row) =>
-      resolveEffectivePlacementServerId(
-        row.environmentServerId,
-        parseProjectOptions(row.projectOptions)
-      ) === serverId || row.taskServerId === serverId
+      resolveEffectivePlacementServerId(row.environmentServerId, row.projectDefaultServerId) ===
+        serverId || row.taskServerId === serverId
   )
 }

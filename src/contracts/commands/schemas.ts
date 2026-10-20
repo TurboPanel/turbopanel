@@ -1,4 +1,10 @@
 import {
+  type FolderRefParts,
+  folderRefParts,
+  isPathId,
+  parseFolderRefParts,
+} from '../directory-names.ts'
+import {
   type HostingWwwMode,
   HOSTNAME_MAX_LENGTH,
   isHostingWwwMode,
@@ -254,6 +260,15 @@ export type PrincipalsReconcileCommandPayload = {
   allowEmpty?: boolean
 }
 
+/** One asset folder the host found, by its four components. */
+export type ReportedFolder = {
+  owner: string
+  scope: string
+  kind: 'service' | 'volume'
+  slug: string
+  present: boolean
+}
+
 /** Must stay in sync with the daemon `server.principals.reconcile` shape. */
 export type PrincipalsReconcileCommandResult = {
   principalsApplied: number
@@ -270,6 +285,14 @@ export type PrincipalsReconcileCommandResult = {
    * its placement. Optional: an older daemon does not send it.
    */
   principals?: PrincipalIdReport[]
+  /**
+   * Every asset folder the host found on disk, so the control plane can mark a
+   * folder it expects as missing and record one it does not know as an orphan.
+   * Absent when the host could not complete the listing (an absent list says
+   * nothing about any folder) and from older daemons. Nothing is deleted
+   * because of it.
+   */
+  folders?: ReportedFolder[]
   /**
    * Host conditions that will stop a valid key from working and that TurboPanel
    * refuses to edit its way around (`AllowUsers`, `DenyGroups`, …). Reported so
@@ -639,6 +662,25 @@ export type PrincipalIdReport = {
   principalId: string
   uid: number
   gid: number
+  /** The account's directory on the host, reported by the daemon (`<home root>/<name>`). Absent from older daemons. */
+  home?: string
+}
+
+const MAX_REPORTED_HOME_LENGTH = 512
+
+/** A home the host reports: an absolute path with no control characters, no `..` step and no trailing slash. */
+export function isReportedHome(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length < 2 || value.length > MAX_REPORTED_HOME_LENGTH) {
+    return false
+  }
+  if (!value.startsWith('/') || value.endsWith('/') || value.includes('//')) {
+    return false
+  }
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0
+    if (code < 0x20 || code === 0x7f) return false
+  }
+  return !value.split('/').some((step) => step === '..' || step === '.')
 }
 
 const MAX_PRINCIPAL_ID_REPORTS = 1000
@@ -652,7 +694,12 @@ export function parsePrincipalIdReports(value: unknown): PrincipalIdReport[] | u
     const { uid, gid } = entry
     if (typeof uid !== 'number' || !Number.isInteger(uid) || uid <= 0) continue
     if (typeof gid !== 'number' || !Number.isInteger(gid) || gid <= 0) continue
-    out.push({ principalId: entry.principalId, uid, gid })
+    out.push({
+      principalId: entry.principalId,
+      uid,
+      gid,
+      ...(isReportedHome(entry.home) ? { home: entry.home } : {}),
+    })
   }
   return out.length > 0 ? out : undefined
 }
@@ -668,6 +715,7 @@ export function parsePrincipalsReconcileResult(value: unknown): PrincipalsReconc
     throw new TypeError('sshdReloaded must be a boolean')
   }
   const principals = parsePrincipalIdReports(value.principals)
+  const folders = parseReportedFolders(value.folders)
   return {
     principalsApplied: value.principalsApplied,
     keysChanged: parseStringArrayField(value.keysChanged, 'keysChanged'),
@@ -679,8 +727,140 @@ export function parsePrincipalsReconcileResult(value: unknown): PrincipalsReconc
           principalsRetired: parseStringArrayField(value.principalsRetired, 'principalsRetired'),
         }),
     ...(principals === undefined ? {} : { principals }),
+    ...(folders === undefined ? {} : { folders }),
     warnings: parseStringArrayField(value.warnings, 'warnings'),
   }
+}
+
+/** Most folders one reconcile result is read for; a longer list is cut and the result is treated as unlisted. */
+export const MAX_REPORTED_FOLDERS = 20000
+
+/**
+ * The folders list of a reconcile result. A list is a complete picture of the
+ * host or it is nothing: a list longer than the cap is dropped whole (never
+ * truncated, which would read as folders gone), and so is a list with an entry
+ * that fails the folder rules (that entry may be a real folder, and the rest
+ * would then read as the whole host). `undefined` means "no list", so nothing
+ * is concluded from it.
+ */
+export function parseReportedFolders(value: unknown): ReportedFolder[] | undefined {
+  if (!Array.isArray(value) || value.length > MAX_REPORTED_FOLDERS) {
+    return undefined
+  }
+  const out: ReportedFolder[] = []
+  for (const entry of value) {
+    if (!isRecord(entry) || (entry.kind !== 'service' && entry.kind !== 'volume')) return undefined
+    if (typeof entry.present !== 'boolean') return undefined
+    try {
+      const ref = parseFolderRefParts(
+        { owner: entry.owner, scope: entry.scope, slug: entry.slug },
+        entry.kind
+      )
+      out.push({ ...folderRefParts(ref), kind: entry.kind, present: entry.present })
+    } catch {
+      return undefined
+    }
+  }
+  return out
+}
+
+/**
+ * Must stay in sync with the daemon `server.folders.remove` shape.
+ *
+ * Remove asset folders whose service or volume the panel has deleted. The only
+ * way a volume folder leaves a host: stopping an environment keeps volumes,
+ * and a service that leaves the compose file keeps its folder. Each entry
+ * names a folder by its four components, never by a path.
+ */
+export type FoldersRemoveCommandPayload = { folders: FolderRemovalEntry[] }
+
+/** One folder to remove. */
+export type FolderRemovalEntry = {
+  kind: 'service' | 'volume'
+  /**
+   * The service or volume id, when the panel still has it (a deleted asset's
+   * row has lost it; the host finds it from its own record). Checked against
+   * the host's record of the folder.
+   */
+  assetId?: string
+  folder: FolderRefParts
+}
+
+/** Most folders one `server.folders.remove` names. */
+export const FOLDERS_REMOVE_MAX = 100
+
+/** Must stay in sync with the daemon `server.folders.remove` shape. */
+export type FoldersRemoveCommandResult = {
+  summary?: string
+  /** One entry per requested folder; absent entries are unknown, not removed. */
+  folders: FolderRemovalResult[]
+}
+
+/** What happened to one requested folder. */
+export type FolderRemovalResult = {
+  owner: string
+  scope: string
+  kind: 'service' | 'volume'
+  slug: string
+  /** True once the folder is gone from the host (or was never there). */
+  removed: boolean
+  /** Why it stayed, in plain words. Only when `removed` is false. */
+  reason?: string
+}
+
+export function parseFoldersRemovePayload(value: unknown): FoldersRemoveCommandPayload {
+  if (!isRecord(value) || !Array.isArray(value.folders)) {
+    throw new TypeError('Invalid folders remove payload')
+  }
+  if (value.folders.length === 0 || value.folders.length > FOLDERS_REMOVE_MAX) {
+    throw new TypeError(`folders must name 1 to ${FOLDERS_REMOVE_MAX} folders`)
+  }
+  return { folders: value.folders.map(parseFolderRemovalEntry) }
+}
+
+function parseFolderRemovalEntry(value: unknown): FolderRemovalEntry {
+  if (!isRecord(value)) throw new TypeError('Invalid folders remove entry')
+  if (value.kind !== 'service' && value.kind !== 'volume') {
+    throw new TypeError('Invalid folders remove kind')
+  }
+  const entry: FolderRemovalEntry = {
+    kind: value.kind,
+    folder: folderRefParts(parseFolderRefParts(value.folder, value.kind)),
+  }
+  if (value.assetId !== undefined) {
+    if (typeof value.assetId !== 'string' || !isPathId(value.assetId)) {
+      throw new TypeError('Invalid folders remove assetId')
+    }
+    entry.assetId = value.assetId
+  }
+  return entry
+}
+
+/** Lenient like the other result parsers: well-formed entries only. */
+export function parseFoldersRemoveResult(value: unknown): FoldersRemoveCommandResult {
+  const result: FoldersRemoveCommandResult = { folders: [] }
+  if (!isRecord(value)) return result
+  if (isString(value.summary)) result.summary = value.summary
+  if (!Array.isArray(value.folders)) return result
+  for (const entry of value.folders.slice(0, FOLDERS_REMOVE_MAX)) {
+    if (!isRecord(entry) || typeof entry.removed !== 'boolean') continue
+    if (entry.kind !== 'service' && entry.kind !== 'volume') continue
+    try {
+      const ref = parseFolderRefParts(
+        { owner: entry.owner, scope: entry.scope, slug: entry.slug },
+        entry.kind
+      )
+      result.folders.push({
+        ...folderRefParts(ref),
+        kind: entry.kind,
+        removed: entry.removed,
+        ...(!entry.removed && isString(entry.reason) ? { reason: clipReason(entry.reason) } : {}),
+      })
+    } catch {
+      // One entry that fails the folder rules is left out.
+    }
+  }
+  return result
 }
 
 export function parseTlsTrustReconcilePayload(value: unknown): TlsTrustReconcileCommandPayload {
@@ -1650,6 +1830,18 @@ export type EnvironmentDeployStorageMount = {
   readOnly?: boolean
 }
 
+/** One service's folder under its site owner's tree. */
+export type EnvironmentDeployServiceFolder = {
+  serviceId: string
+  /**
+   * The compose service the folder belongs to. It lets the host tie a site or
+   * app with no hostname, source or native app to its service id, which no
+   * other list carries for it.
+   */
+  composeServiceName?: string
+  folder: FolderRefParts
+}
+
 export type EnvironmentDeployStorageMaterial = {
   storageId: string
   locationId: string
@@ -1657,6 +1849,12 @@ export type EnvironmentDeployStorageMaterial = {
   name: string
   provider: 'docker' | 'path'
   sourcePath?: string
+  /**
+   * The volume's folder under its site owner's tree, as components. Owned
+   * volumes are addressed by it alone: `sourcePath` is no longer sent for
+   * them, and the daemon refuses a `sourcePath` that comes without a folder.
+   */
+  folder?: FolderRefParts
   /**
    * On-host Docker volume name. Required when `provider` is `docker`.
    */
@@ -2094,9 +2292,9 @@ export type EnvironmentDeployNativeAppVariable = {
  * `credential` — **never** embedded in `cloneUrl`, which stays credential-free
  * so it can be logged verbatim.
  *
- * `releaseId` becomes a directory name under
- * `<principalHome>/sites/<serviceId>/releases/`, so it is validated as a safe
- * id (no path separators) on both sides of the wire.
+ * `releaseId` becomes a directory name under the service's `releases/` folder
+ * (`<principalHome>/<scope>/services/<name>/releases/`), so it is validated as
+ * a safe id (no path separators) on both sides of the wire.
  */
 /** Auth shape of a clone credential — see `EnvironmentDeploySource.credentialKind`. */
 export type EnvironmentDeploySourceCredentialKind = 'token' | 'ssh_key'
@@ -2416,6 +2614,31 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
   /** File-only secret mounts (paths/names, no plaintext). */
   secretPlan?: EnvironmentDeploySecretPlanEntry[]
   storageMaterial?: EnvironmentDeployStorageMaterial[]
+  /**
+   * The folder of every service this deploy runs on the host (a site, a native
+   * app or a Git-backed source), as components. The service id is the same
+   * value the release tree, units and hosting use. The control plane always
+   * sends it (empty when nothing runs on the host); the daemon refuses a
+   * host-run service with no entry.
+   */
+  serviceFolders?: EnvironmentDeployServiceFolder[]
+  /**
+   * Compose service names of sites that left the compose file. The host removes
+   * the vhost, php-fpm pool and per-site runtime of exactly these, in this
+   * environment, after the deploy has succeeded. Absent or empty removes
+   * nothing: a site missing from `sites` is never read as removed.
+   */
+  removedSites?: string[]
+  /**
+   * Hostnames of this deploy's hostings (www redirect names included) that the
+   * control plane can show another environment of the same organization held on
+   * this server, from what it last sent that environment, and that environment
+   * no longer has a hosting for. Each entry names that environment
+   * (`fromEnvironmentId`). The host takes a name only from that environment's
+   * own config, and refuses if any other config also holds it. Absent or
+   * empty: refuse.
+   */
+  takeoverHostnames?: EnvironmentDeployTakeover[]
   principalMaterial?: EnvironmentDeployPrincipalMaterial[]
   serviceHooks?: EnvironmentDeployServiceHook[]
   /**
@@ -2443,6 +2666,9 @@ export type EnvironmentDeployHostingWeb = {
   secretEnv?: Record<string, string>
   php?: EnvironmentDeployHostingPhp
 }
+
+/** A hostname the host may take over, and the environment that held it. */
+export type EnvironmentDeployTakeover = { hostname: string; fromEnvironmentId: string }
 
 export type EnvironmentDeployHosting = {
   hostingId: string
@@ -2554,6 +2780,37 @@ export type EnvironmentDeployCommandResult = {
   warnings?: string[]
   /** The uid/gid each account this deploy ensured has on the host; absent from older daemons. */
   principals?: PrincipalIdReport[]
+  /**
+   * Service folders the host left in place because their service is no longer
+   * in the compose file (a removed service keeps its files; only an explicit
+   * delete removes them). Each becomes an orphan folder row. Absent when there
+   * were none and from older daemons.
+   */
+  keptFolders?: KeptFolder[]
+}
+
+/** A service folder a deploy left in place, by its components. */
+export type KeptFolder = { owner: string; scope: string; kind: 'service'; slug: string }
+
+/** Most kept folders one deploy result is read for. */
+const MAX_KEPT_FOLDERS = 1000
+
+function parseKeptFolders(value: unknown): KeptFolder[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const out: KeptFolder[] = []
+  for (const entry of value.slice(0, MAX_KEPT_FOLDERS)) {
+    if (!isRecord(entry) || entry.kind !== 'service') continue
+    try {
+      const ref = parseFolderRefParts(
+        { owner: entry.owner, scope: entry.scope, slug: entry.slug },
+        'service'
+      )
+      out.push({ ...folderRefParts(ref), kind: 'service' })
+    } catch {
+      // A result is a report; one entry that fails the folder rules is left out.
+    }
+  }
+  return out.length > 0 ? out : undefined
 }
 
 const MAX_ENVIRONMENT_DEPLOY_CONTAINERS = 100
@@ -2908,6 +3165,9 @@ function parseDeployStorageMaterialEntry(entry: unknown): EnvironmentDeployStora
     material.volumeName = entry.volumeName
   }
   if (isString(entry.sourcePath)) material.sourcePath = entry.sourcePath
+  if (entry.folder !== undefined) {
+    material.folder = folderRefParts(parseFolderRefParts(entry.folder, 'volume'))
+  }
   if (isString(entry.principalId)) material.principalId = entry.principalId
   if (isString(entry.contentEnvelope)) {
     material.contentEnvelope = entry.contentEnvelope
@@ -3062,6 +3322,58 @@ function parseDeployStorageMaterial(
 ): EnvironmentDeployStorageMaterial[] | undefined {
   if (!Array.isArray(value)) return undefined
   return value.map(parseDeployStorageMaterialEntry)
+}
+
+function parseDeployTakeoverHostnames(value: unknown): EnvironmentDeployTakeover[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new Error('Invalid environment.deploy payload')
+  return value.map((entry) => {
+    const name = isRecord(entry) ? entry.hostname : undefined
+    const from = isRecord(entry) ? entry.fromEnvironmentId : undefined
+    if (
+      !isString(name) ||
+      name.length > 253 ||
+      !/^[a-z0-9*][a-z0-9.*-]*$/.test(name) ||
+      !isString(from) ||
+      !/^[A-Za-z0-9_-]{1,64}$/.test(from)
+    ) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    return { hostname: name, fromEnvironmentId: from }
+  })
+}
+
+function parseDeployRemovedSites(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new Error('Invalid environment.deploy payload')
+  return value.map((name) => {
+    if (!isString(name) || name === '.' || name === '..' || !/^[A-Za-z0-9._-]+$/.test(name)) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    return name
+  })
+}
+
+function parseDeployServiceFolders(value: unknown): EnvironmentDeployServiceFolder[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.map((entry): EnvironmentDeployServiceFolder => {
+    if (!isRecord(entry) || !isString(entry.serviceId) || entry.serviceId.length === 0) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    if (
+      entry.composeServiceName !== undefined &&
+      (!isString(entry.composeServiceName) || !/^[A-Za-z0-9._-]+$/.test(entry.composeServiceName))
+    ) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    return {
+      serviceId: entry.serviceId,
+      ...(entry.composeServiceName === undefined
+        ? {}
+        : { composeServiceName: entry.composeServiceName }),
+      folder: folderRefParts(parseFolderRefParts(entry.folder, 'service')),
+    }
+  })
 }
 
 function parseDeployServiceHookEntry(entry: unknown): EnvironmentDeployServiceHook {
@@ -4314,6 +4626,9 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       envFile: parseDeployEnvFile(value.envFile),
       secretPlan: parseDeploySecretPlan(value.secretPlan),
       storageMaterial: parseDeployStorageMaterial(value.storageMaterial),
+      serviceFolders: parseDeployServiceFolders(value.serviceFolders),
+      removedSites: parseDeployRemovedSites(value.removedSites),
+      takeoverHostnames: parseDeployTakeoverHostnames(value.takeoverHostnames),
       principalMaterial: parseDeployPrincipalMaterial(value.principalMaterial),
       serviceHooks: parseDeployServiceHooks(value.serviceHooks),
       listenerPorts:
@@ -4349,6 +4664,8 @@ export function parseEnvironmentDeployResult(value: unknown): EnvironmentDeployC
   if (warnings !== undefined) result.warnings = warnings
   const principals = parsePrincipalIdReports(value.principals)
   if (principals !== undefined) result.principals = principals
+  const keptFolders = parseKeptFolders(value.keptFolders)
+  if (keptFolders !== undefined) result.keptFolders = keptFolders
   return result
 }
 
@@ -4452,14 +4769,14 @@ export type EnvironmentStopCommandPayload = {
    */
   fabricNetworks?: string[]
   /**
-   * Per-service release trees (`<principalHome>/sites/<serviceId>`) to reclaim.
+   * Per-service folders (`<principalHome>/<scope>/services/<name>`) to reclaim.
    *
    * Generic on purpose — the same tree the Git release engine publishes into
    * and the native-runtime phase will run out of, not a site detail.
    * Captured while the `service` / `tenancy` / `principal` rows still exist,
    * because by the time the daemon runs the stop they may be gone.
    */
-  siteReleases?: Array<{ serviceId: string; username: string }>
+  siteReleases?: StopSiteRelease[]
   /**
    * Principals (applied Linux logins) that no project, site or app on this
    * server uses once the delete commits. The daemon retires each after the
@@ -4476,6 +4793,51 @@ export type EnvironmentStopCommandResult = {
   summary?: string
   /** Authoritative report — stop always returns `[]` on success so Postgres clears pins. */
   containers?: EnvironmentDeployContainer[]
+  /**
+   * What the host did with each service folder the stop was told to reclaim.
+   * Only present when the payload carried `siteReleases` with a `folder`.
+   */
+  folders?: EnvironmentStopFolderState[]
+}
+
+/** One reclaimed (or not) service folder, by its components. */
+export type EnvironmentStopFolderState = {
+  owner: string
+  scope: string
+  kind: 'service'
+  slug: string
+  removed: boolean
+  /** Why the folder stayed, in plain words. Present only when `removed` is false. */
+  reason?: string
+}
+
+const MAX_FOLDER_REASON_LENGTH = 300
+
+function clipReason(reason: string): string {
+  return reason.slice(0, MAX_FOLDER_REASON_LENGTH)
+}
+
+function parseStopFolderStates(value: unknown): EnvironmentStopFolderState[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const states: EnvironmentStopFolderState[] = []
+  for (const entry of value) {
+    if (!isRecord(entry) || entry.kind !== 'service' || typeof entry.removed !== 'boolean') continue
+    try {
+      const ref = parseFolderRefParts(
+        { owner: entry.owner, scope: entry.scope, slug: entry.slug },
+        'service'
+      )
+      states.push({
+        ...folderRefParts(ref),
+        kind: 'service',
+        removed: entry.removed,
+        ...(!entry.removed && isString(entry.reason) ? { reason: clipReason(entry.reason) } : {}),
+      })
+    } catch {
+      // A result is a report; one entry that fails the folder rules is left out.
+    }
+  }
+  return states
 }
 
 function parseStopIngressServices(value: unknown): Array<{ serviceId: string }> | undefined {
@@ -4493,18 +4855,23 @@ function parseStopIngressServices(value: unknown): Array<{ serviceId: string }> 
   return out
 }
 
+/**
+ * One service release tree to reclaim on stop. `folder` names the service's folder as
+ * components; it is optional until the daemon resolves folders itself, and `username` stays
+ * until then.
+ */
+export type StopSiteRelease = { serviceId: string; username: string; folder?: FolderRefParts }
+
 /** Same charset the daemon's release layout enforces before any path join. */
 const STOP_SITE_RELEASE_SERVICE_ID_RE = /^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$/
 const STOP_SITE_RELEASE_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,27}$/
 
-function parseStopSiteReleases(
-  value: unknown
-): Array<{ serviceId: string; username: string }> | undefined {
+function parseStopSiteReleases(value: unknown): StopSiteRelease[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
     throw new TypeError('siteReleases must be an array')
   }
-  const out: Array<{ serviceId: string; username: string }> = []
+  const out: StopSiteRelease[] = []
   for (const entry of value) {
     if (
       !isRecord(entry) ||
@@ -4515,7 +4882,11 @@ function parseStopSiteReleases(
     ) {
       throw new Error('Invalid environment.stop siteReleases entry')
     }
-    out.push({ serviceId: entry.serviceId, username: entry.username })
+    const release: StopSiteRelease = { serviceId: entry.serviceId, username: entry.username }
+    if (entry.folder !== undefined) {
+      release.folder = folderRefParts(parseFolderRefParts(entry.folder, 'service'))
+    }
+    out.push(release)
   }
   return out
 }
@@ -4599,6 +4970,8 @@ export function parseEnvironmentStopResult(value: unknown): EnvironmentStopComma
   if (isString(value.summary)) result.summary = value.summary
   const containers = parseDeployContainers(value.containers)
   if (containers !== undefined) result.containers = containers
+  const folders = parseStopFolderStates(value.folders)
+  if (folders !== undefined) result.folders = folders
   return result
 }
 
@@ -5285,7 +5658,7 @@ export type ManagedDestroyCommandPayload = {
    * Instance-only marker (never read by the daemon) distinguishing an API
    * hard-delete request from a future "destroy runtime only" action. When
    * true, `applyManagedDestroySideEffect` deletes the `managed` row after a
-   * successful destroy so `principal.managed_id` cascades. Stamped only on the
+   * successful destroy so the cluster's logins and databases cascade. Stamped only on the
    * primary member's destroy command so the row is deleted exactly once.
    */
   deleteAfterDestroy?: boolean
@@ -6925,9 +7298,15 @@ export type CopyBackupSource = {
   ownerUsername?: string
   /** A docker source: the compose project a non-storage-named volume must be labelled with. */
   composeProject?: string
+  /**
+   * A path source: the volume's folder by its parts. The host builds the directory from it and
+   * ignores `hostPath`, which stays beside it for hosts that do not know the field yet.
+   */
+  folder?: FolderRefParts
 }
 
 const COPY_SOURCE_FIELDS = [
+  'folder',
   'volumeName',
   'hostPath',
   'organizationId',
@@ -6940,12 +7319,32 @@ const COPY_SOURCE_FIELDS = [
 const COPY_OWNER_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
 const MAX_COPY_OWNER_USERNAME_LENGTH = 64
 
+/** The `folder` of a path copy source: valid parts, its own owner, and no other way of naming the source beside it. */
+function parseCopySourceFolder(raw: Record<string, unknown>, source: CopyBackupSource): void {
+  const ref = folderRefParts(parseFolderRefParts(raw.folder, 'volume'))
+  if (raw.ownerUsername !== undefined && raw.ownerUsername !== ref.owner) {
+    throw new Error('A path copy source folder must belong to its ownerUsername')
+  }
+  if (
+    raw.organizationId !== undefined ||
+    raw.storageId !== undefined ||
+    raw.composeProject !== undefined
+  ) {
+    throw new Error('Invalid path copy source folder')
+  }
+  source.folder = ref
+}
+
 function parsePathCopySource(raw: Record<string, unknown>, source: CopyBackupSource): void {
   if (raw.volumeName !== undefined) {
     throw new Error('A path copy source cannot name a volume')
   }
   if (raw.composeProject !== undefined) {
     throw new Error('A path copy source cannot name a compose project')
+  }
+  if (raw.folder !== undefined) {
+    parseCopySourceFolder(raw, source)
+    if (raw.hostPath === undefined) return
   }
   if (raw.hostPath !== undefined) {
     if (
@@ -6999,7 +7398,8 @@ export function parseCopyBackupSource(raw: Record<string, unknown>): CopyBackupS
   if (
     raw.hostPath !== undefined ||
     raw.organizationId !== undefined ||
-    raw.ownerUsername !== undefined
+    raw.ownerUsername !== undefined ||
+    raw.folder !== undefined
   ) {
     throw new Error('A docker copy source cannot name a host path')
   }
@@ -7055,6 +7455,8 @@ export type BackupPolicyWireEntry = {
   storageId?: string
   ownerUsername?: string
   composeProject?: string
+  /** A path copy: the volume's folder by its parts (see {@link CopyBackupSource.folder}). */
+  folder?: FolderRefParts
   onCalendar: string
   retentionKeep: number
   enabled: boolean
@@ -7216,9 +7618,9 @@ export const COPY_BACKUP_ARTIFACT_EXTENSION = 'tar.gz'
  * Must stay in sync with the daemon `storage.backup` shape.
  *
  * `create` archives the copy (live, no pause) into
- * `<backupDir>/copies/<copyId>/<backupId>.tar.gz`. `delete` removes an
+ * `<backupDir>/volumes/<copyId>/<backupId>.tar.gz`. `delete` removes an
  * artifact; `policyId` locates one a scheduled run made
- * (`<backupDir>/copies/<copyId>/policy-<policyId>/…`).
+ * (`<backupDir>/volumes/<copyId>/policy-<policyId>/…`).
  */
 export type StorageBackupCommandPayload = CopyBackupSource & {
   action: 'create' | 'delete'
@@ -8089,6 +8491,7 @@ export function parseCommandPayload(
   | FirewallReconcileCommandPayload
   | FirewallConfirmCommandPayload
   | BackupsReconcileCommandPayload
+  | FoldersRemoveCommandPayload
   | EnvironmentDeployCommandPayload
   | EnvironmentLifecycleCommandPayload
   | EnvironmentStopCommandPayload
@@ -8127,6 +8530,8 @@ export function parseCommandPayload(
       return parseFirewallConfirmPayload(value)
     case 'server.backups.reconcile':
       return parseBackupsReconcilePayload(value)
+    case 'server.folders.remove':
+      return parseFoldersRemovePayload(value)
     case 'environment.deploy':
       return parseEnvironmentDeployPayload(value)
     case 'environment.lifecycle':
@@ -8175,6 +8580,7 @@ export function parseCommandResult(
   | FirewallReconcileCommandResult
   | FirewallConfirmCommandResult
   | BackupsReconcileCommandResult
+  | FoldersRemoveCommandResult
   | EnvironmentDeployCommandResult
   | EnvironmentLifecycleCommandResult
   | EnvironmentStopCommandResult
@@ -8213,6 +8619,8 @@ export function parseCommandResult(
       return parseFirewallConfirmResult(value)
     case 'server.backups.reconcile':
       return parseBackupsReconcileResult(value)
+    case 'server.folders.remove':
+      return parseFoldersRemoveResult(value)
     case 'environment.deploy':
       return parseEnvironmentDeployResult(value)
     case 'environment.lifecycle':

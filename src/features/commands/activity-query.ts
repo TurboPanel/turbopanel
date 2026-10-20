@@ -3,9 +3,9 @@
  * restarts and stops that are running or recently failed across every project
  * and environment of one organization.
  *
- * Reads the `command` table only (never `dispatch`). A command carries no
- * organization column, so the organization comes from the command's server
- * (`server.organization_id`) and the caller's server visibility.
+ * Reads the `command` table only (never `dispatch`). A command carries an
+ * organization column (copied from its server at insert), and the caller's
+ * server visibility narrows it further.
  *
  * `step` / `totalSteps` / `stepLabel` come from the step plan the daemon
  * reports on `command.progress` (`command-progress.ts`) and are `null` until
@@ -15,7 +15,7 @@
  */
 import { and, desc, eq, gte, inArray, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { command, environment, project, server } from '../../db/schema.ts'
+import { command, environment, project } from '../../db/schema.ts'
 import { parseStoredCommandProgress } from './command-progress.ts'
 
 export const ACTIVITY_FILTERS = ['all', 'deploying', 'failed'] as const
@@ -209,7 +209,8 @@ async function loadEnvironmentNames(db: Db, organizationId: string, rows: Activi
 /**
  * One page of the organization's activity, newest first. `visibleServerIds` is
  * the caller's `listVisible(server)` set; the organization is also enforced on
- * the server row, so a foreign server id can never surface a foreign command.
+ * the command row (`command.organization_id`, copied from the server), so a
+ * foreign server id can never surface a foreign command.
  */
 export async function queryOrgActivityFeed(
   db: Db,
@@ -221,7 +222,7 @@ export async function queryOrgActivityFeed(
   if (visibleServerIds.length === 0) return { items: [], total: 0, hasMore: false }
 
   const where = and(
-    eq(server.organizationId, organizationId),
+    eq(command.organizationId, organizationId),
     inArray(command.serverId, visibleServerIds),
     inArray(command.name, [...ACTIVITY_COMMAND_NAMES]),
     stateCondition(filter, now)
@@ -242,7 +243,6 @@ export async function queryOrgActivityFeed(
         finishedAt: command.finishedAt,
       })
       .from(command)
-      .innerJoin(server, eq(server.id, command.serverId))
       .where(where)
       .orderBy(desc(command.createdAt), desc(command.id))
       .limit(limit)
@@ -250,7 +250,6 @@ export async function queryOrgActivityFeed(
     db
       .select({ total: sql<number>`count(*)::int` })
       .from(command)
-      .innerJoin(server, eq(server.id, command.serverId))
       .where(where),
   ])
   const names = await loadEnvironmentNames(db, organizationId, rows)

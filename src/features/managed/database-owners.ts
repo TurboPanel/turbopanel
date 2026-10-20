@@ -7,12 +7,13 @@ import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
 import { daemonOwnerSupport } from './login-limit-fields.ts'
 import {
+  applySettingsPatch,
   findManagedLogin,
-  loginGrantMode,
-  patchLoginMetadata,
+  type LoginSettings,
+  type LoginSettingsPatch,
+  patchLogin,
   type ManagedLoginCredentialRow,
 } from './logins.ts'
-import { storedConnectionRole, storedStrings } from './login-patch.ts'
 import type { ManagedRowOptions } from './options.ts'
 import {
   adminAccessNotes,
@@ -92,9 +93,9 @@ export async function resolveChosenOwnerLogin(
   }
   const invalid = evaluateOwnerLogin({
     role: found.role,
-    privileges: storedStrings(found.metadata, 'privileges'),
-    connectionRole: storedConnectionRole(found.metadata),
-    grantMode: loginGrantMode(found.metadata),
+    privileges: found.privileges,
+    connectionRole: found.connectionRole,
+    grantMode: found.grantMode,
   })
   if (invalid) return refuse(invalid.error, invalid.message ?? '', 400)
   if (!/^[A-Za-z_]\w{0,62}$/.test(found.appliedUsername)) {
@@ -111,13 +112,19 @@ export async function resolveChosenOwnerLogin(
 }
 
 /** A login's database list with `name` added (once). */
-export function withDatabaseListed(metadata: unknown, name: string): string[] {
-  return [...new Set([...storedStrings(metadata, 'databases'), name])]
+export function withDatabaseListed(
+  login: Pick<LoginSettings, 'databases'>,
+  name: string
+): string[] {
+  return [...new Set([...login.databases, name])]
 }
 
 /** A login's database list without `name`. */
-export function withoutDatabaseListed(metadata: unknown, name: string): string[] {
-  return storedStrings(metadata, 'databases').filter((entry) => entry !== name)
+export function withoutDatabaseListed(
+  login: Pick<LoginSettings, 'databases'>,
+  name: string
+): string[] {
+  return login.databases.filter((entry) => entry !== name)
 }
 
 /** `databaseOwners` without the entries of one login. */
@@ -138,19 +145,19 @@ export function ownersWithoutDatabase(
 
 /**
  * Whether a login PATCH keeps a login able to own the databases it owns:
- * the refusal, or `null`. `after` is the login's stored metadata with the
- * change applied.
+ * the refusal, or `null`. `after` is the login's settings with the change
+ * applied.
  */
 export function ownedDatabasesRefusal(
   options: Pick<ManagedRowOptions, 'databaseOwners'>,
   loginId: string,
-  after: Record<string, unknown>,
+  after: Pick<LoginSettings, 'databases' | 'privileges' | 'connectionRole'>,
   grantMode: string
 ): { status: 409; error: string; message: string } | null {
   return evaluateOwnedDatabasesKept(databasesOwnedByLogin(options.databaseOwners, loginId), {
-    databases: storedStrings(after, 'databases'),
-    privileges: storedStrings(after, 'privileges'),
-    connectionRole: storedConnectionRole(after),
+    databases: after.databases,
+    privileges: after.privileges,
+    connectionRole: after.connectionRole,
     grantMode,
   })
 }
@@ -161,24 +168,24 @@ export function ownedDatabasesRefusal(
  */
 export async function listLoginOnDatabase(
   db: Db,
-  login: { id: string; metadata: unknown } | undefined,
+  login: { id: string; databases: string[] } | undefined,
   name: string
 ): Promise<{ restore: () => Promise<void> }> {
   if (!login) return { restore: () => Promise.resolve() }
-  const before = storedStrings(login.metadata, 'databases')
-  await patchLoginMetadata(db, login.id, { databases: withDatabaseListed(login.metadata, name) })
-  return { restore: () => patchLoginMetadata(db, login.id, { databases: before }) }
+  const before = login.databases
+  await patchLogin(db, login.id, { databases: withDatabaseListed(login, name) })
+  return { restore: () => patchLogin(db, login.id, { databases: before }) }
 }
 
 /** The opposite: take a login off a database, with a `restore`. */
 export async function unlistLoginFromDatabase(
   db: Db,
-  login: { id: string; metadata: unknown },
+  login: { id: string; databases: string[] },
   name: string
 ): Promise<{ restore: () => Promise<void> }> {
-  const before = storedStrings(login.metadata, 'databases')
-  await patchLoginMetadata(db, login.id, { databases: withoutDatabaseListed(login.metadata, name) })
-  return { restore: () => patchLoginMetadata(db, login.id, { databases: before }) }
+  const before = login.databases
+  await patchLogin(db, login.id, { databases: withoutDatabaseListed(login, name) })
+  return { restore: () => patchLogin(db, login.id, { databases: before }) }
 }
 
 /**
@@ -241,18 +248,18 @@ export function ownersAfterCreate(
 export function loginPatchOwnerChecks(
   engine: string,
   options: Pick<ManagedRowOptions, 'databaseOwners' | 'ownerRoleDatabases'>,
-  target: { id: string; metadata: unknown },
-  plan: { metadata: Record<string, unknown>; grantMode: string },
+  target: LoginSettings & { id: string },
+  plan: { patch: LoginSettingsPatch; grantMode: string },
   support: DaemonOwnerSupport
 ): { refusal: ReturnType<typeof ownedDatabasesRefusal>; notes: string[] } {
-  const after = { ...(target.metadata as Record<string, unknown> | null), ...plan.metadata }
+  const after = applySettingsPatch(target, plan.patch)
   return {
     refusal: ownedDatabasesRefusal(options, target.id, after, plan.grantMode),
     notes: adminAccessNotes(
       engine,
       {
-        privileges: storedStrings(after, 'privileges'),
-        databases: storedStrings(after, 'databases'),
+        privileges: after.privileges,
+        databases: after.databases,
         ownerRoleDatabases: options.ownerRoleDatabases,
       },
       support

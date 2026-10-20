@@ -181,8 +181,11 @@ async function storePreviewRecord(
 ): Promise<void> {
   await db
     .insert(bulwark)
-    .values({ serverId, generation, lastResult: record })
-    .onConflictDoUpdate({ target: bulwark.serverId, set: { lastResult: record } })
+    .values({ serverId, generation, lastResult: record, lastKind: record.kind })
+    .onConflictDoUpdate({
+      target: bulwark.serverId,
+      set: { lastResult: record, lastKind: record.kind },
+    })
 }
 
 async function enqueuePreviewCommand(
@@ -398,7 +401,7 @@ export async function runFirewallPreviewSweep(
       AND srv.status_changed_at IS NOT NULL
       AND (
         COALESCE(bw.mode, 'observe') <> 'off'
-        OR bw.last_result ->> 'kind' IN ('apply', 'remove')
+        OR bw.last_kind IN ('apply', 'remove')
       )
       AND NOT EXISTS (
         SELECT 1
@@ -487,6 +490,7 @@ export async function recordFirewallPreviewResult(
         // A teardown answers with an empty digest: nothing is loaded, so no drift key.
         lastDigest: result.digest === '' ? null : result.digest,
         lastResult: { ...withoutFailure(stored), status, host: result },
+        lastKind: stored.kind,
         ...bulwarkStateOfResult(status, result, new Date().toISOString()),
       },
     })
@@ -521,7 +525,10 @@ export async function recordFirewallPreviewFailure(
   await db
     .insert(bulwark)
     .values({ serverId, generation: payload.generation })
-    .onConflictDoUpdate({ target: bulwark.serverId, set: { lastResult: record } })
+    .onConflictDoUpdate({
+      target: bulwark.serverId,
+      set: { lastResult: record, lastKind: record.kind },
+    })
 }
 
 async function readStoredRecord(db: Db, serverId: string): Promise<FirewallPreviewRecord | null> {

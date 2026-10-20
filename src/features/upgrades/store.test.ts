@@ -131,6 +131,12 @@ async function addServer(
       organizationId: fx.organizationId,
       name: `upgrade-${crypto.randomUUID().slice(0, 8)}`,
       isConnected: input.connected,
+      daemonCommit: input.commit,
+      // A malformed build time is not storable in the column; it reads as unknown.
+      daemonBuiltAt:
+        input.builtAt && Number.isFinite(Date.parse(input.builtAt))
+          ? new Date(input.builtAt).toISOString()
+          : null,
       daemon: {
         projection: {
           daemonBuild: {

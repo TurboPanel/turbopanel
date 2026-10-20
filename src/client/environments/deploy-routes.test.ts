@@ -25,9 +25,11 @@ import {
   deployment,
   dispatch,
   environment,
+  folder,
   fabric,
   grant,
   hosting,
+  hostname,
   network,
   organization,
   principal,
@@ -43,7 +45,13 @@ import {
   variable,
   workspace,
 } from '../../db/schema.ts'
-import { getCommandMetadata, transitionCommand } from '../../features/commands/command-records.ts'
+import {
+  getCommandDispatchPayload,
+  getCommandMetadata,
+  transitionCommand,
+} from '../../features/commands/command-records.ts'
+import { upsertDeploymentTargets } from '../../features/deploy/deployment-records.ts'
+import { resolveEnvironmentSiteReleases } from './site-releases.ts'
 import {
   enableOrganizationFabric,
   getOrganizationFabric,
@@ -576,7 +584,7 @@ async function withDeployFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Deploy Route Env',
+      name: 'deploy-route-env',
       projectId,
       options: { compose: emptyComposeDocument() },
     })
@@ -599,6 +607,7 @@ async function withDeployFixtures(
   } finally {
     await db.delete(command).where(eq(command.serverId, serverId))
     await db.delete(container).where(eq(container.serverId, serverId))
+    await db.delete(folder).where(eq(folder.serverId, serverId))
     await db.delete(service).where(eq(service.environmentId, environmentId))
     await db.delete(environment).where(eq(environment.id, environmentId))
     await db.delete(project).where(eq(project.id, projectId))
@@ -795,7 +804,7 @@ test('POST /environments/:id/deploy payload carries runtime composeFiles', async
         .update(environment)
         .set({
           serverId,
-          name: 'Production',
+          name: 'production',
           options: { compose: emptyComposeDocument() },
           updatedAt: new Date().toISOString(),
         })
@@ -831,12 +840,81 @@ test('POST /environments/:id/deploy payload carries runtime composeFiles', async
         .limit(1)
       const payload = row?.payload as {
         composeFiles: Array<{ filename: string; role: string; content: string }>
+        takeoverHostnames?: string[]
       }
       assertEquals(Array.isArray(payload.composeFiles), true)
       assertEquals(payload.composeFiles.length, 1)
       assertEquals(payload.composeFiles[0]!.role, 'runtime')
       assertEquals(payload.composeFiles[0]!.filename, 'compose.yaml')
       assertEquals(payload.composeFiles[0]!.content.includes('web:'), true)
+      // No hosting: nothing to take over.
+      assertEquals('takeoverHostnames' in payload, false)
+    }
+  )
+})
+
+test('POST /environments/:id/deploy names no removed site for a service that never had a folder on the server', async () => {
+  await withDeployFixtures(
+    async ({
+      db,
+      app,
+      secrets,
+      userId,
+      organizationId,
+      projectId,
+      environmentId,
+      serverId,
+      commandQueue,
+    }) => {
+      await db
+        .update(environment)
+        .set({
+          serverId,
+          name: 'production',
+          options: { compose: emptyComposeDocument() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
+      await db
+        .update(project)
+        .set({
+          options: { compose: composeWithWebService() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(project.id, projectId))
+      const cookie = await sessionCookie(db, secrets, userId)
+      const deploy = async () => {
+        const res = await app.request(`/environments/${environmentId}/deploy`, {
+          method: 'POST',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: '{}',
+        })
+        assertEquals(res.status, 200)
+        const body = (await res.json()) as { commandId: string }
+        const [row] = await db
+          .select({ payload: dispatch.payload })
+          .from(dispatch)
+          .where(eq(dispatch.commandId, body.commandId))
+          .limit(1)
+        return row?.payload as { removedSites?: string[] }
+      }
+
+      // Nothing left: the field is absent, so the host removes nothing.
+      assertEquals((await deploy()).removedSites, undefined)
+
+      // A service row the compose file no longer names, with no folder on this
+      // server (a container, or a site with no owner), is never listed.
+      await db.insert(service).values({
+        environmentId,
+        composeServiceName: 'gone',
+        name: 'gone',
+      })
+      assertEquals((await deploy()).removedSites, undefined)
+      assertEquals(commandQueue.envelopes.length, 2)
     }
   )
 })
@@ -858,7 +936,7 @@ test('POST /environments/:id/deploy records a pending placement for each compose
         .update(environment)
         .set({
           serverId,
-          name: 'Production',
+          name: 'production',
           options: { compose: emptyComposeDocument() },
           updatedAt: new Date().toISOString(),
         })
@@ -914,12 +992,40 @@ test('POST /environments/:id/deploy records a pending placement for each compose
       assertEquals(placed[0]!.composeAlias, 'app')
       assertEquals(placed[0]!.home, `/srv/users/${placed[0]!.appliedUsername}`)
 
+      // The deploy also planned the site's folder under the owner's tree, named
+      // after the service, in the environment's own scope.
+      const planned = await db
+        .select({
+          state: folder.state,
+          scope: folder.scope,
+          kind: folder.kind,
+          slug: folder.slug,
+          environmentId: folder.environmentId,
+        })
+        .from(folder)
+        .where(eq(folder.serverId, serverId))
+      assertEquals(planned, [
+        { state: 'planned', scope: 'production', kind: 'service', slug: 'site', environmentId },
+      ])
+
+      // The command remembers which rows it planned, so its success can mark them present.
+      const metadata = await getCommandMetadata(db, commandQueue.envelopes[0]!.commandId)
+      const folderRows = await db
+        .select({ id: folder.id })
+        .from(folder)
+        .where(eq(folder.serverId, serverId))
+      assertEquals(
+        metadata?.folderIds,
+        folderRows.map((row) => row.id)
+      )
+
       // The deploy created the principal and its tenancy; the fixture only
       // knows the rows it made itself, and `tenancy.service_id` is RESTRICT.
       const serviceIds = await db
         .select({ id: service.id })
         .from(service)
         .where(eq(service.environmentId, environmentId))
+      await db.delete(folder).where(eq(folder.serverId, serverId))
       await db.delete(tenancy).where(
         inArray(
           tenancy.serviceId,
@@ -938,7 +1044,7 @@ test('POST /environments/:id/deploy payload carries the non-secret envFile', asy
         .update(environment)
         .set({
           serverId,
-          name: 'Production',
+          name: 'production',
           options: { compose: emptyComposeDocument() },
           updatedAt: new Date().toISOString(),
         })
@@ -1006,7 +1112,7 @@ async function deployWithStrategy(
         .update(environment)
         .set({
           serverId,
-          name: 'Production',
+          name: 'production',
           options: { compose: emptyComposeDocument(), ...environmentOptions },
           updatedAt: new Date().toISOString(),
         })
@@ -1135,7 +1241,7 @@ test('POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames', a
           .update(environment)
           .set({
             serverId,
-            name: 'Production',
+            name: 'production',
             options: { compose: emptyComposeDocument() },
             updatedAt: new Date().toISOString(),
           })
@@ -1157,9 +1263,17 @@ test('POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames', a
           })
           .returning({ id: service.id })
         hostingServiceId = svc!.id
-        await db.insert(hosting).values({
-          serviceId: svc!.id,
-          options: { hostnames: ['adminer.example.test'] },
+        const [hostingRow] = await db
+          .insert(hosting)
+          .values({
+            serviceId: svc!.id,
+            options: { hostnames: ['adminer.example.test'] },
+          })
+          .returning({ id: hosting.id })
+        await db.insert(hostname).values({
+          hostingId: hostingRow!.id,
+          routingOrganizationId: organizationId,
+          hostname: 'adminer.example.test',
         })
 
         const cookie = await sessionCookie(db, secrets, userId)
@@ -1190,7 +1304,20 @@ test('POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames', a
             containerName: string
           }
           hostingIngressNetwork?: string
+          takeoverHostnames?: { hostname: string; fromEnvironmentId: string }[]
         }
+        // Nothing here was ever sent this name by another environment, so there is
+        // nothing to take over; the deploy records the names it sends for later.
+        assertEquals(payload.takeoverHostnames, undefined)
+        const [recorded] = await db
+          .select({ options: deployment.options })
+          .from(deployment)
+          .where(
+            and(eq(deployment.environmentId, environmentId), eq(deployment.serverId, serverId))
+          )
+        assertEquals((recorded?.options as { servedHostnames?: string[] }).servedHostnames, [
+          'adminer.example.test',
+        ])
         assertEquals(payload.hostingIngress, {
           serviceId: traefikServiceId,
           composeServiceName: 'traefik',
@@ -1240,7 +1367,7 @@ test("POST /environments/:id/deploy uses internal TLS after revoking a Let's Enc
           .update(environment)
           .set({
             serverId,
-            name: 'Production',
+            name: 'production',
             options: { compose: emptyComposeDocument() },
             updatedAt: new Date().toISOString(),
           })
@@ -1354,10 +1481,8 @@ test('POST /environments/:id/deploy uses project defaultServerId when env pin is
       await db
         .update(project)
         .set({
-          options: {
-            compose: composeWithWebService(),
-            defaultServerId: serverId,
-          },
+          options: { compose: composeWithWebService() },
+          defaultServerId: serverId,
           updatedAt: new Date().toISOString(),
         })
         .where(eq(project.id, projectId))
@@ -1884,7 +2009,7 @@ test('POST /environments/:id/lifecycle returns 404 for cross-org environment', a
       const [foreignEnvironment] = await db
         .insert(environment)
         .values({
-          name: 'Foreign Env',
+          name: 'foreign-env',
           projectId: foreignProject!.id,
           serverId,
           options: { compose: emptyComposeDocument() },
@@ -2520,6 +2645,48 @@ test('POST /environments/:id/deploy: a first-batch server that cannot be reached
   })
 })
 
+test('an explicit stop names no release tree, so every folder stays, and delete teardown still does', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const recorded = [
+      {
+        serviceId: crypto.randomUUID(),
+        username: 'appuser',
+        folder: { owner: 'appuser', scope: 'production', slug: 'example.com' },
+      },
+    ]
+    await ctx.db
+      .update(environment)
+      .set({ serverId: ctx.serverId })
+      .where(eq(environment.id, ctx.environmentId))
+    await upsertDeploymentTargets(ctx.db, {
+      environmentId: ctx.environmentId,
+      targets: [
+        {
+          serverId: ctx.serverId,
+          desiredGeneration: 1,
+          status: 'applied',
+          options: { secretPlan: [], siteReleases: recorded },
+        },
+      ],
+    })
+
+    const stopped = await postEnvironment(ctx as unknown as TwoServerCtx, 'stop')
+    assertEquals(stopped.status, 200)
+    const stopCommand = ctx.commandQueue.envelopes.find(
+      (envelope) => envelope.type === 'environment.stop'
+    )
+    const payload = (await getCommandDispatchPayload(ctx.db, stopCommand!.commandId)) as Record<
+      string,
+      unknown
+    >
+    assertEquals('siteReleases' in payload, false)
+
+    // The same record is what a delete reclaims, with the folder components.
+    assertEquals(await resolveEnvironmentSiteReleases(ctx.db, ctx.environmentId), recorded)
+    await ctx.db.delete(deployment).where(eq(deployment.environmentId, ctx.environmentId))
+  })
+})
+
 test('POST /environments/:id/stop mid-rollout cancels the servers still waiting', async () => {
   await withDeployFixtures(async (ctx) => {
     await deployTwoServersSequentially(ctx, {}, async ({ body, serverIds }) => {
@@ -2645,7 +2812,7 @@ async function useCompose(
   const now = new Date().toISOString()
   await ctx.db
     .update(environment)
-    .set({ serverId: ctx.serverId, name: 'Production', updatedAt: now })
+    .set({ serverId: ctx.serverId, name: 'production', updatedAt: now })
     .where(eq(environment.id, ctx.environmentId))
   await ctx.db
     .update(project)
@@ -3313,7 +3480,7 @@ async function pinWebEnvironment(
     .update(environment)
     .set({
       serverId: ctx.serverId,
-      name: 'Production',
+      name: 'production',
       options: { compose: emptyComposeDocument() },
       updatedAt: now,
     })

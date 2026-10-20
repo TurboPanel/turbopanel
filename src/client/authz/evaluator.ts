@@ -1,29 +1,25 @@
-import { eq, type SQL, sql } from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
-import { grant, team, teammate } from "../../db/schema.ts";
-import {
-  isSystemPermissionKey,
-  type PermissionKey,
-  type SubjectType,
-} from "./catalog.ts";
+import { eq, type SQL, sql } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import { grant, team, teammate } from '../../db/schema.ts'
+import { isSystemPermissionKey, type PermissionKey, type SubjectType } from './catalog.ts'
 
-export type { PermissionKey };
+export type { PermissionKey }
 
-export type SubjectKind = SubjectType;
+export type SubjectKind = SubjectType
 
 export type Subject = {
-  subjectKind: SubjectKind;
-  subjectId: string;
-};
+  subjectKind: SubjectKind
+  subjectId: string
+}
 
 /** Thrown by {@link assertCan} when a permission check fails. */
 export class ForbiddenError extends Error {
-  readonly permissionKey: string;
+  readonly permissionKey: string
 
   constructor(permissionKey: string) {
-    super(`Forbidden: ${permissionKey}`);
-    this.name = "ForbiddenError";
-    this.permissionKey = permissionKey;
+    super(`Forbidden: ${permissionKey}`)
+    this.name = 'ForbiddenError'
+    this.permissionKey = permissionKey
   }
 }
 
@@ -32,15 +28,15 @@ export type CanOptions = {
    * Pre-fetched subject set (request-scope memoization). When omitted, the
    * subject set is resolved inline in SQL from `teammate` (org via `team`).
    */
-  subjects?: Subject[];
-};
+  subjects?: Subject[]
+}
 
 /**
  * Resolve the full subject set for a user: the user itself, every team they
  * belong to, and every organization those teams belong to.
  */
 export async function getSubjects(db: Db, userId: string): Promise<Subject[]> {
-  const subjects: Subject[] = [{ subjectKind: "user", subjectId: userId }];
+  const subjects: Subject[] = [{ subjectKind: 'user', subjectId: userId }]
 
   const rows = await db
     .select({
@@ -49,33 +45,31 @@ export async function getSubjects(db: Db, userId: string): Promise<Subject[]> {
     })
     .from(teammate)
     .innerJoin(team, eq(teammate.teamId, team.id))
-    .where(eq(teammate.userId, userId));
+    .where(eq(teammate.userId, userId))
 
-  const seenOrgs = new Set<string>();
-  const orgIds: string[] = [];
+  const seenOrgs = new Set<string>()
+  const orgIds: string[] = []
   for (const row of rows) {
-    subjects.push({ subjectKind: "team", subjectId: row.teamId });
+    subjects.push({ subjectKind: 'team', subjectId: row.teamId })
     if (!seenOrgs.has(row.organizationId)) {
-      seenOrgs.add(row.organizationId);
-      orgIds.push(row.organizationId);
+      seenOrgs.add(row.organizationId)
+      orgIds.push(row.organizationId)
     }
   }
   for (const organizationId of orgIds) {
-    subjects.push({ subjectKind: "organization", subjectId: organizationId });
+    subjects.push({ subjectKind: 'organization', subjectId: organizationId })
   }
 
-  return subjects;
+  return subjects
 }
 
 /** Build the `actorset` CTE body, either from a pre-fetched set or inline. */
 function buildActorsetBody(userId: string, subjects?: Subject[]): SQL {
   if (subjects && subjects.length > 0) {
-    const rows = subjects.map(
-      (s) => sql`(${s.subjectKind}::text, ${s.subjectId}::uuid)`,
-    );
-    const separator = sql.raw(", ");
-    const values = sql.join(rows, separator);
-    return sql`SELECT * FROM (VALUES ${values}) AS s(actor_type, actor_id)`;
+    const rows = subjects.map((s) => sql`(${s.subjectKind}::text, ${s.subjectId}::uuid)`)
+    const separator = sql.raw(', ')
+    const values = sql.join(rows, separator)
+    return sql`SELECT * FROM (VALUES ${values}) AS s(actor_type, actor_id)`
   }
 
   return sql`
@@ -87,33 +81,33 @@ function buildActorsetBody(userId: string, subjects?: Subject[]): SQL {
     FROM teammate tm
     JOIN team t ON t.id = tm.team_id
     WHERE tm.user_id = ${userId}::uuid
-  `;
+  `
 }
 
 /** Non-recursive ancestry enumeration for a single entity leaf. */
 function buildAncestryBody(entityType: string, entityId: string): SQL {
   switch (entityType) {
-    case "organization":
+    case 'organization':
       return sql`
         SELECT 'organization'::text AS entity_type, ${entityId}::uuid AS entity_id, 0 AS depth
-      `;
-    case "team":
+      `
+    case 'team':
       return sql`
         SELECT 'team'::text AS entity_type, t.id AS entity_id, 0 AS depth
         FROM team t WHERE t.id = ${entityId}::uuid
         UNION ALL
         SELECT 'organization'::text, t.organization_id, 1
         FROM team t WHERE t.id = ${entityId}::uuid
-      `;
-    case "workspace":
+      `
+    case 'workspace':
       return sql`
         SELECT 'workspace'::text AS entity_type, r.id AS entity_id, 0 AS depth
         FROM workspace r WHERE r.id = ${entityId}::uuid
         UNION ALL
         SELECT 'organization'::text, r.organization_id, 1
         FROM workspace r WHERE r.id = ${entityId}::uuid
-      `;
-    case "environment":
+      `
+    case 'environment':
       return sql`
         SELECT 'environment'::text AS entity_type, e.id AS entity_id, 0 AS depth
         FROM environment e WHERE e.id = ${entityId}::uuid
@@ -131,8 +125,8 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
         WHERE e.id = ${entityId}::uuid
-      `;
-    case "project":
+      `
+    case 'project':
       return sql`
         SELECT 'project'::text AS entity_type, p.id AS entity_id, 0 AS depth
         FROM project p WHERE p.id = ${entityId}::uuid
@@ -144,8 +138,8 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         FROM project p
         JOIN workspace w ON w.id = p.workspace_id
         WHERE p.id = ${entityId}::uuid
-      `;
-    case "service":
+      `
+    case 'service':
       return sql`
         SELECT 'service'::text AS entity_type, s.id AS entity_id, 0 AS depth
         FROM service s WHERE s.id = ${entityId}::uuid
@@ -170,8 +164,8 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
         WHERE s.id = ${entityId}::uuid
-      `;
-    case "hosting":
+      `
+    case 'hosting':
       return sql`
         SELECT 'hosting'::text AS entity_type, h.id AS entity_id, 0 AS depth
         FROM hosting h WHERE h.id = ${entityId}::uuid
@@ -204,8 +198,8 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
         WHERE h.id = ${entityId}::uuid
-      `;
-    case "container":
+      `
+    case 'container':
       return sql`
         SELECT 'container'::text AS entity_type, c.id AS entity_id, 0 AS depth
         FROM container c WHERE c.id = ${entityId}::uuid
@@ -238,8 +232,8 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
         WHERE c.id = ${entityId}::uuid
-      `;
-    case "principal":
+      `
+    case 'principal':
       // `organization_id` is set directly on every principal row regardless
       // of scope path (project / managed / tenancy-only) — see
       // `schema.ts`'s `principal` doc comment — so this needs no join.
@@ -259,24 +253,24 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         SELECT 'organization'::text, p.organization_id, 3
         FROM principal p
         WHERE p.id = ${entityId}::uuid
-      `;
-    case "server":
+      `
+    case 'server':
       return sql`
         SELECT 'server'::text AS entity_type, s.id AS entity_id, 0 AS depth
         FROM server s WHERE s.id = ${entityId}::uuid
         UNION ALL
         SELECT 'organization'::text, s.organization_id, 1
         FROM server s WHERE s.id = ${entityId}::uuid
-      `;
-    case "tls":
+      `
+    case 'tls':
       return sql`
         SELECT 'tls'::text AS entity_type, t.id AS entity_id, 0 AS depth
         FROM tls t WHERE t.id = ${entityId}::uuid
         UNION ALL
         SELECT 'organization'::text, t.organization_id, 1
         FROM tls t WHERE t.id = ${entityId}::uuid
-      `;
-    case "managed":
+      `
+    case 'managed':
       return sql`
         SELECT 'managed'::text AS entity_type, m.id AS entity_id, 0 AS depth
         FROM managed m WHERE m.id = ${entityId}::uuid
@@ -301,8 +295,8 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
         WHERE m.id = ${entityId}::uuid
-      `;
-    case "variable":
+      `
+    case 'variable':
       return sql`
         SELECT 'variable'::text AS entity_type, v.id AS entity_id, 0 AS depth
         FROM variable v WHERE v.id = ${entityId}::uuid
@@ -434,8 +428,8 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         FROM variable v
         JOIN server sv ON sv.id = v.server_id
         WHERE v.id = ${entityId}::uuid AND v.server_id IS NOT NULL
-      `;
-    case "storage":
+      `
+    case 'storage':
       return sql`
         SELECT 'storage'::text AS entity_type, st.id AS entity_id, 0 AS depth
         FROM storage st WHERE st.id = ${entityId}::uuid
@@ -518,32 +512,32 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
         WHERE st.id = ${entityId}::uuid AND st.service_id IS NOT NULL
-      `;
-    case "network":
+      `
+    case 'network':
       return sql`
         SELECT 'network'::text AS entity_type, n.id AS entity_id, 0 AS depth
         FROM network n WHERE n.id = ${entityId}::uuid
         UNION ALL
         SELECT 'organization'::text, n.organization_id, 1
         FROM network n WHERE n.id = ${entityId}::uuid
-      `;
-    case "datacenter":
+      `
+    case 'datacenter':
       return sql`
         SELECT 'datacenter'::text AS entity_type, d.id AS entity_id, 0 AS depth
         FROM datacenter d WHERE d.id = ${entityId}::uuid
         UNION ALL
         SELECT 'organization'::text, d.organization_id, 1
         FROM datacenter d WHERE d.id = ${entityId}::uuid
-      `;
-    case "ip":
+      `
+    case 'ip':
       return sql`
         SELECT 'ip'::text AS entity_type, i.id AS entity_id, 0 AS depth
         FROM ip i WHERE i.id = ${entityId}::uuid
         UNION ALL
         SELECT 'organization'::text, i.organization_id, 1
         FROM ip i WHERE i.id = ${entityId}::uuid
-      `;
-    case "repository":
+      `
+    case 'repository':
       // Org-level registry entry, exactly like `network` / `datacenter`: the
       // legacy service/environment parent columns are gone, and workload
       // attachment (project.repository_id, compose sourceId references) grants
@@ -554,54 +548,54 @@ function buildAncestryBody(entityType: string, entityId: string): SQL {
         UNION ALL
         SELECT 'organization'::text, src.organization_id, 1
         FROM repository src WHERE src.id = ${entityId}::uuid
-      `;
+      `
     default:
-      throw new Error(`Unknown entity type for ancestry: ${entityType}`);
+      throw new Error(`Unknown entity type for ancestry: ${entityType}`)
   }
 }
 
 function buildLeavesBody(kind: string, organizationId: string): SQL {
   switch (kind) {
-    case "organization":
-      return sql`SELECT id FROM organization WHERE id = ${organizationId}::uuid`;
-    case "workspace":
-      return sql`SELECT id FROM workspace WHERE organization_id = ${organizationId}::uuid`;
-    case "environment":
+    case 'organization':
+      return sql`SELECT id FROM organization WHERE id = ${organizationId}::uuid`
+    case 'workspace':
+      return sql`SELECT id FROM workspace WHERE organization_id = ${organizationId}::uuid`
+    case 'environment':
       return sql`SELECT e.id FROM environment e
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
-        WHERE w.organization_id = ${organizationId}::uuid`;
-    case "project":
+        WHERE w.organization_id = ${organizationId}::uuid`
+    case 'project':
       return sql`SELECT p.id FROM project p
         JOIN workspace w ON w.id = p.workspace_id
-        WHERE w.organization_id = ${organizationId}::uuid`;
-    case "service":
+        WHERE w.organization_id = ${organizationId}::uuid`
+    case 'service':
       return sql`SELECT s.id FROM service s
         JOIN environment e ON e.id = s.environment_id
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
-        WHERE w.organization_id = ${organizationId}::uuid`;
-    case "hosting":
+        WHERE w.organization_id = ${organizationId}::uuid`
+    case 'hosting':
       return sql`SELECT h.id FROM hosting h
         JOIN service s ON s.id = h.service_id
         JOIN environment e ON e.id = s.environment_id
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
-        WHERE w.organization_id = ${organizationId}::uuid`;
-    case "container":
+        WHERE w.organization_id = ${organizationId}::uuid`
+    case 'container':
       return sql`SELECT c.id FROM container c
         JOIN service s ON s.id = c.service_id
         JOIN environment e ON e.id = s.environment_id
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
-        WHERE w.organization_id = ${organizationId}::uuid`;
-    case "principal":
-      return sql`SELECT id FROM principal WHERE organization_id = ${organizationId}::uuid`;
-    case "server":
-      return sql`SELECT id FROM server WHERE organization_id = ${organizationId}::uuid`;
-    case "tls":
-      return sql`SELECT id FROM tls WHERE organization_id = ${organizationId}::uuid`;
-    case "variable":
+        WHERE w.organization_id = ${organizationId}::uuid`
+    case 'principal':
+      return sql`SELECT id FROM principal WHERE organization_id = ${organizationId}::uuid`
+    case 'server':
+      return sql`SELECT id FROM server WHERE organization_id = ${organizationId}::uuid`
+    case 'tls':
+      return sql`SELECT id FROM tls WHERE organization_id = ${organizationId}::uuid`
+    case 'variable':
       return sql`SELECT v.id FROM variable v
         WHERE v.organization_id = ${organizationId}::uuid
         UNION ALL
@@ -637,8 +631,8 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
         UNION ALL
         SELECT v.id FROM variable v
         JOIN server sv ON sv.id = v.server_id
-        WHERE sv.organization_id = ${organizationId}::uuid`;
-    case "storage":
+        WHERE sv.organization_id = ${organizationId}::uuid`
+    case 'storage':
       return sql`SELECT st.id FROM storage st
         WHERE st.organization_id = ${organizationId}::uuid
         UNION ALL
@@ -662,17 +656,17 @@ function buildLeavesBody(kind: string, organizationId: string): SQL {
         JOIN environment e ON e.id = s.environment_id
         JOIN project p ON p.id = e.project_id
         JOIN workspace w ON w.id = p.workspace_id
-        WHERE w.organization_id = ${organizationId}::uuid`;
-    case "network":
-      return sql`SELECT id FROM network WHERE organization_id = ${organizationId}::uuid`;
-    case "datacenter":
-      return sql`SELECT id FROM datacenter WHERE organization_id = ${organizationId}::uuid`;
-    case "ip":
-      return sql`SELECT id FROM ip WHERE organization_id = ${organizationId}::uuid`;
-    case "repository":
-      return sql`SELECT id FROM repository WHERE organization_id = ${organizationId}::uuid`;
+        WHERE w.organization_id = ${organizationId}::uuid`
+    case 'network':
+      return sql`SELECT id FROM network WHERE organization_id = ${organizationId}::uuid`
+    case 'datacenter':
+      return sql`SELECT id FROM datacenter WHERE organization_id = ${organizationId}::uuid`
+    case 'ip':
+      return sql`SELECT id FROM ip WHERE organization_id = ${organizationId}::uuid`
+    case 'repository':
+      return sql`SELECT id FROM repository WHERE organization_id = ${organizationId}::uuid`
     default:
-      throw new Error(`Unknown entity kind for visibility leaves: ${kind}`);
+      throw new Error(`Unknown entity kind for visibility leaves: ${kind}`)
   }
 }
 
@@ -695,10 +689,10 @@ export async function can(
   permissionKey: PermissionKey,
   entityType: string,
   entityId: string,
-  opts?: CanOptions,
+  opts?: CanOptions
 ): Promise<boolean> {
-  const actorsetBody = buildActorsetBody(userId, opts?.subjects);
-  const ancestryBody = buildAncestryBody(entityType, entityId);
+  const actorsetBody = buildActorsetBody(userId, opts?.subjects)
+  const ancestryBody = buildAncestryBody(entityType, entityId)
 
   // Respect the requested organization permission: an `organization:own` check
   // must require an owner grant, while `organization:manage` accepts owner or
@@ -706,37 +700,37 @@ export async function can(
   // broad org access must not silently confer platform-administration rights
   // over system-owned infrastructure. Team-scoped requests keep the prior
   // org-delegation behavior (an org owner/manager may act on any team in the org).
-  let orgPermissionFilter: SQL;
+  let orgPermissionFilter: SQL
   if (isSystemPermissionKey(permissionKey)) {
-    orgPermissionFilter = sql`ag.permission = ${permissionKey}`;
-  } else if (permissionKey === "organization:own") {
-    orgPermissionFilter = sql`ag.permission = 'organization:own'`;
+    orgPermissionFilter = sql`ag.permission = ${permissionKey}`
+  } else if (permissionKey === 'organization:own') {
+    orgPermissionFilter = sql`ag.permission = 'organization:own'`
   } else {
-    orgPermissionFilter =
-      sql`ag.permission IN ('organization:own', 'organization:manage')`;
+    orgPermissionFilter = sql`ag.permission IN ('organization:own', 'organization:manage')`
   }
 
-  const isTeamScopedCheck = entityType === "team" &&
-    (permissionKey === "team:own" || permissionKey === "team:manage");
+  const isTeamScopedCheck =
+    entityType === 'team' && (permissionKey === 'team:own' || permissionKey === 'team:manage')
 
-  let teamPermissionFilter = sql`false`;
+  let teamPermissionFilter = sql`false`
   if (isTeamScopedCheck) {
-    teamPermissionFilter = permissionKey === "team:own"
-      ? sql`ag.permission = 'team:own'`
-      : sql`ag.permission IN ('team:own', 'team:manage')`;
+    teamPermissionFilter =
+      permissionKey === 'team:own'
+        ? sql`ag.permission = 'team:own'`
+        : sql`ag.permission IN ('team:own', 'team:manage')`
   }
 
   // `system:manage` is superadmin-only: the role bypass is superadmin, and
   // organization grant rows never satisfy it (even an explicit leftover grant).
   // Other keys (including system:read / system:operate) keep org grant hits
   // plus the broad platform-admin bypass.
-  const platformAdminRoleFilter = permissionKey === "system:manage"
-    ? sql`role = 'superadmin'`
-    : sql`role IN ('superadmin', 'admin')`;
+  const platformAdminRoleFilter =
+    permissionKey === 'system:manage'
+      ? sql`role = 'superadmin'`
+      : sql`role IN ('superadmin', 'admin')`
 
-  const orgGrantHitsSatisfy = permissionKey === "system:manage"
-    ? sql`false`
-    : sql`EXISTS(SELECT 1 FROM org_hits)`;
+  const orgGrantHitsSatisfy =
+    permissionKey === 'system:manage' ? sql`false` : sql`EXISTS(SELECT 1 FROM org_hits)`
 
   const rows = (await db.execute(sql`
     WITH
@@ -765,9 +759,7 @@ export async function can(
       JOIN actorset ss
         ON ss.actor_type = ag.actor_type AND ss.actor_id = ag.actor_id
       WHERE ${isTeamScopedCheck ? sql`ag.entity_type = 'team'` : sql`false`}
-        AND ${
-    isTeamScopedCheck ? sql`ag.entity_id = ${entityId}::uuid` : sql`false`
-  }
+        AND ${isTeamScopedCheck ? sql`ag.entity_id = ${entityId}::uuid` : sql`false`}
         AND ${teamPermissionFilter}
       LIMIT 1
     )
@@ -776,9 +768,9 @@ export async function can(
       OR ${orgGrantHitsSatisfy}
       OR EXISTS(SELECT 1 FROM team_hits)
     ) AS allowed
-  `)) as unknown as Array<{ allowed: boolean | null }>;
+  `)) as unknown as Array<{ allowed: boolean | null }>
 
-  return rows[0]?.allowed === true;
+  return rows[0]?.allowed === true
 }
 
 /** {@link can} that throws {@link ForbiddenError} when the check fails. */
@@ -788,39 +780,34 @@ export async function assertCan(
   permissionKey: PermissionKey,
   entityType: string,
   entityId: string,
-  opts?: CanOptions,
+  opts?: CanOptions
 ): Promise<void> {
-  const allowed = await can(
-    db,
-    userId,
-    permissionKey,
-    entityType,
-    entityId,
-    opts,
-  );
+  const allowed = await can(db, userId, permissionKey, entityType, entityId, opts)
   if (!allowed) {
-    throw new ForbiddenError(permissionKey);
+    throw new ForbiddenError(permissionKey)
   }
 }
 
 export type ListVisibleInput = {
-  kind: string;
-  userId: string;
-  organizationId: string;
-};
+  kind: string
+  userId: string
+  organizationId: string
+}
 
 /**
- * Return entity ids of `kind` within `organizationId` visible to the user.
- * Org owners/managers and platform admins see all leaves; others see none.
+ * The grant check shared by {@link listVisible} and {@link listVisibleVersions}:
+ * org owners/managers and platform admins see every leaf, others see none.
+ * `columns` is the select list over the `leaves` rows.
  */
-export async function listVisible(
+async function selectVisibleLeaves<Row>(
   db: Db,
-  { kind, userId, organizationId }: ListVisibleInput,
-): Promise<string[]> {
-  const actorsetBody = buildActorsetBody(userId);
-  const leavesBody = buildLeavesBody(kind, organizationId);
+  { userId, organizationId }: Pick<ListVisibleInput, 'userId' | 'organizationId'>,
+  leavesBody: SQL,
+  columns: SQL
+): Promise<Row[]> {
+  const actorsetBody = buildActorsetBody(userId)
 
-  const rows = (await db.execute(sql`
+  return (await db.execute(sql`
     WITH
     actorset(actor_type, actor_id) AS (
       ${actorsetBody}
@@ -844,10 +831,69 @@ export async function listVisible(
     leaves AS (
       ${leavesBody}
     )
-    SELECT l.id AS item_id
+    SELECT ${columns}
     FROM leaves l
     WHERE (SELECT val FROM is_superadmin) OR (SELECT val FROM has_org_access)
-  `)) as unknown as Array<{ item_id: string }>;
+  `)) as unknown as Row[]
+}
 
-  return rows.map((row) => row.item_id);
+/**
+ * Return entity ids of `kind` within `organizationId` visible to the user.
+ * Org owners/managers and platform admins see all leaves; others see none.
+ */
+export async function listVisible(
+  db: Db,
+  { kind, userId, organizationId }: ListVisibleInput
+): Promise<string[]> {
+  const rows = await selectVisibleLeaves<{ item_id: string }>(
+    db,
+    { userId, organizationId },
+    buildLeavesBody(kind, organizationId),
+    sql`l.id AS item_id`
+  )
+
+  return rows.map((row) => row.item_id)
+}
+
+/** Kinds whose rows carry a version stamp for the cached read models. */
+export type VersionedKind = 'workspace' | 'project' | 'environment'
+
+export type VisibleVersion = { id: string; updatedAt: string }
+
+function buildVersionedLeavesBody(kind: VersionedKind, organizationId: string): SQL {
+  switch (kind) {
+    case 'workspace':
+      return sql`SELECT id, updated_at FROM workspace WHERE organization_id = ${organizationId}::uuid`
+    case 'environment':
+      return sql`SELECT e.id, e.updated_at FROM environment e
+        JOIN project p ON p.id = e.project_id
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid`
+    case 'project':
+      return sql`SELECT p.id, p.updated_at FROM project p
+        JOIN workspace w ON w.id = p.workspace_id
+        WHERE w.organization_id = ${organizationId}::uuid`
+  }
+}
+
+/**
+ * Same visibility decision as {@link listVisible} (same grant check, same
+ * result set), but each visible id also carries the time its row last changed.
+ * The cached read models use that as their version stamp, so an edit changes
+ * the cache key at once without another statement. Ordered by id.
+ */
+export async function listVisibleVersions(
+  db: Db,
+  { kind, userId, organizationId }: ListVisibleInput & { kind: VersionedKind }
+): Promise<VisibleVersion[]> {
+  const rows = await selectVisibleLeaves<{ item_id: string; updated_at: string }>(
+    db,
+    { userId, organizationId },
+    buildVersionedLeavesBody(kind, organizationId),
+    sql`l.id AS item_id, l.updated_at::text AS updated_at`
+  )
+
+  return rows
+    .map((row) => ({ id: row.item_id, updatedAt: row.updated_at }))
+    .sort((a, b) => a.id.localeCompare(b.id))
 }

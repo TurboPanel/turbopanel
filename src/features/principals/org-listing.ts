@@ -7,16 +7,9 @@
  * the Manage organization "Principals" tab and the server "Principals" tab;
  * the routes in `client/principals/org-routes.ts` are thin wrappers.
  */
-import { and, asc, eq, inArray, sql } from 'drizzle-orm'
+import { asc, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import {
-  login,
-  principal,
-  principalPlacement,
-  PRINCIPAL_NAME_POOL_WHERE,
-  project,
-  server,
-} from '../../db/schema.ts'
+import { login, principal, principalPlacement, project, server } from '../../db/schema.ts'
 import {
   emptyPrincipalUsage,
   isPrincipalUnused,
@@ -26,7 +19,6 @@ import {
   type ServerPlacementRow,
 } from './placement-records.ts'
 import type { PlacementState } from './placement-vocabulary.ts'
-import { SERVER_PRINCIPAL_PROVIDER } from './store.ts'
 
 /** Worst state first: what the row should show when placements disagree. */
 const STATE_PRECEDENCE: readonly PlacementState[] = ['retiring', 'pending', 'present', 'absent']
@@ -62,8 +54,6 @@ export type OrgPrincipalRow = {
   name: string
   /** The login on the host or engine. */
   appliedUsername: string
-  kind: string
-  provider: string
   /** Which forms the principal has: a system user, a database login, or both. */
   forms: Array<'system' | 'database'>
   projectId: string | null
@@ -83,12 +73,11 @@ export type OrgPrincipalRow = {
 
 /** True when the org-wide delete route would accept this principal. */
 export function isOrphanDeletable(
-  row: Readonly<{ projectId: string | null; provider: string }>,
+  row: Readonly<{ projectId: string | null }>,
   usage: PrincipalUsage
 ): boolean {
   return (
     row.projectId === null &&
-    row.provider === SERVER_PRINCIPAL_PROVIDER &&
     usage.tenancies === 0 &&
     usage.bindings === 0 &&
     usage.storages === 0 &&
@@ -108,9 +97,8 @@ function groupBy<T>(rows: ReadonlyArray<T>, key: (row: T) => string): Map<string
 }
 
 /**
- * Every principal in the organization's name pool (the cluster's own root and
- * replication logins are not principals a person manages and are left out),
- * ordered by name.
+ * Every principal of the organization (a site owner's Linux user), ordered by
+ * name.
  */
 export async function listOrganizationPrincipals(
   db: Db,
@@ -121,19 +109,15 @@ export async function listOrganizationPrincipals(
       id: principal.id,
       username: principal.username,
       appliedUsername: principal.appliedUsername,
-      kind: principal.kind,
-      provider: principal.provider,
       projectId: principal.projectId,
       createdAt: principal.createdAt,
     })
     .from(principal)
-    .where(and(eq(principal.organizationId, organizationId), PRINCIPAL_NAME_POOL_WHERE))
+    .where(eq(principal.organizationId, organizationId))
     .orderBy(asc(sql`lower(${principal.username})`), asc(principal.id))
   if (rows.length === 0) return []
 
   const ids = rows.map((row) => row.id)
-  // Looked up apart from the principal query: the pool predicate uses bare
-  // column names, which a join to `project` would make ambiguous.
   const projectIds = [...new Set(rows.flatMap((row) => (row.projectId ? [row.projectId] : [])))]
   const projectNames = new Map<string, string | null>()
   if (projectIds.length > 0) {
@@ -187,18 +171,14 @@ export async function listOrganizationPrincipals(
       appliedUsername: l.appliedUsername,
     }))
     const forms: OrgPrincipalRow['forms'] = []
-    if (row.provider === SERVER_PRINCIPAL_PROVIDER || servers.length > 0) forms.push('system')
-    if (row.provider !== SERVER_PRINCIPAL_PROVIDER || principalLogins.length > 0) {
-      forms.push('database')
-    }
+    forms.push('system')
+    if (principalLogins.length > 0) forms.push('database')
     const { otherPlacements: _placements, ...usedBy } = used
     const unused = isPrincipalUnused({ ...used, otherPlacements: 0 })
     return {
       id: row.id,
       name: row.username,
       appliedUsername: row.appliedUsername,
-      kind: row.kind,
-      provider: row.provider,
       forms,
       projectId: row.projectId,
       projectName: row.projectId ? (projectNames.get(row.projectId) ?? null) : null,

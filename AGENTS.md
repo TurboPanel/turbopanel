@@ -782,8 +782,10 @@ state is not a concern. Hyperdrive only caches named (extended-protocol)
 statements; unnamed ones are marked uncacheable. **`prepare: true` alone does
 not reach drizzle queries:** drizzle runs everything through `client.unsafe()`,
 whose own default is `prepare: false`. The `HYPERDRIVE_CACHED` client is
-therefore wrapped with `withPreparedUnsafe` (`createWorkersDb(..., {
-preparedStatements: true })`), which passes `{ prepare: true }` on each call.
+therefore wrapped with `withCacheableUnsafe` (`createWorkersDb(..., {
+preparedStatements: true })`), which passes `{ prepare: true }` on each call and
+refuses any statement that is not a registered read-only SELECT (see
+`src/query-cache/AGENTS.md`).
 `fetch_types: false` drops the `pg_catalog.pg_type` lookup postgres.js would
 otherwise run on every new connection (one per request); drizzle parses the
 `cidr[]`/`inet[]` columns itself.

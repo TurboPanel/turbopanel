@@ -77,6 +77,7 @@ import { fetchGitlabAccount } from '../../features/git/gitlab-provider.ts'
 import { GitlabApiError } from '../../features/git/gitlab-api.ts'
 import { generateSshDeployKeypair } from '../../features/git/ssh-keypair.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
+import { nodeVersionSuggestion } from '../environments/deploy-node-version.ts'
 import { canAccessOrganization } from '../org-context.ts'
 import {
   assertCanCreateOr403,
@@ -96,7 +97,6 @@ import {
   type ProviderInstallReturnError,
 } from '../forges/routes-helpers.ts'
 import {
-  COMPOSE_SOURCE_JSONPATH,
   parseSourceAttachBody,
   GIT_DEPLOY_KEY_CREDENTIAL_PROVIDER,
   parseSourceCreateBody,
@@ -141,8 +141,6 @@ const CONNECTION_SELECT = {
   accountLogin: gitConnection.accountLogin,
   accountType: gitConnection.accountType,
   suspendedAt: gitConnection.suspendedAt,
-  metadata: gitConnection.metadata,
-  options: gitConnection.options,
   createdAt: gitConnection.createdAt,
   updatedAt: gitConnection.updatedAt,
 }
@@ -214,7 +212,7 @@ async function authorizeClaimedOrganization(
 /**
  * Deleting a still-referenced repository would make every later save of that compose
  * fail the `knownSourceIds` lint, so it is a 409 instead. Reference detection
- * itself lives in {@link COMPOSE_SOURCE_JSONPATH}.
+ * is the `watch` table (see `features/git/watch-records.ts`).
  */
 export async function composeReferencesRepository(
   db: Db,
@@ -223,20 +221,10 @@ export async function composeReferencesRepository(
 ): Promise<boolean> {
   const rows = await db.execute<{ referenced: boolean }>(sql`
     SELECT EXISTS (
+      -- watch rows are the compose references of projects and environments.
       SELECT 1
-      FROM project p
-      JOIN workspace w ON w.id = p.workspace_id
-      WHERE w.organization_id = ${organizationId}::uuid
-        AND jsonb_path_exists(p.options, ${COMPOSE_SOURCE_JSONPATH}::jsonpath,
-          jsonb_build_object('sid', ${sourceId}::text))
-      UNION ALL
-      SELECT 1
-      FROM environment e
-      JOIN project p ON p.id = e.project_id
-      JOIN workspace w ON w.id = p.workspace_id
-      WHERE w.organization_id = ${organizationId}::uuid
-        AND jsonb_path_exists(e.options, ${COMPOSE_SOURCE_JSONPATH}::jsonpath,
-          jsonb_build_object('sid', ${sourceId}::text))
+      FROM watch k
+      WHERE k.repository_id = ${sourceId}::uuid
       UNION ALL
       -- project.repository_id is the binding itself, and its foreign key is
       -- ON DELETE RESTRICT. Checking it here is what turns a Postgres 23503
@@ -1513,6 +1501,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       via: outcome.via,
       files: outcome.files,
       entries: outcome.entries,
+      nodeVersion: nodeVersionSuggestion(outcome.files),
     })
   })
 

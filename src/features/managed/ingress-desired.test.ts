@@ -24,7 +24,8 @@ import {
   leaf,
   managed,
   organization,
-  principal,
+  login,
+  managedDatabase,
   project,
   replica,
   server,
@@ -39,7 +40,7 @@ import { loadHostSiteBindingNeeds } from '../bindings/host-run.ts'
 import { materializeBinding } from '../bindings/materialize.ts'
 import { serverHasHostRunBinding } from './ingress-bound-consumers.ts'
 import type { ManagedSettings } from './settings.ts'
-import { createManagedPrincipal } from '../principals/store.ts'
+import { createManagedLogin } from './logins.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
 import {
@@ -152,7 +153,7 @@ async function withSingleClusterIngressFixture(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Production',
+      name: 'production',
       projectId,
       serverId,
     })
@@ -168,7 +169,7 @@ async function withSingleClusterIngressFixture(
       name: 'Postgres',
       engine: 'postgres',
       status: 'ready',
-      options: { settings, databases: ['postgres'] },
+      options: { settings },
     })
     .returning({ id: managed.id })
   const managedId = insertedManaged!.id
@@ -188,11 +189,12 @@ async function withSingleClusterIngressFixture(
     ordinal: 1,
   })
 
-  await createManagedPrincipal(db, dataEncryptionSecrets, {
+  await db.insert(managedDatabase).values({ managedId, name: 'postgres' })
+  await createManagedLogin(db, dataEncryptionSecrets, {
     managedId,
-    provider: 'postgres',
+    role: 'root',
     username: 'postgres',
-    metadata: { managedRoot: true, databases: ['postgres'] },
+    databases: ['postgres'],
   })
 
   try {
@@ -204,7 +206,6 @@ async function withSingleClusterIngressFixture(
       dataEncryptionSecrets,
     })
   } finally {
-    await db.delete(principal).where(eq(principal.managedId, managedId))
     await db.delete(replica).where(eq(replica.managedId, managedId))
     await db.delete(container).where(eq(container.id, allocation.containerRowId))
     await db.delete(service).where(eq(service.id, allocation.serviceId))
@@ -710,13 +711,13 @@ async function insertBoundConsumer(
       name: params.projectName,
       workspaceId: params.workspaceId,
       organizationId: params.organizationId,
-      options: { defaultServerId: params.defaultServerId },
+      defaultServerId: params.defaultServerId,
     })
     .returning({ id: project.id })
   const [environmentRow] = await db
     .insert(environment)
     .values({
-      name: 'Production',
+      name: 'production',
       projectId: projectRow!.id,
       serverId: params.environmentServerId,
     })
@@ -738,21 +739,23 @@ async function insertBoundConsumer(
       status: 'ready',
     })
     .returning({ id: managed.id })
-  const [principalRow] = await db
-    .insert(principal)
+  const [databaseRow] = await db
+    .insert(managedDatabase)
+    .values({ managedId: managedRow!.id, name: 'appdb' })
+    .returning({ id: managedDatabase.id })
+  const [loginRow] = await db
+    .insert(login)
     .values({
-      organizationId: params.organizationId,
-      kind: 'database',
-      provider: 'postgres',
+      managedId: managedRow!.id,
+      role: 'user',
       username: params.username,
       appliedUsername: params.username,
-      managedId: managedRow!.id,
     })
-    .returning({ id: principal.id })
+    .returning({ id: login.id })
   await db.insert(binding).values({
-    principalId: principalRow!.id,
+    loginId: loginRow!.id,
     serviceId: serviceRow!.id,
-    databaseName: 'appdb',
+    databaseId: databaseRow!.id,
     keyPrefix: params.keyPrefix,
     isEmitEngineDefaults: false,
   })
@@ -885,7 +888,6 @@ test('loadBoundManagedIdsForServer does not scan unpinned environments that defa
       await db.delete(service).where(inArray(service.id, serviceIds))
     }
     if (managedIds.length > 0) {
-      await db.delete(principal).where(inArray(principal.managedId, managedIds))
       await db.delete(managed).where(inArray(managed.id, managedIds))
     }
     if (environmentIds.length > 0) {
@@ -1004,7 +1006,6 @@ test('serverHasHostRunBinding sees only loopback-form bindings placed on the ser
       await db.delete(service).where(inArray(service.id, serviceIds))
     }
     if (managedIds.length > 0) {
-      await db.delete(principal).where(inArray(principal.managedId, managedIds))
       await db.delete(managed).where(inArray(managed.id, managedIds))
     }
     await db.delete(environment).where(
@@ -1047,24 +1048,28 @@ test('binding variables raise a stored mode without SSL to require while the ser
         .returning({ id: project.id })
       const [envRow] = await db
         .insert(environment)
-        .values({ name: 'Production', projectId: projectRow!.id, serverId })
+        .values({ name: 'production', projectId: projectRow!.id, serverId })
         .returning({ id: environment.id })
       const [serviceRow] = await db
         .insert(service)
         .values({ environmentId: envRow!.id, composeServiceName: 'app' })
         .returning({ id: service.id })
-      const principalRow = await createManagedPrincipal(db, dataEncryptionSecrets, {
+      const loginRow = await createManagedLogin(db, dataEncryptionSecrets, {
         managedId: clusterRow!.id,
-        provider: 'postgres',
         username: 'floor_user',
+        databases: ['postgres'],
       })
+      const [databaseRow] = await db
+        .select({ id: managedDatabase.id })
+        .from(managedDatabase)
+        .where(eq(managedDatabase.managedId, clusterRow!.id))
       try {
         const [bindingRow] = await db
           .insert(binding)
           .values({
-            principalId: principalRow.principalId,
+            loginId: loginRow.loginId,
             serviceId: serviceRow!.id,
-            databaseName: 'postgres',
+            databaseId: databaseRow!.id,
             keyPrefix: 'DATABASE',
             isEmitEngineDefaults: true,
           })
@@ -1081,7 +1086,7 @@ test('binding variables raise a stored mode without SSL to require while the ser
       } finally {
         await db.delete(variable).where(eq(variable.serviceId, serviceRow!.id))
         await db.delete(binding).where(eq(binding.serviceId, serviceRow!.id))
-        await db.delete(principal).where(eq(principal.id, principalRow.principalId))
+        await db.delete(login).where(eq(login.id, loginRow.loginId))
         await db.delete(service).where(eq(service.id, serviceRow!.id))
         await db.delete(environment).where(eq(environment.id, envRow!.id))
         await db.delete(project).where(eq(project.id, projectRow!.id))
@@ -1108,29 +1113,33 @@ test('materializing a binding writes the form the deploy asks for and keeps it o
           name: 'Materialize Form Project',
           workspaceId: ws!.id,
           organizationId,
-          options: { defaultServerId: serverId },
+          defaultServerId: serverId,
         })
         .returning({ id: project.id })
       const [envRow] = await db
         .insert(environment)
-        .values({ name: 'Production', projectId: projectRow!.id, serverId })
+        .values({ name: 'production', projectId: projectRow!.id, serverId })
         .returning({ id: environment.id })
       const [serviceRow] = await db
         .insert(service)
         .values({ environmentId: envRow!.id, composeServiceName: 'app' })
         .returning({ id: service.id })
-      const principalRow = await createManagedPrincipal(db, dataEncryptionSecrets, {
+      const loginRow = await createManagedLogin(db, dataEncryptionSecrets, {
         managedId: clusterRow!.id,
-        provider: 'postgres',
         username: 'app_user',
+        databases: ['postgres'],
       })
+      const [databaseRow] = await db
+        .select({ id: managedDatabase.id })
+        .from(managedDatabase)
+        .where(eq(managedDatabase.managedId, clusterRow!.id))
       try {
         const [bindingRow] = await db
           .insert(binding)
           .values({
-            principalId: principalRow.principalId,
+            loginId: loginRow.loginId,
             serviceId: serviceRow!.id,
-            databaseName: 'postgres',
+            databaseId: databaseRow!.id,
             keyPrefix: 'DATABASE',
             isEmitEngineDefaults: false,
           })
@@ -1184,7 +1193,7 @@ test('materializing a binding writes the form the deploy asks for and keeps it o
       } finally {
         await db.delete(variable).where(eq(variable.serviceId, serviceRow!.id))
         await db.delete(binding).where(eq(binding.serviceId, serviceRow!.id))
-        await db.delete(principal).where(eq(principal.id, principalRow.principalId))
+        await db.delete(login).where(eq(login.id, loginRow.loginId))
         await db.delete(service).where(eq(service.id, serviceRow!.id))
         await db.delete(environment).where(eq(environment.id, envRow!.id))
         await db.delete(project).where(eq(project.id, projectRow!.id))

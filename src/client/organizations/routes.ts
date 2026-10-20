@@ -36,6 +36,7 @@ import { assertCidrAvailable } from '../../features/net/cidr-collisions.ts'
 import { alignedNetworkCidr } from '../../lib/ip-address.ts'
 import { findDockerBridgePoolOverlap } from '../../features/deploy/docker-address-pools.ts'
 import { cidrCollisionResponse } from '../networks/network-scope.ts'
+import { eraseStoredPairs } from '../tls/stored-pair.ts'
 import {
   applyManagedDefaultsPatch,
   composeDefaultResourceLimitsGetResponse,
@@ -231,6 +232,12 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
       gate: 'manage',
       parse: parseTlsSettingsPatch,
       respond: tlsSettingsPutResponse,
+      // Turning Let's Encrypt off: the stored keys are no longer needed.
+      afterWrite: async (db, organizationId, patch) => {
+        if (patch.acmeEnabled === false) {
+          await eraseStoredPairs(db, organizationId)
+        }
+      },
       audit: (patch) => ({
         action: 'organization.acme.set',
         context: { acmeEnabled: patch.acmeEnabled },

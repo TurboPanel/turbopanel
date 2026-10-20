@@ -16,9 +16,11 @@
  *  3. The principal is already on a host with an id nobody has reported yet
  *     (an account that predates this): send nothing and let the host
  *     keep what it has; the report fills the row.
- *  4. Otherwise it is new: take the next number from the installation-wide
- *     sequence and record it on the placement before the command is queued, so
- *     a second server asked a moment later gets the same number.
+ *  4. Otherwise it is new: take the next number from the counter of the
+ *     organization that owns the server (`organization.next_linux_id`, from
+ *     30001, never reused, whoever owns the project) and record it on the
+ *     placement before the command is queued, so a second server asked a
+ *     moment later gets the same number.
  *
  * An operator's own uid/gid on the principal's options always wins and is
  * handled by the caller; nothing here runs for it.
@@ -26,7 +28,8 @@
 import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm'
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { Db } from '../../db/connection.ts'
-import { principal, principalPlacement } from '../../db/schema.ts'
+import { isReportedHome } from '../../contracts/commands/schemas.ts'
+import { principal, principalPlacement, server } from '../../db/schema.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import type { PlacementState } from './placement-vocabulary.ts'
 
@@ -34,7 +37,10 @@ import type { PlacementState } from './placement-vocabulary.ts'
 export const PRINCIPAL_ID_BAND_MIN = 15001
 export const PRINCIPAL_ID_BAND_MAX = 60000
 
-/** How many sequence values one principal may skip because they are in use. */
+/** First number of every host organization's counter. */
+const HOST_ORG_ID_START = 30001
+
+/** How many counter values one principal may skip because they are in use. */
 const MAX_SEQUENCE_SKIPS = 50
 
 export type PlacementIdRow = {
@@ -112,24 +118,33 @@ async function loadPlacementIdRows(
 }
 
 /**
- * Next free number from the sequence. A value another principal already holds
- * somewhere (a reported id from an older host) is skipped, not reused.
+ * Next free number from the counter of the organization that owns `serverId`
+ * (the host organization), whoever owns the project or service. One atomic
+ * UPDATE takes the number, so concurrent allocations never see the same one
+ * and a number is never handed out twice. A value another principal already
+ * holds on one of this organization's servers (a reported id from an older
+ * host) is skipped, not reused.
  */
-async function takeFreshId(tx: Db, principalId: string): Promise<number> {
+async function takeFreshId(tx: Db, serverId: string, principalId: string): Promise<number> {
   for (let attempt = 0; attempt <= MAX_SEQUENCE_SKIPS; attempt += 1) {
     const rows = await tx.execute<{ id: number }>(
-      sql`SELECT nextval('principal_id_seq')::int AS id`
+      sql`UPDATE organization SET next_linux_id = next_linux_id + 1
+          WHERE id = (SELECT organization_id FROM server WHERE id = ${serverId})
+            AND next_linux_id <= ${PRINCIPAL_ID_BAND_MAX}
+          RETURNING next_linux_id - 1 AS id`
     )
     const id = Number(rows[0]?.id)
-    if (!Number.isInteger(id) || id < PRINCIPAL_ID_BAND_MIN || id > PRINCIPAL_ID_BAND_MAX) {
-      throw new Error('principal id sequence returned a value outside the band')
+    if (!Number.isInteger(id) || id < HOST_ORG_ID_START || id > PRINCIPAL_ID_BAND_MAX) {
+      throw new Error('no free Linux user id left for the host organization')
     }
     const taken = await tx
       .select({ id: principalPlacement.id })
       .from(principalPlacement)
+      .innerJoin(server, eq(server.id, principalPlacement.serverId))
       .where(
         and(
           ne(principalPlacement.principalId, principalId),
+          sql`${server.organizationId} = (SELECT organization_id FROM server WHERE id = ${serverId})`,
           sql`(${principalPlacement.uid} = ${id} OR ${principalPlacement.gid} = ${id})`
         )
       )
@@ -145,7 +160,7 @@ async function takeFreshId(tx: Db, principalId: string): Promise<number> {
       .limit(1)
     if (pinned.length === 0) return id
   }
-  throw new Error('no free principal id found in the sequence')
+  throw new Error('no free Linux user id found in the host organization counter')
 }
 
 /**
@@ -167,7 +182,7 @@ async function allocateForPrincipal(
       return { uid: decision.uid, gid: decision.gid }
     }
     if (decision.kind === 'none') return null
-    const id = await takeFreshId(tx, request.principalId)
+    const id = await takeFreshId(tx, serverId, request.principalId)
     await tx
       .insert(principalPlacement)
       .values({
@@ -244,6 +259,8 @@ export type ReportedPrincipalId = {
   principalId: string
   uid: number
   gid: number
+  /** The account's directory on the host, when the host reports it (the daemon owns the root). */
+  home?: string
 }
 
 function isReportableId(value: number): boolean {
@@ -266,6 +283,20 @@ export async function recordReportedPrincipalIds(
   await forEachSequential(reports, async (report) => {
     if (!isReportableId(report.uid) || !isReportableId(report.gid)) return
     try {
+      // The home is the host's to say: it is never computed here. A row that
+      // does not exist is not created, as for the ids below.
+      if (report.home !== undefined && isReportedHome(report.home)) {
+        await db
+          .update(principalPlacement)
+          .set({ home: report.home })
+          .where(
+            and(
+              eq(principalPlacement.serverId, serverId),
+              eq(principalPlacement.principalId, report.principalId),
+              ne(principalPlacement.home, report.home)
+            )
+          )
+      }
       const [row] = await db
         .select({
           id: principalPlacement.id,

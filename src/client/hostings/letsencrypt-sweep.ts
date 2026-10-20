@@ -8,14 +8,15 @@
  * names point at the server. Pinning does not deploy: the owner redeploys, and
  * the panel says so.
  */
-import { asc, sql } from 'drizzle-orm'
+import { asc, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { hosting } from '../../db/schema.ts'
-import { HOSTING_LETS_ENCRYPT_PENDING_KEY } from '../../features/hostings/hosting-certificate.ts'
 import { type DnsLookup, runtimeDnsLookup } from '../../features/hostings/hosting-dns-check.ts'
 import { retryPendingLetsEncrypt } from '../../features/hostings/use-letsencrypt.ts'
+import { logWarn } from '../../lib/logger.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
+import { runStoredPairSweepTick } from '../tls/stored-pair.ts'
 import { createLetsEncryptStore, loadAcmeEnabled } from './letsencrypt-store.ts'
 
 /** Waiting hostings looked at per tick (each one costs a DNS lookup or two). */
@@ -40,9 +41,10 @@ export async function runHostingLetsEncryptSweepTick(
       tlsId: hosting.tlsId,
       options: hosting.options,
       metadata: hosting.metadata,
+      pendingAt: hosting.pendingAt,
     })
     .from(hosting)
-    .where(sql`jsonb_exists(${hosting.metadata}, ${HOSTING_LETS_ENCRYPT_PENDING_KEY})`)
+    .where(isNotNull(hosting.pendingAt))
     .orderBy(asc(hosting.updatedAt))
     .limit(HOSTING_LETS_ENCRYPT_SWEEP_BATCH)
 
@@ -64,5 +66,12 @@ export async function runHostingLetsEncryptSweepTick(
     if (outcome === 'pinned') result.pinned += 1
     if (outcome === 'expired' || outcome === 'refused') result.dropped += 1
   })
+  // Stored certificates nothing pins any more ride the same tick; a failure
+  // here must not hide the result above.
+  try {
+    await runStoredPairSweepTick(db, deps.now ? { now: deps.now } : {})
+  } catch (err) {
+    logWarn('tls', `stored certificate sweep failed: ${err instanceof Error ? err.message : err}`)
+  }
   return result
 }

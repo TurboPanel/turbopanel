@@ -31,11 +31,11 @@ test('describeDatabaseOwners names the owner of each owner-role database only', 
 })
 
 test('database lists and owner entries change one thing at a time', () => {
-  const meta = { databases: ['a', 'b'] }
-  assertEquals(withDatabaseListed(meta, 'c'), ['a', 'b', 'c'])
-  assertEquals(withDatabaseListed(meta, 'a'), ['a', 'b'])
-  assertEquals(withoutDatabaseListed(meta, 'a'), ['b'])
-  assertEquals(withoutDatabaseListed(null, 'a'), [])
+  const settings = { databases: ['a', 'b'] }
+  assertEquals(withDatabaseListed(settings, 'c'), ['a', 'b', 'c'])
+  assertEquals(withDatabaseListed(settings, 'a'), ['a', 'b'])
+  assertEquals(withoutDatabaseListed(settings, 'a'), ['b'])
+  assertEquals(withoutDatabaseListed({ databases: [] }, 'a'), [])
   const owners = { x: { loginId: 'l1', username: 'u1' }, y: { loginId: 'l2', username: 'u2' } }
   assertEquals(ownersWithoutLogin(owners, 'l1'), { y: owners.y })
   assertEquals(ownersWithoutDatabase(owners, 'y'), { x: owners.x })
@@ -44,9 +44,13 @@ test('database lists and owner entries change one thing at a time', () => {
 
 test('ownedDatabasesRefusal reads the login after the change', () => {
   const options = { databaseOwners: { shop: { loginId: 'l1', username: 'u1' } } }
-  const ok = { databases: ['shop'], privileges: ['owner'] }
+  const ok = {
+    databases: ['shop'],
+    privileges: ['owner'],
+    connectionRole: 'read-write' as const,
+  }
   assertEquals(ownedDatabasesRefusal(options, 'l1', ok, 'preset'), null)
-  assertEquals(ownedDatabasesRefusal(options, 'other', { databases: [] }, 'preset'), null)
+  assertEquals(ownedDatabasesRefusal(options, 'other', { ...ok, databases: [] }, 'preset'), null)
   assertEquals(
     ownedDatabasesRefusal(options, 'l1', { ...ok, connectionRole: 'read-only' }, 'preset')?.error,
     'managed_login_owns_databases'
@@ -93,8 +97,17 @@ test('small owner helpers answer the way the routes need', () => {
   const checks = loginPatchOwnerChecks(
     'postgres',
     { databaseOwners: { shop: { loginId: 'l1', username: 'u1' } }, ownerRoleDatabases: [] },
-    { id: 'l1', metadata: { databases: ['shop'], privileges: ['owner'] } },
-    { metadata: { privileges: ['admin'] }, grantMode: 'preset' },
+    {
+      id: 'l1',
+      grantMode: 'preset',
+      tool: false,
+      databases: ['shop'],
+      privileges: ['owner'],
+      connectionRole: 'read-write',
+      allowedSources: undefined,
+      maxConnections: undefined,
+    },
+    { patch: { privileges: ['admin'] }, grantMode: 'preset' },
     { ownerRole: true, databaseOwner: true }
   )
   assertEquals(checks.refusal?.error, 'managed_login_owns_databases')

@@ -1,7 +1,14 @@
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import { RESOURCE_KINDS } from './catalog.ts'
-import { assertCan, can, ForbiddenError, getSubjects, listVisible } from './evaluator.ts'
+import {
+  assertCan,
+  can,
+  ForbiddenError,
+  getSubjects,
+  listVisible,
+  listVisibleVersions,
+} from './evaluator.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -50,16 +57,9 @@ test('ForbiddenError exposes the permission key', () => {
 
 test('can rejects unknown entity types before evaluating grants', async () => {
   await assertRejects(
-    () =>
-      can(
-        createCanDb(true),
-        'user-1',
-        'organization:manage',
-        'unknown-kind',
-        organizationId,
-      ),
+    () => can(createCanDb(true), 'user-1', 'organization:manage', 'unknown-kind', organizationId),
     Error,
-    'Unknown entity type for ancestry: unknown-kind',
+    'Unknown entity type for ancestry: unknown-kind'
   )
 })
 
@@ -69,7 +69,7 @@ test('can resolves allowed flag from mocked sql execution', async () => {
     'user-1',
     'organization:manage',
     'organization',
-    organizationId,
+    organizationId
   )
 
   assertEquals(allowed, true)
@@ -79,7 +79,7 @@ test('can resolves allowed flag from mocked sql execution', async () => {
     'user-1',
     'organization:manage',
     'organization',
-    organizationId,
+    organizationId
   )
 
   assertEquals(denied, false)
@@ -87,16 +87,9 @@ test('can resolves allowed flag from mocked sql execution', async () => {
 
 test('assertCan throws ForbiddenError when access is denied', async () => {
   await assertRejects(
-    () =>
-      assertCan(
-        createCanDb(false),
-        userId,
-        'organization:own',
-        'organization',
-        organizationId,
-      ),
+    () => assertCan(createCanDb(false), userId, 'organization:own', 'organization', organizationId),
     ForbiddenError,
-    'Forbidden: organization:own',
+    'Forbidden: organization:own'
   )
 })
 
@@ -112,20 +105,14 @@ test('can honors pre-fetched subjects without querying teammate tables', async (
         { subjectKind: 'user', subjectId: userId },
         { subjectKind: 'organization', subjectId: organizationId },
       ],
-    },
+    }
   )
 
   assertEquals(allowed, true)
 })
 
 test('can evaluates team-scoped ownership checks', async () => {
-  const allowed = await can(
-    createCanDb(true),
-    userId,
-    'team:own',
-    'team',
-    teamId,
-  )
+  const allowed = await can(createCanDb(true), userId, 'team:own', 'team', teamId)
 
   assertEquals(allowed, true)
 })
@@ -136,17 +123,14 @@ test('can evaluates system permission keys with exact grant filters', async () =
     userId,
     'system:read',
     'organization',
-    organizationId,
+    organizationId
   )
 
   assertEquals(allowed, true)
 })
 
 test('getSubjects merges user, team, and organization via teammate', async () => {
-  const subjects = await getSubjects(
-    createGetSubjectsDb([teamId], [organizationId]),
-    userId,
-  )
+  const subjects = await getSubjects(createGetSubjectsDb([teamId], [organizationId]), userId)
 
   assertEquals(subjects, [
     { subjectKind: 'user', subjectId: userId },
@@ -198,7 +182,7 @@ test('listVisible rejects unknown resource kinds', async () => {
         organizationId,
       }),
     Error,
-    'Unknown entity kind for visibility leaves: not-a-resource-kind',
+    'Unknown entity kind for visibility leaves: not-a-resource-kind'
   )
 })
 
@@ -236,7 +220,7 @@ test('listVisible rejects managed resources until leaf query exists', async () =
         organizationId,
       }),
     Error,
-    'Unknown entity kind for visibility leaves: managed',
+    'Unknown entity kind for visibility leaves: managed'
   )
 })
 
@@ -268,7 +252,7 @@ test('can builds ancestry queries for workspace-tree entity types', async () => 
       userId,
       'organization:manage',
       entityType,
-      organizationId,
+      organizationId
     )
     assertEquals(allowed, false)
   }
@@ -280,8 +264,26 @@ test('can applies superadmin-only filter for system:manage checks', async () => 
     userId,
     'system:manage',
     'organization',
-    organizationId,
+    organizationId
   )
 
   assertEquals(allowed, true)
+})
+
+test('listVisibleVersions returns each visible id with its last change, in id order', async () => {
+  const db = {
+    execute: () =>
+      Promise.resolve([
+        { item_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', updated_at: '2024-02-01 00:00:00+00' },
+        { item_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', updated_at: '2024-01-01 00:00:00+00' },
+      ]),
+  } as unknown as Db
+
+  for (const kind of ['workspace', 'project', 'environment'] as const) {
+    const visible = await listVisibleVersions(db, { kind, userId, organizationId })
+    assertEquals(visible, [
+      { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', updatedAt: '2024-01-01 00:00:00+00' },
+      { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', updatedAt: '2024-02-01 00:00:00+00' },
+    ])
+  }
 })

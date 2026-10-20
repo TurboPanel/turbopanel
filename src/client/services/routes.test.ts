@@ -117,7 +117,7 @@ async function withServiceFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Service Route Env',
+      name: 'service-route-env',
       projectId,
     })
     .returning({ id: environment.id })

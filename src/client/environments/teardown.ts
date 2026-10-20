@@ -38,12 +38,8 @@ import {
   listEnvironmentComposeNetworks,
 } from '../../features/fabric/fabric-records.ts'
 import { listEnvironmentDeploymentTargets } from '../../features/deploy/deployment-records.ts'
-import {
-  parseProjectOptions,
-  resolveEffectivePlacementServerId,
-} from '../../features/projects/project-options.ts'
+import { resolveEffectivePlacementServerId } from '../../features/projects/project-options.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
-import { SERVER_PRINCIPAL_PROVIDER } from '../../features/principals/store.ts'
 import { markPlacementsRetiring } from '../../features/principals/placement-records.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import { retireHostingIngressIfIdle } from '../../features/system/reconcile.ts'
@@ -88,13 +84,7 @@ async function loadProjectPrincipalUsernames(db: Db, projectId: string): Promise
   const rows = await db
     .select({ username: principal.appliedUsername })
     .from(principal)
-    .where(
-      and(
-        eq(principal.projectId, projectId),
-        eq(principal.provider, SERVER_PRINCIPAL_PROVIDER),
-        eq(principal.kind, 'system')
-      )
-    )
+    .where(eq(principal.projectId, projectId))
   return [...new Set(rows.map((row) => row.username))].sort((a, b) => a.localeCompare(b))
 }
 
@@ -103,7 +93,7 @@ async function resolveTeardownServerIds(
   db: Db,
   environmentId: string,
   environmentServerId: string | null,
-  projectOptions: unknown
+  projectDefaultServerId: string | null
 ): Promise<string[]> {
   const deployments = await listEnvironmentDeploymentTargets(db, environmentId)
   const fromDeployments = [...new Set(deployments.map((row) => row.serverId))].sort((a, b) =>
@@ -111,10 +101,7 @@ async function resolveTeardownServerIds(
   )
   if (fromDeployments.length > 0) return fromDeployments
 
-  const pin = resolveEffectivePlacementServerId(
-    environmentServerId,
-    parseProjectOptions(projectOptions)
-  )
+  const pin = resolveEffectivePlacementServerId(environmentServerId, projectDefaultServerId)
   return pin ? [pin] : []
 }
 
@@ -140,7 +127,7 @@ export async function planEnvironmentTeardown(
   if (!envRow) return null
 
   const [projectRow] = await db
-    .select({ id: project.id, options: project.options })
+    .select({ id: project.id, defaultServerId: project.defaultServerId })
     .from(project)
     .where(eq(project.id, envRow.projectId))
     .limit(1)
@@ -150,7 +137,7 @@ export async function planEnvironmentTeardown(
     db,
     environmentId,
     envRow.serverId,
-    projectRow.options
+    projectRow.defaultServerId
   )
   if (serverIds.length === 0) return null
 
@@ -207,7 +194,6 @@ export async function principalsStillOnServer(
     .leftJoin(deployment, eq(deployment.environmentId, environment.id))
     .where(
       and(
-        eq(principal.provider, SERVER_PRINCIPAL_PROVIDER),
         inArray(principal.appliedUsername, [...usernames]),
         or(eq(environment.serverId, serverId), eq(deployment.serverId, serverId))
       )

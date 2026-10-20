@@ -83,18 +83,14 @@ test('parseMaxServersInput accepts zero and rejects negatives', () => {
   assertEquals(parseMaxServersInput(-1).ok, false)
 })
 
-test('parseDefaultEnvironmentNameInput accepts valid names and resets', () => {
-  assertEquals(parseDefaultEnvironmentNameInput('Staging'), {
+test('parseDefaultEnvironmentNameInput accepts folder-safe names and resets', () => {
+  assertEquals(parseDefaultEnvironmentNameInput('staging'), {
     ok: true,
-    value: 'Staging',
+    value: 'staging',
   })
-  assertEquals(parseDefaultEnvironmentNameInput("O'Reilly"), {
+  assertEquals(parseDefaultEnvironmentNameInput(' live_env-2 '), {
     ok: true,
-    value: "O'Reilly",
-  })
-  assertEquals(parseDefaultEnvironmentNameInput(' Live Env '), {
-    ok: true,
-    value: 'Live Env',
+    value: 'live_env-2',
   })
   assertEquals(parseDefaultEnvironmentNameInput(null), {
     ok: true,
@@ -102,17 +98,21 @@ test('parseDefaultEnvironmentNameInput accepts valid names and resets', () => {
   })
 })
 
-test('parseDefaultEnvironmentNameInput rejects invalid values', () => {
+test('parseDefaultEnvironmentNameInput rejects names that cannot be a folder', () => {
   assertEquals(parseDefaultEnvironmentNameInput(12).ok, false)
   assertEquals(parseDefaultEnvironmentNameInput('').ok, false)
   assertEquals(parseDefaultEnvironmentNameInput('   ').ok, false)
-  assertEquals(parseDefaultEnvironmentNameInput('bad/name').ok, true)
+  assertEquals(parseDefaultEnvironmentNameInput('Staging').ok, false)
+  assertEquals(parseDefaultEnvironmentNameInput('live env').ok, false)
+  assertEquals(parseDefaultEnvironmentNameInput('bad/name').ok, false)
   assertEquals(parseDefaultEnvironmentNameInput('bad\nname').ok, false)
-  assertEquals(parseDefaultEnvironmentNameInput('a'.repeat(256)).ok, false)
+  assertEquals(parseDefaultEnvironmentNameInput('common').ok, false)
+  assertEquals(parseDefaultEnvironmentNameInput('a'.repeat(33)).ok, false)
 })
 
-test('resolveDefaultEnvironmentName uses option or Production fallback', () => {
-  assertEquals(resolveDefaultEnvironmentName({ defaultEnvironmentName: 'Staging' }), 'Staging')
+test('resolveDefaultEnvironmentName ignores a saved value that is not a valid name', () => {
+  assertEquals(resolveDefaultEnvironmentName({ defaultEnvironmentName: 'staging' }), 'staging')
+  assertEquals(resolveDefaultEnvironmentName({ defaultEnvironmentName: 'My Env' }), 'production')
   assertEquals(resolveDefaultEnvironmentName({}), 'production')
 })
 

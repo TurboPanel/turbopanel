@@ -25,9 +25,12 @@ import { sweepStalePresence } from '../../daemon/cell/control-plane-monitor.ts'
 import { createDenoMaintenanceScheduler } from '../../daemon/cell/deno-maintenance.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { ALERT_WEBHOOK_POLICY } from '../../features/alerts/alert-webhook-settings.ts'
+import { pruneAuditHistory } from '../../features/audit/prune.ts'
 import { pruneCommandHistory } from '../../features/commands/prune.ts'
+import { getAuditRetentionMonths } from '../../features/settings/audit-retention-settings.ts'
 import { retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
+import { alertNewOrphanFolders } from '../../features/notifications/folder-alerts.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from '../../contracts/cell-protocol.ts'
 import {
   COMMAND_DISPATCH_SWEEP_LIMIT,
@@ -53,6 +56,8 @@ import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fa
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runHostLossTick } from '../../daemon/cell/host-loss-tick.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
+import { runFolderReconcileSweep } from '../../daemon/cell/folder-reconcile-sweep.ts'
+import { runFolderRemovalSweep } from '../../features/folders/removal.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { firewallApplyGateFromEnv } from '../../features/firewall/enforcement.ts'
 import {
@@ -688,6 +693,15 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     void runBackupsReconcileSweep(db, commandQueue).catch((err) => {
       logWarn('daemon-cell', `backups reconcile sweep error: ${String(err)}`)
     })
+    // Folders of deleted assets whose host has not confirmed them gone: asked
+    // again once the server is connected, and every few minutes while stuck.
+    void runFolderRemovalSweep(db, commandQueue).catch((err) => {
+      logWarn('daemon-cell', `folder removal sweep error: ${String(err)}`)
+    })
+    // A fresh folder listing from servers that have folders, every few hours.
+    void runFolderReconcileSweep(db, commandQueue).catch((err) => {
+      logWarn('daemon-cell', `folder reconcile sweep error: ${String(err)}`)
+    })
     // Firewall previews once after each reconnect. Applies only for a server
     // both keys of features/firewall/enforcement.ts allow, and never re-applies
     // an unchanged ruleset.
@@ -746,6 +760,17 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
           limit: WEBHOOK_DELIVERY_SWEEP_LIMIT,
         })
       )
+      // Workers parity (offline-sweep cron): tell each organization about the
+      // folders that became orphans since the last tick, once per orphan.
+      await runCleanupPhase('orphan folder alert sweep', () =>
+        alertNewOrphanFolders(db, dataEncryptionSecrets, {
+          email: {
+            queue: emailQueue,
+            from: emailSettings.from,
+            consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
+          },
+        })
+      )
       // Workers parity (offline-sweep cron): resend notification deliveries
       // whose backoff has elapsed. Self-hosted may dial a LAN receiver.
       await runCleanupPhase('notification retry sweep', () =>
@@ -790,6 +815,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       if (Date.now() - lastCommandPruneMs >= COMMAND_PRUNE_INTERVAL_MS) {
         lastCommandPruneMs = Date.now()
         await runCleanupPhase('command history prune', () => pruneCommandHistory(db))
+        await runCleanupPhase('audit history prune', async () =>
+          pruneAuditHistory(db, { months: await getAuditRetentionMonths(db) })
+        )
       }
       await runCleanupPhase('upgrade tick', async () => {
         const env = Deno.env.toObject()

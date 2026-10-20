@@ -155,6 +155,7 @@ const DAEMON_COMMAND_TYPES = [
   'server.firewall.reconcile',
   'server.firewall.confirm',
   'server.backups.reconcile',
+  'server.folders.remove',
   'environment.deploy',
   'environment.lifecycle',
   'environment.stop',

@@ -20,7 +20,7 @@ import {
 } from '../managed/apply-prepare.ts'
 import { enqueueManagedIngressReconcile } from '../managed/ingress-desired.ts'
 import { getManagedEngineSpec } from '../managed/index.ts'
-import { parseManagedRowOptions } from '../managed/options.ts'
+import { loadManagedOptions } from '../managed/options.ts'
 import { parseManagedResidual } from '../managed/serialize.ts'
 import {
   consumerServerIdsForManaged,
@@ -269,7 +269,7 @@ async function enqueueApplyForBindingManaged(
     )
     return 'failed'
   }
-  const parsed = parseManagedRowOptions(spec, row.options)
+  const parsed = await loadManagedOptions(db, spec, row)
   if (!parsed) {
     compatLogWarn(
       'bindings',

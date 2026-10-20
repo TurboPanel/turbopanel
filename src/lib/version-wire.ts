@@ -190,6 +190,7 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-owner-role-v1',
   'managed-data-only-readwrite-v1',
   'managed-database-owner-v1',
+  'tls-capture-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -200,6 +201,13 @@ export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
  * control plane still sends the legacy plaintext fields.
  */
 export const SEALED_INSTANCE_SECRETS_FEATURE: DaemonWireFeature = 'sealed-instance-secrets-v1'
+
+/**
+ * The daemon sends the certificate and key Caddy issued for a hostname to
+ * `POST /api/daemon/v1/tls/issued`, and this control plane stores them sealed.
+ * The daemon sends nothing until this control plane lists the feature.
+ */
+export const TLS_CAPTURE_FEATURE: DaemonWireFeature = 'tls-capture-v1'
 
 /**
  * The daemon answers `managed-health-request` with `managed-health-result`

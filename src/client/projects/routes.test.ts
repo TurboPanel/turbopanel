@@ -1,6 +1,11 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
+import {
+  isComposeChainError,
+  resolveComposeLayerChain,
+} from '../../features/compose/layer-chain.ts'
+import { mergeComposeLayers, type ComposeLayer } from '../../features/compose/index.ts'
 import { assertEquals } from '@std/assert'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -15,6 +20,7 @@ import {
   managed,
   organization,
   project,
+  repository,
   server,
   service,
   user,
@@ -409,7 +415,7 @@ test('POST /projects empty uses org defaultEnvironmentName when set', async () =
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db
       .update(organization)
-      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .set({ options: { defaultEnvironmentName: 'staging' } })
       .where(eq(organization.id, organizationId))
 
     const cookie = await sessionCookie(db, secrets, userId)
@@ -436,7 +442,7 @@ test('POST /projects empty uses org defaultEnvironmentName when set', async () =
       .from(environment)
       .where(eq(environment.projectId, body.id))
     assertEquals(envs.length, 1)
-    assertEquals(envs[0]!.name, 'Staging')
+    assertEquals(envs[0]!.name, 'staging')
   })
 })
 
@@ -444,7 +450,7 @@ test('POST /projects environmentName overrides the org default for the first env
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db
       .update(organization)
-      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .set({ options: { defaultEnvironmentName: 'staging' } })
       .where(eq(organization.id, organizationId))
 
     const cookie = await sessionCookie(db, secrets, userId)
@@ -459,7 +465,7 @@ test('POST /projects environmentName overrides the org default for the first env
         body: JSON.stringify({ type: 'docker-compose', workspaceId, ...payload }),
       })
 
-    const res = await post({ name: 'Named Env Project', environmentName: 'Edge' })
+    const res = await post({ name: 'Named Env Project', environmentName: 'edge' })
     assertEquals(res.status, 200)
     const body = (await res.json()) as { ok: boolean; id: string }
     const envs = await db
@@ -468,7 +474,7 @@ test('POST /projects environmentName overrides the org default for the first env
       .where(eq(environment.projectId, body.id))
     assertEquals(
       envs.map((e) => e.name),
-      ['Edge']
+      ['edge']
     )
 
     const bad = await post({ name: 'Bad Env Project', environmentName: '   ' })
@@ -480,7 +486,7 @@ test('POST /projects managed and empty honour environmentName, and null or absen
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db
       .update(organization)
-      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .set({ options: { defaultEnvironmentName: 'staging' } })
       .where(eq(organization.id, organizationId))
 
     const cookie = await sessionCookie(db, secrets, userId)
@@ -506,20 +512,20 @@ test('POST /projects managed and empty honour environmentName, and null or absen
     // Catalog creation (managed shares the scaffold path with templates; the
     // catalog ships no template entries to post).
     assertEquals(
-      await create({ type: 'managed', code: 'postgres', name: 'Env M1', environmentName: 'Edge' }),
-      ['Edge']
+      await create({ type: 'managed', code: 'postgres', name: 'Env M1', environmentName: 'edge' }),
+      ['edge']
     )
-    assertEquals(await create({ type: 'managed', code: 'postgres', name: 'Env M2' }), ['Staging'])
+    assertEquals(await create({ type: 'managed', code: 'postgres', name: 'Env M2' }), ['staging'])
     assertEquals(
       await create({ type: 'managed', code: 'postgres', name: 'Env M3', environmentName: null }),
-      ['Staging']
+      ['staging']
     )
 
-    assertEquals(await create({ type: 'empty', name: 'Env E1', environmentName: 'Edge' }), ['Edge'])
+    assertEquals(await create({ type: 'empty', name: 'Env E1', environmentName: 'edge' }), ['edge'])
     assertEquals(await create({ type: 'empty', name: 'Env E2', environmentName: null }), [
-      'Staging',
+      'staging',
     ])
-    assertEquals(await create({ type: 'empty', name: 'Env E3' }), ['Staging'])
+    assertEquals(await create({ type: 'empty', name: 'Env E3' }), ['staging'])
   })
 })
 
@@ -527,7 +533,7 @@ test('POST /projects docker-compose uses org defaultEnvironmentName when set', a
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db
       .update(organization)
-      .set({ options: { defaultEnvironmentName: 'Live' } })
+      .set({ options: { defaultEnvironmentName: 'live' } })
       .where(eq(organization.id, organizationId))
 
     const cookie = await sessionCookie(db, secrets, userId)
@@ -553,7 +559,7 @@ test('POST /projects docker-compose uses org defaultEnvironmentName when set', a
       .from(environment)
       .where(eq(environment.projectId, body.id))
     assertEquals(envs.length, 1)
-    assertEquals(envs[0]!.name, 'Live')
+    assertEquals(envs[0]!.name, 'live')
   })
 })
 
@@ -621,7 +627,7 @@ test('POST /projects/:id/configure reuses custom-named default environment', asy
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db
       .update(organization)
-      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .set({ options: { defaultEnvironmentName: 'staging' } })
       .where(eq(organization.id, organizationId))
 
     const cookie = await sessionCookie(db, secrets, userId)
@@ -657,7 +663,7 @@ test('POST /projects/:id/configure reuses custom-named default environment', asy
       .from(environment)
       .where(eq(environment.projectId, id))
     assertEquals(envs.length, 1)
-    assertEquals(envs[0]!.name, 'Staging')
+    assertEquals(envs[0]!.name, 'staging')
   })
 })
 
@@ -665,7 +671,7 @@ test('POST /projects/:id/configure reuses scaffolded env when org default change
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db
       .update(organization)
-      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .set({ options: { defaultEnvironmentName: 'staging' } })
       .where(eq(organization.id, organizationId))
 
     const cookie = await sessionCookie(db, secrets, userId)
@@ -692,11 +698,11 @@ test('POST /projects/:id/configure reuses scaffolded env when org default change
       })
       .from(environment)
       .where(eq(environment.projectId, id))
-    assertEquals(scaffolded?.name, 'Staging')
+    assertEquals(scaffolded?.name, 'staging')
 
     await db
       .update(organization)
-      .set({ options: { defaultEnvironmentName: 'Live' } })
+      .set({ options: { defaultEnvironmentName: 'live' } })
       .where(eq(organization.id, organizationId))
 
     const configureRes = await app.request(`/projects/${id}/configure`, {
@@ -719,7 +725,7 @@ test('POST /projects/:id/configure reuses scaffolded env when org default change
       .where(eq(environment.projectId, id))
     assertEquals(envs.length, 1)
     assertEquals(envs[0]!.id, scaffolded!.id)
-    assertEquals(envs[0]!.name, 'Staging')
+    assertEquals(envs[0]!.name, 'staging')
 
     const [projectRow] = await db
       .select({ metadata: project.metadata })
@@ -760,13 +766,13 @@ test('POST /projects/:id/configure prefers literal production over org default m
 
     await db.insert(environment).values({
       projectId: id,
-      name: 'Staging',
+      name: 'staging',
       description: 'Custom default sibling',
     })
 
     await db
       .update(organization)
-      .set({ options: { defaultEnvironmentName: 'Staging' } })
+      .set({ options: { defaultEnvironmentName: 'staging' } })
       .where(eq(organization.id, organizationId))
 
     const configureRes = await app.request(`/projects/${id}/configure`, {
@@ -791,7 +797,7 @@ test('POST /projects/:id/configure prefers literal production over org default m
     assertEquals(envs.length, 2)
 
     const production = envs.find((row) => row.name === 'production')
-    const staging = envs.find((row) => row.name === 'Staging')
+    const staging = envs.find((row) => row.name === 'staging')
     assertEquals(production != null, true)
     assertEquals(staging != null, true)
     assertEquals(staging!.description, 'Custom default sibling')
@@ -1809,22 +1815,53 @@ async function assertCatalogScaffold(
   const metadata = projectRow?.metadata as { type?: string } | null
   assertEquals(metadata?.type, entry.kind, `${entry.code}: project type`)
   const options = projectRow?.options as { compose?: { data?: unknown } } | null
-  assertEquals(
-    options?.compose?.data,
-    entry.compose.data,
-    `${entry.code}: stored compose is the template's`
-  )
+  // The Base starts empty: the template's compose sits in the environments.
+  assertEquals(options?.compose?.data, {}, `${entry.code}: the Base starts empty`)
 
   const envs = await ctx.db
-    .select({ id: environment.id, name: environment.name, options: environment.options })
+    .select({
+      id: environment.id,
+      name: environment.name,
+      options: environment.options,
+      isPrimary: environment.isPrimary,
+    })
     .from(environment)
     .where(eq(environment.projectId, projectId))
+  assertEquals(envs.filter((env) => env.isPrimary).length, 1, `${entry.code}: one primary`)
+  assertEquals(
+    envs.find((env) => env.isPrimary)?.name,
+    expectedCatalogEnvironmentName(
+      (
+        entry.environments.find((env) => env.displayName.toLowerCase() === 'production') ??
+        entry.environments[0]!
+      ).displayName
+    ),
+    `${entry.code}: the production-like environment is primary`
+  )
   assertEquals(
     envs.map((env) => env.name),
     entry.environments.map((env) => expectedCatalogEnvironmentName(env.displayName)),
     `${entry.code}: first environment exists with the template's name`
   )
   await forEachSequential(entry.environments, async (declared, index) => {
+    // What a deploy merges is what it merged when the shared compose sat in the Base.
+    const before = mergeComposeLayers([
+      { role: 'project', filename: 'docker-compose.yml', document: entry.compose },
+      ...(declared.compose
+        ? [{ role: 'environment' as const, filename: 'env.yml', document: declared.compose }]
+        : []),
+    ])
+    const chain = resolveComposeLayerChain({
+      projectOptions: projectRow?.options,
+      environmentOptions: envs[index]!.options,
+      environmentFilename: 'env.yml',
+    })
+    assertEquals(isComposeChainError(chain), false)
+    assertEquals(
+      mergeComposeLayers(chain as ComposeLayer[]).data,
+      before.data,
+      `${entry.code}/${declared.displayName}: merged compose is unchanged`
+    )
     const vars = await ctx.db
       .select({ key: variable.key, value: variable.value, isSecret: variable.isSecret })
       .from(variable)
@@ -1865,5 +1902,243 @@ test('POST /projects creates a project from every catalog template and managed e
       const { id } = (await res.json()) as { id: string }
       await assertCatalogScaffold(ctx, id, entry!)
     })
+  })
+})
+
+const WEB_COMPOSE = {
+  version: 1,
+  data: { services: { web: { image: 'nginx:1' } } },
+  presentation: { keyOrder: ['services'], comments: {} },
+}
+const WEB_COMPOSE_V2 = {
+  version: 1,
+  data: { services: { web: { image: 'nginx:2' } } },
+  presentation: { keyOrder: ['services'], comments: {} },
+}
+
+async function storedCompose(ctx: ProjectTestContext, projectId: string) {
+  const [row] = await ctx.db
+    .select({ options: project.options })
+    .from(project)
+    .where(eq(project.id, projectId))
+  const envs = await ctx.db
+    .select({ id: environment.id, name: environment.name, options: environment.options })
+    .from(environment)
+    .where(eq(environment.projectId, projectId))
+  const data = (options: unknown) =>
+    ((options as { compose?: { data?: unknown } } | null)?.compose?.data ?? {}) as Record<
+      string,
+      unknown
+    >
+  return {
+    base: data(row?.options),
+    envs,
+    envData: (id: string) => data(envs.find((e) => e.id === id)?.options),
+  }
+}
+
+test('POST /projects docker-compose puts the compose in the primary environment and leaves the Base empty', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const res = await sendProjectJson(ctx, cookie, 'POST', '/projects', {
+      type: 'docker-compose',
+      workspaceId: ctx.workspaceId,
+      name: 'Compose In Primary',
+      options: { compose: WEB_COMPOSE },
+    })
+    assertEquals(res.status, 200)
+    const { id } = (await res.json()) as { id: string }
+    const stored = await storedCompose(ctx, id)
+    assertEquals(stored.base, {})
+    assertEquals(stored.envs.length, 1)
+    assertEquals(stored.envData(stored.envs[0]!.id), WEB_COMPOSE.data)
+
+    // A deploy merges the same compose it merged when the file sat in the Base.
+    const [row] = await ctx.db
+      .select({ options: project.options })
+      .from(project)
+      .where(eq(project.id, id))
+    const chain = resolveComposeLayerChain({
+      projectOptions: row?.options,
+      environmentOptions: stored.envs[0]!.options,
+      environmentFilename: 'env.yml',
+    })
+    assertEquals(isComposeChainError(chain), false)
+    assertEquals(mergeComposeLayers(chain as ComposeLayer[]).data, WEB_COMPOSE.data)
+  })
+})
+
+test('POST /projects docker-compose keeps a compose with project overlays in the Base', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const res = await sendProjectJson(ctx, cookie, 'POST', '/projects', {
+      type: 'docker-compose',
+      workspaceId: ctx.workspaceId,
+      name: 'Compose With Overlays',
+      options: {
+        compose: WEB_COMPOSE,
+        composeOverlays: [{ id: 'o1', name: 'o1', filename: 'o1.yml', document: WEB_COMPOSE_V2 }],
+      },
+    })
+    assertEquals(res.status, 200)
+    const { id } = (await res.json()) as { id: string }
+    const stored = await storedCompose(ctx, id)
+    assertEquals(stored.base, WEB_COMPOSE.data)
+    assertEquals(stored.envData(stored.envs[0]!.id), {})
+  })
+})
+
+test('PATCH /projects/:id sends a compose edit to the only environment, never the Base', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEmptyProject(ctx, cookie, 'Edit Target Single')
+    const res = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: { compose: WEB_COMPOSE },
+    })
+    assertEquals(res.status, 200)
+    const stored = await storedCompose(ctx, id)
+    assertEquals(stored.base, {})
+    assertEquals(stored.envData(stored.envs[0]!.id), WEB_COMPOSE.data)
+  })
+})
+
+test('PATCH /projects/:id with target base edits the Base; an environment id edits that environment', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEmptyProject(ctx, cookie, 'Edit Target Explicit')
+    const [added] = await ctx.db
+      .insert(environment)
+      .values({ projectId: id, name: 'staging' })
+      .returning({ id: environment.id })
+    const stagingId = added!.id
+
+    const base = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      target: 'base',
+      options: { compose: WEB_COMPOSE },
+    })
+    assertEquals(base.status, 200)
+    const env = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      target: stagingId,
+      options: { compose: WEB_COMPOSE_V2 },
+    })
+    assertEquals(env.status, 200)
+    const stored = await storedCompose(ctx, id)
+    assertEquals(stored.base, WEB_COMPOSE.data)
+    assertEquals(stored.envData(stagingId), WEB_COMPOSE_V2.data)
+    const primary = stored.envs.find((e) => e.id !== stagingId)!
+    assertEquals(stored.envData(primary.id), {})
+  })
+})
+
+test('PATCH /projects/:id with several environments and no target is refused', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEmptyProject(ctx, cookie, 'Edit Target Required')
+    await ctx.db.insert(environment).values({ projectId: id, name: 'staging' })
+
+    const missing = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: { compose: WEB_COMPOSE },
+    })
+    assertEquals(missing.status, 400)
+    assertEquals(((await missing.json()) as { error: string }).error, 'edit_target_required')
+
+    const invalid = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      target: crypto.randomUUID(),
+      options: { compose: WEB_COMPOSE },
+    })
+    assertEquals(((await invalid.json()) as { error: string }).error, 'edit_target_invalid')
+
+    const stored = await storedCompose(ctx, id)
+    assertEquals(stored.base, {})
+    for (const env of stored.envs) assertEquals(stored.envData(env.id), {})
+
+    // Settings that are not compose need no target, even with several environments.
+    const rename = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      description: 'still works',
+    })
+    assertEquals(rename.status, 200)
+  })
+})
+
+test('PATCH /projects/:id refuses project settings mixed into an environment edit', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEmptyProject(ctx, cookie, 'Edit Target Mixed')
+    const res = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: { compose: WEB_COMPOSE, composeSource: { sourceId: 'x' } },
+    })
+    assertEquals(res.status, 400)
+    assertEquals(((await res.json()) as { error: string }).error, 'edit_target_mixed')
+  })
+})
+
+test('POST /projects docker-compose naming a repository watches the environment that now holds the compose', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const [repo] = await ctx.db
+      .insert(repository)
+      .values({
+        organizationId: ctx.organizationId,
+        provider: 'github',
+        repositoryUrl: `https://github.com/example/${crypto.randomUUID()}`,
+      })
+      .returning({ id: repository.id })
+    try {
+      const compose = {
+        version: 1,
+        data: {
+          services: {
+            web: {
+              image: 'nginx:1',
+              'x-turbopanel': { source: { sourceId: repo!.id, branch: 'main' } },
+            },
+          },
+        },
+        presentation: { keyOrder: ['services'], comments: {} },
+      }
+      const res = await sendProjectJson(ctx, cookie, 'POST', '/projects', {
+        type: 'docker-compose',
+        workspaceId: ctx.workspaceId,
+        name: 'Watched Compose',
+        options: { compose },
+      })
+      assertEquals(res.status, 200)
+      const { id } = (await res.json()) as { id: string }
+      const stored = await storedCompose(ctx, id)
+      assertEquals(stored.base, {})
+      const watched = (await ctx.db.execute(
+        sql`SELECT environment_id::text AS env, project_id::text AS proj FROM watch WHERE repository_id = ${repo!.id}::uuid`
+      )) as unknown as { env: string | null; proj: string | null }[]
+      assertEquals(
+        watched.map((row) => row.env),
+        [stored.envs[0]!.id]
+      )
+    } finally {
+      await ctx.db.execute(sql`DELETE FROM watch WHERE repository_id = ${repo!.id}::uuid`)
+      await ctx.db
+        .update(project)
+        .set({ repositoryId: null })
+        .where(eq(project.organizationId, ctx.organizationId))
+      await ctx.db.delete(repository).where(eq(repository.id, repo!.id))
+    }
+  })
+})
+
+test('PATCH /projects/:id without a target is refused when the Base already holds content', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEmptyProject(ctx, cookie, 'Edit Target Base Content')
+    const seeded = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      target: 'base',
+      options: { compose: WEB_COMPOSE },
+    })
+    assertEquals(seeded.status, 200)
+
+    const refused = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: { compose: WEB_COMPOSE_V2 },
+    })
+    assertEquals(refused.status, 400)
+    assertEquals(((await refused.json()) as { error: string }).error, 'edit_target_required')
+    assertEquals((await storedCompose(ctx, id)).base, WEB_COMPOSE.data)
   })
 })

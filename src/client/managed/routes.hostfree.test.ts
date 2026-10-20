@@ -31,11 +31,13 @@ import {
   environment,
   login,
   managed,
+  managedDatabase,
   organization,
   principal,
   project,
   recovery,
   replica,
+  scope,
   server,
   service,
   session,
@@ -118,10 +120,17 @@ function validOptions() {
   if (!settings) {
     throw new TypeError('failed to parse default postgres settings')
   }
-  return {
-    settings,
-    databases: ['defaultdb', 'appdb'],
-  }
+  return { settings }
+}
+
+/** The `database` rows `loadManagedDatabases` reads (name order). */
+function databaseRowsFor(names: string[] = ['appdb', 'defaultdb']) {
+  return names.map((name) => ({
+    name,
+    isRoleOwned: false,
+    ownerLoginId: null,
+    ownerUsername: null,
+  }))
 }
 
 function backupRow(overrides: Record<string, unknown> = {}) {
@@ -147,7 +156,7 @@ function managedRow(overrides: Record<string, unknown> = {}) {
     name: 'PostgreSQL',
     engine: 'postgres',
     status: 'ready',
-    metadata: { rootPrincipalId: PRINCIPAL_ID, rootUsername: 'postgres' },
+    metadata: { rootLoginId: LOGIN_ID, rootUsername: 'postgres' },
     options: validOptions(),
     serverId: SERVER_ID,
     createdAt: NOW,
@@ -284,7 +293,7 @@ function principalRow(overrides: Record<string, unknown> = {}) {
     provider: 'postgres',
     username: 'appuser',
     managedId: MANAGED_ID,
-    metadata: { engine: 'postgres', databases: ['postgres'] },
+    databases: ['postgres'],
     options: {},
     password: 'sealed',
     createdAt: NOW,
@@ -298,13 +307,19 @@ const LOGIN_ID = '0192d6a0-0000-7000-8000-00000000c0c1'
 function loginRow(overrides: Record<string, unknown> = {}) {
   return {
     id: LOGIN_ID,
-    principalId: PRINCIPAL_ID,
+    principalId: null,
     managedId: MANAGED_ID,
     role: 'user',
     username: 'appuser',
     appliedUsername: 'appuser',
-    metadata: { engine: 'postgres', databases: ['postgres'] },
-    options: {},
+    nameScheme: 'plain',
+    grantMode: 'preset',
+    isTool: false,
+    databases: ['defaultdb'],
+    privileges: ['read-write'],
+    access: 'read-write',
+    allowedSources: null,
+    maxConnections: null,
     password: 'sealed',
     createdAt: NOW,
     updatedAt: NOW,
@@ -312,7 +327,7 @@ function loginRow(overrides: Record<string, unknown> = {}) {
   }
 }
 
-/** The cluster's root login, kept in step with the legacy root principal row. */
+/** The cluster's own root login. */
 function rootLoginRow(overrides: Record<string, unknown> = {}) {
   return loginRow({
     id: '0192d6a0-0000-7000-8000-00000000c0c2',
@@ -320,12 +335,7 @@ function rootLoginRow(overrides: Record<string, unknown> = {}) {
     role: 'root',
     username: 'postgres',
     appliedUsername: 'postgres',
-    metadata: {
-      managedRoot: true,
-      engine: 'postgres',
-      databases: ['postgres'],
-      legacyPrincipalId: PRINCIPAL_ID,
-    },
+    privileges: [],
     ...overrides,
   })
 }
@@ -380,6 +390,8 @@ type FakeDbConfig = {
   orgRows?: unknown[]
   serverRows?: unknown[]
   principalRows?: unknown[]
+  /** `database` rows, the shape `loadManagedDatabases` returns. */
+  databaseRows?: unknown[]
   /** `login` rows, the shape `selectLogins` in features/managed/logins.ts returns. */
   loginRows?: unknown[]
   memberRows?: unknown[]
@@ -437,6 +449,9 @@ function fakeDb(config: FakeDbConfig = {}): Db {
         }
         if (table === principal) {
           return queryChain(config.principalRows ?? [])
+        }
+        if (table === managedDatabase) {
+          return queryChain(config.databaseRows ?? databaseRowsFor())
         }
         if (table === login) {
           return queryChain(config.loginRows ?? [])
@@ -658,8 +673,8 @@ const ENV_METHODS: Array<{ method: string; path: string; body?: unknown }> = [
   { method: 'POST', path: envPath('/root-password') },
   { method: 'GET', path: envPath('/users') },
   { method: 'POST', path: envPath('/users'), body: { username: 'app' } },
-  { method: 'POST', path: envPath(`/users/${PRINCIPAL_ID}/password`) },
-  { method: 'DELETE', path: envPath(`/users/${PRINCIPAL_ID}`) },
+  { method: 'POST', path: envPath(`/users/${LOGIN_ID}/password`) },
+  { method: 'DELETE', path: envPath(`/users/${LOGIN_ID}`) },
   { method: 'GET', path: envPath('/databases') },
   { method: 'POST', path: envPath('/databases'), body: { name: 'appdb' } },
   { method: 'DELETE', path: envPath('/databases/appdb') },
@@ -1009,8 +1024,8 @@ test('mutating routes return 404 when the managed row is missing', async () => {
     ['DELETE', envPath(), undefined],
     ['POST', envPath('/root-password'), undefined],
     ['POST', envPath('/users'), { username: 'app' }],
-    ['POST', envPath(`/users/${PRINCIPAL_ID}/password`), undefined],
-    ['DELETE', envPath(`/users/${PRINCIPAL_ID}`), undefined],
+    ['POST', envPath(`/users/${LOGIN_ID}/password`), undefined],
+    ['DELETE', envPath(`/users/${LOGIN_ID}`), undefined],
     ['POST', envPath('/databases'), { name: 'appdb' }],
     ['DELETE', envPath('/databases/appdb'), undefined],
     ['POST', envPath('/members'), { serverId: SERVER_ID }],
@@ -1081,7 +1096,7 @@ test('GET databases / backups / members return stored values', async () => {
   })
   const headers = authHeaders(cookie)
   const databases = await jsonOf(await app.request(envPath('/databases'), { headers }))
-  assertEquals(databases.databases, ['defaultdb', 'appdb'])
+  assertEquals(databases.databases, ['appdb', 'defaultdb'])
 
   const backups = await jsonOf(await app.request(envPath('/backups'), { headers }))
   const list = backups.backups as Array<{ id: string }>
@@ -1101,14 +1116,12 @@ test('GET users filters root and replication logins and names the principal and 
         loginRow({
           role: 'root',
           principalId: null,
-          metadata: { managedRoot: true },
         }),
         loginRow({
           id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
           principalId: null,
           role: 'replication',
           username: 'repl',
-          metadata: { managedReplication: true },
         }),
         loginRow({
           id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
@@ -1120,13 +1133,20 @@ test('GET users filters root and replication logins and names the principal and 
   const body = await jsonOf(await app.request(envPath('/users'), { headers: authHeaders(cookie) }))
   const users = body.users as Array<{
     id: string
-    principalId: string
+    principalId: string | null
     loginId: string
     username: string
   }>
   assertEquals(
     users.map((entry) => [entry.username, entry.id, entry.principalId, entry.loginId]),
-    [['appuser', PRINCIPAL_ID, PRINCIPAL_ID, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb']]
+    [
+      [
+        'appuser',
+        'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        null,
+        'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      ],
+    ]
   )
 })
 
@@ -1736,7 +1756,7 @@ test('POST users rejects invalid JSON and missing encryption', async () => {
 
 test('POST users returns 400 for invalid stored options', async () => {
   const { app, cookie } = await buildApp({
-    db: fakeDb({ managedRows: [managedRow({ options: { databases: 1 } })] }),
+    db: fakeDb({ managedRows: [managedRow({ options: 'bad' })] }),
   })
   await expectJson(
     await app.request(envPath('/users'), {
@@ -1757,7 +1777,7 @@ test('POST user password returns 404 when the login is missing', async () => {
     }),
   })
   await expectJson(
-    await app.request(envPath(`/users/${PRINCIPAL_ID}/password`), {
+    await app.request(envPath(`/users/${LOGIN_ID}/password`), {
       method: 'POST',
       headers: authHeaders(cookie),
     }),
@@ -1774,13 +1794,12 @@ test('POST user password refuses the root login', async () => {
         loginRow({
           role: 'root',
           principalId: null,
-          metadata: { legacyPrincipalId: PRINCIPAL_ID },
         }),
       ],
     }),
   })
   await expectJson(
-    await app.request(envPath(`/users/${PRINCIPAL_ID}/password`), {
+    await app.request(envPath(`/users/${LOGIN_ID}/password`), {
       method: 'POST',
       headers: authHeaders(cookie),
     }),
@@ -1797,13 +1816,12 @@ test('POST user password refuses the replication login', async () => {
         loginRow({
           role: 'replication',
           principalId: null,
-          metadata: { legacyPrincipalId: PRINCIPAL_ID },
         }),
       ],
     }),
   })
   await expectJson(
-    await app.request(envPath(`/users/${PRINCIPAL_ID}/password`), {
+    await app.request(envPath(`/users/${LOGIN_ID}/password`), {
       method: 'POST',
       headers: authHeaders(cookie),
     }),
@@ -1820,13 +1838,12 @@ test('DELETE user refuses the root login', async () => {
         loginRow({
           role: 'root',
           principalId: null,
-          metadata: { managedRoot: true, legacyPrincipalId: PRINCIPAL_ID },
         }),
       ],
     }),
   })
   await expectJson(
-    await app.request(envPath(`/users/${PRINCIPAL_ID}`), {
+    await app.request(envPath(`/users/${LOGIN_ID}`), {
       method: 'DELETE',
       headers: authHeaders(cookie),
     }),
@@ -1852,7 +1869,7 @@ test('DELETE user returns 409 while bindings remain', async () => {
       ],
     }),
   })
-  const res = await app.request(envPath(`/users/${PRINCIPAL_ID}`), {
+  const res = await app.request(envPath(`/users/${LOGIN_ID}`), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -1939,25 +1956,25 @@ test('DELETE database returns 409 listing the SQL users that still have access',
         loginRow({
           role: 'root',
           principalId: null,
-          metadata: { managedRoot: true, databases: ['appdb'] },
+          databases: ['appdb'],
         }),
         loginRow({
           id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
           principalId: null,
           role: 'replication',
           username: 'repl',
-          metadata: { managedReplication: true, databases: ['appdb'] },
+          databases: ['appdb'],
         }),
         loginRow({
           id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
           username: 'appuser',
-          metadata: { engine: 'postgres', databases: ['defaultdb', 'appdb'] },
+          databases: ['defaultdb', 'appdb'],
         }),
         loginRow({
           id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccd',
           principalId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
           username: 'other',
-          metadata: { engine: 'postgres', databases: ['defaultdb'] },
+          databases: ['defaultdb'],
         }),
       ],
     }),
@@ -1981,7 +1998,7 @@ test('DELETE database reports bindings before users', async () => {
       managedRows: [managedRow()],
       principalRows: [
         principalRow({
-          metadata: { engine: 'postgres', databases: ['defaultdb', 'appdb'] },
+          databases: ['defaultdb', 'appdb'],
         }),
       ],
       bindingRows: [
@@ -2209,7 +2226,7 @@ test('backup routes return 404 for an unknown backup id', async () => {
 
 test('GET databases and POST backup reject invalid options', async () => {
   const { app, cookie } = await buildApp({
-    db: fakeDb({ managedRows: [managedRow({ options: { settings: {} } })] }),
+    db: fakeDb({ managedRows: [managedRow({ options: 'bad' })] }),
   })
   const headers = {
     ...authHeaders(cookie),
@@ -2232,7 +2249,7 @@ test('GET databases and POST backup reject invalid options', async () => {
 test('GET backups is unaffected by invalid managed.options — backups is its own table', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
-      managedRows: [managedRow({ options: { settings: {} } })],
+      managedRows: [managedRow({ options: 'bad' })],
       backupRows: [backupRow()],
     }),
   })
@@ -2553,7 +2570,7 @@ test('POST root-password / users return 422 when the daemon key is missing', asy
     { error: 'daemon_key_unavailable' }
   )
   await expectJson(
-    await app.request(envPath(`/users/${PRINCIPAL_ID}/password`), {
+    await app.request(envPath(`/users/${LOGIN_ID}/password`), {
       method: 'POST',
       headers,
       body: '{}',
@@ -2728,7 +2745,7 @@ test('DELETE user / PATCH member / POST database hit apply-ready after validatio
     'content-type': 'application/json',
   }
   await expectJson(
-    await app.request(envPath(`/users/${PRINCIPAL_ID}`), {
+    await app.request(envPath(`/users/${LOGIN_ID}`), {
       method: 'DELETE',
       headers,
     }),
@@ -3214,7 +3231,7 @@ test('POST user-password past apply-ready restores the prior hash on prepare fai
     registry: stubRegistry(),
     commandQueue: recordingQueue(),
   })
-  const res = await app.request(envPath(`/users/${PRINCIPAL_ID}/password`), {
+  const res = await app.request(envPath(`/users/${LOGIN_ID}/password`), {
     method: 'POST',
     headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
     body: '{}',
@@ -3314,7 +3331,7 @@ function recordingUserCreate(memberRows: unknown[]) {
       }
       return {
         values: (values: Record<string, unknown>) => {
-          if (table === principal) inserted.push(values)
+          if (table === login) inserted.push(values)
           return builder.values(values)
         },
       }
@@ -3352,10 +3369,10 @@ async function postUser(
 }
 
 // Other principals (such as the replication login) may be inserted too.
-function loginMetadata(inserted: Array<Record<string, unknown>>): Record<string, unknown> {
-  const login = inserted.find((row) => row.username === 'reporter')
-  assertEquals(login !== undefined, true)
-  return login?.metadata as Record<string, unknown>
+function insertedLogin(inserted: Array<Record<string, unknown>>): Record<string, unknown> {
+  const row = inserted.find((entry) => entry.username === 'reporter')
+  assertEquals(row !== undefined, true)
+  return row as Record<string, unknown>
 }
 
 const PRIMARY_ONLY = [memberRow({ role: 'primary', replicaClass: null, ordinal: 1 })]
@@ -3373,45 +3390,39 @@ const WITH_HIDDEN_REPLICA = [
 
 test('POST users accepts a read-only login on a standalone cluster', async () => {
   const { inserted } = await postUser({ connectionRole: 'read-only' }, PRIMARY_ONLY)
-  assertEquals(loginMetadata(inserted).connectionRole, 'read-only')
+  assertEquals(insertedLogin(inserted).access, 'read-only')
 })
 
 test('POST users accepts a read-only login when no replica is read-eligible', async () => {
   const { inserted } = await postUser({ connectionRole: 'read-only' }, WITH_HIDDEN_REPLICA)
-  assertEquals(loginMetadata(inserted).connectionRole, 'read-only')
+  assertEquals(insertedLogin(inserted).access, 'read-only')
 })
 
-// The principal is inserted before the apply payloads are prepared, and the
+// The login is inserted before the apply payloads are prepared, and the
 // fake db has no organization CA, so a later step may still answer an error:
 // these tests judge only the row that was written.
 test('POST users stores the read-only role on the new login', async () => {
   const { inserted } = await postUser({ connectionRole: 'read-only' }, WITH_READ_REPLICA)
-  const metadata = loginMetadata(inserted)
-  assertEquals(metadata.connectionRole, 'read-only')
-  assertEquals(metadata.databases, ['defaultdb'])
+  assertEquals(insertedLogin(inserted).access, 'read-only')
 })
 
-test('POST users leaves the metadata untouched for read-write and omitted roles', async () => {
+test('POST users stores read-write access for read-write and omitted roles', async () => {
   for (const body of [{ connectionRole: 'read-write' }, {}]) {
     const { inserted } = await postUser(body, PRIMARY_ONLY)
-    const metadata = loginMetadata(inserted)
-    assertEquals('connectionRole' in metadata, false)
-    assertEquals(Object.keys(metadata).sort(), [
-      'databases',
-      'engine',
-      'grantMode',
-      'origin',
-      'privileges',
-    ])
-    assertEquals(metadata.grantMode, 'recipe')
+    const row = insertedLogin(inserted)
+    assertEquals(row.access, 'read-write')
+    assertEquals(row.grantMode, 'recipe')
+    assertEquals(row.isTool, false)
+    assertEquals(row.allowedSources, undefined)
+    assertEquals(row.maxConnections, undefined)
   }
 })
 
 test('POST users stores self mode and the tool flag, and refuses an unknown mode', async () => {
   const { inserted } = await postUser({ grantMode: 'self', tool: true }, PRIMARY_ONLY)
-  const metadata = loginMetadata(inserted)
-  assertEquals(metadata.grantMode, 'self')
-  assertEquals(metadata.tool, true)
+  const row = insertedLogin(inserted)
+  assertEquals(row.grantMode, 'self')
+  assertEquals(row.isTool, true)
   const bad = await postUser({ grantMode: 'preset' }, PRIMARY_ONLY)
   await expectJson(bad.res, 400, {
     error: 'managed_grant_mode_invalid',
@@ -3432,7 +3443,7 @@ async function patchUser(body: Record<string, unknown>, loginOverrides = {}) {
     registry: stubRegistry(),
     commandQueue,
   })
-  const res = await app.request(envPath(`/users/${PRINCIPAL_ID}`), {
+  const res = await app.request(envPath(`/users/${LOGIN_ID}`), {
     method: 'PATCH',
     headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
     body: JSON.stringify(body),
@@ -3468,7 +3479,7 @@ test('PATCH user restores the old settings when preparing the apply throws', asy
   const loginWrites: Array<Record<string, unknown>> = []
   const base = applyReadyDb({
     principalRows: [],
-    loginRows: [loginRow({ metadata: { engine: 'postgres', databases: ['postgres'] } })],
+    loginRows: [loginRow({ databases: ['defaultdb'] })],
     memberRows: PRIMARY_ONLY,
   })
   const db = {
@@ -3477,9 +3488,14 @@ test('PATCH user restores the old settings when preparing the apply throws', asy
       const chain = (base.select as (...a: unknown[]) => { from: (t: unknown) => unknown })(...args)
       return {
         from: (table: unknown) => {
-          // After the new metadata is saved, any read other than the login
-          // itself fails, as if the database dropped mid-request.
-          if (loginWrites.length === 1 && table !== login) {
+          // After the new settings are saved, any read other than the login
+          // and its databases fails, as if the database dropped mid-request.
+          if (
+            loginWrites.length === 1 &&
+            table !== login &&
+            table !== managedDatabase &&
+            table !== scope
+          ) {
             throw new Error('database went away')
           }
           return chain.from(table)
@@ -3503,15 +3519,15 @@ test('PATCH user restores the old settings when preparing the apply throws', asy
     registry: stubRegistry(),
     commandQueue: recordingQueue(),
   })
-  const res = await app.request(envPath(`/users/${PRINCIPAL_ID}`), {
+  const res = await app.request(envPath(`/users/${LOGIN_ID}`), {
     method: 'PATCH',
     headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
     body: JSON.stringify({ grantMode: 'self' }),
   })
   assertEquals(res.status, 500)
   assertEquals(loginWrites.length, 2)
-  assertEquals((loginWrites[0]?.metadata as Record<string, unknown>).grantMode, 'self')
-  assertEquals((loginWrites[1]?.metadata as Record<string, unknown>).grantMode, undefined)
+  assertEquals(loginWrites[0]?.grantMode, 'self')
+  assertEquals(loginWrites[1]?.grantMode, 'preset')
 })
 
 test('PATCH user refuses a bad mode and a move back to preset in plain words', async () => {
@@ -3519,7 +3535,7 @@ test('PATCH user refuses a bad mode and a move back to preset in plain words', a
   assertEquals(bad.res.status, 400)
   const back = await patchUser(
     { grantMode: 'preset' },
-    { metadata: { engine: 'postgres', databases: ['postgres'], grantMode: 'recipe' } }
+    { databases: ['postgres'], grantMode: 'recipe' }
   )
   assertEquals(back.res.status, 422)
   assertEquals((await jsonOf(back.res)).error, 'managed_grant_mode_invalid_transition')
@@ -3529,7 +3545,7 @@ test('GET users reports grant mode, defaulting old logins to preset', async () =
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      loginRows: [loginRow({ metadata: { engine: 'postgres' } })],
+      loginRows: [loginRow()],
     }),
   })
   const body = await jsonOf(await app.request(envPath('/users'), { headers: authHeaders(cookie) }))
@@ -3542,11 +3558,7 @@ test('GET users reports a stored read-only login as read-only', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      loginRows: [
-        loginRow({
-          metadata: { engine: 'postgres', connectionRole: 'read-only' },
-        }),
-      ],
+      loginRows: [loginRow({ access: 'read-only' })],
     }),
   })
   const body = await jsonOf(await app.request(envPath('/users'), { headers: authHeaders(cookie) }))

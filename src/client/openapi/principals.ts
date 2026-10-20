@@ -3,8 +3,6 @@ export const principalSchemas = {
     type: 'object',
     required: [
       'id',
-      'kind',
-      'provider',
       'username',
       'appliedUsername',
       'nameScheme',
@@ -14,8 +12,6 @@ export const principalSchemas = {
     ],
     properties: {
       id: { type: 'string' },
-      kind: { type: 'string' },
-      provider: { type: 'string' },
       username: { type: 'string' },
       appliedUsername: {
         type: 'string',
@@ -57,8 +53,6 @@ export const principalSchemas = {
       'id',
       'name',
       'appliedUsername',
-      'kind',
-      'provider',
       'forms',
       'projectId',
       'projectName',
@@ -77,8 +71,6 @@ export const principalSchemas = {
         type: 'string',
         description: 'The login on the host or engine (the system name).',
       },
-      kind: { type: 'string' },
-      provider: { type: 'string' },
       forms: {
         type: 'array',
         items: { type: 'string', enum: ['system', 'database'] },
@@ -122,13 +114,14 @@ export const principalSchemas = {
       usedBy: {
         type: 'object',
         description: 'What still uses the principal, counted per kind.',
-        required: ['tenancies', 'bindings', 'storages', 'secrets', 'logins'],
+        required: ['tenancies', 'bindings', 'storages', 'secrets', 'logins', 'folders'],
         properties: {
           tenancies: { type: 'integer' },
           bindings: { type: 'integer' },
           storages: { type: 'integer' },
           secrets: { type: 'integer' },
           logins: { type: 'integer' },
+          folders: { type: 'integer' },
         },
       },
       state: {
@@ -185,14 +178,24 @@ export const principalSchemas = {
       source: { type: 'string', enum: ['compose', 'manual', 'storage'] },
       usedBy: {
         type: 'object',
-        description: 'What else uses the principal; otherPlacements leaves this server out.',
-        required: ['tenancies', 'bindings', 'storages', 'secrets', 'logins', 'otherPlacements'],
+        description:
+          'What else uses the principal; otherPlacements and folders leave this server out.',
+        required: [
+          'tenancies',
+          'bindings',
+          'storages',
+          'secrets',
+          'logins',
+          'folders',
+          'otherPlacements',
+        ],
         properties: {
           tenancies: { type: 'integer' },
           bindings: { type: 'integer' },
           storages: { type: 'integer' },
           secrets: { type: 'integer' },
           logins: { type: 'integer' },
+          folders: { type: 'integer' },
           otherPlacements: { type: 'integer' },
         },
       },
@@ -391,7 +394,7 @@ export const principalPaths = {
         404: { description: 'Organization or principal not found' },
         409: {
           description:
-            '`code`: principal_in_use (with `usedBy`: services, bindings, storage, secrets, logins) | principal_has_project | principal_not_system_user',
+            '`code`: principal_in_use (with `usedBy`: services, bindings, storage, secrets, logins) | principal_has_project',
         },
       },
     },

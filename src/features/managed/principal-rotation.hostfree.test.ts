@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import { login, principal } from '../../db/schema.ts'
+import { login } from '../../db/schema.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { rollBackLoginRotation } from './principal-rotation.ts'
@@ -8,10 +8,9 @@ const test = Deno.test.bind(Deno)
 
 const secrets = {} as DerivedSecretsConfig
 const LOGIN_ID = 'login-1'
-const PRINCIPAL_ID = 'principal-1'
 const MANAGED_ID = 'managed-1'
 
-/** A login and the legacy principal row it is kept in step with. */
+/** A login with its current (new) password. */
 function seedDb() {
   return createMemoryDb([
     [
@@ -19,22 +18,8 @@ function seedDb() {
       [
         {
           id: LOGIN_ID,
-          principalId: PRINCIPAL_ID,
           managedId: MANAGED_ID,
           role: 'user',
-          metadata: null,
-          password: 'new-hash',
-          updatedAt: '2026-01-01T00:00:00.000Z',
-        },
-      ],
-    ],
-    [
-      principal,
-      [
-        {
-          id: PRINCIPAL_ID,
-          kind: 'database',
-          managedId: MANAGED_ID,
           password: 'new-hash',
           updatedAt: '2026-01-01T00:00:00.000Z',
         },
@@ -43,7 +28,7 @@ function seedDb() {
   ])
 }
 
-test('rolling back a rotation restores the password on both rows and rewrites the bound project variables', async () => {
+test('rolling back a rotation restores the password and rewrites the bound project variables', async () => {
   const db = seedDb()
   const calls: string[] = []
   const result = await rollBackLoginRotation(
@@ -59,7 +44,6 @@ test('rolling back a rotation restores the password on both rows and rewrites th
   assertEquals(result, { variablesRestored: true })
   assertEquals(calls, [`${LOGIN_ID}:old-hash`])
   assertEquals(db.rows(login)[0]?.password, 'old-hash')
-  assertEquals(db.rows(principal)[0]?.password, 'old-hash')
 })
 
 test('a failed variable rewrite is reported, and the password is still restored', async () => {

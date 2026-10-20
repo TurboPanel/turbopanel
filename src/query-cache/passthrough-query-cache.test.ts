@@ -1,9 +1,6 @@
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../db/connection.ts'
-import {
-  APPROVED_READ_MODELS,
-  isApprovedReadModelId,
-} from './approved-read-models.ts'
+import { APPROVED_READ_MODELS, isApprovedReadModelId } from './approved-read-models.ts'
 import { runApprovedCachedReadModel } from './cached-query.ts'
 import {
   clampQueryCacheTtlSeconds,
@@ -23,7 +20,15 @@ import { createPassthroughQueryCache } from './passthrough-query-cache.ts'
 const test = Deno.test.bind(Deno)
 
 test('isApprovedReadModelId accepts only allowlisted ids', () => {
-  assertEquals(APPROVED_READ_MODELS, ['servers-list', 'server-detail'])
+  assertEquals(APPROVED_READ_MODELS, [
+    'servers-list',
+    'server-detail',
+    'projects-list',
+    'project-detail',
+    'environments-list',
+    'environment-detail',
+    'workspaces-list',
+  ])
   assertEquals(isApprovedReadModelId('servers-list'), true)
   assertEquals(isApprovedReadModelId('server-detail'), true)
   assertEquals(isApprovedReadModelId('daemon-status'), false)
@@ -51,7 +56,7 @@ test('passthrough cache loads approved models and rejects others', async () => {
         load: async () => null,
       } as unknown as Parameters<typeof cache.getReadModel>[0]),
     Error,
-    'Unapproved read model',
+    'Unapproved read model'
   )
 })
 
@@ -65,16 +70,13 @@ test('passthrough cache requires a database', async () => {
         load: async () => [],
       }),
     Error,
-    'Database unavailable',
+    'Database unavailable'
   )
 })
 
 test('queryCacheKey prefixes namespace and joins parts', () => {
   assertEquals(QUERY_CACHE_PREFIX, 'tp:qcache:')
-  assertEquals(
-    queryCacheKey('servers-list', 'org-1', 'a,b'),
-    'tp:qcache:servers-list:org-1:a,b',
-  )
+  assertEquals(queryCacheKey('servers-list', 'org-1', 'a,b'), 'tp:qcache:servers-list:org-1:a,b')
 })
 
 test('clampQueryCacheTtlSeconds bounds ttl to the approved window', () => {
@@ -88,10 +90,7 @@ test('clampQueryCacheTtlSeconds bounds ttl to the approved window', () => {
 
 test('queryCacheKey joins empty trailing parts without dropping namespace', () => {
   assertEquals(queryCacheKey('servers-list'), 'tp:qcache:servers-list')
-  assertEquals(
-    queryCacheKey('server-detail', 'org', ''),
-    'tp:qcache:server-detail:org:',
-  )
+  assertEquals(queryCacheKey('server-detail', 'org', ''), 'tp:qcache:server-detail:org:')
 })
 
 test('runApprovedCachedReadModel bypasses cache when absent', async () => {
@@ -104,7 +103,7 @@ test('runApprovedCachedReadModel bypasses cache when absent', async () => {
     async (passed) => {
       assertEquals(passed, db)
       return [{ id: 'srv-1' }]
-    },
+    }
   )
   assertEquals(loaded, [{ id: 'srv-1' }])
 })
@@ -118,7 +117,7 @@ test('runApprovedCachedReadModel delegates to QueryCache when present', async ()
     'server-detail',
     ['org-1', 'srv-1'],
     async () => ({ id: 'srv-1' }),
-    30,
+    30
   )
   assertEquals(loaded, { id: 'srv-1' })
 })
@@ -145,7 +144,7 @@ test('hyperdrive cache loads approved models and rejects others', async () => {
         load: async () => null,
       } as unknown as Parameters<typeof cache.getReadModel>[0]),
     Error,
-    'Unapproved read model for cached database',
+    'Unapproved read model for cached database'
   )
 })
 

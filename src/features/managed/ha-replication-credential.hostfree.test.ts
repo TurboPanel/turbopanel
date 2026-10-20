@@ -110,14 +110,12 @@ function daemonJoinRow() {
   ]
 }
 
-/** The `login` read in `findManagedLoginByRole`: from, left join, where, order by. */
+/** The `login` read in `findManagedLoginByRole`: from, where, order by. */
 function loginSelect(rows: unknown[]) {
   return {
     from: () => ({
-      leftJoin: () => ({
-        where: () => ({
-          orderBy: () => Promise.resolve(rows),
-        }),
+      where: () => ({
+        orderBy: () => Promise.resolve(rows),
       }),
     }),
   }
@@ -132,8 +130,14 @@ function replicationLoginRow(password: string) {
     username: 'tp_repl',
     appliedUsername: 'tp_repl',
     password,
-    metadata: { managedReplication: true },
-    options: null,
+    nameScheme: 'plain',
+    grantMode: 'preset',
+    isTool: false,
+    databases: [],
+    privileges: [],
+    access: 'read-write',
+    allowedSources: null,
+    maxConnections: null,
     createdAt: '2020-01-01T00:00:00.000Z',
     updatedAt: '2020-01-01T00:00:00.000Z',
   }

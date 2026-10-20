@@ -33,6 +33,32 @@ export const repositorySchemas = {
           },
         },
       },
+      nodeVersion: {
+        type: 'object',
+        description:
+          'The Node series a new app should start on: `newest` is the newest series the ' +
+          'control plane offers (the default pin); `hint` is what the repository asked for ' +
+          '(package.json engines.node or volta.node, .nvmrc, .node-version, .tool-versions).',
+        required: ['newest', 'offered'],
+        properties: {
+          newest: { type: 'string' },
+          offered: { type: 'array', items: { type: 'string' } },
+          hint: {
+            type: 'object',
+            required: ['source', 'requested', 'path', 'status'],
+            properties: {
+              source: {
+                type: 'string',
+                enum: ['package.json', 'volta', '.nvmrc', '.node-version', '.tool-versions'],
+              },
+              requested: { type: 'string' },
+              path: { type: 'string' },
+              status: { type: 'string', enum: ['matched', 'unsupported', 'invalid'] },
+              series: { type: 'string' },
+            },
+          },
+        },
+      },
     },
   },
   RepositoryRefError: {
@@ -262,8 +288,6 @@ export const repositorySchemas = {
       accountType: { type: ['string', 'null'] },
       suspendedAt: { type: ['string', 'null'], format: 'date-time' },
       suspended: { type: 'boolean' },
-      metadata: { type: ['object', 'null'] },
-      options: { type: ['object', 'null'] },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
     },

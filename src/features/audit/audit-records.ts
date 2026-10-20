@@ -53,10 +53,19 @@ export const AUDIT_ACTIONS = [
   'server.addresses.set',
   'deployment.cancel',
   'hosting.letsencrypt.requested',
+  'tls.certificate.store',
+  'tls.certificate.key_erase',
+  'tls.certificate.delete',
   'mail.dead_letter.replay',
   'binding.create',
   'binding.update',
   'binding.delete',
+  'tls.ca.retire',
+  'tls.leaf.renew',
+  'tls.leaf.stale',
+  'tls.leaf.delete',
+  'folder.remove',
+  'environment.primary.set',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

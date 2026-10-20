@@ -12,7 +12,6 @@ import {
   assertManagedSeriesUnchanged,
   assertManagedVariantSwapSafe,
   buildManagedReleaseView,
-  isManagedRootPrincipal,
   isPlainObject,
   MANAGED_SERIES_IMMUTABLE_ERROR,
   MANAGED_USER_PRIVILEGES_INVALID_ERROR,
@@ -23,13 +22,11 @@ import {
   parseManagedPatchName,
   parseManagedUserCreateFields,
   parseManagedVersionSelection,
-  principalMetadata,
   readInitialDatabase,
   resolveManagedServerId,
   resolveManagedUserPrivileges,
   serializeContainerRow,
   serializeManagedLogin,
-  serializeManagedUser,
   evaluateExistingPrincipalLoginName,
   evaluateManagedLoginDropGuard,
   evaluateManagedLoginRotateGuard,
@@ -91,7 +88,7 @@ test('managedSessionPaths lists every managed session route', () => {
   const paths = managedSessionPaths()
   assertEquals(paths.length, 26)
   assertEquals(
-    paths.includes('/environments/:id/managed/users/:principalId/effective-permissions'),
+    paths.includes('/environments/:id/managed/users/:loginId/effective-permissions'),
     true
   )
   assertEquals(paths.includes('/environments/:id/managed/privilege-catalogue'), true)
@@ -411,18 +408,6 @@ test('resolveManagedServerId prefers managed.server_id over environment placemen
   assertEquals(resolveManagedServerId({ serverId: null }, null), null)
 })
 
-test('principalMetadata and isManagedRootPrincipal', () => {
-  assertEquals(principalMetadata(null), {})
-  assertEquals(principalMetadata([1]), {})
-  assertEquals(principalMetadata({ managedRoot: true, databases: ['postgres'] }), {
-    managedRoot: true,
-    databases: ['postgres'],
-  })
-  assertEquals(isManagedRootPrincipal({ managedRoot: true }), true)
-  assertEquals(isManagedRootPrincipal({ managedRoot: false }), false)
-  assertEquals(isManagedRootPrincipal(undefined), false)
-})
-
 test('serializeManagedLogin keeps the users shape, names the principal and login, and the cluster logins are guarded by role', () => {
   const row = {
     id: 'login-1',
@@ -431,19 +416,24 @@ test('serializeManagedLogin keeps the users shape, names the principal and login
     role: 'user' as const,
     username: 'app_user',
     appliedUsername: 'app_user',
-    metadata: { databases: ['postgres'] },
-    options: { nameScheme: 'plain' },
+    nameScheme: 'plain' as const,
+    databases: ['postgres'],
+    privileges: ['read-write'],
+    connectionRole: 'read-write' as const,
+    grantMode: 'preset' as const,
+    tool: false,
+    allowedSources: undefined,
+    maxConnections: undefined,
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-01-01T00:00:00.000Z',
   }
   const serialized = serializeManagedLogin(row)
-  assertEquals(serialized.id, 'prin-1')
+  assertEquals(serialized.id, 'login-1')
   assertEquals(serialized.principalId, 'prin-1')
   assertEquals(serialized.loginId, 'login-1')
   assertEquals(serialized.nameScheme, 'plain')
   assertEquals(serialized.databases, ['postgres'])
-  // A cluster login has no principal: `id` falls back to the login id.
-  assertEquals(serializeManagedLogin({ ...row, principalId: null, role: 'root' }).id, 'login-1')
+  assertEquals(serializeManagedLogin({ ...row, principalId: null, role: 'root' }).principalId, null)
 
   assertEquals(evaluateManagedLoginRotateGuard('root')?.error, 'use_root_password_route')
   assertEquals(
@@ -484,34 +474,40 @@ test('evaluateExistingPrincipalLoginName accepts a name the engine takes and ref
   )
 })
 
-test('serializeManagedUser filters databases and privileges to strings', () => {
-  const serialized = serializeManagedUser({
-    id: 'prin-1',
+test('serializeManagedLogin reads settings from the login columns', () => {
+  const serialized = serializeManagedLogin({
+    id: 'login-1',
+    principalId: null,
+    managedId: 'm1',
+    role: 'user',
     username: 'app_user',
     appliedUsername: 'app_user_ab12cd34ef5',
-    metadata: {
-      databases: ['postgres', 42, 'app'],
-      privileges: ['read-only', null],
-    },
-    createdAt: '2024-01-01T00:00:00.000Z',
-  })
-  assertEquals(serialized, {
-    id: 'prin-1',
-    username: 'app_user',
-    appliedUsername: 'app_user_ab12cd34ef5',
-    // Legacy row (no stored scheme): a suffixed name reads as partial.
     nameScheme: 'partial',
     databases: ['postgres', 'app'],
     privileges: ['read-only'],
-    // Absent metadata role → the writer hostgroup, never an implicit reader.
-    connectionRole: 'read-write',
-    // No stored mode reads as today's behaviour.
-    grantMode: 'preset',
-    tool: false,
-    // No stored limits read as anywhere / no cap.
-    allowedSources: ['any'],
-    maxConnections: null,
+    connectionRole: 'read-only',
+    grantMode: 'self',
+    tool: true,
+    allowedSources: ['internal'],
+    maxConnections: 3,
     createdAt: '2024-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-01T00:00:00.000Z',
+  })
+  assertEquals(serialized, {
+    id: 'login-1',
+    username: 'app_user',
+    appliedUsername: 'app_user_ab12cd34ef5',
+    nameScheme: 'partial',
+    databases: ['postgres', 'app'],
+    privileges: ['read-only'],
+    connectionRole: 'read-only',
+    grantMode: 'self',
+    tool: true,
+    allowedSources: ['internal'],
+    maxConnections: 3,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    principalId: null,
+    loginId: 'login-1',
   })
 })
 

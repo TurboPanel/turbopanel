@@ -26,6 +26,7 @@
  */
 
 import { eq, inArray } from 'drizzle-orm'
+import { type FolderRefParts, parseFolderRefParts } from '../../contracts/directory-names.ts'
 import type { Db } from '../../db/connection.ts'
 import { deployment, environment, principal, project, service } from '../../db/schema.ts'
 import { readServiceSourceExtension } from '../../features/compose/index.ts'
@@ -34,12 +35,19 @@ import {
   loadPrincipalIdsByServiceIdForEnvironment,
   pickSolePrincipalId,
 } from '../principals/tenancies.ts'
+import { assetFolderRef } from '../../features/folders/names.ts'
 import { resolveDeployReleaseServiceId } from './release-service-id.ts'
 
-/** One release tree to reclaim: `<principalHomeRoot>/<username>/sites/<serviceId>`. */
+/**
+ * One release tree to reclaim: `<principalHomeRoot>/<username>/sites/<serviceId>`.
+ * `folder` names the same service's folder as components (owner, scope, slug);
+ * it is sent beside the old fields, which stay authoritative until the daemon
+ * resolves folders itself, and is left out while the service has no folder name.
+ */
 export type EnvironmentSiteRelease = {
   serviceId: string
   username: string
+  folder?: FolderRefParts
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -81,6 +89,7 @@ export async function resolveSourcedEnvironmentSiteReleases(
   const [envRow] = await db
     .select({
       id: environment.id,
+      name: environment.name,
       projectId: environment.projectId,
       options: environment.options,
     })
@@ -103,7 +112,12 @@ export async function resolveSourcedEnvironmentSiteReleases(
   if (sourceComposeNames.size === 0) return []
 
   const serviceRows = await db
-    .select({ id: service.id, composeServiceName: service.composeServiceName })
+    .select({
+      id: service.id,
+      composeServiceName: service.composeServiceName,
+      slug: service.slug,
+      isCommon: service.isCommon,
+    })
     .from(service)
     .where(eq(service.environmentId, environmentId))
   const matched = serviceRows.filter((row) => sourceComposeNames.has(row.composeServiceName))
@@ -126,24 +140,32 @@ export async function resolveSourcedEnvironmentSiteReleases(
 
   const out: EnvironmentSiteRelease[] = []
   for (const row of matched) {
-    const entry = siteReleaseForSourcedService(row, wanted, usernameById)
+    const entry = siteReleaseForSourcedService(row, wanted, usernameById, envRow.name)
     if (entry) out.push(entry)
   }
   return sortSiteReleases(out)
 }
 
 function siteReleaseForSourcedService(
-  row: { id: string; composeServiceName: string },
+  row: { id: string; composeServiceName: string; slug: string | null; isCommon: boolean },
   principalIdByServiceId: Map<string, string>,
-  usernameById: Map<string, string>
+  usernameById: Map<string, string>,
+  environmentName: string | null
 ): EnvironmentSiteRelease | null {
   const principalId = principalIdByServiceId.get(row.id)
   if (!principalId) return null
   const username = usernameById.get(principalId)
   if (!username) return null
+  const folder = assetFolderRef({
+    owner: username,
+    isCommon: row.isCommon,
+    environmentName,
+    slug: row.slug,
+  })
   return {
     serviceId: resolveDeployReleaseServiceId(row.composeServiceName, row.id),
     username,
+    ...(folder === undefined ? {} : { folder }),
   }
 }
 
@@ -159,10 +181,22 @@ const SITE_RELEASE_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,27}$/
 
 function parseRecordedSiteRelease(value: unknown): EnvironmentSiteRelease | null {
   if (!isPlainObject(value)) return null
-  const { serviceId, username } = value
+  const { serviceId, username, folder } = value
   if (typeof serviceId !== 'string' || !SITE_RELEASE_SERVICE_ID_RE.test(serviceId)) return null
   if (typeof username !== 'string' || !SITE_RELEASE_USERNAME_RE.test(username)) return null
-  return { serviceId, username }
+  const parsed = parseRecordedFolder(folder)
+  return { serviceId, username, ...(parsed === undefined ? {} : { folder: parsed }) }
+}
+
+/** A recorded folder reference, or undefined when absent or no longer valid. */
+function parseRecordedFolder(value: unknown): FolderRefParts | undefined {
+  if (value === undefined) return undefined
+  try {
+    const ref = parseFolderRefParts(value, 'service')
+    return { owner: ref.owner, scope: ref.scope, slug: ref.slug }
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -212,7 +246,14 @@ export async function resolveEnvironmentSiteReleases(
 
   const byKey = new Map<string, EnvironmentSiteRelease>()
   for (const entry of [...sourced, ...recorded]) {
-    byKey.set(`${entry.username}\u0000${entry.serviceId}`, entry)
+    const key = `${entry.username}\u0000${entry.serviceId}`
+    // The current rows win; a recorded entry only fills in a folder the current ones lack.
+    const folder = byKey.get(key)?.folder ?? entry.folder
+    byKey.set(key, {
+      serviceId: entry.serviceId,
+      username: entry.username,
+      ...(folder === undefined ? {} : { folder }),
+    })
   }
   return sortSiteReleases([...byKey.values()])
 }

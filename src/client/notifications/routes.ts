@@ -41,6 +41,7 @@ import {
 } from '../../features/notifications/records.ts'
 import {
   describeEvent,
+  eventLabel,
   eventScope,
   eventSeverity,
   NOTIFICATION_EVENTS,
@@ -201,6 +202,7 @@ export function registerNotificationRoutes(router: Hono<AppEnv>, opts: AuthRoute
         event,
         severity: eventSeverity(event),
         scope: eventScope(event),
+        label: eventLabel(event),
         example: describeEvent(event).title,
       })),
     })

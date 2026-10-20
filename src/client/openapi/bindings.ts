@@ -5,9 +5,8 @@ export const bindingSchemas = {
     type: 'object',
     properties: {
       id: { type: 'string' },
-      principalId: { type: 'string' },
       loginId: {
-        type: ['string', 'null'],
+        type: 'string',
         description: 'The database login whose credentials are injected.',
       },
       serviceId: { type: 'string' },
@@ -51,7 +50,7 @@ export const bindingSchemas = {
       principalId: {
         type: 'string',
         description:
-          'The principal whose database login is bound. Required unless `loginId` is given; 409 `binding_login_ambiguous` when the principal has several logins.',
+          'A site owner Linux user whose database login is bound. Required unless `loginId` is given; 409 `binding_login_ambiguous` when the user has several logins.',
       },
       loginId: {
         type: 'string',
@@ -132,7 +131,7 @@ export const bindingPaths = {
           required: false,
           schema: { type: 'string' },
           description:
-            'List bindings whose principal belongs to the managed cluster in this environment (exactly one filter)',
+            'List bindings whose login belongs to the managed cluster in this environment (exactly one filter)',
         },
       ],
     },

@@ -137,6 +137,9 @@ jobs:
       - name: Check metrics boundaries (AE tokens and page identity stay backend-private)
         run: pnpm run check:metrics-boundaries
 
+      - name: Check query-cache boundaries (only registered reads reach the cached connection)
+        run: pnpm run check:query-cache-boundaries
+
       - name: Check contract drift (skip when turbopaneld is not a sibling)
         run: pnpm run check:contract-drift
 

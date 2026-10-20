@@ -20,7 +20,7 @@ a recipe; "Manage permissions myself" stays available.
 
 | Raw report shape and parser | `observed.ts` (twin of the daemon's `ManagedPermissionsObserved`) |
 | Join of report and catalogue | `effective.ts` |
-| `GET …/users/:principalId/effective-permissions` | `privilege-routes.ts`, `src/client/managed/permissions-probe.ts` |
+| `GET …/users/:loginId/effective-permissions` | `privilege-routes.ts`, `src/client/managed/permissions-probe.ts` |
 | Daemon read | `turbopaneld/src/managed/permissions-read.ts` (cell message, feature `managed-permissions-read-v1`) |
 
 ### Where the catalogue lives, and why
@@ -128,13 +128,13 @@ privileges}]` (an `ALTER DEFAULT PRIVILEGES FOR ROLE creator`) and
 
 ### Recipes expand to grid entries
 
-| Recipe         | Postgres (owner role per database)                                             | MySQL and MariaDB (direct grants on every host row)                                                                    |
-| -------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| App            | member of the database's read-write group role                                 | SELECT, INSERT, UPDATE, DELETE, EXECUTE, CREATE TEMPORARY TABLES, LOCK TABLES, SHOW VIEW                               |
+| Recipe         | Postgres (owner role per database)                                             | MySQL and MariaDB (direct grants on every host row)                                                                                                |
+| -------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| App            | member of the database's read-write group role                                 | SELECT, INSERT, UPDATE, DELETE, EXECUTE, CREATE TEMPORARY TABLES, LOCK TABLES, SHOW VIEW                                                           |
 | Migrations     | member of the owner role, `INHERIT FALSE, SET TRUE`; migrations run `SET ROLE` | ALL on its database, no GRANT OPTION (App plus CREATE, ALTER, DROP, INDEX, REFERENCES, CREATE VIEW, TRIGGER, CREATE ROUTINE, ALTER ROUTINE, EVENT) |
-| Read only      | member of the read-only group; `default_transaction_read_only = on`            | SELECT, SHOW VIEW                                                                                                      |
-| Analyst        | Read only limited to chosen schemas (`USAGE` + `IN SCHEMA` defaults)           | Read only on chosen tables                                                                                             |
-| Database admin | member of every owner role (with SET), no superuser                            | ALL on the environment's databases WITH GRANT OPTION, never CREATE USER                                                |
+| Read only      | member of the read-only group; `default_transaction_read_only = on`            | SELECT, SHOW VIEW                                                                                                                                  |
+| Analyst        | Read only limited to chosen schemas (`USAGE` + `IN SCHEMA` defaults)           | Read only on chosen tables                                                                                                                         |
+| Database admin | member of every owner role (with SET), no superuser                            | ALL on the environment's databases WITH GRANT OPTION, never CREATE USER                                                                            |
 
 On MySQL and MariaDB the App job is data only: it can never create, alter or
 drop a table, index, view, routine, trigger or event, and its temporary tables
@@ -153,7 +153,7 @@ The panel must only ever take back what it gave. Postgres cannot tell panel
 grants from developer grants (a grant made by a superuser or an owner-role
 member is recorded as made by the owner), so the panel records its own:
 
-- Stored in `login.metadata.grantLedger`: the exact list of grid entries it
+- To be stored on the `login` row (a column added by a forward migration when this is built): the exact list of grid entries it
   issued, per engine account (and per host row on MySQL and MariaDB), with the
   time and the recipe or edit that caused it.
 - Reconcile adds what is wanted, revokes only ledger entries that are no longer

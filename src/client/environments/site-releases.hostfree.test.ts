@@ -222,3 +222,114 @@ test('resolveSourcedEnvironmentSiteReleases records only what the compose declar
   ])
   assertEquals(await resolveSourcedEnvironmentSiteReleases(db, ENV_ID), [])
 })
+
+// ---------------------------------------------------------------------------
+// The folder components ride beside the old fields.
+// ---------------------------------------------------------------------------
+
+test('a service with a folder name sends its folder components beside the old fields', async () => {
+  const db = fakeDb([
+    [{ id: ENV_ID, name: 'production', projectId: PROJECT_ID, options: composeOptions({}) }],
+    [{ id: PROJECT_ID, options: composeOptions(SOURCED_SERVICE) }],
+    [{ id: SERVICE_ID, composeServiceName: 'web', slug: 'example.com', isCommon: false }],
+    [{ principalId: PRINCIPAL_ID, serviceId: SERVICE_ID }],
+    [{ id: PRINCIPAL_ID, username: 'appuser' }],
+  ])
+  assertEquals(await resolveSourcedEnvironmentSiteReleases(db, ENV_ID), [
+    {
+      serviceId: SERVICE_ID,
+      username: 'appuser',
+      folder: { owner: 'appuser', scope: 'production', slug: 'example.com' },
+    },
+  ])
+})
+
+test('a service in the common scope names the common scope, whatever its environment is called', async () => {
+  const db = fakeDb([
+    [{ id: ENV_ID, name: 'Old Name', projectId: PROJECT_ID, options: composeOptions({}) }],
+    [{ id: PROJECT_ID, options: composeOptions(SOURCED_SERVICE) }],
+    [{ id: SERVICE_ID, composeServiceName: 'web', slug: 'shared', isCommon: true }],
+    [{ principalId: PRINCIPAL_ID, serviceId: SERVICE_ID }],
+    [{ id: PRINCIPAL_ID, username: 'appuser' }],
+  ])
+  const [release] = await resolveSourcedEnvironmentSiteReleases(db, ENV_ID)
+  assertEquals(release!.folder, { owner: 'appuser', scope: 'common', slug: 'shared' })
+})
+
+test('no folder components while the name or the environment name is not usable yet', async () => {
+  for (const row of [
+    { slug: null, isCommon: false, envName: 'production' },
+    { slug: 'web', isCommon: false, envName: 'Old Name' },
+    { slug: 'web', isCommon: false, envName: null },
+  ]) {
+    const db = fakeDb([
+      [{ id: ENV_ID, name: row.envName, projectId: PROJECT_ID, options: composeOptions({}) }],
+      [{ id: PROJECT_ID, options: composeOptions(SOURCED_SERVICE) }],
+      [{ id: SERVICE_ID, composeServiceName: 'web', slug: row.slug, isCommon: row.isCommon }],
+      [{ principalId: PRINCIPAL_ID, serviceId: SERVICE_ID }],
+      [{ id: PRINCIPAL_ID, username: 'appuser' }],
+    ])
+    assertEquals(await resolveSourcedEnvironmentSiteReleases(db, ENV_ID), [
+      { serviceId: SERVICE_ID, username: 'appuser' },
+    ])
+  }
+})
+
+test('a recorded folder survives the round trip, and a broken one is dropped', async () => {
+  const db = fakeDb([
+    [
+      {
+        id: ENV_ID,
+        name: 'production',
+        projectId: PROJECT_ID,
+        options: composeOptions(PLAIN_SERVICE),
+      },
+    ],
+    [{ id: PROJECT_ID, options: composeOptions(PLAIN_SERVICE) }],
+    deploymentOptions([
+      {
+        serviceId: REMOVED_SERVICE_ID,
+        username: 'appuser',
+        folder: { owner: 'appuser', scope: 'production', slug: 'gone.example.com' },
+      },
+      {
+        serviceId: 'svc-1',
+        username: 'appuser',
+        folder: { owner: 'appuser', scope: 'Bad', slug: 'x' },
+      },
+    ]),
+  ])
+  assertEquals(await resolveEnvironmentSiteReleases(db, ENV_ID), [
+    {
+      serviceId: REMOVED_SERVICE_ID,
+      username: 'appuser',
+      folder: { owner: 'appuser', scope: 'production', slug: 'gone.example.com' },
+    },
+    { serviceId: 'svc-1', username: 'appuser' },
+  ])
+})
+
+test('the current folder wins over the recorded one, which fills a gap', async () => {
+  const db = fakeDb([
+    [{ id: ENV_ID, name: 'production', projectId: PROJECT_ID, options: composeOptions({}) }],
+    [{ id: PROJECT_ID, options: composeOptions(SOURCED_SERVICE) }],
+    // Not named yet in the rows, but the last deploy recorded it.
+    [{ id: SERVICE_ID, composeServiceName: 'web', slug: null, isCommon: false }],
+    [{ principalId: PRINCIPAL_ID, serviceId: SERVICE_ID }],
+    [{ id: PRINCIPAL_ID, username: 'appuser' }],
+    deploymentOptions([
+      {
+        serviceId: SERVICE_ID,
+        username: 'appuser',
+        folder: { owner: 'appuser', scope: 'production', slug: 'web' },
+      },
+    ]),
+  ])
+  assertEquals(await resolveEnvironmentSiteReleases(db, ENV_ID), [
+    {
+      serviceId: SERVICE_ID,
+      username: 'appuser',
+      folder: { owner: 'appuser', scope: 'production', slug: 'web' },
+    },
+  ])
+})
