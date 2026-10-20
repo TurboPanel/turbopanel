@@ -15,6 +15,7 @@ import {
 import { readHostingWwwMode } from '../hostings/hosting-options.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { assertNotPanelHostnames } from '../hostings/panel-hostname-guard.ts'
 import { type HostingWwwMode, hostingCertificateNames } from '../../contracts/commands/hostname.ts'
 
 /**
@@ -46,6 +47,9 @@ export async function replaceHostingHostnames(
     .where(eq(hosting.id, hostingId))
     .limit(1)
   const www = readHostingWwwMode(row?.options)
+  // Typed names and the www names the choice adds alike: none may be a name
+  // the panel serves. Throws, so the surrounding transaction rolls back.
+  await assertNotPanelHostnames(db, hostingRoutingNames(hostnames, www))
   await db.delete(hostname).where(eq(hostname.hostingId, hostingId))
   await forEachSequential(hostingRoutingNames(hostnames, www), (value) =>
     db.insert(hostname).values({

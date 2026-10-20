@@ -1,4 +1,5 @@
 import { attachWebMetadataToSites } from '../../features/hostings/hosting-web-env.ts'
+import { panelHostnameInUseMessage } from '../../features/hostings/panel-hostname-guard.ts'
 import { assignSiteListenPorts } from '../../features/compose/site.ts'
 import { assignNativeAppListenPorts } from '../../features/compose/native-app.ts'
 import { NEWEST_NATIVE_APP_NODE_SERIES } from '../../contracts/runtime-registry.ts'
@@ -416,6 +417,7 @@ function mapHostingPrepareError(
         | 'hosting_tls_mode_unsupported'
         | 'hosting_route_conflict'
         | 'hosting_hostname_conflict'
+        | 'hosting_hostname_is_panel'
     }
   >
 ): PrepareErrorResponse {
@@ -470,6 +472,17 @@ function mapHostingPrepareError(
         message: `"${prepared.composeServiceName}" declares ${prepared.hostname}${prepared.pathPrefix}, which an existing hosting already serves alongside ${prepared.otherHostnames.join(
           ', '
         )}. Compose can only take over a hosting that serves this one hostname — split the other hostnames onto their own hosting, or drop the declaration and keep editing the route in the panel.`,
+      },
+    }
+  }
+  if (prepared.kind === 'hosting_hostname_is_panel') {
+    return {
+      status: 409,
+      body: {
+        error: 'hosting_hostname_is_panel_hostname',
+        composeServiceName: prepared.composeServiceName,
+        hostname: prepared.hostname,
+        message: panelHostnameInUseMessage(prepared.hostname),
       },
     }
   }
@@ -571,7 +584,8 @@ function tryMapHostingPrepareError(prepared: DeployPrepareError): PrepareErrorRe
     prepared.kind !== 'hosting_ip_ref_unresolved' &&
     prepared.kind !== 'hosting_tls_mode_unsupported' &&
     prepared.kind !== 'hosting_route_conflict' &&
-    prepared.kind !== 'hosting_hostname_conflict'
+    prepared.kind !== 'hosting_hostname_conflict' &&
+    prepared.kind !== 'hosting_hostname_is_panel'
   ) {
     return null
   }

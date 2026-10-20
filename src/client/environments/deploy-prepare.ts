@@ -1,4 +1,5 @@
 import type { Context } from 'hono'
+import { panelHostnameRefusal } from '../../features/hostings/panel-hostname-guard.ts'
 import { and, eq, inArray, or } from 'drizzle-orm'
 import type { AppEnv } from '../../app/app.ts'
 import { hostingCertificateNames, type HostingWwwMode } from '../../contracts/commands/hostname.ts'
@@ -4173,6 +4174,11 @@ async function resolveHttpHostingEntry(
   const hostnames = readHostnames(h.options)
   if (hostnames.length === 0) return { skip: true }
   const www = readWwwMode(h.options)
+
+  // Last line of defence: a route stored before the write-time check existed,
+  // or written around it, still may not take a name the panel itself serves.
+  const panelRefusal = await panelHostnameRefusal(db, svc.composeServiceName, { hostnames, www })
+  if (panelRefusal) return { prepareError: panelRefusal }
 
   // A revoked Let's Encrypt pin resolves as internal (`tlsId: null`) here —
   // do not treat it as `tls_pin_not_ready`. Deleted / mismatched pins still fail.
