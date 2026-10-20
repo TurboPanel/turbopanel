@@ -5,7 +5,7 @@ import type {
 } from '../../contracts/commands/schemas.ts'
 import type { PlannedFolders } from '../../features/folders/allocate.ts'
 import {
-  removedServiceNames,
+  removedServiceRows,
   serviceFoldersFor,
   servicesNeedingFolders,
   volumesNeedingFolders,
@@ -193,14 +193,34 @@ test('each planned service folder goes on the payload by service id, and an empt
   )
 })
 
+const row = (composeServiceName: string) => ({ id: `id-${composeServiceName}`, composeServiceName })
+
 test('the services that left the compose file are the service rows its document no longer names', () => {
-  assertEquals(removedServiceNames(['web', 'plain', 'old'], { web: {} }), ['old', 'plain'])
-  assertEquals(removedServiceNames(['web', 'web', 'old'], { web: {}, api: {} }), ['old'])
-  assertEquals(removedServiceNames(['web'], { web: {} }), [])
+  assertEquals(
+    removedServiceRows([row('web'), row('plain'), row('old')], { web: {} }).map(
+      (r) => r.composeServiceName
+    ),
+    ['old', 'plain']
+  )
+  assertEquals(
+    removedServiceRows([row('web'), row('web'), row('old')], { web: {}, api: {} }).map(
+      (r) => r.composeServiceName
+    ),
+    ['old']
+  )
+  assertEquals(removedServiceRows([row('web')], { web: {} }), [])
 })
 
 test('an unreadable or empty document never reads as every service having left', () => {
-  assertEquals(removedServiceNames(['web', 'plain'], undefined), [])
-  assertEquals(removedServiceNames(['web', 'plain'], {}), [])
-  assertEquals(removedServiceNames([], { web: {} }), [])
+  assertEquals(removedServiceRows([row('web'), row('plain')], undefined), [])
+  assertEquals(removedServiceRows([row('web'), row('plain')], {}), [])
+  assertEquals(removedServiceRows([], { web: {} }), [])
+})
+
+test('a key the host would refuse is dropped, not sent', () => {
+  const rows = ['.', '..', 'a/b', 'a b', '', 'ok.site', 'fine_1-x'].map(row)
+  assertEquals(
+    removedServiceRows(rows, { web: {} }).map((r) => r.composeServiceName),
+    ['fine_1-x', 'ok.site']
+  )
 })

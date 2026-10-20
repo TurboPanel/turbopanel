@@ -397,7 +397,12 @@ the compose file: after the rest of the deploy has succeeded the host removes
 exactly those sites' vhost, php-fpm pool and per-site runtime in this
 environment (never one that is still in `sites[]`), and nothing host-wide.
 Absent or empty removes nothing: a site missing from `sites[]` is never read as
-removed. The folder of a removed site stays, as an orphan. The stop
+removed. The control plane names a removed service only while its service
+folder on that server is still `present` or `planned`; the deploy that succeeds
+marks the folder an orphan, so the name is not repeated on every later deploy
+(a deploy that fails leaves the folder as it was, and the next one asks again).
+A key the host would refuse (`.`, `..`) is never sent. The folder of a removed
+site stays, as an orphan. The stop
 result's `folders[]` (`{ owner, scope, kind: 'service',
 slug, removed, reason? }`) says which reclaimed folders are gone; `reason` (plain
 words) says why one stayed. The consumer deletes the `removing` row of every
