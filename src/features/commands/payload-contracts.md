@@ -383,11 +383,16 @@ itself. The explicit stop route sends **no** `siteReleases`: stopping keeps
 every service and volume folder, uploads included, and only delete teardown or a
 server leaving the environment names trees to reclaim. A deploy's
 `storageMaterial[].folder` (`{ owner, scope, slug }`) carries the same for an
-owned volume, and `serviceFolders[]` (`{ serviceId, folder }`) names the folder of
-every host-run service (site, native app or Git-backed source) by service id.
-A host that gets a service folder serves, publishes and runs that service from
-`<owner>/<scope>/services/<name>`; a service with no entry keeps the older
-per-service tree. The stop result's `folders[]` (`{ owner, scope, kind: 'service',
+owned volume, and `serviceFolders[]` (`{ serviceId, composeServiceName?, folder }`) names the
+folder of every host-run service (site, native app or Git-backed source) by
+service id. `composeServiceName` is optional and lets the host tie an entry to
+a site or app that appears in none of the lists that carry its service id (no
+hostname, source or native unit): the host takes the service id from the entry
+that names the compose service, then looks the folder up as usual. A host that
+does not read the field ignores it. A host that gets a service folder serves,
+publishes and runs that service from `<owner>/<scope>/services/<name>`; a
+service with no entry is refused (there is no older per-service tree). The stop
+result's `folders[]` (`{ owner, scope, kind: 'service',
 slug, removed, reason? }`) says which reclaimed folders are gone; `reason` (plain
 words) says why one stayed. The consumer deletes the `removing` row of every
 folder reported removed (`confirmFolderRemoved`, through

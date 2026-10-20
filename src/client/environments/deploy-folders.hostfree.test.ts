@@ -41,7 +41,7 @@ function material(
   }
 }
 
-test('a site with no hostname, source or native app is still listed, by its compose name', () => {
+test('a site with no hostname, source or native app is listed by its compose name, and that name goes on the wire', () => {
   const listed = servicesNeedingFolders({
     sites: [
       {
@@ -55,6 +55,21 @@ test('a site with no hostname, source or native app is still listed, by its comp
     storageMaterial: [],
   })
   assertEquals(listed, [{ composeServiceName: 'phpsite', principalId: PRINCIPAL_ID, domain: null }])
+  // The planner returns the compose name of what it planned; the payload entry carries it, so the
+  // host can tie a site that appears in no other list to its folder.
+  const wire = serviceFoldersFor({
+    folderIds: ['f1'],
+    services: new Map([[SERVICE_ID, { owner: 'appuser', scope: 'production', slug: 'phpsite' }]]),
+    serviceNames: new Map([[SERVICE_ID, listed[0]!.composeServiceName!]]),
+    volumes: new Map(),
+  })
+  assertEquals(wire, [
+    {
+      serviceId: SERVICE_ID,
+      composeServiceName: 'phpsite',
+      folder: { owner: 'appuser', scope: 'production', slug: 'phpsite' },
+    },
+  ])
 })
 
 test('every service that runs on the host is listed once, with its owner and domain when known', () => {
