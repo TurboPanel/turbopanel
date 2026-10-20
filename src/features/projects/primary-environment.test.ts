@@ -1,6 +1,6 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
-import { eq, sql } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import { createDenoDb } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { environment, organization, project, server, workspace } from '../../db/schema.ts'
