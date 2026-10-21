@@ -7,7 +7,12 @@ import type { ServerGeo } from '../geo/server-geo.ts'
 import type { ServiceRunState } from '../../contracts/service-run-state.ts'
 import { type LocationFields, parseLocationOverride } from '../geo/location-override.ts'
 import type { DatacenterOptions } from '../datacenters/datacenter-options.ts'
-import { type NtpDefaults, parseNtpDefaults, parseSshPort } from './host-defaults.ts'
+import {
+  type NtpDefaults,
+  parseHideWebServerNames,
+  parseNtpDefaults,
+  parseSshPort,
+} from './host-defaults.ts'
 import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
 import {
   type ManagedExternalAccess,
@@ -373,6 +378,11 @@ export type ServerOptions = {
   sshPort?: number
   /** Desired NTP client settings for this host. Omitted → inherit parent layers. */
   ntp?: NtpDefaults
+  /**
+   * Hide web server names and versions on this host. Omitted → the
+   * organization's setting, which is on unless it says otherwise.
+   */
+  hideWebServerNames?: boolean
   /**
    * Desired state for Docker-hosting provisioning; consumed by later phases to
    * choose self-heal vs report-only.
@@ -1845,6 +1855,11 @@ export function redactServerOptions<T>(value: T): T {
   return copy as T
 }
 
+function assignHideWebServerNames(options: ServerOptions, value: Record<string, unknown>): void {
+  const hide = parseHideWebServerNames(value.hideWebServerNames)
+  if (hide !== undefined) options.hideWebServerNames = hide
+}
+
 /** Parse operator-controlled `server.options` jsonb. */
 export function parseServerOptions(value: unknown): ServerOptions | null {
   if (!isRecord(value)) return null
@@ -1863,6 +1878,7 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   if (sshPort !== undefined) options.sshPort = sshPort
   const ntp = parseNtpDefaults(value.ntp)
   if (ntp) options.ntp = ntp
+  assignHideWebServerNames(options, value)
   if ('metricsCapabilityPlan' in value) {
     const metricsCapabilityPlan = parseServerMetricsCapabilityPlanOverride(
       value.metricsCapabilityPlan
