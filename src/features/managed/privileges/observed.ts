@@ -135,6 +135,8 @@ export const OBSERVED_MAX_GRANTS_PER_LOGIN = 2000
 export const OBSERVED_MAX_NAME_CHARS = 256
 export const OBSERVED_MAX_PRIVILEGES = 64
 export const OBSERVED_MAX_COLUMNS = 256
+/** Ten named objects plus the daemon's `and N more` line. */
+export const OBSERVED_MAX_DEFINED_OBJECTS = 11
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -153,6 +155,19 @@ function names(value: unknown, max: number): string[] | undefined {
     const n = name(entry)
     if (n === undefined) return undefined
     out.push(n)
+  }
+  return out
+}
+
+/** Strings kept as they are (cut at the name limit); empty or non-string entries are skipped. */
+function clampedNames(value: unknown, max: number): string[] {
+  if (!Array.isArray(value)) return []
+  const out: string[] = []
+  for (const entry of value) {
+    if (out.length >= max) break
+    if (typeof entry === 'string' && entry.length > 0) {
+      out.push(entry.slice(0, OBSERVED_MAX_NAME_CHARS))
+    }
   }
   return out
 }
@@ -280,8 +295,8 @@ function parseLogin(value: unknown): ObservedLogin | null {
   const accounts = parseList(value.accounts, parseAccount, 256)
   if (accounts.length > 0) login.accounts = accounts
   if (value.truncated === true) login.truncated = true
-  const definesObjects = names(value.definesObjects, 11)
-  if (definesObjects && definesObjects.length > 0) login.definesObjects = definesObjects
+  const definesObjects = clampedNames(value.definesObjects, OBSERVED_MAX_DEFINED_OBJECTS)
+  if (definesObjects.length > 0) login.definesObjects = definesObjects
   return login
 }
 
