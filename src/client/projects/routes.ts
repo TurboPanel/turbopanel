@@ -33,7 +33,8 @@ import {
 import { deleteProjectCascade } from '../../features/projects/project-delete.ts'
 import {
   planEnvironmentsTeardown,
-  reclaimDeletedEnvironmentHosts,
+  retireIdleIngressOn,
+  stopEnvironmentHosts,
 } from '../environments/teardown.ts'
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { reconcileServicesForProject } from '../environments/reconcile-after-compose-save.ts'
@@ -1089,16 +1090,24 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       { keepPrincipals: true }
     )
 
-    const result = await deleteProjectCascade(db, id, {
-      c,
-      actorId: userId,
-      organizationId,
-    })
+    // The stop goes out after the delete is checked and before any row is
+    // removed; when it cannot be sent the delete is refused and nothing changes.
+    let stoppedServerIds: string[] = []
+    const result = await deleteProjectCascade(
+      db,
+      id,
+      { c, actorId: userId, organizationId },
+      async () => {
+        const stop = await stopEnvironmentHosts(c, db, teardownPlans, userId)
+        stoppedServerIds = stop.serverIds
+        return stop.stopped
+      }
+    )
     if (!result.ok) {
       return c.json({ error: result.error, ...result.detail }, 409)
     }
 
-    await reclaimDeletedEnvironmentHosts(c, db, teardownPlans, userId)
+    await retireIdleIngressOn(c, db, stoppedServerIds, userId)
 
     return c.json({
       ok: true as const,

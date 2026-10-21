@@ -13,6 +13,7 @@ import { loadPrincipalNamePolicy } from '../../features/managed/load-org-default
 import { isManagedLoginNameTaken } from '../../features/managed/logins.ts'
 import type { PrincipalNameScheme } from '../../lib/principal-name-scheme.ts'
 import { deriveFreeSystemName } from './system-name.ts'
+import type { PrincipalUsage } from './placement-records.ts'
 import { encryptSecret, generateSealedSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { Db } from '../../db/connection.ts'
@@ -127,31 +128,16 @@ export async function isServerPrincipalUsernameTaken(
   )
 }
 
-export type PrincipalReferences = {
-  /** Services that run as the principal (`tenancy`). */
-  services: number
-  /** Consumer services bound to the principal's engine login (`binding`). */
-  bindings: number
-  /** Storage entries owned by the principal. */
-  storage: number
-  /** Secrets owned by the principal. */
-  secrets: number
-  /** Database logins that belong to the principal (`login`). */
-  logins: number
-  /** Service and volume folders on any server (`folder`, any state). */
-  folders: number
-}
+/**
+ * What still uses a principal, with the same key names as the principal list
+ * and the 409 body (`PrincipalUsage` minus the placements, which a delete
+ * clears itself).
+ */
+export type PrincipalReferences = Omit<PrincipalUsage, 'otherPlacements'>
 
 /** True when any count in `refs` is above zero. */
 export function isPrincipalReferenced(refs: PrincipalReferences): boolean {
-  return (
-    refs.services > 0 ||
-    refs.bindings > 0 ||
-    refs.storage > 0 ||
-    refs.secrets > 0 ||
-    refs.logins > 0 ||
-    refs.folders > 0
-  )
+  return Object.values(refs).some((total) => total > 0)
 }
 
 /**
@@ -179,9 +165,9 @@ export async function countPrincipalReferences(
     .innerJoin(login, eq(login.id, binding.loginId))
     .where(eq(login.principalId, principalId))
   return {
-    services: await count(tenancy),
+    tenancies: await count(tenancy),
     bindings: bound?.total ?? 0,
-    storage: await count(storage),
+    storages: await count(storage),
     secrets: await count(secret),
     logins: await count(login),
     folders: await count(folder),

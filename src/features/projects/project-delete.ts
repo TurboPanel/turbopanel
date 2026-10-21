@@ -62,6 +62,7 @@ export type ProjectDeleteResult =
         | 'project_has_running_services'
         | 'managed_runtime_present'
         | 'project_has_folders'
+        | 'project_stop_failed'
         | typeof COMMON_ASSET_IN_USE_ERROR
       /** Extra fields for the 409 body (who still uses a shared asset). */
       detail?: Record<string, unknown>
@@ -334,13 +335,14 @@ async function sharedAssetsStillUsed(
 export async function deleteProjectCascade(
   db: Db,
   projectId: string,
-  listenerSync?: BindingListenerSync
+  listenerSync?: BindingListenerSync,
+  stopHosts?: () => Promise<boolean>
 ): Promise<ProjectDeleteResult> {
   // Everything is read and written under the project lock, so an environment
   // created meanwhile cannot slip past the child cleanup the others get.
   const outcome = await db.transaction(async (tx) => {
     await lockProjectForEnvironmentChange(tx, projectId)
-    return await deleteProjectLocked(tx, projectId)
+    return await deleteProjectLocked(tx, projectId, stopHosts)
   })
   if ('refused' in outcome) return outcome.refused
   if (!outcome.bindingTargets) return { ok: true }
@@ -357,7 +359,11 @@ type LockedProjectDelete =
   | { bindingTargets: Awaited<ReturnType<typeof loadBindingListenerTargets>> | null }
 
 /** The checks and the delete, with the project row already locked. */
-async function deleteProjectLocked(tx: Db, projectId: string): Promise<LockedProjectDelete> {
+async function deleteProjectLocked(
+  tx: Db,
+  projectId: string,
+  stopHosts?: () => Promise<boolean>
+): Promise<LockedProjectDelete> {
   const envRows = await tx
     .select({ id: environment.id })
     .from(environment)
@@ -373,6 +379,12 @@ async function deleteProjectLocked(tx: Db, projectId: string): Promise<LockedPro
   const refusal = await refuseProjectDelete(tx, projectId, environmentIds)
   if ('refused' in refusal) return refusal
   const { children } = refusal
+
+  // Nothing is written yet, so a stop that did not go through leaves the
+  // project exactly as it was and the site still named by its rows.
+  if (stopHosts && !(await stopHosts())) {
+    return { refused: { ok: false, error: 'project_stop_failed' } }
+  }
 
   const bindingTargets = await loadBindingListenerTargets(tx, children.serviceIds)
   // The principals outlive the project (`project_id` SET NULL); their
