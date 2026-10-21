@@ -3424,6 +3424,70 @@ test('POST /metrics: a declared machine_class=physical retains sensors with no t
   })
 })
 
+test('POST /metrics keeps the sample and flags the server when its RAM or physical cores are past the licensed box size', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const { app, writes } = await createMetricsTestAppWithDb(db)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const post = (at: string) =>
+      app.request('/api/daemon/v1/metrics', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(
+          buildValidMetricsFrame({
+            // The sample's own sizes are never the plan's unit: only the host report counts.
+            extended: { sizes: { memoryTotalBytes: 1024, logicalCores: 128 } },
+            metadata: { sampledAt: at },
+          })
+        ),
+      })
+    const metadataOf = async () =>
+      ((await db.select({ m: server.metadata }).from(server).where(eq(server.id, serverId)))[0]!
+        .m ?? {}) as Record<string, unknown>
+    const GIB = 1024 ** 3
+    const setHostReport = (gib: number, ...perSocket: number[]) =>
+      db
+        .update(server)
+        .set({
+          metadata: sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${JSON.stringify({
+            resources: {
+              cpus: perSocket.map((total) => ({ cores: { total } })),
+              memory: { totalBytes: gib * GIB },
+            },
+          })}::jsonb`,
+        })
+        .where(eq(server.id, serverId))
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 200))
+
+    // The fixture's tier is S1 (16 GiB, 4 physical cores). 128 logical CPUs on
+    // the sample change nothing: only the host report's RAM and physical cores count.
+    await setHostReport(8, 2, 2)
+    const fits = await post(new Date().toISOString())
+    assertEquals(fits.status, 202)
+    await settle()
+    assertEquals('overPlan' in (await metadataOf()), false)
+
+    // 64 GiB of RAM and 6 physical cores (3 + 3) are both past S1.
+    await setHostReport(64, 3, 3)
+    const over = await post(new Date(Date.now() + 1000).toISOString())
+    assertEquals(over.status, 202)
+    assertEquals(writes.length, 2, 'the sample is stored')
+    await settle()
+    const stamp = (await metadataOf()).overPlan as Record<string, unknown>
+    assertEquals([stamp.memory, stamp.cpu], [true, true])
+
+    // Back inside the box: the flag clears and the sample is still stored.
+    await setHostReport(8, 2, 2)
+    const back = await post(new Date(Date.now() + 2000).toISOString())
+    assertEquals(back.status, 202)
+    assertEquals(writes.length, 3)
+    await settle()
+    assertEquals('overPlan' in (await metadataOf()), false)
+  })
+})
+
 test('POST /metrics truncates hardwareSignals when the org overrides physicalHardwareSignalSlots to 0', async () => {
   await withEnrollFixture(async ({ db, organizationId, serverId, keyId }) => {
     await recordTopologyGeneration(db, serverId, {

@@ -588,6 +588,13 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
     gracefully to positional packing — never a dropped sample. Only the latest
     generation is kept (`server.hardware`), so a sample naming an older one is
     unresolved too.
+    11a. A hosted server with more RAM or more physical CPU cores than its licensed box size keeps
+    every metric; ingest stamps `server.metadata.overPlan` (`over-plan.ts`, `over-plan-flag.ts`,
+    refreshed at most hourly, cleared when it fits again). The units are the box-size bands' own:
+    RAM bytes and physical cores, both from the daemon's host report
+    (`server.metadata.resources`, one entry per socket), so the flag does not flip between two
+    sources; the sample's own sizes are never compared. Box size only: the flag never refuses a sample and
+    never looks at a plan name.
 12. `HARDWARE_HEALTH_EVENT_KIND` is a `Record` over every `MetricEventKind` — a
     new event kind that isn't classified fails to compile, never silently
     defaults either way.

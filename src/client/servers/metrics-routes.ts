@@ -46,6 +46,7 @@ import {
   metricsRangeTailIsNow,
   readLiveSample,
 } from '../../daemon/metrics/query/live-session.ts'
+import { emptyHostFacts } from '../../daemon/metrics/query/host-facts.ts'
 import {
   canonicalizeMetricsRange,
   parseMaxPoints,
@@ -82,6 +83,8 @@ import {
   hardwareProfileUpdateNeedsTopologyValidation,
   metricEventsHasCacheableData,
   type MetricEventsResponse,
+  HOST_FACTS_LOOKBACK_MS,
+  buildHostFactsPayload,
   metricsBackendUnavailableResponse,
   metricsQueryErrorMessage,
   nicSlotLimitViolation,
@@ -834,6 +837,64 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       await cache.set(cacheKey, payload, ttlSeconds)
     }
     return c.json(payload)
+  })
+
+  /**
+   * What the host last told us about itself (kernel, OS, versions, drive model
+   * and SMART verdict, GPU driver and model): text, never numbers. Read from
+   * the newest sample in the last day; empty when the host reports none.
+   */
+  router.get('/servers/:id/metrics/facts', async (c) => {
+    const serverId = c.req.param('id')
+    const denied = await authorizeServerRead(c, serverId)
+    if (denied) return denied
+
+    const store = getServerMetricsStore(c)
+    const backend = resolveStoreBackendKind(store, opts.runtime)
+    if (!store?.queryHostFacts) {
+      return c.json(
+        buildHostFactsPayload({
+          kind: backend,
+          available: false,
+          serverId,
+          sampledAt: null,
+          facts: emptyHostFacts(),
+        })
+      )
+    }
+
+    // Facts change at most once a sample and the card reads them every few minutes:
+    // cache by the minute like the sibling routes.
+    const nowMs = Date.now()
+    const minuteMs = Math.floor(nowMs / 60_000) * 60_000
+    const cacheKey = metricsChartCacheKey({
+      serverId,
+      fromBucketMs: minuteMs,
+      toBucketMs: minuteMs,
+      metrics: [],
+      resolutionSeconds: 60,
+      backend,
+      schemaVersion: 6,
+      kind: 'facts',
+    })
+    const cached = await cache.get<ReturnType<typeof buildHostFactsPayload>>(cacheKey)
+    if (cached) return c.json(cached)
+    try {
+      const result = await store.queryHostFacts({
+        serverId,
+        from: new Date(nowMs - HOST_FACTS_LOOKBACK_MS).toISOString(),
+        to: new Date(nowMs).toISOString(),
+      })
+      const payload = buildHostFactsPayload(result)
+      await cache.set(cacheKey, payload, 60)
+      return c.json(payload)
+    } catch (err) {
+      const message = metricsQueryErrorMessage(err)
+      console.error(
+        `metrics queryHostFacts failed backend=${backend} serverId=${serverId}: ${message}`
+      )
+      return c.json(metricsBackendUnavailableResponse(backend), 503)
+    }
   })
 
   /**

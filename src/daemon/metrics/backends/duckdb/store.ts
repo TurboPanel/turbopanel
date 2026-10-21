@@ -39,6 +39,11 @@ import {
   defaultExpectedSamplesPerBucket,
   finalizeHostSeriesResult,
 } from '../../query/series-response.ts'
+import {
+  emptyHostFacts,
+  hostFactsFromSample,
+  parseStoredHostFacts,
+} from '../../query/host-facts.ts'
 import { computeStatusUptime } from '../../query/uptime.ts'
 import { forEachSequential } from '../../../../lib/sequential.ts'
 import type {
@@ -51,6 +56,8 @@ import type {
   EntitySeriesResult,
   FleetHostSnapshotQuery,
   FleetHostSnapshotResult,
+  HostFactsQuery,
+  HostFactsResult,
   FleetHostSnapshotServer,
   HostSeriesPoint,
   HostSeriesQuery,
@@ -112,6 +119,7 @@ import {
   HARDWARE_SIGNAL_SAMPLES_TABLE,
   hardwareSignalSamplesInsertColumns,
   HOST_METRIC_FIELD_REFS,
+  HOST_FACTS_TABLE,
   HOST_SAMPLES_TABLE,
   HOST_TEXT_FIELDS,
   HOST_TEXT_SAMPLES_TABLE,
@@ -303,7 +311,22 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
    * keep as one sum.
    */
   writeSample(input: AuthenticatedMetricsSample, slotMapping?: SlotMapping): Promise<void> {
-    return this.#enqueueRows(buildSampleRows(input, slotMapping))
+    const rows = buildSampleRows(input, slotMapping)
+    // Latest host facts: every sample from a v8 daemon (one that sends the
+    // `extended` section) replaces the row, even with no text, so a fact that
+    // disappears stops being shown, like on the hosted store. A v6 sample has
+    // nothing to say about facts and leaves the row alone.
+    if (input.extended) {
+      rows.push({
+        table: 'facts',
+        values: [
+          input.serverId,
+          toDuckDbTimestamp(input.metadata.sampledAt),
+          JSON.stringify(hostFactsFromSample(input)),
+        ],
+      })
+    }
+    return this.#enqueueRows(rows)
   }
 
   /**
@@ -920,6 +943,39 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
   }
 
   /**
+   * The facts row of the newest sample in `[from, to)`. DuckDB keeps only the
+   * latest row per server, so a sample older than `from` reads as "none", the
+   * same answer the hosted store gives for a sample outside its window.
+   */
+  async queryHostFacts(input: HostFactsQuery): Promise<HostFactsResult> {
+    await this.flushWrites()
+    const serverId = assertSafeServerId(input.serverId)
+    const from = assertIsoTimestamp('from', input.from)
+    const to = assertIsoTimestamp('to', input.to)
+    assertRange(from, to)
+    const handle = await this.#ensureOpen()
+    const reader = await handle.connection.runAndReadAll(
+      [
+        `SELECT CAST(epoch_ms(sampled_at) AS DOUBLE) AS sampled_at_ms, facts`,
+        `FROM ${HOST_FACTS_TABLE}`,
+        `WHERE server_id = CAST(? AS UUID)`,
+        `  AND sampled_at >= CAST(? AS TIMESTAMP)`,
+        `  AND sampled_at < CAST(? AS TIMESTAMP)`,
+      ].join('\n'),
+      [serverId, toDuckDbTimestamp(from.toISOString()), toDuckDbTimestamp(to.toISOString())]
+    )
+    const row = reader.getRowObjectsJS()[0]
+    const sampledAtMs = row ? toFiniteNumber(row.sampled_at_ms) : null
+    return {
+      kind: 'duckdb',
+      available: true,
+      serverId: input.serverId,
+      sampledAt: sampledAtMs === null ? null : new Date(sampledAtMs).toISOString(),
+      facts: row ? parseStoredHostFacts(row.facts) : emptyHostFacts(),
+    }
+  }
+
+  /**
    * Discrete `server_metric_events` rows in `[from, to)`, unioned with sealed
    * `"events"` Parquet partitions, capped at {@link MAX_STATUS_EVENTS} (same
    * cap/truncation discipline as `queryStatusHistory`). Columns are selected
@@ -1074,9 +1130,13 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     }
     await connection.run('BEGIN TRANSACTION')
     try {
-      await forEachSequential(byTable, ([table, rows]) => {
+      await forEachSequential(byTable, async ([table, rows]) => {
+        if (table === 'facts') {
+          await upsertHostFacts(connection, rows)
+          return
+        }
         const { sql, values } = buildInsertForTable(table, rows)
-        return connection.run(sql, values)
+        await connection.run(sql, values)
       })
       await connection.run('COMMIT')
     } catch (error) {
@@ -1337,11 +1397,35 @@ function buildInsertForTable(
         sql: buildInsertSql(STATUS_EVENTS_TABLE, STATUS_COLUMNS, STATUS_TUPLE, rows.length),
         values,
       }
+    case 'facts':
+      // Latest-only rows are written one at a time by `upsertHostFacts`, never as a bulk insert.
+      throw new TypeError('host facts are upserted, not bulk-inserted')
     default: {
       const exhaustive: never = table
       throw new TypeError(`unknown pending row table: ${exhaustive}`)
     }
   }
+}
+
+/**
+ * Replace a server's facts row with a newer (or equal-age) sample's. A sample
+ * older than the stored row changes nothing: the older row is only dropped when
+ * the new one is at least as recent, and the insert yields to an existing row.
+ */
+async function upsertHostFacts(
+  connection: DuckDbConnectionLike,
+  rows: DuckDbBindValue[][]
+): Promise<void> {
+  await forEachSequential(rows, async ([serverId, sampledAt, facts]) => {
+    await connection.run(
+      `DELETE FROM ${HOST_FACTS_TABLE} WHERE server_id = CAST(? AS UUID) AND sampled_at <= CAST(? AS TIMESTAMP)`,
+      [serverId, sampledAt]
+    )
+    await connection.run(
+      `INSERT INTO ${HOST_FACTS_TABLE} (server_id, sampled_at, facts) VALUES (CAST(? AS UUID), CAST(? AS TIMESTAMP), ?) ON CONFLICT DO NOTHING`,
+      [serverId, sampledAt, facts]
+    )
+  })
 }
 
 function toFiniteNumber(raw: unknown): number | null {
