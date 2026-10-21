@@ -15,6 +15,10 @@ export type TlsAcmeMetadata = {
   notAfter?: string
   /** Present on `lets_encrypt` rows Caddy issues and renews on the host. */
   managedBy?: 'caddy'
+  /** DNS names the stored certificate covers (set when the pair is stored). */
+  storedNames?: string[]
+  /** The server whose Caddy issued the stored certificate (its daemon sent the pair). */
+  issuedByServerId?: string
 }
 
 /**

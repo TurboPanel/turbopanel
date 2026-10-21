@@ -8,10 +8,7 @@ import type { Db } from '../../db/connection.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import type { CommandType } from '../commands/types.ts'
-import type {
-  ManagedHaFailoverCommandPayload,
-  ManagedPromoteCommandPayload,
-} from '../../contracts/commands/schemas.ts'
+import type { ManagedHaFailoverCommandPayload } from '../../contracts/commands/schemas.ts'
 import type { ManagedEngineCode } from './types.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import {
@@ -29,8 +26,8 @@ import { container, managed, replica, server, service } from '../../db/schema.ts
 import { OrchestratorManagedHaAuthority } from './ha-authority.ts'
 import {
   attestedLostServerIds,
-  hostLossFenceAdvance,
   type FenceOutcome,
+  hostLossFenceAdvance,
   nextStateAfterFence,
   nextStateAfterPromoteSuccess,
 } from './ha-recovery-pure.ts'
@@ -43,6 +40,19 @@ import {
 } from './ha-ingress-gate.ts'
 import type { ManagedIngressFanOutOutcome } from './ingress-desired.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
+import { isTargetAlreadyPrimaryInJournal, promoteResumeRequeueRefusal } from './promote-resume.ts'
+import {
+  failoverRecoverPayloadWithSwitchoverCatchup,
+  fenceStopCapturesSwitchoverGtid,
+  promotePayloadWithSwitchoverCatchup,
+  recordSwitchoverRequiredGtid,
+  parseSwitchoverPromoteFailureCode,
+  switchoverAbortReactivateLifecyclePayload,
+  switchoverPromoteFailureShouldReactivateOldPrimary,
+  switchoverPromoteTimedOutCommandError,
+  type SwitchoverPromoteFailureCode,
+} from './switchover-catchup.ts'
+import { isManagedEngineCode } from './index.ts'
 import { findManagedHaHierarchy } from '../system/hierarchy.ts'
 import { loadDatacenterMembershipsForServers } from '../net/datacenter-membership.ts'
 import { isPrivateEndpointError, resolvePrivateEndpoints } from '../net/private-endpoint.ts'
@@ -78,7 +88,7 @@ import {
   type RecoveryMetadata,
   type RecoveryRecord,
 } from './recovery.ts'
-import { compatLogWarn } from '../../lib/log-compat.ts'
+import { compatLogInfo, compatLogWarn } from '../../lib/log-compat.ts'
 import {
   type AutoFailoverSetting,
   AUTOMATIC_FAILOVER_DISABLED_MESSAGE,
@@ -306,7 +316,7 @@ async function failoverPayload(
     source: ManagedMemberRow
     target: ManagedMemberRow
     engine: ManagedEngineCode
-    phase: 'drain' | 'recover'
+    phase: 'drain' | 'undrain' | 'recover'
   }
 ): Promise<ManagedHaFailoverCommandPayload> {
   const sourceHost = await memberDialHost(db, observerServerId, params.source)
@@ -334,6 +344,8 @@ async function enqueuePromoteOrRecover(
     target: ManagedMemberRow
     actor: RecoveryCommandActor
     haPresent: boolean
+    /** Re-drive after a daemon restart (`resumeInterruptedPromote`). */
+    resume?: boolean
   }
 ): Promise<RecoveryEnqueueResult> {
   const authority = OrchestratorManagedHaAuthority
@@ -347,13 +359,16 @@ async function enqueuePromoteOrRecover(
   })
 
   if (authority.shouldUseOrchestrator(params.haPresent)) {
-    const payload = await failoverPayload(db, params.target.serverId, {
-      managedId: params.recovery.managedId,
-      source: params.source,
-      target: params.target,
-      engine: params.engine,
-      phase: 'recover',
-    })
+    const payload = failoverRecoverPayloadWithSwitchoverCatchup(
+      await failoverPayload(db, params.target.serverId, {
+        managedId: params.recovery.managedId,
+        source: params.source,
+        target: params.target,
+        engine: params.engine,
+        phase: 'recover',
+      }),
+      metadata
+    )
     const queued = await enqueueCommand(db, commandQueue, {
       serverId: params.target.serverId,
       type: 'managed.ha.failover',
@@ -378,19 +393,26 @@ async function enqueuePromoteOrRecover(
     }
   }
 
-  const payload: ManagedPromoteCommandPayload = {
-    managedId: params.recovery.managedId,
-    memberId: params.target.id,
-    engine: params.engine,
-    demoteMemberId: params.source.id,
-  }
+  const payload = promotePayloadWithSwitchoverCatchup(
+    {
+      managedId: params.recovery.managedId,
+      memberId: params.target.id,
+      engine: params.engine,
+      demoteMemberId: params.source.id,
+      ...(params.resume ? { resume: true } : {}),
+    },
+    metadata
+  )
   const queued = await enqueueCommand(db, commandQueue, {
     serverId: params.target.serverId,
     type: 'managed.promote',
     payload,
     expiresAtMs: PROMOTE_TTL_MS,
     actor: params.actor,
-    metadata: { recoveryId: params.recovery.id },
+    metadata: {
+      recoveryId: params.recovery.id,
+      ...(params.resume ? { promoteResume: true } : {}),
+    },
   })
   if (!queued) {
     await blockUnqueuedPromote(db, params.recovery.id, metadata)
@@ -521,6 +543,11 @@ async function enqueueFenceCommands(
       action: 'stop',
       memberId: params.source.id,
       engine: params.engine,
+      role: 'primary',
+      demoted: true,
+      ...(fenceStopCapturesSwitchoverGtid(params.recovery.kind, params.engine)
+        ? { captureSwitchoverGtid: true }
+        : {}),
     },
     expiresAtMs: FENCE_TTL_MS,
     actor: params.actor,
@@ -611,7 +638,10 @@ async function beginRecovery(params: {
     await updateRecovery(params.db, recovery.id, {
       state: 'blocked',
       targetMemberId: null,
-      metadata: { ...recovery.metadata, blockedReason: HOST_LOSS_HOST_RETURNED_MESSAGE },
+      metadata: {
+        ...recovery.metadata,
+        blockedReason: HOST_LOSS_HOST_RETURNED_MESSAGE,
+      },
     })
     await stampManagedReady(params.db, params.managedId)
     return { ok: false, error: AUTOMATIC_FAILOVER_BLOCKED_ERROR, status: 409 }
@@ -1071,6 +1101,84 @@ function applyFenceSettlement(
   return { state: advance.state, metadata: advance.metadata }
 }
 
+async function enqueueSwitchoverAbortReactivation(
+  db: Db,
+  commandQueue: CommandQueue,
+  params: {
+    record: RecoveryRecord
+    engine: ManagedEngineCode
+    actor: RecoveryCommandActor
+    source: ManagedMemberRow
+    members: readonly ManagedMemberRow[]
+  }
+): Promise<void> {
+  await enqueueCommand(db, commandQueue, {
+    serverId: params.source.serverId,
+    type: 'managed.lifecycle',
+    payload: switchoverAbortReactivateLifecyclePayload({
+      managedId: params.record.managedId,
+      memberId: params.source.id,
+      engine: params.engine,
+    }),
+    expiresAtMs: FENCE_TTL_MS,
+    actor: params.actor,
+  })
+  const target =
+    params.members.find((row) => row.id === params.record.targetMemberId) ?? params.source
+  const undrainServers = [...new Set(params.members.map((row) => row.serverId))]
+  await forEachSequential(undrainServers, async (serverId) => {
+    if (!(await isServerConnected(db, serverId))) return
+    const payload = await failoverPayload(db, serverId, {
+      managedId: params.record.managedId,
+      source: params.source,
+      target,
+      engine: params.engine,
+      phase: 'undrain',
+    })
+    await enqueueCommand(db, commandQueue, {
+      serverId,
+      type: 'managed.ha.failover',
+      payload,
+      expiresAtMs: FENCE_TTL_MS,
+      actor: params.actor,
+    })
+  })
+}
+
+async function abortSwitchoverWhenGtidMissing(
+  db: Db,
+  commandQueue: CommandQueue | undefined,
+  record: RecoveryRecord,
+  engine: ManagedEngineCode,
+  actor: RecoveryCommandActor
+): Promise<boolean> {
+  if (
+    record.kind !== 'switchover' ||
+    !fenceStopCapturesSwitchoverGtid(record.kind, engine) ||
+    record.metadata.switchoverRequiredGtidSet
+  ) {
+    return false
+  }
+  const members = await listManagedMembers(db, record.managedId)
+  const source = members.find((row) => row.id === record.sourcePrimaryMemberId)
+  if (commandQueue && source) {
+    await enqueueSwitchoverAbortReactivation(db, commandQueue, {
+      record,
+      engine,
+      actor,
+      source,
+      members,
+    })
+  }
+  await failRecoveryForOperator(
+    db,
+    record.id,
+    'Planned switchover stopped: the old primary GTID position was not recorded before promotion'
+  )
+  await stampManagedReady(db, record.managedId)
+  return true
+}
+
 /** After the lock is released: act on the state the settlement produced. */
 async function followFenceAdvance(
   db: Db,
@@ -1090,6 +1198,18 @@ async function followFenceAdvance(
     ? members.find((row) => row.id === record.targetMemberId)
     : null
   if (!source || !target) return
+
+  if (
+    await abortSwitchoverWhenGtidMissing(
+      db,
+      commandQueue,
+      record,
+      settlement.engine,
+      settlement.actor
+    )
+  ) {
+    return
+  }
 
   await enqueuePromoteOrRecover(db, commandQueue, {
     recovery: record,
@@ -1122,8 +1242,15 @@ export async function onFenceCommandSucceeded(
     fencePhase: 'drain' | 'stop'
     engine: ManagedEngineCode
     actor: RecoveryCommandActor
+    switchoverPrimaryExecutedGtidSet?: string
   }
 ): Promise<void> {
+  const switchoverGtid = params.switchoverPrimaryExecutedGtidSet
+  if (switchoverGtid) {
+    await updateRecoveryLocked(db, params.recoveryId, (current) => ({
+      metadata: recordSwitchoverRequiredGtid(current.metadata, switchoverGtid),
+    }))
+  }
   await settleFenceCommand(db, commandQueue, {
     recoveryId: params.recoveryId,
     commandId: params.commandId,
@@ -1321,8 +1448,144 @@ export async function onRecoveryStepFailed(db: Db, recoveryId: string): Promise<
   await failRecoveryForOperator(db, recoveryId, RECOVERY_STEP_FAILED_MESSAGE)
 }
 
+/**
+ * The daemon's own wording (`command-outbox.ts`) for a command whose daemon
+ * restarted before it could answer. Matched case-insensitively.
+ */
+export const DAEMON_RESTART_INTERRUPTION_MARKER = 'daemon restarted while this command was running'
+
+/** A lost promote is queued again at most this often per recovery. */
+export const MAX_PROMOTE_RESUMES = 2
+
+export function isDaemonRestartInterruption(error: string | null | undefined): boolean {
+  return (
+    typeof error === 'string' && error.toLowerCase().includes(DAEMON_RESTART_INTERRUPTION_MARKER)
+  )
+}
+
+/**
+ * The promote (or failover `recover`) command of a recovery was lost because
+ * the target's daemon restarted mid-command. The old primary is already
+ * fenced, so ending the row `failed` would leave the cluster with no writer
+ * until an operator repaired it. Promoting is repeatable (stop replication,
+ * clear read-only), so queue it once more, at most `MAX_PROMOTE_RESUMES`
+ * times, while the row is still `promoting` and the target is still a
+ * replica on a connected server. Returns true when it was queued again; false
+ * means the caller fails the row as before. Never throws.
+ */
+export async function resumeInterruptedPromote(
+  db: Db,
+  commandQueue: CommandQueue | undefined,
+  params: {
+    recoveryId: string
+    engine: ManagedEngineCode
+    actor: RecoveryCommandActor
+    error: string | null | undefined
+  }
+): Promise<boolean> {
+  if (!commandQueue || !isDaemonRestartInterruption(params.error)) return false
+  try {
+    const record = await findRecoveryById(db, params.recoveryId)
+    if (record?.state !== 'promoting' || !record.targetMemberId) return false
+    const inflight = await findInFlightRecovery(db, record.managedId)
+    const resumes = record.metadata.promoteResumes ?? 0
+    if (resumes >= MAX_PROMOTE_RESUMES) return false
+    const members = await listManagedMembers(db, record.managedId)
+    const refusal = promoteResumeRequeueRefusal(record, members, inflight)
+    if (refusal) return false
+    const source = members.find((row) => row.id === record.sourcePrimaryMemberId)
+    const target = members.find((row) => row.id === record.targetMemberId)
+    if (!source || !target) return false
+    if (isTargetAlreadyPrimaryInJournal(record, members)) {
+      await onPromoteSucceeded(db, commandQueue, {}, record.id, params.actor.actorId)
+      return true
+    }
+    if (target.role !== 'replica') return false
+    if (!(await isServerConnected(db, target.serverId))) return false
+    const result = await enqueuePromoteOrRecover(db, commandQueue, {
+      recovery: {
+        ...record,
+        metadata: { ...record.metadata, promoteResumes: resumes + 1 },
+      },
+      engine: params.engine,
+      source,
+      target,
+      actor: params.actor,
+      haPresent: record.metadata.haPresent ?? false,
+      resume: true,
+    })
+    if (result.ok) {
+      compatLogInfo(
+        'managed-ha',
+        `recovery ${record.id}: the promote was lost to a daemon restart, queued again (${resumes + 1} of ${MAX_PROMOTE_RESUMES})`
+      )
+    }
+    return result.ok
+  } catch (error) {
+    compatLogWarn(
+      'managed-ha',
+      `recovery ${params.recoveryId}: resuming an interrupted promote failed: ${
+        error instanceof Error ? error.message : 'unknown error'
+      }`
+    )
+    return false
+  }
+}
+
 export async function onRecoveryCommandFailed(db: Db, recoveryId: string): Promise<void> {
   await failRecoveryForOperator(db, recoveryId, RECOVERY_COMMAND_TIMED_OUT_MESSAGE)
+}
+
+function switchoverPromoteFailedMessage(code: SwitchoverPromoteFailureCode | null): string {
+  if (code === 'gtid_wait_timeout') {
+    return 'Planned switchover aborted: the promotion target did not apply the old primary GTID position before the wait timed out'
+  }
+  if (code === 'gtid_wait_error') {
+    return 'Planned switchover aborted: the promotion target could not run the GTID catch-up check'
+  }
+  if (code === 'promote_started') {
+    return 'Planned switchover aborted after promotion began on the target; the old primary was left read-only to avoid two writers — operator action required'
+  }
+  return 'Planned switchover aborted before the role change finished'
+}
+
+/**
+ * A switchover promote failed before roles flipped: reactivate the old primary
+ * only when promotion never started on the target (GTID wait failure).
+ */
+export async function onSwitchoverPromoteFailed(
+  db: Db,
+  commandQueue: CommandQueue | undefined,
+  params: {
+    recoveryId: string
+    engine: ManagedEngineCode
+    actor: RecoveryCommandActor
+    commandError?: string
+  }
+): Promise<void> {
+  const record = await findRecoveryById(db, params.recoveryId)
+  if (!record?.metadata.switchoverRequiredGtidSet) {
+    await onRecoveryCommandFailed(db, params.recoveryId)
+    return
+  }
+  const failureCode = parseSwitchoverPromoteFailureCode(params.commandError)
+  const members = await listManagedMembers(db, record.managedId)
+  const source = members.find((row) => row.id === record.sourcePrimaryMemberId)
+  if (switchoverPromoteFailureShouldReactivateOldPrimary(failureCode) && commandQueue && source) {
+    await enqueueSwitchoverAbortReactivation(db, commandQueue, {
+      record,
+      engine: params.engine,
+      actor: params.actor,
+      source,
+      members,
+    })
+  }
+  const failed = await failRecoveryForOperator(
+    db,
+    params.recoveryId,
+    switchoverPromoteFailedMessage(failureCode)
+  )
+  if (failed) await stampManagedReady(db, failed.managedId)
 }
 
 /**
@@ -1333,6 +1596,32 @@ export async function onRecoveryCommandFailed(db: Db, recoveryId: string): Promi
  * (`blocked`, never promote); a promote / failover command that is gone fails
  * the row for the operator, who has to check which member is the writer.
  */
+async function settleTimedOutPromoteOrFailoverCommand(
+  db: Db,
+  params: { recoveryId: string; commandId: string },
+  commandQueue?: CommandQueue
+): Promise<void> {
+  const record = await findRecoveryById(db, params.recoveryId)
+  if (record?.metadata.switchoverRequiredGtidSet) {
+    const [row] = await db
+      .select({ engine: managed.engine })
+      .from(managed)
+      .where(eq(managed.id, record.managedId))
+      .limit(1)
+    const engine = row?.engine
+    if (isManagedEngineCode(engine)) {
+      await onSwitchoverPromoteFailed(db, commandQueue, {
+        recoveryId: params.recoveryId,
+        engine,
+        actor: { actorType: 'system', actorId: params.commandId },
+        commandError: switchoverPromoteTimedOutCommandError(RECOVERY_COMMAND_TIMED_OUT_MESSAGE),
+      })
+      return
+    }
+  }
+  await onRecoveryCommandFailed(db, params.recoveryId)
+}
+
 export async function onRecoveryCommandTimedOut(
   db: Db,
   params: {
@@ -1340,7 +1629,8 @@ export async function onRecoveryCommandTimedOut(
     commandId: string
     type: string
     fencePhase: 'drain' | 'stop' | null
-  }
+  },
+  opts?: { commandQueue?: CommandQueue }
 ): Promise<void> {
   const isFenceCommand = params.fencePhase !== null || params.type === 'managed.lifecycle'
   if (isFenceCommand) {
@@ -1359,7 +1649,7 @@ export async function onRecoveryCommandTimedOut(
     return
   }
   if (params.type === 'managed.promote' || params.type === 'managed.ha.failover') {
-    await onRecoveryCommandFailed(db, params.recoveryId)
+    await settleTimedOutPromoteOrFailoverCommand(db, params, opts?.commandQueue)
   }
 }
 

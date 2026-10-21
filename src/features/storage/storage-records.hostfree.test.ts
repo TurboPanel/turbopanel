@@ -17,30 +17,46 @@ import type { Db } from '../../db/connection.ts'
  */
 const test = Deno.test.bind(Deno)
 
-type RetentionTx = Pick<Db, 'delete'>
+type RetentionTx = Pick<Db, 'delete' | 'select' | 'update'>
 
-function createRetentionTx(): RetentionTx & { deletes: unknown[] } {
+/** `doomed` are the volume ids the select finds; each update is a folder rows move. */
+function createRetentionTx(
+  doomed: readonly string[] = []
+): RetentionTx & { deletes: unknown[]; updates: unknown[] } {
   const deletes: unknown[] = []
+  const updates: unknown[] = []
   const deleteFn = ((_table: unknown) => ({
     where: (clause: unknown) => {
       deletes.push(clause)
       return Promise.resolve()
     },
   })) as unknown as RetentionTx['delete']
-  return {
-    deletes,
-    delete: deleteFn,
-  }
+  const selectFn = (() => ({
+    from: () => ({ where: () => Promise.resolve(doomed.map((id) => ({ id }))) }),
+  })) as unknown as RetentionTx['select']
+  const updateFn = ((_table: unknown) => ({
+    set: (values: unknown) => ({
+      where: () => {
+        updates.push(values)
+        // `.returning()` hands back the servers whose rows moved.
+        return Object.assign(Promise.resolve(), {
+          returning: () => Promise.resolve([{ serverId: 'srv-1' }, { serverId: 'srv-1' }]),
+        })
+      },
+    }),
+  })) as unknown as RetentionTx['update']
+  return { deletes, updates, delete: deleteFn, select: selectFn, update: updateFn }
 }
 
 test('applyStorageRetentionOnParentDelete no-ops when the scope is empty', async () => {
   const tx = createRetentionTx()
   await applyStorageRetentionOnParentDelete(tx, {})
   assertEquals(tx.deletes.length, 0)
+  assertEquals(tx.updates.length, 0)
 })
 
 test('applyStorageRetentionOnParentDelete drops mounts then retention=delete rows', async () => {
-  const tx = createRetentionTx()
+  const tx = createRetentionTx(['vol-1'])
   const scope: StorageRetentionScope = {
     serviceIds: ['svc-1', 'svc-2'],
     projectIds: ['proj-1'],
@@ -53,9 +69,24 @@ test('applyStorageRetentionOnParentDelete drops mounts then retention=delete row
 })
 
 test('applyStorageRetentionOnParentDelete skips mount delete without serviceIds', async () => {
-  const tx = createRetentionTx()
+  const tx = createRetentionTx(['vol-1'])
   await applyStorageRetentionOnParentDelete(tx, {
     projectIds: ['proj-1'],
   })
   assertEquals(tx.deletes.length, 1)
+})
+
+test('applyStorageRetentionOnParentDelete marks folders removing before the volumes go, and names the servers to tell', async () => {
+  const tx = createRetentionTx(['vol-1', 'vol-2'])
+  const servers = await applyStorageRetentionOnParentDelete(tx, { projectIds: ['proj-1'] })
+  assertEquals(servers, ['srv-1'])
+  assertEquals(tx.updates, [{ state: 'removing', removalNote: null }])
+  assertEquals(tx.deletes.length, 1)
+})
+
+test('applyStorageRetentionOnParentDelete leaves everything alone when no volume is deleted', async () => {
+  const tx = createRetentionTx([])
+  await applyStorageRetentionOnParentDelete(tx, { projectIds: ['proj-1'] })
+  assertEquals(tx.updates.length, 0)
+  assertEquals(tx.deletes.length, 0)
 })

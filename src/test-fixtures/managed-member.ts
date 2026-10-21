@@ -21,7 +21,6 @@ export function managedMemberRow(overrides: Partial<ManagedMemberRow> = {}): Man
     privatePort: 5432,
     status: 'ready',
     metadata: null,
-    options: null,
     createdAt: STAMP,
     updatedAt: STAMP,
     ...overrides,

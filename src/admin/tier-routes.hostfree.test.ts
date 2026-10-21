@@ -52,7 +52,7 @@ const NOW = '2026-09-08T00:00:00.000Z'
 const BILLING: BillingConfig = {
   secretKey: 'sk_test_x',
   webhookSigningSecret: 'whsec_x',
-  apiVersion: '2025-08-27.basil',
+  apiVersion: '2026-09-30.endive',
 }
 
 function tierRow(overrides: Partial<TierRow> = {}): TierRow {

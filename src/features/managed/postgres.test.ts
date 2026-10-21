@@ -246,6 +246,18 @@ test('buildConnectionInfo masks the password', () => {
   assertEquals(info.username, 'postgres')
 })
 
+test('buildConnectionInfo brackets an IPv6 host in the DSN only', () => {
+  const info = postgresEngineSpec.buildConnectionInfo({
+    host: '2001:db8::4',
+    port: 15432,
+    database: 'appdb',
+    username: 'postgres',
+    sslMode: 'verify-full',
+  })
+  assertEquals(info.dsn.endsWith('@[2001:db8::4]:15432/appdb?sslmode=verify-full'), true)
+  assertEquals(info.host, '2001:db8::4')
+})
+
 test('backup descriptor advertises database scope only', () => {
   const backup = postgresEngineSpec.backup
   if (!backup) throw new TypeError('expected postgres backup descriptor')

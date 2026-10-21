@@ -15,6 +15,19 @@ export const serviceSchemas = {
           'environment overlay). Read-only — written only by deploy reconcile / ' +
           'managed allocation / container reconcile, never by a client request.',
       },
+      slug: {
+        type: ['string', 'null'],
+        description:
+          "Folder name under the site owner's tree (`<scope>/services/<slug>`). Null until set: a " +
+          'deploy picks one (the domain for web hosting) when the first folder is planned. Locked ' +
+          'once the service has a folder on any server.',
+      },
+      common: {
+        type: 'boolean',
+        description:
+          'True when the folder is in the `common` scope shared by environments of any project ' +
+          'that use the same site owner. Chosen before the first folder exists, then locked.',
+      },
       metadata: {
         type: ['object', 'null'],
         description:
@@ -120,6 +133,25 @@ export const serviceSchemas = {
     properties: {
       name: { type: 'string' },
       description: { type: 'string' },
+      slug: {
+        type: 'string',
+        description:
+          'Folder name (lowercase letters, digits, dots, hyphens and underscores, up to 63). ' +
+          '**400** `invalid_directory_name`; **409** `directory_name_taken` (another service of ' +
+          'the site owner has it in the same place), `directory_name_typed_in_uuid_mode`, or ' +
+          '`service_slug_locked` once the service has a folder.',
+      },
+      directoryName: {
+        type: 'string',
+        enum: ['slug', 'uuid'],
+        description: 'Which kind of name; only accepted when the organization allows both.',
+      },
+      common: {
+        type: 'boolean',
+        description:
+          'Share the service across environments. Only before its first folder exists: **409** ' +
+          '`scope_locked` after, or `common_asset_in_use` while another environment uses it.',
+      },
       metadata: { type: 'object', nullable: true },
       options: {
         type: 'object',

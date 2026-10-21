@@ -1,6 +1,12 @@
 /**
  * Organization CA rotation fan-out: enumerate org-scoped managed targets and
  * enqueue `managed.apply` / `managed.ingress.reconcile` plus binding rematerialize.
+ * Once every cluster has been sent, `managed.ha.reconcile` goes to every
+ * Orchestrator host of the organization (`fanOutOrganizationHaReconcile`), not
+ * only the hosts of the clusters that were applied: one Raft group spans the
+ * organization and followers forward `/api/discover` to the leader, so a leader
+ * left on the old trust bundle refuses every member signed by the new CA. The
+ * command consumer still reconciles after each primary `managed.apply` too.
  *
  * Does **not** enqueue `environment.deploy` — consumer compose pick-up of the
  * new `<PREFIX>_CA_CERT` is surfaced as `needsRedeploy`.
@@ -9,28 +15,27 @@ import { and, asc, eq, inArray } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
-import { materializeBindingsForPrincipal } from '../../features/bindings/materialize.ts'
+import { materializeBindingsForManaged } from '../../features/bindings/materialize.ts'
 import {
   enqueuePreparedManagedApply,
   isPrepareError,
   prepareManagedApplyPayloads,
 } from '../../features/managed/apply-prepare.ts'
 import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
-import { parseManagedRowOptions } from '../../features/managed/options.ts'
+import { fanOutOrganizationHaReconcile } from '../../features/managed/ha-desired.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
+import { loadManagedOptions } from '../../features/managed/options.ts'
 import { parseManagedResidual } from '../../features/managed/serialize.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { getManagedEngineSpec } from '../../features/managed/index.ts'
-import {
-  parseProjectOptions,
-  resolveEffectivePlacementServerId,
-} from '../../features/projects/project-options.ts'
+import { resolveEffectivePlacementServerId } from '../../features/projects/project-options.ts'
 import {
   binding,
   environment,
   managed,
   replica,
-  principal,
+  login,
   project,
   server,
   service,
@@ -215,14 +220,14 @@ async function collectConsumerServers(
   if (ownedManagedIds.length === 0) return
   const rows = await db
     .select({
-      managedId: principal.managedId,
+      managedId: login.managedId,
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
       taskServerId: slot.serverId,
       workspaceOrganizationId: workspace.organizationId,
     })
     .from(binding)
-    .innerJoin(principal, eq(binding.principalId, principal.id))
+    .innerJoin(login, eq(login.id, binding.loginId))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
@@ -231,7 +236,7 @@ async function collectConsumerServers(
     .where(
       and(
         eq(workspace.organizationId, organizationId),
-        inArray(principal.managedId, [...ownedManagedIds])
+        inArray(login.managedId, [...ownedManagedIds])
       )
     )
 
@@ -240,7 +245,7 @@ async function collectConsumerServers(
     if (!row.managedId || !ownedManagedIds.includes(row.managedId)) continue
     const placement = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions)
+      row.projectDefaultServerId
     )
     if (placement) addMember(members, placement, row.managedId)
     if (row.taskServerId) addMember(members, row.taskServerId, row.managedId)
@@ -357,15 +362,9 @@ async function rematerializeClusterBindings(
   managedId: string,
   dataEncryptionSecrets: DerivedSecretsConfig
 ): Promise<RematerializeOutcome> {
-  const principals = await db
-    .select({ id: principal.id })
-    .from(principal)
-    .where(eq(principal.managedId, managedId))
-  for (const row of principals) {
-    const result = await materializeBindingsForPrincipal(db, dataEncryptionSecrets, row.id)
-    if (!('ok' in result)) {
-      return { ok: false, error: result.kind }
-    }
+  const result = await materializeBindingsForManaged(db, dataEncryptionSecrets, managedId)
+  if (!('ok' in result)) {
+    return { ok: false, error: result.kind }
   }
   return {
     ok: true,
@@ -381,21 +380,21 @@ async function loadNeedsRedeployForManaged(
     .select({
       environmentId: environment.id,
       environmentServerId: environment.serverId,
-      projectOptions: project.options,
+      projectDefaultServerId: project.defaultServerId,
     })
     .from(binding)
-    .innerJoin(principal, eq(binding.principalId, principal.id))
+    .innerJoin(login, eq(login.id, binding.loginId))
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
-    .where(eq(principal.managedId, managedId))
+    .where(eq(login.managedId, managedId))
 
   const seen = new Set<string>()
   const needs: CaRotationNeedsRedeploy[] = []
   for (const row of rows) {
     const serverId = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions)
+      row.projectDefaultServerId
     )
     if (!serverId) continue
     const key = `${serverId}:${row.environmentId}`
@@ -428,7 +427,7 @@ export async function fanOutApplyForCluster(
       ),
     ]
   }
-  const parsed = parseManagedRowOptions(spec, params.row.options)
+  const parsed = await loadManagedOptions(db, spec, params.row)
   if (!parsed) {
     return [
       applyResultRow(
@@ -446,6 +445,8 @@ export async function fanOutApplyForCluster(
     spec,
     settings: parsed.settings,
     databases: parsed.databases,
+    ownerRoleDatabases: parsed.ownerRoleDatabases,
+    databaseOwners: parsed.databaseOwners,
     serverId: params.row.serverId,
     environmentId: params.row.environmentId,
     organizationId: params.organizationId,
@@ -458,6 +459,7 @@ export async function fanOutApplyForCluster(
     userId: params.actorId,
     managedId: params.row.id,
     members: prepared.members,
+    fanOutMembersConcurrently: true,
   })
   if (enqueued instanceof Response) {
     return [
@@ -609,10 +611,13 @@ async function recordMissingManagedCluster(
   ctx: RotationFanoutContext,
   managedId: string
 ): Promise<void> {
-  const { db, params, state, complete } = ctx
-  state.results.push(
-    applyResultRow(managedId, params.organizationId, 'failed', undefined, 'managed_not_found')
-  )
+  const { db, params, state, complete, targets } = ctx
+  const members = targets.members.filter((member) => member.managedId === managedId)
+  for (const member of members) {
+    state.results.push(
+      applyResultRow(managedId, member.serverId, 'skipped', undefined, 'target_gone')
+    )
+  }
   state.resumeAfter = managedId
   await persistRotationProgress(db, params.rotationId, state, journalCursor(complete, managedId))
 }
@@ -694,6 +699,41 @@ async function fanOutLeftoverIngress(ctx: RotationFanoutContext): Promise<void> 
   await persistRotationProgress(db, params.rotationId, state, null)
 }
 
+export type OrganizationTrustReconcileParams = Readonly<{
+  organizationId: string
+  actorType: 'user' | 'system'
+  actorId: string
+  secretsConfig: SecretsConfig
+  dataEncryptionSecrets: DerivedSecretsConfig
+}>
+
+/** Indirection so tests can observe the org-wide HA reconcile. */
+export const orchestratorTrustReconciler = {
+  fanOut: fanOutOrganizationHaReconcile,
+}
+
+/**
+ * Send the current Organization CA trust bundle to every Orchestrator host of
+ * the organization. Best effort: a failure is logged and never fails the
+ * rotation step that called it (the next primary apply reconciles again).
+ */
+export async function reconcileOrganizationOrchestratorTrust(
+  db: Db,
+  commandQueue: CommandQueue,
+  params: OrganizationTrustReconcileParams
+): Promise<string[]> {
+  try {
+    return await orchestratorTrustReconciler.fanOut(db, commandQueue, params)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    compatLogWarn(
+      'tls-rotation',
+      `orchestrator trust reconcile failed organizationId=${params.organizationId}: ${message}`
+    )
+    return []
+  }
+}
+
 /**
  * Bounded/resumable fan-out across managed clusters in id order.
  * Persist each batch onto `rotation.results` when `rotationId` is set.
@@ -743,6 +783,13 @@ export async function runOrganizationCaRotationFanout(
 
   if (complete) {
     await fanOutLeftoverIngress(ctx)
+    await reconcileOrganizationOrchestratorTrust(db, commandQueue, {
+      organizationId: params.organizationId,
+      actorType: params.actorType,
+      actorId: params.actorId,
+      secretsConfig: params.secretsConfig,
+      dataEncryptionSecrets: params.dataEncryptionSecrets,
+    })
   }
 
   return {

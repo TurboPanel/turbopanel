@@ -47,7 +47,6 @@ export const BILLING_NOT_CONFIGURED_ERROR = 'billing_not_configured'
 export const BILLING_MUTATION_IN_PROGRESS_ERROR = 'billing_mutation_in_progress'
 export const SUBSCRIPTION_PAST_DUE_ERROR = 'subscription_past_due'
 export const SUBSCRIPTION_EXISTS_ERROR = 'subscription_exists'
-export const CHECKOUT_PENDING_ERROR = 'checkout_pending'
 export const NO_SUBSCRIPTION_ERROR = 'no_subscription'
 /** A reduction would leave a licensed server on nothing. */
 export const SERVERS_UNCOVERED_ERROR = 'servers_uncovered'

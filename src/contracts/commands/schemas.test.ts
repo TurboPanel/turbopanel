@@ -155,6 +155,7 @@ const DAEMON_COMMAND_TYPES = [
   'server.firewall.reconcile',
   'server.firewall.confirm',
   'server.backups.reconcile',
+  'server.folders.remove',
   'environment.deploy',
   'environment.lifecycle',
   'environment.stop',
@@ -1430,11 +1431,13 @@ test('parseManagedPromotePayload and result accept valid shapes', () => {
       managedId: '00000000-0000-4000-8000-000000000001',
       memberId: '00000000-0000-4000-8000-0000000000aa',
       demoteMemberId: '00000000-0000-4000-8000-0000000000bb',
+      resume: true,
     }),
     {
       managedId: '00000000-0000-4000-8000-000000000001',
       memberId: '00000000-0000-4000-8000-0000000000aa',
       demoteMemberId: '00000000-0000-4000-8000-0000000000bb',
+      resume: true,
     }
   )
   assertEquals(
@@ -1521,7 +1524,13 @@ test('parseManagedApplyPayload admits allowlisted config paths and rejects unexp
     () =>
       parseManagedApplyPayload({
         ...VALID_MANAGED_APPLY,
-        configFiles: [{ path: 'unexpected.conf', contents: 'x\n', mode: '0640' }],
+        configFiles: [
+          {
+            path: 'unexpected.conf',
+            contents: 'x\n',
+            mode: '0640',
+          },
+        ],
       }),
     Error,
     'Invalid managed.apply configFiles entry'
@@ -1530,7 +1539,13 @@ test('parseManagedApplyPayload admits allowlisted config paths and rejects unexp
     () =>
       parseManagedApplyPayload({
         ...VALID_MANAGED_APPLY,
-        configFiles: [{ path: 'nested/postgresql.conf', contents: 'x\n', mode: '0640' }],
+        configFiles: [
+          {
+            path: 'nested/postgresql.conf',
+            contents: 'x\n',
+            mode: '0640',
+          },
+        ],
       }),
     Error,
     'Invalid managed.apply configFiles entry'
@@ -1698,7 +1713,11 @@ test('parseManagedBackupPayload accepts delete action and optional retentionKeep
 test('parseManagedBackupPayload carries a canonical policyId and rejects a malformed one', () => {
   const policyId = '11111111-1111-4111-8111-111111111111'
   assertEquals(
-    parseManagedBackupPayload({ ...VALID_MANAGED_BACKUP_CREATE, action: 'delete', policyId }),
+    parseManagedBackupPayload({
+      ...VALID_MANAGED_BACKUP_CREATE,
+      action: 'delete',
+      policyId,
+    }),
     { ...VALID_MANAGED_BACKUP_CREATE, action: 'delete', policyId }
   )
   assertThrows(
@@ -2031,7 +2050,10 @@ test('parseCommandPayload carries the sequential strategy fields and rejects bad
     { keepRunningServices: [''] },
   ]) {
     assertThrows(() =>
-      parseCommandPayload('environment.deploy' as CommandType, { ...base, ...bad })
+      parseCommandPayload('environment.deploy' as CommandType, {
+        ...base,
+        ...bad,
+      })
     )
   }
 })
@@ -3017,7 +3039,12 @@ test('parseManagedIngressReconcilePayload admits fabric backends and sorted segm
     }).clusters[0]?.backends[0]?.transport,
     'public'
   )
-  assertEquals(payload.segments, [{ name: `tpn_${netId}`, subnet: '203.0.113.0/24' }])
+  assertEquals(payload.segments, [
+    {
+      name: `tpn_${netId}`,
+      subnet: '203.0.113.0/24',
+    },
+  ])
   assertThrows(
     () =>
       parseManagedIngressReconcilePayload({
@@ -3634,17 +3661,38 @@ test('parseDeployComposeFiles rejects a path with traversal or a leading slash',
 test('parseDeployComposeFiles rejects invalid entries', () => {
   assertThrows(() => parseDeployComposeFiles([]), Error, 'Invalid environment.deploy payload')
   assertThrows(
-    () => parseDeployComposeFiles([{ filename: '../evil.yml', role: 'project', content: 'x' }]),
+    () =>
+      parseDeployComposeFiles([
+        {
+          filename: '../evil.yml',
+          role: 'project',
+          content: 'x',
+        },
+      ]),
     Error,
     'Invalid environment.deploy payload'
   )
   assertThrows(
-    () => parseDeployComposeFiles([{ filename: 'nested/file.yml', role: 'project', content: 'x' }]),
+    () =>
+      parseDeployComposeFiles([
+        {
+          filename: 'nested/file.yml',
+          role: 'project',
+          content: 'x',
+        },
+      ]),
     Error,
     'Invalid environment.deploy payload'
   )
   assertThrows(
-    () => parseDeployComposeFiles([{ filename: 'compose.txt', role: 'project', content: 'x' }]),
+    () =>
+      parseDeployComposeFiles([
+        {
+          filename: 'compose.txt',
+          role: 'project',
+          content: 'x',
+        },
+      ]),
     Error,
     'Invalid environment.deploy payload'
   )
@@ -3659,7 +3707,13 @@ test('parseDeployComposeFiles rejects invalid entries', () => {
   )
   assertThrows(
     () =>
-      parseDeployComposeFiles([{ filename: 'docker-compose.yml', role: 'unknown', content: 'a' }]),
+      parseDeployComposeFiles([
+        {
+          filename: 'docker-compose.yml',
+          role: 'unknown',
+          content: 'a',
+        },
+      ]),
     Error,
     'Invalid environment.deploy payload'
   )
@@ -3678,7 +3732,13 @@ test('parseDeployComposeFiles rejects invalid entries', () => {
   )
   assertThrows(
     () =>
-      parseDeployComposeFiles([{ filename: 'docker-compose.yml', role: 'project', content: '' }]),
+      parseDeployComposeFiles([
+        {
+          filename: 'docker-compose.yml',
+          role: 'project',
+          content: '',
+        },
+      ]),
     Error,
     'Invalid environment.deploy payload'
   )
@@ -3860,17 +3920,28 @@ test('parseEnvironmentStopPayload round-trips siteReleases and rejects unsafe se
 })
 
 test('parseEnvironmentStopPayload round-trips retirePrincipals and rejects unsafe names', () => {
-  const base = { environmentId: 'env-1', projectId: 'proj-1', projectName: 'tp-demo' }
+  const base = {
+    environmentId: 'env-1',
+    projectId: 'proj-1',
+    projectName: 'tp-demo',
+  }
   assertEquals(
-    parseEnvironmentStopPayload({ ...base, retirePrincipals: [{ username: 'app_x1' }] }),
+    parseEnvironmentStopPayload({
+      ...base,
+      retirePrincipals: [{ username: 'app_x1' }],
+    }),
     { ...base, retirePrincipals: [{ username: 'app_x1' }] }
   )
   assertEquals('retirePrincipals' in parseEnvironmentStopPayload(base), false)
   for (const username of ['../root', '-r', 'a b', '', 7]) {
     assertThrows(
-      () => parseEnvironmentStopPayload({ ...base, retirePrincipals: [{ username }] }),
+      () =>
+        parseEnvironmentStopPayload({
+          ...base,
+          retirePrincipals: [{ username }],
+        }),
       Error,
-      'Invalid environment.stop retirePrincipals entry'
+      'Invalid retirePrincipals entry'
     )
   }
   assertThrows(
@@ -4404,7 +4475,9 @@ test('server.principals.reconcile validates principals the same way a deploy doe
   // is a malformed payload. The two must never be confused.
   assertEquals(
     (
-      parseCommandPayload('server.principals.reconcile', { principals: [] }) as {
+      parseCommandPayload('server.principals.reconcile', {
+        principals: [],
+      }) as {
         principals: unknown[]
       }
     ).principals,
@@ -4748,6 +4821,31 @@ test('sourceMaterial build outputDirectory must be a relative subdirectory', () 
       }),
     Error,
     'Invalid sourceMaterial build outputDirectory'
+  )
+})
+
+test('parseManagedApplyPayload reads an optional credential grantMode', () => {
+  const base = VALID_MANAGED_APPLY.credentials[0]
+  assertEquals(
+    parseManagedApplyPayload({ ...VALID_MANAGED_APPLY, credentials: [base] }).credentials[0]
+      ?.grantMode,
+    undefined
+  )
+  for (const grantMode of ['preset', 'recipe', 'self'] as const) {
+    const parsed = parseManagedApplyPayload({
+      ...VALID_MANAGED_APPLY,
+      credentials: [{ ...base, grantMode }],
+    })
+    assertEquals(parsed.credentials[0]?.grantMode, grantMode)
+  }
+  assertThrows(
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        credentials: [{ ...base, grantMode: 'wild' }],
+      }),
+    Error,
+    'Invalid managed.apply credentials grantMode'
   )
 })
 
@@ -5800,6 +5898,41 @@ test('parseManagedIngressReconcilePayload covers monitor, ports, bind, and clust
   assertEquals(payload.clusters[0]?.autoReadSplit, true)
   assertEquals(payload.clusters[0]?.requireTls, true)
   assertEquals(payload.clusters[0]?.users[0]?.connectionRole, 'read-only')
+  assertEquals(payload.clusters[0]?.users[0]?.tool, undefined)
+  const toolPayload = parseManagedIngressReconcilePayload({
+    ...VALID_MANAGED_INGRESS_RECONCILE,
+    clusters: [
+      {
+        ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
+        users: [
+          {
+            ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0]!.users[0],
+            tool: true,
+          },
+        ],
+      },
+    ],
+  })
+  assertEquals(toolPayload.clusters[0]?.users[0]?.tool, true)
+  assertThrows(
+    () =>
+      parseManagedIngressReconcilePayload({
+        ...VALID_MANAGED_INGRESS_RECONCILE,
+        clusters: [
+          {
+            ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
+            users: [
+              {
+                ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0]!.users[0],
+                tool: 'yes',
+              },
+            ],
+          },
+        ],
+      }),
+    TypeError,
+    'Invalid managed.ingress.reconcile user tool'
+  )
 
   assertThrows(
     () => parseManagedIngressReconcilePayload(null),
@@ -5908,6 +6041,34 @@ test('parseManagedIngressReconcilePayload covers monitor, ports, bind, and clust
       }),
     TypeError,
     'Invalid managed.ingress.reconcile cluster requireTls'
+  )
+  for (const engineVersion of ['', "9.7'", '18-alpine', '1.2.3.4', 18]) {
+    assertThrows(
+      () =>
+        parseManagedIngressReconcilePayload({
+          ...VALID_MANAGED_INGRESS_RECONCILE,
+          clusters: [
+            {
+              ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
+              engineVersion,
+            },
+          ],
+        }),
+      TypeError,
+      'Invalid managed.ingress.reconcile cluster engineVersion'
+    )
+  }
+  assertEquals(
+    parseManagedIngressReconcilePayload({
+      ...VALID_MANAGED_INGRESS_RECONCILE,
+      clusters: [
+        {
+          ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
+          engineVersion: '9.7',
+        },
+      ],
+    }).clusters[0]?.engineVersion,
+    '9.7'
   )
   assertThrows(
     () =>
@@ -6102,6 +6263,28 @@ test('parseManagedApplyPayload covers volumes, config files, privileges, and mon
   assertEquals(payload.ingressSourceAddresses, undefined)
   assertEquals(payload.monitorUsers?.[0]?.username, 'tp_monitor')
   assertEquals(payload.credentials[0]?.privileges, ['CONNECT', 'CREATE'])
+
+  const withTopology = parseManagedApplyPayload({
+    ...VALID_MANAGED_APPLY,
+    topologyUser: {
+      username: 'tp_topology_111111111111',
+      password: DAEMON_PSK,
+    },
+  })
+  assertEquals(withTopology.topologyUser?.username, 'tp_topology_111111111111')
+  assertEquals(parseManagedApplyPayload(VALID_MANAGED_APPLY).topologyUser, undefined)
+  assertThrows(
+    () =>
+      parseManagedApplyPayload({
+        ...VALID_MANAGED_APPLY,
+        topologyUser: {
+          username: 'tp_topology_111111111111',
+          password: 'topo-pass',
+        },
+      }),
+    TypeError,
+    'Invalid managed.apply topologyUser'
+  )
 
   const withSources = parseManagedApplyPayload({
     ...VALID_MANAGED_APPLY,
@@ -6616,6 +6799,48 @@ test('parseEnvironmentDeployPayload covers sourceMaterial cloneUrl, railpack, an
   )
 })
 
+const RELEASE_SERVICE_ID = '00000000-0000-4000-8000-000000000099'
+
+test('sourceMaterial round-trips releaseServiceId through parse and wire JSON', () => {
+  const raw = {
+    ...NATIVE_APP_BASE,
+    sourceMaterial: [
+      {
+        ...GITLAB_SOURCE_ENTRY,
+        releaseServiceId: RELEASE_SERVICE_ID,
+      },
+    ],
+  }
+  const parsed = parseEnvironmentDeployPayload(raw)
+  assertEquals(parsed.sourceMaterial?.[0]?.releaseServiceId, RELEASE_SERVICE_ID)
+
+  const again = parseEnvironmentDeployPayload(JSON.parse(JSON.stringify(parsed)) as typeof raw)
+  assertEquals(again.sourceMaterial?.[0]?.releaseServiceId, RELEASE_SERVICE_ID)
+
+  const without = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY }],
+  })
+  assertEquals(without.sourceMaterial?.[0]?.releaseServiceId, undefined)
+})
+
+test('sourceMaterial rejects an unsafe releaseServiceId segment', () => {
+  assertThrows(
+    () =>
+      parseEnvironmentDeployPayload({
+        ...NATIVE_APP_BASE,
+        sourceMaterial: [
+          {
+            ...GITLAB_SOURCE_ENTRY,
+            releaseServiceId: '../svc',
+          },
+        ],
+      }),
+    Error,
+    'Invalid sourceMaterial releaseServiceId'
+  )
+})
+
 const MANAGED_MEMBER_ID = '00000000-0000-4000-8000-0000000000aa'
 const MANAGED_ENV_ID = '00000000-0000-4000-8000-0000000000bb'
 const MANAGED_DEMOTE_ID = '00000000-0000-4000-8000-0000000000cc'
@@ -6716,15 +6941,50 @@ test('parseManagedLifecyclePayload rejects leftover field throws', () => {
     Error,
     'Invalid managed.lifecycle payload'
   )
-  assertEquals(parseManagedLifecyclePayload({ managedId: 'm1', action: 'stop', role: 'replica' }), {
-    managedId: 'm1',
-    action: 'stop',
-    role: 'replica',
-  })
+  assertEquals(
+    parseManagedLifecyclePayload({
+      managedId: 'm1',
+      action: 'stop',
+      role: 'replica',
+    }),
+    {
+      managedId: 'm1',
+      action: 'stop',
+      role: 'replica',
+    }
+  )
   assertThrows(
-    () => parseManagedLifecyclePayload({ managedId: 'm1', action: 'stop', role: 'leader' }),
+    () =>
+      parseManagedLifecyclePayload({
+        managedId: 'm1',
+        action: 'stop',
+        role: 'leader',
+      }),
     Error,
     'Invalid managed.lifecycle payload'
+  )
+  assertEquals(
+    parseManagedLifecyclePayload({
+      managedId: 'm1',
+      action: 'stop',
+      demoted: true,
+    }),
+    {
+      managedId: 'm1',
+      action: 'stop',
+      demoted: true,
+    }
+  )
+  assertEquals(
+    parseManagedLifecyclePayload({
+      managedId: 'm1',
+      action: 'stop',
+      demoted: false,
+    }),
+    {
+      managedId: 'm1',
+      action: 'stop',
+    }
   )
 })
 
@@ -7122,15 +7382,24 @@ test('parseEnvironmentDeployResult keeps per-site app facts and drops unknown ki
   const parsed = parseEnvironmentDeployResult({
     projectName: 'demo',
     sites: [
-      { composeServiceName: 'blog', app: { kind: 'wordpress', version: '6.5.2' } },
+      {
+        composeServiceName: 'blog',
+        app: { kind: 'wordpress', version: '6.5.2' },
+      },
       { composeServiceName: 'docs' },
       { composeServiceName: 'shop', app: { kind: 'drupal' } },
-      { composeServiceName: 'odd', app: { kind: 'wordpress', version: '<script>' } },
+      {
+        composeServiceName: 'odd',
+        app: { kind: 'wordpress', version: '<script>' },
+      },
       { app: { kind: 'wordpress' } },
     ],
   })
   assertEquals(parsed.sites, [
-    { composeServiceName: 'blog', app: { kind: 'wordpress', version: '6.5.2' } },
+    {
+      composeServiceName: 'blog',
+      app: { kind: 'wordpress', version: '6.5.2' },
+    },
     { composeServiceName: 'docs' },
     { composeServiceName: 'odd', app: { kind: 'wordpress' } },
   ])
@@ -7152,12 +7421,20 @@ const DB_SITE_BASE = {
   ],
   hostings: [],
 }
-const DB_SITE = { composeServiceName: 'wp', engine: 'apache', root: 'public', listenPort: 18081 }
+const DB_SITE = {
+  composeServiceName: 'wp',
+  engine: 'apache',
+  root: 'public',
+  listenPort: 18081,
+}
 const CERT = '-----BEGIN CERTIFICATE-----\nAA\n-----END CERTIFICATE-----\n'
 
 test('a site carries dbCa and requiredEnv; a key, a bad name or an empty list is refused', () => {
   const parse = (extra: Record<string, unknown>) =>
-    parseEnvironmentDeployPayload({ ...DB_SITE_BASE, sites: [{ ...DB_SITE, ...extra }] })
+    parseEnvironmentDeployPayload({
+      ...DB_SITE_BASE,
+      sites: [{ ...DB_SITE, ...extra }],
+    })
   const ok = parse({
     dbCa: { variables: ['DATABASE_CA_FILE'], pem: CERT },
     requiredEnv: ['DATABASE_HOST'],
@@ -7189,6 +7466,114 @@ test('the deploy result keeps daemon warnings, bounded, and ignores anything els
     parseEnvironmentDeployResult({ projectName: 'p', warnings: 'x' }).warnings,
     undefined
   )
-  const long = parseEnvironmentDeployResult({ projectName: 'p', warnings: ['x'.repeat(5000)] })
+  const long = parseEnvironmentDeployResult({
+    projectName: 'p',
+    warnings: ['x'.repeat(5000)],
+  })
   assertEquals(long.warnings?.[0]?.length, 1000)
+})
+
+test('managed.ingress.reconcile root allowedSources is optional and validated', () => {
+  const withSources = (allowedSources: unknown) => ({
+    ...VALID_MANAGED_INGRESS_RECONCILE,
+    clusters: [
+      {
+        ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
+        users: [
+          {
+            ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0]!.users[0],
+            role: 'root',
+            allowedSources,
+          },
+        ],
+      },
+    ],
+  })
+  assertEquals(
+    parseManagedIngressReconcilePayload(withSources(['10.0.0.2', '2001:db8::1'])).clusters[0]
+      ?.users[0]?.allowedSources,
+    ['10.0.0.2', '2001:db8::1']
+  )
+  assertEquals(
+    parseManagedIngressReconcilePayload(withSources([])).clusters[0]?.users[0]?.allowedSources,
+    []
+  )
+  assertEquals(
+    parseManagedIngressReconcilePayload(VALID_MANAGED_INGRESS_RECONCILE).clusters[0]?.users[0]
+      ?.allowedSources,
+    undefined
+  )
+  for (const bad of ['10.0.0.2', [1], ['10.0.0.0/8'], ['a%'], ['']]) {
+    assertThrows(
+      () => parseManagedIngressReconcilePayload(withSources(bad)),
+      TypeError,
+      'Invalid managed.ingress.reconcile user allowedSources'
+    )
+  }
+})
+
+test('parseManagedApplyPayload reads an optional databases[].ownerRole', () => {
+  const withOp = (extra: Record<string, unknown>) =>
+    parseManagedApplyPayload({
+      ...VALID_MANAGED_APPLY,
+      databases: [{ name: 'shop', action: 'create', ...extra }],
+    }).databases![0]!
+  assertEquals('ownerRole' in withOp({}), false)
+  assertEquals(withOp({ ownerRole: true }).ownerRole, true)
+  assertEquals('ownerRole' in withOp({ ownerRole: false }), false)
+  assertThrows(() => withOp({ ownerRole: 'yes' }), TypeError, 'ownerRole must be true or false')
+})
+
+test('parseManagedApplyPayload reads an optional databases[].ownerLogin that needs ownerRole', () => {
+  const withOp = (extra: Record<string, unknown>) =>
+    parseManagedApplyPayload({
+      ...VALID_MANAGED_APPLY,
+      databases: [{ name: 'shop', action: 'create', ...extra }],
+    }).databases![0]!
+  assertEquals('ownerLogin' in withOp({ ownerRole: true }), false)
+  assertEquals(withOp({ ownerRole: true, ownerLogin: 'app' }).ownerLogin, 'app')
+  assertThrows(() => withOp({ ownerLogin: 'app' }), TypeError, 'ownerLogin must be a login name')
+  assertThrows(
+    () => withOp({ ownerRole: true, ownerLogin: 7 }),
+    TypeError,
+    'ownerLogin must be a login name'
+  )
+})
+
+test('managed.ingress.reconcile app-login limits are optional and validated', () => {
+  const withFields = (fields: Record<string, unknown>) => ({
+    ...VALID_MANAGED_INGRESS_RECONCILE,
+    clusters: [
+      {
+        ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0],
+        users: [
+          {
+            ...VALID_MANAGED_INGRESS_RECONCILE.clusters[0]!.users[0],
+            role: 'user',
+            ...fields,
+          },
+        ],
+      },
+    ],
+  })
+  const parsed = parseManagedIngressReconcilePayload(
+    withFields({
+      allowedSources: ['203.0.113.%', '2001:db8:1:%', '198.51.100.7'],
+      allowLocalSources: true,
+      maxConnections: 5,
+    })
+  ).clusters[0]!.users[0]!
+  assertEquals(parsed.allowedSources, ['203.0.113.%', '2001:db8:1:%', '198.51.100.7'])
+  assertEquals(parsed.allowLocalSources, true)
+  assertEquals(parsed.maxConnections, 5)
+  for (const bad of [
+    { allowLocalSources: 'yes' },
+    { maxConnections: 0 },
+    { maxConnections: 1.5 },
+    { maxConnections: 100_001 },
+    { allowedSources: ['%'] },
+    { allowedSources: ['10.%.1'] },
+  ]) {
+    assertThrows(() => parseManagedIngressReconcilePayload(withFields(bad)), TypeError)
+  }
 })

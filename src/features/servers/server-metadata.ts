@@ -107,7 +107,11 @@ export type ServerHostResources = {
   /** One entry per physical socket, ordered 0, 1, … */
   cpus?: ServerCpuSocket[]
   gpus?: ServerGpu[]
-  memory?: { totalBytes?: number }
+  memory?: {
+    totalBytes?: number
+    /** Kernel page size in bytes from `getconf PAGESIZE`. Linux only. */
+    pageSizeBytes?: number
+  }
   swap?: { totalBytes?: number }
   /** Host interface addresses (hello / change-detected heartbeat). */
   ips?: ServerReportedIp[]
@@ -573,11 +577,16 @@ function parseGpus(value: unknown): ServerGpu[] | undefined {
   return gpus.length > 0 ? gpus : undefined
 }
 
-function parseMemoryTotal(value: unknown): { totalBytes: number } | undefined {
+function parseMemoryTotal(
+  value: unknown
+): { totalBytes: number; pageSizeBytes?: number } | undefined {
   if (!isRecord(value)) return undefined
   const totalBytes = optionalPositiveInt(value.totalBytes)
   if (totalBytes === undefined) return undefined
-  return { totalBytes }
+  const memory: { totalBytes: number; pageSizeBytes?: number } = { totalBytes }
+  const pageSizeBytes = optionalPositiveInt(value.pageSizeBytes)
+  if (pageSizeBytes !== undefined) memory.pageSizeBytes = pageSizeBytes
+  return memory
 }
 
 function parseSwapTotal(value: unknown): { totalBytes: number } | undefined {
@@ -706,6 +715,7 @@ export function serverHostResourcesEquals(
     cpuSocketsEquals(a.cpus, b.cpus) &&
     gpusEquals(a.gpus, b.gpus) &&
     a.memory?.totalBytes === b.memory?.totalBytes &&
+    a.memory?.pageSizeBytes === b.memory?.pageSizeBytes &&
     a.swap?.totalBytes === b.swap?.totalBytes &&
     serverIpsEquals(a.ips, b.ips)
   )

@@ -165,7 +165,7 @@ export const organizationSchemas = {
       defaultEnvironmentName: {
         type: ['string', 'null'],
         description:
-          'Org-wide name for the environment scaffolded with every new project. null/unset falls back to Production.',
+          'Org-wide primary environment name: the name of the primary environment every new project starts with. null/unset falls back to production. Existing projects keep their primary environment as it is.',
       },
     },
   },
@@ -176,7 +176,7 @@ export const organizationSchemas = {
       defaultEnvironmentName: {
         type: ['string', 'null'],
         description:
-          'Non-empty display name (any characters except control characters; ≤255), or null to reset to the platform default (Production).',
+          'Primary environment name, or null to reset to the platform default (production). It is a folder name on the servers, so it follows the environment name rule: at most 32 characters, lowercase letters, digits, hyphens and underscores, not a reserved word. **400** otherwise.',
       },
     },
   },
@@ -1027,7 +1027,7 @@ export const organizationPaths: Record<string, unknown> = {
   '/api/client/v1/organizations/{id}/default-environment': {
     get: {
       tags: ['Organizations'],
-      summary: 'Get organization default environment name',
+      summary: 'Get organization primary environment name',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1039,7 +1039,7 @@ export const organizationPaths: Record<string, unknown> = {
       ],
       responses: {
         '200': {
-          description: 'Org default environment name',
+          description: 'Org primary environment name',
           content: {
             'application/json': {
               schema: {
@@ -1068,7 +1068,7 @@ export const organizationPaths: Record<string, unknown> = {
     },
     put: {
       tags: ['Organizations'],
-      summary: 'Update organization default environment name',
+      summary: 'Update organization primary environment name',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1090,7 +1090,7 @@ export const organizationPaths: Record<string, unknown> = {
       },
       responses: {
         '200': {
-          description: 'Updated org default environment name',
+          description: 'Updated org primary environment name',
           content: {
             'application/json': {
               schema: {
@@ -1328,6 +1328,15 @@ export const organizationPaths: Record<string, unknown> = {
             },
           },
         },
+        '409': {
+          description:
+            '`managed_ssl_default_external_access_minimum`: an sslMode weaker than require while a database that follows the default is served by a server that allows external access; `databases` names them. Nothing is saved.',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ManagedSslMinimumRefusal' },
+            },
+          },
+        },
         '400': {
           description: 'Invalid sslMode or body',
           content: {
@@ -1478,6 +1487,123 @@ export const organizationPaths: Record<string, unknown> = {
             },
           },
         },
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/directory-defaults': {
+    get: {
+      tags: ['Organizations'],
+      summary: 'Get organization folder naming',
+      description:
+        'Manage-gated. Returns how service and volume folders are named under a site owner: slug (a readable name, the default), uuid (the asset id) or both (a choice per asset, default slug). locked is true once the setting was locked by hand or any folder exists for the organization; lockedByFolders says which.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Folder naming',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['names', 'effectiveNames', 'locked', 'lockedByFolders'],
+                properties: {
+                  names: {
+                    type: 'string',
+                    enum: ['slug', 'uuid', 'both'],
+                    nullable: true,
+                  },
+                  effectiveNames: { type: 'string', enum: ['slug', 'uuid', 'both'] },
+                  locked: { type: 'boolean' },
+                  lockedByFolders: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+    put: {
+      tags: ['Organizations'],
+      summary: 'Update organization folder naming',
+      description:
+        'Manage-gated. Sets organization.options.directoryNames (null clears it to the default, slug) and/or directoryNamesLocked. Changing the value, or clearing the lock, fails with 409 directory_names_locked once any folder exists for the organization, or while the lock is set by hand. Existing folders are never renamed.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                names: {
+                  type: 'string',
+                  enum: ['slug', 'uuid', 'both'],
+                  nullable: true,
+                },
+                locked: { type: 'boolean' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        '200': { description: 'Updated folder naming' },
+        '400': {
+          description: 'Invalid request',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '409': { description: 'directory_names_locked' },
       },
     },
   },
@@ -1861,6 +1987,139 @@ export const organizationPaths: Record<string, unknown> = {
         },
         '409': {
           description: 'TurboFabric is off',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/folders': {
+    get: {
+      tags: ['Organizations'],
+      summary: 'Folders on servers that need a person',
+      description:
+        "Manage-gated. Lists the organization's folder rows that a person can act on or is waiting for: orphan (on a server with no service or volume that owns it), removing (asked to go, the host has not confirmed) and missing (the host no longer has it). Filter with state (comma separated), page with limit (1 to 100, default 50) and offset. reason is plain words, including what the host said the last time it kept a removing folder. action says what POST /folders/{id}/remove would do: remove (an orphan), retry (ask again now) or forget (a missing row); null for a folder in use.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        {
+          name: 'state',
+          in: 'query',
+          required: false,
+          schema: { type: 'string', example: 'orphan,removing' },
+        },
+        { name: 'limit', in: 'query', required: false, schema: { type: 'integer' } },
+        { name: 'offset', in: 'query', required: false, schema: { type: 'integer' } },
+      ],
+      responses: {
+        '200': {
+          description: 'Folders that need attention',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'folders', 'total'],
+                properties: {
+                  ok: { type: 'boolean' },
+                  total: { type: 'integer' },
+                  folders: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      required: ['id', 'kind', 'state', 'scope', 'slug', 'serverId', 'owner'],
+                      properties: {
+                        id: { type: 'string', format: 'uuid' },
+                        kind: { type: 'string', enum: ['service', 'volume'] },
+                        state: { type: 'string', enum: ['orphan', 'removing', 'missing'] },
+                        scope: { type: 'string' },
+                        slug: { type: 'string' },
+                        owner: { type: 'string' },
+                        serverId: { type: 'string', format: 'uuid' },
+                        serverName: { type: 'string', nullable: true },
+                        assetId: { type: 'string', format: 'uuid', nullable: true },
+                        assetName: { type: 'string', nullable: true },
+                        hasAsset: { type: 'boolean' },
+                        reason: { type: 'string', nullable: true },
+                        action: {
+                          type: 'string',
+                          enum: ['remove', 'retry', 'forget'],
+                          nullable: true,
+                        },
+                        updatedAt: { type: 'string', format: 'date-time' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid state, limit or offset',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
+  },
+  '/api/client/v1/folders/{id}/remove': {
+    post: {
+      tags: ['Organizations'],
+      summary: 'Remove, retry or forget a folder',
+      description:
+        'Manage-gated. An orphan folder is moved to removing and its server is asked to delete it (permanent; asks for step-up re-authentication when the organization requires it); a folder already removing is asked again now; a missing row is forgotten, since the host has no folder. A folder a service or volume is using (planned or present), or an orphan a service or volume row still names, is refused with 409 folder_in_use: delete that service or volume instead. Recorded in the audit trail as folder.remove.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        '200': {
+          description: 'Done',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'outcome'],
+                properties: {
+                  ok: { type: 'boolean' },
+                  outcome: { type: 'string', enum: ['removing', 'forgotten'] },
+                },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Forbidden, or step-up re-authentication is required (reauth_required)',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Folder not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '409': {
+          description: 'folder_in_use: a service or volume is using the folder',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },

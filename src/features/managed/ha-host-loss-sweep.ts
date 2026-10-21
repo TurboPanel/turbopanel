@@ -20,7 +20,7 @@
  * test pins that the failover modules themselves never import the probe.
  */
 
-import { and, eq, gte, isNotNull, lte, sql } from 'drizzle-orm'
+import { and, eq, gte, isNotNull, lte } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, managed, replica, server } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
@@ -134,7 +134,7 @@ async function listOfflinePrimaries(
         isNotNull(server.statusChangedAt),
         // Only a mark written by the stale sweep (no heartbeat for the threshold,
         // likely power loss). A closed daemon socket could be a restart or a blip.
-        sql`${server.daemon} -> 'projection' ->> 'offlineReason' = 'sweep_stale'`,
+        eq(server.offlineReason, 'sweep_stale'),
         gte(server.statusChangedAt, giveUpBoundary),
         lte(server.statusChangedAt, params.cutoffIso)
       )

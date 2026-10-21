@@ -539,7 +539,9 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
 10. `slotMapping` is resolved once by the ingest route and threaded through to
     the store — stores never re-derive it themselves.
 11. An unresolved topology generation (no recorded `SlotMapping` yet) degrades
-    gracefully to positional packing — never a dropped sample.
+    gracefully to positional packing — never a dropped sample. Only the latest
+    generation is kept (`server.hardware`), so a sample naming an older one is
+    unresolved too.
 12. `HARDWARE_HEALTH_EVENT_KIND` is a `Record` over every `MetricEventKind` — a
     new event kind that isn't classified fails to compile, never silently
     defaults either way.

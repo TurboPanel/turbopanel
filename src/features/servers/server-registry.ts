@@ -49,7 +49,18 @@ import type { CommandQueue } from '../commands/queue.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import { reconcileFabricMembership } from '../fabric/enqueue.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
-import { isPostgresUniqueViolation as isUniqueViolation } from '../../db/unique-violation.ts'
+import {
+  isPostgresUniqueViolation as isUniqueViolation,
+  isUniqueViolationOn,
+} from '../../db/unique-violation.ts'
+
+/** Constraint that keeps one registration per host machine. */
+export const MACHINE_KEY_UNIQUE_CONSTRAINT = 'uniq_server_machine_key'
+
+/** True when the error is another server row already holding this machine key. */
+export function isMachineKeyInUse(err: unknown): boolean {
+  return isUniqueViolationOn(err, MACHINE_KEY_UNIQUE_CONSTRAINT)
+}
 
 export type FabricMembershipDeps = {
   commandQueue: CommandQueue
@@ -305,6 +316,30 @@ async function announceStoppedServices(
   }
 }
 
+/**
+ * Write the hello's changes. When another server already owns the reported
+ * machine key (a duplicate the baseline cleared, say) the rest of the hello
+ * still has to land, so it is written without the key and said once.
+ */
+async function updateServerKeepingMachineKey(
+  db: Db,
+  serverId: string,
+  update: Record<string, unknown>,
+  machineKeyChanged: boolean
+): Promise<void> {
+  try {
+    await db.update(server).set(update).where(eq(server.id, serverId))
+  } catch (err) {
+    if (!machineKeyChanged || !isMachineKeyInUse(err)) throw err
+    compatLogWarn(
+      'servers',
+      `server ${serverId} reported a machine key another server already holds; keeping the stored key`
+    )
+    delete update.machineKey
+    await db.update(server).set(update).where(eq(server.id, serverId))
+  }
+}
+
 export async function touchServerMetadata(
   db: Db,
   serverId: string,
@@ -390,7 +425,7 @@ export async function touchServerMetadata(
     update.daemon = daemonFeaturesColumnPatch(incomingFeatures)
   }
 
-  await db.update(server).set(update).where(eq(server.id, serverId))
+  await updateServerKeepingMachineKey(db, serverId, update, machineKeyChanged)
 
   await reconcileAfterHardwareReport(db, serverId, base, delta)
   await announceStoppedServices(
@@ -716,7 +751,7 @@ async function resolveLicensedServerId(
     await reconcileFabricMembershipBestEffort(db, verified.organizationId, serverId, fabricDeps)
     return serverId
   } catch (err) {
-    if (!isUniqueViolation(err)) throw err
+    if (!isUniqueViolation(err) || isMachineKeyInUse(err)) throw err
     // Concurrent first enroll: the winner owns the license; only that server
     // may continue, and only when this caller presents the matching serverId.
     const raced = await findReusableLicensedServerId(db, identity, licenseId)

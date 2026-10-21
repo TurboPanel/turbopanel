@@ -4,7 +4,9 @@
 
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
+import type { CommandProgress } from '../../contracts/cell-protocol.ts'
 import {
+  cancelNonTerminalCommand,
   createCommandRecord,
   deleteCommandDispatch,
   getCommandDispatchPayload,
@@ -39,6 +41,7 @@ const baseRow = {
   attempts: 0,
   context: null as unknown,
   resultSummary: null as unknown,
+  progress: null as unknown,
   errorCode: null as string | null,
   errorMessage: null as string | null,
   queuedAt: '2020-01-01T00:00:00.000Z' as string | null,
@@ -513,6 +516,68 @@ test('listCommandRecordsByIds returns empty for no ids and maps matches', async 
   assertEquals(rows.length, 1)
   assertEquals(rows[0]?.id, baseRow.id)
   assertEquals(capturedIds !== undefined, true)
+})
+
+const LIVE_PROGRESS: CommandProgress = {
+  version: 1,
+  steps: [
+    { id: 'fetch', label: 'Fetch the code', state: 'done' },
+    { id: 'build', label: 'Build', state: 'running' },
+    { id: 'start', label: 'Start the app', state: 'pending' },
+  ],
+  current: 'build',
+  updatedAt: '2020-01-01T00:00:01.000Z',
+}
+
+/** `db.update` double answering the status write with `row`, recording every set. */
+function fakeTransitionDb(row: Record<string, unknown>) {
+  const sets: Array<Record<string, unknown>> = []
+  const db = {
+    delete: () => ({ where: () => Promise.resolve(undefined) }),
+    update: () => ({
+      set: (patch: Record<string, unknown>) => {
+        sets.push(patch)
+        const done = Promise.resolve([row])
+        return { where: () => Object.assign(done, { returning: () => done }) }
+      },
+    }),
+  } as unknown as Db
+  return { db, sets }
+}
+
+test('transitionCommand settles the step plan on a terminal status', async () => {
+  const { db, sets } = fakeTransitionDb({ ...baseRow, status: 'failed', progress: LIVE_PROGRESS })
+  const failed = await transitionCommand(db, baseRow.id, { status: 'failed', error: 'boom' })
+  assertEquals(
+    failed?.progress?.steps.map((step) => step.state),
+    ['done', 'failed', 'skipped']
+  )
+  assertEquals(failed?.progress?.current, null)
+  const progressWrite = sets.find((patch) => 'progress' in patch)
+  assertEquals(progressWrite?.progress, failed?.progress)
+  assertEquals(typeof progressWrite?.updatedAt, 'string')
+})
+
+test('transitionCommand leaves the step plan alone while the command is live', async () => {
+  const { db, sets } = fakeTransitionDb({ ...baseRow, status: 'running', progress: LIVE_PROGRESS })
+  const running = await transitionCommand(db, baseRow.id, { status: 'running' })
+  assertEquals(running?.progress, LIVE_PROGRESS)
+  assertEquals(
+    sets.some((patch) => 'progress' in patch),
+    false
+  )
+})
+
+test('cancelNonTerminalCommand settles the step plan as skipped', async () => {
+  const { db, sets } = fakeTransitionDb({ id: baseRow.id, progress: LIVE_PROGRESS })
+  assertEquals(await cancelNonTerminalCommand(db, baseRow.id, { error: 'stopped' }), true)
+  const progressWrite = sets.find((patch) => 'progress' in patch)
+  const settled = progressWrite?.progress as typeof LIVE_PROGRESS
+  assertEquals(
+    settled.steps.map((step) => step.state),
+    ['done', 'skipped', 'skipped']
+  )
+  assertEquals(settled.current, null)
 })
 
 test('transitionCommand stores a failure without signed-URL secrets', async () => {

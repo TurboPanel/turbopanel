@@ -52,13 +52,32 @@ test('parsePrincipalUsernameValue rejects reserved and unsafe names', () => {
     status: 400,
   })
   assertEquals(parsePrincipalUsernameValue('Bad Name!').ok, false)
-  for (const name of ['containers', 'tpbuild']) {
-    assertEquals(parsePrincipalUsernameValue(name), {
-      ok: false,
-      error: 'username_reserved',
-      status: 400,
-    })
+  for (const name of [
+    'ftp',
+    'git',
+    'FTP',
+    ' git ',
+    'ubuntu',
+    'www',
+    'root',
+    'www-data',
+    'sudo',
+    'containers',
+    'tpbuild',
+  ]) {
+    assertEquals(
+      parsePrincipalUsernameValue(name),
+      {
+        ok: false,
+        error: 'username_reserved',
+        status: 400,
+      },
+      name
+    )
   }
+  const notReserved = parsePrincipalUsernameValue('appuser')
+  if (!notReserved.ok) throw new TypeError('expected a normal name not to be reserved')
+  assertEquals(notReserved.username, 'appuser')
   for (const name of ['a.b', 'web-', 'web--app']) {
     assertEquals(parsePrincipalUsernameValue(name), {
       ok: false,

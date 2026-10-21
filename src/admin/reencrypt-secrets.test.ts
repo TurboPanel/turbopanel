@@ -90,7 +90,8 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       name varchar(255),
       slug varchar(255),
       metadata jsonb,
-      options jsonb
+      options jsonb,
+      next_linux_id integer DEFAULT 30001 NOT NULL
     )
   `)
   )
@@ -134,6 +135,7 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       fingerprint_sha256 text,
       ca_state text,
       ca_generation integer,
+      issued_by_server_id uuid,
       metadata jsonb NOT NULL,
       options jsonb
     )
@@ -146,13 +148,10 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       created_at timestamptz(3) DEFAULT now() NOT NULL,
       updated_at timestamptz(3) DEFAULT now() NOT NULL,
       organization_id uuid NOT NULL,
-      kind text NOT NULL,
-      provider text NOT NULL,
       username varchar(255) NOT NULL,
       applied_username varchar(255) NOT NULL,
       password text,
       project_id uuid,
-      managed_id uuid,
       metadata jsonb,
       options jsonb
     )
@@ -190,7 +189,7 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
   )
   await tx.execute(
     sql.raw(`
-    CREATE TABLE "2fa" (
+    CREATE TABLE "totp" (
       id uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
       created_at timestamptz(3) DEFAULT now() NOT NULL,
       updated_at timestamptz(3) DEFAULT now() NOT NULL,
@@ -450,8 +449,6 @@ test('reencryptAtRestSecrets reseals old enc, skips denc/current, fails plaintex
       .insert(principal)
       .values({
         organizationId,
-        kind: 'database',
-        provider: 'postgres',
         username: `reencrypt_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`,
         appliedUsername: `reencrypt_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`,
         password: v1PrincipalEnvelope,
@@ -462,8 +459,6 @@ test('reencryptAtRestSecrets reseals old enc, skips denc/current, fails plaintex
       .insert(principal)
       .values({
         organizationId,
-        kind: 'database',
-        provider: 'postgres',
         username: `reencrypt_p_${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`,
         appliedUsername: `reencrypt_p_${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`,
         password: plaintextPrincipal,
@@ -728,7 +723,7 @@ test('tryBeginReencryptSweep allows only one of two independent concurrent calle
   })
 })
 
-test('reencryptAtRestSecrets reseals 2fa.secret onto the current key version', async () => {
+test('reencryptAtRestSecrets reseals totp.secret onto the current key version', async () => {
   const v1Only = await createV1OnlySecrets()
   const rotated = await createRotatedSecrets()
   const totpPlain = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'

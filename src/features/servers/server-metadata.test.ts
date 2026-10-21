@@ -8,6 +8,7 @@ import {
 import {
   formatServerOsDisplay,
   mergeServerHardwareProfile,
+  mergeServerHostResources,
   osColumnsFromMetadata,
   osMetadataFromColumns,
   parseNtpServersColumn,
@@ -147,7 +148,7 @@ test('parseServerHostResources accepts capacity totals', () => {
           threads: { total: 8 },
         },
       ],
-      memory: { totalBytes: 16_384_000_000 },
+      memory: { totalBytes: 16_384_000_000, pageSizeBytes: 4096 },
       swap: { totalBytes: 0 },
     }),
     {
@@ -158,11 +159,16 @@ test('parseServerHostResources accepts capacity totals', () => {
           threads: { total: 8 },
         },
       ],
-      memory: { totalBytes: 16_384_000_000 },
+      memory: { totalBytes: 16_384_000_000, pageSizeBytes: 4096 },
       swap: { totalBytes: 0 },
     }
   )
+  assertEquals(
+    parseServerHostResources({ memory: { totalBytes: 16_384_000_000, pageSizeBytes: 0 } }),
+    { memory: { totalBytes: 16_384_000_000 } }
+  )
   assertEquals(parseServerHostResources({ memory: { totalBytes: -1 } }), undefined)
+  assertEquals(parseServerHostResources({ memory: { pageSizeBytes: 4096 } }), undefined)
   assertEquals(parseServerHostResources(null), undefined)
 })
 
@@ -203,6 +209,17 @@ test('serverHostResourcesEquals compares field-wise', () => {
   }
   assertEquals(serverHostResourcesEquals(a, { ...a, cpus: [{ ...a.cpus[0] }] }), true)
   assertEquals(
+    serverHostResourcesEquals(a, { ...a, memory: { totalBytes: 100, pageSizeBytes: 4096 } }),
+    false
+  )
+  assertEquals(
+    serverHostResourcesEquals(
+      { ...a, memory: { totalBytes: 100, pageSizeBytes: 4096 } },
+      { ...a, memory: { totalBytes: 100, pageSizeBytes: 4096 } }
+    ),
+    true
+  )
+  assertEquals(
     serverHostResourcesEquals(a, {
       ...a,
       cpus: [{ cores: { total: 8 }, threads: { total: 8 } }],
@@ -217,6 +234,26 @@ test('serverHostResourcesEquals compares field-wise', () => {
     false
   )
   assertEquals(serverHostResourcesEquals(a, null), false)
+})
+
+test('mergeServerHostResources keeps incoming memory pageSizeBytes', () => {
+  assertEquals(
+    mergeServerHostResources(
+      { memory: { totalBytes: 100 }, swap: { totalBytes: 0 } },
+      { memory: { totalBytes: 200, pageSizeBytes: 4096 } }
+    ),
+    { memory: { totalBytes: 200, pageSizeBytes: 4096 }, swap: { totalBytes: 0 } }
+  )
+  assertEquals(
+    mergeServerHostResources(
+      { memory: { totalBytes: 100, pageSizeBytes: 4096 } },
+      { ips: [{ address: '10.0.0.8', version: 4, scope: 'private' }] }
+    ),
+    {
+      memory: { totalBytes: 100, pageSizeBytes: 4096 },
+      ips: [{ address: '10.0.0.8', version: 4, scope: 'private' }],
+    }
+  )
 })
 
 test('serverOsMetadataEquals compares field-wise including variant', () => {

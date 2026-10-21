@@ -451,7 +451,7 @@ test('preflight reserves a run id and start reuses the copied command', async ()
   const first = await coordinator.preflight()
   assertEquals(first.recoveryCommand.includes('pending'), false)
   assertEquals(first.recoveryCommand.includes(first.runId), true)
-  assertEquals(first.backupPath, `/backup/control-plane/${first.runId}`)
+  assertEquals(first.backupPath, `/backup/panel/${first.runId}`)
   const restarted = createUpgradeCoordinator({
     store,
     enqueue: () => Promise.resolve(),

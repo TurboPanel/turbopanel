@@ -38,6 +38,8 @@ export const NOTIFICATION_AUDIENCES = ['members', 'managers'] as const
 export type NotificationAudience = (typeof NOTIFICATION_AUDIENCES)[number]
 
 type EventDefinition = {
+  /** The plain name a person picks it by in the rules screen; no code, no context. */
+  readonly label: string
   readonly severity: NotificationSeverity
   readonly scope: NotificationScope
   readonly audience: NotificationAudience
@@ -79,6 +81,7 @@ function databaseSentence(ctx: NotificationContext): string {
  */
 export const NOTIFICATION_EVENT_DEFINITIONS = {
   'server.offline': {
+    label: 'A server went offline',
     severity: 'critical',
     scope: 'organization',
     audience: 'members',
@@ -94,6 +97,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       }.${databaseSentence(ctx)}`,
   },
   'fleet.mass_disconnect': {
+    label: 'Many servers went offline at once',
     severity: 'critical',
     scope: 'instance',
     audience: 'managers',
@@ -105,6 +109,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       'a broker, not every host at the same time.',
   },
   'server.deleted': {
+    label: 'A server was deleted',
     severity: 'info',
     scope: 'organization',
     audience: 'managers',
@@ -113,6 +118,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     body: (ctx) => `${name(ctx, 'actorEmail', 'An operator')} deleted the server.`,
   },
   'server.daemon_key_revoked': {
+    label: "A server's daemon key was revoked",
     severity: 'warning',
     scope: 'organization',
     audience: 'managers',
@@ -126,6 +132,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       )} revoked the daemon key; the host cannot enrol again until the server is deleted and a rebuilt host enrols fresh.`,
   },
   'access.grant_created': {
+    label: 'Access was granted',
     severity: 'info',
     scope: 'organization',
     audience: 'managers',
@@ -139,6 +146,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       )} to ${name(ctx, 'subjectKind', 'a subject')} ${name(ctx, 'subjectId', '')}`.trimEnd() + '.',
   },
   'access.grant_revoked': {
+    label: 'Access was revoked',
     severity: 'warning',
     scope: 'organization',
     audience: 'managers',
@@ -153,6 +161,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       '.',
   },
   'certificate.renewal_failed': {
+    label: 'A certificate failed to renew',
     severity: 'warning',
     scope: 'organization',
     audience: 'members',
@@ -165,25 +174,35 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
         "Let's Encrypt could not issue or renew the certificate."
       )} Visitors may see a browser warning until it is fixed; check the domain's DNS, then try again.`,
   },
+  'folder.orphans_found': {
+    label: 'A folder was left behind on a server',
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: false,
+    title: (ctx) => {
+      const count = typeof ctx.count === 'number' && ctx.count > 1 ? ctx.count : 1
+      const server = name(ctx, 'serverName', 'a server')
+      return count === 1
+        ? `A folder was left behind on ${server}`
+        : `${count} folders were left behind on ${server}`
+    },
+    body: (ctx) =>
+      `${name(ctx, 'folders', 'A folder')} ${
+        typeof ctx.count === 'number' && ctx.count > 1 ? 'no longer belong' : 'no longer belongs'
+      } to a service or volume. ` +
+      'Its files are still on the server and its name stays reserved. ' +
+      'Open Folders that need attention in the organization settings to remove it, ' +
+      'or put the service back to use it again.',
+  },
 } as const satisfies Record<string, EventDefinition>
 
 export type NotificationEvent = keyof typeof NOTIFICATION_EVENT_DEFINITIONS
 
-/**
- * Events that are defined and tested but not offered yet: the database CHECK
- * constraints on `notification`, `attempt` and `rule` do not list them until
- * the owner commits the migration that widens them (see the PR that added
- * `certificate.renewal_failed`). While listed here an event is not in the
- * rules vocabulary or the catalogue endpoint, is refused as a rule target, and
- * its emitter stays quiet instead of failing on every insert. The migration
- * patch empties this list.
- */
-const EVENTS_AWAITING_MIGRATION: readonly NotificationEvent[] = ['certificate.renewal_failed']
-
 /** The codes, in catalogue order — what the CHECK constraint and the rules vocabulary pin. */
-export const NOTIFICATION_EVENTS = (
-  Object.keys(NOTIFICATION_EVENT_DEFINITIONS) as NotificationEvent[]
-).filter((event) => !EVENTS_AWAITING_MIGRATION.includes(event)) as readonly NotificationEvent[]
+export const NOTIFICATION_EVENTS = Object.keys(
+  NOTIFICATION_EVENT_DEFINITIONS
+) as readonly NotificationEvent[]
 
 /** A rule may name one event, or every event. */
 export const NOTIFICATION_RULE_ANY_EVENT = '*' as const
@@ -193,16 +212,12 @@ export const NOTIFICATION_RULE_EVENTS = [
 ] as const
 
 export function isNotificationEvent(value: string): value is NotificationEvent {
-  return Object.hasOwn(NOTIFICATION_EVENT_DEFINITIONS, value) && !isAwaitingMigration(value)
+  return Object.hasOwn(NOTIFICATION_EVENT_DEFINITIONS, value)
 }
 
-function isAwaitingMigration(value: string): boolean {
-  return (EVENTS_AWAITING_MIGRATION as readonly string[]).includes(value)
-}
-
-/** True when the database accepts this event (it is in the pinned vocabulary). */
-export function isNotificationEventLive(event: NotificationEvent): boolean {
-  return NOTIFICATION_EVENTS.includes(event)
+/** The plain name the rules screen shows for an event. */
+export function eventLabel(event: NotificationEvent): string {
+  return NOTIFICATION_EVENT_DEFINITIONS[event].label
 }
 
 export function eventSeverity(event: NotificationEvent): NotificationSeverity {

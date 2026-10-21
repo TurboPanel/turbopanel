@@ -63,6 +63,7 @@ import {
   withHostingComposeOwner,
   withoutHostingComposeOwner,
 } from '../../features/hostings/hosting-compose-owner.ts'
+import { PanelHostnameClaimError } from '../../features/hostings/panel-hostname-guard.ts'
 import {
   type HostingOptions,
   parseHostingOptions,
@@ -152,8 +153,19 @@ export type ComposeHostingHostnameConflictError = {
   hostname: string
 }
 
+/**
+ * A declaration (or a stored route) names a hostname the panel itself serves.
+ * Sites may never use those; refused for every route, wildcard names excepted.
+ */
+export type ComposeHostingPanelHostnameError = {
+  kind: 'hosting_hostname_is_panel'
+  composeServiceName: string
+  hostname: string
+}
+
 export type ComposeHostingError =
   | ComposeHostingRefError
+  | ComposeHostingPanelHostnameError
   | ComposeHostingTlsModeError
   | ComposeHostingRouteConflictError
   | ComposeHostingHostnameConflictError
@@ -593,6 +605,13 @@ async function persistExistingDeclaredRoute(input: {
       await replaceHostingHostnames(tx, existingId, ctx.organizationId, [route.entry.hostname])
     })
   } catch (err) {
+    if (err instanceof PanelHostnameClaimError) {
+      return {
+        kind: 'hosting_hostname_is_panel',
+        composeServiceName: route.composeServiceName,
+        hostname: route.entry.hostname,
+      }
+    }
     if (isHostnameUniqueViolation(err)) {
       return {
         kind: 'hosting_hostname_conflict',
@@ -641,6 +660,13 @@ async function insertDeclaredRoute(
       return inserted.id
     })
   } catch (err) {
+    if (err instanceof PanelHostnameClaimError) {
+      return {
+        kind: 'hosting_hostname_is_panel',
+        composeServiceName: route.composeServiceName,
+        hostname: route.entry.hostname,
+      }
+    }
     if (isHostnameUniqueViolation(err)) {
       return {
         kind: 'hosting_hostname_conflict',

@@ -9,13 +9,38 @@ import { assertEquals } from '@std/assert'
 const test = Deno.test.bind(Deno)
 
 /**
- * Regression guard: Hyperdrive caches parameterized SELECTs on HYPERDRIVE_CACHED
- * only when postgres.js uses prepare: true (see Workers Hyperdrive notes in
- * AGENTS.md and PG_OPTS_WORKERS in db.ts).
+ * Regression guard: `prepare: true` covers postgres.js tagged templates only. Drizzle
+ * runs everything through `unsafe()`, so the cached binding also needs
+ * `withCacheableUnsafe` (tested in `query-cache/cacheable-client.test.ts`) for Hyperdrive to see named statements.
  */
-test('PG_OPTS_WORKERS keeps prepare: true for Hyperdrive cacheability', async () => {
+test('PG_OPTS_WORKERS keeps prepare: true for tagged-template queries', async () => {
   const source = await Deno.readTextFile(new URL('./connection.ts', import.meta.url))
   const workersOptsMatch = /const PG_OPTS_WORKERS\s*=\s*\{([^}]*)\}/.exec(source)
   assertEquals(workersOptsMatch !== null, true)
   assertEquals(/\bprepare:\s*true\b/.test(workersOptsMatch![1]), true)
+})
+
+test('PG_OPTS_WORKERS turns fetch_types off (no pg_type lookup per request)', async () => {
+  const source = await Deno.readTextFile(new URL('./connection.ts', import.meta.url))
+  const match = /const PG_OPTS_WORKERS\s*=\s*\{([^}]*)\}/.exec(source)
+  assertEquals(/\bfetch_types:\s*false\b/.test(match![1]), true)
+})
+
+test('createWorkersDb wraps the cached client with the statement guard', async () => {
+  const source = await Deno.readTextFile(new URL('./connection.ts', import.meta.url))
+  assertEquals(
+    /if \(options\.preparedStatements\) \{\s*wrapped = withCacheableUnsafe\(/.test(source),
+    true
+  )
+})
+
+test('resolveWorkersCachedDb asks for prepared statements; the primary does not', async () => {
+  const source = await Deno.readTextFile(
+    new URL('../platform/workers/workers-bindings.ts', import.meta.url)
+  )
+  assertEquals(
+    /workersDbFactory\(env\.HYPERDRIVE_CACHED, \{\s*preparedStatements: true/.test(source),
+    true
+  )
+  assertEquals(/workersDbFactory\(env\.HYPERDRIVE, options\)/.test(source), true)
 })

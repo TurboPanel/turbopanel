@@ -29,28 +29,46 @@ test('manifest callback returns the operator to the console, not JSON', () => {
   // repositories" is the operator's actual next step — not the list.
   assertEquals(
     githubManifestUiReturnPath('org-1', { created: 'app-9' }),
-    '/org-1/projects/git-sources/app-9?created=app-9',
+    '/org-1/projects/git-sources/app-9?created=app-9'
   )
   // With nothing created there is no detail screen to land on.
   assertEquals(
     githubManifestUiReturnPath(null, { error: 'conversion_failed' }),
-    '/admin/git?error=conversion_failed',
+    '/admin/git?error=conversion_failed'
+  )
+  // The failure status rides along when it is a short known token…
+  assertEquals(
+    githubManifestUiReturnPath('org-1', { error: 'conversion_failed', status: '403' }),
+    '/org-1/projects/git-sources?error=conversion_failed&status=403'
+  )
+  assertEquals(
+    githubManifestUiReturnPath(null, { error: 'conversion_failed', status: 'network' }),
+    '/admin/git?error=conversion_failed&status=network'
+  )
+  // …and anything else, or a status without an error, is dropped.
+  assertEquals(
+    githubManifestUiReturnPath(null, { error: 'conversion_failed', status: 'x&y=1' }),
+    '/admin/git?error=conversion_failed'
+  )
+  assertEquals(
+    githubManifestUiReturnPath('org-1', { created: 'app-9', status: '403' }),
+    '/org-1/projects/git-sources/app-9?created=app-9'
   )
 })
 
 test('provider install redirects land on the app, never on an API path', () => {
   assertEquals(
     providerInstallUiReturnPath('org-1', 'app-9', { installed: 'inst-1' }),
-    '/org-1/projects/git-sources/app-9?installed=inst-1',
+    '/org-1/projects/git-sources/app-9?installed=inst-1'
   )
   // A failure before the app is known still has to leave the API surface.
   assertEquals(
     providerInstallUiReturnPath('org-1', null, { error: 'state_invalid' }),
-    '/org-1/projects/git-sources?error=state_invalid',
+    '/org-1/projects/git-sources?error=state_invalid'
   )
   assertEquals(
     providerInstallUiReturnPath(null, 'app-9', { error: 'claimed' }),
-    '/admin/git/app-9?error=claimed',
+    '/admin/git/app-9?error=claimed'
   )
 })
 
@@ -63,7 +81,7 @@ test('create takes its organization from the scope, never the body', () => {
       // A caller trying to plant the row in another tenant.
       organizationId: 'someone-else',
     },
-    'org-1',
+    'org-1'
   )
   assertEquals(parsed?.organizationId, 'org-1')
 })
@@ -71,27 +89,24 @@ test('create takes its organization from the scope, never the body', () => {
 test('create rejects a missing or unknown provider', () => {
   assertEquals(parseForgeCreateBody({ name: 'x', externalAppId: '1' }, null), null)
   assertEquals(
-    parseForgeCreateBody(
-      { provider: 'bitbucket', name: 'x', externalAppId: '1' },
-      null,
-    ),
-    null,
+    parseForgeCreateBody({ provider: 'bitbucket', name: 'x', externalAppId: '1' }, null),
+    null
   )
   assertEquals(parseForgeCreateBody(null, null), null)
   assertEquals(
     parseForgeCreateBody({ provider: 'github', name: '', externalAppId: '1' }, null),
-    null,
+    null
   )
   assertEquals(
     parseForgeCreateBody({ provider: 'github', name: 'x', externalAppId: '' }, null),
-    null,
+    null
   )
   assertEquals(
     parseForgeCreateBody(
       { provider: 'github', name: 'x', externalAppId: '1', baseUrl: '   ' },
-      null,
+      null
     ),
-    null,
+    null
   )
 })
 
@@ -105,7 +120,7 @@ test('create applies optional secrets and a required baseUrl', () => {
       clientSecret: 'from-gitlab',
       webhookSecret: null,
     },
-    null,
+    null
   )
   assertEquals(parsed?.baseUrl, 'https://gitlab.example.com')
   assertEquals(parsed?.clientSecret, 'from-gitlab')
@@ -183,7 +198,7 @@ test('serialize marks an instance-wide app read-only only for an org viewer', ()
 test('an org-owned app is writable by its owner', () => {
   const owned = serializeForge(
     { ...app, organizationId: 'org-1' },
-    { publicOrigin: null, viewerOrganizationId: 'org-1' },
+    { publicOrigin: null, viewerOrganizationId: 'org-1' }
   )
   assertEquals(owned.readOnly, false)
   // No public origin yet: the path is still known, the absolute URL is not.
@@ -198,7 +213,7 @@ test('a self-hosted app carries its ref; the app origin beats the instance defau
       baseUrl: 'https://github.acme.test',
       webhookOrigin: 'https://hooks.example.com',
     },
-    { publicOrigin: 'https://panel.example.com', viewerOrganizationId: null },
+    { publicOrigin: 'https://panel.example.com', viewerOrganizationId: null }
   )
   // GitHub Enterprise ships on its own cadence, so the App-id header is not a
   // safe single point of failure there — the ref stays in the path.
@@ -228,24 +243,21 @@ test('the manifest wizard normalizes what it accepts and rejects the rest', () =
       pullRequestAccess: 'write',
       customGitUser: null,
       customGitPort: 2222,
-    },
+    }
   )
 })
 
 test('the manifest wizard defaults github.com and read access when omitted', () => {
-  assertEquals(
-    parseGithubManifestStartBody({ name: 'Acme Panel' }),
-    {
-      name: 'Acme Panel',
-      baseUrl: 'https://github.com',
-      apiUrl: null,
-      organizationLogin: null,
-      webhookOrigin: null,
-      pullRequestAccess: 'read',
-      customGitUser: null,
-      customGitPort: null,
-    },
-  )
+  assertEquals(parseGithubManifestStartBody({ name: 'Acme Panel' }), {
+    name: 'Acme Panel',
+    baseUrl: 'https://github.com',
+    apiUrl: null,
+    organizationLogin: null,
+    webhookOrigin: null,
+    pullRequestAccess: 'read',
+    customGitUser: null,
+    customGitPort: null,
+  })
   assertEquals(parseGithubManifestStartBody({ name: 'Acme Panel', baseUrl: 7 }), null)
 })
 

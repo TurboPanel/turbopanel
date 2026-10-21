@@ -19,7 +19,6 @@ import {
 import { metricsDeploymentKindForRuntime } from '../../contracts/capability-plan.ts'
 import { loadTierPlacementsForServers } from '../../features/tiers/tier-enforcement.ts'
 import { loadServerLayoutPaths } from '../../features/servers/server-topology-records.ts'
-import { isActiveContainerStatus } from '../../features/projects/project-delete.ts'
 import { cachedServerDetailReadModel } from '../../query-cache/read-models/server-detail.ts'
 import { listServerLabels } from '../../features/servers/label-records.ts'
 import { fetchDaemonServerCell } from '../../daemon/cell/server-diagnostics.ts'
@@ -48,7 +47,7 @@ import {
   isDaemonKeyActive,
   revokeDaemonKey,
 } from '../../features/servers/server-identity-db.ts'
-import { container, datacenter, license, organization, server, service } from '../../db/schema.ts'
+import { datacenter, license, organization, principal, server } from '../../db/schema.ts'
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveInstanceRevision } from '../../app/build-info.ts'
 import { isExplicitDevelopmentMode } from '../../lib/dev-mode.ts'
@@ -69,29 +68,56 @@ import { resolveUpdateManifest } from '../../features/update/manifest.ts'
 import { resolveInstanceUpdateChannel, type UpdateChannel } from '../../contracts/update-channel.ts'
 import { getServerUpdatePreparer } from '../../features/update/prepare.ts'
 import { revokeLicense } from '../../features/licenses/license.ts'
-import { recomputeOrganizationAssignments } from '../../features/tiers/assignment-records.ts'
+import {
+  peekOrganizationAssignment,
+  recomputeOrganizationAssignments,
+} from '../../features/tiers/assignment-records.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
-import { hierarchyDeleteHasChildrenResponse, runHierarchyDelete } from '../hierarchy-delete.ts'
+import {
+  hierarchyDeleteHasChildrenResponse,
+  type HierarchyDeleteFkBlocker,
+  runHierarchyDeleteResult,
+} from '../hierarchy-delete.ts'
+import { purgeServerForeignKeysForDelete } from './server-fk.ts'
+import {
+  isPrincipalUnused,
+  loadPrincipalUsage,
+} from '../../features/principals/placement-records.ts'
+import {
+  loadPrincipalRemovalPlan,
+  parsePrincipalRemovalChoices,
+  PRINCIPAL_DELETE_REFUSED_CODE,
+  PRINCIPAL_DELETE_REFUSED_ERROR,
+  PRINCIPAL_NOT_ON_SERVER_CODE,
+  PRINCIPAL_NOT_ON_SERVER_ERROR,
+  principalIdsToDelete,
+  registerServerPrincipalRemovalRoutes,
+  resolvePrincipalRemovalRefusals,
+} from './principal-removal.ts'
 import * as systemHierarchy from '../../features/system/hierarchy.ts'
 import { enqueueSystemReconcile } from '../../features/system/reconcile.ts'
 import type { SystemReconcileAction } from '../../contracts/commands/schemas.ts'
 import { assertDispatchInfrastructure } from './command-dispatch.ts'
-import { deleteServerFabricMembership } from '../../features/fabric/fabric-records.ts'
 import { reconcileFabricMembership } from '../../features/fabric/enqueue.ts'
 import {
   assertServerOfflineForForget,
-  blockersThatPreventForget,
   COLOCATED_SERVER_KEY_REVOKE_BLOCKED_REASON,
   colocatedServerDeleteBlockedReason,
   forgetServerOwnedResources,
-  isServerOnlineDuringForgetError,
-  listServerDeleteBlockers,
-  loadServerDeletePreview,
-  parseForgetResourcesFlag,
-  serverDeleteBlockersResponse,
-  serverOnlineForgetBlockedResponse,
   type ForgottenServerResources,
+  isServerHasBlockersDuringForgetError,
+  isServerOnlineDuringForgetError,
+  loadServerDeletePreview,
+  listSystemContainersBlockingServerDelete,
+  parseForgetResourcesFlag,
+  planServerForget,
+  type ServerDeleteBlocker,
+  serverDeleteBlockersResponse,
+  type ServerForgetBlockedDatabase,
+  type ServerForgetBlockedEnvironment,
+  serverOnlineForgetBlockedResponse,
+  serverSystemContainersDeleteBlockedResponse,
 } from './delete-guards.ts'
 import { resolveColocatedServerId } from '../authn/install-state.ts'
 import { hasActiveColocatedLicenseBinding, resolveColocatedServerIdSet } from './colocated.ts'
@@ -106,8 +132,13 @@ import { UPDATE_REQUEST_TTL_MS } from '../../features/update/constants.ts'
 import { registerServerCommandRoutes } from './commands-routes.ts'
 import { registerServerMetricsRoutes } from './metrics-routes.ts'
 import { registerServerTrafficMapRoutes } from './traffic-map-routes.ts'
+import { registerServerAddressRoutes } from './address-routes.ts'
 import { registerServerLabelRoutes } from './labels-routes.ts'
 import { registerServerServicesRoutes } from './services-routes.ts'
+import {
+  enrichServerDetailTierPlacement,
+  registerServerLicenseTierRoutes,
+} from './license-tier-routes.ts'
 import { resolveOrgRequest } from '../org-request.ts'
 import { cachedServersListReadModel } from '../../query-cache/read-models/servers-list.ts'
 import { applyLocationPatch, resolveLocation } from '../../features/geo/location-override.ts'
@@ -426,11 +457,20 @@ async function assertServerDeletable(
     }
   }
 
-  const listed = await listServerDeleteBlockers(db, serverId, organizationId)
-  const blockers =
-    opts.skipForgettableBlockers === true ? blockersThatPreventForget(listed) : listed
-  if (blockers.length > 0) {
-    return serverDeleteBlockersResponse(c, blockers)
+  const plan = await planServerForget(db, serverId, organizationId)
+  if (opts.skipForgettableBlockers === true) {
+    if (plan.blockedDatabases.length > 0 || plan.blockedEnvironments.length > 0) {
+      return serverDeleteBlockersResponse(
+        c,
+        plan.blockingBlockers,
+        plan.blockedDatabases,
+        plan.blockedEnvironments
+      )
+    }
+    return null
+  }
+  if (plan.blockers.length > 0) {
+    return serverDeleteBlockersResponse(c, plan.blockers)
   }
 
   return null
@@ -517,6 +557,8 @@ function buildServerUpdateFields(patch: ServerPatchFields): Record<string, unkno
   if (patch.name !== undefined) update.name = patch.name
   if (patch.machineClass !== undefined) {
     update.machineClass = patch.machineClass
+    // A pin or a clear is the operator's word; ingest never overwrites it.
+    update.machineClassSource = patch.machineClass === null ? null : 'operator'
   }
   if (patch.options !== undefined || patch.location !== undefined) {
     // Shallow jsonb merge, as before; a resolved `location` is written as one
@@ -648,91 +690,168 @@ async function enqueueHostingReconcileBestEffort(
   }
 }
 
-async function systemEnvironmentHasActiveContainers(
-  db: Db,
-  systemEnvironmentId: string,
-  serverConnected: boolean
-): Promise<boolean> {
-  const serviceRows = await db
-    .select({ id: service.id })
-    .from(service)
-    .where(eq(service.environmentId, systemEnvironmentId))
-  const serviceIds = serviceRows.map((svc) => svc.id)
-  if (serviceIds.length === 0) return false
-
-  const containerRows = await db
-    .select({ status: container.status, containerId: container.containerId })
-    .from(container)
-    .where(inArray(container.serviceId, serviceIds))
-  // A row still `pending` with no runtime container id was allocated but never
-  // started (for example the host went offline before first boot). On an
-  // offline server nothing can start it, so it must not block deleting the
-  // server. On a connected server a start may be in flight, so it still blocks.
-  return containerRows.some(
-    (row) =>
-      isActiveContainerStatus(row.status) &&
-      (serverConnected || !(row.status === 'pending' && row.containerId === null))
-  )
-}
-
 /**
  * Blocks delete while system hosting-ingress containers are still active.
- * Operator must let hosting-disable reconciliation stop ingress first.
+ * On an offline host, `forgetResources` skips this — stale rows are removed
+ * with the system subtree. Otherwise every refusal lists the containers.
  */
 async function assertSystemEnvironmentIdleOrBlocked(
   c: Context,
   db: Db,
-  serverId: string
-): Promise<{ systemEnvironmentId: string | null } | Response> {
-  const systemEnvironmentId = await systemHierarchy.findSystemEnvironmentForServer(db, serverId)
-  if (!systemEnvironmentId) return { systemEnvironmentId: null }
+  serverId: string,
+  opts: Readonly<{ forgetResources: boolean; serverConnected: boolean }>
+): Promise<{ systemEnvironmentIds: string[] } | Response> {
+  const systemEnvironmentIds = await systemHierarchy.listSystemEnvironmentIdsForServer(db, serverId)
+  if (systemEnvironmentIds.length === 0) return { systemEnvironmentIds: [] }
 
-  const [serverRow] = await db
-    .select({ isConnected: server.isConnected })
-    .from(server)
-    .where(eq(server.id, serverId))
-    .limit(1)
-  if (
-    await systemEnvironmentHasActiveContainers(
-      db,
-      systemEnvironmentId,
-      serverRow?.isConnected ?? false
-    )
-  ) {
-    return hierarchyDeleteHasChildrenResponse(c)
+  if (opts.forgetResources && !opts.serverConnected) {
+    return { systemEnvironmentIds }
   }
-  return { systemEnvironmentId }
+
+  const blockingContainers = await listSystemContainersBlockingServerDelete(
+    db,
+    serverId,
+    opts.serverConnected
+  )
+  if (blockingContainers.length > 0) {
+    return serverSystemContainersDeleteBlockedResponse(c, {
+      serverConnected: opts.serverConnected,
+      containers: blockingContainers,
+    })
+  }
+  return { systemEnvironmentIds }
+}
+
+async function stillUnusedPrincipalIds(
+  db: Db,
+  serverId: string,
+  principalIds: readonly string[]
+): Promise<string[]> {
+  if (principalIds.length === 0) return []
+  const usage = await loadPrincipalUsage(db, principalIds, serverId)
+  const unused = principalIds.filter((id) => {
+    const counts = usage.get(id)
+    return counts !== undefined && isPrincipalUnused(counts)
+  })
+  const kept = principalIds.filter((id) => !unused.includes(id))
+  if (kept.length > 0) {
+    compatLogWarn(
+      'servers',
+      `principal delete on server ${serverId} kept ${kept.join(', ')}: used again since the check`
+    )
+  }
+  return unused
 }
 
 async function deleteServerWithSystemSubtree(
   db: Db,
   serverId: string,
-  systemEnvironmentId: string | null,
-  forgetResources: boolean
+  organizationId: string,
+  systemEnvironmentIds: readonly string[],
+  forgetResources: boolean,
+  /** Principals the owner chose to delete outright (already checked unused). */
+  deletePrincipalIds: readonly string[] = []
 ): Promise<{
-  status: 'ok' | 'has_children' | 'online'
+  status: 'ok' | 'has_children' | 'online' | 'blockers'
   forgotten: ForgottenServerResources | null
+  blockers: ServerDeleteBlocker[]
+  blockedDatabases: ServerForgetBlockedDatabase[]
+  blockedEnvironments: ServerForgetBlockedEnvironment[]
+  fkBlockers?: HierarchyDeleteFkBlocker[]
 }> {
   let forgotten: ForgottenServerResources | null = null
   try {
-    const status = await runHierarchyDelete(db, async (tx) => {
+    const deleteResult = await runHierarchyDeleteResult(db, async (tx) => {
       if (forgetResources) {
         await assertServerOfflineForForget(tx, serverId)
-        forgotten = await forgetServerOwnedResources(tx, serverId)
+        forgotten = await forgetServerOwnedResources(tx, serverId, organizationId)
       }
-      if (systemEnvironmentId) {
-        await systemHierarchy.deleteSystemEnvironmentSubtree(tx, systemEnvironmentId)
+      await Promise.all(
+        systemEnvironmentIds.map((environmentId) =>
+          systemHierarchy.deleteSystemEnvironmentSubtree(tx, environmentId)
+        )
+      )
+      await purgeServerForeignKeysForDelete(tx, serverId)
+      // Placements on this server go with it (cascade); a principal chosen
+      // for outright deletion goes too. The usage check ran before the
+      // transaction, so it is repeated here: a tenancy or binding created in
+      // between keeps the identity (the default answer) rather than being
+      // cascaded away.
+      const stillUnused = await stillUnusedPrincipalIds(tx, serverId, deletePrincipalIds)
+      if (stillUnused.length > 0) {
+        await tx
+          .delete(principal)
+          .where(
+            and(inArray(principal.id, stillUnused), eq(principal.organizationId, organizationId))
+          )
       }
-      await deleteServerFabricMembership(tx, serverId)
       await tx.delete(server).where(eq(server.id, serverId))
     })
-    return { status, forgotten: status === 'ok' ? forgotten : null }
+    return {
+      status: deleteResult.status === 'ok' ? 'ok' : 'has_children',
+      forgotten: deleteResult.status === 'ok' ? forgotten : null,
+      blockers: [],
+      blockedDatabases: [],
+      blockedEnvironments: [],
+      ...(deleteResult.status === 'has_children' ? { fkBlockers: [...deleteResult.blockers] } : {}),
+    }
   } catch (error) {
     if (isServerOnlineDuringForgetError(error)) {
-      return { status: 'online', forgotten: null }
+      return {
+        status: 'online',
+        forgotten: null,
+        blockers: [],
+        blockedDatabases: [],
+        blockedEnvironments: [],
+      }
+    }
+    if (isServerHasBlockersDuringForgetError(error)) {
+      return {
+        status: 'blockers',
+        forgotten: null,
+        blockers: error.blockers,
+        blockedDatabases: error.blockedDatabases,
+        blockedEnvironments: error.blockedEnvironments,
+      }
     }
     throw error
   }
+}
+
+/**
+ * Per-principal answers on server removal. Every placement defaults to keep;
+ * a `delete` is refused (409) while something else still uses the principal,
+ * and a choice naming a principal that is not on this server is a 400.
+ */
+async function refusePrincipalRemovalChoices(
+  c: Context,
+  db: Db,
+  serverId: string,
+  choices: ReadonlyArray<{ principalId: string; action: 'keep' | 'delete' }>
+): Promise<Response | null> {
+  if (choices.length === 0) return null
+  const plan = await loadPrincipalRemovalPlan(db, serverId)
+  const refusals = resolvePrincipalRemovalRefusals(plan, choices)
+  if (refusals.length === 0) return null
+  const notOnServer = refusals.filter((refusal) => refusal.reason === 'not_on_server')
+  if (notOnServer.length > 0) {
+    return c.json(
+      {
+        error: PRINCIPAL_NOT_ON_SERVER_ERROR,
+        code: PRINCIPAL_NOT_ON_SERVER_CODE,
+        principals: notOnServer,
+      },
+      400
+    )
+  }
+  return c.json(
+    {
+      error: PRINCIPAL_DELETE_REFUSED_ERROR,
+      code: PRINCIPAL_DELETE_REFUSED_CODE,
+      principals: refusals,
+    },
+    409
+  )
 }
 
 async function reconcileFabricAfterServerDelete(
@@ -841,10 +960,16 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       distinctNonEmptyIds(membershipDcIds)
     )
     const layoutPathsByServer = await loadServerLayoutPaths(db, serverIds)
+    const deployment = metricsDeploymentKindForRuntime(opts.runtime)
+    const pickUnfulfilled =
+      deployment === 'self-hosted'
+        ? undefined
+        : (await peekOrganizationAssignment(db, organizationId)).pickUnfulfilled
     const placementByServer = await loadTierPlacementsForServers(db, serverIds, {
-      deployment: metricsDeploymentKindForRuntime(opts.runtime),
+      deployment,
       orgOptions,
       unwatched: 'counts',
+      pickUnfulfilled,
     })
 
     return c.json({
@@ -1422,6 +1547,12 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       orgOptions,
       unwatched: 'ids',
     })
+    const tierPlacement = await enrichServerDetailTierPlacement(
+      db,
+      organizationId,
+      id,
+      placementByServer.get(id) ?? null
+    )
 
     return c.json({
       ok: true,
@@ -1444,7 +1575,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         datacenterDefaultTimezone: dcOptions?.defaultServerTimezone ?? null,
         datacenterEnforceServerTimezone: dcOptions?.enforceServerTimezone ?? false,
         licenseId: display.row.licenseId ?? null,
-        tierPlacement: placementByServer.get(id) ?? null,
+        tierPlacement,
         layoutPaths: layoutPathsByServer.get(id) ?? null,
         labels: labelRows.map((row) => ({ key: row.key, value: row.value })),
       },
@@ -1616,6 +1747,10 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
     const forgetResources = parseForgetResourcesFlag(c.req.query('forgetResources'), body)
+    const principalChoices = parsePrincipalRemovalChoices(body)
+    if ('error' in principalChoices) {
+      return c.json({ error: principalChoices.error }, 400)
+    }
 
     // Co-located guard before the registry 503 so an unavailable registry can
     // never turn a self-host-pinned (or probe-matched) host into a deletable one.
@@ -1637,20 +1772,37 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       .where(eq(license.serverId, id))
       .limit(1)
 
-    const idleOrBlocked = await assertSystemEnvironmentIdleOrBlocked(c, db, id)
+    const serverConnected = await isServerConnectedStoredOrLive(db, registry, id, row.isConnected)
+    const idleOrBlocked = await assertSystemEnvironmentIdleOrBlocked(c, db, id, {
+      forgetResources,
+      serverConnected,
+    })
     if (idleOrBlocked instanceof Response) return idleOrBlocked
+
+    const principalRefusal = await refusePrincipalRemovalChoices(c, db, id, principalChoices)
+    if (principalRefusal) return principalRefusal
 
     const result = await deleteServerWithSystemSubtree(
       db,
       id,
-      idleOrBlocked.systemEnvironmentId,
-      forgetResources
+      organizationId,
+      idleOrBlocked.systemEnvironmentIds,
+      forgetResources,
+      principalIdsToDelete(principalChoices)
     )
     if (result.status === 'online') {
       return serverOnlineForgetBlockedResponse(c)
     }
+    if (result.status === 'blockers') {
+      return serverDeleteBlockersResponse(
+        c,
+        result.blockers,
+        result.blockedDatabases,
+        result.blockedEnvironments
+      )
+    }
     if (result.status === 'has_children') {
-      return hierarchyDeleteHasChildrenResponse(c)
+      return hierarchyDeleteHasChildrenResponse(c, result.fkBlockers ?? [])
     }
 
     await reconcileFabricAfterServerDelete(c, db, organizationId, session.userId)
@@ -1699,5 +1851,8 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   registerServerMetricsRoutes(router, opts)
   registerServerTrafficMapRoutes(router, opts)
   registerServerLabelRoutes(router, opts)
+  registerServerAddressRoutes(router)
   registerServerServicesRoutes(router, opts)
+  registerServerPrincipalRemovalRoutes(router, opts)
+  registerServerLicenseTierRoutes(router, opts)
 }

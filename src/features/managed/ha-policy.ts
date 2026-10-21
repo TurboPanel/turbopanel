@@ -78,6 +78,17 @@ export function orchestratorPromotionRule(replicaClass: string | null): HaPromot
 }
 
 /**
+ * Engines the bundled Orchestrator can run. It speaks the MySQL protocol
+ * only: a Postgres member answers `/api/discover` with HTTP 500 `invalid
+ * connection`, and Postgres HA is not Orchestrator's to manage at all. A
+ * Postgres cluster is therefore left out of `managed.ha.reconcile` entirely
+ * rather than registered and skipped daemon-side.
+ */
+export function orchestratorManagesEngine(engine: string): boolean {
+  return engine === 'mysql' || engine === 'mariadb'
+}
+
+/**
  * Automatic failover must not continue when the old primary cannot be fenced.
  * Operator switchover and disaster recovery may continue (`needs_resync`).
  */
@@ -113,12 +124,17 @@ export function replicaClassAfterDisasterRecovery(input: {
   return 'read'
 }
 
-/** Primary and same-DC failover replicas join the org Orchestrator Raft group. */
+/**
+ * Primary and same-DC `failover` replicas on **MySQL/MariaDB** HA clusters join
+ * the org Orchestrator Raft group. Postgres-only hosts never run Orchestrator.
+ */
 export function serverHostsManagedHa(
-  membersOnServer: ReadonlyArray<{ role: string; replicaClass: string | null }>
+  membersOnServer: ReadonlyArray<{ role: string; replicaClass: string | null; engine: string }>
 ): boolean {
   return membersOnServer.some(
-    (member) => member.role === 'primary' || member.replicaClass === 'failover'
+    (member) =>
+      orchestratorManagesEngine(member.engine) &&
+      (member.role === 'primary' || member.replicaClass === 'failover')
   )
 }
 
@@ -336,6 +352,18 @@ export type OrchestratorBindingInput = {
    * (`null` = no primary, or no usable address for it).
    */
   expectedPrimary: { host: string; port: number } | null
+  /**
+   * The primary's private-listener port when the primary runs on the
+   * REPORTING server itself. The daemon registers a local member in
+   * Orchestrator by its published private listener (`<ip>:<privatePort>`),
+   * not by the Docker name this side dials it by. The exception applies only
+   * when the report also names one of `localPrimaryHosts`; private ports are
+   * allocated per server and therefore do not identify a cluster member by
+   * themselves.
+   */
+  localPrivatePort?: number | null
+  /** The reporting server's published private addresses and local container name. */
+  localPrimaryHosts?: readonly string[]
 }
 
 /**
@@ -352,8 +380,23 @@ export function orchestratorBindingRejection(input: OrchestratorBindingInput): s
       : null
   }
   if (!input.expectedPrimary) return 'the current primary has no known private address and port'
-  const sameHost = input.instanceHost?.toLowerCase() === input.expectedPrimary.host.toLowerCase()
-  if (sameHost && input.instancePort === input.expectedPrimary.port) return null
+  if (
+    input.instanceHost?.toLowerCase() === input.expectedPrimary.host.toLowerCase() &&
+    input.instancePort === input.expectedPrimary.port
+  ) {
+    return null
+  }
+  const sameLocalHost = input.localPrimaryHosts?.some(
+    (host) => input.instanceHost?.toLowerCase() === host.toLowerCase()
+  )
+  if (
+    input.localPrivatePort !== undefined &&
+    input.localPrivatePort !== null &&
+    input.instancePort === input.localPrivatePort &&
+    sameLocalHost
+  ) {
+    return null
+  }
   return `reported instance ${input.instanceHost}:${input.instancePort} is not the current primary (${input.expectedPrimary.host}:${input.expectedPrimary.port})`
 }
 

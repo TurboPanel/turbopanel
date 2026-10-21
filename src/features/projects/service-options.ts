@@ -95,7 +95,7 @@ function parseResources(value: Record<string, unknown>): ServiceOptions['resourc
 
 /** `undefined` = absent, `null` = present but invalid (rejects the whole document). */
 function parseHealthCheck(
-  value: Record<string, unknown>,
+  value: Record<string, unknown>
 ): ServiceOptions['healthCheck'] | null | undefined {
   if (!isRecord(value.healthCheck)) return undefined
   const policy = value.healthCheck.policy
@@ -115,7 +115,7 @@ export type ParseServiceOptionsOptions = {
 
 export function parseServiceOptions(
   value: unknown,
-  parseOptions: ParseServiceOptionsOptions = {},
+  parseOptions: ParseServiceOptionsOptions = {}
 ): ServiceOptions | null {
   if (value === null || value === undefined) return {}
   if (!isRecord(value)) return null
@@ -153,9 +153,7 @@ export function parseServiceOptions(
 }
 
 /** Default instance count when unset. */
-export function resolveServiceInstances(
-  options: ServiceOptions | null | undefined,
-): number {
+export function resolveServiceInstances(options: ServiceOptions | null | undefined): number {
   return options?.instances ?? DEFAULT_SERVICE_INSTANCES
 }
 
@@ -168,7 +166,7 @@ export function resolveMaxRestartAttempts(options: ServiceOptions | null | undef
 }
 
 export function resolveHealthCheckPolicy(
-  options: ServiceOptions | null | undefined,
+  options: ServiceOptions | null | undefined
 ): HealthCheckPolicy {
   return options?.healthCheck?.policy ?? DEFAULT_HEALTH_POLICY
 }

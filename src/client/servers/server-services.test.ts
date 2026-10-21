@@ -17,7 +17,8 @@ import {
   managed,
   network,
   organization,
-  principal,
+  login,
+  managedDatabase,
   project,
   replica,
   server,
@@ -169,7 +170,6 @@ async function withServicesFixtures(
       const managedIds = managedRows.map((row) => row.id)
       if (managedIds.length > 0) {
         await db.delete(backup).where(inArray(backup.managedId, managedIds))
-        await db.delete(principal).where(inArray(principal.managedId, managedIds))
         await db.delete(managed).where(inArray(managed.id, managedIds))
       }
       await db.delete(environment).where(inArray(environment.id, envIds))
@@ -259,7 +259,7 @@ test('GET /servers/:id/services lists a container app and a database replica', a
     const [appEnv] = await ctx.db
       .insert(environment)
       .values({
-        name: 'Production',
+        name: 'production',
         projectId: appProject!.id,
         serverId: ctx.serverId,
       })
@@ -293,7 +293,7 @@ test('GET /servers/:id/services lists a container app and a database replica', a
     const [dbEnv] = await ctx.db
       .insert(environment)
       .values({
-        name: 'Production',
+        name: 'production',
         projectId: dbProject!.id,
         serverId: ctx.serverId,
       })
@@ -330,35 +330,47 @@ test('GET /servers/:id/services lists a container app and a database replica', a
     assertEquals(body.removal.canRemove, false)
     assertEquals(body.removal.online, false)
     assertEquals(body.removal.canForget, false)
-    assertEquals(body.removal.reasons, [
-      {
-        kind: 'container',
-        count: 1,
-        message: 'One container is still on this server: stop or move the apps first.',
-      },
-      {
-        kind: 'environment',
-        count: 2,
-        message: '2 app environments are still placed on this server.',
-      },
-      {
-        kind: 'managed',
-        count: 1,
-        message: 'One managed database is still placed on this server.',
-      },
-      {
-        kind: 'replica',
-        count: 1,
-        message: 'One database member is still placed on this server.',
-      },
-    ])
+    assertEquals(
+      body.removal.reasons.map(({ kind, count, message }) => ({ kind, count, message })),
+      [
+        {
+          kind: 'container',
+          count: 1,
+          message: 'One container is still on this server: stop or move the apps first.',
+        },
+        {
+          kind: 'environment',
+          count: 2,
+          message:
+            'App environments "Data / production" and "Shop / production" are still placed on this server.',
+        },
+        {
+          kind: 'managed',
+          count: 1,
+          message:
+            'Database "App Data" has its only copy on this server. Delete the database first.',
+        },
+      ]
+    )
+    const envReason = body.removal.reasons.find((row) => row.kind === 'environment')
+    assertEquals(
+      envReason?.items?.map((row) => ({
+        name: row.name,
+        projectName: 'projectName' in row ? row.projectName : null,
+        hasDatabase: 'hasDatabase' in row ? row.hasDatabase : null,
+      })),
+      [
+        { name: 'production', projectName: 'Data', hasDatabase: true },
+        { name: 'production', projectName: 'Shop', hasDatabase: false },
+      ]
+    )
     assertEquals(body.apps, {
       items: [
         {
           serviceId: web!.id,
           name: 'web',
           project: 'Shop',
-          environment: 'Production',
+          environment: 'production',
           containers: {
             items: [{ name: 'shop-web-1', status: 'running', role: 'service' }],
             more: 0,
@@ -406,7 +418,7 @@ test('GET /servers/:id/services omits system-workspace apps and databases', asyn
     const [sysEnv] = await ctx.db
       .insert(environment)
       .values({
-        name: 'Production',
+        name: 'production',
         projectId: sysProject!.id,
         serverId: ctx.serverId,
       })
@@ -475,7 +487,7 @@ test('GET /servers/:id/services groups two database bindings on one app', async 
     const [appEnv] = await ctx.db
       .insert(environment)
       .values({
-        name: 'Production',
+        name: 'production',
         projectId: appProject!.id,
         serverId: ctx.serverId,
       })
@@ -508,7 +520,7 @@ test('GET /servers/:id/services groups two database bindings on one app', async 
     const [dbEnv] = await ctx.db
       .insert(environment)
       .values({
-        name: 'Production',
+        name: 'production',
         projectId: dbProject!.id,
         serverId: ctx.serverId,
       })
@@ -524,39 +536,42 @@ test('GET /servers/:id/services groups two database bindings on one app', async 
       })
       .returning({ id: managed.id })
     const suffix = crypto.randomUUID().slice(0, 8)
+    const [appdb, orders] = await ctx.db
+      .insert(managedDatabase)
+      .values([
+        { managedId: cluster!.id, name: 'appdb' },
+        { managedId: cluster!.id, name: 'orders' },
+      ])
+      .returning({ id: managedDatabase.id })
     const [shopUser] = await ctx.db
-      .insert(principal)
+      .insert(login)
       .values({
-        organizationId: ctx.organizationId,
-        kind: 'database',
-        provider: 'postgres',
+        managedId: cluster!.id,
+        role: 'user',
         username: `shop_${suffix}`,
         appliedUsername: `shop_${suffix}`,
-        managedId: cluster!.id,
       })
-      .returning({ id: principal.id })
+      .returning({ id: login.id })
     const [ordersUser] = await ctx.db
-      .insert(principal)
+      .insert(login)
       .values({
-        organizationId: ctx.organizationId,
-        kind: 'database',
-        provider: 'postgres',
+        managedId: cluster!.id,
+        role: 'user',
         username: `orders_${suffix}`,
         appliedUsername: `orders_${suffix}`,
-        managedId: cluster!.id,
       })
-      .returning({ id: principal.id })
+      .returning({ id: login.id })
     await ctx.db.insert(binding).values({
-      principalId: shopUser!.id,
+      loginId: shopUser!.id,
       serviceId: web!.id,
-      databaseName: 'appdb',
+      databaseId: appdb!.id,
       keyPrefix: 'DATABASE',
       isEmitEngineDefaults: true,
     })
     await ctx.db.insert(binding).values({
-      principalId: ordersUser!.id,
+      loginId: ordersUser!.id,
       serviceId: web!.id,
-      databaseName: 'orders',
+      databaseId: orders!.id,
       keyPrefix: 'ORDERS',
       isEmitEngineDefaults: false,
     })
@@ -596,7 +611,7 @@ test('GET /servers/:id/services caps networks and offers Host is gone when the h
     const [appEnv] = await ctx.db
       .insert(environment)
       .values({
-        name: 'Production',
+        name: 'production',
         projectId: appProject!.id,
       })
       .returning({ id: environment.id })

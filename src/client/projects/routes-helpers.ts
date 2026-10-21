@@ -18,13 +18,23 @@ import {
   type CatalogEntry,
   type CreateProjectType,
 } from './catalog/index.ts'
-import { isConfiguredProjectType } from './empty-setup.ts'
+import { emptyComposeDocument } from '../../features/compose/index.ts'
+import { isConfiguredProjectType, isProductionEnvironmentName } from './empty-setup.ts'
+import { isValidEnvironmentName } from '../../contracts/directory-names.ts'
+import { normalizeDisplayName } from '../../lib/display-name-format.ts'
 import { PROJECT_NAME_IN_USE_ERROR } from '../display-name-uniqueness.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
+import {
+  ENVIRONMENT_NAME_INVALID_ERROR,
+  ENVIRONMENT_NAME_RULE_MESSAGE,
+  PROJECT_SLUG_IN_USE_ERROR,
+} from '../../features/folders/records.ts'
 
 export type ProjectRouteValidationError = {
   ok: false
   error: string
+  /** Operator-facing detail when the code alone is not enough. */
+  message?: string
   status: 400
 }
 
@@ -78,12 +88,20 @@ export function isProjectNameUniqueViolation(err: unknown): boolean {
   return isUniqueViolationOn(err, 'uniq_project_organization_name')
 }
 
+/** The per-organization project slug lock firing under a racer. */
+export function isProjectSlugUniqueViolation(err: unknown): boolean {
+  return isUniqueViolationOn(err, 'uniq_project_organization_slug')
+}
+
 export function mapCreateProjectError(err: unknown): {
   error: string
   status: 409 | 503
 } | null {
   if (isProjectNameUniqueViolation(err)) {
     return { error: PROJECT_NAME_IN_USE_ERROR, status: 409 }
+  }
+  if (isProjectSlugUniqueViolation(err)) {
+    return { error: PROJECT_SLUG_IN_USE_ERROR, status: 409 }
   }
   if (!(err instanceof Error)) return null
   if (err.message === 'encryption unavailable') {
@@ -100,10 +118,12 @@ export function catalogProjectOptions(
   includeEngineOptions: boolean
 ): Record<string, unknown> {
   if (fields.options) return fields.options
+  // The Base starts empty: the entry's compose is merged into its environments.
+  const base = emptyComposeDocument()
   if (includeEngineOptions && fields.entry.options) {
-    return { compose: fields.entry.compose, ...fields.entry.options }
+    return { compose: base, ...fields.entry.options }
   }
-  return { compose: fields.entry.compose }
+  return { compose: base }
 }
 
 export function parseJsonbField(
@@ -217,6 +237,56 @@ export function parseCreateProjectServerIdField(
     return { ok: false, error: 'Invalid request', status: 400 }
   }
   return { ok: true, serverId: body.serverId }
+}
+
+/**
+ * Optional `environmentName`: the name of the project's first environment.
+ * Absent or null means "use the organization default". Validated like the
+ * org default name (trimmed, display-name rules).
+ */
+export function parseCreateProjectEnvironmentNameField(
+  body: Record<string, unknown>
+): { ok: true; environmentName: string | undefined } | ProjectRouteValidationError {
+  if (body.environmentName === undefined || body.environmentName === null) {
+    return { ok: true, environmentName: undefined }
+  }
+  if (typeof body.environmentName !== 'string') {
+    return { ok: false, error: 'Invalid request', status: 400 }
+  }
+  const normalized = normalizeDisplayName(body.environmentName)
+  // The name is the scope folder on every server, so it must be a folder name.
+  if (!isValidEnvironmentName(normalized)) {
+    return {
+      ok: false,
+      error: ENVIRONMENT_NAME_INVALID_ERROR,
+      message: ENVIRONMENT_NAME_RULE_MESSAGE,
+      status: 400,
+    }
+  }
+  return { ok: true, environmentName: normalized }
+}
+
+/**
+ * Display names a catalog entry's environments are created under. The
+ * Production-like environment takes the chosen name, unless another environment
+ * of the entry already uses that name (then it keeps its declared name, so a
+ * project never gets two environments with the same name).
+ */
+export function scaffoldEnvironmentNames(
+  environments: readonly { displayName: string }[],
+  chosenName?: string
+): string[] {
+  const taken = (name: string, index: number) =>
+    environments.some(
+      (other, i) => i !== index && other.displayName.toLowerCase() === name.toLowerCase()
+    )
+  return environments.map((env, index) =>
+    chosenName !== undefined &&
+    isProductionEnvironmentName(env.displayName) &&
+    !taken(chosenName, index)
+      ? chosenName
+      : env.displayName
+  )
 }
 
 /**

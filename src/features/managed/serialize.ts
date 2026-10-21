@@ -1,13 +1,9 @@
 import { isManagedEngineCode, type ManagedEngineSpec } from './index.ts'
 import type { ManagedSslMode } from './ssl.ts'
-import {
-  type ManagedConnectionInfo,
-  type ManagedEngineCode,
-  parseManagedStatus,
-} from './types.ts'
+import { type ManagedConnectionInfo, type ManagedEngineCode, parseManagedStatus } from './types.ts'
 
 export type ManagedResidualMetadata = {
-  rootPrincipalId?: string
+  rootLoginId?: string
   rootUsername?: string
   host?: string
   port?: number
@@ -20,9 +16,7 @@ export function parseManagedResidual(value: unknown): ManagedResidualMetadata {
   }
   const record = value as Record<string, unknown>
   return {
-    ...(typeof record.rootPrincipalId === 'string'
-      ? { rootPrincipalId: record.rootPrincipalId }
-      : {}),
+    ...(typeof record.rootLoginId === 'string' ? { rootLoginId: record.rootLoginId } : {}),
     ...(typeof record.rootUsername === 'string' ? { rootUsername: record.rootUsername } : {}),
     ...(typeof record.host === 'string' ? { host: record.host } : {}),
     ...(typeof record.port === 'number' ? { port: record.port } : {}),
@@ -43,16 +37,15 @@ export function serializeManagedRow(
     updatedAt: string
   },
   serverId: string | null,
-  listener?: Readonly<{ host: string | null; port: number | null }>,
+  listener?: Readonly<{ host: string | null; port: number | null }>
 ) {
   const residual = parseManagedResidual(row.metadata)
-  const engine = row.engine && isManagedEngineCode(row.engine)
-    ? (row.engine as ManagedEngineCode)
-    : null
+  const engine =
+    row.engine && isManagedEngineCode(row.engine) ? (row.engine as ManagedEngineCode) : null
   const status = parseManagedStatus(row.status) ?? 'provisioning'
 
   const metadata: Record<string, unknown> = {
-    ...(residual.rootPrincipalId ? { rootPrincipalId: residual.rootPrincipalId } : {}),
+    ...(residual.rootLoginId ? { rootLoginId: residual.rootLoginId } : {}),
     ...(residual.rootUsername ? { rootUsername: residual.rootUsername } : {}),
     ...(residual.error ? { error: residual.error } : {}),
   }
@@ -85,7 +78,7 @@ export function buildConnectionPayload(
     username: string
     /** Effective mode (service override → org default → platform). */
     sslMode: ManagedSslMode
-  },
+  }
 ): ManagedConnectionInfo {
   return spec.buildConnectionInfo({
     host: params.host,

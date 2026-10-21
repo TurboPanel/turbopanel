@@ -746,6 +746,41 @@ test('githubProvider.readRepositoryFiles aborts on transport failure', async () 
   )
 })
 
+test('githubProvider.readRepositoryFiles answers a ref the repository does not have', async () => {
+  const ctx = await mintedCtx()
+  // GitHub: 422 "No commit found for SHA" = the repository is there, the ref
+  // is not. A 404 is a missing or invisible repository and keeps the
+  // status-less fallback to a connected server.
+  for (const [status, expected] of [
+    [422, { failure: 'github ref not found', status: 404, reason: 'ref_not_found' }],
+    [404, { failure: 'github request failed: github commit lookup failed (404)' }],
+  ] as const) {
+    await withFetch(
+      (url) => {
+        if (url.includes('/access_tokens')) {
+          return new Response(JSON.stringify({ token: 'ghs_read' }))
+        }
+        if (url.includes('/commits/')) {
+          return new Response(JSON.stringify({ message: 'No commit found for SHA: l' }), {
+            status,
+          })
+        }
+        throw new TypeError(`unexpected ${url}`)
+      },
+      async () => {
+        assertEquals(
+          await githubProvider.readRepositoryFiles(ctx, {
+            row: sourceRow,
+            ref: 'l',
+            paths: ['compose.yaml'],
+          }),
+          expected
+        )
+      }
+    )
+  }
+})
+
 test('githubProvider.readRepositoryFiles reports miss reasons and auth gaps', async () => {
   assertEquals(
     await githubProvider.readRepositoryFiles(

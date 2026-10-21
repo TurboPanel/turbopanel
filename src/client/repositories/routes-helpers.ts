@@ -10,8 +10,7 @@ import type { AppEnv } from '../../app/app.ts'
 import { isSafeRoot } from '../../features/compose/service-kind.ts'
 import { canonicalizeRepositoryUrl } from '../../features/git/clone-url.ts'
 
-export const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
  * Kept as a literal rather than imported from `src/features/git/git-provider.ts`
@@ -23,11 +22,7 @@ export const UUID_RE =
 export const SOURCE_PROVIDERS = ['github', 'gitlab', 'git'] as const
 export type SourceProvider = (typeof SOURCE_PROVIDERS)[number]
 
-export const SOURCE_AUTO_DEPLOY_MODES = [
-  'immediate',
-  'checks_passed',
-  'disabled',
-] as const
+export const SOURCE_AUTO_DEPLOY_MODES = ['immediate', 'checks_passed', 'disabled'] as const
 export type SourceAutoDeploy = (typeof SOURCE_AUTO_DEPLOY_MODES)[number]
 
 export const SOURCE_REPOSITORY_URL_MAX_LENGTH = 2048
@@ -67,10 +62,7 @@ function isProvider(value: unknown): value is SourceProvider {
 }
 
 function isAutoDeploy(value: unknown): value is SourceAutoDeploy {
-  return (
-    typeof value === 'string' &&
-    SOURCE_AUTO_DEPLOY_MODES.includes(value as SourceAutoDeploy)
-  )
+  return typeof value === 'string' && SOURCE_AUTO_DEPLOY_MODES.includes(value as SourceAutoDeploy)
 }
 
 /** `git@host:owner/repo.git` — the scp-like form git accepts. */
@@ -104,7 +96,7 @@ const SCP_LIKE_SSH_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+$/
 export function validateRepositoryUrl(
   provider: SourceProvider,
   raw: string,
-  secretId: string | null,
+  secretId: string | null
 ): { ok: true; url: string } | { ok: false; error: string } {
   const url = raw.trim()
   if (url.length === 0 || url.length > SOURCE_REPOSITORY_URL_MAX_LENGTH) {
@@ -139,9 +131,7 @@ export function validateRepositoryUrl(
   return { ok: true, url: canonicalizeRepositoryUrl(url) }
 }
 
-function parseOptionalUuid(
-  value: unknown,
-): { ok: true; value: string | null } | { ok: false } {
+function parseOptionalUuid(value: unknown): { ok: true; value: string | null } | { ok: false } {
   if (value === undefined || value === null) return { ok: true, value: null }
   if (typeof value !== 'string' || !UUID_RE.test(value)) return { ok: false }
   return { ok: true, value }
@@ -149,7 +139,7 @@ function parseOptionalUuid(
 
 function parseOptionalTrimmed(
   value: unknown,
-  maxLength: number,
+  maxLength: number
 ): { ok: true; value: string | null } | { ok: false } {
   if (value === undefined || value === null) return { ok: true, value: null }
   if (typeof value !== 'string') return { ok: false }
@@ -160,7 +150,7 @@ function parseOptionalTrimmed(
 }
 
 function parseOptionalSubdirectory(
-  value: unknown,
+  value: unknown
 ): { ok: true; value: string | null } | { ok: false } {
   const parsed = parseOptionalTrimmed(value, 200)
   if (!parsed.ok) return { ok: false }
@@ -169,7 +159,7 @@ function parseOptionalSubdirectory(
 }
 
 function parseOptionalJsonb(
-  value: unknown,
+  value: unknown
 ): { ok: true; value: Record<string, unknown> | null } | { ok: false } {
   if (value === undefined || value === null) return { ok: true, value: null }
   if (typeof value !== 'object' || Array.isArray(value)) return { ok: false }
@@ -212,14 +202,15 @@ export const GIT_DEPLOY_KEY_CREDENTIAL_PROVIDER = 'git_deploy_key'
  * has no key lane at all ({@link assertProviderAuthShape} says the same thing
  * from the other direction).
  */
-export const SOURCE_DEPLOY_KEY_PROVIDERS: ReadonlySet<SourceProvider> = new Set<
-  SourceProvider
->(['git', 'gitlab'])
+export const SOURCE_DEPLOY_KEY_PROVIDERS: ReadonlySet<SourceProvider> = new Set<SourceProvider>([
+  'git',
+  'gitlab',
+])
 
 export function assertProviderAuthShape(
   provider: SourceProvider,
   connectionId: string | null,
-  secretId: string | null,
+  secretId: string | null
 ): string | null {
   if (provider === 'github') {
     if (!connectionId) return 'source_installation_required'
@@ -237,7 +228,7 @@ export function assertProviderAuthShape(
 
 export function parseSourceCreateBody(
   c: Context<AppEnv>,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): SourceCreateFields | Response {
   const provider = body.provider === undefined ? 'github' : body.provider
   if (!isProvider(provider)) {
@@ -258,30 +249,19 @@ export function parseSourceCreateBody(
 
   // Settled before the URL check so the credential handed to
   // `validateRepositoryUrl` is one this provider may actually clone with.
-  const authError = assertProviderAuthShape(
-    provider,
-    connectionId.value,
-    secretId.value,
-  )
+  const authError = assertProviderAuthShape(provider, connectionId.value, secretId.value)
   if (authError) return c.json({ error: authError }, 400)
 
   if (typeof body.repositoryUrl !== 'string') {
     return c.json({ error: 'Invalid request' }, 400)
   }
-  const repositoryUrl = validateRepositoryUrl(
-    provider,
-    body.repositoryUrl,
-    secretId.value,
-  )
+  const repositoryUrl = validateRepositoryUrl(provider, body.repositoryUrl, secretId.value)
   if (!repositoryUrl.ok) {
     return c.json({ error: repositoryUrl.error }, 400)
   }
 
   const repositoryExternalId = parseOptionalTrimmed(body.repositoryExternalId, 64)
-  const defaultBranch = parseOptionalTrimmed(
-    body.defaultBranch,
-    SOURCE_BRANCH_MAX_LENGTH,
-  )
+  const defaultBranch = parseOptionalTrimmed(body.defaultBranch, SOURCE_BRANCH_MAX_LENGTH)
   const subdirectory = parseOptionalSubdirectory(body.subdirectory)
   if (!repositoryExternalId.ok || !defaultBranch.ok || !subdirectory.ok) {
     return c.json({ error: 'Invalid request' }, 400)
@@ -345,7 +325,7 @@ function resolvePatchedAuthId(
   body: Record<string, unknown>,
   key: 'connectionId' | 'secretId',
   fallback: string | null,
-  patch: SourcePatchFields,
+  patch: SourcePatchFields
 ): { ok: true; value: string | null } | { ok: false } {
   if (!(key in body)) return { ok: true, value: fallback }
   const parsed = parseOptionalUuid(body[key])
@@ -366,7 +346,7 @@ function applyRepositoryUrlPatch(
   body: Record<string, unknown>,
   existing: { provider: SourceProvider; secretId: string | null; repositoryUrl: string },
   secretId: string | null,
-  patch: SourcePatchFields,
+  patch: SourcePatchFields
 ): string | null {
   const changed = 'repositoryUrl' in body
   if (!changed && secretId === existing.secretId) return null
@@ -393,7 +373,7 @@ export function parseSourcePatchBody(
     connectionId: string | null
     secretId: string | null
     repositoryUrl: string
-  },
+  }
 ): SourcePatchFields | Response {
   if ('serviceId' in body || 'environmentId' in body || 'provider' in body) {
     return c.json({ error: 'source_scope_immutable' }, 400)
@@ -401,18 +381,8 @@ export function parseSourcePatchBody(
 
   const patch: SourcePatchFields = { updatedAt: new Date().toISOString() }
 
-  const connectionId = resolvePatchedAuthId(
-    body,
-    'connectionId',
-    existing.connectionId,
-    patch,
-  )
-  const secretId = resolvePatchedAuthId(
-    body,
-    'secretId',
-    existing.secretId,
-    patch,
-  )
+  const connectionId = resolvePatchedAuthId(body, 'connectionId', existing.connectionId, patch)
+  const secretId = resolvePatchedAuthId(body, 'secretId', existing.secretId, patch)
   if (!connectionId.ok || !secretId.ok) {
     return c.json({ error: 'Invalid request' }, 400)
   }
@@ -420,11 +390,7 @@ export function parseSourcePatchBody(
   // `provider` is immutable, so the pairing is checked against the post-patch
   // values: a field the body omits keeps whatever the row holds, which the
   // create path already validated under this same rule.
-  const authError = assertProviderAuthShape(
-    existing.provider,
-    connectionId.value,
-    secretId.value,
-  )
+  const authError = assertProviderAuthShape(existing.provider, connectionId.value, secretId.value)
   if (authError) return c.json({ error: authError }, 400)
 
   const urlError = applyRepositoryUrlPatch(body, existing, secretId.value, patch)
@@ -440,26 +406,7 @@ export function parseSourcePatchBody(
   return patch
 }
 
-/**
- * Compose stores `services.<name>.x-turbopanel.source.sourceId` in jsonb, but a
- * `!override` / `!reset` tag can wrap **any** node on that path as a
- * `{ __turbopanelComposeTag, value }` sentinel (`src/features/compose/tags.ts`) — the
- * scalar id, the whole `source` mapping, `x-turbopanel`, or the service itself.
- * Enumerating those shapes one by one is how tagged mappings were missed, so the
- * lookup uses recursive `**` hops between the anchor keys instead: every
- * intervening `value` wrapper is absorbed, while the match still has to sit on a
- * literal `x-turbopanel` → `source` → `sourceId` chain (a stray `sourceId`
- * elsewhere in the service does not count).
- *
- * Two readers share it, and they must agree: delete refuses to drop a source a
- * compose document still names (409), and the webhook trigger resolver
- * (`./webhook-trigger.ts`) treats that same reference as an attachment, so a
- * source bound only through the Services form still auto-deploys. Bind the
- * `$sid` variable via `jsonb_build_object('sid', <uuid>::text)`.
- */
-export const COMPOSE_SOURCE_JSONPATH =
-  '$."compose"."data"."services".**."x-turbopanel".**."source".**."sourceId".**' +
-  ' ? (@ == $sid)'
+export { COMPOSE_SOURCE_JSONPATH } from '../../features/git/watch-records.ts'
 
 /**
  * `repository.metadata` as a mutable record. Anything non-object resets to
@@ -564,14 +511,11 @@ export function parseSourceAttachBody(body: unknown): SourceAttachFields | null 
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return null
   const raw = body as Record<string, unknown>
 
-  const connectionId = typeof raw.connectionId === 'string'
-    ? raw.connectionId.trim()
-    : ''
+  const connectionId = typeof raw.connectionId === 'string' ? raw.connectionId.trim() : ''
   if (!UUID_RE.test(connectionId)) return null
 
-  const repositoryExternalId = typeof raw.repositoryExternalId === 'string'
-    ? raw.repositoryExternalId.trim()
-    : ''
+  const repositoryExternalId =
+    typeof raw.repositoryExternalId === 'string' ? raw.repositoryExternalId.trim() : ''
   if (repositoryExternalId.length === 0) return null
 
   const rawUrl = typeof raw.repositoryUrl === 'string' ? raw.repositoryUrl.trim() : ''
@@ -600,8 +544,6 @@ export type ConnectionRowLike = {
   accountLogin: string | null
   accountType: string | null
   suspendedAt: string | null
-  metadata: unknown
-  options: unknown
   createdAt: string
   updatedAt: string
 }
@@ -620,8 +562,6 @@ export function serializeConnectionRow(row: ConnectionRowLike) {
     accountType: row.accountType,
     suspendedAt: row.suspendedAt,
     suspended: row.suspendedAt !== null,
-    metadata: row.metadata ?? null,
-    options: row.options ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }

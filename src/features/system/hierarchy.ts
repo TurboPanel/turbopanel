@@ -48,6 +48,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { container, environment, project, server, service, workspace } from '../../db/schema.ts'
+import { isFirstEnvironmentOf } from '../projects/primary-environment.ts'
 import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
 import { normalizeDisplayNameKey } from '../../lib/display-name-format.ts'
 import {
@@ -159,11 +160,12 @@ export type SelfHostSystemHierarchyIds = {
  * should only be used where at most one system environment can exist for the
  * server in question (e.g. non-colocated hosting-ingress delete-blocking).
  */
-export async function findSystemEnvironmentForServer(
+/** Every system-workspace environment pinned to `serverId` (hosting-ingress, managed-ingress, …). */
+export async function listSystemEnvironmentIdsForServer(
   db: Db,
   serverId: string,
   component?: string
-): Promise<string | null> {
+): Promise<string[]> {
   const rows = await (component === undefined
     ? db.execute<{ id: string }>(sql`
         SELECT e.id
@@ -172,7 +174,7 @@ export async function findSystemEnvironmentForServer(
         JOIN workspace w ON w.id = p.workspace_id
         WHERE e.server_id = ${serverId}::uuid
           AND w.kind = ${WORKSPACE_KIND_TURBOPANEL}
-        LIMIT 1
+        ORDER BY e.id ASC
       `)
     : db.execute<{ id: string }>(sql`
         SELECT e.id
@@ -182,9 +184,18 @@ export async function findSystemEnvironmentForServer(
         WHERE e.server_id = ${serverId}::uuid
           AND w.kind = ${WORKSPACE_KIND_TURBOPANEL}
           AND p.component = ${component}
-        LIMIT 1
+        ORDER BY e.id ASC
       `))
-  return rows[0]?.id ?? null
+  return rows.map((row) => row.id)
+}
+
+export async function findSystemEnvironmentForServer(
+  db: Db,
+  serverId: string,
+  component?: string
+): Promise<string | null> {
+  const ids = await listSystemEnvironmentIdsForServer(db, serverId, component)
+  return ids[0] ?? null
 }
 
 /**
@@ -346,6 +357,28 @@ async function ensureHostingIngressProject(tx: Db, workspaceId: string): Promise
 }
 
 /**
+ * The environment name for a server's system environment: its display name
+ * reduced to the environment name rule, with the front of the server id so two
+ * servers with the same name cannot collide.
+ */
+/** Strips leading and trailing hyphens and underscores (a loop, so no backtracking). */
+function trimSeparators(value: string): string {
+  let start = 0
+  let end = value.length
+  while (start < end && (value[start] === '-' || value[start] === '_')) start += 1
+  while (end > start && (value[end - 1] === '-' || value[end - 1] === '_')) end -= 1
+  return value.slice(start, end)
+}
+
+export function systemEnvironmentName(displayName: string, serverId: string): string {
+  const suffix = serverId.replaceAll('-', '').slice(-8)
+  const base = trimSeparators(
+    trimSeparators(displayName.toLowerCase().replaceAll(/[^a-z0-9_-]+/g, '-')).slice(0, 23)
+  )
+  return base === '' ? `server-${suffix}` : `${base}-${suffix}`
+}
+
+/**
  * Per-server system environment under a known system project.
  *
  * Identity is `(project_id, server_id)` — never `environment.metadata.component`.
@@ -375,7 +408,9 @@ async function ensureServerEnvironment(
     .values({
       projectId,
       serverId,
-      name: displayName,
+      name: systemEnvironmentName(displayName, serverId),
+      // The project row is locked above, so "first" cannot race another create.
+      isPrimary: isFirstEnvironmentOf(projectId),
     })
     .returning({ id: environment.id })
 
@@ -741,6 +776,33 @@ export async function findManagedHaHierarchy(
     containerRowId: row.containerRowId,
     containerName: row.containerName,
   }
+}
+
+/**
+ * Every server in these organizations that still has a managed-ha (Orchestrator)
+ * hierarchy row, whether or not it hosts an HA cluster today. A server whose
+ * clusters were all deleted keeps its Orchestrator until a reconcile tears it
+ * down, so fan-outs must reach it too.
+ */
+export async function listManagedHaHierarchyServerIds(
+  db: Db,
+  organizationIds: readonly string[]
+): Promise<string[]> {
+  if (organizationIds.length === 0) return []
+  const rows = await db
+    .select({ serverId: environment.serverId })
+    .from(environment)
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+    .innerJoin(server, eq(server.id, environment.serverId))
+    .where(
+      and(
+        inArray(server.organizationId, [...organizationIds]),
+        eq(workspace.kind, WORKSPACE_KIND_TURBOPANEL),
+        eq(project.component, SYSTEM_MANAGED_HA_COMPONENT)
+      )
+    )
+  return rows.flatMap((row) => (row.serverId ? [row.serverId] : []))
 }
 
 /**

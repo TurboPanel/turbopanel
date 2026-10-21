@@ -199,7 +199,16 @@ test('buildLicenseInstallCommand carries the instance channel so enrolled daemon
     ...base,
     updateChannel: 'release',
   })
-  assertEquals(release.includes(' TURBOPANEL_UPDATE_CHANNEL=release sh'), true)
+  // release is the default, so a production command does not say it.
+  assertEquals(release.includes('UPDATE_CHANNEL'), false)
+  assertEquals(
+    buildLicenseInstallCommand({
+      ...base,
+      updateChannel: 'release',
+      dlBase: 'https://dev.example/downloads/daemon',
+    }).includes(' TURBOPANEL_UPDATE_CHANNEL=release '),
+    true
+  )
   const rc = buildLicenseInstallCommand({ ...base, updateChannel: 'rc' })
   assertEquals(rc.includes('TURBOPANEL_UPDATE_CHANNEL=rc'), true)
   // trunk is said too: it picks testing.turbopanel.sh and run.sh's sudo re-run follows it.
@@ -216,7 +225,7 @@ test('buildLicenseInstallCommand carries the instance channel so enrolled daemon
     runtime: 'workers',
     updateChannel: 'release',
   })
-  assertEquals(hosted.includes('TURBOPANEL_UPDATE_CHANNEL=release'), true)
+  assertEquals(hosted.includes('UPDATE_CHANNEL'), false)
 })
 
 test('installScriptHostForChannel: rc is staging, the canary rail is testing, everything else the bare host', () => {

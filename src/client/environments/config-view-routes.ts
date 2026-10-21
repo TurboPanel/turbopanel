@@ -97,6 +97,7 @@ export function registerEnvironmentConfigViewRoutes(router: Hono<AppEnv>, opts: 
         id: environment.id,
         name: environment.name,
         projectId: environment.projectId,
+        isPrimary: environment.isPrimary,
         environmentOptions: environment.options,
         projectOptions: project.options,
       })
@@ -120,6 +121,7 @@ export function registerEnvironmentConfigViewRoutes(router: Hono<AppEnv>, opts: 
       ok: true as const,
       environmentId: row.id,
       projectId: row.projectId,
+      isPrimary: row.isPrimary,
       ...view,
     })
   })

@@ -84,7 +84,7 @@ async function withVolumeFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Compose Volumes Env',
+      name: 'compose-volumes-env',
       projectId,
     })
     .returning({ id: environment.id })

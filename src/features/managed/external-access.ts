@@ -24,7 +24,7 @@
  * Out of scope here, on purpose: per-login source restrictions.
  */
 
-import { and, eq, gte, inArray, sql } from 'drizzle-orm'
+import { and, eq, gte, inArray, isNotNull, lte, sql } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
 import { command, managed, replica, server } from '../../db/schema.ts'
@@ -34,7 +34,7 @@ import { enqueueManagedIngressReconcile } from './ingress-desired.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
 import { managedIngressPortForEngine } from './ingress-ports.ts'
 import { loadManagedIngressPorts } from './load-org-defaults.ts'
-import { parseManagedRowOptions } from './options.ts'
+import { parseManagedSettings } from './options.ts'
 import {
   MANAGED_EXTERNAL_ACCESS_KEY,
   type ManagedExternalAccess,
@@ -54,20 +54,20 @@ export {
   readManagedExternalAccess,
 } from './external-access-setting.ts'
 
-async function loadServerOptions(db: Db, serverId: string): Promise<unknown> {
+async function loadServerSetting(db: Db, serverId: string): Promise<ManagedExternalAccess> {
   const [row] = await db
-    .select({ options: server.options })
+    .select({ options: server.options, pendingAt: server.externalAccessPendingAt })
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1)
-  return row?.options
+  return readManagedExternalAccess(row?.options, row?.pendingAt)
 }
 
 export async function loadManagedExternalAccess(
   db: Db,
   serverId: string
 ): Promise<ManagedExternalAccess> {
-  return readManagedExternalAccess(await loadServerOptions(db, serverId))
+  return await loadServerSetting(db, serverId)
 }
 
 async function writeManagedExternalAccess(
@@ -79,8 +79,9 @@ async function writeManagedExternalAccess(
     .update(server)
     .set({
       options: sql`COALESCE(${server.options}, '{}'::jsonb) || ${JSON.stringify({
-        [MANAGED_EXTERNAL_ACCESS_KEY]: setting,
+        [MANAGED_EXTERNAL_ACCESS_KEY]: { enabled: setting.enabled },
       })}::jsonb`,
+      externalAccessPendingAt: setting.pendingSince ?? null,
       updatedAt: new Date().toISOString(),
     })
     .where(eq(server.id, serverId))
@@ -112,17 +113,14 @@ export async function clearManagedExternalAccessPendingThrough(
   serverId: string,
   through: string
 ): Promise<void> {
-  const setting = sql`${server.options} -> ${MANAGED_EXTERNAL_ACCESS_KEY}`
   await db
     .update(server)
-    .set({
-      options: sql`jsonb_set(${server.options}, ARRAY[${MANAGED_EXTERNAL_ACCESS_KEY}]::text[], (${setting}) - 'pendingSince')`,
-    })
+    .set({ externalAccessPendingAt: null })
     .where(
       and(
         eq(server.id, serverId),
-        sql`(${setting} ->> 'pendingSince') IS NOT NULL`,
-        sql`((${setting} ->> 'pendingSince')::timestamptz) <= ${through}::timestamptz`
+        isNotNull(server.externalAccessPendingAt),
+        lte(server.externalAccessPendingAt, through)
       )
     )
 }
@@ -166,14 +164,27 @@ export async function loadFrontedManagedIds(db: Db, serverId: string): Promise<s
   return [...ids]
 }
 
-/** Every server whose ProxySQL fronts the cluster: its members and bound consumers. */
+/**
+ * Every server whose ProxySQL fronts the cluster: its members, plus the
+ * servers its bound consumers place on whose {@link loadFrontedManagedIds}
+ * includes it. A consumer's server fronts only bindings of the server owner's
+ * organization (the ingress builder's rule), so a consumer server is kept only
+ * when the ingress there would actually carry this cluster.
+ */
 export async function loadManagedFrontendServerIds(db: Db, managedId: string): Promise<string[]> {
   const members = await db
     .select({ serverId: replica.serverId })
     .from(replica)
     .where(eq(replica.managedId, managedId))
-  const consumers = await consumerServerIdsForManaged(db, managedId)
-  return [...new Set([...members.map((row) => row.serverId), ...consumers])]
+  const memberIds = new Set(members.map((row) => row.serverId))
+  const fronting = new Set(memberIds)
+  const consumers = (await consumerServerIdsForManaged(db, managedId)).filter(
+    (serverId) => !memberIds.has(serverId)
+  )
+  await forEachSequential(consumers, async (serverId) => {
+    if ((await loadFrontedManagedIds(db, serverId)).includes(managedId)) fronting.add(serverId)
+  })
+  return [...fronting]
 }
 
 /**
@@ -205,7 +216,7 @@ export async function loadHostIngressListeners(
   for (const row of rows) {
     const engine = (row.engine ?? 'postgres') as ManagedEngineCode
     const spec = getManagedEngineSpec(engine)
-    if (!spec || !parseManagedRowOptions(spec, row.options)) continue
+    if (!spec || parseManagedSettings(spec, row.options) === null) continue
     ports.add(managedIngressPortForEngine(engine, spec.defaultPort, ingressPorts))
   }
   return { external: true, ports: [...ports].toSorted((a, b) => a - b) }
@@ -221,14 +232,11 @@ export type ManagedExternalAccessServerView = {
   otherClusters: number
 }
 
-/**
- * The setting on every server that fronts `managedId`, with how many other
- * clusters share each one. The cluster screens show this and warn on it.
- */
-export async function loadManagedExternalAccessView(
+/** Each server fronting `managedId`, by display name, with its external access setting. */
+export async function loadFrontendServerSettings(
   db: Db,
   managedId: string
-): Promise<ManagedExternalAccessServerView[]> {
+): Promise<Array<{ id: string; name: string; setting: ManagedExternalAccess }>> {
   const serverIds = await loadManagedFrontendServerIds(db, managedId)
   if (serverIds.length === 0) return []
   const rows = await db
@@ -237,16 +245,32 @@ export async function loadManagedExternalAccessView(
       name: server.name,
       hostname: server.hostname,
       options: server.options,
+      pendingAt: server.externalAccessPendingAt,
     })
     .from(server)
     .where(inArray(server.id, serverIds))
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name || row.hostname || row.id,
+    setting: readManagedExternalAccess(row.options, row.pendingAt),
+  }))
+}
+
+/**
+ * The setting on every server that fronts `managedId`, with how many other
+ * clusters share each one. The cluster screens show this and warn on it.
+ */
+export async function loadManagedExternalAccessView(
+  db: Db,
+  managedId: string
+): Promise<ManagedExternalAccessServerView[]> {
   const views: ManagedExternalAccessServerView[] = []
-  await forEachSequential(rows, async (row) => {
-    const setting = readManagedExternalAccess(row.options)
+  await forEachSequential(await loadFrontendServerSettings(db, managedId), async (row) => {
+    const { setting } = row
     const fronted = await loadFrontedManagedIds(db, row.id)
     views.push({
       id: row.id,
-      name: row.name || row.hostname || row.id,
+      name: row.name,
       enabled: setting.enabled,
       pending: setting.pendingSince !== undefined,
       otherClusters: fronted.filter((id) => id !== managedId).length,
@@ -295,15 +319,10 @@ export async function runManagedExternalAccessPendingSweep(
   const connected = await db
     .select({
       id: server.id,
-      pendingSince: sql<string>`${server.options} -> ${MANAGED_EXTERNAL_ACCESS_KEY} ->> 'pendingSince'`,
+      pendingSince: server.externalAccessPendingAt,
     })
     .from(server)
-    .where(
-      and(
-        eq(server.isConnected, true),
-        sql`${server.options} -> ${MANAGED_EXTERNAL_ACCESS_KEY} -> 'pendingSince' IS NOT NULL`
-      )
-    )
+    .where(and(eq(server.isConnected, true), isNotNull(server.externalAccessPendingAt)))
   if (connected.length === 0) return { enqueued: 0 }
 
   const cutoff = new Date(Date.now() - INGRESS_RECONCILE_VALID_MS).toISOString()
@@ -326,6 +345,7 @@ export async function runManagedExternalAccessPendingSweep(
   await forEachSequential(
     connected.filter((row) => !busy.has(row.id)),
     async ({ id, pendingSince }) => {
+      if (!pendingSince) return
       const result = await enqueueManagedIngressReconcile(db, commandQueue, {
         serverId: id,
         actorType: 'system',
