@@ -82,9 +82,9 @@ export function adminAccessNotes(
     ? 'read and write access to the data (no owner rights, and it cannot hand out access to others)'
     : "the right to connect only (this server's TurboPanel daemon is older; update it to give read and write access)"
   return [
-    `These databases were made before owner roles, so they have no owner role for a Database admin login to work through: ${without.join(
+    `These databases have no owner role yet, so there is none for a Database admin login to work through: ${without.join(
       ', '
-    )}. The login has ${access} there, and the full Database admin rights on every database that has an owner role. It is never the root login.`,
+    )}. The login has ${access} there, and the full Database admin rights on every database that has an owner role. Move a database onto an owner role (POST …/managed/databases/{name}/owner-role with confirm: true) to give it the full rights there. It is never the root login.`,
   ]
 }
 
@@ -215,6 +215,68 @@ export const OWNER_CHANGE_NOT_AVAILABLE = {
   error: 'managed_database_owner_change_not_available',
   message:
     "Changing a database's owner after it was made is not available yet, because it has to move what the panel manages without touching anything you made yourself. Choose the owner when you create the database. To use a different owner now, create a new database and move your data across.",
+}
+
+export const DATABASE_CONVERT_NEEDS_DAEMON_ERROR = 'managed_database_convert_needs_daemon_update'
+
+/** The engine's own databases, which never move onto an owner role. */
+const ENGINE_DATABASES = new Set(['postgres', 'template0', 'template1'])
+
+/**
+ * Rules for moving a database that already exists (the cluster's first
+ * database, or one made before owner roles) onto its owner role. The caller
+ * has already checked that the database exists. `null` when it may go ahead.
+ * It changes who owns things, so it has to be asked for with `confirm: true`;
+ * asking again for a database that already has an owner role just repeats it.
+ */
+export function evaluateOwnerRoleConversion(
+  engine: string,
+  name: string,
+  confirm: unknown,
+  daemonCanConvert: boolean
+): OwnerRoleValidationError | null {
+  if (engine !== 'postgres') {
+    return {
+      ok: false,
+      error: 'managed_owner_role_unsupported',
+      message: 'Only Postgres databases can use an owner role.',
+      status: 400,
+    }
+  }
+  if (ENGINE_DATABASES.has(name)) {
+    return {
+      ok: false,
+      error: 'managed_owner_role_database_not_movable',
+      message: `${name} is one of the engine's own databases and cannot be moved onto an owner role.`,
+      status: 400,
+    }
+  }
+  if (name.length > OWNER_ROLE_MAX_DATABASE_NAME) {
+    return {
+      ok: false,
+      error: 'managed_owner_role_name_too_long',
+      message: `A Postgres database name can have at most ${OWNER_ROLE_MAX_DATABASE_NAME} characters to get an owner role, because the owner role is named after it.`,
+      status: 400,
+    }
+  }
+  if (confirm !== true) {
+    return {
+      ok: false,
+      error: 'managed_owner_role_confirm_required',
+      message: `Moving ${name} onto an owner role hands everything in it (schemas, tables, views, sequences, functions, types) to the owner role tp_${name}_owner, whoever owns it now. No data is changed or removed. It waits at most five seconds for a busy table and then stops without changing anything, so run it in a quiet window and repeat it if it stops. Send confirm: true to go ahead.`,
+      status: 400,
+    }
+  }
+  if (!daemonCanConvert) {
+    return {
+      ok: false,
+      error: DATABASE_CONVERT_NEEDS_DAEMON_ERROR,
+      message:
+        "This server's TurboPanel daemon is too old to move an existing database onto an owner role. Update the server, then try again.",
+      status: 409,
+    }
+  }
+  return null
 }
 
 /** The databases a login owns by choice (see `databaseOwners` in the options). */

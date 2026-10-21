@@ -40,6 +40,11 @@ import {
   defaultExpectedSamplesPerBucket,
   finalizeHostSeriesResult,
 } from '../../query/series-response.ts'
+import {
+  emptyHostFacts,
+  hostFactsFromSample,
+  parseStoredHostFacts,
+} from '../../query/host-facts.ts'
 import { computeStatusUptime } from '../../query/uptime.ts'
 import { forEachSequential } from '../../../../lib/sequential.ts'
 import type {
@@ -52,6 +57,8 @@ import type {
   EntitySeriesResult,
   FleetHostSnapshotQuery,
   FleetHostSnapshotResult,
+  HostFactsQuery,
+  HostFactsResult,
   FleetHostSnapshotServer,
   HostSeriesPoint,
   HostSeriesQuery,
@@ -86,6 +93,7 @@ import {
   parquetFamily,
   type ParquetFamilyKey,
   pruneExpiredPartitions,
+  pruneToSizeCap,
   sealDayToParquet,
   timestampLiteralFromMs,
   utcDayStartMs,
@@ -112,6 +120,7 @@ import {
   hardwareSignalSamplesInsertColumns,
   HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST,
   HOST_METRIC_FIELD_REFS,
+  HOST_FACTS_TABLE,
   HOST_SAMPLES_TABLE,
   hostMetricColumnName,
   type HostMetricGroup,
@@ -167,6 +176,9 @@ export const DUCKDB_WRITE_BATCH_MAX_AGE_MS = 5_000
 /** Default retention for hot rows + sealed partitions (matches AE's 90 days). */
 export const DEFAULT_DUCKDB_RETENTION_DAYS = 90
 
+/** Default cap for the whole self-hosted metrics store (5 GiB); the oldest sealed days go first. */
+export const DEFAULT_DUCKDB_MAX_BYTES = 5 * 1024 ** 3
+
 /** Loopback port the dev-only embedded DuckDB UI serves on. */
 export const DUCKDB_UI_DEFAULT_PORT = 4213
 
@@ -188,6 +200,8 @@ export type DuckDbStoreConfig = {
   memoryLimitMb?: number
   /** Hot + Parquet retention days (default 90). */
   retentionDays?: number
+  /** Cap for the whole metrics store in bytes (default 5 GiB); the oldest sealed days are pruned first. */
+  maxBytes?: number
 }
 
 export type DuckDbStoreOptions = {
@@ -220,6 +234,7 @@ type PendingRowTable =
   | 'docker'
   | 'event'
   | 'status'
+  | 'facts'
 
 type PendingRow = {
   table: PendingRowTable
@@ -241,6 +256,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
   readonly #threads: number | undefined
   readonly #memoryLimitMb: number | undefined
   readonly #retentionDays: number
+  readonly #maxBytes: number
   readonly #openHandle: () => Promise<DuckDbHandle>
   readonly #batchMaxRows: number
   readonly #batchMaxAgeMs: number
@@ -265,6 +281,8 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     this.#retentionDays =
       assertOptionalPositiveInt('retentionDays', config.retentionDays) ??
       DEFAULT_DUCKDB_RETENTION_DAYS
+    this.#maxBytes =
+      assertOptionalPositiveInt('maxBytes', config.maxBytes) ?? DEFAULT_DUCKDB_MAX_BYTES
     this.#paths = resolveDuckDbPaths(config.metricsDir)
     this.#batchMaxRows = options?.writeBatchMaxRows ?? DUCKDB_WRITE_BATCH_MAX_ROWS
     this.#batchMaxAgeMs = options?.writeBatchMaxAgeMs ?? DUCKDB_WRITE_BATCH_MAX_AGE_MS
@@ -505,6 +523,21 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
           ...EXTENDED_DOCKER_FIELD_NAMES.map((field) =>
             extendedNumber(input.extended?.docker, field)
           ),
+        ],
+      })
+    }
+
+    // Latest host facts: every sample from a v8 daemon (one that sends the
+    // `extended` section) replaces the row, even with no text, so a fact that
+    // disappears stops being shown, like on the hosted store. A v6 sample has
+    // nothing to say about facts and leaves the row alone.
+    if (input.extended) {
+      rows.push({
+        table: 'facts',
+        values: [
+          input.serverId,
+          toDuckDbTimestamp(input.metadata.sampledAt),
+          JSON.stringify(hostFactsFromSample(input)),
         ],
       })
     }
@@ -923,6 +956,30 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       parquetRoot: this.#paths.parquetRoot,
       nowMs,
     })
+
+    // Then the size cap: retention days are not enough on a big fleet, and an
+    // operator's disk must never fill with metrics.
+    const pruned = await pruneToSizeCap({
+      parquetRoot: this.#paths.parquetRoot,
+      maxBytes: this.#maxBytes,
+      otherBytes:
+        (await fileSizeOrZero(this.#paths.databasePath)) +
+        (await fileSizeOrZero(`${this.#paths.databasePath}.wal`)),
+    })
+    if (pruned.removedDays > 0 && pruned.removedFromMs !== null && pruned.removedToMs !== null) {
+      const day = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+      console.warn(
+        `metrics store over its ${this.#maxBytes}-byte cap: removed the ${pruned.removedDays} oldest sealed day(s), ${day(pruned.removedFromMs)} to ${day(pruned.removedToMs)}`
+      )
+    }
+    if (pruned.failedDays > 0) {
+      console.warn(`metrics store size cap: could not remove ${pruned.failedDays} sealed day(s)`)
+    }
+    if (pruned.stillOver) {
+      console.warn(
+        `metrics store is still over its ${this.#maxBytes}-byte cap after pruning; the newest sealed days are kept, so the hot database file or a failed removal is holding it over`
+      )
+    }
   }
 
   /** Flush pending writes and release the database handle (tests/shutdown). */
@@ -1153,6 +1210,39 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
   }
 
   /**
+   * The facts row of the newest sample in `[from, to)`. DuckDB keeps only the
+   * latest row per server, so a sample older than `from` reads as "none", the
+   * same answer the hosted store gives for a sample outside its window.
+   */
+  async queryHostFacts(input: HostFactsQuery): Promise<HostFactsResult> {
+    await this.flushWrites()
+    const serverId = assertSafeServerId(input.serverId)
+    const from = assertIsoTimestamp('from', input.from)
+    const to = assertIsoTimestamp('to', input.to)
+    assertRange(from, to)
+    const handle = await this.#ensureOpen()
+    const reader = await handle.connection.runAndReadAll(
+      [
+        `SELECT CAST(epoch_ms(sampled_at) AS DOUBLE) AS sampled_at_ms, facts`,
+        `FROM ${HOST_FACTS_TABLE}`,
+        `WHERE server_id = CAST(? AS UUID)`,
+        `  AND sampled_at >= CAST(? AS TIMESTAMP)`,
+        `  AND sampled_at < CAST(? AS TIMESTAMP)`,
+      ].join('\n'),
+      [serverId, toDuckDbTimestamp(from.toISOString()), toDuckDbTimestamp(to.toISOString())]
+    )
+    const row = reader.getRowObjectsJS()[0]
+    const sampledAtMs = row ? toFiniteNumber(row.sampled_at_ms) : null
+    return {
+      kind: 'duckdb',
+      available: true,
+      serverId: input.serverId,
+      sampledAt: sampledAtMs === null ? null : new Date(sampledAtMs).toISOString(),
+      facts: row ? parseStoredHostFacts(row.facts) : emptyHostFacts(),
+    }
+  }
+
+  /**
    * Discrete `server_metric_events` rows in `[from, to)`, unioned with sealed
    * `"events"` Parquet partitions, capped at {@link MAX_STATUS_EVENTS} (same
    * cap/truncation discipline as `queryStatusHistory`). Columns are selected
@@ -1307,9 +1397,13 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     }
     await connection.run('BEGIN TRANSACTION')
     try {
-      await forEachSequential(byTable, ([table, rows]) => {
+      await forEachSequential(byTable, async ([table, rows]) => {
+        if (table === 'facts') {
+          await upsertHostFacts(connection, rows)
+          return
+        }
         const { sql, values } = buildInsertForTable(table, rows)
-        return connection.run(sql, values)
+        await connection.run(sql, values)
       })
       await connection.run('COMMIT')
     } catch (error) {
@@ -1587,11 +1681,43 @@ function buildInsertForTable(
         sql: buildInsertSql(STATUS_EVENTS_TABLE, STATUS_COLUMNS, STATUS_TUPLE, rows.length),
         values,
       }
+    case 'facts':
+      // Latest-only rows are written one at a time by `upsertHostFacts`, never as a bulk insert.
+      throw new TypeError('host facts are upserted, not bulk-inserted')
     default: {
       const exhaustive: never = table
       throw new TypeError(`unknown pending row table: ${exhaustive}`)
     }
   }
+}
+
+async function fileSizeOrZero(path: string): Promise<number> {
+  try {
+    return (await Deno.stat(path)).size
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * Replace a server's facts row with a newer (or equal-age) sample's. A sample
+ * older than the stored row changes nothing: the older row is only dropped when
+ * the new one is at least as recent, and the insert yields to an existing row.
+ */
+async function upsertHostFacts(
+  connection: DuckDbConnectionLike,
+  rows: DuckDbBindValue[][]
+): Promise<void> {
+  await forEachSequential(rows, async ([serverId, sampledAt, facts]) => {
+    await connection.run(
+      `DELETE FROM ${HOST_FACTS_TABLE} WHERE server_id = CAST(? AS UUID) AND sampled_at <= CAST(? AS TIMESTAMP)`,
+      [serverId, sampledAt]
+    )
+    await connection.run(
+      `INSERT INTO ${HOST_FACTS_TABLE} (server_id, sampled_at, facts) VALUES (CAST(? AS UUID), CAST(? AS TIMESTAMP), ?) ON CONFLICT DO NOTHING`,
+      [serverId, sampledAt, facts]
+    )
+  })
 }
 
 /** DuckDB `TIMESTAMP`-castable UTC string from an ISO timestamp. */

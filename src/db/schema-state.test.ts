@@ -47,7 +47,12 @@ test('compareSchemaState classifies every history shape', () => {
     unknown: [X],
   })
   // Same set, wrong order: not a prefix of the manifest.
-  assertEquals(compareSchemaState([B, A], [A, B]), { status: 'diverged', applied: 2, shipped: 2, at: 0 })
+  assertEquals(compareSchemaState([B, A], [A, B]), {
+    status: 'diverged',
+    applied: 2,
+    shipped: 2,
+    at: 0,
+  })
 })
 
 test('every state has a sentence, and only ahead/diverged say refusing', () => {
@@ -64,7 +69,7 @@ test('every state has a sentence, and only ahead/diverged say refusing', () => {
     assertEquals(
       sentence.endsWith('refusing'),
       state.status === 'ahead' || state.status === 'diverged',
-      `${state.status}: ${sentence}`,
+      `${state.status}: ${sentence}`
     )
   }
 })
@@ -79,10 +84,7 @@ test('the Node twin (scripts/schema-state.mjs) carries the same sentences verbat
     assertEquals(twin.includes(sentence), true, `missing in scripts/schema-state.mjs: ${sentence}`)
   }
   // And the same bookkeeping query.
-  assertEquals(
-    twin.includes('select hash from public.migration order by created_at, id'),
-    true,
-  )
+  assertEquals(twin.includes('select hash from public.migration order by created_at, id'), true)
 })
 
 test('the shipped manifest resolves from MIGRATIONS_FOLDER and has sha256 entries', async () => {

@@ -75,6 +75,14 @@ export const METRIC_EVENTS_TABLE = 'server_metric_events'
 export const STATUS_EVENTS_TABLE = 'server_status_events'
 
 /**
+ * Latest host facts (the short text a v8 sample carries beside its numbers):
+ * one row per server, replaced as newer samples arrive. Not a time series, so
+ * it is never archived to Parquet and needs no retention. Added with
+ * `CREATE TABLE IF NOT EXISTS`, so an existing file at the current marker (10) simply gains it. (A marker-9 file is discarded, not upgraded.)
+ */
+export const HOST_FACTS_TABLE = 'server_host_facts'
+
+/**
  * Sidecar version written after a successful open. The current DuckDB store
  * is **10** — the only supported on-disk layout. `openDuckDb` discards
  * `metrics.duckdb`, `parquet/`, `tmp/`, and `schema-version` when the marker
@@ -705,6 +713,19 @@ function metricEventsTableDdl(): string {
   ].join('\n')
 }
 
+/** Latest-only facts row: `facts` holds the JSON the reader parses (`query/host-facts.ts`). */
+function hostFactsTableDdl(): string {
+  return [
+    `CREATE TABLE IF NOT EXISTS ${HOST_FACTS_TABLE} (`,
+    indent([
+      'server_id UUID PRIMARY KEY',
+      'sampled_at TIMESTAMP NOT NULL',
+      'facts VARCHAR NOT NULL',
+    ]),
+    `)`,
+  ].join('\n')
+}
+
 function statusEventsTableDdl(): string {
   return [
     `CREATE TABLE IF NOT EXISTS ${STATUS_EVENTS_TABLE} (`,
@@ -761,6 +782,7 @@ export function buildSchemaStatements(): string[] {
     `CREATE INDEX IF NOT EXISTS idx_${METRIC_EVENTS_TABLE}_server_time ON ${METRIC_EVENTS_TABLE} (server_id, "at")`,
     statusEventsTableDdl(),
     `CREATE INDEX IF NOT EXISTS idx_${STATUS_EVENTS_TABLE}_server_time ON ${STATUS_EVENTS_TABLE} (server_id, "at")`,
+    hostFactsTableDdl(),
   ]
 }
 

@@ -462,7 +462,10 @@ out of the hot tables — export to `tmp/`, validate row count by re-reading,
 atomic rename, then delete hot rows. Interrupted exports (`tmp/*.parquet`) are
 swept on the next tick. Reads union the hot tables with overlapping partitions.
 Retention (`TURBOPANEL_SERVER_METRICS_RETENTION_DAYS`, default 90) prunes
-expired partitions plus any hot rows past the cutoff.
+expired partitions plus any hot rows past the cutoff. Then a size cap
+(`TURBOPANEL_SERVER_METRICS_MAX_BYTES`, default 5 GiB, `pruneToSizeCap`) removes
+whole sealed days, oldest first, until the sealed partitions plus the hot
+database file fit, so a big fleet can never fill the operator's disk.
 
 **Cross-backend regression net:** `representative-machines.ts` (16 machine
 shapes) feeds `representative-row-counts.test.ts` (exact AE row count + family
@@ -584,6 +587,13 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
     gracefully to positional packing — never a dropped sample. Only the latest
     generation is kept (`server.hardware`), so a sample naming an older one is
     unresolved too.
+    11a. A hosted server with more RAM or more physical CPU cores than its licensed box size keeps
+    every metric; ingest stamps `server.metadata.overPlan` (`over-plan.ts`, `over-plan-flag.ts`,
+    refreshed at most hourly, cleared when it fits again). The units are the box-size bands' own:
+    RAM bytes and physical cores, both from the daemon's host report
+    (`server.metadata.resources`, one entry per socket), so the flag does not flip between two
+    sources; the sample's own sizes are never compared. Box size only: the flag never refuses a sample and
+    never looks at a plan name.
 12. `HARDWARE_HEALTH_EVENT_KIND` is a `Record` over every `MetricEventKind` — a
     new event kind that isn't classified fails to compile, never silently
     defaults either way.

@@ -63,6 +63,8 @@ import {
   processCommandEnvelope,
 } from './consumer.ts'
 import type { CommandEnvelope } from './envelope.ts'
+import { recordCommandProgress } from './command-progress.ts'
+import type { CommandQueue } from './queue.ts'
 import { parseManagedResidual } from '../managed/serialize.ts'
 import { resolveFleetPresence } from '../../daemon/cell/server-status.ts'
 import { setResolveFleetPresence } from '../../platform/ports/fleet-presence.ts'
@@ -143,11 +145,13 @@ function createDispatchMockRegistry(
   enqueueCalled: boolean
   waitForRequestCalled: boolean
   capturedOutbound: unknown
+  enqueueOpts: { ttlSeconds?: number } | undefined
 } {
   const state = {
     enqueueCalled: false,
     waitForRequestCalled: false,
     capturedOutbound: null as unknown,
+    enqueueOpts: undefined as { ttlSeconds?: number } | undefined,
   }
 
   const cell: DaemonCell = {
@@ -176,9 +180,10 @@ function createDispatchMockRegistry(
         connected: false,
         ...patch,
       }),
-    enqueue: (outbound) => {
+    enqueue: (outbound, opts) => {
       state.enqueueCalled = true
       state.capturedOutbound = outbound
+      state.enqueueOpts = opts
       return Promise.resolve({
         serverId,
         requestId: outbound.requestId,
@@ -224,6 +229,9 @@ function createDispatchMockRegistry(
     },
     get capturedOutbound() {
       return state.capturedOutbound
+    },
+    get enqueueOpts() {
+      return state.enqueueOpts
     },
     getCell: () => cell,
     listOnlineServerIds: () => Promise.resolve([]),
@@ -5896,5 +5904,215 @@ test('processCommandEnvelope leaves a folder row alone when it changed after the
         assertEquals(one.login.length > 0, true)
       }
     )
+  })
+})
+
+/** A registry whose cell reports the given request and never delivers a result by itself. */
+function registryWithRequest(
+  serverId: string,
+  request: (requestId: string) => PendingRequestRecord | null
+) {
+  const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
+  const base = registry.getCell(serverId)
+  const cell = { ...base, getRequest: (id: string) => Promise.resolve(request(id)) }
+  return Object.assign(registry, { getCell: () => cell as DaemonCell })
+}
+
+function fakeQueue() {
+  const sent: CommandEnvelope[] = []
+  const queue: CommandQueue = {
+    enqueue: (envelope) => {
+      sent.push(envelope)
+      return Promise.resolve()
+    },
+  }
+  return { sent, queue }
+}
+
+async function sentDeploy(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string,
+  opts: { sentAgoMs: number; runningSinceAgoMs?: number | null }
+) {
+  const record = await createCommandRecord(db, {
+    serverId,
+    ...TEST_COMMAND_ACTOR,
+    type: 'environment.deploy',
+    payload: { notAnEnvironmentId: true },
+  })
+  const sentAt = new Date(Date.now() - opts.sentAgoMs).toISOString()
+  await transitionCommand(db, record.id, { status: 'sent', sentAt })
+  if (opts.runningSinceAgoMs !== undefined) {
+    const runningSince =
+      opts.runningSinceAgoMs === null
+        ? null
+        : new Date(Date.now() - opts.runningSinceAgoMs).toISOString()
+    await db
+      .update(command)
+      .set({
+        progress: { version: 1, steps: [], current: null, updatedAt: sentAt, runningSince },
+      })
+      .where(eq(command.id, record.id))
+  }
+  return record
+}
+
+const ACKED_REQUEST = (serverId: string, id: string): PendingRequestRecord => ({
+  serverId,
+  requestId: id,
+  requestKind: 'command-dispatch',
+  status: 'acked',
+  createdAt: new Date().toISOString(),
+  expiresAt: new Date().toISOString(),
+  ackAt: new Date().toISOString(),
+})
+
+test('a deploy that waited hours for the server is handed back to the queue, not timed out', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await sentDeploy(db, serverId, {
+      sentAgoMs: 3 * 60 * 60_000,
+      runningSinceAgoMs: null,
+    })
+    const registry = registryWithRequest(serverId, (id) => ACKED_REQUEST(serverId, id))
+    const { sent, queue } = fakeQueue()
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
+      commandQueue: queue,
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      deployWaitHoldMs: 0,
+    })
+
+    assertEquals(sent.length, 1)
+    assertEquals(sent[0]?.commandId, record.id)
+    assertEquals(registry.enqueueCalled, false)
+    assertEquals((await getCommandRecord(db, record.id))?.status, 'sent')
+  })
+})
+
+test('a deploy that has been running longer than the run cap times out, counted from its start', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await sentDeploy(db, serverId, {
+      sentAgoMs: 3 * 60 * 60_000,
+      runningSinceAgoMs: 11 * 60_000,
+    })
+    const registry = registryWithRequest(serverId, (id) => ACKED_REQUEST(serverId, id))
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+    })
+
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'timed_out')
+    assertEquals(updated?.error?.includes('10 minutes'), true)
+  })
+})
+
+test('a deploy started a minute ago is not timed out even though it was sent hours ago', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await sentDeploy(db, serverId, {
+      sentAgoMs: 3 * 60 * 60_000,
+      runningSinceAgoMs: 9 * 60_000 + 55_000,
+    })
+    let looks = 0
+    const registry = registryWithRequest(serverId, (id) => {
+      looks += 1
+      return looks < 2
+        ? ACKED_REQUEST(serverId, id)
+        : { ...ACKED_REQUEST(serverId, id), status: 'done', result: { containers: [] } }
+    })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+    })
+
+    assertEquals((await getCommandRecord(db, record.id))?.status, 'succeeded')
+  })
+})
+
+test('a deploy that was already sent is waited for again, not sent twice', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await sentDeploy(db, serverId, { sentAgoMs: 60_000 })
+    const registry = registryWithRequest(serverId, (id) => ({
+      ...ACKED_REQUEST(serverId, id),
+      status: 'done',
+      finishedAt: new Date().toISOString(),
+      result: { containers: [] },
+    }))
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+    })
+
+    assertEquals(registry.enqueueCalled, false)
+    assertEquals((await getCommandRecord(db, record.id))?.status, 'succeeded')
+  })
+})
+
+test('a deploy sent to a server that stays offline fails with plain words after the offline limit', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const record = await sentDeploy(db, serverId, { sentAgoMs: 16 * 60_000 })
+    const registry = registryWithRequest(serverId, (id) => ({
+      ...ACKED_REQUEST(serverId, id),
+      status: 'queued',
+    }))
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+    })
+
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'timed_out')
+    assertEquals(updated?.error?.includes('offline'), true)
+  })
+})
+
+test('the start is when the control plane first hears the server is running, and a later report does not move it', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    const record = await sentDeploy(db, serverId, { sentAgoMs: 60_000 })
+    const frame = (runningSince: string | null) => ({
+      version: 1,
+      steps: [],
+      current: null,
+      updatedAt: new Date().toISOString(),
+      runningSince,
+    })
+    const before = Date.now()
+    const started = '2026-10-21T10:00:00.000Z'
+    await recordCommandProgress(db, { serverId, commandId: record.id, progress: frame(started) })
+    await recordCommandProgress(db, { serverId, commandId: record.id, progress: frame(null) })
+    await recordCommandProgress(db, {
+      serverId,
+      commandId: record.id,
+      progress: frame('2026-10-21T10:30:00.000Z'),
+    })
+    const stored = await getCommandRecord(db, record.id)
+    // The start is when the control plane first heard it, whatever the server's clock says.
+    const startedMs = Date.parse(stored?.startedAt ?? '')
+    assertEquals(startedMs >= before && startedMs <= Date.now(), true)
+    assertEquals(Date.parse(stored?.progress?.runningSince ?? '') >= startedMs, true)
+  })
+})
+
+test('a deploy is sent with a request lifetime longer than the queue limit, other commands are not', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const deploy = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'environment.deploy',
+      payload: { notAnEnvironmentId: true },
+    })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: { ...ACKED_REQUEST(serverId, deploy.id), status: 'done' },
+    })
+    await processCommandEnvelope(db, registry, buildEnvelope(deploy, serverId), {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+    })
+    assertEquals((registry.enqueueOpts?.ttlSeconds ?? 0) > 6 * 60 * 60, true)
   })
 })

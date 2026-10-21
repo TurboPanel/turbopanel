@@ -28,7 +28,8 @@ test('MySQL and MariaDB refuse every system schema name, in any letter case', ()
       assertEquals(validateManagedDatabaseCreateName(name, ['defaultdb'], id, spec.engine), {
         ok: false,
         error: 'reserved_database_name',
-        status: 400,
+        message: `'${name}' is a name the database engine keeps for itself. Pick a different database name.`,
+        status: 422,
       })
     }
   }
@@ -62,4 +63,22 @@ test('the reserved list applies to the MySQL family only', () => {
 test('an engine argument is optional and defaults to no reserved names', () => {
   const id = mysqlEngineSpec.userOperations.identifier
   assertEquals(validateManagedDatabaseCreateName('mysql', ['defaultdb'], id), null)
+})
+
+test('PostgreSQL refuses its built-in database names and the pg_ prefix on create', () => {
+  const id = postgresEngineSpec.userOperations.identifier
+  for (const name of ['postgres', 'template0', 'Template1', 'pg_stats', 'PG_x']) {
+    const result = validateManagedDatabaseCreateName(
+      name,
+      ['defaultdb'],
+      id,
+      postgresEngineSpec.engine
+    )
+    assertEquals(result?.error, 'reserved_database_name', name)
+    assertEquals(result?.status, 422, name)
+  }
+  assertEquals(
+    validateManagedDatabaseCreateName('pgdata', ['defaultdb'], id, postgresEngineSpec.engine),
+    null
+  )
 })
