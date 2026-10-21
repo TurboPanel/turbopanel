@@ -2595,6 +2595,11 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
    */
   noCache?: boolean
   /**
+   * Hide web server names and versions in responses and default error pages.
+   * Absent reads as off, so an older daemon changes nothing.
+   */
+  hideWebServerNames?: boolean
+  /**
    * `sequential`: the daemon stops the previous version, runs migrations,
    * starts the new one, gates on health and rolls back. Omitted for `inplace`
    * (and for a daemon that predates the field, which deploys in place).
@@ -4621,6 +4626,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       managedNetworkServices,
       managedNetwork: parseDeployManagedNetwork(value.managedNetwork, managedNetworkServices),
       noCache: parseOptionalDeployBoolean(value.noCache),
+      hideWebServerNames: parseOptionalDeployBoolean(value.hideWebServerNames),
       deployStrategy: parseDeployStrategyField(value.deployStrategy),
       migrations: parseDeployMigrationsField(value.migrations),
       healthTimeoutSeconds: parseHealthTimeoutField(value.healthTimeoutSeconds),

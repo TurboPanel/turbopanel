@@ -267,6 +267,7 @@ test('hostDefaultsGetResponse and PutResponse expose configured org values', () 
   assertEquals(hostDefaultsGetResponse({}), {
     sshPort: null,
     ntp: null,
+    hideWebServerNames: true,
     defaultFabricEnabled: false,
   })
   assertEquals(
@@ -279,9 +280,25 @@ test('hostDefaultsGetResponse and PutResponse expose configured org values', () 
       ok: true,
       sshPort: 2222,
       ntp: { enabled: true },
+      hideWebServerNames: true,
       defaultFabricEnabled: true,
     }
   )
+  assertEquals(hostDefaultsGetResponse({ hideWebServerNames: false }).hideWebServerNames, false)
+})
+
+test('parseHostDefaultsPatch takes hideWebServerNames as a boolean or null', () => {
+  assertEquals(parseHostDefaultsPatch({ hideWebServerNames: 'no' }), {
+    ok: false,
+    error: 'Invalid hideWebServerNames',
+    status: 400,
+  })
+  const off = parseHostDefaultsPatch({ hideWebServerNames: false })
+  if (!off.ok) throw new TypeError('expected hideWebServerNames patch')
+  assertEquals(off.patch.hideWebServerNames, false)
+  const cleared = parseHostDefaultsPatch({ hideWebServerNames: null })
+  if (!cleared.ok) throw new TypeError('expected hideWebServerNames clear')
+  assertEquals(cleared.patch.hideWebServerNames, null)
 })
 
 test('parseDefaultTimezonePatch rejects empty and invalid patches', () => {

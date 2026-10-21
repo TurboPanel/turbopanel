@@ -91,7 +91,7 @@ export const organizationSchemas = {
   },
   OrganizationHostDefaults: {
     type: 'object',
-    required: ['sshPort', 'ntp', 'defaultFabricEnabled'],
+    required: ['sshPort', 'ntp', 'hideWebServerNames', 'defaultFabricEnabled'],
     properties: {
       sshPort: {
         type: ['integer', 'null'],
@@ -117,6 +117,11 @@ export const organizationSchemas = {
             minItems: 1,
           },
         },
+      },
+      hideWebServerNames: {
+        type: 'boolean',
+        description:
+          'Hide web server names and versions (Server, Via and X-Powered-By headers, error-page footers). On unless set to false. Servers that set their own value keep it; the rest follow this one. Applies to a site on its next deploy.',
       },
       defaultFabricEnabled: {
         type: 'boolean',
@@ -151,6 +156,10 @@ export const organizationSchemas = {
             minItems: 1,
           },
         },
+      },
+      hideWebServerNames: {
+        type: ['boolean', 'null'],
+        description: 'Boolean, or null to clear (treated as on).',
       },
       defaultFabricEnabled: {
         type: ['boolean', 'null'],
@@ -1006,7 +1015,7 @@ export const organizationPaths: Record<string, unknown> = {
           },
         },
         '400': {
-          description: 'Invalid sshPort, ntp, or body',
+          description: 'Invalid sshPort, ntp, hideWebServerNames, or body',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },

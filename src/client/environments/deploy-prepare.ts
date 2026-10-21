@@ -207,6 +207,7 @@ import {
   storageCopy,
   tls,
 } from '../../db/schema.ts'
+import { loadHideWebServerNames } from '../../features/servers/web-server-settings.ts'
 import {
   checkResourceLimits,
   parseResourceLimits,
@@ -2894,6 +2895,9 @@ async function toPreparedDeployResult(
     ...(parts.edge?.hostingIngressNetwork === undefined
       ? {}
       : { hostingIngressNetwork: parts.edge.hostingIngressNetwork }),
+    ...(parts.edge?.hideWebServerNames === undefined
+      ? {}
+      : { hideWebServerNames: parts.edge.hideWebServerNames }),
     composeServiceExpansion: expansionToRecord(parts.expansion),
     volumes: parts.registeredVolumes,
     warnings: parts.warnings,
@@ -4667,7 +4671,12 @@ async function resolveSharedHttpHostingIngress(
  */
 type ServerEdgeDeployment = Pick<
   ServerDeployment,
-  'hostings' | 'tlsMaterial' | 'listenerPorts' | 'hostingIngress' | 'hostingIngressNetwork'
+  | 'hostings'
+  | 'tlsMaterial'
+  | 'listenerPorts'
+  | 'hostingIngress'
+  | 'hostingIngressNetwork'
+  | 'hideWebServerNames'
 >
 
 /**
@@ -4752,6 +4761,11 @@ async function compileServerEdgeDeployment(
     listenerPorts,
     ...(hostingIngress ? { hostingIngress } : {}),
     ...(hostingIngressNetwork ? { hostingIngressNetwork } : {}),
+    hideWebServerNames: await loadHideWebServerNames(
+      db,
+      params.serverId,
+      params.serverOrganizationId ?? params.organizationId
+    ),
   }
 }
 

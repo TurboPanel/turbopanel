@@ -88,7 +88,14 @@ changes.
   `ntp` (`null` inherits). List/detail expose effective `sshPort` /
   `sshPortSource` / `ntpDefaults` / `ntpDefaultsSource`; detail also adds
   `datacenterDefaultTimezone` / `datacenterEnforceServerTimezone`. Saving
-  defaults does **not** rewrite sshd or enqueue NTP/timezone commands. Multi-DC
+  defaults does **not** rewrite sshd or enqueue NTP/timezone commands.
+  `hideWebServerNames` (organization and server layers only; no migration, same
+  `options` jsonb) is on unless a layer says off: org `PUT …/host-defaults`
+  (`null` clears), server `PATCH options.hideWebServerNames` (`null` inherits);
+  list/detail expose the effective value and `hideWebServerNamesSource`. It is
+  read at deploy-prepare (`loadHideWebServerNames`, the server owner's
+  organization) and sent as `environment.deploy.hideWebServerNames`, so it takes
+  effect on each environment's next deploy; saving it enqueues nothing. Multi-DC
   membership inherits from the first pin after sort by datacenter id (same as
   timezone).
 - **Server services snapshot (client surface):** `GET /servers/:id/services`

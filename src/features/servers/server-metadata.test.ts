@@ -341,6 +341,8 @@ test('parseServerOptions and resolveEffectiveServerTimezone', () => {
       ntp: { enabled: true, servers: ['pool.ntp.org'] },
     }
   )
+  assertEquals(parseServerOptions({ hideWebServerNames: false }), { hideWebServerNames: false })
+  assertEquals(parseServerOptions({ hideWebServerNames: null }), {})
   assertEquals(parseServerOptions(null), null)
   assertEquals(parseServerOptions({}), {})
 
