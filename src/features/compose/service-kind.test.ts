@@ -1170,6 +1170,39 @@ test('php version series and extension membership are enforced', () => {
   )
 })
 
+test('php.version accepts offered series and refuses the rest', () => {
+  const versionIssues = (version?: string) =>
+    collectServiceTurbopanelValidationIssues({
+      blog: {
+        'x-turbopanel': {
+          serviceKind: 'site',
+          php: version === undefined ? { extensions: ['gd'] } : { version },
+        },
+      },
+    }).filter((issue) => issue.path === 'services.blog.x-turbopanel.php.version')
+
+  assertEquals(versionIssues('8.1'), [])
+  assertEquals(versionIssues('8.2'), [])
+  assertEquals(versionIssues('8.3'), [])
+  assertEquals(versionIssues('8.4'), [])
+  assertEquals(versionIssues('8.5'), [])
+  // Omitted version is the host default; save does not invent a pin.
+  assertEquals(versionIssues(), [])
+  assertEquals(
+    parseServiceTurbopanelExtension({
+      serviceKind: 'site',
+      php: { extensions: ['gd'] },
+    })?.php?.version,
+    undefined
+  )
+
+  const unsupported = (version: string) =>
+    `PHP ${version} is not supported; supported: 8.1, 8.2, 8.3, 8.4, 8.5`
+  assertEquals(versionIssues('8.0')[0]?.message, unsupported('8.0'))
+  assertEquals(versionIssues('7.4')[0]?.message, unsupported('7.4'))
+  assertEquals(versionIssues('9.0')[0]?.message, unsupported('9.0'))
+})
+
 test('php settings and pool directives are validated key by key', () => {
   const issues = collectServiceTurbopanelValidationIssues({
     blog: {

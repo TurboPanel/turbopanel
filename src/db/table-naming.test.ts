@@ -17,12 +17,9 @@ const test = Deno.test.bind(Deno)
 /**
  * Physical table names that intentionally break the single-word rule (or the
  * leading-letter form of it) because an external model depends on the name.
- *
- * | Name | Why |
- * | --- | --- |
- * | `2fa` | Better Auth two-factor model — digit-leading physical name; map via schema model when wiring BA |
+ * None today: the last one (`2fa`) became `totp`.
  */
-const PHYSICAL_TABLE_NAME_EXCEPTIONS = new Set<string>(['2fa'])
+const PHYSICAL_TABLE_NAME_EXCEPTIONS = new Set<string>()
 
 /**
  * Every physical table name the owner has approved. The regex below only
@@ -34,6 +31,7 @@ const PHYSICAL_TABLE_NAME_EXCEPTIONS = new Set<string>(['2fa'])
  */
 const APPROVED_TABLE_NAMES = new Set<string>([
   'account',
+  'address',
   'allowance',
   'archive',
   'attempt',
@@ -41,7 +39,6 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'backup',
   'binding',
   'bulwark',
-  'capability',
   'certificate',
   'changeover',
   'channel',
@@ -49,17 +46,17 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'connection',
   'container',
   'copy',
+  'database',
   'datacenter',
   'delivery',
   'deployment',
   'dispatch',
   'edict',
-  'entitlement',
   'environment',
   'fabric',
+  // One service or volume directory per server under a site owner's tree.
+  'folder',
   'forge',
-  'generation',
-  'grant',
   'hosting',
   'hostname',
   'invitation',
@@ -69,6 +66,7 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'leaf',
   'lease',
   'license',
+  'login',
   'managed',
   'marker',
   'monitor',
@@ -79,6 +77,9 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'origin',
   'passkey',
   'payer',
+  'permission',
+  // `principal` × `server`: where a system principal is a Linux account (2026-10-13).
+  'placement',
   'principal',
   'project',
   'recovery',
@@ -88,11 +89,13 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'retention',
   'rule',
   'seat',
+  'scope',
   'secret',
   'server',
   'service',
   'session',
   'setting',
+  'share',
   'slot',
   'snapshot',
   'ssh',
@@ -107,10 +110,12 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'tenancy',
   'tier',
   'tls',
+  'totp',
   'upgrade',
   'user',
   'variable',
   'verification',
+  'watch',
   'workspace',
 ])
 
@@ -288,9 +293,6 @@ test('migrations/ CREATE TABLE names are single lower-case words', async () => {
   if (!unique.includes('task')) {
     throw new TypeError('expected cron table "task"')
   }
-  if (!unique.includes('entitlement')) {
-    throw new TypeError('expected principal-runtime-grant table "entitlement"')
-  }
   if (!unique.includes('ssh')) {
     throw new TypeError('expected principal-ssh-key table "ssh"')
   }
@@ -314,7 +316,8 @@ test('migrations/ CREATE TABLE names are single lower-case words', async () => {
     }
   }
 
-  assertEquals(unique.includes('2fa'), true)
+  assertEquals(unique.includes('totp'), true)
+  assertEquals(unique.includes('permission'), true)
 })
 
 test('every physical table name is owner-approved (or an explicit pending rename)', async () => {

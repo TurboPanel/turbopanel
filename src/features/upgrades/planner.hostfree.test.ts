@@ -2,6 +2,7 @@ import { assertEquals } from '@std/assert'
 import {
   batchIndexFor,
   computeBatchSize,
+  orderServersConnectedFirst,
   type PlanInput,
   planSingleServer,
   planUpgrade,
@@ -159,4 +160,63 @@ test('every fleet server lands in exactly one wave for any batch size', () => {
     const size = computeBatchSize(batch, ids.length)
     assertEquals(Math.max(...steps.map((s) => s.batchIndex)), Math.ceil(ids.length / size) - 1)
   }
+})
+
+test('orderServersConnectedFirst keeps relative order inside each group', () => {
+  assertEquals(
+    orderServersConnectedFirst(
+      ['studio', 'io-1', 'alpha', 'io-2', 'beta'],
+      new Set(['alpha', 'beta'])
+    ),
+    ['alpha', 'beta', 'studio', 'io-1', 'io-2']
+  )
+})
+
+test('fleet steps put connected servers before offline ones, stable within each group', () => {
+  const plan = planUpgrade(
+    input({
+      fleetServerIds: ['studio', 'io-1', 'alpha', 'io-2', 'beta'],
+      connectedServerIds: ['alpha', 'beta'],
+      batch: { mode: 'count', value: 1 },
+    })
+  )
+  const fleet = plan.phases.find((p) => p.phase === 'fleet')
+  assertEquals(
+    fleet?.steps.map((s) => s.serverId),
+    ['alpha', 'beta', 'studio', 'io-1', 'io-2']
+  )
+  assertEquals(
+    fleet?.steps.map((s) => s.batchIndex),
+    [0, 1, 2, 3, 4]
+  )
+})
+
+test('a run with only offline servers keeps fleet order', () => {
+  const ids = ['studio', 'io-1', 'io-2']
+  const plan = planUpgrade(
+    input({
+      fleetServerIds: ids,
+      connectedServerIds: [],
+      batch: { mode: 'count', value: 1 },
+    })
+  )
+  assertEquals(
+    plan.phases.find((p) => p.phase === 'fleet')?.steps.map((s) => s.serverId),
+    ids
+  )
+})
+
+test('a run with only connected servers keeps fleet order', () => {
+  const ids = ['alpha', 'beta', 'gamma']
+  const plan = planUpgrade(
+    input({
+      fleetServerIds: ids,
+      connectedServerIds: ids,
+      batch: { mode: 'count', value: 1 },
+    })
+  )
+  assertEquals(
+    plan.phases.find((p) => p.phase === 'fleet')?.steps.map((s) => s.serverId),
+    ids
+  )
 })

@@ -1,5 +1,5 @@
 /**
- * Host metrics wire contract (daemon → instance). Mirrored in instance
+ * Host metrics wire contract (daemon → instance). Mirrored in the daemon's
  * `src/contracts/metrics-contract.ts`.
  *
  * Metrics are grouped by entity (host, network device, filesystem, block

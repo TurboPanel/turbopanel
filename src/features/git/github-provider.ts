@@ -178,6 +178,21 @@ function githubReadFailure(error: unknown): GitProviderFailure {
 }
 
 /**
+ * The commit lookup for a read, with one answer kept: GitHub replies **422**
+ * ("No commit found for SHA") when the repository is visible but the ref does
+ * not exist. That is the answer a connected server would also get, so it is
+ * reported as such instead of sending the read on to a server to clone and
+ * fail. A missing or invisible repository is a 404, and every other failure
+ * keeps the status-less fallback described on {@link githubReadFailure}.
+ */
+function githubCommitLookupFailure(error: unknown): GitProviderFailure {
+  if (error instanceof GithubAppTokenError && error.status === 422) {
+    return { failure: 'github ref not found', status: 404, reason: 'ref_not_found' }
+  }
+  return githubReadFailure(error)
+}
+
+/**
  * The public default branch GitHub advertises for a github.com HTTPS clone
  * URL, via anonymous REST. No App, no token.
  *
@@ -452,7 +467,7 @@ export const githubProvider: GitProvider = {
     try {
       commitSha = (await resolveGithubCommit(auth, params.row.repositoryUrl, params.ref)).commitSha
     } catch (error) {
-      return githubReadFailure(error)
+      return githubCommitLookupFailure(error)
     }
 
     const maxBytes = params.maxBytesPerFile ?? MAX_REPOSITORY_FILE_BYTES
@@ -490,7 +505,7 @@ export const githubProvider: GitProvider = {
     try {
       commitSha = (await resolveGithubCommit(auth, params.row.repositoryUrl, params.ref)).commitSha
     } catch (error) {
-      return githubReadFailure(error)
+      return githubCommitLookupFailure(error)
     }
 
     const parsed = parseRepositoryOwnerRepo(params.row.repositoryUrl)

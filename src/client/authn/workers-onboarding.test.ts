@@ -303,12 +303,17 @@ it('Workers sign-up creates an organization for the new user', async () => {
 
     const organizationId = memberRows[0].organizationId
     const orgRows = await db
-      .select({ id: organization.id })
+      .select({ id: organization.id, name: organization.name })
       .from(organization)
       .where(eq(organization.id, organizationId))
       .limit(1)
     if (orgRows.length !== 1) {
       throw new Error(`expected organization row for ${organizationId}`)
+    }
+    if (orgRows[0]?.name !== `${email}'s organization`) {
+      throw new Error(
+        `expected org name ${email}'s organization, got ${orgRows[0]?.name ?? 'null'}`
+      )
     }
 
     const workspaceRows = await db

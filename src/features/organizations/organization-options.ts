@@ -9,8 +9,14 @@ import {
   type PrincipalNameScheme,
   resolveOrgPrincipalNameScheme,
 } from '../../lib/principal-name-scheme.ts'
-import { isValidDisplayName, normalizeDisplayName } from '../../lib/display-name-format.ts'
-import { type NtpDefaults, parseNtpDefaults, parseSshPort } from '../servers/host-defaults.ts'
+import { isValidEnvironmentName } from '../../contracts/directory-names.ts'
+import { normalizeDisplayName } from '../../lib/display-name-format.ts'
+import {
+  type NtpDefaults,
+  parseHideWebServerNames,
+  parseNtpDefaults,
+  parseSshPort,
+} from '../servers/host-defaults.ts'
 import {
   type ManagedOrganizationDefaults,
   parseManagedOrganizationDefaults,
@@ -24,6 +30,11 @@ import {
   parseOrganizationDockerNetworking,
 } from '../deploy/docker-address-pools.ts'
 import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
+import {
+  DEFAULT_DIRECTORY_NAME_MODE,
+  type DirectoryNameMode,
+  isDirectoryNameMode,
+} from '../folders/vocabulary.ts'
 
 /** Platform fallback when `defaultEnvironmentName` is unset. */
 export const DEFAULT_ENVIRONMENT_NAME = 'production'
@@ -64,6 +75,11 @@ export type OrganizationOptions = {
   /** Desired NTP client settings inherited by datacenters and servers. */
   ntp?: NtpDefaults
   /**
+   * Hide web server names and versions on servers that do not set their own.
+   * Omitted → on.
+   */
+  hideWebServerNames?: boolean
+  /**
    * Preferred TurboFabric state for this organization. Does not create or tear
    * down the mesh — `PUT /organizations/:id/fabric` remains the enable path.
    */
@@ -94,6 +110,19 @@ export type OrganizationOptions = {
    * `principal_scheme_locked`. Never renames existing principals.
    */
   principalNameSchemeLocked?: boolean
+  /**
+   * How service and volume folders are named for the whole organization:
+   * `slug` (a readable name), `uuid` (the asset id) or `both` (a choice per
+   * asset, default slug). Absent means `slug`. Never renames an existing
+   * folder. See `features/folders/names.ts`.
+   */
+  directoryNames?: DirectoryNameMode
+  /**
+   * True once the first folder exists for the organization (written when that
+   * folder is planned) or a manager locks it by hand. While true the setting
+   * cannot change and a create asking for another kind of name is refused.
+   */
+  directoryNamesLocked?: boolean
   /**
    * Display unit for temperature metrics (chart axes, tooltips, thresholds).
    * Platform fallback is {@link DEFAULT_TEMPERATURE_UNIT} (`celsius`).
@@ -222,16 +251,25 @@ export function parseDefaultEnvironmentNameInput(
 ): { ok: true; value: string | null } | { ok: false } {
   if (value === null) return { ok: true, value: null }
   if (typeof value !== 'string') return { ok: false }
+  // The default becomes the folder name of the first environment of every new
+  // project, so it has to be a valid environment name, not just a display name.
   const normalized = normalizeDisplayName(value)
-  if (!isValidDisplayName(normalized)) {
+  if (!isValidEnvironmentName(normalized)) {
     return { ok: false }
   }
   return { ok: true, value: normalized }
 }
 
-/** Resolved scaffold name: option when set, else platform fallback. */
+/**
+ * Resolved scaffold name: option when set and still a valid environment name,
+ * else the platform fallback (a value saved before names became folder names
+ * is not used).
+ */
 export function resolveDefaultEnvironmentName(options: OrganizationOptions): string {
-  return options.defaultEnvironmentName ?? DEFAULT_ENVIRONMENT_NAME
+  const configured = options.defaultEnvironmentName
+  return configured !== undefined && isValidEnvironmentName(configured)
+    ? configured
+    : DEFAULT_ENVIRONMENT_NAME
 }
 
 function assignTrimmedOption(
@@ -248,6 +286,14 @@ function assignMaxServers(options: OrganizationOptions, value: Record<string, un
   if (!('maxServers' in value)) return
   const parsed = parseMaxServersInput(value.maxServers)
   if (parsed.ok) options.maxServers = parsed.value
+}
+
+function assignHideWebServerNames(
+  options: OrganizationOptions,
+  value: Record<string, unknown>
+): void {
+  const hide = parseHideWebServerNames(value.hideWebServerNames)
+  if (hide !== undefined) options.hideWebServerNames = hide
 }
 
 function assignManagedDatabase(options: OrganizationOptions, value: Record<string, unknown>): void {
@@ -306,6 +352,7 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (sshPort !== undefined) options.sshPort = sshPort
   const ntp = parseNtpDefaults(value.ntp)
   if (ntp) options.ntp = ntp
+  assignHideWebServerNames(options, value)
   if (typeof value.defaultFabricEnabled === 'boolean') {
     options.defaultFabricEnabled = value.defaultFabricEnabled
   }
@@ -337,7 +384,29 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   }
   assignComposeDefaultResourceLimits(options, value)
   assignPhpModes(options, value)
+  assignDirectoryNames(options, value)
   return options
+}
+
+function assignDirectoryNames(
+  options: Pick<OrganizationOptions, 'directoryNames' | 'directoryNamesLocked'>,
+  value: Record<string, unknown>
+): void {
+  if (isDirectoryNameMode(value.directoryNames)) options.directoryNames = value.directoryNames
+  if (typeof value.directoryNamesLocked === 'boolean') {
+    options.directoryNamesLocked = value.directoryNamesLocked
+  }
+}
+
+/** Effective folder-name mode and lock for new services and volumes. */
+export function resolveDirectoryNames(options: OrganizationOptions): {
+  mode: DirectoryNameMode
+  locked: boolean
+} {
+  return {
+    mode: options.directoryNames ?? DEFAULT_DIRECTORY_NAME_MODE,
+    locked: options.directoryNamesLocked === true,
+  }
 }
 
 function assignPhpModes(options: { phpModes?: PhpMode[] }, value: Record<string, unknown>): void {

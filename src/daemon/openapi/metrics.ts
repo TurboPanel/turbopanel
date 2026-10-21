@@ -184,7 +184,7 @@ export const metricsSchemas = {
       extended: {
         type: 'object',
         description:
-          "v8 additions: host counters (`host`), Docker health and totals (`docker`), hosting-Caddy certificate expiry (`ingress`), free text (`text`), per-drive / per-GPU text (`blockDeviceText`, `gpuText`) and the sizes the sample's percentages are measured against (`sizes` for the host, `filesystemSizes` and `gpuSizes` per entity id). An unknown size is left out, never sent as 0. Every key is optional; unknown keys are rejected.",
+          "v8 additions: host counters (`host`), Docker health and totals (`docker`), hosting-Caddy certificate expiry (`ingress`), free text (`text`), per-drive / per-GPU text (`blockDeviceText`, `gpuText`) and the sizes the sample's percentages are measured against (`sizes` for the host, `filesystemSizes`, `gpuSizes` and `networkSizes` per entity id, the last being each NIC's link speed). An unknown size is left out, never sent as 0. Every key is optional; unknown keys are rejected.",
         properties: {
           host: { type: 'object' },
           docker: { type: 'object' },
@@ -195,6 +195,7 @@ export const metricsSchemas = {
           sizes: { type: 'object' },
           filesystemSizes: { type: 'array', items: { type: 'object' } },
           gpuSizes: { type: 'array', items: { type: 'object' } },
+          networkSizes: { type: 'array', items: { type: 'object' } },
         },
         additionalProperties: false,
       },

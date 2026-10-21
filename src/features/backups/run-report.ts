@@ -34,12 +34,13 @@ import { COPY_BACKUP_ARTIFACT_EXTENSION } from '../../contracts/commands/schemas
 import { isManagedBackupArtifactExtension } from '../managed/types.ts'
 import { insertManagedBackup } from './backup-records.ts'
 import { deletePrunedArchives, insertArchive } from './archive-records.ts'
+import { BACKUP_ROOT_FOLDERS, backupRelativePath } from './vocabulary.ts'
 
 /** Stored failure text is bounded; the daemon caps it at the same length. */
 export const MAX_BACKUP_RUN_ERROR_CHARS = 2000
 
-/** An absolute path in a charset a backup directory plausibly uses. */
-const ARTIFACT_PATH_RE = /^\/[\w .@+/-]+$/
+/** A path (relative to the backup root, or absolute) in a charset a backup directory plausibly uses. */
+const ARTIFACT_PATH_RE = /^\/?[\w .@+/-]+$/
 
 export type BackupRunReportOutcome = { ok: true } | { ok: false; error: string }
 
@@ -114,18 +115,28 @@ function checkRunConsistency(report: BackupRunReportMessage): string | null {
 }
 
 /**
- * The artifact must sit in this policy's own directory for this target:
- * `<backupDir>/<managedId>/policy-<policyId>/<backupId>.<ext>` for an engine,
- * `<backupDir>/copies/<copyId>/policy-<policyId>/<backupId>.tar.gz` for a copy.
+ * The artifact must sit in this policy's own directory for this target, relative
+ * to the backup root: `managed/<managedId>/policy-<policyId>/<backupId>.<ext>` for
+ * an engine, `volumes/<copyId>/policy-<policyId>/<backupId>.tar.gz` for a copy.
  */
+function targetId(target: BackupRunTarget): string {
+  return target.kind === 'managed' ? target.managedId : target.copyId
+}
+
 function checkArtifactPath(report: BackupRunReportMessage, target: BackupRunTarget): string | null {
   const path = report.path ?? ''
   if (!ARTIFACT_PATH_RE.test(path)) return 'invalid artifact path'
-  const directory = target.kind === 'managed' ? `/${target.managedId}` : `/copies/${target.copyId}`
-  const prefix = `${directory}/policy-${report.policyId}/${report.backupId}.`
-  const cut = path.lastIndexOf(prefix)
-  if (cut < 0) return 'artifact path is outside the policy directory'
-  const extension = path.slice(cut + prefix.length)
+  if (
+    path
+      .split('/')
+      .some((part, index) => part === '..' || part === '.' || (part === '' && index > 0))
+  ) {
+    return 'invalid artifact path'
+  }
+  const relative = backupRelativePath(path, target.kind, targetId(target))
+  const prefix = `${BACKUP_ROOT_FOLDERS[target.kind]}/${targetId(target)}/policy-${report.policyId}/${report.backupId}.`
+  if (!relative.startsWith(prefix)) return 'artifact path is outside the policy directory'
+  const extension = relative.slice(prefix.length)
   const valid =
     target.kind === 'managed'
       ? isManagedBackupArtifactExtension(extension)
@@ -175,7 +186,7 @@ function toRunRecord(
       backupId: report.backupId ?? '',
       sizeBytes: report.sizeBytes ?? 0,
       checksum: report.checksum ?? '',
-      path: report.path ?? '',
+      path: backupRelativePath(report.path ?? '', target.kind, targetId(target)),
     }
   }
   return record
@@ -256,6 +267,7 @@ async function recordManagedArtifacts(
       path: record.artifact.path,
       createdAt: record.finishedAt,
       retentionId: record.policyId,
+      serverId: record.serverId,
     })
   }
   if (record.pruned.length > 0) {

@@ -9,6 +9,7 @@ import type {
 } from '../features/servers/server-metadata.ts'
 import type { MetricsCapabilityPlan } from './capability-plan.ts'
 import type { ServiceRunState } from './service-run-state.ts'
+import type { ManagedPermissionsObserved } from '../features/managed/privileges/observed.ts'
 import { isValidWireguardEndpoint, isValidWireguardPublicKey } from '../features/fabric/wg.ts'
 
 export type DaemonBuildInfo = {
@@ -175,6 +176,62 @@ export type UpdateProgressMessage = {
   errorCode?: string
 }
 
+/** Where one deploy step stands. Twin of the daemon's `cell-messages.ts`. */
+export type CommandProgressStepState =
+  | 'ready' // already on the server, nothing to do (shown ticked from the start)
+  | 'pending' // planned, not started
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'skipped' // never ran because an earlier step failed or the deploy was cancelled
+
+export const COMMAND_PROGRESS_STEP_STATES = [
+  'ready',
+  'pending',
+  'running',
+  'done',
+  'failed',
+  'skipped',
+] as const
+
+export type CommandProgressStep = {
+  /** Stable id: a kind, optionally `:` and a target (`install-php:8.3`). */
+  id: string
+  /** Plain words, user facing, no vendor platform names. */
+  label: string
+  state: CommandProgressStepState
+  startedAt?: string
+  finishedAt?: string
+  /** Live one-line detail for the running step (the install step the server is on). */
+  detail?: string
+}
+
+/**
+ * The step plan of one command and where it stands. Every message carries
+ * the whole payload, so a lost one is harmless; the control plane stores the
+ * latest copy on `command.progress`.
+ */
+export type CommandProgress = {
+  version: 1
+  /** In execution order, at most {@link MAX_DAEMON_WS_PROGRESS_STEPS}. */
+  steps: CommandProgressStep[]
+  /** Id of the running step, or null when none is running. */
+  current: string | null
+  updatedAt: string
+}
+
+/**
+ * Fire-and-forget deploy progress. No correlated request: it must not
+ * complete the pending `command-dispatch` it describes.
+ */
+export type CommandProgressMessage = {
+  type: 'command-progress'
+  id: string
+  commandId: string
+  at: string
+  progress: CommandProgress
+}
+
 /**
  * JSON messages exchanged between the instance and daemon over /ws.
  *
@@ -308,6 +365,38 @@ export type ManagedHealthObservedMember = {
   }
 }
 
+/**
+ * Ask a host for the current permissions of some logins on one managed
+ * cluster it runs (feature `managed-permissions-read-v1`). Read only.
+ * Twin of the daemon's `ManagedPermissionsRequestMessage`.
+ */
+export type ManagedPermissionsRequestMessage = {
+  type: 'managed-permissions-request'
+  id: string
+  managedId: string
+  engine: string
+  /** Applied engine usernames (up to {@link MAX_DAEMON_WS_PERMISSIONS_LOGINS}). */
+  logins: string[]
+  /** Postgres: databases whose objects to read. Ignored for MySQL and MariaDB. */
+  databases: string[]
+  at: string
+}
+
+/**
+ * The host's answer: what the engine reports, bounded to
+ * {@link MAX_DAEMON_WS_PERMISSIONS_JSON_BYTES}. The control plane parses
+ * `permissions` with `parseManagedPermissionsObserved`.
+ * Twin of the daemon's `ManagedPermissionsResultMessage`.
+ */
+export type ManagedPermissionsResultMessage = {
+  type: 'managed-permissions-result'
+  id: string
+  ok: boolean
+  permissions?: ManagedPermissionsObserved
+  error?: string
+  at: string
+}
+
 /** One replica in a `managed-health-report`: `down`, or its reading. */
 export type ManagedHealthReportMember = {
   managedId: string
@@ -423,6 +512,8 @@ export type DaemonMessage =
       error?: string
       at: string
     }
+  | ManagedPermissionsRequestMessage
+  | ManagedPermissionsResultMessage
   | {
       /**
        * Daemon-initiated, fire-and-forget: every managed replica the host runs,
@@ -736,6 +827,7 @@ export type DaemonMessage =
     }
   | InstanceUpdateMessage
   | UpdateProgressMessage
+  | CommandProgressMessage
   | InstanceUpdateResultMessage
   | {
       type: 'command-dispatch'
@@ -781,6 +873,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'addresses-result',
   'managed-logs-result',
   'managed-health-result',
+  'managed-permissions-result',
   'container-logs-result',
   'metrics-live-start-result',
   'metrics-live-stop-result',
@@ -804,6 +897,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'update-result',
   'instance-update-result',
   'update-progress',
+  'command-progress',
   'command-ack',
   'command-outcome',
 ] as const)
@@ -823,6 +917,21 @@ export const MAX_DAEMON_WS_FEATURE_CHARS = 64
 /** Max characters for `update-progress.errorCode`. */
 export const MAX_DAEMON_WS_ERROR_CODE_CHARS = 64
 
+/** Max steps in one `command-progress.progress.steps`. */
+export const MAX_DAEMON_WS_PROGRESS_STEPS = 24
+
+/** Max characters for one `command-progress` step id. */
+export const MAX_DAEMON_WS_PROGRESS_STEP_ID_CHARS = 64
+
+/** Max characters for one `command-progress` step label. */
+export const MAX_DAEMON_WS_PROGRESS_LABEL_CHARS = 60
+
+/** Max characters for one `command-progress` step detail line. */
+export const MAX_DAEMON_WS_PROGRESS_DETAIL_CHARS = 200
+
+/** Max serialized size of one `command-progress.progress` payload. */
+export const MAX_DAEMON_WS_PROGRESS_JSON_BYTES = 8 * 1024
+
 /** Max characters for daemon-reported error strings. */
 export const MAX_DAEMON_WS_ERROR_CHARS = 4 * 1024
 
@@ -833,6 +942,13 @@ export const MAX_DAEMON_WS_LOGS_CHARS = 200 * 1024
 export const MAX_DAEMON_WS_MANAGED_HEALTH_FIELD_CHARS = 128
 /** Bound for a replica's opaque GTID set text (`receivedGtid`, `executedGtid`). */
 export const MAX_DAEMON_WS_MANAGED_GTID_CHARS = 4096
+
+/** Max logins in one `managed-permissions-request`. */
+export const MAX_DAEMON_WS_PERMISSIONS_LOGINS = 50
+/** Max databases in one `managed-permissions-request`. */
+export const MAX_DAEMON_WS_PERMISSIONS_DATABASES = 100
+/** Max UTF-8 bytes of `managed-permissions-result.permissions` JSON. */
+export const MAX_DAEMON_WS_PERMISSIONS_JSON_BYTES = 128 * 1024
 
 /** Max UTF-8 bytes of `metrics-capabilities-result.capabilities` JSON. */
 export const MAX_DAEMON_WS_CAPABILITIES_BYTES = 96 * 1024
@@ -1014,6 +1130,89 @@ function validateUpdateProgressFields(record: Record<string, unknown>): string |
     validateOptionalBoundedString(record.detail, 'detail', MAX_DAEMON_WS_ERROR_CHARS) ??
     validateOptionalBoundedString(record.errorCode, 'errorCode', MAX_DAEMON_WS_ERROR_CODE_CHARS)
   )
+}
+
+/**
+ * Envelope of a `command-progress` frame. The `progress` payload itself is
+ * checked by {@link validateCommandProgress} at the handler: a daemon one
+ * release ahead may send a step shape this build does not know, and that
+ * must drop the payload, not the socket.
+ */
+function validateCommandProgressFields(record: Record<string, unknown>): string | null {
+  if (!isBoundedId(record.id)) return 'invalid id'
+  if (!isBoundedId(record.commandId)) return 'invalid commandId'
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
+  return null
+}
+
+const COMMAND_PROGRESS_STEP_STATE_SET = new Set<string>(COMMAND_PROGRESS_STEP_STATES)
+
+function validateBoundedString(value: unknown, field: string, maxChars: number): string | null {
+  if (typeof value !== 'string' || value.length === 0) return `invalid ${field}`
+  if (value.length > maxChars) return `${field} exceeds max length`
+  return null
+}
+
+function validateCommandProgressStep(value: unknown, index: number): string | null {
+  if (!isRecord(value)) return `invalid step ${index}`
+  if (typeof value.state !== 'string' || !COMMAND_PROGRESS_STEP_STATE_SET.has(value.state)) {
+    return `invalid step ${index} state`
+  }
+  return (
+    validateBoundedString(value.id, `step ${index} id`, MAX_DAEMON_WS_PROGRESS_STEP_ID_CHARS) ??
+    validateBoundedString(value.label, `step ${index} label`, MAX_DAEMON_WS_PROGRESS_LABEL_CHARS) ??
+    validateOptionalBoundedString(
+      value.detail,
+      `step ${index} detail`,
+      MAX_DAEMON_WS_PROGRESS_DETAIL_CHARS
+    ) ??
+    validateOptionalIsoTimestamp(value.startedAt, `step ${index} startedAt`) ??
+    validateOptionalIsoTimestamp(value.finishedAt, `step ${index} finishedAt`)
+  )
+}
+
+/**
+ * Shape and size of one {@link CommandProgress} payload. `null` when it is
+ * acceptable, otherwise the reason. Steps are capped at
+ * {@link MAX_DAEMON_WS_PROGRESS_STEPS}, every string at its own cap, and the
+ * whole payload at {@link MAX_DAEMON_WS_PROGRESS_JSON_BYTES}.
+ */
+export function validateCommandProgress(value: unknown): string | null {
+  if (!isRecord(value)) return 'invalid progress'
+  if (value.version !== 1) return 'invalid progress version'
+  if (!isIsoTimestamp(value.updatedAt)) return 'invalid progress updatedAt'
+  if (value.current !== null && !isBoundedId(value.current)) return 'invalid progress current'
+  if (!Array.isArray(value.steps)) return 'invalid progress steps'
+  if (value.steps.length > MAX_DAEMON_WS_PROGRESS_STEPS) return 'progress steps exceed max entries'
+  return (
+    validateCommandProgressSteps(value.steps, value.current) ??
+    validateBoundedJson(value, MAX_DAEMON_WS_PROGRESS_JSON_BYTES, 'progress')
+  )
+}
+
+/**
+ * The plan as a whole: every step well formed, ids unique, at most one step
+ * running, and `current` naming exactly that step (or null when none runs).
+ */
+function validateCommandProgressSteps(steps: unknown[], current: unknown): string | null {
+  const ids = new Set<string>()
+  let running: string | null = null
+  for (const [index, step] of steps.entries()) {
+    const issue = validateCommandProgressStep(step, index)
+    if (issue) return issue
+    const { id, state } = step as CommandProgressStep
+    if (ids.has(id)) return `duplicate step id ${id}`
+    ids.add(id)
+    if (state !== 'running') continue
+    if (running !== null) return 'more than one running step'
+    running = id
+  }
+  return current === running ? null : 'progress current does not match the running step'
+}
+
+/** {@link validateCommandProgress} as a type guard. */
+export function isCommandProgress(value: unknown): value is CommandProgress {
+  return validateCommandProgress(value) === null
 }
 
 function validateAddressesResultFields(record: Record<string, unknown>): string | null {
@@ -1461,6 +1660,20 @@ function validateManagedHealthResultFields(record: Record<string, unknown>): str
   return validateManagedHealthMember(record.member)
 }
 
+function validateManagedPermissionsResultFields(record: Record<string, unknown>): string | null {
+  const base = validateOkResultFields(record)
+  if (base) return base
+  if (record.permissions === undefined) return null
+  if (typeof record.permissions !== 'object' || record.permissions === null) {
+    return 'invalid permissions'
+  }
+  return validateBoundedJson(
+    record.permissions,
+    MAX_DAEMON_WS_PERMISSIONS_JSON_BYTES,
+    'permissions'
+  )
+}
+
 /**
  * What the host did with a `deploy-cancel`: `cancelling` (it was told to stop;
  * the deploy command's own outcome says how it ended), `too_late` (the deploy
@@ -1611,6 +1824,8 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateManagedLogsResultFields(record)
     case 'managed-health-result':
       return validateManagedHealthResultFields(record)
+    case 'managed-permissions-result':
+      return validateManagedPermissionsResultFields(record)
     case 'repo-read-result':
       return validateRepoReadResultFields(record)
     case 'repo-default-branch-result':
@@ -1650,6 +1865,8 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateCommandOutcomeFields(record)
     case 'update-progress':
       return validateUpdateProgressFields(record)
+    case 'command-progress':
+      return validateCommandProgressFields(record)
     default:
       return `disallowed type ${String(record.type)}`
   }
@@ -1728,6 +1945,7 @@ function validateInboundEnvelopeKind(inbound: DaemonInboundEnvelope): string | n
       return validateRepoReadEnvelope(inbound)
     case 'repo-default-branch-result':
     case 'managed-health-result':
+    case 'managed-permissions-result':
       return validateOptionalError(inbound.error)
     case 'fabric-paths-result':
       return validateFabricPathsEnvelope(inbound)
@@ -1807,6 +2025,13 @@ export type DaemonOutboundEnvelope =
       memberId: string
       role: 'primary' | 'replica'
       engine: string
+    })
+  | (OutboundEnvelopeBase & {
+      kind: 'managed-permissions-request'
+      managedId: string
+      engine: string
+      logins: string[]
+      databases: string[]
     })
   | (OutboundEnvelopeBase & {
       kind: 'container-logs-request'
@@ -1928,6 +2153,14 @@ export type DaemonInboundEnvelope =
       at: string
       ok: boolean
       member?: ManagedHealthObservedMember
+      error?: string
+    }
+  | {
+      kind: 'managed-permissions-result'
+      requestId: string
+      at: string
+      ok: boolean
+      permissions?: ManagedPermissionsObserved
       error?: string
     }
   | {
@@ -2093,9 +2326,10 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
     case 'acme-issuance-event':
     case 'instance-acme-issuance-event':
     case 'update-progress':
+    case 'command-progress':
       // Fire-and-forget (or session setup). Not a correlated request.
-      // `update-progress` must stay in this list: it never completes a
-      // pending update.
+      // `update-progress` and `command-progress` must stay in this list:
+      // neither completes a pending update or command.
       return null
 
     case 'addresses-result':
@@ -2120,6 +2354,15 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
         at: msg.at,
         ok: msg.ok,
         member: msg.member,
+        error: msg.error,
+      }
+    case 'managed-permissions-result':
+      return {
+        kind: 'managed-permissions-result',
+        requestId: msg.id,
+        at: msg.at,
+        ok: msg.ok,
+        permissions: msg.permissions,
         error: msg.error,
       }
     case 'container-logs-result':
@@ -2361,6 +2604,16 @@ export function outboundEnvelopeToWireMessage(env: DaemonOutboundEnvelope): Daem
         memberId: env.memberId,
         role: env.role,
         engine: env.engine,
+        at: env.at,
+      }
+    case 'managed-permissions-request':
+      return {
+        type: 'managed-permissions-request',
+        id: env.requestId,
+        managedId: env.managedId,
+        engine: env.engine,
+        logins: env.logins,
+        databases: env.databases,
         at: env.at,
       }
     case 'container-logs-request':

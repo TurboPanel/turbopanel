@@ -28,8 +28,10 @@ import {
 } from '../../contracts/capability-plan.ts'
 import { colocatedServerUpdateBlockedReason, type ServerUpdateCommit } from './update-status.ts'
 import {
+  parseHideWebServerNamesInput,
   parseNtpDefaultsInput,
   parseSshPortInput,
+  resolveEffectiveHideWebServerNames,
   resolveEffectiveNtpDefaults,
   resolveEffectiveSshPort,
   type NtpDefaults,
@@ -101,9 +103,10 @@ export type ServerPatchFields = {
   name?: string | null
   /** Pins `server.machine_class`; `null` clears the pin so ingest infers again. */
   machineClass?: ServerMachineClass | null
-  options?: Omit<ServerOptions, 'sshPort' | 'ntp'> & {
+  options?: Omit<ServerOptions, 'sshPort' | 'ntp' | 'hideWebServerNames'> & {
     sshPort?: number | null
     ntp?: NtpDefaults | null
+    hideWebServerNames?: boolean | null
   }
   /**
    * The request's `location` as parsed: fields to set, `null` fields to clear,
@@ -161,8 +164,20 @@ function parseServerPatchName(
   }
 }
 
+/** Overlay `hideWebServerNames` (`null` inherits); an error response when it is not a boolean. */
+function overlayHideWebServerNames(
+  options: NonNullable<ServerPatchFields['options']>,
+  raw: Record<string, unknown>
+): ServerRouteValidationError | null {
+  if (!('hideWebServerNames' in raw)) return null
+  const hide = parseHideWebServerNamesInput(raw.hideWebServerNames)
+  if (!hide.ok) return { ok: false, error: 'Invalid hideWebServerNames', status: 400 }
+  options.hideWebServerNames = hide.value
+  return null
+}
+
 /**
- * Overlay sshPort / ntp onto parsed server options. `null` clears inherit.
+ * Overlay sshPort / ntp / hideWebServerNames onto parsed server options. `null` clears inherit.
  */
 function parseServerPatchOptions(
   raw: unknown
@@ -176,6 +191,9 @@ function parseServerPatchOptions(
   // `options` is merged into the stored blob, so leaving `location` out of it
   // keeps the stored override.
   delete options.location
+  // Likewise the external-access setting: it only changes through its own route,
+  // which also tells the server.
+  delete options.managedExternalAccess
   if ('sshPort' in raw) {
     const sshPort = parseSshPortInput(raw.sshPort)
     if (!sshPort.ok) {
@@ -190,6 +208,8 @@ function parseServerPatchOptions(
     }
     options.ntp = ntp.value
   }
+  const hide = overlayHideWebServerNames(options, raw)
+  if (hide) return hide
   return { ok: true, options }
 }
 
@@ -495,6 +515,9 @@ export type ServerHostDefaultsFields = {
   sshPortSource: string | null
   ntpDefaults: NtpDefaults | null
   ntpDefaultsSource: string | null
+  /** Effective web server name hiding: this server's setting, else the organization's, else on. */
+  hideWebServerNames: boolean
+  hideWebServerNamesSource: string | null
 }
 
 export function resolveServerTimezoneFields(
@@ -521,11 +544,14 @@ export function resolveServerHostDefaultsFields(
   const serverOptions = parseServerOptions(rowOptions)
   const ssh = resolveEffectiveSshPort(serverOptions, dcOptions, orgOptions)
   const ntp = resolveEffectiveNtpDefaults(serverOptions, dcOptions, orgOptions)
+  const hide = resolveEffectiveHideWebServerNames(serverOptions, orgOptions)
   return {
     sshPort: ssh.sshPort,
     sshPortSource: ssh.source,
     ntpDefaults: ntp.ntp,
     ntpDefaultsSource: ntp.source,
+    hideWebServerNames: hide.hideWebServerNames,
+    hideWebServerNamesSource: hide.source,
   }
 }
 

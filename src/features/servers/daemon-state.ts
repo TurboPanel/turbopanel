@@ -94,13 +94,20 @@ function isPublicJwk(value: unknown): value is JsonWebKey {
   return isNonEmptyString(jwk.kty) && isNonEmptyString(jwk.crv) && isNonEmptyString(jwk.x)
 }
 
-const UPDATE_PROJECTION_STATUSES = new Set<UpdateProjection['status']>([
+/** Pinned to `server_daemon_update_status_check` by `src/db/enum-checks.test.ts`. */
+export const SERVER_DAEMON_UPDATE_STATUSES = [
   'idle',
   'updating',
   'done',
   'failed',
   'expired',
-])
+] as const
+/** Pinned to `server_offline_reason_check` by `src/db/enum-checks.test.ts`. */
+export const SERVER_OFFLINE_REASONS = ['disconnect', 'sweep_stale'] as const
+
+const UPDATE_PROJECTION_STATUSES = new Set<UpdateProjection['status']>(
+  SERVER_DAEMON_UPDATE_STATUSES
+)
 
 function parseUpdateProjection(raw: unknown): UpdateProjection | undefined {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {

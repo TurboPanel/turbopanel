@@ -3,20 +3,19 @@
  */
 
 import { assertEquals, assertMatch, assertRejects } from '@std/assert'
+import { isReservedPrincipalUsername } from '../../lib/naming.ts'
 import type { Db } from '../../db/connection.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { ensureManagedReplicationLogin } from '../managed/cluster-logins.ts'
+import { createManagedLogin } from '../managed/logins.ts'
 import {
   composeAliasShortUsername,
-  createManagedPrincipal,
   createPrincipal,
-  ensureManagedReplicationPrincipal,
   isManagedUsernameTaken,
   isServerPrincipalUsernameTaken,
   isUuid,
-  listManagedPrincipals,
   lockOrganizationsForUpdate,
-  PRINCIPAL_PROVIDERS,
   replaceTenancies,
   resolveManagedAppliedUsername,
   resolveManagedOwningOrganizationIds,
@@ -98,36 +97,44 @@ test('isUuid accepts v5-shaped ids and rejects garbage', () => {
 test('isServerPrincipalUsernameTaken short-circuits blank and hits/misses', async () => {
   assertEquals(await isServerPrincipalUsernameTaken({} as Db, 'org', '   '), false)
 
-  const hit = {
-    select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([{ id: 'p1' }]),
-            }),
-          }),
-        }),
-      }),
-    }),
-  } as unknown as Db
-  assertEquals(await isServerPrincipalUsernameTaken(hit, 'org', 'AppUser'), true)
-
-  const miss = {
-    select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([]),
-            }),
-          }),
-        }),
-      }),
-    }),
-  } as unknown as Db
-  assertEquals(await isServerPrincipalUsernameTaken(miss, 'org', 'free', 'exclude-me'), false)
+  assertEquals(
+    await isServerPrincipalUsernameTaken(poolProbeDb([{ id: 'p1' }]), 'org', 'AppUser'),
+    true
+  )
+  assertEquals(
+    await isServerPrincipalUsernameTaken(poolProbeDb([]), 'org', 'free', 'exclude-me'),
+    false
+  )
+  // A database login the organization made with the name takes it too.
+  assertEquals(
+    await isServerPrincipalUsernameTaken(poolProbeDb([], [{ id: 'l1' }]), 'org', 'appuser'),
+    true
+  )
 })
+
+/**
+ * The organization name pool is two probes: the principal table (a single-table
+ * select) and the user logins of the organization's clusters (a join chain).
+ */
+function poolProbeDb(
+  principalRows: Array<{ id: string }>,
+  loginRows: Array<{ id: string }> = []
+): Db {
+  const loginChain = {
+    innerJoin: () => loginChain,
+    where: () => ({ limit: () => Promise.resolve(loginRows) }),
+  }
+  return {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => Promise.resolve(principalRows),
+        }),
+        innerJoin: () => loginChain,
+      }),
+    }),
+  } as unknown as Db
+}
 
 test('replaceTenancies deletes inserts and no-ops when unchanged', async () => {
   let deleted: string[] | null = null
@@ -199,8 +206,6 @@ test('createPrincipal inserts principal and stewards in a transaction', async ()
     db,
     {
       organizationId: 'org-1',
-      kind: 'system',
-      provider: 'server',
       username: 'deploy',
       metadata: { a: 1 },
       options: { b: 2 },
@@ -213,33 +218,6 @@ test('createPrincipal inserts principal and stewards in a transaction', async ()
     (stewardValues as Array<{ serviceId: string }>).map((r) => r.serviceId),
     ['svc-1', 'svc-2']
   )
-})
-
-test('listManagedPrincipals orders and projects columns', async () => {
-  const db = {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          orderBy: () =>
-            Promise.resolve([
-              {
-                id: 'p1',
-                kind: 'database',
-                provider: 'postgres',
-                username: 'app',
-                managedId: 'm1',
-                metadata: null,
-                options: null,
-                createdAt: 't0',
-                updatedAt: 't1',
-              },
-            ]),
-        }),
-      }),
-    }),
-  } as unknown as Db
-  const rows = await listManagedPrincipals(db, 'm1')
-  assertEquals(rows[0]?.username, 'app')
 })
 
 test('resolveManagedOwningOrganizationIds unions members and extras sorted', async () => {
@@ -281,36 +259,28 @@ test('isManagedUsernameTaken handles empty orgs and hits', async () => {
   assertEquals(await isManagedUsernameTaken({} as Db, [], 'app'), false)
   assertEquals(await isManagedUsernameTaken({} as Db, ['org'], '  '), false)
 
-  const hit = {
-    select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([{ id: 'p' }]),
-            }),
-          }),
-        }),
-      }),
-    }),
-  } as unknown as Db
-  assertEquals(await isManagedUsernameTaken(hit, ['org'], 'Root', 'exclude'), true)
+  assertEquals(
+    await isManagedUsernameTaken(poolProbeDb([{ id: 'p' }]), ['org'], 'Root', 'exclude'),
+    true
+  )
+  assertEquals(await isManagedUsernameTaken(poolProbeDb([]), ['org'], 'Root'), false)
 })
 
+/**
+ * Answers every name probe: the principal pool query (`from.where.limit`) and
+ * the login query (`from.innerJoin.innerJoin.where.limit`) share one row source.
+ */
+function nameProbeDb(rows: () => unknown[]): Db {
+  const chain = {
+    innerJoin: () => chain,
+    where: () => chain,
+    limit: () => Promise.resolve(rows()),
+  }
+  return { select: () => ({ from: () => chain }) } as unknown as Db
+}
+
 test('resolveManagedAppliedUsername prefers free short name without suffix', async () => {
-  const free = {
-    select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([]),
-            }),
-          }),
-        }),
-      }),
-    }),
-  } as unknown as Db
+  const free = nameProbeDb(() => [])
 
   const preferred = await resolveManagedAppliedUsername(
     free,
@@ -322,23 +292,11 @@ test('resolveManagedAppliedUsername prefers free short name without suffix', asy
   assertEquals(preferred, 'root')
 
   let takenCalls = 0
-  const takenThenFree = {
-    select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => {
-                takenCalls += 1
-                // preferred taken, suffixed free
-                return Promise.resolve(takenCalls === 1 ? [{ id: 'x' }] : [])
-              },
-            }),
-          }),
-        }),
-      }),
-    }),
-  } as unknown as Db
+  const takenThenFree = nameProbeDb(() => {
+    takenCalls += 1
+    // preferred taken, suffixed free
+    return takenCalls === 1 ? [{ id: 'x' }] : []
+  })
   const derived = await resolveManagedAppliedUsername(
     takenThenFree,
     ['org'],
@@ -350,19 +308,7 @@ test('resolveManagedAppliedUsername prefers free short name without suffix', asy
 })
 
 test('resolveManagedAppliedUsername suffix mode never returns the bare name', async () => {
-  const free = {
-    select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([]),
-            }),
-          }),
-        }),
-      }),
-    }),
-  } as unknown as Db
+  const free = nameProbeDb(() => [])
 
   const derived = await resolveManagedAppliedUsername(
     free,
@@ -378,12 +324,8 @@ test('resolveManagedAppliedUsername throws when pattern cannot fit', async () =>
   const free = {
     select: () => ({
       from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => Promise.resolve([{ id: 'x' }]),
-            }),
-          }),
+        where: () => ({
+          limit: () => Promise.resolve([{ id: 'x' }]),
         }),
       }),
     }),
@@ -433,9 +375,7 @@ test('lockOrganizationsForUpdate orders ids and no-ops empty', async () => {
   assertEquals(locked.length, 2)
 })
 
-test('PRINCIPAL_PROVIDERS and USERNAME_RE gate managed usernames', () => {
-  assertEquals(PRINCIPAL_PROVIDERS.has('postgres'), true)
-  assertEquals(PRINCIPAL_PROVIDERS.has('unknown'), false)
+test('USERNAME_RE gates managed usernames', () => {
   assertEquals(USERNAME_RE.test('App_User-1'), true)
   assertEquals(USERNAME_RE.test('1bad'), false)
 })
@@ -484,8 +424,6 @@ test('createPrincipal omits null metadata and options from insert', async () => 
     db,
     {
       organizationId: 'org-1',
-      kind: 'system',
-      provider: 'server',
       username: 'deploy',
     },
     []
@@ -567,70 +505,53 @@ test('rotatePrincipalPassword returns generated plaintext', async () => {
   assertEquals(rotated.plaintext.length > 0, true)
 })
 
-test('createManagedPrincipal inserts sealed password and validates inputs', async () => {
+test('createManagedLogin inserts a sealed password and validates inputs', async () => {
   const dataEncryptionSecrets = await testDataEncryptionSecrets()
-  let insertValues: Record<string, unknown> | undefined
+  const inserts: Record<string, unknown>[] = []
 
   const db = {
-    select: () => ({
-      from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            innerJoin: () => ({
-              where: () => ({
-                limit: () => Promise.resolve([{ organizationId: 'org-1' }]),
-              }),
-            }),
-          }),
-        }),
-      }),
-    }),
     insert: () => ({
       values: (values: Record<string, unknown>) => {
-        insertValues = values
-        return {
-          returning: () => Promise.resolve([{ id: 'managed-user' }]),
-        }
+        inserts.push(values)
+        return { returning: () => Promise.resolve([{ id: 'login-1' }]) }
       },
     }),
   } as unknown as Db
 
-  const created = await createManagedPrincipal(db, dataEncryptionSecrets, {
+  const created = await createManagedLogin(db, dataEncryptionSecrets, {
     managedId: 'm1',
-    provider: 'postgres',
     username: 'app_user',
-    metadata: { role: 'app' },
+    grantMode: 'recipe',
   })
-  assertEquals(created.principalId, 'managed-user')
+  assertEquals(created.loginId, 'login-1')
   assertEquals(typeof created.password, 'string')
-  assertEquals(insertValues?.organizationId, 'org-1')
-  assertEquals(insertValues?.managedId, 'm1')
-  assertEquals(typeof insertValues?.password, 'string')
-  assertEquals((insertValues?.password as string).startsWith('tpsecret.'), true)
+  const [loginValues] = inserts
+  assertEquals(loginValues?.managedId, 'm1')
+  assertEquals(loginValues?.principalId, null)
+  assertEquals(loginValues?.role, 'user')
+  assertEquals(loginValues?.username, 'app_user')
+  assertEquals(loginValues?.appliedUsername, 'app_user')
+  assertEquals(loginValues?.grantMode, 'recipe')
+  assertEquals((loginValues?.password as string).startsWith('tpsecret.'), true)
 
   await assertRejects(
-    () =>
-      createManagedPrincipal(db, dataEncryptionSecrets, {
-        managedId: 'm1',
-        provider: 'postgres',
-        username: '1bad',
-      }),
+    () => createManagedLogin(db, dataEncryptionSecrets, { managedId: 'm1', username: '1bad' }),
     TypeError,
     'invalid username'
   )
   await assertRejects(
     () =>
-      createManagedPrincipal(db, dataEncryptionSecrets, {
+      createManagedLogin(db, dataEncryptionSecrets, {
         managedId: 'm1',
-        provider: 'not-real',
         username: 'valid_user',
+        appliedUsername: '1bad',
       }),
     TypeError,
-    'invalid provider'
+    'invalid applied username'
   )
 })
 
-test('ensureManagedReplicationPrincipal reuses existing replication row', async () => {
+test('ensureManagedReplicationLogin reuses the existing replication login', async () => {
   const db = {
     select: () => ({
       from: () => ({
@@ -639,15 +560,22 @@ test('ensureManagedReplicationPrincipal reuses existing replication row', async 
             Promise.resolve([
               {
                 id: 'repl-existing',
-                kind: 'database',
-                provider: 'postgres',
+                principalId: null,
+                managedId: 'm1',
+                role: 'replication',
                 username: 'tp_repl',
                 appliedUsername: 'tp_repl',
-                managedId: 'm1',
-                metadata: { managedReplication: true },
-                options: null,
+                nameScheme: 'plain',
+                grantMode: 'preset',
+                isTool: false,
+                databases: [],
+                privileges: [],
+                access: 'read-write',
+                allowedSources: null,
+                maxConnections: null,
                 createdAt: 't0',
                 updatedAt: 't1',
+                password: null,
               },
             ]),
         }),
@@ -655,33 +583,31 @@ test('ensureManagedReplicationPrincipal reuses existing replication row', async 
     }),
   } as unknown as Db
 
-  const existing = await ensureManagedReplicationPrincipal(db, await testDataEncryptionSecrets(), {
+  const existing = await ensureManagedReplicationLogin(db, await testDataEncryptionSecrets(), {
     managedId: 'm1',
-    provider: 'postgres',
     identifier: { pattern: /^[a-z0-9_]+$/i, maxLength: 63 },
     nameScheme: 'partial',
   })
   assertEquals(existing, {
-    principalId: 'repl-existing',
+    loginId: 'repl-existing',
     appliedUsername: 'tp_repl',
     created: false,
   })
 })
 
-test('ensureManagedReplicationPrincipal creates replication principal when absent', async () => {
+test('ensureManagedReplicationLogin creates the replication login when absent', async () => {
   const dataEncryptionSecrets = await testDataEncryptionSecrets()
-  const result = await ensureManagedReplicationPrincipal(
+  const result = await ensureManagedReplicationLogin(
     managedReplicationDb(),
     dataEncryptionSecrets,
     {
       managedId: '01936b3e-aaaa-bbbb-cccc-123456789abc',
-      provider: 'postgres',
       identifier: { pattern: /^[a-z0-9_]+$/i, maxLength: 63 },
       nameScheme: 'partial',
     }
   )
   assertEquals(result.created, true)
-  assertEquals(result.principalId, 'repl-new')
+  assertEquals(result.loginId, 'repl-new')
   assertMatch(result.appliedUsername, /^tp_repl_[a-z0-9]{11}$/)
 })
 
@@ -690,15 +616,11 @@ test('resolveManagedAppliedUsername returns a fresh suffix when candidate is tak
   const db = {
     select: () => ({
       from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            where: () => ({
-              limit: () => {
-                takenCalls += 1
-                return Promise.resolve([{ id: 'x' }])
-              },
-            }),
-          }),
+        where: () => ({
+          limit: () => {
+            takenCalls += 1
+            return Promise.resolve([{ id: 'x' }])
+          },
         }),
       }),
     }),
@@ -727,4 +649,14 @@ test('composeAliasShortUsername folds dashes into a shape the host builds for', 
   // A cap that lands on a dash drops it.
   assertEquals(composeAliasShortUsername(`${'a'.repeat(15)}-bbbb`), 'a'.repeat(15))
   assertEquals(composeAliasShortUsername('containers'), 'ucontainers')
+})
+
+test('composeAliasShortUsername never yields a reserved host login', () => {
+  // Folding an alias that matches a host system user prefixes it rather than
+  // minting that login as a site owner's Linux user.
+  for (const alias of ['ftp', 'git', 'FTP', ' git ', 'ubuntu', 'www', 'root', 'www-data', 'sudo']) {
+    const derived = composeAliasShortUsername(alias)
+    assertEquals(isReservedPrincipalUsername(derived), false, `${alias} -> ${derived}`)
+  }
+  assertEquals(isReservedPrincipalUsername(composeAliasShortUsername('appuser')), false)
 })

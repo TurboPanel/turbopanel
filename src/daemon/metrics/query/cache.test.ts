@@ -36,29 +36,21 @@ it('metricsChartCacheKey: stable metric ordering and schema version', () => {
   assertEquals(keyA.includes('v6'), true)
 })
 
-it('metricsChartCacheKey: topologyGeneration is appended only when provided', () => {
-  const withoutGeneration = metricsChartCacheKey({
+it('metricsChartCacheKey: hardwareWrittenAtMs is appended only when provided', () => {
+  const base = {
     serverId: '11111111-1111-4111-8111-111111111111',
     fromBucketMs: 1_000,
     toBucketMs: 2_000,
     metrics: ['host.cpu.userPercent'],
     resolutionSeconds: 300,
-    backend: 'duckdb',
+    backend: 'duckdb' as const,
     schemaVersion: 6,
-  })
-  const withGeneration = metricsChartCacheKey({
-    serverId: '11111111-1111-4111-8111-111111111111',
-    fromBucketMs: 1_000,
-    toBucketMs: 2_000,
-    metrics: ['host.cpu.userPercent'],
-    resolutionSeconds: 300,
-    backend: 'duckdb',
-    schemaVersion: 6,
-    topologyGeneration: 2,
-  })
-  assertEquals(withoutGeneration.includes(':tg'), false)
-  assertEquals(withGeneration.endsWith(':tg2'), true)
-  assertEquals(withGeneration === withoutGeneration, false)
+  }
+  const plain = metricsChartCacheKey(base)
+  const revised = metricsChartCacheKey({ ...base, hardwareWrittenAtMs: 2 })
+  assertEquals(plain.includes(':hw'), false)
+  assertEquals(revised.endsWith(':hw2'), true)
+  assertEquals(metricsChartCacheKey({ ...base, hardwareWrittenAtMs: 3 }) === revised, false)
 })
 
 it('resolveChartCacheTtlSeconds: live vs historical', () => {

@@ -95,7 +95,7 @@ async function insertDeployedEnvironment(db: Db, organizationId: string, serverI
     .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ projectId: proj!.id, name: 'Production', serverId })
+    .values({ projectId: proj!.id, name: 'production', serverId })
     .returning({ id: environment.id })
   await db.insert(deployment).values({
     environmentId: env!.id,

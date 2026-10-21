@@ -14,16 +14,17 @@ import {
   leaf,
   managed,
   organization,
-  principal,
+  managedDatabase,
   project,
   server,
   service,
   tls,
   workspace,
 } from '../../db/schema.ts'
+import { mariadbEngineSpec } from './mariadb.ts'
 import { postgresEngineSpec } from './postgres.ts'
 import type { ManagedSettings } from './settings.ts'
-import { createManagedPrincipal } from '../principals/store.ts'
+import { createManagedLogin } from './logins.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
 import { isPrepareError, prepareManagedApplyPayloads } from './apply-prepare.ts'
@@ -101,7 +102,7 @@ async function withManagedAllocationFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Managed Allocate Env',
+      name: 'managed-allocate-env',
       projectId,
     })
     .returning({ id: environment.id })
@@ -189,7 +190,7 @@ async function withManagedApplyPrepareFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Production',
+      name: 'production',
       projectId,
       serverId,
     })
@@ -204,16 +205,17 @@ async function withManagedApplyPrepareFixtures(
       name: 'Postgres',
       engine: 'postgres',
       status: 'ready',
-      options: { settings: postgresEngineSpec.defaultSettings, databases: ['postgres'] },
+      options: { settings: postgresEngineSpec.defaultSettings },
     })
     .returning({ id: managed.id })
   const managedId = insertedManaged!.id
 
-  await createManagedPrincipal(db, dataEncryptionSecrets, {
+  await db.insert(managedDatabase).values({ managedId, name: 'postgres' })
+  await createManagedLogin(db, dataEncryptionSecrets, {
     managedId,
-    provider: 'postgres',
+    role: 'root',
     username: 'postgres',
-    metadata: { managedRoot: true, databases: ['postgres'] },
+    databases: ['postgres'],
   })
 
   const app = new Hono<AppEnv>()
@@ -248,7 +250,6 @@ async function withManagedApplyPrepareFixtures(
     // this test-owned organization (not just the tracked consumer ids) so
     // that hierarchy never leaks and blocks the `server` delete below via
     // the `environment.server_id` RESTRICT foreign key.
-    await db.delete(principal).where(eq(principal.managedId, managedId))
     await db.delete(container).where(eq(container.serverId, serverId))
 
     const workspaceIds = (
@@ -458,6 +459,7 @@ test('prepareManagedApplyPayloads self-heals primary member and omits ingress', 
         spec: postgresEngineSpec,
         settings: settingsWithExposure(true),
         databases: ['postgres'],
+        ownerRoleDatabases: undefined,
         serverId,
         environmentId,
         organizationId,
@@ -505,6 +507,39 @@ test('prepareManagedApplyPayloads self-heals primary member and omits ingress', 
   )
 })
 
+test('prepareManagedApplyPayloads keeps an imageless MariaDB row on 12.3 and a stored image as is', async () => {
+  const imageless = mariadbEngineSpec.parseSettings({ ...mariadbEngineSpec.defaultSettings })
+  const stored = mariadbEngineSpec.parseSettings({
+    ...mariadbEngineSpec.defaultSettings,
+    image: 'docker.io/library/mariadb:11.8',
+  })
+  if (!imageless || !stored) throw new TypeError('expected valid managed settings')
+  assertEquals(imageless.image, undefined)
+  for (const [settings, expected] of [
+    [imageless, 'docker.io/library/mariadb:12.3'],
+    [stored, 'docker.io/library/mariadb:11.8'],
+  ] as const) {
+    await withManagedApplyPrepareFixtures(
+      async ({ db, c, serverId, environmentId, managedId, organizationId }) => {
+        const prepared = await prepareManagedApplyPayloads(c, db, {
+          managedRow: { id: managedId, engine: 'mariadb' },
+          spec: mariadbEngineSpec,
+          settings,
+          databases: ['defaultdb'],
+          ownerRoleDatabases: undefined,
+          serverId,
+          environmentId,
+          organizationId,
+        })
+        if (isPrepareError(prepared)) {
+          throw new TypeError(`unexpected prepare error: ${prepared.kind}`)
+        }
+        assertEquals(prepared.members[0]!.payload.image, expected)
+      }
+    )
+  }
+})
+
 test('prepareManagedApplyPayloads ensures org CA and sets orgTlsMaterial with denc leaf key', async () => {
   await withManagedApplyPrepareFixtures(
     async ({ db, c, serverId, environmentId, managedId, organizationId }) => {
@@ -513,6 +548,7 @@ test('prepareManagedApplyPayloads ensures org CA and sets orgTlsMaterial with de
         spec: postgresEngineSpec,
         settings: settingsWithExposure(false),
         databases: ['postgres'],
+        ownerRoleDatabases: undefined,
         serverId,
         environmentId,
         organizationId,
@@ -558,6 +594,7 @@ test('prepareManagedApplyPayloads ensures org CA and sets orgTlsMaterial with de
         spec: postgresEngineSpec,
         settings: settingsWithExposure(false),
         databases: ['postgres'],
+        ownerRoleDatabases: undefined,
         serverId,
         environmentId,
         organizationId,

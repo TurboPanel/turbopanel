@@ -9,6 +9,7 @@ import {
   isTerminalStepStatus,
   platformFailureError,
   PLATFORM_PHASES,
+  runWaitsOnlyOnOfflineServers,
   summarizeSteps,
   WORKERS_DISPATCH_BUDGET,
 } from './run.ts'
@@ -75,6 +76,50 @@ test('batchComplete requires every step in the batch terminal', () => {
   assertEquals(batchComplete(steps, 0), true)
   assertEquals(batchComplete(steps, 1), false)
   assertEquals(batchComplete(steps, 9), false)
+})
+
+test('runWaitsOnlyOnOfflineServers: only fleet waiting, never-dispatched steps on disconnected hosts', () => {
+  const offline = { phase: 'fleet' as const, status: 'waiting' as const, serverId: 'down' }
+  const pending = { phase: 'fleet' as const, status: 'pending' as const, serverId: 'also-down' }
+  assertEquals(runWaitsOnlyOnOfflineServers([], []), false)
+  assertEquals(runWaitsOnlyOnOfflineServers([offline], []), true)
+  assertEquals(runWaitsOnlyOnOfflineServers([pending], []), false)
+  assertEquals(runWaitsOnlyOnOfflineServers([offline, pending], ['up']), false)
+  assertEquals(runWaitsOnlyOnOfflineServers([{ ...offline, attempts: 1 }], []), false)
+  assertEquals(runWaitsOnlyOnOfflineServers([offline], ['down']), false)
+  assertEquals(
+    runWaitsOnlyOnOfflineServers([{ phase: 'fleet', status: 'dispatched', serverId: 'down' }], []),
+    false
+  )
+  assertEquals(
+    runWaitsOnlyOnOfflineServers([{ phase: 'fleet', status: 'installing', serverId: 'down' }], []),
+    false
+  )
+  assertEquals(
+    runWaitsOnlyOnOfflineServers(
+      [{ phase: 'colocated_daemon', status: 'waiting', serverId: 'panel' }],
+      []
+    ),
+    false
+  )
+  assertEquals(
+    runWaitsOnlyOnOfflineServers(
+      [
+        { phase: 'fleet', status: 'waiting', serverId: 'down' },
+        { phase: 'control_plane', status: 'pending', serverId: 'panel' },
+      ],
+      []
+    ),
+    false
+  )
+  assertEquals(
+    runWaitsOnlyOnOfflineServers([{ phase: 'fleet', status: 'done', serverId: 'down' }], []),
+    false
+  )
+  assertEquals(
+    runWaitsOnlyOnOfflineServers([{ phase: 'fleet', status: 'rolled_back', serverId: 'down' }], []),
+    false
+  )
 })
 
 test('summarizeSteps and finalRunStatus classify outcomes', () => {
@@ -225,4 +270,65 @@ test('with a batch of 1 only one server is open at a time and a failure never st
     [2, 'pending'],
   ])
   assertEquals(activeBatchIndex(after), 2)
+})
+
+test('activeBatchIndex prefers a later connected batch over earlier offline ones', () => {
+  assertEquals(
+    activeBatchIndex([
+      { batchIndex: 0, status: 'waiting', connected: false },
+      { batchIndex: 1, status: 'waiting', connected: false },
+      { batchIndex: 2, status: 'pending', connected: true },
+      { batchIndex: 3, status: 'pending', connected: true },
+    ]),
+    2
+  )
+})
+
+test('activeBatchIndex keeps relative order: the earliest connected open batch', () => {
+  assertEquals(
+    activeBatchIndex([
+      { batchIndex: 2, status: 'pending', connected: true },
+      { batchIndex: 0, status: 'pending', connected: false },
+      { batchIndex: 5, status: 'pending', connected: true },
+    ]),
+    2
+  )
+})
+
+test('activeBatchIndex with only offline servers is still the lowest open batch', () => {
+  assertEquals(
+    activeBatchIndex([
+      { batchIndex: 0, status: 'waiting', connected: false },
+      { batchIndex: 1, status: 'pending', connected: false },
+    ]),
+    0
+  )
+})
+
+test('activeBatchIndex with only connected servers is still the lowest open batch', () => {
+  assertEquals(
+    activeBatchIndex([
+      { batchIndex: 0, status: 'pending', connected: true },
+      { batchIndex: 1, status: 'pending', connected: true },
+    ]),
+    0
+  )
+})
+
+test('an in-flight batch is not skipped for a later connected server', () => {
+  assertEquals(
+    activeBatchIndex([
+      { batchIndex: 0, status: 'installing', connected: true },
+      { batchIndex: 1, status: 'pending', connected: true },
+    ]),
+    0
+  )
+  assertEquals(
+    activeBatchIndex([
+      { batchIndex: 0, status: 'waiting', connected: false },
+      { batchIndex: 1, status: 'installing', connected: true },
+      { batchIndex: 2, status: 'pending', connected: true },
+    ]),
+    1
+  )
 })

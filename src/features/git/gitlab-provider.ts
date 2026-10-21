@@ -179,6 +179,23 @@ export function parseGitlabInstallationEvent(
   return null
 }
 
+/**
+ * GitLab answers a commit lookup with 404 for both a missing project and a
+ * missing ref; only the body tells them apart ("404 Commit Not Found" vs
+ * "404 Project Not Found"), and `readGitlabError` folds that body into the
+ * message. A missing ref is the caller's input, not a provider failure.
+ */
+function gitlabCommitLookupFailure(error: unknown): GitProviderFailure {
+  if (
+    error instanceof GitlabApiError &&
+    error.status === 404 &&
+    /commit not found/i.test(error.message)
+  ) {
+    return { failure: 'gitlab ref not found', status: 404, reason: 'ref_not_found' }
+  }
+  return gitlabReadFailure(error)
+}
+
 function gitlabReadFailure(error: unknown): GitProviderFailure {
   // A GitlabApiError raised by a non-OK response carries a status; one raised
   // by a failed fetch does not. Preserving that distinction is what lets the
@@ -267,7 +284,7 @@ export const gitlabProvider: GitProvider = {
       commitSha = (await resolveGitlabCommit(auth.baseUrl, auth.token, auth.projectId, params.ref))
         .commitSha
     } catch (error) {
-      return gitlabReadFailure(error)
+      return gitlabCommitLookupFailure(error)
     }
 
     const maxBytes = params.maxBytesPerFile ?? MAX_REPOSITORY_FILE_BYTES
@@ -332,7 +349,7 @@ export const gitlabProvider: GitProvider = {
       commitSha = (await resolveGitlabCommit(auth.baseUrl, auth.token, auth.projectId, params.ref))
         .commitSha
     } catch (error) {
-      return gitlabReadFailure(error)
+      return gitlabCommitLookupFailure(error)
     }
 
     const maxEntries = params.maxEntries ?? 256

@@ -1,8 +1,8 @@
-import { eq, isNull, sql } from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
-import type { ServerMetadata } from "./server-metadata.ts";
-import { normalizeMachineKey } from "../../lib/machine-key.ts";
-import { key, server } from "../../db/schema.ts";
+import { eq, isNull, sql } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import type { ServerMetadata } from './server-metadata.ts'
+import { normalizeMachineKey } from '../../lib/machine-key.ts'
+import { key, server } from '../../db/schema.ts'
 import {
   buildDefaultDaemonStatus,
   mapServerDaemonStatusFromColumns,
@@ -10,32 +10,32 @@ import {
   parseServerDaemonState,
   type ServerDaemonState,
   type ServerDaemonStatus,
-} from "./daemon-state.ts";
+} from './daemon-state.ts'
 
 function nowTs(): string {
-  return new Date().toISOString();
+  return new Date().toISOString()
 }
 
-export type { ServerDaemonKey, ServerDaemonState, ServerDaemonStatus } from "./daemon-state.ts";
+export type { ServerDaemonKey, ServerDaemonState, ServerDaemonStatus } from './daemon-state.ts'
 export {
   buildDefaultDaemonStatus,
   isDaemonKeyActive,
   mapServerDaemonStatusFromColumns,
   parseServerDaemonState,
   SERVER_KEY_REVOKED_ERROR,
-} from "./daemon-state.ts";
+} from './daemon-state.ts'
 
 export type ServerDaemonStateWithMetadata = ServerDaemonState & {
-  status: ServerDaemonStatus;
-  hostname: string | null;
-  machineKey: string | null;
-  metadata: ServerMetadata | null;
-};
+  status: ServerDaemonStatus
+  hostname: string | null
+  machineKey: string | null
+  metadata: ServerMetadata | null
+}
 
 const STATUS_COLUMNS = {
   connected: server.isConnected,
   statusChangedAt: server.statusChangedAt,
-} as const;
+} as const
 
 /**
  * Columns from the `key` table, selected alongside `server` columns.
@@ -49,11 +49,11 @@ const KEY_COLUMNS = {
   createdAt: key.createdAt,
   revokedAt: key.revokedAt,
   lastUsedAt: key.lastUsedAt,
-} as const;
+} as const
 
 export async function getServerDaemonStateByServerId(
   db: Db,
-  serverId: string,
+  serverId: string
 ): Promise<ServerDaemonStateWithMetadata | null> {
   // Inner join: no key row means "not enrolled" — the same predicate the
   // jsonb parse used to enforce by returning null on a missing `key`.
@@ -69,12 +69,12 @@ export async function getServerDaemonStateByServerId(
     .from(server)
     .innerJoin(key, eq(key.serverId, server.id))
     .where(eq(server.id, serverId))
-    .limit(1);
+    .limit(1)
 
-  if (!row) return null;
-  const parsedKey = parseServerDaemonKeyRow(row);
-  if (!parsedKey) return null;
-  const jsonbState = parseServerDaemonState(row.daemon);
+  if (!row) return null
+  const parsedKey = parseServerDaemonKeyRow(row)
+  if (!parsedKey) return null
+  const jsonbState = parseServerDaemonState(row.daemon)
   return {
     key: parsedKey,
     ...(jsonbState?.projection ? { projection: jsonbState.projection } : {}),
@@ -82,12 +82,12 @@ export async function getServerDaemonStateByServerId(
     hostname: row.hostname ?? null,
     machineKey: row.machineKey ?? null,
     metadata: (row.metadata ?? null) as ServerMetadata | null,
-  };
+  }
 }
 
 export async function getServerDaemonStateByFingerprint(
   db: Db,
-  fingerprint: string,
+  fingerprint: string
 ): Promise<(ServerDaemonState & { serverId: string; status: ServerDaemonStatus }) | null> {
   const [row] = await db
     .select({
@@ -99,18 +99,32 @@ export async function getServerDaemonStateByFingerprint(
     .from(key)
     .innerJoin(server, eq(server.id, key.serverId))
     .where(eq(key.fingerprint, fingerprint))
-    .limit(1);
+    .limit(1)
 
-  if (!row) return null;
-  const parsedKey = parseServerDaemonKeyRow(row);
-  if (!parsedKey) return null;
-  const jsonbState = parseServerDaemonState(row.daemon);
+  if (!row) return null
+  const parsedKey = parseServerDaemonKeyRow(row)
+  if (!parsedKey) return null
+  const jsonbState = parseServerDaemonState(row.daemon)
   return {
     key: parsedKey,
     ...(jsonbState?.projection ? { projection: jsonbState.projection } : {}),
     status: mapServerDaemonStatusFromColumns(row),
     serverId: row.serverId,
-  };
+  }
+}
+
+/**
+ * The promoted copies of the daemon projection (offline reason, build,
+ * update status). They go with `daemon` whenever it is reset, so a stale
+ * `updating` or `sweep_stale` never outlives the projection it came from.
+ */
+function clearedProjectionColumns() {
+  return {
+    offlineReason: null,
+    daemonCommit: null,
+    daemonBuiltAt: null,
+    daemonUpdateStatus: null,
+  }
 }
 
 /**
@@ -121,8 +135,8 @@ export async function getServerDaemonStateByFingerprint(
  */
 export class DaemonKeyRevokedError extends Error {
   constructor(readonly serverId: string) {
-    super(`daemon key is revoked for server: ${serverId}`);
-    this.name = "DaemonKeyRevokedError";
+    super(`daemon key is revoked for server: ${serverId}`)
+    this.name = 'DaemonKeyRevokedError'
   }
 }
 
@@ -130,18 +144,18 @@ export async function attachDaemonStateToServer(
   db: Db,
   serverId: string,
   params: {
-    publicJwk: JsonWebKey;
-    fingerprint: string;
-    algorithm?: "Ed25519";
-    hostname?: string | null;
-    machineKey?: string | null;
-  },
+    publicJwk: JsonWebKey
+    fingerprint: string
+    algorithm?: 'Ed25519'
+    hostname?: string | null
+    machineKey?: string | null
+  }
 ): Promise<{ keyId: string }> {
-  const now = nowTs();
-  const defaultStatus = buildDefaultDaemonStatus();
-  const hostname = params.hostname?.trim() || null;
-  const machineKey = normalizeMachineKey(params.machineKey) ?? null;
-  const algorithm = params.algorithm ?? "Ed25519";
+  const now = nowTs()
+  const defaultStatus = buildDefaultDaemonStatus()
+  const hostname = params.hostname?.trim() || null
+  const machineKey = normalizeMachineKey(params.machineKey) ?? null
+  const algorithm = params.algorithm ?? 'Ed25519'
 
   // Insert-or-replace plus the server column write must land together: a
   // failure between them would leave a key row with stale server columns.
@@ -174,10 +188,10 @@ export async function attachDaemonStateToServer(
           updatedAt: now,
         },
       })
-      .returning({ id: key.id });
+      .returning({ id: key.id })
 
     if (!keyRow) {
-      throw new DaemonKeyRevokedError(serverId);
+      throw new DaemonKeyRevokedError(serverId)
     }
 
     const updated = await tx
@@ -186,6 +200,7 @@ export async function attachDaemonStateToServer(
         // Re-enrollment always resets projection too — a full replace, not
         // a merge, same as the old whole-jsonb write.
         daemon: null,
+        ...clearedProjectionColumns(),
         ...(hostname ? { hostname } : {}),
         ...(machineKey ? { machineKey } : {}),
         isConnected: defaultStatus.connected,
@@ -193,14 +208,14 @@ export async function attachDaemonStateToServer(
         updatedAt: now,
       })
       .where(eq(server.id, serverId))
-      .returning({ id: server.id });
+      .returning({ id: server.id })
 
     if (updated.length === 0) {
-      throw new Error(`server row missing for enroll attach: ${serverId}`);
+      throw new Error(`server row missing for enroll attach: ${serverId}`)
     }
 
-    return { keyId: keyRow.id };
-  });
+    return { keyId: keyRow.id }
+  })
 }
 
 /**
@@ -211,21 +226,15 @@ export async function attachDaemonStateToServer(
 export async function touchDaemonKeyLastUsed(
   db: Db,
   serverId: string,
-  at = nowTs(),
+  at = nowTs()
 ): Promise<void> {
-  await db
-    .update(key)
-    .set({ lastUsedAt: at, updatedAt: at })
-    .where(eq(key.serverId, serverId));
+  await db.update(key).set({ lastUsedAt: at, updatedAt: at }).where(eq(key.serverId, serverId))
 }
 
 /** Targeted single-column write — see {@link touchDaemonKeyLastUsed}. */
 export async function revokeDaemonKey(db: Db, serverId: string): Promise<void> {
-  const now = nowTs();
-  await db
-    .update(key)
-    .set({ revokedAt: now, updatedAt: now })
-    .where(eq(key.serverId, serverId));
+  const now = nowTs()
+  await db.update(key).set({ revokedAt: now, updatedAt: now }).where(eq(key.serverId, serverId))
 }
 
 /**
@@ -236,20 +245,18 @@ export async function revokeDaemonKey(db: Db, serverId: string): Promise<void> {
  * license binding) must not leave a live key behind, or
  * `getServerDaemonStateByFingerprint` would still authenticate it.
  */
-export async function clearServerDaemonState(
-  db: Db,
-  serverId: string,
-): Promise<void> {
-  const now = nowTs();
-  const defaultStatus = buildDefaultDaemonStatus();
-  await db.delete(key).where(eq(key.serverId, serverId));
+export async function clearServerDaemonState(db: Db, serverId: string): Promise<void> {
+  const now = nowTs()
+  const defaultStatus = buildDefaultDaemonStatus()
+  await db.delete(key).where(eq(key.serverId, serverId))
   await db
     .update(server)
     .set({
       daemon: null,
+      ...clearedProjectionColumns(),
       isConnected: defaultStatus.connected,
       statusChangedAt: defaultStatus.statusChangedAt,
       updatedAt: now,
     })
-    .where(eq(server.id, serverId));
+    .where(eq(server.id, serverId))
 }

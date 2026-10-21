@@ -185,6 +185,13 @@ export const DAEMON_WIRE_FEATURES = [
   'deploy-cancel-v1',
   'site-db-bindings-v1',
   'deno-native-apps-v1',
+  'managed-ingress-ipv6-v1',
+  'managed-login-limits-v1',
+  'managed-permissions-read-v1',
+  'managed-owner-role-v1',
+  'managed-data-only-readwrite-v1',
+  'managed-database-owner-v1',
+  'tls-capture-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -195,6 +202,13 @@ export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
  * control plane still sends the legacy plaintext fields.
  */
 export const SEALED_INSTANCE_SECRETS_FEATURE: DaemonWireFeature = 'sealed-instance-secrets-v1'
+
+/**
+ * The daemon sends the certificate and key Caddy issued for a hostname to
+ * `POST /api/daemon/v1/tls/issued`, and this control plane stores them sealed.
+ * The daemon sends nothing until this control plane lists the feature.
+ */
+export const TLS_CAPTURE_FEATURE: DaemonWireFeature = 'tls-capture-v1'
 
 /**
  * The daemon answers `managed-health-request` with `managed-health-result`
@@ -213,8 +227,11 @@ export const MANAGED_HEALTH_REPORT_FEATURE: DaemonWireFeature = 'managed-health-
 
 /**
  * A MySQL / MariaDB replica's `replication` carries `receivedGtid`,
- * `executedGtid`, `fullyApplied` and `lastStreaming`. Stored for a later
- * host-loss freshness rule; no decision reads them yet.
+ * `executedGtid`, `fullyApplied` and `lastStreaming`. When a whole database
+ * host is lost, the failover promote rule reads `fullyApplied`,
+ * `executedGtid` (to pick the standby with the most applied transactions)
+ * and `lastStreaming`. `receivedGtid` is only validated and stored
+ * (cell-protocol, schemas, members, health-probe); no decision code reads it.
  */
 export const MANAGED_REPLICA_FRESHNESS_FEATURE: DaemonWireFeature = 'managed-replica-freshness-v1'
 
@@ -255,6 +272,15 @@ export const MANAGED_HA_BOOT_HOLD_FEATURE: DaemonWireFeature = 'managed-ha-boot-
 export const METRICS_V8_FEATURE: DaemonWireFeature = 'metrics-v8'
 
 /**
+ * This control plane stores and reads the per-sample sizes (`extended.sizes`,
+ * `filesystemSizes`, `gpuSizes`, `networkSizes`) and divides each bucket by the
+ * size its own sample carried. Advertised only by a release that does so: a
+ * daemon that sees this feature stops counting sizes in its change fingerprint,
+ * which is safe only when a resized server is never divided by stale totals.
+ */
+export const METRICS_V8_SIZES_FEATURE: DaemonWireFeature = 'metrics-v8-sizes'
+
+/**
  * The daemon runs each PHP site in the mode its deploy asks for (`php.mode`).
  * Without it the daemon runs every PHP site on one shared php-fpm pool, so the
  * control plane refuses to deploy any other mode to it. OpenLiteSpeed and
@@ -286,6 +312,61 @@ export const SITE_DB_BINDINGS_FEATURE: DaemonWireFeature = 'site-db-bindings-v1'
  * refuses to send a Deno app to it.
  */
 export const DENO_NATIVE_APPS_FEATURE: DaemonWireFeature = 'deno-native-apps-v1'
+
+/**
+ * The daemon publishes the shared database listeners on the IPv6 wildcard
+ * (`::` in `managed.ingress.reconcile` `bindAddresses`) and reads it back on
+ * self-heal. Without it the control plane sends `0.0.0.0` alone, so external
+ * access stays IPv4 only on that server.
+ */
+export const MANAGED_INGRESS_IPV6_FEATURE: DaemonWireFeature = 'managed-ingress-ipv6-v1'
+
+/**
+ * The daemon enforces `allowedSources` / `allowLocalSources` and
+ * `maxConnections` on app logins of `managed.ingress.reconcile` (and accepts
+ * `%` prefixes in `allowedSources`). Without it the control plane never sends
+ * them: an older daemon would ignore the fields and leave the login unlimited,
+ * so a limited login is left out of that server's payload instead.
+ */
+export const MANAGED_LOGIN_LIMITS_FEATURE: DaemonWireFeature = 'managed-login-limits-v1'
+
+/**
+ * The daemon answers `managed-permissions-request` with
+ * `managed-permissions-result` (a login's current grants, read only). Without
+ * it the control plane never sends the message and answers 409
+ * `daemon_update_required` on the effective-permissions route.
+ */
+export const MANAGED_PERMISSIONS_READ_FEATURE: DaemonWireFeature = 'managed-permissions-read-v1'
+
+/**
+ * The daemon honours `ownerRole` on a Postgres database and the Database admin
+ * login built on it. Without it the control plane records no owner role (a new
+ * database is made without one) and refuses an admin login with 409
+ * `managed_owner_role_needs_daemon_update`: an older daemon would ignore both.
+ */
+export const MANAGED_OWNER_ROLE_FEATURE: DaemonWireFeature = 'managed-owner-role-v1'
+
+/**
+ * The daemon gives a MySQL or MariaDB read/write login data changes only (no
+ * creating, altering or dropping tables, indexes, views, routines, triggers or
+ * events), keeps the grant option for the Database admin login alone, and
+ * tightens older logins on their next apply. Without it the control plane
+ * refuses a new read/write login on those engines with 409
+ * `managed_readwrite_needs_daemon_update`: an older daemon would leave it able
+ * to change the shape of the database.
+ */
+export const MANAGED_DATA_ONLY_READWRITE_FEATURE: DaemonWireFeature =
+  'managed-data-only-readwrite-v1'
+
+/**
+ * The daemon honours `databases[].ownerLogin` (a login the customer chose owns
+ * the database), moves a new cluster's own empty first database onto its owner
+ * role, and gives a Database admin login on a database without an owner role
+ * the read-write rights. Without it the control plane refuses a chosen login
+ * owner with 409 `managed_database_owner_needs_daemon_update`, and a new
+ * cluster's first database is made without an owner role as before.
+ */
+export const MANAGED_DATABASE_OWNER_FEATURE: DaemonWireFeature = 'managed-database-owner-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}

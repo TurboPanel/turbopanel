@@ -16,12 +16,9 @@ import {
 type PrincipalRow = Pick<
   typeof principal.$inferSelect,
   | 'id'
-  | 'kind'
-  | 'provider'
   | 'username'
   | 'appliedUsername'
   | 'projectId'
-  | 'managedId'
   | 'metadata'
   | 'options'
   | 'createdAt'
@@ -30,8 +27,6 @@ type PrincipalRow = Pick<
 
 export type SerializedProjectPrincipal = {
   id: string
-  kind: string
-  provider: string
   username: string
   /**
    * Login actually created on the host — the short `username` plus a random
@@ -46,17 +41,10 @@ export type SerializedProjectPrincipal = {
    */
   nameScheme: PrincipalNameScheme
   projectId: string | null
-  managedId: string | null
   metadata: unknown
   options: unknown
   /** Services this principal runs as / owns storage for (via `tenancy`). */
   serviceIds: string[]
-  /**
-   * Runtime series this principal may execute on the host. `grantedBy` says
-   * whether an operator granted it or a deploy inserted it because a service
-   * declared the runtime — both are real, revocable grants.
-   */
-  entitlements: { runtime: string; series: string; grantedBy: string }[]
   /**
    * How this account may log in, decoded from `options.shell`.
    *
@@ -85,29 +73,18 @@ export type SerializedProjectPrincipal = {
 export function serializeProjectPrincipal(
   row: PrincipalRow,
   serviceIds: readonly string[] = [],
-  entitlements: readonly {
-    runtime: string
-    series: string
-    grantedBy: string
-  }[] = [],
   sshKeyCount = 0,
   passwordAuth = false
 ): SerializedProjectPrincipal {
   return {
     id: row.id,
-    kind: row.kind,
-    provider: row.provider,
     username: row.username,
     appliedUsername: row.appliedUsername,
     nameScheme: principalNameSchemeOf(row),
     projectId: row.projectId,
-    managedId: row.managedId,
     metadata: row.metadata,
     options: row.options,
     serviceIds: [...serviceIds].sort((a, b) => a.localeCompare(b)),
-    entitlements: [...entitlements].sort((a, b) =>
-      `${a.runtime}@${a.series}`.localeCompare(`${b.runtime}@${b.series}`)
-    ),
     access: accessLevelForShell(resolvePrincipalShell(parsePrincipalOptions(row.options))),
     sshKeyCount,
     passwordAuth,

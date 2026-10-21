@@ -846,13 +846,12 @@ export const EMPTY_HOST_CAPACITIES: HostCapacities = {
 }
 
 export type TopologyContext = {
-  topologyGeneration: number | null
   slotMapping: SlotMapping | null
   inventory: TopologyInventory | null
   capacities: HostCapacities
 }
 
-const EMPTY_TOPOLOGY_CONTEXT: Omit<TopologyContext, 'topologyGeneration'> = {
+const EMPTY_TOPOLOGY_CONTEXT: TopologyContext = {
   slotMapping: null,
   inventory: null,
   capacities: EMPTY_HOST_CAPACITIES,
@@ -869,9 +868,8 @@ export function buildTopologyContext(
   record: { generation: number; snapshot: unknown } | undefined,
   hardwareProfile: ServerHardwareProfile | undefined
 ): TopologyContext {
-  const topologyGeneration = record?.generation ?? null
   if (!isSlotMappableTopologySnapshot(record?.snapshot)) {
-    return { topologyGeneration, ...EMPTY_TOPOLOGY_CONTEXT }
+    return EMPTY_TOPOLOGY_CONTEXT
   }
   const snapshot = record!.snapshot
   const overrides = topologyOverridesFromHardwareProfile(hardwareProfile)
@@ -879,10 +877,9 @@ export function buildTopologyContext(
   try {
     slotMapping = computeSlotMapping(snapshot, overrides)
   } catch {
-    return { topologyGeneration, ...EMPTY_TOPOLOGY_CONTEXT }
+    return EMPTY_TOPOLOGY_CONTEXT
   }
   return {
-    topologyGeneration,
     slotMapping,
     inventory: buildTopologyInventory(snapshot, slotMapping),
     capacities: capacitiesFromSnapshot(snapshot, slotMapping),
@@ -921,7 +918,6 @@ export type SeriesRouteResponse = {
   host: HostSeriesChartResponse | null
   entities: EntitySeriesResult[]
   inventory: TopologyInventory | null
-  topologyGeneration: number | null
   cpuLimits: EffectiveCpuThermalLimits
   temperatureUnit: TemperatureUnit
   nicSlotLimit: number
@@ -953,7 +949,6 @@ export function buildSeriesRouteResponse(
     host: params.host,
     entities: params.entities,
     inventory: params.context.inventory,
-    topologyGeneration: params.context.topologyGeneration,
     cpuLimits: params.envelope.cpuLimits,
     temperatureUnit: params.envelope.temperatureUnit,
     nicSlotLimit: params.envelope.nicSlotLimit,
@@ -1222,13 +1217,6 @@ async function queryOneEntityFamilySeries(
 ): Promise<EntityFamilyQueryOutcome> {
   const entityIds = [...selection.entityIds]
   const fields = [...selection.fields]
-  const networkExtra =
-    family === 'network'
-      ? {
-          slotMapping: input.context.slotMapping ?? undefined,
-          topologyGeneration: input.context.topologyGeneration,
-        }
-      : {}
   try {
     const store = input.store
     if (!store?.queryEntitySeries) {
@@ -1252,7 +1240,6 @@ async function queryOneEntityFamilySeries(
         from: input.fromIso,
         to: input.toIso,
         resolutionSeconds: input.resolutionSeconds,
-        ...networkExtra,
       }),
     }
   } catch (err) {
@@ -1316,7 +1303,6 @@ export type FleetServerUsageRecord = {
   latestAt: string | null
   values: Partial<Record<string, number | null>>
   sampleCount: number
-  topologyGeneration?: number | null
   derived: DerivedHostValues
 }
 
@@ -1342,7 +1328,6 @@ export function buildFleetLatestPayload(
       latestAt: string | null
       values: Partial<Record<string, number | null>>
       sampleCount: number
-      topologyGeneration?: number | null
     }>
     capacitiesByServer: ReadonlyMap<string, HostCapacities>
   }>

@@ -51,6 +51,7 @@ import {
   registerDaemonApiRoutes,
 } from './api-routes.ts'
 import { MAX_METRICS_PAYLOAD_BYTES } from './metrics/validation.ts'
+import { createInMemoryMetricsGate, type MetricsGate } from './metrics/ingest-gate.ts'
 import { METRICS_SCHEMA_VERSION } from '../contracts/metrics-contract.ts'
 import type { DaemonCell, DaemonCellRegistry, DaemonCellSnapshot } from '../contracts/cell.ts'
 import type { DaemonOutboundEnvelope } from '../contracts/cell-protocol.ts'
@@ -1225,7 +1226,7 @@ test('POST /enroll rejects a second host once the license is latched', async () 
   )
 })
 
-test('POST /enroll with a fresh license creates a new server even on the same host', async () => {
+test('POST /enroll with a fresh license is refused when the host is already registered (machine key is unique)', async () => {
   await withEnrollFixture(
     async ({
       db,
@@ -1281,20 +1282,18 @@ test('POST /enroll with a fresh license creates a new server even on the same ho
           signature,
         }),
       })
-      assertEquals(enrollResponse.status, 200)
-      const body = (await enrollResponse.json()) as {
-        serverId: string
-        keyId: string
-      }
-      assertEquals(body.serverId !== serverId, true)
+      assertEquals(enrollResponse.status, 409)
+      const body = (await enrollResponse.json()) as { error: string; message?: string }
+      assertEquals(body.error, 'machine_key_in_use')
+      assertExists(body.message)
 
+      // Nothing changed: the original license still belongs to the original server.
       const [original] = await db
         .select({ serverId: license.serverId })
         .from(license)
         .where(eq(license.id, licenseId))
       assertEquals(original?.serverId, serverId)
 
-      await deleteOrganizationServerTree(db, organizationId, body.serverId)
       await db.delete(license).where(eq(license.id, freshLicenseId))
     }
   )
@@ -2506,6 +2505,7 @@ async function createMetricsTestAppWithDb(
   options: {
     registry?: DaemonCellRegistry
     runtime?: 'workers' | 'deno'
+    gate?: MetricsGate
   } = {}
 ): Promise<{
   app: Hono<AppEnv>
@@ -2524,9 +2524,11 @@ async function createMetricsTestAppWithDb(
     },
   }
 
+  const gate = options.gate ?? createInMemoryMetricsGate()
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
+    c.set('metricsGate', gate)
     c.set('serverMetricsStore', fakeStore)
     if (options.registry) c.set('daemonCellRegistry', options.registry)
     return next()
@@ -3037,6 +3039,61 @@ test('POST /metrics does not await the store write before responding', async () 
   assertEquals(writes.length, 1)
 })
 
+test('POST /metrics stores one sample a minute: a duplicate timestamp gets 409 (the daemon does not retry it) and is not written', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const { app, writes } = await createMetricsTestAppWithDb(db)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const body = JSON.stringify(buildValidMetricsFrame())
+    const post = () =>
+      app.request('/api/daemon/v1/metrics', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          'Content-Type': 'application/json',
+        },
+        body,
+      })
+    assertEquals((await post()).status, 202)
+    const replay = await post()
+    assertEquals(replay.status, 409)
+    assertEquals(await replay.json(), { ok: false, error: 'duplicate_sample' })
+    assertEquals(replay.headers.get('Retry-After'), null)
+    assertEquals(writes.length, 1)
+  })
+})
+
+test('POST /metrics: a sample sent too soon after the last gets 429 with Retry-After and is not written', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const { app, writes } = await createMetricsTestAppWithDb(db)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const post = (sampledAt: string) =>
+      app.request('/api/daemon/v1/metrics', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(buildValidMetricsFrame({ metadata: { sampledAt } })),
+      })
+    const base = Date.now()
+    assertEquals((await post(new Date(base).toISOString())).status, 202)
+    // Spend the catch-up allowance with samples a second apart, then one more is refused.
+    let refused: Response | undefined
+    for (let i = 1; i <= 8 && !refused; i++) {
+      const response = await post(new Date(base + i * 1000).toISOString())
+      if (response.status === 429) refused = response
+    }
+    assertEquals(refused?.status, 429)
+    assertEquals((await refused!.json()) as unknown, {
+      ok: false,
+      error: 'rate_limited',
+      reason: 'too_soon',
+    })
+    assert(Number(refused!.headers.get('Retry-After')) >= 1)
+    assertEquals(writes.length, 6)
+  })
+})
+
 test('POST /metrics accepts a known topology generation without requesting a resync', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
     await recordTopologyGeneration(db, serverId, {
@@ -3232,6 +3289,11 @@ test('POST /metrics writes machine_class=physical back once topology proves it, 
     assertEquals(response.status, 202)
     assertEquals(writes[0]?.hardwareSignals.length, 1)
     assertEquals(await readMachineClassSettled(db, serverId, 'physical'), 'physical')
+    const [after] = await db
+      .select({ source: server.machineClassSource })
+      .from(server)
+      .where(eq(server.id, serverId))
+    assertEquals(after?.source, 'detected')
   })
 })
 
@@ -3293,6 +3355,41 @@ test('POST /metrics: a declared machine_class=virtual beats a topology that carr
     assertEquals(response.status, 202)
     assertEquals(writes[0]?.hardwareSignals, [])
     assertEquals(await readMachineClassSettled(db, serverId, 'virtual'), 'virtual')
+  })
+})
+
+test('POST /metrics never overwrites a machine class an operator pinned', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    await recordTopologyGeneration(db, serverId, {
+      generation: 0,
+      bootGeneration: 0,
+      snapshot: { hardwareSignals: [{ signalId: 'board-fan' }] },
+      appliedAt: new Date().toISOString(),
+    })
+    await db
+      .update(server)
+      .set({ machineClass: 'virtual', machineClassSource: 'operator' })
+      .where(eq(server.id, serverId))
+
+    const { app } = await createMetricsTestAppWithDb(db)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const response = await app.request('/api/daemon/v1/metrics', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(
+        buildValidMetricsFrame({ hardwareSignals: [{ signalId: 'sig0', kind: 'fan' }] })
+      ),
+    })
+    assertEquals(response.status, 202)
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    const [row] = await db
+      .select({ machineClass: server.machineClass, source: server.machineClassSource })
+      .from(server)
+      .where(eq(server.id, serverId))
+    assertEquals(row, { machineClass: 'virtual', source: 'operator' })
   })
 })
 
@@ -3783,5 +3880,90 @@ test("GET /host/docker-networking returns the owner org's pools (empty when unco
       addressPools: [{ base: '10.200.0.0/16', size: 24 }],
       defaultBridgeCidr: '172.17.0.1/16',
     })
+  })
+})
+
+test('POST /metrics: a sample stamped more than 60 s ahead gets 409 and is not written', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const { app, writes } = await createMetricsTestAppWithDb(db)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const sampledAt = new Date(Date.now() + 120_000).toISOString()
+    const response = await app.request('/api/daemon/v1/metrics', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(buildValidMetricsFrame({ metadata: { sampledAt } })),
+    })
+    assertEquals(response.status, 409)
+    assertEquals(await response.json(), { ok: false, error: 'sample_in_future' })
+    assertEquals(writes.length, 0)
+  })
+})
+
+test('POST /metrics: a gate that cannot answer gets 503 and nothing is written', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const gate: MetricsGate = { admit: () => Promise.reject(new Error('gate unreachable')) }
+    const { app, writes } = await createMetricsTestAppWithDb(db, { gate })
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const response = await app.request('/api/daemon/v1/metrics', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(buildValidMetricsFrame()),
+    })
+    assertEquals(response.status, 503)
+    assertEquals(await response.json(), { ok: false, error: 'metrics_gate_unavailable' })
+    assertEquals(writes.length, 0)
+  })
+})
+
+test('POST /metrics: events over the hourly budget are cut most severe first, logged, and the sample is still stored', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    const gate: MetricsGate = {
+      admit: () => Promise.resolve({ stored: true, eventsAllowed: 1 }),
+    }
+    const { app, writes } = await createMetricsTestAppWithDb(db, { gate })
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const at = new Date().toISOString()
+    const warnings: string[] = []
+    const originalWarn = console.warn
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.join(' '))
+    }
+    let response: Response
+    try {
+      response = await app.request('/api/daemon/v1/metrics', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(
+          buildValidMetricsFrame({
+            events: [
+              { eventId: 'evt-warn', at, kind: 'nic_link_down', severity: 'warning' },
+              { eventId: 'evt-crit', at, kind: 'oom_kill', severity: 'critical' },
+            ],
+          })
+        ),
+      })
+    } finally {
+      console.warn = originalWarn
+    }
+    assertEquals(response.status, 202)
+    assertEquals(writes.length, 1)
+    assertEquals(
+      writes[0]?.events.map((event) => event.eventId),
+      ['evt-crit']
+    )
+    assert(
+      warnings.some((line) =>
+        line.includes(`metrics events over the hourly budget for ${serverId}: kept 1 of 2`)
+      )
+    )
   })
 })

@@ -121,13 +121,7 @@ export type HostSeriesQuery = {
   resolutionSeconds?: number
 }
 
-/**
- * One bucket timestamp with a values map keyed by requested canonical name.
- * `topologyGeneration` replaces v3's `hardwareProfileGeneration` — `null`
- * means unknown or the bucket spans a topology reassignment (mixed
- * generations), a boundary marker for series-continuity breaks. Omitted
- * when the backend doesn't track generations.
- */
+/** One bucket timestamp with a values map keyed by requested canonical name. */
 export type HostSeriesPoint = {
   at: string
   values: Partial<Record<string, number | null>>
@@ -144,7 +138,6 @@ export type HostSeriesPoint = {
    * due two intervals later). Drives gap detection — see `computeSeriesCoverage`.
    */
   sampleSpacingSeconds?: number
-  topologyGeneration?: number | null
 }
 
 export type HostSeriesResult = {
@@ -161,12 +154,6 @@ export type HostSeriesResult = {
   gapBuckets?: string[]
   /** Number of underlying samples contributing to the series. */
   sampleCount: number
-  /**
-   * Distinct topology generations observed anywhere in the queried range,
-   * sorted ascending — `length > 1` means the server's topology changed
-   * during the window. Omitted when the backend doesn't track generations.
-   */
-  topologyGenerations?: number[]
 }
 
 export type HostSummaryQuery = {
@@ -238,26 +225,6 @@ export type EntitySeriesQuery = {
   from: string
   to: string
   resolutionSeconds?: number
-  /**
-   * Current topology's `SlotMapping`, consulted only for `family: "network"`
-   * — identifies which of `entityIds` (if any) are the first two
-   * `normalNicSlots` so the Cloudflare backend can reconstruct their series
-   * from `host.io` instead of the (nonexistent) paged `network` rows. `undefined`
-   * on a backend/caller that doesn't resolve one (e.g. no recorded topology
-   * generation yet) — every requested entity is then treated as independently
-   * paged, matching pre-slot-mapping behavior.
-   */
-  slotMapping?: SlotMapping
-  /**
-   * The topology generation `slotMapping` was computed for. `host.io` rows
-   * carry no per-row NIC identity (unlike a paged `network` row's blob10), so
-   * the embedded-NIC reconstruction scopes its `host.io` scan to this exact
-   * generation — otherwise a slot reassignment (an operator changing
-   * `nicSlotDeviceIds`) would relabel older `host.io`
-   * history as the new device. `null`/`undefined` (no recorded generation)
-   * means the reconstruction finds no in-range rows rather than guessing.
-   */
-  topologyGeneration?: number | null
 }
 
 export type EntitySeriesPoint = {
@@ -333,12 +300,6 @@ export type FleetHostSnapshotServer = {
   latestAt: string | null
   values: Partial<Record<string, number | null>>
   sampleCount: number
-  /**
-   * Topology generation shared by every contributing sample in the queried
-   * window, or `null` when unknown or mixed (a reassignment happened inside
-   * the window). Omitted when the backend doesn't track generations.
-   */
-  topologyGeneration?: number | null
 }
 
 export type FleetHostSnapshotResult = {
@@ -416,14 +377,14 @@ export type HostFactsResult = {
  * `writeSample` / `writeStatusEvent` are fire-and-forget — callers must not
  * await them into WS / request handlers (same discipline as v3 writes).
  *
- * `writeSample`'s optional `slotMapping` is the caller-resolved
- * `(topology generation) -> SlotMapping` result (see
- * `client/servers/topology-slot-mapping.ts`) for the sample's own
+ * `writeSample`'s optional `slotMapping` is the caller-resolved `SlotMapping`
+ * (see `client/servers/topology-slot-mapping.ts`) for the sample's own
  * `metadata.topologyGeneration` — resolving it requires a DB read, so it is
  * computed by the ingest route (which already does that work for capability
- * planning), never by the store itself. `undefined` means the generation
- * hasn't been recorded yet; implementations must fall back to a
- * topology-agnostic packing in that case (see `field-map.ts`).
+ * planning), never by the store itself. `undefined` means that generation is
+ * not the one on record; implementations must fall back to a topology-agnostic
+ * packing in that case (see `field-map.ts`). Readers never use the generation:
+ * every stored row names its own devices.
  */
 export interface ServerMetricsStore {
   writeSample(input: AuthenticatedMetricsSample, slotMapping?: SlotMapping): void | Promise<void>

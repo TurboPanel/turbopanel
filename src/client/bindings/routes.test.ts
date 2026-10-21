@@ -12,24 +12,28 @@ import { createDenoDb } from '../../db/connection.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import { createSession } from '../authn/session-store.ts'
+import { STEP_UP_WINDOW_MS } from '../authn/step-up.ts'
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
   type SecretsConfig,
 } from '../../lib/secrets/secrets.ts'
 import {
+  audit,
   binding,
   command,
   container,
   environment,
   grant,
+  login,
   managed,
+  managedDatabase,
   organization,
-  principal,
   project,
   replica,
   server,
   service,
+  session,
   tls,
   user,
   variable,
@@ -135,6 +139,7 @@ async function cleanupBindingRoutesOrg(
     await db.delete(workspace).where(inArray(workspace.id, workspaceIds))
   }
 
+  await db.delete(audit).where(eq(audit.organizationId, organizationId))
   await db.delete(tls).where(eq(tls.organizationId, organizationId))
   await db.delete(server).where(eq(server.organizationId, organizationId))
   await db.delete(grant).where(and(eq(grant.actorId, userId), eq(grant.entityId, organizationId)))
@@ -154,7 +159,7 @@ async function withBindingFixtures(
     serverId: string
     managedId: string
     managedEnvironmentId: string
-    principalId: string
+    loginId: string
     consumerEnvironmentId: string
     consumerServiceId: string
   }) => Promise<void>
@@ -239,7 +244,7 @@ async function withBindingFixtures(
   const [managedEnv] = await db
     .insert(environment)
     .values({
-      name: 'Production',
+      name: 'production',
       projectId: managedProject!.id,
       serverId,
     })
@@ -255,10 +260,14 @@ async function withBindingFixtures(
       name: 'Postgres',
       engine: 'postgres',
       status: 'ready',
-      options: { settings, databases: ['postgres', 'appdb'] },
+      options: { settings },
     })
     .returning({ id: managed.id })
   const managedId = insertedManaged!.id
+  await db.insert(managedDatabase).values([
+    { managedId, name: 'postgres' },
+    { managedId, name: 'appdb' },
+  ])
 
   await db.insert(replica).values({
     managedId,
@@ -269,19 +278,18 @@ async function withBindingFixtures(
   })
 
   const sealedPassword = await encryptSecret(dataEncryptionSecrets, 'bind-route-secret')
-  const [insertedPrincipal] = await db
-    .insert(principal)
+  const bindUser = `bind_user_${crypto.randomUUID().slice(0, 8)}`
+  const [insertedLogin] = await db
+    .insert(login)
     .values({
-      organizationId,
-      kind: 'database',
-      provider: 'postgres',
-      username: `bind_user_${crypto.randomUUID().slice(0, 8)}`,
-      appliedUsername: `bind_user_${crypto.randomUUID().slice(0, 8)}`,
-      password: sealedPassword,
       managedId,
+      role: 'user',
+      username: bindUser,
+      appliedUsername: bindUser,
+      password: sealedPassword,
     })
-    .returning({ id: principal.id })
-  const principalId = insertedPrincipal!.id
+    .returning({ id: login.id })
+  const loginId = insertedLogin!.id
 
   const [consumerProject] = await db
     .insert(project)
@@ -296,7 +304,7 @@ async function withBindingFixtures(
   const [consumerEnv] = await db
     .insert(environment)
     .values({
-      name: 'Consumer',
+      name: 'consumer',
       projectId: consumerProject!.id,
       serverId,
     })
@@ -325,13 +333,27 @@ async function withBindingFixtures(
       serverId,
       managedId,
       managedEnvironmentId,
-      principalId,
+      loginId,
       consumerEnvironmentId,
       consumerServiceId,
     })
   } finally {
     await cleanupBindingRoutesOrg(db, organizationId, userId)
   }
+}
+
+async function dbIdFor(
+  db: ReturnType<typeof createDenoDb>,
+  loginId: string,
+  name: string
+): Promise<string> {
+  const [row] = await db
+    .select({ id: managedDatabase.id })
+    .from(managedDatabase)
+    .innerJoin(login, eq(login.managedId, managedDatabase.managedId))
+    .where(and(eq(login.id, loginId), eq(managedDatabase.name, name)))
+    .limit(1)
+  return row!.id
 }
 
 function authHeaders(cookie: string, organizationId: string): Record<string, string> {
@@ -350,7 +372,7 @@ test('GET /bindings list filters and CRUD round-trip', async () => {
       secrets,
       userId,
       organizationId,
-      principalId,
+      loginId,
       managedEnvironmentId,
       consumerEnvironmentId,
       consumerServiceId,
@@ -402,7 +424,7 @@ test('GET /bindings list filters and CRUD round-trip', async () => {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          principalId,
+          loginId,
           serviceId: consumerServiceId,
           databaseName: 'postgres',
           keyPrefix: 'TURBOPANEL',
@@ -414,7 +436,7 @@ test('GET /bindings list filters and CRUD round-trip', async () => {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          principalId,
+          loginId,
           serviceId: consumerServiceId,
           databaseName: 'missing_db',
           keyPrefix: 'DATABASE',
@@ -428,7 +450,7 @@ test('GET /bindings list filters and CRUD round-trip', async () => {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          principalId,
+          loginId,
           serviceId: consumerServiceId,
           databaseName: 'postgres',
           keyPrefix: 'DATABASE',
@@ -442,6 +464,22 @@ test('GET /bindings list filters and CRUD round-trip', async () => {
         throw new TypeError('expected binding id string')
       }
       const bindingId = created.id
+      const auditActions = async () =>
+        await db
+          .select({ action: audit.action, context: audit.context, actorUserId: audit.actorUserId })
+          .from(audit)
+          .where(and(eq(audit.organizationId, organizationId), eq(audit.targetId, bindingId)))
+          .orderBy(audit.id)
+      const afterCreate = await auditActions()
+      assertEquals(
+        afterCreate.map((r) => r.action),
+        ['binding.create']
+      )
+      assertEquals(afterCreate[0]?.actorUserId, userId)
+      assertEquals(
+        (afterCreate[0]?.context as Record<string, unknown>).serviceId,
+        consumerServiceId
+      )
 
       const varsAfterCreate = await db
         .select({ key: variable.key })
@@ -487,7 +525,7 @@ test('GET /bindings list filters and CRUD round-trip', async () => {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          principalId,
+          loginId,
           serviceId: consumerServiceId,
           databaseName: 'appdb',
           keyPrefix: 'DATABASE',
@@ -520,6 +558,10 @@ test('GET /bindings list filters and CRUD round-trip', async () => {
         .where(eq(binding.id, bindingId))
         .limit(1)
       assertEquals(patchedRow?.keyPrefix, 'APP')
+      assertEquals(
+        (await auditActions()).map((r) => r.action),
+        ['binding.create', 'binding.update']
+      )
 
       const patchMissing = await app.request(`/bindings/${crypto.randomUUID()}`, {
         method: 'PATCH',
@@ -547,6 +589,67 @@ test('GET /bindings list filters and CRUD round-trip', async () => {
         .where(eq(binding.id, bindingId))
         .limit(1)
       assertEquals(afterDelete.length, 0)
+
+      const finalTrail = await auditActions()
+      assertEquals(
+        finalTrail.map((r) => r.action),
+        ['binding.create', 'binding.update', 'binding.delete']
+      )
+      // Ids and key names only: never a password or connection string.
+      assertEquals(JSON.stringify(finalTrail).toLowerCase().includes('password'), false)
+    }
+  )
+})
+
+test('DELETE /bindings/:id needs step-up while the organization requires it, and a refused delete leaves no trace', async () => {
+  await withBindingFixtures(
+    async ({ db, app, secrets, userId, organizationId, loginId, consumerServiceId }) => {
+      const { token } = await createSession(db, userId, {})
+      await db
+        .update(session)
+        .set({ createdAt: new Date(Date.now() - 2 * STEP_UP_WINDOW_MS).toISOString() })
+        .where(eq(session.token, token))
+      const signed = await buildSignedCookie(token, secrets)
+      const headers = authHeaders(`${HTTP_SESSION_COOKIE_NAME}=${signed}`, organizationId)
+
+      const create = await app.request('/bindings', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          loginId,
+          serviceId: consumerServiceId,
+          databaseName: 'postgres',
+          keyPrefix: 'DATABASE',
+          emitEngineDefaults: false,
+        }),
+      })
+      assertEquals(create.status, 200)
+      const { id } = (await create.json()) as { id: string }
+
+      await db
+        .update(organization)
+        .set({ options: { requireReauthForDestructive: true } })
+        .where(eq(organization.id, organizationId))
+
+      const refused = await app.request(`/bindings/${id}`, { method: 'DELETE', headers })
+      assertEquals(refused.status, 403)
+      const body = (await refused.json()) as { error: string; action: string }
+      assertEquals(body.error, 'reauth_required')
+      assertEquals(body.action, 'binding.delete')
+      const kept = await db.select({ id: binding.id }).from(binding).where(eq(binding.id, id))
+      assertEquals(kept.length, 1)
+      const deleteAudits = await db
+        .select({ id: audit.id })
+        .from(audit)
+        .where(and(eq(audit.targetId, id), eq(audit.action, 'binding.delete')))
+      assertEquals(deleteAudits.length, 0)
+
+      await db
+        .update(organization)
+        .set({ options: { requireReauthForDestructive: false } })
+        .where(eq(organization.id, organizationId))
+      const allowed = await app.request(`/bindings/${id}`, { method: 'DELETE', headers })
+      assertEquals(allowed.status, 200)
     }
   )
 })
@@ -561,30 +664,27 @@ test('POST /bindings rejects non-bindable principals and encryption gaps', async
       userId,
       organizationId,
       managedId,
-      principalId,
+      loginId,
       consumerServiceId,
     }) => {
       const cookie = await sessionCookie(db, secrets, userId)
       const headers = authHeaders(cookie, organizationId)
 
-      const [rootPrincipal] = await db
-        .insert(principal)
+      const [rootLogin] = await db
+        .insert(login)
         .values({
-          organizationId,
-          kind: 'database',
-          provider: 'postgres',
+          managedId,
+          role: 'root',
           username: `root_${crypto.randomUUID().slice(0, 8)}`,
           appliedUsername: `root_${crypto.randomUUID().slice(0, 8)}`,
-          managedId,
-          metadata: { managedRoot: true },
         })
-        .returning({ id: principal.id })
+        .returning({ id: login.id })
 
       const rootCreate = await app.request('/bindings', {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          principalId: rootPrincipal!.id,
+          loginId: rootLogin!.id,
           serviceId: consumerServiceId,
           databaseName: 'postgres',
           keyPrefix: 'ROOTDB',
@@ -594,22 +694,20 @@ test('POST /bindings rejects non-bindable principals and encryption gaps', async
       assertEquals(rootCreate.status, 404)
 
       const [noPassword] = await db
-        .insert(principal)
+        .insert(login)
         .values({
-          organizationId,
-          kind: 'database',
-          provider: 'postgres',
+          managedId,
+          role: 'user',
           username: `nopw_${crypto.randomUUID().slice(0, 8)}`,
           appliedUsername: `nopw_${crypto.randomUUID().slice(0, 8)}`,
-          managedId,
         })
-        .returning({ id: principal.id })
+        .returning({ id: login.id })
 
       const noPwCreate = await app.request('/bindings', {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          principalId: noPassword!.id,
+          loginId: noPassword!.id,
           serviceId: consumerServiceId,
           databaseName: 'postgres',
           keyPrefix: 'NOPW',
@@ -632,7 +730,7 @@ test('POST /bindings rejects non-bindable principals and encryption gaps', async
         method: 'POST',
         headers: authHeaders(noEncCookie, organizationId),
         body: JSON.stringify({
-          principalId,
+          loginId,
           serviceId: consumerServiceId,
           databaseName: 'appdb',
           keyPrefix: 'NOENC',
@@ -668,7 +766,7 @@ test('GET /bindings managedEnvironmentId returns empty when cluster has no princ
     const [lonelyEnv] = await db
       .insert(environment)
       .values({
-        name: 'Lonely',
+        name: 'lonely',
         projectId: lonelyProject!.id,
         serverId,
       })
@@ -679,10 +777,7 @@ test('GET /bindings managedEnvironmentId returns empty when cluster has no princ
       name: 'Lonely PG',
       engine: 'postgres',
       status: 'ready',
-      options: {
-        settings: postgresEngineSpec.defaultSettings,
-        databases: ['postgres'],
-      },
+      options: { settings: postgresEngineSpec.defaultSettings },
     })
 
     const res = await app.request(`/bindings?managedEnvironmentId=${lonelyEnv!.id}`, { headers })
@@ -693,13 +788,13 @@ test('GET /bindings managedEnvironmentId returns empty when cluster has no princ
 
 test('PATCH /bindings/:id returns 503 when encryption secrets are missing', async () => {
   await withBindingFixtures(
-    async ({ db, secretsConfig, userId, organizationId, principalId, consumerServiceId }) => {
+    async ({ db, secretsConfig, userId, organizationId, loginId, consumerServiceId }) => {
       const [row] = await db
         .insert(binding)
         .values({
-          principalId,
+          loginId,
           serviceId: consumerServiceId,
-          databaseName: 'postgres',
+          databaseId: await dbIdFor(db, loginId, 'postgres'),
           keyPrefix: 'PATCHENC',
           isEmitEngineDefaults: false,
         })
@@ -730,13 +825,13 @@ test('POST /bindings is refused while a destroy of the cluster is outstanding, a
       organizationId,
       serverId,
       managedId,
-      principalId,
+      loginId,
       consumerServiceId,
     }) => {
       const cookie = await sessionCookie(db, secrets, userId)
       const headers = authHeaders(cookie, organizationId)
       const body = JSON.stringify({
-        principalId,
+        loginId,
         serviceId: consumerServiceId,
         databaseName: 'postgres',
         keyPrefix: 'DATABASE',
@@ -757,12 +852,8 @@ test('POST /bindings is refused while a destroy of the cluster is outstanding, a
         assertEquals(refused.status, 409)
         assertEquals(await refused.json(), { error: 'managed_busy', reason: 'destroy_in_flight' })
         assertEquals(
-          (
-            await db
-              .select({ id: binding.id })
-              .from(binding)
-              .where(eq(binding.principalId, principalId))
-          ).length,
+          (await db.select({ id: binding.id }).from(binding).where(eq(binding.loginId, loginId)))
+            .length,
           0
         )
 
@@ -778,23 +869,14 @@ test('POST /bindings is refused while a destroy of the cluster is outstanding, a
 
 test('detachBindingsForManaged removes every binding of the cluster and its variables, and no other', async () => {
   await withBindingFixtures(
-    async ({
-      db,
-      app,
-      secrets,
-      userId,
-      organizationId,
-      managedId,
-      principalId,
-      consumerServiceId,
-    }) => {
+    async ({ db, app, secrets, userId, organizationId, managedId, loginId, consumerServiceId }) => {
       const cookie = await sessionCookie(db, secrets, userId)
       const headers = authHeaders(cookie, organizationId)
       const created = await app.request('/bindings', {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          principalId,
+          loginId,
           serviceId: consumerServiceId,
           databaseName: 'postgres',
           keyPrefix: 'DATABASE',
@@ -803,7 +885,7 @@ test('detachBindingsForManaged removes every binding of the cluster and its vari
       })
       assertEquals(created.status, 200)
       const mine = () =>
-        db.select({ id: binding.id }).from(binding).where(eq(binding.principalId, principalId))
+        db.select({ id: binding.id }).from(binding).where(eq(binding.loginId, loginId))
       assertEquals((await mine()).length, 1)
 
       // Another cluster's id removes nothing.

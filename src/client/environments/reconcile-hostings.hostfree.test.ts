@@ -5,7 +5,7 @@
 import { assertEquals } from '@std/assert'
 import type { ComposeDocument } from '../../features/compose/index.ts'
 import { hostingEntryKey } from '../../features/compose/index.ts'
-import { hostname, hosting, ip, service, tls } from '../../db/schema.ts'
+import { hostname, hosting, instanceHostname, ip, service, setting, tls } from '../../db/schema.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
   HOSTING_COMPOSE_ROUTE_METADATA_KEY,
@@ -75,6 +75,7 @@ function createReconcileDb(opts: {
   hostingRows?: ExistingRow[]
   tlsRows?: Array<{ id: string; label: string | null }>
   ipRows?: Array<{ id: string; label: string | null }>
+  panelHosts?: string[]
 }) {
   return createMemoryDb([
     [hosting, opts.hostingRows ?? []],
@@ -102,6 +103,21 @@ function createReconcileDb(opts: {
       })),
     ],
     [hostname, []],
+    [setting, []],
+    [
+      instanceHostname,
+      (opts.panelHosts ?? []).map((host, index) => ({
+        id: `panel-${index}`,
+        host,
+        source: 'platform-ca',
+        uploadedCertId: null,
+        acmeLastAttemptAt: null,
+        acmeLastError: null,
+        notAfter: null,
+        createdAt: new Date(index).toISOString(),
+        updatedAt: new Date(index).toISOString(),
+      })),
+    ],
   ])
 }
 
@@ -657,4 +673,36 @@ test('reconcileHostingsFromCompose sets options.www from the entry and drops it 
   const third = await reconcile({ hostname: HOSTNAME, www: 'off' })
   if (!third.ok) throw new TypeError('expected update with www off to succeed')
   assertEquals('www' in (hostingRow(db, id)?.options as Record<string, unknown>), false)
+})
+
+for (const declared of ['canary.example.test', 'CANARY.Example.Test']) {
+  test(`reconcileHostingsFromCompose refuses a declaration of the panel hostname (${declared})`, async () => {
+    const db = createReconcileDb({ panelHosts: ['canary.example.test'] })
+    const result = await reconcileHostingsFromCompose(db, {
+      organizationId: ORG_ID,
+      environmentId: ENV_ID,
+      merged: composeDoc({ web: hostingService([{ hostname: declared }]) }),
+      serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
+    })
+    assertEquals(result, {
+      ok: false,
+      error: {
+        kind: 'hosting_hostname_is_panel',
+        composeServiceName: 'web',
+        hostname: declared.toLowerCase(),
+      },
+    })
+    assertEquals(db.rows(hostname).length, 0)
+  })
+}
+
+test('reconcileHostingsFromCompose accepts a wildcard that would textually cover the panel hostname', async () => {
+  const db = createReconcileDb({ panelHosts: ['canary.example.test'] })
+  const result = await reconcileHostingsFromCompose(db, {
+    organizationId: ORG_ID,
+    environmentId: ENV_ID,
+    merged: composeDoc({ web: hostingService([{ hostname: '*.example.test' }]) }),
+    serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
+  })
+  assertEquals(result.ok, true)
 })

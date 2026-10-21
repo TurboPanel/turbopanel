@@ -625,7 +625,7 @@ it('GET /servers/:id/metrics/series issues one fan-in queryHostSeries call', asy
   )
 })
 
-it('GET /servers/:id/metrics/series attaches cpuLimits, temperatureUnit, and topology-generation breaks', async () => {
+it('GET /servers/:id/metrics/series attaches cpuLimits and temperatureUnit', async () => {
   const fakeStore = createFakeMetricsStore({
     queryHostSeries: (input) =>
       Promise.resolve({
@@ -638,19 +638,16 @@ it('GET /servers/:id/metrics/series attaches cpuLimits, temperatureUnit, and top
             at: FROM,
             values: { 'host.cpu.busyPercent': 10 },
             sampleCount: 1,
-            topologyGeneration: 1,
           },
           {
             at: TO,
             values: { 'host.cpu.busyPercent': 20 },
             sampleCount: 1,
-            topologyGeneration: 2,
           },
         ],
         resolutionSeconds: input.resolutionSeconds ?? 60,
         gapCount: 0,
         sampleCount: 2,
-        topologyGenerations: [1, 2],
       }),
   })
 
@@ -683,15 +680,13 @@ it('GET /servers/:id/metrics/series attaches cpuLimits, temperatureUnit, and top
         source: 'catalog-exact',
       })
       assertEquals(body.temperatureUnit, 'fahrenheit')
-      assertEquals(body.host!.topologyGenerationBreaks, [1])
-      assertEquals(body.host!.topologyGenerations, [1, 2])
     },
     undefined,
     fakeStore
   )
 })
 
-it('GET /servers/:id/metrics/series does not serve a stale cache entry across a topology-generation bump', async () => {
+it('GET /servers/:id/metrics/series does not serve a stale cache entry across a new hardware record', async () => {
   const fakeStore = createFakeMetricsStore({
     queryHostSeries: (input) =>
       Promise.resolve({
@@ -750,10 +745,78 @@ it('GET /servers/:id/metrics/series does not serve a stale cache entry across a 
         appliedAt: new Date().toISOString(),
       })
 
-      // Identical (server, range, metrics) request — must not hit the
-      // pre-bump cache entry.
+      // Identical (server, range, metrics) request — the response carries the
+      // device inventory and capacities from the latest hardware record, so it
+      // must not be answered from the entry cached before the new record. (The
+      // chart values themselves no longer depend on the generation.)
       const afterBump = await app.request(url, { headers: { Cookie: cookie } })
       assertEquals(afterBump.status, 200)
+      assertEquals(fakeStore.seriesCalls.length, 2)
+    },
+    undefined,
+    fakeStore
+  )
+})
+
+function emptyTopologySnapshot(memoryTotalBytes: number) {
+  return {
+    networks: [],
+    filesystems: [],
+    blockDevices: [],
+    gpus: [],
+    hardwareSignals: [],
+    cpu: { sockets: 1, coresPerSocket: 1, threadsPerSocket: 1, model: null },
+    numaNodes: [],
+    memoryTotalBytes,
+    swapTotalBytes: null,
+  }
+}
+
+it('GET /servers/:id/metrics/series does not serve a stale cache entry after the hardware record is rewritten at the same generation', async () => {
+  const fakeStore = createFakeMetricsStore({
+    queryHostSeries: (input) =>
+      Promise.resolve({
+        kind: 'duckdb',
+        available: true,
+        serverId: input.serverId,
+        metrics: input.metrics,
+        points: [{ at: FROM, values: { 'host.cpu.busyPercent': 90 }, sampleCount: 1 }],
+        resolutionSeconds: input.resolutionSeconds ?? 60,
+        gapCount: 0,
+        sampleCount: 1,
+      }),
+  })
+
+  await withMetricsFixtures(
+    async ({ db, app, serverId, cookie }) => {
+      const url = `/servers/${serverId}/metrics/series?from=${FROM}&to=${TO}&metrics=host.cpu.busyPercent`
+      const record = (memoryTotalBytes: number) =>
+        recordTopologyGeneration(db, serverId, {
+          generation: 1,
+          bootGeneration: 1,
+          snapshot: emptyTopologySnapshot(memoryTotalBytes),
+          appliedAt: new Date().toISOString(),
+        })
+
+      await record(1_000)
+      assertEquals((await app.request(url, { headers: { Cookie: cookie } })).status, 200)
+      assertEquals(fakeStore.seriesCalls.length, 1)
+      assertEquals((await app.request(url, { headers: { Cookie: cookie } })).status, 200)
+      assertEquals(fakeStore.seriesCalls.length, 1)
+
+      // Age the stored write past the rewrite cooldown, then resend the SAME
+      // generation with different content: the record is rewritten in place,
+      // its generation does not change, and the cached response must not be
+      // served (it carries the inventory and capacities of the old content).
+      await db
+        .update(server)
+        .set({
+          hardware: sql`jsonb_set(${server.hardware}, '{updatedAt}', to_jsonb(${new Date(Date.now() - 600_000).toISOString()}::text))`,
+        })
+        .where(eq(server.id, serverId))
+      assertEquals(await record(2_000), 'refreshed')
+
+      assertEquals((await app.request(url, { headers: { Cookie: cookie } })).status, 200)
       assertEquals(fakeStore.seriesCalls.length, 2)
     },
     undefined,
@@ -1220,8 +1283,6 @@ it('GET /servers/:id/metrics/series allows a slot-mapped NIC as a standalone net
       assertEquals(body.ok, true)
       assertEquals(body.entities?.[0]?.entities?.[0]?.entityId, 'eth0')
       assertEquals(fakeStore.entityCalls.length, 1)
-      assertEquals(fakeStore.entityCalls[0]!.slotMapping?.normalNicSlots, ['eth0'])
-      assertEquals(fakeStore.entityCalls[0]!.topologyGeneration, 1)
     },
     undefined,
     fakeStore

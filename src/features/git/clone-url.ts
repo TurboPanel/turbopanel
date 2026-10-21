@@ -115,7 +115,7 @@ export function isGithubDotComHttpsCloneUrl(repositoryUrl: string): boolean {
 }
 
 export function parseRepositoryOwnerRepo(
-  repositoryUrl: string,
+  repositoryUrl: string
 ): { owner: string; repo: string } | null {
   const segments = repositoryPathSegments(repositoryUrl)
   if (segments.length < 2) return null
@@ -132,9 +132,7 @@ export function parseRepositoryOwnerRepo(
  * `owner/repo` — a project can sit arbitrarily deep in subgroups — so its API
  * client percent-encodes this string as the project id.
  */
-export function repositoryPathFromCloneUrl(
-  repositoryUrl: string,
-): string | null {
+export function repositoryPathFromCloneUrl(repositoryUrl: string): string | null {
   const segments = repositoryPathSegments(repositoryUrl)
   if (segments.length < 2) return null
   const last = segments.at(-1)!.replace(/\.git$/, '')
@@ -159,10 +157,7 @@ function repositoryPathSegments(repositoryUrl: string): string[] {
 export const COMMIT_MESSAGE_MAX_CHARS = 300
 export const COMMIT_AUTHOR_MAX_CHARS = 200
 
-export function trimCommitField(
-  value: unknown,
-  maxChars: number,
-): string | undefined {
+export function trimCommitField(value: unknown, maxChars: number): string | undefined {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
   if (trimmed.length === 0) return undefined
@@ -219,6 +214,40 @@ export function isSafeGitRef(value: string): boolean {
   if (value.startsWith('/') || value.startsWith('-')) return false
   if (value.includes('..')) return false
   return SAFE_GIT_REF_RE.test(value)
+}
+
+/** Printable characters `git check-ref-format` refuses anywhere in a ref name. */
+const GIT_REF_FORBIDDEN_CHAR_RE = /[~^:?*[\\]/
+
+/** A space, an ASCII control character, or DEL — none may appear in a ref. */
+function hasControlOrSpace(value: string): boolean {
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0
+    if (code <= 0x20 || code === 0x7f) return true
+  }
+  return false
+}
+
+/** Longest ref the inspect route will look up, same bound as {@link isSafeGitRef}. */
+export const GIT_REF_NAME_MAX_LENGTH = 250
+
+/**
+ * Whether `value` is a name git itself would accept for a branch or tag — the
+ * `git check-ref-format --branch` rules, checked here so a half-typed or
+ * malformed name is refused without contacting a provider or a server.
+ *
+ * Wider than {@link isSafeGitRef} (which is the narrow allow-list a REST sink
+ * wants): `feature+x` is a valid branch git can fetch, so it passes here.
+ */
+export function isValidGitRefName(value: string): boolean {
+  if (value.length === 0 || value.length > GIT_REF_NAME_MAX_LENGTH) return false
+  if (value === '@' || value.startsWith('-')) return false
+  if (GIT_REF_FORBIDDEN_CHAR_RE.test(value) || hasControlOrSpace(value)) return false
+  if (value.includes('..') || value.includes('@{')) return false
+  if (value.endsWith('.')) return false
+  return value
+    .split('/')
+    .every((part) => part.length > 0 && !part.startsWith('.') && !part.endsWith('.lock'))
 }
 
 /**

@@ -6,11 +6,7 @@
  */
 
 import type { ManagedIngressReconcileBackend } from '../../contracts/commands/schemas.ts'
-import {
-  collapseManagedSqlAccessScopes,
-  type ManagedSqlAccessScope,
-  unionManagedSqlAccessScopes,
-} from './access-scope.ts'
+import { ALL_INTERFACES_BIND, ALL_INTERFACES_IPV6_BIND, LOOPBACK_BIND } from './access-address.ts'
 import {
   DEFAULT_MANAGED_INGRESS_PORTS,
   type ManagedIngressFamily,
@@ -18,6 +14,7 @@ import {
   managedIngressPortForEngine,
   type ManagedIngressPorts,
 } from './ingress-ports.ts'
+import { describeManagedImage, effectiveManagedImage } from './releases.ts'
 import { type ManagedSslMode, managedSslRequiresTls, resolveManagedSslMode } from './ssl.ts'
 
 export {
@@ -47,21 +44,6 @@ export function hostgroupsForClusterIndex(index: number): {
   }
 }
 
-/**
- * Every distinct scope the clusters on one host ask for, widest first, with
- * `public` collapsing the rest (it already listens on all interfaces).
- *
- * This is a **union, not a maximum**: one ProxySQL frontend can publish the
- * same port on several host addresses, and `datacenter` + `turbofabric` are two
- * different addresses. Keeping only the widest would silently unpublish the
- * other scope's clients. Empty means no cluster wants a host publish.
- */
-export function unionExposureScopes(
-  scopes: readonly (ManagedSqlAccessScope | undefined)[]
-): ManagedSqlAccessScope[] {
-  return collapseManagedSqlAccessScopes(unionManagedSqlAccessScopes(scopes))
-}
-
 export function isIngressRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -84,23 +66,50 @@ export function protocolListenerForEngine(
   }
 }
 
-export function isManagedRootPrincipal(metadata: unknown): boolean {
-  if (!isIngressRecord(metadata)) return false
-  return metadata.managedRoot === true
+/**
+ * Wire `engineVersion` for a cluster: the release series its image runs
+ * (`18`, `9.7`, `11.8`). ProxySQL reports it to clients as the server version
+ * (it would otherwise say PostgreSQL 16.1 / MySQL 8.0.11 whatever the engine).
+ * The series is all the image tag pins, so no patch level. `undefined` for an
+ * image outside the release catalog or of another engine; the daemon then
+ * leaves the version as is.
+ */
+export function ingressEngineVersion(
+  spec: { engine: string; defaultImage: string; legacyDefaultImage?: string },
+  image: string | undefined
+): string | undefined {
+  const release = describeManagedImage(effectiveManagedImage(spec, image?.trim()))
+  if (!release) return undefined
+  if (release.engine !== spec.engine) return undefined
+  return release.series
 }
 
-export function isManagedReplicationPrincipal(metadata: unknown): boolean {
-  if (!isIngressRecord(metadata)) return false
-  return metadata.managedReplication === true
+/**
+ * {@link ingressEngineVersion} from a `managed` row's raw `options`, read
+ * before any settings parse: a row that stores a series no longer creatable
+ * (`postgres:17`, `mariadb:11.4`) fails the creatable-image check and would
+ * otherwise fall back to the default settings, reporting the default series
+ * instead of the one the container runs. No stored image means the spec's
+ * legacy default (what an old row runs); unreadable options send nothing.
+ */
+export function ingressEngineVersionFromOptions(
+  spec: { engine: string; defaultImage: string; legacyDefaultImage?: string },
+  options: unknown
+): string | undefined {
+  if (!isIngressRecord(options)) return undefined
+  // No settings at all parses as the defaults: the legacy default image.
+  if (options.settings === undefined || options.settings === null) {
+    return ingressEngineVersion(spec, undefined)
+  }
+  if (!isIngressRecord(options.settings)) return undefined
+  const image = options.settings.image
+  if (image === undefined) return ingressEngineVersion(spec, undefined)
+  return typeof image === 'string' ? ingressEngineVersion(spec, image) : undefined
 }
 
-export function principalDefaultDatabase(metadata: unknown): string | undefined {
-  if (!isIngressRecord(metadata)) return undefined
-  if (!Array.isArray(metadata.databases)) return undefined
-  const first = metadata.databases.find(
-    (entry): entry is string => typeof entry === 'string' && entry.length > 0
-  )
-  return first
+/** The login's first listed database, the default the proxy sends it to. */
+export function principalDefaultDatabase(databases: readonly string[]): string | undefined {
+  return databases.find((entry) => entry.length > 0)
 }
 
 export function looksLikeIpLiteral(value: string): boolean {
@@ -146,11 +155,18 @@ export function addBackendAddressSan(
 
 /**
  * Collect DNS + IP SANs that clients are told to dial for this server's
- * ProxySQL — hostname, bind address, and remote peer endpoints used by backends.
+ * ProxySQL — the main host, the addresses clients use, bind address, and
+ * remote peer endpoints used by backends.
  * Synthetic names (leaf CN) stay additional SANs only via the builder.
  */
 export function collectProxySqlListenerSans(params: {
   hostname: string | null | undefined
+  /**
+   * Every DNS name and address of the server's addresses clients use, plus its
+   * Linux hostname (`clientAddressCertificateNames`). A client verifies the
+   * host it typed, so each one it may type needs its own entry.
+   */
+  clientNames?: { dnsNames: readonly string[]; ipAddresses: readonly string[] }
   /**
    * Every address the frontend publishes on. All of them are dial targets, so
    * all of them need a SAN or `verify-full` fails on whichever one the client
@@ -163,6 +179,8 @@ export function collectProxySqlListenerSans(params: {
   const ipAddresses = new Set<string>()
   const hostname = params.hostname?.trim()
   if (hostname) addSanValue(hostname, dnsNames, ipAddresses)
+  for (const name of params.clientNames?.dnsNames ?? []) dnsNames.add(name)
+  for (const address of params.clientNames?.ipAddresses ?? []) ipAddresses.add(address)
   for (const address of params.bindAddresses) {
     addBindAddressSan(address, dnsNames, ipAddresses)
   }
@@ -176,62 +194,44 @@ export function collectProxySqlListenerSans(params: {
 }
 
 /**
- * Pure bind decision for shared ProxySQL publish — never let an ambiguous
- * `undefined` mean two different things.
+ * Host addresses the server's shared ProxySQL publishes its client listeners on.
  *
- * - No enabled exposure → omit every published port (daemon publishes nothing)
- * - `public` → explicit all-interfaces (`0.0.0.0`), no per-scope lookup
- * - anything else → caller resolves one host address per scope
+ * - external access **off** (the default): loopback only. Sites run by a site
+ *   owner's Linux user dial `127.0.0.1`; loopback is not exposure, nothing off
+ *   the machine can reach it. Bound containers need no publish at all (they
+ *   dial ProxySQL by name over the managed Docker network).
+ * - external access **on**: every IPv4 address of the server (`0.0.0.0`), and
+ *   every IPv6 address (`::`) too when the daemon reports a live IPv6 address
+ *   (`hostHasIpv6`) and advertises `managed-ingress-ipv6-v1`. On a kernel with
+ *   no IPv6 stack a `[::]` publish fails and takes the listener down; a
+ *   reported IPv6 address is the proof the stack is there, so both must hold.
  *
- * **The publish is the enforcement.** Docker's published port is the only
- * layer that stands between a disabled cluster and the network today: the host
- * firewall only previews these listeners so far (it enforces nothing until the
- * default-drop stage), and ProxySQL has no per-user source ACL. So an empty
- * decision must stay empty — returning an all-interfaces bind because "the
- * exposure toggle is only recorded intent" hands every credential on the host
- * to the internet. The daemon already honours this contract (an absent/empty
- * `bindAddresses` means "publish nothing"; see `managed-ingress-reconcile.ts`),
- * which is why the toggle can be enforced from here.
- *
- * Flapping the compose publish on a toggle costs a ProxySQL restart. That is
- * the intended price of turning host access off, not a reason to leave it on.
+ * Never empty here: a server with no cluster to front never reaches this
+ * decision (the reconcile is `not_needed` or a teardown). **The publish is the
+ * enforcement**: the host firewall only previews these listeners so far, and
+ * ProxySQL has no per-user source ACL, so "off" must stay loopback and must
+ * never widen to a wildcard.
  */
-export type IngressBindScopeDecision =
-  | { kind: 'omit' }
-  | { kind: 'public_all_interfaces'; addresses: readonly ['0.0.0.0'] }
-  | {
-      kind: 'resolve'
-      scopes: ReadonlyArray<Exclude<ManagedSqlAccessScope, 'public'>>
-    }
-
-export function decideIngressBindScopes(
-  enabledScopes: readonly (ManagedSqlAccessScope | undefined)[]
-): IngressBindScopeDecision {
-  const scopes = unionExposureScopes(enabledScopes)
-  if (scopes.length === 0) return { kind: 'omit' }
-  if (scopes[0] === 'public') {
-    return {
-      kind: 'public_all_interfaces',
-      addresses: ['0.0.0.0'], // NOSONAR typescript:S1313 — explicit all-interfaces publish
-    }
-  }
-  return {
-    kind: 'resolve',
-    scopes: scopes as ReadonlyArray<Exclude<ManagedSqlAccessScope, 'public'>>,
-  }
+export function decideIngressBindAddresses(
+  externalAccess: boolean,
+  ipv6: Readonly<{ serverHasIpv6: boolean; daemonPublishesIpv6: boolean }>
+): string[] {
+  if (!externalAccess) return [LOOPBACK_BIND]
+  return ipv6.serverHasIpv6 && ipv6.daemonPublishesIpv6
+    ? [ALL_INTERFACES_BIND, ALL_INTERFACES_IPV6_BIND]
+    : [ALL_INTERFACES_BIND]
 }
 
 /**
  * Addresses the proxy's certificate must name for its published listeners. A
- * host-run consumer verifies the certificate against `127.0.0.1`, and under a
- * public publish the bind is a wildcard that carries no SAN of its own, so
- * loopback is named explicitly whenever the loopback scope was requested.
+ * site run by a site owner's Linux user verifies the certificate against
+ * `127.0.0.1`, and under an all-interfaces publish the bind is a wildcard that
+ * carries no SAN of its own, so loopback is always named explicitly.
  */
-export function sanBindAddresses(
-  bindAddresses: readonly string[],
-  hostRunScopes: readonly ManagedSqlAccessScope[]
-): string[] {
-  return hostRunScopes.includes('local') ? [...bindAddresses, '127.0.0.1'] : [...bindAddresses]
+export function sanBindAddresses(bindAddresses: readonly string[]): string[] {
+  return bindAddresses.includes(LOOPBACK_BIND)
+    ? [...bindAddresses]
+    : [...bindAddresses, LOOPBACK_BIND]
 }
 
 export type LocalBackendMember = {
@@ -329,21 +329,29 @@ export function sortManagedIds(ids: Iterable<string>): string[] {
   return [...ids].sort((a, b) => a.localeCompare(b))
 }
 
-export function buildIngressUserRole(metadata: unknown): 'root' | 'user' {
-  return isManagedRootPrincipal(metadata) ? 'root' : 'user'
+/**
+ * A database-tool login (`login.is_tool`): the daemon sends all of its
+ * traffic to the primary and adds no read/write split rules. Only an
+ * explicit `true` is emitted, so the payload for other logins stays minimal.
+ */
+export function principalIsTool(isTool: boolean): true | undefined {
+  return isTool ? true : undefined
+}
+
+export function buildIngressUserRole(role: string): 'root' | 'user' {
+  return role === 'root' ? 'root' : 'user'
 }
 
 /**
  * Frontend hostgroup default for a managed login.
  *
  * Returns `undefined` for the implicit `read-write` default so the wire payload
- * stays minimal. Only an explicit `connectionRole: 'read-only'` on the
- * principal metadata moves a login to the reader hostgroup — read eligibility
- * of a member never rewrites where an existing login sends its traffic.
+ * stays minimal. Only an explicit `read-only` access on the login moves it to
+ * the reader hostgroup — read eligibility of a member never rewrites where an
+ * existing login sends its traffic.
  */
-export function principalConnectionRole(metadata: unknown): 'read-only' | undefined {
-  if (!isIngressRecord(metadata)) return undefined
-  return metadata.connectionRole === 'read-only' ? 'read-only' : undefined
+export function principalConnectionRole(access: string): 'read-only' | undefined {
+  return access === 'read-only' ? 'read-only' : undefined
 }
 
 /** Cluster-level `^SELECT` split policy; absent/false keeps reads on the primary. */
@@ -358,18 +366,27 @@ export function clusterAutoReadSplit(routing: { autoReadSplit?: boolean } | unde
  * (`use_ssl`), so it is resolved once here — service override → org default →
  * platform `require` — and the daemon applies it to every login of the cluster.
  * Backend (ProxySQL → engine) TLS is unconditional and unaffected.
+ *
+ * `externalAccess` (the fronting server's "allow external access" switch)
+ * forces TLS on whatever the mode says: saving a weak mode under external
+ * access is refused, so this only bites when stored data drifted. `use_ssl` is
+ * per login, not per listener, so it also makes clients on the server itself
+ * use TLS for that cluster — which they already do under the default `require`.
  */
 export function clusterRequireTls(
   configured: ManagedSslMode | undefined,
-  organizationDefault: ManagedSslMode | undefined
+  organizationDefault: ManagedSslMode | undefined,
+  externalAccess = false
 ): boolean {
-  return managedSslRequiresTls(resolveManagedSslMode(configured, organizationDefault))
+  return (
+    externalAccess || managedSslRequiresTls(resolveManagedSslMode(configured, organizationDefault))
+  )
 }
 
-export function shouldSkipIngressFrontendUser(username: unknown, metadata: unknown): boolean {
+export function shouldSkipIngressFrontendUser(username: unknown, role: string): boolean {
   if (typeof username !== 'string' || username.length === 0) return true
-  // Replication principal is not a client login — never a ProxySQL frontend user.
-  if (isManagedReplicationPrincipal(metadata)) return true
+  // The replication login is not a client login — never a ProxySQL frontend user.
+  if (role === 'replication') return true
   return false
 }
 

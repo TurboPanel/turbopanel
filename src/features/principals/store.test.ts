@@ -3,6 +3,7 @@ import { assertEquals, assertMatch, assertRejects } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
+import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { decryptSecret } from '../../lib/secrets/data-encryption.ts'
 import {
@@ -18,16 +19,15 @@ import {
   tenancy,
   user,
   workspace,
+  login,
 } from '../../db/schema.ts'
 import {
   createPrincipal,
   ensureComposePrincipal,
   isManagedUsernameTaken,
   isServerPrincipalUsernameTaken,
-  PRINCIPAL_PROVIDERS,
   replaceTenancies,
   resolveManagedAppliedUsername,
-  SERVER_PRINCIPAL_PROVIDER,
   setPrincipalPassword,
 } from './store.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
@@ -99,7 +99,7 @@ async function withPrincipalFixtures(
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: 'Principal Store Env',
+      name: 'principal-store-env',
       projectId,
     })
     .returning({ id: environment.id })
@@ -119,8 +119,6 @@ async function withPrincipalFixtures(
     .insert(principal)
     .values({
       organizationId,
-      kind: 'database',
-      provider: 'postgres',
       username: 'app_user',
       appliedUsername: 'app_user',
     })
@@ -228,20 +226,12 @@ test('setPrincipalPassword throws when principal id is missing', async () => {
   })
 })
 
-test('PRINCIPAL_PROVIDERS contains server not pam', () => {
-  assertEquals(PRINCIPAL_PROVIDERS.has('server'), true)
-  assertEquals(PRINCIPAL_PROVIDERS.has('pam'), false)
-  assertEquals(SERVER_PRINCIPAL_PROVIDER, 'server')
-})
-
 test('isServerPrincipalUsernameTaken is org-scoped and case-insensitive', async () => {
   await withPrincipalFixtures(async ({ db, organizationId, projectId }) => {
     const [inserted] = await db
       .insert(principal)
       .values({
         organizationId,
-        kind: 'system',
-        provider: SERVER_PRINCIPAL_PROVIDER,
         username: 'AppUser',
         appliedUsername: 'AppUser',
         projectId,
@@ -260,6 +250,66 @@ test('isServerPrincipalUsernameTaken is org-scoped and case-insensitive', async 
       )
     } finally {
       await db.delete(principal).where(eq(principal.id, createdId))
+    }
+  })
+})
+
+test('principal names are one pool per organization, shared with user logins', async () => {
+  await withPrincipalFixtures(async ({ db, organizationId }) => {
+    const insertPool = async (values: {
+      username: string
+      appliedUsername: string
+      projectId?: string
+      metadata?: Record<string, unknown>
+    }) => {
+      const [row] = await db
+        .insert(principal)
+        .values({ organizationId, ...values })
+        .returning({ id: principal.id })
+      return row!.id
+    }
+    const ids: string[] = []
+    try {
+      // No project at all: visible to the server check through organization_id.
+      ids.push(
+        await insertPool({
+          username: 'orphan',
+          appliedUsername: 'orphan_x1y2z3a4b5c',
+        })
+      )
+      assertEquals(await isServerPrincipalUsernameTaken(db, organizationId, 'ORPHAN'), true)
+      assertEquals(
+        await isServerPrincipalUsernameTaken(db, organizationId, 'orphan_x1y2z3a4b5c'),
+        true
+      )
+      // The fixture's principal `app_user` is in the same pool.
+      assertEquals(await isServerPrincipalUsernameTaken(db, organizationId, 'app_user'), true)
+      assertEquals(await isManagedUsernameTaken(db, [organizationId], 'orphan'), true)
+      assertEquals(await isManagedUsernameTaken(db, [organizationId], 'free_name'), false)
+
+      // The index backs the check: a second pool row with the same typed or
+      // applied name is refused by the database, case-insensitively.
+      const typedDup = await insertPool({
+        username: 'Orphan',
+        appliedUsername: 'orphan_other',
+      }).then(
+        () => null,
+        (err: unknown) => err
+      )
+      assertEquals(isUniqueViolationOn(typedDup, 'uniq_principal_organization_username'), true)
+      const appliedDup = await insertPool({
+        username: 'other',
+        appliedUsername: 'ORPHAN_X1Y2Z3A4B5C',
+      }).then(
+        () => null,
+        (err: unknown) => err
+      )
+      assertEquals(
+        isUniqueViolationOn(appliedDup, 'uniq_principal_organization_applied_username'),
+        true
+      )
+    } finally {
+      if (ids.length > 0) await db.delete(principal).where(inArray(principal.id, ids))
     }
   })
 })
@@ -327,11 +377,8 @@ test('isManagedUsernameTaken scopes by server-owning org not create chain', asyn
     .insert(principal)
     .values({
       organizationId: organizationIdA,
-      kind: 'database',
-      provider: 'postgres',
       username: 'SharedUser',
       appliedUsername: 'SharedUser',
-      managedId: m!.id,
     })
     .returning({ id: principal.id })
 
@@ -405,19 +452,28 @@ test('resolveManagedAppliedUsername suffixes when short name taken', async () =>
     role: 'primary',
     ordinal: 1,
   })
-  const [prin] = await db
-    .insert(principal)
-    .values({
-      organizationId,
-      kind: 'database',
-      provider: 'postgres',
-      username: 'postgres',
-      appliedUsername: 'postgres',
-      managedId,
-    })
-    .returning({ id: principal.id })
+  // The cluster's own root login holds the bare engine admin name.
+  await db.insert(login).values({
+    managedId,
+    role: 'root',
+    username: 'postgres',
+    appliedUsername: 'postgres',
+  })
+
+  await db.insert(login).values({
+    managedId,
+    role: 'user',
+    username: 'webuser',
+    appliedUsername: 'webuser_x1',
+  })
 
   try {
+    // A user login takes part in the organization's name pool; the cluster's
+    // root login does not.
+    assertEquals(await isServerPrincipalUsernameTaken(db, organizationId, 'webuser'), true)
+    assertEquals(await isServerPrincipalUsernameTaken(db, organizationId, 'webuser_x1'), true)
+    assertEquals(await isServerPrincipalUsernameTaken(db, organizationId, 'postgres'), false)
+
     const identifier = { pattern: /^[a-zA-Z_][a-zA-Z0-9_]*$/, maxLength: 63 }
     const free = await resolveManagedAppliedUsername(db, [organizationId], 'app_root', identifier, {
       scheme: 'plain',
@@ -453,7 +509,7 @@ test('resolveManagedAppliedUsername suffixes when short name taken', async () =>
     assertMatch(random, /^[a-z][a-z0-9]{11}$/)
     assertEquals(identifier.pattern.test(random), true)
   } finally {
-    await db.delete(principal).where(eq(principal.id, prin!.id))
+    await db.delete(login).where(eq(login.managedId, managedId))
     await db.delete(replica).where(eq(replica.managedId, managedId))
     await db.delete(managed).where(eq(managed.id, managedId))
     await db.delete(environment).where(eq(environment.id, env!.id))
@@ -488,8 +544,6 @@ test('createPrincipal and replaceTenancies write expected tenancy edges', async 
         db,
         {
           organizationId,
-          kind: 'database',
-          provider: 'postgres',
           username: 'created_user',
         },
         [serviceId]

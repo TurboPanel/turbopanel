@@ -274,6 +274,38 @@ test('a copy entry names where its bytes live: a volume, a host path, or the def
   assertEquals(parsedDefault, defaultDir)
 })
 
+test('a path copy entry can name its volume folder by parts, with or without the old fields beside it', () => {
+  const folder = { owner: 'acme', scope: 'production', slug: 'uploads' }
+  const hostPath = `/srv/users/acme/volumes/${STORAGE_ID}`
+  for (const entry of [
+    pathEntry({ folder }),
+    pathEntry({ folder, hostPath, ownerUsername: 'acme' }),
+    pathEntry({ folder: { ...folder, scope: 'common' } }),
+  ]) {
+    const parsed: unknown = parseBackupsReconcilePayload({ policies: [entry] }).policies[0]
+    assertEquals(parsed, entry)
+  }
+})
+
+test('a folder on a copy entry follows the folder rules and cannot sit with another source', () => {
+  const folder = { owner: 'acme', scope: 'production', slug: 'uploads' }
+  const cases: Record<string, unknown>[] = [
+    { ...copyEntry, folder },
+    pathEntry({ folder, ownerUsername: 'other' }),
+    pathEntry({ folder, organizationId: ORG_ID, storageId: STORAGE_ID }),
+    pathEntry({ folder, composeProject: 'p' }),
+    pathEntry({ folder, volumeName: 'x' }),
+    pathEntry({ folder: { ...folder, scope: 'Production' } }),
+    pathEntry({ folder: { ...folder, slug: 'a/b' } }),
+    pathEntry({ folder: { ...folder, owner: 'bad name' } }),
+    pathEntry({ folder: { ...folder, kind: 'volume' } }),
+    pathEntry({ folder: 'acme/production/uploads' }),
+  ]
+  for (const entry of cases) {
+    assertThrows(() => parseBackupsReconcilePayload({ policies: [entry] }), Error)
+  }
+})
+
 test('a copy entry refuses an ambiguous or unsafe source', () => {
   const cases: Record<string, unknown>[] = [
     { ...copyEntry, volumeName: undefined },
@@ -333,6 +365,7 @@ test('a managed entry cannot carry copy source fields', () => {
     'storageId',
     'ownerUsername',
     'composeProject',
+    'folder',
   ]) {
     assertThrows(
       () =>

@@ -425,17 +425,6 @@ function defOf(id: string): DoubleDef {
   return def
 }
 
-/** The `extended.text` key behind each content blob of a host row, blob7 onward (the reader's twin of `v8HostRowValues`). */
-export function v8HostRowTextKeys(
-  family: V8HostFamily
-): (keyof NonNullable<MetricsExtended['text']>)[] {
-  return V8_HOST_ROW_SPECS[family].blobs.map((id) => {
-    const key = TEXT_KEYS[id]
-    if (!key) throw new TypeError(`v8 layout names an unknown text id: ${id}`)
-    return key
-  })
-}
-
 function textOf(c: V8Context, id: string): string {
   const key = TEXT_KEYS[id]
   if (!key) throw new TypeError(`v8 layout names an unknown text id: ${id}`)
@@ -539,18 +528,6 @@ function opsPerSecond(device: BlockDeviceSample): number | null {
   return device.readOpsPerSecond + device.writeOpsPerSecond
 }
 
-/**
- * The text each entity of a paged family carries, in the order its blobs follow
- * the row's content blobs (entity by entity). The reader maps blobs back to
- * entities with this, so the writer below is built from it too.
- */
-export const V8_ENTITY_TEXT_FIELDS = {
-  block: ['model', 'smart'],
-  gpu: ['driver', 'model', 'memoryTotal'],
-  network: ['linkSpeed'],
-  filesystem: ['size'],
-} as const
-
 function blockText(key: 'model' | 'smart') {
   return {
     read: (d: BlockDeviceSample, s: MetricsSample) =>
@@ -574,7 +551,7 @@ const BLOCK_SPEC: EntityRowSpec<BlockDeviceSample> = {
     entityNum('writeLatencyMs'),
     entityNum('queueDepth'),
   ],
-  blobs: V8_ENTITY_TEXT_FIELDS.block.map(blockText),
+  blobs: [blockText('model'), blockText('smart')],
   perPage: 3,
 }
 

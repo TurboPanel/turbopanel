@@ -279,6 +279,7 @@ async function coordinatorFrom(
     now: () => new Date().toISOString(),
     colocatedServerId: colocated,
     instanceInstalled: { version: INSTANCE_VERSION, commit: revision.commit },
+    buildLabel: resolveBuildLabel(env),
     verifyTimeoutMs: parseUpgradeVerifyTimeoutMs(env[UPGRADE_VERIFY_TIMEOUT_ENV]),
   })
 }
