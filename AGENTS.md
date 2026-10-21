@@ -376,6 +376,30 @@ guard; `pnpm test:do` alone does not.
   else `git rev-parse HEAD`, and a deploy that cannot name a 40-hex commit is
   refused (so `/api/health` never reports `revision: unknown`). A failed
   migrate stops before wrangler runs.
+  `scripts/migrate-locked.mjs` takes a database backup first when anything is
+  pending (`scripts/migrate-backup.mjs`):
+  - `TURBOPANEL_MIGRATE_BACKUP_COMMAND` is a shell command that reads
+    `TURBOPANEL_DATABASE_URL` from its environment. It runs under the migration
+    lock; a non-zero exit, a spawn error or a timeout refuses the migration.
+    `TURBOPANEL_MIGRATE_BACKUP_TIMEOUT_SECONDS` (default 900) bounds it; the
+    command is killed on timeout and the lock is released.
+  - The command should write to a temporary file and rename it when done, so a
+    half dump never looks finished. Example:
+    `sh -c 'pg_dump -Fc "$TURBOPANEL_DATABASE_URL" -f /backups/panel.part && mv /backups/panel.part /backups/panel-$(date -u +%Y%m%dT%H%M%SZ).dump'`.
+  - Set it as a build variable in the Workers Builds dashboard (or the shell
+    that runs `pnpm migrate`); `wrangler.jsonc` vars are not read for it. The
+    build image may not ship `pg_dump`, so the command must fetch or run it
+    (for example over SSH on the database host). The method is the owner's
+    choice (see the local report "Panel database backup and restore plan").
+  - Without a command, only `CLOUDFLARE_ENV` of testing, staging, local, ci or
+    unset (a local run, or the CI build migrating its own test database) warns
+    and continues. Every other value (`live`, `Live`, `production`, a typo)
+    refuses unless `TURBOPANEL_MIGRATE_BACKUP_ACK=1`. The guard depends on
+    `CLOUDFLARE_ENV` being set correctly by the deploy scripts.
+  - The command's output is printed with the database URL, its password and the
+    values (8+ characters) of env vars named like TOKEN, SECRET, KEY or PASSWORD
+    blanked. That is a best effort: a secret fetched from elsewhere or printed
+    re-encoded is not caught, so the command should print no secrets.
 - **Database role grants (owner-run, not a migration).** The hosted panel
   connects as a runtime role (and a cached read role) that the migrate role
   does not create. Their grants live in
@@ -392,7 +416,6 @@ guard; `pnpm test:do` alone does not.
   `/api/client/v1/status` answer 503 `database roles lack grants` (the role and
   object go to the server log only), instead of a bare "database unavailable". Agents
   never run it against live, staging or testing.
-
 - **STAGING and LIVE use the same Workers Builds setup**, one Worker per
   environment: `staging-instance` (branch `staging`, deploy command
   `pnpm run deploy:staging`) and `instance` (branch `live`, deploy command
