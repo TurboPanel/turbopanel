@@ -591,6 +591,34 @@ test('tick: a fleet step that already ran and dropped is never skipped as offlin
   assertEquals(step.errorCode, 'server_offline')
 })
 
+test('start: the settle never skips a pending step or a platform-phase step', async () => {
+  for (const patch of [
+    { status: 'pending' as const, phase: 'fleet' as const },
+    { status: 'waiting' as const, phase: 'colocated_daemon' as const },
+  ]) {
+    const { coordinator, store } = build({
+      runtime: 'workers',
+      colocatedServerId: null,
+      facts: [factFor('srv-a', { colocated: false, connected: false })],
+    })
+    await store.insertRun(runRow(), [stepRow('step-1', { serverId: 'srv-a', ...patch })])
+    // Bypass the first check, as if the step changed after it.
+    const realSteps = store.stepsFor.bind(store)
+    let calls = 0
+    store.stepsFor = async (id) => {
+      calls += 1
+      const rows = await realSteps(id)
+      if (calls === 1) return rows.map((row) => ({ ...row, status: 'waiting', phase: 'fleet' }))
+      return rows
+    }
+    const refused = await coordinator.start({ source: 'manual', startedBy: null })
+    assertEquals(refused.ok, false)
+    if (refused.ok) throw new TypeError('expected a refusal')
+    assertEquals(refused.error, 'upgrade_run_active')
+    assertEquals((await store.stepsFor('upgrade-run-1'))[0]?.status, patch.status)
+  }
+})
+
 test('start: a host that reconnects during the settle keeps the run open', async () => {
   const { coordinator, store } = build({
     runtime: 'workers',

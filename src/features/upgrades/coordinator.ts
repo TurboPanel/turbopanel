@@ -749,7 +749,8 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     await forEachSequential(steps, async (step) => {
       if (isTerminal(step.status)) return
       const [fact] = await deps.store.factsFor([step.serverId], deps.colocatedServerId)
-      if (step.attempts > 0 || fact?.connected !== false) {
+      const idle = step.status === 'waiting' && step.phase === 'fleet' && step.attempts === 0
+      if (!idle || fact?.connected !== false) {
         lostRace = true
         return
       }
