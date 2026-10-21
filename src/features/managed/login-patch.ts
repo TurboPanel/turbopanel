@@ -106,6 +106,16 @@ function patchSettings(after: LoginGrantMode, input: LoginPatchInput): LoginSett
   return patch
 }
 
+/** Admin is exclusive, and a tool login by default. */
+function applyAdminDefaults(
+  patch: LoginSettingsPatch,
+  current: LoginPatchCurrent,
+  input: LoginPatchInput
+): void {
+  patch.privileges = [DATABASE_ADMIN_PRIVILEGE]
+  if (input.tool === undefined && !current.tool) patch.tool = true
+}
+
 /** A login's stored mode and levels, for the daemon rule on the read/write level. */
 export function readWriteGrantState(
   settings: Pick<LoginSettings, 'grantMode' | 'privileges' | 'databases'>
@@ -117,21 +127,13 @@ export function readWriteGrantState(
   }
 }
 
-export function planLoginPatch(
+/** Refusals that come from a manage-myself login, or from moving one onto PostgreSQL's read-only default. */
+function refuseSelfLoginChange(
   engine: string,
   current: LoginPatchCurrent,
-  input: LoginPatchInput
-): LoginPatchResult | LoginPatchError {
-  if (current.role !== 'user') {
-    return fail(
-      422,
-      'managed_login_not_editable',
-      'Only logins you created can be changed. The cluster administrator and replication logins are managed by TurboPanel.'
-    )
-  }
-  const after = resolveGrantMode(current.grantMode, input)
-  if (typeof after !== 'string') return after
-
+  input: LoginPatchInput,
+  after: LoginGrantMode
+): LoginPatchError | null {
   // connectionRole is routing (read replicas vs primary), not privileges, so a
   // manage-myself login may change it. Only the panel-set privileges are refused.
   if (after === 'self' && input.privileges !== undefined) {
@@ -156,6 +158,26 @@ export function planLoginPatch(
       'This login is set to read-only. In PostgreSQL that is a default setting on the login itself, and a manage-myself login is never touched by the panel, so the read-only setting stays on until someone removes it by hand (ALTER ROLE ... RESET default_transaction_read_only). Send confirmReset: true to go ahead.'
     )
   }
+  return null
+}
+
+export function planLoginPatch(
+  engine: string,
+  current: LoginPatchCurrent,
+  input: LoginPatchInput
+): LoginPatchResult | LoginPatchError {
+  if (current.role !== 'user') {
+    return fail(
+      422,
+      'managed_login_not_editable',
+      'Only logins you created can be changed. The cluster administrator and replication logins are managed by TurboPanel.'
+    )
+  }
+  const after = resolveGrantMode(current.grantMode, input)
+  if (typeof after !== 'string') return after
+
+  const selfRefusal = refuseSelfLoginChange(engine, current, input, after)
+  if (selfRefusal) return selfRefusal
   if (input.tool !== undefined && typeof input.tool !== 'boolean') {
     return fail(400, 'Invalid request', 'tool must be true or false.')
   }
@@ -181,19 +203,17 @@ export function planLoginPatch(
 
   const patch = patchSettings(after, input)
   if (input.privileges !== undefined && becomesAdmin) {
-    // Admin is exclusive, and a tool login by default.
-    patch.privileges = [DATABASE_ADMIN_PRIVILEGE]
-    if (input.tool === undefined && !current.tool) {
-      patch.tool = true
-    }
+    applyAdminDefaults(patch, current, input)
   }
   if (Object.keys(patch).length === 0) {
     return fail(400, 'Invalid request', 'Nothing to change.')
   }
   const tool = patch.tool ?? current.tool
   const summary = describeApply(engine, after, tool, becomesAdmin)
-  summary.push(...describePatchedLimits(current, input))
-  summary.push(...describeStraightThroughPatch(engine, current, patch))
+  summary.push(
+    ...describePatchedLimits(current, input),
+    ...describeStraightThroughPatch(engine, current, patch)
+  )
   return { ok: true, patch, grantMode: after, summary }
 }
 
