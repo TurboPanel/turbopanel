@@ -63,6 +63,7 @@ export type PendingRowTable =
   | 'docker'
   | 'event'
   | 'status'
+  | 'facts'
 
 export type SampleRow = { table: PendingRowTable; values: DuckDbBindValue[] }
 

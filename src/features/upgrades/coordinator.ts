@@ -849,14 +849,6 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     return true
   }
 
-  async function markInProgressRefused(step: UpgradeStepRow, at: string): Promise<void> {
-    // An earlier dispatch of this step is still installing. It is the live
-    // install now: keep the step in flight and let its own reports finish it.
-    step.detail = withInProgressRefused(step.detail)
-    step.lastStageAt = at
-    await deps.store.saveStep(step)
-  }
-
   function currentCommit(step: UpgradeStepRow, fact: FleetServerFact | undefined): string | null {
     if (step.unit === 'instance') {
       // A UI-only refresh reinstalls the same binary, so "the instance runs the
@@ -1127,22 +1119,23 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       await deps.store.saveStep(step)
     },
     noteProgress: async (input) => {
-      const step = await findOpenStep(deps.store, input.serverId, input.unit, input.upgradeId)
-      if (!step) return
-      const report = classifyReport(step, input.requestId)
-      if (!report) return
-      if (input.stage === 'failed' && input.errorCode === DISPATCH_IN_PROGRESS) {
-        if (report === 'current') await markInProgressRefused(step, input.at)
-        return
-      }
-      const failure = input.stage === 'failed' || input.stage === 'rolled-back'
-      if (failure && !priorFailureApplies(step, report)) return
-      const status = stepStatusForProgressStage(input.stage)
-      step.status = status
-      step.lastStageAt = input.at
-      if (input.errorCode) step.errorCode = input.errorCode
-      if (input.detail) recordProgressDetail(step, status, input.detail)
-      await deps.store.saveStep(step)
+      await applyReport(deps.store, input, (step, report) => {
+        if (input.stage === 'failed' && input.errorCode === DISPATCH_IN_PROGRESS) {
+          if (report === 'current') markInProgressRefused(step, input.at)
+          return report === 'current'
+        }
+        const failure = input.stage === 'failed' || input.stage === 'rolled-back'
+        if (failure && !priorFailureApplies(step, report)) return false
+        const status = stepStatusForProgressStage(input.stage)
+        // Reports replayed after a restart can arrive out of order; an earlier
+        // stage never pulls a step back from a later one.
+        if (stageRank(status) < stageRank(step.status)) return false
+        step.status = status
+        step.lastStageAt = input.at
+        if (input.errorCode) step.errorCode = input.errorCode
+        if (input.detail) recordProgressDetail(step, status, input.detail)
+        return true
+      })
     },
     updateGate: async () => {
       const [target, fleet] = await Promise.all([resolveTarget(), facts()])
@@ -1154,38 +1147,91 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       })
     },
     noteOutcome: async (input) => {
-      const step = await findOpenStep(deps.store, input.serverId, input.unit, input.upgradeId)
-      if (!step) return
-      const report = classifyReport(step, input.requestId)
-      if (!report) return
-      if (!input.ok && input.errorCode === DISPATCH_IN_PROGRESS) {
-        if (report === 'current') await markInProgressRefused(step, input.at)
-        return
-      }
-      if (!input.ok && !priorFailureApplies(step, report)) return
-      if (input.ok) {
-        step.lastStageAt = input.at
-        if (step.unit === 'instance') {
-          step.status = 'done'
+      await applyReport(deps.store, input, (step, report) => {
+        if (!input.ok && input.errorCode === DISPATCH_IN_PROGRESS) {
+          if (report === 'current') markInProgressRefused(step, input.at)
+          return report === 'current'
         }
-      } else if (isRollbackOutcome(step, input.errorCode)) {
-        // The daemon reports a rollback as a `rolled-back` progress stage and
-        // then a failed result carrying the rollback's reason code; the
-        // result must not turn that into an ordinary failure.
-        step.status = 'rolled_back'
-        step.errorCode = input.errorCode ?? step.errorCode ?? 'rolled_back'
-        step.errorMessage = input.error
-          ? redactUrlSecrets(input.error)
-          : (step.errorMessage ?? null)
-        step.lastStageAt = input.at
-      } else {
-        step.status = 'failed'
-        step.errorCode = input.errorCode ?? 'update_failed'
-        step.errorMessage = redactedOr(input.error, null)
-        step.lastStageAt = input.at
-      }
-      await deps.store.saveStep(step)
+        if (!input.ok && !priorFailureApplies(step, report)) return false
+        applyOutcome(step, input)
+        return true
+      })
     },
+  }
+}
+
+/**
+ * An earlier dispatch of this step is still installing. It is the live install
+ * now: keep the step in flight and let its own reports finish it.
+ */
+function markInProgressRefused(step: UpgradeStepRow, at: string): void {
+  step.detail = withInProgressRefused(step.detail)
+  step.lastStageAt = at
+}
+
+const STAGE_ORDER: readonly string[] = [
+  'dispatched',
+  'preparing',
+  'downloading',
+  'installing',
+  'restarting',
+  'verifying',
+]
+
+/** Position of an in-flight stage; every other status (including the closing ones) ranks by role. */
+function stageRank(status: string): number {
+  const index = STAGE_ORDER.indexOf(status)
+  if (index >= 0) return index
+  return status === 'done' || status === 'failed' || status === 'rolled_back'
+    ? STAGE_ORDER.length
+    : 0
+}
+
+function applyOutcome(
+  step: UpgradeStepRow,
+  input: { ok: boolean; at: string; error?: string; errorCode?: string }
+): void {
+  if (input.ok) {
+    step.lastStageAt = input.at
+    if (step.unit === 'instance') step.status = 'done'
+  } else if (isRollbackOutcome(step, input.errorCode)) {
+    // The daemon reports a rollback as a `rolled-back` progress stage and
+    // then a failed result carrying the rollback's reason code; the
+    // result must not turn that into an ordinary failure.
+    step.status = 'rolled_back'
+    step.errorCode = input.errorCode ?? step.errorCode ?? 'rolled_back'
+    step.errorMessage = input.error ? redactUrlSecrets(input.error) : (step.errorMessage ?? null)
+    step.lastStageAt = input.at
+  } else {
+    step.status = 'failed'
+    step.errorCode = input.errorCode ?? 'update_failed'
+    step.errorMessage = redactedOr(input.error, null)
+    step.lastStageAt = input.at
+  }
+}
+
+const REPORT_WRITE_ATTEMPTS = 5
+
+/**
+ * Apply one daemon report to its open step. Reports replayed after a restart
+ * arrive together and are handled concurrently, so each write is guarded by the
+ * status it read: if another report settled the step first, read it again and
+ * decide against the new state instead of overwriting it (a late `verifying`
+ * must not undo `done`).
+ */
+async function applyReport(
+  store: UpgradeStore,
+  input: { serverId: string; unit: UpgradeStepUnit; upgradeId?: string; requestId: string },
+  mutate: (step: UpgradeStepRow, report: 'current' | 'prior') => boolean
+): Promise<void> {
+  for (let attempt = 0; attempt < REPORT_WRITE_ATTEMPTS; attempt += 1) {
+    const step = await findOpenStep(store, input.serverId, input.unit, input.upgradeId)
+    if (!step) return
+    const report = classifyReport(step, input.requestId)
+    if (!report) return
+    const readStatus = step.status
+    if (!mutate(step, report)) return
+    if (await store.saveStep(step, readStatus)) return
   }
 }
 
