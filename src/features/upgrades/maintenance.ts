@@ -3,7 +3,6 @@
  * an automatic run, then advances the active run. Hello handlers do not
  * enqueue; this is the path that does.
  */
-import { resolveBuildLabel } from '../../app/build-info.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { resolveInstanceUpdateChannel } from '../../contracts/update-channel.ts'
 import type { Db } from '../../db/connection.ts'
@@ -21,6 +20,8 @@ export async function runUpgradeMaintenance(input: {
   resolveManifests: boolean
   env?: Record<string, string | undefined>
   instanceInstalled: { version: string; commit: string | null }
+  /** Full label of the installed package (`0.1.19-canary.3`), when known. */
+  buildLabel?: string | null
   colocatedServerId: string | null
 }): Promise<void> {
   const env = input.env ?? (typeof Deno === 'undefined' ? {} : Deno.env.toObject())
@@ -43,7 +44,7 @@ export async function runUpgradeMaintenance(input: {
     now: () => new Date().toISOString(),
     colocatedServerId: input.colocatedServerId,
     instanceInstalled: input.instanceInstalled,
-    buildLabel: resolveBuildLabel(env),
+    buildLabel: input.buildLabel,
     verifyTimeoutMs: parseUpgradeVerifyTimeoutMs(env[UPGRADE_VERIFY_TIMEOUT_ENV]),
     trace: traceUpgradeTick,
   })

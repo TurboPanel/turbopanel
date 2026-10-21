@@ -103,7 +103,7 @@ import {
 import { pruneAuditHistory } from '../../features/audit/prune.ts'
 import { pruneCommandHistory } from '../../features/commands/prune.ts'
 import { getAuditRetentionMonths } from '../../features/settings/audit-retention-settings.ts'
-import { resolveInstanceRevision } from '../../app/build-info.ts'
+import { resolveBuildLabel, resolveInstanceRevision } from '../../app/build-info.ts'
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveColocatedServerId } from '../../client/authn/install-state.ts'
 import { runUpgradeMaintenance } from '../../features/upgrades/maintenance.ts'
@@ -1033,6 +1033,7 @@ export async function runUpgradeMaintenanceSafely(db: Db, env: CloudflareBinding
         version: INSTANCE_VERSION,
         commit: revision.commit,
       },
+      buildLabel: resolveBuildLabel(envRecord),
       colocatedServerId: colocated,
     })
     sweepTrace('upgrade-tick')

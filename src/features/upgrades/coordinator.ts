@@ -1371,7 +1371,7 @@ function stepFromVersion(
   if (unit === 'instance') return instance.version
   if (!fact) return null
   const labelled = fact.commit ? instance.daemonLabels.get(fact.commit) : undefined
-  if (labelled && labelled.startsWith(`${fact.version}-`)) return labelled
+  if (labelled?.startsWith(`${fact.version}-`)) return labelled
   return fact.version
 }
 
