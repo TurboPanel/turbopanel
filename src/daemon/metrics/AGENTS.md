@@ -13,7 +13,7 @@ and rejects anything else; every stored hosted row carries blob3 `"8"` (`AE_STOR
 
 ## Metrics v8 (authoritative for new rows)
 
-Full storage format (column-by-column slot tables, units, nullability, DuckDB columns, versioning, how to add a metric): `STORAGE-FORMAT.md`.
+Full storage format (column-by-column slot tables, units, nullability, DuckDB columns, versioning, how to add a metric): `STORAGE-FORMAT.md`. The list of every stored value and its home in both stores is `field-registry.ts`, checked against both stores by `field-registry.test.ts` (`pnpm check:metrics-parity`).
 
 The v8 layout is **fixture-pinned**: `V8-LAYOUT.md` (generated) and
 `testing/v8-layout.fixture.json` are the spec, produced from the owner-sealed
