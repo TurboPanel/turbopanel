@@ -116,10 +116,10 @@
     },
     {
       // Inbound Stripe events (`/webhook/stripe`). Same gate, its own bucket,
-      // and a modest budget — Stripe delivery volume is far below a push fan-out.
+      // and a budget of 600 a minute per source address, so a burst of delivered events is not delayed.
       "name": "STRIPE_WEBHOOK_RATE_LIMITER",
       "namespace_id": "1009",
-      "simple": { "limit": 60, "period": 60 }
+      "simple": { "limit": 600, "period": 60 }
     },
     {
       // Generic mutating-request cap (client/admin/install/developer writes), keyed
@@ -256,10 +256,10 @@
         },
         {
           // Inbound Stripe events (`/webhook/stripe`). Same gate, its own bucket,
-          // and a modest budget — Stripe delivery volume is far below a push fan-out.
+          // and a budget of 600 a minute per source address, so a burst of delivered events is not delayed.
           "name": "STRIPE_WEBHOOK_RATE_LIMITER",
           "namespace_id": "2009",
-          "simple": { "limit": 60, "period": 60 }
+          "simple": { "limit": 600, "period": 60 }
         },
         {
           // Generic mutating-request cap (client/admin/install/developer writes), keyed
@@ -424,10 +424,10 @@
         },
         {
           // Inbound Stripe events (`/webhook/stripe`). Same gate, its own bucket,
-          // and a modest budget — Stripe delivery volume is far below a push fan-out.
+          // and a budget of 600 a minute per source address, so a burst of delivered events is not delayed.
           "name": "STRIPE_WEBHOOK_RATE_LIMITER",
           "namespace_id": "4009",
-          "simple": { "limit": 60, "period": 60 }
+          "simple": { "limit": 600, "period": 60 }
         },
         {
           // Generic mutating-request cap (client/admin/install/developer writes), keyed
@@ -564,10 +564,10 @@
         },
         {
           // Inbound Stripe events (`/webhook/stripe`). Same gate, its own bucket,
-          // and a modest budget — Stripe delivery volume is far below a push fan-out.
+          // and a budget of 600 a minute per source address, so a burst of delivered events is not delayed.
           "name": "STRIPE_WEBHOOK_RATE_LIMITER",
           "namespace_id": "3009",
-          "simple": { "limit": 60, "period": 60 }
+          "simple": { "limit": 600, "period": 60 }
         },
         {
           // Generic mutating-request cap (client/admin/install/developer writes), keyed
