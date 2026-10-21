@@ -3879,6 +3879,33 @@ test('parseEnvironmentStopPayload accepts and validates ingressServices', () => 
   )
 })
 
+test('parseEnvironmentStopPayload round-trips releaseCleanup and rejects unsafe segments', () => {
+  const base = { environmentId: 'env-1', projectId: 'proj-1', projectName: 'tp-demo' }
+  const releaseCleanup = [{ serviceId: 'svc-1', username: 'appuser' }]
+  assertEquals(parseEnvironmentStopPayload({ ...base, releaseCleanup }), {
+    ...base,
+    releaseCleanup,
+  })
+  assertThrows(
+    () =>
+      parseEnvironmentStopPayload({
+        ...base,
+        releaseCleanup: [{ serviceId: '../etc', username: 'appuser' }],
+      }),
+    Error,
+    'Invalid environment.stop releaseCleanup entry'
+  )
+})
+
+test('parseEnvironmentDeployResult carries unchanged only when the host said so', () => {
+  assertEquals(parseEnvironmentDeployResult({ projectName: 'p', unchanged: true }).unchanged, true)
+  assertEquals(
+    parseEnvironmentDeployResult({ projectName: 'p', unchanged: 'yes' }).unchanged,
+    undefined
+  )
+  assertEquals(parseEnvironmentDeployResult({ projectName: 'p' }).unchanged, undefined)
+})
+
 test('parseEnvironmentStopPayload round-trips siteReleases and rejects unsafe segments', () => {
   assertEquals(
     parseEnvironmentStopPayload({

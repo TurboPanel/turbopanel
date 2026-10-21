@@ -2787,6 +2787,12 @@ export type EnvironmentDeployCommandResult = {
    * were none and from older daemons.
    */
   keptFolders?: KeptFolder[]
+  /**
+   * True when the host found nothing to change (same sources, variables and
+   * settings as the last finished deploy) and built and restarted nothing.
+   * Absent otherwise and from older daemons.
+   */
+  unchanged?: boolean
 }
 
 /** A service folder a deploy left in place, by its components. */
@@ -4666,6 +4672,7 @@ export function parseEnvironmentDeployResult(value: unknown): EnvironmentDeployC
   if (principals !== undefined) result.principals = principals
   const keptFolders = parseKeptFolders(value.keptFolders)
   if (keptFolders !== undefined) result.keptFolders = keptFolders
+  if (value.unchanged === true) result.unchanged = true
   return result
 }
 
@@ -4778,6 +4785,12 @@ export type EnvironmentStopCommandPayload = {
    */
   siteReleases?: StopSiteRelease[]
   /**
+   * Services whose published releases a Destroy clears while their folder stays
+   * (uploads in `shared/`, logs, the owner's account). Same entry shape as
+   * `siteReleases`; a delete sends `siteReleases` instead, which removes the folder.
+   */
+  releaseCleanup?: StopSiteRelease[]
+  /**
    * Principals (applied Linux logins) that no project, site or app on this
    * server uses once the delete commits. The daemon retires each after the
    * rest of the stop through `tp-host principal-remove` (slice, processes, key
@@ -4866,10 +4879,13 @@ export type StopSiteRelease = { serviceId: string; username: string; folder?: Fo
 const STOP_SITE_RELEASE_SERVICE_ID_RE = /^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$/
 const STOP_SITE_RELEASE_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]{0,27}$/
 
-function parseStopSiteReleases(value: unknown): StopSiteRelease[] | undefined {
+function parseStopSiteReleases(
+  value: unknown,
+  field: 'siteReleases' | 'releaseCleanup' = 'siteReleases'
+): StopSiteRelease[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
-    throw new TypeError('siteReleases must be an array')
+    throw new TypeError(`${field} must be an array`)
   }
   const out: StopSiteRelease[] = []
   for (const entry of value) {
@@ -4880,7 +4896,7 @@ function parseStopSiteReleases(value: unknown): StopSiteRelease[] | undefined {
       !isString(entry.username) ||
       !STOP_SITE_RELEASE_USERNAME_RE.test(entry.username)
     ) {
-      throw new Error('Invalid environment.stop siteReleases entry')
+      throw new Error(`Invalid environment.stop ${field} entry`)
     }
     const release: StopSiteRelease = { serviceId: entry.serviceId, username: entry.username }
     if (entry.folder !== undefined) {
@@ -4948,6 +4964,7 @@ export function parseEnvironmentStopPayload(value: unknown): EnvironmentStopComm
   const ingressServices = parseStopIngressServices(value.ingressServices)
   const fabricNetworks = parseStopFabricNetworks(value.fabricNetworks)
   const siteReleases = parseStopSiteReleases(value.siteReleases)
+  const releaseCleanup = parseStopSiteReleases(value.releaseCleanup, 'releaseCleanup')
   const retirePrincipals = parseRetirePrincipals(value.retirePrincipals)
   return {
     environmentId,
@@ -4956,6 +4973,7 @@ export function parseEnvironmentStopPayload(value: unknown): EnvironmentStopComm
     ...(ingressServices !== undefined ? { ingressServices } : {}),
     ...(fabricNetworks !== undefined ? { fabricNetworks } : {}),
     ...(siteReleases !== undefined ? { siteReleases } : {}),
+    ...(releaseCleanup !== undefined ? { releaseCleanup } : {}),
     ...(retirePrincipals !== undefined ? { retirePrincipals } : {}),
   }
 }

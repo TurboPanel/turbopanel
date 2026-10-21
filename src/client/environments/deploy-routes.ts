@@ -2319,6 +2319,8 @@ async function enqueueStopCommand(
     fabricNetworks: string[]
     /** Per-service release trees to reclaim (generic, not site only). */
     siteReleases: EnvironmentSiteRelease[]
+    /** Services whose releases are cleared while their folder stays. */
+    releaseCleanup?: EnvironmentSiteRelease[]
   }
 ): Promise<QueuedCommandRef | Response> {
   const expiresAt = new Date(Date.now() + 120_000).toISOString()
@@ -2334,6 +2336,9 @@ async function enqueueStopCommand(
       ...(params.ingressServices.length > 0 ? { ingressServices: params.ingressServices } : {}),
       ...(params.fabricNetworks.length > 0 ? { fabricNetworks: params.fabricNetworks } : {}),
       ...(params.siteReleases.length > 0 ? { siteReleases: params.siteReleases } : {}),
+      ...(params.releaseCleanup && params.releaseCleanup.length > 0
+        ? { releaseCleanup: params.releaseCleanup }
+        : {}),
     },
     expiresAt,
   })
@@ -2399,10 +2404,11 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
     const tcpUdpServices = await resolveTcpUdpIngressServices(db, environmentId)
     const composeNetworks = await listEnvironmentComposeNetworks(db, environmentId)
     const namesByServer = composeNetworkNamesByServer(composeNetworks)
-    // An explicit stop keeps every service and volume folder, uploads included;
-    // only deleting the environment, a server leaving it, or the asset removes
-    // files. So no release tree is named here (delete teardown still names them).
-    const siteReleases: EnvironmentSiteRelease[] = []
+    // Destroy clears each service's published releases (they pile up on every
+    // deploy) but keeps every service and volume folder, uploads included; only
+    // deleting the environment, a server leaving it, or the asset removes files.
+    // So the trees go out as `releaseCleanup`, never as `siteReleases`.
+    const releaseCleanup = await resolveEnvironmentSiteReleases(db, environmentId)
     const queued: QueuedCommandRef[] = []
     for (const serverId of loaded.serverIds) {
       const enqueued = await enqueueStopCommand(db, commandQueue, {
@@ -2416,7 +2422,8 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
           serviceId: svc.serviceId,
         })),
         fabricNetworks: namesByServer.get(serverId) ?? [],
-        siteReleases,
+        siteReleases: [],
+        releaseCleanup,
       })
       if (enqueued instanceof Response) return enqueued
       queued.push(enqueued)
