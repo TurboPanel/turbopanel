@@ -24,6 +24,8 @@ import {
 } from '../../db/schema.ts'
 import { clampManagedResources, type ManagedSettings } from '../../features/managed/settings.ts'
 import { registerManagedExternalAccessRoutes } from './external-access-routes.ts'
+import { checkLoginMayBeDeleted, MANAGED_LOGIN_CHECK_TIMEOUT_MS } from './definer-guard.ts'
+import { probeManagedPermissions } from './permissions-probe.ts'
 import { registerManagedPrivilegeRoutes } from './privilege-routes.ts'
 import { loadManagedExternalAccessView } from '../../features/managed/external-access.ts'
 import {
@@ -2467,6 +2469,20 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
+    // MySQL and MariaDB: ask the host first, so nothing is removed for a login
+    // that still owns views, triggers, routines or events.
+    const deleteCheck = await checkLoginMayBeDeleted(ctx.spec.engine, target.appliedUsername, () =>
+      probeManagedPermissions(db, getDaemonCellRegistry(c), {
+        serverId: targetServerId,
+        managedId: row.id,
+        engine: ctx.spec.engine,
+        logins: [target.appliedUsername],
+        databases: [],
+        timeoutMs: MANAGED_LOGIN_CHECK_TIMEOUT_MS,
+      })
+    )
+    if (deleteCheck.kind === 'refuse') return c.json(deleteCheck.body, deleteCheck.status)
+
     const prepared = await prepareApplyForManaged(c, db, ctx, row, options, targetServerId, {
       dropUsers: [target.appliedUsername],
       omitLoginIds: [target.id],
@@ -2495,6 +2511,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     return c.json({
       ok: true,
       ...handedBackNotes(handedBack),
+      ...(deleteCheck.note ? { note: deleteCheck.note } : {}),
       commandId: primaryFanout?.commandId,
       serverId: primaryFanout?.serverId ?? targetServerId,
       results: enqueued,

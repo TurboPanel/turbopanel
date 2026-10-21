@@ -3016,8 +3016,8 @@ test('POST user rejects invalid username and DELETE database protects initial da
           databases: ['defaultdb'],
         }),
       })
-      assertEquals(badUser.status, 400)
-      assertEquals(await badUser.json(), { error: 'Invalid username' })
+      assertEquals(badUser.status, 422)
+      assertEquals((await badUser.json()).error, 'reserved_username')
 
       const dropInitial = await app.request(
         `/environments/${environmentId}/managed/databases/${encodeURIComponent('defaultdb')}`,
