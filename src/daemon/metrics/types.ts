@@ -341,12 +341,13 @@ export type MetricEventsResult = {
  * await them into WS / request handlers (same discipline as v3 writes).
  *
  * `writeSample`'s optional `slotMapping` is the caller-resolved `SlotMapping`
- * (see `client/servers/topology-slot-mapping.ts`) for the server's latest
- * hardware facts — resolving it requires a DB read, so it is computed by the
- * ingest route (which already does that work for capability planning), never
- * by the store itself. `undefined` means the server has not reported its
- * hardware yet; implementations must fall back to a topology-agnostic
- * packing in that case (see `field-map.ts`).
+ * (see `client/servers/topology-slot-mapping.ts`) for the sample's own
+ * `metadata.topologyGeneration` — resolving it requires a DB read, so it is
+ * computed by the ingest route (which already does that work for capability
+ * planning), never by the store itself. `undefined` means that generation is
+ * not the one on record; implementations must fall back to a topology-agnostic
+ * packing in that case (see `field-map.ts`). Readers never use the generation:
+ * every stored row names its own devices.
  */
 export interface ServerMetricsStore {
   writeSample(input: AuthenticatedMetricsSample, slotMapping?: SlotMapping): void | Promise<void>

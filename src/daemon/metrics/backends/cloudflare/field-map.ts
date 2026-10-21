@@ -18,7 +18,7 @@
  *
  * Slot assignment is identity-addressed when a `SlotMapping` is available
  * (`client/servers/topology-slot-mapping.ts`, resolved by the ingest route
- * from the server's latest hardware facts):
+ * from the sample's own `metadata.topologyGeneration`):
  *
  *  - `host.network` embeds the first two `slotMapping.normalNicSlots` entries
  *    (looked up by `deviceId`), so the common 1-NIC/2-NIC host never writes a

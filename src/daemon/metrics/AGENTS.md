@@ -485,7 +485,7 @@ instance (`disabled` / `analytics-engine` / `duckdb`) purely by instance type
   `tp:metrics:chart:` + kind + authorized `serverId` + bucket-rounded range +
   sorted metrics + resolution + backend + `v{schemaVersion}` (callers pass
   `schemaVersion: 6` explicitly, required) + `tg{topologyGeneration}` when a
-  caller scopes to the server's latest hardware record. TTL: live 45 s / historical 300 s.
+  caller scopes to one topology generation. TTL: live 45 s / historical 300 s.
   Workers: Cloudflare Cache API; Deno: bounded in-process `Map` (256 entries).
 
 **Resolution ladder** (`query/resolution.ts`): range ≤10 min → 10 s; ≤1 h → 60
