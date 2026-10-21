@@ -1082,6 +1082,27 @@ function buildDescriptorMap(
 export const HOST_METRICS_METRIC_DESCRIPTORS: Record<string, HostMetricsMetricDescriptor> =
   buildDescriptorMap(ALL_DESCRIPTOR_RECORDS)
 
+/**
+ * The nine data points the v8 layout no longer stores (pegged cores, hosting
+ * free, Docker used, router backends up, router requests, major page faults,
+ * 2xx responses, unreclaimable slab, logs used). They stay in the contract and
+ * the descriptors, so an older screen asking for one gets an empty value rather
+ * than an unknown-metric error. Both stores must read them as empty: the hosted
+ * reader has no slot for them, and the self-hosted reader masks them with this
+ * set even though its columns still hold older rows.
+ */
+export const UNSTORED_V8_HOST_METRICS: ReadonlySet<string> = new Set([
+  'host.cpu.saturatedCoreCount',
+  'storage.hostingFreeBytes',
+  'storage.dockerUsedBytes',
+  'router.backendsUp',
+  'router.backendRequests',
+  'host.memory.majorPageFaultsPerSecond',
+  'ingress.responses2xx',
+  'diagnostics.slabUnreclaimableBytes',
+  'storage.logsUsedBytes',
+])
+
 /** AE double-index page budget per fixed-shape family (one row/page per sample, not per entity). */
 const HOSTED_FAMILY_CAPACITY: Partial<Record<HostedFamily, number>> = {
   'host.system': 19,

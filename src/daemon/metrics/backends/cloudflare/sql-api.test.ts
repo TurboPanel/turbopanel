@@ -1,4 +1,4 @@
-import { assertEquals, assertStringIncludes } from '@std/assert'
+import { assertEquals, assertRejects, assertStringIncludes } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import {
   AE_EVENT_INDEX_SUFFIX,
@@ -398,6 +398,45 @@ it('queryHostSeriesViaSqlApi: a data point v8 no longer stores reads as empty, n
   assertEquals(result.points[0].values['storage.logsUsedBytes'], null)
   assertEquals(result.points[0].values['storage.hostingFreeBytes'], null)
   assertStringIncludes(sql, 'AS m0')
+})
+
+it('a dataset nothing has written to yet reads as no data, but other errors still throw', async () => {
+  const config = (status: number, body: string) => ({
+    accountId: 'acct123',
+    apiToken: 'token-xyz',
+    fetch: async () => new Response(body, { status }),
+  })
+  const query = {
+    serverId: HOST_SERVER_ID,
+    metrics: ['host.cpu.busyPercent'],
+    from: '2026-01-01T00:00:00.000Z',
+    to: '2026-01-01T00:05:00.000Z',
+    resolutionSeconds: 60,
+  }
+  const missingHttp = await queryHostSeriesViaSqlApi(
+    config(422, 'Unknown table live_turbopanel_server_metrics_v8'),
+    query
+  )
+  assertEquals(missingHttp.available, true)
+  assertEquals(missingHttp.points, [])
+  const missingEnvelope = await queryHostSeriesViaSqlApi(
+    config(
+      200,
+      JSON.stringify({
+        success: false,
+        errors: [{ message: "Table default.live_turbopanel_server_metrics_v8 doesn't exist" }],
+      })
+    ),
+    query
+  )
+  assertEquals(missingEnvelope.points, [])
+
+  for (const [status, body] of [
+    [422, 'unable to find type of column: blob9'],
+    [500, 'Unknown table other_dataset'],
+  ] as const) {
+    await assertRejects(() => queryHostSeriesViaSqlApi(config(status, body), query), Error, body)
+  }
 })
 
 it('queryHostSeriesViaSqlApi rejects a non-host metric', async () => {

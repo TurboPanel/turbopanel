@@ -289,6 +289,21 @@ function unwrapAeSqlSuccessResult(
   }
 }
 
+/**
+ * Analytics Engine creates a dataset on its first write, so a read against a
+ * dataset nothing has written to yet fails with a missing-table error instead
+ * of returning no rows. That one error (and only for one of our own
+ * `turbopanel_server_metrics_v<N>` datasets) means "no data".
+ */
+export function isMissingDatasetError(message: string): boolean {
+  return (
+    /turbopanel_server_metrics_v\d+/.test(message) &&
+    /unknown table|table .*(doesn't|does not) exist|no such table|unable to find table/i.test(
+      message
+    )
+  )
+}
+
 export function parseCloudflareSqlResponse(body: unknown): AnalyticsEngineSqlResult {
   if (!isPlainObject(body)) {
     throw new TypeError('AE SQL response is not a JSON object')
@@ -309,7 +324,9 @@ export function parseCloudflareSqlResponse(body: unknown): AnalyticsEngineSqlRes
   }
 
   if (envelope.success !== true) {
-    throw new Error(`AE SQL API error: ${collectAeSqlFailureDetail(envelope)}`)
+    const detail = collectAeSqlFailureDetail(envelope)
+    if (isMissingDatasetError(detail)) return { data: [] }
+    throw new Error(`AE SQL API error: ${detail}`)
   }
   const result = envelope.result
   if (result == null) {
@@ -369,6 +386,7 @@ async function executeSql(
   })
   if (!response.ok) {
     const body = await response.text()
+    if (isMissingDatasetError(body)) return { data: [] }
     throw new Error(`AE SQL HTTP ${response.status}${labelSuffix}: ${body.slice(0, 500)}`)
   }
   return parseCloudflareSqlResponse(await response.json())

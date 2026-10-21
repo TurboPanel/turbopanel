@@ -21,6 +21,7 @@
 import {
   DIAGNOSTICS_CPU_FIELD_NAMES,
   HOST_METRICS_METRIC_DESCRIPTORS,
+  UNSTORED_V8_HOST_METRICS,
   type HostMetricsMetricDescriptor,
   type MetricEntityScope,
 } from '../../metric-descriptors.ts'
@@ -706,6 +707,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     }
 
     const metricSelects = metrics.map((name) => {
+      if (UNSTORED_V8_HOST_METRICS.has(name)) return `CAST(NULL AS DOUBLE) AS "${name}"`
       const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[name]!
       const column = hostSeriesColumnForDescriptor(descriptor)
       // "h." metadata prefix: unambiguous even without the `md`/`rt`/`st`/`dk` joins,
@@ -814,6 +816,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       to.getTime()
     )
     const metricSelects = metrics.map((name) => {
+      if (UNSTORED_V8_HOST_METRICS.has(name)) return `CAST(NULL AS DOUBLE) AS "${name}"`
       const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[name]!
       const column = hostColumnForDescriptor(descriptor)
       return `${hostFieldAggregateSql(descriptor, column)} AS "${name}"`

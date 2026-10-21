@@ -11,8 +11,8 @@
  * Deliberate deviations from the explorer, all documented in V8-LAYOUT.md:
  *  - owner exclusions in plan.json are removed before packing;
  *  - the explorer packs envelope blobs in catalogue order; the real envelope
- *    keeps sample time at blob5, so topology generation moves to blob4
- *    (still six contiguous envelope blobs, so content packing is unchanged).
+ *    keeps sample time at blob5, so blob4 is kept as a reserved,
+ *    always-empty slot (still six contiguous envelope blobs, so content packing is unchanged).
  *
  * Usage: node scripts/metrics-v8-layout/generate.mjs
  */
@@ -148,7 +148,7 @@ ids, not the 171 the brief quoted, and equals preset \`r\` exactly). Differences
 - Owner answer 2026-10-03: hosting/front Caddy is totals only, so \`topSitesReq\` and \`topSites5xx\` are dropped before
   packing. \`topSites\` (largest sites by disk, from the directory walk) is not a Caddy field and stays.
 - The explorer packs envelope blobs in catalogue order, which would put sample time in blob4. The real envelope keeps
-  sample time at blob5 (as in v6, so every row kind agrees), so topology generation takes blob4. There are still six
+  sample time at blob5 (as in v6, so every row kind agrees), so blob4 stays reserved and is written empty. There are still six
   contiguous envelope blobs and 14 content blobs, so content packing is identical to the explorer.
 - Slot ids are catalogue ids (\`busy\`, \`oomKills\`, ...). The contract field behind each id is in \`v8-layout.ts\`.
 - Owner amendment 2026-10-07: every sample carries the sizes its percentages are measured against, so a resize
@@ -169,7 +169,7 @@ ids, not the 171 the brief quoted, and equals preset \`r\` exactly). Differences
 | blob1 | kind, \`metrics\` |
 | blob2 | family (below) |
 | blob3 | storage layout revision, \`8\` (the sizes amendment reused slots under wire version 8, so rows stamped \`7\` are never read) |
-| blob4 | topology generation |
+| blob4 | reserved, written empty |
 | blob5 | sample time, UTC text \`YYYY-MM-DD hh:mm:ss\` |
 | blob6 | entity ids (comma joined, same order as the row's doubles) or source id; empty on host rows |
 | blob7-blob20 | text content blobs (below) |
@@ -457,7 +457,7 @@ const fixture = {
   envelope: {
     order: ENVELOPE_ORDER,
     contentBlobCapacity: 20 - ENVELOPE_ORDER.length,
-    note: 'Metrics rows: blob1 kind, blob2 family, blob3 "8" (storage layout revision), blob4 topology generation, blob5 sample time (UTC YYYY-MM-DD hh:mm:ss), blob6 entity or source ids; content text blobs from blob7. double20 is the interval.',
+    note: 'Metrics rows: blob1 kind, blob2 family, blob3 "8" (storage layout revision), blob4 reserved (written empty), blob5 sample time (UTC YYYY-MM-DD hh:mm:ss), blob6 entity or source ids; content text blobs from blob7. double20 is the interval.',
   },
   planLimits,
   families: Object.fromEntries(Object.entries(templates).map(([k, v]) => [k, v.tpl])),

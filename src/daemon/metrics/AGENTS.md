@@ -25,7 +25,7 @@ v6 rows; where they disagree with `V8-LAYOUT.md`, v8 wins.
 - **Envelope**: blob1 kind, blob2 family, blob3 `"8"` (the storage layout revision, never the wire version), blob4 reserved (written empty), blob5 sample time as UTC text `YYYY-MM-DD hh:mm:ss`, blob6 entity ids, content text from blob7, double20 interval. Sequence, plan generation and page are no longer written. Event and status rows keep their v6 blob positions except blob3 and the blob5 text format.
 - **Wire negotiation**: wire feature `metrics-v8` (`DAEMON_WIRE_FEATURES`, both repos). A daemon stamps `METRICS_LEGACY_WIRE_VERSION` (6) until the control plane it is attached to advertises it. Hard cut: the control plane accepts wire versions 6 and 8 only (`METRICS_WIRE_VERSIONS`), advertises no `metrics-v7`, and a version-7 sample is refused with the usual version error; an older daemon falls back to the plain version-6 sample until it updates. `metrics-v8-sizes` is advertised only because this release stores the sizes and divides each bucket by the size its own sample carried. v8 data rides the optional `extended` section and `metadata.durable`; a v6 sample writes the same v8 rows with sentinels and empty text for the absent data.
 - **Caddy is totals only** (no per-site fields anywhere); slow families are still re-sent every sample.
-- **Reads**: the missing-metric sentinel is tested as `col > -pow(10, 307)` (`aePresentValueSql`), never by equality; a delta-sum over an absent family is null, not 0. Hosted rows live only in the `_v8` dataset and are read as stamp 8 only; earlier rows are dropped, with no dual read. Descriptors for the nine data points v8 stops storing stay and read as empty. Descriptors for the new v8 metrics (OOM kills, Docker health, cert expiry, text blobs) are reader work.
+- **Reads**: the missing-metric sentinel is tested as `col > -pow(10, 307)` (`aePresentValueSql`), never by equality; a delta-sum over an absent family is null, not 0. Hosted rows live only in the `_v8` dataset and are read as stamp 8 only; earlier rows are dropped, with no dual read. Descriptors for the nine data points v8 stops storing stay and read as empty. Descriptors for the new v8 metrics (OOM kills, Docker health, cert expiry, text blobs) are reader work. Analytics Engine creates a dataset on its first write, so a read before any write fails with a missing-table error; `isMissingDatasetError` turns exactly that error (for one of our own `turbopanel_server_metrics_v<N>` datasets) into "no data" and every other error still throws. The testing deploy should check the first `_v8` read.
 
 Root context: `../../../AGENTS.md`. Daemon cell: `../cell/AGENTS.md`. Operator
 glossary (what each console chart means): `../../../../website/docs/metrics/`.
@@ -268,7 +268,7 @@ fake engine in `testing/fake-analytics-engine.ts` now mirrors them as `422`):
   entity. `executeSql` refuses an over-long statement before sending it.
 - **No aggregate over a String blob** (`cannot use the String type as argument
 1 in max(`). Aggregate `doubleN` columns only. No reader depends on the topology
-  generation (blob4 is still written, never read).
+  generation (blob4 and event blob7 are reserved and written empty).
 - Emit only functions on Cloudflare's AE SQL reference pages —
   `sql-limits.test.ts` keeps an allowlist and checks every builder's
   worst-case statements against all three rules. Errors name the query

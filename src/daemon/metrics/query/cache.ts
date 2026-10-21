@@ -36,12 +36,6 @@ export function metricsChartCacheKey(input: {
   /** Callers must pass `6` explicitly. */
   schemaVersion: number
   kind?: 'series' | 'summary' | 'connection' | 'fleet-latest' | 'events' | 'entity-series'
-  /**
-   * Scopes the cache entry to one topology generation. Uses a distinct
-   * `tg{gen}` token, appended only when provided so it never collides with a
-   * full-range entry, which omits it.
-   */
-  topologyGeneration?: number
 }): string {
   const sortedMetrics = [...input.metrics].sort((a, b) => a.localeCompare(b)).join(',')
   const kind = input.kind ?? 'series'
@@ -55,7 +49,6 @@ export function metricsChartCacheKey(input: {
     String(input.resolutionSeconds),
     input.backend,
     `v${input.schemaVersion}`,
-    ...(input.topologyGeneration !== undefined ? [`tg${input.topologyGeneration}`] : []),
   ].join(':')
 }
 

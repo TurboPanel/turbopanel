@@ -193,7 +193,7 @@
   "envelope": {
     "order": ["kind", "family", "version", "topoGen", "sampledAt", "ids"],
     "contentBlobCapacity": 14,
-    "note": "Metrics rows: blob1 kind, blob2 family, blob3 \"8\" (storage layout revision), blob4 topology generation, blob5 sample time (UTC YYYY-MM-DD hh:mm:ss), blob6 entity or source ids; content text blobs from blob7. double20 is the interval."
+    "note": "Metrics rows: blob1 kind, blob2 family, blob3 \"8\" (storage layout revision), blob4 reserved (written empty), blob5 sample time (UTC YYYY-MM-DD hh:mm:ss), blob6 entity or source ids; content text blobs from blob7. double20 is the interval."
   },
   "planLimits": {
     "S1": {

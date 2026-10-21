@@ -476,7 +476,6 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       backend,
       schemaVersion: 6,
       kind: 'series',
-      topologyGeneration: latestGeneration?.generation,
     })
 
     const cached = await cache.get<ReturnType<typeof buildSeriesRouteResponse>>(cacheKey)
@@ -589,7 +588,6 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       backend,
       schemaVersion: 6,
       kind: 'summary',
-      topologyGeneration: latestGeneration?.generation,
     })
 
     const cached = await cache.get<HostSummaryChartResponse & CpuLimitsEnvelope>(cacheKey)
@@ -659,7 +657,7 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
 
     const resolved = resolveDbAndRange(c)
     if (resolved instanceof Response) return resolved
-    const { db, range } = resolved
+    const { range } = resolved
 
     // Status transitions are v6-only: `queryStatusHistory` is optional on
     // `ServerMetricsStore` (only `DisabledServerMetricsStore` omits it),
@@ -675,10 +673,6 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
     })
     const queryRange = canonicalizeMetricsRange(range.fromMs, range.toMs, resolutionSeconds)
 
-    // Only the generation is needed here (no cpuLimits envelope on this
-    // route).
-    const latestGeneration = await getLatestTopologyGeneration(db, serverId)
-
     const cacheKey = metricsChartCacheKey({
       serverId,
       fromBucketMs: queryRange.fromMs,
@@ -688,7 +682,6 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       backend,
       schemaVersion: 6,
       kind: 'connection',
-      topologyGeneration: latestGeneration?.generation,
     })
 
     const cached = await cache.get<ConnectionHistoryChartResponse>(cacheKey)

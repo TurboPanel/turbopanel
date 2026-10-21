@@ -36,31 +36,6 @@ it('metricsChartCacheKey: stable metric ordering and schema version', () => {
   assertEquals(keyA.includes('v6'), true)
 })
 
-it('metricsChartCacheKey: topologyGeneration is appended only when provided', () => {
-  const withoutGeneration = metricsChartCacheKey({
-    serverId: '11111111-1111-4111-8111-111111111111',
-    fromBucketMs: 1_000,
-    toBucketMs: 2_000,
-    metrics: ['host.cpu.userPercent'],
-    resolutionSeconds: 300,
-    backend: 'duckdb',
-    schemaVersion: 6,
-  })
-  const withGeneration = metricsChartCacheKey({
-    serverId: '11111111-1111-4111-8111-111111111111',
-    fromBucketMs: 1_000,
-    toBucketMs: 2_000,
-    metrics: ['host.cpu.userPercent'],
-    resolutionSeconds: 300,
-    backend: 'duckdb',
-    schemaVersion: 6,
-    topologyGeneration: 2,
-  })
-  assertEquals(withoutGeneration.includes(':tg'), false)
-  assertEquals(withGeneration.endsWith(':tg2'), true)
-  assertEquals(withGeneration === withoutGeneration, false)
-})
-
 it('resolveChartCacheTtlSeconds: live vs historical', () => {
   const nowMs = Date.parse('2026-01-01T01:00:00.000Z')
   assertEquals(

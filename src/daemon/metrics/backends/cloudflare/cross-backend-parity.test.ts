@@ -25,6 +25,10 @@
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import {
+  HOST_METRICS_METRIC_DESCRIPTORS,
+  UNSTORED_V8_HOST_METRICS,
+} from '../../metric-descriptors.ts'
+import {
   buildMetricsSample,
   type MetricsSampleInput,
 } from '../../../../contracts/metrics-contract.ts'
@@ -413,6 +417,26 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
       routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendErrors5xx'),
       0
     )
+
+    // --- The data points v8 no longer stores read as empty on BOTH backends,
+    // even though the self-hosted columns still exist (and hold this sample's
+    // values: routerBackendsUp 3, the hosting/logs gauges 512 and 1_000_000). ---
+    const droppedMetrics = [...UNSTORED_V8_HOST_METRICS].filter(
+      (name) =>
+        HOST_METRICS_METRIC_DESCRIPTORS[name] !== undefined && name !== 'ingress.responses2xx'
+    )
+    assertEquals(droppedMetrics.length, 8)
+    const droppedQuery = { ...routerQuery, metrics: droppedMetrics }
+    for (const result of [
+      await duckStore.queryHostSeries(droppedQuery),
+      await aeStore.queryHostSeries(droppedQuery),
+    ]) {
+      for (const point of result.points) {
+        for (const name of droppedMetrics) {
+          assertEquals(point.values[name] ?? null, null, `${name} must read as empty`)
+        }
+      }
+    }
 
     // --- managed.storage / managed.docker: the other two host-wide
     // singletons. Covers a flat storage gauge, a *nested* per-engine reading
