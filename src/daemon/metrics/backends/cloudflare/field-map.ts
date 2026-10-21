@@ -43,10 +43,10 @@
  * always derive columns and write payloads through this module.
  */
 
-import {
-  type MetricEvent,
-  type MetricsSample,
-  type NetworkDeviceSample,
+import type {
+  MetricEvent,
+  MetricsSample,
+  NetworkDeviceSample,
 } from '../../../../contracts/metrics-contract.ts'
 import { METRICS_LAYOUT_VERSION } from '../../field-registry.ts'
 import type { HostedFamily, MetricEntityScope } from '../../metric-descriptors.ts'
