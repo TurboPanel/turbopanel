@@ -91,7 +91,7 @@ async function withCluster(fn: (fixture: Fixture) => Promise<void>): Promise<voi
       .returning({ id: project.id })
     const [env] = await db
       .insert(environment)
-      .values({ name: 'Production', projectId: proj!.id, serverId })
+      .values({ name: 'production', projectId: proj!.id, serverId })
       .returning({ id: environment.id })
     const [cluster] = await db
       .insert(managed)

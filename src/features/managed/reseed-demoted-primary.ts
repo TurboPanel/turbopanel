@@ -27,7 +27,7 @@ import {
 import { headlessManagedContext } from './headless-context.ts'
 import { getManagedEngineSpec } from './index.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
-import { parseManagedRowOptions } from './options.ts'
+import { loadManagedOptions } from './options.ts'
 import { findInFlightRecovery } from './recovery-records.ts'
 import type { RecoveryRecord } from './recovery.ts'
 import { parseManagedResidual } from './serialize.ts'
@@ -51,6 +51,7 @@ export type ReseedDemotedPrimaryDeps = {
   hasOutstandingApply?: (db: Db, managedId: string, memberId: string) => Promise<boolean>
   loadCluster?: (db: Db, managedId: string) => Promise<ManagedApplyCluster | null>
   preflight?: typeof preflightManagedApplyInfrastructure
+  loadOptions?: typeof loadManagedOptions
   preparePayloads?: (
     c: Context,
     db: Db,
@@ -319,7 +320,10 @@ async function enqueueSwitchoverReseedApply(
     skip(`engine ${cluster.engine} is unrecognized`)
     return
   }
-  const options = parseManagedRowOptions(spec, cluster.options)
+  const options = await (deps.loadOptions ?? loadManagedOptions)(db, spec, {
+    id: cluster.id,
+    options: cluster.options,
+  })
   if (!options) {
     skip('managed options are invalid')
     return
@@ -342,6 +346,8 @@ async function enqueueSwitchoverReseedApply(
     spec,
     settings: options.settings,
     databases: options.databases,
+    ownerRoleDatabases: options.ownerRoleDatabases,
+    databaseOwners: options.databaseOwners,
     serverId: primaryServerId,
     environmentId: cluster.environmentId,
     organizationId: cluster.organizationId,

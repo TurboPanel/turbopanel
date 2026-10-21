@@ -64,7 +64,6 @@ function member(overrides: Partial<ManagedMemberRow> = {}): ManagedMemberRow {
     privatePort: 5432,
     status: 'needs_resync',
     metadata: null,
-    options: null,
     createdAt: NOW,
     updatedAt: NOW,
     ...overrides,
@@ -135,6 +134,7 @@ function capturingDeps(enqueued: EnqueueCall[], extra: ReseedDemotedPrimaryDeps 
     hasOutstandingApply: () => Promise.resolve(false),
     loadCluster: () => Promise.resolve(clusterRow()),
     preflight: () => Promise.resolve(null),
+    loadOptions: () => Promise.resolve({ settings: { ssl: {} }, databases: ['postgres'] }),
     preparePayloads: (_c: Context, _db: Db, input: BuildManagedApplyInput) => {
       prepareServerId = input.serverId
       forceResyncMemberIds = input.forceResyncMemberIds
