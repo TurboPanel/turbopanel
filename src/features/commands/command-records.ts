@@ -333,6 +333,23 @@ export async function claimCommandMetadataFlag(
   return claimed.length > 0
 }
 
+/** `command.metadata` key stamped once a command's message is on the command queue. */
+export const ENQUEUED_FLAG = 'enqueuedAt'
+
+/**
+ * Record that the command's message reached the command queue. Until then a
+ * `queued` command may belong to a worker that died before it enqueued it, so
+ * the stale sweep gives it only a short wait; after it, the command may
+ * legitimately wait a long time behind other deploys. Best effort.
+ */
+export async function markCommandEnqueued(db: Db, commandId: string): Promise<void> {
+  try {
+    await claimCommandMetadataFlag(db, commandId, ENQUEUED_FLAG)
+  } catch {
+    // The sweep falls back to its short wait for this command.
+  }
+}
+
 /**
  * The only sanctioned read of the daemon execution payload. Returns `null` once
  * the dispatch row has been cleaned up (success) or swept (expired failure).

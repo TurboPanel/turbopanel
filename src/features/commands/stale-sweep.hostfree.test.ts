@@ -251,3 +251,58 @@ test('the stale-command sweep leaves a recovery alone when its command was alrea
   assertEquals(await sweepStaleCommands(withCandidates(db, [stalled]), { now: T0 }), 0)
   assertEquals(db.rows(recovery)[0]?.state, 'promoting')
 })
+
+test('a deploy that is still waiting to start is not swept at the run cap', () => {
+  const sentAt = new Date(T0).toISOString()
+  const waiting = candidate({
+    name: 'environment.deploy',
+    sentAt,
+    progress: { version: 1, steps: [], current: null, updatedAt: sentAt, runningSince: null },
+  })
+  assertEquals(isStaleCommand(waiting, T0 + 3 * 60 * 60_000), false)
+  assertEquals(isStaleCommand(waiting, T0 + 6 * 60 * 60_000 + STALE_COMMAND_GRACE_MS), true)
+})
+
+test('a deploy still in the command queue is not swept after 15 minutes', () => {
+  const queued = candidate({
+    name: 'environment.deploy',
+    status: 'queued',
+    queuedAt: new Date(T0).toISOString(),
+    metadata: { enqueuedAt: new Date(T0).toISOString() },
+  })
+  assertEquals(isStaleCommand(queued, T0 + 60 * 60_000), false)
+  assertEquals(isStaleCommand(queued, T0 + 6 * 60 * 60_000 + STALE_COMMAND_GRACE_MS), true)
+})
+
+test('a running deploy is swept when its own run cap runs out, counted from its start', () => {
+  const started = T0 + 2 * 60 * 60_000
+  const running = candidate({
+    name: 'environment.deploy',
+    sentAt: new Date(T0).toISOString(),
+    progress: {
+      version: 1,
+      steps: [],
+      current: null,
+      updatedAt: new Date(started).toISOString(),
+      runningSince: new Date(started).toISOString(),
+    },
+  })
+  assertEquals(isStaleCommand(running, started + 10 * 60_000), false)
+  assertEquals(isStaleCommand(running, started + 10 * 60_000 + STALE_COMMAND_GRACE_MS), true)
+})
+
+test('a deploy from a server that never reports a start keeps the old deadline', () => {
+  const sent = candidate({ name: 'environment.deploy', sentAt: new Date(T0).toISOString() })
+  assertEquals(isStaleCommand(sent, T0 + 10 * 60_000), false)
+  assertEquals(isStaleCommand(sent, T0 + 10 * 60_000 + STALE_COMMAND_GRACE_MS), true)
+})
+
+test('a queued deploy whose message never reached the queue is still swept after the short wait', () => {
+  const lost = candidate({
+    name: 'environment.deploy',
+    status: 'queued',
+    queuedAt: new Date(T0).toISOString(),
+  })
+  assertEquals(isStaleCommand(lost, T0 + 10 * 60_000), false)
+  assertEquals(isStaleCommand(lost, T0 + 10 * 60_000 + STALE_COMMAND_GRACE_MS), true)
+})

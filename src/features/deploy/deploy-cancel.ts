@@ -29,7 +29,7 @@
  */
 
 import { and, eq, sql } from 'drizzle-orm'
-import type { DaemonCellRegistry } from '../../contracts/cell.ts'
+import type { DaemonCell, DaemonCellRegistry } from '../../contracts/cell.ts'
 import {
   DEPLOY_CANCEL_OUTCOMES,
   type DaemonOutboundEnvelope,
@@ -283,4 +283,30 @@ export async function cancelEnvironmentDeploy(
   const tally: Tally = { cancelledDirect: [], signalled: [], tooLate: [] }
   remaining.forEach((row, index) => tally[kinds[index]].push(row.serverId))
   return summarize(tally)
+}
+
+/**
+ * Tell the server to stop a deploy the control plane has given up on (its run
+ * cap or queue limit ran out). Best effort and not waited for: a server that
+ * cannot cancel, or is offline, is left alone, and one that already switched
+ * over answers "too late" and finishes. The command is already failed here.
+ */
+export async function cancelDeployOnServer(
+  db: Db,
+  cell: DaemonCell,
+  serverId: string,
+  commandId: string
+): Promise<void> {
+  try {
+    if (!(await storedDaemonFeatures(db, serverId)).includes(DEPLOY_CANCEL_FEATURE)) return
+    await cell.enqueue({
+      kind: 'deploy-cancel',
+      deliveryId: generateDeliveryId(),
+      requestId: generateRequestId(),
+      commandId,
+      at: new Date().toISOString(),
+    })
+  } catch {
+    // Nothing more can be done from here.
+  }
 }

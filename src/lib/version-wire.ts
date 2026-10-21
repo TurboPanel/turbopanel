@@ -191,6 +191,7 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-owner-role-v1',
   'managed-data-only-readwrite-v1',
   'managed-database-owner-v1',
+  'managed-database-convert-v1',
   'tls-capture-v1',
 ] as const
 
@@ -367,6 +368,14 @@ export const MANAGED_DATA_ONLY_READWRITE_FEATURE: DaemonWireFeature =
  * cluster's first database is made without an owner role as before.
  */
 export const MANAGED_DATABASE_OWNER_FEATURE: DaemonWireFeature = 'managed-database-owner-v1'
+
+/**
+ * The daemon honours `databases[].convertExisting` on a Postgres database: an
+ * existing database that holds data is handed to its owner role on request.
+ * Without it the control plane refuses the request with 409
+ * `managed_database_convert_needs_daemon_update`.
+ */
+export const MANAGED_DATABASE_CONVERT_FEATURE: DaemonWireFeature = 'managed-database-convert-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}

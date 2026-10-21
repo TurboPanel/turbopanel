@@ -8,7 +8,7 @@
  * and `daemon/deno-ws.ts`) and by the terminal transitions in
  * `command-records.ts`.
  */
-import { and, eq, notInArray } from 'drizzle-orm'
+import { and, eq, notInArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command } from '../../db/schema.ts'
 import {
@@ -53,6 +53,7 @@ function normalizeCommandProgress(progress: CommandProgress): CommandProgress {
     })),
     current: progress.current,
     updatedAt: progress.updatedAt,
+    ...(progress.runningSince === undefined ? {} : { runningSince: progress.runningSince }),
   }
 }
 
@@ -113,9 +114,32 @@ export async function recordCommandProgress(
   if (!isCommandProgress(input.progress)) return 'invalid'
   const progress = normalizeCommandProgress(input.progress)
   try {
+    const receivedAt = nowIso()
+    // The deploy's run clock is the control plane's own: the server only says
+    // "running" or "waiting", and the time it started is when that was first
+    // heard, so a wrong clock on the server cannot stretch or shorten the cap.
+    if (typeof progress.runningSince === 'string') {
+      const [previous] = await db
+        .select({ progress: command.progress })
+        .from(command)
+        .where(and(eq(command.id, input.commandId), eq(command.serverId, input.serverId)))
+        .limit(1)
+      const before = parseStoredCommandProgress(previous?.progress)?.runningSince
+      progress.runningSince = typeof before === 'string' ? before : receivedAt
+    }
     const rows = await db
       .update(command)
-      .set({ progress, updatedAt: nowIso() })
+      .set({
+        progress,
+        updatedAt: receivedAt,
+        // The first time the server says it is running, that is when the
+        // command started; waiting for the host afterwards does not undo it.
+        ...(typeof progress.runningSince === 'string'
+          ? {
+              startedAt: sql`COALESCE(${command.startedAt}, ${progress.runningSince}::timestamptz)`,
+            }
+          : {}),
+      })
       .where(
         and(
           eq(command.id, input.commandId),

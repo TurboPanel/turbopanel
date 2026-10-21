@@ -218,6 +218,13 @@ export type CommandProgress = {
   /** Id of the running step, or null when none is running. */
   current: string | null
   updatedAt: string
+  /**
+   * When the server began actually running this command, or `null` while it
+   * waits for the host (another build holds the single build slot). Absent
+   * from a daemon that does not report it. The control plane starts the
+   * command's run deadline from here, so waiting never counts against it.
+   */
+  runningSince?: string | null
 }
 
 /**
@@ -295,6 +302,8 @@ export type BackupRunReportMessage = {
   sizeBytes?: number
   checksum?: string
   path?: string
+  /** The database a managed engine's run dumped; absent from an older daemon and for storage copies. */
+  database?: string
   /** `bk_` ids this run's retention removed from the policy's directory. */
   pruned?: string[]
   /** When the policy's timer next fires, read from systemd after the run. */
@@ -1182,6 +1191,10 @@ export function validateCommandProgress(value: unknown): string | null {
   if (value.version !== 1) return 'invalid progress version'
   if (!isIsoTimestamp(value.updatedAt)) return 'invalid progress updatedAt'
   if (value.current !== null && !isBoundedId(value.current)) return 'invalid progress current'
+  if (value.runningSince !== null) {
+    const issue = validateOptionalIsoTimestamp(value.runningSince, 'progress runningSince')
+    if (issue) return issue
+  }
   if (!Array.isArray(value.steps)) return 'invalid progress steps'
   if (value.steps.length > MAX_DAEMON_WS_PROGRESS_STEPS) return 'progress steps exceed max entries'
   return (
@@ -1396,6 +1409,9 @@ const BACKUP_RUN_STATUSES = new Set(['succeeded', 'failed'])
 /** Max characters for `backup-run-report.path`. */
 export const MAX_DAEMON_WS_BACKUP_PATH_CHARS = 1024
 
+/** Max characters for `backup-run-report.database`. */
+export const MAX_DAEMON_WS_BACKUP_DATABASE_CHARS = 128
+
 /** Max `backup-run-report.pruned` entries (a policy keeps at most 100 artifacts). */
 export const MAX_DAEMON_WS_BACKUP_PRUNED = 256
 
@@ -1453,6 +1469,14 @@ function validateBackupRunReportArtifact(record: Record<string, unknown>): strin
   }
   if (record.pruned !== undefined && !isBackupPrunedList(record.pruned)) {
     return 'invalid pruned'
+  }
+  if (
+    record.database !== undefined &&
+    (typeof record.database !== 'string' ||
+      record.database.length === 0 ||
+      record.database.length > MAX_DAEMON_WS_BACKUP_DATABASE_CHARS)
+  ) {
+    return 'invalid database'
   }
   return null
 }

@@ -3912,6 +3912,33 @@ test('parseEnvironmentStopPayload accepts and validates ingressServices', () => 
   )
 })
 
+test('parseEnvironmentStopPayload round-trips releaseCleanup and rejects unsafe segments', () => {
+  const base = { environmentId: 'env-1', projectId: 'proj-1', projectName: 'tp-demo' }
+  const releaseCleanup = [{ serviceId: 'svc-1', username: 'appuser' }]
+  assertEquals(parseEnvironmentStopPayload({ ...base, releaseCleanup }), {
+    ...base,
+    releaseCleanup,
+  })
+  assertThrows(
+    () =>
+      parseEnvironmentStopPayload({
+        ...base,
+        releaseCleanup: [{ serviceId: '../etc', username: 'appuser' }],
+      }),
+    Error,
+    'Invalid environment.stop releaseCleanup entry'
+  )
+})
+
+test('parseEnvironmentDeployResult carries unchanged only when the host said so', () => {
+  assertEquals(parseEnvironmentDeployResult({ projectName: 'p', unchanged: true }).unchanged, true)
+  assertEquals(
+    parseEnvironmentDeployResult({ projectName: 'p', unchanged: 'yes' }).unchanged,
+    undefined
+  )
+  assertEquals(parseEnvironmentDeployResult({ projectName: 'p' }).unchanged, undefined)
+})
+
 test('parseEnvironmentStopPayload round-trips siteReleases and rejects unsafe segments', () => {
   assertEquals(
     parseEnvironmentStopPayload({
@@ -7571,6 +7598,23 @@ test('parseManagedApplyPayload reads an optional databases[].ownerLogin that nee
     TypeError,
     'ownerLogin must be a login name'
   )
+})
+
+test('parseManagedApplyPayload reads an optional databases[].convertExisting that needs ownerRole on a create', () => {
+  const withOp = (extra: Record<string, unknown>, action = 'create') =>
+    parseManagedApplyPayload({
+      ...VALID_MANAGED_APPLY,
+      databases: [{ name: 'shop', action, ...extra }],
+    }).databases![0]!
+  assertEquals('convertExisting' in withOp({ ownerRole: true }), false)
+  assertEquals(withOp({ ownerRole: true, convertExisting: true }).convertExisting, true)
+  for (const bad of [
+    () => withOp({ convertExisting: true }),
+    () => withOp({ ownerRole: true, convertExisting: false }),
+    () => withOp({ ownerRole: true, convertExisting: true }, 'drop'),
+  ]) {
+    assertThrows(bad, TypeError, 'convertExisting must be true')
+  }
 })
 
 test('managed.ingress.reconcile app-login limits are optional and validated', () => {

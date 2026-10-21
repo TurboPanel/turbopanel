@@ -15,6 +15,13 @@
       "when": 1792542413788,
       "tag": "0001_login_straight_through",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792604831497,
+      "tag": "0002_backup_policy_database",
+      "breakpoints": true
     }
   ]
 }

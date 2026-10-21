@@ -12,7 +12,11 @@ import type {
   EnvironmentDeploySite,
   EnvironmentLifecycleAction,
 } from '../../contracts/commands/schemas.ts'
-import type { DeployPrepareError, PreparedNativeAppService } from './deploy-prepare.ts'
+import type {
+  DeployPrepareError,
+  NativeAppVariablesView,
+  PreparedNativeAppService,
+} from './deploy-prepare.ts'
 import {
   validateDeployHostings,
   validateDeployStorageMaterialList,
@@ -1025,6 +1029,60 @@ export function buildNativeAppServicesForDeploy(
     ...app,
     serviceId: resolveDeployReleaseServiceId(app.composeServiceName, app.serviceId),
   }))
+}
+
+const COMMIT_SHA_RE = /^[0-9a-f]{7,64}$/i
+
+/**
+ * The commit a preview reports for a source: the real commit, or nothing.
+ * A plain-git source has none until the host clones, so the prepared row
+ * carries the branch name in its place; showing that as a commit is wrong.
+ */
+export function previewCommitSha(entry: { commitSha: string }): string | undefined {
+  return COMMIT_SHA_RE.test(entry.commitSha) ? entry.commitSha : undefined
+}
+
+/**
+ * The variable lists the preview shows, with `PORT` set to the port the deploy
+ * will hand each app. Prepare lists the port from the app spec; the deploy
+ * then allocates again out of the shared ledger (after the sites, past ports
+ * other environments hold), so the two can differ.
+ *
+ * Runs the same two allocations as the deploy, on a copy of `reserved`.
+ */
+export function previewNativeAppVariables(
+  prepared: {
+    sites: EnvironmentDeploySite[]
+    hostings: EnvironmentDeployHosting[]
+    nativeAppServices: readonly PreparedNativeAppService[]
+    nativeAppVariables?: readonly NativeAppVariablesView[]
+  },
+  reserved: ReadonlySet<number> | undefined,
+  uniqueKey: string
+): NativeAppVariablesView[] {
+  const views = prepared.nativeAppVariables ?? []
+  if (prepared.nativeAppServices.length === 0) return [...views]
+  const used = new Set<number>(reserved)
+  buildSitesForDeploy(prepared.sites, prepared.hostings, used, uniqueKey)
+  const ports = new Map(
+    buildNativeAppServicesForDeploy(
+      prepared.nativeAppServices,
+      prepared.hostings,
+      [],
+      used,
+      uniqueKey
+    ).map((app) => [app.composeServiceName, String(app.listenPort)] as const)
+  )
+  return views.map((view) => {
+    const port = ports.get(view.composeServiceName)
+    if (port === undefined) return view
+    return {
+      ...view,
+      variables: view.variables.map((entry) =>
+        entry.name === 'PORT' && entry.source === 'platform' ? { ...entry, value: port } : entry
+      ),
+    }
+  })
 }
 
 export type DeployMaterialValidationError = {

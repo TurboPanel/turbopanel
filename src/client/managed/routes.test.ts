@@ -3016,8 +3016,8 @@ test('POST user rejects invalid username and DELETE database protects initial da
           databases: ['defaultdb'],
         }),
       })
-      assertEquals(badUser.status, 400)
-      assertEquals(await badUser.json(), { error: 'Invalid username' })
+      assertEquals(badUser.status, 422)
+      assertEquals((await badUser.json()).error, 'reserved_username')
 
       const dropInitial = await app.request(
         `/environments/${environmentId}/managed/databases/${encodeURIComponent('defaultdb')}`,
@@ -3153,6 +3153,7 @@ type PolicyBody = {
   schedule: string
   preset: unknown
   timezone: string | null
+  database: string | null
   retentionKeep: number
   enabled: boolean
   automatic: boolean
@@ -3318,6 +3319,71 @@ test('backup policy routes: create, list with last run, update, delete, runs', a
         headers,
       })
       assertEquals(gone.status, 404)
+    }
+  )
+})
+
+test('backup policy routes: a chosen database is validated, stored, pushed and can be cleared', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const created = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(created.status, 200)
+      const base = `/environments/${environmentId}/managed/backup-policies`
+      const post = (extra: Record<string, unknown>) =>
+        app.request(base, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            name: 'Nightly',
+            schedule: { preset: 'hourly' },
+            retentionKeep: 3,
+            ...extra,
+          }),
+        })
+
+      const unknown = await post({ database: 'no_such_db' })
+      assertEquals(unknown.status, 422)
+      assertEquals(((await unknown.json()) as { error: string }).error, 'backup_database_invalid')
+      const wrongType = await post({ database: 7 })
+      assertEquals(wrongType.status, 422)
+
+      const plain = await post({})
+      assertEquals(plain.status, 201)
+      const plainBody = (await plain.json()) as { policy: PolicyBody }
+      assertEquals(plainBody.policy.database, null)
+
+      const patch = (id: string, database: unknown) =>
+        app.request(`${base}/${id}`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify({ database }),
+        })
+      const bad = await patch(plainBody.policy.id, 'no_such_db')
+      assertEquals(bad.status, 422)
+
+      const chosen = await patch(plainBody.policy.id, 'defaultdb')
+      assertEquals(chosen.status, 200)
+      assertEquals(((await chosen.json()) as { policy: PolicyBody }).policy.database, 'defaultdb')
+      const pushed = await latestBackupsReconcilePayload(db, serverId)
+      assertEquals(
+        pushed.find((entry) => entry.policyId === plainBody.policy.id)?.database,
+        'defaultdb'
+      )
+
+      const cleared = await patch(plainBody.policy.id, null)
+      assertEquals(cleared.status, 200)
+      assertEquals(((await cleared.json()) as { policy: PolicyBody }).policy.database, null)
     }
   )
 })
