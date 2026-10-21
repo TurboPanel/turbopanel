@@ -272,6 +272,15 @@ export const MANAGED_HA_BOOT_HOLD_FEATURE: DaemonWireFeature = 'managed-ha-boot-
 export const METRICS_V8_FEATURE: DaemonWireFeature = 'metrics-v8'
 
 /**
+ * This control plane stores and reads the per-sample sizes (`extended.sizes`,
+ * `filesystemSizes`, `gpuSizes`, `networkSizes`) and divides each bucket by the
+ * size its own sample carried. Advertised only by a release that does so: a
+ * daemon that sees this feature stops counting sizes in its change fingerprint,
+ * which is safe only when a resized server is never divided by stale totals.
+ */
+export const METRICS_V8_SIZES_FEATURE: DaemonWireFeature = 'metrics-v8-sizes'
+
+/**
  * The daemon runs each PHP site in the mode its deploy asks for (`php.mode`).
  * Without it the daemon runs every PHP site on one shared php-fpm pool, so the
  * control plane refuses to deploy any other mode to it. OpenLiteSpeed and

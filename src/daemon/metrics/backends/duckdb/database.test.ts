@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from '@std/assert'
+import { assertEquals, assertRejects, assertStringIncludes } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import { DUCKDB_SCHEMA_MARKER_VERSION, HOST_SAMPLES_TABLE } from './schema.ts'
 import {
@@ -247,6 +247,42 @@ it('openDuckDb discards a marker-8 store and recreates the current layout', asyn
     }
     assertEquals(await fileExistsForTest(`${stale}/metrics.parquet`), false)
   } finally {
+    await Deno.remove(metricsDir, { recursive: true })
+  }
+})
+
+it('openDuckDb discards a marker-9 store, logs it, and starts fresh at the current marker', async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-open-cut9-' })
+  const warnings: string[] = []
+  const originalWarn = console.warn
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(' '))
+  }
+  try {
+    const paths = resolveDuckDbPaths(metricsDir)
+    ;(await openDuckDb({ paths })).close()
+    await Deno.writeTextFile(schemaMarkerPath(paths), String(DUCKDB_SCHEMA_MARKER_VERSION - 1))
+    const stale = `${paths.parquetRoot}/server_host_samples/year=2026`
+    await Deno.mkdir(stale, { recursive: true })
+    await Deno.writeTextFile(`${stale}/metrics.parquet`, 'marker nine day')
+
+    const handle = await openDuckDb({ paths })
+    try {
+      assertEquals(await readSchemaMarker(paths), DUCKDB_SCHEMA_MARKER_VERSION)
+    } finally {
+      handle.close()
+    }
+    assertEquals(await fileExistsForTest(`${stale}/metrics.parquet`), false)
+    assertEquals(warnings.length, 1)
+    assertStringIncludes(warnings[0] ?? '', 'schema marker 9')
+    assertStringIncludes(warnings[0] ?? '', 'Discarding the old metrics store')
+
+    // A second open of the fresh store is quiet and keeps its data.
+    const again = await openDuckDb({ paths })
+    again.close()
+    assertEquals(warnings.length, 1)
+  } finally {
+    console.warn = originalWarn
     await Deno.remove(metricsDir, { recursive: true })
   }
 })

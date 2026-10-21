@@ -261,3 +261,8 @@ test('advertises metrics-v8-sizes, the feature a daemon checks before it sends t
   // A control plane that advertises the sizes also advertises metrics-v8 (the sizes ride its `extended` block).
   assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes('metrics-v8'), true)
 })
+
+test('does not advertise metrics-v7, so a daemon that only knows v7 stays on the basic sample until it updates', () => {
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes('metrics-v7'), false)
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes('metrics-v7-sizes'), false)
+})

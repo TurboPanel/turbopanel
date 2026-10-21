@@ -625,7 +625,7 @@ it('GET /servers/:id/metrics/series issues one fan-in queryHostSeries call', asy
   )
 })
 
-it('GET /servers/:id/metrics/series attaches cpuLimits, temperatureUnit, and topology-generation breaks', async () => {
+it('GET /servers/:id/metrics/series attaches cpuLimits and temperatureUnit', async () => {
   const fakeStore = createFakeMetricsStore({
     queryHostSeries: (input) =>
       Promise.resolve({
@@ -638,19 +638,16 @@ it('GET /servers/:id/metrics/series attaches cpuLimits, temperatureUnit, and top
             at: FROM,
             values: { 'host.cpu.busyPercent': 10 },
             sampleCount: 1,
-            topologyGeneration: 1,
           },
           {
             at: TO,
             values: { 'host.cpu.busyPercent': 20 },
             sampleCount: 1,
-            topologyGeneration: 2,
           },
         ],
         resolutionSeconds: input.resolutionSeconds ?? 60,
         gapCount: 0,
         sampleCount: 2,
-        topologyGenerations: [1, 2],
       }),
   })
 
@@ -683,8 +680,6 @@ it('GET /servers/:id/metrics/series attaches cpuLimits, temperatureUnit, and top
         source: 'catalog-exact',
       })
       assertEquals(body.temperatureUnit, 'fahrenheit')
-      assertEquals(body.host!.topologyGenerationBreaks, [1])
-      assertEquals(body.host!.topologyGenerations, [1, 2])
     },
     undefined,
     fakeStore
@@ -1220,8 +1215,6 @@ it('GET /servers/:id/metrics/series allows a slot-mapped NIC as a standalone net
       assertEquals(body.ok, true)
       assertEquals(body.entities?.[0]?.entities?.[0]?.entityId, 'eth0')
       assertEquals(fakeStore.entityCalls.length, 1)
-      assertEquals(fakeStore.entityCalls[0]!.slotMapping?.normalNicSlots, ['eth0'])
-      assertEquals(fakeStore.entityCalls[0]!.topologyGeneration, 1)
     },
     undefined,
     fakeStore

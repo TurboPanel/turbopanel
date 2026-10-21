@@ -18,11 +18,14 @@
  *
  * Slot assignment is identity-addressed when a `SlotMapping` is available
  * (`client/servers/topology-slot-mapping.ts`, resolved by the ingest route
- * from the sample's own `metadata.topologyGeneration`):
+ * from the server's latest hardware facts):
  *
  *  - `host.network` embeds the first two `slotMapping.normalNicSlots` entries
  *    (looked up by `deviceId`), so the common 1-NIC/2-NIC host never writes a
- *    `network` row. Devices in `slotMapping.fabricDeviceIds` never page.
+ *    `network` row, and names them (plus the folded extra filesystem) in its
+ *    blob6 so every stored row says which device it holds — readers never
+ *    need the layout that was active when it was written. Devices in
+ *    `slotMapping.fabricDeviceIds` never page.
  *  - `block` / `network` / `filesystem` / `gpu` / `hardware.physical` pages
  *    order their entities by the matching `*PageOrder` list and stamp blob6
  *    with that page's entity ids, comma-joined in the same order as the
@@ -119,8 +122,7 @@ export const AE_BLOB_KIND_INDEX = 0
 export const AE_BLOB_FAMILY_INDEX = 1
 /** blob3 — schema version (stringified integer, every row kind): always {@link AE_STORAGE_VERSION}. */
 export const AE_BLOB_SCHEMA_VERSION_INDEX = 2
-/** blob4 — `"metrics"` rows: `metadata.topologyGeneration` (stringified integer). Reserved-empty on events/status. */
-export const AE_BLOB_TOPOLOGY_GENERATION_INDEX = 3
+/* blob4 — reserved, written empty on every row (it held the topology generation before rows named their own devices). */
 /**
  * blob5 — sample time as UTC text `YYYY-MM-DD hh:mm:ss` (the one format AE's
  * `toDateTime` parses). On `"metrics"` rows `metadata.sampledAt`; on
@@ -129,14 +131,15 @@ export const AE_BLOB_TOPOLOGY_GENERATION_INDEX = 3
 export const AE_BLOB_SAMPLED_AT_INDEX = 4
 /**
  * blob6 — `"metrics"` rows: comma-joined entity ids in the same order as the
- * page's double values (entity families) or empty (host rows). `"event"`
- * rows: the enclosing sample's sequence, as in v6.
+ * page's double values (entity families); on `host.network` the embedded
+ * devices as `nic1=<id>@<Mb/s>;nic2=<id>@<Mb/s>;fs=<id>` (see
+ * `v8HostRowEntityIds`); empty on the other host rows. `"event"` rows: the
+ * enclosing sample's sequence, as in v6.
  */
 export const AE_BLOB_ENTITY_IDS_INDEX = 5
 /** blob6 on `"event"` rows — enclosing sample's sequence (stringified integer). */
 export const AE_BLOB_SEQUENCE_INDEX = 5
-/** blob7 on `"event"` rows — `metadata.topologyGeneration`. */
-export const AE_EVENT_BLOB_TOPOLOGY_GENERATION_INDEX = 6
+/* blob7 on `"event"` rows — reserved, written empty (it held the topology generation). */
 /** blob8 on `"event"` rows — capability-plan generation (empty when unresolved). */
 export const AE_BLOB_CAPABILITY_PLAN_GENERATION_INDEX = 7
 /** blob9 on `"event"` rows — `"0"`. */
@@ -406,7 +409,6 @@ export function buildMetricsBlobs(
   blobs[AE_BLOB_KIND_INDEX] = AE_KIND_METRICS
   blobs[AE_BLOB_FAMILY_INDEX] = family
   blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(AE_STORAGE_VERSION)
-  blobs[AE_BLOB_TOPOLOGY_GENERATION_INDEX] = String(sample.metadata.topologyGeneration)
   blobs[AE_BLOB_SAMPLED_AT_INDEX] = formatAeSampleTime(sample.metadata.sampledAt)
   blobs[AE_BLOB_ENTITY_IDS_INDEX] = entityIds
   content.forEach((text, i) => {
@@ -426,7 +428,6 @@ export function buildEventBlobs(
   blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(AE_STORAGE_VERSION)
   blobs[AE_BLOB_SAMPLED_AT_INDEX] = formatAeSampleTime(event.at)
   blobs[AE_BLOB_SEQUENCE_INDEX] = String(sample.metadata.sequence)
-  blobs[AE_EVENT_BLOB_TOPOLOGY_GENERATION_INDEX] = String(sample.metadata.topologyGeneration)
   blobs[AE_BLOB_CAPABILITY_PLAN_GENERATION_INDEX] = capabilityPlanGenerationBlob(sample)
   blobs[AE_BLOB_PAGE_INDEX] = '0'
   blobs[AE_BLOB_SOURCE_OR_IDENTITY_INDEX] = event.source ?? ''

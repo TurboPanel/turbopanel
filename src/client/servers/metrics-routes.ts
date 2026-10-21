@@ -476,7 +476,7 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       backend,
       schemaVersion: 6,
       kind: 'series',
-      topologyGeneration: context.topologyGeneration ?? undefined,
+      topologyGeneration: latestGeneration?.generation,
     })
 
     const cached = await cache.get<ReturnType<typeof buildSeriesRouteResponse>>(cacheKey)

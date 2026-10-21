@@ -13,7 +13,7 @@ ids, not the 171 the brief quoted, and equals preset `r` exactly). Differences f
 - Owner answer 2026-10-03: hosting/front Caddy is totals only, so `topSitesReq` and `topSites5xx` are dropped before
   packing. `topSites` (largest sites by disk, from the directory walk) is not a Caddy field and stays.
 - The explorer packs envelope blobs in catalogue order, which would put sample time in blob4. The real envelope keeps
-  sample time at blob5 (as in v6, so every row kind agrees), so topology generation takes blob4. There are still six
+  sample time at blob5 (as in v6, so every row kind agrees), so blob4 stays reserved and is written empty. There are still six
   contiguous envelope blobs and 14 content blobs, so content packing is identical to the explorer.
 - Slot ids are catalogue ids (`busy`, `oomKills`, ...). The contract field behind each id is in `v8-layout.ts`.
 - Owner amendment 2026-10-07: every sample carries the sizes its percentages are measured against, so a resize
@@ -34,7 +34,7 @@ ids, not the 171 the brief quoted, and equals preset `r` exactly). Differences f
 | blob1        | kind, `metrics`                                                                                                          |
 | blob2        | family (below)                                                                                                           |
 | blob3        | storage layout revision, `8` (the sizes amendment reused slots under wire version 8, so rows stamped `7` are never read) |
-| blob4        | topology generation                                                                                                      |
+| blob4        | reserved, written empty (it held the topology generation; readers never use one)                                         |
 | blob5        | sample time, UTC text `YYYY-MM-DD hh:mm:ss`                                                                              |
 | blob6        | entity ids (comma joined, same order as the row's doubles) or source id; empty on host rows                              |
 | blob7-blob20 | text content blobs (below)                                                                                               |

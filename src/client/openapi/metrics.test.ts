@@ -100,9 +100,9 @@ test('HostSeriesChartPointDerived requires exactly the v5 derived-value set (no 
   assertEquals(Object.keys(schema.properties!).sort(), [...schema.required!].sort())
 })
 
-test('HostSeriesChartPoint documents topologyGeneration, never the retired hardwareProfileGeneration', () => {
+test('HostSeriesChartPoint carries no generation at all, and never the retired hardwareProfileGeneration', () => {
   const schema = metricsSchemas.HostSeriesChartPoint as SchemaObject
-  assertExists(schema.properties?.topologyGeneration)
+  assertEquals('topologyGeneration' in (schema.properties ?? {}), false)
   assertEquals('hardwareProfileGeneration' in (schema.properties ?? {}), false)
   assertEquals('partsPresent' in (schema.properties ?? {}), false)
 })
@@ -113,7 +113,7 @@ test('HostSeriesChartPoint no longer advertises the deleted per-core hotspot pay
   assertEquals('HostSeriesCpuHotspotPoint' in metricsSchemas, false)
 })
 
-test('HostSeriesChartResponse bundles host/entities/inventory/topologyGeneration and drops every v3-only field', () => {
+test('HostSeriesChartResponse bundles host/entities/inventory and drops every v3-only field and every generation', () => {
   const schema = metricsSchemas.HostSeriesChartResponse as SchemaObject
   assertEquals(schema.required, [
     'ok',
@@ -126,13 +126,13 @@ test('HostSeriesChartResponse bundles host/entities/inventory/topologyGeneration
     'host',
     'entities',
     'inventory',
-    'topologyGeneration',
     'cpuLimits',
     'temperatureUnit',
     'nicSlotLimit',
   ])
   assertEquals('sensorsAvailable' in (schema.properties ?? {}), false)
   assertEquals('generationBreaks' in (schema.properties ?? {}), false)
+  assertEquals('topologyGeneration' in (schema.properties ?? {}), false)
   assertEquals('hardwareProfileGenerations' in (schema.properties ?? {}), false)
   assertEquals('metrics' in (schema.properties ?? {}), false)
   assertEquals('points' in (schema.properties ?? {}), false)

@@ -26,11 +26,9 @@ import {
   AE_BLOB_SCHEMA_VERSION_INDEX,
   AE_BLOB_SOURCE_OR_IDENTITY_INDEX,
   AE_BLOB_STATUS_OR_EVENT_REASON_INDEX,
-  AE_BLOB_TOPOLOGY_GENERATION_INDEX,
   AE_STORAGE_VERSION,
   AE_DOUBLE_COUNT,
   AE_DOUBLE_INTERVAL_INDEX,
-  AE_EVENT_BLOB_TOPOLOGY_GENERATION_INDEX,
   AE_EVENT_INDEX_SUFFIX,
   AE_FAMILY_HOST_IO,
   AE_FAMILY_HOST_SYSTEM,
@@ -247,7 +245,7 @@ function contentBlobs(point: AnalyticsEngineDataPointLike, count: number): strin
 // Envelope
 // ---------------------------------------------------------------------------
 
-it('metrics rows: blob1 kind, blob2 family, blob3 "8", blob4 topology generation, blob5 UTC text sample time, blob6 entity ids', () => {
+it('metrics rows: blob1 kind, blob2 family, blob3 "8", blob4 empty, blob5 UTC text sample time, blob6 entity ids', () => {
   const sample = buildSample({
     metadata: {
       version: 6,
@@ -265,13 +263,13 @@ it('metrics rows: blob1 kind, blob2 family, blob3 "8", blob4 topology generation
     'metrics',
     'gpu',
     '8',
-    '12',
+    '',
     '2026-03-04 05:06:07',
     'gpu0,gpu1',
   ])
   const host = pointFor(points, 'host.system')
   assertEquals(host.blobs[AE_BLOB_ENTITY_IDS_INDEX], '')
-  assertEquals(host.blobs[AE_BLOB_TOPOLOGY_GENERATION_INDEX], '12')
+  assertEquals(host.blobs[3], '', 'blob4 is reserved and written empty')
   assertEquals(host.blobs[AE_BLOB_SAMPLED_AT_INDEX], '2026-03-04 05:06:07')
 })
 
@@ -1034,7 +1032,7 @@ it('events: one event-kind row per entry at the v6 blob positions, blob3 "8" and
   assertEquals(event.blobs[AE_BLOB_FAMILY_INDEX], 'nic_link_down')
   assertEquals(event.blobs[AE_BLOB_SCHEMA_VERSION_INDEX], '8')
   assertEquals(event.blobs[AE_BLOB_SAMPLED_AT_INDEX], '2026-01-01 00:00:00')
-  assertEquals(event.blobs[AE_EVENT_BLOB_TOPOLOGY_GENERATION_INDEX], '1')
+  assertEquals(event.blobs[6], '', 'blob7 is reserved and written empty on events')
   assertEquals(event.blobs[AE_BLOB_SOURCE_OR_IDENTITY_INDEX], 'daemon')
   assertEquals(event.blobs[AE_BLOB_EVENT_ENTITY_ID_INDEX], 'eth0')
   assertEquals(event.blobs[AE_BLOB_EVENT_ID_INDEX], 'evt1')

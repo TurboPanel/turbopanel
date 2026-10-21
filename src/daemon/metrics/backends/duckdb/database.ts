@@ -127,7 +127,7 @@ export function escapeSqlString(value: string): string {
 }
 
 /**
- * Open (or create) the current DuckDB metrics store (schema marker 9).
+ * Open (or create) the current DuckDB metrics store (schema marker 10).
  * A sidecar marker holding an older version number discards
  * `metrics.duckdb`, `parquet/`, `tmp/`, and `schema-version` before this
  * open creates the current layout (no in-place migration). A missing marker
@@ -189,6 +189,11 @@ async function discardNonCurrentMetricsStore(paths: DuckDbPaths): Promise<void> 
   const state = await readSchemaMarkerState(paths)
   if (state.kind === 'version' && state.value === DUCKDB_SCHEMA_MARKER_VERSION) return
   if (state.kind === 'version' && state.value < DUCKDB_SCHEMA_MARKER_VERSION) {
+    console.warn(
+      `DuckDB metrics store at ${paths.metricsDir} has schema marker ${state.value}; this build ` +
+        `uses ${DUCKDB_SCHEMA_MARKER_VERSION} and does not upgrade older files in place. ` +
+        'Discarding the old metrics store and starting a fresh one.'
+    )
     await removeMetricsStoreFiles(paths)
     return
   }

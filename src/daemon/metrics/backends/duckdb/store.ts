@@ -720,7 +720,6 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       }) * ${bucketSeconds} AS DOUBLE) AS bucket,`,
       `  CAST(count(*) AS DOUBLE) AS sample_count,`,
       `  CAST(avg(h.interval_seconds) AS DOUBLE) AS avg_interval_seconds,`,
-      `  string_agg(DISTINCT CAST(h.topology_generation AS VARCHAR), ',') AS topology_gen_raw,`,
       `  CAST(epoch_ms(max(h.sampled_at)) AS DOUBLE) AS last_sampled_at_ms,`,
       `  ${metricSelects.join(',\n  ')}`,
       `FROM ${hostSource} AS h`,
@@ -739,11 +738,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     ])
     const rows = reader.getRowObjectsJS()
 
-    const { points, sampleCount, topologyGenerations } = parseHostSeriesRows(
-      metrics,
-      rows,
-      bucketSeconds
-    )
+    const { points, sampleCount } = parseHostSeriesRows(metrics, rows, bucketSeconds)
 
     return finalizeHostSeriesResult(from.toISOString(), to.toISOString(), {
       kind: 'duckdb',
@@ -754,7 +749,6 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       resolutionSeconds: bucketSeconds,
       gapCount: 0,
       sampleCount,
-      topologyGenerations,
     })
   }
 
@@ -830,7 +824,6 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       `  CAST(server_id AS VARCHAR) AS server_id,`,
       `  CAST(count(*) AS DOUBLE) AS sample_count,`,
       `  CAST(epoch_ms(max(sampled_at)) AS DOUBLE) AS latest_at_ms,`,
-      `  string_agg(DISTINCT CAST(topology_generation AS VARCHAR), ',') AS topology_gen_raw,`,
       `  ${metricSelects.join(',\n  ')}`,
       `FROM ${source}`,
       `WHERE server_id IN (${inList})`,
@@ -850,14 +843,12 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       if (!serverId) continue
       const sampleCount = toFiniteNumber(row.sample_count) ?? 0
       const latestAtMs = toFiniteNumber(row.latest_at_ms)
-      const generations = parseHardwareProfileGenerations(row.topology_gen_raw)
       servers.push({
         serverId,
         sampleCount,
         latestAt:
           latestAtMs === null || sampleCount <= 0 ? null : new Date(latestAtMs).toISOString(),
         values: parseMetricValues(metrics, row),
-        topologyGeneration: generations.length === 1 ? generations[0]! : null,
       })
     }
     servers.sort((a, b) => a.serverId.localeCompare(b.serverId))
@@ -1667,21 +1658,6 @@ function sumValueSql(column: string): string {
   return `SUM(${column})`
 }
 
-/**
- * Parse a `string_agg(DISTINCT CAST(topology_generation AS VARCHAR), ',')`
- * aggregate into the distinct generations observed, sorted ascending.
- * `string_agg` drops NULLs, so an all-NULL group yields an empty array.
- */
-function parseHardwareProfileGenerations(raw: unknown): number[] {
-  if (typeof raw !== 'string' || raw.length === 0) return []
-  const values = new Set<number>()
-  for (const token of raw.split(',')) {
-    const value = toFiniteNumber(token.trim())
-    if (value !== null) values.add(value)
-  }
-  return [...values].sort((a, b) => a - b)
-}
-
 // ---------------------------------------------------------------------------
 // Query helpers (`queryHostSeries`/`queryFleetHostSnapshot`,
 // `queryEntitySeries`/`queryEntityIdsSeen`/`queryMetricEvents`) — real
@@ -1880,11 +1856,9 @@ function parseHostSeriesRows(
 ): {
   points: HostSeriesPoint[]
   sampleCount: number
-  topologyGenerations: number[]
 } {
   const points: HostSeriesPoint[] = []
   let sampleCount = 0
-  const allGenerations = new Set<number>()
   for (const row of rows) {
     const bucketEpochSeconds = toFiniteNumber(row.bucket)
     if (bucketEpochSeconds === null) continue
@@ -1895,8 +1869,6 @@ function parseHostSeriesRows(
       avgIntervalSeconds !== null
         ? defaultExpectedSamplesPerBucket(resolutionSeconds, avgIntervalSeconds)
         : defaultExpectedSamplesPerBucket(resolutionSeconds)
-    const bucketGenerations = parseHardwareProfileGenerations(row.topology_gen_raw)
-    for (const generation of bucketGenerations) allGenerations.add(generation)
     const lastSampledAtMs = toFiniteNumber(row.last_sampled_at_ms)
     const point: HostSeriesPoint = {
       at: new Date(bucketEpochSeconds * 1000).toISOString(),
@@ -1910,15 +1882,10 @@ function parseHostSeriesRows(
       ...(avgIntervalSeconds !== null && avgIntervalSeconds > 0
         ? { sampleSpacingSeconds: avgIntervalSeconds }
         : {}),
-      topologyGeneration: bucketGenerations.length === 1 ? bucketGenerations[0]! : null,
     }
     points.push(point)
   }
-  return {
-    points,
-    sampleCount,
-    topologyGenerations: [...allGenerations].sort((a, b) => a - b),
-  }
+  return { points, sampleCount }
 }
 
 function parseMetricValues(

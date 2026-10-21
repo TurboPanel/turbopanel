@@ -22,10 +22,10 @@ v6 rows; where they disagree with `V8-LAYOUT.md`, v8 wins.
 
 - **Dataset** `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}` (hard cut, per-env `<env>_` prefix); pinned for every wrangler environment by `wrangler-datasets.test.ts`. Readers accept only blob3 = `AE_STORAGE_VERSION` (`AE_SUPPORTED_SCHEMA_VERSIONS` = [8]): the sizes amendment reused hosted slots under wire version 8, so rows stamped earlier are skipped, never read with the new slot meanings. Bump `AE_STORAGE_VERSION` whenever a slot changes meaning.
 - **Rows**: `host.system` (liveness, bare serverId index), `host.io`, `host.network`, `host.web` on every host; `managed.database` only with managed databases; `block` (>1 drive, 3/row), `network` (NIC 3+, 3/row), `filesystem` (9/row; exactly one extra filesystem is folded into `host.network`), `gpu` (3/row, physical or real passthrough), `hardware.physical` (physical, up to 19 signals). VPS 4 rows, physical 5-6, +1 with databases.
-- **Envelope**: blob1 kind, blob2 family, blob3 `"8"` (the storage layout revision, never the wire version), blob4 topology generation, blob5 sample time as UTC text `YYYY-MM-DD hh:mm:ss`, blob6 entity ids, content text from blob7, double20 interval. Sequence, plan generation and page are no longer written. Event and status rows keep their v6 blob positions except blob3 and the blob5 text format.
-- **Wire negotiation**: wire feature `metrics-v8` (`DAEMON_WIRE_FEATURES`, both repos). A daemon stamps `METRICS_LEGACY_WIRE_VERSION` (6) until the control plane it is attached to advertises it. v8 data rides the optional `extended` section and `metadata.durable`; a v6 sample writes the same v8 rows with sentinels and empty text for the absent data.
+- **Envelope**: blob1 kind, blob2 family, blob3 `"8"` (the storage layout revision, never the wire version), blob4 reserved (written empty), blob5 sample time as UTC text `YYYY-MM-DD hh:mm:ss`, blob6 entity ids, content text from blob7, double20 interval. Sequence, plan generation and page are no longer written. Event and status rows keep their v6 blob positions except blob3 and the blob5 text format.
+- **Wire negotiation**: wire feature `metrics-v8` (`DAEMON_WIRE_FEATURES`, both repos). A daemon stamps `METRICS_LEGACY_WIRE_VERSION` (6) until the control plane it is attached to advertises it. Hard cut: the control plane accepts wire versions 6 and 8 only (`METRICS_WIRE_VERSIONS`), advertises no `metrics-v7`, and a version-7 sample is refused with the usual version error; an older daemon falls back to the plain version-6 sample until it updates. `metrics-v8-sizes` is advertised only because this release stores the sizes and divides each bucket by the size its own sample carried. v8 data rides the optional `extended` section and `metadata.durable`; a v6 sample writes the same v8 rows with sentinels and empty text for the absent data.
 - **Caddy is totals only** (no per-site fields anywhere); slow families are still re-sent every sample.
-- **Reads**: the missing-metric sentinel is tested as `col > -pow(10, 307)` (`aePresentValueSql`), never by equality; a delta-sum over an absent family is null, not 0. The v6+v8 dual-dataset merge and descriptors for the new v8 metrics (OOM kills, Docker health, cert expiry, text blobs) are reader work.
+- **Reads**: the missing-metric sentinel is tested as `col > -pow(10, 307)` (`aePresentValueSql`), never by equality; a delta-sum over an absent family is null, not 0. Hosted rows live only in the `_v8` dataset and are read as stamp 8 only; earlier rows are dropped, with no dual read. Descriptors for the nine data points v8 stops storing stay and read as empty. Descriptors for the new v8 metrics (OOM kills, Docker health, cert expiry, text blobs) are reader work.
 
 Root context: `../../../AGENTS.md`. Daemon cell: `../cell/AGENTS.md`. Operator
 glossary (what each console chart means): `../../../../website/docs/metrics/`.
@@ -267,8 +267,8 @@ fake engine in `testing/fake-analytics-engine.ts` now mirrors them as `422`):
   `AE_SQL_CHUNK_CONCURRENCY` at once, and merge rows back by bucket / server /
   entity. `executeSql` refuses an over-long statement before sending it.
 - **No aggregate over a String blob** (`cannot use the String type as argument
-1 in max(`). Aggregate `doubleN` columns only; the topology generation
-  (`blob7`, a stringified integer) is compared as `MIN/MAX(toUInt32(blob7))`.
+1 in max(`). Aggregate `doubleN` columns only. No reader depends on the topology
+  generation (blob4 is still written, never read).
 - Emit only functions on Cloudflare's AE SQL reference pages —
   `sql-limits.test.ts` keeps an allowlist and checks every builder's
   worst-case statements against all three rules. Errors name the query
@@ -416,8 +416,8 @@ flag. Entity tables carry arbitrary cardinality per sample (one row per reported
 entity), unlike v3's fixed-width part tables.
 
 **Schema on open** (`database.ts`): `CREATE TABLE IF NOT EXISTS` /
-`CREATE INDEX IF NOT EXISTS` for the current layout (schema marker **9**). A
-marker-8 database is discarded like any older version (hard cut, no migration); a sidecar marker holding an older version number discards `metrics.duckdb`, `parquet/`,
+`CREATE INDEX IF NOT EXISTS` for the current layout (schema marker **10**). A
+marker-9 database is discarded like any older version (hard cut, no migration, one log line saying so); a sidecar marker holding an older version number discards `metrics.duckdb`, `parquet/`,
 `tmp/`, and `schema-version` before the current store is created. A missing marker beside existing data, or an empty, unparseable, or newer marker, fails the open without deleting anything — there is no
 in-place migration and no supported path for older DuckDB files. The marker is a
 discard-on-mismatch counter, not a monotonic migration version. **The three
@@ -440,9 +440,8 @@ expired partitions plus any hot rows past the cutoff.
 **Cross-backend regression net:** `representative-machines.ts` (16 machine
 shapes) feeds `representative-row-counts.test.ts` (exact AE row count + family
 order per shape), `cross-backend-parity.test.ts` (AE vs. DuckDB agree on the
-same logical sample), `topology-generation-guard.test.ts` (re-interpreting a
-sample under a stale topology generation never corrupts identity-addressed
-slots), `orphan-row-semantics.test.ts`, and `counter-reset-end-to-end.test.ts`
+same logical sample), `embedded-device-identity.test.ts` (an embedded NIC is read by the
+id its row names, never by a generation number), `orphan-row-semantics.test.ts`, and `counter-reset-end-to-end.test.ts`
 (storage/query never fabricates a value in place of a daemon-emitted `null`
 after a monotonic counter reset — daemon half of the battery lives in
 `turbopaneld/src/metrics/collector/baseline-reset-battery.test.ts`). **New
@@ -486,7 +485,7 @@ instance (`disabled` / `analytics-engine` / `duckdb`) purely by instance type
   `tp:metrics:chart:` + kind + authorized `serverId` + bucket-rounded range +
   sorted metrics + resolution + backend + `v{schemaVersion}` (callers pass
   `schemaVersion: 6` explicitly, required) + `tg{topologyGeneration}` when a
-  caller scopes to one topology generation. TTL: live 45 s / historical 300 s.
+  caller scopes to the server's latest hardware record. TTL: live 45 s / historical 300 s.
   Workers: Cloudflare Cache API; Deno: bounded in-process `Map` (256 entries).
 
 **Resolution ladder** (`query/resolution.ts`): range ≤10 min → 10 s; ≤1 h → 60
