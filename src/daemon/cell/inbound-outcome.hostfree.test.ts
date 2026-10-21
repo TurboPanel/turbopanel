@@ -287,6 +287,34 @@ test('deriveInboundOutcome maps managed-health-result done and failed', () => {
   )
 })
 
+test('deriveInboundOutcome maps managed-permissions-result done and failed', () => {
+  const permissions = { engine: 'postgres', observedAt: AT, logins: [] }
+  assertEquals(
+    deriveInboundOutcome({
+      kind: 'managed-permissions-result',
+      requestId: REQUEST_ID,
+      at: AT,
+      ok: true,
+      permissions,
+    }),
+    { status: 'done', result: { ok: true, permissions, error: undefined } }
+  )
+  assertEquals(
+    deriveInboundOutcome({
+      kind: 'managed-permissions-result',
+      requestId: REQUEST_ID,
+      at: AT,
+      ok: false,
+      error: 'engine not running',
+    }),
+    {
+      status: 'failed',
+      result: { ok: false, permissions: undefined, error: 'engine not running' },
+      error: 'engine not running',
+    }
+  )
+})
+
 test('deriveInboundOutcome maps repo-default-branch-result done, null branch and failed', () => {
   const base = { kind: 'repo-default-branch-result' as const, requestId: REQUEST_ID, at: AT }
   assertEquals(deriveInboundOutcome({ ...base, ok: true, defaultBranch: 'main' }), {
@@ -314,6 +342,7 @@ const SAMPLES: Record<DaemonInboundEnvelope['kind'], DaemonInboundEnvelope> = {
   'addresses-result': { kind: 'addresses-result', ...common, ips: [] },
   'managed-logs-result': { kind: 'managed-logs-result', ...common, logs: '' },
   'managed-health-result': { kind: 'managed-health-result', ...common, ok: true },
+  'managed-permissions-result': { kind: 'managed-permissions-result', ...common, ok: true },
   'container-logs-result': { kind: 'container-logs-result', ...common, logs: '' },
   'repo-read-result': { kind: 'repo-read-result', ...common, ok: true },
   'repo-default-branch-result': {

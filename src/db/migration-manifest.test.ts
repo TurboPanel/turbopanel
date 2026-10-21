@@ -10,8 +10,7 @@
  * runs. The manifest pins idx/tag/when/sha256 per file (sha256 computed the
  * way drizzle's `readMigrationFiles` does, so it equals the live
  * `public.migration.hash`). Append entries with
- * `node scripts/check-migration-freeze.mjs --update`; only the pre-tag fold
- * may `--rebaseline`. See scripts/check-migration-freeze.mjs for the full
+ * `node scripts/check-migration-freeze.mjs --update`. See scripts/check-migration-freeze.mjs for the full
  * invariant list and src/db/AGENTS.md (baseline policy).
  */
 

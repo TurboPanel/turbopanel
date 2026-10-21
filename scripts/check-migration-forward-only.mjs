@@ -55,11 +55,16 @@ const RULES = [
 ]
 
 /** Drop `-- ...` comments so a comment never trips (or hides) a rule. */
-function stripComments(sql) {
+export function stripComments(sql) {
   return sql
     .split('\n')
     .map((line) => line.replace(/--.*$/, ''))
     .join('\n')
+}
+
+/** True when the file carries a `-- breaking-ok: <reason>` line (also read by check-migration-upgrade.mjs). */
+export function hasBreakingOk(sql) {
+  return OPT_OUT.test(sql)
 }
 
 /**
@@ -68,7 +73,7 @@ function stripComments(sql) {
  * a `-- breaking-ok: <reason>` line.
  */
 export function findBreakingStatements(sql) {
-  if (OPT_OUT.test(sql)) return []
+  if (hasBreakingOk(sql)) return []
   const code = stripComments(sql)
   return RULES.filter(([re]) => re.test(code)).map(([, label]) => label)
 }

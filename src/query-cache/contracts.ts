@@ -7,10 +7,7 @@ export const MAX_QUERY_CACHE_TTL_SECONDS = 60
 export const DEFAULT_QUERY_CACHE_TTL_SECONDS = 60
 
 export function clampQueryCacheTtlSeconds(ttl?: number): number {
-  return Math.min(
-    Math.max(ttl ?? DEFAULT_QUERY_CACHE_TTL_SECONDS, 1),
-    MAX_QUERY_CACHE_TTL_SECONDS,
-  )
+  return Math.min(Math.max(ttl ?? DEFAULT_QUERY_CACHE_TTL_SECONDS, 1), MAX_QUERY_CACHE_TTL_SECONDS)
 }
 
 export type ApprovedReadModelCacheOpts<T> = {
@@ -18,6 +15,8 @@ export type ApprovedReadModelCacheOpts<T> = {
   key: string
   ttlSeconds?: number
   load: (db: Db) => Promise<T>
+  /** The primary connection, for a cache that can fall back to it. */
+  primaryDb?: Db
 }
 
 /**

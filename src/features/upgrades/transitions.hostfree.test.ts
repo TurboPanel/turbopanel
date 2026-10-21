@@ -147,7 +147,46 @@ function hoursBefore(iso: string, hours: number): string {
   return new Date(Date.parse(iso) - hours * HOUR_MS).toISOString()
 }
 
-test('a step still offline past the offline deadline needs attention', () => {
+function minutesBefore(iso: string, minutes: number): string {
+  return new Date(Date.parse(iso) - minutes * 60 * 1000).toISOString()
+}
+
+test('a fleet step still offline past the deadline is skipped', () => {
+  const action = planStepAction(
+    step({ status: 'waiting', phase: 'fleet', lastStageAt: minutesBefore(NOW, 16) }),
+    facts({ serverConnected: false }),
+    cfg
+  )
+  assertEquals(action, { kind: 'skip_offline' })
+})
+
+test('a colocated daemon step still offline past the deadline needs attention', () => {
+  const action = planStepAction(
+    step({
+      status: 'waiting',
+      phase: 'colocated_daemon',
+      lastStageAt: minutesBefore(NOW, 16),
+    }),
+    facts({ serverConnected: false }),
+    cfg
+  )
+  assertEquals(action, { kind: 'needs_attention', errorCode: 'server_offline' })
+})
+
+test('a control-plane step still offline past the deadline needs attention', () => {
+  const action = planStepAction(
+    step({
+      status: 'waiting',
+      phase: 'control_plane',
+      lastStageAt: minutesBefore(NOW, 16),
+    }),
+    facts({ serverConnected: false }),
+    cfg
+  )
+  assertEquals(action, { kind: 'needs_attention', errorCode: 'server_offline' })
+})
+
+test('a step with no phase still offline past the deadline needs attention', () => {
   const action = planStepAction(
     step({ status: 'waiting', lastStageAt: hoursBefore(NOW, 2) }),
     facts({ serverConnected: false }),
@@ -187,6 +226,18 @@ test('the offline deadline is configurable', () => {
     { now: NOW, offlineDeadlineMs: 60 * 1000 }
   )
   assertEquals(action, { kind: 'needs_attention', errorCode: 'server_offline' })
+  assertEquals(
+    planStepAction(
+      step({
+        phase: 'fleet',
+        status: 'waiting',
+        lastStageAt: new Date(Date.parse(NOW) - 5 * 60 * 1000).toISOString(),
+      }),
+      facts({ serverConnected: false }),
+      { now: NOW, offlineDeadlineMs: 60 * 1000 }
+    ),
+    { kind: 'skip_offline' }
+  )
 })
 
 test('a server back online before the deadline is dispatched', () => {

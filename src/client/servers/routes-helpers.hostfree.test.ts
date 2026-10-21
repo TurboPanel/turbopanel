@@ -127,6 +127,23 @@ test('parseServerPatchCore validates name, options, and emptiness', () => {
   if (!withSsh.ok) throw new TypeError('expected sshPort patch')
   assertEquals(withSsh.patch.options?.sshPort, 2222)
 
+  // The external access setting only changes through its own route.
+  const withExternalAccess = parseServerPatchCore({
+    options: { sshPort: 2222, managedExternalAccess: { enabled: true } },
+  })
+  if (!withExternalAccess.ok) throw new TypeError('expected options patch')
+  assertEquals(withExternalAccess.patch.options?.sshPort, 2222)
+  assertEquals('managedExternalAccess' in (withExternalAccess.patch.options ?? {}), false)
+
+  const hidden = parseServerPatchCore({ options: { hideWebServerNames: false } })
+  if (!hidden.ok) throw new TypeError('expected hideWebServerNames patch')
+  assertEquals(hidden.patch.options?.hideWebServerNames, false)
+  const inheritHidden = parseServerPatchCore({ options: { hideWebServerNames: null } })
+  if (!inheritHidden.ok) throw new TypeError('expected hideWebServerNames clear')
+  assertEquals(inheritHidden.patch.options?.hideWebServerNames, null)
+  const badHidden = parseServerPatchCore({ options: { hideWebServerNames: 'off' } })
+  assertEquals(badHidden.ok, false)
+
   const clearSsh = parseServerPatchCore({ options: { sshPort: null } })
   if (!clearSsh.ok) throw new TypeError('expected sshPort clear')
   assertEquals(clearSsh.patch.options?.sshPort, null)
@@ -326,6 +343,18 @@ test('timezone and presence shaping helpers', () => {
   assertEquals(builtin.sshPort, 22)
   assertEquals(builtin.sshPortSource, null)
   assertEquals(builtin.ntpDefaults, null)
+  assertEquals(builtin.hideWebServerNames, true)
+  assertEquals(builtin.hideWebServerNamesSource, null)
+  const orgOff = resolveServerHostDefaultsFields({}, { hideWebServerNames: false }, undefined)
+  assertEquals(orgOff.hideWebServerNames, false)
+  assertEquals(orgOff.hideWebServerNamesSource, 'organization')
+  const serverOn = resolveServerHostDefaultsFields(
+    { hideWebServerNames: true },
+    { hideWebServerNames: false },
+    undefined
+  )
+  assertEquals(serverOn.hideWebServerNames, true)
+  assertEquals(serverOn.hideWebServerNamesSource, 'server')
 
   const os = shapeServerOsFields({ family: 'linux', id: 'debian' })
   assertEquals(os.os?.id, 'debian')

@@ -407,7 +407,13 @@ test('the catalogue lists every event with its severity and scope', async () => 
   await withFixtures('deno', async ({ app, memberCookie }) => {
     const res = await json(app, memberCookie, 'GET', '/notification-events')
     const { events } = (await res.json()) as {
-      events: Array<{ event: string; severity: string; scope: string; example: string }>
+      events: Array<{
+        event: string
+        severity: string
+        scope: string
+        label: string
+        example: string
+      }>
     }
     assertEquals(
       events.some(
@@ -417,9 +423,13 @@ test('the catalogue lists every event with its severity and scope', async () => 
       true
     )
     assertEquals(
-      events.every((e) => e.example.length > 0),
+      events.every((e) => e.example.length > 0 && e.label.length > 0),
       true
     )
+    // The two alerts the owners asked for are offered, under their plain names.
+    const label = (code: string) => events.find((e) => e.event === code)?.label
+    assertEquals(label('folder.orphans_found'), 'A folder was left behind on a server')
+    assertEquals(label('certificate.renewal_failed'), 'A certificate failed to renew')
   })
 })
 

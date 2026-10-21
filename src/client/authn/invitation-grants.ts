@@ -89,6 +89,41 @@ export function resolveInvitationGrants(raw: unknown): InvitationGrantSpec[] {
   return parseInvitationGrants(raw) ?? []
 }
 
+async function assertInvitationGrantSpecValid(
+  db: Db,
+  grantSpec: InvitationGrantSpec,
+  organizationId: string
+): Promise<void> {
+  const targetResult = await validateGrantEntityTarget(
+    db,
+    grantSpec.entityType,
+    grantSpec.entityId,
+    organizationId
+  )
+  if (!targetResult.ok) {
+    throw new InvitationGrantValidationError(targetResult.error, targetResult.status)
+  }
+
+  const permissionCompat = validatePermissionEntityCompatibility(
+    grantSpec.permissionKey as PermissionKey,
+    grantSpec.entityType
+  )
+  if (!permissionCompat.ok) {
+    throw new InvitationGrantValidationError(permissionCompat.error, 400)
+  }
+}
+
+/** Validate every grant spec before accept mutates membership (same rules as materialize). */
+export async function validateInvitationGrantSpecs(
+  db: Db,
+  grants: InvitationGrantSpec[],
+  organizationId: string
+): Promise<void> {
+  await forEachSequential(grants, async (grantSpec) => {
+    await assertInvitationGrantSpecValid(db, grantSpec, organizationId)
+  })
+}
+
 /** Materialize invitation grant specs into user-scoped `grant` rows (idempotent). */
 export async function materializeInvitationGrants(
   db: Db,
@@ -97,23 +132,7 @@ export async function materializeInvitationGrants(
   organizationId: string
 ): Promise<void> {
   await forEachSequential(grants, async (grantSpec) => {
-    const targetResult = await validateGrantEntityTarget(
-      db,
-      grantSpec.entityType,
-      grantSpec.entityId,
-      organizationId
-    )
-    if (!targetResult.ok) {
-      throw new InvitationGrantValidationError(targetResult.error, targetResult.status)
-    }
-
-    const permissionCompat = validatePermissionEntityCompatibility(
-      grantSpec.permissionKey as PermissionKey,
-      grantSpec.entityType
-    )
-    if (!permissionCompat.ok) {
-      throw new InvitationGrantValidationError(permissionCompat.error, 400)
-    }
+    await assertInvitationGrantSpecValid(db, grantSpec, organizationId)
 
     await db
       .insert(grant)

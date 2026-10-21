@@ -25,6 +25,10 @@ import {
 } from '../../db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerHostingRoutes } from './routes.ts'
+import {
+  removeInstanceHostname,
+  upsertInstanceHostname,
+} from '../../features/install/instance-hostnames.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -101,7 +105,7 @@ test('PATCH /hostings rejects public bind with non-public ip scope', async () =>
     .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ projectId: proj!.id, name: 'E', createdAt: now, updatedAt: now })
+    .values({ projectId: proj!.id, name: 'e', createdAt: now, updatedAt: now })
     .returning({ id: environment.id })
   const [svc] = await db
     .insert(service)
@@ -266,7 +270,7 @@ test('PATCH /hostings returns 404 when ipId belongs to another org', async () =>
     .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ projectId: proj!.id, name: 'E', createdAt: now, updatedAt: now })
+    .values({ projectId: proj!.id, name: 'e', createdAt: now, updatedAt: now })
     .returning({ id: environment.id })
   const [svc] = await db
     .insert(service)
@@ -392,7 +396,7 @@ async function withHostingFixtures(
     .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ projectId: proj!.id, name: 'E', createdAt: now, updatedAt: now })
+    .values({ projectId: proj!.id, name: 'e', createdAt: now, updatedAt: now })
     .returning({ id: environment.id })
   const [svc] = await db
     .insert(service)
@@ -783,7 +787,7 @@ test('POST /hostings returns 404 when service belongs to another org', async () 
       .insert(environment)
       .values({
         projectId: foreignProj!.id,
-        name: 'FE',
+        name: 'fe',
         createdAt: now,
         updatedAt: now,
       })
@@ -854,7 +858,7 @@ test('GET /hostings/:id returns 404 for a hosting in another org', async () => {
       .insert(environment)
       .values({
         projectId: foreignProj!.id,
-        name: 'FE',
+        name: 'fe',
         createdAt: now,
         updatedAt: now,
       })
@@ -955,6 +959,72 @@ test('PATCH /hostings returns 403 for a member without manage grants', async () 
     } finally {
       await db.delete(hosting).where(eq(hosting.id, host!.id))
       await db.delete(user).where(eq(user.id, viewerId))
+    }
+  })
+})
+
+const PANEL_HOST = 'panel-guard.example.test'
+const PANEL_MESSAGE = `${PANEL_HOST} is used by the control panel itself and cannot be used by a site`
+
+test('hostings cannot use a panel hostname: create, update, spellings, and the reverse direction', async () => {
+  await withHostingFixtures(async ({ app, secrets, db, userId, organizationId, serviceId }) => {
+    const call = hostingCaller(app, await sessionCookie(db, secrets, userId), organizationId)
+    const published = await upsertInstanceHostname(db, PANEL_HOST, 'platform-ca')
+    assertEquals(published.ok, true)
+    try {
+      // Create, in every spelling.
+      for (const typed of [PANEL_HOST, PANEL_HOST.toUpperCase(), `${PANEL_HOST}.`]) {
+        const res = await call('POST', '/hostings', {
+          serviceId,
+          name: 'Site',
+          options: { hostnames: [typed] },
+        })
+        const body = (await res.json()) as { error: string; message: string }
+        // Other spellings may already be turned away as malformed (400); they
+        // are never accepted. The plain name gets the plain panel message.
+        if (res.status === 409) {
+          assertEquals(body.error, 'hostname_is_panel_hostname')
+          assertEquals(
+            body.message.endsWith(
+              'is used by the control panel itself and cannot be used by a site'
+            ),
+            true
+          )
+        } else {
+          assertEquals([typed, res.status], [typed, 400])
+        }
+      }
+      const refused = await call('POST', '/hostings', {
+        serviceId,
+        name: 'Site',
+        options: { hostnames: [PANEL_HOST] },
+      })
+      assertEquals(((await refused.json()) as { message: string }).message, PANEL_MESSAGE)
+
+      // Update: an existing hosting may not move onto the panel name, and is left unchanged.
+      const id = await createHostingId(call, serviceId, { hostnames: ['shop.example.test'] })
+      const patched = await call('PATCH', `/hostings/${id}`, {
+        options: { hostnames: [PANEL_HOST] },
+      })
+      assertEquals(patched.status, 409)
+      assertEquals(await hostnameRows(db, id), ['shop.example.test'])
+
+      // Reverse: a name a site already serves cannot become a panel name.
+      const taken = await upsertInstanceHostname(db, 'shop2.example.test', 'platform-ca')
+      assertEquals(taken.ok, true)
+      await removeInstanceHostname(db, 'shop2.example.test')
+      const siteId = await createHostingId(call, serviceId, {
+        hostnames: ['site-used.example.test'],
+      })
+      const reverse = await upsertInstanceHostname(db, 'Site-Used.Example.Test', 'platform-ca')
+      assertEquals(reverse.ok, false)
+      if (!reverse.ok) {
+        assertEquals(reverse.error.includes('already used by a site'), true)
+      }
+      await db.delete(hosting).where(eq(hosting.id, siteId))
+      await db.delete(hosting).where(eq(hosting.id, id))
+    } finally {
+      await removeInstanceHostname(db, PANEL_HOST)
     }
   })
 })

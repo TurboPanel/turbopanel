@@ -79,7 +79,7 @@ export type MetricsCapabilityPlan = {
   databaseProxyMetricsEnabled: boolean
   /**
    * Whether `dockerUsage` — Docker's own `GET /system/df` breakdown — may be
-   * reported. Docker metrics are on every plan since v7: tier entitlements
+   * reported. Docker metrics are on every plan since v8: tier entitlements
    * always grant it; only an explicit org/server override can turn it off.
    * `storage` has no flag of its own: host-wide storage accounting is granted
    * at every tier, the same way `diagnostics` needed no flag once v6 merged it.
@@ -116,6 +116,10 @@ const METRICS_CAPABILITY_PLAN_FIELD_ORDER = [
  * gets the same plan" bug this type exists to fix.
  */
 export type ServerMachineClass = 'physical' | 'virtual'
+
+/** Who set `server.machine_class`: ingest from the topology, or an operator. */
+export const SERVER_MACHINE_CLASS_SOURCES = ['detected', 'operator'] as const
+export type ServerMachineClassSource = (typeof SERVER_MACHINE_CLASS_SOURCES)[number]
 
 export function isServerMachineClass(value: unknown): value is ServerMachineClass {
   return value === 'physical' || value === 'virtual'
@@ -244,7 +248,7 @@ export const PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN: MetricsCapabilityPlan = {
   physicalHardwareSignalSlots: 19,
   managedIngressEnabled: true,
   databaseProxyMetricsEnabled: true,
-  // On for every plan, tiered or not (v7).
+  // On for every plan, tiered or not (v8).
   managedDockerEnabled: true,
   hardwareHealthEventsEnabled: true,
 }

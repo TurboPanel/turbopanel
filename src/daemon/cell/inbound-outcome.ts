@@ -78,9 +78,9 @@ function redactOutcome(outcome: InboundOutcome): InboundOutcome {
  * function. `public-urls-update` grew optional `hostnames` / `instanceAcme`
  * on the outbound side; its result kind is unchanged.
  *
- * `update-progress` has no correlated request and must not gain a case
- * here. It is fire-and-forget progress, not a completion of `update` or
- * `instance-update`.
+ * `update-progress` and `command-progress` have no correlated request and
+ * must not gain a case here. They are fire-and-forget progress, not a
+ * completion of `update`, `instance-update` or `command-dispatch`.
  */
 export function deriveInboundOutcome(inbound: DaemonInboundEnvelope): InboundOutcome | null {
   const outcome = deriveRawInboundOutcome(inbound)
@@ -100,6 +100,12 @@ function deriveRawInboundOutcome(inbound: DaemonInboundEnvelope): InboundOutcome
       return inboundOutcomeFromOk(inbound.ok, inbound.error, {
         ok: inbound.ok,
         member: inbound.member,
+        error: inbound.error,
+      })
+    case 'managed-permissions-result':
+      return inboundOutcomeFromOk(inbound.ok, inbound.error, {
+        ok: inbound.ok,
+        permissions: inbound.permissions,
         error: inbound.error,
       })
     case 'repo-read-result':

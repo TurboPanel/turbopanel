@@ -637,7 +637,7 @@ it('stray tmp export from a crash is swept and never double-deletes hot rows', a
 // queryMetricEvents.
 // ---------------------------------------------------------------------------
 
-it('v5 queryHostSeries: weighted-average math, real NULL for an unpopulated metric, mixed-generation bucket is null, generations union sorted', async () => {
+it('v5 queryHostSeries: weighted-average math and real NULL for an unpopulated metric', async () => {
   await withStore(async (store) => {
     await store.writeSample(
       sample({
@@ -672,42 +672,7 @@ it('v5 queryHostSeries: weighted-average math, real NULL for an unpopulated metr
     assertEquals(point.values['host.cpu.busyPercent'], 20)
     // Never populated by either sample in range — real SQL NULL.
     assertEquals(point.values['host.memory.usedBytes'], null)
-    // Bucket spans two topology generations — null, never a fabricated single value.
-    assertEquals(point.topologyGeneration, null)
-    assertEquals(result.topologyGenerations, [1, 2])
     assertEquals(result.sampleCount, 2)
-  })
-})
-
-it("v5 queryHostSeries: topologyGeneration is the shared generation when a bucket's samples agree", async () => {
-  await withStore(async (store) => {
-    await store.writeSample(
-      sample({
-        atMs: DAY_START,
-        cpuBusyPercent: 10,
-        topologyGeneration: 3,
-      })
-    )
-    await store.writeSample(
-      sample({
-        atMs: DAY_START + 60_000,
-        sequence: 2,
-        cpuBusyPercent: 20,
-        topologyGeneration: 3,
-      })
-    )
-
-    const result = await store.queryHostSeries({
-      serverId: SERVER_A,
-      metrics: ['host.cpu.busyPercent'],
-      from: new Date(DAY_START).toISOString(),
-      to: new Date(DAY_START + 300_000).toISOString(),
-      resolutionSeconds: 300,
-    })
-
-    assertEquals(result.points.length, 1)
-    assertEquals(result.points[0]!.topologyGeneration, 3)
-    assertEquals(result.topologyGenerations, [3])
   })
 })
 
@@ -831,6 +796,31 @@ it('v5 queryFleetHostSnapshot: multiple servers, values map, a requested-but-abs
     assertEquals(byId.get(SERVER_A)?.values['host.cpu.busyPercent'], 10)
     assertEquals(byId.get(serverB)?.values['host.cpu.busyPercent'], 50)
     assertEquals(byId.has(serverC), false)
+  })
+})
+
+it('v8 queryFleetHostSnapshot: a data point v8 no longer stores reads as empty even though the column holds a value', async () => {
+  await withStore(async (store) => {
+    const withFaults = sample({ serverId: SERVER_A, atMs: DAY_START, cpuBusyPercent: 10 })
+    withFaults.host.memory.majorPageFaultsPerSecond = 42
+    withFaults.host.cpu.saturatedCoreCount = 3
+    await store.writeSample(withFaults)
+
+    const result = await store.queryFleetHostSnapshot({
+      serverIds: [SERVER_A],
+      metrics: [
+        'host.cpu.busyPercent',
+        'host.memory.majorPageFaultsPerSecond',
+        'host.cpu.saturatedCoreCount',
+      ],
+      from: new Date(DAY_START).toISOString(),
+      to: new Date(DAY_START + 600_000).toISOString(),
+    })
+
+    const values = result.servers[0]?.values
+    assertEquals(values?.['host.cpu.busyPercent'], 10)
+    assertEquals(values?.['host.memory.majorPageFaultsPerSecond'] ?? null, null)
+    assertEquals(values?.['host.cpu.saturatedCoreCount'] ?? null, null)
   })
 })
 
@@ -1058,10 +1048,10 @@ it('v5 queryMetricEvents: truncates at MAX_STATUS_EVENTS and reports truncated: 
       kind: 'oom_kill',
       severity: 'info',
     }))
-    // `buildMetricsSample` caps events per sample at 128 — split across
+    // `buildMetricsSample` caps events per sample at 16 — split across
     // several `writeSample` calls (each call still fans its own events out
     // inside a single transaction; the cap is per-sample, not per-store).
-    const CHUNK = 100
+    const CHUNK = 16
     for (let offset = 0; offset < allEvents.length; offset += CHUNK) {
       const chunk = allEvents.slice(offset, offset + CHUNK)
       await store.writeSample(
@@ -1313,8 +1303,8 @@ const DOCKER_V6: DockerUsageSample = {
   buildCacheReclaimableBytes: null,
 }
 
-it('v7 extended numeric fields land in the ext_* columns; a v6 sample writes real NULLs there', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-v7-' })
+it('v8 extended numeric fields land in the ext_* columns; a v6 sample writes real NULLs there', async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-v8-' })
   try {
     const store = makeStore(metricsDir)
     await store.writeSample(

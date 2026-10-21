@@ -5,7 +5,7 @@
  *
  * T6 — every "log and skip" branch skips *before* a row is written, and a
  * refetch that rejects writes nothing. T7 — the response shapes the pinned
- * API version (`2025-08-27.basil`) sends and the older shapes still in the
+ * API version (`2026-09-30.endive`) sends and the older shapes still in the
  * wild both project the same rows: period end on the subscription or per
  * item, the invoice's subscription pre- and post-basil, a Checkout session
  * naming its subscription as an id or an object, the second page of items,
@@ -45,11 +45,6 @@ import {
   runPendingStripeProjections,
   type StripeProjectionOutcome,
 } from './stripe-projection.ts'
-import {
-  newPendingCheckoutRecord,
-  readPendingCheckout,
-  writePendingCheckout,
-} from '../../features/billing/pending-checkout.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -695,19 +690,6 @@ test('T7 · checkout.session.completed reads the session first, then projects th
     },
   ]) {
     const db = emptyDb()
-    await writePendingCheckout(
-      db,
-      ORG,
-      newPendingCheckoutRecord({
-        sessionId: 'cs_1',
-        url: 'https://checkout.stripe.com/c/pay/cs_1',
-        tierId: S1,
-        quantity: 2,
-        idempotencyKey: 'checkout-key',
-        nowMs: Date.parse(NOW),
-      }),
-      Date.parse(NOW)
-    )
     const client = routedClient({
       'GET /v1/checkout/sessions/cs_1': () => ({
         id: 'cs_1',
@@ -736,7 +718,6 @@ test('T7 · checkout.session.completed reads the session first, then projects th
       db.rows(subscriptionItem).map((row) => row.quantity),
       [2]
     )
-    assertEquals(await readPendingCheckout(db, ORG, Date.parse(NOW)), null)
   }
 })
 

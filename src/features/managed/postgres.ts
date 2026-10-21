@@ -10,6 +10,7 @@
  */
 
 import { applyResourcesToComposeService } from '../compose/apply-service-options.ts'
+import { joinHostPort } from '../../lib/ip-address.ts'
 import { requireDefaultManagedImage } from './releases.ts'
 import type { ManagedSslMode } from './ssl.ts'
 import {
@@ -99,7 +100,7 @@ const USER_OPERATIONS: ManagedUserOperations = {
     'drop-database',
     'grant-database',
   ],
-  privileges: ['owner', 'read-write', 'read-only'],
+  privileges: ['owner', 'read-write', 'read-only', 'admin'],
   identifier: {
     quote: '"',
     maxLength: MAX_IDENTIFIER_LENGTH,
@@ -465,8 +466,8 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
   volumes.push(`./tls:${TLS_DIR_CONTAINER}:ro`)
 
   // Private listener: the one deliberate exception to "no published engine ports".
-  // Multi-member only — binds solely on the member's private address at the
-  // instance-allocated `private_port` (cross-host replication + ProxySQL backends).
+  // Binds solely on the member's private address at the instance-allocated
+  // `private_port` (cross-host replication and remote consumer ProxySQL).
   if (input.member?.privateListener) {
     const { address, port } = input.member.privateListener
     service.ports = [`${address}:${port}:5432`]
@@ -504,10 +505,9 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
     env: { ...env },
     healthcheck,
     exposure: {
-      enabled: settings.exposure.enabled,
+      enabled: true,
       protocol: 'tcp',
       containerPort: DEFAULT_PORT,
-      ...(settings.exposure.scope !== undefined ? { scope: settings.exposure.scope } : {}),
     },
   }
 
@@ -532,7 +532,7 @@ function formatSslMode(mode: ManagedSslMode): string {
 function buildConnectionInfo(input: BuildConnectionInfoInput): ManagedConnectionInfo {
   const dsn =
     `postgresql://${encodeURIComponent(input.username)}:***@` +
-    `${input.host}:${input.port}/${encodeURIComponent(input.database)}` +
+    `${joinHostPort(input.host, input.port)}/${encodeURIComponent(input.database)}` +
     `?sslmode=${formatSslMode(input.sslMode)}`
   return {
     dsn,
@@ -547,7 +547,7 @@ function buildBindingDsn(input: BuildConnectionInfoInput & { password: string })
   return (
     `postgresql://${encodeURIComponent(input.username)}:` +
     `${encodeURIComponent(input.password)}@` +
-    `${input.host}:${input.port}/${encodeURIComponent(input.database)}` +
+    `${joinHostPort(input.host, input.port)}/${encodeURIComponent(input.database)}` +
     `?sslmode=${formatSslMode(input.sslMode)}`
   )
 }
@@ -560,10 +560,7 @@ export const postgresEngineSpec: ManagedEngineSpec = {
   principalProvider: 'postgres',
   rootUsername: ROOT_USERNAME,
   exposeProtocol: 'tcp',
-  defaultSettings: {
-    ...DEFAULT_MANAGED_SETTINGS,
-    exposure: { enabled: true },
-  },
+  defaultSettings: { ...DEFAULT_MANAGED_SETTINGS },
   parseSettings: parsePostgresSettings,
   buildRuntimeSpec,
   buildConnectionInfo,

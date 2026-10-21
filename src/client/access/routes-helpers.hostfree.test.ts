@@ -10,6 +10,7 @@ import {
   organizationResourceIdMismatch,
   ownerRemovalConflictMessage,
   parseCreateAccessBody,
+  parseCreateInvitationBody,
   validateAccessCheckQuery,
   validateAccessListQuery,
   validateAccessResourceIdQuery,
@@ -84,7 +85,7 @@ test('parseCreateAccessBody rejects invalid shapes and deny effect', () => {
       resourceId: validUuid,
       permissionKey: 'not-a-permission',
     }),
-    { ok: false, error: 'permissionKey is required', status: 400 },
+    { ok: false, error: 'permissionKey is required', status: 400 }
   )
 
   const badUuid = parseCreateAccessBody({
@@ -136,30 +137,26 @@ test('parseCreateAccessBody accepts allow-only grants for all subject kinds', ()
 })
 
 test('validateAccessCheckQuery requires params and valid catalog keys', () => {
-  assertEquals(
-    validateAccessCheckQuery(undefined, 'organization:manage'),
-    {
-      ok: false,
-      error: 'resourceId and permissionKey query parameters are required',
-      status: 400,
-    },
-  )
-  assertEquals(
-    validateAccessCheckQuery(validUuid, undefined),
-    {
-      ok: false,
-      error: 'resourceId and permissionKey query parameters are required',
-      status: 400,
-    },
-  )
-  assertEquals(
-    validateAccessCheckQuery('bad-id', 'organization:manage'),
-    { ok: false, error: 'Invalid resourceId', status: 400 },
-  )
-  assertEquals(
-    validateAccessCheckQuery(validUuid, 'organization:delete'),
-    { ok: false, error: 'Invalid permissionKey', status: 400 },
-  )
+  assertEquals(validateAccessCheckQuery(undefined, 'organization:manage'), {
+    ok: false,
+    error: 'resourceId and permissionKey query parameters are required',
+    status: 400,
+  })
+  assertEquals(validateAccessCheckQuery(validUuid, undefined), {
+    ok: false,
+    error: 'resourceId and permissionKey query parameters are required',
+    status: 400,
+  })
+  assertEquals(validateAccessCheckQuery('bad-id', 'organization:manage'), {
+    ok: false,
+    error: 'Invalid resourceId',
+    status: 400,
+  })
+  assertEquals(validateAccessCheckQuery(validUuid, 'organization:delete'), {
+    ok: false,
+    error: 'Invalid permissionKey',
+    status: 400,
+  })
 
   const ok = validateAccessCheckQuery(validUuid, 'team:own')
   if (!ok.ok) {
@@ -170,26 +167,21 @@ test('validateAccessCheckQuery requires params and valid catalog keys', () => {
 })
 
 test('validateAccessListQuery requires a UUID resourceId', () => {
-  assertEquals(
-    validateAccessListQuery(undefined),
-    {
-      ok: false,
-      error: 'resourceId query parameter is required',
-      status: 400,
-    },
-  )
-  assertEquals(
-    validateAccessListQuery(''),
-    {
-      ok: false,
-      error: 'resourceId query parameter is required',
-      status: 400,
-    },
-  )
-  assertEquals(
-    validateAccessListQuery('not-a-uuid'),
-    { ok: false, error: 'Invalid resourceId', status: 400 },
-  )
+  assertEquals(validateAccessListQuery(undefined), {
+    ok: false,
+    error: 'resourceId query parameter is required',
+    status: 400,
+  })
+  assertEquals(validateAccessListQuery(''), {
+    ok: false,
+    error: 'resourceId query parameter is required',
+    status: 400,
+  })
+  assertEquals(validateAccessListQuery('not-a-uuid'), {
+    ok: false,
+    error: 'Invalid resourceId',
+    status: 400,
+  })
 
   const ok = validateAccessListQuery(validUuid)
   if (!ok.ok) {
@@ -199,22 +191,16 @@ test('validateAccessListQuery requires a UUID resourceId', () => {
 })
 
 test('validateAccessResourceIdQuery requires kind and itemId', () => {
-  assertEquals(
-    validateAccessResourceIdQuery(undefined, validUuid),
-    {
-      ok: false,
-      error: 'kind and itemId query parameters are required',
-      status: 400,
-    },
-  )
-  assertEquals(
-    validateAccessResourceIdQuery('organization', undefined),
-    {
-      ok: false,
-      error: 'kind and itemId query parameters are required',
-      status: 400,
-    },
-  )
+  assertEquals(validateAccessResourceIdQuery(undefined, validUuid), {
+    ok: false,
+    error: 'kind and itemId query parameters are required',
+    status: 400,
+  })
+  assertEquals(validateAccessResourceIdQuery('organization', undefined), {
+    ok: false,
+    error: 'kind and itemId query parameters are required',
+    status: 400,
+  })
 
   const ok = validateAccessResourceIdQuery('team', otherUuid)
   if (!ok.ok) {
@@ -224,11 +210,31 @@ test('validateAccessResourceIdQuery requires kind and itemId', () => {
   assertEquals(ok.itemId, otherUuid)
 })
 
+test('parseCreateInvitationBody omits grants when absent and rejects null or non-array', () => {
+  const teamId = validUuid
+  const omitted = parseCreateInvitationBody({
+    teamId,
+    email: 'invitee@example.com',
+  })
+  if (!('teamId' in omitted)) {
+    throw new TypeError('expected omitted grants to parse')
+  }
+  assertEquals(omitted.grants, undefined)
+
+  const nullGrants = parseCreateInvitationBody({
+    teamId,
+    email: 'invitee@example.com',
+    grants: null,
+  })
+  if (!('ok' in nullGrants) || nullGrants.ok !== false) {
+    throw new TypeError('expected null grants rejection')
+  }
+  assertEquals(nullGrants.error, 'Invalid request')
+  assertEquals(nullGrants.status, 400)
+})
+
 test('invitationEmailsMatch is case and whitespace insensitive', () => {
-  assertEquals(
-    invitationEmailsMatch('User@Example.com', ' user@example.com '),
-    true,
-  )
+  assertEquals(invitationEmailsMatch('User@Example.com', ' user@example.com '), true)
   assertEquals(invitationEmailsMatch('a@b.co', 'c@d.co'), false)
 })
 
@@ -244,16 +250,7 @@ test('invitationAcceptErrorPayload maps gone and invalid_grant', () => {
 })
 
 test('organizationResourceIdMismatch only flags organization kind drift', () => {
-  assertEquals(
-    organizationResourceIdMismatch('organization', validUuid, otherUuid),
-    true,
-  )
-  assertEquals(
-    organizationResourceIdMismatch('organization', validUuid, validUuid),
-    false,
-  )
-  assertEquals(
-    organizationResourceIdMismatch('team', otherUuid, validUuid),
-    false,
-  )
+  assertEquals(organizationResourceIdMismatch('organization', validUuid, otherUuid), true)
+  assertEquals(organizationResourceIdMismatch('organization', validUuid, validUuid), false)
+  assertEquals(organizationResourceIdMismatch('team', otherUuid, validUuid), false)
 })

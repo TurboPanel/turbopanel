@@ -8,10 +8,7 @@
 import { eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { workspace } from '../../db/schema.ts'
-import {
-  parseWorkspaceKind,
-  type WorkspaceKind,
-} from '../../db/workspace-kind.ts'
+import { parseWorkspaceKind, type WorkspaceKind } from '../../db/workspace-kind.ts'
 
 function kindFromRow(value: string | null | undefined): WorkspaceKind | null {
   if (value == null) return null
@@ -28,7 +25,7 @@ function kindFromRow(value: string | null | undefined): WorkspaceKind | null {
 export async function resolveWorkspaceKindForEntity(
   db: Db,
   entityType: string,
-  entityId: string,
+  entityId: string
 ): Promise<WorkspaceKind | null> {
   switch (entityType) {
     case 'workspace': {
@@ -151,19 +148,6 @@ export async function resolveWorkspaceKindForEntity(
         LIMIT 1
       `)
       if (rows[0]?.kind) return kindFromRow(rows[0].kind)
-
-      const managedRows = await db.execute<{ kind: string }>(sql`
-        SELECT w.kind AS kind
-        FROM principal p
-        JOIN managed m ON m.id = p.managed_id
-        JOIN environment e ON e.id = m.environment_id
-        JOIN project pr ON pr.id = e.project_id
-        JOIN workspace w ON w.id = pr.workspace_id
-        WHERE p.id = ${entityId}::uuid
-          AND p.managed_id IS NOT NULL
-        LIMIT 1
-      `)
-      if (managedRows[0]?.kind) return kindFromRow(managedRows[0].kind)
 
       const tenancyRows = await db.execute<{ kind: string }>(sql`
         SELECT w.kind AS kind

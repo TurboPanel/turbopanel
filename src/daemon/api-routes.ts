@@ -25,11 +25,13 @@ import {
 } from '../lib/secrets/data-encryption.ts'
 import type { Db } from '../db/connection.ts'
 import { describeError } from '../lib/describe-error.ts'
+import { storeIssuedCertificate } from '../client/tls/issued-certificate.ts'
 import { logWarn } from '../lib/logger.ts'
 import {
   getDaemonCellRegistry,
   getDb,
   getExecutionLogStore,
+  getMetricsGate,
   getServerMetricsStore,
 } from '../db/connection.ts'
 import { contentLengthExceeds, readBodyWithByteLimit } from '../lib/http/bounded-body.ts'
@@ -88,6 +90,8 @@ import {
   topologyChurnLimitedRecently,
 } from '../features/servers/server-topology-records.ts'
 import { recordCapabilityPlanGenerationIfChanged } from '../client/servers/capability-plan-records.ts'
+import type { GateDecision, MetricsGate } from './metrics/ingest-gate.ts'
+import type { MetricEvent } from '../contracts/metrics-contract.ts'
 import { enqueueCapabilityPlanUpdate } from '../client/servers/capability-plan-push.ts'
 import { computeSlotMapping } from '../contracts/topology-slot-mapping.ts'
 import {
@@ -109,10 +113,18 @@ import {
   type FabricMembershipDeps,
   findServerIdForIdentity,
   getServerLicenseBinding,
+  isMachineKeyInUse,
   resolveServerId,
   touchServerMetadata,
 } from '../features/servers/server-registry.ts'
 import { getCommandQueue } from '../features/commands/queue.ts'
+
+const MACHINE_KEY_IN_USE_RESULT = {
+  ok: false,
+  status: 409,
+  error: 'machine_key_in_use',
+  message: 'This host is already registered as another server. Remove that server first.',
+} as const
 import {
   loadExecutionLogCommandTarget,
   MAX_EXECUTION_LOG_CHUNK_BODY_BYTES,
@@ -193,6 +205,12 @@ export const MAX_SECRETS_DECRYPT_CIPHERTEXT_CHARS = 16 * 1024
  * the batch cap × per-ciphertext cap plus JSON array/quoting overhead.
  */
 export const MAX_SECRETS_DECRYPT_BODY_BYTES = 2 * 1024 * 1024
+
+/**
+ * `POST /tls/issued` — hostname plus one certificate chain and one private key
+ * (32 KiB chain + 8 KiB key at most) with JSON quoting overhead.
+ */
+export const MAX_TLS_ISSUED_BODY_BYTES = 64 * 1024
 
 /** `POST /auth/challenge` — optional serverId/keyId only. */
 export const MAX_AUTH_CHALLENGE_BODY_BYTES = 4 * 1024
@@ -338,6 +356,28 @@ function parseEnrollFields(body: Record<string, unknown>): FieldResult<EnrollFie
  * Resolves the server row, guards against a fingerprint collision, and attaches
  * the daemon key — the final leg of `POST /enroll` once the signature is verified.
  */
+function enrollFailureBody(failure: { error: string; message?: string }) {
+  return {
+    ok: false,
+    error: failure.error,
+    ...(failure.message ? { message: failure.message } : {}),
+  }
+}
+
+/** `resolveServerId`, with a host that is already registered answered as a conflict marker. */
+async function resolveServerIdOrConflict(
+  db: Db,
+  identity: Parameters<typeof resolveServerId>[1],
+  fabricDeps: Parameters<typeof resolveServerId>[2]
+): Promise<{ serverId: string | null } | { conflict: true }> {
+  try {
+    return { serverId: await resolveServerId(db, identity, fabricDeps) }
+  } catch (err) {
+    if (isMachineKeyInUse(err)) return { conflict: true }
+    throw err
+  }
+}
+
 async function finalizeDaemonEnrollment(
   db: Db,
   params: {
@@ -352,7 +392,7 @@ async function finalizeDaemonEnrollment(
   }
 ): Promise<
   | { ok: true; serverId: string; keyId: string }
-  | { ok: false; status: 400 | 403 | 409 | 500; error: string }
+  | { ok: false; status: 400 | 403 | 409 | 500; error: string; message?: string }
 > {
   const {
     serverIdBody,
@@ -394,7 +434,9 @@ async function finalizeDaemonEnrollment(
     }
   }
 
-  const serverId = await resolveServerId(db, identity, fabricDeps)
+  const resolved = await resolveServerIdOrConflict(db, identity, fabricDeps)
+  if ('conflict' in resolved) return MACHINE_KEY_IN_USE_RESULT
+  const serverId = resolved.serverId
   if (!serverId) {
     return {
       ok: false,
@@ -422,12 +464,18 @@ async function finalizeDaemonEnrollment(
     })
     return { ok: true, serverId, keyId: result.keyId }
   } catch (err) {
-    if (err instanceof DaemonKeyRevokedError) {
-      return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR }
-    }
-    const message = err instanceof Error ? err.message : String(err)
-    return { ok: false, status: 500, error: message }
+    return enrollAttachFailure(err)
   }
+}
+
+/** The answer for a failed key attach: revoked, host already registered, or a plain error. */
+function enrollAttachFailure(err: unknown) {
+  if (err instanceof DaemonKeyRevokedError) {
+    return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR } as const
+  }
+  if (isMachineKeyInUse(err)) return MACHINE_KEY_IN_USE_RESULT
+  const message = err instanceof Error ? err.message : String(err)
+  return { ok: false, status: 500, error: message } as const
 }
 
 function enrollFabricDepsFromContext(c: Context): FabricMembershipDeps | undefined {
@@ -638,6 +686,71 @@ export function topologyResyncRecentlyRequested(
   return Number.isFinite(requestedMs) && nowMs - requestedMs < TOPOLOGY_RESYNC_MARK_COOLDOWN_MS
 }
 
+const EVENT_SEVERITY_RANK: Readonly<Record<MetricEvent['severity'], number>> = {
+  critical: 0,
+  warning: 1,
+  info: 2,
+}
+
+/** Events ordered most severe first, then oldest: what survives a budget cut. */
+function mostSevereFirst(events: readonly MetricEvent[]): MetricEvent[] {
+  return [...events].sort(
+    (a, b) =>
+      EVENT_SEVERITY_RANK[a.severity] - EVENT_SEVERITY_RANK[b.severity] ||
+      Date.parse(a.at) - Date.parse(b.at)
+  )
+}
+
+/**
+ * Ask the ingest gate whether this durable sample may be stored, and trim its
+ * events to the hourly budget. Returns the refusal response (429 over the
+ * limits, 503 when the gate itself cannot answer), or `null` when the sample
+ * goes on to be stored — possibly with fewer events than it arrived with.
+ */
+async function applyMetricsIngestGate<E extends Env>(
+  c: Context<E>,
+  metricsGate: MetricsGate,
+  serverId: string,
+  sample: AuthenticatedMetricsSample
+): Promise<Response | null> {
+  let gate: GateDecision
+  try {
+    gate = await metricsGate.admit(serverId, sample.metadata.sampledAt, sample.events.length)
+  } catch (err) {
+    // No exact count, no write: an unmetered path is what the gate stops.
+    rateLimitedMetricsLog(serverId, 'metrics_gate_failed', () => {
+      console.warn(`metrics gate failed for ${serverId}: ${describeError(err)}`)
+    })
+    c.header('Retry-After', '60')
+    return c.json({ ok: false, error: 'metrics_gate_unavailable' }, 503)
+  }
+  if (!gate.stored) {
+    rateLimitedMetricsLog(serverId, `metrics_gate_${gate.reason}`, () => {
+      console.warn(`metrics sample refused for ${serverId}: ${gate.reason}`)
+    })
+    // A duplicate (or replayed) sample can never be accepted later, so it gets
+    // 409, which the daemon does not retry; only an early sample is worth
+    // retrying, so only that one gets 429 with a Retry-After.
+    if (gate.reason === 'duplicate') {
+      return c.json({ ok: false, error: 'duplicate_sample' }, 409)
+    }
+    if (gate.reason === 'future') {
+      return c.json({ ok: false, error: 'sample_in_future' }, 409)
+    }
+    c.header('Retry-After', String(gate.retryAfterSeconds))
+    return c.json({ ok: false, error: 'rate_limited', reason: gate.reason }, 429)
+  }
+  if (gate.eventsAllowed < sample.events.length) {
+    rateLimitedMetricsLog(serverId, 'metrics_gate_events_dropped', () => {
+      console.warn(
+        `metrics events over the hourly budget for ${serverId}: kept ${gate.eventsAllowed} of ${sample.events.length}`
+      )
+    })
+    sample.events = mostSevereFirst(sample.events).slice(0, gate.eventsAllowed)
+  }
+  return null
+}
+
 type IngestPlanAndTopology = {
   plan: MetricsCapabilityPlan
   slotMapping: SlotMapping | undefined
@@ -765,7 +878,7 @@ async function resolveIngestPlanAndReconcileTopology(
       // topology generation from promoting the host. Fire-and-forget, like
       // `markTopologyResyncRequested` above.
       db.update(server)
-        .set({ machineClass: 'physical' })
+        .set({ machineClass: 'physical', machineClassSource: 'detected' })
         .where(and(eq(server.id, serverId), isNull(server.machineClass)))
         .catch((err) => {
           rateLimitedMetricsLog(serverId, 'machine_class_record_failed', () => {
@@ -871,6 +984,8 @@ type DaemonApiEnv = {
     daemonServerId: string
     daemonKeyId: string
     daemonTokenId: string
+    /** Bound by the app (`bindContextValue`); absent when no secrets are configured. */
+    dataEncryptionSecrets?: DerivedSecretsConfig
   }
 }
 
@@ -954,6 +1069,9 @@ export function registerDaemonApiRoutes<E extends Env>(
       key: daemonMetricsRateLimitKey(serverId),
     })
     if (!success) {
+      // The binding's window is 60 s: telling the daemon when to try again
+      // stops a well-behaved one from hammering the limit.
+      c.header('Retry-After', '60')
       return c.json({ ok: false, error: 'rate_limited' }, 429)
     }
     return null
@@ -1326,7 +1444,7 @@ export function registerDaemonApiRoutes<E extends Env>(
       ...(fabricDeps ? { fabricDeps } : {}),
     })
     if (!enrolled.ok) {
-      return c.json({ ok: false, error: enrolled.error }, enrolled.status)
+      return c.json(enrollFailureBody(enrolled), enrolled.status)
     }
     // Bound now: `license.server_id` carries it from here.
     await clearLicenseEnrollAttempt(db, licenseId).catch(() => {})
@@ -1615,7 +1733,7 @@ export function registerDaemonApiRoutes<E extends Env>(
         })
       }
 
-      // Live leases. A v7 daemon keeps its 60 s baseline running during a
+      // Live leases. A v8 daemon keeps its 60 s baseline running during a
       // lease and flags the parallel 10 s live samples `durable: false`: those
       // feed the chart's live overlay ONLY and are never stored (storing them
       // is the 6x row cost the baseline-only rule removes). They are buffered
@@ -1629,6 +1747,16 @@ export function registerDaemonApiRoutes<E extends Env>(
         await cacheLiveSample(metricsChartCache, sample)
         return c.json({ ok: true }, 202)
       }
+      // Exactly one stored sample a minute per server, and a bounded number of
+      // events an hour (`metrics/ingest-gate.ts`): a Durable Object per server
+      // on Workers, an in-process map on Deno. Every deployment binds one, so
+      // its absence only happens in tests that exercise other parts of the route.
+      const metricsGate = getMetricsGate(c)
+      if (metricsGate) {
+        const refused = await applyMetricsIngestGate(c, metricsGate, serverId, sample)
+        if (refused) return refused
+      }
+
       if (await isServerLiveSessionActive(metricsChartCache, serverId)) {
         await cacheLiveSample(metricsChartCache, sample)
       }
@@ -1707,6 +1835,65 @@ export function registerDaemonApiRoutes<E extends Env>(
       )
 
       return c.json({ plaintexts }, 200)
+    }
+  )
+
+  /**
+   * The certificate and private key Caddy issued on the calling server for one
+   * hostname. Stored sealed next to the other certificates (see
+   * `client/tls/issued-certificate.ts` for every check). The body is never
+   * logged and nothing from it comes back in the answer.
+   */
+  daemon.post(
+    '/tls/issued',
+    requireDaemonJwt,
+    enforceJwtRestLimit('tls-issued'),
+    requireActiveDaemonKey,
+    async (c) => {
+      const bodyRead = await readBoundedJsonBody(c, MAX_TLS_ISSUED_BODY_BYTES)
+      if (!bodyRead.ok) return bodyRead.response
+      let body: {
+        hostname?: unknown
+        certificatePem?: unknown
+        privateKeyPem?: unknown
+      }
+      try {
+        body = JSON.parse(bodyRead.text) as typeof body
+      } catch {
+        return c.json({ ok: false, error: 'invalid json' }, 400)
+      }
+      if (
+        typeof body.hostname !== 'string' ||
+        typeof body.certificatePem !== 'string' ||
+        typeof body.privateKeyPem !== 'string'
+      ) {
+        return c.json(
+          {
+            ok: false,
+            error: 'hostname, certificatePem and privateKeyPem are required',
+          },
+          400
+        )
+      }
+      const db = getDb(c)
+      const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+      if (!db || !dataEncryptionSecrets) {
+        return c.json({ ok: false, error: 'storage unavailable' }, 503)
+      }
+      const result = await storeIssuedCertificate(
+        db,
+        {
+          serverId: c.get('daemonServerId'),
+          hostname: body.hostname,
+          certificatePem: body.certificatePem,
+          privateKeyPem: body.privateKeyPem,
+        },
+        { dataEncryptionSecrets }
+      )
+      if (!result.ok) {
+        return c.json({ ok: false, error: result.error, message: result.message }, result.status)
+      }
+      return c.json({ ok: true, stored: result.stored }, 200)
     }
   )
 

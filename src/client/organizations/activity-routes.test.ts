@@ -135,7 +135,7 @@ async function seed(db: Db): Promise<Seeded> {
     const environmentId = await insertId(
       db
         .insert(environment)
-        .values({ projectId, name: `Env ${label} ${nonce}`, serverId })
+        .values({ projectId, name: `env-${label}-${nonce}`.toLowerCase(), serverId })
         .returning({ id: environment.id })
     )
     for (const [index, spec] of names.entries()) {
@@ -146,6 +146,8 @@ async function seed(db: Db): Promise<Seeded> {
         actorId: actor,
         name: name!,
         status: status!,
+        organizationId: org,
+        environmentId,
         context: { environmentId, projectId },
         errorMessage: status === 'failed' ? `boom ${label}` : null,
         createdAt: new Date(Date.now() - index * 1000).toISOString(),

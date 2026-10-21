@@ -25,11 +25,12 @@
  * table from the one `drizzle-kit migrate` and this repo's baseline use; get
  * this wrong and every migration replays into a second, shadow table.
  */
+import fs from 'node:fs'
 import postgres from 'postgres'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import { migrate } from 'drizzle-orm/postgres-js/migrator'
 import { resolvePostgresParts } from './resolve-postgres-url.mjs'
-import { assertMigrateTargetMatchesEnv } from './check-deploy-env.mjs'
+import { assertMigrateTargetMatchesEnv, stripJsonc } from './check-deploy-env.mjs'
 import {
   compareSchemaState,
   describeSchemaState,
@@ -47,6 +48,32 @@ const LOCK_KEY_2 = 0x4d494752 // 'MIGR'
 function fail(message) {
   console.error(`migrate-locked: ${message}`)
   process.exit(1)
+}
+
+// Testing and staging reach their databases through the managed database
+// listener, a pooling proxy that refuses a session advisory lock ("Feature not
+// supported"). They may skip the lock with TURBOPANEL_MIGRATE_NO_LOCK=1. Any
+// other environment (live, local) keeps the lock: skipping it there is refused.
+const NO_LOCK_ENVS = new Set(['testing', 'staging'])
+// The variable comes from the build's environment or from that environment's
+// `vars` in wrangler.jsonc (a build variable is not needed in the dashboard).
+function wranglerVar(envName, key) {
+  try {
+    const config = JSON.parse(stripJsonc(fs.readFileSync('./wrangler.jsonc', 'utf8')))
+    return config.env?.[envName]?.vars?.[key]
+  } catch {
+    return undefined
+  }
+}
+const cloudflareEnv = process.env.CLOUDFLARE_ENV?.trim() ?? ''
+const skipLock =
+  String(
+    process.env.TURBOPANEL_MIGRATE_NO_LOCK?.trim() ||
+      wranglerVar(cloudflareEnv, 'TURBOPANEL_MIGRATE_NO_LOCK') ||
+      ''
+  ).trim() === '1'
+if (skipLock && !NO_LOCK_ENVS.has(cloudflareEnv)) {
+  fail('TURBOPANEL_MIGRATE_NO_LOCK=1 is only allowed when CLOUDFLARE_ENV is testing or staging')
 }
 
 const url = process.env.TURBOPANEL_DATABASE_URL?.trim()
@@ -80,20 +107,26 @@ const client = parts.socketDir
 const db = drizzle(client)
 
 try {
-  console.log('migrate-locked: waiting for the migration advisory lock…')
-  await client`select pg_advisory_lock(${LOCK_KEY_1}, ${LOCK_KEY_2})`
+  if (skipLock) {
+    console.log(
+      `migrate-locked: advisory lock skipped (TURBOPANEL_MIGRATE_NO_LOCK=1, env ${cloudflareEnv}); do not run two migrations at once`
+    )
+  } else {
+    console.log('migrate-locked: waiting for the migration advisory lock…')
+    await client`select pg_advisory_lock(${LOCK_KEY_1}, ${LOCK_KEY_2})`
+  }
   // Refuse a database whose history this checkout does not ship (a newer
   // release, or the pre-freeze baseline) — see scripts/schema-state.mjs.
   // Read under the lock so a concurrent migrate cannot change the answer.
   const state = compareSchemaState(
     await readAppliedMigrationHashes(client),
-    readShippedMigrationHashes('./migrations'),
+    readShippedMigrationHashes('./migrations')
   )
   if (state.status === 'ahead' || state.status === 'diverged') {
     throw new Error(describeSchemaState(state))
   }
   console.log(`migrate-locked: ${describeSchemaState(state)}`)
-  console.log('migrate-locked: lock acquired, applying migrations…')
+  console.log(`migrate-locked: ${skipLock ? 'applying' : 'lock acquired, applying'} migrations…`)
   await migrate(db, {
     migrationsFolder: './migrations',
     migrationsTable: 'migration',
@@ -102,8 +135,19 @@ try {
   console.log('migrate-locked: migrations applied successfully')
 } catch (err) {
   console.error(`migrate-locked: ${err instanceof Error ? err.message : String(err)}`)
+  // The migrator wraps the database's own error as "Failed query: …"; print what
+  // the server (or the proxy in front of it) actually said.
+  const cause = err instanceof Error ? err.cause : undefined
+  if (cause) {
+    console.error(
+      `migrate-locked: cause: ${cause instanceof Error ? cause.message : String(cause)}`
+    )
+    if (cause.code) console.error(`migrate-locked: cause code: ${cause.code}`)
+  }
   process.exitCode = 1
 } finally {
-  await client`select pg_advisory_unlock(${LOCK_KEY_1}, ${LOCK_KEY_2})`
+  if (!skipLock) {
+    await client`select pg_advisory_unlock(${LOCK_KEY_1}, ${LOCK_KEY_2})`
+  }
   await client.end()
 }

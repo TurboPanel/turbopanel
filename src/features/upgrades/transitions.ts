@@ -6,9 +6,11 @@
  *
  * Self-healing rules encoded here:
  *   - An offline server's step becomes `waiting`; it is dispatched on reconnect.
- *     A step still waiting after {@link UPGRADE_OFFLINE_DEADLINE_MS} becomes
- *     `needs_attention` (`server_offline`), so one unreachable host cannot hold
- *     the single instance-wide run open. The retry endpoint reopens it.
+ *     A never-dispatched fleet step still waiting after
+ *     {@link UPGRADE_OFFLINE_DEADLINE_MS} is skipped (`skip_offline`, `server_offline`) so one unreachable host cannot
+ *     hold the single instance-wide run open. Co-located daemon and control-plane
+ *     steps still become `needs_attention`: the fleet gate depends on them. The
+ *     skipped host is picked up by the first run after it reconnects.
  *   - No progress within the step timeout → retry with backoff, up to
  *     {@link UPGRADE_STEP_MAX_ATTEMPTS} dispatches, then `needs_attention`.
  *   - `rolled_back` → one automatic retry, then `needs_attention`.
@@ -19,7 +21,12 @@
  *     what the hello/heartbeat projection sees when a host comes back on the
  *     new build).
  */
-import type { UpgradeStepErrorCode, UpgradeStepStatus, UpgradeStepUnit } from './vocabulary.ts'
+import type {
+  UpgradePhase,
+  UpgradeStepErrorCode,
+  UpgradeStepStatus,
+  UpgradeStepUnit,
+} from './vocabulary.ts'
 
 /** Total dispatches allowed for a step whose install stalls. */
 export const UPGRADE_STEP_MAX_ATTEMPTS = 3
@@ -78,7 +85,7 @@ export const UPGRADE_BACKOFF_MAX_MS = 30 * 60 * 1000
  * How long a step may wait for its server to come back, counted from when it
  * started waiting (the orchestrator stamps `lastStageAt` on entry).
  */
-export const UPGRADE_OFFLINE_DEADLINE_MS = 60 * 60 * 1000
+export const UPGRADE_OFFLINE_DEADLINE_MS = 15 * 60 * 1000
 
 /** Statuses that are settled — the tick leaves them alone. */
 const SETTLED: ReadonlySet<UpgradeStepStatus> = new Set<UpgradeStepStatus>([
@@ -108,6 +115,8 @@ export function isInFlightStepStatus(status: UpgradeStepStatus): boolean {
 
 export type StepView = {
   status: UpgradeStepStatus
+  /** Fleet steps skip when offline too long; platform phases still fail the run. */
+  phase?: UpgradePhase
   /** Which component the step installs; `instance` gets the verify window. */
   unit?: UpgradeStepUnit
   attempts: number
@@ -142,6 +151,7 @@ export type StepAction =
   | { kind: 'done' }
   | { kind: 'dispatch' }
   | { kind: 'wait_offline' }
+  | { kind: 'skip_offline' }
   | { kind: 'retry'; nextAttemptAt: string }
   | { kind: 'needs_attention'; errorCode: string }
 
@@ -180,7 +190,13 @@ function isStalled(step: StepView, cfg: StepConfig): boolean {
   return Date.parse(cfg.now) - Date.parse(step.lastStageAt) > timeout
 }
 
-/** Only a step already `waiting` has a `lastStageAt` that marks when it went offline. */
+/**
+ * Only a step already `waiting` has a `lastStageAt` that marks when it went
+ * offline: the tick that first noticed the host offline stamps it (no
+ * last-seen column). The window is strictly more than the deadline, so exactly
+ * 15:00 still waits. A host already offline when a run is planned never gets
+ * here; the planner skips it at once.
+ */
 function offlineTooLong(step: StepView, cfg: StepConfig): boolean {
   if (step.status !== 'waiting' || !step.lastStageAt) return false
   const deadline = cfg.offlineDeadlineMs ?? UPGRADE_OFFLINE_DEADLINE_MS
@@ -199,6 +215,7 @@ function handleRolledBack(step: StepView, facts: StepFacts, cfg: StepConfig): St
 function handleDue(step: StepView, facts: StepFacts, cfg: StepConfig): StepAction {
   if (!facts.serverConnected) {
     if (offlineTooLong(step, cfg)) {
+      if (step.phase === 'fleet' && step.attempts === 0) return { kind: 'skip_offline' }
       return { kind: 'needs_attention', errorCode: 'server_offline' satisfies UpgradeStepErrorCode }
     }
     return { kind: 'wait_offline' }

@@ -1,5 +1,6 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
+import { X509Certificate } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -31,6 +32,8 @@ import {
   parseTlsOptions,
   resolveTlsForHosting,
 } from '../../lib/tls/index.ts'
+import { metadataFromParsed, splitTlsMetadata } from '../../lib/tls/metadata.ts'
+import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { TlsCandidate, TlsMetadata, TlsSource } from '../../lib/tls/types.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerTlsRoutes } from './routes.ts'
@@ -202,7 +205,7 @@ async function seedManagedClusters(
     const [environmentRow] = await db
       .insert(environment)
       .values({
-        name: `Cluster ${i + 1}`,
+        name: `cluster-${i + 1}`,
         projectId,
         serverId: params.serverId,
       })
@@ -640,6 +643,11 @@ test('POST /tls/ca/rotate retires prior CA and mints a new active generation', a
       trustBundlePem: string
     }
     assertEquals(afterBody.tls.id, rotateBody.id)
+    // Rotation mints the current kind of Organization CA: ECDSA P-384.
+    assertEquals(
+      new X509Certificate(afterBody.tls.certificatePem).publicKey.asymmetricKeyDetails?.namedCurve,
+      'secp384r1'
+    )
     assertEquals(afterBody.trustBundlePem.includes(afterBody.tls.certificatePem.trim()), true)
     assertEquals(afterBody.trustBundlePem.includes(priorPem.trim()), true)
 
@@ -648,6 +656,72 @@ test('POST /tls/ca/rotate retires prior CA and mints a new active generation', a
     const downloadBody = await download.text()
     assertEquals(downloadBody, afterBody.trustBundlePem)
     assertEquals(downloadBody.split('BEGIN CERTIFICATE').length - 1, 2)
+  })
+})
+
+test('an existing RSA Organization CA is kept until rotated, and rotation mints P-384', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    // An organization whose CA predates P-384: RSA key, already active.
+    const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+      parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno'),
+      'data-encryption'
+    )
+    const legacy = await mintSelfSignedCertificate(['legacy-org-ca.example.com'])
+    const { columns, residual } = splitTlsMetadata(metadataFromParsed(legacy.parsed, 'ready'))
+    const [legacyRow] = await db
+      .insert(tls)
+      .values({
+        organizationId,
+        name: 'Organization CA',
+        source: 'organization_ca',
+        certificatePem: legacy.certificatePem,
+        privateKeyPem: await encryptSecret(dataEncryptionSecrets, legacy.privateKeyPem),
+        status: columns.status,
+        notAfter: columns.notAfter,
+        fingerprintSha256: columns.fingerprintSha256,
+        metadata: residual,
+        options: null,
+        caState: 'active',
+        caGeneration: 1,
+      })
+      .returning({ id: tls.id })
+
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
+    const keyType = (pem: string) => new X509Certificate(pem).publicKey.asymmetricKeyType
+
+    const ensure = await app.request('/tls/ca', { headers })
+    assertEquals(ensure.status, 200)
+    const ensureBody = (await ensure.json()) as { tls: { id: string; certificatePem: string } }
+    assertEquals(ensureBody.tls.id, legacyRow!.id)
+    assertEquals(keyType(ensureBody.tls.certificatePem), 'rsa')
+
+    const rotate = await app.request('/tls/ca/rotate', { method: 'POST', headers })
+    assertEquals(rotate.status, 200)
+
+    const after = await app.request('/tls/ca', { headers })
+    const afterBody = (await after.json()) as { tls: { id: string; certificatePem: string } }
+    assertEquals(afterBody.tls.id === legacyRow!.id, false)
+    assertEquals(
+      new X509Certificate(afterBody.tls.certificatePem).publicKey.asymmetricKeyDetails?.namedCurve,
+      'secp384r1'
+    )
+    const [retired] = await db
+      .select({ caState: tls.caState, certificatePem: tls.certificatePem })
+      .from(tls)
+      .where(eq(tls.id, legacyRow!.id))
+      .limit(1)
+    assertEquals(retired?.caState, 'retired')
+    assertEquals(keyType(retired!.certificatePem!), 'rsa')
+
+    const download = await app.request('/tls/ca/download', { headers })
+    const bundle = await download.text()
+    assertEquals(bundle.includes(legacy.certificatePem.trim()), true)
+    assertEquals(bundle.includes(afterBody.tls.certificatePem.trim()), true)
   })
 })
 
@@ -700,6 +774,10 @@ test('GET /tls/ca/download returns the Organization CA trust-bundle PEM', async 
     const download = await app.request('/tls/ca/download', { headers })
     assertEquals(download.status, 200)
     assertEquals(download.headers.get('content-type')?.includes('application/x-pem-file'), true)
+    assertEquals(
+      download.headers.get('content-disposition'),
+      `attachment; filename="turbopanel-org-ca-${organizationId}.pem"`
+    )
     const body = await download.text()
     assertEquals(body, firstBody.trustBundlePem)
     assertEquals(body.includes('BEGIN CERTIFICATE'), true)
@@ -739,9 +817,7 @@ test('POST /tls/ca/rotate returns 409 while a changeover is in flight', async ()
       method: 'POST',
       headers,
     })
-    assertEquals(second.status, 409)
-    const body = (await second.json()) as { error: string }
-    assertEquals(body.error, 'ca_rotation_in_progress')
+    assertEquals(second.status, 200)
   })
 })
 
@@ -1000,6 +1076,52 @@ test('POST /tls/ca/rotate keeps kind and managedId when one server hosts two clu
   })
 })
 
+test('POST /tls/ca/retire completes when ingress target server was removed', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
+
+    const ensure = await app.request('/tls/ca', { headers })
+    assertEquals(ensure.status, 200)
+
+    const rotate = await app.request('/tls/ca/rotate', {
+      method: 'POST',
+      headers,
+    })
+    assertEquals(rotate.status, 200)
+    const rotateBody = (await rotate.json()) as { rotationId: string }
+
+    const [serverRow] = await db
+      .insert(server)
+      .values({ organizationId, name: 'removed rotation ingress host' })
+      .returning({ id: server.id })
+    const serverId = serverRow!.id
+
+    await db
+      .update(changeover)
+      .set({
+        state: 'awaiting_retire',
+        results: [{ serverId, kind: 'ingress', status: 'queued' }],
+      })
+      .where(eq(changeover.id, rotateBody.rotationId))
+
+    await db.delete(server).where(eq(server.id, serverId))
+
+    const retire = await app.request('/tls/ca/retire', {
+      method: 'POST',
+      headers,
+    })
+    assertEquals(retire.status, 200)
+    const retireBody = (await retire.json()) as { ok: true; rotationId: string }
+    assertEquals(retireBody.ok, true)
+    assertEquals(retireBody.rotationId, rotateBody.rotationId)
+  })
+})
+
 test('POST /tls/ca/retire stays blocked when binding rematerialize failed', async () => {
   await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
@@ -1027,7 +1149,6 @@ test('POST /tls/ca/retire stays blocked when binding rematerialize failed', asyn
           {
             serverId: organizationId,
             kind: 'binding',
-            managedId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
             status: 'failed',
             error: 'binding_ca_unavailable',
           },

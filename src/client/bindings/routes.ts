@@ -6,19 +6,21 @@
  */
 
 import type { Context, Hono } from 'hono'
-import { eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { assertCanOr403 } from '../authz/index.ts'
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
+import { recordAudit, type AuditAction } from '../../features/audit/audit-records.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db/connection.ts'
-import { forEachSequential, mapSequential } from '../../lib/sequential.ts'
-import { binding, managed, principal, service, slot } from '../../db/schema.ts'
-import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
-import { getCommandQueue } from '../../features/commands/queue.ts'
-import { compatLogWarn } from '../../lib/log-compat.ts'
+import { mapSequential } from '../../lib/sequential.ts'
+import { isUuid } from '../access/routes-helpers.ts'
+import { binding, login, managed, managedDatabase, service } from '../../db/schema.ts'
+import { managedDatabaseNames } from '../../features/managed/options.ts'
+import { findManagedLogin, type ManagedLoginRow } from '../../features/managed/logins.ts'
 import {
   assertCanManageOr403,
   assertCanReadOr403,
@@ -28,11 +30,11 @@ import {
   requireStringField,
 } from '../shared.ts'
 import { hasOutstandingManagedDestroy } from '../../features/managed/destroy-pending.ts'
-import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
+import { remoteBindingReachError } from '../../features/bindings/binding-reach.ts'
 import {
-  loadServicePlacementServerId,
-  memberServerIdsForManaged,
-} from '../../features/bindings/resolve-endpoint.ts'
+  enqueueIngressForBindingChange,
+  loadServiceConsumerServerIds,
+} from '../../features/bindings/enqueue-change.ts'
 import {
   materializeBinding,
   type MaterializeBindingError,
@@ -42,13 +44,12 @@ import {
   checkBindingDatabaseTarget,
   detectBindingCreateConflicts,
   detectBindingUpdateConflicts,
-  isBindableDatabasePrincipal,
   mapBindingUniqueViolation,
   parseBindingKeyPrefix,
   parseBindingsListFilter,
   parseEmitEngineDefaults,
-  resolveBindingPrincipalEngine,
-  resolveBindingPrincipalManagedId,
+  resolveBindingEngine,
+  resolveBindingManagedId,
   resolvePatchBindingFields,
   serializeBindingRow,
   bindingDatabaseTargetHttpStatus,
@@ -57,9 +58,9 @@ import {
 
 const BINDING_SELECT = {
   id: binding.id,
-  principalId: binding.principalId,
+  loginId: binding.loginId,
   serviceId: binding.serviceId,
-  databaseName: binding.databaseName,
+  databaseName: managedDatabase.name,
   keyPrefix: binding.keyPrefix,
   emitEngineDefaults: binding.isEmitEngineDefaults,
   createdAt: binding.createdAt,
@@ -67,60 +68,26 @@ const BINDING_SELECT = {
 }
 
 /**
- * After binding create/update/delete, reconcile ProxySQL on the consumer
- * placement server and every managed cluster member (backend + frontend users).
+ * Record one binding change. Facts and ids only: never the generated
+ * password, the connection string or any variable value.
  */
-async function enqueueIngressForBindingChange(
+async function recordBindingAudit(
   c: Context<AppEnv>,
   db: Db,
-  params: Readonly<{
-    serviceId: string
-    managedId: string
-    actorId: string
-  }>
+  organizationId: string,
+  action: Extract<AuditAction, `binding.${string}`>,
+  bindingId: string,
+  context: Record<string, unknown>
 ): Promise<void> {
-  const secretsConfig = c.get('secretsConfig')
-  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
-  const commandQueue = getCommandQueue(c)
-  if (
-    !secretsConfig ||
-    !dataEncryptionSecrets ||
-    !commandQueue ||
-    isNoopCommandQueue(commandQueue)
-  ) {
-    return
-  }
-
-  const serverIds = new Set<string>()
-  const placement = await loadServicePlacementServerId(db, params.serviceId)
-  if (placement) serverIds.add(placement)
-  for (const memberServerId of await memberServerIdsForManaged(db, params.managedId)) {
-    serverIds.add(memberServerId)
-  }
-  const consumerTasks = await db
-    .select({ serverId: slot.serverId })
-    .from(slot)
-    .where(eq(slot.serviceId, params.serviceId))
-  for (const row of consumerTasks) {
-    serverIds.add(row.serverId)
-  }
-
-  await forEachSequential(serverIds, async (serverId) => {
-    try {
-      await enqueueManagedIngressReconcile(db, commandQueue, {
-        serverId,
-        actorType: 'user',
-        actorId: params.actorId,
-        secretsConfig,
-        dataEncryptionSecrets,
-      })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      compatLogWarn(
-        'bindings',
-        `managed.ingress.reconcile after binding change failed for ${serverId}: ${message}`
-      )
-    }
+  const session = c.get('session')
+  await recordAudit(db, {
+    organizationId,
+    actorUserId: session?.userId ?? null,
+    actorEmail: session?.email ?? null,
+    action,
+    targetType: 'binding',
+    targetId: bindingId,
+    context,
   })
 }
 
@@ -189,11 +156,12 @@ async function selectBindingsByServiceId(
   return db
     .select(BINDING_SELECT)
     .from(binding)
+    .innerJoin(managedDatabase, eq(managedDatabase.id, binding.databaseId))
     .where(eq(binding.serviceId, serviceId))
     .orderBy(binding.createdAt)
 }
 
-/** Managed-cluster list: principal → managed.environment_id (not consumer services). */
+/** Managed-cluster list: login → managed.environment_id (not consumer services). */
 async function selectBindingsByManagedEnvironmentId(
   c: Context<AppEnv>,
   db: Db,
@@ -218,17 +186,12 @@ async function selectBindingsByManagedEnvironmentId(
     .limit(1)
   if (!managedRow) return []
 
-  const principalRows = await db
-    .select({ id: principal.id })
-    .from(principal)
-    .where(eq(principal.managedId, managedRow.id))
-  const principalIds = principalRows.map((r) => r.id)
-  if (principalIds.length === 0) return []
-
   return db
     .select(BINDING_SELECT)
     .from(binding)
-    .where(inArray(binding.principalId, principalIds))
+    .innerJoin(managedDatabase, eq(managedDatabase.id, binding.databaseId))
+    .innerJoin(login, eq(login.id, binding.loginId))
+    .where(eq(login.managedId, managedRow.id))
     .orderBy(binding.createdAt)
 }
 
@@ -254,12 +217,14 @@ async function selectBindingsByConsumerEnvironmentId(
   return db
     .select(BINDING_SELECT)
     .from(binding)
+    .innerJoin(managedDatabase, eq(managedDatabase.id, binding.databaseId))
     .where(inArray(binding.serviceId, serviceIds))
     .orderBy(binding.createdAt)
 }
 
 type CreateBindingInput = {
-  principalId: string
+  /** The login to bind (`loginId`), or the site owner's user whose single login it is (`principalId`). */
+  login: { loginId: string } | { principalId: string }
   serviceId: string
   databaseName: string
   keyPrefix: string
@@ -270,8 +235,14 @@ async function parseCreateBindingInput(c: Context<AppEnv>): Promise<CreateBindin
   const body = await parseJsonBody(c)
   if (body instanceof Response) return body
 
-  const principalId = requireStringField(c, body, 'principalId')
-  if (principalId instanceof Response) return principalId
+  let loginRef: CreateBindingInput['login']
+  if (typeof body.loginId === 'string' && body.loginId.length > 0) {
+    loginRef = { loginId: body.loginId }
+  } else {
+    const principalId = requireStringField(c, body, 'principalId')
+    if (principalId instanceof Response) return principalId
+    loginRef = { principalId }
+  }
   const serviceId = requireStringField(c, body, 'serviceId')
   if (serviceId instanceof Response) return serviceId
   const databaseName = requireStringField(c, body, 'databaseName')
@@ -283,7 +254,7 @@ async function parseCreateBindingInput(c: Context<AppEnv>): Promise<CreateBindin
   if (!emitParsed.ok) return c.json({ error: emitParsed.error }, 400)
 
   return {
-    principalId,
+    login: loginRef,
     serviceId,
     databaseName,
     keyPrefix: prefixParsed.prefix,
@@ -291,32 +262,55 @@ async function parseCreateBindingInput(c: Context<AppEnv>): Promise<CreateBindin
   }
 }
 
-/** Load + validate the source principal for a new binding (database principal, not root/replication). */
-async function loadBindablePrincipal(
+type BindableLogin = { loginId: string; managedId: string }
+
+function toBindableLogin(row: ManagedLoginRow): BindableLogin | null {
+  if (row.role !== 'user') return null
+  return { loginId: row.id, managedId: row.managedId }
+}
+
+/**
+ * Load + validate the login a new binding hands out: a `user` login, never the
+ * cluster's root or replication login. By `loginId` directly; by
+ * `principalId` (a site owner's Linux user) when it has exactly one login,
+ * 409 when it has several and the caller must name one.
+ */
+async function loadBindableLogin(
   c: Context<AppEnv>,
   db: Db,
-  principalId: string
-): Promise<{ id: string; managedId: string } | Response> {
-  const [principalRow] = await db
-    .select({
-      id: principal.id,
-      kind: principal.kind,
-      managedId: principal.managedId,
-      metadata: principal.metadata,
-    })
-    .from(principal)
-    .where(eq(principal.id, principalId))
-    .limit(1)
-  if (
-    !isBindableDatabasePrincipal({
-      kind: principalRow?.kind,
-      managedId: principalRow?.managedId,
-      metadata: principalRow?.metadata,
-    })
-  ) {
-    return c.json({ error: 'Not found' }, 404)
+  ref: CreateBindingInput['login']
+): Promise<BindableLogin | Response> {
+  if ('loginId' in ref) {
+    const [row] = await db
+      .select({ managedId: login.managedId })
+      .from(login)
+      .where(sql`${login.id}::text = ${ref.loginId}`)
+      .limit(1)
+    const found = row ? await findManagedLogin(db, row.managedId, ref.loginId) : undefined
+    const bindable = found ? toBindableLogin(found) : null
+    return bindable ?? c.json({ error: 'Not found' }, 404)
   }
-  return { id: principalRow!.id, managedId: principalRow!.managedId! }
+
+  if (!isUuid(ref.principalId)) return c.json({ error: 'Not found' }, 404)
+  const rows = await db
+    .select({ id: login.id, managedId: login.managedId, role: login.role })
+    .from(login)
+    .where(eq(login.principalId, ref.principalId))
+  const candidates = rows.filter((row) => row.role === 'user')
+  if (candidates.length === 0) return c.json({ error: 'Not found' }, 404)
+  if (candidates.length > 1) {
+    return c.json(
+      {
+        error: 'binding_login_ambiguous',
+        logins: candidates.map((row) => ({ loginId: row.id, managedId: row.managedId })),
+      },
+      409
+    )
+  }
+  return {
+    loginId: candidates[0]!.id,
+    managedId: candidates[0]!.managedId,
+  }
 }
 
 /** Load the managed cluster row for a binding and confirm it belongs to the caller's org. */
@@ -332,6 +326,7 @@ async function loadManagedForBindingOrg(
       environmentId: managed.environmentId,
       engine: managed.engine,
       options: managed.options,
+      databases: managedDatabaseNames(),
     })
     .from(managed)
     .where(eq(managed.id, managedId))
@@ -349,7 +344,7 @@ async function loadManagedForBindingOrg(
  */
 function requireBindingEngineCode(
   c: Context<AppEnv>,
-  managedRow: { engine: string | null; options: unknown },
+  managedRow: { engine: string | null; options: unknown; databases: readonly string[] },
   databaseName: string
 ): string | Response {
   const error = checkBindingDatabaseTarget(managedRow, databaseName)
@@ -383,23 +378,35 @@ async function insertAndMaterializeBinding(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   params: Readonly<{
-    principalId: string
+    loginId: string
     serviceId: string
     databaseName: string
     keyPrefix: string
     emitEngineDefaults: boolean
     managedId: string
     actorId: string
+    organizationId: string
   }>
 ): Promise<Response> {
   try {
     const id = await db.transaction(async (tx) => {
+      const [databaseRow] = await tx
+        .select({ id: managedDatabase.id })
+        .from(managedDatabase)
+        .where(
+          and(
+            eq(managedDatabase.managedId, params.managedId),
+            eq(managedDatabase.name, params.databaseName)
+          )
+        )
+        .limit(1)
+      if (!databaseRow) throw new TypeError('database_not_found')
       const [inserted] = await tx
         .insert(binding)
         .values({
-          principalId: params.principalId,
+          loginId: params.loginId,
           serviceId: params.serviceId,
-          databaseName: params.databaseName,
+          databaseId: databaseRow.id,
           keyPrefix: params.keyPrefix,
           isEmitEngineDefaults: params.emitEngineDefaults,
         })
@@ -416,13 +423,27 @@ async function insertAndMaterializeBinding(
       return materializeErrorResponse(c, materializeResult)
     }
 
-    await enqueueIngressForBindingChange(c, db, {
-      serviceId: params.serviceId,
+    const listenerSync = await enqueueIngressForBindingChange(c, db, {
+      serviceIds: [params.serviceId],
       managedId: params.managedId,
       actorId: params.actorId,
+      organizationId: params.organizationId,
     })
 
-    return c.json({ ok: true as const, id })
+    await recordBindingAudit(c, db, params.organizationId, 'binding.create', id, {
+      serviceId: params.serviceId,
+      loginId: params.loginId,
+      managedId: params.managedId,
+      databaseName: params.databaseName,
+      keyPrefix: params.keyPrefix,
+      emitEngineDefaults: params.emitEngineDefaults,
+    })
+
+    return c.json({
+      ok: true as const,
+      id,
+      ...(listenerSync.warning ? { warning: listenerSync.warning } : {}),
+    })
   } catch (err) {
     const mapped = mapBindingUniqueViolation(err)
     if (mapped) {
@@ -468,7 +489,12 @@ async function loadBindingRowForMutation(
   db: Db,
   id: string
 ): Promise<BindingRow | Response> {
-  const [row] = await db.select(BINDING_SELECT).from(binding).where(eq(binding.id, id)).limit(1)
+  const [row] = await db
+    .select(BINDING_SELECT)
+    .from(binding)
+    .innerJoin(managedDatabase, eq(managedDatabase.id, binding.databaseId))
+    .where(eq(binding.id, id))
+    .limit(1)
   if (!row) return c.json({ error: 'Not found' }, 404)
   return row
 }
@@ -551,14 +577,14 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const serviceDenied = await assertServiceCreatable(c, db, organizationId, input.serviceId)
     if (serviceDenied) return serviceDenied
 
-    const principalResult = await loadBindablePrincipal(c, db, input.principalId)
-    if (principalResult instanceof Response) return principalResult
+    const loginResult = await loadBindableLogin(c, db, input.login)
+    if (loginResult instanceof Response) return loginResult
 
     const managedResult = await loadManagedForBindingOrg(
       c,
       db,
       organizationId,
-      principalResult.managedId
+      loginResult.managedId
     )
     if (managedResult instanceof Response) return managedResult
 
@@ -576,6 +602,15 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // it succeeds: refuse a new one instead of silently dropping it later.
     if (await hasOutstandingManagedDestroy(db, managedResult.id)) {
       return c.json({ error: 'managed_busy', reason: 'destroy_in_flight' }, 409)
+    }
+
+    const consumerHosts = await loadServiceConsumerServerIds(db, input.serviceId)
+    const reachDenied = await remoteBindingReachError(db, {
+      managedId: managedResult.id,
+      consumerServerIds: consumerHosts,
+    })
+    if (reachDenied) {
+      return c.json(reachDenied, 422)
     }
 
     const conflictDenied = await assertBindingCreateConflicts(
@@ -596,13 +631,14 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     }
 
     return insertAndMaterializeBinding(c, db, dataEncryptionSecrets, {
-      principalId: input.principalId,
+      loginId: loginResult.loginId,
       serviceId: input.serviceId,
       databaseName: input.databaseName,
       keyPrefix: input.keyPrefix,
       emitEngineDefaults: input.emitEngineDefaults,
       managedId: managedResult.id,
       actorId: session.userId,
+      organizationId,
     })
   })
 
@@ -632,7 +668,7 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (fieldsResult instanceof Response) return fieldsResult
     const { keyPrefix: nextPrefix, emitEngineDefaults: nextEmit } = fieldsResult
 
-    const { managedId, engineCode } = await resolveBindingPrincipalEngine(db, row.principalId)
+    const { managedId, engineCode } = await resolveBindingEngine(db, row)
 
     const conflictDenied = await assertBindingUpdateConflicts(
       db,
@@ -668,15 +704,29 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return materializeErrorResponse(c, materializeResult)
     }
 
+    let listenerWarning: string | undefined
     if (managedId) {
-      await enqueueIngressForBindingChange(c, db, {
-        serviceId: row.serviceId,
+      const listenerSync = await enqueueIngressForBindingChange(c, db, {
+        serviceIds: [row.serviceId],
         managedId,
         actorId: session.userId,
+        organizationId,
+        apply: false,
       })
+      listenerWarning = listenerSync.warning
     }
 
-    return c.json({ ok: true as const })
+    await recordBindingAudit(c, db, organizationId, 'binding.update', id, {
+      serviceId: row.serviceId,
+      loginId: row.loginId,
+      keyPrefix: { from: row.keyPrefix, to: nextPrefix },
+      emitEngineDefaults: { from: row.emitEngineDefaults, to: nextEmit },
+    })
+
+    return c.json({
+      ok: true as const,
+      ...(listenerWarning ? { warning: listenerWarning } : {}),
+    })
   })
 
   router.delete('/bindings/:id', async (c) => {
@@ -695,9 +745,12 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .select({
         id: binding.id,
         serviceId: binding.serviceId,
-        principalId: binding.principalId,
+        loginId: binding.loginId,
+        databaseName: managedDatabase.name,
+        keyPrefix: binding.keyPrefix,
       })
       .from(binding)
+      .innerJoin(managedDatabase, eq(managedDatabase.id, binding.databaseId))
       .where(eq(binding.id, id))
       .limit(1)
     if (!row) return c.json({ error: 'Not found' }, 404)
@@ -705,18 +758,35 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const serviceDenied = await assertServiceMutable(c, db, organizationId, row.serviceId)
     if (serviceDenied) return serviceDenied
 
-    const managedId = await resolveBindingPrincipalManagedId(db, row.principalId)
+    const stepUp = await requireStepUpIfConfigured(c, organizationId, 'binding.delete')
+    if (stepUp) return stepUp
+
+    const managedId = await resolveBindingManagedId(db, row)
 
     await db.delete(binding).where(eq(binding.id, id))
 
+    let listenerWarning: string | undefined
     if (managedId) {
-      await enqueueIngressForBindingChange(c, db, {
-        serviceId: row.serviceId,
+      const listenerSync = await enqueueIngressForBindingChange(c, db, {
+        serviceIds: [row.serviceId],
         managedId,
         actorId: session.userId,
+        organizationId,
       })
+      listenerWarning = listenerSync.warning
     }
 
-    return c.json({ ok: true as const })
+    await recordBindingAudit(c, db, organizationId, 'binding.delete', id, {
+      serviceId: row.serviceId,
+      loginId: row.loginId,
+      managedId,
+      databaseName: row.databaseName,
+      keyPrefix: row.keyPrefix,
+    })
+
+    return c.json({
+      ok: true as const,
+      ...(listenerWarning ? { warning: listenerWarning } : {}),
+    })
   })
 }

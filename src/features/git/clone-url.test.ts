@@ -8,6 +8,7 @@ import {
   isCommitSha,
   isGithubDotComHttpsCloneUrl,
   isSafeGitRef,
+  isValidGitRefName,
   isSafeRepositoryPath,
   isSshCloneUrl,
   NULL_COMMIT_SHA,
@@ -33,22 +34,10 @@ test('isSshCloneUrl recognizes ssh:// and scp-like git@host:path forms', () => {
 })
 
 test('isGithubDotComHttpsCloneUrl accepts only github.com HTTPS clones', () => {
-  assertEquals(
-    isGithubDotComHttpsCloneUrl('https://github.com/acme/app.git'),
-    true,
-  )
-  assertEquals(
-    isGithubDotComHttpsCloneUrl('https://www.github.com/acme/app.git'),
-    true,
-  )
-  assertEquals(
-    isGithubDotComHttpsCloneUrl('git@github.com:acme/app.git'),
-    false,
-  )
-  assertEquals(
-    isGithubDotComHttpsCloneUrl('https://gitlab.com/acme/app.git'),
-    false,
-  )
+  assertEquals(isGithubDotComHttpsCloneUrl('https://github.com/acme/app.git'), true)
+  assertEquals(isGithubDotComHttpsCloneUrl('https://www.github.com/acme/app.git'), true)
+  assertEquals(isGithubDotComHttpsCloneUrl('git@github.com:acme/app.git'), false)
+  assertEquals(isGithubDotComHttpsCloneUrl('https://gitlab.com/acme/app.git'), false)
   assertEquals(isGithubDotComHttpsCloneUrl('not-a-url'), false)
 })
 
@@ -57,43 +46,40 @@ test('canonicalizeRepositoryUrl settles every spelling on the .git clone URL', (
   // compares, so `.../repo` and `.../repo.git` must not mint two rows.
   assertEquals(
     canonicalizeRepositoryUrl('https://github.com/acme/app'),
-    'https://github.com/acme/app.git',
+    'https://github.com/acme/app.git'
   )
   assertEquals(
     canonicalizeRepositoryUrl('https://github.com/acme/app.git'),
-    'https://github.com/acme/app.git',
+    'https://github.com/acme/app.git'
   )
   assertEquals(
     canonicalizeRepositoryUrl('https://github.com/acme/app/'),
-    'https://github.com/acme/app.git',
+    'https://github.com/acme/app.git'
   )
   assertEquals(
     canonicalizeRepositoryUrl('  https://GitHub.com/acme/app  '),
-    'https://github.com/acme/app.git',
+    'https://github.com/acme/app.git'
   )
   // Path case is preserved — only scheme and host are case-insensitive.
   assertEquals(
     canonicalizeRepositoryUrl('HTTPS://GITHUB.COM/Acme/App'),
-    'https://github.com/Acme/App.git',
+    'https://github.com/Acme/App.git'
   )
   // git ignores query and fragment on a clone URL; a port is load-bearing.
   assertEquals(
     canonicalizeRepositoryUrl('https://git.example:8443/org/repo?ref=x#frag'),
-    'https://git.example:8443/org/repo.git',
+    'https://git.example:8443/org/repo.git'
   )
   assertEquals(
     canonicalizeRepositoryUrl('ssh://git@gitlab.example/group/sub/repo'),
-    'ssh://git@gitlab.example/group/sub/repo.git',
+    'ssh://git@gitlab.example/group/sub/repo.git'
   )
   // scp-syntax keeps its shape — it is a different transport, not a spelling
   // of the https URL — but the host half is still case-insensitive.
-  assertEquals(
-    canonicalizeRepositoryUrl('git@GitHub.com:acme/app'),
-    'git@github.com:acme/app.git',
-  )
+  assertEquals(canonicalizeRepositoryUrl('git@GitHub.com:acme/app'), 'git@github.com:acme/app.git')
   assertEquals(
     canonicalizeRepositoryUrl('git@github.com:acme/app.git'),
-    'git@github.com:acme/app.git',
+    'git@github.com:acme/app.git'
   )
   // Unparseable or pathless input is returned trimmed; validation owns
   // rejecting it.
@@ -102,43 +88,37 @@ test('canonicalizeRepositoryUrl settles every spelling on the .git clone URL', (
 })
 
 test('parseRepositoryOwnerRepo extracts owner and repo from HTTPS URLs', () => {
-  assertEquals(
-    parseRepositoryOwnerRepo('https://github.com/TurboPanel/turbopanel.git'),
-    { owner: 'TurboPanel', repo: 'turbopanel' },
-  )
-  assertEquals(
-    parseRepositoryOwnerRepo('https://gitlab.com/group/subgroup/project'),
-    { owner: 'subgroup', repo: 'project' },
-  )
+  assertEquals(parseRepositoryOwnerRepo('https://github.com/TurboPanel/turbopanel.git'), {
+    owner: 'TurboPanel',
+    repo: 'turbopanel',
+  })
+  assertEquals(parseRepositoryOwnerRepo('https://gitlab.com/group/subgroup/project'), {
+    owner: 'subgroup',
+    repo: 'project',
+  })
   assertEquals(parseRepositoryOwnerRepo('https://github.com/only-owner'), null)
   assertEquals(parseRepositoryOwnerRepo('not-a-url'), null)
 })
 
 test('parseRepositoryOwnerRepo handles scp-like SSH clone URLs', () => {
-  assertEquals(
-    parseRepositoryOwnerRepo('git@github.com:TurboPanel/turbopanel.git'),
-    { owner: 'TurboPanel', repo: 'turbopanel' },
-  )
+  assertEquals(parseRepositoryOwnerRepo('git@github.com:TurboPanel/turbopanel.git'), {
+    owner: 'TurboPanel',
+    repo: 'turbopanel',
+  })
 })
 
 test('repositoryPathFromCloneUrl returns the full namespace path', () => {
   assertEquals(
     repositoryPathFromCloneUrl('https://gitlab.com/group/subgroup/project.git'),
-    'group/subgroup/project',
+    'group/subgroup/project'
   )
-  assertEquals(
-    repositoryPathFromCloneUrl('git@gitlab.com:acme/widgets.git'),
-    'acme/widgets',
-  )
+  assertEquals(repositoryPathFromCloneUrl('git@gitlab.com:acme/widgets.git'), 'acme/widgets')
   assertEquals(repositoryPathFromCloneUrl('https://github.com/solo'), null)
 })
 
 test('trimCommitField trims, caps, and drops empty values', () => {
   assertEquals(trimCommitField('  hello  ', 10), 'hello')
-  const capped = trimCommitField(
-    'x'.repeat(COMMIT_MESSAGE_MAX_CHARS + 5),
-    COMMIT_MESSAGE_MAX_CHARS,
-  )
+  const capped = trimCommitField('x'.repeat(COMMIT_MESSAGE_MAX_CHARS + 5), COMMIT_MESSAGE_MAX_CHARS)
   if (capped === undefined) throw new TypeError('expected capped commit field')
   assertEquals(capped.length, COMMIT_MESSAGE_MAX_CHARS)
   assertEquals(trimCommitField('   ', COMMIT_AUTHOR_MAX_CHARS), undefined)
@@ -213,4 +193,38 @@ test('isSafeRepositoryPath rejects absolute, traversing, and odd paths', () => {
   assertEquals(isSafeRepositoryPath('src%2Fetc'), false)
   assertEquals(isSafeRepositoryPath('src etc'), false)
   assertEquals(isSafeRepositoryPath('src\0'), false)
+})
+
+test('isValidGitRefName follows git check-ref-format for branch names', () => {
+  for (const ok of ['main', 'live', 'feature/a+b', 'v1.2.3', 'release/2026-10', 'a'.repeat(250)]) {
+    assertEquals(isValidGitRefName(ok), true, ok)
+  }
+  for (const bad of [
+    '',
+    '@',
+    '-x',
+    'a b',
+    'a\tb',
+    'a..b',
+    'a@{1}',
+    'x.lock',
+    'a/x.lock/b',
+    'a/',
+    '/a',
+    'a//b',
+    '.a',
+    'a/.b',
+    'a.',
+    'a~1',
+    'a^',
+    'a:b',
+    'a?',
+    'a*',
+    'a[b',
+    'a\\b',
+    'a\u007f',
+    'a'.repeat(251),
+  ]) {
+    assertEquals(isValidGitRefName(bad), false, JSON.stringify(bad))
+  }
 })

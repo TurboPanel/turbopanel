@@ -22,13 +22,9 @@ import {
   FORGE_PROVIDERS,
 } from '../../features/git/forge-records.ts'
 import { stripTrailingSlashes } from '../../features/git/origin.ts'
-import {
-  webhookPathFor,
-  type WebhookProvider,
-} from '../../features/git/webhook-reachability.ts'
+import { webhookPathFor, type WebhookProvider } from '../../features/git/webhook-reachability.ts'
 
-export const FORGE_UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+export const FORGE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
  * GitHub sends the operator's browser to the manifest callback. After the
@@ -46,8 +42,7 @@ export const GITHUB_MANIFEST_RETURN_ERRORS = [
   'create_failed',
 ] as const
 
-export type GithubManifestReturnError =
-  (typeof GITHUB_MANIFEST_RETURN_ERRORS)[number]
+export type GithubManifestReturnError = (typeof GITHUB_MANIFEST_RETURN_ERRORS)[number]
 
 /**
  * Where the console lists Git applications.
@@ -57,9 +52,7 @@ export type GithubManifestReturnError =
  * place the console's own layout is written down on the server side.
  */
 export function gitSourcesUiBasePath(organizationId: string | null): string {
-  return organizationId === null
-    ? '/admin/git'
-    : `/${organizationId}/projects/git-sources`
+  return organizationId === null ? '/admin/git' : `/${organizationId}/projects/git-sources`
 }
 
 /** One registered forge's detail screen, where the connection is completed. */
@@ -76,9 +69,20 @@ function withQuery(base: string, query: Record<string, string | undefined>): str
   return qs ? `${base}?${qs}` : base
 }
 
+/**
+ * Why a `conversion_failed` happened, short enough for the query string: GitHub's
+ * HTTP status (`403`), or `network` / `invalid_response` when GitHub never
+ * answered usefully. Anything else is dropped rather than echoed.
+ */
+export const GITHUB_MANIFEST_RETURN_STATUS_RE = /^(?:[1-5]\d{2}|network|invalid_response)$/
+
 export function githubManifestUiReturnPath(
   organizationId: string | null,
-  query: { created?: string; error?: GithubManifestReturnError },
+  query: {
+    created?: string
+    error?: GithubManifestReturnError
+    status?: string
+  }
 ): string {
   // A freshly converted app goes straight to its own screen, which is where the
   // "repository access has not been installed yet" step lives — that is the
@@ -86,7 +90,11 @@ export function githubManifestUiReturnPath(
   const base = query.created
     ? forgeUiPath(organizationId, query.created)
     : gitSourcesUiBasePath(organizationId)
-  return withQuery(base, { created: query.created, error: query.error })
+  const status =
+    query.error && query.status && GITHUB_MANIFEST_RETURN_STATUS_RE.test(query.status)
+      ? query.status
+      : undefined
+  return withQuery(base, { created: query.created, error: query.error, status })
 }
 
 /**
@@ -111,8 +119,7 @@ export const PROVIDER_INSTALL_RETURN_ERRORS = [
   'rate_limited',
 ] as const
 
-export type ProviderInstallReturnError =
-  (typeof PROVIDER_INSTALL_RETURN_ERRORS)[number]
+export type ProviderInstallReturnError = (typeof PROVIDER_INSTALL_RETURN_ERRORS)[number]
 
 /**
  * Where a provider's install/consent redirect lands the operator.
@@ -125,11 +132,9 @@ export type ProviderInstallReturnError =
 export function providerInstallUiReturnPath(
   organizationId: string | null,
   forgeId: string | null,
-  query: { installed?: string; error?: ProviderInstallReturnError },
+  query: { installed?: string; error?: ProviderInstallReturnError }
 ): string {
-  const base = forgeId
-    ? forgeUiPath(organizationId, forgeId)
-    : gitSourcesUiBasePath(organizationId)
+  const base = forgeId ? forgeUiPath(organizationId, forgeId) : gitSourcesUiBasePath(organizationId)
   return withQuery(base, { installed: query.installed, error: query.error })
 }
 
@@ -185,7 +190,7 @@ type ManifestOptionalField = (typeof MANIFEST_OPTIONAL_FIELDS)[number]
  * manifest cannot be corrected afterwards.
  */
 function readManifestOptionals(
-  raw: Record<string, unknown>,
+  raw: Record<string, unknown>
 ): Record<ManifestOptionalField, string | null> | null {
   const out = {} as Record<ManifestOptionalField, string | null>
   for (const key of MANIFEST_OPTIONAL_FIELDS) {
@@ -204,9 +209,7 @@ function readCustomGitPort(value: unknown): number | null | undefined {
   return port
 }
 
-export function parseGithubManifestStartBody(
-  body: unknown,
-): GithubManifestStartInput | null {
+export function parseGithubManifestStartBody(body: unknown): GithubManifestStartInput | null {
   const raw = isPlainObject(body) ? body : {}
 
   const name = typeof raw.name === 'string' ? raw.name.trim() : ''
@@ -267,7 +270,7 @@ function readRequiredString(value: unknown): string | null {
 function applyNullable(
   raw: Record<string, unknown>,
   target: Record<string, unknown>,
-  key: string,
+  key: string
 ): boolean {
   if (!(key in raw)) return true
   const value = raw[key]
@@ -283,7 +286,7 @@ function applyNullable(
 
 export function parseForgeCreateBody(
   body: unknown,
-  organizationId: string | null,
+  organizationId: string | null
 ): ForgeCreate | null {
   if (!isPlainObject(body)) return null
 
@@ -362,13 +365,9 @@ export type SerializedForge = ForgeSummary & {
  */
 export function serializeForge(
   app: ForgeSummary,
-  opts: { publicOrigin: string | null; viewerOrganizationId: string | null },
+  opts: { publicOrigin: string | null; viewerOrganizationId: string | null }
 ): SerializedForge {
-  const webhookPath = webhookPathFor(
-    app.provider as WebhookProvider,
-    app.webhookRef,
-    app.baseUrl,
-  )
+  const webhookPath = webhookPathFor(app.provider as WebhookProvider, app.webhookRef, app.baseUrl)
   const origin = app.webhookOrigin ?? opts.publicOrigin
   return {
     ...app,

@@ -24,9 +24,9 @@ import {
   grant,
   ip,
   managed,
+  managedDatabase,
   network,
   organization,
-  principal,
   project,
   replica,
   server,
@@ -36,7 +36,7 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import { postgresEngineSpec } from '../../features/managed/postgres.ts'
-import { createManagedPrincipal } from '../../features/principals/store.ts'
+import { createManagedLogin } from '../../features/managed/logins.ts'
 import { ensureManagedContainerAllocation } from '../../features/managed/allocate-managed-container.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerDatacenterRoutes } from './routes.ts'
@@ -2090,7 +2090,7 @@ async function withManagedPolicyFixtures(
   const projectId = proj!.id
   const [env] = await db
     .insert(environment)
-    .values({ name: 'Production', projectId, serverId: primaryServerId })
+    .values({ name: 'production', projectId, serverId: primaryServerId })
     .returning({ id: environment.id })
   const environmentId = env!.id
 
@@ -2146,11 +2146,12 @@ async function withManagedPolicyFixtures(
       memberOrdinals: [1, 2],
     }),
   ]
-  await createManagedPrincipal(db, dataEncryptionSecrets, {
+  await db.insert(managedDatabase).values({ managedId, name: 'postgres' })
+  await createManagedLogin(db, dataEncryptionSecrets, {
     managedId,
-    provider: 'postgres',
+    role: 'root',
     username: 'postgres',
-    metadata: { managedRoot: true, databases: ['postgres'] },
+    databases: ['postgres'],
   })
 
   const serverIds = [primaryServerId, replicaServerId]
@@ -2169,7 +2170,6 @@ async function withManagedPolicyFixtures(
       dcB,
     })
   } finally {
-    await db.delete(principal).where(eq(principal.managedId, managedId))
     await db.delete(replica).where(eq(replica.managedId, managedId))
     await db.delete(container).where(
       inArray(

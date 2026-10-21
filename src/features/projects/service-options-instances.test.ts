@@ -19,10 +19,9 @@ const test = Deno.test.bind(Deno)
 
 test('parseServiceOptions accepts instances within the clamp', () => {
   assertEquals(parseServiceOptions({ instances: 3 }), { instances: 3 })
-  assertEquals(
-    parseServiceOptions({ instances: MAX_SERVICE_INSTANCES }),
-    { instances: MAX_SERVICE_INSTANCES },
-  )
+  assertEquals(parseServiceOptions({ instances: MAX_SERVICE_INSTANCES }), {
+    instances: MAX_SERVICE_INSTANCES,
+  })
 })
 
 test('parseServiceOptions drops invalid or oversized instances', () => {
@@ -58,16 +57,19 @@ test('parseServiceOptions drops deploy commands unless the caller opts in', () =
 
 test('parseServiceOptions reads deploy commands, build, and operations', () => {
   assertEquals(
-    parseServiceOptions({
-      preDeployCommand: ' npm ci ',
-      postDeployCommand: 'echo done',
-      build: { disableCache: true },
-      container: { name: ' web ' },
-      operations: {
-        stopGracePeriodSeconds: 45,
-        maxRestartAttempts: 3,
+    parseServiceOptions(
+      {
+        preDeployCommand: ' npm ci ',
+        postDeployCommand: 'echo done',
+        build: { disableCache: true },
+        container: { name: ' web ' },
+        operations: {
+          stopGracePeriodSeconds: 45,
+          maxRestartAttempts: 3,
+        },
       },
-    }, { deployHooks: true }),
+      { deployHooks: true }
+    ),
     {
       preDeployCommand: 'npm ci',
       postDeployCommand: 'echo done',
@@ -76,7 +78,7 @@ test('parseServiceOptions reads deploy commands, build, and operations', () => {
         stopGracePeriodSeconds: 45,
         maxRestartAttempts: 3,
       },
-    },
+    }
   )
 })
 
@@ -97,7 +99,7 @@ test('parseServiceOptions reads health check policy and resource limits', () => 
         memoryBytes: 512,
         memoryReservationBytes: 256,
       },
-    },
+    }
   )
 })
 

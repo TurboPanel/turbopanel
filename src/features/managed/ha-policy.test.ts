@@ -185,9 +185,22 @@ test('disaster recovery demotes remote failover to read and never upgrades read'
 })
 
 test('serverHostsManagedHa includes primary and failover, not read-only', () => {
-  assertEquals(serverHostsManagedHa([{ role: 'primary', replicaClass: null }]), true)
-  assertEquals(serverHostsManagedHa([{ role: 'replica', replicaClass: 'failover' }]), true)
-  assertEquals(serverHostsManagedHa([{ role: 'replica', replicaClass: 'read' }]), false)
+  assertEquals(
+    serverHostsManagedHa([{ role: 'primary', replicaClass: null, engine: 'mysql' }]),
+    true
+  )
+  assertEquals(
+    serverHostsManagedHa([{ role: 'replica', replicaClass: 'failover', engine: 'mariadb' }]),
+    true
+  )
+  assertEquals(
+    serverHostsManagedHa([{ role: 'replica', replicaClass: 'read', engine: 'mysql' }]),
+    false
+  )
+  assertEquals(
+    serverHostsManagedHa([{ role: 'primary', replicaClass: null, engine: 'postgres' }]),
+    false
+  )
 })
 
 test('pickHaAdvertiseAddress prefers IPv4 datacenter pins', () => {
@@ -646,6 +659,57 @@ test('orchestratorBindingRejection: a missing instance is legacy only for a daem
     typeof orchestratorBindingRejection({
       reporterBindsInstance: true,
       expectedPrimary: BOUND_PRIMARY,
+    }),
+    'string'
+  )
+})
+
+test('orchestratorBindingRejection: a local primary is known by its published private listener', () => {
+  // The control plane dials a local member by its Docker name; the daemon
+  // registers it in Orchestrator as <private ip>:<privatePort>.
+  const base = {
+    reporterBindsInstance: true,
+    expectedPrimary: { host: 'abc-1', port: 3306 },
+    localPrivatePort: 45001,
+    localPrimaryHosts: ['172.20.4.10', 'abc-1'],
+  }
+  assertEquals(
+    orchestratorBindingRejection({ ...base, instanceHost: '172.20.4.10', instancePort: 45001 }),
+    null
+  )
+  assertEquals(
+    typeof orchestratorBindingRejection({
+      ...base,
+      instanceHost: '172.20.4.11',
+      instancePort: 45001,
+    }),
+    'string'
+  )
+  assertEquals(
+    typeof orchestratorBindingRejection({
+      ...base,
+      instanceHost: '172.20.4.10',
+      instancePort: 45002,
+    }),
+    'string'
+  )
+  assertEquals(
+    typeof orchestratorBindingRejection({
+      ...base,
+      expectedPrimary: null,
+      instanceHost: '172.20.4.10',
+      instancePort: 45001,
+    }),
+    'string'
+  )
+  // A remote primary (no local private port) is unchanged.
+  assertEquals(
+    typeof orchestratorBindingRejection({
+      reporterBindsInstance: true,
+      expectedPrimary: BOUND_PRIMARY,
+      localPrivatePort: null,
+      instanceHost: '10.0.0.5',
+      instancePort: 45001,
     }),
     'string'
   )

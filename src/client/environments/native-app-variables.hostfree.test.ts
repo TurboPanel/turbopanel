@@ -71,7 +71,28 @@ function prepareNativeApp(
   const services = applied.document.data.services as Record<string, unknown>
   const split = splitNativeAppServices(services)
   const variables = resolveNativeAppVariables(split.apps, applied)
-  const prepared = nativeAppServicesForDeploy(split.apps, [], {}, {}, new Map(), variables)
+  const preparedResult = nativeAppServicesForDeploy(
+    split.apps,
+    [
+      {
+        serviceId: '00000000-0000-4000-8000-0000000000a1',
+        composeServiceName: 'web',
+        kind: 'node',
+        clones: ['web'],
+        slots: [],
+        containers: [],
+        hostings: [],
+      },
+    ],
+    {},
+    {},
+    new Map(),
+    variables
+  )
+  if ('kind' in preparedResult) {
+    throw new TypeError(`unexpected prepare error: ${preparedResult.kind}`)
+  }
+  const prepared = preparedResult
   return { applied, split, prepared, variables }
 }
 

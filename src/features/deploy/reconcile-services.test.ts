@@ -44,7 +44,7 @@ describe('reconcileServicesFromCompose', () => {
       .insert(environment)
       .values({
         projectId: projectRow.id,
-        name: 'Production',
+        name: 'production',
       })
       .returning({ id: environment.id })
 
@@ -119,7 +119,7 @@ describe('reconcileServicesFromCompose', () => {
       .insert(environment)
       .values({
         projectId: projectRow.id,
-        name: 'Production',
+        name: 'production',
         options: {
           compose: {
             version: 1,
@@ -184,14 +184,14 @@ describe('reconcileServicesFromCompose', () => {
       .insert(environment)
       .values({
         projectId: projectRow.id,
-        name: 'Staging',
+        name: 'staging',
       })
       .returning({ id: environment.id })
     const [envTwo] = await db
       .insert(environment)
       .values({
         projectId: projectRow.id,
-        name: 'Production',
+        name: 'production',
       })
       .returning({ id: environment.id })
 
@@ -250,7 +250,7 @@ describe('reconcileServicesFromCompose', () => {
       .insert(environment)
       .values({
         projectId: projectRow.id,
-        name: 'Production',
+        name: 'production',
       })
       .returning({ id: environment.id })
 
@@ -324,7 +324,7 @@ describe('reconcileServicesFromCompose', () => {
       .insert(environment)
       .values({
         projectId: projectRow.id,
-        name: 'Production',
+        name: 'production',
       })
       .returning({ id: environment.id })
 

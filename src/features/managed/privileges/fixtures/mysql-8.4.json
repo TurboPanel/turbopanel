@@ -1,0 +1,1427 @@
+{
+  "allGrants": {
+    "global": [
+      "ALLOW_NONEXISTENT_DEFINER",
+      "ALTER",
+      "ALTER ROUTINE",
+      "APPLICATION_PASSWORD_ADMIN",
+      "AUDIT_ABORT_EXEMPT",
+      "AUDIT_ADMIN",
+      "AUTHENTICATION_POLICY_ADMIN",
+      "BACKUP_ADMIN",
+      "BINLOG_ADMIN",
+      "BINLOG_ENCRYPTION_ADMIN",
+      "CLONE_ADMIN",
+      "CONNECTION_ADMIN",
+      "CREATE",
+      "CREATE ROLE",
+      "CREATE ROUTINE",
+      "CREATE TABLESPACE",
+      "CREATE TEMPORARY TABLES",
+      "CREATE USER",
+      "CREATE VIEW",
+      "DELETE",
+      "DROP",
+      "DROP ROLE",
+      "ENCRYPTION_KEY_ADMIN",
+      "EVENT",
+      "EXECUTE",
+      "FILE",
+      "FIREWALL_EXEMPT",
+      "FLUSH_OPTIMIZER_COSTS",
+      "FLUSH_PRIVILEGES",
+      "FLUSH_STATUS",
+      "FLUSH_TABLES",
+      "FLUSH_USER_RESOURCES",
+      "GROUP_REPLICATION_ADMIN",
+      "GROUP_REPLICATION_STREAM",
+      "INDEX",
+      "INNODB_REDO_LOG_ARCHIVE",
+      "INNODB_REDO_LOG_ENABLE",
+      "INSERT",
+      "LOCK TABLES",
+      "OPTIMIZE_LOCAL_TABLE",
+      "PASSWORDLESS_USER_ADMIN",
+      "PERSIST_RO_VARIABLES_ADMIN",
+      "PROCESS",
+      "REFERENCES",
+      "RELOAD",
+      "REPLICATION CLIENT",
+      "REPLICATION SLAVE",
+      "REPLICATION_APPLIER",
+      "REPLICATION_SLAVE_ADMIN",
+      "RESOURCE_GROUP_ADMIN",
+      "RESOURCE_GROUP_USER",
+      "ROLE_ADMIN",
+      "SELECT",
+      "SENSITIVE_VARIABLES_OBSERVER",
+      "SERVICE_CONNECTION_ADMIN",
+      "SESSION_VARIABLES_ADMIN",
+      "SET_ANY_DEFINER",
+      "SHOW DATABASES",
+      "SHOW VIEW",
+      "SHOW_ROUTINE",
+      "SHUTDOWN",
+      "SUPER",
+      "SYSTEM_USER",
+      "SYSTEM_VARIABLES_ADMIN",
+      "TABLE_ENCRYPTION_ADMIN",
+      "TELEMETRY_LOG_ADMIN",
+      "TRANSACTION_GTID_TAG",
+      "TRIGGER",
+      "UPDATE",
+      "XA_RECOVER_ADMIN"
+    ],
+    "procedure": [
+      "ALTER ROUTINE",
+      "EXECUTE"
+    ],
+    "schema": [
+      "ALL PRIVILEGES"
+    ],
+    "table": [
+      "ALL PRIVILEGES"
+    ]
+  },
+  "engine": "mysql",
+  "enumValues": {
+    "columns_priv.Column_priv": [
+      "Insert",
+      "References",
+      "Select",
+      "Update"
+    ],
+    "procs_priv.Proc_priv": [
+      "Alter Routine",
+      "Execute",
+      "Grant"
+    ],
+    "tables_priv.Table_priv": [
+      "Alter",
+      "Create",
+      "Create View",
+      "Delete",
+      "Drop",
+      "Grant",
+      "Index",
+      "Insert",
+      "References",
+      "Select",
+      "Show view",
+      "Trigger",
+      "Update"
+    ]
+  },
+  "globalGrantsDistinct": [
+    "ALLOW_NONEXISTENT_DEFINER",
+    "APPLICATION_PASSWORD_ADMIN",
+    "AUDIT_ABORT_EXEMPT",
+    "AUDIT_ADMIN",
+    "AUTHENTICATION_POLICY_ADMIN",
+    "BACKUP_ADMIN",
+    "BINLOG_ADMIN",
+    "BINLOG_ENCRYPTION_ADMIN",
+    "CLONE_ADMIN",
+    "CONNECTION_ADMIN",
+    "ENCRYPTION_KEY_ADMIN",
+    "FIREWALL_EXEMPT",
+    "FLUSH_OPTIMIZER_COSTS",
+    "FLUSH_PRIVILEGES",
+    "FLUSH_STATUS",
+    "FLUSH_TABLES",
+    "FLUSH_USER_RESOURCES",
+    "GROUP_REPLICATION_ADMIN",
+    "GROUP_REPLICATION_STREAM",
+    "INNODB_REDO_LOG_ARCHIVE",
+    "INNODB_REDO_LOG_ENABLE",
+    "OPTIMIZE_LOCAL_TABLE",
+    "PASSWORDLESS_USER_ADMIN",
+    "PERSIST_RO_VARIABLES_ADMIN",
+    "REPLICATION_APPLIER",
+    "REPLICATION_SLAVE_ADMIN",
+    "RESOURCE_GROUP_ADMIN",
+    "RESOURCE_GROUP_USER",
+    "ROLE_ADMIN",
+    "SENSITIVE_VARIABLES_OBSERVER",
+    "SERVICE_CONNECTION_ADMIN",
+    "SESSION_VARIABLES_ADMIN",
+    "SET_ANY_DEFINER",
+    "SHOW_ROUTINE",
+    "SYSTEM_USER",
+    "SYSTEM_VARIABLES_ADMIN",
+    "TABLE_ENCRYPTION_ADMIN",
+    "TELEMETRY_LOG_ADMIN",
+    "TRANSACTION_GTID_TAG",
+    "XA_RECOVER_ADMIN"
+  ],
+  "grantStatementProbe": {
+    "ALL": {
+      "column": false,
+      "global": true,
+      "procedure": true,
+      "schema": true,
+      "table": true
+    },
+    "ALLOW_NONEXISTENT_DEFINER": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "ALTER": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": true,
+      "table": true
+    },
+    "ALTER ROUTINE": {
+      "column": false,
+      "global": true,
+      "procedure": true,
+      "schema": true,
+      "table": false
+    },
+    "APPLICATION_PASSWORD_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "AUDIT_ABORT_EXEMPT": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "AUDIT_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "AUTHENTICATION_POLICY_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "BACKUP_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "BINLOG ADMIN": {
+      "column": false,
+      "global": false,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "BINLOG MONITOR": {
+      "column": false,
+      "global": false,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "BINLOG REPLAY": {
+      "column": false,
+      "global": false,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "BINLOG_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "BINLOG_ENCRYPTION_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "CLONE_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "CONNECTION ADMIN": {
+      "column": false,
+      "global": false,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "CONNECTION_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "CREATE": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": true,
+      "table": true
+    },
+    "CREATE ROUTINE": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": true,
+      "table": false
+    },
+    "CREATE TABLESPACE": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "CREATE TEMPORARY TABLES": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": true,
+      "table": false
+    },
+    "CREATE USER": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "CREATE VIEW": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": true,
+      "table": true
+    },
+    "DELETE": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": true,
+      "table": true
+    },
+    "DELETE HISTORY": {
+      "column": false,
+      "global": false,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "DROP": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": true,
+      "table": true
+    },
+    "ENCRYPTION_KEY_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "EVENT": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": true,
+      "table": false
+    },
+    "EXECUTE": {
+      "column": false,
+      "global": true,
+      "procedure": true,
+      "schema": true,
+      "table": false
+    },
+    "FEDERATED ADMIN": {
+      "column": false,
+      "global": false,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "FILE": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "FIREWALL_EXEMPT": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "FLUSH_OPTIMIZER_COSTS": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "FLUSH_PRIVILEGES": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "FLUSH_STATUS": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "FLUSH_TABLES": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "FLUSH_USER_RESOURCES": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "GRANT OPTION": {
+      "column": false,
+      "global": true,
+      "procedure": true,
+      "schema": true,
+      "table": true
+    },
+    "GROUP_REPLICATION_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "GROUP_REPLICATION_STREAM": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "INDEX": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": true,
+      "table": true
+    },
+    "INNODB_REDO_LOG_ARCHIVE": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "INNODB_REDO_LOG_ENABLE": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "INSERT": {
+      "column": true,
+      "global": true,
+      "procedure": false,
+      "schema": true,
+      "table": true
+    },
+    "LOCK TABLES": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": true,
+      "table": false
+    },
+    "OPTIMIZE_LOCAL_TABLE": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "PASSWORDLESS_USER_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "PERSIST_RO_VARIABLES_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "PROCESS": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "PROXY": {
+      "column": false,
+      "global": false,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "READ_ONLY ADMIN": {
+      "column": false,
+      "global": false,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "REFERENCES": {
+      "column": true,
+      "global": true,
+      "procedure": false,
+      "schema": true,
+      "table": true
+    },
+    "RELOAD": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "REPLICA MONITOR": {
+      "column": false,
+      "global": false,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "REPLICATION CLIENT": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "REPLICATION MASTER ADMIN": {
+      "column": false,
+      "global": false,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "REPLICATION SLAVE": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "REPLICATION SLAVE ADMIN": {
+      "column": false,
+      "global": false,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "REPLICATION_APPLIER": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "REPLICATION_SLAVE_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "RESOURCE_GROUP_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "RESOURCE_GROUP_USER": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "ROLE_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "SELECT": {
+      "column": true,
+      "global": true,
+      "procedure": false,
+      "schema": true,
+      "table": true
+    },
+    "SENSITIVE_VARIABLES_OBSERVER": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "SERVICE_CONNECTION_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "SESSION_VARIABLES_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "SET USER": {
+      "column": false,
+      "global": false,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "SET_ANY_DEFINER": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "SET_USER_ID": {
+      "column": false,
+      "global": false,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "SHOW CREATE ROUTINE": {
+      "column": false,
+      "global": false,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "SHOW DATABASES": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "SHOW VIEW": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": true,
+      "table": true
+    },
+    "SHOW_ROUTINE": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "SHUTDOWN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "SLAVE MONITOR": {
+      "column": false,
+      "global": false,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "SUPER": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "SYSTEM_USER": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "SYSTEM_VARIABLES_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "TABLE_ENCRYPTION_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "TELEMETRY_LOG_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "TRANSACTION_GTID_TAG": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    },
+    "TRIGGER": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": true,
+      "table": true
+    },
+    "UPDATE": {
+      "column": true,
+      "global": true,
+      "procedure": false,
+      "schema": true,
+      "table": true
+    },
+    "USAGE": {
+      "column": false,
+      "global": true,
+      "procedure": true,
+      "schema": true,
+      "table": true
+    },
+    "XA_RECOVER_ADMIN": {
+      "column": false,
+      "global": true,
+      "procedure": false,
+      "schema": false,
+      "table": false
+    }
+  },
+  "grantTableColumns": {
+    "columns_priv": [
+      "Column_name",
+      "Column_priv",
+      "Db",
+      "Host",
+      "Table_name",
+      "Timestamp",
+      "User"
+    ],
+    "db": [
+      "Alter_priv",
+      "Alter_routine_priv",
+      "Create_priv",
+      "Create_routine_priv",
+      "Create_tmp_table_priv",
+      "Create_view_priv",
+      "Db",
+      "Delete_priv",
+      "Drop_priv",
+      "Event_priv",
+      "Execute_priv",
+      "Grant_priv",
+      "Host",
+      "Index_priv",
+      "Insert_priv",
+      "Lock_tables_priv",
+      "References_priv",
+      "Select_priv",
+      "Show_view_priv",
+      "Trigger_priv",
+      "Update_priv",
+      "User"
+    ],
+    "default_roles": [
+      "DEFAULT_ROLE_HOST",
+      "DEFAULT_ROLE_USER",
+      "HOST",
+      "USER"
+    ],
+    "global_grants": [
+      "HOST",
+      "PRIV",
+      "USER",
+      "WITH_GRANT_OPTION"
+    ],
+    "procs_priv": [
+      "Db",
+      "Grantor",
+      "Host",
+      "Proc_priv",
+      "Routine_name",
+      "Routine_type",
+      "Timestamp",
+      "User"
+    ],
+    "proxies_priv": [
+      "Grantor",
+      "Host",
+      "Proxied_host",
+      "Proxied_user",
+      "Timestamp",
+      "User",
+      "With_grant"
+    ],
+    "role_edges": [
+      "FROM_HOST",
+      "FROM_USER",
+      "TO_HOST",
+      "TO_USER",
+      "WITH_ADMIN_OPTION"
+    ],
+    "tables_priv": [
+      "Column_priv",
+      "Db",
+      "Grantor",
+      "Host",
+      "Table_name",
+      "Table_priv",
+      "Timestamp",
+      "User"
+    ],
+    "user": [
+      "Alter_priv",
+      "Alter_routine_priv",
+      "Create_priv",
+      "Create_role_priv",
+      "Create_routine_priv",
+      "Create_tablespace_priv",
+      "Create_tmp_table_priv",
+      "Create_user_priv",
+      "Create_view_priv",
+      "Delete_priv",
+      "Drop_priv",
+      "Drop_role_priv",
+      "Event_priv",
+      "Execute_priv",
+      "File_priv",
+      "Grant_priv",
+      "Host",
+      "Index_priv",
+      "Insert_priv",
+      "Lock_tables_priv",
+      "Password_require_current",
+      "Password_reuse_history",
+      "Password_reuse_time",
+      "Process_priv",
+      "References_priv",
+      "Reload_priv",
+      "Repl_client_priv",
+      "Repl_slave_priv",
+      "Select_priv",
+      "Show_db_priv",
+      "Show_view_priv",
+      "Shutdown_priv",
+      "Super_priv",
+      "Trigger_priv",
+      "Update_priv",
+      "User",
+      "User_attributes",
+      "account_locked",
+      "authentication_string",
+      "max_connections",
+      "max_questions",
+      "max_updates",
+      "max_user_connections",
+      "password_expired",
+      "password_last_changed",
+      "password_lifetime",
+      "plugin",
+      "ssl_cipher",
+      "ssl_type",
+      "x509_issuer",
+      "x509_subject"
+    ]
+  },
+  "image": "docker.io/library/mysql:8.4",
+  "informationSchemaPrivilegeTypes": {
+    "schemaPrivilegesRoot": [],
+    "userPrivilegesRoot": [
+      "ALLOW_NONEXISTENT_DEFINER",
+      "ALTER",
+      "ALTER ROUTINE",
+      "APPLICATION_PASSWORD_ADMIN",
+      "AUDIT_ABORT_EXEMPT",
+      "AUDIT_ADMIN",
+      "AUTHENTICATION_POLICY_ADMIN",
+      "BACKUP_ADMIN",
+      "BINLOG_ADMIN",
+      "BINLOG_ENCRYPTION_ADMIN",
+      "CLONE_ADMIN",
+      "CONNECTION_ADMIN",
+      "CREATE",
+      "CREATE ROLE",
+      "CREATE ROUTINE",
+      "CREATE TABLESPACE",
+      "CREATE TEMPORARY TABLES",
+      "CREATE USER",
+      "CREATE VIEW",
+      "DELETE",
+      "DROP",
+      "DROP ROLE",
+      "ENCRYPTION_KEY_ADMIN",
+      "EVENT",
+      "EXECUTE",
+      "FILE",
+      "FIREWALL_EXEMPT",
+      "FLUSH_OPTIMIZER_COSTS",
+      "FLUSH_PRIVILEGES",
+      "FLUSH_STATUS",
+      "FLUSH_TABLES",
+      "FLUSH_USER_RESOURCES",
+      "GROUP_REPLICATION_ADMIN",
+      "GROUP_REPLICATION_STREAM",
+      "INDEX",
+      "INNODB_REDO_LOG_ARCHIVE",
+      "INNODB_REDO_LOG_ENABLE",
+      "INSERT",
+      "LOCK TABLES",
+      "OPTIMIZE_LOCAL_TABLE",
+      "PASSWORDLESS_USER_ADMIN",
+      "PERSIST_RO_VARIABLES_ADMIN",
+      "PROCESS",
+      "REFERENCES",
+      "RELOAD",
+      "REPLICATION CLIENT",
+      "REPLICATION SLAVE",
+      "REPLICATION_APPLIER",
+      "REPLICATION_SLAVE_ADMIN",
+      "RESOURCE_GROUP_ADMIN",
+      "RESOURCE_GROUP_USER",
+      "ROLE_ADMIN",
+      "SELECT",
+      "SENSITIVE_VARIABLES_OBSERVER",
+      "SERVICE_CONNECTION_ADMIN",
+      "SESSION_VARIABLES_ADMIN",
+      "SET_ANY_DEFINER",
+      "SHOW DATABASES",
+      "SHOW VIEW",
+      "SHOW_ROUTINE",
+      "SHUTDOWN",
+      "SUPER",
+      "SYSTEM_USER",
+      "SYSTEM_VARIABLES_ADMIN",
+      "TABLE_ENCRYPTION_ADMIN",
+      "TELEMETRY_LOG_ADMIN",
+      "TRANSACTION_GTID_TAG",
+      "TRIGGER",
+      "UPDATE",
+      "XA_RECOVER_ADMIN"
+    ]
+  },
+  "rootGrants": {
+    "dynamic": [
+      "ALLOW_NONEXISTENT_DEFINER",
+      "APPLICATION_PASSWORD_ADMIN",
+      "AUDIT_ABORT_EXEMPT",
+      "AUDIT_ADMIN",
+      "AUTHENTICATION_POLICY_ADMIN",
+      "BACKUP_ADMIN",
+      "BINLOG_ADMIN",
+      "BINLOG_ENCRYPTION_ADMIN",
+      "CLONE_ADMIN",
+      "CONNECTION_ADMIN",
+      "ENCRYPTION_KEY_ADMIN",
+      "FIREWALL_EXEMPT",
+      "FLUSH_OPTIMIZER_COSTS",
+      "FLUSH_PRIVILEGES",
+      "FLUSH_STATUS",
+      "FLUSH_TABLES",
+      "FLUSH_USER_RESOURCES",
+      "GROUP_REPLICATION_ADMIN",
+      "GROUP_REPLICATION_STREAM",
+      "INNODB_REDO_LOG_ARCHIVE",
+      "INNODB_REDO_LOG_ENABLE",
+      "OPTIMIZE_LOCAL_TABLE",
+      "PASSWORDLESS_USER_ADMIN",
+      "PERSIST_RO_VARIABLES_ADMIN",
+      "REPLICATION_APPLIER",
+      "REPLICATION_SLAVE_ADMIN",
+      "RESOURCE_GROUP_ADMIN",
+      "RESOURCE_GROUP_USER",
+      "ROLE_ADMIN",
+      "SENSITIVE_VARIABLES_OBSERVER",
+      "SERVICE_CONNECTION_ADMIN",
+      "SESSION_VARIABLES_ADMIN",
+      "SET_ANY_DEFINER",
+      "SHOW_ROUTINE",
+      "SYSTEM_USER",
+      "SYSTEM_VARIABLES_ADMIN",
+      "TABLE_ENCRYPTION_ADMIN",
+      "TELEMETRY_LOG_ADMIN",
+      "TRANSACTION_GTID_TAG",
+      "XA_RECOVER_ADMIN"
+    ],
+    "otherLevels": [
+      {
+        "on": "@",
+        "privileges": [
+          "PROXY"
+        ]
+      }
+    ],
+    "roles": [],
+    "static": [
+      "ALTER",
+      "ALTER ROUTINE",
+      "CREATE",
+      "CREATE ROLE",
+      "CREATE ROUTINE",
+      "CREATE TABLESPACE",
+      "CREATE TEMPORARY TABLES",
+      "CREATE USER",
+      "CREATE VIEW",
+      "DELETE",
+      "DROP",
+      "DROP ROLE",
+      "EVENT",
+      "EXECUTE",
+      "FILE",
+      "INDEX",
+      "INSERT",
+      "LOCK TABLES",
+      "PROCESS",
+      "REFERENCES",
+      "RELOAD",
+      "REPLICATION CLIENT",
+      "REPLICATION SLAVE",
+      "SELECT",
+      "SHOW DATABASES",
+      "SHOW VIEW",
+      "SHUTDOWN",
+      "SUPER",
+      "TRIGGER",
+      "UPDATE"
+    ]
+  },
+  "series": "8.4",
+  "serverVersion": "8.4.11",
+  "showPrivileges": [
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "ALLOW_NONEXISTENT_DEFINER"
+    },
+    {
+      "Comment": "To alter the table",
+      "Context": "Tables",
+      "Privilege": "Alter"
+    },
+    {
+      "Comment": "To alter or drop stored functions/procedures",
+      "Context": "Functions,Procedures",
+      "Privilege": "Alter routine"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "APPLICATION_PASSWORD_ADMIN"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "AUDIT_ABORT_EXEMPT"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "AUDIT_ADMIN"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "AUTHENTICATION_POLICY_ADMIN"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "BACKUP_ADMIN"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "BINLOG_ADMIN"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "BINLOG_ENCRYPTION_ADMIN"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "CLONE_ADMIN"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "CONNECTION_ADMIN"
+    },
+    {
+      "Comment": "To create new databases and tables",
+      "Context": "Databases,Tables,Indexes",
+      "Privilege": "Create"
+    },
+    {
+      "Comment": "To create new roles",
+      "Context": "Server Admin",
+      "Privilege": "Create role"
+    },
+    {
+      "Comment": "To use CREATE FUNCTION/PROCEDURE",
+      "Context": "Databases",
+      "Privilege": "Create routine"
+    },
+    {
+      "Comment": "To create/alter/drop tablespaces",
+      "Context": "Server Admin",
+      "Privilege": "Create tablespace"
+    },
+    {
+      "Comment": "To use CREATE TEMPORARY TABLE",
+      "Context": "Databases",
+      "Privilege": "Create temporary tables"
+    },
+    {
+      "Comment": "To create new users",
+      "Context": "Server Admin",
+      "Privilege": "Create user"
+    },
+    {
+      "Comment": "To create new views",
+      "Context": "Tables",
+      "Privilege": "Create view"
+    },
+    {
+      "Comment": "To delete existing rows",
+      "Context": "Tables",
+      "Privilege": "Delete"
+    },
+    {
+      "Comment": "To drop databases, tables, and views",
+      "Context": "Databases,Tables",
+      "Privilege": "Drop"
+    },
+    {
+      "Comment": "To drop roles",
+      "Context": "Server Admin",
+      "Privilege": "Drop role"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "ENCRYPTION_KEY_ADMIN"
+    },
+    {
+      "Comment": "To create, alter, drop and execute events",
+      "Context": "Server Admin",
+      "Privilege": "Event"
+    },
+    {
+      "Comment": "To execute stored routines",
+      "Context": "Functions,Procedures",
+      "Privilege": "Execute"
+    },
+    {
+      "Comment": "To read and write files on the server",
+      "Context": "File access on server",
+      "Privilege": "File"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "FIREWALL_EXEMPT"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "FLUSH_OPTIMIZER_COSTS"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "FLUSH_PRIVILEGES"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "FLUSH_STATUS"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "FLUSH_TABLES"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "FLUSH_USER_RESOURCES"
+    },
+    {
+      "Comment": "To give to other users those privileges you possess",
+      "Context": "Databases,Tables,Functions,Procedures",
+      "Privilege": "Grant option"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "GROUP_REPLICATION_ADMIN"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "GROUP_REPLICATION_STREAM"
+    },
+    {
+      "Comment": "To create or drop indexes",
+      "Context": "Tables",
+      "Privilege": "Index"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "INNODB_REDO_LOG_ARCHIVE"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "INNODB_REDO_LOG_ENABLE"
+    },
+    {
+      "Comment": "To insert data into tables",
+      "Context": "Tables",
+      "Privilege": "Insert"
+    },
+    {
+      "Comment": "To use LOCK TABLES (together with SELECT privilege)",
+      "Context": "Databases",
+      "Privilege": "Lock tables"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "OPTIMIZE_LOCAL_TABLE"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "PASSWORDLESS_USER_ADMIN"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "PERSIST_RO_VARIABLES_ADMIN"
+    },
+    {
+      "Comment": "To view the plain text of currently executing queries",
+      "Context": "Server Admin",
+      "Privilege": "Process"
+    },
+    {
+      "Comment": "To make proxy user possible",
+      "Context": "Server Admin",
+      "Privilege": "Proxy"
+    },
+    {
+      "Comment": "To have references on tables",
+      "Context": "Databases,Tables",
+      "Privilege": "References"
+    },
+    {
+      "Comment": "To reload or refresh tables, logs and privileges",
+      "Context": "Server Admin",
+      "Privilege": "Reload"
+    },
+    {
+      "Comment": "To ask where the slave or master servers are",
+      "Context": "Server Admin",
+      "Privilege": "Replication client"
+    },
+    {
+      "Comment": "To read binary log events from the master",
+      "Context": "Server Admin",
+      "Privilege": "Replication slave"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "REPLICATION_APPLIER"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "REPLICATION_SLAVE_ADMIN"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "RESOURCE_GROUP_ADMIN"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "RESOURCE_GROUP_USER"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "ROLE_ADMIN"
+    },
+    {
+      "Comment": "To retrieve rows from table",
+      "Context": "Tables",
+      "Privilege": "Select"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "SENSITIVE_VARIABLES_OBSERVER"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "SERVICE_CONNECTION_ADMIN"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "SESSION_VARIABLES_ADMIN"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "SET_ANY_DEFINER"
+    },
+    {
+      "Comment": "To see all databases with SHOW DATABASES",
+      "Context": "Server Admin",
+      "Privilege": "Show databases"
+    },
+    {
+      "Comment": "To see views with SHOW CREATE VIEW",
+      "Context": "Tables",
+      "Privilege": "Show view"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "SHOW_ROUTINE"
+    },
+    {
+      "Comment": "To shut down the server",
+      "Context": "Server Admin",
+      "Privilege": "Shutdown"
+    },
+    {
+      "Comment": "To use KILL thread, SET GLOBAL, CHANGE REPLICATION SOURCE, etc.",
+      "Context": "Server Admin",
+      "Privilege": "Super"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "SYSTEM_USER"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "SYSTEM_VARIABLES_ADMIN"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "TABLE_ENCRYPTION_ADMIN"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "TELEMETRY_LOG_ADMIN"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "TRANSACTION_GTID_TAG"
+    },
+    {
+      "Comment": "To use triggers",
+      "Context": "Tables",
+      "Privilege": "Trigger"
+    },
+    {
+      "Comment": "To update existing rows",
+      "Context": "Tables",
+      "Privilege": "Update"
+    },
+    {
+      "Comment": "No privileges - allow connect only",
+      "Context": "Server Admin",
+      "Privilege": "Usage"
+    },
+    {
+      "Comment": "",
+      "Context": "Server Admin",
+      "Privilege": "XA_RECOVER_ADMIN"
+    }
+  ]
+}

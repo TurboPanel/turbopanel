@@ -44,6 +44,9 @@ import {
   isValidDisplayName,
   normalizeDisplayName,
 } from '../../lib/display-name-format.ts'
+import { resolveDefaultSignupOrganizationName } from './default-signup-organization-name.ts'
+
+export { MY_ORGANIZATION_NAME } from './default-signup-organization-name.ts'
 
 /** Linear-time check matching `/^[^\s@]+@[^\s@]+\.[^\s@]+$/` without backtracking. */
 export function isSimpleEmailShape(email: string): boolean {
@@ -66,11 +69,10 @@ export function isSimpleEmailShape(email: string): boolean {
  */
 export const ROOT_ORGANIZATION_NAME = 'Root Organization'
 /**
- * Default display name for the first org provisioned for a signed-up user
- * (Workers onboarding / `createOrganizationForUser` without an explicit name).
- * Explicit create (`POST /organizations`) defaults to {@link NEW_ORGANIZATION_NAME}.
+ * Sign-up default org naming: {@link resolveDefaultSignupOrganizationName} (`you@example.com's organization`);
+ * {@link MY_ORGANIZATION_NAME} only when the email is missing. Explicit create (`POST /organizations`)
+ * defaults to {@link NEW_ORGANIZATION_NAME}.
  */
-export const MY_ORGANIZATION_NAME = 'My Organization'
 /** Default display name when creating an additional organization via the API. */
 export const NEW_ORGANIZATION_NAME = 'New Organization'
 export const DEFAULT_TEAM_NAME = 'Default Team'
@@ -1211,7 +1213,16 @@ export async function createOrganizationForUserInTx(
   userId: string,
   orgName?: string
 ): Promise<{ organizationId: string; teamId: string }> {
-  const displayName = orgName?.trim() || MY_ORGANIZATION_NAME
+  const explicitName = orgName?.trim()
+  let displayName = explicitName
+  if (!displayName) {
+    const ownerRows = await db
+      .select({ email: user.email })
+      .from(user)
+      .where(eq(user.id, userId))
+      .limit(1)
+    displayName = resolveDefaultSignupOrganizationName(ownerRows[0]?.email)
+  }
 
   const insertedOrg = await db
     .insert(organization)

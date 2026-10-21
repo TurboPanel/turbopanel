@@ -34,6 +34,7 @@ import { logWarn } from '../../lib/logger.ts'
  */
 export const AUDIT_ACTIONS = [
   'server.daemon_key.revoke',
+  'server.license_tier.set',
   'server.delete',
   'grant.create',
   'grant.delete',
@@ -48,9 +49,23 @@ export const AUDIT_ACTIONS = [
   'organization.acme.set',
   'organization.reauth_for_destructive.set',
   'server.firewall_mode.set',
+  'server.managed_external_access.update',
+  'server.addresses.set',
   'deployment.cancel',
   'hosting.letsencrypt.requested',
+  'tls.certificate.store',
+  'tls.certificate.key_erase',
+  'tls.certificate.delete',
   'mail.dead_letter.replay',
+  'binding.create',
+  'binding.update',
+  'binding.delete',
+  'tls.ca.retire',
+  'tls.leaf.renew',
+  'tls.leaf.stale',
+  'tls.leaf.delete',
+  'folder.remove',
+  'environment.primary.set',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

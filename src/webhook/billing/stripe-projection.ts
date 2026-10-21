@@ -45,7 +45,6 @@ import {
   WEBHOOK_DELIVERY_RETENTION_MS,
 } from '../../features/webhook-delivery/webhook-delivery-records.ts'
 import { type PayerSubject, resolvePayerSubject } from '../../features/billing/customer-subject.ts'
-import { clearPendingCheckout } from '../../features/billing/pending-checkout.ts'
 import type { BillingQuantityLock } from '../../features/billing/quantity-lock.ts'
 import {
   type EntitlementSyncOutcome,
@@ -383,7 +382,6 @@ async function projectSubscriptionPass(
   // `pending_update` is read for its presence only — never its contents.
   let entitlements: EntitlementSyncOutcome | null = null
   if (subject.organizationId) {
-    await clearPendingCheckout(deps.db, subject.organizationId)
     entitlements = await syncEntitlementsForOrganization(
       {
         db: deps.db,
@@ -475,10 +473,6 @@ export async function projectStripeEvent(
       const session = await deps.client.get<StripeObject>(
         `/v1/checkout/sessions/${encodeURIComponent(event.objectId)}`
       )
-      const checkoutSubject = resolvePayerSubject(session.metadata)
-      if (checkoutSubject?.organizationId) {
-        await clearPendingCheckout(deps.db, checkoutSubject.organizationId)
-      }
       subscriptionId = idOrObjectId(session.subscription)
       break
     }

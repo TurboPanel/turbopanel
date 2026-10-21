@@ -34,6 +34,12 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core'
+import {
+  ENVIRONMENT_NAME_RE,
+  FOLDER_NAME_RE,
+  PROJECT_SLUG_RE,
+  RESERVED_SCOPE_NAMES,
+} from '../contracts/directory-names.ts'
 import { cidr, inet } from './net-types.ts'
 
 export const invitation = pgTable(
@@ -98,30 +104,39 @@ export const invitation = pgTable(
     check('invitation_status_check', sql`status IN ('pending', 'accepted', 'revoked')`),
   ]
 )
-export const organization = pgTable('organization', {
-  id: uuid()
-    .default(sql`uuidv7()`)
-    .primaryKey()
-    .notNull(),
-  createdAt: timestamp('created_at', {
-    precision: 3,
-    withTimezone: true,
-    mode: 'string',
-  })
-    .defaultNow()
-    .notNull(),
-  updatedAt: timestamp('updated_at', {
-    precision: 3,
-    withTimezone: true,
-    mode: 'string',
-  })
-    .defaultNow()
-    .$onUpdate(() => sql`now()`)
-    .notNull(),
-  metadata: jsonb(),
-  options: jsonb(),
-  name: text(),
-})
+export const organization = pgTable(
+  'organization',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    options: jsonb(),
+    name: text(),
+    nextLinuxId: integer('next_linux_id').default(30001).notNull(),
+  },
+  (table) => [
+    check(
+      'organization_next_linux_id_check',
+      sql`${table.nextLinuxId} >= 30001 AND ${table.nextLinuxId} <= 60001`
+    ),
+  ]
+)
 /**
  * Organization TLS certificate library (upload / Let's Encrypt / self-signed).
  * Private keys are sealed `tpsecret` envelopes — never returned on client GET.
@@ -174,8 +189,19 @@ export const tls = pgTable(
     caState: text('ca_state'),
     /** Monotonic per-org counter on Organization CA rows; null on non-CA rows. */
     caGeneration: integer('ca_generation'),
+    /** Server whose Caddy issued the stored Let's Encrypt pair; null when none is stored. */
+    issuedByServerId: uuid('issued_by_server_id'),
   },
   (table) => [
+    index('idx_tls_issued_by_server_id').using(
+      'btree',
+      table.issuedByServerId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.issuedByServerId],
+      foreignColumns: [server.id],
+      name: 'tls_issued_by_server_id_server_id_fk',
+    }).onDelete('set null'),
     index('idx_tls_organization_id').using(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops')
@@ -255,7 +281,6 @@ export const changeover = pgTable(
       .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
-    options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
     fromCaGeneration: integer('from_ca_generation').default(0).notNull(),
     toCaGeneration: integer('to_ca_generation').default(0).notNull(),
@@ -275,6 +300,12 @@ export const changeover = pgTable(
     }),
     /** Per-server / per-cluster fan-out rows (`ingress` | `apply`). */
     results: jsonb().default([]),
+    /** Set when fan-out finishes (`awaiting_retire`); the sweep retires the old generation after it. */
+    retireBy: timestamp('retire_by', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
   },
   (table) => [
     index('idx_changeover_organization_id').using(
@@ -495,6 +526,7 @@ export const allowance = pgTable(
   },
   (table) => [
     uniqueIndex('uniq_allowance_organization').on(table.organizationId),
+    index('idx_allowance_tier_id').on(table.tierId),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -568,6 +600,12 @@ export const server = pgTable(
      */
     machineClass: text('machine_class'),
     /**
+     * Who set `machine_class`: `detected` (ingest wrote it back from the
+     * topology) or `operator` (`PATCH /servers/:id` pinned or cleared it).
+     * NULL while `machine_class` is NULL. Ingest never overwrites `operator`.
+     */
+    machineClassSource: text('machine_class_source'),
+    /**
      * Daemon-reported host timezone (IANA). Operator override lives on
      * `server.options.timezone`.
      */
@@ -595,6 +633,12 @@ export const server = pgTable(
      * the SX grant, so the column is populated there too.
      */
     assignedTierId: uuid('assigned_tier_id'),
+    /**
+     * Operator-chosen floor for assignment: use a spare license at this tier
+     * or the smallest tier above before falling back to the derived smallest
+     * that fits. Null means derive only.
+     */
+    preferredTierId: uuid('preferred_tier_id'),
     isConnected: boolean('is_connected').default(false).notNull(),
     /**
      * Last status transition (`is_connected` flip). Feeds derived `connectedAt`
@@ -623,20 +667,53 @@ export const server = pgTable(
      * as absent `options.hosting`.
      */
     isHostingEnabled: boolean('is_hosting_enabled'),
+    /**
+     * Latest hardware layout the daemon reported (`generation`,
+     * `bootGeneration`, `snapshot`, `appliedAt`, `updatedAt`, `changes`), at
+     * most 64 KiB, rewritten at most once per cooldown. Overwritten in
+     * place: there is no history. Never selected by list, detail or auth reads.
+     */
+    hardware: jsonb(),
+    /**
+     * Latest resolved metrics capability plan (`generation`, `planHash`,
+     * `plan`, `appliedAt`). Overwritten in place; recomputable from the box
+     * size and the hardware. Never selected by list, detail or auth reads.
+     */
+    capability: jsonb(),
+    /** Why the host is offline, from the daemon projection (`projection.offlineReason`). */
+    offlineReason: text('offline_reason'),
+    /** Commit of the daemon build running on the host (`projection.daemonBuild.commit`). */
+    daemonCommit: text('daemon_commit'),
+    /** When the running daemon build was built (`projection.daemonBuild.builtAt`). */
+    daemonBuiltAt: timestamp('daemon_built_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /** Daemon self-update state (`projection.update.status`). */
+    daemonUpdateStatus: text('daemon_update_status'),
+    /** Since when a managed-database external-access change waits for this server (self-hosted sweep). */
+    externalAccessPendingAt: timestamp('external_access_pending_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
   },
   (table) => [
     index('idx_server_organization_id').using(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops')
     ),
-    index('idx_server_machine_key').using(
-      'btree',
-      table.machineKey.asc().nullsLast().op('text_ops')
-    ),
-    index('idx_server_hostname').using('btree', table.hostname.asc().nullsLast().op('text_ops')),
+    unique('uniq_server_machine_key').on(table.machineKey),
     index('idx_server_connected')
       .on(table.id)
       .where(sql`${table.isConnected}`),
+    index('idx_server_offline')
+      .on(table.statusChangedAt.desc())
+      .where(sql`${table.isConnected} = false`),
+    index('idx_server_updating')
+      .on(table.id)
+      .where(sql`${table.daemonUpdateStatus} = 'updating'`),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -651,7 +728,25 @@ export const server = pgTable(
       foreignColumns: [tier.id],
       name: 'server_assigned_tier_id_tier_id_fk',
     }).onDelete('set null'),
+    index('idx_server_preferred_tier_id').using(
+      'btree',
+      table.preferredTierId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.preferredTierId],
+      foreignColumns: [tier.id],
+      name: 'server_preferred_tier_id_tier_id_fk',
+    }).onDelete('set null'),
     check('server_machine_class_check', sql`${table.machineClass} IN ('physical', 'virtual')`),
+    check(
+      'server_machine_class_source_check',
+      sql`machine_class_source IN ('detected', 'operator')`
+    ),
+    check('server_offline_reason_check', sql`offline_reason IN ('disconnect', 'sweep_stale')`),
+    check(
+      'server_daemon_update_status_check',
+      sql`daemon_update_status IN ('idle', 'updating', 'done', 'failed', 'expired')`
+    ),
   ]
 )
 /**
@@ -769,6 +864,8 @@ export const license = pgTable(
     uniqueIndex('uniq_license_server_id')
       .on(table.serverId)
       .where(sql`${table.serverId} IS NOT NULL`),
+    /** Plain, because a partial unique index cannot serve the cascade lookup from `server`. */
+    index('idx_license_server_id').on(table.serverId),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -995,10 +1092,6 @@ export const subscriptionItem = pgTable(
     quantity: integer().notNull(),
   },
   (table) => [
-    index('idx_seat_subscription_id').using(
-      'btree',
-      table.subscriptionId.asc().nullsLast().op('uuid_ops')
-    ),
     index('idx_seat_tier_id').using('btree', table.tierId.asc().nullsLast().op('uuid_ops')),
     uniqueIndex('uniq_seat_provider_item').on(table.providerItemId),
     // The reconciliation invariant compares seats to licenses *per tier*, so
@@ -1040,7 +1133,6 @@ export const command = pgTable(
       .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
-    options: jsonb(),
     serverId: uuid('server_id').notNull(),
     actorType: text('actor_type').notNull(),
     actorId: uuid('actor_id').notNull(),
@@ -1056,6 +1148,12 @@ export const command = pgTable(
     context: jsonb(),
     /** Bounded daemon result summary (was `result`). */
     resultSummary: jsonb('result_summary'),
+    /**
+     * Latest `command-progress` payload from the daemon (`CommandProgress`,
+     * `src/contracts/cell-protocol.ts`): the step plan and where it stands.
+     * Null until the daemon reports one; finalised on the terminal transition.
+     */
+    progress: jsonb(),
     errorCode: text('error_code'),
     errorMessage: text('error_message'),
     queuedAt: timestamp('queued_at', {
@@ -1101,18 +1199,54 @@ export const command = pgTable(
      * filtered scalar moves.
      */
     managedDestroyGateId: text('managed_destroy_gate_id'),
+    /**
+     * Organization of the server, copied at insert (the activity feed and any
+     * org-wide command list filter on it). Kept when the server is deleted
+     * only as NULL: the row itself cascades with the server.
+     */
+    organizationId: uuid('organization_id'),
+    /**
+     * Environment a deploy, lifecycle or stop command was issued for (was
+     * `context->>'environmentId'`). Set null when the environment is deleted.
+     */
+    environmentId: uuid('environment_id'),
+    /**
+     * Managed cluster the command acts on (was `context->>'managedId'`). Set
+     * null when the cluster is deleted.
+     */
+    managedId: uuid('managed_id'),
   },
   (table) => [
-    index('idx_command_managed_destroy_gate_id').using(
-      'btree',
-      table.managedDestroyGateId.asc().nullsLast().op('text_ops')
-    ),
-    index('idx_command_server_id_created_at').using(
+    index('idx_command_managed_destroy_gate_id')
+      .using('btree', table.managedDestroyGateId.asc().nullsLast().op('text_ops'))
+      .where(sql`${table.managedDestroyGateId} IS NOT NULL`),
+    /** The per-server command list: newest first, with the id as the tie-break so no sort is needed. */
+    index('idx_command_server_recent').using(
       'btree',
       table.serverId.asc(),
-      table.createdAt.desc()
+      table.createdAt.desc(),
+      table.id.desc()
     ),
-    index('idx_command_status').using('btree', table.status.asc()),
+    /**
+     * Rows still moving: the stale-command reaper and the open-command probes
+     * walk only these. The status list is repeated literally in the queries so
+     * the planner can match the predicate.
+     */
+    index('idx_command_open')
+      .using('btree', table.status.asc(), table.updatedAt.asc())
+      .where(sql`${table.status} IN ('queued', 'dispatching', 'sent', 'acked', 'running')`),
+    /** Open commands of one managed cluster (failover, destroy, TLS rotation lookups). */
+    index('idx_command_managed')
+      .using('btree', table.managedId.asc())
+      .where(
+        sql`${table.managedId} IS NOT NULL AND ${table.status} IN ('queued', 'dispatching', 'sent', 'acked', 'running')`
+      ),
+    /** The organization activity feed: deploys, lifecycle and stops, open or recently failed. */
+    index('idx_command_feed')
+      .using('btree', table.organizationId.asc(), table.createdAt.desc(), table.id.desc())
+      .where(
+        sql`${table.name} IN ('environment.deploy', 'environment.lifecycle', 'environment.stop') AND ${table.status} IN ('queued', 'dispatching', 'sent', 'acked', 'running', 'failed', 'timed_out')`
+      ),
     /**
      * Backs the per-minute reconcile sweeps' "has this server ever (or since
      * its last connect) been sent a `<x>.reconcile`" EXISTS probes, which
@@ -1132,17 +1266,31 @@ export const command = pgTable(
      * the append-only `command` table — one row per attempt — not from
      * `deployment`, which is an upsert-per-(environment, server) current-state
      * table. Partial + expression so it stays small: only
-     * `environment.deploy` rows, keyed on the allowlisted
-     * `context->>'environmentId'` rather than a denormalized column.
+     * `environment.deploy` rows, keyed on `environment_id`.
      */
-    index('idx_command_deploy_environment_created')
-      .using('btree', sql`((context ->> 'environmentId'))`, table.createdAt.desc())
-      .where(sql`name = 'environment.deploy'`),
+    index('idx_command_deploy')
+      .using('btree', table.environmentId.asc(), table.createdAt.desc(), table.id.desc())
+      .where(sql`${table.name} = 'environment.deploy'`),
     foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
       name: 'command_server_id_server_id_fk',
     }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'command_organization_id_organization_id_fk',
+    }).onDelete('set null'),
+    foreignKey({
+      columns: [table.environmentId],
+      foreignColumns: [environment.id],
+      name: 'command_environment_id_environment_id_fk',
+    }).onDelete('set null'),
+    foreignKey({
+      columns: [table.managedId],
+      foreignColumns: [managed.id],
+      name: 'command_managed_id_managed_id_fk',
+    }).onDelete('set null'),
     // Mirror `COMMAND_STATUSES` / `COMMAND_ACTOR_TYPES` (src/features/commands/types.ts) —
     // pinned by enum-checks.test.ts.
     check(
@@ -1250,6 +1398,7 @@ export const upgrade = pgTable(
     uniqueIndex('uniq_upgrade_active')
       .on(sql`(true)`)
       .where(sql`${table.status} IN ('pending', 'running')`),
+    index('idx_upgrade_started_by').on(table.startedBy),
     foreignKey({
       columns: [table.startedBy],
       foreignColumns: [user.id],
@@ -1298,6 +1447,8 @@ export const stage = pgTable(
     upgradeId: uuid('upgrade_id').notNull(),
     serverId: uuid('server_id').notNull(),
     unit: text().notNull(),
+    /** Which part of the run the step belongs to: the colocated daemon first, then the control plane, then the fleet. */
+    phase: text().notNull().default('fleet'),
     batchIndex: integer('batch_index').default(0).notNull(),
     status: text().notNull().default('pending'),
     requestId: text('request_id'),
@@ -1322,6 +1473,12 @@ export const stage = pgTable(
   },
   (table) => [
     index('idx_stage_upgrade_status').on(table.upgradeId, table.status),
+    index('idx_stage_upgrade_phase').on(
+      table.upgradeId,
+      table.phase,
+      table.batchIndex,
+      table.status
+    ),
     index('idx_stage_server_created').on(table.serverId, table.createdAt.desc()),
     index('idx_stage_active_next_attempt')
       .on(table.status, table.nextAttemptAt)
@@ -1341,6 +1498,7 @@ export const stage = pgTable(
     // Mirror UPGRADE_STEP_UNITS / UPGRADE_STEP_STATUSES
     // (src/features/upgrades/vocabulary.ts) — pinned by enum-checks.test.ts.
     check('stage_unit_check', sql`unit IN ('daemon', 'instance')`),
+    check('stage_phase_check', sql`phase IN ('colocated_daemon', 'control_plane', 'fleet')`),
     check(
       'stage_status_check',
       sql`status IN ('pending', 'waiting', 'dispatched', 'preparing', 'downloading', 'installing', 'restarting', 'verifying', 'done', 'failed', 'rolled_back', 'needs_attention', 'skipped')`
@@ -1519,10 +1677,6 @@ export const fabric = pgTable(
   },
   (table) => [
     uniqueIndex('uniq_fabric_organization_id').on(table.organizationId),
-    index('idx_fabric_organization_id').using(
-      'btree',
-      table.organizationId.asc().nullsLast().op('uuid_ops')
-    ),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -1594,10 +1748,6 @@ export const ip = pgTable(
     }),
   },
   (table) => [
-    index('idx_ip_organization_id').using(
-      'btree',
-      table.organizationId.asc().nullsLast().op('uuid_ops')
-    ),
     index('idx_ip_datacenter_id').using(
       'btree',
       table.datacenterId.asc().nullsLast().op('uuid_ops')
@@ -1669,6 +1819,99 @@ export const ip = pgTable(
   ]
 )
 /**
+ * An address clients use to reach a server, as the operator states it: one
+ * `public` entry per server and one per datacenter the server belongs to.
+ * Intent only, layered over what the panel already knows (`ip` rows, datacenter
+ * pins, daemon-reported interfaces): a blank `address_v4` / `address_v6` means
+ * "this server's own address on that side", so repin and existing rows keep
+ * working and only router or 1:1 NAT addresses are typed in. Never in `ip`, so
+ * one router address may front several servers of an org on different ports.
+ * `options.ports` holds the external port per listener (`postgres`, `mysql`,
+ * `http`, `https`): absent means the listen port, `null` means not reachable
+ * through this address. Read by `src/features/net/client-addresses.ts`.
+ */
+export const clientAddress = pgTable(
+  'address',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    options: jsonb(),
+    organizationId: uuid('organization_id').notNull(),
+    serverId: uuid('server_id').notNull(),
+    /** `public` | `datacenter` */
+    scope: text().notNull(),
+    /** Set if and only if `scope = 'datacenter'`. */
+    datacenterId: uuid('datacenter_id'),
+    /** The DNS name clients type; always contains a dot. */
+    hostname: varchar('hostname', { length: 253 }),
+    /** Override for the IPv4 address clients use; NULL = this server's own. */
+    addressV4: inet('address_v4'),
+    /** Override for the IPv6 address clients use; NULL = this server's own. */
+    addressV6: inet('address_v6'),
+    /** The entry that fills the main connection string (at most one per server). */
+    isPrimary: boolean('is_primary').default(false).notNull(),
+  },
+  (table) => [
+    index('idx_address_organization_id').using(
+      'btree',
+      table.organizationId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_address_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
+    index('idx_address_datacenter_id').using(
+      'btree',
+      table.datacenterId.asc().nullsLast().op('uuid_ops')
+    ),
+    uniqueIndex('uniq_address_server_public')
+      .on(table.serverId)
+      .where(sql`${table.scope} = 'public'`),
+    uniqueIndex('uniq_address_server_datacenter')
+      .on(table.serverId, table.datacenterId)
+      .where(sql`${table.datacenterId} IS NOT NULL`),
+    uniqueIndex('uniq_address_server_primary')
+      .on(table.serverId)
+      .where(sql`${table.isPrimary}`),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'address_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'address_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.datacenterId],
+      foreignColumns: [datacenter.id],
+      name: 'address_datacenter_id_datacenter_id_fk',
+    }).onDelete('cascade'),
+    check('address_scope_check', sql`scope IN ('public', 'datacenter')`),
+    check(
+      'address_datacenter_scope_check',
+      sql`(${table.scope} = 'datacenter') = (${table.datacenterId} IS NOT NULL)`
+    ),
+    check('address_v4_family_check', sql`family(${table.addressV4}) = 4`),
+    check('address_v6_family_check', sql`family(${table.addressV6}) = 6`),
+  ]
+)
+/**
  * One server in an org TurboFabric mesh (parallel to managed `node`). Private
  * key never stored; `public_key` stays null until the first successful
  * `server.fabric.reconcile`. `address` is the `tp0` host address; `prefix` is
@@ -1732,7 +1975,6 @@ export const relay = pgTable(
     presharedKey: text('preshared_key'),
   },
   (table) => [
-    index('idx_relay_fabric_id').using('btree', table.fabricId.asc().nullsLast().op('uuid_ops')),
     index('idx_relay_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
       columns: [table.fabricId],
@@ -1786,14 +2028,12 @@ export const subnet = pgTable(
       .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
-    options: jsonb(),
     networkId: uuid('network_id').notNull(),
     serverId: uuid('server_id').notNull(),
     /** Server-local subnet for this network. */
     cidr: cidr().notNull(),
   },
   (table) => [
-    index('idx_subnet_network_id').using('btree', table.networkId.asc().nullsLast().op('uuid_ops')),
     index('idx_subnet_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
       columns: [table.networkId],
@@ -1855,6 +2095,17 @@ export const workspace = pgTable(
       .where(sql`kind = 'turbopanel'`),
   ]
 )
+/**
+ * SQL for the folder-name CHECKs, built from the shared rule patterns in
+ * `contracts/directory-names.ts` so a CHECK cannot drift from the code that
+ * validates a typed name. A slug never contains `..` (the pattern allows a
+ * single dot inside the name).
+ */
+const FOLDER_NAME_SQL = FOLDER_NAME_RE.source
+const PROJECT_SLUG_SQL = PROJECT_SLUG_RE.source
+const ENVIRONMENT_NAME_SQL = ENVIRONMENT_NAME_RE.source
+const RESERVED_ENVIRONMENT_NAMES_SQL = RESERVED_SCOPE_NAMES.map((name) => `'${name}'`).join(', ')
+
 export const project = pgTable(
   'project',
   {
@@ -1938,8 +2189,32 @@ export const project = pgTable(
      * `environment.metadata.component`.
      */
     component: text(),
+    /**
+     * Short name derived from the project name, unique per organization. It is
+     * never part of a path on a host (names and labels only). Changeable until
+     * a folder exists under any environment of the project, then locked. A row
+     * made without one gets a unique id-shaped slug; create flows send a real one.
+     */
+    slug: text()
+      .default(sql`uuidv7()::text`)
+      .notNull(),
+    /**
+     * Default placement server: environments without their own `server_id`
+     * inherit it at deploy / lifecycle / stop time. The API still carries it
+     * as `options.defaultServerId`.
+     */
+    defaultServerId: uuid('default_server_id'),
   },
   (table) => [
+    index('idx_project_default_server_id').using(
+      'btree',
+      table.defaultServerId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.defaultServerId],
+      foreignColumns: [server.id],
+      name: 'project_default_server_id_server_id_fk',
+    }).onDelete('set null'),
     index('idx_project_workspace_id').using(
       'btree',
       table.workspaceId.asc().nullsLast().op('uuid_ops')
@@ -1979,6 +2254,9 @@ export const project = pgTable(
     uniqueIndex('uniq_project_workspace_system_component')
       .on(table.workspaceId, table.component)
       .where(sql`component IS NOT NULL`),
+    /** Unique per organization. */
+    unique('uniq_project_organization_slug').on(table.organizationId, table.slug),
+    check('project_slug_check', sql.raw(`slug ~ '${PROJECT_SLUG_SQL}'`)),
   ]
 )
 
@@ -2014,10 +2292,26 @@ export const environment = pgTable(
      * `deployment.desired_generation`.
      */
     generation: integer().default(0).notNull(),
-    name: text(),
+    /**
+     * The scope folder name on every server (`/srv/users/<owner>/<name>`), so
+     * it follows the environment name rule. The default only keeps a row made
+     * without a name valid (32 hex characters, never a reserved name); every
+     * create flow sends the typed name.
+     */
+    name: text()
+      .default(sql`replace(uuidv7()::text, '-', '')`)
+      .notNull(),
     description: text('description'),
+    /** The project's primary environment: landing, status, and the source a new environment copies. */
+    isPrimary: boolean('is_primary').default(false).notNull(),
+    /** Pinned environments are listed right after the primary one. */
+    isPinned: boolean('is_pinned').default(false).notNull(),
   },
   (table) => [
+    unique('uniq_environment_project_name').on(table.projectId, table.name),
+    uniqueIndex('uniq_environment_project_primary')
+      .using('btree', table.projectId.asc().nullsLast().op('uuid_ops'))
+      .where(sql`${table.isPrimary}`),
     index('idx_environment_project_id').using(
       'btree',
       table.projectId.asc().nullsLast().op('uuid_ops')
@@ -2037,8 +2331,10 @@ export const environment = pgTable(
       name: 'environment_server_id_server_id_fk',
     }).onDelete('restrict'),
     check(
-      'environment_name_format_check',
-      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._/-]+$'::text))`
+      'environment_name_check',
+      sql.raw(
+        `name ~ '${ENVIRONMENT_NAME_SQL}' AND name NOT IN (${RESERVED_ENVIRONMENT_NAMES_SQL})`
+      )
     ),
   ]
 )
@@ -2087,13 +2383,9 @@ export const managed = pgTable(
      */
     engine: text().notNull(),
     /** `provisioning` | `applying` | `ready` | `stopped` | `failed` */
-    status: text(),
+    status: text().default('provisioning').notNull(),
   },
   (table) => [
-    index('idx_managed_environment_id').using(
-      'btree',
-      table.environmentId.asc().nullsLast().op('uuid_ops')
-    ),
     index('idx_managed_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
     index('idx_managed_engine').using('btree', table.engine.asc().nullsLast().op('text_ops')),
     foreignKey({
@@ -2112,8 +2404,12 @@ export const managed = pgTable(
       sql`(${table.name} IS NULL) OR (((char_length((${table.name})::text) >= 1) AND (char_length((${table.name})::text) <= 255)) AND ((${table.name})::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
     ),
     check(
+      'managed_engine_check',
+      sql`engine IN ('postgres', 'mysql', 'mariadb', 'redis', 'clickhouse')`
+    ),
+    check(
       'managed_status_check',
-      sql`status IS NULL OR status IN ('provisioning','applying','ready','stopped','failed')`
+      sql`status IN ('provisioning','applying','ready','stopped','failed')`
     ),
   ]
 )
@@ -2145,7 +2441,6 @@ export const replica = pgTable(
       .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
-    options: jsonb(),
     managedId: uuid('managed_id').notNull(),
     serverId: uuid('server_id').notNull(),
     /** `primary` | `replica` */
@@ -2171,13 +2466,9 @@ export const replica = pgTable(
      */
     privatePort: integer('private_port'),
     /** Per-member observed status; same vocabulary as `managed.status` plus `needs_resync`. */
-    status: text(),
+    status: text().default('provisioning').notNull(),
   },
   (table) => [
-    index('idx_replica_managed_id').using(
-      'btree',
-      table.managedId.asc().nullsLast().op('uuid_ops')
-    ),
     index('idx_replica_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
       columns: [table.managedId],
@@ -2209,7 +2500,7 @@ export const replica = pgTable(
     ),
     check(
       'replica_status_check',
-      sql`status IS NULL OR status IN ('provisioning','applying','ready','stopped','failed','needs_resync')`
+      sql`status IN ('provisioning','applying','ready','stopped','failed','needs_resync')`
     ),
   ]
 )
@@ -2258,7 +2549,9 @@ export const backup = pgTable(
     checksum: text().notNull(),
     /** Null for an instance-scope backup; set for a single-database backup. */
     database: text(),
-    /** Artifact path on the host filesystem. */
+    /** The `database` row the dump was of; NULL for an instance-scope backup or once that database is dropped (the name stays in `database`). */
+    databaseId: uuid('database_id'),
+    /** Artifact path relative to the backup root of the host. */
     path: text().notNull(),
     /**
      * The {@link retention} whose scheduled run made this artifact; null for
@@ -2266,6 +2559,13 @@ export const backup = pgTable(
      * artifact that is still on disk.
      */
     retentionId: uuid('retention_id'),
+    /**
+     * Host that holds the on-disk artifact (the primary when the backup ran).
+     * Null on rows written before this column existed, or after that server
+     * is deleted (`set null`). Restore/delete must not assume the current
+     * primary still has the file.
+     */
+    serverId: uuid('server_id'),
   },
   (table) => [
     index('idx_backup_managed_id_created_at').using(
@@ -2274,6 +2574,8 @@ export const backup = pgTable(
       table.createdAt.desc()
     ),
     index('idx_backup_retention_id').using('btree', table.retentionId.asc().nullsLast()),
+    index('idx_backup_server_id').using('btree', table.serverId.asc().nullsLast()),
+    index('idx_backup_database_id').using('btree', table.databaseId.asc().nullsLast()),
     foreignKey({
       columns: [table.managedId],
       foreignColumns: [managed.id],
@@ -2283,6 +2585,16 @@ export const backup = pgTable(
       columns: [table.retentionId],
       foreignColumns: [retention.id],
       name: 'backup_retention_id_retention_id_fk',
+    }).onDelete('set null'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'backup_server_id_server_id_fk',
+    }).onDelete('set null'),
+    foreignKey({
+      columns: [table.databaseId],
+      foreignColumns: [managedDatabase.id],
+      name: 'backup_database_id_database_id_fk',
     }).onDelete('set null'),
     uniqueIndex('uniq_backup_managed_backup_id').on(table.managedId, table.backupId),
     check('backup_id_format_check', sql`backup_id ~ '^[A-Za-z0-9_-]+$'`),
@@ -2334,6 +2646,23 @@ export const leaf = pgTable(
       .defaultNow()
       .$onUpdate(() => sql`now()`)
       .notNull(),
+    /** `active` | `stale` */
+    state: text().default('active').notNull(),
+    staleAt: timestamp('stale_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    staleReason: text('stale_reason'),
+    /** `offline` | `unused` | `owner` */
+    staleCause: text('stale_cause'),
+    attempts: integer().default(0).notNull(),
+    attemptedAt: timestamp('attempted_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    lastError: text('last_error'),
   },
   (table) => [
     index('idx_leaf_not_after').using(
@@ -2355,6 +2684,8 @@ export const leaf = pgTable(
     uniqueIndex('uniq_leaf_engine_replica')
       .on(table.replicaId)
       .where(sql`${table.kind} = 'engine'`),
+    /** Plain, because a partial unique index cannot serve the cascade lookup from `replica`. */
+    index('idx_leaf_replica_id').on(table.replicaId),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -2381,6 +2712,20 @@ export const leaf = pgTable(
       name: 'leaf_ca_id_tls_id_fk',
     }).onDelete('cascade'),
     check('leaf_kind_check', sql`${table.kind} IN ('ingress','engine')`),
+    check('leaf_state_check', sql`state IN ('active','stale')`),
+    check(
+      'leaf_stale_cause_check',
+      sql`stale_cause IS NULL OR stale_cause IN ('offline','unused','owner')`
+    ),
+    check(
+      'leaf_stale_check',
+      sql`(${table.state} = 'stale') = (${table.staleAt} IS NOT NULL) AND (${table.state} = 'stale') = (${table.staleCause} IS NOT NULL)`
+    ),
+    check('leaf_attempts_check', sql`${table.attempts} >= 0`),
+    check(
+      'leaf_text_length_check',
+      sql`(${table.staleReason} IS NULL OR length(${table.staleReason}) <= 300) AND (${table.lastError} IS NULL OR length(${table.lastError}) <= 300)`
+    ),
     check(
       'leaf_kind_keys_check',
       sql`(
@@ -2474,11 +2819,16 @@ export const recovery = pgTable(
       .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
-    options: jsonb(),
     managedId: uuid('managed_id').notNull(),
     /** `automatic-failover` | `switchover` | `disaster-recovery` */
     kind: text().notNull(),
+    /**
+     * The member that was primary when the run started. A plain id with no
+     * foreign key on purpose: the journal outlives the member (a former
+     * primary is removed after a switchover).
+     */
     sourcePrimaryMemberId: uuid('source_primary_member_id').notNull(),
+    /** The member promoted by the run; set null if that member is later removed. */
     targetMemberId: uuid('target_member_id'),
     /**
      * `detecting` | `fencing` | `promoting` | `repointing` |
@@ -2519,6 +2869,11 @@ export const recovery = pgTable(
       'recovery_state_check',
       sql`${table.state} IN ('detecting','fencing','promoting','repointing','reconciling-ingress','verifying','completed','failed','blocked')`
     ),
+    foreignKey({
+      columns: [table.targetMemberId],
+      foreignColumns: [replica.id],
+      name: 'recovery_target_member_id_replica_id_fk',
+    }).onDelete('set null'),
   ]
 )
 export const variable = pgTable(
@@ -2713,25 +3068,36 @@ export const service = pgTable(
      * `name` itself is not unique and must not be assumed so.
      */
     composeServiceName: varchar('compose_service_name', { length: 255 }).notNull(),
+    /**
+     * Folder name under the site owner's tree (`services/<slug>`). Chosen at
+     * creation (a slug, or the service id in uuid mode) and locked once a
+     * `folder` row exists for the service. NULL until set.
+     */
+    slug: text(),
+    /**
+     * True when the folder lives in the `common` scope instead of the
+     * environment's own. Chosen at creation, never changed.
+     */
+    isCommon: boolean('is_common').default(false).notNull(),
   },
   (table) => [
-    index('idx_service_environment_id').using(
-      'btree',
-      table.environmentId.asc().nullsLast().op('uuid_ops')
-    ),
     /** Unique per environment. */
     uniqueIndex('uniq_service_environment_compose_name').on(
       table.environmentId,
       table.composeServiceName
     ),
+    /** One folder name per environment; partial while slugs are being filled in. */
+    uniqueIndex('uniq_service_environment_slug')
+      .on(table.environmentId, table.slug)
+      .where(sql`slug IS NOT NULL`),
     foreignKey({
       columns: [table.environmentId],
       foreignColumns: [environment.id],
       name: 'service_environment_id_environment_id_fk',
     }).onDelete('restrict'),
     check(
-      'service_name_format_check',
-      sql`(name IS NULL) OR (((char_length((name)::text) >= 1) AND (char_length((name)::text) <= 255)) AND ((name)::text ~ '^[A-Za-z0-9 ._-]+$'::text))`
+      'service_slug_check',
+      sql.raw(String.raw`slug IS NULL OR (slug ~ '${FOLDER_NAME_SQL}' AND slug !~ '\.\.')`)
     ),
   ]
 )
@@ -2779,8 +3145,8 @@ export const deployment = pgTable(
     status: text().default('pending').notNull(),
     /**
      * Back-reference to the `command` row for the most recent apply attempt on
-     * this `(environment, server)`. No FK — mirrors `command.actor_id`. This is
-     * the join key from current state into the append-only command history.
+     * this `(environment, server)`; set null when that command is pruned. This
+     * is the join key from current state into the append-only command history.
      */
     lastCommandId: uuid('last_command_id'),
     /** When the last apply attempt reached a terminal state. */
@@ -2796,14 +3162,13 @@ export const deployment = pgTable(
   },
   (table) => [
     unique('uniq_deployment_environment_server').on(table.environmentId, table.serverId),
-    index('idx_deployment_environment_id').using(
-      'btree',
-      table.environmentId.asc().nullsLast().op('uuid_ops')
-    ),
     index('idx_deployment_server_id').using(
       'btree',
       table.serverId.asc().nullsLast().op('uuid_ops')
     ),
+    index('idx_deployment_last_command')
+      .on(table.lastCommandId)
+      .where(sql`${table.lastCommandId} IS NOT NULL`),
     foreignKey({
       columns: [table.environmentId],
       foreignColumns: [environment.id],
@@ -2826,6 +3191,11 @@ export const deployment = pgTable(
       'deployment_outcome_check',
       sql`${table.outcome} IS NULL OR ${table.outcome} IN ('applied','failed','timed_out')`
     ),
+    foreignKey({
+      columns: [table.lastCommandId],
+      foreignColumns: [command.id],
+      name: 'deployment_last_command_id_command_id_fk',
+    }).onDelete('set null'),
   ]
 )
 /**
@@ -2856,8 +3226,6 @@ export const slot = pgTable(
       .defaultNow()
       .$onUpdate(() => sql`now()`)
       .notNull(),
-    metadata: jsonb(),
-    options: jsonb(),
     environmentId: uuid('environment_id').notNull(),
     serviceId: uuid('service_id').notNull(),
     serverId: uuid('server_id').notNull(),
@@ -2942,7 +3310,6 @@ export const task = pgTable(
   },
   (table) => [
     unique('uniq_task_service_name').on(table.serviceId, table.name),
-    index('idx_task_service_id').using('btree', table.serviceId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
       columns: [table.serviceId],
       foreignColumns: [service.id],
@@ -2986,7 +3353,6 @@ export const label = pgTable(
   },
   (table) => [
     unique('uniq_label_server_key').on(table.serverId, table.key),
-    index('idx_label_server_id').using('btree', table.serverId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
@@ -3038,8 +3404,21 @@ export const hosting = pgTable(
      * NULL reads as `'http'`, same default `resolveHostingProtocol` applies.
      */
     protocol: text(),
+    /**
+     * When a waiting Let's Encrypt request was made (the DNS did not point at
+     * the server yet); NULL when none is waiting. The sweep retries every row
+     * with a value, so it is a column with a partial index, not a JSON key.
+     */
+    pendingAt: timestamp('pending_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
   },
   (table) => [
+    index('idx_hosting_pending')
+      .on(table.updatedAt)
+      .where(sql`${table.pendingAt} IS NOT NULL`),
     index('idx_hosting_service_id').using(
       'btree',
       table.serviceId.asc().nullsLast().op('uuid_ops')
@@ -3195,10 +3574,6 @@ export const container = pgTable(
     ordinal: integer('ordinal').default(1).notNull(),
   },
   (table) => [
-    index('idx_container_service_id').using(
-      'btree',
-      table.serviceId.asc().nullsLast().op('uuid_ops')
-    ),
     index('idx_container_server_id').using(
       'btree',
       table.serverId.asc().nullsLast().op('uuid_ops')
@@ -3231,11 +3606,12 @@ export const container = pgTable(
   ]
 )
 /**
- * A principal is an account identity that can be attached to services — a
- * Linux (server) host account or a database engine user. Org is derived through
- * `steward` → `service` (or `project` → `workspace` for project principals);
- * there is deliberately no `organization_id` column here. Host-account username
- * uniqueness is app-enforced per organization (trim + case-insensitive).
+ * A principal is a site owner's Linux user: the host account that runs sites
+ * and owns their tree. `organization_id` is the owning org (set on every
+ * insert, see the column note). Names are one pool per organization:
+ * `uniq_principal_organization_*` keep the typed `username` and the applied
+ * login unique per org, case-insensitively. Database logins are not
+ * principals; they live in `login`.
  */
 export const principal = pgTable(
   'principal',
@@ -3266,15 +3642,12 @@ export const principal = pgTable(
     metadata: jsonb(),
     options: jsonb(),
 
-    /** `system` (Linux/server host account) | `database` (engine account) */
-    kind: text().notNull(),
-    /** `server` | `postgres` | `mysql` | `redis` | `clickhouse` */
-    provider: text().notNull(),
     /**
      * Account name. Allowlist mirrors POSIX/database account naming: starts
      * with a letter or underscore, then letters/digits/underscore/hyphen
      * (`^[A-Za-z_][A-Za-z0-9_-]*$`), 1–255 chars. Server principals additionally
-     * enforce ≤ 32 at the API layer (daemon username limit).
+     * enforce `MAX_PRINCIPAL_USERNAME_LENGTH` (28) at the API layer (Linux
+     * login limit).
      */
     username: varchar({ length: 255 }).notNull(),
     /**
@@ -3304,10 +3677,12 @@ export const principal = pgTable(
      * multi-valued concept used for username-collision checks only).
      */
     organizationId: uuid('organization_id').notNull(),
-    /** Optional project scope for hosting principals. */
+    /**
+     * Optional project scope for hosting principals. SET NULL on project
+     * delete: the principal (and the Linux user and home it names) outlives
+     * the project and is removed only by its own explicit delete.
+     */
     projectId: uuid('project_id'),
-    /** Optional managed-engine scope (cascade-deletes with the managed row). */
-    managedId: uuid('managed_id'),
   },
   (table) => [
     index('idx_principal_organization_id').using(
@@ -3318,10 +3693,6 @@ export const principal = pgTable(
       'btree',
       table.projectId.asc().nullsLast().op('uuid_ops')
     ),
-    index('idx_principal_managed_id').using(
-      'btree',
-      table.managedId.asc().nullsLast().op('uuid_ops')
-    ),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -3331,17 +3702,7 @@ export const principal = pgTable(
       columns: [table.projectId],
       foreignColumns: [project.id],
       name: 'principal_project_id_project_id_fk',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.managedId],
-      foreignColumns: [managed.id],
-      name: 'principal_managed_id_managed_id_fk',
-    }).onDelete('cascade'),
-    check('principal_kind_check', sql`kind IN ('system', 'database')`),
-    check(
-      'principal_provider_check',
-      sql`provider IN ('server', 'postgres', 'mysql', 'redis', 'clickhouse')`
-    ),
+    }).onDelete('set null'),
     check(
       'principal_username_format_check',
       sql`(char_length((username)::text) >= 1) AND (char_length((username)::text) <= 255) AND ((username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)`
@@ -3350,89 +3711,26 @@ export const principal = pgTable(
       'principal_applied_username_format_check',
       sql`(char_length((applied_username)::text) >= 1) AND (char_length((applied_username)::text) <= 255) AND ((applied_username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)`
     ),
-    // No global unique on `username`: the same account name (e.g. `postgres`,
-    // `www-data`) legitimately recurs across different systems/services.
-    // Server-provider host accounts are uniqueness-checked per org in app code
-    // (both the short `username` and the `applied_username` namespaces).
+    // One name pool per organization. No global unique: the same name
+    // legitimately recurs across organizations. The app check
+    // (`isServerPrincipalUsernameTaken`) answers 409 first; these indexes are
+    // the backstop.
+    uniqueIndex('uniq_principal_organization_username').on(
+      table.organizationId,
+      sql`lower(${table.username})`
+    ),
+    uniqueIndex('uniq_principal_organization_applied_username').on(
+      table.organizationId,
+      sql`lower(${table.appliedUsername})`
+    ),
   ]
 )
-/**
- * Which runtime series a principal may **execute** on the host.
- *
- * A row here becomes a unix group membership (`tpphp84`, `tpnode24`), because
- * that is the only form the kernel enforces at `execve` — anything derived only
- * into a generated systemd unit or an FPM pool is invisible to a shell session
- * or a cron job, both of which run as the principal.
- *
- * A table rather than `principal.options` jsonb for three reasons:
- * `parsePrincipalOptions` is drop-on-invalid, which is the wrong posture for a
- * security grant; "which principals still hold php 8.1?" has to be answerable
- * before a series can be retired; and per-row provenance is the audit trail.
- *
- * `grantedBy` distinguishes an operator's explicit grant from one deploy-prepare
- * inserted because a service declared the runtime. Both are real grants and both
- * are revocable — the distinction exists so the UI can say why a principal has
- * something, not to make one of them implicit.
- *
- * No `organization_id`: derived through `principal`, matching that table.
- */
-export const entitlement = pgTable(
-  'entitlement',
-  {
-    id: uuid()
-      .default(sql`uuidv7()`)
-      .primaryKey()
-      .notNull(),
-    createdAt: timestamp('created_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    })
-      .defaultNow()
-      .notNull(),
-    updatedAt: timestamp('updated_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    })
-      .defaultNow()
-      .$onUpdate(() => sql`now()`)
-      .notNull(),
-    principalId: uuid('principal_id').notNull(),
-    runtime: text().notNull(),
-    /** Exec boundary (`8.4`, `24`), never a patch pin. */
-    series: text().notNull(),
-    grantedBy: text('granted_by').default('operator').notNull(),
-  },
-  (table) => [
-    index('idx_entitlement_principal_id').using(
-      'btree',
-      table.principalId.asc().nullsLast().op('uuid_ops')
-    ),
-    foreignKey({
-      columns: [table.principalId],
-      foreignColumns: [principal.id],
-      name: 'entitlement_principal_id_principal_id_fk',
-    }).onDelete('cascade'),
-    unique('entitlement_unique').on(table.principalId, table.runtime, table.series),
-    check('entitlement_runtime_check', sql`${table.runtime} IN ('php', 'node', 'deno')`),
-    check(
-      'entitlement_series_check',
-      // `[.]` not `\.`: a template literal eats the backslash, and a bare dot
-      // would match any character. A character class keeps it literal.
-      sql`${table.series} ~ '^[0-9]{1,3}([.][0-9]{1,3})?$'`
-    ),
-    check('entitlement_granted_by_check', sql`${table.grantedBy} IN ('operator', 'deploy')`),
-  ]
-)
-
 /**
  * A public key that may authenticate as this principal over SSH.
  *
- * A table rather than `principal.options` jsonb, for the reasons
- * `entitlement` already lists — `parsePrincipalOptions` is
- * drop-on-invalid, which is the wrong posture for a credential — plus one
- * specific to keys: **"which principals does this fingerprint reach?" has to be
+ * A table rather than `principal.options` jsonb: `parsePrincipalOptions` is
+ * drop-on-invalid, which is the wrong posture for a credential, and one more
+ * reason is specific to keys: **"which principals does this fingerprint reach?" has to be
  * answerable in one query.** When a laptop is lost the operator has a
  * fingerprint and needs every account it opens, across every project and every
  * server. A blob per principal cannot answer that.
@@ -3495,10 +3793,6 @@ export const sshKey = pgTable(
     bits: integer(),
   },
   (table) => [
-    index('idx_ssh_principal_id').using(
-      'btree',
-      table.principalId.asc().nullsLast().op('uuid_ops')
-    ),
     // The lost-laptop query: every account one fingerprint opens.
     index('idx_ssh_fingerprint').using('btree', table.fingerprint.asc().nullsLast().op('text_ops')),
     index('idx_ssh_user_id').using('btree', table.userId.asc().nullsLast().op('uuid_ops')),
@@ -3529,6 +3823,294 @@ export const sshKey = pgTable(
       sql`${table.publicKey} ~ '^[A-Za-z0-9@.-]+ [A-Za-z0-9+/]+={0,2}$'`
     ),
     check('ssh_name_check', sql`char_length(${table.name}) >= 1`),
+  ]
+)
+
+/**
+ * One principal on one server: where a `system` principal exists (or is about
+ * to exist) as a Linux account. `principal` stays the single org-scoped
+ * identity row; this is its per-server form. `state` follows the host:
+ * `pending` once a deploy that materializes the account is queued, `present`
+ * when that deploy succeeded, `retiring` once a stop carrying
+ * `retirePrincipals` is queued, `absent` when it succeeded. `uid` / `gid`
+ * are what the host actually assigned and stay NULL until the daemon reports
+ * them; the partial unique on `(server_id, uid)` is what makes a reported id
+ * trustworthy. `source` says why the account is there: a compose
+ * `x-turbopanel.principals` alias, a manually created project principal, or a
+ * storage entry owned by the principal. Rows are bookkeeping beside the
+ * implicit reach (project → environment.server_id) until that reach is
+ * retired; deploy, teardown and server removal write them.
+ */
+export const principalPlacement = pgTable(
+  'placement',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    principalId: uuid('principal_id').notNull(),
+    serverId: uuid('server_id').notNull(),
+    /** `pending` | `present` | `retiring` | `absent` */
+    state: text().notNull(),
+    /** Host-assigned ids, reported by the daemon; NULL until then. */
+    uid: integer(),
+    gid: integer(),
+    /** Account home on the host (`/srv/users/<applied_username>`). */
+    home: text().notNull(),
+    /** `compose` | `manual` | `storage` */
+    source: text().notNull(),
+  },
+  (table) => [
+    index('idx_placement_server_id').using(
+      'btree',
+      table.serverId.asc().nullsLast().op('uuid_ops')
+    ),
+    unique('uniq_placement_principal_server').on(table.principalId, table.serverId),
+    uniqueIndex('uniq_placement_server_uid')
+      .on(table.serverId, table.uid)
+      .where(sql`${table.uid} IS NOT NULL`),
+    foreignKey({
+      columns: [table.principalId],
+      foreignColumns: [principal.id],
+      name: 'placement_principal_id_principal_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'placement_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    check('placement_state_check', sql`state IN ('pending', 'present', 'retiring', 'absent')`),
+    check('placement_source_check', sql`source IN ('compose', 'manual', 'storage')`),
+  ]
+)
+
+/**
+ * One row per service or volume folder on one server: the single record of
+ * "something exists under this scope on that server". The folder name is the
+ * asset's `slug` at the moment the folder was planned, and `scope` is the
+ * environment name (or `common`) exactly as it is on disk. While a row exists
+ * (any state but `missing`) the environment's name, the asset's slug, the
+ * project slug and the organization's folder-name setting cannot change.
+ *
+ * `planned` (reserved, not yet on the host), `present`, `removing` (asset
+ * deleted, the host has not confirmed, for example an offline server),
+ * `orphan` (found on the host with no asset behind it), `missing` (recorded
+ * but gone from the host). `service_id` and `storage_id` become NULL when the
+ * asset row is deleted first; the row stays (and keeps its locks) until the
+ * host confirms the folder is gone. Nothing here is a path: the daemon builds paths from the
+ * components.
+ */
+export const folder = pgTable(
+  'folder',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    serverId: uuid('server_id').notNull(),
+    /** The site owner whose tree holds the folder (its `applied_username` is the first path part). */
+    principalId: uuid('principal_id').notNull(),
+    /** NULL in the `common` scope. */
+    environmentId: uuid('environment_id'),
+    /** Scope folder name as created: the environment name, or `common`. */
+    scope: text().notNull(),
+    /** `service` | `volume` */
+    kind: text().notNull(),
+    /** Folder name: copy of the asset's slug. */
+    slug: text().notNull(),
+    serviceId: uuid('service_id'),
+    storageId: uuid('storage_id'),
+    /** `planned` | `present` | `removing` | `orphan` | `missing` */
+    state: text().notNull(),
+    /**
+     * Why the host kept a `removing` folder, in plain words, from its last
+     * answer; NULL when it has not refused. Cleared when the row leaves
+     * `removing`.
+     */
+    removalNote: text('removal_note'),
+    /** When the owners were told this folder is an orphan; NULL until then and again once it stops being one. */
+    orphanAlertedAt: timestamp('orphan_alerted_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+  },
+  (table) => [
+    uniqueIndex('uniq_folder_location').on(
+      table.serverId,
+      table.principalId,
+      table.scope,
+      table.kind,
+      table.slug
+    ),
+    index('idx_folder_principal_id').using(
+      'btree',
+      table.principalId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_folder_environment_id').using(
+      'btree',
+      table.environmentId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_folder_service_id').using('btree', table.serviceId.asc().nullsLast().op('uuid_ops')),
+    index('idx_folder_storage_id').using('btree', table.storageId.asc().nullsLast().op('uuid_ops')),
+    // The orphan alert reads only the orphans nobody has been told about, and
+    // the rows it must clear once they stop being orphans: both stay tiny.
+    index('idx_folder_orphan_unalerted')
+      .using('btree', table.serverId.asc().nullsLast().op('uuid_ops'))
+      .where(sql`${table.state} = 'orphan' AND ${table.orphanAlertedAt} IS NULL`),
+    index('idx_folder_orphan_alerted')
+      .using('btree', table.state.asc().nullsLast().op('text_ops'))
+      .where(sql`${table.orphanAlertedAt} IS NOT NULL`),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'folder_server_id_server_id_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.principalId],
+      foreignColumns: [principal.id],
+      name: 'folder_principal_id_principal_id_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.environmentId],
+      foreignColumns: [environment.id],
+      name: 'folder_environment_id_environment_id_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'folder_service_id_service_id_fk',
+    }).onDelete('set null'),
+    foreignKey({
+      columns: [table.storageId],
+      foreignColumns: [storage.id],
+      name: 'folder_storage_id_storage_id_fk',
+    }).onDelete('set null'),
+    check('folder_kind_check', sql`kind IN ('service', 'volume')`),
+    check(
+      'folder_state_check',
+      sql`state IN ('planned', 'present', 'removing', 'orphan', 'missing')`
+    ),
+    check(
+      'folder_removal_note_check',
+      sql`removal_note IS NULL OR char_length(removal_note) <= 300`
+    ),
+    check('folder_slug_check', sql.raw(String.raw`slug ~ '${FOLDER_NAME_SQL}' AND slug !~ '\.\.'`)),
+    check(
+      'folder_scope_check',
+      sql.raw(
+        `scope = 'common' OR (scope ~ '${ENVIRONMENT_NAME_SQL}' AND scope NOT IN (${RESERVED_ENVIRONMENT_NAMES_SQL}))`
+      )
+    ),
+    // `common` has no environment; every other scope has one, except an orphan
+    // found on a host whose environment is not (or no longer) known.
+    check(
+      'folder_common_scope_check',
+      sql`(scope = 'common' AND environment_id IS NULL) OR (scope <> 'common' AND (environment_id IS NOT NULL OR state = 'orphan'))`
+    ),
+    check(
+      'folder_asset_kind_check',
+      sql`(kind = 'service' AND storage_id IS NULL) OR (kind = 'volume' AND service_id IS NULL)`
+    ),
+  ]
+)
+
+/**
+ * An environment using a common asset: a service or volume in the `common`
+ * scope of a site owner, which belongs to that owner and not to any one
+ * environment. Any environment of any project in the organization can share
+ * it. Deleting the environment removes its rows (cascade); deleting the asset
+ * is refused while a row names it (restrict), and the routes say so in plain
+ * words first.
+ */
+export const share = pgTable(
+  'share',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    environmentId: uuid('environment_id').notNull(),
+    serviceId: uuid('service_id'),
+    storageId: uuid('storage_id'),
+  },
+  (table) => [
+    index('idx_share_environment_id').using(
+      'btree',
+      table.environmentId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_share_service_id').using('btree', table.serviceId.asc().nullsLast().op('uuid_ops')),
+    index('idx_share_storage_id').using('btree', table.storageId.asc().nullsLast().op('uuid_ops')),
+    uniqueIndex('uniq_share_environment_service')
+      .on(table.environmentId, table.serviceId)
+      .where(sql`service_id IS NOT NULL`),
+    uniqueIndex('uniq_share_environment_storage')
+      .on(table.environmentId, table.storageId)
+      .where(sql`storage_id IS NOT NULL`),
+    foreignKey({
+      columns: [table.environmentId],
+      foreignColumns: [environment.id],
+      name: 'share_environment_id_environment_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'share_service_id_service_id_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.storageId],
+      foreignColumns: [storage.id],
+      name: 'share_storage_id_storage_id_fk',
+    }).onDelete('restrict'),
+    check(
+      'share_asset_check',
+      sql`(service_id IS NOT NULL AND storage_id IS NULL) OR (service_id IS NULL AND storage_id IS NOT NULL)`
+    ),
   ]
 )
 
@@ -3565,10 +4147,6 @@ export const tenancy = pgTable(
     serviceId: uuid('service_id').notNull(),
   },
   (table) => [
-    index('idx_tenancy_principal_id').using(
-      'btree',
-      table.principalId.asc().nullsLast().op('uuid_ops')
-    ),
     index('idx_tenancy_service_id').using(
       'btree',
       table.serviceId.asc().nullsLast().op('uuid_ops')
@@ -3587,11 +4165,219 @@ export const tenancy = pgTable(
   ]
 )
 /**
- * Join edge: managed-database principal ↔ consuming compose service.
+ * A database login: one engine role on one managed cluster. It is not a
+ * principal: a principal is only a site owner's Linux user.
+ *
+ * `principal_id` names the site owner's Linux user the login shares its name
+ * with (the one allowed overlap in the organization's name pool); it is NULL
+ * for every login made on its own and for the cluster's own `root` and
+ * `replication` logins. The permission settings are real columns:
+ * `grant_mode`, `is_tool`, `allowed_sources`, `max_connections`, `access` and
+ * `privileges`; the databases a login may use are `scope` rows.
+ */
+export const login = pgTable(
+  'login',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    /** Cluster the role exists on; cascade-deletes with it. */
+    managedId: uuid('managed_id').notNull(),
+    /** Site owner's Linux user this login shares its name with; NULL otherwise. */
+    principalId: uuid('principal_id'),
+    /** `root` | `replication` | `user` */
+    role: text().notNull(),
+    /** Name the customer typed (equals `applied_username` for `plain` names and cluster logins). */
+    username: varchar({ length: 255 }).notNull(),
+    /** Engine role name actually created on the cluster. */
+    appliedUsername: varchar('applied_username', { length: 255 }).notNull(),
+    /** How `applied_username` was derived from `username`: `plain` | `partial` | `random` */
+    nameScheme: text('name_scheme').default('plain').notNull(),
+    /** Write-only credential, a `tpsecret` envelope; never returned on GET. */
+    password: text(),
+    /**
+     * Who sets the permissions on reconcile: `preset` (logins from before
+     * modes; the panel resets them), `recipe` (the panel sets them) or `self`
+     * (the owner sets them by hand and the panel never resets them).
+     */
+    grantMode: text('grant_mode').default('preset').notNull(),
+    /** A database-tool login routes everything to the primary (no read/write split). */
+    isTool: boolean('is_tool').default(false).notNull(),
+    /** Places the login may connect from; NULL means anywhere. */
+    allowedSources: text('allowed_sources').array(),
+    /** Per-login connection cap; NULL means no cap. */
+    maxConnections: integer('max_connections'),
+    /** PostgreSQL only: connect straight through the front door; NULL means the owner never chose (default applies). */
+    isStraightThrough: boolean('is_straight_through'),
+    /** Routing: `read-write` to the primary, `read-only` to read replicas. */
+    access: text().default('read-write').notNull(),
+    /** What the login may do in each database it can use (`owner`, `read-write`, `read-only`, `admin`). */
+    privileges: text()
+      .array()
+      .default(sql`'{}'::text[]`)
+      .notNull(),
+  },
+  (table) => [
+    index('idx_login_principal_id').using(
+      'btree',
+      table.principalId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.managedId],
+      foreignColumns: [managed.id],
+      name: 'login_managed_id_managed_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.principalId],
+      foreignColumns: [principal.id],
+      name: 'login_principal_id_principal_id_fk',
+    }).onDelete('cascade'),
+    // One login per site owner's Linux user per cluster.
+    uniqueIndex('uniq_login_managed_principal')
+      .on(table.managedId, table.principalId)
+      .where(sql`${table.principalId} IS NOT NULL`),
+    // Engine role names are one namespace per cluster, case-insensitively.
+    uniqueIndex('uniq_login_managed_applied_username').on(
+      table.managedId,
+      sql`lower(btrim((${table.appliedUsername})::text))`
+    ),
+    check('login_role_check', sql`role IN ('root', 'replication', 'user')`),
+    check('login_name_scheme_check', sql`name_scheme IN ('plain', 'partial', 'random')`),
+    check('login_grant_mode_check', sql`grant_mode IN ('preset', 'recipe', 'self')`),
+    check('login_access_check', sql`access IN ('read-write', 'read-only')`),
+    check('login_max_connections_check', sql`max_connections IS NULL OR max_connections >= 1`),
+    check(
+      'login_applied_username_format_check',
+      sql`(char_length((applied_username)::text) >= 1) AND (char_length((applied_username)::text) <= 255) AND ((applied_username)::text ~ '^[A-Za-z_][A-Za-z0-9_-]*$'::text)`
+    ),
+  ]
+)
+/**
+ * One database inside a managed cluster. The row holds what the old
+ * `managed.options` lists said: the name, whether it was made with an owner
+ * role (Postgres), and the login the customer chose as its owner.
+ */
+export const managedDatabase = pgTable(
+  'database',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    /** Cluster the database lives on; cascade-deletes with it. */
+    managedId: uuid('managed_id').notNull(),
+    /** Name on the engine, as typed (unique per cluster, case-insensitively). */
+    name: varchar({ length: 255 }).notNull(),
+    /** Postgres: made with an owner role (`tp_<db>_owner`, `_rw`, `_ro`). */
+    isRoleOwned: boolean('is_role_owned').default(false).notNull(),
+    /** Postgres: the login the customer chose as owner; NULL means the default no-login owner role. */
+    ownerLoginId: uuid('owner_login_id'),
+  },
+  (table) => [
+    uniqueIndex('uniq_database_managed_name').on(table.managedId, sql`lower(${table.name})`),
+    index('idx_database_owner_login_id').using(
+      'btree',
+      table.ownerLoginId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.managedId],
+      foreignColumns: [managed.id],
+      name: 'database_managed_id_managed_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.ownerLoginId],
+      foreignColumns: [login.id],
+      name: 'database_owner_login_id_login_id_fk',
+    }).onDelete('set null'),
+    check('database_name_check', sql`char_length(name) >= 1`),
+    check('database_owner_role_check', sql`owner_login_id IS NULL OR is_role_owned`),
+  ]
+)
+/**
+ * Which databases a login may use: one row per login and database. What the
+ * login may do in them is `login.privileges`.
+ */
+export const scope = pgTable(
+  'scope',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    loginId: uuid('login_id').notNull(),
+    databaseId: uuid('database_id').notNull(),
+  },
+  (table) => [
+    unique('uniq_scope_login_database').on(table.loginId, table.databaseId),
+    index('idx_scope_database_id').using(
+      'btree',
+      table.databaseId.asc().nullsLast().op('uuid_ops')
+    ),
+    foreignKey({
+      columns: [table.loginId],
+      foreignColumns: [login.id],
+      name: 'scope_login_id_login_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.databaseId],
+      foreignColumns: [managedDatabase.id],
+      name: 'scope_database_id_database_id_fk',
+    }).onDelete('cascade'),
+  ]
+)
+/**
+ * Join edge: database login ↔ consuming compose service.
  * Materializes system-owned `variable` rows (marked via `variable.binding_id`)
  * so DB credentials ride the existing deploy injection rail.
  *
- * FK direction: principal CASCADE (user/db gone → drop bindings); service
+ * FK direction: login CASCADE (login gone → drop bindings); database
+ * RESTRICT (a database in use cannot be dropped); service
  * RESTRICT (a service still referenced by bindings cannot be deleted).
  */
 export const binding = pgTable(
@@ -3616,29 +4402,31 @@ export const binding = pgTable(
       .defaultNow()
       .$onUpdate(() => sql`now()`)
       .notNull(),
-    metadata: jsonb(),
-    options: jsonb(),
-    principalId: uuid('principal_id').notNull(),
+    /** The login whose credentials are injected. */
+    loginId: uuid('login_id').notNull(),
     serviceId: uuid('service_id').notNull(),
-    databaseName: varchar('database_name', { length: 255 }).notNull(),
+    /** The database the credentials point at. */
+    databaseId: uuid('database_id').notNull(),
     keyPrefix: varchar('key_prefix', { length: 64 }).default('DATABASE').notNull(),
     /** When true, also emit the unprefixed conventional engine keys (PG* / MYSQL_*). API JSON still serializes as `emitEngineDefaults`. */
     isEmitEngineDefaults: boolean('is_emit_engine_defaults').default(true).notNull(),
   },
   (table) => [
-    index('idx_binding_principal_id').using(
+    index('idx_binding_database_id').using(
       'btree',
-      table.principalId.asc().nullsLast().op('uuid_ops')
+      table.databaseId.asc().nullsLast().op('uuid_ops')
     ),
-    index('idx_binding_service_id').using(
-      'btree',
-      table.serviceId.asc().nullsLast().op('uuid_ops')
-    ),
+    index('idx_binding_login_id').using('btree', table.loginId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
-      columns: [table.principalId],
-      foreignColumns: [principal.id],
-      name: 'binding_principal_id_principal_id_fk',
+      columns: [table.loginId],
+      foreignColumns: [login.id],
+      name: 'binding_login_id_login_id_fk',
     }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.databaseId],
+      foreignColumns: [managedDatabase.id],
+      name: 'binding_database_id_database_id_fk',
+    }).onDelete('restrict'),
     foreignKey({
       columns: [table.serviceId],
       foreignColumns: [service.id],
@@ -3651,10 +4439,6 @@ export const binding = pgTable(
     check(
       'binding_key_prefix_format_check',
       sql`(char_length((key_prefix)::text) >= 1) AND (char_length((key_prefix)::text) <= 64) AND ((key_prefix)::text ~ '^[A-Za-z_][A-Za-z0-9_]*$'::text)`
-    ),
-    check(
-      'binding_database_name_format_check',
-      sql`(char_length((database_name)::text) >= 1) AND (char_length((database_name)::text) <= 63) AND ((database_name)::text ~ '^[A-Za-z_][A-Za-z0-9_]*$'::text)`
     ),
   ]
 )
@@ -3692,7 +4476,6 @@ export const secret = pgTable(
       .$onUpdate(() => sql`now()`)
       .notNull(),
     metadata: jsonb(),
-    options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
     principalId: uuid('principal_id'),
     provider: text().notNull(),
@@ -3768,7 +4551,6 @@ export const storage = pgTable(
     name: varchar({ length: 255 }).notNull(),
     accessMode: text('access_mode').default('single_writer').notNull(),
     retention: text().default('retain').notNull(),
-    generation: integer().default(0).notNull(),
     principalId: uuid('principal_id'),
     /** Sealed file content (`tpsecret` or `tpdaemon`) for `kind=file` entries. */
     contentEnvelope: text('content_envelope'),
@@ -3780,6 +4562,17 @@ export const storage = pgTable(
      * column to sit on.
      */
     composeVolumeKey: text('compose_volume_key'),
+    /**
+     * Folder name under the site owner's tree (`volumes/<slug>`) for volumes
+     * the panel owns. Locked once a `folder` row exists. NULL for kinds with
+     * no folder and until set.
+     */
+    slug: text(),
+    /**
+     * True when the volume folder lives in the `common` scope. Chosen at
+     * creation, never changed; a volume not tied to an environment is common.
+     */
+    isCommon: boolean('is_common').default(false).notNull(),
   },
   (table) => [
     index('idx_storage_organization_id').using(
@@ -3849,6 +4642,10 @@ export const storage = pgTable(
     ),
     check('storage_retention_check', sql`retention IN ('retain', 'delete')`),
     check(
+      'storage_slug_check',
+      sql.raw(String.raw`slug IS NULL OR (slug ~ '${FOLDER_NAME_SQL}' AND slug !~ '\.\.')`)
+    ),
+    check(
       'storage_at_most_one_parent_check',
       sql`((workspace_id IS NOT NULL)::int +
         (project_id IS NOT NULL)::int +
@@ -3904,7 +4701,6 @@ export const storageCopy = pgTable(
     state: text().default('pending').notNull(),
     path: text(),
     endpoint: text(),
-    generation: integer().default(0).notNull(),
   },
   (table) => [
     index('idx_copy_storage_id').using('btree', table.storageId.asc().nullsLast().op('uuid_ops')),
@@ -3996,6 +4792,7 @@ export const retention = pgTable(
     index('idx_retention_organization_id').using('btree', table.organizationId.asc()),
     index('idx_retention_managed_id').using('btree', table.managedId.asc().nullsLast()),
     index('idx_retention_copy_id').using('btree', table.copyId.asc().nullsLast()),
+    index('idx_retention_created_by').on(table.createdBy),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -4174,7 +4971,6 @@ export const mount = pgTable(
   },
   (table) => [
     index('idx_mount_storage_id').using('btree', table.storageId.asc().nullsLast().op('uuid_ops')),
-    index('idx_mount_service_id').using('btree', table.serviceId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
       columns: [table.storageId],
       foreignColumns: [storage.id],
@@ -4214,18 +5010,12 @@ export const tag = pgTable(
       .defaultNow()
       .$onUpdate(() => sql`now()`)
       .notNull(),
-    metadata: jsonb(),
-    options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
     name: text().notNull(),
     description: text('description'),
     color: varchar({ length: 32 }),
   },
   (table) => [
-    index('idx_tag_organization_id').using(
-      'btree',
-      table.organizationId.asc().nullsLast().op('uuid_ops')
-    ),
     uniqueIndex('uniq_tag_organization_name').on(
       table.organizationId,
       sql`lower(btrim((${table.name})::text))`
@@ -4415,8 +5205,6 @@ export const forge = pgTable(
       .defaultNow()
       .$onUpdate(() => sql`now()`)
       .notNull(),
-    metadata: jsonb(),
-    options: jsonb(),
     /** NULL = instance-wide (any organization may use it); set = owned by that org. */
     organizationId: uuid('organization_id'),
     provider: text().notNull(),
@@ -4490,7 +5278,6 @@ export const forge = pgTable(
       'btree',
       table.organizationId.asc().nullsLast().op('uuid_ops')
     ),
-    index('idx_forge_provider').using('btree', table.provider.asc().nullsLast().op('text_ops')),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -4556,8 +5343,6 @@ export const gitConnection = pgTable(
       .defaultNow()
       .$onUpdate(() => sql`now()`)
       .notNull(),
-    metadata: jsonb(),
-    options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
     /** The registered application this connection was granted through. */
     forgeId: uuid('forge_id').notNull(),
@@ -4581,10 +5366,6 @@ export const gitConnection = pgTable(
     oauthEnvelope: jsonb('oauth_envelope'),
   },
   (table) => [
-    index('idx_connection_organization_id').using(
-      'btree',
-      table.organizationId.asc().nullsLast().op('uuid_ops')
-    ),
     index('idx_connection_forge_id').using('btree', table.forgeId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
       columns: [table.organizationId],
@@ -4694,13 +5475,11 @@ export const repository = pgTable(
     lastInspectedCommitSha: text('last_inspected_commit_sha'),
   },
   (table) => [
-    index('idx_repository_organization_id').using(
+    /** The pushed-repository lookup, and the connection foreign key. */
+    index('idx_repository_connection_external').using(
       'btree',
-      table.organizationId.asc().nullsLast().op('uuid_ops')
-    ),
-    index('idx_repository_connection_id').using(
-      'btree',
-      table.connectionId.asc().nullsLast().op('uuid_ops')
+      table.connectionId.asc().nullsLast(),
+      table.repositoryExternalId.asc().nullsLast()
     ),
     index('idx_repository_secret_id').using(
       'btree',
@@ -4745,6 +5524,75 @@ export const repository = pgTable(
     check(
       'repository_auto_deploy_check',
       sql`auto_deploy IN ('immediate', 'checks_passed', 'disabled')`
+    ),
+  ]
+)
+/**
+ * Which environment or project follows which repository: a compose document
+ * names a repository at `services.<name>.x-turbopanel.source.sourceId`, and a
+ * push must find the environments that reaches without scanning every options
+ * column. A row for a project reaches every environment of that project. The
+ * rows are derived from the options and kept in step by
+ * `features/git/watch-records.ts`.
+ */
+export const watch = pgTable(
+  'watch',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    repositoryId: uuid('repository_id').notNull(),
+    /** Set when an environment's own compose names the repository. */
+    environmentId: uuid('environment_id'),
+    /** Set when the project's compose names it (reaches every environment of the project). */
+    projectId: uuid('project_id'),
+  },
+  (table) => [
+    uniqueIndex('uniq_watch_repository_environment')
+      .on(table.repositoryId, table.environmentId)
+      .where(sql`${table.environmentId} IS NOT NULL`),
+    uniqueIndex('uniq_watch_repository_project')
+      .on(table.repositoryId, table.projectId)
+      .where(sql`${table.projectId} IS NOT NULL`),
+    index('idx_watch_environment_id').using(
+      'btree',
+      table.environmentId.asc().nullsLast().op('uuid_ops')
+    ),
+    index('idx_watch_project_id').using('btree', table.projectId.asc().nullsLast().op('uuid_ops')),
+    foreignKey({
+      columns: [table.repositoryId],
+      foreignColumns: [repository.id],
+      name: 'watch_repository_id_repository_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.environmentId],
+      foreignColumns: [environment.id],
+      name: 'watch_environment_id_environment_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.projectId],
+      foreignColumns: [project.id],
+      name: 'watch_project_id_project_id_fk',
+    }).onDelete('cascade'),
+    check(
+      'watch_target_check',
+      sql`(environment_id IS NOT NULL AND project_id IS NULL) OR (environment_id IS NULL AND project_id IS NOT NULL)`
     ),
   ]
 )
@@ -4821,9 +5669,12 @@ export const webhookDelivery = pgTable(
   },
   (table) => [
     index('idx_delivery_created_at').using('btree', table.createdAt.asc()),
-    index('idx_delivery_stripe_pending')
-      .using('btree', table.createdAt.asc())
-      .where(sql`${table.provider} = 'stripe' AND ${table.projectedAt} IS NULL`),
+    /** The per-minute projection retry: least recently attempted first. */
+    index('idx_delivery_pending')
+      .using('btree', table.updatedAt.asc())
+      .where(
+        sql`${table.provider} = 'stripe' AND ${table.projectedAt} IS NULL AND ${table.objectId} IS NOT NULL`
+      ),
     // Widened beyond the git kinds when billing landed: the same ledger claims
     // Stripe event ids (`src/webhook/billing/stripe.ts`).
     check('delivery_provider_check', sql`provider IN ('github', 'gitlab', 'stripe')`),
@@ -4831,7 +5682,7 @@ export const webhookDelivery = pgTable(
   ]
 )
 export const grant = pgTable(
-  'grant',
+  'permission',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -4851,20 +5702,19 @@ export const grant = pgTable(
     permission: text().notNull(),
   },
   (table) => [
-    unique('grant_unique').on(
+    unique('permission_unique').on(
       table.entityType,
       table.entityId,
       table.actorType,
       table.actorId,
       table.permission
     ),
-    index('idx_grant_entity').on(table.entityType, table.entityId),
-    index('idx_grant_actor').on(table.actorType, table.actorId),
+    index('idx_permission_actor').on(table.actorType, table.actorId),
     // Mirror `SUBJECT_TYPES` / `GRANT_ENTITY_TYPES` (src/client/authz/catalog.ts) —
     // pinned by enum-checks.test.ts.
-    check('grant_actor_type_check', sql`actor_type IN ('user', 'team', 'organization')`),
+    check('permission_actor_type_check', sql`actor_type IN ('user', 'team', 'organization')`),
     check(
-      'grant_entity_type_check',
+      'permission_entity_type_check',
       sql`entity_type IN ('organization', 'workspace', 'environment', 'project', 'service', 'server', 'hosting', 'variable', 'managed', 'container', 'tls', 'team')`
     ),
   ]
@@ -4907,7 +5757,9 @@ export const audit = pgTable(
     organizationId: uuid('organization_id'),
     /**
      * Who acted. Null only for an action the platform took on nobody's
-     * behalf (a scheduled sweep), never for an operator action.
+     * behalf (a scheduled sweep), never for an operator action. A plain id on
+     * purpose, with no foreign key: the trail keeps the id after the account
+     * is deleted, and `actor_email` still names who it was.
      */
     actorUserId: uuid('actor_user_id'),
     /** Denormalized on purpose: the trail must survive the account's deletion. */
@@ -4921,20 +5773,17 @@ export const audit = pgTable(
     context: jsonb(),
   },
   (table) => [
-    index('idx_audit_organization_created').on(table.organizationId, table.createdAt.desc()),
-    index('idx_audit_target').on(table.targetType, table.targetId),
+    /** The organization audit list: newest first, the id as tie-break so no sort is needed. */
+    index('idx_audit_organization_recent').on(
+      table.organizationId,
+      table.createdAt.desc(),
+      table.id.desc()
+    ),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
       name: 'audit_organization_id_organization_id_fk',
     }).onDelete('cascade'),
-    // The actor's account may be deleted; the row stays, with the id nulled
-    // and `actor_email` still naming who it was.
-    foreignKey({
-      columns: [table.actorUserId],
-      foreignColumns: [user.id],
-      name: 'audit_actor_user_id_user_id_fk',
-    }).onDelete('set null'),
   ]
 )
 export const session = pgTable(
@@ -5151,6 +6000,7 @@ export const lease = pgTable(
   },
   (table) => [
     unique('uniq_lease_name_organization').on(table.name, table.organizationId).nullsNotDistinct(),
+    index('idx_lease_organization_id').on(table.organizationId),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -5183,20 +6033,6 @@ export const account = pgTable(
     userId: uuid('user_id').notNull(),
     providerId: text('provider_id').notNull(),
     providerUserId: text('provider_user_id').notNull(),
-    accessToken: text('access_token'),
-    refreshToken: text('refresh_token'),
-    idToken: text('id_token'),
-    accessTokenExpiresAt: timestamp('access_token_expires_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    }),
-    refreshTokenExpiresAt: timestamp('refresh_token_expires_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    }),
-    scope: text(),
     password: text(),
   },
   (table) => [
@@ -5227,7 +6063,6 @@ export const teammate = pgTable(
     userId: uuid('user_id').notNull(),
   },
   (table) => [
-    index('idx_teammate_team_id').using('btree', table.teamId.asc().nullsLast().op('uuid_ops')),
     index('idx_teammate_user_id').using('btree', table.userId.asc().nullsLast().op('uuid_ops')),
     foreignKey({
       columns: [table.teamId],
@@ -5264,8 +6099,6 @@ export const team = pgTable(
       .defaultNow()
       .$onUpdate(() => sql`now()`)
       .notNull(),
-    metadata: jsonb(),
-    options: jsonb(),
     organizationId: uuid('organization_id').notNull(),
     name: text(),
   },
@@ -5307,8 +6140,6 @@ export const user = pgTable(
       .defaultNow()
       .$onUpdate(() => sql`now()`)
       .notNull(),
-    metadata: jsonb(),
-    options: jsonb(),
     /** Stays `varchar(255)` (schema-text-types audit, 2026-09-16): `oauth-http.ts` writes the OAuth profile name straight from the provider with no length check — the column is that write's only guard. */
     name: varchar({ length: 255 }),
     email: varchar({ length: 255 }).notNull(),
@@ -5330,7 +6161,7 @@ export const user = pgTable(
   ]
 )
 export const twoFactor = pgTable(
-  '2fa',
+  'totp',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -5358,12 +6189,11 @@ export const twoFactor = pgTable(
     backupCodes: text('backup_codes').notNull(),
   },
   (table) => [
-    index('idx_2fa_user_id').using('btree', table.userId.asc().nullsLast().op('uuid_ops')),
-    unique('uniq_2fa_user_id').on(table.userId),
+    unique('uniq_totp_user_id').on(table.userId),
     foreignKey({
       columns: [table.userId],
       foreignColumns: [user.id],
-      name: '2fa_user_id_user_id_fk',
+      name: 'totp_user_id_user_id_fk',
     }).onDelete('cascade'),
   ]
 )
@@ -5398,115 +6228,6 @@ export const verification = pgTable(
     value: text().notNull(),
   },
   (table) => [unique('verification_identifier_unique').on(table.identifier)]
-)
-/**
- * Append-only history of every topology generation a server has ever
- * reported (stable device/filesystem/GPU/signal identity + a generation
- * counter, pushed by the daemon over the `topology-report` cell message).
- * One row per (server, generation) — never updated in place, so later
- * "resolve historical generation N" query-reconstruction work can replay
- * exactly what the daemon saw at that generation.
- *
- * `snapshot` is the full topology snapshot as reported by the daemon, minus
- * daemon-internal-only fields. jsonb, so no migration for its shape.
- *
- * Bounded: at most 12 new generations per server per hour and 24 per day,
- * and only the newest 200 rows kept per server (see `server-topology-records.ts`). This
- * table has no partner `options` column (that jsonb-pairing convention only
- * applies to columns literally named `metadata`/`options`; ours is
- * `snapshot`).
- */
-export const topologyGeneration = pgTable(
-  'generation',
-  {
-    id: uuid()
-      .default(sql`uuidv7()`)
-      .primaryKey()
-      .notNull(),
-    createdAt: timestamp('created_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    })
-      .defaultNow()
-      .notNull(),
-    serverId: uuid('server_id').notNull(),
-    generation: integer().notNull(),
-    bootGeneration: integer('boot_generation').notNull(),
-    snapshot: jsonb(),
-    appliedAt: timestamp('applied_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    }).notNull(),
-  },
-  (table) => [
-    unique('uniq_generation_server_generation').on(table.serverId, table.generation),
-    index('idx_generation_server_generation').using(
-      'btree',
-      table.serverId.asc(),
-      table.generation.desc()
-    ),
-    foreignKey({
-      columns: [table.serverId],
-      foreignColumns: [server.id],
-      name: 'generation_server_id_server_id_fk',
-    }).onDelete('cascade'),
-  ]
-)
-
-/**
- * Append-only history of resolved v5 metrics-capability-plan generations
- * (see `../../daemon/metrics/capability-plan.ts`) — one row per
- * `(server, generation)`, written only when the *resolved* plan for a server
- * actually changes (`plan_hash` differs from the last recorded row), never
- * on every sample. Mirrors `topologyGeneration`'s shape/spirit, scoped to
- * capability-plan config instead of daemon-reported topology.
- *
- * `plan` is the full resolved `MetricsCapabilityPlan` snapshot, stored for
- * audit/debugging; `plan_hash` is the cheap "did it change" comparison key.
- * jsonb, so no migration for the plan shape.
- *
- * Bounded: only the newest 100 rows are kept per server (see
- * `capability-plan-records.ts`).
- */
-export const capabilityPlanGeneration = pgTable(
-  'capability',
-  {
-    id: uuid()
-      .default(sql`uuidv7()`)
-      .primaryKey()
-      .notNull(),
-    createdAt: timestamp('created_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    })
-      .defaultNow()
-      .notNull(),
-    serverId: uuid('server_id').notNull(),
-    generation: integer().notNull(),
-    planHash: text('plan_hash').notNull(),
-    plan: jsonb(),
-    appliedAt: timestamp('applied_at', {
-      precision: 3,
-      withTimezone: true,
-      mode: 'string',
-    }).notNull(),
-  },
-  (table) => [
-    unique('uniq_capability_server_generation').on(table.serverId, table.generation),
-    index('idx_capability_server_generation').using(
-      'btree',
-      table.serverId.asc(),
-      table.generation.desc()
-    ),
-    foreignKey({
-      columns: [table.serverId],
-      foreignColumns: [server.id],
-      name: 'capability_server_id_server_id_fk',
-    }).onDelete('cascade'),
-  ]
 )
 
 /**
@@ -5606,6 +6327,7 @@ export const notificationChannel = pgTable(
     ),
     index('idx_channel_organization').on(table.organizationId),
     index('idx_channel_user').on(table.userId),
+    index('idx_channel_created_by_user_id').on(table.createdByUserId),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -5647,7 +6369,7 @@ export const notificationRule = pgTable(
   (table) => [
     check(
       'rule_event_check',
-      sql`event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')`
+      sql`event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found')`
     ),
     check('rule_min_severity_check', sql`min_severity IN ('info', 'warning', 'critical')`),
     uniqueIndex('uniq_rule_channel_event').on(table.channelId, table.event),
@@ -5702,10 +6424,15 @@ export const notification = pgTable(
   (table) => [
     check(
       'notification_event_check',
-      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')`
+      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found')`
     ),
     check('notification_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
     index('idx_notification_user_created').on(table.userId, table.createdAt.desc()),
+    /** The unread count (polled every minute per open browser) and mark-all-read. */
+    index('idx_notification_unread')
+      .on(table.userId)
+      .where(sql`${table.readAt} IS NULL AND ${table.dismissedAt} IS NULL`),
+    index('idx_notification_organization_id').on(table.organizationId),
     foreignKey({
       columns: [table.userId],
       foreignColumns: [user.id],
@@ -5769,7 +6496,7 @@ export const notificationDelivery = pgTable(
   (table) => [
     check(
       'attempt_event_check',
-      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')`
+      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found')`
     ),
     check('attempt_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
     check(
@@ -5782,6 +6509,7 @@ export const notificationDelivery = pgTable(
       .on(table.channelId, table.createdAt)
       .where(sql`status = 'held'`),
     index('idx_attempt_channel_created').on(table.channelId, table.createdAt.desc()),
+    index('idx_attempt_organization_id').on(table.organizationId),
     foreignKey({
       columns: [table.channelId],
       foreignColumns: [notificationChannel.id],
@@ -5848,6 +6576,7 @@ export const edict = pgTable(
   (table) => [
     index('idx_edict_organization_id').using('btree', table.organizationId.asc()),
     index('idx_edict_server_id').using('btree', table.serverId.asc().nullsLast()),
+    index('idx_edict_created_by').on(table.createdBy),
     foreignKey({
       columns: [table.organizationId],
       foreignColumns: [organization.id],
@@ -5919,6 +6648,8 @@ export const bulwark = pgTable(
     lastDigest: text('last_digest'),
     /** What the host last answered (applied or refused, rule count, warnings); null before any report. */
     lastResult: jsonb('last_result'),
+    /** `kind` of the record in `last_result` (`preview`, `apply` or `remove`); the firewall sweep filters on it. */
+    lastKind: text('last_kind'),
     state: text().default('idle').notNull(),
     /** When an unconfirmed ruleset is undone by the host's guard; null unless `state` is `pending`. */
     deadlineAt: timestamp('deadline_at', {
@@ -5948,6 +6679,10 @@ export const bulwark = pgTable(
     check('bulwark_mode_check', sql`mode IN ('observe', 'managed', 'off')`),
     check('bulwark_state_check', sql`state IN ('idle', 'pending', 'confirmed', 'rolled_back')`),
     check('bulwark_generation_check', sql`generation >= 0`),
+    check(
+      'bulwark_last_kind_check',
+      sql`last_kind IS NULL OR last_kind IN ('preview', 'apply', 'remove')`
+    ),
     check(
       'bulwark_digest_format_check',
       sql`last_digest IS NULL OR last_digest ~ '^[a-f0-9]{64}$'`

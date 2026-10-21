@@ -16,12 +16,15 @@ import {
 const test = Deno.test.bind(Deno)
 
 test('an adopted row is marked, and reads back as adopted', () => {
-  const metadata = withHostingComposeOwner({ note: 'kept' }, {
-    composeServiceName: 'web',
-    route: 'app.example.com /',
-    tlsMode: 'internal',
-    adopted: true,
-  })
+  const metadata = withHostingComposeOwner(
+    { note: 'kept' },
+    {
+      composeServiceName: 'web',
+      route: 'app.example.com /',
+      tlsMode: 'internal',
+      adopted: true,
+    }
+  )
   assertEquals(metadata.note, 'kept')
   assertEquals(isComposeOwnedHosting(metadata), true)
   assertEquals(isAdoptedComposeHosting(metadata), true)
@@ -58,12 +61,15 @@ test('a row compose minted itself is never marked adopted', () => {
 })
 
 test('releasing strips every compose key and keeps operator metadata', () => {
-  const owned = withHostingComposeOwner({ note: 'kept' }, {
-    composeServiceName: 'web',
-    route: 'app.example.com /',
-    tlsMode: 'internal',
-    adopted: true,
-  })
+  const owned = withHostingComposeOwner(
+    { note: 'kept' },
+    {
+      composeServiceName: 'web',
+      route: 'app.example.com /',
+      tlsMode: 'internal',
+      adopted: true,
+    }
+  )
   const released = withoutHostingComposeOwner(owned)
   assertEquals(released, { note: 'kept' })
   assertEquals(isComposeOwnedHosting(released), false)

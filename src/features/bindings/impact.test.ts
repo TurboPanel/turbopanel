@@ -6,9 +6,9 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import {
   hasBindingsForDatabase,
-  hasBindingsForPrincipal,
+  hasBindingsForLogin,
   listBindingImpactForDatabase,
-  listBindingImpactForPrincipal,
+  listBindingImpactForLogin,
 } from './impact.ts'
 
 /**
@@ -30,20 +30,21 @@ function thenableRows(rows: unknown[]) {
 }
 
 function joinChain(rows: unknown[]): Db {
-  // listBindingImpact* uses select.from.innerJoin.innerJoin.where (and another join for DB).
+  // listBindingImpact* uses select.from.leftJoin.leftJoin.innerJoin.innerJoin.where;
+  // the per-login reads select.from.innerJoin(.innerJoin.innerJoin).where.
   const terminal = {
     where: () => thenableRows(rows),
+  }
+  const joins = {
+    innerJoin: () => joins,
+    leftJoin: () => joins,
+    where: terminal.where,
   }
   const chain = {
     select: () => ({
       from: () => ({
-        innerJoin: () => ({
-          innerJoin: () => ({
-            innerJoin: () => terminal,
-            where: terminal.where,
-          }),
-          where: terminal.where,
-        }),
+        innerJoin: () => joins,
+        leftJoin: () => joins,
         where: () => ({
           limit: () => Promise.resolve(rows),
         }),
@@ -53,8 +54,8 @@ function joinChain(rows: unknown[]): Db {
   return chain as unknown as Db
 }
 
-test('listBindingImpactForPrincipal sorts by keyPrefix and sets count', async () => {
-  const result = await listBindingImpactForPrincipal(
+test('listBindingImpactForLogin sorts by keyPrefix and sets count', async () => {
+  const result = await listBindingImpactForLogin(
     joinChain([
       {
         serviceId: 's2',
@@ -71,10 +72,13 @@ test('listBindingImpactForPrincipal sorts by keyPrefix and sets count', async ()
         keyPrefix: 'AAA',
       },
     ]),
-    'principal-1',
+    'login-1'
   )
   assertEquals(result.count, 2)
-  assertEquals(result.services.map((s) => s.keyPrefix), ['AAA', 'ZZZ'])
+  assertEquals(
+    result.services.map((s) => s.keyPrefix),
+    ['AAA', 'ZZZ']
+  )
   assertEquals(result.services[0]?.serviceId, 's1')
 })
 
@@ -86,15 +90,9 @@ test('listBindingImpactForDatabase returns empty impact shape', async () => {
   assertEquals(result, { count: 0, services: [] })
 })
 
-test('hasBindingsForPrincipal is true only when a row exists', async () => {
-  assertEquals(
-    await hasBindingsForPrincipal(joinChain([{ id: 'b1' }]), 'principal-1'),
-    true,
-  )
-  assertEquals(
-    await hasBindingsForPrincipal(joinChain([]), 'principal-1'),
-    false,
-  )
+test('hasBindingsForLogin is true only when a row exists', async () => {
+  assertEquals(await hasBindingsForLogin(joinChain([{ id: 'b1' }]), 'login-1'), true)
+  assertEquals(await hasBindingsForLogin(joinChain([]), 'login-1'), false)
 })
 
 test('hasBindingsForDatabase delegates to impact count', async () => {
@@ -109,15 +107,15 @@ test('hasBindingsForDatabase delegates to impact count', async () => {
           keyPrefix: 'DB',
         },
       ]),
-      { managedId: 'm1', databaseName: 'app' },
+      { managedId: 'm1', databaseName: 'app' }
     ),
-    true,
+    true
   )
   assertEquals(
     await hasBindingsForDatabase(joinChain([]), {
       managedId: 'm1',
       databaseName: 'app',
     }),
-    false,
+    false
   )
 })

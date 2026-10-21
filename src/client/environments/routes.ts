@@ -1,11 +1,15 @@
-import { and, eq, inArray } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { assertCanOr403, listVisible } from '../authz/index.ts'
-import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
+import { assertCanOr403, listVisibleVersions } from '../authz/index.ts'
+import { resolveEntityOrganizationId, resolveEntityVersion } from '../authz/create-access-grant.ts'
+import {
+  cachedEnvironmentDetail,
+  cachedEnvironmentsList,
+} from '../../query-cache/read-models/hierarchy-reads.ts'
 import { getDb, type Db } from '../../db/connection.ts'
 import { environment } from '../../db/schema.ts'
 import { settleDeployOptions } from '../../features/deploy/deploy-options.ts'
@@ -17,6 +21,13 @@ import {
 import { verifyServerInOrg } from './deploy-prepare.ts'
 import { loadRepinNeedsRedeployForEnvironment } from './repin-needs-redeploy.ts'
 import { reconcileServicesForEnvironment } from './reconcile-after-compose-save.ts'
+import {
+  environmentNameInUse,
+  isEnvironmentNameUniqueViolation,
+  refuseDeleteWhileFolders,
+  updateEnvironmentChecked,
+} from './rename-lock.ts'
+import { syncEnvironmentWatch } from '../../features/git/watch-records.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -40,26 +51,26 @@ import {
   loadOrganizationRepositoryIds,
   loadProjectRepositoryId,
 } from '../../features/git/repository-records.ts'
+import { copyOfPrimaryOptions } from '../../features/projects/primary-environment-copy.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
+import {
+  isFirstEnvironmentOf,
+  PrimaryEnvironmentConflictError,
+  loadPrimaryEnvironment,
+  lockProjectForEnvironmentChange,
+  setPrimaryEnvironment,
+  sortEnvironmentsForDisplay,
+} from '../../features/projects/primary-environment.ts'
 import {
   parseCreateEnvironmentJsonb,
   parseCreateEnvironmentNames,
+  parseCreateEnvironmentStart,
+  standAloneEnvironmentOptions,
   parseEnvironmentPatchMetadata,
   parseEnvironmentPatchOptions,
   parseOptionalServerIdShape,
   serializeEnvironment,
 } from './routes-helpers.ts'
-
-const ENVIRONMENT_SELECT = {
-  id: environment.id,
-  name: environment.name,
-  description: environment.description,
-  projectId: environment.projectId,
-  serverId: environment.serverId,
-  metadata: environment.metadata,
-  options: environment.options,
-  createdAt: environment.createdAt,
-  updatedAt: environment.updatedAt,
-} as const
 
 type EnvironmentPatchFields = {
   name?: string | null
@@ -67,6 +78,7 @@ type EnvironmentPatchFields = {
   serverId?: string | null
   metadata?: Record<string, unknown> | null
   options?: Record<string, unknown> | null
+  isPinned?: boolean
   updatedAt: string
 }
 
@@ -74,11 +86,15 @@ type CreateEnvironmentInput = {
   projectId: string
   /** The parent project's binding, already resolved for the lint above. */
   projectRepositoryId: string | null
-  name: string | null
+  name: string
   description: string | null
   serverId?: string | null
   metadata: Record<string, unknown> | null
   options: Record<string, unknown> | null
+  /** Plain-words list of what a copy left behind (empty unless the environment is a copy). */
+  notCopied: string[]
+  /** The copy the options were checked as, to be re-read under the project lock; null when not a copy. */
+  copySnapshot: string | null
 }
 
 function buildEnvironmentPatchFields(
@@ -98,6 +114,10 @@ function buildEnvironmentPatchFields(
   }
   if (metadataResult.metadata !== 'absent') {
     patchFields.metadata = metadataResult.metadata
+  }
+  if (body.pinned !== undefined) {
+    if (typeof body.pinned !== 'boolean') return c.json({ error: 'Invalid request' }, 400)
+    patchFields.isPinned = body.pinned
   }
   return patchFields
 }
@@ -221,22 +241,38 @@ async function parseCreateEnvironmentInput(
 
   const names = parseCreateEnvironmentNames(body)
   if (!names.ok) {
-    return c.json({ error: names.error }, names.status)
+    return c.json(
+      names.message === undefined
+        ? { error: names.error }
+        : { error: names.error, message: names.message },
+      names.status
+    )
   }
+
+  const startResult = parseCreateEnvironmentStart(body)
+  if (!startResult.ok) return c.json(validationErrorBody(startResult), startResult.status)
+  // A new environment starts as a copy of the primary one's own changes unless
+  // the caller asks for an empty one or sends its own options. The copy goes
+  // through the same checks as options a caller typed.
+  const {
+    body: sourceBody,
+    notCopied,
+    copySnapshot,
+  } = await resolveCreateStartBody(db, projectId, body, startResult.start)
 
   const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
   // An overlay is part of its project's compose, so it answers to the same
   // one-repository rule — and to the project's binding, not to its own.
   const projectRepositoryId = (await loadProjectRepositoryId(db, projectId)) ?? null
   const jsonb = parseCreateEnvironmentJsonb(
-    body,
+    sourceBody,
     {
       knownSourceIds,
       // Same union as the PATCH lane: the project's persisted root plus this
       // document's own.
       knownPrincipalAliases: unionAliasSets(
         await loadProjectPrincipalAliases(db, projectId),
-        composePrincipalAliases(body.options)
+        composePrincipalAliases(sourceBody.options)
       ),
       layer: 'overlay',
       projectRepositoryId,
@@ -261,24 +297,168 @@ async function parseCreateEnvironmentInput(
     ...(serverId !== undefined ? { serverId } : {}),
     metadata: jsonb.metadata,
     options: jsonb.options,
+    notCopied,
+    copySnapshot,
   }
+}
+
+function primaryConflict(c: Context<AppEnv>): Response {
+  return c.json(
+    {
+      error: 'primary_environment_conflict',
+      message: 'The primary environment changed at the same time. Reload and try again.',
+    },
+    409
+  )
+}
+
+/** The body whose `options` the new environment is checked and stored with. */
+async function resolveCreateStartBody(
+  db: Db,
+  projectId: string,
+  body: Record<string, unknown>,
+  start: 'copy' | 'empty' | null
+): Promise<{ body: Record<string, unknown>; notCopied: string[]; copySnapshot: string | null }> {
+  const plain = (next: Record<string, unknown>) => ({
+    body: next,
+    notCopied: [],
+    copySnapshot: null,
+  })
+  if (start === 'empty') return plain({ ...body, options: standAloneEnvironmentOptions() })
+  if (start === null && body.options !== undefined && body.options !== null) return plain(body)
+  const primary = await loadPrimaryEnvironment(db, projectId)
+  if (!primary) return plain(body)
+  const copied = copyOfPrimaryOptions(primary.options, await loadProjectOptions(db, projectId))
+  return {
+    body: copied.options ? { ...body, options: copied.options } : body,
+    notCopied: copied.notCopied,
+    copySnapshot: JSON.stringify(copied.options),
+  }
+}
+
+/**
+ * Insert the environment under the project lock. A copy is read again under
+ * that lock: if the primary (or the Base) changed since the options were
+ * checked, nothing is created and the caller gets a conflict.
+ */
+async function insertEnvironmentLocked(db: Db, input: CreateEnvironmentInput): Promise<string> {
+  return await db.transaction(async (tx) => {
+    // The first environment of a project is its primary one; the lock keeps
+    // two creates from both deciding they are first.
+    await lockProjectForEnvironmentChange(tx, input.projectId)
+    if (input.copySnapshot !== null) {
+      const primary = await loadPrimaryEnvironment(tx, input.projectId)
+      const again = primary
+        ? copyOfPrimaryOptions(primary.options, await loadProjectOptions(tx, input.projectId))
+        : null
+      if (JSON.stringify(again?.options ?? null) !== input.copySnapshot) {
+        throw new PrimaryEnvironmentConflictError()
+      }
+    }
+    const [inserted] = await tx
+      .insert(environment)
+      .values({
+        name: input.name,
+        description: input.description,
+        projectId: input.projectId,
+        isPrimary: isFirstEnvironmentOf(input.projectId),
+        ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
+        ...(input.metadata !== null ? { metadata: input.metadata } : {}),
+        ...(input.options !== null ? { options: input.options } : {}),
+      })
+      .returning({ id: environment.id })
+    if (input.options !== null) await syncEnvironmentWatch(tx, inserted.id)
+    return inserted.id
+  })
 }
 
 /** A row created while the delete ran trips an FK: report it as "has children". */
 async function deleteEnvironmentCascadeGuarded(
   db: Db,
-  id: string
+  id: string,
+  listenerSync?: Parameters<typeof deleteEnvironmentCascade>[2]
 ): Promise<EnvironmentDeleteResult | 'has_children'> {
   try {
-    return await deleteEnvironmentCascade(db, id)
+    return await deleteEnvironmentCascade(db, id, listenerSync)
   } catch (error) {
     if (isForeignKeyViolation(error)) return 'has_children'
     throw error
   }
 }
 
-function environmentDeleteRefusal(c: Context<AppEnv>, error: EnvironmentDeleteRefusal): Response {
-  return c.json({ error }, 409)
+function environmentDeleteRefusal(
+  c: Context<AppEnv>,
+  error: EnvironmentDeleteRefusal,
+  detail?: Record<string, unknown>
+): Response {
+  return c.json({ error, ...detail }, 409)
+}
+
+/** After a saved `options` patch: adopt the repository the compose names and refresh the service rows. */
+async function settleAfterOptionsPatch(
+  db: Db,
+  environmentId: string,
+  parent: { projectId: string; repositoryId: string | null } | null | undefined,
+  patchFields: EnvironmentPatchFields
+): Promise<void> {
+  if (patchFields.options === undefined) return
+  if (parent) {
+    await adoptProjectRepository(db, parent.projectId, patchFields.options, parent.repositoryId)
+  }
+  await reconcileServicesForEnvironment(db, environmentId)
+}
+
+/**
+ * Apply an environment PATCH body (name, description, server, metadata, options,
+ * pinned) with every check the PATCH route runs. Returns a response when the
+ * change is refused, otherwise null. The caller has already checked access.
+ */
+export async function applyEnvironmentPatch(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  id: string,
+  body: Record<string, unknown>
+): Promise<Response | null> {
+  const patchFields = buildEnvironmentPatchFields(c, body)
+  if (patchFields instanceof Response) return patchFields
+
+  const serverIdError = await applyEnvironmentServerIdPatch(
+    c,
+    db,
+    organizationId,
+    body,
+    patchFields
+  )
+  if (serverIdError) return serverIdError
+
+  const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
+  const parent = await loadEnvironmentProjectRepository(db, id)
+  // An overlay answers to the project's root as well as its own: a service
+  // here may name an alias the base declared, and one the base did not is a
+  // dangling reference either way.
+  const optionsError = applyEnvironmentOptionsPatch(
+    c,
+    body,
+    patchFields,
+    knownSourceIds,
+    parent?.repositoryId ?? null,
+    unionAliasSets(
+      parent ? await loadProjectPrincipalAliases(db, parent.projectId) : new Set(),
+      composePrincipalAliases(body.options)
+    ),
+    parent ? await loadProjectOptions(db, parent.projectId) : null
+  )
+  if (optionsError) return optionsError
+  await keepStoredDeployOptions(db, id, patchFields)
+
+  const refused = await updateEnvironmentChecked(c, db, id, patchFields, {
+    syncWatch: patchFields.options !== undefined,
+  })
+  if (refused) return refused
+
+  await settleAfterOptionsPatch(db, id, parent, patchFields)
+  return null
 }
 
 export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -289,6 +469,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
 
   router.use('/environments', createSessionMiddleware(secrets))
   router.use('/environments/:id', createSessionMiddleware(secrets))
+  router.use('/environments/:id/primary', createSessionMiddleware(secrets))
 
   router.get('/environments', async (c) => {
     const db = getDb(c)
@@ -303,28 +484,22 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
 
     const projectId = c.req.query('projectId')
 
-    const visibleIds = await listVisible(db, {
+    // Who may see which environment is decided here, on the primary connection;
+    // the visible ids (with when each last changed) go into the cached read.
+    const visible = await listVisibleVersions(db, {
       kind: 'environment',
       userId: session.userId,
       organizationId,
     })
 
-    if (visibleIds.length === 0) {
+    if (visible.length === 0) {
       return c.json({ environments: [] })
     }
 
-    const conditions = [inArray(environment.id, visibleIds)]
-    if (projectId) {
-      conditions.push(eq(environment.projectId, projectId))
-    }
+    const all = await cachedEnvironmentsList(c, { organizationId, visible })
+    const rows = projectId ? all.filter((row) => row.projectId === projectId) : all
 
-    const rows = await db
-      .select(ENVIRONMENT_SELECT)
-      .from(environment)
-      .where(and(...conditions))
-      .orderBy(environment.createdAt)
-
-    return c.json({ environments: rows.map(serializeEnvironment) })
+    return c.json({ environments: sortEnvironmentsForDisplay(rows).map(serializeEnvironment) })
   })
 
   router.get('/environments/:id', async (c) => {
@@ -339,18 +514,16 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     const organizationId = orgResult
 
     const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'environment', id)
-    if (!entityOrgId || entityOrgId !== organizationId) {
+    const entity = await resolveEntityVersion(db, 'environment', id)
+    if (entity?.organizationId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const rows = await db
-      .select(ENVIRONMENT_SELECT)
-      .from(environment)
-      .where(eq(environment.id, id))
-      .limit(1)
-
-    const row = rows[0]
+    const row = await cachedEnvironmentDetail(c, {
+      organizationId,
+      id,
+      updatedAt: entity.updatedAt,
+    })
     if (!row) {
       return c.json({ error: 'Not found' }, 404)
     }
@@ -379,25 +552,19 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     const input = await parseCreateEnvironmentInput(c, db, orgResult)
     if (input instanceof Response) return input
 
-    const id = await db.transaction(async (tx) => {
-      const [inserted] = await tx
-        .insert(environment)
-        .values({
-          name: input.name,
-          description: input.description,
-          projectId: input.projectId,
-          ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
-          ...(input.metadata !== null ? { metadata: input.metadata } : {}),
-          ...(input.options !== null ? { options: input.options } : {}),
-        })
-        .returning({ id: environment.id })
-      return inserted.id
-    })
+    let id: string
+    try {
+      id = await insertEnvironmentLocked(db, input)
+    } catch (err) {
+      if (isEnvironmentNameUniqueViolation(err)) return environmentNameInUse(c)
+      if (err instanceof PrimaryEnvironmentConflictError) return primaryConflict(c)
+      throw err
+    }
 
     await adoptProjectRepository(db, input.projectId, input.options, input.projectRepositoryId)
     await reconcileServicesForEnvironment(db, id)
 
-    return c.json({ ok: true as const, id })
+    return c.json({ ok: true as const, id, notCopied: input.notCopied })
   })
 
   router.patch('/environments/:id', async (c) => {
@@ -426,48 +593,63 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const patchFields = buildEnvironmentPatchFields(c, body)
-    if (patchFields instanceof Response) return patchFields
-
-    const serverIdError = await applyEnvironmentServerIdPatch(
-      c,
-      db,
-      organizationId,
-      body,
-      patchFields
-    )
-    if (serverIdError) return serverIdError
-
-    const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
-    const parent = await loadEnvironmentProjectRepository(db, id)
-    // An overlay answers to the project's root as well as its own: a service
-    // here may name an alias the base declared, and one the base did not is a
-    // dangling reference either way.
-    const optionsError = applyEnvironmentOptionsPatch(
-      c,
-      body,
-      patchFields,
-      knownSourceIds,
-      parent?.repositoryId ?? null,
-      unionAliasSets(
-        parent ? await loadProjectPrincipalAliases(db, parent.projectId) : new Set(),
-        composePrincipalAliases(body.options)
-      ),
-      parent ? await loadProjectOptions(db, parent.projectId) : null
-    )
-    if (optionsError) return optionsError
-    await keepStoredDeployOptions(db, id, patchFields)
-
-    await db.update(environment).set(patchFields).where(eq(environment.id, id))
-
-    if (patchFields.options !== undefined) {
-      if (parent) {
-        await adoptProjectRepository(db, parent.projectId, patchFields.options, parent.repositoryId)
-      }
-      await reconcileServicesForEnvironment(db, id)
-    }
+    const refused = await applyEnvironmentPatch(c, db, organizationId, id, body)
+    if (refused) return refused
 
     return c.json({ ok: true as const })
+  })
+
+  // Make this environment the project's primary one. Idempotent.
+  router.post('/environments/:id/primary', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
+
+    const id = c.req.param('id')
+    const entityOrgId = await resolveEntityOrganizationId(db, 'environment', id)
+    if (!entityOrgId || entityOrgId !== organizationId) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    const denied = await assertCanOr403(c, 'organization:manage', 'environment', id)
+    if (denied) return denied
+
+    const immutable = await assertNotSystemOwnedOr403(c, 'environment', id)
+    if (immutable) return immutable
+
+    const [row] = await db
+      .select({ projectId: environment.projectId, wasPrimary: environment.isPrimary })
+      .from(environment)
+      .where(eq(environment.id, id))
+      .limit(1)
+    if (!row) return c.json({ error: 'Not found' }, 404)
+
+    let changed: boolean
+    try {
+      changed = await db.transaction((tx) => setPrimaryEnvironment(tx, row.projectId, id))
+    } catch (err) {
+      if (!(err instanceof PrimaryEnvironmentConflictError)) throw err
+      return primaryConflict(c)
+    }
+    if (!changed) return c.json({ error: 'Not found' }, 404)
+    // Making the primary environment primary again changed nothing: no audit row.
+    if (!row.wasPrimary)
+      await recordAudit(db, {
+        organizationId,
+        actorUserId: session.userId,
+        actorEmail: session.email ?? null,
+        action: 'environment.primary.set',
+        targetType: 'environment',
+        targetId: id,
+        context: { projectId: row.projectId },
+      })
+    return c.json({ ok: true as const, id, projectId: row.projectId })
   })
 
   router.delete('/environments/:id', async (c) => {
@@ -496,18 +678,29 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     const stepUp = await requireStepUpIfConfigured(c, organizationId, 'environment.delete')
     if (stepUp) return stepUp
 
+    // The name is a folder on the servers: an environment with folders cannot go.
+    const foldersBlock = await refuseDeleteWhileFolders(c, db, id)
+    if (foldersBlock) return foldersBlock
+
     // Planned before the delete: the payload is built from rows the delete
     // removes. Dispatched after it commits.
     const teardownPlan = await planEnvironmentTeardown(db, id)
 
     // Refuses (409) while a container is running or a deploy is in progress;
     // otherwise drops the environment and everything under it.
-    const result = await deleteEnvironmentCascadeGuarded(db, id)
+    const result = await deleteEnvironmentCascadeGuarded(db, id, {
+      c,
+      actorId: session.userId,
+      organizationId,
+    })
     if (result === 'has_children') return hierarchyDeleteHasChildrenResponse(c)
-    if (!result.ok) return environmentDeleteRefusal(c, result.error)
+    if (!result.ok) return environmentDeleteRefusal(c, result.error, result.detail)
 
     await reclaimDeletedEnvironmentHosts(c, db, teardownPlan ? [teardownPlan] : [], session.userId)
 
-    return c.json({ ok: true as const })
+    return c.json({
+      ok: true as const,
+      ...(result.warning ? { warning: result.warning } : {}),
+    })
   })
 }

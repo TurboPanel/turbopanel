@@ -10,98 +10,103 @@
  * commands. TurboFabric mesh enable remains `PUT …/fabric`.
  */
 
-import { isValidNtpServer } from "../../contracts/commands/schemas.ts";
+import { isValidNtpServer } from '../../contracts/commands/schemas.ts'
 
-export const DEFAULT_SSH_PORT = 22;
-export const SSH_PORT_MIN = 1;
-export const SSH_PORT_MAX = 65535;
+export const DEFAULT_SSH_PORT = 22
+export const SSH_PORT_MIN = 1
+export const SSH_PORT_MAX = 65535
 
-export type HostDefaultsSource = "server" | "datacenter" | "organization";
+export type HostDefaultsSource = 'server' | 'datacenter' | 'organization'
 
 export type NtpDefaults = {
-  enabled?: boolean;
-  servers?: string[];
-  fallbackServers?: string[];
-};
+  enabled?: boolean
+  servers?: string[]
+  fallbackServers?: string[]
+}
 
 export type HostDefaultsLayer = {
-  sshPort?: number;
-  ntp?: NtpDefaults;
+  sshPort?: number
+  ntp?: NtpDefaults
   /** Organization layer only — ignored on datacenter/server. */
-  defaultFabricEnabled?: boolean;
-};
+  defaultFabricEnabled?: boolean
+  /**
+   * Hide web server names and versions (headers, error pages). Organization and
+   * server layers only; unset everywhere means on.
+   */
+  hideWebServerNames?: boolean
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function firstDefined<T>(
-  layers: ReadonlyArray<{ value: T | undefined; source: HostDefaultsSource }>,
+  layers: ReadonlyArray<{ value: T | undefined; source: HostDefaultsSource }>
 ): { value: T | undefined; source: HostDefaultsSource | null } {
   for (const layer of layers) {
     if (layer.value !== undefined) {
-      return { value: layer.value, source: layer.source };
+      return { value: layer.value, source: layer.source }
     }
   }
-  return { value: undefined, source: null };
+  return { value: undefined, source: null }
 }
 
 /** True when `value` is an integer in the TCP port range (1–65535). */
 export function isValidSshPort(value: unknown): value is number {
-  return typeof value === "number" &&
+  return (
+    typeof value === 'number' &&
     Number.isInteger(value) &&
     value >= SSH_PORT_MIN &&
-    value <= SSH_PORT_MAX;
+    value <= SSH_PORT_MAX
+  )
 }
 
 /**
  * Parse an SSH port PUT/PATCH value. `null` clears the layer (inherit parent).
  */
 export function parseSshPortInput(
-  value: unknown,
+  value: unknown
 ): { ok: true; value: number | null } | { ok: false } {
-  if (value === null) return { ok: true, value: null };
-  if (!isValidSshPort(value)) return { ok: false };
-  return { ok: true, value };
+  if (value === null) return { ok: true, value: null }
+  if (!isValidSshPort(value)) return { ok: false }
+  return { ok: true, value }
 }
 
 /** Lenient jsonb read — invalid/missing → omitted. */
 export function parseSshPort(value: unknown): number | undefined {
-  return isValidSshPort(value) ? value : undefined;
+  return isValidSshPort(value) ? value : undefined
 }
 
 function parseOptionalNtpHostList(value: unknown): string[] | undefined {
-  if (!Array.isArray(value) || value.length === 0) return undefined;
-  const hosts: string[] = [];
+  if (!Array.isArray(value) || value.length === 0) return undefined
+  const hosts: string[] = []
   for (const entry of value) {
-    if (!isValidNtpServer(entry)) return undefined;
-    hosts.push(entry);
+    if (!isValidNtpServer(entry)) return undefined
+    hosts.push(entry)
   }
-  return hosts;
+  return hosts
 }
 
-function parseNtpHostListInput(
-  value: unknown,
-): { ok: true; value: string[] } | { ok: false } {
-  if (!Array.isArray(value) || value.length === 0) return { ok: false };
-  const hosts: string[] = [];
+function parseNtpHostListInput(value: unknown): { ok: true; value: string[] } | { ok: false } {
+  if (!Array.isArray(value) || value.length === 0) return { ok: false }
+  const hosts: string[] = []
   for (const entry of value) {
-    if (!isValidNtpServer(entry)) return { ok: false };
-    hosts.push(entry);
+    if (!isValidNtpServer(entry)) return { ok: false }
+    hosts.push(entry)
   }
-  return { ok: true, value: hosts };
+  return { ok: true, value: hosts }
 }
 
 /** Lenient jsonb read for desired NTP defaults. */
 export function parseNtpDefaults(value: unknown): NtpDefaults | undefined {
-  if (!isRecord(value)) return undefined;
-  const ntp: NtpDefaults = {};
-  if (typeof value.enabled === "boolean") ntp.enabled = value.enabled;
-  const servers = parseOptionalNtpHostList(value.servers);
-  if (servers) ntp.servers = servers;
-  const fallbackServers = parseOptionalNtpHostList(value.fallbackServers);
-  if (fallbackServers) ntp.fallbackServers = fallbackServers;
-  return Object.keys(ntp).length > 0 ? ntp : undefined;
+  if (!isRecord(value)) return undefined
+  const ntp: NtpDefaults = {}
+  if (typeof value.enabled === 'boolean') ntp.enabled = value.enabled
+  const servers = parseOptionalNtpHostList(value.servers)
+  if (servers) ntp.servers = servers
+  const fallbackServers = parseOptionalNtpHostList(value.fallbackServers)
+  if (fallbackServers) ntp.fallbackServers = fallbackServers
+  return Object.keys(ntp).length > 0 ? ntp : undefined
 }
 
 /**
@@ -110,66 +115,92 @@ export function parseNtpDefaults(value: unknown): NtpDefaults | undefined {
  * `fallbackServers`. Empty host arrays are rejected.
  */
 export function parseNtpDefaultsInput(
-  value: unknown,
+  value: unknown
 ): { ok: true; value: NtpDefaults | null } | { ok: false } {
-  if (value === null) return { ok: true, value: null };
-  if (!isRecord(value)) return { ok: false };
+  if (value === null) return { ok: true, value: null }
+  if (!isRecord(value)) return { ok: false }
 
-  const ntp: NtpDefaults = {};
-  if ("enabled" in value) {
-    if (typeof value.enabled !== "boolean") return { ok: false };
-    ntp.enabled = value.enabled;
+  const ntp: NtpDefaults = {}
+  if ('enabled' in value) {
+    if (typeof value.enabled !== 'boolean') return { ok: false }
+    ntp.enabled = value.enabled
   }
-  if ("servers" in value) {
-    const parsed = parseNtpHostListInput(value.servers);
-    if (!parsed.ok) return { ok: false };
-    ntp.servers = parsed.value;
+  if ('servers' in value) {
+    const parsed = parseNtpHostListInput(value.servers)
+    if (!parsed.ok) return { ok: false }
+    ntp.servers = parsed.value
   }
-  if ("fallbackServers" in value) {
-    const parsed = parseNtpHostListInput(value.fallbackServers);
-    if (!parsed.ok) return { ok: false };
-    ntp.fallbackServers = parsed.value;
+  if ('fallbackServers' in value) {
+    const parsed = parseNtpHostListInput(value.fallbackServers)
+    if (!parsed.ok) return { ok: false }
+    ntp.fallbackServers = parsed.value
   }
-  if (Object.keys(ntp).length === 0) return { ok: false };
-  return { ok: true, value: ntp };
+  if (Object.keys(ntp).length === 0) return { ok: false }
+  return { ok: true, value: ntp }
 }
 
 export function parseDefaultFabricEnabledInput(
-  value: unknown,
+  value: unknown
 ): { ok: true; value: boolean | null } | { ok: false } {
-  if (value === null) return { ok: true, value: null };
-  if (typeof value !== "boolean") return { ok: false };
-  return { ok: true, value };
+  if (value === null) return { ok: true, value: null }
+  if (typeof value !== 'boolean') return { ok: false }
+  return { ok: true, value }
+}
+
+/** Hidden unless a layer says otherwise. */
+export const DEFAULT_HIDE_WEB_SERVER_NAMES = true
+
+/** Lenient jsonb read — anything but a boolean is omitted. */
+export function parseHideWebServerNames(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined
+}
+
+/** PUT/PATCH value: a boolean sets the layer, `null` clears it (inherit). */
+export const parseHideWebServerNamesInput = parseDefaultFabricEnabledInput
+
+/** Server value wins, then the organization's; on when neither is set. */
+export function resolveEffectiveHideWebServerNames(
+  server: HostDefaultsLayer | null | undefined,
+  organization: HostDefaultsLayer | null | undefined
+): { hideWebServerNames: boolean; source: HostDefaultsSource | null } {
+  const resolved = firstDefined([
+    { value: server?.hideWebServerNames, source: 'server' },
+    { value: organization?.hideWebServerNames, source: 'organization' },
+  ])
+  if (resolved.value !== undefined) {
+    return { hideWebServerNames: resolved.value, source: resolved.source }
+  }
+  return { hideWebServerNames: DEFAULT_HIDE_WEB_SERVER_NAMES, source: null }
 }
 
 export function resolveEffectiveSshPort(
   server: HostDefaultsLayer | null | undefined,
   datacenter: HostDefaultsLayer | null | undefined,
-  organization: HostDefaultsLayer | null | undefined,
+  organization: HostDefaultsLayer | null | undefined
 ): { sshPort: number; source: HostDefaultsSource | null } {
   const resolved = firstDefined([
-    { value: server?.sshPort, source: "server" },
-    { value: datacenter?.sshPort, source: "datacenter" },
-    { value: organization?.sshPort, source: "organization" },
-  ]);
+    { value: server?.sshPort, source: 'server' },
+    { value: datacenter?.sshPort, source: 'datacenter' },
+    { value: organization?.sshPort, source: 'organization' },
+  ])
   if (resolved.value !== undefined) {
-    return { sshPort: resolved.value, source: resolved.source };
+    return { sshPort: resolved.value, source: resolved.source }
   }
-  return { sshPort: DEFAULT_SSH_PORT, source: null };
+  return { sshPort: DEFAULT_SSH_PORT, source: null }
 }
 
 export function resolveEffectiveNtpDefaults(
   server: HostDefaultsLayer | null | undefined,
   datacenter: HostDefaultsLayer | null | undefined,
-  organization: HostDefaultsLayer | null | undefined,
+  organization: HostDefaultsLayer | null | undefined
 ): { ntp: NtpDefaults | null; source: HostDefaultsSource | null } {
   const resolved = firstDefined([
-    { value: server?.ntp, source: "server" },
-    { value: datacenter?.ntp, source: "datacenter" },
-    { value: organization?.ntp, source: "organization" },
-  ]);
+    { value: server?.ntp, source: 'server' },
+    { value: datacenter?.ntp, source: 'datacenter' },
+    { value: organization?.ntp, source: 'organization' },
+  ])
   return {
     ntp: resolved.value ?? null,
     source: resolved.value ? resolved.source : null,
-  };
+  }
 }

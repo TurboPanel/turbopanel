@@ -17,7 +17,6 @@ import {
   detectBindingCreateConflicts,
   detectBindingUpdateConflicts,
   findBindingKeyConflicts,
-  isBindableDatabasePrincipal,
   isEngineDefaultsInUse,
   isKeyOwnedByBindingOnService,
   isPostgresUniqueViolation,
@@ -26,8 +25,8 @@ import {
   parseBindingKeyPrefix,
   parseBindingsListFilter,
   parseEmitEngineDefaults,
-  resolveBindingPrincipalEngine,
-  resolveBindingPrincipalManagedId,
+  resolveBindingEngine,
+  resolveBindingManagedId,
   resolvePatchBindingFields,
   resolveServiceIdForHosting,
   serializeBindingRow,
@@ -99,61 +98,54 @@ test('isPostgresUniqueViolation detects Postgres 23505', () => {
 })
 
 test('bindingMaterializeHttpPayload maps endpoint failures to 422', () => {
-  assertEquals(
-    bindingMaterializeHttpPayload({ kind: 'binding_endpoint_unavailable' }),
-    { status: 422, body: { error: BINDING_ENDPOINT_UNAVAILABLE_ERROR } },
-  )
-  assertEquals(
-    bindingMaterializeHttpPayload({ kind: 'datacenter_ip_required' }),
-    { status: 422, body: { error: BINDING_ENDPOINT_UNAVAILABLE_ERROR } },
-  )
-  assertEquals(
-    bindingMaterializeHttpPayload({ kind: 'private_path_unavailable' }),
-    { status: 422, body: { error: BINDING_ENDPOINT_UNAVAILABLE_ERROR } },
-  )
-  assertEquals(
-    bindingMaterializeHttpPayload({ kind: 'binding_password_unavailable' }),
-    { status: 400, body: { error: 'binding_password_unavailable' } },
-  )
+  assertEquals(bindingMaterializeHttpPayload({ kind: 'binding_endpoint_unavailable' }), {
+    status: 422,
+    body: { error: BINDING_ENDPOINT_UNAVAILABLE_ERROR },
+  })
+  assertEquals(bindingMaterializeHttpPayload({ kind: 'datacenter_ip_required' }), {
+    status: 422,
+    body: { error: BINDING_ENDPOINT_UNAVAILABLE_ERROR },
+  })
+  assertEquals(bindingMaterializeHttpPayload({ kind: 'private_path_unavailable' }), {
+    status: 422,
+    body: { error: BINDING_ENDPOINT_UNAVAILABLE_ERROR },
+  })
+  assertEquals(bindingMaterializeHttpPayload({ kind: 'binding_password_unavailable' }), {
+    status: 400,
+    body: { error: 'binding_password_unavailable' },
+  })
 })
 
 test('checkBindingDatabaseTarget validates engine + database', () => {
   assertEquals(
-    checkBindingDatabaseTarget({ engine: 'not-real', options: {} }, 'app'),
-    'binding_engine_unsupported',
+    checkBindingDatabaseTarget({ engine: 'not-real', options: {}, databases: [] }, 'app'),
+    'binding_engine_unsupported'
   )
   assertEquals(
-    checkBindingDatabaseTarget(
-      { engine: 'postgres', options: 'bad' },
-      'app',
-    ),
-    'Invalid managed options',
-  )
-  assertEquals(
-    checkBindingDatabaseTarget(
-      {
-        engine: 'postgres',
-        options: {
-          settings: postgresEngineSpec.defaultSettings,
-          databases: ['app'],
-        },
-      },
-      'missing',
-    ),
-    'database_not_found',
+    checkBindingDatabaseTarget({ engine: 'postgres', options: 'bad', databases: [] }, 'app'),
+    'Invalid managed options'
   )
   assertEquals(
     checkBindingDatabaseTarget(
       {
         engine: 'postgres',
-        options: {
-          settings: postgresEngineSpec.defaultSettings,
-          databases: ['app'],
-        },
+        options: { settings: postgresEngineSpec.defaultSettings },
+        databases: ['app'],
       },
-      'app',
+      'missing'
     ),
-    null,
+    'database_not_found'
+  )
+  assertEquals(
+    checkBindingDatabaseTarget(
+      {
+        engine: 'postgres',
+        options: { settings: postgresEngineSpec.defaultSettings },
+        databases: ['app'],
+      },
+      'app'
+    ),
+    null
   )
 })
 
@@ -164,18 +156,13 @@ test('resolvePatchBindingFields applies and validates overrides', () => {
     keyPrefix: 'DATABASE',
     emitEngineDefaults: true,
   })
-  assertEquals(
-    resolvePatchBindingFields({ keyPrefix: 'APP', emitEngineDefaults: false }, base),
-    { ok: true, keyPrefix: 'APP', emitEngineDefaults: false },
-  )
-  assertEquals(
-    resolvePatchBindingFields({ keyPrefix: 'TURBOPANEL' }, base).ok,
-    false,
-  )
-  assertEquals(
-    resolvePatchBindingFields({ emitEngineDefaults: 'yes' }, base).ok,
-    false,
-  )
+  assertEquals(resolvePatchBindingFields({ keyPrefix: 'APP', emitEngineDefaults: false }, base), {
+    ok: true,
+    keyPrefix: 'APP',
+    emitEngineDefaults: false,
+  })
+  assertEquals(resolvePatchBindingFields({ keyPrefix: 'TURBOPANEL' }, base).ok, false)
+  assertEquals(resolvePatchBindingFields({ emitEngineDefaults: 'yes' }, base).ok, false)
 })
 
 test('findBindingKeyConflicts returns null for empty key sets', async () => {
@@ -184,27 +171,24 @@ test('findBindingKeyConflicts returns null for empty key sets', async () => {
       serviceId: 'svc',
       keys: [],
     }),
-    null,
+    null
   )
 })
 
 test('findBindingKeyConflicts reports service-scoped user variable first', async () => {
-  const conflict = await findBindingKeyConflicts(
-    selectQueueDb([[{ key: 'DATABASE_URL' }]]),
-    { serviceId: 'svc', keys: ['DATABASE_URL'] },
-  )
+  const conflict = await findBindingKeyConflicts(selectQueueDb([[{ key: 'DATABASE_URL' }]]), {
+    serviceId: 'svc',
+    keys: ['DATABASE_URL'],
+  })
   assertEquals(conflict, 'DATABASE_URL')
 })
 
 test('findBindingKeyConflicts excludeBindingId still finds foreign rows', async () => {
-  const conflict = await findBindingKeyConflicts(
-    selectQueueDb([[{ key: 'DATABASE_URL' }]]),
-    {
-      serviceId: 'svc',
-      keys: ['DATABASE_URL'],
-      excludeBindingId: 'binding-other',
-    },
-  )
+  const conflict = await findBindingKeyConflicts(selectQueueDb([[{ key: 'DATABASE_URL' }]]), {
+    serviceId: 'svc',
+    keys: ['DATABASE_URL'],
+    excludeBindingId: 'binding-other',
+  })
   assertEquals(conflict, 'DATABASE_URL')
 })
 
@@ -215,18 +199,18 @@ test('findBindingKeyConflicts checks hosting-scoped keys when service is clean',
       [{ id: 'h1' }, { id: 'h2' }], // hostings
       [{ key: 'DATABASE_PASSWORD' }], // hosting hit
     ]),
-    { serviceId: 'svc', keys: ['DATABASE_PASSWORD'] },
+    { serviceId: 'svc', keys: ['DATABASE_PASSWORD'] }
   )
   assertEquals(conflict, 'DATABASE_PASSWORD')
 })
 
 test('findBindingKeyConflicts returns null when hostings absent', async () => {
   assertEquals(
-    await findBindingKeyConflicts(
-      selectQueueDb([[], []]),
-      { serviceId: 'svc', keys: ['DATABASE_URL'] },
-    ),
-    null,
+    await findBindingKeyConflicts(selectQueueDb([[], []]), {
+      serviceId: 'svc',
+      keys: ['DATABASE_URL'],
+    }),
+    null
   )
 })
 
@@ -239,16 +223,13 @@ test('assertNoBindingKeyConflicts maps emitted key collisions', async () => {
   })
   assertEquals(ok, { ok: true })
 
-  const bad = await assertNoBindingKeyConflicts(
-    selectQueueDb([[{ key: 'DATABASE_URL' }]]),
-    {
-      serviceId: 'svc',
-      keyPrefix: 'DATABASE',
-      emitEngineDefaults: false,
-      engineCode: 'postgres',
-      excludeBindingId: 'b1',
-    },
-  )
+  const bad = await assertNoBindingKeyConflicts(selectQueueDb([[{ key: 'DATABASE_URL' }]]), {
+    serviceId: 'svc',
+    keyPrefix: 'DATABASE',
+    emitEngineDefaults: false,
+    engineCode: 'postgres',
+    excludeBindingId: 'b1',
+  })
   assertEquals(bad, { ok: false, key: 'DATABASE_URL' })
   assertEquals(BINDING_KEY_CONFLICT_ERROR, 'binding_key_conflict')
 })
@@ -261,22 +242,19 @@ test('assertNoBindingKeyConflicts short-circuits unknown engines', async () => {
       emitEngineDefaults: true,
       engineCode: 'not-a-real-engine',
     }),
-    { ok: true },
+    { ok: true }
   )
 })
 
 test('detectBindingCreateConflicts covers prefix / defaults / keys', async () => {
   assertEquals(
-    await detectBindingCreateConflicts(
-      selectQueueDb([[{ id: 'b1' }]]),
-      {
-        serviceId: 'svc',
-        keyPrefix: 'DB',
-        emitEngineDefaults: false,
-        engineCode: 'postgres',
-      },
-    ),
-    { error: BINDING_KEY_PREFIX_IN_USE_ERROR },
+    await detectBindingCreateConflicts(selectQueueDb([[{ id: 'b1' }]]), {
+      serviceId: 'svc',
+      keyPrefix: 'DB',
+      emitEngineDefaults: false,
+      engineCode: 'postgres',
+    }),
+    { error: BINDING_KEY_PREFIX_IN_USE_ERROR }
   )
 
   assertEquals(
@@ -290,9 +268,9 @@ test('detectBindingCreateConflicts covers prefix / defaults / keys', async () =>
         keyPrefix: 'DB',
         emitEngineDefaults: true,
         engineCode: 'postgres',
-      },
+      }
     ),
-    { error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR },
+    { error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR }
   )
 
   assertEquals(
@@ -306,9 +284,9 @@ test('detectBindingCreateConflicts covers prefix / defaults / keys', async () =>
         keyPrefix: 'DATABASE',
         emitEngineDefaults: false,
         engineCode: 'postgres',
-      },
+      }
     ),
-    { error: BINDING_KEY_CONFLICT_ERROR, key: 'DATABASE_URL' },
+    { error: BINDING_KEY_CONFLICT_ERROR, key: 'DATABASE_URL' }
   )
 
   assertEquals(
@@ -323,143 +301,95 @@ test('detectBindingCreateConflicts covers prefix / defaults / keys', async () =>
         keyPrefix: 'DATABASE',
         emitEngineDefaults: false,
         engineCode: 'postgres',
-      },
+      }
     ),
-    null,
+    null
   )
 })
 
 test('detectBindingUpdateConflicts only checks changed fields', async () => {
   assertEquals(
-    await detectBindingUpdateConflicts(
-      selectQueueDb([[{ id: 'other' }]]),
-      {
-        id: 'b1',
-        serviceId: 'svc',
-        previousKeyPrefix: 'DATABASE',
-        previousEmitEngineDefaults: false,
-        nextKeyPrefix: 'APP',
-        nextEmitEngineDefaults: false,
-        engineCode: 'postgres',
-      },
-    ),
-    { error: BINDING_KEY_PREFIX_IN_USE_ERROR },
+    await detectBindingUpdateConflicts(selectQueueDb([[{ id: 'other' }]]), {
+      id: 'b1',
+      serviceId: 'svc',
+      previousKeyPrefix: 'DATABASE',
+      previousEmitEngineDefaults: false,
+      nextKeyPrefix: 'APP',
+      nextEmitEngineDefaults: false,
+      engineCode: 'postgres',
+    }),
+    { error: BINDING_KEY_PREFIX_IN_USE_ERROR }
   )
 
   assertEquals(
-    await detectBindingUpdateConflicts(
-      selectQueueDb([[{ id: 'other' }]]),
-      {
-        id: 'b1',
-        serviceId: 'svc',
-        previousKeyPrefix: 'DATABASE',
-        previousEmitEngineDefaults: false,
-        nextKeyPrefix: 'DATABASE',
-        nextEmitEngineDefaults: true,
-        engineCode: 'postgres',
-      },
-    ),
-    { error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR },
+    await detectBindingUpdateConflicts(selectQueueDb([[{ id: 'other' }]]), {
+      id: 'b1',
+      serviceId: 'svc',
+      previousKeyPrefix: 'DATABASE',
+      previousEmitEngineDefaults: false,
+      nextKeyPrefix: 'DATABASE',
+      nextEmitEngineDefaults: true,
+      engineCode: 'postgres',
+    }),
+    { error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR }
   )
 
   assertEquals(
-    await detectBindingUpdateConflicts(
-      selectQueueDb([[]]),
-      {
-        id: 'b1',
-        serviceId: 'svc',
-        previousKeyPrefix: 'DATABASE',
-        previousEmitEngineDefaults: true,
-        nextKeyPrefix: 'DATABASE',
-        nextEmitEngineDefaults: true,
-        engineCode: 'postgres',
-      },
-    ),
-    null,
+    await detectBindingUpdateConflicts(selectQueueDb([[]]), {
+      id: 'b1',
+      serviceId: 'svc',
+      previousKeyPrefix: 'DATABASE',
+      previousEmitEngineDefaults: true,
+      nextKeyPrefix: 'DATABASE',
+      nextEmitEngineDefaults: true,
+      engineCode: 'postgres',
+    }),
+    null
   )
 })
 
 test('isPrefixInUse / isEngineDefaultsInUse / isKeyOwnedByBindingOnService', async () => {
+  assertEquals(await isPrefixInUse(selectQueueDb([[{ id: 'b1' }]]), 'svc', 'DB'), true)
+  assertEquals(await isPrefixInUse(selectQueueDb([[]]), 'svc', 'DB', 'exclude'), false)
+  assertEquals(await isEngineDefaultsInUse(selectQueueDb([[{ id: 'b1' }]]), 'svc'), true)
+  assertEquals(await isEngineDefaultsInUse(selectQueueDb([[]]), 'svc', 'exclude'), false)
   assertEquals(
-    await isPrefixInUse(selectQueueDb([[{ id: 'b1' }]]), 'svc', 'DB'),
-    true,
+    await isKeyOwnedByBindingOnService(selectQueueDb([[{ id: 'v1' }]]), 'svc', 'DATABASE_URL'),
+    true
   )
-  assertEquals(
-    await isPrefixInUse(selectQueueDb([[]]), 'svc', 'DB', 'exclude'),
-    false,
-  )
-  assertEquals(
-    await isEngineDefaultsInUse(selectQueueDb([[{ id: 'b1' }]]), 'svc'),
-    true,
-  )
-  assertEquals(
-    await isEngineDefaultsInUse(selectQueueDb([[]]), 'svc', 'exclude'),
-    false,
-  )
-  assertEquals(
-    await isKeyOwnedByBindingOnService(
-      selectQueueDb([[{ id: 'v1' }]]),
-      'svc',
-      'DATABASE_URL',
-    ),
-    true,
-  )
-  assertEquals(
-    await isKeyOwnedByBindingOnService(selectQueueDb([[]]), 'svc', 'X'),
-    false,
-  )
+  assertEquals(await isKeyOwnedByBindingOnService(selectQueueDb([[]]), 'svc', 'X'), false)
 })
 
-test('resolveBindingPrincipalManagedId / Engine', async () => {
+test('resolveBindingManagedId / Engine', async () => {
+  const row = { loginId: 'l1' }
+  assertEquals(await resolveBindingManagedId(selectQueueDb([[]]), row), null)
+  assertEquals(await resolveBindingManagedId(selectQueueDb([[{ managedId: 'm1' }]]), row), 'm1')
+  assertEquals(await resolveBindingEngine(selectQueueDb([[]]), row), {
+    managedId: null,
+    engineCode: 'postgres',
+  })
   assertEquals(
-    await resolveBindingPrincipalManagedId(selectQueueDb([[]]), 'p1'),
-    null,
+    await resolveBindingEngine(selectQueueDb([[{ managedId: 'm1' }], [{ engine: 'mysql' }]]), row),
+    { managedId: 'm1', engineCode: 'mysql' }
   )
-  assertEquals(
-    await resolveBindingPrincipalManagedId(
-      selectQueueDb([[{ managedId: 'm1' }]]),
-      'p1',
-    ),
-    'm1',
-  )
-  assertEquals(
-    await resolveBindingPrincipalEngine(selectQueueDb([[]]), 'p1'),
-    { managedId: null, engineCode: 'postgres' },
-  )
-  assertEquals(
-    await resolveBindingPrincipalEngine(
-      selectQueueDb([[{ managedId: 'm1' }], [{ engine: 'mysql' }]]),
-      'p1',
-    ),
-    { managedId: 'm1', engineCode: 'mysql' },
-  )
-  assertEquals(
-    await resolveBindingPrincipalEngine(
-      selectQueueDb([[{ managedId: 'm1' }], [{}]]),
-      'p1',
-    ),
-    { managedId: 'm1', engineCode: 'postgres' },
-  )
+  assertEquals(await resolveBindingEngine(selectQueueDb([[{ managedId: 'm1' }], [{}]]), row), {
+    managedId: 'm1',
+    engineCode: 'postgres',
+  })
 })
 
 test('resolveServiceIdForHosting returns null when missing', async () => {
+  assertEquals(await resolveServiceIdForHosting(selectQueueDb([[]]), 'hosting'), null)
   assertEquals(
-    await resolveServiceIdForHosting(selectQueueDb([[]]), 'hosting'),
-    null,
-  )
-  assertEquals(
-    await resolveServiceIdForHosting(
-      selectQueueDb([[{ serviceId: 'svc-1' }]]),
-      'hosting',
-    ),
-    'svc-1',
+    await resolveServiceIdForHosting(selectQueueDb([[{ serviceId: 'svc-1' }]]), 'hosting'),
+    'svc-1'
   )
 })
 
 test('serializeBindingRow fills keys without endpoint when cluster empty', async () => {
   const row = {
     id: 'b1',
-    principalId: 'p1',
+    loginId: 'l1',
     serviceId: 'svc',
     databaseName: 'app',
     keyPrefix: 'DATABASE',
@@ -476,18 +406,17 @@ test('serializeBindingRow fills keys without endpoint when cluster empty', async
   const withManaged = await serializeBindingRow(
     selectQueueDb([
       [{ managedId: 'm1', username: 'u' }],
-      [{
-        id: 'm1',
-        engine: 'postgres',
-        options: {
-          settings: postgresEngineSpec.defaultSettings,
-          databases: ['app'],
+      [
+        {
+          id: 'm1',
+          engine: 'postgres',
+          options: { settings: postgresEngineSpec.defaultSettings },
+          environmentId: 'env-m',
         },
-        environmentId: 'env-m',
-      }],
+      ],
       [], // resolveBindingEndpoint members → unavailable
     ]),
-    row,
+    row
   )
   assertEquals(withManaged.engine, 'postgres')
   assertEquals(withManaged.managedEnvironmentId, 'env-m')
@@ -503,7 +432,7 @@ test('parseBindingsListFilter requires exactly one filter', () => {
       environmentId: undefined,
       managedEnvironmentId: undefined,
     }).ok,
-    false,
+    false
   )
   assertEquals(
     parseBindingsListFilter({
@@ -511,7 +440,7 @@ test('parseBindingsListFilter requires exactly one filter', () => {
       environmentId: 'e1',
       managedEnvironmentId: undefined,
     }).ok,
-    false,
+    false
   )
   assertEquals(
     parseBindingsListFilter({
@@ -519,7 +448,7 @@ test('parseBindingsListFilter requires exactly one filter', () => {
       environmentId: undefined,
       managedEnvironmentId: undefined,
     }),
-    { ok: true, filter: { kind: 'service', serviceId: 's1' } },
+    { ok: true, filter: { kind: 'service', serviceId: 's1' } }
   )
   assertEquals(
     parseBindingsListFilter({
@@ -530,7 +459,7 @@ test('parseBindingsListFilter requires exactly one filter', () => {
     {
       ok: true,
       filter: { kind: 'managedEnvironment', managedEnvironmentId: 'me1' },
-    },
+    }
   )
   assertEquals(
     parseBindingsListFilter({
@@ -538,7 +467,7 @@ test('parseBindingsListFilter requires exactly one filter', () => {
       environmentId: 'e1',
       managedEnvironmentId: undefined,
     }),
-    { ok: true, filter: { kind: 'environment', environmentId: 'e1' } },
+    { ok: true, filter: { kind: 'environment', environmentId: 'e1' } }
   )
 })
 
@@ -549,53 +478,18 @@ test('bindingDatabaseTargetHttpStatus and unique-violation mapping', () => {
     mapBindingUniqueViolation(
       Object.assign(new Error('uniq_binding_service_engine_defaults'), {
         code: '23505',
-      }),
+      })
     ),
-    { error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR, status: 409 },
+    { error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR, status: 409 }
   )
   assertEquals(
     mapBindingUniqueViolation(
-      Object.assign(new Error('uniq_binding_service_prefix'), { code: '23505' }),
+      Object.assign(new Error('uniq_binding_service_prefix'), { code: '23505' })
     ),
-    { error: BINDING_KEY_PREFIX_IN_USE_ERROR, status: 409 },
+    { error: BINDING_KEY_PREFIX_IN_USE_ERROR, status: 409 }
   )
   assertEquals(
     mapBindingUniqueViolation(Object.assign(new Error('other'), { code: '23505' })),
-    null,
-  )
-})
-
-test('isBindableDatabasePrincipal rejects root and replication metadata', () => {
-  assertEquals(
-    isBindableDatabasePrincipal({
-      kind: 'database',
-      managedId: 'm1',
-      metadata: {},
-    }),
-    true,
-  )
-  assertEquals(
-    isBindableDatabasePrincipal({
-      kind: 'database',
-      managedId: 'm1',
-      metadata: { managedRoot: true },
-    }),
-    false,
-  )
-  assertEquals(
-    isBindableDatabasePrincipal({
-      kind: 'database',
-      managedId: 'm1',
-      metadata: { managedReplication: true },
-    }),
-    false,
-  )
-  assertEquals(
-    isBindableDatabasePrincipal({
-      kind: 'system',
-      managedId: 'm1',
-      metadata: {},
-    }),
-    false,
+    null
   )
 })

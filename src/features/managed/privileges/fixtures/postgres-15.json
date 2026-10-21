@@ -1,0 +1,162 @@
+{
+  "aclLetters": {
+    "F": "U",
+    "L": "rw",
+    "S": "U",
+    "T": "U",
+    "d": "CTc",
+    "f": "X",
+    "l": "U",
+    "n": "UC",
+    "p": "sA",
+    "r": "arwdDxt",
+    "s": "rwU",
+    "t": "C"
+  },
+  "aclPrivilegeTypes": {
+    "F": [
+      "USAGE"
+    ],
+    "L": [
+      "SELECT",
+      "UPDATE"
+    ],
+    "S": [
+      "USAGE"
+    ],
+    "T": [
+      "USAGE"
+    ],
+    "c": null,
+    "d": [
+      "CONNECT",
+      "CREATE",
+      "TEMPORARY"
+    ],
+    "f": [
+      "EXECUTE"
+    ],
+    "l": [
+      "USAGE"
+    ],
+    "n": [
+      "CREATE",
+      "USAGE"
+    ],
+    "p": [
+      "ALTER SYSTEM",
+      "SET"
+    ],
+    "r": [
+      "DELETE",
+      "INSERT",
+      "REFERENCES",
+      "SELECT",
+      "TRIGGER",
+      "TRUNCATE",
+      "UPDATE"
+    ],
+    "s": [
+      "SELECT",
+      "UPDATE",
+      "USAGE"
+    ],
+    "t": [
+      "CREATE"
+    ]
+  },
+  "authMembersColumns": [
+    "admin_option",
+    "grantor",
+    "member",
+    "roleid"
+  ],
+  "columnGrants": {
+    "accepted": {
+      "ALL": true,
+      "ALTER SYSTEM": false,
+      "CONNECT": false,
+      "CREATE": false,
+      "DELETE": false,
+      "EXECUTE": false,
+      "INSERT": true,
+      "MAINTAIN": false,
+      "REFERENCES": true,
+      "SELECT": true,
+      "SET": false,
+      "TEMPORARY": false,
+      "TRIGGER": false,
+      "TRUNCATE": false,
+      "UPDATE": true,
+      "USAGE": false
+    },
+    "letters": "arwx",
+    "refused": [
+      "ALTER SYSTEM",
+      "CONNECT",
+      "CREATE",
+      "DELETE",
+      "EXECUTE",
+      "MAINTAIN",
+      "SET",
+      "TEMPORARY",
+      "TRIGGER",
+      "TRUNCATE",
+      "USAGE"
+    ]
+  },
+  "defaultAclAccepted": {
+    "DATABASES": false,
+    "FUNCTIONS": true,
+    "LARGE OBJECTS": false,
+    "PARAMETERS": false,
+    "ROUTINES": true,
+    "SCHEMAS": true,
+    "SEQUENCES": true,
+    "TABLES": true,
+    "TYPES": true
+  },
+  "defaultAclObjTypes": [
+    "S",
+    "T",
+    "f",
+    "n",
+    "r"
+  ],
+  "engine": "postgres",
+  "functions": {
+    "has_parameter_privilege": true,
+    "pg_get_acl": false
+  },
+  "grantableOnParameter": true,
+  "image": "docker.io/library/postgres:15",
+  "maintainGrantable": false,
+  "membershipOptions": false,
+  "predefinedRoles": [
+    "pg_checkpoint",
+    "pg_database_owner",
+    "pg_execute_server_program",
+    "pg_monitor",
+    "pg_read_all_data",
+    "pg_read_all_settings",
+    "pg_read_all_stats",
+    "pg_read_server_files",
+    "pg_signal_backend",
+    "pg_stat_scan_tables",
+    "pg_write_all_data",
+    "pg_write_server_files"
+  ],
+  "roleAttributeColumns": [
+    "rolbypassrls",
+    "rolcanlogin",
+    "rolconnlimit",
+    "rolcreatedb",
+    "rolcreaterole",
+    "rolinherit",
+    "rolreplication",
+    "rolsuper"
+  ],
+  "series": "15",
+  "serverVersion": "15.19",
+  "serverVersionNum": 150019
+}

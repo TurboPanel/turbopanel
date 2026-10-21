@@ -1,6 +1,7 @@
 import { assertEquals, assertStringIncludes } from '@std/assert'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { mariadbEngineSpec } from './mariadb.ts'
 import { mysqlEngineSpec } from './mysql.ts'
 import { postgresEngineSpec } from './postgres.ts'
 import { isManagedVariantSwapSafe } from './releases.ts'
@@ -11,7 +12,6 @@ import {
   assertManagedSeriesUnchanged,
   assertManagedVariantSwapSafe,
   buildManagedReleaseView,
-  isManagedRootPrincipal,
   isPlainObject,
   MANAGED_SERIES_IMMUTABLE_ERROR,
   MANAGED_USER_PRIVILEGES_INVALID_ERROR,
@@ -22,12 +22,14 @@ import {
   parseManagedPatchName,
   parseManagedUserCreateFields,
   parseManagedVersionSelection,
-  principalMetadata,
   readInitialDatabase,
   resolveManagedServerId,
   resolveManagedUserPrivileges,
   serializeContainerRow,
-  serializeManagedUser,
+  serializeManagedLogin,
+  evaluateExistingPrincipalLoginName,
+  evaluateManagedLoginDropGuard,
+  evaluateManagedLoginRotateGuard,
 } from './routes-helpers.ts'
 
 /**
@@ -84,7 +86,12 @@ test('isPlainObject accepts records only', () => {
 
 test('managedSessionPaths lists every managed session route', () => {
   const paths = managedSessionPaths()
-  assertEquals(paths.length, 23)
+  assertEquals(paths.length, 26)
+  assertEquals(
+    paths.includes('/environments/:id/managed/users/:loginId/effective-permissions'),
+    true
+  )
+  assertEquals(paths.includes('/environments/:id/managed/privilege-catalogue'), true)
   assertEquals(paths.includes('/environments/:id/managed/logs'), true)
   assertEquals(paths.includes('/environments/:id/managed/backup-policies'), true)
   assertEquals(paths.includes('/environments/:id/managed/backup-policies/:policyId'), true)
@@ -93,49 +100,13 @@ test('managedSessionPaths lists every managed session route', () => {
   assertEquals(paths.includes('/environments/:id/managed/members/:memberId/resync'), true)
   assertEquals(paths.includes('/environments/:id/managed/disaster-recovery/promote'), true)
   assertEquals(paths.includes('/organizations/:id/managed'), true)
+  assertEquals(paths.includes('/servers/:id/managed-external-access'), true)
 })
 
-test('mergeCreateSettings returns defaults when body has no exposure', () => {
-  const merged = mergeCreateSettings(postgresEngineSpec, {})
+test('mergeCreateSettings returns the engine defaults', () => {
+  const merged = mergeCreateSettings(postgresEngineSpec)
   if (!merged) throw new TypeError('expected merged settings')
-  assertEquals(merged.exposure.enabled, true)
-  // New clusters are local-only until the owner picks a wider scope.
-  assertEquals(merged.exposure.scope, 'local')
-})
-
-test('mergeCreateSettings merges exposure overrides and re-validates', () => {
-  const merged = mergeCreateSettings(postgresEngineSpec, {
-    exposure: {
-      enabled: true,
-      scope: 'public',
-    },
-  })
-  if (!merged) throw new TypeError('expected merged settings')
-  assertEquals(merged.exposure.enabled, true)
-  assertEquals(merged.exposure.scope, 'public')
-
-  const legacyBind = mergeCreateSettings(postgresEngineSpec, {
-    exposure: { enabled: true, bind: 'datacenter' },
-  })
-  assertEquals(legacyBind, null)
-
-  const invalidScope = mergeCreateSettings(postgresEngineSpec, {
-    exposure: { enabled: true, scope: 'internet' },
-  })
-  assertEquals(invalidScope, null)
-})
-
-test('mergeCreateSettings ignores non-object exposure and invalid scope tokens', () => {
-  const fromString = mergeCreateSettings(postgresEngineSpec, {
-    exposure: 'nope',
-  })
-  if (!fromString) throw new TypeError('expected settings')
-  assertEquals(fromString.exposure.enabled, true)
-
-  const badScope = mergeCreateSettings(postgresEngineSpec, {
-    exposure: { scope: 'internet' },
-  })
-  assertEquals(badScope, null)
+  assertEquals(merged, postgresEngineSpec.parseSettings(postgresEngineSpec.defaultSettings))
 })
 
 test('parseManagedVersionSelection resolves a catalog series and variant', () => {
@@ -160,7 +131,7 @@ test('parseManagedVersionSelection resolves a catalog series and variant', () =>
   })
 })
 
-test('create accepts only the three verified series', () => {
+test('create accepts only the verified series', () => {
   // The only creatable series per engine, both of their base-OS variants.
   assertEquals(parseManagedVersionSelection('mysql', { engineSeries: '9.7' }), {
     ok: true,
@@ -177,14 +148,24 @@ test('create accepts only the three verified series', () => {
     ok: true,
     image: 'docker.io/library/mariadb:12.3',
   })
+  assertEquals(parseManagedVersionSelection('mysql', { engineSeries: '8.4' }), {
+    ok: true,
+    image: 'docker.io/library/mysql:8.4',
+  })
+  assertEquals(
+    parseManagedVersionSelection('mariadb', { engineSeries: '11.8', imageVariant: 'ubi' }),
+    { ok: true, image: 'docker.io/library/mariadb:11.8-ubi' }
+  )
+  assertEquals(parseManagedVersionSelection('mariadb', { imageVariant: 'ubi' }), {
+    ok: true,
+    image: 'docker.io/library/mariadb:11.8-ubi',
+  })
 
   // Every other catalogued series is refused — it is known, not tested.
   for (const [engine, series] of [
     ['postgres', '17'],
     ['postgres', '16'],
     ['postgres', '15'],
-    ['mysql', '8.4'],
-    ['mariadb', '11.8'],
     ['mariadb', '11.4'],
     ['mariadb', '10.11'],
   ] as const) {
@@ -251,20 +232,15 @@ test('parseManagedVersionSelection rejects unknown versions and bad types', () =
 })
 
 test('mergeCreateSettings applies a resolved catalog image', () => {
-  const merged = mergeCreateSettings(
-    postgresEngineSpec,
-    { exposure: { enabled: true, scope: 'datacenter' } },
-    'docker.io/library/postgres:18'
-  )
+  const merged = mergeCreateSettings(postgresEngineSpec, 'docker.io/library/postgres:18')
   if (!merged) throw new TypeError('expected merged settings')
   assertEquals(merged.image, 'docker.io/library/postgres:18')
-  assertEquals(merged.exposure.scope, 'datacenter')
 
   // An image outside the engine allowlist is rejected by parseSettings.
-  assertEquals(mergeCreateSettings(postgresEngineSpec, {}, 'docker.io/library/mysql:9.7'), null)
+  assertEquals(mergeCreateSettings(postgresEngineSpec, 'docker.io/library/mysql:9.7'), null)
   // An untested series never reaches settings — the gate is in the parser too.
   assertEquals(
-    mergeCreateSettings(postgresEngineSpec, {}, 'docker.io/library/postgres:17-alpine'),
+    mergeCreateSettings(postgresEngineSpec, 'docker.io/library/postgres:17-alpine'),
     null
   )
 })
@@ -432,40 +408,115 @@ test('resolveManagedServerId prefers managed.server_id over environment placemen
   assertEquals(resolveManagedServerId({ serverId: null }, null), null)
 })
 
-test('principalMetadata and isManagedRootPrincipal', () => {
-  assertEquals(principalMetadata(null), {})
-  assertEquals(principalMetadata([1]), {})
-  assertEquals(principalMetadata({ managedRoot: true, databases: ['postgres'] }), {
-    managedRoot: true,
+test('serializeManagedLogin keeps the users shape, names the principal and login, and the cluster logins are guarded by role', () => {
+  const row = {
+    id: 'login-1',
+    principalId: 'prin-1',
+    managedId: 'm1',
+    role: 'user' as const,
+    username: 'app_user',
+    appliedUsername: 'app_user',
+    nameScheme: 'plain' as const,
     databases: ['postgres'],
-  })
-  assertEquals(isManagedRootPrincipal({ managedRoot: true }), true)
-  assertEquals(isManagedRootPrincipal({ managedRoot: false }), false)
-  assertEquals(isManagedRootPrincipal(undefined), false)
+    privileges: ['read-write'],
+    connectionRole: 'read-write' as const,
+    grantMode: 'preset' as const,
+    tool: false,
+    allowedSources: undefined,
+    maxConnections: undefined,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-01T00:00:00.000Z',
+  }
+  const serialized = serializeManagedLogin(row, 'postgres')
+  assertEquals(serialized.id, 'login-1')
+  assertEquals(serialized.principalId, 'prin-1')
+  assertEquals(serialized.loginId, 'login-1')
+  assertEquals(serialized.nameScheme, 'plain')
+  assertEquals(serialized.databases, ['postgres'])
+  assertEquals(
+    serializeManagedLogin({ ...row, principalId: null, role: 'root' }, 'postgres').principalId,
+    null
+  )
+
+  assertEquals(evaluateManagedLoginRotateGuard('root')?.error, 'use_root_password_route')
+  assertEquals(
+    evaluateManagedLoginRotateGuard('replication')?.error,
+    'cannot_rotate_replication_user'
+  )
+  assertEquals(evaluateManagedLoginRotateGuard('user'), null)
+  assertEquals(evaluateManagedLoginDropGuard('root')?.error, 'cannot_drop_root_user')
+  assertEquals(evaluateManagedLoginDropGuard('replication'), null)
+  assertEquals(evaluateManagedLoginDropGuard('user'), null)
 })
 
-test('serializeManagedUser filters databases and privileges to strings', () => {
-  const serialized = serializeManagedUser({
-    id: 'prin-1',
-    username: 'app_user',
-    appliedUsername: 'app_user_ab12cd34ef5',
-    metadata: {
-      databases: ['postgres', 42, 'app'],
-      privileges: ['read-only', null],
+test('evaluateExistingPrincipalLoginName accepts a name the engine takes and refuses the rest', () => {
+  assertEquals(evaluateExistingPrincipalLoginName(postgresEngineSpec, 'alice'), null)
+  assertEquals(evaluateExistingPrincipalLoginName(postgresEngineSpec, 'site_owner_01'), null)
+  // A Linux name may carry a hyphen no engine role name takes, and MySQL
+  // role names stop at 32 characters: the login is refused, never renamed.
+  assertEquals(
+    evaluateExistingPrincipalLoginName(postgresEngineSpec, 'site-owner')?.error,
+    'principal_name_does_not_fit'
+  )
+  const long = 'a'.repeat(mysqlEngineSpec.userOperations.identifier.maxLength + 1)
+  assertEquals(
+    evaluateExistingPrincipalLoginName(mysqlEngineSpec, long)?.error,
+    'principal_name_does_not_fit'
+  )
+  assertEquals(
+    evaluateExistingPrincipalLoginName(postgresEngineSpec, 'postgres')?.error,
+    'principal_name_reserved'
+  )
+  assertEquals(
+    evaluateExistingPrincipalLoginName(postgresEngineSpec, 'postgres_abc', 'postgres_abc')?.error,
+    'principal_name_reserved'
+  )
+  assertStringIncludes(
+    evaluateExistingPrincipalLoginName(mysqlEngineSpec, long)?.message ?? '',
+    'Create a login with a new name instead'
+  )
+})
+
+test('serializeManagedLogin reads settings from the login columns', () => {
+  const serialized = serializeManagedLogin(
+    {
+      id: 'login-1',
+      principalId: null,
+      managedId: 'm1',
+      role: 'user',
+      username: 'app_user',
+      appliedUsername: 'app_user_ab12cd34ef5',
+      nameScheme: 'partial',
+      databases: ['postgres', 'app'],
+      privileges: ['read-only'],
+      connectionRole: 'read-only',
+      grantMode: 'self',
+      tool: true,
+      allowedSources: ['internal'],
+      maxConnections: 3,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
     },
-    createdAt: '2024-01-01T00:00:00.000Z',
-  })
+    'postgres'
+  )
   assertEquals(serialized, {
-    id: 'prin-1',
+    id: 'login-1',
     username: 'app_user',
     appliedUsername: 'app_user_ab12cd34ef5',
-    // Legacy row (no stored scheme): a suffixed name reads as partial.
     nameScheme: 'partial',
     databases: ['postgres', 'app'],
     privileges: ['read-only'],
-    // Absent metadata role → the writer hostgroup, never an implicit reader.
-    connectionRole: 'read-write',
+    connectionRole: 'read-only',
+    grantMode: 'self',
+    tool: true,
+    allowedSources: ['internal'],
+    maxConnections: 3,
+    // A source-limited login never connects straight through, default or not.
+    straightThrough: false,
+    straightThroughDefault: true,
     createdAt: '2024-01-01T00:00:00.000Z',
+    principalId: null,
+    loginId: 'login-1',
   })
 })
 
@@ -533,7 +584,17 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
 
   // Reserved platform-internal names stay rejected even when the exposed
   // root login is a suffixed name that no longer equals them.
-  for (const reserved of ['postgres', 'root', 'mysql', 'superadmin', 'Root']) {
+  for (const reserved of [
+    'postgres',
+    'root',
+    'mysql',
+    'superadmin',
+    'Root',
+    // The platform's own prefix: owner roles, monitor and replication logins.
+    'tp_shop_owner',
+    'tp_monitor_ab12',
+    'TP_repl',
+  ]) {
     const res = parseManagedUserCreateFields(
       c,
       mockManagedContext(),
@@ -545,6 +606,22 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
     assertEquals(res.status, 400)
     assertEquals(await res.json(), { error: 'Invalid username' })
   }
+})
+
+test('parseManagedUserCreateFields takes the admin privilege on any Postgres database', () => {
+  const c = mockContext()
+  const body = { username: 'dba', databases: ['postgres'], privileges: ['admin', 'read-write'] }
+  // No owner role on the database: not refused (the answer says what it got).
+  const plain = parseManagedUserCreateFields(c, mockManagedContext(), body, defaultRowOptions())
+  if (plain instanceof Response) throw new TypeError('expected parsed fields')
+  assertEquals(plain.privileges, ['admin'])
+
+  const ok = parseManagedUserCreateFields(c, mockManagedContext(), body, {
+    ...defaultRowOptions(),
+    ownerRoleDatabases: ['postgres'],
+  })
+  if (ok instanceof Response) throw new TypeError('expected parsed fields')
+  assertEquals(ok.privileges, ['admin'])
 })
 
 test('parseManagedUserCreateFields refuses a system schema listed by an older cluster', async () => {
@@ -733,4 +810,22 @@ test('PATCH name: absent leaves it, null clears it, a string is validated', () =
   assertEquals(parseManagedPatchName({ name: '  Orders DB ' }), { ok: true, name: 'Orders DB' })
   const bad = parseManagedPatchName({ name: 42 })
   assertEquals(bad.ok, false)
+})
+
+test('assertManagedSeriesUnchanged treats an imageless MariaDB row as 12.3, not the new default', () => {
+  const imageless = mariadbEngineSpec.parseSettings({ ...mariadbEngineSpec.defaultSettings })
+  const onEleven = mariadbEngineSpec.parseSettings({
+    ...mariadbEngineSpec.defaultSettings,
+    image: 'docker.io/library/mariadb:11.8',
+  })
+  const onTwelve = mariadbEngineSpec.parseSettings({
+    ...mariadbEngineSpec.defaultSettings,
+    image: 'docker.io/library/mariadb:12.3',
+  })
+  if (!imageless || !onEleven || !onTwelve) throw new TypeError('settings did not parse')
+  assertEquals(assertManagedSeriesUnchanged(mariadbEngineSpec, imageless, onTwelve), null)
+  assertEquals(
+    assertManagedSeriesUnchanged(mariadbEngineSpec, imageless, onEleven)?.error,
+    'managed_series_immutable'
+  )
 })

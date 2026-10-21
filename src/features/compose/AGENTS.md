@@ -796,7 +796,7 @@ build and the series agree. The series each native app ran with is recorded
 on the deploy command's `context.releases[].nodeVersion`, carried on the
 rollback pin (`DeployRollbackReleasePin.nodeVersion`), and a rollback sends it
 back without reading anything; a release recorded before that falls back to a
-read, then the default with a warning. It all runs before
+read, then the newest offered series with a warning. It all runs before
 `mergeDeployPrincipalRuntimes`, so the runtime group granted matches the series
 sent. The preview lists the result once per app as `nativeAppNodeVersions`
 (`nodeVersion`, `source`, `requested`, `path`, `note`).
@@ -825,9 +825,6 @@ around it:
   `engines.node` / `.nvmrc` lookup, no Node view in the preview, no Node series
   on its release row. Its series is the pin or the default; reading it from the
   repository (`deno.json`) is deferred.
-- **Runtime grant.** `merge-deploy-principal-runtimes.ts` grants the owner's
-  Linux user `deno@<series>` (`tpdeno<series>` on the host) instead of
-  `node@<series>`.
 - **Preview.** `nativeAppDenoVersions` lists each Deno app once: its series and
   whether it came from the compose pin or the default.
 

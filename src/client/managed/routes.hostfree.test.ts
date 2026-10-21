@@ -29,12 +29,15 @@ import {
   command,
   container,
   environment,
+  login,
   managed,
+  managedDatabase,
   organization,
   principal,
   project,
   recovery,
   replica,
+  scope,
   server,
   service,
   session,
@@ -47,7 +50,10 @@ import { postgresEngineSpec } from '../../features/managed/postgres.ts'
 import { POSTGRES_ALLOWED_IMAGES } from '../../features/managed/settings.ts'
 import type { ManagedEngineSpec } from '../../features/managed/types.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
-import { managedSessionPaths } from '../../features/managed/routes-helpers.ts'
+import {
+  buildManagedReplicaLiveCheckFailedBody,
+  managedSessionPaths,
+} from '../../features/managed/routes-helpers.ts'
 import { registerManagedRoutes } from './routes.ts'
 import { SERVER_OFFLINE_BODY } from './context.ts'
 
@@ -114,10 +120,17 @@ function validOptions() {
   if (!settings) {
     throw new TypeError('failed to parse default postgres settings')
   }
-  return {
-    settings,
-    databases: ['defaultdb', 'appdb'],
-  }
+  return { settings }
+}
+
+/** The `database` rows `loadManagedDatabases` reads (name order). */
+function databaseRowsFor(names: string[] = ['appdb', 'defaultdb']) {
+  return names.map((name) => ({
+    name,
+    isRoleOwned: false,
+    ownerLoginId: null,
+    ownerUsername: null,
+  }))
 }
 
 function backupRow(overrides: Record<string, unknown> = {}) {
@@ -143,7 +156,7 @@ function managedRow(overrides: Record<string, unknown> = {}) {
     name: 'PostgreSQL',
     engine: 'postgres',
     status: 'ready',
-    metadata: { rootPrincipalId: PRINCIPAL_ID, rootUsername: 'postgres' },
+    metadata: { rootLoginId: LOGIN_ID, rootUsername: 'postgres' },
     options: validOptions(),
     serverId: SERVER_ID,
     createdAt: NOW,
@@ -280,13 +293,51 @@ function principalRow(overrides: Record<string, unknown> = {}) {
     provider: 'postgres',
     username: 'appuser',
     managedId: MANAGED_ID,
-    metadata: { engine: 'postgres', databases: ['postgres'] },
+    databases: ['postgres'],
     options: {},
     password: 'sealed',
     createdAt: NOW,
     updatedAt: NOW,
     ...overrides,
   }
+}
+
+const LOGIN_ID = '0192d6a0-0000-7000-8000-00000000c0c1'
+
+function loginRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: LOGIN_ID,
+    principalId: null,
+    managedId: MANAGED_ID,
+    role: 'user',
+    username: 'appuser',
+    appliedUsername: 'appuser',
+    nameScheme: 'plain',
+    grantMode: 'preset',
+    isTool: false,
+    databases: ['defaultdb'],
+    privileges: ['read-write'],
+    access: 'read-write',
+    allowedSources: null,
+    maxConnections: null,
+    password: 'sealed',
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides,
+  }
+}
+
+/** The cluster's own root login. */
+function rootLoginRow(overrides: Record<string, unknown> = {}) {
+  return loginRow({
+    id: '0192d6a0-0000-7000-8000-00000000c0c2',
+    principalId: null,
+    role: 'root',
+    username: 'postgres',
+    appliedUsername: 'postgres',
+    privileges: [],
+    ...overrides,
+  })
 }
 
 function queryChain(rows: unknown[]) {
@@ -339,6 +390,10 @@ type FakeDbConfig = {
   orgRows?: unknown[]
   serverRows?: unknown[]
   principalRows?: unknown[]
+  /** `database` rows, the shape `loadManagedDatabases` returns. */
+  databaseRows?: unknown[]
+  /** `login` rows, the shape `selectLogins` in features/managed/logins.ts returns. */
+  loginRows?: unknown[]
   memberRows?: unknown[]
   bindingRows?: unknown[]
   recoveryRows?: unknown[]
@@ -383,13 +438,23 @@ function fakeDb(config: FakeDbConfig = {}): Db {
           return queryChain(config.orgRows ?? [{ options: {} }])
         }
         if (table === managed) {
-          return managedQueryChain(config.managedRows ?? [], [{ organizationId: ORG_ID }])
+          return managedQueryChain(config.managedRows ?? [], [
+            {
+              organizationId: ORG_ID,
+            },
+          ])
         }
         if (table === server) {
           return queryChain(config.serverRows ?? [presenceServer()])
         }
         if (table === principal) {
           return queryChain(config.principalRows ?? [])
+        }
+        if (table === managedDatabase) {
+          return queryChain(config.databaseRows ?? databaseRowsFor())
+        }
+        if (table === login) {
+          return queryChain(config.loginRows ?? [])
         }
         if (table === replica) {
           return queryChain(config.memberRows ?? [])
@@ -589,7 +654,11 @@ const BACKUP_POLICY_ROUTES: Array<{ method: string; path: string; body?: unknown
     path: envPath('/backup-policies'),
     body: { name: 'Hourly', schedule: { preset: 'hourly' }, retentionKeep: 24 },
   },
-  { method: 'PATCH', path: envPath(`/backup-policies/${POLICY_ID}`), body: { name: 'Renamed' } },
+  {
+    method: 'PATCH',
+    path: envPath(`/backup-policies/${POLICY_ID}`),
+    body: { name: 'Renamed' },
+  },
   { method: 'DELETE', path: envPath(`/backup-policies/${POLICY_ID}`) },
   { method: 'GET', path: envPath(`/backup-policies/${POLICY_ID}/runs`) },
 ]
@@ -604,8 +673,8 @@ const ENV_METHODS: Array<{ method: string; path: string; body?: unknown }> = [
   { method: 'POST', path: envPath('/root-password') },
   { method: 'GET', path: envPath('/users') },
   { method: 'POST', path: envPath('/users'), body: { username: 'app' } },
-  { method: 'POST', path: envPath(`/users/${PRINCIPAL_ID}/password`) },
-  { method: 'DELETE', path: envPath(`/users/${PRINCIPAL_ID}`) },
+  { method: 'POST', path: envPath(`/users/${LOGIN_ID}/password`) },
+  { method: 'DELETE', path: envPath(`/users/${LOGIN_ID}`) },
   { method: 'GET', path: envPath('/databases') },
   { method: 'POST', path: envPath('/databases'), body: { name: 'appdb' } },
   { method: 'DELETE', path: envPath('/databases/appdb') },
@@ -732,11 +801,19 @@ test('backup policy routes refuse a member without organization:manage with 403'
         if (executeCalls === 1) {
           return Promise.resolve([{ organization_id: ORG_ID, kind: 'user' }])
         }
-        return Promise.resolve([{ allowed: false, organization_id: ORG_ID, kind: 'user' }])
+        return Promise.resolve([
+          {
+            allowed: false,
+            organization_id: ORG_ID,
+            kind: 'user',
+          },
+        ])
       },
     } as unknown as Db
     const { app, cookie } = await buildApp({ db })
-    await expectJson(await requestRoute(app, cookie, route), 403, { error: 'Forbidden' })
+    await expectJson(await requestRoute(app, cookie, route), 403, {
+      error: 'Forbidden',
+    })
   }
 })
 
@@ -762,7 +839,10 @@ test('backup policy routes let org owners and managers (organization:manage) lis
   assertEquals(policy.preset, { preset: 'hourly' })
   assertEquals(policy.retentionKeep, 24)
   assertEquals(policy.automatic, false)
-  assertEquals(body.reconcile, { queuedServerIds: [SERVER_ID], failedServerIds: [] })
+  assertEquals(body.reconcile, {
+    queuedServerIds: [SERVER_ID],
+    failedServerIds: [],
+  })
   assertEquals(commandQueue.envelopes.length, 1)
   assertEquals(commandQueue.envelopes[0]?.type, 'server.backups.reconcile')
   assertEquals(commandQueue.envelopes[0]?.serverId, SERVER_ID)
@@ -775,7 +855,11 @@ test('backup policy create validates the body before writing', async () => {
     commandQueue,
   })
   const post = (body: Record<string, unknown>) =>
-    requestRoute(app, cookie, { method: 'POST', path: envPath('/backup-policies'), body })
+    requestRoute(app, cookie, {
+      method: 'POST',
+      path: envPath('/backup-policies'),
+      body,
+    })
   const base = { name: 'Nightly', schedule: '0 2 * * *', retentionKeep: 7 }
 
   const unionDays = await jsonOf(await post({ ...base, schedule: '0 0 1 * 1' }))
@@ -800,7 +884,9 @@ test('backup policy create validates the body before writing', async () => {
 })
 
 test('backup policy item routes answer 404 for an id that is not a policy', async () => {
-  const { app, cookie } = await buildApp({ db: fakeDb({ managedRows: [managedRow()] }) })
+  const { app, cookie } = await buildApp({
+    db: fakeDb({ managedRows: [managedRow()] }),
+  })
   for (const route of BACKUP_POLICY_ROUTES.slice(2)) {
     for (const policyId of [POLICY_ID, 'not-a-uuid']) {
       const res = await requestRoute(app, cookie, {
@@ -938,8 +1024,8 @@ test('mutating routes return 404 when the managed row is missing', async () => {
     ['DELETE', envPath(), undefined],
     ['POST', envPath('/root-password'), undefined],
     ['POST', envPath('/users'), { username: 'app' }],
-    ['POST', envPath(`/users/${PRINCIPAL_ID}/password`), undefined],
-    ['DELETE', envPath(`/users/${PRINCIPAL_ID}`), undefined],
+    ['POST', envPath(`/users/${LOGIN_ID}/password`), undefined],
+    ['DELETE', envPath(`/users/${LOGIN_ID}`), undefined],
     ['POST', envPath('/databases'), { name: 'appdb' }],
     ['DELETE', envPath('/databases/appdb'), undefined],
     ['POST', envPath('/members'), { serverId: SERVER_ID }],
@@ -1010,7 +1096,7 @@ test('GET databases / backups / members return stored values', async () => {
   })
   const headers = authHeaders(cookie)
   const databases = await jsonOf(await app.request(envPath('/databases'), { headers }))
-  assertEquals(databases.databases, ['defaultdb', 'appdb'])
+  assertEquals(databases.databases, ['appdb', 'defaultdb'])
 
   const backups = await jsonOf(await app.request(envPath('/backups'), { headers }))
   const list = backups.backups as Array<{ id: string }>
@@ -1022,18 +1108,22 @@ test('GET databases / backups / members return stored values', async () => {
   assertEquals(memberList[0]?.role, 'replica')
 })
 
-test('GET users filters root and replication principals', async () => {
+test('GET users filters root and replication logins and names the principal and login', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      principalRows: [
-        principalRow({ metadata: { managedRoot: true } }),
-        principalRow({
-          id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-          username: 'repl',
-          metadata: { managedReplication: true },
+      loginRows: [
+        loginRow({
+          role: 'root',
+          principalId: null,
         }),
-        principalRow({
+        loginRow({
+          id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          principalId: null,
+          role: 'replication',
+          username: 'repl',
+        }),
+        loginRow({
           id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
           username: 'appuser',
         }),
@@ -1041,10 +1131,22 @@ test('GET users filters root and replication principals', async () => {
     }),
   })
   const body = await jsonOf(await app.request(envPath('/users'), { headers: authHeaders(cookie) }))
-  const users = body.users as Array<{ username: string }>
+  const users = body.users as Array<{
+    id: string
+    principalId: string | null
+    loginId: string
+    username: string
+  }>
   assertEquals(
-    users.map((entry) => entry.username),
-    ['appuser']
+    users.map((entry) => [entry.username, entry.id, entry.principalId, entry.loginId]),
+    [
+      [
+        'appuser',
+        'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        null,
+        'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      ],
+    ]
   )
 })
 
@@ -1200,13 +1302,17 @@ async function createdImage(
   await postCreate(body, inserted, code)
   const row = inserted.find((entry) => entry.table === managed)
   const options = row?.values.options as { settings?: { image?: string } } | undefined
-  if (!options?.settings) throw new TypeError('create did not persist settings')
+  if (!options?.settings) {
+    throw new TypeError('create did not persist settings')
+  }
   return options.settings.image
 }
 
-test('POST create persists the requested variant and keeps the default when none is sent', async () => {
-  // Neither field: no image is written, so the engine default applies as before.
-  assertEquals(await createdImage({}), undefined)
+test('POST create persists the requested variant and stores the default when none is sent', async () => {
+  // Neither field: the resolved default image is stored, so a later change of the
+  // catalog default can never change which series this row runs.
+  assertEquals(await createdImage({}), 'docker.io/library/postgres:18-alpine')
+  assertEquals(await createdImage({}, 'mariadb'), 'docker.io/library/mariadb:11.8')
   assertEquals(await createdImage({ engineSeries: '18' }), 'docker.io/library/postgres:18-alpine')
   assertEquals(
     await createdImage({ engineSeries: '18', imageVariant: 'debian' }),
@@ -1225,9 +1331,14 @@ test('POST create resolves MySQL and MariaDB versions through the same helper', 
     await createdImage({ engineSeries: '12.3' }, 'mariadb'),
     'docker.io/library/mariadb:12.3'
   )
+  assertEquals(await createdImage({ engineSeries: '8.4' }, 'mysql'), 'docker.io/library/mysql:8.4')
+  assertEquals(
+    await createdImage({ engineSeries: '11.8', imageVariant: 'ubi' }, 'mariadb'),
+    'docker.io/library/mariadb:11.8-ubi'
+  )
   for (const [code, series] of [
-    ['mysql', '8.4'],
-    ['mariadb', '11.8'],
+    ['mysql', '8.0'],
+    ['mariadb', '11.4'],
   ] as const) {
     const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = []
     const res = await postCreate({ engineSeries: series }, inserted, code)
@@ -1402,7 +1513,9 @@ test('PATCH refuses a series change with 409 managed_series_immutable and persis
 })
 
 test('PATCH to an untested series is refused by the settings parser and persists nothing', async () => {
-  const { db, writes } = writeCountingDb({ managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)] })
+  const { db, writes } = writeCountingDb({
+    managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)],
+  })
   const { app, cookie } = await buildApp({ db })
   const res = await patchManaged(app, cookie, { image: PG_SERIES_17_ALPINE })
   assertEquals(res.status, 400)
@@ -1411,7 +1524,9 @@ test('PATCH to an untested series is refused by the settings parser and persists
 })
 
 test('PATCH refuses Alpine to Debian on PostgreSQL with 409 managed_variant_swap_unsafe and persists nothing', async () => {
-  const { db, writes } = writeCountingDb({ managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)] })
+  const { db, writes } = writeCountingDb({
+    managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)],
+  })
   const { app, cookie } = await buildApp({ db })
   const res = await patchManaged(app, cookie, { image: PG_DEBIAN })
   assertEquals(res.status, 409)
@@ -1421,16 +1536,22 @@ test('PATCH refuses Alpine to Debian on PostgreSQL with 409 managed_variant_swap
   assertEquals(writes(), 0)
 
   // The other direction is just as unsafe.
-  const reverse = writeCountingDb({ managedRows: [rowFor(postgresEngineSpec, PG_DEBIAN)] })
+  const reverse = writeCountingDb({
+    managedRows: [rowFor(postgresEngineSpec, PG_DEBIAN)],
+  })
   const reverseApp = await buildApp({ db: reverse.db })
-  const back = await patchManaged(reverseApp.app, reverseApp.cookie, { image: PG_ALPINE })
+  const back = await patchManaged(reverseApp.app, reverseApp.cookie, {
+    image: PG_ALPINE,
+  })
   assertEquals(back.status, 409)
   assertEquals((await jsonOf(back)).error, 'managed_variant_swap_unsafe')
   assertEquals(reverse.writes(), 0)
 })
 
 test('PATCH accepts a PostgreSQL patch that keeps the same image', async () => {
-  const { db, writes } = writeCountingDb({ managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)] })
+  const { db, writes } = writeCountingDb({
+    managedRows: [rowFor(postgresEngineSpec, PG_ALPINE)],
+  })
   const { app, cookie } = await buildApp({ db })
   const res = await patchManaged(app, cookie, { image: PG_ALPINE })
   assertEquals(res.status, 200)
@@ -1635,7 +1756,7 @@ test('POST users rejects invalid JSON and missing encryption', async () => {
 
 test('POST users returns 400 for invalid stored options', async () => {
   const { app, cookie } = await buildApp({
-    db: fakeDb({ managedRows: [managedRow({ options: { databases: 1 } })] }),
+    db: fakeDb({ managedRows: [managedRow({ options: 'bad' })] }),
   })
   await expectJson(
     await app.request(envPath('/users'), {
@@ -1648,15 +1769,15 @@ test('POST users returns 400 for invalid stored options', async () => {
   )
 })
 
-test('POST user password returns 404 when the principal is missing', async () => {
+test('POST user password returns 404 when the login is missing', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      principalRows: [],
+      loginRows: [],
     }),
   })
   await expectJson(
-    await app.request(envPath(`/users/${PRINCIPAL_ID}/password`), {
+    await app.request(envPath(`/users/${LOGIN_ID}/password`), {
       method: 'POST',
       headers: authHeaders(cookie),
     }),
@@ -1665,15 +1786,20 @@ test('POST user password returns 404 when the principal is missing', async () =>
   )
 })
 
-test('POST user password refuses the root principal', async () => {
+test('POST user password refuses the root login', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      principalRows: [principalRow({ metadata: { managedRoot: true } })],
+      loginRows: [
+        loginRow({
+          role: 'root',
+          principalId: null,
+        }),
+      ],
     }),
   })
   await expectJson(
-    await app.request(envPath(`/users/${PRINCIPAL_ID}/password`), {
+    await app.request(envPath(`/users/${LOGIN_ID}/password`), {
       method: 'POST',
       headers: authHeaders(cookie),
     }),
@@ -1682,15 +1808,20 @@ test('POST user password refuses the root principal', async () => {
   )
 })
 
-test('POST user password refuses a replication principal', async () => {
+test('POST user password refuses the replication login', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      principalRows: [principalRow({ metadata: { managedReplication: true } })],
+      loginRows: [
+        loginRow({
+          role: 'replication',
+          principalId: null,
+        }),
+      ],
     }),
   })
   await expectJson(
-    await app.request(envPath(`/users/${PRINCIPAL_ID}/password`), {
+    await app.request(envPath(`/users/${LOGIN_ID}/password`), {
       method: 'POST',
       headers: authHeaders(cookie),
     }),
@@ -1699,15 +1830,20 @@ test('POST user password refuses a replication principal', async () => {
   )
 })
 
-test('DELETE user refuses the root principal', async () => {
+test('DELETE user refuses the root login', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      principalRows: [principalRow({ metadata: { managedRoot: true } })],
+      loginRows: [
+        loginRow({
+          role: 'root',
+          principalId: null,
+        }),
+      ],
     }),
   })
   await expectJson(
-    await app.request(envPath(`/users/${PRINCIPAL_ID}`), {
+    await app.request(envPath(`/users/${LOGIN_ID}`), {
       method: 'DELETE',
       headers: authHeaders(cookie),
     }),
@@ -1720,7 +1856,7 @@ test('DELETE user returns 409 while bindings remain', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      principalRows: [principalRow()],
+      loginRows: [loginRow()],
       bindingRows: [
         {
           id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
@@ -1733,7 +1869,7 @@ test('DELETE user returns 409 while bindings remain', async () => {
       ],
     }),
   })
-  const res = await app.request(envPath(`/users/${PRINCIPAL_ID}`), {
+  const res = await app.request(envPath(`/users/${LOGIN_ID}`), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -1766,7 +1902,10 @@ test('POST databases rejects a missing name and an invalid identifier', async ()
     body: JSON.stringify({ name: 'bad-name' }),
   })
   assertEquals(hyphen.status, 400)
-  const hyphenBody = (await hyphen.json()) as { error: string; message: string }
+  const hyphenBody = (await hyphen.json()) as {
+    error: string
+    message: string
+  }
   assertEquals(hyphenBody.error, 'Invalid database name')
   assertStringIncludes(hyphenBody.message, 'Hyphens are not allowed on purpose')
   assertStringIncludes(hyphenBody.message, 'my_app')
@@ -1813,22 +1952,29 @@ test('DELETE database returns 409 listing the SQL users that still have access',
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      principalRows: [
-        principalRow({ metadata: { managedRoot: true, databases: ['appdb'] } }),
-        principalRow({
-          id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-          username: 'repl',
-          metadata: { managedReplication: true, databases: ['appdb'] },
+      loginRows: [
+        loginRow({
+          role: 'root',
+          principalId: null,
+          databases: ['appdb'],
         }),
-        principalRow({
+        loginRow({
+          id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          principalId: null,
+          role: 'replication',
+          username: 'repl',
+          databases: ['appdb'],
+        }),
+        loginRow({
           id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
           username: 'appuser',
-          metadata: { engine: 'postgres', databases: ['defaultdb', 'appdb'] },
+          databases: ['defaultdb', 'appdb'],
         }),
-        principalRow({
+        loginRow({
           id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccd',
+          principalId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
           username: 'other',
-          metadata: { engine: 'postgres', databases: ['defaultdb'] },
+          databases: ['defaultdb'],
         }),
       ],
     }),
@@ -1839,7 +1985,10 @@ test('DELETE database returns 409 listing the SQL users that still have access',
   })
   assertEquals(res.status, 409)
   const raw = await res.text()
-  assertEquals(JSON.parse(raw), { error: 'managed_database_has_users', users: ['appuser'] })
+  assertEquals(JSON.parse(raw), {
+    error: 'managed_database_has_users',
+    users: ['appuser'],
+  })
   assertEquals(raw.includes('sealed'), false)
 })
 
@@ -1848,7 +1997,9 @@ test('DELETE database reports bindings before users', async () => {
     db: fakeDb({
       managedRows: [managedRow()],
       principalRows: [
-        principalRow({ metadata: { engine: 'postgres', databases: ['defaultdb', 'appdb'] } }),
+        principalRow({
+          databases: ['defaultdb', 'appdb'],
+        }),
       ],
       bindingRows: [
         {
@@ -2075,7 +2226,7 @@ test('backup routes return 404 for an unknown backup id', async () => {
 
 test('GET databases and POST backup reject invalid options', async () => {
   const { app, cookie } = await buildApp({
-    db: fakeDb({ managedRows: [managedRow({ options: { settings: {} } })] }),
+    db: fakeDb({ managedRows: [managedRow({ options: 'bad' })] }),
   })
   const headers = {
     ...authHeaders(cookie),
@@ -2098,7 +2249,7 @@ test('GET databases and POST backup reject invalid options', async () => {
 test('GET backups is unaffected by invalid managed.options — backups is its own table', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
-      managedRows: [managedRow({ options: { settings: {} } })],
+      managedRows: [managedRow({ options: 'bad' })],
       backupRows: [backupRow()],
     }),
   })
@@ -2188,10 +2339,7 @@ test('disaster-recovery promote cannot verify a session when the database is uns
 })
 
 test('GET managed serializes a placed cluster with a loopback listener', async () => {
-  // Exposure is on by default now, so opt this cluster out to keep the
-  // loopback fallback covered.
   const options = validOptions()
-  options.settings.exposure = { enabled: false }
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow({ options })],
@@ -2394,7 +2542,7 @@ test('POST root-password / users return 422 when the daemon key is missing', asy
     db: fakeDb({
       managedRows: [managedRow()],
       serverRows: [presenceServer(true)],
-      principalRows: [principalRow()],
+      loginRows: [loginRow(), rootLoginRow()],
     }),
     registry: stubRegistry(),
     commandQueue: recordingQueue(),
@@ -2422,7 +2570,7 @@ test('POST root-password / users return 422 when the daemon key is missing', asy
     { error: 'daemon_key_unavailable' }
   )
   await expectJson(
-    await app.request(envPath(`/users/${PRINCIPAL_ID}/password`), {
+    await app.request(envPath(`/users/${LOGIN_ID}/password`), {
       method: 'POST',
       headers,
       body: '{}',
@@ -2449,26 +2597,6 @@ test('POST create rejects an invalid name after the host is online', async () =>
     }),
     400,
     { error: 'Invalid request' }
-  )
-})
-
-test('POST create rejects invalid settings after the host is online', async () => {
-  const { app, cookie } = await buildApp({
-    db: fakeDb({
-      envRows: [envRow({ serverId: SERVER_ID })],
-      serverRows: [presenceServer(true)],
-    }),
-    registry: stubRegistry(),
-    commandQueue: recordingQueue(),
-  })
-  await expectJson(
-    await app.request(envPath(), {
-      method: 'POST',
-      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
-      body: JSON.stringify({ exposure: { bind: 'public' } }),
-    }),
-    400,
-    { error: 'managed_settings_invalid' }
   )
 })
 
@@ -2554,7 +2682,7 @@ test('DELETE hard-deletes pending containers for environment services', async ()
   assertEquals(body.deleted, true)
 })
 
-test('POST promote returns 409 when replica lag is unknown', async () => {
+test('POST promote returns 409 when replica lag is unknown and no live probe', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
@@ -2568,11 +2696,11 @@ test('POST promote returns 409 when replica lag is unknown', async () => {
       body: JSON.stringify({}),
     }),
     409,
-    { error: 'managed_replica_not_streaming' }
+    LIVE_CHECK_FAILED
   )
 })
 
-test('POST promote returns 409 when replica health is stale', async () => {
+test('POST promote returns 409 when stored health is stale and no live probe', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
@@ -2597,7 +2725,7 @@ test('POST promote returns 409 when replica health is stale', async () => {
       body: JSON.stringify({}),
     }),
     409,
-    { error: 'managed_replica_health_stale' }
+    LIVE_CHECK_FAILED
   )
 })
 
@@ -2606,7 +2734,7 @@ test('DELETE user / PATCH member / POST database hit apply-ready after validatio
     db: fakeDb({
       managedRows: [managedRow()],
       serverRows: [presenceServer(true)],
-      principalRows: [principalRow()],
+      loginRows: [loginRow()],
       memberRows: [memberRow()],
     }),
     registry: stubRegistry(),
@@ -2617,7 +2745,7 @@ test('DELETE user / PATCH member / POST database hit apply-ready after validatio
     'content-type': 'application/json',
   }
   await expectJson(
-    await app.request(envPath(`/users/${PRINCIPAL_ID}`), {
+    await app.request(envPath(`/users/${LOGIN_ID}`), {
       method: 'DELETE',
       headers,
     }),
@@ -2681,6 +2809,7 @@ function applyReadyDb(extra: FakeDbConfig = {}) {
         },
       }),
     ],
+    loginRows: extra.loginRows ?? [rootLoginRow()],
     serviceRows: extra.serviceRows ?? [engineServiceRow()],
     containerRows: extra.containerRows ?? [engineContainerRow()],
     backupRows: extra.backupRows ?? [backupRow()],
@@ -2813,7 +2942,10 @@ test('DELETE cluster refuses with the bound services listed, and queues nothing'
     registry: stubRegistry(),
     commandQueue: countingQueue(enqueued),
   })
-  const res = await app.request(envPath(), { method: 'DELETE', headers: authHeaders(cookie) })
+  const res = await app.request(envPath(), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
   assertEquals(res.status, 409)
   const body = await jsonOf(res)
   assertEquals(body.error, 'managed_has_bindings')
@@ -2893,7 +3025,13 @@ test('DELETE cluster with ?detach=true needs the same rights as the destroy: man
       if (executeCalls === 1) {
         return Promise.resolve([{ organization_id: ORG_ID, kind: 'user' }])
       }
-      return Promise.resolve([{ allowed: false, organization_id: ORG_ID, kind: 'user' }])
+      return Promise.resolve([
+        {
+          allowed: false,
+          organization_id: ORG_ID,
+          kind: 'user',
+        },
+      ])
     },
     delete: (table: unknown) => {
       deletedTables.push(table)
@@ -2963,9 +3101,110 @@ test('DELETE cluster with no bindings is unchanged and reports no detached list'
     registry: stubRegistry(),
     commandQueue: recordingQueue(),
   })
-  const res = await app.request(envPath(), { method: 'DELETE', headers: authHeaders(cookie) })
+  const res = await app.request(envPath(), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
   assertEquals(res.status, 200)
   assertEquals('detached' in (await jsonOf(res)), false)
+})
+
+const MARIADB_FAILOVER_UNSUPPORTED_REASON =
+  'MariaDB 12.3 can run on one server; automatic failover needs MariaDB 11.8 for now.'
+
+test('POST members refuses MariaDB 12.3 with 422 managed_failover_unsupported', async () => {
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb({
+      managedRows: [rowFor(mariadbEngineSpec, 'docker.io/library/mariadb:12.3')],
+      projectRows: [{ metadata: { code: 'mariadb' } }],
+    }),
+  })
+  const res = await app.request(envPath('/members'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ serverId: REPLICA_SERVER_ID }),
+  })
+  assertEquals(res.status, 422)
+  assertEquals(await jsonOf(res), {
+    error: MARIADB_FAILOVER_UNSUPPORTED_REASON,
+    code: 'managed_failover_unsupported',
+  })
+})
+
+test('POST members allows MariaDB 11.8 past the failover gate', async () => {
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb({
+      managedRows: [rowFor(mariadbEngineSpec, 'docker.io/library/mariadb:11.8')],
+      projectRows: [{ metadata: { code: 'mariadb' } }],
+    }),
+  })
+  const res = await app.request(envPath('/members'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ serverId: REPLICA_SERVER_ID }),
+  })
+  assertEquals(res.status, 422)
+  const body = await jsonOf(res)
+  // Past the failover gate: the request now fails on placement, not on the series.
+  assertEquals(body, { error: 'private_path_unavailable' })
+})
+
+test('POST members treats an imageless MariaDB row as 12.3 and refuses it', async () => {
+  const legacy = managedRow({
+    engine: 'mariadb',
+    options: {
+      settings: mariadbEngineSpec.parseSettings({
+        ...mariadbEngineSpec.defaultSettings,
+      }),
+      databases: ['defaultdb'],
+    },
+  })
+  const { app, cookie } = await buildApp({
+    db: applyReadyDb({
+      managedRows: [legacy],
+      projectRows: [{ metadata: { code: 'mariadb' } }],
+    }),
+  })
+  const res = await app.request(envPath('/members'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ serverId: REPLICA_SERVER_ID }),
+  })
+  assertEquals(res.status, 422)
+  assertEquals(await jsonOf(res), {
+    error: MARIADB_FAILOVER_UNSUPPORTED_REASON,
+    code: 'managed_failover_unsupported',
+  })
+})
+
+test('PATCH member to failover is refused on MariaDB 12.3 but not on 11.8', async () => {
+  for (const [image, refused] of [
+    ['docker.io/library/mariadb:12.3', true],
+    ['docker.io/library/mariadb:11.8', false],
+  ] as const) {
+    const { app, cookie } = await buildApp({
+      db: applyReadyDb({
+        managedRows: [rowFor(mariadbEngineSpec, image)],
+        memberRows: [memberRow({ replicaClass: 'read' })],
+        projectRows: [{ metadata: { code: 'mariadb' } }],
+      }),
+    })
+    const res = await app.request(envPath(`/members/${MEMBER_ID}`), {
+      method: 'PATCH',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({ replicaClass: 'failover' }),
+    })
+    const body = await jsonOf(res)
+    if (refused) {
+      assertEquals(res.status, 422)
+      assertEquals(body, {
+        error: MARIADB_FAILOVER_UNSUPPORTED_REASON,
+        code: 'managed_failover_unsupported',
+      })
+    } else {
+      assertEquals(body.code === 'managed_failover_unsupported', false)
+    }
+  }
 })
 
 test('POST members surfaces a private-path error for an unreachable replica host', async () => {
@@ -2987,12 +3226,12 @@ test('POST members surfaces a private-path error for an unreachable replica host
 test('POST user-password past apply-ready restores the prior hash on prepare failure', async () => {
   const { app, cookie } = await buildApp({
     db: applyReadyDb({
-      principalRows: [principalRow()],
+      loginRows: [loginRow()],
     }),
     registry: stubRegistry(),
     commandQueue: recordingQueue(),
   })
-  const res = await app.request(envPath(`/users/${PRINCIPAL_ID}/password`), {
+  const res = await app.request(envPath(`/users/${LOGIN_ID}/password`), {
     method: 'POST',
     headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
     body: '{}',
@@ -3047,7 +3286,7 @@ test('POST root-password past apply-ready maps a later prepare error', async () 
 test('POST users past apply-ready hits namespace and insert short-circuits', async () => {
   const { app, cookie } = await buildApp({
     db: applyReadyDb({
-      principalRows: [principalRow({ username: 'appuser' })],
+      loginRows: [loginRow({ username: 'appuser' })],
     }),
     registry: stubRegistry(),
     commandQueue: recordingQueue(),
@@ -3082,7 +3321,7 @@ test('POST users past apply-ready hits namespace and insert short-circuits', asy
  * (the new login) and which commands were queued.
  */
 function recordingUserCreate(memberRows: unknown[]) {
-  const base = applyReadyDb({ principalRows: [], memberRows })
+  const base = applyReadyDb({ principalRows: [], loginRows: [], memberRows })
   const inserted: Array<Record<string, unknown>> = []
   const db = {
     ...base,
@@ -3092,7 +3331,7 @@ function recordingUserCreate(memberRows: unknown[]) {
       }
       return {
         values: (values: Record<string, unknown>) => {
-          if (table === principal) inserted.push(values)
+          if (table === login) inserted.push(values)
           return builder.values(values)
         },
       }
@@ -3130,10 +3369,10 @@ async function postUser(
 }
 
 // Other principals (such as the replication login) may be inserted too.
-function loginMetadata(inserted: Array<Record<string, unknown>>): Record<string, unknown> {
-  const login = inserted.find((row) => row.username === 'reporter')
-  assertEquals(login !== undefined, true)
-  return login?.metadata as Record<string, unknown>
+function insertedLogin(inserted: Array<Record<string, unknown>>): Record<string, unknown> {
+  const row = inserted.find((entry) => entry.username === 'reporter')
+  assertEquals(row !== undefined, true)
+  return row as Record<string, unknown>
 }
 
 const PRIMARY_ONLY = [memberRow({ role: 'primary', replicaClass: null, ordinal: 1 })]
@@ -3149,51 +3388,246 @@ const WITH_HIDDEN_REPLICA = [
   }),
 ]
 
-test('POST users refuses a read-only login on a standalone cluster', async () => {
-  const { res, inserted, envelopes } = await postUser({ connectionRole: 'read-only' }, PRIMARY_ONLY)
-  await expectJson(res, 422, { error: 'managed_no_read_targets' })
-  assertEquals(inserted, [])
-  assertEquals(envelopes, [])
+test('POST users accepts a read-only login on a standalone cluster', async () => {
+  const { inserted } = await postUser({ connectionRole: 'read-only' }, PRIMARY_ONLY)
+  assertEquals(insertedLogin(inserted).access, 'read-only')
 })
 
-test('POST users refuses a read-only login when no replica is read-eligible', async () => {
-  const { res, inserted, envelopes } = await postUser(
-    { connectionRole: 'read-only' },
-    WITH_HIDDEN_REPLICA
-  )
-  await expectJson(res, 422, { error: 'managed_no_read_targets' })
-  assertEquals(inserted, [])
-  assertEquals(envelopes, [])
+test('POST users accepts a read-only login when no replica is read-eligible', async () => {
+  const { inserted } = await postUser({ connectionRole: 'read-only' }, WITH_HIDDEN_REPLICA)
+  assertEquals(insertedLogin(inserted).access, 'read-only')
 })
 
-// The principal is inserted before the apply payloads are prepared, and the
+// The login is inserted before the apply payloads are prepared, and the
 // fake db has no organization CA, so a later step may still answer an error:
 // these tests judge only the row that was written.
 test('POST users stores the read-only role on the new login', async () => {
   const { inserted } = await postUser({ connectionRole: 'read-only' }, WITH_READ_REPLICA)
-  const metadata = loginMetadata(inserted)
-  assertEquals(metadata.connectionRole, 'read-only')
-  assertEquals(metadata.databases, ['defaultdb'])
+  assertEquals(insertedLogin(inserted).access, 'read-only')
 })
 
-test('POST users leaves the metadata untouched for read-write and omitted roles', async () => {
+test('POST users stores read-write access for read-write and omitted roles', async () => {
   for (const body of [{ connectionRole: 'read-write' }, {}]) {
     const { inserted } = await postUser(body, PRIMARY_ONLY)
-    const metadata = loginMetadata(inserted)
-    assertEquals('connectionRole' in metadata, false)
-    assertEquals(Object.keys(metadata).sort(), ['databases', 'engine', 'privileges'])
+    const row = insertedLogin(inserted)
+    assertEquals(row.access, 'read-write')
+    assertEquals(row.grantMode, 'recipe')
+    assertEquals(row.isTool, false)
+    assertEquals(row.allowedSources, undefined)
+    assertEquals(row.maxConnections, undefined)
   }
+})
+
+test('POST users stores self mode and the tool flag, and refuses an unknown mode', async () => {
+  const { inserted } = await postUser({ grantMode: 'self', tool: true }, PRIMARY_ONLY)
+  const row = insertedLogin(inserted)
+  assertEquals(row.grantMode, 'self')
+  assertEquals(row.isTool, true)
+  const bad = await postUser({ grantMode: 'preset' }, PRIMARY_ONLY)
+  await expectJson(bad.res, 400, {
+    error: 'managed_grant_mode_invalid',
+    message: "grantMode must be 'recipe' (the panel sets permissions) or 'self' (you set them).",
+  })
+  assertEquals(bad.inserted, [])
+})
+
+test('POST users stores an explicit straightThrough choice and leaves it unset otherwise', async () => {
+  for (const choice of [true, false]) {
+    const { res, inserted } = await postUser({ straightThrough: choice }, PRIMARY_ONLY)
+    assertEquals(insertedLogin(inserted).isStraightThrough, choice)
+    if (res.status === 200) {
+      const user = ((await jsonOf(res)) as { user: Record<string, unknown> }).user
+      assertEquals(user.straightThrough, choice)
+      assertEquals(user.straightThroughDefault, false)
+    }
+  }
+  const { inserted } = await postUser({}, PRIMARY_ONLY)
+  assertEquals(insertedLogin(inserted).isStraightThrough, undefined)
+  const nulled = await postUser({ straightThrough: null }, PRIMARY_ONLY)
+  assertEquals(insertedLogin(nulled.inserted).isStraightThrough, undefined)
+})
+
+test('POST users refuses straightThrough with a source limit, and a non-boolean value', async () => {
+  const conflict = await postUser(
+    { straightThrough: true, allowedSources: ['address:203.0.113.%'] },
+    PRIMARY_ONLY
+  )
+  await expectJson(conflict.res, 400, {
+    error: 'straight_through_conflicts_with_source_limit',
+    message:
+      'A login that connects straight through cannot be limited to certain addresses. Turn one off.',
+  })
+  assertEquals(conflict.inserted, [])
+  const allowed = await postUser(
+    { straightThrough: false, allowedSources: ['address:203.0.113.%'] },
+    PRIMARY_ONLY
+  )
+  assertEquals(allowed.res.status === 400, false)
+  const bad = await postUser({ straightThrough: 'yes' }, PRIMARY_ONLY)
+  assertEquals(bad.res.status, 400)
+  assertEquals(bad.inserted, [])
+})
+
+async function patchUser(body: Record<string, unknown>, loginOverrides = {}) {
+  const { envelopes, commandQueue } = recordingUserCreate(PRIMARY_ONLY)
+  const withLogin = applyReadyDb({
+    principalRows: [],
+    loginRows: [loginRow(loginOverrides)],
+    memberRows: PRIMARY_ONLY,
+  })
+  const { app, cookie } = await buildApp({
+    db: withLogin,
+    registry: stubRegistry(),
+    commandQueue,
+  })
+  const res = await app.request(envPath(`/users/${LOGIN_ID}`), {
+    method: 'PATCH',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  return { res, envelopes }
+}
+
+test('PATCH user dry run lists what would run and queues nothing', async () => {
+  const { res, envelopes } = await patchUser({ grantMode: 'self', dryRun: true })
+  assertEquals(res.status, 200)
+  const body = await jsonOf(res)
+  assertEquals(body.dryRun, true)
+  assertEquals(body.grantMode, 'self')
+  assertEquals(Array.isArray(body.statements), true)
+  assertEquals(envelopes, [])
+})
+
+test('PATCH user refuses straightThrough against a stored source limit, in both directions', async () => {
+  const withLimit = await patchUser({ straightThrough: true }, { allowedSources: ['internal'] })
+  assertEquals(withLimit.res.status, 400)
+  assertEquals((await jsonOf(withLimit.res)).error, 'straight_through_conflicts_with_source_limit')
+  const withChoice = await patchUser({ allowedSources: ['internal'] }, { isStraightThrough: true })
+  assertEquals(withChoice.res.status, 400)
+  assertEquals((await jsonOf(withChoice.res)).error, 'straight_through_conflicts_with_source_limit')
+  const bad = await patchUser({ straightThrough: 'on' })
+  assertEquals(bad.res.status, 400)
+  assertEquals(withLimit.envelopes, [])
+})
+
+test('PATCH user dry run says in plain words that straightThrough changes the connection path', async () => {
+  const { res, envelopes } = await patchUser({ straightThrough: true, dryRun: true })
+  assertEquals(res.status, 200)
+  const statements = (await jsonOf(res)).statements as string[]
+  assertEquals(
+    statements.some((line) => line.includes('straight through the front door')),
+    true
+  )
+  assertEquals(envelopes, [])
+  const off = await patchUser(
+    { straightThrough: false, dryRun: true },
+    { privileges: ['owner'], isStraightThrough: null }
+  )
+  const offStatements = (await jsonOf(off.res)).statements as string[]
+  assertEquals(
+    offStatements.some((line) => line.includes('normal shared path')),
+    true
+  )
+})
+
+test('PATCH user applies a change and queues an apply', async () => {
+  const { res, envelopes } = await patchUser({ grantMode: 'self', tool: true })
+  assertEquals([200, 409, 422, 500].includes(res.status), true)
+  if (res.status === 200) assertEquals(envelopes.length > 0, true)
+  const missing = await patchUser({})
+  assertEquals(missing.res.status, 400)
+  const badDb = await patchUser({ databases: ['nope'] })
+  assertEquals(badDb.res.status, 400)
+  const badRole = await patchUser({ connectionRole: 'writer' })
+  assertEquals(badRole.res.status, 400)
+  const badPriv = await patchUser({ privileges: [] })
+  assertEquals(badPriv.res.status, 400)
+})
+
+test('PATCH user restores the old settings when preparing the apply throws', async () => {
+  const loginWrites: Array<Record<string, unknown>> = []
+  const base = applyReadyDb({
+    principalRows: [],
+    loginRows: [loginRow({ databases: ['defaultdb'] })],
+    memberRows: PRIMARY_ONLY,
+  })
+  const db = {
+    ...base,
+    select: (...args: unknown[]) => {
+      const chain = (base.select as (...a: unknown[]) => { from: (t: unknown) => unknown })(...args)
+      return {
+        from: (table: unknown) => {
+          // After the new settings are saved, any read other than the login
+          // and its databases fails, as if the database dropped mid-request.
+          if (
+            loginWrites.length === 1 &&
+            table !== login &&
+            table !== managedDatabase &&
+            table !== scope
+          ) {
+            throw new Error('database went away')
+          }
+          return chain.from(table)
+        },
+      }
+    },
+    update: (table: unknown) => {
+      const inner = base.update(table as never) as unknown as {
+        set: (next: Record<string, unknown>) => unknown
+      }
+      return {
+        set: (next: Record<string, unknown>) => {
+          if (table === login) loginWrites.push(next)
+          return inner.set(next)
+        },
+      }
+    },
+  } as unknown as Db
+  const { app, cookie } = await buildApp({
+    db,
+    registry: stubRegistry(),
+    commandQueue: recordingQueue(),
+  })
+  const res = await app.request(envPath(`/users/${LOGIN_ID}`), {
+    method: 'PATCH',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ grantMode: 'self' }),
+  })
+  assertEquals(res.status, 500)
+  assertEquals(loginWrites.length, 2)
+  assertEquals(loginWrites[0]?.grantMode, 'self')
+  assertEquals(loginWrites[1]?.grantMode, 'preset')
+})
+
+test('PATCH user refuses a bad mode and a move back to preset in plain words', async () => {
+  const bad = await patchUser({ grantMode: 'wild' })
+  assertEquals(bad.res.status, 400)
+  const back = await patchUser(
+    { grantMode: 'preset' },
+    { databases: ['postgres'], grantMode: 'recipe' }
+  )
+  assertEquals(back.res.status, 422)
+  assertEquals((await jsonOf(back.res)).error, 'managed_grant_mode_invalid_transition')
+})
+
+test('GET users reports grant mode, defaulting old logins to preset', async () => {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({
+      managedRows: [managedRow()],
+      loginRows: [loginRow()],
+    }),
+  })
+  const body = await jsonOf(await app.request(envPath('/users'), { headers: authHeaders(cookie) }))
+  const users = body.users as Array<{ grantMode: string; tool: boolean }>
+  assertEquals(users[0]?.grantMode, 'preset')
+  assertEquals(users[0]?.tool, false)
 })
 
 test('GET users reports a stored read-only login as read-only', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
-      principalRows: [
-        principalRow({
-          metadata: { engine: 'postgres', connectionRole: 'read-only' },
-        }),
-      ],
+      loginRows: [loginRow({ access: 'read-only' })],
     }),
   })
   const body = await jsonOf(await app.request(envPath('/users'), { headers: authHeaders(cookie) }))
@@ -3331,7 +3765,13 @@ test('POST disaster-recovery promote returns 403 when manage is denied', async (
       if (executeCalls === 1) {
         return Promise.resolve([{ organization_id: ORG_ID, kind: 'user' }])
       }
-      return Promise.resolve([{ allowed: false, organization_id: ORG_ID, kind: 'user' }])
+      return Promise.resolve([
+        {
+          allowed: false,
+          organization_id: ORG_ID,
+          kind: 'user',
+        },
+      ])
     },
   } as unknown as Db
   const { app, cookie } = await buildApp({ db })
@@ -3349,7 +3789,14 @@ test('POST disaster-recovery promote returns 403 when manage is denied', async (
 test('POST disaster-recovery promote hides a foreign environment as 404', async () => {
   const db = {
     ...drReplicaDb(),
-    execute: () => Promise.resolve([{ allowed: true, organization_id: OTHER_ORG, kind: 'user' }]),
+    execute: () =>
+      Promise.resolve([
+        {
+          allowed: true,
+          organization_id: OTHER_ORG,
+          kind: 'user',
+        },
+      ]),
   } as unknown as Db
   const { app, cookie } = await buildApp({ db })
   await expectJson(
@@ -3433,6 +3880,8 @@ test('PATCH member replica class still requires apply-ready after conversion', a
 
 const HEALTH_FEATURE = 'managed-health-v1'
 
+const LIVE_CHECK_FAILED = buildManagedReplicaLiveCheckFailedBody()
+
 /** An enrolled, online server whose stored hello advertised `features`. */
 function serverAdvertising(features: string[]) {
   return { ...applyReadyServer(true), daemon: { projection: { features } } }
@@ -3452,6 +3901,8 @@ function streamingHealth(over: Record<string, unknown> = {}) {
         lagBytes: 0,
         lagSeconds: 0,
         observedAt: new Date().toISOString(),
+        receivedLsn: '0/3000100',
+        replayLsn: '0/3000100',
         ...over,
       },
     },
@@ -3566,7 +4017,7 @@ test('POST promote fails closed when the probe times out', async () => {
     features: [HEALTH_FEATURE],
     reply: { status: 'expired' },
   })
-  await expectJson(response, 409, { error: 'managed_replica_health_stale' })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
   assertEquals(sent.length, 1)
 })
 
@@ -3575,7 +4026,7 @@ test('POST promote fails closed when the daemon cannot read health', async () =>
     features: [HEALTH_FEATURE],
     reply: { status: 'failed', error: 'engine not running' },
   })
-  await expectJson(response, 409, { error: 'managed_replica_health_stale' })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
 })
 
 test('POST promote sends no probe to a daemon without managed-health-v1', async () => {
@@ -3583,24 +4034,88 @@ test('POST promote sends no probe to a daemon without managed-health-v1', async 
     features: ['update-progress-v1'],
     reply: { status: 'done', result: streamingHealth() },
   })
-  await expectJson(response, 409, { error: 'managed_replica_health_stale' })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
   assertEquals(sent.length, 0)
 })
 
-test('POST promote does not probe a fresh stored observation', async () => {
+test('POST promote probes even when the stored observation is recent', async () => {
   const { response, sent } = await promoteVia({
     features: [HEALTH_FEATURE],
     metadata: {
       replication: {
         state: 'streaming',
-        observedAt: new Date().toISOString(),
+        observedAt: new Date(Date.now() - 60_000).toISOString(),
         lagBytes: 0,
       },
     },
     reply: { status: 'done', result: streamingHealth() },
   })
   await expectQueued(response, { status: 'queued' })
-  assertEquals(sent.length, 0)
+  assertEquals(sent.length, 1)
+})
+
+test('POST promote refuses a replica whose threads stopped after the stored reading', async () => {
+  const { response, sent } = await promoteVia({
+    features: [HEALTH_FEATURE],
+    metadata: {
+      replication: {
+        state: 'streaming',
+        observedAt: new Date(Date.now() - 3_000).toISOString(),
+        lagBytes: 0,
+      },
+    },
+    reply: {
+      status: 'done',
+      result: streamingHealth({ state: 'reconnecting' }),
+    },
+  })
+  await expectJson(response, 409, { error: 'managed_replica_not_streaming' })
+  assertEquals(sent.length, 1)
+})
+
+test('POST promote does not act on a minute-old stored reading when the daemon cannot answer', async () => {
+  const { response } = await promoteVia({
+    features: [HEALTH_FEATURE],
+    metadata: {
+      replication: {
+        state: 'streaming',
+        observedAt: new Date(Date.now() - 60_000).toISOString(),
+        lagBytes: 0,
+      },
+    },
+    reply: { status: 'expired' },
+  })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
+})
+
+test('POST promote does not trust a recent stored reading when the live probe fails', async () => {
+  const { response, sent } = await promoteVia({
+    features: [HEALTH_FEATURE],
+    metadata: {
+      replication: {
+        state: 'streaming',
+        observedAt: new Date(Date.now() - 3_000).toISOString(),
+        lagBytes: 0,
+        receivedLsn: '0/3000100',
+        replayLsn: '0/3000100',
+      },
+    },
+    reply: { status: 'expired' },
+  })
+  await expectJson(response, 409, LIVE_CHECK_FAILED)
+  assertEquals(sent.length, 1)
+})
+
+test('POST promote still returns health_stale when the live probe answers with an old reading', async () => {
+  const { response, sent } = await promoteVia({
+    features: [HEALTH_FEATURE],
+    reply: {
+      status: 'done',
+      result: streamingHealth({ observedAt: '2020-01-01T00:00:00.000Z' }),
+    },
+  })
+  await expectJson(response, 409, { error: 'managed_replica_health_stale' })
+  assertEquals(sent.length, 1)
 })
 
 test('POST promote with force never probes', async () => {
@@ -3666,8 +4181,15 @@ test('GET status?refresh=1 probes the replicas, asks the primary for its slot re
 })
 
 test('GET status?refresh=1 does not probe a primary that has no replicas', async () => {
-  const { registry, sent } = healthRegistry({ status: 'done', result: streamingHealth() })
-  const primary = memberRow({ role: 'primary', replicaClass: null, ordinal: 1 })
+  const { registry, sent } = healthRegistry({
+    status: 'done',
+    result: streamingHealth(),
+  })
+  const primary = memberRow({
+    role: 'primary',
+    replicaClass: null,
+    ordinal: 1,
+  })
   const { app, cookie } = await buildApp({
     db: fakeDb({
       managedRows: [managedRow()],
@@ -3676,7 +4198,9 @@ test('GET status?refresh=1 does not probe a primary that has no replicas', async
     }),
     registry,
   })
-  await app.request(envPath('/status?refresh=1'), { headers: authHeaders(cookie) })
+  await app.request(envPath('/status?refresh=1'), {
+    headers: authHeaders(cookie),
+  })
   assertEquals(sent.length, 0)
 })
 

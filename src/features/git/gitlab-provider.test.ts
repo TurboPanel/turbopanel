@@ -496,6 +496,39 @@ test('gitlab readRepositoryFiles classifies missing, binary, and oversized files
   )
 })
 
+test('gitlab readRepositoryFiles reports a missing ref, not a missing project', async () => {
+  const ctx = await mintedCtx()
+  for (const [body, expected] of [
+    [
+      { message: '404 Commit Not Found' },
+      { failure: 'gitlab ref not found', status: 404, reason: 'ref_not_found' },
+    ],
+    [
+      { message: '404 Project Not Found' },
+      { failure: 'gitlab request failed (404): 404 Project Not Found', status: 404 },
+    ],
+  ] as const) {
+    await withFetch(
+      (url) => {
+        if (url.includes('/repository/commits/')) {
+          return new Response(JSON.stringify(body), { status: 404 })
+        }
+        throw new TypeError(`unexpected ${url}`)
+      },
+      async () => {
+        assertEquals(
+          await gitlabProvider.readRepositoryFiles(ctx, {
+            row: oauthRow,
+            ref: 'nope',
+            paths: ['README.md'],
+          }),
+          expected
+        )
+      }
+    )
+  }
+})
+
 test('gitlab read auth maps API failures with and without a status', async () => {
   const ctx = await mintedCtx()
   await withFetch(

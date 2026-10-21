@@ -98,12 +98,14 @@ test('sticky re-plan leaves server_id untouched and only bumps generation', asyn
   await replaceEnvironmentSlots(db, {
     environmentId: envId,
     generation: 7,
-    slots: [{
-      serviceId: serviceA,
-      serverId: serverA,
-      slot: 0,
-      desiredState: 'running',
-    }],
+    slots: [
+      {
+        serviceId: serviceA,
+        serverId: serverA,
+        slot: 0,
+        desiredState: 'running',
+      },
+    ],
   })
 
   assertEquals(db.conflictSets.length, 1)
@@ -159,8 +161,6 @@ test('listEnvironmentSlots orders by serviceId then slot', async () => {
               id: '2',
               createdAt: '2020-01-01T00:00:00.000Z',
               updatedAt: '2020-01-01T00:00:00.000Z',
-              metadata: null,
-              options: null,
               environmentId: envId,
               serviceId: serviceB,
               serverId: serverA,
@@ -172,8 +172,6 @@ test('listEnvironmentSlots orders by serviceId then slot', async () => {
               id: '1',
               createdAt: '2020-01-01T00:00:00.000Z',
               updatedAt: '2020-01-01T00:00:00.000Z',
-              metadata: null,
-              options: null,
               environmentId: envId,
               serviceId: serviceA,
               serverId: serverA,
@@ -185,8 +183,6 @@ test('listEnvironmentSlots orders by serviceId then slot', async () => {
               id: '0',
               createdAt: '2020-01-01T00:00:00.000Z',
               updatedAt: '2020-01-01T00:00:00.000Z',
-              metadata: null,
-              options: null,
               environmentId: envId,
               serviceId: serviceA,
               serverId: serverA,
@@ -202,7 +198,7 @@ test('listEnvironmentSlots orders by serviceId then slot', async () => {
   const listed = await listEnvironmentSlots(db, envId)
   assertEquals(
     listed.map((row) => `${row.serviceId}:${String(row.slot)}`),
-    [`${serviceA}:0`, `${serviceA}:1`, `${serviceB}:0`],
+    [`${serviceA}:0`, `${serviceA}:1`, `${serviceB}:0`]
   )
 })
 
@@ -211,8 +207,6 @@ test('serializeSlot defaults unknown desiredState to running', () => {
     id: 't',
     createdAt: '2020-01-01T00:00:00.000Z',
     updatedAt: '2020-01-01T00:00:00.000Z',
-    metadata: null,
-    options: null,
     environmentId: envId,
     serviceId: serviceA,
     serverId: serverA,
@@ -234,12 +228,14 @@ test('replaceEnvironmentSlots writes and patches slot.address including explicit
   await replaceEnvironmentSlots(db, {
     environmentId: envId,
     generation: 4,
-    slots: [{
-      serviceId: serviceA,
-      serverId: serverA,
-      slot: 0,
-      address: '203.0.113.10',
-    }],
+    slots: [
+      {
+        serviceId: serviceA,
+        serverId: serverA,
+        slot: 0,
+        address: '203.0.113.10',
+      },
+    ],
   })
 
   assertEquals(db.inserts[0]?.address, '203.0.113.10')
@@ -248,12 +244,14 @@ test('replaceEnvironmentSlots writes and patches slot.address including explicit
   await replaceEnvironmentSlots(db, {
     environmentId: envId,
     generation: 5,
-    slots: [{
-      serviceId: serviceA,
-      serverId: serverA,
-      slot: 0,
-      address: null,
-    }],
+    slots: [
+      {
+        serviceId: serviceA,
+        serverId: serverA,
+        slot: 0,
+        address: null,
+      },
+    ],
   })
 
   assertEquals(db.inserts[1]?.address, null)
@@ -265,8 +263,6 @@ test('serializeSlot and listEnvironmentSlots surface a persisted address', async
     id: 't',
     createdAt: '2020-01-01T00:00:00.000Z',
     updatedAt: '2020-01-01T00:00:00.000Z',
-    metadata: null,
-    options: null,
     environmentId: envId,
     serviceId: serviceA,
     serverId: serverA,
@@ -281,20 +277,20 @@ test('serializeSlot and listEnvironmentSlots surface a persisted address', async
     select: () => ({
       from: () => ({
         where: () =>
-          thenableRows([{
-            id: '0',
-            createdAt: '2020-01-01T00:00:00.000Z',
-            updatedAt: '2020-01-01T00:00:00.000Z',
-            metadata: null,
-            options: null,
-            environmentId: envId,
-            serviceId: serviceA,
-            serverId: serverA,
-            slot: 0,
-            generation: 1,
-            desiredState: 'running',
-            address: '203.0.113.10',
-          }]),
+          thenableRows([
+            {
+              id: '0',
+              createdAt: '2020-01-01T00:00:00.000Z',
+              updatedAt: '2020-01-01T00:00:00.000Z',
+              environmentId: envId,
+              serviceId: serviceA,
+              serverId: serverA,
+              slot: 0,
+              generation: 1,
+              desiredState: 'running',
+              address: '203.0.113.10',
+            },
+          ]),
       }),
     }),
   } as unknown as Db

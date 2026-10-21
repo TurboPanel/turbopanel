@@ -22,8 +22,7 @@ src/features/billing/
 ├── schedules.ts          deferred changes: subscription-schedule phases, `mutateSubscription`
 ├── entitlements.ts       landed intents → derived server assignment → schedule rebuild, under the lease
 ├── seat-increase.ts      an immediate change's idempotency key + params, persisted before Stripe
-├── pending-checkout.ts    an in-flight first Checkout session, persisted under the lease
-├── checkout.ts           first purchase (hosted Checkout) + customer creation
+├── checkout.ts           first purchase (hosted Checkout, Stripe is the only record of open sessions) + customer creation
 ├── portal.ts             Customer Portal: invoices and payment methods only
 ├── reconcile.ts          maintenance phase: purchased vs held vs covered, alert only
 └── test-clock.ts         /v1/test_helpers/test_clocks, for the live harness only
@@ -73,7 +72,11 @@ Both `TURBOPANEL_STRIPE_SECRET_KEY` and
 `TURBOPANEL_STRIPE_WEBHOOK_SIGNING_SECRET` are **secrets**
 (`wrangler secret put`), never `vars` in `wrangler.jsonc`; `keep_vars: true`
 protects dashboard-set values across deploys. `TURBOPANEL_STRIPE_API_VERSION` is
-an optional override of the pin below.
+an optional override of the pin below. `TURBOPANEL_STRIPE_IS_COUPON_ALLOWED`
+(`1` on, anything else off) is a plain var: when on, Checkout sends
+`allow_promotion_codes=true` so the customer can type a promotion code. Live
+commits `"0"`; an unfinished Checkout session already handed out keeps the
+setting it was created with.
 
 A Workers deployment with no key: the three tables exist and are empty,
 `/webhook/stripe` answers `503 stripe_webhook_not_configured`, no Stripe call is
@@ -296,7 +299,28 @@ subscription.
 flexible billing mode, `billing_cycle_anchor_config` at day 1 / 00:00:00 UTC,
 and no `proration_behavior` on create so the default prorates the first month.
 Checkout passes the same block under `subscription_data` (verified accepted on
-the pinned `2025-08-27.basil` version).
+`2025-08-27.basil`, not yet re-verified on the pinned `2026-09-30.endive`).
+
+## First Checkout keeps no local record
+
+Stripe is the record of what is open. Under the quantity lease,
+`openCheckoutSession` (`checkout.ts`) lists the customer's Checkout sessions:
+one completed within the last ~65 minutes means the customer already paid, so
+the route answers `409 subscription_exists` and creates nothing; every open
+session is expired (`POST /v1/checkout/sessions/{id}/expire`) except a
+same-tier, same-quantity one created inside the idempotency window, which is
+handed back (a double click or a quick return). Then the new session is
+created. A refused expire is read back from the session: `expired` goes on,
+`complete` is the paid case above, anything else is a plain `502`/`503`
+`stripe_error` and nothing is created (the next try starts from the listing, so
+the user is never stuck). Sessions carry `expires_at` of 60 to 65 minutes
+(counted from the end of the idempotency window so a retried create presents
+identical parameters under its key), plus `turbopanel_tier_id` /
+`turbopanel_quantity` metadata for the match. The create key carries the ids of
+the sessions it replaced, so going back to an earlier choice inside a window is
+a new request and never replays the expired session. There is no
+`checkout_pending` refusal and no `BILLING_PENDING_CHECKOUT:*` row; leftover
+rows are ignored.
 
 ## The pending-change ledger
 
