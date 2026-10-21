@@ -758,6 +758,72 @@ it('GET /servers/:id/metrics/series does not serve a stale cache entry across a 
   )
 })
 
+function emptyTopologySnapshot(memoryTotalBytes: number) {
+  return {
+    networks: [],
+    filesystems: [],
+    blockDevices: [],
+    gpus: [],
+    hardwareSignals: [],
+    cpu: { sockets: 1, coresPerSocket: 1, threadsPerSocket: 1, model: null },
+    numaNodes: [],
+    memoryTotalBytes,
+    swapTotalBytes: null,
+  }
+}
+
+it('GET /servers/:id/metrics/series does not serve a stale cache entry after the hardware record is rewritten at the same generation', async () => {
+  const fakeStore = createFakeMetricsStore({
+    queryHostSeries: (input) =>
+      Promise.resolve({
+        kind: 'duckdb',
+        available: true,
+        serverId: input.serverId,
+        metrics: input.metrics,
+        points: [{ at: FROM, values: { 'host.cpu.busyPercent': 90 }, sampleCount: 1 }],
+        resolutionSeconds: input.resolutionSeconds ?? 60,
+        gapCount: 0,
+        sampleCount: 1,
+      }),
+  })
+
+  await withMetricsFixtures(
+    async ({ db, app, serverId, cookie }) => {
+      const url = `/servers/${serverId}/metrics/series?from=${FROM}&to=${TO}&metrics=host.cpu.busyPercent`
+      const record = (memoryTotalBytes: number) =>
+        recordTopologyGeneration(db, serverId, {
+          generation: 1,
+          bootGeneration: 1,
+          snapshot: emptyTopologySnapshot(memoryTotalBytes),
+          appliedAt: new Date().toISOString(),
+        })
+
+      await record(1_000)
+      assertEquals((await app.request(url, { headers: { Cookie: cookie } })).status, 200)
+      assertEquals(fakeStore.seriesCalls.length, 1)
+      assertEquals((await app.request(url, { headers: { Cookie: cookie } })).status, 200)
+      assertEquals(fakeStore.seriesCalls.length, 1)
+
+      // Age the stored write past the rewrite cooldown, then resend the SAME
+      // generation with different content: the record is rewritten in place,
+      // its generation does not change, and the cached response must not be
+      // served (it carries the inventory and capacities of the old content).
+      await db
+        .update(server)
+        .set({
+          hardware: sql`jsonb_set(${server.hardware}, '{updatedAt}', to_jsonb(${new Date(Date.now() - 600_000).toISOString()}::text))`,
+        })
+        .where(eq(server.id, serverId))
+      assertEquals(await record(2_000), 'refreshed')
+
+      assertEquals((await app.request(url, { headers: { Cookie: cookie } })).status, 200)
+      assertEquals(fakeStore.seriesCalls.length, 2)
+    },
+    undefined,
+    fakeStore
+  )
+})
+
 it('GET /servers/:id/metrics/series resolves cpuLimits from the daemon-reported CPU model when hardwareProfile.cpuModel is unset', async () => {
   const fakeStore = createFakeMetricsStore({
     queryHostSeries: (input) =>

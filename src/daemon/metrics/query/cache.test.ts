@@ -36,7 +36,7 @@ it('metricsChartCacheKey: stable metric ordering and schema version', () => {
   assertEquals(keyA.includes('v6'), true)
 })
 
-it('metricsChartCacheKey: hardwareRevision is appended only when provided', () => {
+it('metricsChartCacheKey: hardwareWrittenAtMs is appended only when provided', () => {
   const base = {
     serverId: '11111111-1111-4111-8111-111111111111',
     fromBucketMs: 1_000,
@@ -47,10 +47,10 @@ it('metricsChartCacheKey: hardwareRevision is appended only when provided', () =
     schemaVersion: 6,
   }
   const plain = metricsChartCacheKey(base)
-  const revised = metricsChartCacheKey({ ...base, hardwareRevision: 2 })
+  const revised = metricsChartCacheKey({ ...base, hardwareWrittenAtMs: 2 })
   assertEquals(plain.includes(':hw'), false)
   assertEquals(revised.endsWith(':hw2'), true)
-  assertEquals(metricsChartCacheKey({ ...base, hardwareRevision: 3 }) === revised, false)
+  assertEquals(metricsChartCacheKey({ ...base, hardwareWrittenAtMs: 3 }) === revised, false)
 })
 
 it('resolveChartCacheTtlSeconds: live vs historical', () => {

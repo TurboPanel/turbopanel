@@ -484,7 +484,7 @@ instance (`disabled` / `analytics-engine` / `duckdb`) purely by instance type
   server/range can never collide. **Chart cache** (`query/cache.ts`): key =
   `tp:metrics:chart:` + kind + authorized `serverId` + bucket-rounded range +
   sorted metrics + resolution + backend + `v{schemaVersion}` (callers pass
-  `schemaVersion: 6` explicitly, required) + `hw{revision}` (the latest hardware record, series only) when a
+  `schemaVersion: 6` explicitly, required) + `hw{ms}` (when the stored hardware record was last written, series only) when a
   response carries hardware-record data. TTL: live 45 s / historical 300 s.
   Workers: Cloudflare Cache API; Deno: bounded in-process `Map` (256 entries).
 

@@ -49,12 +49,12 @@ export type TopologyGenerationRecord = {
   bootGeneration: number
   snapshot: unknown
   appliedAt: string
+  /** When the stored value was last written; it changes whenever the snapshot is rewritten, even at the same generation. */
+  updatedAt: string
 }
 
 /** What `server.hardware` stores: the record plus the write bookkeeping. */
 type StoredHardware = TopologyGenerationRecord & {
-  /** When the value was last written. */
-  updatedAt: string
   /** Times of the latest generation changes, newest first, at most a day old and at most the daily limit. */
   changes: string[]
 }
@@ -104,6 +104,7 @@ function toRecord(stored: StoredHardware | undefined): TopologyGenerationRecord 
     bootGeneration: stored.bootGeneration,
     snapshot: stored.snapshot,
     appliedAt: stored.appliedAt,
+    updatedAt: stored.updatedAt,
   }
 }
 
