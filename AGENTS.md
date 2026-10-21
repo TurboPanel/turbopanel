@@ -376,6 +376,12 @@ guard; `pnpm test:do` alone does not.
   else `git rev-parse HEAD`, and a deploy that cannot name a 40-hex commit is
   refused (so `/api/health` never reports `revision: unknown`). A failed
   migrate stops before wrangler runs.
+  `scripts/migrate-locked.mjs` takes a database backup first when anything is
+  pending: with `TURBOPANEL_MIGRATE_BACKUP_COMMAND` set (a shell command that
+  reads `TURBOPANEL_DATABASE_URL` from its environment) it runs that command and
+  refuses to migrate if it fails. Without it, `live` refuses unless
+  `TURBOPANEL_MIGRATE_BACKUP_ACK=1`; other environments print a warning and
+  continue (`scripts/migrate-backup.mjs`).
 - **STAGING and LIVE use the same Workers Builds setup**, one Worker per
   environment: `staging-instance` (branch `staging`, deploy command
   `pnpm run deploy:staging`) and `instance` (branch `live`, deploy command

@@ -30,6 +30,7 @@ import postgres from 'postgres'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import { migrate } from 'drizzle-orm/postgres-js/migrator'
 import { resolvePostgresParts } from './resolve-postgres-url.mjs'
+import { runMigrateBackup } from './migrate-backup.mjs'
 import { assertMigrateTargetMatchesEnv, stripJsonc } from './check-deploy-env.mjs'
 import {
   compareSchemaState,
@@ -126,6 +127,9 @@ try {
     throw new Error(describeSchemaState(state))
   }
   console.log(`migrate-locked: ${describeSchemaState(state)}`)
+  // Back up before anything changes (no wipes: rollback is a restore). Runs
+  // under the lock, so no other migration slips in between dump and migrate.
+  if (state.status !== 'current') runMigrateBackup(process.env)
   console.log(`migrate-locked: ${skipLock ? 'applying' : 'lock acquired, applying'} migrations…`)
   await migrate(db, {
     migrationsFolder: './migrations',
