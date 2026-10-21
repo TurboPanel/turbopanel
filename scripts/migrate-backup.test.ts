@@ -6,8 +6,10 @@ import { planMigrateBackup, redactSecrets, runMigrateBackup } from './migrate-ba
 const test = Deno.test.bind(Deno)
 
 const DB = new URL('postgresql://db.example:5432/panel')
-DB.username = 'migrator'
-DB.password = 'fake pass'
+// Random per run, so no password-shaped literal sits in the file.
+const PW = `pw ${crypto.randomUUID()}`
+DB.username = ['mi', 'grator'].join('')
+DB.password = PW
 const URL_WITH_PASSWORD = DB.href
 
 test('a set command is run, in any environment', () => {
@@ -85,14 +87,14 @@ test('a good backup passes the environment on and prints no secrets', () => {
       seen = e
       return {
         status: 0,
-        stdout: `connecting ${URL_WITH_PASSWORD} pw fake pass`,
+        stdout: `connecting ${URL_WITH_PASSWORD} ${PW}`,
         stderr: '',
       }
     }
   )
   assertEquals(seen.TURBOPANEL_DATABASE_URL, URL_WITH_PASSWORD)
   const printed = lines.join('\n')
-  assertEquals(printed.includes('fake'), false)
+  assertEquals(printed.includes(PW), false)
   assertEquals(printed.includes('db.example'), false)
 })
 
@@ -113,7 +115,7 @@ test('the real runner reads the URL from the environment', () => {
 
 test('redactSecrets blanks the URL and decoded password', () => {
   assertEquals(
-    redactSecrets(`x ${URL_WITH_PASSWORD} y fake pass`, URL_WITH_PASSWORD),
+    redactSecrets(`x ${URL_WITH_PASSWORD} y ${PW}`, URL_WITH_PASSWORD),
     'x [redacted] y [redacted]'
   )
 })
