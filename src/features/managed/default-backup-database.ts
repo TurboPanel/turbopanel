@@ -6,20 +6,29 @@ const MYSQL_FAMILY_SYSTEM_SCHEMAS = new Set([
   'sys',
 ])
 
+/** The cluster's initial database from its parsed settings, when it names one. */
+export function initialDatabaseOf(settings: unknown): string | undefined {
+  if (typeof settings !== 'object' || settings === null) return undefined
+  const initial = (settings as Record<string, unknown>).initialDatabase
+  return typeof initial === 'string' && initial.length > 0 ? initial : undefined
+}
+
 /**
- * The database a backup dumps when none is named: the first configured
- * (initial) database, skipping MySQL-family system schemas. `null` when the
- * instance has no such database. Shared by manual backups and the scheduled
- * policy entry, so both dump the same database.
+ * The database a backup dumps when none is named: the cluster's initial
+ * (default) database when it still exists, otherwise the first configured
+ * database, skipping MySQL-family system schemas. `null` when the instance has
+ * no such database. Shared by manual backups and the scheduled policy entry,
+ * so both dump the same database.
  */
 export function defaultBackupDatabase(
   databases: readonly string[],
-  engine?: string
+  engine?: string,
+  initialDatabase?: string
 ): string | null {
   const skipSystem = engine === 'mysql' || engine === 'mariadb'
-  for (const name of databases) {
-    if (skipSystem && MYSQL_FAMILY_SYSTEM_SCHEMAS.has(name.toLowerCase())) continue
-    return name
-  }
-  return null
+  const usable = databases.filter(
+    (name) => !(skipSystem && MYSQL_FAMILY_SYSTEM_SCHEMAS.has(name.toLowerCase()))
+  )
+  if (initialDatabase !== undefined && usable.includes(initialDatabase)) return initialDatabase
+  return usable[0] ?? null
 }

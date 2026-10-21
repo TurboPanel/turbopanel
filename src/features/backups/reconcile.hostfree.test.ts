@@ -284,6 +284,24 @@ test('a managed entry carries the first non-system database, as a manual backup 
   )
 })
 
+test('a managed entry carries the initial database, not the first one by name', async () => {
+  const names = ['ct_db_app', 'ct_db_bk', 'defaultdb']
+  const { db } = fakeDb({
+    policyRows: (['postgres', 'mysql', 'mariadb'] as const).map((engine, index) =>
+      policyRow({
+        id: `0192d6a0-0000-7000-8000-0000000000b${index}`,
+        engine,
+        ...managedOptions(engine, names),
+      })
+    ),
+  })
+  const set = await buildBackupPolicySetForServer(db, SERVER_A)
+  assertEquals(
+    set.map((entry) => entry.database),
+    ['defaultdb', 'defaultdb', 'defaultdb']
+  )
+})
+
 test('a managed entry names no database when the cluster has none to dump or its options are unreadable', async () => {
   const { db } = fakeDb({
     policyRows: [

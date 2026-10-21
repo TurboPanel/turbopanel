@@ -295,6 +295,8 @@ export type BackupRunReportMessage = {
   sizeBytes?: number
   checksum?: string
   path?: string
+  /** The database a managed engine's run dumped; absent from an older daemon and for storage copies. */
+  database?: string
   /** `bk_` ids this run's retention removed from the policy's directory. */
   pruned?: string[]
   /** When the policy's timer next fires, read from systemd after the run. */
@@ -1396,6 +1398,9 @@ const BACKUP_RUN_STATUSES = new Set(['succeeded', 'failed'])
 /** Max characters for `backup-run-report.path`. */
 export const MAX_DAEMON_WS_BACKUP_PATH_CHARS = 1024
 
+/** Max characters for `backup-run-report.database`. */
+export const MAX_DAEMON_WS_BACKUP_DATABASE_CHARS = 128
+
 /** Max `backup-run-report.pruned` entries (a policy keeps at most 100 artifacts). */
 export const MAX_DAEMON_WS_BACKUP_PRUNED = 256
 
@@ -1453,6 +1458,14 @@ function validateBackupRunReportArtifact(record: Record<string, unknown>): strin
   }
   if (record.pruned !== undefined && !isBackupPrunedList(record.pruned)) {
     return 'invalid pruned'
+  }
+  if (
+    record.database !== undefined &&
+    (typeof record.database !== 'string' ||
+      record.database.length === 0 ||
+      record.database.length > MAX_DAEMON_WS_BACKUP_DATABASE_CHARS)
+  ) {
+    return 'invalid database'
   }
   return null
 }

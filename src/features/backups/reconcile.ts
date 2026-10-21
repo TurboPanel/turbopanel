@@ -36,7 +36,10 @@ import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import { getManagedBackupDescriptor, getManagedEngineSpec } from '../managed/index.ts'
-import { defaultBackupDatabase } from '../managed/default-backup-database.ts'
+import {
+  defaultBackupDatabase,
+  initialDatabaseOf,
+} from '../managed/default-backup-database.ts'
 import { managedDatabaseNames, parseManagedSettings } from '../managed/options.ts'
 import { managedHasBackupPolicies } from './policy-records.ts'
 import { translateBackupSchedule } from './schedules.ts'
@@ -80,13 +83,14 @@ type ManagedPolicyRow = {
 
 /**
  * The database a scheduled run dumps: the same default a manual backup picks
- * (the first non-system database). Absent when the stored options cannot say,
+ * (the cluster's initial database, else the first non-system one). Absent when the stored options cannot say,
  * so the daemon falls back to its engine default rather than the run failing here.
  */
 function scheduledBackupDatabase(row: ManagedPolicyRow): string | undefined {
   const spec = getManagedEngineSpec(row.engine)
-  if (!spec || parseManagedSettings(spec, row.options) === null) return undefined
-  return defaultBackupDatabase(row.databases, row.engine) ?? undefined
+  const settings = spec ? parseManagedSettings(spec, row.options) : null
+  if (!spec || settings === null) return undefined
+  return defaultBackupDatabase(row.databases, row.engine, initialDatabaseOf(settings)) ?? undefined
 }
 
 function toWireEntry(row: ManagedPolicyRow): BackupPolicyWireEntry | null {
