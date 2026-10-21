@@ -2081,6 +2081,39 @@ test('parseCommandPayload rejects non-boolean noCache on environment.deploy', ()
   )
 })
 
+test('parseCommandPayload carries hideWebServerNames on environment.deploy and rejects non-booleans', () => {
+  const base = {
+    environmentId: 'env-1',
+    projectId: 'proj-1',
+    organizationId: 'org-1',
+    projectName: 'tp-demo',
+    composeFiles: [
+      { filename: 'compose.yaml', role: 'runtime' as const, content: 'services: {}\\n' },
+    ],
+    hostings: [],
+  }
+  for (const value of [true, false]) {
+    const parsed = parseCommandPayload('environment.deploy' as CommandType, {
+      ...base,
+      hideWebServerNames: value,
+    }) as { hideWebServerNames?: boolean }
+    assertEquals(parsed.hideWebServerNames, value)
+  }
+  const absent = parseCommandPayload('environment.deploy' as CommandType, base) as {
+    hideWebServerNames?: boolean
+  }
+  assertEquals('hideWebServerNames' in absent, false)
+  assertThrows(
+    () =>
+      parseCommandPayload('environment.deploy' as CommandType, {
+        ...base,
+        hideWebServerNames: 'yes',
+      }),
+    Error,
+    'Invalid environment.deploy payload'
+  )
+})
+
 const MINIMAL_DEPLOY = {
   environmentId: 'env-1',
   projectId: 'proj-1',

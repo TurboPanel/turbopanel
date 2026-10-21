@@ -628,6 +628,17 @@ export const serverSchemas = {
         enum: ['server', 'organization', 'datacenter', null],
         description: 'Which configured layer supplied ntpDefaults (null when none are set).',
       },
+      hideWebServerNames: {
+        type: 'boolean',
+        description:
+          'Effective web server name hiding: server.options.hideWebServerNames, else the organization setting, else on.',
+      },
+      hideWebServerNamesSource: {
+        type: ['string', 'null'],
+        enum: ['server', 'organization', 'datacenter', null],
+        description:
+          'Which configured layer supplied hideWebServerNames (null when the default, on, is used).',
+      },
       colocatedWithInstance: {
         type: 'boolean',
         description:
@@ -844,10 +855,11 @@ export const serverSchemas = {
       options: {
         type: 'object',
         description:
-          'Merged into server.options. sshPort (1–65535 or null to inherit) and ntp (object or null to inherit) participate in the host-defaults cascade.',
+          'Merged into server.options. sshPort (1–65535 or null to inherit) and ntp (object or null to inherit) participate in the host-defaults cascade; hideWebServerNames (boolean or null to inherit the organization setting) is a server option too.',
         properties: {
           sshPort: { type: ['integer', 'null'], minimum: 1, maximum: 65535 },
           ntp: { type: ['object', 'null'] },
+          hideWebServerNames: { type: ['boolean', 'null'] },
           hosting: {
             type: 'object',
             properties: { enabled: { type: 'boolean' } },

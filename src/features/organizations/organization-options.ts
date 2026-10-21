@@ -11,7 +11,12 @@ import {
 } from '../../lib/principal-name-scheme.ts'
 import { isValidEnvironmentName } from '../../contracts/directory-names.ts'
 import { normalizeDisplayName } from '../../lib/display-name-format.ts'
-import { type NtpDefaults, parseNtpDefaults, parseSshPort } from '../servers/host-defaults.ts'
+import {
+  type NtpDefaults,
+  parseHideWebServerNames,
+  parseNtpDefaults,
+  parseSshPort,
+} from '../servers/host-defaults.ts'
 import {
   type ManagedOrganizationDefaults,
   parseManagedOrganizationDefaults,
@@ -69,6 +74,11 @@ export type OrganizationOptions = {
   sshPort?: number
   /** Desired NTP client settings inherited by datacenters and servers. */
   ntp?: NtpDefaults
+  /**
+   * Hide web server names and versions on servers that do not set their own.
+   * Omitted → on.
+   */
+  hideWebServerNames?: boolean
   /**
    * Preferred TurboFabric state for this organization. Does not create or tear
    * down the mesh — `PUT /organizations/:id/fabric` remains the enable path.
@@ -278,6 +288,14 @@ function assignMaxServers(options: OrganizationOptions, value: Record<string, un
   if (parsed.ok) options.maxServers = parsed.value
 }
 
+function assignHideWebServerNames(
+  options: OrganizationOptions,
+  value: Record<string, unknown>
+): void {
+  const hide = parseHideWebServerNames(value.hideWebServerNames)
+  if (hide !== undefined) options.hideWebServerNames = hide
+}
+
 function assignManagedDatabase(options: OrganizationOptions, value: Record<string, unknown>): void {
   if (!('managedDatabase' in value)) return
   const managedDatabase = parseManagedOrganizationDefaults(value.managedDatabase)
@@ -334,6 +352,7 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (sshPort !== undefined) options.sshPort = sshPort
   const ntp = parseNtpDefaults(value.ntp)
   if (ntp) options.ntp = ntp
+  assignHideWebServerNames(options, value)
   if (typeof value.defaultFabricEnabled === 'boolean') {
     options.defaultFabricEnabled = value.defaultFabricEnabled
   }

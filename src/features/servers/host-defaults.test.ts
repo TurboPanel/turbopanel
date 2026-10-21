@@ -2,10 +2,13 @@ import { assertEquals } from "@std/assert";
 import {
   DEFAULT_SSH_PORT,
   parseDefaultFabricEnabledInput,
+  parseHideWebServerNames,
+  parseHideWebServerNamesInput,
   parseNtpDefaults,
   parseNtpDefaultsInput,
   parseSshPort,
   parseSshPortInput,
+  resolveEffectiveHideWebServerNames,
   resolveEffectiveNtpDefaults,
   resolveEffectiveSshPort,
 } from "./host-defaults.ts";
@@ -159,4 +162,35 @@ test("resolveEffectiveNtpDefaults prefers the most specific configured layer", (
     ntp: null,
     source: null,
   });
+});
+
+test("resolveEffectiveHideWebServerNames is on unless the server or organization says off", () => {
+  assertEquals(resolveEffectiveHideWebServerNames({}, {}), {
+    hideWebServerNames: true,
+    source: null,
+  });
+  assertEquals(
+    resolveEffectiveHideWebServerNames({}, { hideWebServerNames: false }),
+    { hideWebServerNames: false, source: "organization" },
+  );
+  assertEquals(
+    resolveEffectiveHideWebServerNames(
+      { hideWebServerNames: true },
+      { hideWebServerNames: false },
+    ),
+    { hideWebServerNames: true, source: "server" },
+  );
+  assertEquals(resolveEffectiveHideWebServerNames(null, undefined), {
+    hideWebServerNames: true,
+    source: null,
+  });
+});
+
+test("hideWebServerNames parsers read booleans and treat anything else as unset", () => {
+  assertEquals(parseHideWebServerNames(false), false);
+  assertEquals(parseHideWebServerNames(null), undefined);
+  assertEquals(parseHideWebServerNames("off"), undefined);
+  assertEquals(parseHideWebServerNamesInput(null), { ok: true, value: null });
+  assertEquals(parseHideWebServerNamesInput(true), { ok: true, value: true });
+  assertEquals(parseHideWebServerNamesInput(0), { ok: false });
 });

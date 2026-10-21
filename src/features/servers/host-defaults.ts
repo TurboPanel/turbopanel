@@ -29,6 +29,11 @@ export type HostDefaultsLayer = {
   ntp?: NtpDefaults;
   /** Organization layer only — ignored on datacenter/server. */
   defaultFabricEnabled?: boolean;
+  /**
+   * Hide web server names and versions (headers, error pages). Organization and
+   * server layers only; unset everywhere means on.
+   */
+  hideWebServerNames?: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -140,6 +145,38 @@ export function parseDefaultFabricEnabledInput(
   if (value === null) return { ok: true, value: null };
   if (typeof value !== "boolean") return { ok: false };
   return { ok: true, value };
+}
+
+/** Hidden unless a layer says otherwise. */
+export const DEFAULT_HIDE_WEB_SERVER_NAMES = true;
+
+/** Lenient jsonb read — anything but a boolean is omitted. */
+export function parseHideWebServerNames(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+/** PUT/PATCH value: a boolean sets the layer, `null` clears it (inherit). */
+export function parseHideWebServerNamesInput(
+  value: unknown,
+): { ok: true; value: boolean | null } | { ok: false } {
+  if (value === null) return { ok: true, value: null };
+  if (typeof value !== "boolean") return { ok: false };
+  return { ok: true, value };
+}
+
+/** Server value wins, then the organization's; on when neither is set. */
+export function resolveEffectiveHideWebServerNames(
+  server: HostDefaultsLayer | null | undefined,
+  organization: HostDefaultsLayer | null | undefined,
+): { hideWebServerNames: boolean; source: HostDefaultsSource | null } {
+  const resolved = firstDefined([
+    { value: server?.hideWebServerNames, source: "server" },
+    { value: organization?.hideWebServerNames, source: "organization" },
+  ]);
+  if (resolved.value !== undefined) {
+    return { hideWebServerNames: resolved.value, source: resolved.source };
+  }
+  return { hideWebServerNames: DEFAULT_HIDE_WEB_SERVER_NAMES, source: null };
 }
 
 export function resolveEffectiveSshPort(
