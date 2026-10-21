@@ -2330,6 +2330,128 @@ test('managed user create/delete target managed.server_id when environment place
   )
 })
 
+test('managed user straightThrough round trip: create, list, change, default and conflicts', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      const ready = () =>
+        db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+      await ready()
+
+      type UserBody = { id: string; straightThrough: boolean; straightThroughDefault: boolean }
+      const send = async (method: string, path: string, body?: unknown) => {
+        await ready()
+        const res = await app.request(`/environments/${environmentId}/managed/users${path}`, {
+          method,
+          headers,
+          body: body === undefined ? undefined : JSON.stringify(body),
+        })
+        return { status: res.status, body: (await res.json()) as Record<string, unknown> }
+      }
+      const listed = async () =>
+        ((await send('GET', '')).body.users as UserBody[]).reduce(
+          (acc, user) => ({ ...acc, [user.id]: user }),
+          {} as Record<string, UserBody>
+        )
+
+      const chosen = await send('POST', '', {
+        username: 'chosen_user',
+        databases: ['defaultdb'],
+        straightThrough: true,
+      })
+      assertEquals(chosen.status, 200)
+      const chosenUser = chosen.body.user as UserBody
+      assertEquals([chosenUser.straightThrough, chosenUser.straightThroughDefault], [true, false])
+
+      const migrator = await send('POST', '', {
+        username: 'migrator_user',
+        databases: ['defaultdb'],
+        privileges: ['owner'],
+      })
+      assertEquals(migrator.status, 200)
+      const migratorUser = migrator.body.user as UserBody
+      assertEquals(
+        [migratorUser.straightThrough, migratorUser.straightThroughDefault],
+        [true, true]
+      )
+
+      const plain = await send('POST', '', { username: 'plain_user', databases: ['defaultdb'] })
+      const plainUser = plain.body.user as UserBody
+      assertEquals([plainUser.straightThrough, plainUser.straightThroughDefault], [false, true])
+
+      let users = await listed()
+      assertEquals(users[chosenUser.id]?.straightThrough, true)
+      assertEquals(users[migratorUser.id]?.straightThroughDefault, true)
+
+      // The owner turns it off for the Migration login, then back to the default.
+      const before = commandQueue.envelopes.length
+      const off = await send('PATCH', `/${migratorUser.id}`, { straightThrough: false })
+      assertEquals(off.status, 200)
+      assertEquals(
+        [
+          (off.body.user as UserBody).straightThrough,
+          (off.body.user as UserBody).straightThroughDefault,
+        ],
+        [false, false]
+      )
+      // The change re-applies the cluster and its front door.
+      assertEquals(
+        commandQueue.envelopes.slice(before).some((e) => e.type === 'managed.ingress.reconcile'),
+        true
+      )
+      const back = await send('PATCH', `/${migratorUser.id}`, { straightThrough: null })
+      assertEquals(
+        [
+          (back.body.user as UserBody).straightThrough,
+          (back.body.user as UserBody).straightThroughDefault,
+        ],
+        [true, true]
+      )
+
+      // A source limit and the switch together are refused, both ways.
+      const limited = await send('PATCH', `/${chosenUser.id}`, {
+        allowedSources: ['address:203.0.113.%'],
+      })
+      assertEquals(limited.status, 400)
+      assertEquals(limited.body.error, 'straight_through_conflicts_with_source_limit')
+      const created2 = await send('POST', '', {
+        username: 'both_user',
+        databases: ['defaultdb'],
+        straightThrough: true,
+        allowedSources: ['address:203.0.113.%'],
+      })
+      assertEquals(created2.status, 400)
+      assertEquals(created2.body.error, 'straight_through_conflicts_with_source_limit')
+
+      // A Migration login with a source limit is not an error; it just goes off.
+      const noLongerThrough = await send('PATCH', `/${migratorUser.id}`, {
+        allowedSources: ['address:203.0.113.%'],
+      })
+      if (noLongerThrough.status === 200) {
+        assertEquals((noLongerThrough.body.user as UserBody).straightThrough, false)
+      } else {
+        // A server whose daemon cannot enforce limits answers 409 first.
+        assertEquals(noLongerThrough.status, 409)
+      }
+      users = await listed()
+      assertEquals(Object.keys(users).length, 3)
+    }
+  )
+})
+
 test('managed database create/delete target managed.server_id when environment placement has drifted', async () => {
   await withManagedFixtures(
     {},

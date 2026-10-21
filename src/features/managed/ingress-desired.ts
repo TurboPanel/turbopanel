@@ -65,6 +65,7 @@ import { loginSourceServerIds, loginWireLimits } from './login-sources.ts'
 import { loadServerAddressMap } from './login-sources-load.ts'
 import { materializeBindingsForManaged } from '../bindings/materialize.ts'
 import { loginDatabaseNames } from './logins.ts'
+import { resolveStraightThrough } from './login-straight-through.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { loadManagedIngressPorts, loadManagedOrgDefaults } from './load-org-defaults.ts'
 import {
@@ -254,9 +255,13 @@ async function loadClusterUsersForManagedIds(
       access: login.access,
       allowedSources: login.allowedSources,
       maxConnections: login.maxConnections,
+      privileges: login.privileges,
+      isStraightThrough: login.isStraightThrough,
+      engine: managed.engine,
       password: login.password,
     })
     .from(login)
+    .innerJoin(managed, eq(managed.id, login.managedId))
     .where(inArray(login.managedId, [...managedIds]))
 
   const daemonSupportsLimits = (daemonState.projection?.features ?? []).includes(
@@ -291,6 +296,20 @@ async function loadClusterUsersForManagedIds(
     const connectionRole = principalConnectionRole(row.access)
     if (connectionRole !== undefined) user.connectionRole = connectionRole
     if (principalIsTool(row.isTool)) user.tool = true
+    // Sent only when on, so the payload for other logins stays as it was and a
+    // daemon that predates the field ignores it (see managed/AGENTS.md).
+    if (
+      resolveStraightThrough({
+        engine: row.engine,
+        role: user.role,
+        privileges: row.privileges ?? [],
+        connectionRole: row.access,
+        allowedSources: row.allowedSources ?? undefined,
+        straightThrough: row.isStraightThrough ?? undefined,
+      }).value
+    ) {
+      user.straightThrough = true
+    }
     // Root: always limited to this server, its containers and the organization's
     // servers (sent even when empty). App logins: limited only when their owner
     // chose places (below).

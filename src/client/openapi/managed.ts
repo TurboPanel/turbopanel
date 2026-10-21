@@ -13,6 +13,12 @@ const MAX_CONNECTIONS_SCHEMA = {
     'Most connections this login may hold open at once. Omit for no per-login cap. Answers 400 `managed_login_max_connections_invalid` outside 1 to 10000.',
 } as const
 
+const STRAIGHT_THROUGH_REQUEST_SCHEMA = {
+  type: 'boolean',
+  description:
+    "Connect straight through (no connection sharing), PostgreSQL only: the login's connection goes straight through the database front door, one server connection per client session, no connection reuse and no read split. Omitted = the default (on for a login with the migrations privilege `owner` and a read/write connection role, off for the rest). Answers 400 `straight_through_conflicts_with_source_limit` together with `allowedSources` (a login with a source limit always uses the normal path), 400 `straight_through_postgres_only` for MySQL and MariaDB, and 400 `straight_through_login_not_allowed` for the cluster administrator and replication logins.",
+} as const
+
 const ENV_ID_PARAM = {
   name: 'id',
   in: 'path',
@@ -665,6 +671,16 @@ export const managedSchemas = {
         description:
           'A database-tool login: everything goes to the primary, never split between reader and writer.',
       },
+      straightThrough: {
+        type: 'boolean',
+        description:
+          'Connect straight through (no connection sharing), PostgreSQL only: one server connection per client session, no connection reuse, no read split. This is what the front door does now, so it is false for a login limited to certain addresses and for MySQL and MariaDB.',
+      },
+      straightThroughDefault: {
+        type: 'boolean',
+        description:
+          'True when `straightThrough` comes from the default (the owner never chose): on for a PostgreSQL login with the migrations privilege (`owner`) and a read/write connection role, off for the rest.',
+      },
       createdAt: { type: 'string', format: 'date-time' },
     },
   },
@@ -1038,6 +1054,7 @@ export const managedSchemas = {
       },
       allowedSources: ALLOWED_SOURCES_SCHEMA,
       maxConnections: MAX_CONNECTIONS_SCHEMA,
+      straightThrough: STRAIGHT_THROUGH_REQUEST_SCHEMA,
       nameScheme: {
         type: 'string',
         enum: ['plain', 'partial', 'random'],
@@ -2100,6 +2117,11 @@ export const managedPaths = {
                   ...MAX_CONNECTIONS_SCHEMA,
                   nullable: true,
                   description: `${MAX_CONNECTIONS_SCHEMA.description} \`null\` removes the cap.`,
+                },
+                straightThrough: {
+                  ...STRAIGHT_THROUGH_REQUEST_SCHEMA,
+                  nullable: true,
+                  description: `${STRAIGHT_THROUGH_REQUEST_SCHEMA.description} \`null\` goes back to the default.`,
                 },
                 databases: { type: 'array', items: { type: 'string' } },
                 connectionRole: { type: 'string', enum: ['read-write', 'read-only'] },

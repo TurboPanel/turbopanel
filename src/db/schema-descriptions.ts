@@ -720,6 +720,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Places the login may connect from (`internal`, `server:` plus an id, `address:` plus a value); NULL means anywhere (API field `allowedSources`).',
       max_connections:
         'Per-login cap on open connections, at least 1; NULL means no cap (API field `maxConnections`).',
+      is_straight_through:
+        'PostgreSQL only: true connects the login straight through the front door; NULL means never chosen, so the default applies (API field `straightThrough`).',
       access:
         'Routing: `read-write` sends the login to the primary, `read-only` to read replicas or the primary when there are none (API field `connectionRole`).',
       privileges:

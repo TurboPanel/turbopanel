@@ -4223,6 +4223,8 @@ export const login = pgTable(
     allowedSources: text('allowed_sources').array(),
     /** Per-login connection cap; NULL means no cap. */
     maxConnections: integer('max_connections'),
+    /** PostgreSQL only: connect straight through the front door; NULL means the owner never chose (default applies). */
+    isStraightThrough: boolean('is_straight_through'),
     /** Routing: `read-write` to the primary, `read-only` to read replicas. */
     access: text().default('read-write').notNull(),
     /** What the login may do in each database it can use (`owner`, `read-write`, `read-only`, `admin`). */
