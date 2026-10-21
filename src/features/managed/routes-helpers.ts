@@ -951,7 +951,11 @@ export function isReservedDatabaseName(engine: string, name: string): boolean {
  * when a database is created: older clusters may already list `postgres` as an
  * ordinary database and keep working.
  */
-const POSTGRES_RESERVED_NEW_DATABASES: readonly string[] = ['postgres', 'template0', 'template1']
+const POSTGRES_RESERVED_NEW_DATABASES: ReadonlySet<string> = new Set([
+  'postgres',
+  'template0',
+  'template1',
+])
 
 /** The plain answer for a reserved database name (HTTP 422). */
 function reservedDatabaseNameBody(name?: string): { error: string; message: string } {
@@ -968,8 +972,7 @@ export function isReservedNewDatabaseName(engine: string, name: string): boolean
   if (engine !== 'postgres') return false
   const lower = name.toLowerCase()
   return (
-    POSTGRES_RESERVED_NEW_DATABASES.includes(lower) ||
-    lower.startsWith(RESERVED_POSTGRES_NAME_PREFIX)
+    POSTGRES_RESERVED_NEW_DATABASES.has(lower) || lower.startsWith(RESERVED_POSTGRES_NAME_PREFIX)
   )
 }
 
