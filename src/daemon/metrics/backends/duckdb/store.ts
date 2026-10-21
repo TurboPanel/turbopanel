@@ -1177,15 +1177,6 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
   }
 
   /**
-   * Discrete `server_metric_events` rows in `[from, to)`, unioned with sealed
-   * `"events"` Parquet partitions, capped at {@link MAX_STATUS_EVENTS} (same
-   * cap/truncation discipline as `queryStatusHistory`). Columns are selected
-   * explicitly (not `SELECT *`) so `"at"` can be cast to an epoch-ms double —
-   * the raw DuckDB `TIMESTAMP` value `getRowObjectsJS()` returns for an
-   * unconverted column isn't a plain JS string/number, the same reason every
-   * other read path in this file casts timestamps before reading them.
-   */
-  /**
    * The facts row of the newest sample in `[from, to)`. DuckDB keeps only the
    * latest row per server, so a sample older than `from` reads as "none", the
    * same answer the hosted store gives for a sample outside its window.
@@ -1218,6 +1209,15 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     }
   }
 
+  /**
+   * Discrete `server_metric_events` rows in `[from, to)`, unioned with sealed
+   * `"events"` Parquet partitions, capped at {@link MAX_STATUS_EVENTS} (same
+   * cap/truncation discipline as `queryStatusHistory`). Columns are selected
+   * explicitly (not `SELECT *`) so `"at"` can be cast to an epoch-ms double —
+   * the raw DuckDB `TIMESTAMP` value `getRowObjectsJS()` returns for an
+   * unconverted column isn't a plain JS string/number, the same reason every
+   * other read path in this file casts timestamps before reading them.
+   */
   async queryMetricEvents(input: MetricEventsQuery): Promise<MetricEventsResult> {
     await this.flushWrites()
     const serverId = assertSafeServerId(input.serverId)

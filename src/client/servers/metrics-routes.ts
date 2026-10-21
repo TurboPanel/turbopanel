@@ -862,14 +862,31 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       )
     }
 
+    // Facts change at most once a sample and the card reads them every few minutes:
+    // cache by the minute like the sibling routes.
     const nowMs = Date.now()
+    const minuteMs = Math.floor(nowMs / 60_000) * 60_000
+    const cacheKey = metricsChartCacheKey({
+      serverId,
+      fromBucketMs: minuteMs,
+      toBucketMs: minuteMs,
+      metrics: [],
+      resolutionSeconds: 60,
+      backend,
+      schemaVersion: 6,
+      kind: 'facts',
+    })
+    const cached = await cache.get<ReturnType<typeof buildHostFactsPayload>>(cacheKey)
+    if (cached) return c.json(cached)
     try {
       const result = await store.queryHostFacts({
         serverId,
         from: new Date(nowMs - HOST_FACTS_LOOKBACK_MS).toISOString(),
         to: new Date(nowMs).toISOString(),
       })
-      return c.json(buildHostFactsPayload(result))
+      const payload = buildHostFactsPayload(result)
+      await cache.set(cacheKey, payload, 60)
+      return c.json(payload)
     } catch (err) {
       const message = metricsQueryErrorMessage(err)
       console.error(

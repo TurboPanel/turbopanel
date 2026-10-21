@@ -632,6 +632,14 @@ export const V8_ENTITY_FIELD_ORDER: Readonly<Record<V8EntityFamily, readonly (st
   'hardware.physical': SIGNAL_SPEC.doubles.map((d) => d.field),
 }
 
+/** Text blobs each entity of a paged family carries, taken from the row specs (the writer). */
+export const V8_ENTITY_BLOB_COUNTS = {
+  block: BLOCK_SPEC.blobs.length,
+  gpu: GPU_SPEC.blobs.length,
+  network: NETWORK_SPEC.blobs.length,
+  filesystem: FILESYSTEM_SPEC.blobs.length,
+} as const
+
 export const V8_ENTITIES_PER_PAGE: Readonly<Record<V8EntityFamily, number>> = {
   block: BLOCK_SPEC.perPage,
   network: NETWORK_SPEC.perPage,

@@ -33,6 +33,8 @@ import {
   V8_ENTITY_FIELD_ORDER,
   V8_HOST_FAMILIES,
   V8_HOST_ROW_SPECS,
+  V8_ENTITY_BLOB_COUNTS,
+  V8_ENTITY_TEXT_FIELDS,
 } from './v8-layout.ts'
 
 type FixtureRow = { family: string; page?: number; entities?: string[] }
@@ -265,4 +267,10 @@ it('the entity row shapes match the fixture templates (width, entities per page)
   }
   assertEquals(V8_ENTITY_FIELD_ORDER['hardware.physical'].length, 1)
   assertEquals(V8_ENTITIES_PER_PAGE['hardware.physical'], 19)
+})
+
+it('the facts reader names exactly as many text fields per entity as the writer packs', () => {
+  for (const family of ['block', 'gpu', 'network', 'filesystem'] as const) {
+    assertEquals(V8_ENTITY_TEXT_FIELDS[family].length, V8_ENTITY_BLOB_COUNTS[family], family)
+  }
 })

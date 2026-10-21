@@ -78,7 +78,7 @@ export const STATUS_EVENTS_TABLE = 'server_status_events'
  * Latest host facts (the short text a v8 sample carries beside its numbers):
  * one row per server, replaced as newer samples arrive. Not a time series, so
  * it is never archived to Parquet and needs no retention. Added with
- * `CREATE TABLE IF NOT EXISTS`, so an existing marker-9 file simply gains it.
+ * `CREATE TABLE IF NOT EXISTS`, so an existing file at the current marker (10) simply gains it. (A marker-9 file is discarded, not upgraded.)
  */
 export const HOST_FACTS_TABLE = 'server_host_facts'
 
