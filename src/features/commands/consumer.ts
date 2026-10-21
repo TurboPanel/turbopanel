@@ -84,11 +84,14 @@ import {
 import type { FirewallApplyGate } from '../firewall/enforcement.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { nowIso } from './ids.ts'
+import { cancelDeployOnServer } from '../deploy/deploy-cancel.ts'
 import { isNoopCommandQueue } from './noop-command-queue.ts'
 import {
   createDeployWaiter,
   DEPLOY_WAIT_MESSAGES,
+  DEPLOY_REQUEST_TTL_SECONDS,
   DEPLOY_RUN_CAP_MS,
+  DEPLOY_WAIT_CANCELS_SERVER,
   type DeployWaiter,
 } from './deploy-wait.ts'
 import {
@@ -632,7 +635,11 @@ async function enqueueAndAwaitOutcome(
   }
 
   const cell = registry.getCell(envelope.serverId)
-  await cell.enqueue(outbound)
+  // A deploy may wait hours for the server, so its request must outlive the default five minutes.
+  await cell.enqueue(
+    outbound,
+    record.type === 'environment.deploy' ? { ttlSeconds: DEPLOY_REQUEST_TTL_SECONDS } : undefined
+  )
   commandConsumerTrace('dispatch-enqueued', {
     commandId: record.id,
     commandType: record.type,
@@ -662,38 +669,80 @@ async function awaitCommandOutcome(
   record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   deps: CommandConsumerDeps | undefined,
-  sentAt: string
+  sentAt: string,
+  resumed = false
 ): Promise<PendingRequestRecord | null> {
   const cell = registry.getCell(envelope.serverId)
-  const canHandOff = !!deps?.commandQueue && !isNoopCommandQueue(deps.commandQueue)
   const waiter =
-    record.type === 'environment.deploy'
-      ? createDeployWaiter({
-          sentAt,
-          readProgress: async () => (await getCommandRecord(db, record.id))?.progress ?? null,
-          holdMs: canHandOff ? deps?.deployWaitHoldMs : Number.POSITIVE_INFINITY,
-        })
-      : undefined
+    record.type === 'environment.deploy' ? makeDeployWaiter(db, record, sentAt, deps) : undefined
 
-  const pending = await awaitOutcomeWithAckDeadline(
-    cell,
-    record.id,
-    commandTimeoutMs(record.type),
-    COMMAND_ACK_DEADLINE_MS,
-    waiter
-  )
+  // A wait picked up again has been through the ack check already.
+  const pending =
+    resumed && waiter
+      ? await waiter.wait(cell, record.id, 0)
+      : await awaitOutcomeWithAckDeadline(
+          cell,
+          record.id,
+          commandTimeoutMs(record.type),
+          COMMAND_ACK_DEADLINE_MS,
+          waiter
+        )
   if (pending) return pending
-  if (waiter?.verdict === 'handoff') {
-    await deps?.commandQueue?.enqueue(envelope)
+  await settleUnansweredCommand(db, cell, record, envelope, deps, waiter)
+  return null
+}
+
+function makeDeployWaiter(
+  db: Db,
+  record: DispatchableCommandRecord,
+  sentAt: string,
+  deps: CommandConsumerDeps | undefined
+): DeployWaiter {
+  const canHandOff = !!deps?.commandQueue && !isNoopCommandQueue(deps.commandQueue)
+  return createDeployWaiter({
+    sentAt,
+    readCommand: async () => {
+      const current = await getCommandRecord(db, record.id)
+      return current === null
+        ? null
+        : { status: current.status, progress: current.progress, updatedAt: current.updatedAt }
+    },
+    ...(canHandOff
+      ? { holdMs: deps?.deployWaitHoldMs }
+      : { holdMs: Number.POSITIVE_INFINITY, endMs: Number.POSITIVE_INFINITY }),
+  })
+}
+
+/**
+ * The wait ended without a result. A deploy that someone else already finished
+ * is left alone, one still waiting goes back on the queue, and anything else
+ * is timed out with its failure side effects.
+ */
+async function settleUnansweredCommand(
+  db: Db,
+  cell: DaemonCell,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  deps: CommandConsumerDeps | undefined,
+  waiter: DeployWaiter | undefined
+): Promise<void> {
+  if (waiter?.verdict === 'settled') return
+  const trace = (resultStatus: string) =>
     commandConsumerTrace('dispatch-result', {
       commandId: record.id,
       commandType: record.type,
       serverId: envelope.serverId,
-      resultStatus: 'handed_off',
+      resultStatus,
     })
-    return null
+  if (waiter?.verdict === 'handoff') {
+    await deps?.commandQueue?.enqueue(envelope)
+    trace('handed_off')
+    return
   }
   const timeoutMessage = deployTimeoutMessage(waiter)
+  if (waiter && DEPLOY_WAIT_CANCELS_SERVER.has(waiter.verdict)) {
+    await cancelDeployOnServer(db, cell, envelope.serverId, record.id)
+  }
   if (waiter?.verdict === 'offline') {
     // Never reached the server: take it back so it cannot be delivered later.
     await cell.expireRequest?.(record.id).catch(() => undefined)
@@ -702,12 +751,7 @@ async function awaitCommandOutcome(
     status: 'timed_out',
     ...(timeoutMessage === undefined ? {} : { error: timeoutMessage }),
   })
-  commandConsumerTrace('dispatch-result', {
-    commandId: record.id,
-    commandType: record.type,
-    serverId: envelope.serverId,
-    resultStatus: 'timed_out',
-  })
+  trace('timed_out')
   await applyManagedFailedSideEffect(db, record, deps, 'Command timed out')
   await applyEnvironmentDeployFailedSideEffect(
     db,
@@ -718,13 +762,19 @@ async function awaitCommandOutcome(
     deps
   )
   await applyFabricFailedSideEffect(db, record, envelope)
-  return null
 }
 
 /** The plain-words error for a deploy that ended without a result; none for other commands. */
 function deployTimeoutMessage(waiter: DeployWaiter | undefined): string | undefined {
   const verdict = waiter?.verdict
-  if (verdict === undefined || verdict === 'none' || verdict === 'handoff') return undefined
+  if (
+    verdict === undefined ||
+    verdict === 'none' ||
+    verdict === 'handoff' ||
+    verdict === 'settled'
+  ) {
+    return undefined
+  }
   return DEPLOY_WAIT_MESSAGES[verdict]
 }
 
@@ -745,7 +795,9 @@ async function resumeDeployWait(
   if (!['sent', 'acked', 'running'].includes(record.status)) return null
   const existing = await registry.getCell(envelope.serverId).getRequest(record.id)
   if (existing === null || existing.status === 'expired') return null
-  return { pending: await awaitCommandOutcome(db, registry, record, envelope, deps, record.sentAt) }
+  return {
+    pending: await awaitCommandOutcome(db, registry, record, envelope, deps, record.sentAt, true),
+  }
 }
 
 /**

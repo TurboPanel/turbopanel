@@ -31,7 +31,7 @@ import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from './queue.ts'
 import { command, deployment, managed, recovery } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
-import { transitionCommand } from './command-records.ts'
+import { ENQUEUED_FLAG, transitionCommand } from './command-records.ts'
 import { failTimedOutDeploy } from '../deploy/rollout.ts'
 import { nowIso } from './ids.ts'
 import { commandTimeoutMs } from './consumer.ts'
@@ -109,7 +109,10 @@ function isStaleDeploy(row: StaleCommandCandidate, nowMs: number, graceMs: numbe
     toMs(row.sentAt) ?? toMs(row.dispatchStartedAt) ?? toMs(row.queuedAt) ?? toMs(row.createdAt)
   if (waitingSince === null) return false
   if (row.status === 'queued' || row.status === 'dispatching') {
-    return nowMs >= waitingSince + queueLimit
+    // Only a command whose message is known to be on the queue may wait long;
+    // one that never got there (its worker died) is given the old short wait.
+    const onQueue = asRecord(row.metadata)?.[ENQUEUED_FLAG] !== undefined
+    return nowMs >= waitingSince + (onQueue ? queueLimit : commandTimeoutMs(row.name) + graceMs)
   }
   const run = deployRunState({
     progress: row.progress,

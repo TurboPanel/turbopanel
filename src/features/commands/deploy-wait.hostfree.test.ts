@@ -5,7 +5,10 @@ import type { DaemonCell, PendingRequestRecord } from '../../contracts/cell.ts'
 import { awaitOutcomeWithAckDeadline } from './consumer.ts'
 import {
   createDeployWaiter,
+  DEPLOY_INVOCATION_LIMIT_MS,
   DEPLOY_OFFLINE_LIMIT_MS,
+  DEPLOY_PAUSED_SILENCE_MS,
+  DEPLOY_REQUEST_TTL_SECONDS,
   DEPLOY_QUEUE_HOLD_MS,
   DEPLOY_QUEUE_LIMIT_MS,
   DEPLOY_RUN_CAP_MS,
@@ -64,6 +67,8 @@ function verdict(over: Partial<Parameters<typeof deployWaitVerdict>[0]>) {
     sentAt: iso(T0),
     nowMs: T0,
     holdUntilMs: T0 + DEPLOY_QUEUE_HOLD_MS,
+    endAtMs: T0 + DEPLOY_INVOCATION_LIMIT_MS,
+    silentMs: 0,
     ...over,
   })
 }
@@ -80,13 +85,27 @@ test('a queued deploy keeps waiting, then hands the wait back, then gives up at 
 test('the run cap counts only from when the deploy started', () => {
   const started = T0 + 2 * 60 * 60_000
   const progress = plan(iso(started))
-  assertEquals(verdict({ progress, nowMs: started + DEPLOY_RUN_CAP_MS - 1 }), null)
-  assertEquals(verdict({ progress, nowMs: started + DEPLOY_RUN_CAP_MS }), 'run_cap')
+  const endAtMs = started + 2 * DEPLOY_RUN_CAP_MS
+  assertEquals(verdict({ progress, endAtMs, nowMs: started + DEPLOY_RUN_CAP_MS - 1 }), null)
+  assertEquals(verdict({ progress, endAtMs, nowMs: started + DEPLOY_RUN_CAP_MS }), 'run_cap')
 })
 
-test('a running deploy is never handed back, even past the hold', () => {
-  const progress = plan(iso(T0))
+test('a running deploy is kept past the hold but handed back before the invocation limit', () => {
+  const progress = plan(iso(T0 + 4 * 60_000))
   assertEquals(verdict({ progress, nowMs: T0 + DEPLOY_QUEUE_HOLD_MS + 1000 }), null)
+  assertEquals(verdict({ progress, nowMs: T0 + DEPLOY_INVOCATION_LIMIT_MS }), 'handoff')
+})
+
+test('a deploy the server said was waiting, then went quiet, is given up on', () => {
+  const quiet = { silentMs: DEPLOY_PAUSED_SILENCE_MS - 1, nowMs: T0 + 60_000 }
+  assertEquals(verdict(quiet), null)
+  assertEquals(verdict({ ...quiet, silentMs: DEPLOY_PAUSED_SILENCE_MS }), 'silent')
+  // A server that never said anything is not judged by silence.
+  assertEquals(verdict({ progress: null, silentMs: DEPLOY_PAUSED_SILENCE_MS * 10 }), null)
+})
+
+test('a deploy request outlives the queue limit in the cell', () => {
+  assertEquals(DEPLOY_REQUEST_TTL_SECONDS * 1000 > DEPLOY_QUEUE_LIMIT_MS + DEPLOY_RUN_CAP_MS, true)
 })
 
 test('a deploy that never reached an offline server fails at the offline limit, not before', () => {
@@ -106,7 +125,12 @@ function request(status: string): PendingRequestRecord {
   } as PendingRequestRecord
 }
 
-function waiterHarness(statuses: string[], progress: () => unknown, holdMs = 60_000) {
+function waiterHarness(
+  statuses: string[],
+  progress: () => unknown,
+  holdMs = 60_000,
+  commandStatus = () => 'sent'
+) {
   let nowMs = T0
   const cell = {
     // A round that finds nothing ends after the poll interval, as a real cell does.
@@ -123,9 +147,11 @@ function waiterHarness(statuses: string[], progress: () => unknown, holdMs = 60_
   } as unknown as DaemonCell
   const waiter = createDeployWaiter({
     sentAt: iso(T0),
-    readProgress: () => Promise.resolve(progress()),
+    readCommand: () =>
+      Promise.resolve({ status: commandStatus(), progress: progress(), updatedAt: iso(T0) }),
     now: () => nowMs,
     holdMs,
+    endMs: 3_600_000,
     pollMs: 10_000,
   })
   return { cell, waiter, now: () => nowMs }
@@ -167,8 +193,21 @@ test('the ack deadline still fails a deploy the server never acknowledged', asyn
     dropDaemonConnection: () => Promise.resolve(),
     expireRequest: () => Promise.resolve(request('expired')),
   } as unknown as DaemonCell
-  const waiter = createDeployWaiter({ sentAt: iso(T0), readProgress: () => Promise.resolve(null) })
+  const waiter = createDeployWaiter({ sentAt: iso(T0), readCommand: () => Promise.resolve(null) })
   const result = await awaitOutcomeWithAckDeadline(cell, 'r1', 600_000, 1_000, waiter)
   assertEquals(result?.status, 'failed')
   assertEquals(waiter.verdict, 'none')
+})
+
+test('the waiter stops when the command was already finished by someone else', async () => {
+  let status = 'sent'
+  const h = waiterHarness(
+    ['acked'],
+    () => plan(null),
+    600_000,
+    () => status
+  )
+  status = 'cancelled'
+  assertEquals(await h.waiter.wait(h.cell, 'r1', 0), null)
+  assertEquals(h.waiter.verdict, 'settled')
 })

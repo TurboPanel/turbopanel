@@ -1120,3 +1120,37 @@ test("prune reports expired updates and purges orphan index entries", async () =
     await cleanupCell(client, serverId);
   }
 });
+
+test("a request enqueued with a long lifetime keeps its record while queued and after it is acked", async () => {
+  const { client, cell, serverId } = createTestCell();
+  try {
+    const requestId = generateRequestId();
+    const at = new Date().toISOString();
+    await cell.enqueue(
+      {
+        kind: "command-dispatch",
+        deliveryId: generateDeliveryId(),
+        requestId,
+        at,
+        commandId: "cmd-long",
+        commandType: "environment.deploy",
+        payload: {},
+      },
+      { ttlSeconds: 6 * 60 * 60 + 900 },
+    );
+    const sixHoursFromNow = Date.now() + 6 * 60 * 60 * 1000;
+    const expiresAfter = async () =>
+      Date.parse((await cell.getRequest(requestId))?.expiresAt ?? "");
+    assert((await expiresAfter()) > sixHoursFromNow);
+    await cell.handleInbound({
+      kind: "command-ack",
+      requestId,
+      at,
+      daemonReceivedAt: at,
+    });
+    assert((await expiresAfter()) > sixHoursFromNow);
+    assertEquals((await cell.getRequest(requestId))?.status, "acked");
+  } finally {
+    await cleanupCell(client, serverId);
+  }
+});

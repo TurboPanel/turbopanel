@@ -96,7 +96,11 @@ import {
   normalizeReplicaCounts,
 } from '../../features/commands/context.ts'
 import { type CommandQueue, getCommandQueue } from '../../features/commands/queue.ts'
-import { createCommandRecord, transitionCommand } from '../../features/commands/command-records.ts'
+import {
+  createCommandRecord,
+  markCommandEnqueued,
+  transitionCommand,
+} from '../../features/commands/command-records.ts'
 import { bumpEnvironmentGeneration } from '../../features/deploy/environment-generation.ts'
 import {
   type DeploymentTargetInput,
@@ -813,6 +817,7 @@ async function deliverDeployCommand(
 
   try {
     await commandQueue.enqueue(envelope)
+    await markCommandEnqueued(db, params.commandId)
   } catch {
     await transitionCommand(db, params.commandId, {
       status: 'failed',

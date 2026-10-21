@@ -268,6 +268,7 @@ test('a deploy still in the command queue is not swept after 15 minutes', () => 
     name: 'environment.deploy',
     status: 'queued',
     queuedAt: new Date(T0).toISOString(),
+    metadata: { enqueuedAt: new Date(T0).toISOString() },
   })
   assertEquals(isStaleCommand(queued, T0 + 60 * 60_000), false)
   assertEquals(isStaleCommand(queued, T0 + 6 * 60 * 60_000 + STALE_COMMAND_GRACE_MS), true)
@@ -294,4 +295,14 @@ test('a deploy from a server that never reports a start keeps the old deadline',
   const sent = candidate({ name: 'environment.deploy', sentAt: new Date(T0).toISOString() })
   assertEquals(isStaleCommand(sent, T0 + 10 * 60_000), false)
   assertEquals(isStaleCommand(sent, T0 + 10 * 60_000 + STALE_COMMAND_GRACE_MS), true)
+})
+
+test('a queued deploy whose message never reached the queue is still swept after the short wait', () => {
+  const lost = candidate({
+    name: 'environment.deploy',
+    status: 'queued',
+    queuedAt: new Date(T0).toISOString(),
+  })
+  assertEquals(isStaleCommand(lost, T0 + 10 * 60_000), false)
+  assertEquals(isStaleCommand(lost, T0 + 10 * 60_000 + STALE_COMMAND_GRACE_MS), true)
 })

@@ -145,11 +145,13 @@ function createDispatchMockRegistry(
   enqueueCalled: boolean
   waitForRequestCalled: boolean
   capturedOutbound: unknown
+  enqueueOpts: { ttlSeconds?: number } | undefined
 } {
   const state = {
     enqueueCalled: false,
     waitForRequestCalled: false,
     capturedOutbound: null as unknown,
+    enqueueOpts: undefined as { ttlSeconds?: number } | undefined,
   }
 
   const cell: DaemonCell = {
@@ -178,9 +180,10 @@ function createDispatchMockRegistry(
         connected: false,
         ...patch,
       }),
-    enqueue: (outbound) => {
+    enqueue: (outbound, opts) => {
       state.enqueueCalled = true
       state.capturedOutbound = outbound
+      state.enqueueOpts = opts
       return Promise.resolve({
         serverId,
         requestId: outbound.requestId,
@@ -226,6 +229,9 @@ function createDispatchMockRegistry(
     },
     get capturedOutbound() {
       return state.capturedOutbound
+    },
+    get enqueueOpts() {
+      return state.enqueueOpts
     },
     getCell: () => cell,
     listOnlineServerIds: () => Promise.resolve([]),
@@ -6065,7 +6071,7 @@ test('a deploy sent to a server that stays offline fails with plain words after 
   })
 })
 
-test('the first time the server says it is running is stored as the start, and waiting does not undo it', async () => {
+test('the start is when the control plane first hears the server is running, and a later report does not move it', async () => {
   await withConsumerFixtures(async ({ db, serverId }) => {
     const record = await sentDeploy(db, serverId, { sentAgoMs: 60_000 })
     const frame = (runningSince: string | null) => ({
@@ -6075,6 +6081,7 @@ test('the first time the server says it is running is stored as the start, and w
       updatedAt: new Date().toISOString(),
       runningSince,
     })
+    const before = Date.now()
     const started = '2026-10-21T10:00:00.000Z'
     await recordCommandProgress(db, { serverId, commandId: record.id, progress: frame(started) })
     await recordCommandProgress(db, { serverId, commandId: record.id, progress: frame(null) })
@@ -6084,7 +6091,28 @@ test('the first time the server says it is running is stored as the start, and w
       progress: frame('2026-10-21T10:30:00.000Z'),
     })
     const stored = await getCommandRecord(db, record.id)
-    assertEquals(stored?.startedAt, started)
-    assertEquals(stored?.progress?.runningSince, '2026-10-21T10:30:00.000Z')
+    // The start is when the control plane first heard it, whatever the server's clock says.
+    const startedMs = Date.parse(stored?.startedAt ?? '')
+    assertEquals(startedMs >= before && startedMs <= Date.now(), true)
+    assertEquals(Date.parse(stored?.progress?.runningSince ?? '') >= startedMs, true)
+  })
+})
+
+test('a deploy is sent with a request lifetime longer than the queue limit, other commands are not', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const deploy = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'environment.deploy',
+      payload: { notAnEnvironmentId: true },
+    })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: { ...ACKED_REQUEST(serverId, deploy.id), status: 'done' },
+    })
+    await processCommandEnvelope(db, registry, buildEnvelope(deploy, serverId), {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+    })
+    assertEquals((registry.enqueueOpts?.ttlSeconds ?? 0) > 6 * 60 * 60, true)
   })
 })

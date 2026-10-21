@@ -26,6 +26,7 @@ import { transitionCommand } from '../commands/command-records.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import { nowIso } from '../commands/ids.ts'
 import { markDeploymentFailed } from './deployment-records.ts'
+import { markCommandEnqueued } from '../commands/command-records.ts'
 import { DEPLOY_QUEUE_LIMIT_MS } from '../commands/deploy-wait.ts'
 
 /** Same budget `createDeployCommand` gives a command at creation: how long it may wait to start. */
@@ -186,6 +187,7 @@ async function deliverClaimed(
       attempt: 1,
       queuedAt: params.queuedAt,
     })
+    await markCommandEnqueued(db, claimed.commandId)
     return true
   } catch {
     const error = 'Command queue unavailable'
