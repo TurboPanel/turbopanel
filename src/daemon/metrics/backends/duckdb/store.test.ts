@@ -799,6 +799,31 @@ it('v5 queryFleetHostSnapshot: multiple servers, values map, a requested-but-abs
   })
 })
 
+it('v8 queryFleetHostSnapshot: a data point v8 no longer stores reads as empty even though the column holds a value', async () => {
+  await withStore(async (store) => {
+    const withFaults = sample({ serverId: SERVER_A, atMs: DAY_START, cpuBusyPercent: 10 })
+    withFaults.host.memory.majorPageFaultsPerSecond = 42
+    withFaults.host.cpu.saturatedCoreCount = 3
+    await store.writeSample(withFaults)
+
+    const result = await store.queryFleetHostSnapshot({
+      serverIds: [SERVER_A],
+      metrics: [
+        'host.cpu.busyPercent',
+        'host.memory.majorPageFaultsPerSecond',
+        'host.cpu.saturatedCoreCount',
+      ],
+      from: new Date(DAY_START).toISOString(),
+      to: new Date(DAY_START + 600_000).toISOString(),
+    })
+
+    const values = result.servers[0]?.values
+    assertEquals(values?.['host.cpu.busyPercent'], 10)
+    assertEquals(values?.['host.memory.majorPageFaultsPerSecond'] ?? null, null)
+    assertEquals(values?.['host.cpu.saturatedCoreCount'] ?? null, null)
+  })
+})
+
 it('v5 queryEntitySeries: network family — per-entity buckets, missing entity gets empty points + full gap, unpopulated metric is real NULL', async () => {
   await withStore(async (store) => {
     const from = DAY_START
