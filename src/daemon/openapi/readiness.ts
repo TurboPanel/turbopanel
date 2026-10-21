@@ -60,6 +60,18 @@ export const readinessPaths: Record<string, unknown> = {
                       error: { type: 'string', const: 'database unavailable' },
                     },
                   },
+                  {
+                    type: 'object',
+                    required: ['ok', 'ready', 'error', 'missing'],
+                    description:
+                      'The database answers but the connection role lacks grants on the schema or tables (for example after the schema was recreated). `missing` names the role and object, never a secret.',
+                    properties: {
+                      ok: { type: 'boolean', const: false },
+                      ready: { type: 'boolean', const: false },
+                      error: { type: 'string', const: 'database roles lack grants' },
+                      missing: { type: 'array', items: { type: 'string' } },
+                    },
+                  },
                 ],
               },
             },

@@ -6,6 +6,7 @@ import {
   resolveSignupEnvOverrideFromContext,
 } from './authn/install-state.ts'
 import { getDb } from '../db/connection.ts'
+import { DATABASE_ROLES_LACK_GRANTS, findMissingRuntimeGrants } from '../db/role-grants.ts'
 import { logError } from '../lib/logger.ts'
 import { isCustomerBillingOperational } from '../features/billing/config.ts'
 import { registerAccessRoutes } from './access/routes.ts'
@@ -112,6 +113,19 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
       // The console's first request: an unmigrated or unreachable database
       // must read as "database unavailable", not an opaque 500.
       logError('client-status', 'status read failed', error)
+      const missing = db === undefined ? [] : await findMissingRuntimeGrants(db)
+      if (missing.length > 0) {
+        logError('client-status', `${DATABASE_ROLES_LACK_GRANTS}: ${missing.join('; ')}`)
+        return c.json(
+          {
+            ok: false,
+            error: DATABASE_ROLES_LACK_GRANTS,
+            code: 'database_roles_lack_grants',
+            missing,
+          },
+          503
+        )
+      }
       return c.json({ ok: false, error: 'Database unavailable', code: 'database_error' }, 503)
     }
     if (payload === null) {

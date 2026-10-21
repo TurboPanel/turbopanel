@@ -526,6 +526,26 @@ test('readiness answers 503, not 500, when the database is down', async () => {
   assertEquals(body.error, 'database unavailable')
 })
 
+test('readiness names missing grants instead of a bare database-unavailable', async () => {
+  const lacking = {
+    select: () => {
+      throw new Error('permission denied for schema public')
+    },
+    execute: () =>
+      Promise.resolve([
+        { role: 'app', schema_usage: false, table_exists: true, table_privileges: false },
+      ]),
+  } as unknown as Db
+  const response = await daemonApp({}, lacking).request(`${DAEMON_API_PREFIX}/readiness`)
+  assertEquals(response.status, 503)
+  const body = (await response.json()) as { error: string; missing: string[] }
+  assertEquals(body.error, 'database roles lack grants')
+  assertEquals(body.missing, [
+    'role app lacks USAGE on schema public',
+    'role app lacks read/write on table public.setting',
+  ])
+})
+
 const TLS_ISSUED_BODY = JSON.stringify({
   hostname: 'shop.example.com',
   certificatePem: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
