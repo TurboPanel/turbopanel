@@ -35,7 +35,7 @@ export function metricsChartCacheKey(input: {
   backend: MetricsBackendKind
   /** Callers must pass `6` explicitly. */
   schemaVersion: number
-  kind?: 'series' | 'summary' | 'connection' | 'fleet-latest' | 'events' | 'entity-series'
+  kind?: 'series' | 'summary' | 'connection' | 'fleet-latest' | 'events' | 'entity-series' | 'facts'
   /**
    * When the server's stored hardware record was last written (epoch ms), for
    * responses that carry what that record holds (device inventory, capacities,

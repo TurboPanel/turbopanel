@@ -409,6 +409,17 @@ function defOf(id: string): DoubleDef {
   return def
 }
 
+/** The `extended.text` key behind each content blob of a host row, blob7 onward (the reader's twin of `v8HostRowValues`). */
+export function v8HostRowTextKeys(
+  family: V8HostFamily
+): (keyof NonNullable<MetricsExtended['text']>)[] {
+  return V8_HOST_ROW_SPECS[family].blobs.map((id) => {
+    const key = TEXT_KEYS[id]
+    if (!key) throw new TypeError(`v8 layout names an unknown text id: ${id}`)
+    return key
+  })
+}
+
 function textOf(c: V8Context, id: string): string {
   const key = TEXT_KEYS[id]
   if (!key) throw new TypeError(`v8 layout names an unknown text id: ${id}`)
@@ -507,6 +518,18 @@ function entityNum<E>(field: string): {
   return { field, read: (entity) => num(entity, field) }
 }
 
+/**
+ * The text each entity of a paged family carries, in the order its blobs follow
+ * the row's content blobs (entity by entity). The facts reader maps blobs back to
+ * entities with this; it mirrors the blob lists of the row specs below.
+ */
+export const V8_ENTITY_TEXT_FIELDS = {
+  block: ['model', 'smart'],
+  gpu: ['driver', 'model', 'memoryTotal'],
+  network: ['linkSpeed'],
+  filesystem: ['size'],
+} as const
+
 function blockText(key: 'model' | 'smart') {
   return {
     read: (d: BlockDeviceSample, s: MetricsSample) =>
@@ -587,6 +610,14 @@ export const V8_ENTITY_FIELD_ORDER: Readonly<Record<V8EntityFamily, readonly (st
   gpu: GPU_SPEC.doubles.map((d) => d.field),
   'hardware.physical': SIGNAL_SPEC.doubles.map((d) => d.field),
 }
+
+/** Text blobs each entity of a paged family carries, taken from the row specs (the writer). */
+export const V8_ENTITY_BLOB_COUNTS = {
+  block: BLOCK_SPEC.blobs.length,
+  gpu: GPU_SPEC.blobs.length,
+  network: NETWORK_SPEC.blobs.length,
+  filesystem: FILESYSTEM_SPEC.blobs.length,
+} as const
 
 export const V8_ENTITIES_PER_PAGE: Readonly<Record<V8EntityFamily, number>> = {
   block: BLOCK_SPEC.perPage,
