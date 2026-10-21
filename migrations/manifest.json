@@ -14,6 +14,12 @@
       "tag": "0001_login_straight_through",
       "when": 1792542413788,
       "sha256": "d5e03c7668e5788d619a606938ed81feec29a275f17fe2ccb7568548fd1d1542"
+    },
+    {
+      "idx": 2,
+      "tag": "0002_backup_copy_targets",
+      "when": 1792606113383,
+      "sha256": "85d06bfdf5e038ead327ed337d84394cd83c7ee2460dffabf051014fed827067"
     }
   ]
 }

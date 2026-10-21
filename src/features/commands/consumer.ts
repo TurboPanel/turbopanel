@@ -75,6 +75,12 @@ import { deleteManagedBackup, insertManagedBackup } from '../backups/backup-reco
 import { applyStorageBackupSideEffect } from '../backups/storage-command-effects.ts'
 import { applyBackupsReconcileSideEffect } from '../backups/reconcile-effects.ts'
 import {
+  applyBackupTargetTestFailure,
+  applyBackupTargetTestSideEffect,
+} from '../backups/target-test-effects.ts'
+import type { CopyResealDeps } from '../backups/targets.ts'
+import { recordPendingCopy } from '../backups/copy-records.ts'
+import {
   commandMayChangeFirewallPreview,
   enqueueFirewallPreview,
   FIREWALL_RECONCILE_COMMAND,
@@ -219,6 +225,8 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.firewall.confirm': 60_000,
   // Writes a few unit files, one daemon-reload, enables what moved. No dump runs here.
   'server.backups.reconcile': 120_000,
+  // Writes, reads and deletes one small object; the request timeout alone is a minute.
+  'server.backups.test-target': 120_000,
   // One `rm -rf` through the root helper per folder, up to 100 folders; a big volume takes minutes.
   'server.folders.remove': 600_000,
   'environment.deploy': 600_000,
@@ -264,6 +272,7 @@ export function commandTimeoutMs(type: string): number {
     type === 'server.firewall.reconcile' ||
     type === 'server.firewall.confirm' ||
     type === 'server.backups.reconcile' ||
+    type === 'server.backups.test-target' ||
     type === 'server.folders.remove' ||
     type === 'environment.deploy' ||
     type === 'environment.lifecycle' ||
@@ -816,6 +825,14 @@ async function applyTimeSyncSideEffect(
   } catch {
     // Malformed success payload — leave columns for the next heartbeat.
   }
+}
+
+/** The secrets a backup reconcile needs to seal copy targets for a host; absent when the consumer has none. */
+function consumerCopyDeps(deps?: CommandConsumerDeps): CopyResealDeps | undefined {
+  const fields = consumerFabricSecretFields(deps)
+  return fields.secretsConfig && fields.dataEncryptionSecrets
+    ? { secretsConfig: fields.secretsConfig, dataEncryptionSecrets: fields.dataEncryptionSecrets }
+    : undefined
 }
 
 function consumerFabricSecretFields(deps?: CommandConsumerDeps): {
@@ -1627,6 +1644,7 @@ async function applyManagedApplySideEffect(
       managedId: payload.managedId,
       previousServerId: backupHost,
       actorId: envelope.serverId,
+      copyDeps: consumerCopyDeps(deps),
     })
 
     // Primary success → enqueue deferred standby applies (if any).
@@ -2023,6 +2041,13 @@ async function applyManagedBackupSideEffect(
         ...(backupResult.completedAt !== undefined ? { createdAt: backupResult.completedAt } : {}),
         serverId: record.serverId,
       })
+      // Only a backup that was asked to be copied waits for a copy.
+      if (payload.copyTarget) {
+        await recordPendingCopy(db, {
+          managedId: payload.managedId,
+          backupId: backupResult.backupId,
+        })
+      }
     }
   } catch (err) {
     const message = errorMessage(err)
@@ -2235,7 +2260,8 @@ async function applyManagedDestroySideEffect(
         db,
         deps?.commandQueue,
         { actorType: 'system', actorId: envelope.serverId },
-        [backupHost]
+        [backupHost],
+        consumerCopyDeps(deps)
       )
     }
 
@@ -2521,6 +2547,7 @@ async function applyManagedFailedSideEffect(
   deps?: CommandConsumerDeps,
   error?: string
 ): Promise<void> {
+  await applyBackupTargetTestFailure(db, record, error)
   const meta = await getCommandMetadata(db, record.id)
   // A failed return-fence stop (`ha-return-fence.ts`) must not flip the member
   // from `needs_resync` to `failed` or mark the whole cluster failed; the
@@ -2625,6 +2652,7 @@ async function applySucceededSideEffects(
   await applyManagedPromoteSideEffect(db, record, envelope, result, deps)
   await applyManagedHaFailoverSideEffect(db, record, envelope, result, deps)
   await applyBackupsReconcileSideEffect(db, record, result)
+  await applyBackupTargetTestSideEffect(db, record, result)
   await applyManagedBackupSideEffect(db, record, envelope, result)
   await applyManagedRestoreSideEffect(db, record, envelope, result)
   await applyStorageBackupSideEffect(db, record, result)
@@ -2781,6 +2809,7 @@ async function applyManagedPromoteSideEffect(
       managedId,
       previousServerId: backupHost,
       actorId: envelope.serverId,
+      copyDeps: consumerCopyDeps(deps),
     })
 
     if (promotedMemberId) {
@@ -2945,6 +2974,7 @@ async function applyManagedHaFailoverSideEffect(
       managedId: payload.managedId,
       previousServerId: backupHost,
       actorId: envelope.serverId,
+      copyDeps: consumerCopyDeps(deps),
     })
 
     await enqueueFollowPrimaryOnReplicas(db, deps?.commandQueue, {

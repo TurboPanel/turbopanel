@@ -2603,6 +2603,219 @@ export const backup = pgTable(
   ]
 )
 /**
+ * A named S3-compatible destination an organization copies finished backups
+ * to (`features/backups/targets.ts`). The secret access key is stored sealed
+ * (`tpsecret` envelope) and never returned by any API; `access_key_id` is an
+ * identifier, not a secret. Deleting an organization removes its targets;
+ * a target still named by an assignment cannot be deleted (RESTRICT).
+ */
+export const backupTarget = pgTable(
+  'backup_target',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    organizationId: uuid('organization_id').notNull(),
+    name: text().notNull(),
+    kind: text().default('s3').notNull(),
+    endpoint: text().notNull(),
+    region: text().notNull(),
+    bucket: text().notNull(),
+    /** Folder inside the bucket; no leading or trailing slash; empty for none. */
+    prefix: text().default('').notNull(),
+    isPathStyle: boolean('is_path_style').default(true).notNull(),
+    isServerSideEncrypted: boolean('is_server_side_encrypted').default(false).notNull(),
+    accessKeyId: text('access_key_id').notNull(),
+    /** `tpsecret` envelope of the secret access key. Never returned by an API. */
+    secretKeySealed: text('secret_key_sealed').notNull(),
+    lastTestedAt: timestamp('last_tested_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /** Null until the first test; then whether it passed. */
+    isLastTestOk: boolean('is_last_test_ok'),
+    /** A plain reason when the last test failed. */
+    lastTestError: text('last_test_error'),
+    createdBy: uuid('created_by'),
+  },
+  (table) => [
+    uniqueIndex('uniq_backup_target_organization_name').on(table.organizationId, table.name),
+    index('idx_backup_target_created_by').on(table.createdBy),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'backup_target_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.createdBy],
+      foreignColumns: [user.id],
+      name: 'backup_target_created_by_user_id_fk',
+    }).onDelete('set null'),
+    // Mirror BACKUP_TARGET_STORE_KINDS (src/features/backups/vocabulary.ts) — pinned by enum-checks.test.ts.
+    check('backup_target_kind_check', sql`kind IN ('s3')`),
+    check('backup_target_name_check', sql`char_length(name) BETWEEN 1 AND 64`),
+  ]
+)
+/**
+ * Which {@link backupTarget} applies where. A row with no `managed_id` is the
+ * organization's default; a row with one is that cluster's own choice, which
+ * wins over the default. A cluster row with no `target_id` means "no copy for
+ * this cluster" even when the organization has a default.
+ */
+export const backupTargetAssignment = pgTable(
+  'backup_target_assignment',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    organizationId: uuid('organization_id').notNull(),
+    managedId: uuid('managed_id'),
+    targetId: uuid('target_id'),
+  },
+  (table) => [
+    uniqueIndex('uniq_backup_target_assignment_default')
+      .on(table.organizationId)
+      .where(sql`managed_id IS NULL`),
+    uniqueIndex('uniq_backup_target_assignment_managed')
+      .on(table.managedId)
+      .where(sql`managed_id IS NOT NULL`),
+    index('idx_backup_target_assignment_target_id').on(table.targetId),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'backup_target_assignment_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.managedId],
+      foreignColumns: [managed.id],
+      name: 'backup_target_assignment_managed_id_managed_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.targetId],
+      foreignColumns: [backupTarget.id],
+      name: 'backup_target_assignment_target_id_backup_target_id_fk',
+    }).onDelete('restrict'),
+    check(
+      'backup_target_assignment_target_check',
+      sql`managed_id IS NOT NULL OR target_id IS NOT NULL`
+    ),
+  ]
+)
+/**
+ * How copying one backup to one target stands, as the host reported it
+ * (`features/backups/copy-report.ts`). Keyed by the engine and the daemon's
+ * `bk_` id as text, not by the {@link backup} row, so a report that arrives
+ * before the backup's own run report still lands. `target_name` is kept so a
+ * deleted target still reads in plain words.
+ */
+export const backupCopy = pgTable(
+  'backup_copy',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    managedId: uuid('managed_id').notNull(),
+    backupId: text('backup_id').notNull(),
+    targetId: uuid('target_id'),
+    targetName: text('target_name').notNull(),
+    state: text().default('pending').notNull(),
+    /** A plain reason when `state` is `failed`. */
+    error: text(),
+    /** Object key in the bucket (prefix included), once copied. */
+    objectKey: text('object_key'),
+    sizeBytes: bigint('size_bytes', { mode: 'number' }),
+    attempts: integer().default(0).notNull(),
+    copiedAt: timestamp('copied_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /** The host that reported the last state. */
+    serverId: uuid('server_id'),
+  },
+  (table) => [
+    uniqueIndex('uniq_backup_copy_managed_backup_target').on(
+      table.managedId,
+      table.backupId,
+      table.targetId
+    ),
+    index('idx_backup_copy_managed_id_backup_id').on(table.managedId, table.backupId),
+    index('idx_backup_copy_target_id').on(table.targetId),
+    index('idx_backup_copy_server_id').on(table.serverId),
+    foreignKey({
+      columns: [table.managedId],
+      foreignColumns: [managed.id],
+      name: 'backup_copy_managed_id_managed_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.targetId],
+      foreignColumns: [backupTarget.id],
+      name: 'backup_copy_target_id_backup_target_id_fk',
+    }).onDelete('set null'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'backup_copy_server_id_server_id_fk',
+    }).onDelete('set null'),
+    check('backup_copy_backup_id_format_check', sql`backup_id ~ '^[A-Za-z0-9_-]+$'`),
+    // Mirror BACKUP_COPY_STATES (src/features/backups/vocabulary.ts) — pinned by enum-checks.test.ts.
+    check(
+      'backup_copy_state_check',
+      sql`state IN ('pending', 'copying', 'copied', 'failed', 'removed')`
+    ),
+    check('backup_copy_attempts_check', sql`attempts >= 0`),
+  ]
+)
+/**
  * Tracking row for Organization-CA-signed managed leaves (ProxySQL frontend
  * and per-replica engine). Re-issuance upserts rather than appending history
  * (partial uniques below). Declared after `replica` / `managed` / `server` so

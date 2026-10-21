@@ -3,6 +3,7 @@ import { upgradeWebSocket } from 'hono/deno'
 import type { WSContext } from 'hono/ws'
 import type { DaemonCellRegistry, DaemonCellSnapshot } from '../contracts/cell.ts'
 import type {
+  BackupCopyReportResultMessage,
   BackupRunReportResultMessage,
   DaemonInboundEnvelope,
   DaemonInboundFrameResult,
@@ -62,6 +63,11 @@ import {
   createBackupRunReportStore,
   handleBackupRunReport,
 } from '../features/backups/run-report.ts'
+import {
+  backupCopyReportResultMessage,
+  createBackupCopyReportStore,
+  handleBackupCopyReport,
+} from '../features/backups/copy-report.ts'
 import { handleManagedHaEvent } from '../features/managed/ha-event.ts'
 import { handleManagedHealthReport } from '../features/managed/health-report.ts'
 import {
@@ -561,7 +567,7 @@ type DaemonInboundDispatch = {
   /** Seals alert channel addresses when an event notifies; omit and only the bell is written. */
   dataEncryptionSecrets?: DerivedSecretsConfig
   /** Answer on the socket the frame arrived on (daemon-initiated requests). */
-  reply: (message: BackupRunReportResultMessage) => void
+  reply: (message: BackupRunReportResultMessage | BackupCopyReportResultMessage) => void
 }
 
 /**
@@ -582,6 +588,23 @@ async function handleBackupRunReportInbound(params: {
     reporterServerId: params.reporterServerId,
   })
   params.reply(backupRunReportResultMessage(message.id, outcome, new Date().toISOString()))
+}
+
+/** Same answer rule as the run report: reply once the outcome is known; an error escapes and the daemon resends. */
+async function handleBackupCopyReportInbound(params: {
+  cell: ReturnType<DaemonCellRegistry['getCell']>
+  db: Db
+  connectionId: string | undefined
+  message: Extract<DaemonMessage, { type: 'backup-copy-report' }>
+  reporterServerId: string
+  reply: DaemonInboundDispatch['reply']
+}): Promise<void> {
+  const { cell, db, connectionId, message } = params
+  await cell.recordInbound({ connectionId, at: message.at })
+  const outcome = await handleBackupCopyReport(createBackupCopyReportStore(db), message, {
+    reporterServerId: params.reporterServerId,
+  })
+  params.reply(backupCopyReportResultMessage(message.id, outcome, new Date().toISOString()))
 }
 
 /**
@@ -690,6 +713,16 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
       return
     case 'backup-run-report':
       await handleBackupRunReportInbound({
+        cell,
+        db,
+        connectionId,
+        message,
+        reporterServerId: serverId,
+        reply: params.reply,
+      })
+      return
+    case 'backup-copy-report':
+      await handleBackupCopyReportInbound({
         cell,
         db,
         connectionId,

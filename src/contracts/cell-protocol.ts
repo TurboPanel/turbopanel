@@ -317,6 +317,44 @@ export type BackupRunReportResultMessage = {
   at: string
 }
 
+/**
+ * Daemon → control plane: how copying one finished backup to its S3-compatible
+ * target ended (wire feature `backup-s3-copy-v1`; the daemon sends it only to
+ * a control plane that lists the feature). Correlated by `id` like
+ * {@link BackupRunReportMessage}: the daemon deletes its spooled report only
+ * when a {@link BackupCopyReportResultMessage} with the same `id` arrives, and
+ * a second copy of the same report changes nothing. Twin of
+ * `turbopaneld/src/contracts/cell-messages.ts`.
+ */
+export type BackupCopyReportMessage = {
+  type: 'backup-copy-report'
+  id: string
+  targetId: string
+  managedId: string
+  backupId: string
+  policyId?: string
+  state: 'copied' | 'failed'
+  /** A plain reason when `state` is `failed`. */
+  error?: string
+  /** Object key inside the bucket (the target's prefix included). */
+  objectKey?: string
+  sizeBytes?: number
+  attempts: number
+  finishedAt: string
+  /** `bk_` ids the bucket retention removed after this copy. */
+  pruned?: string[]
+  at: string
+}
+
+/** Control plane → daemon: the copy report with this `id` is stored (`ok: true`) or refused for good. */
+export type BackupCopyReportResultMessage = {
+  type: 'backup-copy-report-result'
+  id: string
+  ok: boolean
+  error?: string
+  at: string
+}
+
 /** Instance-wide ACME knobs for hostnames whose source is `lets-encrypt`. */
 export type InstanceAcmeWireSettings = {
   contactEmail: string
@@ -797,6 +835,8 @@ export type DaemonMessage =
     }
   | BackupRunReportMessage
   | BackupRunReportResultMessage
+  | BackupCopyReportMessage
+  | BackupCopyReportResultMessage
   | {
       type: 'public-urls-update'
       id: string
@@ -890,6 +930,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'acme-issuance-event',
   'instance-acme-issuance-event',
   'backup-run-report',
+  'backup-copy-report',
   'fabric-paths-result',
   'dev-sync-result',
   'tunnel-token-result',
@@ -1467,6 +1508,50 @@ function validateBackupRunReportFields(record: Record<string, unknown>): string 
   return validateBackupRunReportRun(record) ?? validateBackupRunReportArtifact(record)
 }
 
+const BACKUP_COPY_STATES = new Set(['copied', 'failed'])
+const BACKUP_COPY_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const BACKUP_COPY_OBJECT_KEY_MAX = 1024
+
+/** Shape only; `handleBackupCopyReport` decides whether the report is believed. */
+function validateBackupCopyReportFields(record: Record<string, unknown>): string | null {
+  if (!isBoundedId(record.id)) return 'invalid id'
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
+  if (typeof record.targetId !== 'string' || !BACKUP_COPY_UUID_RE.test(record.targetId)) {
+    return 'invalid targetId'
+  }
+  if (typeof record.managedId !== 'string' || !BACKUP_COPY_UUID_RE.test(record.managedId)) {
+    return 'invalid managedId'
+  }
+  if (!isBackupRunToken(record.backupId)) return 'invalid backupId'
+  if (
+    record.policyId !== undefined &&
+    (typeof record.policyId !== 'string' || !BACKUP_POLICY_ID_RE.test(record.policyId))
+  ) {
+    return 'invalid policyId'
+  }
+  if (typeof record.state !== 'string' || !BACKUP_COPY_STATES.has(record.state)) {
+    return 'invalid state'
+  }
+  if (!isIsoTimestamp(record.finishedAt)) return 'invalid finishedAt'
+  if (!(isNonNegativeInt(record.attempts) && Number.isSafeInteger(record.attempts))) {
+    return 'invalid attempts'
+  }
+  if (
+    record.sizeBytes !== undefined &&
+    !(isNonNegativeInt(record.sizeBytes) && Number.isSafeInteger(record.sizeBytes))
+  ) {
+    return 'invalid sizeBytes'
+  }
+  if (
+    record.objectKey !== undefined &&
+    (typeof record.objectKey !== 'string' || record.objectKey.length > BACKUP_COPY_OBJECT_KEY_MAX)
+  ) {
+    return 'invalid objectKey'
+  }
+  if (record.pruned !== undefined && !isBackupPrunedList(record.pruned)) return 'invalid pruned'
+  return validateOptionalError(record.error)
+}
+
 function isFabricPeerHealth(value: unknown): value is FabricPathPeerHealth {
   return typeof value === 'string' && FABRIC_PEER_HEALTH.has(value)
 }
@@ -1841,6 +1926,8 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateAcmeIssuanceEventFields(record)
     case 'backup-run-report':
       return validateBackupRunReportFields(record)
+    case 'backup-copy-report':
+      return validateBackupCopyReportFields(record)
     case 'fabric-paths-result':
       return validateFabricPathsResultFields(record)
     case 'dev-sync-result':

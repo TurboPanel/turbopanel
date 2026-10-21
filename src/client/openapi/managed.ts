@@ -1278,6 +1278,11 @@ export const managedSchemas = {
         description:
           'Host that holds the on-disk artifact (the primary when the backup ran). Absent on older records.',
       },
+      copy: {
+        $ref: '#/components/schemas/BackupTargetCopy',
+        description:
+          'How copying this backup to its off-server target stands; null when no target applied.',
+      },
     },
   },
   ManagedBackupsResponse: {
@@ -1660,6 +1665,11 @@ export const managedSchemas = {
         type: 'string',
         description:
           'The artifact is on a former primary. Restore it there, take a new backup, or switch back first.',
+      },
+      canRestoreFromCopy: {
+        type: 'boolean',
+        description:
+          'True when a finished copy in the bucket exists: resend with `{ "fromCopy": true }` to restore from it on this server.',
       },
     },
   },
@@ -2419,8 +2429,16 @@ export const managedPaths = {
       tags: ['Managed services'],
       summary: 'Restore a backup: enqueue managed.restore',
       description:
-        'Daemon verifies the stored checksum/size before touching the running engine. Artifacts live on the host that made them; a backup from a former primary answers 409 backup_on_other_server and does not enqueue.',
+        'Daemon verifies the stored checksum/size before touching the running engine. Artifacts live on the host that made them; a backup from a former primary answers 409 backup_on_other_server and does not enqueue. With `{ "fromCopy": true }` the server fetches the finished copy from the bucket instead (409 `backup_copy_not_ready` or `backup_copy_unavailable` when it cannot).',
       parameters: [ENV_ID_PARAM, BACKUP_ID_PARAM],
+      requestBody: {
+        required: false,
+        content: {
+          'application/json': {
+            schema: { type: 'object', properties: { fromCopy: { type: 'boolean' } } },
+          },
+        },
+      },
       responses: {
         200: {
           description: 'Restore command enqueued',
