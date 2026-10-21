@@ -6,7 +6,7 @@ Third-party components remain under their own copyright and license terms and ar
 
 <!-- lockfiles
 deno.lock sha256:e077ab24ed3f601ada799a5ed3d2d720934cfedb6b4e8e2c57fed6ad05ce1fe7
-pnpm-lock.yaml sha256:c0273b087fd658f04c85548bb25ed5bbb569597334cb63d9560a37bb286960b6
+pnpm-lock.yaml sha256:5790a8e94ab0b19e048f27fb98001bd9aec9e7c7559fd15ad7d782d03e5ae092
 -->
 
 ## Production dependencies

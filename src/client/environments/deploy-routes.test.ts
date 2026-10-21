@@ -2645,7 +2645,7 @@ test('POST /environments/:id/deploy: a first-batch server that cannot be reached
   })
 })
 
-test('an explicit stop names no release tree, so every folder stays, and delete teardown still does', async () => {
+test('an explicit stop clears releases but removes no folder, and delete teardown still removes them', async () => {
   await withDeployFixtures(async (ctx) => {
     const recorded = [
       {
@@ -2679,7 +2679,9 @@ test('an explicit stop names no release tree, so every folder stays, and delete 
       string,
       unknown
     >
+    // Destroy clears the releases but names no folder to remove, so uploads stay.
     assertEquals('siteReleases' in payload, false)
+    assertEquals(payload.releaseCleanup, recorded)
 
     // The same record is what a delete reclaims, with the folder components.
     assertEquals(await resolveEnvironmentSiteReleases(ctx.db, ctx.environmentId), recorded)
