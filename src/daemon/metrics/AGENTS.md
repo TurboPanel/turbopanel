@@ -174,6 +174,31 @@ fire-and-forget `ServerMetricsStore.writeSample(sample, slotMapping)` via
 the store — never re-derived by the store itself. WebSocket
 `{ type: "metrics" }` frames are **not** accepted — ingestion is HTTP-only.
 
+#### Ingest gate — one stored sample a minute per server
+
+`ingest-gate.ts` holds every server to one stored sample a minute, with no
+Postgres involved. The rules are one pure function (`decideAdmission`); the
+state lives where the runtime can keep it exact:
+
+- **Workers:** `MetricsGateObject` (`ingest-gate-object.ts`), one Durable Object
+  per server (`METRICS_GATE`, `getByName(serverId)`). A Durable Object runs one
+  request at a time, so racing samples cannot both pass: exact. It is not the
+  daemon cell (`DAEMON_CELL`), which ingest must never wake. Analytics Engine
+  cannot do this job: it is write-only, and its SQL cannot drop duplicate
+  sample times before averaging.
+- **Self-hosted:** `createInMemoryMetricsGate`, a bounded in-process map.
+  Exact while the process lives; a restart forgets the last stored time.
+
+Best effort, not exact: the Analytics Engine write after an admitted sample is
+fire-and-forget, so an admitted sample can still be lost.
+
+A sample stamped more than 60 s ahead of the receive time is refused with 409 (`sample_in_future`). A sample at or before the last stored one is a duplicate or replay; one at least 50 s after it is on time; an earlier one spends a catch-up token (5, refilling one a minute). A duplicate or replayed sample gets 409 (`duplicate_sample`, no `Retry-After`): it can never be accepted later and the daemon does not retry a 409. An early sample gets 429 with `Retry-After` (the daemon retries 429s). A gate error (the object unreachable) answers 503 rather than writing unmetered. Events are stored while a 120-an-hour budget lasts, most severe first; the rest are dropped and the sample is still stored. Live (non-durable) samples are never stored and skip the gate.
+
+Two things to know:
+
+- A daemon clock more than 60 s ahead gets a permanent 409 and the daemon does not retry it, so those samples are lost until the clock is fixed.
+- The on-time path (a gap of 50 s or more) spends no catch-up token, so a tampered daemon could chain samples about 50 s apart. That is bounded to roughly 1.2 stored samples a minute sustained.
+
 #### Cadence — one interval everywhere
 
 Every family writes on every sample. There is no per-family cadence and no
