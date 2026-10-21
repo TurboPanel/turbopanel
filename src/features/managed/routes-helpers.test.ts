@@ -20,6 +20,7 @@ import {
   managedSessionPaths,
   mergeCreateSettings,
   parseManagedPatchName,
+  isReservedManagedUsername,
   parseManagedUserCreateFields,
   parseManagedVersionSelection,
   readInitialDatabase,
@@ -594,7 +595,6 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
     'tp_shop_owner',
     'tp_monitor_ab12',
     'TP_repl',
-    'pg_monitor',
   ]) {
     const res = parseManagedUserCreateFields(
       c,
@@ -605,8 +605,17 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
     )
     if (!(res instanceof Response)) throw new TypeError('expected Response')
     assertEquals(res.status, 422)
-    assertEquals((await res.json()).error, 'reserved_username')
+    const body = await res.json()
+    assertEquals(body.error, 'reserved_username')
+    assertEquals(body.message.includes(`'${reserved}'`), true)
   }
+})
+
+test('the pg_ prefix is reserved for PostgreSQL logins only', () => {
+  assertEquals(isReservedManagedUsername('pg_monitor', undefined, 'postgres'), true)
+  assertEquals(isReservedManagedUsername('pg_monitor', undefined, 'mysql'), false)
+  assertEquals(isReservedManagedUsername('pg_monitor'), false)
+  assertEquals(isReservedManagedUsername('tp_x', undefined, 'mysql'), true)
 })
 
 test('parseManagedUserCreateFields takes the admin privilege on any Postgres database', () => {
@@ -639,8 +648,10 @@ test('parseManagedUserCreateFields refuses a system schema listed by an older cl
     options
   )
   if (!(res instanceof Response)) throw new TypeError('expected Response')
-  assertEquals(res.status, 400)
-  assertEquals(await res.json(), { error: 'reserved_database_name' })
+  assertEquals(res.status, 422)
+  const body = await res.json()
+  assertEquals(body.error, 'reserved_database_name')
+  assertEquals(typeof body.message, 'string')
 
   const ok = parseManagedUserCreateFields(
     c,

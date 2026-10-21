@@ -109,6 +109,12 @@ export type ObservedLogin = {
   defaults: ObservedDefaultGrant[]
   /** True when a limit cut the lists short. */
   truncated?: boolean
+  /**
+   * MySQL / MariaDB: views, triggers, routines and events that name this login
+   * as their definer, like `view shop.orders_v` (the last entry may be `and N more`).
+   * Absent when there are none or the daemon did not report them.
+   */
+  definesObjects?: string[]
 }
 
 export type ManagedPermissionsObserved = {
@@ -274,6 +280,8 @@ function parseLogin(value: unknown): ObservedLogin | null {
   const accounts = parseList(value.accounts, parseAccount, 256)
   if (accounts.length > 0) login.accounts = accounts
   if (value.truncated === true) login.truncated = true
+  const definesObjects = names(value.definesObjects, 11)
+  if (definesObjects && definesObjects.length > 0) login.definesObjects = definesObjects
   return login
 }
 

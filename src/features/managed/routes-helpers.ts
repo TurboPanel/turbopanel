@@ -565,12 +565,16 @@ const RESERVED_MANAGED_USERNAME_PREFIX = 'tp_'
 /** PostgreSQL itself owns role names starting with `pg_`. */
 const RESERVED_POSTGRES_NAME_PREFIX = 'pg_'
 
-export function isReservedManagedUsername(username: string, rootUsername?: string): boolean {
+export function isReservedManagedUsername(
+  username: string,
+  rootUsername?: string,
+  engine?: string
+): boolean {
   const lower = username.toLowerCase()
   return (
     RESERVED_MANAGED_USERNAMES.has(lower) ||
     lower.startsWith(RESERVED_MANAGED_USERNAME_PREFIX) ||
-    lower.startsWith(RESERVED_POSTGRES_NAME_PREFIX) ||
+    (engine === 'postgres' && lower.startsWith(RESERVED_POSTGRES_NAME_PREFIX)) ||
     (rootUsername !== undefined && username === rootUsername)
   )
 }
@@ -605,7 +609,7 @@ export function parseManagedUserCreateFields(
   if (!USERNAME_RE.test(username) || !pattern.test(username) || username.length > maxShortLength) {
     return c.json({ error: 'Invalid username' }, 400)
   }
-  if (isReservedManagedUsername(username, effectiveRoot)) {
+  if (isReservedManagedUsername(username, effectiveRoot, ctx.spec.engine)) {
     return c.json(
       {
         error: 'reserved_username',
@@ -650,7 +654,7 @@ export function parseManagedLoginGrantFields(
   }
   // A cluster that predates the reserved-name check may still list a system schema.
   if (databases.some((name) => isReservedDatabaseName(ctx.spec.engine, name))) {
-    return c.json({ error: 'reserved_database_name' }, 400)
+    return c.json(reservedDatabaseNameBody(), 422)
   }
 
   const connectionRole = parseManagedConnectionRole(body.connectionRole)
@@ -708,7 +712,7 @@ export function evaluateExistingPrincipalLoginName(
       message: `The principal's name '${appliedUsername}' is not a valid ${spec.engine} role name (at most ${maxLength} characters, matching ${pattern}). Create a login with a new name instead.`,
     }
   }
-  if (isReservedManagedUsername(appliedUsername, rootUsername ?? spec.rootUsername)) {
+  if (isReservedManagedUsername(appliedUsername, rootUsername ?? spec.rootUsername, spec.engine)) {
     return {
       error: 'principal_name_reserved',
       message: `The principal's name '${appliedUsername}' is reserved on ${spec.engine}. Create a login with a new name instead.`,
@@ -785,7 +789,7 @@ export function parseManagedLoginPatchFields(
       return c.json({ error: 'Invalid request' }, 400)
     }
     if (list.some((name) => isReservedDatabaseName(ctx.spec.engine, name))) {
-      return c.json({ error: 'reserved_database_name' }, 400)
+      return c.json(reservedDatabaseNameBody(), 422)
     }
     input.databases = [...new Set(list as string[])]
   }
@@ -949,6 +953,15 @@ export function isReservedDatabaseName(engine: string, name: string): boolean {
  */
 const POSTGRES_RESERVED_NEW_DATABASES: readonly string[] = ['postgres', 'template0', 'template1']
 
+/** The plain answer for a reserved database name (HTTP 422). */
+function reservedDatabaseNameBody(name?: string): { error: string; message: string } {
+  const subject = name === undefined ? 'That database name' : `'${name}'`
+  return {
+    error: 'reserved_database_name',
+    message: `${subject} is a name the database engine keeps for itself. Pick a different database name.`,
+  }
+}
+
 /** True for a name that must not be given to a new database or initial database. */
 export function isReservedNewDatabaseName(engine: string, name: string): boolean {
   if (isReservedDatabaseName(engine, name)) return true
@@ -975,12 +988,7 @@ export function validateManagedDatabaseCreateName(
     }
   }
   if (isReservedNewDatabaseName(engine, name)) {
-    return {
-      ok: false,
-      error: 'reserved_database_name',
-      message: `'${name}' is a name the database engine keeps for itself. Pick a different database name.`,
-      status: 422,
-    }
+    return { ok: false, ...reservedDatabaseNameBody(name), status: 422 }
   }
   if (databases.some((entry) => entry.toLowerCase() === name.toLowerCase())) {
     return { ok: false, error: 'database_exists', status: 409 }
