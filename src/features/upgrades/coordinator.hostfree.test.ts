@@ -812,6 +812,129 @@ test('auto-update waits for an offline server to reconnect instead of opening ru
   )
 })
 
+test('a fleet host skipped while offline is picked up on the first tick after it reconnects', async () => {
+  const host = {
+    ...fact(['managed-upgrade-v1'], 'old-daemon'),
+    serverId: FLEET_A,
+    colocated: false,
+    connected: false,
+  }
+  const clock = { now: T0 }
+  const store = createMemoryUpgradeStore({
+    facts: [host],
+    latest: target,
+    settings: { ...DEFAULT_UPGRADE_SETTINGS, autoUpdate: true },
+  })
+  const coordinator = createUpgradeCoordinator({
+    store,
+    enqueue: () => Promise.resolve(),
+    runtime: 'workers',
+    channel: 'release',
+    development: false,
+    now: () => clock.now,
+    colocatedServerId: null,
+    instanceInstalled: { version: '0.1.1', commit: 'new-instance' },
+    resolveTarget: () => Promise.resolve(target),
+  })
+  // Offline when the run starts: skipped at once, the run does not stay open.
+  const first = await coordinator.start({ source: 'auto', startedBy: null })
+  assertEquals(first.ok, true)
+  if (!first.ok) throw new TypeError(first.error)
+  const skipped = (await store.stepsFor(first.runId))[0]
+  assertEquals(skipped?.status, 'skipped')
+  assertEquals(skipped?.errorCode, 'server_offline')
+  assertEquals(await coordinator.activeRun(), null)
+
+  // Still offline: the tick does not reopen a run on every pass.
+  clock.now = minutesAfter(T0, 5)
+  await coordinator.tick()
+  assertEquals(await coordinator.activeRun(), null)
+
+  // Reconnected and behind: the next tick starts a run on its own.
+  store.facts[0] = { ...store.facts[0]!, connected: true }
+  clock.now = minutesAfter(T0, 17)
+  await coordinator.tick()
+  const next = await coordinator.activeRun()
+  assertEquals(next?.source, 'auto')
+  assertEquals(next?.id === first.runId, false)
+})
+
+test('a reconnected host that was skipped waits for a person when auto-update is off', async () => {
+  const host = {
+    ...fact(['managed-upgrade-v1'], 'old-daemon'),
+    serverId: FLEET_A,
+    colocated: false,
+    connected: true,
+  }
+  const store = createMemoryUpgradeStore({
+    facts: [host],
+    latest: target,
+    settings: { ...DEFAULT_UPGRADE_SETTINGS, autoUpdate: false },
+  })
+  const coordinator = createUpgradeCoordinator({
+    store,
+    enqueue: () => Promise.resolve(),
+    runtime: 'workers',
+    channel: 'release',
+    development: false,
+    now: () => T0,
+    colocatedServerId: null,
+    instanceInstalled: { version: '0.1.1', commit: 'new-instance' },
+    resolveTarget: () => Promise.resolve(target),
+  })
+  await coordinator.tick()
+  assertEquals(await coordinator.activeRun(), null)
+})
+
+test('the tick starts a run for a newer published build once the previous run has finished', async () => {
+  const host = {
+    ...fact(['managed-upgrade-v1'], 'old-daemon'),
+    serverId: FLEET_A,
+    colocated: false,
+    connected: true,
+  }
+  let published = structuredClone(target)
+  const store = createMemoryUpgradeStore({
+    facts: [host],
+    latest: published,
+    settings: { ...DEFAULT_UPGRADE_SETTINGS, autoUpdate: true },
+  })
+  const coordinator = createUpgradeCoordinator({
+    store,
+    enqueue: () => Promise.resolve(),
+    runtime: 'workers',
+    channel: 'release',
+    development: false,
+    now: () => T0,
+    colocatedServerId: null,
+    instanceInstalled: { version: '0.1.1', commit: 'new-instance' },
+    resolveTarget: () => Promise.resolve(published),
+  })
+  const first = await coordinator.start({ source: 'auto', startedBy: null })
+  assertEquals(first.ok, true)
+  if (!first.ok) throw new TypeError(first.error)
+  const step = (await store.stepsFor(first.runId))[0]
+  if (!step) throw new TypeError('expected a fleet step')
+  step.status = 'done'
+  await store.saveStep(step)
+  await coordinator.tick({ resolveManifests: false })
+  assertEquals(await coordinator.activeRun(), null)
+
+  published = {
+    ...target,
+    daemon: {
+      ...target.daemon,
+      commit: 'newer-daemon',
+      buildId: 'd2',
+      builtAt: minutesAfter(T0, 1),
+    },
+  }
+  await coordinator.tick()
+  const next = await coordinator.activeRun()
+  assertEquals(next?.target.daemon?.commit, 'newer-daemon')
+  assertEquals(next?.id === first.runId, false)
+})
+
 test('a non-development gate fails closed when the target cannot be read', () => {
   assertEquals(
     clientUpdateBlock({
