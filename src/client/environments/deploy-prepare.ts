@@ -27,6 +27,7 @@ import {
   type CompileRuntimeOptions,
 } from '../../features/compose/compile-runtime.ts'
 import { sha256HexUtf8 } from '../../features/compose/desired-hash.ts'
+import { deployInputsDigest } from './deploy-inputs-digest.ts'
 import {
   parseOrganizationOptions,
   resolveAcmeEnabled,
@@ -2712,7 +2713,8 @@ function ownsIngressForService(
 async function deployDesiredHash(
   composeYaml: string,
   sourceMaterial: readonly EnvironmentDeploySource[],
-  nativeAppServices: readonly PreparedNativeAppService[] = []
+  nativeAppServices: readonly PreparedNativeAppService[] = [],
+  inputs?: Record<string, unknown>
 ): Promise<string> {
   const parts: string[] = []
   if (sourceMaterial.length > 0) {
@@ -2743,8 +2745,62 @@ async function deployDesiredHash(
         .join('\n')
     )
   }
+  // Variables, hostnames, sites, apps and storage decide what runs just as the
+  // compose document does; without them a changed variable would hash the same
+  // and the host would skip the redeploy as unchanged.
+  if (inputs !== undefined) parts.push(await deployInputsDigest(inputs))
   if (parts.length === 0) return await sha256HexUtf8(composeYaml)
   return await sha256HexUtf8([composeYaml, ...parts].join('\n'))
+}
+
+/**
+ * What a real deploy hashes beyond the compose document (see
+ * `deploy-inputs-digest.ts`). Preview carries none of the sealed material, so
+ * it keeps the compose-and-commits hash it always had.
+ */
+function deployHashInputs(parts: {
+  hooks: ServiceDeployHook[]
+  principalMaterial: EnvironmentDeployPrincipalMaterial[]
+  sites: EnvironmentDeploySite[]
+  nativeAppServices: PreparedNativeAppService[]
+  nativeAppVariables?: NativeAppVariablesView[]
+  nativeAppNodeVersions?: NativeAppNodeVersionView[]
+  nativeAppDenoVersions?: NativeAppDenoVersionView[]
+  sourceMaterial: EnvironmentDeploySource[]
+  dockerExternalNetworks: string[]
+  dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
+  fabricNetworks?: readonly EnvironmentDeployFabricNetwork[]
+  managedNetworkServices: string[]
+  managedNetwork?: string
+  ingressServices: EnvironmentDeployIngressService[]
+  edge?: ServerEdgeDeployment
+  replicaCounts: Record<string, number>
+  hashInputs?: Record<string, unknown>
+}): Record<string, unknown> | undefined {
+  if (parts.hashInputs === undefined) return undefined
+  return {
+    ...parts.hashInputs,
+    hooks: parts.hooks,
+    principalMaterial: parts.principalMaterial,
+    sites: parts.sites,
+    nativeAppServices: parts.nativeAppServices,
+    nativeAppVariables: parts.nativeAppVariables,
+    nativeAppNodeVersions: parts.nativeAppNodeVersions,
+    nativeAppDenoVersions: parts.nativeAppDenoVersions,
+    sourceMaterial: parts.sourceMaterial,
+    dockerExternalNetworks: parts.dockerExternalNetworks,
+    dockerNetworkAddressing: parts.dockerNetworkAddressing,
+    fabricNetworks: parts.fabricNetworks,
+    managedNetworkServices: parts.managedNetworkServices,
+    managedNetwork: parts.managedNetwork,
+    ingressServices: parts.ingressServices,
+    hostings: parts.edge?.hostings,
+    tlsMaterial: parts.edge?.tlsMaterial,
+    listenerPorts: parts.edge?.listenerPorts,
+    hostingIngress: parts.edge?.hostingIngress,
+    hostingIngressNetwork: parts.edge?.hostingIngressNetwork,
+    replicaCounts: parts.replicaCounts,
+  }
 }
 
 async function toPreparedDeployResult(
@@ -2790,6 +2846,13 @@ async function toPreparedDeployResult(
     envFile?: string
     secretPlan?: DeploySecretPlanEntry[]
     sourceSelection?: DeploySourceSelection
+    /**
+     * The variables and storage as they are before they are sealed for the
+     * daemon (sealing adds a fresh nonce on every send), so the hash compares
+     * what a deploy carries, not how it was wrapped. Set only for a real
+     * deploy; absent for a preview.
+     */
+    hashInputs?: Record<string, unknown>
   }
 ): Promise<PreparedDeployCompose> {
   const omitSecrets = mode === 'preview'
@@ -2800,7 +2863,8 @@ async function toPreparedDeployResult(
     desiredHash: await deployDesiredHash(
       parts.composeYaml,
       parts.sourceMaterial,
-      parts.nativeAppServices
+      parts.nativeAppServices,
+      deployHashInputs(parts)
     ),
     replicaCounts: parts.replicaCounts,
     hooks: parts.hooks,
@@ -3705,6 +3769,14 @@ export async function prepareDeployCompose(
 
   return await toPreparedDeployResult(mode, {
     serverId: resolved.serverId,
+    ...(mode === 'preview'
+      ? {}
+      : {
+          hashInputs: {
+            secretVariables: withVariables.secretMaterial,
+            storage: storageMaterialRaw,
+          },
+        }),
     composeYaml,
     composeFiles,
     hooks,

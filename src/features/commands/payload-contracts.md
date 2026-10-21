@@ -379,9 +379,12 @@ privileged runner, best-effort per entry, and a failure never fails the stop.
 Idempotent when the compose file is already gone. Used as the teardown
 gate before project cascade delete. `folder` (`{ owner, scope, slug }`, the
 service folder as components) names the folder to remove; the daemon takes the
-path from the components and never from a path on the wire. The explicit stop route sends **no** `siteReleases`: stopping keeps
+path from the components and never from a path on the wire. The explicit stop route (Destroy) sends **no** `siteReleases`: it keeps
 every service and volume folder, uploads included, and only delete teardown or a
-server leaving the environment names trees to reclaim. A deploy's
+server leaving the environment names trees to reclaim. It sends `releaseCleanup[]`
+instead (same entry shape): the daemon removes each service's published releases,
+the `current` link and its own release records, and leaves the folder, `shared/`,
+logs and the site owner's account in place. An older daemon ignores the field. A deploy's
 `storageMaterial[].folder` (`{ owner, scope, slug }`) carries the same for an
 owned volume, and `serviceFolders[]` (`{ serviceId, composeServiceName?, folder }`) names the
 folder of every host-run service (site, native app or Git-backed source) by
