@@ -78,3 +78,14 @@ test('a source whose commit is only a branch name is never taken as unchanged', 
   const branchOnly = inputs({ sourceMaterial: [{ composeServiceName: 'web', commitSha: 'main' }] })
   assertNotEquals(await deployInputsDigest(branchOnly), await deployInputsDigest(branchOnly))
 })
+
+test('a changed linked-database login value (delivered as a secret variable) changes the digest', async () => {
+  const login = (valueEnvelope: string) =>
+    inputs({
+      secretVariables: [{ key: 'DB_PASSWORD', composeServiceName: 'web', valueEnvelope }],
+    })
+  assertNotEquals(
+    await deployInputsDigest(login('tpsecret.v1.before')),
+    await deployInputsDigest(login('tpsecret.v1.after'))
+  )
+})
