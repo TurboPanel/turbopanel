@@ -99,866 +99,275 @@ export type NotStoredField = {
   note: string
 }
 
-function field(
-  kind: StoredField['kind'],
-  id: string,
-  hosted: RegistryHostedHome,
-  table: RegistryTable,
-  column: string,
-  extra: Partial<StoredField>
-): StoredField {
-  return {
-    id,
-    kind,
-    cadence: 'every-sample',
-    hosted,
-    duckdb: { table, column },
-    encoding: 'same',
-    ...extra,
-  }
+const HOME = /^([\w.]+)@(ed|eb|d|b)(\d+)$/
+
+function parseHome(text: string): RegistryHostedHome {
+  const match = HOME.exec(text)
+  if (!match) throw new TypeError(`bad hosted home: ${text}`)
+  const [, row, kind, n] = match
+  const key = { d: 'double', b: 'blob', ed: 'entityDouble', eb: 'entityBlob' }[kind]!
+  return { row, [key]: Number(n) } as RegistryHostedHome
 }
 
-function num(
-  id: string,
-  hosted: RegistryHostedHome,
-  table: RegistryTable,
-  column: string,
-  extra: Partial<StoredField> = {}
-): StoredField {
-  return field('number', id, hosted, table, column, extra)
+/** One value per line: `id kind(n|t) row@slot table.column [tn] [+row@slot ...]`. */
+function parseStored(table: string): StoredField[] {
+  return table
+    .trim()
+    .split('\n')
+    .map((line) => {
+      const [id, kind, hosted, db, ...flags] = line.trim().split(/\s+/)
+      const [dbTable, column] = db.split('.')
+      const also = flags
+        .filter((flag) => flag.startsWith('+'))
+        .map((flag) => parseHome(flag.slice(1)))
+      return {
+        id,
+        kind: kind === 'n' ? 'number' : 'text',
+        cadence: 'every-sample',
+        hosted: parseHome(hosted),
+        ...(also.length > 0 ? { hostedAlso: also } : {}),
+        duckdb: { table: dbTable as RegistryTable, column },
+        encoding: flags.includes('tn') ? 'hosted-text-number' : 'same',
+      } satisfies StoredField
+    })
 }
 
-function text(
-  id: string,
-  hosted: RegistryHostedHome,
-  table: RegistryTable,
-  column: string,
-  extra: Partial<StoredField> = {}
-): StoredField {
-  return field('text', id, hosted, table, column, extra)
+/** One value per line: `id|why|note`. */
+function parseNotStored(table: string): NotStoredField[] {
+  return table
+    .trim()
+    .split('\n')
+    .map((line) => {
+      const [id, why, note] = line.split('|')
+      return { id, why: why as NotStoredField['why'], note }
+    })
 }
 
 /**
  * Every value both stores keep. Numbers first (in descriptor order), then the
  * device sizes and facts, then the host facts that ride as text.
  */
-export const STORED_FIELDS: readonly StoredField[] = [
-  num('host.cpu.busyPercent', { row: 'host.system', double: 1 }, 'host', 'cpu_busy_percent'),
-  num('host.cpu.userPercent', { row: 'host.system', double: 2 }, 'host', 'cpu_user_percent'),
-  num('host.cpu.systemPercent', { row: 'host.system', double: 3 }, 'host', 'cpu_system_percent'),
-  num('host.cpu.iowaitPercent', { row: 'host.system', double: 4 }, 'host', 'cpu_iowait_percent'),
-  num('host.cpu.stealPercent', { row: 'host.system', double: 5 }, 'host', 'cpu_steal_percent'),
-  num('host.cpu.softirqPercent', { row: 'host.system', double: 6 }, 'host', 'cpu_softirq_percent'),
-  num(
-    'host.cpu.pressureSomePercent',
-    { row: 'host.system', double: 8 },
-    'host',
-    'cpu_pressure_some_percent'
-  ),
-  num(
-    'host.kernel.fileHandlesUsedPercent',
-    { row: 'host.web', double: 17 },
-    'host',
-    'kernel_file_handles_used_percent'
-  ),
-  num(
-    'host.kernel.conntrackUsedPercent',
-    { row: 'host.web', double: 16 },
-    'host',
-    'kernel_conntrack_used_percent'
-  ),
-  num('host.memory.usedBytes', { row: 'host.system', double: 12 }, 'host', 'memory_used_bytes'),
-  num(
-    'host.memory.cachedFilesBytes',
-    { row: 'host.system', double: 13 },
-    'host',
-    'memory_cached_files_bytes'
-  ),
-  num(
-    'host.memory.swapUsedBytes',
-    { row: 'host.system', double: 14 },
-    'host',
-    'memory_swap_used_bytes'
-  ),
-  num(
-    'host.memory.pressureSomePercent',
-    { row: 'host.system', double: 10 },
-    'host',
-    'memory_pressure_some_percent'
-  ),
-  num(
-    'host.memory.pressureFullPercent',
-    { row: 'host.system', double: 11 },
-    'host',
-    'memory_pressure_full_percent'
-  ),
-  num(
-    'host.storage.ioPressureSomePercent',
-    { row: 'host.io', double: 1 },
-    'host',
-    'storage_io_pressure_some_percent'
-  ),
-  num(
-    'host.storage.ioPressureFullPercent',
-    { row: 'host.io', double: 2 },
-    'host',
-    'storage_io_pressure_full_percent'
-  ),
-  num(
-    'host.storage.diskReadBytesPerSecond',
-    { row: 'host.io', double: 3 },
-    'host',
-    'storage_disk_read_bytes_per_second'
-  ),
-  num(
-    'host.storage.diskWriteBytesPerSecond',
-    { row: 'host.io', double: 4 },
-    'host',
-    'storage_disk_write_bytes_per_second'
-  ),
-  num(
-    'host.storage.diskLatencyMs',
-    { row: 'host.io', double: 5 },
-    'host',
-    'storage_disk_latency_ms'
-  ),
-  num(
-    'host.storage.rootFilesystemAvailableBytes',
-    { row: 'host.io', double: 8 },
-    'host',
-    'storage_root_filesystem_available_bytes'
-  ),
-  num(
-    'host.storage.rootFilesystemFreeInodes',
-    { row: 'host.io', double: 10 },
-    'host',
-    'storage_root_filesystem_free_inodes'
-  ),
-  num(
-    'host.network.tcpRetransmitPercent',
-    { row: 'host.network', double: 1 },
-    'host',
-    'network_tcp_retransmit_percent'
-  ),
-  num(
-    'network.receiveBytesPerSecond',
-    { row: 'network', entityDouble: 1 },
-    'network',
-    'receive_bytes_per_second',
-    {
-      hostedAlso: [
-        { row: 'host.network', double: 2 },
-        { row: 'host.network', double: 5 },
-      ],
-    }
-  ),
-  num(
-    'network.transmitBytesPerSecond',
-    { row: 'network', entityDouble: 2 },
-    'network',
-    'transmit_bytes_per_second',
-    {
-      hostedAlso: [
-        { row: 'host.network', double: 3 },
-        { row: 'host.network', double: 6 },
-      ],
-    }
-  ),
-  num(
-    'network.receiveErrorsPerSecond',
-    { row: 'network', entityDouble: 3 },
-    'network',
-    'receive_errors_per_second'
-  ),
-  num(
-    'network.transmitErrorsPerSecond',
-    { row: 'network', entityDouble: 4 },
-    'network',
-    'transmit_errors_per_second'
-  ),
-  num(
-    'network.receiveDropsPerSecond',
-    { row: 'network', entityDouble: 5 },
-    'network',
-    'receive_drops_per_second'
-  ),
-  num(
-    'network.transmitDropsPerSecond',
-    { row: 'network', entityDouble: 6 },
-    'network',
-    'transmit_drops_per_second'
-  ),
-  num(
-    'filesystem.availableBytes',
-    { row: 'filesystem', entityDouble: 1 },
-    'filesystem',
-    'available_bytes',
-    { hostedAlso: [{ row: 'host.io', double: 12 }] }
-  ),
-  num(
-    'filesystem.freeInodes',
-    { row: 'filesystem', entityDouble: 2 },
-    'filesystem',
-    'free_inodes',
-    { hostedAlso: [{ row: 'host.io', double: 14 }] }
-  ),
-  num(
-    'block.readBytesPerSecond',
-    { row: 'block', entityDouble: 1 },
-    'block',
-    'read_bytes_per_second'
-  ),
-  num(
-    'block.writeBytesPerSecond',
-    { row: 'block', entityDouble: 2 },
-    'block',
-    'write_bytes_per_second'
-  ),
-  num('block.readLatencyMs', { row: 'block', entityDouble: 4 }, 'block', 'read_latency_ms'),
-  num('block.writeLatencyMs', { row: 'block', entityDouble: 5 }, 'block', 'write_latency_ms'),
-  num('block.queueDepth', { row: 'block', entityDouble: 6 }, 'block', 'queue_depth'),
-  num('gpu.utilizationPercent', { row: 'gpu', entityDouble: 1 }, 'gpu', 'utilization_percent'),
-  num('gpu.memoryUsedBytes', { row: 'gpu', entityDouble: 2 }, 'gpu', 'memory_used_bytes'),
-  num(
-    'gpu.memoryActivityPercent',
-    { row: 'gpu', entityDouble: 3 },
-    'gpu',
-    'memory_activity_percent'
-  ),
-  num(
-    'gpu.pcieReceiveBytesPerSecond',
-    { row: 'gpu', entityDouble: 4 },
-    'gpu',
-    'pcie_receive_bytes_per_second'
-  ),
-  num(
-    'gpu.pcieTransmitBytesPerSecond',
-    { row: 'gpu', entityDouble: 5 },
-    'gpu',
-    'pcie_transmit_bytes_per_second'
-  ),
-  num('gpu.throttlePercent', { row: 'gpu', entityDouble: 6 }, 'gpu', 'throttle_percent'),
-  num(
-    'hardwareSignal.value',
-    { row: 'hardware.physical', entityDouble: 1 },
-    'hardwareSignal',
-    'value'
-  ),
-  num('ingress.requests', { row: 'host.web', double: 1 }, 'ingress', 'requests'),
-  num('ingress.responses4xx', { row: 'host.web', double: 2 }, 'ingress', 'responses4xx'),
-  num('ingress.responses5xx', { row: 'host.web', double: 3 }, 'ingress', 'responses5xx'),
-  num('ingress.requestErrors', { row: 'host.web', double: 4 }, 'ingress', 'request_errors'),
-  num('ingress.requestBytes', { row: 'host.web', double: 5 }, 'ingress', 'request_bytes'),
-  num('ingress.responseBytes', { row: 'host.web', double: 6 }, 'ingress', 'response_bytes'),
-  num(
-    'ingress.requestDurationSecondsSum',
-    { row: 'host.web', double: 7 },
-    'ingress',
-    'request_duration_seconds_sum'
-  ),
-  num('ingress.bucket100ms', { row: 'host.web', double: 8 }, 'ingress', 'bucket100ms'),
-  num('ingress.bucket500ms', { row: 'host.web', double: 9 }, 'ingress', 'bucket500ms'),
-  num('ingress.bucket1s', { row: 'host.web', double: 10 }, 'ingress', 'bucket1s'),
-  num('ingress.requestsInFlight', { row: 'host.web', double: 11 }, 'ingress', 'requests_in_flight'),
-  num('databaseProxy.queries', { row: 'managed.database', double: 7 }, 'databaseProxy', 'queries'),
-  num(
-    'databaseProxy.slowQueries',
-    { row: 'managed.database', double: 8 },
-    'databaseProxy',
-    'slow_queries'
-  ),
-  num(
-    'databaseProxy.queryLatencyMsAvg',
-    { row: 'managed.database', double: 9 },
-    'databaseProxy',
-    'query_latency_ms_avg'
-  ),
-  num(
-    'databaseProxy.backendLatencyMsAvg',
-    { row: 'managed.database', double: 10 },
-    'databaseProxy',
-    'backend_latency_ms_avg'
-  ),
-  num(
-    'databaseProxy.activeTransactions',
-    { row: 'managed.database', double: 11 },
-    'databaseProxy',
-    'active_transactions'
-  ),
-  num(
-    'databaseProxy.clientConnections',
-    { row: 'managed.database', double: 12 },
-    'databaseProxy',
-    'client_connections'
-  ),
-  num(
-    'databaseProxy.clientConnectionsAborted',
-    { row: 'managed.database', double: 13 },
-    'databaseProxy',
-    'client_connections_aborted'
-  ),
-  num(
-    'databaseProxy.connectionsRejectedMaxConns',
-    { row: 'managed.database', double: 14 },
-    'databaseProxy',
-    'connections_rejected_max_conns'
-  ),
-  num(
-    'databaseProxy.backendConnections',
-    { row: 'managed.database', double: 15 },
-    'databaseProxy',
-    'backend_connections'
-  ),
-  num(
-    'databaseProxy.connectionErrors',
-    { row: 'managed.database', double: 16 },
-    'databaseProxy',
-    'connection_errors'
-  ),
-  num(
-    'databaseProxy.backendsUp',
-    { row: 'managed.database', double: 17 },
-    'databaseProxy',
-    'backends_up'
-  ),
-  num(
-    'databaseProxy.backendsTotal',
-    { row: 'managed.database', double: 18 },
-    'databaseProxy',
-    'backends_total'
-  ),
-  num('router.backendsTotal', { row: 'host.web', double: 13 }, 'router', 'backends_total'),
-  num('router.backendErrors5xx', { row: 'host.web', double: 14 }, 'router', 'backend_errors5xx'),
-  num(
-    'router.backendLatencyMsAvg',
-    { row: 'host.web', double: 15 },
-    'router',
-    'backend_latency_ms_avg'
-  ),
-  num('storage.hostingUsedBytes', { row: 'host.io', double: 16 }, 'storage', 'hosting_used_bytes'),
-  num('storage.backupUsedBytes', { row: 'host.io', double: 17 }, 'storage', 'backup_used_bytes'),
-  num('storage.backupFreeBytes', { row: 'host.io', double: 18 }, 'storage', 'backup_free_bytes'),
-  num(
-    'storage.postgresInstancesRunning',
-    { row: 'managed.database', double: 1 },
-    'storage',
-    'postgres_instances_running'
-  ),
-  num(
-    'storage.postgresInstancesHealthy',
-    { row: 'managed.database', double: 2 },
-    'storage',
-    'postgres_instances_healthy'
-  ),
-  num(
-    'storage.mysqlInstancesRunning',
-    { row: 'managed.database', double: 3 },
-    'storage',
-    'mysql_instances_running'
-  ),
-  num(
-    'storage.mysqlInstancesHealthy',
-    { row: 'managed.database', double: 4 },
-    'storage',
-    'mysql_instances_healthy'
-  ),
-  num(
-    'storage.mariadbInstancesRunning',
-    { row: 'managed.database', double: 5 },
-    'storage',
-    'mariadb_instances_running'
-  ),
-  num(
-    'storage.mariadbInstancesHealthy',
-    { row: 'managed.database', double: 6 },
-    'storage',
-    'mariadb_instances_healthy'
-  ),
-  num('dockerUsage.layersBytes', { row: 'host.network', double: 15 }, 'docker', 'layers_bytes'),
-  num(
-    'dockerUsage.containersBytes',
-    { row: 'host.network', double: 16 },
-    'docker',
-    'containers_bytes'
-  ),
-  num('dockerUsage.volumesBytes', { row: 'host.network', double: 17 }, 'docker', 'volumes_bytes'),
-  num(
-    'dockerUsage.buildCacheBytes',
-    { row: 'host.network', double: 18 },
-    'docker',
-    'build_cache_bytes'
-  ),
-  num(
-    'diagnostics.committedAsBytes',
-    { row: 'host.system', double: 18 },
-    'memoryDiagnostics',
-    'committed_as_bytes'
-  ),
-  num(
-    'extended.host.pidLimitUsedPercent',
-    { row: 'host.web', double: 18 },
-    'host',
-    'ext_pid_limit_used_percent'
-  ),
-  num(
-    'extended.host.irqPressureFullPercent',
-    { row: 'host.system', double: 9 },
-    'host',
-    'ext_irq_pressure_full_percent'
-  ),
-  num('extended.host.oomKills', { row: 'host.system', double: 17 }, 'host', 'ext_oom_kills'),
-  num(
-    'extended.host.rootDiskQueueDepth',
-    { row: 'host.io', double: 6 },
-    'host',
-    'ext_root_disk_queue_depth'
-  ),
-  num(
-    'extended.host.rootDiskOpsPerSecond',
-    { row: 'host.io', double: 7 },
-    'host',
-    'ext_root_disk_ops_per_second'
-  ),
-  num(
-    'extended.host.systemdUnitsFailed',
-    { row: 'host.web', double: 19 },
-    'host',
-    'ext_systemd_units_failed'
-  ),
-  num(
-    'extended.host.mdArraysDegraded',
-    { row: 'host.io', double: 19 },
-    'host',
-    'ext_md_arrays_degraded'
-  ),
-  num(
-    'extended.docker.containersRunning',
-    { row: 'host.network', double: 8 },
-    'docker',
-    'ext_containers_running'
-  ),
-  num(
-    'extended.docker.containersUnhealthy',
-    { row: 'host.network', double: 9 },
-    'docker',
-    'ext_containers_unhealthy'
-  ),
-  num(
-    'extended.docker.containersRestarting',
-    { row: 'host.network', double: 10 },
-    'docker',
-    'ext_containers_restarting'
-  ),
-  num(
-    'extended.docker.containerOomEvents',
-    { row: 'host.network', double: 11 },
-    'docker',
-    'ext_container_oom_events'
-  ),
-  num(
-    'extended.docker.containerDieEvents',
-    { row: 'host.network', double: 12 },
-    'docker',
-    'ext_container_die_events'
-  ),
-  num(
-    'extended.docker.containersCpuPercent',
-    { row: 'host.network', double: 13 },
-    'docker',
-    'ext_containers_cpu_percent'
-  ),
-  num(
-    'extended.docker.containersMemoryBytes',
-    { row: 'host.network', double: 14 },
-    'docker',
-    'ext_containers_memory_bytes'
-  ),
-  num(
-    'extended.docker.reclaimableBytes',
-    { row: 'host.network', double: 19 },
-    'docker',
-    'ext_reclaimable_bytes'
-  ),
-  num(
-    'extended.ingress.tlsCertSoonestExpiryDays',
-    { row: 'host.web', double: 12 },
-    'ingress',
-    'ext_tls_cert_soonest_expiry_days'
-  ),
-  num(
-    'extended.sizes.memoryTotalBytes',
-    { row: 'host.system', double: 15 },
-    'host',
-    'ext_memory_total_bytes'
-  ),
-  num(
-    'extended.sizes.swapTotalBytes',
-    { row: 'host.system', double: 16 },
-    'host',
-    'ext_swap_total_bytes'
-  ),
-  num(
-    'extended.sizes.commitLimitBytes',
-    { row: 'host.system', double: 19 },
-    'host',
-    'ext_commit_limit_bytes'
-  ),
-  num(
-    'extended.sizes.logicalCores',
-    { row: 'host.system', double: 7 },
-    'host',
-    'ext_logical_cores'
-  ),
-  num(
-    'extended.sizes.rootFilesystemTotalBytes',
-    { row: 'host.io', double: 9 },
-    'host',
-    'ext_root_filesystem_total_bytes'
-  ),
-  num(
-    'extended.sizes.rootFilesystemTotalInodes',
-    { row: 'host.io', double: 11 },
-    'host',
-    'ext_root_filesystem_total_inodes'
-  ),
-  num('block.opsPerSecond', { row: 'block', entityDouble: 3 }, 'block', 'ops_per_second'),
-  // The derived sum of one embedded NIC's four error and drop rates (NICs 1 and 2 keep only this).
-  num(
-    'network.problemsPerSecond',
-    { row: 'host.network', double: 4 },
-    'network',
-    'problems_per_second',
-    {
-      hostedAlso: [{ row: 'host.network', double: 7 }],
-    }
-  ),
-  // Sizes: the hosted store keeps a device size as text on the device's own row.
-  num('network.linkSpeedMbps', { row: 'network', entityBlob: 1 }, 'network', 'link_speed_mbps', {
-    encoding: 'hosted-text-number',
-    hostedAlso: [{ row: 'host.network', blob: 6 }],
-  }),
-  num('filesystem.totalBytes', { row: 'filesystem', entityBlob: 1 }, 'filesystem', 'total_bytes', {
-    encoding: 'hosted-text-number',
-    hostedAlso: [{ row: 'host.io', double: 13 }],
-  }),
-  num(
-    'filesystem.totalInodes',
-    { row: 'filesystem', entityBlob: 1 },
-    'filesystem',
-    'total_inodes',
-    {
-      encoding: 'hosted-text-number',
-      hostedAlso: [{ row: 'host.io', double: 15 }],
-    }
-  ),
-  num('gpu.memoryTotalBytes', { row: 'gpu', entityBlob: 3 }, 'gpu', 'memory_total_bytes', {
-    encoding: 'hosted-text-number',
-  }),
-  // Device facts.
-  text('block.model', { row: 'block', entityBlob: 1 }, 'block', 'model'),
-  text('block.smart', { row: 'block', entityBlob: 2 }, 'block', 'smart'),
-  text('gpu.driver', { row: 'gpu', entityBlob: 1 }, 'gpu', 'driver'),
-  text('gpu.model', { row: 'gpu', entityBlob: 2 }, 'gpu', 'model'),
-  text('hardwareSignal.kind', { row: 'hardware.physical', blob: 7 }, 'hardwareSignal', 'kind'),
-  // Host facts: free text, one column per fact in the self-hosted store.
-  text('text.loadavg', { row: 'host.system', blob: 7 }, 'hostText', 'loadavg'),
-  text('text.topCpu', { row: 'host.system', blob: 8 }, 'hostText', 'top_cpu'),
-  text('text.cpuModel', { row: 'host.system', blob: 9 }, 'hostText', 'cpu_model'),
-  text('text.topMem', { row: 'host.system', blob: 10 }, 'hostText', 'top_mem'),
-  text('text.lastOom', { row: 'host.system', blob: 11 }, 'hostText', 'last_oom'),
-  text('text.kernel', { row: 'host.system', blob: 12 }, 'hostText', 'kernel'),
-  text('text.os', { row: 'host.system', blob: 13 }, 'hostText', 'os'),
-  text('text.bootId', { row: 'host.system', blob: 14 }, 'hostText', 'boot_id'),
-  text('text.virt', { row: 'host.system', blob: 15 }, 'hostText', 'virt'),
-  text('text.cloudProvider', { row: 'host.system', blob: 16 }, 'hostText', 'cloud_provider'),
-  text('text.agentVersion', { row: 'host.system', blob: 17 }, 'hostText', 'agent_version'),
-  text('text.timeSync', { row: 'host.system', blob: 18 }, 'hostText', 'time_sync'),
-  text('text.pendingUpdates', { row: 'host.system', blob: 19 }, 'hostText', 'pending_updates'),
-  text('text.rebootRequired', { row: 'host.system', blob: 20 }, 'hostText', 'reboot_required'),
-  text('text.fsReadOnly', { row: 'host.io', blob: 7 }, 'hostText', 'fs_read_only'),
-  text('text.raidState', { row: 'host.io', blob: 8 }, 'hostText', 'raid_state'),
-  text(
-    'text.unhealthyContainers',
-    { row: 'host.network', blob: 7 },
-    'hostText',
-    'unhealthy_containers'
-  ),
-  text('text.dockerVersion', { row: 'host.network', blob: 8 }, 'hostText', 'docker_version'),
-  text('text.fpmBusiest', { row: 'host.web', blob: 7 }, 'hostText', 'fpm_busiest'),
-  text('text.topSites', { row: 'host.web', blob: 8 }, 'hostText', 'top_sites'),
-  text('text.caddyVersion', { row: 'host.web', blob: 9 }, 'hostText', 'caddy_version'),
-  text('text.certSoonest', { row: 'host.web', blob: 10 }, 'hostText', 'cert_soonest'),
-  text('text.traefikVersion', { row: 'host.web', blob: 11 }, 'hostText', 'traefik_version'),
-  text('text.unhealthyBackends', { row: 'host.web', blob: 12 }, 'hostText', 'unhealthy_backends'),
-  text('text.phpVersions', { row: 'host.web', blob: 13 }, 'hostText', 'php_versions'),
-  text('text.webEngines', { row: 'host.web', blob: 14 }, 'hostText', 'web_engines'),
-  text('text.failedUnits', { row: 'host.web', blob: 15 }, 'hostText', 'failed_units'),
-  text('text.dbVersions', { row: 'managed.database', blob: 7 }, 'hostText', 'db_versions'),
-]
+export const STORED_FIELDS: readonly StoredField[] = parseStored(`
+host.cpu.busyPercent n host.system@d1 host.cpu_busy_percent
+host.cpu.userPercent n host.system@d2 host.cpu_user_percent
+host.cpu.systemPercent n host.system@d3 host.cpu_system_percent
+host.cpu.iowaitPercent n host.system@d4 host.cpu_iowait_percent
+host.cpu.stealPercent n host.system@d5 host.cpu_steal_percent
+host.cpu.softirqPercent n host.system@d6 host.cpu_softirq_percent
+host.cpu.pressureSomePercent n host.system@d8 host.cpu_pressure_some_percent
+host.kernel.fileHandlesUsedPercent n host.web@d17 host.kernel_file_handles_used_percent
+host.kernel.conntrackUsedPercent n host.web@d16 host.kernel_conntrack_used_percent
+host.memory.usedBytes n host.system@d12 host.memory_used_bytes
+host.memory.cachedFilesBytes n host.system@d13 host.memory_cached_files_bytes
+host.memory.swapUsedBytes n host.system@d14 host.memory_swap_used_bytes
+host.memory.pressureSomePercent n host.system@d10 host.memory_pressure_some_percent
+host.memory.pressureFullPercent n host.system@d11 host.memory_pressure_full_percent
+host.storage.ioPressureSomePercent n host.io@d1 host.storage_io_pressure_some_percent
+host.storage.ioPressureFullPercent n host.io@d2 host.storage_io_pressure_full_percent
+host.storage.diskReadBytesPerSecond n host.io@d3 host.storage_disk_read_bytes_per_second
+host.storage.diskWriteBytesPerSecond n host.io@d4 host.storage_disk_write_bytes_per_second
+host.storage.diskLatencyMs n host.io@d5 host.storage_disk_latency_ms
+host.storage.rootFilesystemAvailableBytes n host.io@d8 host.storage_root_filesystem_available_bytes
+host.storage.rootFilesystemFreeInodes n host.io@d10 host.storage_root_filesystem_free_inodes
+host.network.tcpRetransmitPercent n host.network@d1 host.network_tcp_retransmit_percent
+network.receiveBytesPerSecond n network@ed1 network.receive_bytes_per_second +host.network@d2 +host.network@d5
+network.transmitBytesPerSecond n network@ed2 network.transmit_bytes_per_second +host.network@d3 +host.network@d6
+network.receiveErrorsPerSecond n network@ed3 network.receive_errors_per_second
+network.transmitErrorsPerSecond n network@ed4 network.transmit_errors_per_second
+network.receiveDropsPerSecond n network@ed5 network.receive_drops_per_second
+network.transmitDropsPerSecond n network@ed6 network.transmit_drops_per_second
+filesystem.availableBytes n filesystem@ed1 filesystem.available_bytes +host.io@d12
+filesystem.freeInodes n filesystem@ed2 filesystem.free_inodes +host.io@d14
+block.readBytesPerSecond n block@ed1 block.read_bytes_per_second
+block.writeBytesPerSecond n block@ed2 block.write_bytes_per_second
+block.readLatencyMs n block@ed4 block.read_latency_ms
+block.writeLatencyMs n block@ed5 block.write_latency_ms
+block.queueDepth n block@ed6 block.queue_depth
+gpu.utilizationPercent n gpu@ed1 gpu.utilization_percent
+gpu.memoryUsedBytes n gpu@ed2 gpu.memory_used_bytes
+gpu.memoryActivityPercent n gpu@ed3 gpu.memory_activity_percent
+gpu.pcieReceiveBytesPerSecond n gpu@ed4 gpu.pcie_receive_bytes_per_second
+gpu.pcieTransmitBytesPerSecond n gpu@ed5 gpu.pcie_transmit_bytes_per_second
+gpu.throttlePercent n gpu@ed6 gpu.throttle_percent
+hardwareSignal.value n hardware.physical@ed1 hardwareSignal.value
+ingress.requests n host.web@d1 ingress.requests
+ingress.responses4xx n host.web@d2 ingress.responses4xx
+ingress.responses5xx n host.web@d3 ingress.responses5xx
+ingress.requestErrors n host.web@d4 ingress.request_errors
+ingress.requestBytes n host.web@d5 ingress.request_bytes
+ingress.responseBytes n host.web@d6 ingress.response_bytes
+ingress.requestDurationSecondsSum n host.web@d7 ingress.request_duration_seconds_sum
+ingress.bucket100ms n host.web@d8 ingress.bucket100ms
+ingress.bucket500ms n host.web@d9 ingress.bucket500ms
+ingress.bucket1s n host.web@d10 ingress.bucket1s
+ingress.requestsInFlight n host.web@d11 ingress.requests_in_flight
+databaseProxy.queries n managed.database@d7 databaseProxy.queries
+databaseProxy.slowQueries n managed.database@d8 databaseProxy.slow_queries
+databaseProxy.queryLatencyMsAvg n managed.database@d9 databaseProxy.query_latency_ms_avg
+databaseProxy.backendLatencyMsAvg n managed.database@d10 databaseProxy.backend_latency_ms_avg
+databaseProxy.activeTransactions n managed.database@d11 databaseProxy.active_transactions
+databaseProxy.clientConnections n managed.database@d12 databaseProxy.client_connections
+databaseProxy.clientConnectionsAborted n managed.database@d13 databaseProxy.client_connections_aborted
+databaseProxy.connectionsRejectedMaxConns n managed.database@d14 databaseProxy.connections_rejected_max_conns
+databaseProxy.backendConnections n managed.database@d15 databaseProxy.backend_connections
+databaseProxy.connectionErrors n managed.database@d16 databaseProxy.connection_errors
+databaseProxy.backendsUp n managed.database@d17 databaseProxy.backends_up
+databaseProxy.backendsTotal n managed.database@d18 databaseProxy.backends_total
+router.backendsTotal n host.web@d13 router.backends_total
+router.backendErrors5xx n host.web@d14 router.backend_errors5xx
+router.backendLatencyMsAvg n host.web@d15 router.backend_latency_ms_avg
+storage.hostingUsedBytes n host.io@d16 storage.hosting_used_bytes
+storage.backupUsedBytes n host.io@d17 storage.backup_used_bytes
+storage.backupFreeBytes n host.io@d18 storage.backup_free_bytes
+storage.postgresInstancesRunning n managed.database@d1 storage.postgres_instances_running
+storage.postgresInstancesHealthy n managed.database@d2 storage.postgres_instances_healthy
+storage.mysqlInstancesRunning n managed.database@d3 storage.mysql_instances_running
+storage.mysqlInstancesHealthy n managed.database@d4 storage.mysql_instances_healthy
+storage.mariadbInstancesRunning n managed.database@d5 storage.mariadb_instances_running
+storage.mariadbInstancesHealthy n managed.database@d6 storage.mariadb_instances_healthy
+dockerUsage.layersBytes n host.network@d15 docker.layers_bytes
+dockerUsage.containersBytes n host.network@d16 docker.containers_bytes
+dockerUsage.volumesBytes n host.network@d17 docker.volumes_bytes
+dockerUsage.buildCacheBytes n host.network@d18 docker.build_cache_bytes
+diagnostics.committedAsBytes n host.system@d18 memoryDiagnostics.committed_as_bytes
+extended.host.pidLimitUsedPercent n host.web@d18 host.ext_pid_limit_used_percent
+extended.host.irqPressureFullPercent n host.system@d9 host.ext_irq_pressure_full_percent
+extended.host.oomKills n host.system@d17 host.ext_oom_kills
+extended.host.rootDiskQueueDepth n host.io@d6 host.ext_root_disk_queue_depth
+extended.host.rootDiskOpsPerSecond n host.io@d7 host.ext_root_disk_ops_per_second
+extended.host.systemdUnitsFailed n host.web@d19 host.ext_systemd_units_failed
+extended.host.mdArraysDegraded n host.io@d19 host.ext_md_arrays_degraded
+extended.docker.containersRunning n host.network@d8 docker.ext_containers_running
+extended.docker.containersUnhealthy n host.network@d9 docker.ext_containers_unhealthy
+extended.docker.containersRestarting n host.network@d10 docker.ext_containers_restarting
+extended.docker.containerOomEvents n host.network@d11 docker.ext_container_oom_events
+extended.docker.containerDieEvents n host.network@d12 docker.ext_container_die_events
+extended.docker.containersCpuPercent n host.network@d13 docker.ext_containers_cpu_percent
+extended.docker.containersMemoryBytes n host.network@d14 docker.ext_containers_memory_bytes
+extended.docker.reclaimableBytes n host.network@d19 docker.ext_reclaimable_bytes
+extended.ingress.tlsCertSoonestExpiryDays n host.web@d12 ingress.ext_tls_cert_soonest_expiry_days
+extended.sizes.memoryTotalBytes n host.system@d15 host.ext_memory_total_bytes
+extended.sizes.swapTotalBytes n host.system@d16 host.ext_swap_total_bytes
+extended.sizes.commitLimitBytes n host.system@d19 host.ext_commit_limit_bytes
+extended.sizes.logicalCores n host.system@d7 host.ext_logical_cores
+extended.sizes.rootFilesystemTotalBytes n host.io@d9 host.ext_root_filesystem_total_bytes
+extended.sizes.rootFilesystemTotalInodes n host.io@d11 host.ext_root_filesystem_total_inodes
+block.opsPerSecond n block@ed3 block.ops_per_second
+network.problemsPerSecond n host.network@d4 network.problems_per_second +host.network@d7
+network.linkSpeedMbps n network@eb1 network.link_speed_mbps tn +host.network@b6
+filesystem.totalBytes n filesystem@eb1 filesystem.total_bytes tn +host.io@d13
+filesystem.totalInodes n filesystem@eb1 filesystem.total_inodes tn +host.io@d15
+gpu.memoryTotalBytes n gpu@eb3 gpu.memory_total_bytes tn
+block.model t block@eb1 block.model
+block.smart t block@eb2 block.smart
+gpu.driver t gpu@eb1 gpu.driver
+gpu.model t gpu@eb2 gpu.model
+hardwareSignal.kind t hardware.physical@b7 hardwareSignal.kind
+text.loadavg t host.system@b7 hostText.loadavg
+text.topCpu t host.system@b8 hostText.top_cpu
+text.cpuModel t host.system@b9 hostText.cpu_model
+text.topMem t host.system@b10 hostText.top_mem
+text.lastOom t host.system@b11 hostText.last_oom
+text.kernel t host.system@b12 hostText.kernel
+text.os t host.system@b13 hostText.os
+text.bootId t host.system@b14 hostText.boot_id
+text.virt t host.system@b15 hostText.virt
+text.cloudProvider t host.system@b16 hostText.cloud_provider
+text.agentVersion t host.system@b17 hostText.agent_version
+text.timeSync t host.system@b18 hostText.time_sync
+text.pendingUpdates t host.system@b19 hostText.pending_updates
+text.rebootRequired t host.system@b20 hostText.reboot_required
+text.fsReadOnly t host.io@b7 hostText.fs_read_only
+text.raidState t host.io@b8 hostText.raid_state
+text.unhealthyContainers t host.network@b7 hostText.unhealthy_containers
+text.dockerVersion t host.network@b8 hostText.docker_version
+text.fpmBusiest t host.web@b7 hostText.fpm_busiest
+text.topSites t host.web@b8 hostText.top_sites
+text.caddyVersion t host.web@b9 hostText.caddy_version
+text.certSoonest t host.web@b10 hostText.cert_soonest
+text.traefikVersion t host.web@b11 hostText.traefik_version
+text.unhealthyBackends t host.web@b12 hostText.unhealthy_backends
+text.phpVersions t host.web@b13 hostText.php_versions
+text.webEngines t host.web@b14 hostText.web_engines
+text.failedUnits t host.web@b15 hostText.failed_units
+text.dbVersions t managed.database@b7 hostText.db_versions
+`)
 
 /**
  * Contract values kept on the wire (so an older screen asking for one gets an
  * empty answer, not an unknown-name error) but stored in neither store. Both
  * stores read them as empty.
  */
-export const NOT_STORED_FIELDS: readonly NotStoredField[] = [
-  {
-    id: 'host.cpu.saturatedCoreCount',
-    why: 'dropped',
-    note: 'Owner decision, 7 Oct (pegged cores)',
-  },
-  {
-    id: 'host.cpu.procsRunning',
-    why: 'left-out',
-    note: '"pressure covers blocked tasks, and PID-limit % covers the count"',
-  },
-  {
-    id: 'host.cpu.procsBlocked',
-    why: 'left-out',
-    note: '"pressure covers blocked tasks, and PID-limit % covers the count"',
-  },
-  {
-    id: 'host.cpu.processCount',
-    why: 'left-out',
-    note: '"pressure covers blocked tasks, and PID-limit % covers the count"',
-  },
-  { id: 'host.memory.swapInBytesPerSecond', why: 'left-out', note: '"Swap in/out rates"' },
-  { id: 'host.memory.swapOutBytesPerSecond', why: 'left-out', note: '"Swap in/out rates"' },
-  { id: 'host.memory.majorPageFaultsPerSecond', why: 'dropped', note: 'Owner decision, 7 Oct' },
-  {
-    id: 'host.network.softnetDropsPerSecond',
-    why: 'left-out',
-    note: '"Softnet drops: rare on hosting traffic; live view"',
-  },
-  { id: 'block.readOpsPerSecond', why: 'left-out', note: '"split ops" (the sum is kept as ops/s)' },
-  { id: 'block.writeOpsPerSecond', why: 'left-out', note: '"split ops"' },
-  {
-    id: 'block.utilizationPercent',
-    why: 'left-out',
-    note: '"Utilisation %" (misleads on NVMe and virtual disks)',
-  },
-  { id: 'ingress.responses2xx', why: 'dropped', note: 'Owner decision, 7 Oct' },
-  {
-    id: 'ingress.responses3xx',
-    why: 'left-out',
-    note: '"3xx, the 10 ms / 50 ms / 5 s buckets, upstream health, retries"',
-  },
-  {
-    id: 'ingress.bucket10ms',
-    why: 'left-out',
-    note: '"3xx, the 10 ms / 50 ms / 5 s buckets, upstream health, retries"',
-  },
-  {
-    id: 'ingress.bucket50ms',
-    why: 'left-out',
-    note: '"3xx, the 10 ms / 50 ms / 5 s buckets, upstream health, retries"',
-  },
-  {
-    id: 'ingress.bucket5s',
-    why: 'left-out',
-    note: '"3xx, the 10 ms / 50 ms / 5 s buckets, upstream health, retries"',
-  },
-  {
-    id: 'ingress.upstreamsHealthy',
-    why: 'left-out',
-    note: '"3xx, the 10 ms / 50 ms / 5 s buckets, upstream health, retries"',
-  },
-  {
-    id: 'ingress.upstreamsTotal',
-    why: 'left-out',
-    note: '"3xx, the 10 ms / 50 ms / 5 s buckets, upstream health, retries"',
-  },
-  {
-    id: 'ingress.retries',
-    why: 'left-out',
-    note: '"3xx, the 10 ms / 50 ms / 5 s buckets, upstream health, retries"',
-  },
-  {
-    id: 'databaseProxy.clientConnectionsCreated',
-    why: 'left-out',
-    note: '"ProxySQL \'created\' counters and byte totals"',
-  },
-  {
-    id: 'databaseProxy.backendConnectionsCreated',
-    why: 'left-out',
-    note: '"ProxySQL \'created\' counters and byte totals"',
-  },
-  {
-    id: 'databaseProxy.backendConnectionsAborted',
-    why: 'left-out',
-    note: '"ProxySQL \'created\' counters and byte totals"',
-  },
-  {
-    id: 'databaseProxy.bytesFromBackends',
-    why: 'left-out',
-    note: '"ProxySQL \'created\' counters and byte totals"',
-  },
-  {
-    id: 'databaseProxy.bytesToBackends',
-    why: 'left-out',
-    note: '"ProxySQL \'created\' counters and byte totals"',
-  },
-  { id: 'router.backendsUp', why: 'dropped', note: 'Owner decision, 7 Oct' },
-  {
-    id: 'router.servicesTotal',
-    why: 'left-out',
-    note: '"Service/router totals, reloads, open connections, retries"',
-  },
-  {
-    id: 'router.routersTotal',
-    why: 'left-out',
-    note: '"Service/router totals, reloads, open connections, retries"',
-  },
-  {
-    id: 'router.retries',
-    why: 'left-out',
-    note: '"Service/router totals, reloads, open connections, retries"',
-  },
-  { id: 'router.backendRequests', why: 'dropped', note: 'Owner decision, 7 Oct' },
-  { id: 'router.httpOpenConnections', why: 'left-out', note: 'Owner decision, 7 Oct' },
-  { id: 'router.configReloads', why: 'left-out', note: 'Owner decision, 7 Oct' },
-  {
-    id: 'router.configLastReloadAgeSeconds',
-    why: 'not-named',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  {
-    id: 'router.tlsCertSoonestExpiryDays',
-    why: 'not-named',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  { id: 'storage.dockerUsedBytes', why: 'dropped', note: 'Owner decision, 7 Oct' },
-  { id: 'storage.logsUsedBytes', why: 'dropped', note: 'Owner decision, 7 Oct' },
-  { id: 'storage.hostingFreeBytes', why: 'dropped', note: 'Owner decision, 7 Oct' },
-  { id: 'storage.logsFreeBytes', why: 'left-out', note: '"Logs free" (disk space line)' },
-  {
-    id: 'storage.postgresConnectionsUsed',
-    why: 'left-out',
-    note: '"Per-engine connection counts"',
-  },
-  { id: 'storage.postgresConnectionsMax', why: 'left-out', note: '"Per-engine connection counts"' },
-  { id: 'storage.mysqlConnectionsUsed', why: 'left-out', note: '"Per-engine connection counts"' },
-  { id: 'storage.mysqlConnectionsMax', why: 'left-out', note: '"Per-engine connection counts"' },
-  { id: 'storage.mariadbConnectionsUsed', why: 'left-out', note: '"Per-engine connection counts"' },
-  { id: 'storage.mariadbConnectionsMax', why: 'left-out', note: '"Per-engine connection counts"' },
-  { id: 'dockerUsage.imagesCount', why: 'left-out', note: '"Image, volume and container counts"' },
-  {
-    id: 'dockerUsage.imagesReclaimableBytes',
-    why: 'not-named',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  {
-    id: 'dockerUsage.containersCount',
-    why: 'left-out',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  {
-    id: 'dockerUsage.volumesCount',
-    why: 'left-out',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  {
-    id: 'dockerUsage.volumesReclaimableBytes',
-    why: 'not-named',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  {
-    id: 'dockerUsage.buildCacheReclaimableBytes',
-    why: 'not-named',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  {
-    id: 'diagnostics.averageFrequencyMHz',
-    why: 'left-out',
-    note: '"Clock speeds: meaningless on VMs"',
-  },
-  {
-    id: 'diagnostics.minimumFrequencyMHz',
-    why: 'left-out',
-    note: '"Clock speeds: meaningless on VMs"',
-  },
-  {
-    id: 'diagnostics.maximumFrequencyMHz',
-    why: 'left-out',
-    note: '"Clock speeds: meaningless on VMs"',
-  },
-  {
-    id: 'diagnostics.contextSwitchesPerSecond',
-    why: 'not-named',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  {
-    id: 'diagnostics.interruptsPerSecond',
-    why: 'not-named',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  {
-    id: 'diagnostics.forksPerSecond',
-    why: 'not-named',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  {
-    id: 'diagnostics.cpuIrqPercent',
-    why: 'not-named',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  {
-    id: 'diagnostics.memoryFreeBytes',
-    why: 'left-out',
-    note: '"MemFree, Cached, AnonPages repeat used/cache"',
-  },
-  {
-    id: 'diagnostics.cachedBytes',
-    why: 'left-out',
-    note: '"MemFree, Cached, AnonPages repeat used/cache"',
-  },
-  {
-    id: 'diagnostics.anonPagesBytes',
-    why: 'left-out',
-    note: '"MemFree, Cached, AnonPages repeat used/cache"',
-  },
-  {
-    id: 'diagnostics.slabReclaimableBytes',
-    why: 'not-named',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  { id: 'diagnostics.slabUnreclaimableBytes', why: 'dropped', note: 'Owner decision, 7 Oct' },
-  {
-    id: 'diagnostics.dirtyBytes',
-    why: 'not-named',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  {
-    id: 'diagnostics.writebackBytes',
-    why: 'not-named',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  {
-    id: 'diagnostics.shmemBytes',
-    why: 'not-named',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  {
-    id: 'diagnostics.pageScanDirectPerSecond',
-    why: 'not-named',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  {
-    id: 'diagnostics.pageScanKswapdPerSecond',
-    why: 'not-named',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  {
-    id: 'diagnostics.compactionStallsPerSecond',
-    why: 'not-named',
-    note: 'Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows',
-  },
-  {
-    id: 'extended.host.mdArraysResyncing',
-    why: 'left-out',
-    note: '"RAID resyncing as a number: the text already shows progress"',
-  },
-]
+export const NOT_STORED_FIELDS: readonly NotStoredField[] = parseNotStored(`
+host.cpu.saturatedCoreCount|dropped|Owner decision, 7 Oct (pegged cores)
+host.cpu.procsRunning|left-out|"pressure covers blocked tasks, and PID-limit % covers the count"
+host.cpu.procsBlocked|left-out|"pressure covers blocked tasks, and PID-limit % covers the count"
+host.cpu.processCount|left-out|"pressure covers blocked tasks, and PID-limit % covers the count"
+host.memory.swapInBytesPerSecond|left-out|"Swap in/out rates"
+host.memory.swapOutBytesPerSecond|left-out|"Swap in/out rates"
+host.memory.majorPageFaultsPerSecond|dropped|Owner decision, 7 Oct
+host.network.softnetDropsPerSecond|left-out|"Softnet drops: rare on hosting traffic; live view"
+block.readOpsPerSecond|left-out|"split ops" (the sum is kept as ops/s)
+block.writeOpsPerSecond|left-out|"split ops"
+block.utilizationPercent|left-out|"Utilisation %" (misleads on NVMe and virtual disks)
+ingress.responses2xx|dropped|Owner decision, 7 Oct
+ingress.responses3xx|left-out|"3xx, the 10 ms / 50 ms / 5 s buckets, upstream health, retries"
+ingress.bucket10ms|left-out|"3xx, the 10 ms / 50 ms / 5 s buckets, upstream health, retries"
+ingress.bucket50ms|left-out|"3xx, the 10 ms / 50 ms / 5 s buckets, upstream health, retries"
+ingress.bucket5s|left-out|"3xx, the 10 ms / 50 ms / 5 s buckets, upstream health, retries"
+ingress.upstreamsHealthy|left-out|"3xx, the 10 ms / 50 ms / 5 s buckets, upstream health, retries"
+ingress.upstreamsTotal|left-out|"3xx, the 10 ms / 50 ms / 5 s buckets, upstream health, retries"
+ingress.retries|left-out|"3xx, the 10 ms / 50 ms / 5 s buckets, upstream health, retries"
+databaseProxy.clientConnectionsCreated|left-out|"ProxySQL 'created' counters and byte totals"
+databaseProxy.backendConnectionsCreated|left-out|"ProxySQL 'created' counters and byte totals"
+databaseProxy.backendConnectionsAborted|left-out|"ProxySQL 'created' counters and byte totals"
+databaseProxy.bytesFromBackends|left-out|"ProxySQL 'created' counters and byte totals"
+databaseProxy.bytesToBackends|left-out|"ProxySQL 'created' counters and byte totals"
+router.backendsUp|dropped|Owner decision, 7 Oct
+router.servicesTotal|left-out|"Service/router totals, reloads, open connections, retries"
+router.routersTotal|left-out|"Service/router totals, reloads, open connections, retries"
+router.retries|left-out|"Service/router totals, reloads, open connections, retries"
+router.backendRequests|dropped|Owner decision, 7 Oct
+router.httpOpenConnections|left-out|Owner decision, 7 Oct
+router.configReloads|left-out|Owner decision, 7 Oct
+router.configLastReloadAgeSeconds|not-named|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+router.tlsCertSoonestExpiryDays|not-named|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+storage.dockerUsedBytes|dropped|Owner decision, 7 Oct
+storage.logsUsedBytes|dropped|Owner decision, 7 Oct
+storage.hostingFreeBytes|dropped|Owner decision, 7 Oct
+storage.logsFreeBytes|left-out|"Logs free" (disk space line)
+storage.postgresConnectionsUsed|left-out|"Per-engine connection counts"
+storage.postgresConnectionsMax|left-out|"Per-engine connection counts"
+storage.mysqlConnectionsUsed|left-out|"Per-engine connection counts"
+storage.mysqlConnectionsMax|left-out|"Per-engine connection counts"
+storage.mariadbConnectionsUsed|left-out|"Per-engine connection counts"
+storage.mariadbConnectionsMax|left-out|"Per-engine connection counts"
+dockerUsage.imagesCount|left-out|"Image, volume and container counts"
+dockerUsage.imagesReclaimableBytes|not-named|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+dockerUsage.containersCount|left-out|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+dockerUsage.volumesCount|left-out|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+dockerUsage.volumesReclaimableBytes|not-named|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+dockerUsage.buildCacheReclaimableBytes|not-named|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+diagnostics.averageFrequencyMHz|left-out|"Clock speeds: meaningless on VMs"
+diagnostics.minimumFrequencyMHz|left-out|"Clock speeds: meaningless on VMs"
+diagnostics.maximumFrequencyMHz|left-out|"Clock speeds: meaningless on VMs"
+diagnostics.contextSwitchesPerSecond|not-named|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+diagnostics.interruptsPerSecond|not-named|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+diagnostics.forksPerSecond|not-named|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+diagnostics.cpuIrqPercent|not-named|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+diagnostics.memoryFreeBytes|left-out|"MemFree, Cached, AnonPages repeat used/cache"
+diagnostics.cachedBytes|left-out|"MemFree, Cached, AnonPages repeat used/cache"
+diagnostics.anonPagesBytes|left-out|"MemFree, Cached, AnonPages repeat used/cache"
+diagnostics.slabReclaimableBytes|not-named|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+diagnostics.slabUnreclaimableBytes|dropped|Owner decision, 7 Oct
+diagnostics.dirtyBytes|not-named|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+diagnostics.writebackBytes|not-named|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+diagnostics.shmemBytes|not-named|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+diagnostics.pageScanDirectPerSecond|not-named|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+diagnostics.pageScanKswapdPerSecond|not-named|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+diagnostics.compactionStallsPerSecond|not-named|Not named in the audit; the old diagnostics row and the unkept counts have no place in the four locked rows
+extended.host.mdArraysResyncing|left-out|"RAID resyncing as a number: the text already shows progress"
+`)
 
 export const STORED_FIELD_IDS: ReadonlySet<string> = new Set(STORED_FIELDS.map((f) => f.id))
 export const NOT_STORED_FIELD_IDS: ReadonlySet<string> = new Set(NOT_STORED_FIELDS.map((f) => f.id))
