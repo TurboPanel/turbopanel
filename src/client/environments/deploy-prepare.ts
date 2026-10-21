@@ -275,6 +275,10 @@ import {
 } from '../../features/system/hierarchy.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { loadManagedIngressPorts } from '../../features/managed/load-org-defaults.ts'
+import {
+  describeReservedHostPorts,
+  reservedHostPortFindings,
+} from '../../features/compose/reserved-host-ports.ts'
 import { DEFAULT_MANAGED_INGRESS_PORTS } from '../../features/managed/ingress-ports.ts'
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -318,6 +322,7 @@ export type DeployPrepareWarningCode =
   | 'php_mode_not_allowed'
   | 'node_version_unresolved'
   | 'storage_service_removed'
+  | 'reserved_host_port'
 
 /**
  * Gate a deploy's PHP series against what the target host actually reports.
@@ -1124,6 +1129,17 @@ function appendUnseenRegisteredVolumes(
       mounts: [],
     })
   }
+}
+
+/** Warn about each published host port the platform reserves; the host refuses these at deploy. */
+export function reservedHostPortWarnings(
+  services: Record<string, unknown>
+): DeployPrepareWarning[] {
+  return reservedHostPortFindings(services).map(({ service, port }) => ({
+    code: 'reserved_host_port',
+    message: `Service "${service}" publishes host port ${port}, which the platform reserves for its own services (reserved host ports: ${describeReservedHostPorts()}). The deploy will be refused; publish a different host port.`,
+    details: { composeServiceName: service, port },
+  }))
 }
 
 /**
@@ -3735,6 +3751,7 @@ export async function prepareDeployCompose(
   // composeYaml today. Compile one runtime snapshot; daemons never see
   // project/environment/platform layers.
   const effective = split.containerDocument
+  warnings.push(...reservedHostPortWarnings(composeServicesRecord(effective)))
   const compiled = compileRuntimeCompose(effective, {
     ...compileRuntimeOptionsForServer(params.environmentId, pipeline, params.schedule),
     placementServerId: params.serverId,

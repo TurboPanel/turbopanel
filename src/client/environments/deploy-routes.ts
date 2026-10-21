@@ -54,6 +54,8 @@ import {
   buildDeployPreviewContainers,
   buildDeployPreviewServers,
   buildNativeAppServicesForDeploy,
+  previewCommitSha,
+  previewNativeAppVariables,
   buildSitesForDeploy,
   composeProjectName,
   type DeployStrategyOverride,
@@ -1283,7 +1285,8 @@ type DeployPreviewSource = {
   provider: string
   cloneUrl: string
   ref: string
-  commitSha: string
+  /** Left out until the commit is known: the host resolves a plain-git branch when it clones. */
+  commitSha?: string
   releaseId: string
   subdirectory?: string
 }
@@ -1383,7 +1386,7 @@ function deployPreviewSources(
           provider: entry.provider,
           cloneUrl: entry.cloneUrl,
           ref: entry.ref,
-          commitSha: entry.commitSha,
+          commitSha: previewCommitSha(entry),
           releaseId: entry.releaseId,
           subdirectory: entry.subdirectory,
         })
@@ -1514,6 +1517,10 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
     if (preparedByServer instanceof Response) return preparedByServer
 
     const strategy = await resolveEnginePlan(db, environmentId, planned, override)
+    const reservedPorts = await listReservedListenPorts(db, {
+      environmentId,
+      serverIds: preparedByServer.map((row) => row.serverId),
+    })
 
     const first = preparedByServer[0]
     const serverRows =
@@ -1560,7 +1567,9 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
       ],
       envFile: first?.prepared.envFile ?? '',
       secretPlan: first?.prepared.secretPlan ?? [],
-      nativeAppVariables: preparedByServer.flatMap((row) => row.prepared.nativeAppVariables ?? []),
+      nativeAppVariables: preparedByServer.flatMap((row) =>
+        previewNativeAppVariables(row.prepared, reservedPorts.get(row.serverId), environmentId)
+      ),
       nativeAppNodeVersions: oncePerApp(
         preparedByServer.flatMap((row) => row.prepared.nativeAppNodeVersions ?? [])
       ),
