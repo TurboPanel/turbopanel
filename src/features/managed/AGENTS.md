@@ -469,8 +469,13 @@ name over 54 characters 400 `managed_owner_role_name_too_long`; `ownerRole`
 stays accepted only as `true`; 400 on MySQL/MariaDB when asked for). Existing databases keep their owner until the customer asks:
 `POST …/databases/{name}/owner-role` with `confirm: true` (`evaluateOwnerRoleConversion`;
 needs `managed-database-convert-v1`, else 409 `managed_database_convert_needs_daemon_update`)
-flags the database as role-owned and sends one apply with
-`databases[].convertExisting` (`convertDatabases` in the apply input, never stored). The
+sends one apply with the database flagged and `databases[].convertExisting`
+(`convertDatabases` in the apply input, never stored). The `database.is_role_owned` flag is
+set only when the primary's apply succeeds (`markConvertedDatabasesRoleOwned` in the command
+consumer), so a failed move leaves nothing flagged. The route is behind the step-up
+`managed.database.owner_role` and audited as `managed.database.owner_role.move`. The daemon
+gives up after 5 s on a lock (tell the customer to run it in a quiet window) and repeats
+safely. The
 daemon hands the database and what is in it to `tp_<db>_owner` in one transaction, so it then
 behaves like an API-made one (first database included). Asking again repeats it safely. The flag rides on every apply as `databases[].ownerRole`
 (create) and on the drop op, so every `prepareManagedApplyPayloads` caller must

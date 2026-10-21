@@ -243,11 +243,19 @@ export function evaluateOwnerRoleConversion(
       status: 400,
     }
   }
-  if (ENGINE_DATABASES.has(name) || name.length > OWNER_ROLE_MAX_DATABASE_NAME) {
+  if (ENGINE_DATABASES.has(name)) {
+    return {
+      ok: false,
+      error: 'managed_owner_role_database_not_movable',
+      message: `${name} is one of the engine's own databases and cannot be moved onto an owner role.`,
+      status: 400,
+    }
+  }
+  if (name.length > OWNER_ROLE_MAX_DATABASE_NAME) {
     return {
       ok: false,
       error: 'managed_owner_role_name_too_long',
-      message: `This database cannot be moved onto an owner role: it is one of the engine's own databases, or its name is longer than ${OWNER_ROLE_MAX_DATABASE_NAME} characters.`,
+      message: `A Postgres database name can have at most ${OWNER_ROLE_MAX_DATABASE_NAME} characters to get an owner role, because the owner role is named after it.`,
       status: 400,
     }
   }
@@ -255,7 +263,7 @@ export function evaluateOwnerRoleConversion(
     return {
       ok: false,
       error: 'managed_owner_role_confirm_required',
-      message: `Moving ${name} onto an owner role hands everything in it (schemas, tables, views, sequences, functions, types) to the owner role tp_${name}_owner, whoever owns it now. No data is changed or removed. Send confirm: true to go ahead.`,
+      message: `Moving ${name} onto an owner role hands everything in it (schemas, tables, views, sequences, functions, types) to the owner role tp_${name}_owner, whoever owns it now. No data is changed or removed. It waits at most five seconds for a busy table and then stops without changing anything, so run it in a quiet window and repeat it if it stops. Send confirm: true to go ahead.`,
       status: 400,
     }
   }

@@ -251,11 +251,15 @@ test('moving an existing database onto its owner role needs a Postgres database,
     evaluateOwnerRoleConversion(engine, name, confirm, daemon)
   assertEquals(ask('postgres', 'defaultdb', true), null)
   assertEquals(ask('mysql', 'defaultdb', true)?.error, 'managed_owner_role_unsupported')
-  assertEquals(ask('postgres', 'postgres', true)?.status, 400)
-  assertEquals(ask('postgres', 'x'.repeat(OWNER_ROLE_MAX_DATABASE_NAME + 1), true)?.status, 400)
+  assertEquals(ask('postgres', 'postgres', true)?.error, 'managed_owner_role_database_not_movable')
+  assertEquals(
+    ask('postgres', 'x'.repeat(OWNER_ROLE_MAX_DATABASE_NAME + 1), true)?.error,
+    'managed_owner_role_name_too_long'
+  )
   const unconfirmed = ask('postgres', 'defaultdb', undefined)
   assertEquals(unconfirmed?.error, 'managed_owner_role_confirm_required')
   assertEquals(unconfirmed?.message?.includes('tp_defaultdb_owner'), true)
+  assertEquals(unconfirmed?.message?.includes('quiet window'), true)
   assertEquals(ask('postgres', 'defaultdb', 'yes')?.status, 400)
   const old = ask('postgres', 'defaultdb', true, false)
   assertEquals(old?.error, DATABASE_CONVERT_NEEDS_DAEMON_ERROR)

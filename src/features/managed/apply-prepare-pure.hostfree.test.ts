@@ -5,6 +5,7 @@ import {
   decryptSecretForDaemon,
   parseDaemonSecretEnvelope,
 } from '../../lib/secrets/data-encryption.ts'
+import { convertedDatabaseNames } from './options.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { ManagedApplyCommandPayload } from '../../contracts/commands/schemas.ts'
 import { mintOrganizationCa, verifyCertificateSignature } from '../../lib/tls/index.ts'
@@ -610,4 +611,16 @@ test('buildDatabaseOps asks for a conversion only for a listed owner-role databa
   assertEquals(buildDatabaseOps({ databases: ['first'], convertDatabases: ['first'] }), [
     { name: 'first', action: 'create' },
   ])
+})
+
+test('convertedDatabaseNames lists only databases the apply asked to move onto an owner role', () => {
+  assertEquals(
+    convertedDatabaseNames([
+      { name: 'first', ownerRole: true, convertExisting: true },
+      { name: 'shop', ownerRole: true },
+      { name: 'old', convertExisting: true },
+    ]),
+    ['first']
+  )
+  assertEquals(convertedDatabaseNames(undefined), [])
 })

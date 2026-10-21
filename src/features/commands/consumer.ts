@@ -132,6 +132,7 @@ import {
   type ReportedFolder,
 } from '../../contracts/commands/schemas.ts'
 import { updateManagedMemberObservedReplication } from '../managed/members.ts'
+import { convertedDatabaseNames, markConvertedDatabasesRoleOwned } from '../managed/options.ts'
 import { markFoldersPresent } from '../folders/allocate.ts'
 import {
   applyFolderRemovalReports,
@@ -1612,6 +1613,13 @@ async function applyManagedApplySideEffect(
           updatedAt,
         })
         .where(eq(managed.id, payload.managedId))
+    }
+    if (isPrimary) {
+      await markConvertedDatabasesRoleOwned(
+        db,
+        payload.managedId,
+        convertedDatabaseNames(payload.databases)
+      )
     }
     if (applyResult.containers !== undefined) {
       await reconcileContainersSafely(

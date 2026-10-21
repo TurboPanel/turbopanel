@@ -3,6 +3,7 @@ import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import type { StepUpAction } from '../authn/step-up-actions.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -2548,7 +2549,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   // made before owner roles) onto its owner role, only when asked. Ownership
   // only: nothing in the database is changed or removed. Repeating it is safe.
   router.post('/environments/:id/managed/databases/:databaseName/owner-role', async (c) => {
-    const scope = await loadManagedRowScope(c)
+    const scope = await loadManagedRowScope(c, 'managed.database.owner_role')
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
     const databaseName = decodeURIComponent(c.req.param('databaseName'))
@@ -2570,35 +2571,38 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: refusal.error, message: refusal.message }, refusal.status)
     }
 
-    const nextOwnerRoleDatabases = nextDatabasesAfterCreate(
-      options.ownerRoleDatabases ?? [],
-      databaseName
-    )
     const nextOptions: ManagedRowOptions = {
       ...options,
-      ownerRoleDatabases: nextOwnerRoleDatabases,
+      ownerRoleDatabases: nextDatabasesAfterCreate(options.ownerRoleDatabases ?? [], databaseName),
     }
     const prepared = await prepareApplyForManaged(c, db, ctx, row, nextOptions, targetServerId, {
       convertDatabases: [databaseName],
     })
     if (prepared instanceof Response) return prepared
-    await saveManagedOptions(db, row.id, nextOptions)
 
+    // The database is only recorded as having an owner role once the primary
+    // reports the move done (see `markConvertedDatabasesRoleOwned`), so a
+    // move that fails leaves nothing flagged that is not true.
     const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
       userId: auth.userId,
       managedId: row.id,
       members: prepared.members,
     })
-    if (enqueued instanceof Response) {
-      await saveManagedOptions(db, row.id, options)
-      return enqueued
-    }
+    if (enqueued instanceof Response) return enqueued
+    await recordAudit(db, {
+      organizationId: auth.organizationId,
+      actorUserId: auth.userId,
+      action: 'managed.database.owner_role.move',
+      targetType: 'managed',
+      targetId: row.id,
+      context: { database: databaseName },
+    })
     const primaryFanout = pickPrimaryCommandResult(enqueued)
     return c.json({
       ok: true,
       databases: options.databases,
-      ownerRoleDatabases: nextOwnerRoleDatabases,
-      owners: describeDatabaseOwners({ ...nextOptions }),
+      ownerRoleDatabases: options.ownerRoleDatabases ?? [],
+      owners: describeDatabaseOwners(options),
       commandId: primaryFanout?.commandId,
       serverId: primaryFanout?.serverId ?? targetServerId,
       results: enqueued,
