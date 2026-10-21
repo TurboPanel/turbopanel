@@ -28,19 +28,12 @@ import { type Db, getDb } from '../../db/connection.ts'
 import { createStripeClient, type StripeClient } from '../../features/billing/client.ts'
 import { type BillingConfig, isCustomerBillingOperational } from '../../features/billing/config.ts'
 import {
-  checkoutIdempotencyKey,
   checkoutReturnUrls,
-  createCheckoutSession,
   ensureCustomerForOrganization,
+  openCheckoutSession,
 } from '../../features/billing/checkout.ts'
 import { seatLinesFromState } from '../../features/billing/entitlements.ts'
 import { type BillingGateway, resolveBillingGateway } from '../../features/billing/gateway.ts'
-import {
-  newPendingCheckoutRecord,
-  pendingCheckoutMatches,
-  readPendingCheckout,
-  writePendingCheckout,
-} from '../../features/billing/pending-checkout.ts'
 import { createPortalSession } from '../../features/billing/portal.ts'
 import {
   type BillingQuantityLock,
@@ -74,7 +67,6 @@ import {
   BILLING_MUTATION_IN_PROGRESS_ERROR,
   BILLING_NOT_CONFIGURED_ERROR,
   type BillingOrgView,
-  CHECKOUT_PENDING_ERROR,
   hasLiveSubscription,
   licensesEndingRefusal,
   loadBillingOrgView,
@@ -331,14 +323,6 @@ export function registerBillingRoutes(
         return c.json({ error: SUBSCRIPTION_EXISTS_ERROR }, 409)
       }
 
-      const pending = await readPendingCheckout(auth.db, auth.organizationId, nowMs())
-      if (pending) {
-        if (pendingCheckoutMatches(pending, { tierId, quantity })) {
-          return c.json({ url: pending.url, sessionId: pending.sessionId })
-        }
-        return c.json({ error: CHECKOUT_PENDING_ERROR }, 409)
-      }
-
       const client = createClient(auth.config)
       try {
         const price = await resolveTierPrice(auth.db, resolveBillingGateway(client), tierId)
@@ -358,36 +342,21 @@ export function registerBillingRoutes(
           now: new Date(nowMs()).toISOString(),
         })
         const urls = checkoutReturnUrls(await resolvePublicBaseUrl(c, opts), auth.organizationId)
-        const idempotencyKey = checkoutIdempotencyKey(
-          auth.organizationId,
-          tierId,
-          quantity,
-          nowMs()
-        )
-        const session = await createCheckoutSession(client, {
+        const outcome = await openCheckoutSession(client, {
           providerCustomerId,
           providerPriceId: price.providerPriceId,
           quantity,
+          tierId,
           successUrl: urls.successUrl,
           cancelUrl: urls.cancelUrl,
           organizationId: auth.organizationId,
-          idempotencyKey,
           allowPromotionCodes: auth.config.couponsAllowed,
+          nowMs: nowMs(),
         })
-        await writePendingCheckout(
-          auth.db,
-          auth.organizationId,
-          newPendingCheckoutRecord({
-            sessionId: session.sessionId,
-            url: session.url,
-            tierId,
-            quantity,
-            idempotencyKey,
-            nowMs: nowMs(),
-          }),
-          nowMs()
-        )
-        return c.json({ url: session.url, sessionId: session.sessionId })
+        if (outcome.kind === 'subscription_exists') {
+          return c.json({ error: SUBSCRIPTION_EXISTS_ERROR }, 409)
+        }
+        return c.json({ url: outcome.url, sessionId: outcome.sessionId })
       } catch (err) {
         return stripeErrorResponse(c, err)
       }

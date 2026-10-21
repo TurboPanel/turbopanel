@@ -1,6 +1,6 @@
 {
   "name": "turbopanel",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -50,7 +50,7 @@
     "@noble/hashes": "1.8.0",
     "amqplib": "^2.0.1",
     "drizzle-orm": "^0.45.2",
-    "hono": "4.13.7",
+    "hono": "4.13.11",
     "ioredis": "^5.11.1",
     "nodemailer": "^10.0.2",
     "postgres": "^3.4.7",

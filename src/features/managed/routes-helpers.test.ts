@@ -427,13 +427,16 @@ test('serializeManagedLogin keeps the users shape, names the principal and login
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-01-01T00:00:00.000Z',
   }
-  const serialized = serializeManagedLogin(row)
+  const serialized = serializeManagedLogin(row, 'postgres')
   assertEquals(serialized.id, 'login-1')
   assertEquals(serialized.principalId, 'prin-1')
   assertEquals(serialized.loginId, 'login-1')
   assertEquals(serialized.nameScheme, 'plain')
   assertEquals(serialized.databases, ['postgres'])
-  assertEquals(serializeManagedLogin({ ...row, principalId: null, role: 'root' }).principalId, null)
+  assertEquals(
+    serializeManagedLogin({ ...row, principalId: null, role: 'root' }, 'postgres').principalId,
+    null
+  )
 
   assertEquals(evaluateManagedLoginRotateGuard('root')?.error, 'use_root_password_route')
   assertEquals(
@@ -475,24 +478,27 @@ test('evaluateExistingPrincipalLoginName accepts a name the engine takes and ref
 })
 
 test('serializeManagedLogin reads settings from the login columns', () => {
-  const serialized = serializeManagedLogin({
-    id: 'login-1',
-    principalId: null,
-    managedId: 'm1',
-    role: 'user',
-    username: 'app_user',
-    appliedUsername: 'app_user_ab12cd34ef5',
-    nameScheme: 'partial',
-    databases: ['postgres', 'app'],
-    privileges: ['read-only'],
-    connectionRole: 'read-only',
-    grantMode: 'self',
-    tool: true,
-    allowedSources: ['internal'],
-    maxConnections: 3,
-    createdAt: '2024-01-01T00:00:00.000Z',
-    updatedAt: '2024-01-01T00:00:00.000Z',
-  })
+  const serialized = serializeManagedLogin(
+    {
+      id: 'login-1',
+      principalId: null,
+      managedId: 'm1',
+      role: 'user',
+      username: 'app_user',
+      appliedUsername: 'app_user_ab12cd34ef5',
+      nameScheme: 'partial',
+      databases: ['postgres', 'app'],
+      privileges: ['read-only'],
+      connectionRole: 'read-only',
+      grantMode: 'self',
+      tool: true,
+      allowedSources: ['internal'],
+      maxConnections: 3,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    },
+    'postgres'
+  )
   assertEquals(serialized, {
     id: 'login-1',
     username: 'app_user',
@@ -505,6 +511,9 @@ test('serializeManagedLogin reads settings from the login columns', () => {
     tool: true,
     allowedSources: ['internal'],
     maxConnections: 3,
+    // A source-limited login never connects straight through, default or not.
+    straightThrough: false,
+    straightThroughDefault: true,
     createdAt: '2024-01-01T00:00:00.000Z',
     principalId: null,
     loginId: 'login-1',
