@@ -25,6 +25,11 @@ import type {
   NetworkDeviceSample,
 } from '../../../../contracts/metrics-contract.ts'
 import type { MetricEntityScope } from '../../metric-descriptors.ts'
+import {
+  blockOpsPerSecond,
+  dockerReclaimableBytes,
+  nicProblemsPerSecond,
+} from '../../shared-derivations.ts'
 
 export const V8_HOST_FAMILIES = [
   'host.system',
@@ -123,39 +128,18 @@ function proxyField(field: string): DoubleDef {
   return { ref: { scope: 'databaseProxy', field }, read: (c) => num(c.proxy, field) }
 }
 
-/** Sum of a NIC's four error/drop rates, `null` if any input is missing. */
-function nicProblems(nic: NetworkDeviceSample | undefined): number | null {
-  if (!nic) return null
-  const parts = [
-    nic.receiveErrorsPerSecond,
-    nic.transmitErrorsPerSecond,
-    nic.receiveDropsPerSecond,
-    nic.transmitDropsPerSecond,
-  ]
-  if (parts.includes(null)) return null
-  return (parts as number[]).reduce((sum, value) => sum + value, 0)
-}
-
 function embeddedNic(slot: 0 | 1, key: 'rx' | 'tx' | 'problems'): DoubleDef {
   return {
     read: (c) => {
       const nic = c.nics[slot]
-      if (key === 'problems') return nicProblems(nic)
+      if (key === 'problems') return nicProblemsPerSecond(nic)
       return (key === 'rx' ? nic?.receiveBytesPerSecond : nic?.transmitBytesPerSecond) ?? null
     },
   }
 }
 
-/** Docker's reclaimable bytes: the daemon's own sum, else the three df groups added up. */
 function reclaimableTotal(c: V8Context): number | null {
-  const own = num(c.sample.extended?.docker, 'reclaimableBytes')
-  if (own !== null) return own
-  const parts = [
-    num(c.sample.dockerUsage, 'imagesReclaimableBytes'),
-    num(c.sample.dockerUsage, 'volumesReclaimableBytes'),
-    num(c.sample.dockerUsage, 'buildCacheReclaimableBytes'),
-  ].filter((part): part is number => part !== null)
-  return parts.length === 0 ? null : parts.reduce((sum, part) => sum + part, 0)
+  return dockerReclaimableBytes(c.sample.extended?.docker, c.sample.dockerUsage)
 }
 
 function foldedFilesystemField(field: 'availableBytes' | 'freeInodes'): DoubleDef {
@@ -523,11 +507,6 @@ function entityNum<E>(field: string): {
   return { field, read: (entity) => num(entity, field) }
 }
 
-function opsPerSecond(device: BlockDeviceSample): number | null {
-  if (device.readOpsPerSecond === null || device.writeOpsPerSecond === null) return null
-  return device.readOpsPerSecond + device.writeOpsPerSecond
-}
-
 function blockText(key: 'model' | 'smart') {
   return {
     read: (d: BlockDeviceSample, s: MetricsSample) =>
@@ -546,7 +525,7 @@ const BLOCK_SPEC: EntityRowSpec<BlockDeviceSample> = {
   doubles: [
     entityNum('readBytesPerSecond'),
     entityNum('writeBytesPerSecond'),
-    { field: 'opsPerSecond', read: opsPerSecond },
+    { field: 'opsPerSecond', read: blockOpsPerSecond },
     entityNum('readLatencyMs'),
     entityNum('writeLatencyMs'),
     entityNum('queueDepth'),
