@@ -50,6 +50,8 @@ export type LoginSettings = {
   allowedSources: string[] | undefined
   /** Per-login connection cap; `undefined` means no cap. */
   maxConnections: number | undefined
+  /** PostgreSQL only: the stored choice to connect straight through; `undefined` means never chosen (default applies). */
+  straightThrough?: boolean | undefined
 }
 
 /** A change to {@link LoginSettings}; `null` clears `allowedSources` / `maxConnections`. */
@@ -61,6 +63,8 @@ export type LoginSettingsPatch = {
   connectionRole?: LoginConnectionRole
   allowedSources?: string[] | null
   maxConnections?: number | null
+  /** `null` goes back to the default. */
+  straightThrough?: boolean | null
 }
 
 export type ManagedLoginRow = LoginSettings & {
@@ -102,6 +106,7 @@ const LOGIN_SELECT = {
   access: login.access,
   allowedSources: login.allowedSources,
   maxConnections: login.maxConnections,
+  isStraightThrough: login.isStraightThrough,
   createdAt: login.createdAt,
   updatedAt: login.updatedAt,
   password: login.password,
@@ -133,6 +138,7 @@ function toLoginRow(row: {
   access: string
   allowedSources: string[] | null
   maxConnections: number | null
+  isStraightThrough: boolean | null
   createdAt: string
   updatedAt: string
   password: string | null
@@ -153,6 +159,7 @@ function toLoginRow(row: {
     allowedSources:
       row.allowedSources && row.allowedSources.length > 0 ? row.allowedSources : undefined,
     maxConnections: row.maxConnections ?? undefined,
+    straightThrough: row.isStraightThrough ?? undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     password: row.password,
@@ -279,6 +286,10 @@ export function applySettingsPatch(
       patch.maxConnections === undefined
         ? settings.maxConnections
         : (patch.maxConnections ?? undefined),
+    straightThrough:
+      patch.straightThrough === undefined
+        ? settings.straightThrough
+        : (patch.straightThrough ?? undefined),
   }
 }
 
@@ -290,6 +301,7 @@ function settingsColumns(patch: LoginSettingsPatch) {
     ...(patch.connectionRole !== undefined ? { access: patch.connectionRole } : {}),
     ...(patch.allowedSources !== undefined ? { allowedSources: patch.allowedSources } : {}),
     ...(patch.maxConnections !== undefined ? { maxConnections: patch.maxConnections } : {}),
+    ...(patch.straightThrough !== undefined ? { isStraightThrough: patch.straightThrough } : {}),
   }
 }
 

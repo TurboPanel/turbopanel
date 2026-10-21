@@ -246,6 +246,7 @@ import {
   serializeContainerRow,
   serializeManagedLogin,
   serializeOrgManagedListRow,
+  straightThroughFields,
   validateManagedDatabaseCreateName,
 } from '../../features/managed/routes-helpers.ts'
 import {
@@ -2033,7 +2034,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const logins = await listManagedLogins(db, row.id)
     return c.json({
-      users: logins.filter((entry) => entry.role === 'user').map(serializeManagedLogin),
+      users: logins
+        .filter((entry) => entry.role === 'user')
+        .map((entry) => serializeManagedLogin(entry, row.engine)),
     })
   })
 
@@ -2085,7 +2088,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
     if (commandQueue instanceof Response) return commandQueue
-    const limits = await parseGatedLoginLimits(c, db, ctx.organizationId, body, targetServerId)
+    const limits = await parseGatedLoginLimits(
+      c,
+      db,
+      ctx.organizationId,
+      body,
+      targetServerId,
+      ctx.spec.engine
+    )
     if (limits instanceof Response) return limits
 
     // A read-only login on a cluster with no read-eligible replica is fine:
@@ -2186,6 +2196,14 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         tool,
         allowedSources: limits.allowedSources ?? ['any'],
         maxConnections: limits.maxConnections ?? null,
+        ...straightThroughFields({
+          engine: ctx.spec.engine,
+          role: 'user',
+          privileges,
+          allowedSources: limits.allowedSources ?? undefined,
+          straightThrough:
+            typeof limits.straightThrough === 'boolean' ? limits.straightThrough : undefined,
+        }),
         createdAt: createdLogin?.createdAt ?? new Date().toISOString(),
       },
       password,
@@ -2298,7 +2316,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const primaryResult = pickPrimaryCommandResult(enqueued)
     return c.json({
       ok: true,
-      user: updated ? serializeManagedLogin(updated) : null,
+      user: updated ? serializeManagedLogin(updated, ctx.spec.engine) : null,
       ...notesField(notes),
       commandId: primaryResult?.commandId,
       serverId: primaryResult?.serverId ?? targetServerId,

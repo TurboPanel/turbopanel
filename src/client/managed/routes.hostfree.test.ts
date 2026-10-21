@@ -3431,6 +3431,43 @@ test('POST users stores self mode and the tool flag, and refuses an unknown mode
   assertEquals(bad.inserted, [])
 })
 
+test('POST users stores an explicit straightThrough choice and leaves it unset otherwise', async () => {
+  for (const choice of [true, false]) {
+    const { res, inserted } = await postUser({ straightThrough: choice }, PRIMARY_ONLY)
+    assertEquals(insertedLogin(inserted).isStraightThrough, choice)
+    if (res.status === 200) {
+      const user = ((await jsonOf(res)) as { user: Record<string, unknown> }).user
+      assertEquals(user.straightThrough, choice)
+      assertEquals(user.straightThroughDefault, false)
+    }
+  }
+  const { inserted } = await postUser({}, PRIMARY_ONLY)
+  assertEquals(insertedLogin(inserted).isStraightThrough, undefined)
+  const nulled = await postUser({ straightThrough: null }, PRIMARY_ONLY)
+  assertEquals(insertedLogin(nulled.inserted).isStraightThrough, undefined)
+})
+
+test('POST users refuses straightThrough with a source limit, and a non-boolean value', async () => {
+  const conflict = await postUser(
+    { straightThrough: true, allowedSources: ['address:203.0.113.%'] },
+    PRIMARY_ONLY
+  )
+  await expectJson(conflict.res, 400, {
+    error: 'straight_through_conflicts_with_source_limit',
+    message:
+      'A login that connects straight through cannot be limited to certain addresses. Turn one off.',
+  })
+  assertEquals(conflict.inserted, [])
+  const allowed = await postUser(
+    { straightThrough: false, allowedSources: ['address:203.0.113.%'] },
+    PRIMARY_ONLY
+  )
+  assertEquals(allowed.res.status === 400, false)
+  const bad = await postUser({ straightThrough: 'yes' }, PRIMARY_ONLY)
+  assertEquals(bad.res.status, 400)
+  assertEquals(bad.inserted, [])
+})
+
 async function patchUser(body: Record<string, unknown>, loginOverrides = {}) {
   const { envelopes, commandQueue } = recordingUserCreate(PRIMARY_ONLY)
   const withLogin = applyReadyDb({
@@ -3459,6 +3496,38 @@ test('PATCH user dry run lists what would run and queues nothing', async () => {
   assertEquals(body.grantMode, 'self')
   assertEquals(Array.isArray(body.statements), true)
   assertEquals(envelopes, [])
+})
+
+test('PATCH user refuses straightThrough against a stored source limit, in both directions', async () => {
+  const withLimit = await patchUser({ straightThrough: true }, { allowedSources: ['internal'] })
+  assertEquals(withLimit.res.status, 400)
+  assertEquals((await jsonOf(withLimit.res)).error, 'straight_through_conflicts_with_source_limit')
+  const withChoice = await patchUser({ allowedSources: ['internal'] }, { isStraightThrough: true })
+  assertEquals(withChoice.res.status, 400)
+  assertEquals((await jsonOf(withChoice.res)).error, 'straight_through_conflicts_with_source_limit')
+  const bad = await patchUser({ straightThrough: 'on' })
+  assertEquals(bad.res.status, 400)
+  assertEquals(withLimit.envelopes, [])
+})
+
+test('PATCH user dry run says in plain words that straightThrough changes the connection path', async () => {
+  const { res, envelopes } = await patchUser({ straightThrough: true, dryRun: true })
+  assertEquals(res.status, 200)
+  const statements = (await jsonOf(res)).statements as string[]
+  assertEquals(
+    statements.some((line) => line.includes('straight through the front door')),
+    true
+  )
+  assertEquals(envelopes, [])
+  const off = await patchUser(
+    { straightThrough: false, dryRun: true },
+    { privileges: ['owner'], isStraightThrough: null }
+  )
+  const offStatements = (await jsonOf(off.res)).statements as string[]
+  assertEquals(
+    offStatements.some((line) => line.includes('normal shared path')),
+    true
+  )
 })
 
 test('PATCH user applies a change and queues an apply', async () => {

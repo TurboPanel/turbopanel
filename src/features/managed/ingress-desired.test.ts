@@ -40,7 +40,7 @@ import { loadHostSiteBindingNeeds } from '../bindings/host-run.ts'
 import { materializeBinding } from '../bindings/materialize.ts'
 import { serverHasHostRunBinding } from './ingress-bound-consumers.ts'
 import type { ManagedSettings } from './settings.ts'
-import { createManagedLogin } from './logins.ts'
+import { createManagedLogin, findManagedLogin, patchLogin } from './logins.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { ensureManagedContainerAllocation } from './allocate-managed-container.ts'
 import {
@@ -682,6 +682,100 @@ test('each cluster carries its engine version so ProxySQL reports the real one',
         throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`)
       }
       assertEquals(built.clusters[0]?.engineVersion, '17')
+    }
+  )
+})
+
+test('straightThrough goes on the wire only for a PostgreSQL user login that resolves on', async () => {
+  await withSingleClusterIngressFixture(
+    false,
+    async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
+      const [member] = await db
+        .select({ managedId: replica.managedId })
+        .from(replica)
+        .where(eq(replica.serverId, serverId))
+      const managedId = member!.managedId
+      const make = (username: string, extra: Record<string, unknown>) =>
+        createManagedLogin(db, dataEncryptionSecrets, {
+          managedId,
+          username,
+          databases: ['postgres'],
+          ...extra,
+        })
+      // Migration level defaults on; the rest default off.
+      await make('migrator', { privileges: ['owner'] })
+      await make('plain_app', { privileges: ['read-write'] })
+      await make('chosen_on', { privileges: ['read-write'], straightThrough: true })
+      const chosenOff = await make('chosen_off', { privileges: ['owner'], straightThrough: false })
+      // The column round-trips: false is kept as a choice, null goes back to unset.
+      assertEquals(
+        (await findManagedLogin(db, managedId, chosenOff.loginId))?.straightThrough,
+        false
+      )
+      await patchLogin(db, chosenOff.loginId, { straightThrough: null })
+      assertEquals(
+        (await findManagedLogin(db, managedId, chosenOff.loginId))?.straightThrough,
+        undefined
+      )
+      await patchLogin(db, chosenOff.loginId, { straightThrough: false })
+      // A source limit always wins, default or chosen: never on the wire.
+      await make('limited_migrator', { privileges: ['owner'], allowedSources: ['internal'] })
+      await make('limited_chosen', {
+        privileges: ['read-write'],
+        straightThrough: true,
+        allowedSources: ['internal'],
+      })
+      const built = await buildManagedIngressReconcilePayload(db, {
+        serverId,
+        secretsConfig,
+        dataEncryptionSecrets,
+      })
+      if (built === null || 'kind' in built) {
+        throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`)
+      }
+      const users = built.clusters[0]!.users
+      const flag = (name: string) => users.find((entry) => entry.username === name)
+      assertEquals(flag('migrator')?.straightThrough, true)
+      assertEquals(flag('chosen_on')?.straightThrough, true)
+      for (const name of [
+        'plain_app',
+        'chosen_off',
+        'limited_migrator',
+        'limited_chosen',
+        'postgres',
+      ]) {
+        assertEquals(flag(name) !== undefined && 'straightThrough' in flag(name)!, false, name)
+      }
+    }
+  )
+})
+
+test('straightThrough is never sent for a MySQL cluster login', async () => {
+  await withSingleClusterIngressFixture(
+    false,
+    async ({ db, serverId, secretsConfig, dataEncryptionSecrets }) => {
+      const [member] = await db
+        .select({ managedId: replica.managedId })
+        .from(replica)
+        .where(eq(replica.serverId, serverId))
+      await db.update(managed).set({ engine: 'mysql' }).where(eq(managed.id, member!.managedId))
+      await createManagedLogin(db, dataEncryptionSecrets, {
+        managedId: member!.managedId,
+        username: 'my_migrator',
+        privileges: ['owner'],
+        databases: ['postgres'],
+      })
+      const built = await buildManagedIngressReconcilePayload(db, {
+        serverId,
+        secretsConfig,
+        dataEncryptionSecrets,
+      })
+      if (built === null || 'kind' in built) {
+        throw new TypeError(`expected a payload, got ${JSON.stringify(built)}`)
+      }
+      for (const user of built.clusters[0]!.users) {
+        assertEquals('straightThrough' in user, false, user.username)
+      }
     }
   )
 })

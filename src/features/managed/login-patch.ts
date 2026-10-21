@@ -20,6 +20,12 @@ import {
   type LoginSettingsPatch,
 } from './logins.ts'
 import { describePatchedLimits } from './login-sources.ts'
+import {
+  describeStraightThroughChange,
+  refuseStraightThrough,
+  resolveStraightThrough,
+  straightThroughAfter,
+} from './login-straight-through.ts'
 
 export type LoginPatchError = {
   ok: false
@@ -40,6 +46,8 @@ export type LoginPatchInput = {
   allowedSources?: string[] | null
   /** Parsed cap; `null` clears. Absent leaves the stored value. */
   maxConnections?: number | null
+  /** Parsed choice; `null` goes back to the default. Absent leaves the stored value. */
+  straightThrough?: boolean | null
 }
 
 export type LoginPatchCurrent = LoginSettings & {
@@ -96,6 +104,7 @@ function patchSettings(after: LoginGrantMode, input: LoginPatchInput): LoginSett
   // `null` clears: NULL means anywhere / no cap.
   if (input.allowedSources !== undefined) patch.allowedSources = input.allowedSources
   if (input.maxConnections !== undefined) patch.maxConnections = input.maxConnections
+  if (input.straightThrough !== undefined) patch.straightThrough = input.straightThrough
   return patch
 }
 
@@ -153,6 +162,18 @@ export function planLoginPatch(
     return fail(400, 'Invalid request', 'tool must be true or false.')
   }
 
+  // Straight through: judged on the state after the change, both directions
+  // (turning it on with a limit, or adding a limit to a login set to it).
+  const straightAfter = straightThroughAfter(current, input)
+  const straightRefusal = refuseStraightThrough({
+    engine,
+    role: current.role,
+    ...straightAfter,
+  })
+  if (straightRefusal) {
+    return fail(straightRefusal.status, straightRefusal.error, straightRefusal.message)
+  }
+
   // The Database admin login has one rule (never read-only), checked on the
   // state after the change. Owner-role setup never refuses it.
   const privilegesAfter = input.privileges ?? current.privileges
@@ -179,6 +200,14 @@ export function planLoginPatch(
   const tool = patch.tool ?? current.tool
   const summary = describeApply(engine, after, tool, becomesAdmin)
   summary.push(...describePatchedLimits(current, input))
+  const resolved = (privileges: string[], after: ReturnType<typeof straightThroughAfter>) =>
+    resolveStraightThrough({ engine, role: current.role, privileges, ...after })
+  summary.push(
+    ...describeStraightThroughChange(
+      resolved(current.privileges, current),
+      resolved(patch.privileges ?? current.privileges, straightAfter)
+    )
+  )
   return { ok: true, patch, grantMode: after, summary }
 }
 
@@ -233,5 +262,6 @@ export function loginPatchUndo(previous: LoginSettings): LoginSettingsPatch {
     connectionRole: previous.connectionRole,
     allowedSources: previous.allowedSources ?? null,
     maxConnections: previous.maxConnections ?? null,
+    straightThrough: previous.straightThrough ?? null,
   }
 }

@@ -29,11 +29,18 @@ import {
   parseLoginMaxConnections,
 } from './login-sources.ts'
 import { findOrganizationServerIds } from './login-sources-load.ts'
+import {
+  isStraightThroughValue,
+  refuseStraightThrough,
+  STRAIGHT_THROUGH_INVALID_MESSAGE,
+} from './login-straight-through.ts'
 
 /** Present keys only. `null` clears: `allowedSources: null` means anywhere. */
 export type LoginLimitFields = {
   allowedSources?: string[] | null
   maxConnections?: number | null
+  /** PostgreSQL only; `null` goes back to the default. */
+  straightThrough?: boolean | null
 }
 
 const isError = (value: unknown): value is LoginSourcesError =>
@@ -70,6 +77,12 @@ export async function parseLoginLimitFields(
     if (isError(parsed)) return c.json(parsed, 400)
     fields.maxConnections = parsed
   }
+  if (body.straightThrough !== undefined) {
+    if (!isStraightThroughValue(body.straightThrough)) {
+      return c.json({ error: 'Invalid request', message: STRAIGHT_THROUGH_INVALID_MESSAGE }, 400)
+    }
+    fields.straightThrough = body.straightThrough
+  }
   return fields
 }
 
@@ -85,23 +98,47 @@ export function loginLimitsRequested(fields: LoginLimitFields): boolean {
 export function loginLimitSettings(fields: LoginLimitFields): {
   allowedSources?: string[]
   maxConnections?: number
+  straightThrough?: boolean
 } {
   return {
     ...(fields.allowedSources ? { allowedSources: fields.allowedSources } : {}),
     ...(fields.maxConnections ? { maxConnections: fields.maxConnections } : {}),
+    // Only an explicit choice is stored; absent or `null` keeps the default.
+    ...(typeof fields.straightThrough === 'boolean'
+      ? { straightThrough: fields.straightThrough }
+      : {}),
   }
 }
 
-/** Parse the limit fields and refuse (400/409) what this server could not enforce. */
+/** 400 when a new login asks to connect straight through where that cannot apply; `null` when fine. */
+export function refuseStraightThroughOnCreate(
+  c: Context,
+  engine: string,
+  fields: LoginLimitFields
+): Response | null {
+  const refusal = refuseStraightThrough({
+    engine,
+    role: 'user',
+    allowedSources: fields.allowedSources ?? undefined,
+    straightThrough: fields.straightThrough ?? undefined,
+  })
+  return refusal ? c.json({ error: refusal.error, message: refusal.message }, refusal.status) : null
+}
+
+/** Parse the limit fields and refuse (400/409) what a new login could not have or this server could not enforce. */
 export async function parseGatedLoginLimits(
   c: Context,
   db: Db,
   organizationId: string,
   body: Record<string, unknown>,
-  serverId: string
+  serverId: string,
+  engine: string
 ): Promise<LoginLimitFields | Response> {
   const fields = await parseLoginLimitFields(c, db, organizationId, body)
   if (fields instanceof Response) return fields
+  // Before the daemon check, so the conflict reads the same on every server.
+  const straightRefused = refuseStraightThroughOnCreate(c, engine, fields)
+  if (straightRefused) return straightRefused
   return (await refuseLimitsIfUnsupported(c, db, fields, serverId)) ?? fields
 }
 
